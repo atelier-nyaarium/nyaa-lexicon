@@ -1,0 +1,15 @@
+{
+	"name": "@nyaa-lexicon/provider-typescript",
+	"version": "0.1.1",
+	"private": true,
+	"type": "module",
+	"description": "TypeScript and JavaScript provider, wrapping the TypeScript compiler API",
+	"exports": {
+		".": "./src/main.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"typescript": "6.0.3",
+		"vscode-jsonrpc": "9.0.1"
+	}
+}

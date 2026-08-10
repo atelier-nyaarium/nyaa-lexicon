@@ -1,0 +1,158 @@
+// What indexes exist on this machine, and removing the ones nobody wants.
+//
+// Every other module here answers about ONE workspace; this one is about the state root itself,
+// which is the only view from which "delete this project" is answerable.
+//
+// Reads never open a store, because opening one REBUILDS an index whose schema has moved on, so
+// inspecting would rewrite the thing being inspected.
+
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { DaemonLockSchema } from "./lockFile.js";
+import { currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+/**
+ * Whether the indexed project is still there, in three values rather than two.
+ *
+ * `unknown` is load-bearing: an index predating the recorded path has nothing to check, and
+ * folding that into `missing` tells a user their live project is gone. Found by a real probe.
+ */
+export type WorkspaceState = "present" | "missing" | "unknown";
+
+export interface ProjectStore {
+	/** Directory name under the state root, and the confirmation token a delete requires. */
+	key: string;
+	/** The workspace this index was built from, or null when no daemon has recorded one. */
+	workspaceRoot: string | null;
+	/** Whether that path is still on disk, or that the index never said where it came from. */
+	workspace: WorkspaceState;
+	/** Bytes of index, excluding WAL companions, or 0 when there is no index file. */
+	bytes: number;
+	/** Last write to the index, epoch millis, or null when there is no index file. */
+	modifiedAt: number | null;
+	/** The pid serving it right now, or null. A live daemon blocks deletion. */
+	livePid: number | null;
+}
+
+export type DeleteOutcome = { deleted: true; key: string; bytes: number } | { deleted: false; reason: string };
+
+////////////////////////////////
+//  Functions & Helpers
+
+/** The pid of the daemon serving this directory, or null when the lock is absent, junk, or dead. */
+function pidOf(dir: string, isAlive: (pid: number) => boolean): number | null {
+	let raw: string;
+	try {
+		raw = readFileSync(path.join(dir, "daemon.json"), "utf8");
+	} catch {
+		return null;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	const lock = DaemonLockSchema.safeParse(parsed);
+	if (!lock.success) return null;
+	return isAlive(lock.data.pid) ? lock.data.pid : null;
+}
+
+/** The workspace an index was built from. Null when it is too old to carry the key, never a guess. */
+function workspaceOf(indexFile: string): string | null {
+	if (!existsSync(indexFile)) return null;
+	let db: DatabaseSync | null = null;
+	try {
+		db = new DatabaseSync(indexFile, { readOnly: true });
+		const row = db.prepare("SELECT value FROM meta WHERE key = ?").get("workspaceRoot") as
+			| { value: string }
+			| undefined;
+		return row?.value ?? null;
+	} catch {
+		return null;
+	} finally {
+		db?.close();
+	}
+}
+
+function sizeOf(indexFile: string): { bytes: number; modifiedAt: number | null } {
+	try {
+		const stats = statSync(indexFile);
+		return { bytes: stats.size, modifiedAt: stats.mtimeMs };
+	} catch {
+		return { bytes: 0, modifiedAt: null };
+	}
+}
+
+/** Every workspace index on this machine, newest first. */
+export function listProjectStores(
+	isAlive: (pid: number) => boolean,
+	host: PlatformEnv = currentHost(),
+): ProjectStore[] {
+	const root = stateRoot(host);
+	let entries: string[];
+	try {
+		entries = readdirSync(root, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name);
+	} catch {
+		return [];
+	}
+
+	const stores = entries.map((key): ProjectStore => {
+		const dir = path.join(root, key);
+		const indexFile = path.join(dir, "index.sqlite");
+		const workspaceRoot = workspaceOf(indexFile);
+		const { bytes, modifiedAt } = sizeOf(indexFile);
+		return {
+			key,
+			workspaceRoot,
+			workspace: workspaceRoot === null ? "unknown" : existsSync(workspaceRoot) ? "present" : "missing",
+			bytes,
+			modifiedAt,
+			livePid: pidOf(dir, isAlive),
+		};
+	});
+
+	return stores.sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
+}
+
+/**
+ * Delete one project's state directory, the one irreversible operation here.
+ *
+ * A live daemon is refused, since deleting a file under its own writer corrupts it mid-write. The
+ * key must match exactly, so no fuzzy match can reach the wrong project.
+ */
+export function deleteProjectStore(
+	key: string,
+	isAlive: (pid: number) => boolean,
+	host: PlatformEnv = currentHost(),
+): DeleteOutcome {
+	// The key names a directory, so a separator or a traversal segment in it would leave the state
+	// root entirely. Refused rather than sanitized: a caller passing one is confused about what a
+	// key is, and quietly deleting some repaired path is worse than saying no.
+	if (key.length === 0 || key.includes("/") || key.includes("\\") || key.includes("..")) {
+		return { deleted: false, reason: `${JSON.stringify(key)} is not a store key` };
+	}
+
+	const store = listProjectStores(isAlive, host).find((candidate) => candidate.key === key);
+	if (store === undefined) return { deleted: false, reason: `no store named ${key}` };
+	if (store.livePid !== null) {
+		return {
+			deleted: false,
+			reason: `pid ${store.livePid} is serving ${key} right now; shut it down first, then delete`,
+		};
+	}
+
+	rmSync(path.join(stateRoot(host), key), { recursive: true, force: true });
+	return { deleted: true, key, bytes: store.bytes };
+}
+
+/** The key a workspace path maps to, so a caller can name a store from a path. */
+export function storeKeyFor(workspaceRoot: string): string {
+	return workspaceKey(workspaceRoot);
+}

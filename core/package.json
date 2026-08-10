@@ -1,0 +1,15 @@
+{
+	"name": "@nyaa-lexicon/core",
+	"version": "0.1.1",
+	"private": true,
+	"type": "module",
+	"description": "Daemon, SQLite store, provider supervisor, query planning, narrative composition",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"vscode-jsonrpc": "9.0.1",
+		"zod": "4.4.3"
+	}
+}

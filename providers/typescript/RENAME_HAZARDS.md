@@ -1,0 +1,31 @@
+# TypeScript rename hazards
+
+This inventory describes edits that a future rename tier must validate before it returns an edit
+set. A plain span replacement changes one identifier span to the requested name. A different
+replacement changes a larger span or adds syntax so that the surrounding meaning stays the same.
+A refusal is required when the provider cannot prove that the edit preserves the program contract.
+
+The TypeScript language service can find identifier references with `findReferences`, which uses
+the compiler's reference engine. The checker also exposes a symbol's declarations. Those answers
+identify a symbol and its bound identifier uses, but they do not choose a safe rewrite for every
+syntactic form below. The AST is needed for that choice.
+
+| Construct | Edit policy | Checker evidence and syntax rule |
+| --- | --- | --- |
+| `import { foo as bar }` | Different replacement for the imported name. Plain replacement for the local name. | The import specifier has separate `propertyName` (`foo`) and `name` (`bar`) nodes. Renaming the imported `foo` changes only the specifier and must not change uses of local `bar`. Renaming `bar` changes the local binding and its references. Symbol declarations and `findReferences` distinguish the local alias; syntax is needed to edit the right specifier node. |
+| `export { foo as default }` | Plain replacement for local `foo`; refusal to rename the fixed `default` export slot. | The export specifier has a local `propertyName` and an exported `name`. `default` is not a renameable local identifier. The checker can resolve `foo`; syntax is needed to preserve the export name. |
+| `export * as ns` | Plain replacement for `ns`; refusal to rename the wildcard's underlying members through this span. | `ns` is the namespace export name and is a distinct syntax node. The checker can resolve a local namespace symbol when one exists, but `*` does not select one symbol to rename. Syntax distinguishes the alias from the source module. |
+| Object shorthand `{ foo }` | Different replacement: `{ foo: newName }` when `foo` is the value reference and the property key must remain stable. | `ShorthandPropertyAssignment` has one written name serving two roles. `findReferences` identifies the value symbol, but it does not by itself say that the property key is load-bearing. The AST must expand the shorthand. |
+| Destructuring shorthand `const { foo } = value` | Different replacement: `{ foo: newName }` when renaming the local binding. | The binding is the local value symbol, while the implicit property key remains `foo`. The checker identifies the binding declaration and its references. The AST must preserve the source property name instead of changing it to `newName`. |
+| String property access `value["foo"]` | Refusal by default. | The property key is a string literal, not an identifier reference. A checker symbol may describe a property named `foo`, but it does not prove that every string access is the same property contract. The AST can detect the form, but a safe rename needs stronger property and API evidence. |
+| JSX element names `<Foo />` and `</Foo>` | Plain replacement only when casing stays in the same JSX meaning. Refusal when casing changes meaning. | The checker can bind component identifiers and may return both opening and closing tag references. The AST must edit both tags and distinguish identifiers from intrinsic lowercase names and member tags. Renaming `Foo` to `foo` can change a component into an intrinsic element, so that edit is a refusal. |
+| Declaration merging | Plain replacement across every declaration and reference only when the merged symbol is intentionally renamed as one unit. Otherwise refusal. | `symbol.declarations` exposes the merged declarations and `findReferences` exposes their references. The AST is needed to report every declaration span, including class, interface, namespace, or function merges. A partial edit is not a closed rename. |
+| Same spelling in the type and value namespaces | Plain replacement within the checker-selected symbol's references. Refusal if the requested target does not identify one namespace. | Type and value uses can share text while resolving to different symbols. The checker and `findReferences` provide the binding distinction. Syntax identifies type positions and value positions for validation, and collision checks are required before applying the edit. |
+| Private class fields `#name` versus public `name` | Different replacement for a private field: `#name` becomes `#newName`. Public `name` is untouched. | `PrivateIdentifier` declarations and references are distinct from public identifiers. The checker can identify the private symbol. The AST supplies the hash-bearing span and prevents a public property with the same suffix from being edited. |
+| Module augmentation and ambient declarations | Refusal by default. | Ambient declarations and module augmentations can describe an external API or merge with a symbol outside the workspace. `symbol.declarations` and external declaration paths reveal some of this risk, while the AST identifies `declare module`, ambient containers, and the string module name. A module string is not a renameable identifier, and changing an ambient contract requires an explicit API decision. |
+| Named default declarations `export default function foo()` | Plain replacement for `foo`; anonymous default declarations are a refusal. | The checker can bind a named default declaration. Syntax distinguishes the local name from the fixed `default` export marker. An anonymous default has no declaration span to rename. |
+| Overloaded declarations | Plain replacement across every overload signature, implementation declaration, and reference when the symbol is closed. Otherwise refusal. | The checker presents overloads as one symbol with several declarations. `symbol.declarations` supplies the complete declaration set. Syntax is needed to edit each name span without treating a signature as a separate symbol. |
+
+The safe default is to refuse when a symbol has an external declaration, an ambient or augmented
+declaration, an unresolved alias, or a syntax form whose property key is not an identifier. A
+reference that cannot be proven to belong to the closed symbol set must not be rewritten.

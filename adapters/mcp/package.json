@@ -1,0 +1,16 @@
+{
+	"name": "@nyaa-lexicon/adapter-mcp",
+	"version": "0.1.1",
+	"private": true,
+	"type": "module",
+	"description": "Agent-facing MCP adapter: thin stdio client over the daemon, token budgeting, progressive disclosure",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "1.30.0",
+		"@nyaa-lexicon/core": "workspace:*",
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"zod": "4.4.3"
+	}
+}

@@ -1,0 +1,107 @@
+// Finding and starting the provider processes.
+//
+// Core learns nothing about any language here. It finds directories under providers/ and starts
+// each one; a provider states its own id, extensions and tiers at initialize. Four entrypoints
+// used to hand-roll this, and every one of them hardcoded a single provider, so the other two
+// were unreachable from every way of running the tool.
+
+import { existsSync, readdirSync } from "node:fs";
+import path from "node:path";
+import type { ProviderClaims } from "./routing.js";
+import type { ProviderSupervisor } from "./supervisor.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+export interface ProviderCommand {
+	/** The directory name under providers/. A label for reports, never a routing key. */
+	directory: string;
+	command: string[];
+}
+
+export interface StartedProvider {
+	directory: string;
+	claims: ProviderClaims;
+}
+
+export interface StartReport {
+	started: StartedProvider[];
+	/** A provider that would not start, kept rather than thrown: the others still work. */
+	failed: Array<{ directory: string; error: string }>;
+}
+
+////////////////////////////////
+//  Constants
+
+/** How long a provider gets to answer initialize before it counts as failed to start. */
+const START_TIMEOUT_MS = 60_000;
+
+////////////////////////////////
+//  Functions & Helpers
+
+/**
+ * Walk up for the repository that owns this build.
+ *
+ * Not derived from `import.meta.dirname` directly: that is `core/src` in source and `dist` in the
+ * bundle, so a fixed number of `..` segments is correct in exactly one of the two.
+ */
+export function lexiconRoot(): string {
+	let dir = import.meta.dirname;
+	for (let depth = 0; depth < 6; depth++) {
+		if (existsSync(path.join(dir, "providers")) && existsSync(path.join(dir, "package.json"))) return dir;
+		dir = path.dirname(dir);
+	}
+	throw new Error("could not locate the lexicon repository from this build");
+}
+
+/** Every provider present on disk, discovered rather than listed, so adding one needs no edit here. */
+export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
+	const directory = path.join(root, "providers");
+	if (!existsSync(directory)) return [];
+
+	const found: ProviderCommand[] = [];
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		const entrypoint = path.join(directory, entry.name, "src", "main.ts");
+		if (existsSync(entrypoint)) found.push({ directory: entry.name, command: ["bun", "run", entrypoint] });
+	}
+	return found.sort((a, b) => a.directory.localeCompare(b.directory));
+}
+
+/**
+ * Start every discovered provider against one workspace.
+ *
+ * A provider that fails to start is recorded rather than thrown. A missing python3 or a syntax
+ * error in one tree would otherwise take down answering for every other language, which is the
+ * opposite of what separate processes are for.
+ */
+export async function startProviders(
+	supervisor: ProviderSupervisor,
+	workspaceRoot: string,
+	commands = discoverProviders(),
+): Promise<StartReport> {
+	const report: StartReport = { started: [], failed: [] };
+
+	for (const entry of commands) {
+		try {
+			const claims = await supervisor.start(
+				{ command: entry.command, timeoutMs: START_TIMEOUT_MS },
+				workspaceRoot,
+			);
+			report.started.push({ directory: entry.directory, claims });
+		} catch (error) {
+			report.failed.push({
+				directory: entry.directory,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return report;
+}
+
+/** One line per provider, so a caller that starts them can say what it actually got. */
+export function describeStart(report: StartReport): string {
+	const lines = report.started.map((p) => `  ${p.claims.language}: ${p.claims.extensions.join(" ")}`);
+	for (const failure of report.failed) lines.push(`  ${failure.directory}: did not start (${failure.error})`);
+	return lines.join("\n");
+}

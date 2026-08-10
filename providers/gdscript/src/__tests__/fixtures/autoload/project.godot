@@ -1,0 +1,5 @@
+[application]
+config/name="GDScript binding fixture"
+
+[autoload]
+GameState="*res://state.gd"

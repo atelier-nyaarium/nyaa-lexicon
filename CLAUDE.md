@@ -57,7 +57,7 @@ it from `dist/` under node:
 bun run build --build-only                       # bundle without bumping or committing
 
 node dist/index-workspace.js <repo> [symbol]     # index a repo, optionally query a name
-node dist/grade.js                               # graded checks against a known repo
+node dist/grade.js <switchboard checkout>        # graded checks against a repo whose answers are known
 node dist/daemon.js <repo>                        # the daemon itself
 node dist/conformance.js bun run providers/<language>/src/main.ts
 ```
@@ -88,7 +88,7 @@ Ordered by how much they prove:
 
 1. `bun run test` for the unit level.
 2. `node dist/conformance.js ...` if the change touches a provider or the protocol.
-3. `node dist/grade.js` if it touches extraction, resolution or the service. This asks a real
+3. `node dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
    repository questions whose right answers are already known, so it catches "produces output" that
    is not "produces the right output".
 4. Drive the built server against a real workspace. **A green gate is not evidence.** A multi-file
