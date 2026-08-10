@@ -1,0 +1,99 @@
+# Provider protocol
+
+A language provider is a separate process speaking this protocol over stdio, so each one is written
+in whatever language has the best analyzer for its target. Providers live in
+`providers/<language>/` and depend on this contract alone.
+
+## The one rule
+
+**Uncertainty lives in the value, never in the interface.** Every provider implements every method.
+There are no optional capabilities. A provider with no inference answers `typeOf` with
+`Unknown { reason: NotImplemented }`, so a provider covering nothing and one covering everything
+are identical in shape and completely different in content. That is what lets the core stay free of
+any branch on language, which a residue test enforces.
+
+## Methods
+
+```
+initialize(root)             -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
+discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
+parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[] }
+resolveImport(from, spec)    -> ImportResolution
+bind(reference)              -> Binding
+typeOf(target)               -> TypeInfo
+renameEdits(request)         -> RenameEditsResponse
+shutdown()
+```
+
+`parseFile` is one call returning everything from one parse. There is no `describe`: narrative is
+the core's job, and a provider writing prose means the boundary leaked. `discoverProject` is the
+underestimated one, since config discovery and specifier resolution rules are the largest
+per-language cost.
+
+## The values carry the contract
+
+`Binding` is `Bound`, `Ambiguous` or `Unbound`. Ambiguous is a first-class answer, not an error and
+not a guess.
+
+`TypeInfo` is `Known`, `Inferred` or `Unknown`. `display` is a string, because a structured type
+tree is a TypeScript-shaped idea that other languages cannot fill.
+
+`reason` is a closed enum, and an Unknown without one fails conformance. "The language cannot know
+this" and "nobody has written it yet" must never collapse into the same sentence.
+
+## Declaring what you cover
+
+A tier boolean may not be an unqualified claim over a vocabulary. Declaring the `references` tier
+REQUIRES listing the roles extracted, refused by the schema rather than by convention, and emitting
+a role outside that list fails conformance. So the declaration cannot over-claim or under-claim.
+
+The tiers are a planning hint and a coverage report. Nothing consults them before making a call.
+
+## Positions
+
+Ranges are UTF-16 code units, pinned in the schema and proven by a shared conformance case whose
+fixture puts one astral character to the left of a name, so bytes, codepoints and code units give
+three different columns and only one passes.
+
+The reverse direction matters more than the forward one: a range that reads correctly and slices
+incorrectly corrupts a file on rename rather than merely misreporting it.
+
+## Rename
+
+A write is proposed before it is performed. The core decides WHICH occurrences belong to a symbol,
+since provenance is language-neutral, and the provider decides WHAT TEXT each becomes, since that
+is pure syntax.
+
+Three per-site outcomes, so an occurrence that must change and cannot is never confused with one
+that correctly needs no change. A single blocked site writes nothing at all.
+
+`ownerCalls` carries the calls to the declaration that owns the symbol being renamed, per file. A
+named argument spells a parameter at a site written as the function's name, so no search for the
+old name would ever find it.
+
+## Transport
+
+`vscode-jsonrpc` over stdio. It solves the partial-read problem a pipe creates and gives request
+correlation, which framing alone does not. A hand-written NDJSON reader was written, audited and
+deleted after shipping two bugs in exactly the area this library has had a decade of use in.
+
+## Conformance
+
+`protocol/` carries a fixture corpus and a runner:
+
+```
+node dist/conformance.js <command to start your provider>
+```
+
+It runs without the core and without a daemon, so a provider team is never blocked on us. A
+provider passes when every tier it DECLARES passes; an undeclared tier skips rather than fails, so
+read the skip list as carefully as the failures. Passing tier N IS being done with tier N: the
+suite says when a provider is finished, not the team writing it.
+
+The suite asserts the shape of Unknowns too. Without that, a provider can return reasonless
+Unknowns everywhere and pass.
+
+## Versioning
+
+Negotiated at initialize and additive-only within a major, so an older provider keeps working
+against a newer core. A major mismatch is refused rather than attempted.
