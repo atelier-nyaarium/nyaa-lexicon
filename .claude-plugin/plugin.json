@@ -1,0 +1,8 @@
+{
+	"name": "lexicon",
+	"version": "0.1.1",
+	"description": "Symbol-level code understanding for agents and editors. Structure, references, types, rename planning, and a knowledge layer that refuses uncited answers.",
+	"author": {
+		"name": "Nyaarium"
+	}
+}
