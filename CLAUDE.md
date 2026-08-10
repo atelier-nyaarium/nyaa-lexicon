@@ -126,7 +126,10 @@ Corpora clone into `temp/`, which is ignored.
 
 ## References
 
-- **nyaadot** (`~/projects/nyaadot`) - the framework-first role model. Read its doctrine and its
-  `util/` primitives before designing a new mechanism here.
-- **switchboard** (`~/projects/switchboard`) - the toolchain and plugin-packaging reference, and a
-  dogfood target: barrel re-exports, a Kotlin twin held by fixtures, and residue tests.
+Sibling projects this one learned from. Paths are wherever they are checked out; nothing here
+assumes a layout.
+
+- **nyaadot** - the framework-first role model. Read its doctrine and its `util/` primitives before
+  designing a new mechanism here.
+- **switchboard** - the toolchain and plugin-packaging reference, and a dogfood target: barrel
+  re-exports, a Kotlin twin held by fixtures, and residue tests.

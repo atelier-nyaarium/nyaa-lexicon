@@ -104,13 +104,22 @@ describe("reading history", () => {
 		expect(history.lastTouched).toBeGreaterThanOrEqual(history.firstSeen as number);
 	});
 
-	it("finds a real partner for a file this repository actually edits together", async () => {
+	it("finds real partners, or says the only commits were too wide to count", async () => {
 		const commits = await readHistory(process.cwd(), 200);
-		const { partners } = coChangesFor("core/src/store.ts", commits);
+		const { partners, report } = coChangesFor("core/src/store.ts", commits);
 
-		// Not asserting WHICH file: that would encode this session's history into a test. Only that
-		// a file with commits has partners at all, which is the property.
-		expect(partners.length).toBeGreaterThan(0);
+		// Not asserting WHICH file: that would encode this session's history into a test.
+		//
+		// Nor asserting that partners exist unconditionally, because they legitimately may not. A
+		// repository whose only commit touching this file is a bulk import has every candidate
+		// dropped as a sweep, and reporting nothing is then the correct answer rather than a miss.
+		// What must always hold is that the drop was REPORTED: a pair query that silently returns
+		// nothing is indistinguishable from a file with no partners, which is the whole reason the
+		// count is on the report.
+		if (partners.length === 0) {
+			expect(report.skippedWideCommits).toBeGreaterThan(0);
+			return;
+		}
 		expect(partners[0]?.outOf).toBeGreaterThan(0);
 	});
 });
