@@ -1,0 +1,4 @@
+# The committed bundle: 2.7MB of minified output rewritten by every release. `-diff` stops a
+# rebuild rendering as an unreadable wall of it, and linguist-generated stops GitHub reporting
+# generated output as what this repository is written in.
+dist/** -diff linguist-generated

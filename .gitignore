@@ -1,0 +1,28 @@
+node_modules/
+
+# tsc project-reference output. NOT "dist": dist/ is the shipped bundle and IS committed,
+# because the MCP server runs as `node dist/main.js` with no install step and no bun.
+.tsbuild/
+*.tsbuildinfo
+
+# Local index + daemon state (always derivable; never committed)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.lexicon/
+
+# Cycle run state, written beside the plan it tracks. Machine bookkeeping, not the plan.
+plans/*.cycle.json
+
+# Real codebases cloned to measure a provider against. Large, and owned by their upstreams.
+tmp/
+
+*.log
+
+#### OS
+.DS_Store
+._.DS_Store
+Thumbs.db
+
+# Left behind whenever the Python provider shells out to its extractor.
+__pycache__/

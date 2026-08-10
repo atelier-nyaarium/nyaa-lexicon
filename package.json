@@ -1,0 +1,30 @@
+{
+	"name": "nyaa-lexicon",
+	"version": "0.1.1",
+	"private": true,
+	"type": "module",
+	"description": "Symbol-level code understanding served to agents over MCP and to editors over LSP",
+	"workspaces": [
+		"protocol",
+		"core",
+		"adapters/*",
+		"providers/*"
+	],
+	"scripts": {
+		"build": "bun run scripts/build.ts",
+		"lint": "bun run scripts/lint.ts",
+		"lint:fix": "biome check --write .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"clean": "bunx tsc --build --clean"
+	},
+	"engines": {
+		"node": ">=22.5"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.1",
+		"bun-types": "1.3.14",
+		"typescript": "6.0.3",
+		"vitest": "4.1.9"
+	}
+}
