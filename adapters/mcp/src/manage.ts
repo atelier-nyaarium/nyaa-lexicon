@@ -85,12 +85,8 @@ function describeAge(modifiedAt: number | null, now: number): string {
 	return `${days} days ago`;
 }
 
-/**
- * One row per store, with the reclaimable ones called out rather than left to be spotted.
- *
- * An index that never recorded its workspace reads as UNVERIFIED, never orphaned: a probe on real
- * state found nine live projects offered for deletion because a boolean had folded the two.
- */
+/** An index that never recorded its workspace reads as UNVERIFIED, never orphaned: folding the two
+ * once offered nine live projects for deletion. */
 export function renderStores(stores: ProjectStore[], now: number): string {
 	if (stores.length === 0) return "This machine holds no indexes.";
 

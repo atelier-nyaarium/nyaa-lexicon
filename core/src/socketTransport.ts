@@ -213,11 +213,7 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 ////////////////////////////////
 //  Connecting
 
-/**
- * Connect and authenticate, resolving once the server says welcome.
- *
- * Unref'd on purpose: an idle daemon connection must not keep a finished client process alive.
- */
+/** Resolves once the server says welcome. Unref'd, so an idle connection cannot hold a client open. */
 export function connectFrames(port: number, token: string, timeoutMs = CONNECT_TIMEOUT_MS): Promise<FrameClient> {
 	return new Promise((resolveConnect, rejectConnect) => {
 		const socket = netConnect({ port, host: "127.0.0.1" });

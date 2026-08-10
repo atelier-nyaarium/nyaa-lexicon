@@ -35,12 +35,7 @@ export const DEFAULT_LINGER_MS = 30 * 60 * 1000;
 ////////////////////////////////
 //  Functions & Helpers
 
-/**
- * A countdown that runs only while nobody is connected.
- *
- * A client that connects and leaves gets the FULL wait again, since the daemon was useful in
- * between. Arming clears first, so a flapping client cannot stack timers.
- */
+/** Runs only while nobody is connected. Re-arming restarts the FULL wait and clears any prior timer. */
 export function lingerWhileEmpty(options: LingerOptions): Linger {
 	const setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
 	const clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));

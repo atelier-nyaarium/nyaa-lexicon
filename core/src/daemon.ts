@@ -22,13 +22,7 @@ export type Handle = (method: string, params: unknown) => Promise<unknown>;
 
 export interface DaemonOptions {
 	workspaceRoot: string;
-	/**
-	 * Handles one query. The daemon owns transport and lifetime, never the answers.
-	 *
-	 * Optional so the lock can be claimed BEFORE the store is opened: a request arriving in that
-	 * window is answered as retryable "starting", rather than a loser having already touched
-	 * SQLite by the time it learns it lost.
-	 */
+	/** Optional so the lock is claimed BEFORE the store opens; until it lands, requests get "starting". */
 	handle?: Handle;
 	host?: PlatformEnv;
 	/** Fires with the connected-client count on every change. The lifetime signal. */
@@ -76,13 +70,8 @@ function readLock(lockFile: string): DaemonLock | null {
 	}
 }
 
-/**
- * Claim the lock exclusively, or learn who holds it.
- *
- * Linked from a fully-written staging file, so the lock appears WITH its content: a `wx` write has
- * a create-then-fill gap where a reader sees half a JSON and steals a live daemon's lock. A stale
- * lock is stolen by rename, which exactly one contender wins; the loser loops back to the link.
- */
+/** Linked from a fully-written staging file, since a `wx` write has a create-then-fill gap where a
+ * reader sees half a JSON and steals a live daemon's lock. A stale lock is stolen by rename. */
 function claimLock(lockFile: string, lock: DaemonLock): { claimed: true } | { claimed: false; holder: DaemonLock } {
 	mkdirSync(path.dirname(lockFile), { recursive: true });
 	const staging = `${lockFile}.${process.pid}.claim`;
@@ -121,12 +110,8 @@ function claimLock(lockFile: string, lock: DaemonLock): { claimed: true } | { cl
 ////////////////////////////////
 //  Starting
 
-/**
- * Binds localhost, claims the lock, and serves until stopped.
- *
- * Port zero so two workspaces never contend for a fixed one, and a token so binding a TCP port is
- * safe on a shared machine. Binding precedes claiming because the lock carries the port.
- */
+/** Port zero so two workspaces never contend, and a token so binding a port is safe on a shared box.
+ * Binding precedes claiming because the lock carries the port. */
 export async function startDaemon(options: DaemonOptions): Promise<StartOutcome> {
 	const host = options.host ?? currentHost();
 	const paths = workspacePaths(host, options.workspaceRoot);

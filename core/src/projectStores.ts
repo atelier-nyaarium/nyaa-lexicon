@@ -15,12 +15,8 @@ import { currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.
 ////////////////////////////////
 //  Interfaces & Types
 
-/**
- * Whether the indexed project is still there, in three values rather than two.
- *
- * `unknown` is load-bearing: an index predating the recorded path has nothing to check, and
- * folding that into `missing` tells a user their live project is gone. Found by a real probe.
- */
+/** Three values, because an index predating the recorded path has nothing to check, and calling
+ * that `missing` tells a user their live project is gone. */
 export type WorkspaceState = "present" | "missing" | "unknown";
 
 export interface ProjectStore {
@@ -121,12 +117,8 @@ export function listProjectStores(
 	return stores.sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
 }
 
-/**
- * Delete one project's state directory, the one irreversible operation here.
- *
- * A live daemon is refused, since deleting a file under its own writer corrupts it mid-write. The
- * key must match exactly, so no fuzzy match can reach the wrong project.
- */
+/** Irreversible, so a live daemon is refused (deleting under its own writer corrupts it mid-write)
+ * and the key must match exactly. */
 export function deleteProjectStore(
 	key: string,
 	isAlive: (pid: number) => boolean,

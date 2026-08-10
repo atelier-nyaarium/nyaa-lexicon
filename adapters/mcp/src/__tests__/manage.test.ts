@@ -67,13 +67,8 @@ describe("listing project stores", () => {
 		expect(shown).toContain("6.0MB");
 	});
 
-	/**
-	 * The defect a live probe found, and the reason the state is three-valued.
-	 *
-	 * An index written before the workspace path was recorded looks identical to an abandoned one
-	 * from its directory name alone. Reported as missing, nine live repositories were listed as
-	 * orphaned and offered up for deletion.
-	 */
+	// An index predating the recorded path looks identical to an abandoned one. Called missing, it
+	// listed nine live repositories as orphaned and offered them for deletion.
 	it("never calls an index whose workspace it cannot check abandoned", () => {
 		const shown = textOf(
 			listProjectStoresTool(

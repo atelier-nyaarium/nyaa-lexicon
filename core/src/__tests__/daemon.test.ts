@@ -29,13 +29,8 @@ async function launch(overrides: Partial<DaemonOptions> = {}): Promise<RunningDa
 	return outcome.daemon;
 }
 
-/**
- * A raw socket speaking whatever bytes the test wants, for probing the gate itself.
- *
- * Reading is wired up here because a socket with no data listener stays paused, and a paused
- * stream holding unread bytes does not reach close. Every real peer reads; a test that does not
- * measures its own omission.
- */
+/** A raw socket for probing the gate. It reads because a socket with no data listener stays paused,
+ * and a paused stream holding unread bytes never reaches close. */
 function rawConnect(port: number, heard: string[] = []): Promise<Socket> {
 	return new Promise((resolve, reject) => {
 		const socket = netConnect({ port, host: "127.0.0.1" });
@@ -53,12 +48,8 @@ function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Wait for the daemon's own count to reach `want`.
- *
- * The client sees its close before the server has run its bookkeeping, so asserting straight off
- * a client-side close measures the ordering of two processes rather than the count.
- */
+/** A client sees its own close before the server books it, so asserting off the client's close
+ * measures two processes racing rather than the count. */
 async function settledAt(running: RunningDaemon, want: number): Promise<number> {
 	for (let waited = 0; waited < 2_000 && running.connections() !== want; waited += 20) await wait(20);
 	return running.connections();
@@ -291,14 +282,8 @@ describe("staying up", () => {
 		expect(existsSync(workspacePaths(host, WORKSPACE).lockFile)).toBe(false);
 	});
 
-	/**
-	 * A residue test, and it survives the linger landing because it never forbade shutting down.
-	 *
-	 * What it enforces is WHERE the decision lives: daemon.ts owns transport and the lock claim,
-	 * `lifetime.ts` owns when to stop, on an injected clock. A timer here would be one no test
-	 * could decide, since waiting out a timer means waiting however long the timer is, and a test
-	 * that waits 150ms passes just as happily against the 30 minute default it meant to catch.
-	 */
+	// Enforces WHERE the decision lives, not that it exists: a timer here is one no test could
+	// decide, since a 150ms test passes just as happily against a 30 minute default.
 	it("keeps lifetime decisions out of the transport, where no test could reach them", () => {
 		const source = readFileSync(join(import.meta.dirname, "..", "daemon.ts"), "utf8")
 			.replace(/\/\*[\s\S]*?\*\//g, " ")

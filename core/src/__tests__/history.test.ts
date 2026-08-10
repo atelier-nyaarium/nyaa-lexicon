@@ -50,12 +50,8 @@ describe("co-change", () => {
 		expect(partners[0]).toEqual({ module: "b.ts", together: 1, outOf: 3 });
 	});
 
-	/**
-	 * The filter the whole signal depends on.
-	 *
-	 * A formatter run or a licence sweep touches hundreds of unrelated files and pairs every one
-	 * with every other. Left in, one such commit outweighs every real commit in the sample.
-	 */
+	// A formatter run pairs every file it touched with every other, so one such commit left in
+	// outweighs every real commit in the sample.
 	it("ignores a sweep, and says that it did rather than filtering silently", () => {
 		const sweep = commit("wide", ...Array.from({ length: 50 }, (_, i) => `f${i}.ts`), "a.ts");
 		const { partners, report } = coChangesFor("a.ts", [commit("1", "a.ts", "b.ts"), sweep]);
@@ -108,14 +104,8 @@ describe("reading history", () => {
 		const commits = await readHistory(process.cwd(), 200);
 		const { partners, report } = coChangesFor("core/src/store.ts", commits);
 
-		// Not asserting WHICH file: that would encode this session's history into a test.
-		//
-		// Nor asserting that partners exist unconditionally, because they legitimately may not. A
-		// repository whose only commit touching this file is a bulk import has every candidate
-		// dropped as a sweep, and reporting nothing is then the correct answer rather than a miss.
-		// What must always hold is that the drop was REPORTED: a pair query that silently returns
-		// nothing is indistinguishable from a file with no partners, which is the whole reason the
-		// count is on the report.
+		// Partners may legitimately be absent, since a repo whose only commit here is a bulk import
+		// has every candidate dropped as a sweep. What must hold is that the drop was reported.
 		if (partners.length === 0) {
 			expect(report.skippedWideCommits).toBeGreaterThan(0);
 			return;
@@ -124,12 +114,8 @@ describe("reading history", () => {
 	});
 });
 
-/**
- * The only tier-1 source of RATIONALE rather than structure.
- *
- * A reference says a symbol is used. A commit message saying why it stopped caching says something
- * no edge in the index can.
- */
+/** The only source of RATIONALE rather than structure: an edge says a symbol is used, a commit
+ * message says why it stopped being cached. */
 describe("commits naming a symbol", () => {
 	it("finds the commits whose message names it, newest first", () => {
 		const found = commitsMentioning("resolveImport", [
