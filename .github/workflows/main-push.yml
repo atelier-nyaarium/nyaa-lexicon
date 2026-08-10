@@ -1,0 +1,33 @@
+name: Push (main)
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+jobs:
+  Audit:
+    name: "Audit"
+    uses: ./.github/workflows/_audit.yml
+    secrets: inherit
+    permissions:
+      actions: read
+      contents: read
+
+  Lint:
+    name: "Lint"
+    uses: ./.github/workflows/_lint.yml
+    secrets: inherit
+    permissions:
+      actions: read
+      contents: read
+
+  Test:
+    name: "Test"
+    uses: ./.github/workflows/_test.yml
+    secrets: inherit
+    permissions:
+      actions: read
+      contents: read

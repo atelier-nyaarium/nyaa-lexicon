@@ -1,0 +1,30 @@
+name: Workflow Call - Test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Node
+        # Pinned because the store tests need `node:sqlite`, which landed in 22.5, and bun
+        # does not carry it at all. A runner default drifting below that fails the store
+        # half of the suite with a missing-module error rather than a clear version one.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        # vitest, including the residue tests that enforce the structural rules.
+        run: bun run test
