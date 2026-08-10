@@ -14,8 +14,9 @@ node_modules/
 # Cycle run state, written beside the plan it tracks. Machine bookkeeping, not the plan.
 plans/*.cycle.json
 
-# Real codebases cloned to measure a provider against. Large, and owned by their upstreams.
-tmp/
+# Scratch, including the real codebases cloned to measure a provider against: large, and owned by
+# their upstreams.
+temp/
 
 *.log
 
