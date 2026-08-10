@@ -44,8 +44,17 @@ export interface FrameClient {
 	readonly closed: boolean;
 }
 
-/** The store is not open yet. The transport answers it as retryable rather than as a failure. */
-export class DaemonStartingError extends Error {}
+/** Not ready yet, answered as retryable. Carries the daemon's own countdown, so a client never
+ * runs out of patience before the daemon runs out of time. */
+export class DaemonStartingError extends Error {
+	constructor(
+		message: string,
+		readonly retryInMs = 0,
+		readonly waitingFor = "startup",
+	) {
+		super(message);
+	}
+}
 
 /** The socket died with requests in flight. The caller's cue to reconnect, not to report failure. */
 export class ConnectionLostError extends Error {}
@@ -64,9 +73,10 @@ const SERVER_LINE_CAP = 8 * 1024 * 1024;
 /** Responses carry real result sets, so the client's cap is generous rather than symmetric. */
 const CLIENT_LINE_CAP = 512 * 1024 * 1024;
 
-/** Covers the claim-to-ready window: store open plus provider spawns, with slow-disk headroom. */
-const STARTING_BUDGET_MS = 15_000;
 const STARTING_RETRY_MS = 250;
+/** A backstop against a daemon whose countdown never reaches zero, not the normal bound. The daemon
+ * publishes the real budget on every starting answer. */
+const STARTING_CEILING_MS = 5 * 60 * 1000;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -179,7 +189,14 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 				writeFrame(socket, { kind: "response", id: frame.id, ok: true, result });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				const starting = error instanceof DaemonStartingError ? { starting: true } : {};
+				const starting =
+					error instanceof DaemonStartingError
+						? {
+								starting: true,
+								retryInMs: Math.max(0, Math.round(error.retryInMs)),
+								waitingFor: error.waitingFor,
+							}
+						: {};
 				writeFrame(socket, { kind: "response", id: frame.id, ok: false, error: message, ...starting });
 			}
 		}
@@ -303,17 +320,21 @@ export function connectFrames(port: number, token: string, timeoutMs = CONNECT_T
 			get closed() {
 				return closed;
 			},
-			// A `starting` answer is the daemon between claiming its lock and opening its store, so
-			// it is retried within a budget rather than surfaced: the lock exists precisely so a
-			// client can find a daemon that is still coming up.
+			// Retried for as long as the DAEMON says it still needs; its countdown hitting zero is
+			// what turns waiting into a failure.
 			async request(method: string, params?: unknown): Promise<unknown> {
-				const deadline = Date.now() + STARTING_BUDGET_MS;
+				const ceiling = Date.now() + STARTING_CEILING_MS;
 				for (;;) {
 					const frame = await sendRequest(method, params);
 					if (frame.ok) return frame.result;
-					if (frame.starting && Date.now() < deadline) {
+					if (frame.starting && (frame.retryInMs ?? 0) > 0 && Date.now() < ceiling) {
 						await new Promise((resolve) => setTimeout(resolve, STARTING_RETRY_MS));
 						continue;
+					}
+					if (frame.starting) {
+						throw new Error(
+							`${frame.error} (gave up waiting on ${frame.waitingFor ?? "startup"}; it never became ready)`,
+						);
 					}
 					throw new Error(frame.error);
 				}

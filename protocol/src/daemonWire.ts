@@ -52,8 +52,13 @@ export const ResponseFrameSchema = z
 			id: z.number().int().nonnegative(),
 			ok: z.literal(false),
 			error: z.string(),
-			/** True while the daemon has claimed its lock but not yet opened its store. Retryable. */
+			/** True while the daemon has claimed its lock but cannot yet answer. Retryable. */
 			starting: z.boolean().optional(),
+			/** How much longer the DAEMON expects to need. The client waits on this rather than a
+			 * budget of its own, since two independently chosen numbers cannot stay in agreement. */
+			retryInMs: z.number().int().nonnegative().optional(),
+			/** What it waits for, so a stall names itself instead of needing a bug report. */
+			waitingFor: z.string().optional(),
 		}),
 	])
 	.meta({ id: "ResponseFrame" });

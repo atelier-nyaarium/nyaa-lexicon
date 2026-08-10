@@ -6,6 +6,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+	admitWorkspace,
 	ConnectionLostError,
 	connectFrames,
 	ensureDaemon,
@@ -241,6 +242,18 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 	};
 }
 
+/** The daemon when one can be reached, this process when it cannot. */
+async function warmBackend(workspaceRoot: string): Promise<ToolBackend> {
+	const daemon = await ensureDaemon({ workspaceRoot });
+	return daemon.connected ? daemonBackend(workspaceRoot) : localBackend(workspaceRoot);
+}
+
+/** Every question answers the refusal, so it explains itself at whichever tool was reached for. */
+export function refusedBackend(reason: string): ToolBackend {
+	const refuse = () => Promise.reject(new Error(reason));
+	return new Proxy({} as ToolBackend, { get: () => refuse });
+}
+
 export function buildServer(backend: ToolBackend, manageDeps?: ManageDeps): McpServer {
 	const server = new McpServer(SERVER_INFO);
 
@@ -448,10 +461,11 @@ async function main(argv: string[]): Promise<void> {
 	// project root, which cwd is not: it does not move when working directories are added
 	// mid-session. Reading it here is what lets a config carry no absolute workspace path.
 	const workspaceRoot = process.env["LEXICON_WORKSPACE"] ?? process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd();
-	// One warm index shared by every session, started here if nobody has started it yet. Indexing
-	// in this process is the fallback for when that cannot be done, not the normal path.
-	const daemon = await ensureDaemon({ workspaceRoot });
-	const backend = daemon.connected ? daemonBackend(workspaceRoot) : localBackend(workspaceRoot);
+
+	// Before ensureDaemon, or a session launched from a home directory spawns a daemon that walks
+	// it. The server still starts, so the refusal arrives as an answer rather than a failed load.
+	const admission = admitWorkspace(workspaceRoot);
+	const backend = admission.admitted ? await warmBackend(workspaceRoot) : refusedBackend(admission.reason);
 
 	await buildServer(backend).connect(new StdioServerTransport());
 }

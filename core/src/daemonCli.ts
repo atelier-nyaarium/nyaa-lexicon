@@ -17,6 +17,13 @@ import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
+import { admitWorkspace } from "./workspaceAdmission.js";
+
+////////////////////////////////
+//  Constants
+
+/** Headroom over the slowest provider start. Published to clients rather than mirrored by them. */
+const STARTUP_ALLOWANCE_MS = 90_000;
 
 ////////////////////////////////
 //  Main
@@ -43,6 +50,14 @@ async function main(argv: string[]): Promise<void> {
 	}
 
 	const host = currentHost();
+
+	// Before the state directory exists, so a refused root leaves nothing behind to clean up.
+	const admission = admitWorkspace(root, host);
+	if (!admission.admitted) {
+		console.error(admission.reason);
+		process.exit(3);
+	}
+
 	const paths = workspacePaths(host, root);
 	mkdirSync(paths.dir, { recursive: true });
 
@@ -54,7 +69,19 @@ async function main(argv: string[]): Promise<void> {
 	// loser exits here, having never touched SQLite, and both clients connect to whoever won.
 	// `observe` is deferred because the linger needs the daemon it will stop.
 	let observe: (connections: number) => void = () => {};
-	const outcome = await startDaemon({ workspaceRoot: root, onConnections: (n) => observe(n) });
+
+	// What a request arriving before the handler is told, so no client is more impatient than this
+	// process is slow.
+	let startingSince = Date.now();
+	let waitingFor = "opening the index";
+	const outcome = await startDaemon({
+		workspaceRoot: root,
+		onConnections: (n) => observe(n),
+		startingNote: () => ({
+			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - Date.now()),
+			waitingFor,
+		}),
+	});
 	if (!outcome.claimed) {
 		console.log(`not starting: ${outcome.reason}`);
 		return;
@@ -67,6 +94,8 @@ async function main(argv: string[]): Promise<void> {
 	if (rebuilt) console.log(`${reason ?? "the index could not be trusted"}; rebuilt from empty`);
 
 	const supervisor = new ProviderSupervisor();
+	startingSince = Date.now();
+	waitingFor = "the language providers to start";
 	const providers = await startProviders(supervisor, root);
 	console.log(`providers:\n${describeStart(providers)}`);
 
@@ -85,13 +114,44 @@ async function main(argv: string[]): Promise<void> {
 
 	const dispatch = createDispatch(service);
 
+	// Warming is opt-in, and the opt-in is having indexed here before. A directory nobody meant to
+	// index costs nothing until something asks about it.
+	let scan: Promise<void> | null = null;
+	let live: { stop: () => void } | null = null;
+	function warm(): void {
+		scan ??= (async () => {
+			const started = Date.now();
+			const outcomes = await service.indexWorkspace();
+			const indexed = outcomes.filter((o) => o.action === "indexed");
+			const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
+			console.log(`scope: ${service.scopeReport()}`);
+			console.log(`indexed ${indexed.length} files, ${symbols} symbols, ${Date.now() - started}ms`);
+
+			// Watching starts with warming: a watcher over an unasked-for workspace would index it
+			// on the next file change anyway.
+			live = startLiveIndex({
+				service,
+				workspaceRoot: root,
+				onApplied: (applied) => {
+					const touched = applied.filter((o) => o.action !== "skipped");
+					if (touched.length > 0) console.log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
+				},
+				onError: (error) => console.log(`reindex failed: ${error instanceof Error ? error.message : error}`),
+			});
+		})();
+	}
+
 	// `shutdown` is a daemon method rather than a service one, so it is answered here instead of in
 	// the service's table. It answers BEFORE stopping, or the caller reads its own success as a
 	// dropped connection.
 	async function handle(method: string, params: unknown): Promise<unknown> {
-		if (method !== "shutdown") return dispatch(method, params);
-		setTimeout(() => void shutdown("asked to shut down"), 0).unref?.();
-		return { stopping: true };
+		if (method === "shutdown") {
+			setTimeout(() => void shutdown("asked to shut down"), 0).unref?.();
+			return { stopping: true };
+		}
+		// Asking about the workspace IS the request to index it.
+		warm();
+		return dispatch(method, params);
 	}
 
 	// Answering BEFORE the first scan, on purpose. Publishing the lock only once indexing finished
@@ -100,22 +160,8 @@ async function main(argv: string[]): Promise<void> {
 	// why the index reports its state rather than letting a caller assume it.
 	daemon.setHandle(handle);
 
-	const started = Date.now();
-	const outcomes = await service.indexWorkspace();
-	const indexed = outcomes.filter((o) => o.action === "indexed");
-	const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
-	console.log(`scope: ${service.scopeReport()}`);
-	console.log(`indexed ${indexed.length} files, ${symbols} symbols, ${Date.now() - started}ms`);
-
-	const live = startLiveIndex({
-		service,
-		workspaceRoot: root,
-		onApplied: (outcomes) => {
-			const touched = outcomes.filter((o) => o.action !== "skipped");
-			if (touched.length > 0) console.log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
-		},
-		onError: (error) => console.log(`reindex failed: ${error instanceof Error ? error.message : error}`),
-	});
+	if (store.totals().files > 0) warm();
+	else console.log("cold: nothing indexed here before, so nothing is scanned until something asks");
 
 	// One way out, whatever asked for it: the signal, the RPC, and the linger all land here, so
 	// there is no second teardown order to keep in step with this one. The lock goes first, since
@@ -127,7 +173,7 @@ async function main(argv: string[]): Promise<void> {
 		console.log(`stopping: ${why}`);
 		linger.cancel();
 		await daemon.stop();
-		live.stop();
+		live?.stop();
 		supervisor.stopAll();
 		store.close();
 		process.exit(0);

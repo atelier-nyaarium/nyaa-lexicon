@@ -8,6 +8,8 @@
 // them gets fixed in the same commit.
 
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -125,6 +127,10 @@ const MIN_MENTION_LENGTH = 3;
  * worse than one that arrives as two facts.
  */
 export async function readHistory(workspaceRoot: string, depth = DEFAULT_DEPTH): Promise<Commit[]> {
+	// Asked before running git, since git answers a non-repository by writing `fatal:` to our own
+	// stderr, which reads as the daemon dying.
+	if (!existsSync(path.join(workspaceRoot, ".git"))) return [];
+
 	// The message is free-form and multi-line, so it needs its own terminator before the numstat rows
 	// rather than a line count nobody can rely on.
 	const { stdout } = await run(

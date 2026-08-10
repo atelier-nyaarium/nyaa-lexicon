@@ -82,19 +82,25 @@ export async function startProviders(
 ): Promise<StartReport> {
 	const report: StartReport = { started: [], failed: [] };
 
-	for (const entry of commands) {
-		try {
-			const claims = await supervisor.start(
-				{ command: entry.command, timeoutMs: START_TIMEOUT_MS },
-				workspaceRoot,
-			);
-			report.started.push({ directory: entry.directory, claims });
-		} catch (error) {
-			report.failed.push({
-				directory: entry.directory,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+	// Concurrent: sequential made the worst case the SUM of every provider's timeout.
+	const settled = await Promise.all(
+		commands.map(async (entry) => {
+			try {
+				const claims = await supervisor.start(
+					{ command: entry.command, timeoutMs: START_TIMEOUT_MS },
+					workspaceRoot,
+				);
+				return { entry, claims };
+			} catch (error) {
+				return { entry, error: error instanceof Error ? error.message : String(error) };
+			}
+		}),
+	);
+
+	// Reported in the order given, not the order they finished, so the list is stable run to run.
+	for (const outcome of settled) {
+		if ("claims" in outcome) report.started.push({ directory: outcome.entry.directory, claims: outcome.claims });
+		else report.failed.push({ directory: outcome.entry.directory, error: outcome.error });
 	}
 	return report;
 }

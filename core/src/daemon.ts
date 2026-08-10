@@ -27,6 +27,8 @@ export interface DaemonOptions {
 	host?: PlatformEnv;
 	/** Fires with the connected-client count on every change. The lifetime signal. */
 	onConnections?: (count: number) => void;
+	/** Asked on every request that beats the handler; the client waits on this countdown. */
+	startingNote?: () => { retryInMs: number; waitingFor: string };
 	/** Test seams for the heartbeat; production uses the transport's defaults. */
 	heartbeatMs?: number;
 	missedLimit?: number;
@@ -50,6 +52,9 @@ export type StartOutcome = { claimed: true; daemon: RunningDaemon } | { claimed:
 
 const TOKEN_BYTES = 24;
 const CLAIM_ATTEMPTS = 4;
+
+/** Patience given when no startingNote offers a real countdown. */
+const DEFAULT_STARTING_ALLOWANCE_MS = 15_000;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -116,13 +121,24 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 	const host = options.host ?? currentHost();
 	const paths = workspacePaths(host, options.workspaceRoot);
 	const token = randomBytes(TOKEN_BYTES).toString("hex");
+	const startedAt = Date.now();
 	let handle = options.handle ?? null;
 	let stopped = false;
 
 	const server: FrameServer = await serveFrames({
 		token,
 		handle: async (method, params) => {
-			if (handle === null) throw new DaemonStartingError("the daemon is starting");
+			if (handle === null) {
+				const note = options.startingNote?.() ?? {
+					retryInMs: Math.max(0, startedAt + DEFAULT_STARTING_ALLOWANCE_MS - Date.now()),
+					waitingFor: "startup",
+				};
+				throw new DaemonStartingError(
+					`the daemon is starting, waiting on ${note.waitingFor}`,
+					note.retryInMs,
+					note.waitingFor,
+				);
+			}
 			return handle(method, params);
 		},
 		...(options.onConnections === undefined ? {} : { onConnections: options.onConnections }),

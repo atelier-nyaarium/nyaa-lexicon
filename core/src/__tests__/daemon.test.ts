@@ -240,6 +240,35 @@ describe("the starting window", () => {
 
 		await expect(pending).resolves.toEqual({ method: "describe", params: { id: "x" } });
 	});
+
+	// The defect: a private 15s client budget against three 60s provider starts reported permanent
+	// failure for a daemon still coming up.
+	it("waits as long as the daemon says it still needs, not a budget of its own", async () => {
+		const outcome = await startDaemon({
+			workspaceRoot: WORKSPACE,
+			host,
+			startingNote: () => ({ retryInMs: 60_000, waitingFor: "the language providers to start" }),
+		});
+		if (!outcome.claimed) throw new Error(outcome.reason);
+		daemon = outcome.daemon;
+
+		const pending = callDaemon(daemon.lock, "describe");
+		setTimeout(() => daemon?.setHandle(async (method) => ({ method })), 400);
+
+		await expect(pending).resolves.toEqual({ method: "describe" });
+	});
+
+	it("gives up once the daemon's countdown reaches zero, naming what it waited for", async () => {
+		const outcome = await startDaemon({
+			workspaceRoot: WORKSPACE,
+			host,
+			startingNote: () => ({ retryInMs: 0, waitingFor: "the language providers to start" }),
+		});
+		if (!outcome.claimed) throw new Error(outcome.reason);
+		daemon = outcome.daemon;
+
+		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/the language providers to start/);
+	});
 });
 
 describe("presence", () => {
