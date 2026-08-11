@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { describeScope, fileScopeFor, gitFiles, globToRegExp, includedFiles } from "../fileScope";
+import { describeScope, fileScopeFor, generatedFiles, gitFiles, globToRegExp, includedFiles } from "../fileScope";
 
 ////////////////////////////////
 //  Helpers
@@ -80,6 +80,24 @@ describe("what git says belongs to the project", () => {
 });
 
 describe("the scoping rule", () => {
+	it("reads generated declarations from git attributes", () => {
+		const root = repo({
+			".gitattributes": "generated/** linguist-generated\n",
+			"generated/a.ts": "",
+			"src/a.ts": "",
+		});
+
+		expect(generatedFiles(root, ["generated/a.ts", "src/a.ts"])).toEqual(new Set(["generated/a.ts"]));
+	});
+
+	it("lets an explicit include override an exclude", () => {
+		const root = repo({ "generated/a.ts": "", "src/a.ts": "" });
+		const scope = fileScopeFor(root, { include: ["generated/**"], exclude: ["generated/**"] });
+
+		expect(scope.allows("generated/a.ts")).toBe(true);
+		expect(scope.allows("src/a.ts")).toBe(true);
+	});
+
 	it("refuses an ignored file to auto-discovery", () => {
 		const root = repo({ "src/a.ts": "", "dist/built.js": "" }, "dist/\n");
 		const scope = fileScopeFor(root);

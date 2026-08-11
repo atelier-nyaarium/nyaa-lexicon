@@ -20,6 +20,7 @@ export {
 	describeScope,
 	type FileScope,
 	fileScopeFor,
+	generatedFiles,
 	gitFiles,
 	globToRegExp,
 	includedFiles,

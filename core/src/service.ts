@@ -27,7 +27,7 @@ import {
 	type RecordOutcome,
 } from "./answers.js";
 import { type FileEdits, writeAll } from "./applyEdits.js";
-import { describeScope, type FileScope, fileScopeFor, includedFiles } from "./fileScope.js";
+import { describeScope, type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
 import { findCycles } from "./graph.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
 import { decideInvalidation, type FileEvent } from "./invalidation.js";
@@ -84,6 +84,7 @@ export interface IndexOutcome {
 	module: string;
 	action: "indexed" | "forgotten" | "skipped";
 	reason?: string;
+	failure?: string;
 	declarations?: number;
 }
 
@@ -99,6 +100,7 @@ export interface IndexStatus {
 	state: "unstarted" | "discovering" | "indexing" | "ready";
 	done: number;
 	total: number;
+	failures: number;
 	/** Files the index already holds, from this scan or any earlier one. */
 	stored: number;
 }
@@ -376,7 +378,7 @@ export class LexiconService {
 	) {}
 
 	/** This process's scan only. `stored` is read from the index when the status is asked for. */
-	private status: Omit<IndexStatus, "stored"> = { state: "unstarted", done: 0, total: 0 };
+	private status: Omit<IndexStatus, "stored"> = { state: "unstarted", done: 0, total: 0, failures: 0 };
 	private scope: FileScope | null = null;
 	private readonly cache = new ResultCache();
 
@@ -428,7 +430,7 @@ export class LexiconService {
 	 * flooding it would only trade a readable progress order for the same wall clock.
 	 */
 	async indexWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		this.status = { state: "discovering", done: 0, total: 0 };
+		this.status = { state: "discovering", done: 0, total: 0, failures: 0 };
 		const discovered: string[] = [];
 		for (const provider of this.supervisor.running()) {
 			const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
@@ -438,24 +440,32 @@ export class LexiconService {
 		}
 
 		this.scope = fileScopeFor(this.workspaceRoot);
-		// Explicit includes are ADDED, not merely permitted. A provider's own discovery decides what
-		// exists, and a tsconfig's file list is exactly what omits the build output somebody is
-		// pointing at, so allowing a path without adding it would not be a way of naming it.
 		const named = includedFiles(this.workspaceRoot, this.scope.include);
-		const modules = [
-			...new Set([...discovered.filter((module) => this.scope?.allows(module) ?? true), ...named]),
-		].filter((module) => this.supervisor.route(module).owned);
+		const namedSet = new Set(named);
+		const roots = [...new Set([...(this.scope.known ?? []), ...discovered, ...named])].filter(
+			(module) => this.scope?.allows(module) ?? true,
+		);
+		const generated = generatedFiles(this.workspaceRoot, roots);
+		const modules = roots
+			.filter((module) => namedSet.has(module) || !generated.has(module))
+			.filter((module) => this.supervisor.route(module).owned);
 
 		const outcomes: IndexOutcome[] = [];
-		this.status = { state: "indexing", done: 0, total: modules.length };
+		this.status = { state: "indexing", done: 0, total: modules.length, failures: 0 };
 		for (const [done, module] of modules.entries()) {
-			outcomes.push(await this.indexOne(module));
-			this.status = { state: "indexing", done: done + 1, total: modules.length };
+			try {
+				outcomes.push(await this.indexOne(module));
+			} catch (error) {
+				outcomes.push(this.failedOutcome(module, error));
+			}
+			this.status = { state: "indexing", done: done + 1, total: modules.length, failures: this.status.failures };
 			onProgress?.(done + 1, modules.length);
 		}
 
-		outcomes.push(...(await this.followImports(new Set(modules))));
-		this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
+		const seen = new Set(modules);
+		outcomes.push(...(await this.followImports(seen)));
+		outcomes.push(...this.prune(seen));
+		this.status = { state: "ready", done: outcomes.length, total: outcomes.length, failures: this.status.failures };
 		return outcomes;
 	}
 
@@ -471,6 +481,12 @@ export class LexiconService {
 		return text === null
 			? { module, action: "skipped", reason: "unreadable" }
 			: this.indexFile(module, hashOf(text));
+	}
+
+	private failedOutcome(module: string, error: unknown): IndexOutcome {
+		const failure = error instanceof Error ? error.message : String(error);
+		this.status = { ...this.status, failures: this.status.failures + 1 };
+		return { module, action: "skipped", reason: "parse failed", failure };
 	}
 
 	/**
@@ -497,8 +513,25 @@ export class LexiconService {
 				}
 			}
 			if (found.length === 0) break;
-			for (const module of found) outcomes.push(await this.indexOne(module));
+			for (const module of found) {
+				try {
+					outcomes.push(await this.indexOne(module));
+				} catch (error) {
+					outcomes.push(this.failedOutcome(module, error));
+				}
+			}
 		}
+		return outcomes;
+	}
+
+	private prune(reachable: Set<string>): IndexOutcome[] {
+		const outcomes: IndexOutcome[] = [];
+		for (const module of this.store.indexedFiles()) {
+			if (reachable.has(module)) continue;
+			this.store.forgetFile(module);
+			outcomes.push({ module, action: "forgotten", reason: "no longer a root or reachable" });
+		}
+		if (outcomes.length > 0) this.cache.invalidate();
 		return outcomes;
 	}
 
@@ -536,7 +569,11 @@ export class LexiconService {
 				outcomes.push({ module: decision.module, action: "skipped", reason: decision.reason });
 				continue;
 			}
-			outcomes.push(await this.indexFile(decision.module, decision.contentHash));
+			try {
+				outcomes.push(await this.indexFile(decision.module, decision.contentHash));
+			} catch (error) {
+				outcomes.push(this.failedOutcome(decision.module, error));
+			}
 		}
 
 		return outcomes;

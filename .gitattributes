@@ -2,3 +2,8 @@
 # rebuild rendering as an unreadable wall of it, and linguist-generated stops GitHub reporting
 # generated output as what this repository is written in.
 dist/** -diff linguist-generated
+
+# Per-package tsc output. Committed, but not source: lexicon reads this attribute to decide what
+# auto-tracks, so without it the indexer treats emitted `.js` and `.d.ts` as the project's own code.
+*/dist/** -diff linguist-generated
+*/*/dist/** -diff linguist-generated

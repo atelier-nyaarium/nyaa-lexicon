@@ -525,7 +525,7 @@ export function renderOverview(result: {
 	literals: number;
 	modules: number;
 	scope: string;
-	index: { state: string; done: number; total: number };
+	index: { state: string; done: number; total: number; failures?: number };
 	largest: Array<{ module: string; symbols: number }>;
 	knowledge?: { answers: number; stale?: number; doubted?: number };
 }): string {
@@ -534,6 +534,8 @@ export function renderOverview(result: {
 		`scope: ${result.scope}`,
 		`index: ${result.index.state}${result.index.state === "ready" ? "" : ` (${result.index.done} of ${result.index.total})`}`,
 	];
+	const failures = result.index.failures ?? 0;
+	if (failures > 0) lines.push(`index failures: ${failures}; prior facts were kept`);
 
 	// The front door mentions the knowledge layer, because an agent arriving with an ordinary task
 	// has no reason to call a tool it has never heard of. One line each way: coverage when it

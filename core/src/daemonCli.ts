@@ -129,9 +129,12 @@ async function main(argv: string[]): Promise<void> {
 			const started = Date.now();
 			const outcomes = await service.indexWorkspace();
 			const indexed = outcomes.filter((o) => o.action === "indexed");
+			const failures = outcomes.filter((o) => o.failure !== undefined);
 			const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
 			console.log(`scope: ${service.scopeReport()}`);
 			console.log(`indexed ${indexed.length} files, ${symbols} symbols, ${Date.now() - started}ms`);
+			if (failures.length > 0)
+				console.log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
 			everScanned = true;
 
 			// Watching starts with warming: a watcher over an unasked-for workspace would index it
@@ -141,7 +144,10 @@ async function main(argv: string[]): Promise<void> {
 				workspaceRoot: root,
 				onApplied: (applied) => {
 					const touched = applied.filter((o) => o.action !== "skipped");
+					const failures = applied.filter((o) => o.failure !== undefined);
 					if (touched.length > 0) console.log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
+					if (failures.length > 0)
+						console.log(`reindex failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
 				},
 				onError: (error) => console.log(`reindex failed: ${error instanceof Error ? error.message : error}`),
 			});

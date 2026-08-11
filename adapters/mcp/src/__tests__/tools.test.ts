@@ -34,7 +34,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			blockers: [],
 			warnings: [],
 		}),
-		indexStatus: async () => ({ state: "ready", done: 1, total: 1, stored: 1 }),
+		indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
 		findLiterals: async (query) => ({ query, literals: [], total: 0, truncated: false }),
 		graphOf: async (symbolId) => ({ symbolId, fanIn: 0, fanOut: 0 }),
 		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
@@ -79,7 +79,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			literals: 0,
 			modules: 0,
 			scope: "test",
-			index: { state: "ready", done: 0, total: 0, stored: 0 },
+			index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0 },
 			largest: [],
 		}),
 		coChangedWith: async (module) => ({
@@ -339,7 +339,10 @@ describe("answering from an index that is still being built", () => {
 
 	it("says how much has been read when references come back empty mid-scan", async () => {
 		const result = await findReferences(
-			backend({ ...found, indexStatus: async () => ({ state: "indexing", done: 40, total: 700, stored: 0 }) }),
+			backend({
+				...found,
+				indexStatus: async () => ({ state: "indexing", done: 40, total: 700, failures: 0, stored: 0 }),
+			}),
 			{ name: "Cart" },
 		);
 		expect(textOf(result)).toContain("40 of 700 files read");
@@ -352,7 +355,10 @@ describe("answering from an index that is still being built", () => {
 
 	it("does not let an unbuilt index look like an empty repository", async () => {
 		const result = await findReferences(
-			backend({ ...found, indexStatus: async () => ({ state: "unstarted", done: 0, total: 0, stored: 0 }) }),
+			backend({
+				...found,
+				indexStatus: async () => ({ state: "unstarted", done: 0, total: 0, failures: 0, stored: 0 }),
+			}),
 			{ name: "Cart" },
 		);
 		expect(textOf(result)).toContain("has not been built yet");
@@ -361,7 +367,7 @@ describe("answering from an index that is still being built", () => {
 	// The commonest answer during a cold scan, and the one the first version of this missed.
 	it("qualifies 'no symbol named that', which otherwise reads as a settled fact", async () => {
 		const result = await describeSymbol(
-			backend({ indexStatus: async () => ({ state: "indexing", done: 12, total: 700, stored: 0 }) }),
+			backend({ indexStatus: async () => ({ state: "indexing", done: 12, total: 700, failures: 0, stored: 0 }) }),
 			{ name: "Ghost" },
 		);
 
@@ -371,7 +377,10 @@ describe("answering from an index that is still being built", () => {
 
 	it("qualifies a rename plan too, since a partial index makes a partial plan", async () => {
 		const result = await prepareRename(
-			backend({ ...found, indexStatus: async () => ({ state: "indexing", done: 5, total: 700, stored: 0 }) }),
+			backend({
+				...found,
+				indexStatus: async () => ({ state: "indexing", done: 5, total: 700, failures: 0, stored: 0 }),
+			}),
 			{ name: "Cart", newName: "Basket" },
 		);
 		expect(textOf(result)).toContain("5 of 700 files read");
@@ -386,7 +395,10 @@ describe("answering from an index that is still being built", () => {
 	 */
 	it("separates a refresh over a warm index from a cold build", async () => {
 		const result = await findReferences(
-			backend({ ...found, indexStatus: async () => ({ state: "indexing", done: 3, total: 109, stored: 109 }) }),
+			backend({
+				...found,
+				indexStatus: async () => ({ state: "indexing", done: 3, total: 109, failures: 0, stored: 109 }),
+			}),
 			{ name: "Cart" },
 		);
 

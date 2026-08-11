@@ -590,18 +590,22 @@ function text(body: string, isError = false): ToolResult {
  */
 async function withIndexState(backend: ToolBackend, body: string): Promise<string> {
 	const status = await backend.indexStatus();
-	if (status.state === "ready") return body;
+	const failureNote =
+		status.failures === 0
+			? ""
+			: `\n\n${status.failures} file${status.failures === 1 ? "" : "s"} failed to parse; prior facts were kept.`;
+	if (status.state === "ready") return `${body}${failureNote}`;
 
 	// A scan in progress over an index that already holds files is a REFRESH, not a cold build. The
 	// answer came from a complete previous scan, and calling that incomplete is its own dishonesty:
 	// a daemon restart would otherwise stamp every correct answer as unreliable.
 	if (status.stored > 0) {
-		return `${body}\n\nAnswered from an index of ${status.stored} files. A rescan is in progress (${status.done} of ${status.total}), so anything edited since the last scan may not be reflected.`;
+		return `${body}\n\nAnswered from an index of ${status.stored} files. A rescan is in progress (${status.done} of ${status.total}), so anything edited since the last scan may not be reflected.${failureNote}`;
 	}
 	if (status.state === "indexing") {
-		return `${body}\n\nStill indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.`;
+		return `${body}\n\nStill indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.${failureNote}`;
 	}
-	return `${body}\n\nThe index has not been built yet, so this answer covers nothing.`;
+	return `${body}\n\nThe index has not been built yet, so this answer covers nothing.${failureNote}`;
 }
 
 /**

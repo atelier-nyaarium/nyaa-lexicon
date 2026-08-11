@@ -865,7 +865,13 @@ export class IndexStore {
 		return rows.map(rowToImport);
 	}
 
-	/** Every module, with what it holds. The shape of the workspace rather than any one file. */
+	/** Every module held by the index, including files with no declarations. */
+	indexedFiles(): string[] {
+		const rows = this.db.prepare("SELECT module FROM files ORDER BY module").all() as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Every module with facts, ordered by symbol count. */
 	moduleSummary(): Array<{ module: string; symbols: number }> {
 		return this.db
 			.prepare("SELECT module, COUNT(*) AS symbols FROM symbols GROUP BY module ORDER BY symbols DESC")
