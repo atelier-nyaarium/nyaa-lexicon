@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/adapter-mcp",
-	"version": "1.6.1",
+	"version": "1.6.2",
 	"private": true,
 	"type": "module",
 	"description": "Agent-facing MCP adapter: thin stdio client over the daemon, token budgeting, progressive disclosure",

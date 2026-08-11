@@ -258,24 +258,21 @@ CREATE TABLE gaps (
 				 WHERE localName = ? OR (localName IS NULL AND name = ?)
 				 ORDER BY module, startLine`).all($,$).map(mJ)}importsIn($){return this.db.prepare("SELECT * FROM imports WHERE module = ? ORDER BY startLine").all($).map(mJ)}searchSymbols($,v){let U=["name LIKE ? ESCAPE '\\'"],X=[`%${$.replace(/[%_\\]/g,"\\$&")}%`];if(v.kind!==void 0)U.push("kind = ?"),X.push(v.kind);if(v.module!==void 0)U.push("module LIKE ? ESCAPE '\\'"),X.push(`%${v.module.replace(/[%_\\]/g,"\\$&")}%`);return X.push(v.limit),this.db.prepare(`SELECT * FROM symbols WHERE ${U.join(" AND ")} ORDER BY module, startLine LIMIT ?`).all(...X).map(FU)}importsMatching($,v){return this.db.prepare("SELECT * FROM imports WHERE specifier LIKE ? ESCAPE '\\' ORDER BY module, startLine LIMIT ?").all(`%${$.replace(/[%_\\]/g,"\\$&")}%`,v).map(mJ)}indexedFiles(){return this.db.prepare("SELECT module FROM files ORDER BY module").all().map((v)=>v.module)}moduleSummary(){return this.db.prepare("SELECT module, COUNT(*) AS symbols FROM symbols GROUP BY module ORDER BY symbols DESC").all()}totals(){let $=(v)=>this.db.prepare(v).get().n;return{files:$("SELECT COUNT(*) AS n FROM files"),symbols:$("SELECT COUNT(*) AS n FROM symbols"),references:$("SELECT COUNT(*) AS n FROM refs"),imports:$("SELECT COUNT(*) AS n FROM imports"),literals:$("SELECT COUNT(*) AS n FROM literals")}}declarationsNamed($){return this.db.prepare("SELECT * FROM symbols WHERE name = ? ORDER BY module, startLine").all($).map(FU)}literalsWithValue($,v){return this.db.prepare("SELECT * FROM literals WHERE value = ? ORDER BY module, startLine LIMIT ?").all($,v).map(nJ)}literalsInRange($,v,U){return this.db.prepare("SELECT * FROM literals WHERE number IS NOT NULL AND number BETWEEN ? AND ? ORDER BY number LIMIT ?").all($,v,U).map(nJ)}literalsOfKind($,v){return this.db.prepare("SELECT * FROM literals WHERE kind = ? ORDER BY module, startLine LIMIT ?").all($,v).map(nJ)}sharedLiterals($,v){return this.db.prepare(`SELECT value, kind, COUNT(DISTINCT module) AS files, COUNT(*) AS uses
 				 FROM literals GROUP BY value, kind HAVING files >= ? ORDER BY files DESC, uses DESC LIMIT ?`).all($,v)}referencesFrom($){return this.db.prepare("SELECT * FROM refs WHERE fromId = ? AND targetId IS NOT NULL ORDER BY module, startLine").all($).map(pJ)}allEdges(){return this.db.prepare("SELECT DISTINCT fromId AS 'from', targetId AS 'to' FROM refs WHERE fromId IS NOT NULL AND targetId IS NOT NULL").all()}mostReferenced($){return this.db.prepare(`SELECT targetId AS symbolId, COUNT(*) AS count FROM refs
-				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC LIMIT ?`).all($)}unreferencedSymbols(){return this.db.prepare("SELECT * FROM symbols WHERE symbolId NOT IN (SELECT targetId FROM refs WHERE targetId IS NOT NULL)").all().map(FU)}close(){this.db.close()}}function cu($){let v={...$.mLines===null?{}:{lines:$.mLines},...$.mParameters===null?{}:{parameters:$.mParameters},...$.mNesting===null?{}:{nesting:$.mNesting},...$.mBranches===null?{}:{branches:$.mBranches}};return Object.keys(v).length===0?{}:{metrics:v}}function FU($){let v=$;return{symbolId:v.symbolId,factId:v.factId,module:v.module,name:v.name,kind:v.kind,visibility:v.visibility,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}},selectionRange:{start:{line:v.nameLine,character:v.nameChar},end:{line:v.nameEndLine,character:v.nameEndChar}},...cu(v),...v.exported===null?{}:{exported:v.exported===1},...v.containerId===null?{}:{containerId:v.containerId},...v.signature===null?{}:{signature:v.signature},...v.docComment===null?{}:{docComment:v.docComment}}}function nJ($){let v=$;return{factId:v.factId,module:v.module,kind:v.kind,value:v.value,number:v.number,containerId:v.containerId,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}}}}function mJ($){let v=$,U=v.localName===null||v.localStartLine===null?{}:{local:v.localName,localRange:{start:{line:v.localStartLine,character:v.localStartChar??0},end:{line:v.localEndLine??v.localStartLine,character:v.localEndChar??0}}},X=v.name===null||v.startLine===null?{}:{name:v.name,range:{start:{line:v.startLine,character:v.startChar??0},end:{line:v.endLine??v.startLine,character:v.endChar??0}}};return{factId:v.factId,module:v.module,specifier:v.specifier,reExport:v.reExport===1,...X,...U}}function cJ($){let v=JSON.parse($.citations),U=$.doubtId===null||$.doubtReason===null||$.doubtAt===null?void 0:{factId:$.doubtId,reason:$.doubtReason,at:$.doubtAt,...$.doubtBy===null?{}:{by:$.doubtBy}};return{symbolId:$.symbolId,question:$.question,factId:$.factId,prose:$.prose,citations:v,thin:$.thin===1,createdAt:$.createdAt,...$.model===null?{}:{model:$.model},...U===void 0?{}:{doubt:U}}}function pJ($){let v=$;return{factId:v.factId,module:v.module,name:v.name,role:v.role,targetId:v.targetId,fromId:v.fromId,provenance:v.provenance,startLine:v.startLine,startCharacter:v.startChar,endLine:v.endLine,endCharacter:v.endChar}}import{spawn as pu}from"node:child_process";var qU=eJ(dB(),1);var FI=30000;function FH($,v,U){let X,J=new Promise((G,Q)=>{X=setTimeout(()=>Q(Error(`${U} timed out after ${v}ms`)),v)});return Promise.race([$,J]).finally(()=>clearTimeout(X))}class xQ{providers=new Map;async start($,v){let U=this.spawnProcess($,v),X=$.timeoutMs??FI;try{await FH(new Promise((Y,D)=>{U.child.once("spawn",Y),U.child.once("error",(W)=>D(Error(`provider failed to start: ${W.message}`)))}),X,"spawn")}catch(Y){throw this.stopProcess(U),Y}let J;try{J=await FH(U.connection.sendRequest("initialize",{workspaceRoot:v,protocolVersion:N6}),X,"initialize")}catch(Y){throw this.stopProcess(U),Y}let G=BQ.initialize.response.parse(J);if(!tB(G.protocolVersion))throw this.stopProcess(U),Error(`provider ${G.providerId} speaks ${G.protocolVersion}, we speak ${N6}`);let Q={providerId:G.providerId,language:G.language,extensions:G.extensions,...G.filenames===void 0?{}:{filenames:G.filenames}};return this.providers.set(Q.providerId,{...U,claims:Q,tiers:G.tiers,spec:$}),Q}spawnProcess($,v){let[U,...X]=$.command,J=pu(U,X,{stdio:["pipe","pipe","inherit"],cwd:v});if(!J.stdin||!J.stdout)throw Error("provider process has no stdio pipes");let G=qU.createMessageConnection(new qU.StreamMessageReader(J.stdout),new qU.StreamMessageWriter(J.stdin));G.listen();let Q=new CQ;return J.on("exit",(Y)=>Q.close(Error(`provider exited with code ${Y}`))),J.on("error",(Y)=>Q.close(Error(`provider errored: ${Y.message}`))),{child:J,connection:G,queue:Q}}route($){return NH($,[...this.providers.values()].map((v)=>v.claims))}declares($,v){return this.providers.get($)?.tiers[v]===!0}async ask($,v,U){let X=this.route($);if(!X.owned){let J=X.reason==="contested"?`claimed by ${X.providerIds.join(", ")}`:"unclaimed";throw Error(`no provider owns ${$}: ${J}`)}return this.askProvider(X.providerId,v,U)}async askProvider($,v,U){let X=this.providers.get($);if(!X)throw Error(`provider ${$} is not running`);let J=X.spec.timeoutMs??FI;return X.queue.run(async()=>{let G=await FH(X.connection.sendRequest(v,U),J,v);return BQ[v].response.parse(G)})}stopProcess($){$.queue.close(Error("provider stopped")),$.connection.dispose(),$.child.kill()}stop($){let v=this.providers.get($);if(!v)return;this.stopProcess(v),this.providers.delete($)}stopAll(){for(let $ of[...this.providers.keys()])this.stop($)}running(){return[...this.providers.values()].map(($)=>$.claims)}}import AH from"node:path";function qH($,v=S4()){let U=AH.resolve($);if(U===AH.parse(U).root)return{admitted:!1,reason:`${U} is the filesystem root, which is never one project`};if(U===AH.resolve(v.home))return{admitted:!1,reason:`${U} is your home directory, which is never one project. Register the project you mean instead.`};return{admitted:!0}}var AI={name:"nyaa-lexicon",version:"1.6.1",private:!0,type:"module",description:"Symbol-level code understanding served to agents over MCP and to editors over LSP",workspaces:["protocol","core","adapters/*","providers/*"],scripts:{build:"bun run scripts/build.ts",lint:"bun run scripts/lint.ts","lint:fix":"biome check --write .",test:"vitest run","test:watch":"vitest",clean:"bunx tsc --build --clean"},engines:{node:">=22.5"},devDependencies:{"@biomejs/biome":"2.5.1","bun-types":"1.3.14",typescript:"6.0.3",vitest:"4.1.9"}};var qI=`
-Every codebase lexicon knows about, and which are bound right now.
+				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC LIMIT ?`).all($)}unreferencedSymbols(){return this.db.prepare("SELECT * FROM symbols WHERE symbolId NOT IN (SELECT targetId FROM refs WHERE targetId IS NOT NULL)").all().map(FU)}close(){this.db.close()}}function cu($){let v={...$.mLines===null?{}:{lines:$.mLines},...$.mParameters===null?{}:{parameters:$.mParameters},...$.mNesting===null?{}:{nesting:$.mNesting},...$.mBranches===null?{}:{branches:$.mBranches}};return Object.keys(v).length===0?{}:{metrics:v}}function FU($){let v=$;return{symbolId:v.symbolId,factId:v.factId,module:v.module,name:v.name,kind:v.kind,visibility:v.visibility,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}},selectionRange:{start:{line:v.nameLine,character:v.nameChar},end:{line:v.nameEndLine,character:v.nameEndChar}},...cu(v),...v.exported===null?{}:{exported:v.exported===1},...v.containerId===null?{}:{containerId:v.containerId},...v.signature===null?{}:{signature:v.signature},...v.docComment===null?{}:{docComment:v.docComment}}}function nJ($){let v=$;return{factId:v.factId,module:v.module,kind:v.kind,value:v.value,number:v.number,containerId:v.containerId,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}}}}function mJ($){let v=$,U=v.localName===null||v.localStartLine===null?{}:{local:v.localName,localRange:{start:{line:v.localStartLine,character:v.localStartChar??0},end:{line:v.localEndLine??v.localStartLine,character:v.localEndChar??0}}},X=v.name===null||v.startLine===null?{}:{name:v.name,range:{start:{line:v.startLine,character:v.startChar??0},end:{line:v.endLine??v.startLine,character:v.endChar??0}}};return{factId:v.factId,module:v.module,specifier:v.specifier,reExport:v.reExport===1,...X,...U}}function cJ($){let v=JSON.parse($.citations),U=$.doubtId===null||$.doubtReason===null||$.doubtAt===null?void 0:{factId:$.doubtId,reason:$.doubtReason,at:$.doubtAt,...$.doubtBy===null?{}:{by:$.doubtBy}};return{symbolId:$.symbolId,question:$.question,factId:$.factId,prose:$.prose,citations:v,thin:$.thin===1,createdAt:$.createdAt,...$.model===null?{}:{model:$.model},...U===void 0?{}:{doubt:U}}}function pJ($){let v=$;return{factId:v.factId,module:v.module,name:v.name,role:v.role,targetId:v.targetId,fromId:v.fromId,provenance:v.provenance,startLine:v.startLine,startCharacter:v.startChar,endLine:v.endLine,endCharacter:v.endChar}}import{spawn as pu}from"node:child_process";var qU=eJ(dB(),1);var FI=30000;function FH($,v,U){let X,J=new Promise((G,Q)=>{X=setTimeout(()=>Q(Error(`${U} timed out after ${v}ms`)),v)});return Promise.race([$,J]).finally(()=>clearTimeout(X))}class xQ{providers=new Map;async start($,v){let U=this.spawnProcess($,v),X=$.timeoutMs??FI;try{await FH(new Promise((Y,D)=>{U.child.once("spawn",Y),U.child.once("error",(W)=>D(Error(`provider failed to start: ${W.message}`)))}),X,"spawn")}catch(Y){throw this.stopProcess(U),Y}let J;try{J=await FH(U.connection.sendRequest("initialize",{workspaceRoot:v,protocolVersion:N6}),X,"initialize")}catch(Y){throw this.stopProcess(U),Y}let G=BQ.initialize.response.parse(J);if(!tB(G.protocolVersion))throw this.stopProcess(U),Error(`provider ${G.providerId} speaks ${G.protocolVersion}, we speak ${N6}`);let Q={providerId:G.providerId,language:G.language,extensions:G.extensions,...G.filenames===void 0?{}:{filenames:G.filenames}};return this.providers.set(Q.providerId,{...U,claims:Q,tiers:G.tiers,spec:$}),Q}spawnProcess($,v){let[U,...X]=$.command,J=pu(U,X,{stdio:["pipe","pipe","inherit"],cwd:v});if(!J.stdin||!J.stdout)throw Error("provider process has no stdio pipes");let G=qU.createMessageConnection(new qU.StreamMessageReader(J.stdout),new qU.StreamMessageWriter(J.stdin));G.listen();let Q=new CQ;return J.on("exit",(Y)=>Q.close(Error(`provider exited with code ${Y}`))),J.on("error",(Y)=>Q.close(Error(`provider errored: ${Y.message}`))),{child:J,connection:G,queue:Q}}route($){return NH($,[...this.providers.values()].map((v)=>v.claims))}declares($,v){return this.providers.get($)?.tiers[v]===!0}async ask($,v,U){let X=this.route($);if(!X.owned){let J=X.reason==="contested"?`claimed by ${X.providerIds.join(", ")}`:"unclaimed";throw Error(`no provider owns ${$}: ${J}`)}return this.askProvider(X.providerId,v,U)}async askProvider($,v,U){let X=this.providers.get($);if(!X)throw Error(`provider ${$} is not running`);let J=X.spec.timeoutMs??FI;return X.queue.run(async()=>{let G=await FH(X.connection.sendRequest(v,U),J,v);return BQ[v].response.parse(G)})}stopProcess($){$.queue.close(Error("provider stopped")),$.connection.dispose(),$.child.kill()}stop($){let v=this.providers.get($);if(!v)return;this.stopProcess(v),this.providers.delete($)}stopAll(){for(let $ of[...this.providers.keys()])this.stop($)}running(){return[...this.providers.values()].map(($)=>$.claims)}}import AH from"node:path";function qH($,v=S4()){let U=AH.resolve($);if(U===AH.parse(U).root)return{admitted:!1,reason:`${U} is the filesystem root, which is never one project`};if(U===AH.resolve(v.home))return{admitted:!1,reason:`${U} is your home directory, which is never one project. Register the project you mean instead.`};return{admitted:!0}}var AI={name:"nyaa-lexicon",version:"1.6.2",private:!0,type:"module",description:"Symbol-level code understanding served to agents over MCP and to editors over LSP",workspaces:["protocol","core","adapters/*","providers/*"],scripts:{build:"bun run scripts/build.ts",lint:"bun run scripts/lint.ts","lint:fix":"biome check --write .",test:"vitest run","test:watch":"vitest",clean:"bunx tsc --build --clean"},engines:{node:">=22.5"},devDependencies:{"@biomejs/biome":"2.5.1","bun-types":"1.3.14",typescript:"6.0.3",vitest:"4.1.9"}};var qI=`
+Every codebase lexicon knows about, and which are bound.
 
-Bound projects are the ones every other tool answers from. Start here when a query says nothing is
-bound, then bind_project the one you mean. A codebase that is not listed has never been registered;
-register_project adds it.
+Bound projects are the ones every other tool answers from. Not listed means never registered.
 `.trim(),II=`
 Teach lexicon about a codebase, by absolute path to its root.
 
-Registering does not index it and does not make it answerable; bind_project does both. Use this once
-per codebase. Registering an already-known project is safe and simply reports it.
+Registering neither indexes it nor makes it answerable; bind_project does both. Re-registering is safe.
 `.trim(),PI=`
 Make a registered project one of the codebases queries answer from.
 
-A bind lasts for this session only, so bind at the start of a session before asking anything. The
-INDEX it warms outlives the session and is shared, so re-binding costs a call rather than a rescan.
+A bind lasts this session only. The index it warms outlives the session, so re-binding costs a call
+rather than a rescan.
 
-Several projects can be bound at once; every query then answers from each, labelled by project.
+Several can be bound at once. Every query answers from each, labelled by project.
 `.trim(),EI=`
 Stop answering queries from this project. It stays registered and its index survives.
 `.trim(),wI={},bI={root:H.string().min(1).describe("Absolute path to the codebase's root directory")},MI={project:H.string().min(1).describe("Project name or key, exactly as list_projects reports it")};function k6($,v=!1){return{content:[{type:"text",text:$}],...v?{isError:!0}:{}}}function SI($){return{list:()=>$.all(),register:(v)=>KH(v,(U)=>qH(U)),bind:(v)=>$.bind(v),unbind:(v)=>$.unbind(v)}}function ZI($){if($.length===0)return"No project is registered, so there is nothing to answer from. Call register_project with the absolute path to the codebase's root, then bind_project.";return`No project is bound, so there is nothing to answer from. Registered: ${$.map((U)=>U.name).join(", ")}. Call bind_project with one of those, or register_project for a codebase not listed.`}function RI($){let v=$.list();if(v.length===0)return k6("No project is registered. Call register_project with the absolute path to a codebase's root.");let U=v.map((G)=>`${G.bound?"BOUND  ":"       "}${G.name}
@@ -283,29 +280,26 @@ Stop answering queries from this project. It stays registered and its index surv
 `)}
 
 ${J}`)}function _I($,v){let U=$.register(v.root);if(!U.registered)return k6(U.reason,!0);if(U.already)return k6(`${U.project.name} is already registered. Call bind_project to answer from it.`);return k6(`Registered ${U.project.name} at ${U.project.root}. Call bind_project to answer from it.`)}function CI($,v){let U=$.bind(v.project);if(!U.bound)return k6(U.reason,!0);return k6(`Bound ${U.project.name}. Its index warms on the next query and stays warm for other sessions. The bind itself lasts only this session.`)}function TI($,v){let U=$.unbind(v.project);if(!U.bound)return k6(U.reason,!0);return k6(`Unbound ${U.project.name}. It stays registered and its index is untouched.`)}import{existsSync as ou,readFileSync as tu}from"node:fs";import au from"node:path";var gI=`
-Every code index this machine holds, across all projects, with its size, when it was last written,
-whether a daemon is serving it now, and whether the project it indexed still exists on disk.
+Every code index this machine holds, with its size, when it was last written, whether a daemon is
+serving it, and whether the project it indexed still exists on disk.
 
-Use it to find indexes worth reclaiming: a store whose workspace is GONE can never be useful again,
-since nothing will re-index a directory that is not there. Sizes are real; a large repository's
-index runs to hundreds of megabytes.
+Use it to find indexes worth reclaiming. A large repository's index runs to hundreds of megabytes.
 
-The key each row reports is what delete_project_store requires.
+The key each row reports is what delete_project_store and stop_project_daemon require.
 `.trim(),fI=`
 Permanently delete one project's index, by the key list_project_stores reports.
 
-IRREVERSIBLE, and it takes the recorded ANSWERS with it, which are the one thing here that no
-re-index can regenerate. Show the user the row you are about to delete and get their agreement
-before calling this.
+IRREVERSIBLE, and it takes the recorded ANSWERS with it. Show the user the row and get their
+agreement before calling this.
 
-Refused while a daemon is serving that store; stop it first. A store for a workspace still on disk
-is rebuilt on next use, so deleting it costs a re-scan rather than the project.
+Refused while a daemon is serving that store; stop_project_daemon first. A store whose workspace
+still exists rebuilds on next use.
 `.trim(),yI=`
 Stop the daemon serving one project's index, by the key list_project_stores reports.
 
-Safe to call when it is already stopped: that is success, because nothing is serving the store.
-Refused for a project bound in this session; call unbind_project first. Use this before
-delete_project_store when that tool reports a live daemon.
+Already stopped is success. Refused for a project bound in this session; unbind_project first.
+
+Use before delete_project_store when that tool reports a live daemon.
 `.trim(),uI={},PH={key:H.string().min(1).describe("The store key, exactly as list_project_stores reports it")},hI=PH,kI=1048576,xI=5000,su=100;function l4($,v=!1){return{content:[{type:"text",text:$}],...v?{isError:!0}:{}}}function lI($){let v=S4();return $.workspaceRoot===null?au.join(T6(v),$.key,"daemon.json"):LU(v,$.workspaceRoot).lockFile}function eu($){let v;try{v=tu(lI($),"utf8")}catch{return null}try{let U=t1.safeParse(JSON.parse(v));return U.success&&j1(U.data.pid)?U.data:null}catch{return null}}function iI(){return{list:()=>_Q(j1),remove:($)=>zH($,j1),lock:($)=>{if($.workspaceRoot===null)return eu($);let v=fJ($.workspaceRoot);if(v.action==="connect")return v.lock;if(v.action==="replace"&&v.lock.workspaceRoot===$.workspaceRoot)return v.lock;return null},shutdown:($)=>UH($,"shutdown",{}),gone:($,v)=>{if(!j1(v))return!0;return!ou(lI($))},wait:($)=>new Promise((v)=>setTimeout(v,$)),now:()=>Date.now()}}function IH($){return $<kI?`${Math.max(1,Math.round($/1024))}KB`:`${($/kI).toFixed(1)}MB`}function $h($,v){if($===null)return"never written";let U=Math.floor((v-$)/86400000);if(U<1)return"today";if(U===1)return"yesterday";return`${U} days ago`}function vh($,v){if($.length===0)return"This machine holds no indexes.";let U=$.map((Y)=>{let D=Y.workspaceRoot??"(this index predates recording its workspace)",W=Y.livePid!==null?`in use by pid ${Y.livePid}`:Y.workspace==="present"?"idle":Y.workspace==="missing"?"ORPHANED, its workspace is gone":"UNVERIFIED, it does not say what it indexed";return`${Y.key}
   ${D}
   ${IH(Y.bytes)}, written ${$h(Y.modifiedAt,v)}, ${W}`}),X=$.filter((Y)=>Y.workspace==="missing"),J=$.filter((Y)=>Y.workspace==="unknown"),G=X.reduce((Y,D)=>Y+D.bytes,0),Q=[];if(X.length===0&&J.length===0)Q.push("Every index here belongs to a project still on disk.");if(X.length>0)Q.push(`${X.length} index a workspace that no longer exists, holding ${IH(G)}. Nothing can rebuild those, though deleting one still destroys any recorded answers about that project.`);if(J.length>0)Q.push(`${J.length} were written before the workspace path was recorded, so whether their project still exists is unknown rather than no. Each is re-stamped the next time its daemon runs; do not treat one as abandoned on the strength of this listing.`);return`${$.length} indexed ${$.length===1?"project":"projects"}:
@@ -352,195 +346,194 @@ This reads the import graph, not source text.`;let v=new Map;for(let X of $.impo
 `)}var VP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},KP={name:H.string().min(1).optional(),symbolId:H.string().min(1).optional(),module:H.string().min(1).optional(),limit:H.number().int().positive().max(500).optional().describe("Default 50.")},zP={fromModule:H.string().min(1).describe("Workspace-relative path of the importing file."),specifier:H.string().min(1).describe("The specifier exactly as written in the import.")},NP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},LP={value:H.string().optional().describe("Exact decoded value. Indexed, so this is the cheap one."),pattern:H.string().optional().describe("JavaScript regular expression, matched against the value."),kind:H.enum(["string","number","boolean"]).optional().describe("Defaults to string for a pattern search."),min:H.number().optional().describe("Numeric lower bound, inclusive."),max:H.number().optional().describe("Numeric upper bound, inclusive."),limit:H.number().int().positive().max(500).optional().describe("Default 50.")},jP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},OP={text:H.string().min(1).describe("Substring of the symbol name. Case-sensitive."),kind:H.string().min(1).optional().describe("class, function, method, constant, interface, and so on."),module:H.string().min(1).optional().describe("Substring of the file path, to scope the search."),limit:H.number().int().positive().max(300).optional().describe("Default 50.")},FP={module:H.string().min(1).describe("Workspace-relative path of the file.")},AP={specifier:H.string().min(1).optional().describe("Substring of the specifier as written in source."),module:H.string().min(1).optional().describe("Workspace-relative path; answers who imports this file."),limit:H.number().int().positive().max(300).optional().describe("Default 50.")},qP={limit:H.number().int().positive().max(100).optional().describe("Default 20.")},IP={},PP={module:H.string().min(1).describe("Workspace-relative path of the file to ask about."),limit:H.number().int().positive().max(100).optional().describe("Default 20.")},EP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},wP={module:H.string().min(1).describe("Workspace-relative path of the file to ask about.")},bP={name:H.string().min(1).describe("Symbol name as written. Case-sensitive, and at least 3 characters."),limit:H.number().int().positive().max(100).optional().describe("Default 20.")},rJ=["describe","why","relate","contract","effects","usage"],MP={symbolId:H.string().min(1).describe("Exact symbol id the answer is about, from an earlier tool answer."),question:H.enum(rJ).describe("Which question the prose answers."),prose:H.string().min(1).describe("The answer, TERSE. One or two sentences, a short paragraph at most. Say only what the facts cannot."),citations:H.array(H.string().min(1)).min(1).describe("Fact ids consumed, whole and exactly as symbol_facts prints them, never the trailing digest alone. Other answers' ids may be cited too."),model:H.string().min(1).optional().describe("Who wrote it, e.g. a model name."),resolvesDoubt:H.string().min(1).optional().describe("The standing doubt's id, from recall. Without it a doubt rides forward onto the new answer."),omitting:H.string().min(1).optional().describe("When replacing a live answer without citing all its facts: what you dropped and why.")},SP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),question:H.enum(rJ).optional().describe("One question class. Omit for everything recorded about it.")},ZP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),reason:H.string().min(1).describe("Why the recorded answer is no longer trusted. The next writer reads this."),question:H.enum(rJ).optional().describe("One question class. Omit to doubt everything recorded about it."),by:H.string().min(1).optional().describe("Who is declaring the doubt, e.g. a model name.")},RP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),question:H.enum(rJ).describe("Which recorded answer is being re-affirmed."),citations:H.array(H.string().min(1)).optional().describe("Current fact ids replacing retired ones, from symbol_facts. Omit when only clearing a doubt."),model:H.string().min(1).optional().describe("Who is vouching, e.g. a model name."),resolvesDoubt:H.string().min(1).optional().describe("The standing doubt's id, from recall. Required to clear it.")},_P={name:H.string().min(1).optional().describe("Root symbol name. Omit both name and symbolId for workspace gaps."),symbolId:H.string().min(1).optional().describe("Exact root symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate the name."),question:H.enum(rJ).optional().describe("Default describe."),limit:H.number().int().positive().max(300).optional().describe("Default 60.")},CP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),limit:H.number().int().positive().max(200).optional().describe("Per kind, default 40.")},TP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),newName:H.string().min(1).describe("The name you intend to give it.")},kP=`
 What a symbol is, as its signature surface rather than its source.
 
-Use instead of reading a file when you want a class's shape without its bodies, or when you want
-to know how widely something is used before touching it. Answers with the declaration, its direct
-members, a count of how many places reference it, and any RECORDED KNOWLEDGE: prose a previous
-agent concluded about this symbol and grounded in cited facts, served with a staleness check.
+Answers with the declaration, its direct members, how many places reference it, and any recorded
+knowledge, served with a staleness check.
 
-Give symbolId when you have one; otherwise give name, plus module if the name is not unique.
+Use instead of reading a file for a class's shape without its bodies, or to see how widely something
+is used before touching it.
+
+Give symbolId when you have one, otherwise name, plus module if the name is not unique.
 `.trim(),xP=`
 Every USE of a symbol, resolved through imports and re-exports rather than matched by name.
 
-This is the one grep cannot do: it returns uses of THIS symbol, so a same-named local elsewhere is
-excluded and an alias is followed. Grouped by file, capped, and the cap is reported.
+A same-named local elsewhere is excluded and an alias is followed. Grouped by file, capped, and the
+cap is reported.
 
-Import and export STATEMENTS are not uses and are not listed here. To see every occurrence a
-rewrite would have to touch, including those, call prepare_rename.
+Import and export STATEMENTS are not uses and are not listed. For every occurrence a rewrite would
+touch, call prepare_rename.
 `.trim(),gP=`
 Where an import specifier actually lands.
 
-Follows path mappings, package exports and re-export chains, so it answers for a barrel import
-that grep cannot follow. Distinguishes a file in the workspace, a dependency outside it, and a
-specifier that resolves to nothing, which is a finding rather than an error.
-`.trim(),fP=`
-Everything a rename would have to touch, before touching any of it.
+Follows path mappings, package exports and re-export chains, so it answers for a barrel import.
 
-Call this before renaming a symbol by hand. It lists every occurrence resolved through real
-binding, including the declaration itself, grouped by file. Crucially it also reports what it
-cannot promise: occurrences spelled the same that never bound, and whether the symbol is exported
-past the edge of the index. Reads only; nothing is written.
+Distinguishes a file in the workspace, a dependency outside it, and a specifier that resolves to
+nothing. Resolving to nothing is a finding, not an error.
+`.trim(),fP=`
+Everything a rename would touch, before touching any of it. Reads only.
+
+Lists every occurrence resolved through real binding, including the declaration, grouped by file.
+
+Also reports what it cannot promise: occurrences spelled the same that never bound, and whether the
+symbol is exported past the edge of the index.
 `.trim(),yP=`
 Rename a symbol everywhere it is used. THIS WRITES FILES.
 
-The only tool here that changes anything. It renames the declaration, every use resolved through
-real binding, and every import and re-export that reaches it, then re-indexes what it touched.
+Renames the declaration, every use resolved through real binding, and every import and re-export
+that reaches it, then re-indexes what it touched.
 
-It is all or nothing. If any occurrence should change and cannot be changed safely, nothing is
-written and you are told which ones and why. Call prepare_rename first if you want to see the
-blast radius before committing to it.
+All or nothing. If any occurrence should change and cannot be changed safely, nothing is written and
+you are told which ones and why. Call prepare_rename first for the blast radius.
 `.trim(),uP=`
 Find literal VALUES written in the code: an exact string, a regex, or a number range.
 
-Searches decoded values, so it sees through quoting. This reaches text no symbol query can, because
-a name inside a string is not a reference: a Python __all__ entry, the signal name in connect("..."),
-a magic string two files share, a hard-coded timeout.
+Searches decoded values, so it sees through quoting. Reaches text no symbol query can: a Python
+__all__ entry, the signal name in connect("..."), a magic string two files share, a hard-coded timeout.
 
-Prefer it over grep when you want the VALUE rather than the line. Every hit carries the declaration
-it sits inside.
+Prefer it over grep for the VALUE rather than the line. Every hit carries the declaration it sits inside.
 `.trim(),hP=`
 How a symbol sits in the reference graph: fan-in, fan-out, and whether it is in a cycle.
 
-Fan-in is how many places use it, fan-out how many distinct symbols it uses, and the cycle is
-reported with every member when there is one. Use before refactoring something to find out whether
-it is a hub, a leaf, or knotted into a loop.
+Fan-in is how many places use it, fan-out how many distinct symbols it uses. A cycle is reported with
+every member.
 
-Numbers are bounded by what binding resolved, so a low fan-in can mean "barely used" or "barely
-resolved" and this cannot tell you which.
+Use before refactoring, to tell a hub from a leaf. Numbers are bounded by what binding resolved, so a
+low fan-in can mean barely used or barely resolved.
 `.trim(),lP=`
 What this repository is, at a glance. Call it first in a codebase you do not know.
 
 Files, symbols, references, imports and literals indexed, the biggest modules, how much recorded
-knowledge exists, and how the file set was decided. That last part says whether scope came from git
-or was walked off the disk, which is the difference between your project and whatever sits under it.
+knowledge exists, and whether scope came from git or was walked off the disk.
 `.trim(),iP=`
-Find declarations whose NAME contains some text. Where browsing starts.
+Find declarations whose NAME contains some text. Where browsing starts, and how you get a name for
+describe_symbol.
 
-describe_symbol needs a name you already have. This is how you get one. Filter by kind (class,
-function, method, interface, constant) and by a path substring to scope it to one area.
+Filter by kind (class, function, method, interface, constant) and by a path substring.
 
-This searches DECLARED names, not text: a name inside a comment or a string will not match, and a
-symbol reached through an alias still matches its real name.
+Searches DECLARED names, not text. A name inside a comment or string will not match, and a symbol
+reached through an alias still matches its real name.
 `.trim(),nP=`
-Everything one file declares, nested by container. The "open the file" answer.
+Everything one file declares, nested by container.
 
-Use instead of reading a file when you want its shape: classes with their methods, functions,
-constants, each with its signature. This is the compression tier applied to a whole file rather
-than one symbol, so it costs a fraction of the source.
+Classes with their methods, functions, constants, each with its signature. Costs a fraction of the
+source.
+
+Use instead of reading a file when you want its shape.
 `.trim(),mP=`
 Which files import something, by the specifier as written or by the file it resolves to.
 
-Two questions, one tool. Give a specifier substring to find every place that imports it as written
-("discord.js", "~/actions", "res://"). Give a module path to find who imports THAT file.
+Give a specifier substring for every place importing it as written ("discord.js", "~/actions",
+"res://"). Give a module path for who imports THAT file.
 
-Reads the import graph rather than searching text, which is what makes it work in every language: a
-text search for specifiers works in TypeScript and silently returns nothing in Python.
+Reads the import graph rather than searching text, so it works in every language. A text search for
+specifiers works in TypeScript and silently returns nothing in Python.
 `.trim(),cP=`
 The most-referenced symbols here, most used first.
 
-The natural second question in a codebase you do not know: what does everything depend on. A hub is
-where a change is expensive and where reading pays off most.
+A hub is where a change is expensive and where reading pays off most.
 
 Counts are bounded by what binding resolved.
 `.trim(),pP=`
 Files that get edited in the same commits as this one, from git history.
 
 Finds relationships no reference edge can: a test enforcing an invariant by grep, two files held in
-sync by a fixture, a doc that goes stale when a behaviour changes. None is a reference, and all get
-fixed in the same commit.
+sync by a fixture, a doc that goes stale when a behaviour changes.
 
 Use before changing something to find what usually changes with it. Each row gives both counts, so a
 9-of-10 partner reads differently from a 2-of-40 one.
 `.trim(),dP=`
 What a type extends and what extends it, in both directions at once.
 
-Answers what a class name alone cannot: whether overriding a method here changes behaviour elsewhere,
-and which base actually declares the thing you are looking at. A subclass in another file is found
-without opening it.
+Tells you whether overriding a method here changes behaviour elsewhere, and which base actually
+declares the thing you are looking at. A subclass in another file is found without opening it.
 
-Unresolved bases are LISTED rather than dropped, since a base outside the workspace is a real
-supertype this index cannot name, and omitting it would read as extending nothing.
+Unresolved bases are LISTED rather than dropped. A base outside the workspace is a real supertype
+this index cannot name.
 `.trim(),rP=`
 How much a file changes and how long it has existed, from git.
 
-Churn is lines rather than commits, since forty one-line commits and two rewrites are different
-things a commit count cannot separate. Use it to weigh how settled code is before rewriting it.
+Churn is lines rather than commits. Forty one-line commits and two rewrites are different things.
 
-Says when the history window ran out rather than reporting a floor as a date, so an old file is
-never made to look new.
+Says when the history window ran out rather than reporting a floor as a date.
+
+Use to weigh how settled code is before rewriting it.
 `.trim(),oP=`
 Commits whose message names this symbol. The closest thing here to a reason.
 
-Every other question answers what the code IS or who touches it. This finds where somebody wrote down
-WHY: why a cache was added, what a workaround was working around, which bug a guard exists for.
+Finds where somebody wrote down WHY: why a cache was added, what a workaround was working around,
+which bug a guard exists for.
 
-Use before changing something whose shape looks arbitrary. Matched on a word boundary and
-case-sensitively, and each row says how many files that commit touched, so a mention inside a sweep
-is not read as a deliberate one.
+Matched on a word boundary and case-sensitively. Each row says how many files that commit touched,
+so a mention inside a sweep is not read as a deliberate one.
+
+Use before changing something whose shape looks arbitrary.
 `.trim(),tP=`
 Save what you just figured out about a symbol, so the next agent does not re-derive it.
 
-When working here teaches you what something IS, spend one call recording it: prose plus the fact ids
-you drew it from, using ids from symbol_facts. The store refuses an answer that cites nothing, cites
-ids that do not resolve, or cites only other symbols' facts. YOU are the model; this never calls one.
+Prose plus the fact ids you drew it from, using ids from symbol_facts. The store refuses an answer
+that cites nothing, cites ids that do not resolve, or cites only other symbols' facts. YOU are the
+model; this never calls one.
 
-KEEP THE PROSE TERSE. One or two sentences is the target, a short paragraph the ceiling. Every later
-reader pays for it, so write the part they cannot already see and stop.
+KEEP THE PROSE TERSE. One or two sentences is the target, a short paragraph the ceiling. Write the
+part a reader cannot already see and stop.
 
-Citing only the subject's own declaration is accepted but marked THIN, being a paraphrase of the
-signature. One more fact, a reference, a literal, or a child answer, grounds it in something else.
+Citing only the subject's own declaration is marked THIN. Add a reference, a literal, or a child
+answer.
 
-Answers may cite other answers' ids, which is how a parent leans on its children. When a cited fact
-changes, the answer reports stale by itself.
+Answers may cite other answers' ids. When a cited fact changes, the answer reports stale by itself.
 `.trim(),aP=`
 The full recorded answer for one symbol, with its health: STALE, SHAKY, or DOUBTED.
 
-describe_symbol already serves the describe answer inline; this is the recall for every other
-question class, and the first step of re-affirming or clearing a doubt, since the prose to verify
-and the doubt's id both live here. Omit question for everything recorded about the symbol.
+describe_symbol already serves the describe answer inline. This is the recall for every other
+question class, and the first step of re-affirming or clearing a doubt.
+
+Omit question for everything recorded about the symbol.
 `.trim(),sP=`
 Flag a recorded answer you no longer trust, without rewriting it.
 
-Use right after changing code in a way that shifts what a symbol MEANS: the facts may still
-resolve, but the recorded explanation describes the old purpose. The doubt shows on every recall,
-cascades as SHAKY into answers built on this one, and joins knowledge_gaps as recheck demand.
+Use right after changing code in a way that shifts what a symbol MEANS, where the facts still
+resolve but the explanation describes the old purpose.
 
-The reason you give is what the next writer reads. Clearing the doubt requires citing its id,
-which only a recall shows, so nobody can erase a warning they never saw.
+The doubt shows on every recall, cascades as SHAKY into answers built on this one, and joins
+knowledge_gaps as recheck demand.
+
+The reason you give is what the next writer reads. Clearing it requires citing its id, which only a
+recall shows.
 `.trim(),eP=`
 Vouch that a recorded answer still holds, healing its ground instead of rewriting it.
 
-Two uses. When a recall showed STALE ids: verify the prose against symbol_facts, then call this
-with the current fact ids; the same prose is re-grounded in one call, no re-authoring. When a
-recall showed DOUBTED: verify, then call this citing the doubt's id as resolvesDoubt.
+STALE ids: verify the prose against symbol_facts, then call this with the current fact ids. Same
+prose, re-grounded, no re-authoring.
+
+DOUBTED: verify, then call this citing the doubt's id as resolvesDoubt.
 
 Re-grounding mints a new answer id, so answers citing the old one go stale and heal the same way,
-leaves first. Only re-affirm what you have actually re-checked; this call IS the vouching.
+leaves first. Only re-affirm what you have re-checked; this call IS the vouching.
 `.trim(),$E=`
 What is not yet understood here: symbols whose recorded knowledge is missing or gone doubtful.
 
-Two uses. BEFORE working on something, call it with that symbol as the root: the dependency tree
-beneath it comes back LEAVES FIRST, which is a map of what you are about to lean on and how much of
-it anyone has explained. And to BUILD knowledge, answer the rows in order with record_answer, so
-every parent's description can lean on its children's.
+With a root symbol, the dependency tree beneath it comes back LEAVES FIRST, mapping what you are
+about to lean on. Answer the rows in order with record_answer, so every parent can lean on its
+children.
 
-With no root it lists the workspace's gaps by measured demand, stale answers first since those are
-usually quick re-affirmations. Answered entries drop out, so working the list is naturally
-resumable: keep calling until it returns empty.
+With no root, the workspace's gaps by measured demand, stale answers first.
+
+Answered entries drop out. Keep calling until it returns empty.
 `.trim(),vE=`
 Every indexed fact about one symbol, each with an id that can be cited and later re-checked.
 
-The raw material behind the other answers: the declaration, the references, the literals written
-inside it, and the imports that actually resolve to it. Use when you want the evidence rather than
-a summary of it, or when you intend to record WHY you concluded something.
+The declaration, the references, the literals written inside it, and the imports that resolve to it.
 
 Each id is a digest of that fact's own contents, so an id that stops resolving is exactly a fact
-that changed. That is what makes a conclusion recorded today checkable tomorrow.
+that changed.
+
+Use when you want the evidence rather than a summary, or when you intend to record WHY.
 `.trim(),UE=`
 What type a symbol actually has, including when the source never says.
 
-Use for anything unannotated, where reading the declaration tells you nothing and the answer comes
-from inference. Says which of three it is: declared in source, inferred with the basis stated, or
-unknown with a reason. Unknown is a real answer here and never a failure.
+Says which of three it is: declared in source, inferred with the basis stated, or unknown with a
+reason. Unknown is a real answer, never a failure.
+
+Use for anything unannotated, where the declaration tells you nothing.
 `.trim();function X$($,v=!1){return{content:[{type:"text",text:$}],...v?{isError:!0}:{}}}async function R$($,v){let U=await $.indexStatus(),X=U.failures===0?"":`
 
 ${U.failures} file${U.failures===1?"":"s"} failed to parse; prior facts were kept.`;if(U.state==="ready")return`${v}${X}`;if(U.stored>0)return`${v}
