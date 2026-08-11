@@ -26,8 +26,7 @@ import { admitWorkspace } from "./workspaceAdmission.js";
 /** Headroom over the slowest provider start. Published to clients rather than mirrored by them. */
 const STARTUP_ALLOWANCE_MS = 90_000;
 
-/** Re-offered on every request while the first scan runs, so a caller waits as long as the scan is
- * still going. The client's own ceiling is what ends it; the scan finishes regardless. */
+/** Re-offered while the first scan runs. The client's ceiling ends the wait; the scan finishes anyway. */
 const FIRST_SCAN_PATIENCE_MS = 30_000;
 
 ////////////////////////////////
@@ -123,7 +122,7 @@ async function main(argv: string[]): Promise<void> {
 	// index costs nothing until something asks about it.
 	let scan: Promise<void> | null = null;
 	let live: { stop: () => void } | null = null;
-	// A store with content was scanned by an earlier run, so only a truly empty one makes a caller wait.
+	// Content means an earlier run scanned it, so only an empty store makes a caller wait.
 	let everScanned = store.totals().files > 0;
 	function warm(): void {
 		scan ??= (async () => {
@@ -160,9 +159,8 @@ async function main(argv: string[]): Promise<void> {
 		// Asking about the workspace IS the request to index it.
 		warm();
 
-		// A first scan makes the caller WAIT rather than answering from an empty store. "No symbol
-		// named X" and "nothing is indexed yet" are different answers, and the first one reads as
-		// settled. A rescan does not wait: there is a real index to answer from meanwhile.
+		// A first scan makes the caller wait: "no such symbol" from an empty store reads as settled.
+		// A rescan does not, since there is a real index to answer from meanwhile.
 		if (!everScanned) {
 			const status = service.indexStatus();
 			throw new DaemonStartingError(
