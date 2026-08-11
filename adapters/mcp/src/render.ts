@@ -342,19 +342,13 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 		const thin = outcome.answer.thin
 			? "\nMarked THIN: nothing cited reaches beyond the declaration, so this reads as a paraphrase of the signature. Citing a reference, a literal or a child answer would ground it in something a reader cannot already see."
 			: "";
-		// The store counts out loud on every write. A tally kept by the writer is prose, and one
-		// writer inherited another run's outputs and reported 188 where the store held 5; with the
-		// count in every response, the last response IS the count and a drifted tally contradicts
-		// the next line its keeper reads.
-		const mine =
-			outcome.stored.byThisModel === undefined ? "" : ` (${outcome.stored.byThisModel} under your model tag)`;
 		// A carried doubt is stated to the one writer who can still address it, at the one moment the
 		// context to address it is already loaded.
 		const carried =
 			outcome.doubtCarried === undefined
 				? ""
 				: `\nA standing doubt rode forward onto this answer: "${outcome.doubtCarried.reason}". If your rewrite addresses it, record again citing resolvesDoubt ${outcome.doubtCarried.factId}.`;
-		return `Recorded. The store now holds ${outcome.stored.total} answer${outcome.stored.total === 1 ? "" : "s"}${mine}.${thin}${carried}\nThis answer's own citable id:\n  ${outcome.answer.factId}\nCite it from answers about things that use ${outcome.answer.symbolId}.`;
+		return `Recorded. ${outcome.answer.factId}${thin}${carried}`;
 	}
 	const lines = [`Not recorded: ${outcome.reason}.`];
 	for (const factId of outcome.unresolved ?? []) lines.push(`  ${factId}`);

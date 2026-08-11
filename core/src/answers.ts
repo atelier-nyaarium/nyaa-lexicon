@@ -104,15 +104,6 @@ export type RecordOutcome =
 			recorded: true;
 			answer: Answer;
 			/**
-			 * The store's own counts, stated on every write.
-			 *
-			 * A tally kept by the writer is prose, and an agent that inherited another run's output
-			 * files once reported 188 where the store held 5. With the store counting out loud on
-			 * every record, the last response IS the count, and a drifted tally contradicts the very
-			 * next line the agent reads.
-			 */
-			stored: { total: number; byThisModel?: number };
-			/**
 			 * A doubt the previous answer carried that this write did NOT cite, so it rode forward.
 			 * Stated on the outcome because the writer is the one person who can still address it.
 			 */

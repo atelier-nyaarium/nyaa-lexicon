@@ -253,7 +253,12 @@ const QUESTIONS = ["describe", "why", "relate", "contract", "effects", "usage"] 
 export const RecordAnswerInput = {
 	symbolId: z.string().min(1).describe("Exact symbol id the answer is about, from an earlier tool answer."),
 	question: z.enum(QUESTIONS).describe("Which question the prose answers."),
-	prose: z.string().min(1).describe("The answer. A sentence to a paragraph; say what the facts cannot."),
+	prose: z
+		.string()
+		.min(1)
+		.describe(
+			"The answer, TERSE. One or two sentences, a short paragraph at most. Say only what the facts cannot.",
+		),
 	citations: z
 		.array(z.string().min(1))
 		.min(1)
@@ -502,6 +507,9 @@ it is, spend one call recording it: prose plus the fact ids you drew it from, us
 symbol_facts. The store refuses an answer that cites nothing, cites ids that do not resolve, or
 cites only other symbols' facts, so a stored answer is always grounded in inputs that existed when
 it was written. YOU are the model here; this tool never calls one.
+
+KEEP THE PROSE TERSE. One or two sentences is the target and a short paragraph is the ceiling. Every
+later reader pays for it, so write the part a reader cannot see and stop.
 
 Citing only the subject's own declaration is accepted but marked THIN: structurally a paraphrase of
 what a reader already sees. A cheap-looking leaf with a lone declaration and nothing else nearby

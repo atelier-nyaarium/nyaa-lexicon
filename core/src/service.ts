@@ -1133,11 +1133,9 @@ export class LexiconService {
 		this.store.saveAnswer(answer);
 		// Saving closed the gap row, but a carried doubt is still open work, so the demand stays.
 		if (carried !== undefined) this.store.recordGap(symbolId, question, Date.now());
-		const counts = this.store.answerCounts(model);
 		return {
 			recorded: true,
 			answer,
-			stored: { total: counts.total, ...(counts.byModel === undefined ? {} : { byThisModel: counts.byModel }) },
 			...(carried === undefined ? {} : { doubtCarried: carried }),
 		};
 	}
@@ -1244,12 +1242,7 @@ export class LexiconService {
 			...(options.model === undefined ? {} : { model: options.model }),
 		};
 		this.store.saveAnswer(affirmed);
-		const counts = this.store.answerCounts(options.model);
-		return {
-			recorded: true,
-			answer: affirmed,
-			stored: { total: counts.total, ...(counts.byModel === undefined ? {} : { byThisModel: counts.byModel }) },
-		};
+		return { recorded: true, answer: affirmed };
 	}
 
 	/**
