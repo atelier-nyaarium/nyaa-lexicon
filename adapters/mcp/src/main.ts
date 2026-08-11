@@ -6,18 +6,35 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-	admitWorkspace,
+	boundProjects,
 	ConnectionLostError,
 	connectFrames,
-	currentHost,
 	ensureDaemon,
 	type FrameClient,
 	IndexStore,
 	LexiconService,
 	ProviderSupervisor,
+	type RegisteredProject,
+	readRegistry,
 	startProviders,
 } from "@nyaa-lexicon/core";
 import packageJson from "../../../package.json";
+import {
+	BIND_PROJECT_DESCRIPTION,
+	type BindingDeps,
+	BindProjectInput,
+	bindProjectTool,
+	LIST_PROJECTS_DESCRIPTION,
+	ListProjectsInput,
+	listProjectsTool,
+	liveBindingDeps,
+	nothingBoundMessage,
+	REGISTER_PROJECT_DESCRIPTION,
+	RegisterProjectInput,
+	registerProjectTool,
+	UNBIND_PROJECT_DESCRIPTION,
+	unbindProjectTool,
+} from "./binding.js";
 import {
 	DELETE_STORE_DESCRIPTION,
 	DeleteStoreInput,
@@ -243,20 +260,12 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 	};
 }
 
-/** The daemon when one can be reached, this process when it cannot. */
-async function warmBackend(workspaceRoot: string): Promise<ToolBackend> {
-	const daemon = await ensureDaemon({ workspaceRoot });
-	return daemon.connected ? daemonBackend(workspaceRoot) : localBackend(workspaceRoot);
-}
+/** One fixed backend, or one per bound project. Tests pass a backend; production routes. */
+export type BackendSource = ToolBackend | ((project: RegisteredProject) => ToolBackend);
 
-/** Every question answers the refusal, so it explains itself at whichever tool was reached for. */
-export function refusedBackend(reason: string): ToolBackend {
-	const refuse = () => Promise.reject(new Error(reason));
-	return new Proxy({} as ToolBackend, { get: () => refuse });
-}
-
-export function buildServer(backend: ToolBackend, manageDeps?: ManageDeps): McpServer {
+export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bindingDeps?: BindingDeps): McpServer {
 	const server = new McpServer(SERVER_INFO);
+	const routed = typeof source === "function" ? source : null;
 
 	// The SDK's callback type is wider than ours in ways the strict optional settings will not
 	// unify, so each handler is adapted once here rather than loosening the tool signatures.
@@ -285,148 +294,199 @@ export function buildServer(backend: ToolBackend, manageDeps?: ManageDeps): McpS
 	const gapsShape = KnowledgeGapsInput as any;
 	const listStoresShape = ListStoresInput as any;
 	const deleteStoreShape = DeleteStoreInput as any;
+	const listProjectsShape = ListProjectsInput as any;
+	const registerProjectShape = RegisterProjectInput as any;
+	const bindProjectShape = BindProjectInput as any;
 	const adapt =
 		(handler: (args: any) => Promise<ToolResult>) =>
 		async (args: any): Promise<any> =>
 			handler(args);
+
+	// Every question goes to each bound project in turn, labelled, because "which codebase" is the
+	// one thing the agent knows and lexicon cannot infer.
+	const perProject =
+		(handler: (backend: ToolBackend, args: any) => Promise<ToolResult>) =>
+		async (args: any): Promise<any> => {
+			if (routed === null) return handler(source as ToolBackend, args);
+
+			const bound = boundProjects();
+			if (bound.length === 0) {
+				return { content: [{ type: "text", text: nothingBoundMessage(readRegistry()) }], isError: true };
+			}
+			if (bound.length === 1 && bound[0] !== undefined) return handler(routed(bound[0]), args);
+
+			const sections: string[] = [];
+			for (const project of bound) {
+				const result = await handler(routed(project), args);
+				sections.push(`=== ${project.name}\n${result.content.map((chunk) => chunk.text).join("\n")}`);
+			}
+			return { content: [{ type: "text", text: sections.join("\n\n") }] };
+		};
 	// biome-ignore-end lint/suspicious/noExplicitAny: MCP SDK type compat
 
 	server.registerTool(
 		"describe_symbol",
 		{ title: "Describe Symbol", description: DESCRIBE_DESCRIPTION, inputSchema: describeShape },
-		adapt((args) => describeSymbol(backend, args)),
+		perProject((backend, args) => describeSymbol(backend, args)),
 	);
 
 	server.registerTool(
 		"find_references",
 		{ title: "Find References", description: REFERENCES_DESCRIPTION, inputSchema: referencesShape },
-		adapt((args) => findReferences(backend, args)),
+		perProject((backend, args) => findReferences(backend, args)),
 	);
 
 	server.registerTool(
 		"resolve_import",
 		{ title: "Resolve Import", description: RESOLVE_IMPORT_DESCRIPTION, inputSchema: importShape },
-		adapt((args) => resolveImport(backend, args)),
+		perProject((backend, args) => resolveImport(backend, args)),
 	);
 
 	server.registerTool(
 		"type_of",
 		{ title: "Type Of", description: TYPE_OF_DESCRIPTION, inputSchema: typeShape },
-		adapt((args) => typeOfSymbol(backend, args)),
+		perProject((backend, args) => typeOfSymbol(backend, args)),
 	);
 
 	server.registerTool(
 		"prepare_rename",
 		{ title: "Prepare Rename", description: PREPARE_RENAME_DESCRIPTION, inputSchema: renameShape },
-		adapt((args) => prepareRename(backend, args)),
+		perProject((backend, args) => prepareRename(backend, args)),
 	);
 
 	server.registerTool(
 		"rename_symbol",
 		{ title: "Rename Symbol", description: RENAME_SYMBOL_DESCRIPTION, inputSchema: renameShape },
-		adapt((args) => renameSymbol(backend, args)),
+		perProject((backend, args) => renameSymbol(backend, args)),
 	);
 
 	server.registerTool(
 		"find_literals",
 		{ title: "Find Literals", description: FIND_LITERALS_DESCRIPTION, inputSchema: literalShape },
-		adapt((args) => findLiterals(backend, args)),
+		perProject((backend, args) => findLiterals(backend, args)),
 	);
 
 	server.registerTool(
 		"graph_of",
 		{ title: "Graph Of", description: GRAPH_OF_DESCRIPTION, inputSchema: graphShape },
-		adapt((args) => graphOf(backend, args)),
+		perProject((backend, args) => graphOf(backend, args)),
 	);
 
 	server.registerTool(
 		"co_changed_with",
 		{ title: "Co-changed With", description: CO_CHANGED_WITH_DESCRIPTION, inputSchema: coChangeShape },
-		adapt((args) => coChangedWith(backend, args)),
+		perProject((backend, args) => coChangedWith(backend, args)),
 	);
 
 	server.registerTool(
 		"type_hierarchy",
 		{ title: "Type Hierarchy", description: TYPE_HIERARCHY_DESCRIPTION, inputSchema: hierarchyShape },
-		adapt((args) => typeHierarchy(backend, args)),
+		perProject((backend, args) => typeHierarchy(backend, args)),
 	);
 
 	server.registerTool(
 		"file_history",
 		{ title: "File History", description: FILE_HISTORY_DESCRIPTION, inputSchema: fileHistoryShape },
-		adapt((args) => fileHistory(backend, args)),
+		perProject((backend, args) => fileHistory(backend, args)),
 	);
 
 	server.registerTool(
 		"symbol_facts",
 		{ title: "Symbol Facts", description: SYMBOL_FACTS_DESCRIPTION, inputSchema: factsShape },
-		adapt((args) => symbolFacts(backend, args)),
+		perProject((backend, args) => symbolFacts(backend, args)),
 	);
 
 	server.registerTool(
 		"symbol_history",
 		{ title: "Symbol History", description: SYMBOL_HISTORY_DESCRIPTION, inputSchema: symbolHistoryShape },
-		adapt((args) => symbolHistory(backend, args)),
+		perProject((backend, args) => symbolHistory(backend, args)),
 	);
 
 	server.registerTool(
 		"record_answer",
 		{ title: "Record Answer", description: RECORD_ANSWER_DESCRIPTION, inputSchema: recordShape },
-		adapt((args) => recordAnswer(backend, args)),
+		perProject((backend, args) => recordAnswer(backend, args)),
 	);
 
 	server.registerTool(
 		"recall_answer",
 		{ title: "Recall Answer", description: RECALL_ANSWER_DESCRIPTION, inputSchema: recallShape },
-		adapt((args) => recallAnswer(backend, args)),
+		perProject((backend, args) => recallAnswer(backend, args)),
 	);
 
 	server.registerTool(
 		"invalidate_answer",
 		{ title: "Invalidate Answer", description: INVALIDATE_ANSWER_DESCRIPTION, inputSchema: invalidateShape },
-		adapt((args) => invalidateAnswer(backend, args)),
+		perProject((backend, args) => invalidateAnswer(backend, args)),
 	);
 
 	server.registerTool(
 		"reaffirm_answer",
 		{ title: "Reaffirm Answer", description: REAFFIRM_ANSWER_DESCRIPTION, inputSchema: reaffirmShape },
-		adapt((args) => reaffirmAnswer(backend, args)),
+		perProject((backend, args) => reaffirmAnswer(backend, args)),
 	);
 
 	server.registerTool(
 		"knowledge_gaps",
 		{ title: "Knowledge Gaps", description: KNOWLEDGE_GAPS_DESCRIPTION, inputSchema: gapsShape },
-		adapt((args) => knowledgeGaps(backend, args)),
+		perProject((backend, args) => knowledgeGaps(backend, args)),
 	);
 
 	server.registerTool(
 		"overview",
 		{ title: "Overview", description: OVERVIEW_DESCRIPTION, inputSchema: overviewShape },
-		adapt(() => overview(backend)),
+		perProject((backend) => overview(backend)),
 	);
 
 	server.registerTool(
 		"search_symbols",
 		{ title: "Search Symbols", description: SEARCH_SYMBOLS_DESCRIPTION, inputSchema: searchShape },
-		adapt((args) => searchSymbols(backend, args)),
+		perProject((backend, args) => searchSymbols(backend, args)),
 	);
 
 	server.registerTool(
 		"outline_module",
 		{ title: "Outline Module", description: OUTLINE_MODULE_DESCRIPTION, inputSchema: outlineShape },
-		adapt((args) => outlineModule(backend, args)),
+		perProject((backend, args) => outlineModule(backend, args)),
 	);
 
 	server.registerTool(
 		"find_imports",
 		{ title: "Find Imports", description: FIND_IMPORTS_DESCRIPTION, inputSchema: importsShape },
-		adapt((args) => findImports(backend, args)),
+		perProject((backend, args) => findImports(backend, args)),
 	);
 
 	server.registerTool(
 		"hubs",
 		{ title: "Hubs", description: HUBS_DESCRIPTION, inputSchema: hubsShape },
-		adapt((args) => hubs(backend, args)),
+		perProject((backend, args) => hubs(backend, args)),
+	);
+
+	// Never gated on a binding: these are how an agent RECOVERS from having none.
+	const binding = bindingDeps ?? liveBindingDeps();
+
+	server.registerTool(
+		"list_projects",
+		{ title: "List Projects", description: LIST_PROJECTS_DESCRIPTION, inputSchema: listProjectsShape },
+		adapt(async () => listProjectsTool(binding)),
+	);
+
+	server.registerTool(
+		"register_project",
+		{ title: "Register Project", description: REGISTER_PROJECT_DESCRIPTION, inputSchema: registerProjectShape },
+		adapt(async (args) => registerProjectTool(binding, args)),
+	);
+
+	server.registerTool(
+		"bind_project",
+		{ title: "Bind Project", description: BIND_PROJECT_DESCRIPTION, inputSchema: bindProjectShape },
+		adapt(async (args) => bindProjectTool(binding, args)),
+	);
+
+	server.registerTool(
+		"unbind_project",
+		{ title: "Unbind Project", description: UNBIND_PROJECT_DESCRIPTION, inputSchema: bindProjectShape },
+		adapt(async (args) => unbindProjectTool(binding, args)),
 	);
 
 	// Machine-wide rather than workspace-wide, and the only tools here that write. They read the
@@ -458,21 +518,18 @@ async function main(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// CLAUDE_PROJECT_DIR is set in this process's environment by the client and is the stable
-	// project root, which cwd is not: it does not move when working directories are added
-	// mid-session. Reading it here is what lets a config carry no absolute workspace path.
-	const named = process.env["LEXICON_WORKSPACE"] ?? process.env["CLAUDE_PROJECT_DIR"];
-	const workspaceRoot = named ?? process.cwd();
+	// No workspace is guessed from the environment or the working directory. Which codebase to
+	// answer about is the agent's to state, and it states it by binding.
+	const backends = new Map<string, ToolBackend>();
+	const backendFor = (project: RegisteredProject): ToolBackend => {
+		const existing = backends.get(project.key);
+		if (existing !== undefined) return existing;
+		const created = daemonBackend(project.root);
+		backends.set(project.key, created);
+		return created;
+	};
 
-	// Before ensureDaemon, or a session launched somewhere nobody meant spawns a daemon that walks
-	// it. The server still starts, so the refusal arrives as an answer rather than a failed load.
-	const admission = admitWorkspace(workspaceRoot, currentHost(), {
-		chosenBy: named === undefined ? "fallback" : "explicit",
-		installedAt: import.meta.dirname,
-	});
-	const backend = admission.admitted ? await warmBackend(workspaceRoot) : refusedBackend(admission.reason);
-
-	await buildServer(backend).connect(new StdioServerTransport());
+	await buildServer(backendFor).connect(new StdioServerTransport());
 }
 
 if (import.meta.main) await main(process.argv.slice(2));

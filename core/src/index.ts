@@ -139,4 +139,4 @@ export {
 	type WatchOptions,
 	watchWorkspace,
 } from "./watcher.js";
-export { type Admission, type AdmissionContext, admitWorkspace } from "./workspaceAdmission.js";
+export { type Admission, admitWorkspace } from "./workspaceAdmission.js";
