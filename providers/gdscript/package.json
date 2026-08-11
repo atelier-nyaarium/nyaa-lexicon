@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-gdscript",
-	"version": "1.1.5",
+	"version": "1.2.0",
 	"private": true,
 	"type": "module",
 	"description": "GDScript provider for nyaa-lexicon",
