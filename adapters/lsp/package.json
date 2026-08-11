@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/adapter-lsp",
-	"version": "1.3.0",
+	"version": "1.4.0",
 	"private": true,
 	"type": "module",
 	"description": "Editor-facing LSP adapter. DECLARED STUB through the foundation plan; MCP proves the seam first",
