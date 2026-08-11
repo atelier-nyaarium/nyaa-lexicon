@@ -11,6 +11,7 @@ import {
 	doubtFactId,
 	type FactKind,
 	type ImportResolution,
+	type IndexDepth,
 	isParameterSymbol,
 	ownerOf,
 	type Range,
@@ -337,6 +338,17 @@ function detailOf(detail: string | undefined): string {
 	return detail === undefined ? "" : `: ${detail}`;
 }
 
+/** A package remains external even when it offers one safe module for surface indexing. */
+function importTarget(resolution: ImportResolution): { module: string; depth: IndexDepth } | null {
+	if (resolution.status === "resolved") {
+		return { module: resolution.module, depth: resolution.depth ?? "full" };
+	}
+	if (resolution.status === "external" && resolution.surface !== undefined) {
+		return { module: resolution.surface.module, depth: "surface" };
+	}
+	return null;
+}
+
 /** One place that decides what "more than a page" means, so no caller reports a cap as a total. */
 function page(query: LiteralQuery, found: StoredLiteral[], limit: number): LiteralsResult {
 	return {
@@ -379,6 +391,7 @@ export class LexiconService {
 	private scope: FileScope | null = null;
 	private discovered = new Set<string>();
 	private roots = new Set<string>();
+	private depths = new Map<string, IndexDepth>();
 	private readonly cache = new ResultCache();
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
@@ -395,7 +408,7 @@ export class LexiconService {
 	 * Skips rather than throws when nobody owns the file, since a workspace is full of files no
 	 * provider claims and each one is not an error.
 	 */
-	async indexFile(module: string, contentHash: string): Promise<IndexOutcome> {
+	async indexFile(module: string, contentHash: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
 		const route = this.supervisor.route(module);
 		if (!route.owned) {
 			const reason = route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed";
@@ -408,7 +421,12 @@ export class LexiconService {
 			return { module, action: "forgotten", reason: "file is gone" };
 		}
 
-		const facts = await this.supervisor.ask(module, "parseFile", { module, contentHash, text });
+		const facts = await this.supervisor.ask(module, "parseFile", {
+			module,
+			contentHash,
+			text,
+			...(depth === "surface" ? { depth } : {}),
+		});
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 		if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("; "));
 		this.store.replaceFile(
@@ -441,6 +459,7 @@ export class LexiconService {
 		}
 
 		this.roots = this.rootModules();
+		this.depths = new Map([...this.roots].map((module) => [module, this.rootDepth(module)]));
 		const modules = [...this.roots];
 
 		const outcomes: IndexOutcome[] = [];
@@ -471,9 +490,12 @@ export class LexiconService {
 		return this.scope === null ? "not yet scoped" : describeScope(this.scope);
 	}
 
-	private async indexOne(module: string): Promise<IndexOutcome> {
+	private async indexOne(
+		module: string,
+		depth = this.depths.get(module) ?? this.rootDepth(module),
+	): Promise<IndexOutcome> {
 		const text = this.readFile(module);
-		if (text !== null) return this.indexFile(module, hashOf(text));
+		if (text !== null) return this.indexFile(module, hashOf(text), depth);
 		this.forgetFile(module);
 		return { module, action: "forgotten", reason: "file is gone" };
 	}
@@ -494,7 +516,11 @@ export class LexiconService {
 	 * Only workspace-RESOLVED specifiers are followed. An external one would drag a package tree in
 	 * behind it, so the closure is bounded by construction rather than by a limit.
 	 */
-	private async followImports(seen: Set<string>, indexExisting = true): Promise<IndexOutcome[]> {
+	private async followImports(
+		seen: Set<string>,
+		indexExisting = true,
+		previousDepths: ReadonlyMap<string, IndexDepth> = new Map(),
+	): Promise<IndexOutcome[]> {
 		const outcomes: IndexOutcome[] = [];
 
 		while (true) {
@@ -502,14 +528,24 @@ export class LexiconService {
 			for (const module of [...seen]) {
 				for (const statement of this.store.importsIn(module)) {
 					const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
-					if (landed?.status !== "resolved" || seen.has(landed.module)) continue;
-					seen.add(landed.module);
-					found.push(landed.module);
+					const target = landed === null ? null : importTarget(landed);
+					if (target === null) continue;
+					const depth = this.currentScope().surface(target.module) ? "surface" : target.depth;
+					const prior = this.depths.get(target.module);
+					if (seen.has(target.module) && !(prior === "surface" && depth === "full")) continue;
+					seen.add(target.module);
+					this.depths.set(target.module, depth);
+					found.push(target.module);
 				}
 			}
 			if (found.length === 0) break;
 			for (const module of found) {
-				if (!indexExisting && this.store.contentHashOf(module) !== null) continue;
+				if (
+					!indexExisting &&
+					this.store.contentHashOf(module) !== null &&
+					previousDepths.get(module) === this.depths.get(module)
+				)
+					continue;
 				try {
 					outcomes.push(await this.indexOne(module));
 				} catch (error) {
@@ -545,6 +581,15 @@ export class LexiconService {
 		);
 	}
 
+	private currentScope(): FileScope {
+		this.scope ??= fileScopeFor(this.workspaceRoot);
+		return this.scope;
+	}
+
+	private rootDepth(module: string): IndexDepth {
+		return this.currentScope().surface(module) ? "surface" : "full";
+	}
+
 	private forgetFile(module: string): void {
 		this.store.forgetFile(module);
 		this.cache.invalidate();
@@ -569,12 +614,14 @@ export class LexiconService {
 	async applyBatch(events: FileEvent[]): Promise<IndexOutcome[]> {
 		const outcomes: IndexOutcome[] = [];
 		const previousRoots = this.roots;
+		const previousDepths = this.depths;
 		const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
 		const roots = this.rootModules(changed);
 		for (const event of events) {
 			if (event.kind === "deleted") roots.delete(event.module);
 		}
 		this.roots = roots;
+		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
 		const attempted = new Set<string>();
 
 		for (const event of events) {
@@ -598,7 +645,11 @@ export class LexiconService {
 			}
 			attempted.add(decision.module);
 			try {
-				const outcome = await this.indexFile(decision.module, decision.contentHash);
+				const outcome = await this.indexFile(
+					decision.module,
+					decision.contentHash,
+					this.depths.get(decision.module) ?? this.rootDepth(decision.module),
+				);
 				outcomes.push(outcome);
 				if (outcome.action === "forgotten") roots.delete(decision.module);
 			} catch (error) {
@@ -607,7 +658,12 @@ export class LexiconService {
 		}
 
 		for (const module of roots) {
-			if (previousRoots.has(module) || attempted.has(module) || this.store.contentHashOf(module) !== null)
+			if (
+				attempted.has(module) ||
+				(this.store.contentHashOf(module) !== null &&
+					previousRoots.has(module) &&
+					previousDepths.get(module) === this.depths.get(module))
+			)
 				continue;
 			try {
 				const outcome = await this.indexOne(module);
@@ -619,7 +675,7 @@ export class LexiconService {
 		}
 
 		const seen = new Set(roots);
-		outcomes.push(...(await this.followImports(seen, false)));
+		outcomes.push(...(await this.followImports(seen, false, previousDepths)));
 		outcomes.push(...this.prune(seen));
 		return outcomes;
 	}
@@ -722,7 +778,7 @@ export class LexiconService {
 		const matched: StoredImport[] = [];
 		for (const statement of this.store.importsMatching("", ALL_IMPORTS_SCAN)) {
 			const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
-			if (landed?.status === "resolved" && landed.module === target) matched.push(statement);
+			if (landed !== null && importTarget(landed)?.module === target) matched.push(statement);
 			if (matched.length > limit) break;
 		}
 		return { query, imports: matched.slice(0, limit), total: matched.length, truncated: matched.length > limit };
@@ -1602,8 +1658,14 @@ export class LexiconService {
 	 * it once per same-named import, and the re-export walk asks the same handful repeatedly.
 	 */
 	async resolveImport(fromModule: string, specifier: string): Promise<ImportResolution> {
-		return this.cache.through(`resolveImport ${fromModule} ${specifier}`, () =>
-			this.supervisor.ask(fromModule, "resolveImport", { fromModule, specifier }),
+		const surfaceGlobs = this.currentScope().bundles;
+		const configKey = surfaceGlobs.join("\u0000");
+		return this.cache.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
+			this.supervisor.ask(fromModule, "resolveImport", {
+				fromModule,
+				specifier,
+				...(surfaceGlobs.length === 0 ? {} : { surfaceGlobs }),
+			}),
 		);
 	}
 

@@ -49,7 +49,10 @@ function importsFrom(text: string): Import[] {
 	}));
 }
 
-function fakeSupervisor(discovered: string[] = []): ProviderSupervisor {
+function fakeSupervisor(
+	discovered: string[] = [],
+	parseRequests: Array<{ module: string; depth?: "full" | "surface" }> = [],
+): ProviderSupervisor {
 	const supervisor = {
 		running: () => [claims],
 		route: (module: string): Route =>
@@ -59,7 +62,16 @@ function fakeSupervisor(discovered: string[] = []): ProviderSupervisor {
 		askProvider: async () => ({ files: discovered, externalRoots: [], configFiles: [], diagnostics: [] }),
 		ask: async (_module: string, method: string, params: unknown) => {
 			if (method === "parseFile") {
-				const request = params as { module: string; contentHash: string; text: string };
+				const request = params as {
+					module: string;
+					contentHash: string;
+					text: string;
+					depth?: "full" | "surface";
+				};
+				parseRequests.push({
+					module: request.module,
+					...(request.depth === undefined ? {} : { depth: request.depth }),
+				});
 				if (request.text.includes("POISON")) throw new Error("poisoned file");
 				const diagnostics = request.text.includes("SYNTAX")
 					? [{ severity: "error" as const, message: "syntax error" }]
@@ -79,6 +91,13 @@ function fakeSupervisor(discovered: string[] = []): ProviderSupervisor {
 			}
 			if (method === "resolveImport") {
 				const request = params as { fromModule: string; specifier: string };
+				if (request.specifier.startsWith("external:")) {
+					return {
+						status: "external",
+						packageName: "fixture",
+						surface: { module: request.specifier.slice("external:".length) },
+					};
+				}
 				if (!request.specifier.startsWith(".")) return { status: "unresolved", reason: "NotImplemented" };
 				return {
 					status: "resolved",
@@ -225,9 +244,66 @@ describe("root exclusions and includes", () => {
 			reason: "no longer a root or reachable",
 		});
 	});
+
+	it("passes configured bundle roots and reachable files to providers at surface depth", async () => {
+		initGit();
+		put(".gitignore", "opaque/\n");
+		put("root.fake", 'export class Root {}\nimport "./opaque/runtime.fake";\n');
+		put("opaque/runtime.fake", "export class Runtime {}\n");
+		put("lexicon.json", JSON.stringify({ bundles: ["opaque/**"] }));
+		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
+		service = new LexiconService(
+			store,
+			fakeSupervisor([], requests),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+
+		expect(requests.find((request) => request.module === "root.fake")).toEqual({ module: "root.fake" });
+		expect(requests.find((request) => request.module === "opaque/runtime.fake")).toEqual({
+			module: "opaque/runtime.fake",
+			depth: "surface",
+		});
+	});
 });
 
 describe("reachability and failures", () => {
+	it("indexes an external surface without treating the package as a workspace module", async () => {
+		initGit();
+		put(".gitignore", "external.fake\n");
+		put("root.fake", 'export class Root {}\nimport "external:external.fake";\n');
+		put("external.fake", "export class External {}\n");
+		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
+		service = new LexiconService(
+			store,
+			fakeSupervisor([], requests),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+
+		expect(service.findByName("External")).toHaveLength(1);
+		expect(requests.find((request) => request.module === "external.fake")).toEqual({
+			module: "external.fake",
+			depth: "surface",
+		});
+	});
+
 	it("keeps an out-of-scope import tree while referenced and prunes it after a live refactor", async () => {
 		initGit();
 		put(".gitignore", "reachable.fake\nleaf.fake\n");

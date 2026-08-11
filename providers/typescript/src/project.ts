@@ -5,8 +5,9 @@
 // and none of them are things a syntax tree can answer.
 
 import path from "node:path";
-import { normalizeModulePath } from "@nyaa-lexicon/protocol";
+import { type ImportResolution, normalizeModulePath } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { configuredSurfaceCandidates, isDeclarationModule, isLikelyBundle, surfaceGlobMatches } from "./bundle.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -145,14 +146,14 @@ export function resolveSpecifier(
 	fromModule: string,
 	specifier: string,
 	options: ts.CompilerOptions,
-):
-	| { status: "resolved"; module: string }
-	| { status: "external"; packageName: string }
-	| { status: "unresolved"; reason: "ExternalDependency" | "RuntimeConstructed"; detail: string } {
+	surfaceGlobs: string[] = [],
+): ImportResolution {
 	const containing = path.join(workspaceRoot, fromModule);
 	const resolved = ts.resolveModuleName(specifier, containing, options, HOST).resolvedModule;
 
 	if (resolved === undefined) {
+		const runtime = resolveRuntimeSurface(workspaceRoot, containing, specifier, options, surfaceGlobs);
+		if (runtime !== null) return runtime;
 		// A bare specifier that resolves to nothing is still named as a package, since that is what
 		// the author wrote and what a reader needs to go look up.
 		const bare = !specifier.startsWith(".") && !path.isAbsolute(specifier);
@@ -163,13 +164,62 @@ export function resolveSpecifier(
 		};
 	}
 
-	if (resolved.isExternalLibraryImport === true) {
-		return { status: "external", packageName: resolved.packageId?.name ?? packageNameOf(specifier) };
-	}
-
 	const module = toModule(workspaceRoot, resolved.resolvedFileName);
 	if (module === null) return { status: "external", packageName: packageNameOf(specifier) };
-	return { status: "resolved", module };
+	if (resolved.isExternalLibraryImport === true) {
+		return {
+			status: "external",
+			packageName: resolved.packageId?.name ?? packageNameOf(specifier),
+			surface: { module },
+		};
+	}
+	return surfaceDepth(module, resolved.resolvedFileName, surfaceGlobs) === "surface"
+		? { status: "resolved", module, depth: "surface" }
+		: { status: "resolved", module };
+}
+
+/** Runtime-root imports need an explicit bundle boundary because TypeScript treats them as URLs. */
+function resolveRuntimeSurface(
+	workspaceRoot: string,
+	containing: string,
+	specifier: string,
+	options: ts.CompilerOptions,
+	surfaceGlobs: string[],
+): ImportResolution | null {
+	if (!specifier.startsWith("/")) return null;
+	const clean = specifier.slice(1).split(/[?#]/, 1)[0] ?? "";
+	const candidates = new Set(configuredSurfaceCandidates(specifier, surfaceGlobs));
+	const direct = normalizeCandidate(clean);
+	if (direct !== null) candidates.add(direct);
+
+	const existing = [...candidates].filter((module) => {
+		const file = path.join(workspaceRoot, module);
+		if (!ts.sys.fileExists(file)) return false;
+		if (surfaceGlobs.some((glob) => surfaceGlobMatches(glob, module))) return true;
+		const text = ts.sys.readFile(file);
+		return text !== undefined && isLikelyBundle(module, text);
+	});
+	if (existing.length !== 1) return null;
+
+	const runtime = path.join(workspaceRoot, existing[0] as string);
+	const typed = ts.resolveModuleName(runtime, containing, options, HOST).resolvedModule;
+	const fileName = typed?.resolvedFileName ?? runtime;
+	const module = toModule(workspaceRoot, fileName);
+	return module === null ? null : { status: "resolved", module, depth: "surface" };
+}
+
+function normalizeCandidate(module: string): string | null {
+	try {
+		return normalizeModulePath(module);
+	} catch {
+		return null;
+	}
+}
+
+function surfaceDepth(module: string, fileName: string, globs: string[]): "full" | "surface" {
+	if (isDeclarationModule(module) || globs.some((glob) => surfaceGlobMatches(glob, module))) return "surface";
+	const text = ts.sys.readFile(fileName);
+	return text !== undefined && isLikelyBundle(module, text) ? "surface" : "full";
 }
 
 /** `@scope/name` keeps two segments; everything else keeps one. */

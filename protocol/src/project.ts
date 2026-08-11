@@ -10,6 +10,11 @@ import { UnknownReasonSchema } from "./values.js";
 ////////////////////////////////
 //  Schemas
 
+/** How much of a module a provider may expose to the index. */
+export const IndexDepthSchema = z.enum(["full", "surface"]).meta({ id: "IndexDepth" });
+
+export type IndexDepth = z.infer<typeof IndexDepthSchema>;
+
 /**
  * Where an import specifier landed.
  *
@@ -22,12 +27,16 @@ export const ImportResolutionSchema = z
 			status: z.literal("resolved"),
 			/** Workspace-relative, matching the symbol id grammar's module field. */
 			module: z.string().min(1),
+			/** Surface constrains generated or shipped code without changing resolution truth. */
+			depth: IndexDepthSchema.optional(),
 		}),
 		z.object({
 			status: z.literal("external"),
 			/** Package name as the ecosystem spells it, e.g. "zod" or "System.Text.Json". */
 			packageName: z.string().min(1),
 			version: z.string().optional(),
+			/** An indexable API entry point, never permission to walk package implementation. */
+			surface: z.object({ module: z.string().min(1) }).optional(),
 		}),
 		z.object({
 			status: z.literal("unresolved"),

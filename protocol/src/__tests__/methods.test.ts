@@ -22,6 +22,24 @@ describe("method table", () => {
 		expect(isProviderMethod("")).toBe(false);
 	});
 
+	it("carries an additive surface depth through parse and resolution", () => {
+		expect(
+			METHOD_SCHEMAS.parseFile.request.parse({
+				module: "opaque/runtime.js",
+				contentHash: "hash",
+				text: "",
+				depth: "surface",
+			}),
+		).toMatchObject({ depth: "surface" });
+		expect(
+			METHOD_SCHEMAS.resolveImport.response.parse({
+				status: "external",
+				packageName: "example",
+				surface: { module: "node_modules/example/index.d.ts" },
+			}),
+		).toMatchObject({ status: "external", surface: { module: "node_modules/example/index.d.ts" } });
+	});
+
 	it("validates a well-formed initialize round trip", () => {
 		const response = {
 			providerId: "ts-provider",

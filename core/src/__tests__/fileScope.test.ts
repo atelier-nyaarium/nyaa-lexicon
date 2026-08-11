@@ -98,6 +98,14 @@ describe("the scoping rule", () => {
 		expect(scope.allows("src/a.ts")).toBe(true);
 	});
 
+	it("marks only configured bundle globs for surface indexing", () => {
+		const root = repo({ "opaque/runtime.js": "", "src/a.js": "" });
+		const scope = fileScopeFor(root, { bundles: ["opaque/**"] });
+
+		expect(scope.surface("opaque/runtime.js")).toBe(true);
+		expect(scope.surface("src/a.js")).toBe(false);
+	});
+
 	it("refuses an ignored file to auto-discovery", () => {
 		const root = repo({ "src/a.ts": "", "dist/built.js": "" }, "dist/\n");
 		const scope = fileScopeFor(root);

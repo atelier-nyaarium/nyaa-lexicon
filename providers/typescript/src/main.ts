@@ -1,12 +1,21 @@
 // The TypeScript provider and its wire handlers.
 
-import { PROTOCOL_VERSION, type ProviderHandlers, runProviderOnStdio, serveProvider } from "@nyaa-lexicon/protocol";
+import {
+	type IndexDepth,
+	PROTOCOL_VERSION,
+	type ProviderHandlers,
+	parseSymbolId,
+	runProviderOnStdio,
+	serveProvider,
+} from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { TypeScriptAnalyzer } from "./analyzer.js";
+import { isDeclarationModule, isLikelyBundle } from "./bundle.js";
 import { LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
 import { type LoadedProject, loadProject, resolveSpecifier, toModule } from "./project.js";
+import { extractSurfaceFile } from "./surface.js";
 
 ////////////////////////////////
 //  Constants
@@ -39,12 +48,14 @@ export class TypeScriptProvider {
 	private workspaceRoot = process.cwd();
 	private project: LoadedProject | null = null;
 	private analyzer: TypeScriptAnalyzer | null = null;
+	private readonly runtimeSurfaces = new Set<string>();
 
 	initialize(workspaceRoot: string) {
 		this.analyzer?.dispose();
 		this.workspaceRoot = workspaceRoot;
 		this.project = null;
 		this.analyzer = null;
+		this.runtimeSurfaces.clear();
 		return {
 			providerId: "typescript-provider",
 			language: LANGUAGE,
@@ -85,7 +96,18 @@ export class TypeScriptProvider {
 	 * An editor's buffer differs from disk constantly, and answering about the saved version while
 	 * a caller asks about the open one is a whole class of wrong-but-plausible answers.
 	 */
-	parseFile(params: { module: string; contentHash: string; text: string }) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+		if (this.isSurface(params)) {
+			const extracted = extractSurfaceFile(params.module, params.text);
+			if (!isDeclarationModule(params.module)) this.runtimeSurfaces.add(params.module);
+			return {
+				module: params.module,
+				contentHash: params.contentHash,
+				...extracted,
+			};
+		}
+
+		this.runtimeSurfaces.delete(params.module);
 		const analyzer = this.analyzed();
 		const source =
 			analyzer.updateFile(params.module, params.text) ??
@@ -110,8 +132,14 @@ export class TypeScriptProvider {
 		};
 	}
 
-	resolveImport(params: { fromModule: string; specifier: string }) {
-		return resolveSpecifier(this.workspaceRoot, params.fromModule, params.specifier, this.loaded().options);
+	resolveImport(params: { fromModule: string; specifier: string; surfaceGlobs?: string[] | undefined }) {
+		return resolveSpecifier(
+			this.workspaceRoot,
+			params.fromModule,
+			params.specifier,
+			this.loaded().options,
+			params.surfaceGlobs,
+		);
 	}
 
 	bind(params: {
@@ -119,6 +147,13 @@ export class TypeScriptProvider {
 		name: string;
 		range: { start: { line: number; character: number }; end: { line: number; character: number } };
 	}) {
+		if (this.runtimeSurfaces.has(params.module)) {
+			return {
+				status: "unbound" as const,
+				reason: "DynamicallyTyped" as const,
+				detail: "bundle surfaces do not retain implementation bindings",
+			};
+		}
 		return this.analyzed().bind(params.module, params.name, params.range);
 	}
 
@@ -130,6 +165,14 @@ export class TypeScriptProvider {
 					range: { start: { line: number; character: number }; end: { line: number; character: number } };
 			  },
 	) {
+		const module = "symbolId" in params ? parseSymbolId(params.symbolId)?.module : params.module;
+		if (module !== undefined && this.runtimeSurfaces.has(module)) {
+			return {
+				status: "unknown" as const,
+				reason: "DynamicallyTyped" as const,
+				detail: "a JavaScript bundle does not retain source types",
+			};
+		}
 		return this.analyzed().typeOf(params);
 	}
 
@@ -144,7 +187,16 @@ export class TypeScriptProvider {
 	shutdown() {
 		this.analyzer?.dispose();
 		this.analyzer = null;
+		this.runtimeSurfaces.clear();
 		return {};
+	}
+
+	private isSurface(params: { module: string; text: string; depth?: IndexDepth | undefined }): boolean {
+		return (
+			params.depth === "surface" ||
+			params.module.split("/").includes("node_modules") ||
+			isLikelyBundle(params.module, params.text)
+		);
 	}
 }
 

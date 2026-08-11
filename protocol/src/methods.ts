@@ -4,7 +4,7 @@
 // (Unknown with a reason), never by omitting a method, so the core cannot branch on language.
 
 import { z } from "zod";
-import { FileFactsSchema, ImportResolutionSchema, ProjectModelSchema } from "./project.js";
+import { FileFactsSchema, ImportResolutionSchema, IndexDepthSchema, ProjectModelSchema } from "./project.js";
 import { RenameEditsRequestSchema, RenameEditsResponseSchema } from "./rename.js";
 import { RangeSchema, ReferenceRoleSchema } from "./symbols.js";
 import { BindingSchema, TypeInfoSchema, UnknownReasonSchema } from "./values.js";
@@ -78,11 +78,18 @@ export const ParseFileRequestSchema = z
 		contentHash: z.string().min(1),
 		/** Text is passed in so the provider never disagrees with the core about what is on disk. */
 		text: z.string(),
+		/** Absent means full for compatibility with providers predating surface indexing. */
+		depth: IndexDepthSchema.optional(),
 	})
 	.meta({ id: "ParseFileRequest" });
 
 export const ResolveImportRequestSchema = z
-	.object({ fromModule: z.string().min(1), specifier: z.string().min(1) })
+	.object({
+		fromModule: z.string().min(1),
+		specifier: z.string().min(1),
+		/** Explicit bundle declarations can resolve runtime paths the language alone cannot. */
+		surfaceGlobs: z.array(z.string().min(1)).optional(),
+	})
 	.meta({ id: "ResolveImportRequest" });
 
 /** Identified by position rather than by id: the reference has no symbol until this call runs. */

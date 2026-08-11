@@ -22,7 +22,8 @@ export type Compatibility =
 // 1.0.0: the daemon-client wire moved from one-shot HTTP to framed sockets, the first breaking
 // change; the major bump is what makes a client meeting a leftover HTTP daemon replace it rather
 // than hang on a handshake the old server cannot speak.
-export const PROTOCOL_VERSION = "1.0.0" as const;
+// 1.1.0: imports may expose an indexable surface and parseFile may request surface depth.
+export const PROTOCOL_VERSION = "1.1.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

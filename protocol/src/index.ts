@@ -64,6 +64,8 @@ export {
 	type ImportResolution,
 	ImportResolutionSchema,
 	ImportSchema,
+	type IndexDepth,
+	IndexDepthSchema,
 	type Literal,
 	LiteralSchema,
 	type ProjectModel,

@@ -23,6 +23,8 @@ export interface ScopeConfig {
 	include?: string[];
 	/** Paths or globs excluded from automatic roots. Includes still override this list. */
 	exclude?: string[];
+	/** Generated or shipped modules constrained to their exported surface. */
+	bundles?: string[];
 }
 
 export interface FileScope {
@@ -34,6 +36,9 @@ export interface FileScope {
 	known: Set<string> | null;
 	include: string[];
 	exclude: string[];
+	bundles: string[];
+	/** Whether this module must use surface indexing even when it is explicitly included. */
+	surface: (module: string) => boolean;
 }
 
 ////////////////////////////////
@@ -93,10 +98,14 @@ export function readScopeConfig(workspaceRoot: string): ScopeConfig {
 	const file = path.join(workspaceRoot, CONFIG_FILE);
 	if (!existsSync(file)) return {};
 	try {
-		const parsed = JSON.parse(readFileSync(file, "utf8")) as { include?: unknown; exclude?: unknown };
+		const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+			include?: unknown;
+			exclude?: unknown;
+			bundles?: unknown;
+		};
 		const paths = (value: unknown): string[] =>
 			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-		return { include: paths(parsed.include), exclude: paths(parsed.exclude) };
+		return { include: paths(parsed.include), exclude: paths(parsed.exclude), bundles: paths(parsed.bundles) };
 	} catch {
 		return {};
 	}
@@ -129,19 +138,24 @@ export function fileScopeFor(workspaceRoot: string, config = readScopeConfig(wor
 	const known = gitFiles(workspaceRoot);
 	const include = config.include ?? [];
 	const exclude = config.exclude ?? [];
+	const bundles = config.bundles ?? [];
 	const matchers = include.map(globToRegExp);
 	const excluded = exclude.map(globToRegExp);
+	const surfaces = bundles.map(globToRegExp);
 	const included = (module: string) => matchers.some((matcher) => matcher.test(module));
 	const allowed = (module: string) => !excluded.some((matcher) => matcher.test(module)) || included(module);
+	const surface = (module: string) => surfaces.some((matcher) => matcher.test(module));
 
 	// Walk mode has no git root set and leans on the watcher's weaker ignore list.
-	if (known === null) return { mode: "walk", allows: allowed, known: null, include, exclude };
+	if (known === null) return { mode: "walk", allows: allowed, known: null, include, exclude, bundles, surface };
 	return {
 		mode: "git",
 		allows: (module) => allowed(module) && (known.has(module) || included(module)),
 		known,
 		include,
 		exclude,
+		bundles,
+		surface,
 	};
 }
 
