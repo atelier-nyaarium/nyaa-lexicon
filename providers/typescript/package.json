@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-typescript",
-	"version": "1.1.1",
+	"version": "1.1.2",
 	"private": true,
 	"type": "module",
 	"description": "TypeScript and JavaScript provider, wrapping the TypeScript compiler API",
