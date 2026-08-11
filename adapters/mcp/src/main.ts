@@ -9,6 +9,7 @@ import {
 	admitWorkspace,
 	ConnectionLostError,
 	connectFrames,
+	currentHost,
 	ensureDaemon,
 	type FrameClient,
 	IndexStore,
@@ -460,11 +461,15 @@ async function main(argv: string[]): Promise<void> {
 	// CLAUDE_PROJECT_DIR is set in this process's environment by the client and is the stable
 	// project root, which cwd is not: it does not move when working directories are added
 	// mid-session. Reading it here is what lets a config carry no absolute workspace path.
-	const workspaceRoot = process.env["LEXICON_WORKSPACE"] ?? process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd();
+	const named = process.env["LEXICON_WORKSPACE"] ?? process.env["CLAUDE_PROJECT_DIR"];
+	const workspaceRoot = named ?? process.cwd();
 
-	// Before ensureDaemon, or a session launched from a home directory spawns a daemon that walks
+	// Before ensureDaemon, or a session launched somewhere nobody meant spawns a daemon that walks
 	// it. The server still starts, so the refusal arrives as an answer rather than a failed load.
-	const admission = admitWorkspace(workspaceRoot);
+	const admission = admitWorkspace(workspaceRoot, currentHost(), {
+		chosenBy: named === undefined ? "fallback" : "explicit",
+		installedAt: import.meta.dirname,
+	});
 	const backend = admission.admitted ? await warmBackend(workspaceRoot) : refusedBackend(admission.reason);
 
 	await buildServer(backend).connect(new StdioServerTransport());

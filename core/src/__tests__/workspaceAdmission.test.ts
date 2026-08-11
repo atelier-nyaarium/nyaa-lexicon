@@ -77,3 +77,33 @@ describe("refusing a workspace", () => {
 		expect(admitWorkspace(path.join(home, "app", ".."), host).admitted).toBe(false);
 	});
 });
+
+describe("indexing itself", () => {
+	// Copilot names no workspace and starts the server inside the plugin, so lexicon indexed its own
+	// install and reported one healthy project that was not the user's.
+	it("refuses the install directory when nobody named a workspace, and names the variable", () => {
+		const install = make("plugins", "lexicon");
+		const outcome = admitWorkspace(install, host, {
+			chosenBy: "fallback",
+			installedAt: path.join(install, "dist"),
+		});
+
+		expect(outcome.admitted).toBe(false);
+		if (outcome.admitted) return;
+		expect(outcome.reason).toContain("LEXICON_WORKSPACE");
+	});
+
+	// Dogfooding: pointing lexicon at its own source is deliberate and must keep working.
+	it("admits the install directory when a workspace was named", () => {
+		const install = make("plugins", "lexicon");
+		const context = { chosenBy: "explicit" as const, installedAt: path.join(install, "dist") };
+
+		expect(admitWorkspace(install, host, context)).toEqual({ admitted: true });
+	});
+
+	it("admits a real project, since the install is elsewhere", () => {
+		const context = { chosenBy: "fallback" as const, installedAt: path.join(home, "plugins", "lexicon", "dist") };
+
+		expect(admitWorkspace(make("code", "app"), host, context)).toEqual({ admitted: true });
+	});
+});

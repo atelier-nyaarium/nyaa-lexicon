@@ -12,11 +12,28 @@ import { currentHost, type PlatformEnv } from "./paths.js";
 /** Refusal carries the reason, since a caller has to tell the user what to do instead. */
 export type Admission = { admitted: true } | { admitted: false; reason: string };
 
+export interface AdmissionContext {
+	/** `fallback` means nobody named a workspace and the process's own directory was used. */
+	chosenBy?: "explicit" | "fallback";
+	/** Where lexicon's own code is running from. */
+	installedAt?: string;
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
+/** Whether one path is at or inside another. */
+function within(inner: string, outer: string): boolean {
+	const relative = path.relative(outer, inner);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 /** Whether this root is a project, or something every project merely lives inside. */
-export function admitWorkspace(workspaceRoot: string, host: PlatformEnv = currentHost()): Admission {
+export function admitWorkspace(
+	workspaceRoot: string,
+	host: PlatformEnv = currentHost(),
+	context: AdmissionContext = {},
+): Admission {
 	const root = path.resolve(workspaceRoot);
 
 	if (root === path.parse(root).root) {
@@ -27,6 +44,15 @@ export function admitWorkspace(workspaceRoot: string, host: PlatformEnv = curren
 		return {
 			admitted: false,
 			reason: `${root} is your home directory, which is never one project. Start in the directory you mean to ask about.`,
+		};
+	}
+
+	// Falling back to the process's own directory means indexing the plugin, which answers about the
+	// wrong project while looking healthy.
+	if (context.chosenBy === "fallback" && context.installedAt !== undefined && within(context.installedAt, root)) {
+		return {
+			admitted: false,
+			reason: `${root} is where lexicon itself is installed, and no workspace was named. Set LEXICON_WORKSPACE to the project you want indexed.`,
 		};
 	}
 
