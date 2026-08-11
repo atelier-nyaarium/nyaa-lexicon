@@ -26,27 +26,24 @@ export interface BindingDeps {
 //  Constants
 
 export const LIST_PROJECTS_DESCRIPTION = `
-Every codebase lexicon knows about, and which are bound right now.
+Every codebase lexicon knows about, and which are bound.
 
-Bound projects are the ones every other tool answers from. Start here when a query says nothing is
-bound, then bind_project the one you mean. A codebase that is not listed has never been registered;
-register_project adds it.
+Bound projects are the ones every other tool answers from. Not listed means never registered.
 `.trim();
 
 export const REGISTER_PROJECT_DESCRIPTION = `
 Teach lexicon about a codebase, by absolute path to its root.
 
-Registering does not index it and does not make it answerable; bind_project does both. Use this once
-per codebase. Registering an already-known project is safe and simply reports it.
+Registering neither indexes it nor makes it answerable; bind_project does both. Re-registering is safe.
 `.trim();
 
 export const BIND_PROJECT_DESCRIPTION = `
 Make a registered project one of the codebases queries answer from.
 
-A bind lasts for this session only, so bind at the start of a session before asking anything. The
-INDEX it warms outlives the session and is shared, so re-binding costs a call rather than a rescan.
+A bind lasts this session only. The index it warms outlives the session, so re-binding costs a call
+rather than a rescan.
 
-Several projects can be bound at once; every query then answers from each, labelled by project.
+Several can be bound at once. Every query answers from each, labelled by project.
 `.trim();
 
 export const UNBIND_PROJECT_DESCRIPTION = `

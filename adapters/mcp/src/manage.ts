@@ -46,33 +46,30 @@ export interface ManageDeps {
 //  Constants
 
 export const LIST_STORES_DESCRIPTION = `
-Every code index this machine holds, across all projects, with its size, when it was last written,
-whether a daemon is serving it now, and whether the project it indexed still exists on disk.
+Every code index this machine holds, with its size, when it was last written, whether a daemon is
+serving it, and whether the project it indexed still exists on disk.
 
-Use it to find indexes worth reclaiming: a store whose workspace is GONE can never be useful again,
-since nothing will re-index a directory that is not there. Sizes are real; a large repository's
-index runs to hundreds of megabytes.
+Use it to find indexes worth reclaiming. A large repository's index runs to hundreds of megabytes.
 
-The key each row reports is what delete_project_store requires.
+The key each row reports is what delete_project_store and stop_project_daemon require.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
 Permanently delete one project's index, by the key list_project_stores reports.
 
-IRREVERSIBLE, and it takes the recorded ANSWERS with it, which are the one thing here that no
-re-index can regenerate. Show the user the row you are about to delete and get their agreement
-before calling this.
+IRREVERSIBLE, and it takes the recorded ANSWERS with it. Show the user the row and get their
+agreement before calling this.
 
-Refused while a daemon is serving that store; stop it first. A store for a workspace still on disk
-is rebuilt on next use, so deleting it costs a re-scan rather than the project.
+Refused while a daemon is serving that store; stop_project_daemon first. A store whose workspace
+still exists rebuilds on next use.
 `.trim();
 
 export const STOP_DAEMON_DESCRIPTION = `
 Stop the daemon serving one project's index, by the key list_project_stores reports.
 
-Safe to call when it is already stopped: that is success, because nothing is serving the store.
-Refused for a project bound in this session; call unbind_project first. Use this before
-delete_project_store when that tool reports a live daemon.
+Already stopped is success. Refused for a project bound in this session; unbind_project first.
+
+Use before delete_project_store when that tool reports a live daemon.
 `.trim();
 
 export const ListStoresInput = {};
