@@ -258,14 +258,16 @@ CREATE TABLE gaps (
 				 WHERE localName = ? OR (localName IS NULL AND name = ?)
 				 ORDER BY module, startLine`).all($,$).map(mJ)}importsIn($){return this.db.prepare("SELECT * FROM imports WHERE module = ? ORDER BY startLine").all($).map(mJ)}searchSymbols($,v){let U=["name LIKE ? ESCAPE '\\'"],X=[`%${$.replace(/[%_\\]/g,"\\$&")}%`];if(v.kind!==void 0)U.push("kind = ?"),X.push(v.kind);if(v.module!==void 0)U.push("module LIKE ? ESCAPE '\\'"),X.push(`%${v.module.replace(/[%_\\]/g,"\\$&")}%`);return X.push(v.limit),this.db.prepare(`SELECT * FROM symbols WHERE ${U.join(" AND ")} ORDER BY module, startLine LIMIT ?`).all(...X).map(FU)}importsMatching($,v){return this.db.prepare("SELECT * FROM imports WHERE specifier LIKE ? ESCAPE '\\' ORDER BY module, startLine LIMIT ?").all(`%${$.replace(/[%_\\]/g,"\\$&")}%`,v).map(mJ)}indexedFiles(){return this.db.prepare("SELECT module FROM files ORDER BY module").all().map((v)=>v.module)}moduleSummary(){return this.db.prepare("SELECT module, COUNT(*) AS symbols FROM symbols GROUP BY module ORDER BY symbols DESC").all()}totals(){let $=(v)=>this.db.prepare(v).get().n;return{files:$("SELECT COUNT(*) AS n FROM files"),symbols:$("SELECT COUNT(*) AS n FROM symbols"),references:$("SELECT COUNT(*) AS n FROM refs"),imports:$("SELECT COUNT(*) AS n FROM imports"),literals:$("SELECT COUNT(*) AS n FROM literals")}}declarationsNamed($){return this.db.prepare("SELECT * FROM symbols WHERE name = ? ORDER BY module, startLine").all($).map(FU)}literalsWithValue($,v){return this.db.prepare("SELECT * FROM literals WHERE value = ? ORDER BY module, startLine LIMIT ?").all($,v).map(nJ)}literalsInRange($,v,U){return this.db.prepare("SELECT * FROM literals WHERE number IS NOT NULL AND number BETWEEN ? AND ? ORDER BY number LIMIT ?").all($,v,U).map(nJ)}literalsOfKind($,v){return this.db.prepare("SELECT * FROM literals WHERE kind = ? ORDER BY module, startLine LIMIT ?").all($,v).map(nJ)}sharedLiterals($,v){return this.db.prepare(`SELECT value, kind, COUNT(DISTINCT module) AS files, COUNT(*) AS uses
 				 FROM literals GROUP BY value, kind HAVING files >= ? ORDER BY files DESC, uses DESC LIMIT ?`).all($,v)}referencesFrom($){return this.db.prepare("SELECT * FROM refs WHERE fromId = ? AND targetId IS NOT NULL ORDER BY module, startLine").all($).map(pJ)}allEdges(){return this.db.prepare("SELECT DISTINCT fromId AS 'from', targetId AS 'to' FROM refs WHERE fromId IS NOT NULL AND targetId IS NOT NULL").all()}mostReferenced($){return this.db.prepare(`SELECT targetId AS symbolId, COUNT(*) AS count FROM refs
-				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC LIMIT ?`).all($)}unreferencedSymbols(){return this.db.prepare("SELECT * FROM symbols WHERE symbolId NOT IN (SELECT targetId FROM refs WHERE targetId IS NOT NULL)").all().map(FU)}close(){this.db.close()}}function cu($){let v={...$.mLines===null?{}:{lines:$.mLines},...$.mParameters===null?{}:{parameters:$.mParameters},...$.mNesting===null?{}:{nesting:$.mNesting},...$.mBranches===null?{}:{branches:$.mBranches}};return Object.keys(v).length===0?{}:{metrics:v}}function FU($){let v=$;return{symbolId:v.symbolId,factId:v.factId,module:v.module,name:v.name,kind:v.kind,visibility:v.visibility,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}},selectionRange:{start:{line:v.nameLine,character:v.nameChar},end:{line:v.nameEndLine,character:v.nameEndChar}},...cu(v),...v.exported===null?{}:{exported:v.exported===1},...v.containerId===null?{}:{containerId:v.containerId},...v.signature===null?{}:{signature:v.signature},...v.docComment===null?{}:{docComment:v.docComment}}}function nJ($){let v=$;return{factId:v.factId,module:v.module,kind:v.kind,value:v.value,number:v.number,containerId:v.containerId,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}}}}function mJ($){let v=$,U=v.localName===null||v.localStartLine===null?{}:{local:v.localName,localRange:{start:{line:v.localStartLine,character:v.localStartChar??0},end:{line:v.localEndLine??v.localStartLine,character:v.localEndChar??0}}},X=v.name===null||v.startLine===null?{}:{name:v.name,range:{start:{line:v.startLine,character:v.startChar??0},end:{line:v.endLine??v.startLine,character:v.endChar??0}}};return{factId:v.factId,module:v.module,specifier:v.specifier,reExport:v.reExport===1,...X,...U}}function cJ($){let v=JSON.parse($.citations),U=$.doubtId===null||$.doubtReason===null||$.doubtAt===null?void 0:{factId:$.doubtId,reason:$.doubtReason,at:$.doubtAt,...$.doubtBy===null?{}:{by:$.doubtBy}};return{symbolId:$.symbolId,question:$.question,factId:$.factId,prose:$.prose,citations:v,thin:$.thin===1,createdAt:$.createdAt,...$.model===null?{}:{model:$.model},...U===void 0?{}:{doubt:U}}}function pJ($){let v=$;return{factId:v.factId,module:v.module,name:v.name,role:v.role,targetId:v.targetId,fromId:v.fromId,provenance:v.provenance,startLine:v.startLine,startCharacter:v.startChar,endLine:v.endLine,endCharacter:v.endChar}}import{spawn as pu}from"node:child_process";var qU=eJ(dB(),1);var FI=30000;function FH($,v,U){let X,J=new Promise((G,Q)=>{X=setTimeout(()=>Q(Error(`${U} timed out after ${v}ms`)),v)});return Promise.race([$,J]).finally(()=>clearTimeout(X))}class xQ{providers=new Map;async start($,v){let U=this.spawnProcess($,v),X=$.timeoutMs??FI;try{await FH(new Promise((Y,D)=>{U.child.once("spawn",Y),U.child.once("error",(W)=>D(Error(`provider failed to start: ${W.message}`)))}),X,"spawn")}catch(Y){throw this.stopProcess(U),Y}let J;try{J=await FH(U.connection.sendRequest("initialize",{workspaceRoot:v,protocolVersion:N6}),X,"initialize")}catch(Y){throw this.stopProcess(U),Y}let G=BQ.initialize.response.parse(J);if(!tB(G.protocolVersion))throw this.stopProcess(U),Error(`provider ${G.providerId} speaks ${G.protocolVersion}, we speak ${N6}`);let Q={providerId:G.providerId,language:G.language,extensions:G.extensions,...G.filenames===void 0?{}:{filenames:G.filenames}};return this.providers.set(Q.providerId,{...U,claims:Q,tiers:G.tiers,spec:$}),Q}spawnProcess($,v){let[U,...X]=$.command,J=pu(U,X,{stdio:["pipe","pipe","inherit"],cwd:v});if(!J.stdin||!J.stdout)throw Error("provider process has no stdio pipes");let G=qU.createMessageConnection(new qU.StreamMessageReader(J.stdout),new qU.StreamMessageWriter(J.stdin));G.listen();let Q=new CQ;return J.on("exit",(Y)=>Q.close(Error(`provider exited with code ${Y}`))),J.on("error",(Y)=>Q.close(Error(`provider errored: ${Y.message}`))),{child:J,connection:G,queue:Q}}route($){return NH($,[...this.providers.values()].map((v)=>v.claims))}declares($,v){return this.providers.get($)?.tiers[v]===!0}async ask($,v,U){let X=this.route($);if(!X.owned){let J=X.reason==="contested"?`claimed by ${X.providerIds.join(", ")}`:"unclaimed";throw Error(`no provider owns ${$}: ${J}`)}return this.askProvider(X.providerId,v,U)}async askProvider($,v,U){let X=this.providers.get($);if(!X)throw Error(`provider ${$} is not running`);let J=X.spec.timeoutMs??FI;return X.queue.run(async()=>{let G=await FH(X.connection.sendRequest(v,U),J,v);return BQ[v].response.parse(G)})}stopProcess($){$.queue.close(Error("provider stopped")),$.connection.dispose(),$.child.kill()}stop($){let v=this.providers.get($);if(!v)return;this.stopProcess(v),this.providers.delete($)}stopAll(){for(let $ of[...this.providers.keys()])this.stop($)}running(){return[...this.providers.values()].map(($)=>$.claims)}}import AH from"node:path";function qH($,v=S4()){let U=AH.resolve($);if(U===AH.parse(U).root)return{admitted:!1,reason:`${U} is the filesystem root, which is never one project`};if(U===AH.resolve(v.home))return{admitted:!1,reason:`${U} is your home directory, which is never one project. Register the project you mean instead.`};return{admitted:!0}}var AI={name:"nyaa-lexicon",version:"1.6.2",private:!0,type:"module",description:"Symbol-level code understanding served to agents over MCP and to editors over LSP",workspaces:["protocol","core","adapters/*","providers/*"],scripts:{build:"bun run scripts/build.ts",lint:"bun run scripts/lint.ts","lint:fix":"biome check --write .",test:"vitest run","test:watch":"vitest",clean:"bunx tsc --build --clean"},engines:{node:">=22.5"},devDependencies:{"@biomejs/biome":"2.5.1","bun-types":"1.3.14",typescript:"6.0.3",vitest:"4.1.9"}};var qI=`
+				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC LIMIT ?`).all($)}unreferencedSymbols(){return this.db.prepare("SELECT * FROM symbols WHERE symbolId NOT IN (SELECT targetId FROM refs WHERE targetId IS NOT NULL)").all().map(FU)}close(){this.db.close()}}function cu($){let v={...$.mLines===null?{}:{lines:$.mLines},...$.mParameters===null?{}:{parameters:$.mParameters},...$.mNesting===null?{}:{nesting:$.mNesting},...$.mBranches===null?{}:{branches:$.mBranches}};return Object.keys(v).length===0?{}:{metrics:v}}function FU($){let v=$;return{symbolId:v.symbolId,factId:v.factId,module:v.module,name:v.name,kind:v.kind,visibility:v.visibility,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}},selectionRange:{start:{line:v.nameLine,character:v.nameChar},end:{line:v.nameEndLine,character:v.nameEndChar}},...cu(v),...v.exported===null?{}:{exported:v.exported===1},...v.containerId===null?{}:{containerId:v.containerId},...v.signature===null?{}:{signature:v.signature},...v.docComment===null?{}:{docComment:v.docComment}}}function nJ($){let v=$;return{factId:v.factId,module:v.module,kind:v.kind,value:v.value,number:v.number,containerId:v.containerId,range:{start:{line:v.startLine,character:v.startChar},end:{line:v.endLine,character:v.endChar}}}}function mJ($){let v=$,U=v.localName===null||v.localStartLine===null?{}:{local:v.localName,localRange:{start:{line:v.localStartLine,character:v.localStartChar??0},end:{line:v.localEndLine??v.localStartLine,character:v.localEndChar??0}}},X=v.name===null||v.startLine===null?{}:{name:v.name,range:{start:{line:v.startLine,character:v.startChar??0},end:{line:v.endLine??v.startLine,character:v.endChar??0}}};return{factId:v.factId,module:v.module,specifier:v.specifier,reExport:v.reExport===1,...X,...U}}function cJ($){let v=JSON.parse($.citations),U=$.doubtId===null||$.doubtReason===null||$.doubtAt===null?void 0:{factId:$.doubtId,reason:$.doubtReason,at:$.doubtAt,...$.doubtBy===null?{}:{by:$.doubtBy}};return{symbolId:$.symbolId,question:$.question,factId:$.factId,prose:$.prose,citations:v,thin:$.thin===1,createdAt:$.createdAt,...$.model===null?{}:{model:$.model},...U===void 0?{}:{doubt:U}}}function pJ($){let v=$;return{factId:v.factId,module:v.module,name:v.name,role:v.role,targetId:v.targetId,fromId:v.fromId,provenance:v.provenance,startLine:v.startLine,startCharacter:v.startChar,endLine:v.endLine,endCharacter:v.endChar}}import{spawn as pu}from"node:child_process";var qU=eJ(dB(),1);var FI=30000;function FH($,v,U){let X,J=new Promise((G,Q)=>{X=setTimeout(()=>Q(Error(`${U} timed out after ${v}ms`)),v)});return Promise.race([$,J]).finally(()=>clearTimeout(X))}class xQ{providers=new Map;async start($,v){let U=this.spawnProcess($,v),X=$.timeoutMs??FI;try{await FH(new Promise((Y,D)=>{U.child.once("spawn",Y),U.child.once("error",(W)=>D(Error(`provider failed to start: ${W.message}`)))}),X,"spawn")}catch(Y){throw this.stopProcess(U),Y}let J;try{J=await FH(U.connection.sendRequest("initialize",{workspaceRoot:v,protocolVersion:N6}),X,"initialize")}catch(Y){throw this.stopProcess(U),Y}let G=BQ.initialize.response.parse(J);if(!tB(G.protocolVersion))throw this.stopProcess(U),Error(`provider ${G.providerId} speaks ${G.protocolVersion}, we speak ${N6}`);let Q={providerId:G.providerId,language:G.language,extensions:G.extensions,...G.filenames===void 0?{}:{filenames:G.filenames}};return this.providers.set(Q.providerId,{...U,claims:Q,tiers:G.tiers,spec:$}),Q}spawnProcess($,v){let[U,...X]=$.command,J=pu(U,X,{stdio:["pipe","pipe","inherit"],cwd:v});if(!J.stdin||!J.stdout)throw Error("provider process has no stdio pipes");let G=qU.createMessageConnection(new qU.StreamMessageReader(J.stdout),new qU.StreamMessageWriter(J.stdin));G.listen();let Q=new CQ;return J.on("exit",(Y)=>Q.close(Error(`provider exited with code ${Y}`))),J.on("error",(Y)=>Q.close(Error(`provider errored: ${Y.message}`))),{child:J,connection:G,queue:Q}}route($){return NH($,[...this.providers.values()].map((v)=>v.claims))}declares($,v){return this.providers.get($)?.tiers[v]===!0}async ask($,v,U){let X=this.route($);if(!X.owned){let J=X.reason==="contested"?`claimed by ${X.providerIds.join(", ")}`:"unclaimed";throw Error(`no provider owns ${$}: ${J}`)}return this.askProvider(X.providerId,v,U)}async askProvider($,v,U){let X=this.providers.get($);if(!X)throw Error(`provider ${$} is not running`);let J=X.spec.timeoutMs??FI;return X.queue.run(async()=>{let G=await FH(X.connection.sendRequest(v,U),J,v);return BQ[v].response.parse(G)})}stopProcess($){$.queue.close(Error("provider stopped")),$.connection.dispose(),$.child.kill()}stop($){let v=this.providers.get($);if(!v)return;this.stopProcess(v),this.providers.delete($)}stopAll(){for(let $ of[...this.providers.keys()])this.stop($)}running(){return[...this.providers.values()].map(($)=>$.claims)}}import AH from"node:path";function qH($,v=S4()){let U=AH.resolve($);if(U===AH.parse(U).root)return{admitted:!1,reason:`${U} is the filesystem root, which is never one project`};if(U===AH.resolve(v.home))return{admitted:!1,reason:`${U} is your home directory, which is never one project. Register the project you mean instead.`};return{admitted:!0}}var AI={name:"nyaa-lexicon",version:"1.6.3",private:!0,type:"module",description:"Symbol-level code understanding served to agents over MCP and to editors over LSP",workspaces:["protocol","core","adapters/*","providers/*"],scripts:{build:"bun run scripts/build.ts",lint:"bun run scripts/lint.ts","lint:fix":"biome check --write .",test:"vitest run","test:watch":"vitest",clean:"bunx tsc --build --clean"},engines:{node:">=22.5"},devDependencies:{"@biomejs/biome":"2.5.1","bun-types":"1.3.14",typescript:"6.0.3",vitest:"4.1.9"}};var qI=`
 Every codebase lexicon knows about, and which are bound.
 
 Bound projects are the ones every other tool answers from. Not listed means never registered.
 `.trim(),II=`
 Teach lexicon about a codebase, by absolute path to its root.
 
-Registering neither indexes it nor makes it answerable; bind_project does both. Re-registering is safe.
+Registering neither indexes it nor makes it answerable.
+
+bind_project does both. Re-registering is safe.
 `.trim(),PI=`
 Make a registered project one of the codebases queries answer from.
 
@@ -280,8 +282,12 @@ Stop answering queries from this project. It stays registered and its index surv
 `)}
 
 ${J}`)}function _I($,v){let U=$.register(v.root);if(!U.registered)return k6(U.reason,!0);if(U.already)return k6(`${U.project.name} is already registered. Call bind_project to answer from it.`);return k6(`Registered ${U.project.name} at ${U.project.root}. Call bind_project to answer from it.`)}function CI($,v){let U=$.bind(v.project);if(!U.bound)return k6(U.reason,!0);return k6(`Bound ${U.project.name}. Its index warms on the next query and stays warm for other sessions. The bind itself lasts only this session.`)}function TI($,v){let U=$.unbind(v.project);if(!U.bound)return k6(U.reason,!0);return k6(`Unbound ${U.project.name}. It stays registered and its index is untouched.`)}import{existsSync as ou,readFileSync as tu}from"node:fs";import au from"node:path";var gI=`
-Every code index this machine holds, with its size, when it was last written, whether a daemon is
-serving it, and whether the project it indexed still exists on disk.
+Every code index this machine holds.
+
+- Its size.
+- When it was last written.
+- Whether a daemon is serving it.
+- Whether the project it indexed still exists on disk.
 
 Use it to find indexes worth reclaiming. A large repository's index runs to hundreds of megabytes.
 
@@ -292,8 +298,9 @@ Permanently delete one project's index, by the key list_project_stores reports.
 IRREVERSIBLE, and it takes the recorded ANSWERS with it. Show the user the row and get their
 agreement before calling this.
 
-Refused while a daemon is serving that store; stop_project_daemon first. A store whose workspace
-still exists rebuilds on next use.
+Refused while a daemon is serving that store.
+
+stop_project_daemon first. A store whose workspace still exists rebuilds on next use.
 `.trim(),yI=`
 Stop the daemon serving one project's index, by the key list_project_stores reports.
 
@@ -343,11 +350,33 @@ This reads the import graph, not source text.`;let v=new Map;for(let X of $.impo
 `)}function BP($){if(!$.renamed){let U=[`Did not rename ${$.plan.oldName}: ${$.reason}`];for(let X of $.plan.blockers){U.push(`  ${X.kind}: ${X.detail}`);for(let J of X.sites??[])U.push(`    ${J.module}:${J.line}`)}return U.push("Nothing was written."),U.join(`
 `)}let v=[`Renamed ${$.plan.oldName} to ${$.plan.newName} across ${$.modules.length} file${$.modules.length===1?"":"s"}:`];for(let U of $.modules)v.push(`  ${U}`);for(let U of $.plan.warnings)v.push(`  note  ${U.kind}: ${U.detail}`);return v.join(`
 `)}function HP($,v){if(v.length===0)return`No symbol named ${$} is indexed.`;if(v.length===1)return"";let U=[`${v.length} symbols named ${$}:`];for(let X of v)U.push(`  ${X.module}  ${IU(X)}`),U.push(`    ${X.symbolId}`);return U.push("Pass one of the symbolIds above to pick one."),U.join(`
-`)}var VP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},KP={name:H.string().min(1).optional(),symbolId:H.string().min(1).optional(),module:H.string().min(1).optional(),limit:H.number().int().positive().max(500).optional().describe("Default 50.")},zP={fromModule:H.string().min(1).describe("Workspace-relative path of the importing file."),specifier:H.string().min(1).describe("The specifier exactly as written in the import.")},NP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},LP={value:H.string().optional().describe("Exact decoded value. Indexed, so this is the cheap one."),pattern:H.string().optional().describe("JavaScript regular expression, matched against the value."),kind:H.enum(["string","number","boolean"]).optional().describe("Defaults to string for a pattern search."),min:H.number().optional().describe("Numeric lower bound, inclusive."),max:H.number().optional().describe("Numeric upper bound, inclusive."),limit:H.number().int().positive().max(500).optional().describe("Default 50.")},jP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},OP={text:H.string().min(1).describe("Substring of the symbol name. Case-sensitive."),kind:H.string().min(1).optional().describe("class, function, method, constant, interface, and so on."),module:H.string().min(1).optional().describe("Substring of the file path, to scope the search."),limit:H.number().int().positive().max(300).optional().describe("Default 50.")},FP={module:H.string().min(1).describe("Workspace-relative path of the file.")},AP={specifier:H.string().min(1).optional().describe("Substring of the specifier as written in source."),module:H.string().min(1).optional().describe("Workspace-relative path; answers who imports this file."),limit:H.number().int().positive().max(300).optional().describe("Default 50.")},qP={limit:H.number().int().positive().max(100).optional().describe("Default 20.")},IP={},PP={module:H.string().min(1).describe("Workspace-relative path of the file to ask about."),limit:H.number().int().positive().max(100).optional().describe("Default 20.")},EP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},wP={module:H.string().min(1).describe("Workspace-relative path of the file to ask about.")},bP={name:H.string().min(1).describe("Symbol name as written. Case-sensitive, and at least 3 characters."),limit:H.number().int().positive().max(100).optional().describe("Default 20.")},rJ=["describe","why","relate","contract","effects","usage"],MP={symbolId:H.string().min(1).describe("Exact symbol id the answer is about, from an earlier tool answer."),question:H.enum(rJ).describe("Which question the prose answers."),prose:H.string().min(1).describe("The answer, TERSE. One or two sentences, a short paragraph at most. Say only what the facts cannot."),citations:H.array(H.string().min(1)).min(1).describe("Fact ids consumed, whole and exactly as symbol_facts prints them, never the trailing digest alone. Other answers' ids may be cited too."),model:H.string().min(1).optional().describe("Who wrote it, e.g. a model name."),resolvesDoubt:H.string().min(1).optional().describe("The standing doubt's id, from recall. Without it a doubt rides forward onto the new answer."),omitting:H.string().min(1).optional().describe("When replacing a live answer without citing all its facts: what you dropped and why.")},SP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),question:H.enum(rJ).optional().describe("One question class. Omit for everything recorded about it.")},ZP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),reason:H.string().min(1).describe("Why the recorded answer is no longer trusted. The next writer reads this."),question:H.enum(rJ).optional().describe("One question class. Omit to doubt everything recorded about it."),by:H.string().min(1).optional().describe("Who is declaring the doubt, e.g. a model name.")},RP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),question:H.enum(rJ).describe("Which recorded answer is being re-affirmed."),citations:H.array(H.string().min(1)).optional().describe("Current fact ids replacing retired ones, from symbol_facts. Omit when only clearing a doubt."),model:H.string().min(1).optional().describe("Who is vouching, e.g. a model name."),resolvesDoubt:H.string().min(1).optional().describe("The standing doubt's id, from recall. Required to clear it.")},_P={name:H.string().min(1).optional().describe("Root symbol name. Omit both name and symbolId for workspace gaps."),symbolId:H.string().min(1).optional().describe("Exact root symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate the name."),question:H.enum(rJ).optional().describe("Default describe."),limit:H.number().int().positive().max(300).optional().describe("Default 60.")},CP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),limit:H.number().int().positive().max(200).optional().describe("Per kind, default 40.")},TP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),newName:H.string().min(1).describe("The name you intend to give it.")},kP=`
+`)}var VP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},KP={name:H.string().min(1).optional(),symbolId:H.string().min(1).optional(),module:H.string().min(1).optional(),limit:H.number().int().positive().max(500).optional().describe("Default 50.")},zP={fromModule:H.string().min(1).describe("Workspace-relative path of the importing file."),specifier:H.string().min(1).describe("The specifier exactly as written in the import.")},NP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},LP={value:H.string().optional().describe("Exact decoded value. Indexed, so this is the cheap one."),pattern:H.string().optional().describe("JavaScript regular expression, matched against the value."),kind:H.enum(["string","number","boolean"]).optional().describe("Defaults to string for a pattern search."),min:H.number().optional().describe("Numeric lower bound, inclusive."),max:H.number().optional().describe("Numeric upper bound, inclusive."),limit:H.number().int().positive().max(500).optional().describe("Default 50.")},jP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},OP={text:H.string().min(1).describe("Substring of the symbol name. Case-sensitive."),kind:H.string().min(1).optional().describe(`
+- class
+- function
+- method
+- constant
+- interface
+- and so on
+`.trim()),module:H.string().min(1).optional().describe("Substring of the file path, to scope the search."),limit:H.number().int().positive().max(300).optional().describe("Default 50.")},FP={module:H.string().min(1).describe("Workspace-relative path of the file.")},AP={specifier:H.string().min(1).optional().describe("Substring of the specifier as written in source."),module:H.string().min(1).optional().describe("Workspace-relative path; answers who imports this file."),limit:H.number().int().positive().max(300).optional().describe("Default 50.")},qP={limit:H.number().int().positive().max(100).optional().describe("Default 20.")},IP={},PP={module:H.string().min(1).describe("Workspace-relative path of the file to ask about."),limit:H.number().int().positive().max(100).optional().describe("Default 20.")},EP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name.")},wP={module:H.string().min(1).describe("Workspace-relative path of the file to ask about.")},bP={name:H.string().min(1).describe("Symbol name as written. Case-sensitive, and at least 3 characters."),limit:H.number().int().positive().max(100).optional().describe("Default 20.")},rJ=["describe","why","relate","contract","effects","usage"],MP={symbolId:H.string().min(1).describe("Exact symbol id the answer is about, from an earlier tool answer."),question:H.enum(rJ).describe("Which question the prose answers."),prose:H.string().min(1).describe(`
+The answer, TERSE.
+
+One or two sentences, a short paragraph at most.
+
+Say only what the facts cannot.
+`.trim()),citations:H.array(H.string().min(1)).min(1).describe(`
+Fact ids consumed, whole and exactly as symbol_facts prints them.
+
+Never the trailing digest alone.
+
+Other answers' ids may be cited too.
+`.trim()),model:H.string().min(1).optional().describe("Who wrote it, e.g. a model name."),resolvesDoubt:H.string().min(1).optional().describe("The standing doubt's id, from recall. Without it a doubt rides forward onto the new answer."),omitting:H.string().min(1).optional().describe("When replacing a live answer without citing all its facts: what you dropped and why.")},SP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),question:H.enum(rJ).optional().describe("One question class. Omit for everything recorded about it.")},ZP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),reason:H.string().min(1).describe("Why the recorded answer is no longer trusted. The next writer reads this."),question:H.enum(rJ).optional().describe("One question class. Omit to doubt everything recorded about it."),by:H.string().min(1).optional().describe("Who is declaring the doubt, e.g. a model name.")},RP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),question:H.enum(rJ).describe("Which recorded answer is being re-affirmed."),citations:H.array(H.string().min(1)).optional().describe("Current fact ids replacing retired ones, from symbol_facts. Omit when only clearing a doubt.".trim()),model:H.string().min(1).optional().describe("Who is vouching, e.g. a model name."),resolvesDoubt:H.string().min(1).optional().describe("The standing doubt's id, from recall. Required to clear it.")},_P={name:H.string().min(1).optional().describe("Root symbol name. Omit both name and symbolId for workspace gaps."),symbolId:H.string().min(1).optional().describe("Exact root symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate the name."),question:H.enum(rJ).optional().describe("Default describe."),limit:H.number().int().positive().max(300).optional().describe("Default 60.")},CP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),limit:H.number().int().positive().max(200).optional().describe("Per kind, default 40.")},TP={name:H.string().min(1).optional().describe("Symbol name. Omit if you already have symbolId."),symbolId:H.string().min(1).optional().describe("Exact symbol id, from an earlier answer."),module:H.string().min(1).optional().describe("Workspace-relative path, to disambiguate a name."),newName:H.string().min(1).describe("The name you intend to give it.")},kP=`
 What a symbol is, as its signature surface rather than its source.
 
-Answers with the declaration, its direct members, how many places reference it, and any recorded
-knowledge, served with a staleness check.
+Answers with:
+
+- The declaration and its direct members.
+- How many places reference it.
+- Any recorded knowledge, served with a staleness check.
 
 Use instead of reading a file for a class's shape without its bodies, or to see how widely something
 is used before touching it.
@@ -356,15 +385,19 @@ Give symbolId when you have one, otherwise name, plus module if the name is not 
 `.trim(),xP=`
 Every USE of a symbol, resolved through imports and re-exports rather than matched by name.
 
-A same-named local elsewhere is excluded and an alias is followed. Grouped by file, capped, and the
-cap is reported.
+A same-named local elsewhere is excluded and an alias is followed. Results are grouped by file.
+They are capped, and the cap is reported.
 
 Import and export STATEMENTS are not uses and are not listed. For every occurrence a rewrite would
 touch, call prepare_rename.
 `.trim(),gP=`
 Where an import specifier actually lands.
 
-Follows path mappings, package exports and re-export chains, so it answers for a barrel import.
+Follows:
+
+- Path mappings.
+- Package exports.
+- Re-export chains, so it answers for a barrel import.
 
 Distinguishes a file in the workspace, a dependency outside it, and a specifier that resolves to
 nothing. Resolving to nothing is a finding, not an error.
@@ -378,20 +411,33 @@ symbol is exported past the edge of the index.
 `.trim(),yP=`
 Rename a symbol everywhere it is used. THIS WRITES FILES.
 
-Renames the declaration, every use resolved through real binding, and every import and re-export
-that reaches it, then re-indexes what it touched.
+Renames:
+
+- The declaration.
+- Every use resolved through real binding.
+- Every import and re-export that reaches it.
+
+Then re-indexes what it touched.
 
 All or nothing. If any occurrence should change and cannot be changed safely, nothing is written and
 you are told which ones and why. Call prepare_rename first for the blast radius.
 `.trim(),uP=`
-Find literal VALUES written in the code: an exact string, a regex, or a number range.
+Find literal VALUES written in the code:
+
+- An exact string.
+- A regex.
+- A number range.
 
 Searches decoded values, so it sees through quoting. Reaches text no symbol query can: a Python
 __all__ entry, the signal name in connect("..."), a magic string two files share, a hard-coded timeout.
 
 Prefer it over grep for the VALUE rather than the line. Every hit carries the declaration it sits inside.
 `.trim(),hP=`
-How a symbol sits in the reference graph: fan-in, fan-out, and whether it is in a cycle.
+How a symbol sits in the reference graph:
+
+- Fan-in.
+- Fan-out.
+- Whether it is in a cycle.
 
 Fan-in is how many places use it, fan-out how many distinct symbols it uses. A cycle is reported with
 every member.
@@ -401,8 +447,10 @@ low fan-in can mean barely used or barely resolved.
 `.trim(),lP=`
 What this repository is, at a glance. Call it first in a codebase you do not know.
 
-Files, symbols, references, imports and literals indexed, the biggest modules, how much recorded
-knowledge exists, and whether scope came from git or was walked off the disk.
+- Files, symbols, references, imports and literals indexed.
+- The biggest modules.
+- How much recorded knowledge exists.
+- Whether scope came from git or was walked off the disk.
 `.trim(),iP=`
 Find declarations whose NAME contains some text. Where browsing starts, and how you get a name for
 describe_symbol.
@@ -414,15 +462,23 @@ reached through an alias still matches its real name.
 `.trim(),nP=`
 Everything one file declares, nested by container.
 
-Classes with their methods, functions, constants, each with its signature. Costs a fraction of the
-source.
+- Classes with their methods.
+- Functions.
+- Constants.
+
+Each with its signature. Costs a fraction of the source.
 
 Use instead of reading a file when you want its shape.
 `.trim(),mP=`
 Which files import something, by the specifier as written or by the file it resolves to.
 
-Give a specifier substring for every place importing it as written ("discord.js", "~/actions",
-"res://"). Give a module path for who imports THAT file.
+Give a specifier substring for every place importing it as written:
+
+- "discord.js"
+- "~/actions"
+- "res://"
+
+Give a module path for who imports THAT file.
 
 Reads the import graph rather than searching text, so it works in every language. A text search for
 specifiers works in TypeScript and silently returns nothing in Python.
@@ -435,8 +491,11 @@ Counts are bounded by what binding resolved.
 `.trim(),pP=`
 Files that get edited in the same commits as this one, from git history.
 
-Finds relationships no reference edge can: a test enforcing an invariant by grep, two files held in
-sync by a fixture, a doc that goes stale when a behaviour changes.
+Finds relationships no reference edge can:
+
+- A test enforcing an invariant by grep.
+- Two files held in sync by a fixture.
+- A doc that goes stale when a behaviour changes.
 
 Use before changing something to find what usually changes with it. Each row gives both counts, so a
 9-of-10 partner reads differently from a 2-of-40 one.
@@ -459,8 +518,11 @@ Use to weigh how settled code is before rewriting it.
 `.trim(),oP=`
 Commits whose message names this symbol. The closest thing here to a reason.
 
-Finds where somebody wrote down WHY: why a cache was added, what a workaround was working around,
-which bug a guard exists for.
+Finds where somebody wrote down WHY:
+
+- Why a cache was added.
+- What a workaround was working around.
+- Which bug a guard exists for.
 
 Matched on a word boundary and case-sensitively. Each row says how many files that commit touched,
 so a mention inside a sweep is not read as a deliberate one.
@@ -493,20 +555,21 @@ Flag a recorded answer you no longer trust, without rewriting it.
 Use right after changing code in a way that shifts what a symbol MEANS, where the facts still
 resolve but the explanation describes the old purpose.
 
-The doubt shows on every recall, cascades as SHAKY into answers built on this one, and joins
-knowledge_gaps as recheck demand.
+The doubt shows on every recall.
+
+It cascades as SHAKY into answers built on this one and joins knowledge_gaps as recheck demand.
 
 The reason you give is what the next writer reads. Clearing it requires citing its id, which only a
 recall shows.
 `.trim(),eP=`
 Vouch that a recorded answer still holds, healing its ground instead of rewriting it.
 
-STALE ids: verify the prose against symbol_facts, then call this with the current fact ids. Same
-prose, re-grounded, no re-authoring.
+STALE ids: verify the prose against symbol_facts, then call this with the current fact ids.
+Same prose, re-grounded, no re-authoring.
 
 DOUBTED: verify, then call this citing the doubt's id as resolvesDoubt.
 
-Re-grounding mints a new answer id, so answers citing the old one go stale and heal the same way,
+Re-grounding mints a new answer id. Answers citing the old one go stale and heal the same way,
 leaves first. Only re-affirm what you have re-checked; this call IS the vouching.
 `.trim(),$E=`
 What is not yet understood here: symbols whose recorded knowledge is missing or gone doubtful.
@@ -521,7 +584,10 @@ Answered entries drop out. Keep calling until it returns empty.
 `.trim(),vE=`
 Every indexed fact about one symbol, each with an id that can be cited and later re-checked.
 
-The declaration, the references, the literals written inside it, and the imports that resolve to it.
+- The declaration.
+- The references.
+- The literals written inside it.
+- The imports that resolve to it.
 
 Each id is a digest of that fact's own contents, so an id that stops resolving is exactly a fact
 that changed.
@@ -530,8 +596,13 @@ Use when you want the evidence rather than a summary, or when you intend to reco
 `.trim(),UE=`
 What type a symbol actually has, including when the source never says.
 
-Says which of three it is: declared in source, inferred with the basis stated, or unknown with a
-reason. Unknown is a real answer, never a failure.
+Says which of three it is:
+
+- Declared in source.
+- Inferred with the basis stated.
+- Unknown with a reason.
+
+Unknown is a real answer, never a failure.
 
 Use for anything unannotated, where the declaration tells you nothing.
 `.trim();function X$($,v=!1){return{content:[{type:"text",text:$}],...v?{isError:!0}:{}}}async function R$($,v){let U=await $.indexStatus(),X=U.failures===0?"":`
