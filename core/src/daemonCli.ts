@@ -15,6 +15,7 @@ import { startLiveIndex } from "./liveIndex.js";
 import { currentHost, workspacePaths } from "./paths.js";
 import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
+import { DaemonStartingError } from "./socketTransport.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
 import { admitWorkspace } from "./workspaceAdmission.js";
@@ -24,6 +25,10 @@ import { admitWorkspace } from "./workspaceAdmission.js";
 
 /** Headroom over the slowest provider start. Published to clients rather than mirrored by them. */
 const STARTUP_ALLOWANCE_MS = 90_000;
+
+/** Re-offered on every request while the first scan runs, so a caller waits as long as the scan is
+ * still going. The client's own ceiling is what ends it; the scan finishes regardless. */
+const FIRST_SCAN_PATIENCE_MS = 30_000;
 
 ////////////////////////////////
 //  Main
@@ -118,6 +123,8 @@ async function main(argv: string[]): Promise<void> {
 	// index costs nothing until something asks about it.
 	let scan: Promise<void> | null = null;
 	let live: { stop: () => void } | null = null;
+	// A store with content was scanned by an earlier run, so only a truly empty one makes a caller wait.
+	let everScanned = store.totals().files > 0;
 	function warm(): void {
 		scan ??= (async () => {
 			const started = Date.now();
@@ -126,6 +133,7 @@ async function main(argv: string[]): Promise<void> {
 			const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
 			console.log(`scope: ${service.scopeReport()}`);
 			console.log(`indexed ${indexed.length} files, ${symbols} symbols, ${Date.now() - started}ms`);
+			everScanned = true;
 
 			// Watching starts with warming: a watcher over an unasked-for workspace would index it
 			// on the next file change anyway.
@@ -151,6 +159,18 @@ async function main(argv: string[]): Promise<void> {
 		}
 		// Asking about the workspace IS the request to index it.
 		warm();
+
+		// A first scan makes the caller WAIT rather than answering from an empty store. "No symbol
+		// named X" and "nothing is indexed yet" are different answers, and the first one reads as
+		// settled. A rescan does not wait: there is a real index to answer from meanwhile.
+		if (!everScanned) {
+			const status = service.indexStatus();
+			throw new DaemonStartingError(
+				`the first index is still building (${status.done} of ${status.total})`,
+				FIRST_SCAN_PATIENCE_MS,
+				"the first index",
+			);
+		}
 		return dispatch(method, params);
 	}
 
