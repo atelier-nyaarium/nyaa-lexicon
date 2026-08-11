@@ -109,10 +109,16 @@ export function toUri(workspaceRoot: string, module: string): string {
 	return `file://${full.split("/").map(encodeURIComponent).join("/").replace("%3A", ":")}`;
 }
 
+/** The absolute path a file URI names, or null for any other scheme. */
+export function pathFromUri(uri: string): string | null {
+	if (!uri.startsWith("file://")) return null;
+	return decodeURIComponent(uri.slice("file://".length));
+}
+
 /** The inverse, back to a workspace-relative module. Null when the URI names another workspace. */
 export function toModule(workspaceRoot: string, uri: string): string | null {
-	if (!uri.startsWith("file://")) return null;
-	const full = decodeURIComponent(uri.slice("file://".length));
+	const full = pathFromUri(uri);
+	if (full === null) return null;
 	const root = `${workspaceRoot.replace(/\/+$/, "")}/`;
 	return full.startsWith(root) ? full.slice(root.length) : null;
 }

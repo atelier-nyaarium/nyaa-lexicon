@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { IndexStore, LexiconService, ProviderSupervisor, startProviders } from "@nyaa-lexicon/core";
-import { LspServer } from "./server.js";
+import { LspServer, pathFromUri } from "./server.js";
 import { createReader, encode, type Message } from "./transport.js";
 
 ////////////////////////////////
@@ -33,11 +33,28 @@ const CAPABILITIES = {
 };
 
 ////////////////////////////////
-//  Main
+//  Interfaces & Types
 
-async function main(): Promise<void> {
-	const workspaceRoot = process.env["LEXICON_WORKSPACE"] ?? process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd();
+/** Everything that cannot exist until the editor has named a workspace. */
+interface Served {
+	store: IndexStore;
+	supervisor: ProviderSupervisor;
+	service: LexiconService;
+	lsp: LspServer;
+}
 
+////////////////////////////////
+//  Functions & Helpers
+
+/** The root the EDITOR names. `workspaceFolders` wins over the deprecated `rootUri`, and a client
+ * that names neither is editing a loose file with no project to index. */
+function rootFrom(params: unknown): string | null {
+	const named = (params ?? {}) as { rootUri?: string | null; workspaceFolders?: Array<{ uri?: string }> | null };
+	const uri = named.workspaceFolders?.[0]?.uri ?? named.rootUri;
+	return typeof uri === "string" ? pathFromUri(uri) : null;
+}
+
+function serve(workspaceRoot: string): Served {
 	const { store } = IndexStore.open(":memory:");
 	const supervisor = new ProviderSupervisor();
 	const service = new LexiconService(
@@ -52,7 +69,16 @@ async function main(): Promise<void> {
 		},
 		workspaceRoot,
 	);
-	const lsp = new LspServer(service, workspaceRoot);
+	return { store, supervisor, service, lsp: new LspServer(service, workspaceRoot) };
+}
+
+////////////////////////////////
+//  Main
+
+async function main(): Promise<void> {
+	// Nothing is read from the environment: the workspace arrives in `initialize`, so everything
+	// below it is built only once the editor has said which project this is.
+	let served: Served | null = null;
 
 	function send(message: Message): void {
 		process.stdout.write(encode(message));
@@ -72,33 +98,61 @@ async function main(): Promise<void> {
 		const uri = params.textDocument?.uri ?? "";
 		const position = params.position ?? { line: 0, character: 0 };
 
+		// Lifecycle first, because these are the only methods that mean anything before a workspace
+		// exists, and `initialize` is what brings one into being.
+		if (message.method === "initialize") {
+			const workspaceRoot = rootFrom(message.params);
+			// No capabilities rather than false ones: with no workspace there is nothing to index, and
+			// claiming hover or rename would promise answers this server cannot have.
+			if (workspaceRoot === null) {
+				process.stderr.write("no workspace folder named in initialize; nothing to index\n");
+				reply(message.id, { capabilities: {}, serverInfo: { name: "nyaa-lexicon" } });
+				return;
+			}
+
+			served = serve(workspaceRoot);
+			const { supervisor, service } = served;
+			reply(message.id, { capabilities: CAPABILITIES, serverInfo: { name: "nyaa-lexicon" } });
+			// Indexing starts AFTER the handshake is answered, so an editor is never held waiting on a
+			// workspace scan before it can show anything at all.
+			void startProviders(supervisor, workspaceRoot)
+				.then(() => service.indexWorkspace())
+				.then((outcomes) => {
+					const indexed = outcomes.filter((outcome) => outcome.action === "indexed").length;
+					process.stderr.write(`indexed ${indexed} files\n`);
+				})
+				.catch((error) => process.stderr.write(`indexing failed: ${error}\n`));
+			return;
+		}
+
+		if (message.method === "initialized") return;
+
+		if (message.method === "shutdown") {
+			reply(message.id, null);
+			return;
+		}
+
+		if (message.method === "exit") {
+			served?.supervisor.stopAll();
+			served?.store.close();
+			process.exit(0);
+		}
+
+		// Everything past here reads the index. A request must still be ANSWERED when there is none,
+		// or the editor waits for it forever.
+		if (served === null) {
+			if (message.id !== undefined) {
+				send({
+					jsonrpc: "2.0",
+					id: message.id,
+					error: { code: -32002, message: "no workspace: initialize named none" },
+				});
+			}
+			return;
+		}
+		const { lsp } = served;
+
 		switch (message.method) {
-			case "initialize":
-				reply(message.id, { capabilities: CAPABILITIES, serverInfo: { name: "nyaa-lexicon" } });
-				// Indexing starts AFTER the handshake is answered, so an editor is never held waiting
-				// on a workspace scan before it can show anything at all.
-				void startProviders(supervisor, workspaceRoot)
-					.then(() => service.indexWorkspace())
-					.then((outcomes) => {
-						const indexed = outcomes.filter((outcome) => outcome.action === "indexed").length;
-						process.stderr.write(`indexed ${indexed} files\n`);
-					})
-					.catch((error) => process.stderr.write(`indexing failed: ${error}\n`));
-				return;
-
-			case "initialized":
-				return;
-
-			case "shutdown":
-				reply(message.id, null);
-				return;
-
-			case "exit":
-				supervisor.stopAll();
-				store.close();
-				process.exit(0);
-				return;
-
 			case "textDocument/hover":
 				reply(message.id, await lsp.hover(uri, position));
 				return;
