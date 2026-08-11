@@ -98,6 +98,15 @@ describe("the scoping rule", () => {
 		expect(scope.allows("src/a.ts")).toBe(true);
 	});
 
+	it("lets deny override an explicit include", () => {
+		const root = repo({ "reference/a.ts": "", "src/a.ts": "" });
+		const scope = fileScopeFor(root, { include: ["reference/**"], deny: ["reference/**"] });
+
+		expect(scope.allows("reference/a.ts")).toBe(false);
+		expect(scope.denies("reference/a.ts")).toBe(true);
+		expect(scope.denies("src/a.ts")).toBe(false);
+	});
+
 	it("marks only configured bundle globs for surface indexing", () => {
 		const root = repo({ "opaque/runtime.js": "", "src/a.js": "" });
 		const scope = fileScopeFor(root, { bundles: ["opaque/**"] });

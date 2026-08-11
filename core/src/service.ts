@@ -409,6 +409,7 @@ export class LexiconService {
 	 * provider claims and each one is not an error.
 	 */
 	async indexFile(module: string, contentHash: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
+		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const route = this.supervisor.route(module);
 		if (!route.owned) {
 			const reason = route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed";
@@ -494,6 +495,7 @@ export class LexiconService {
 		module: string,
 		depth = this.depths.get(module) ?? this.rootDepth(module),
 	): Promise<IndexOutcome> {
+		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const text = this.readFile(module);
 		if (text !== null) return this.indexFile(module, hashOf(text), depth);
 		this.forgetFile(module);
@@ -529,7 +531,7 @@ export class LexiconService {
 				for (const statement of this.store.importsIn(module)) {
 					const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
 					const target = landed === null ? null : importTarget(landed);
-					if (target === null) continue;
+					if (target === null || this.currentScope().denies(target.module)) continue;
 					const depth = this.currentScope().surface(target.module) ? "surface" : target.depth;
 					const prior = this.depths.get(target.module);
 					if (seen.has(target.module) && !(prior === "surface" && depth === "full")) continue;

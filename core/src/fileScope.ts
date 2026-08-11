@@ -7,7 +7,7 @@
 // hardcoded list of six directory names.
 //
 // THE RULE: ignore governs DISCOVERY, not REACHABILITY. Auto-discovery never walks into ignored
-// territory. An explicitly named path is indexed anyway. And anything an indexed file imports is
+// territory. An explicitly named path is indexed unless denied. And anything an indexed file imports is
 // followed, even into ignored territory, because a generated file you import is part of your
 // program while a `.env` nobody imports never becomes reachable.
 
@@ -23,6 +23,8 @@ export interface ScopeConfig {
 	include?: string[];
 	/** Paths or globs excluded from automatic roots. Includes still override this list. */
 	exclude?: string[];
+	/** Paths or globs that must never be indexed, including through imports. */
+	deny?: string[];
 	/** Generated or shipped modules constrained to their exported surface. */
 	bundles?: string[];
 }
@@ -36,6 +38,9 @@ export interface FileScope {
 	known: Set<string> | null;
 	include: string[];
 	exclude: string[];
+	deny: string[];
+	/** Whether this module is forbidden from roots and import closure. */
+	denies: (module: string) => boolean;
 	bundles: string[];
 	/** Whether this module must use surface indexing even when it is explicitly included. */
 	surface: (module: string) => boolean;
@@ -101,11 +106,17 @@ export function readScopeConfig(workspaceRoot: string): ScopeConfig {
 		const parsed = JSON.parse(readFileSync(file, "utf8")) as {
 			include?: unknown;
 			exclude?: unknown;
+			deny?: unknown;
 			bundles?: unknown;
 		};
 		const paths = (value: unknown): string[] =>
 			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-		return { include: paths(parsed.include), exclude: paths(parsed.exclude), bundles: paths(parsed.bundles) };
+		return {
+			include: paths(parsed.include),
+			exclude: paths(parsed.exclude),
+			deny: paths(parsed.deny),
+			bundles: paths(parsed.bundles),
+		};
 	} catch {
 		return {};
 	}
@@ -138,22 +149,30 @@ export function fileScopeFor(workspaceRoot: string, config = readScopeConfig(wor
 	const known = gitFiles(workspaceRoot);
 	const include = config.include ?? [];
 	const exclude = config.exclude ?? [];
+	const deny = config.deny ?? [];
 	const bundles = config.bundles ?? [];
 	const matchers = include.map(globToRegExp);
 	const excluded = exclude.map(globToRegExp);
+	const denied = deny.map(globToRegExp);
 	const surfaces = bundles.map(globToRegExp);
 	const included = (module: string) => matchers.some((matcher) => matcher.test(module));
-	const allowed = (module: string) => !excluded.some((matcher) => matcher.test(module)) || included(module);
+	const denies = (module: string) => denied.some((matcher) => matcher.test(module));
+	const allowed = (module: string) =>
+		!denies(module) && (!excluded.some((matcher) => matcher.test(module)) || included(module));
 	const surface = (module: string) => surfaces.some((matcher) => matcher.test(module));
 
 	// Walk mode has no git root set and leans on the watcher's weaker ignore list.
-	if (known === null) return { mode: "walk", allows: allowed, known: null, include, exclude, bundles, surface };
+	if (known === null) {
+		return { mode: "walk", allows: allowed, known: null, include, exclude, deny, denies, bundles, surface };
+	}
 	return {
 		mode: "git",
 		allows: (module) => allowed(module) && (known.has(module) || included(module)),
 		known,
 		include,
 		exclude,
+		deny,
+		denies,
 		bundles,
 		surface,
 	};
@@ -233,6 +252,7 @@ function couldReach(matcher: RegExp, directory: string): boolean {
 /** One line a caller can print, so "350 files" and "136,000 files" are never confused for each other. */
 export function describeScope(scope: FileScope): string {
 	if (scope.mode === "walk") return "no git repository; walked the tree with the default ignore list";
-	const extra = scope.include.length > 0 ? `, plus ${scope.include.length} explicit include(s)` : "";
-	return `${scope.known?.size ?? 0} files git tracks or does not ignore${extra}`;
+	const included = scope.include.length > 0 ? `, plus ${scope.include.length} explicit include(s)` : "";
+	const denied = scope.deny.length > 0 ? `, ${scope.deny.length} deny pattern(s)` : "";
+	return `${scope.known?.size ?? 0} files git tracks or does not ignore${included}${denied}`;
 }

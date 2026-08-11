@@ -208,6 +208,32 @@ describe("workspace roots", () => {
 });
 
 describe("root exclusions and includes", () => {
+	it("does not parse a denied direct index request", async () => {
+		initGit();
+		put("lexicon.json", JSON.stringify({ deny: ["reference.fake"] }));
+		put("reference.fake", "export class Reference {}\n");
+		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
+		service = new LexiconService(
+			store,
+			fakeSupervisor([], requests),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await expect(service.indexFile("reference.fake", "reference-1")).resolves.toEqual({
+			module: "reference.fake",
+			action: "skipped",
+			reason: "denied by scope",
+		});
+		expect(requests).toEqual([]);
+	});
+
 	it("excludes generated roots until an explicit include names them", async () => {
 		initGit();
 		put(".gitattributes", "generated.fake linguist-generated\n");
@@ -344,6 +370,42 @@ describe("reachability and failures", () => {
 		});
 		expect(outcomes).toContainEqual({
 			module: "leaf.fake",
+			action: "forgotten",
+			reason: "no longer a root or reachable",
+		});
+	});
+
+	it("denies imported files and prunes their prior facts after a config change", async () => {
+		initGit();
+		put("root.fake", 'export class Root {}\nimport "./reference/entry.fake";\n');
+		put("reference/entry.fake", "export class Reference {}\n");
+		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
+		service = new LexiconService(
+			store,
+			fakeSupervisor([], requests),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+		expect(service.findByName("Reference")).toHaveLength(1);
+		expect(requests.filter((request) => request.module === "reference/entry.fake")).toHaveLength(1);
+
+		put("lexicon.json", JSON.stringify({ deny: ["reference/**"] }));
+		const outcomes = await service.applyBatch([
+			{ kind: "changed", module: "lexicon.json", contentHash: "scope-deny" },
+		]);
+
+		expect(service.findByName("Reference")).toEqual([]);
+		expect(requests.filter((request) => request.module === "reference/entry.fake")).toHaveLength(1);
+		expect(outcomes).toContainEqual({
+			module: "reference/entry.fake",
 			action: "forgotten",
 			reason: "no longer a root or reachable",
 		});
