@@ -54,7 +54,13 @@ export function lexiconRoot(): string {
 	throw new Error("could not locate the lexicon repository from this build");
 }
 
-/** Every provider present on disk, discovered rather than listed, so adding one needs no edit here. */
+/**
+ * Every provider present on disk, discovered rather than listed, so adding one needs no edit here.
+ *
+ * The bundle is preferred over the source: it runs on plain node with no install, which the source
+ * cannot, since it imports workspace packages that only resolve when a `node_modules` exists. A
+ * host that installs dependencies and one that does not otherwise behave completely differently.
+ */
 export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 	const directory = path.join(root, "providers");
 	if (!existsSync(directory)) return [];
@@ -62,8 +68,15 @@ export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 	const found: ProviderCommand[] = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
-		const entrypoint = path.join(directory, entry.name, "src", "main.ts");
-		if (existsSync(entrypoint)) found.push({ directory: entry.name, command: ["bun", "run", entrypoint] });
+
+		const bundled = path.join(root, "dist", "providers", entry.name, "main.js");
+		if (existsSync(bundled)) {
+			found.push({ directory: entry.name, command: [process.execPath, bundled] });
+			continue;
+		}
+
+		const source = path.join(directory, entry.name, "src", "main.ts");
+		if (existsSync(source)) found.push({ directory: entry.name, command: ["bun", "run", source] });
 	}
 	return found.sort((a, b) => a.directory.localeCompare(b.directory));
 }

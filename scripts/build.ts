@@ -21,7 +21,7 @@
 // what it is, so replacing a derivation fails this script instead.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 ////////////////////////////////
@@ -62,6 +62,44 @@ const ENTRYPOINTS = [
 	{ source: path.join("adapters", "lsp", "src", "main.ts"), out: "lsp.js" },
 ];
 const DIST_DIR = "dist";
+
+/**
+ * Providers are bundled too, and for the same reason the server is.
+ *
+ * Unbundled, they ran as TypeScript source importing `@nyaa-lexicon/protocol` and `typescript`, so
+ * they needed a `node_modules` beside them. A host that installs one worked and a host that does
+ * not got three providers that started, failed their first import, timed out, and left an index
+ * that reported files in scope and zero symbols.
+ *
+ * Discovered rather than listed, matching how the runtime finds them.
+ */
+function providerBundles(root: string): Array<{ source: string; out: string; assets: string }> {
+	const directory = path.join(root, "providers");
+	if (!existsSync(directory)) return [];
+
+	return readdirSync(directory, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory() && existsSync(path.join(directory, entry.name, "src", "main.ts")))
+		.map((entry) => ({
+			source: path.join("providers", entry.name, "src", "main.ts"),
+			out: path.join("providers", entry.name, "main.js"),
+			assets: path.join("providers", entry.name, "src"),
+		}));
+}
+
+/** Non-TypeScript files a provider reads at runtime, resolved next to its own bundle. */
+function copyProviderAssets(root: string, from: string, into: string): string[] {
+	const source = path.join(root, from);
+	if (!existsSync(source)) return [];
+
+	const copied: string[] = [];
+	mkdirSync(path.join(root, into), { recursive: true });
+	for (const entry of readdirSync(source, { withFileTypes: true })) {
+		if (!entry.isFile() || entry.name.endsWith(".ts")) continue;
+		copyFileSync(path.join(source, entry.name), path.join(root, into, entry.name));
+		copied.push(path.join(into, entry.name));
+	}
+	return copied;
+}
 
 /** What the marketplace reads. Its version must match package.json or an install goes stale. */
 const PLUGIN_MANIFEST = path.join(".claude-plugin", "plugin.json");
@@ -256,14 +294,21 @@ function main(argv: string[]): void {
 	// Stale output from a previous run must not survive into the commit.
 	rmSync(path.join(ROOT, DIST_DIR), { recursive: true, force: true });
 
+	const providers = providerBundles(ROOT);
+	if (providers.length === 0) throw new Error("no providers found to bundle; the shipped index would find nothing");
+
 	try {
-		for (const entry of ENTRYPOINTS) {
+		for (const entry of [...ENTRYPOINTS, ...providers]) {
 			const outfile = path.join(DIST_DIR, entry.out);
 			execFileSync(
 				"bun",
 				["build", entry.source, "--outfile", outfile, "--target", "node", "--minify", "--format", "esm"],
 				{ cwd: ROOT, stdio: "inherit" },
 			);
+		}
+		for (const entry of providers) {
+			const assets = copyProviderAssets(ROOT, entry.assets, path.join(DIST_DIR, path.dirname(entry.out)));
+			for (const asset of assets) console.log(`copied ${asset}`);
 		}
 	} catch {
 		// bun already printed the compiler error; a stack trace from this script would only bury it.
