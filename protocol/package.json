@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/protocol",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"private": true,
 	"type": "module",
 	"description": "The provider protocol: wire schemas, symbol id grammar, NDJSON framing, conformance suite",
