@@ -384,13 +384,12 @@ blast radius before committing to it.
 export const FIND_LITERALS_DESCRIPTION = `
 Find literal VALUES written in the code: an exact string, a regex, or a number range.
 
-Searches decoded values, so it sees through quoting: one query finds a value however it was
-quoted or escaped. This reaches text no symbol query can, because a name inside a string is not a
-reference: the entry in a Python __all__, the signal name in connect("..."), a magic string two
-files silently share, a hard-coded timeout you want every instance of.
+Searches decoded values, so it sees through quoting. This reaches text no symbol query can, because
+a name inside a string is not a reference: a Python __all__ entry, the signal name in connect("..."),
+a magic string two files share, a hard-coded timeout.
 
-Prefer this over grep when you want the VALUE rather than the line: grep matches source text, this
-matches what the program actually sees, and every hit carries the declaration it sits inside.
+Prefer it over grep when you want the VALUE rather than the line. Every hit carries the declaration
+it sits inside.
 `.trim();
 
 export const GRAPH_OF_DESCRIPTION = `
@@ -400,17 +399,16 @@ Fan-in is how many places use it, fan-out how many distinct symbols it uses, and
 reported with every member when there is one. Use before refactoring something to find out whether
 it is a hub, a leaf, or knotted into a loop.
 
-Every number is bounded by what binding actually resolved, so it describes the index rather than
-the code. A low fan-in can mean "barely used" or "barely resolved" and this cannot tell you which.
+Numbers are bounded by what binding resolved, so a low fan-in can mean "barely used" or "barely
+resolved" and this cannot tell you which.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `
 What this repository is, at a glance. Call it first in a codebase you do not know.
 
-Files, symbols, references, imports and literals indexed, the biggest modules by symbol count, how
-much recorded knowledge exists here, and how the file set was decided. That last part matters: it
-says whether the index is git-scoped or was walked off the disk, which is the difference between
-describing your project and describing whatever happens to sit under it.
+Files, symbols, references, imports and literals indexed, the biggest modules, how much recorded
+knowledge exists, and how the file set was decided. That last part says whether scope came from git
+or was walked off the disk, which is the difference between your project and whatever sits under it.
 `.trim();
 
 export const SEARCH_SYMBOLS_DESCRIPTION = `
@@ -437,9 +435,8 @@ Which files import something, by the specifier as written or by the file it reso
 Two questions, one tool. Give a specifier substring to find every place that imports it as written
 ("discord.js", "~/actions", "res://"). Give a module path to find who imports THAT file.
 
-Reads the import graph rather than searching text, which is what makes it work in every language.
-A TypeScript specifier happens to be a string in source and a Python one is not, so any answer
-built on searching strings works in one language and silently returns nothing in the other.
+Reads the import graph rather than searching text, which is what makes it work in every language: a
+text search for specifiers works in TypeScript and silently returns nothing in Python.
 `.trim();
 
 export const HUBS_DESCRIPTION = `
@@ -448,76 +445,67 @@ The most-referenced symbols here, most used first.
 The natural second question in a codebase you do not know: what does everything depend on. A hub is
 where a change is expensive and where reading pays off most.
 
-Counts are bounded by what binding resolved, so this ranks the index rather than the truth.
+Counts are bounded by what binding resolved.
 `.trim();
 
 export const CO_CHANGED_WITH_DESCRIPTION = `
 Files that get edited in the same commits as this one, from git history.
 
-The one question here answered by neither the parser nor the filesystem, and it finds relationships
-no reference edge can: a test that enforces an invariant by grep, two files held in sync by a
-fixture, a constant that must never diverge from its twin, a doc that goes stale when a behaviour
-changes. None of those is a reference, and all of them get fixed in the same commit.
+Finds relationships no reference edge can: a test enforcing an invariant by grep, two files held in
+sync by a fixture, a doc that goes stale when a behaviour changes. None is a reference, and all get
+fixed in the same commit.
 
-Use before changing something to find what usually changes with it. Each result says how many
-commits touched both out of how many touched this file at all, so a 9-of-10 partner reads
-differently from a 2-of-40 one.
+Use before changing something to find what usually changes with it. Each row gives both counts, so a
+9-of-10 partner reads differently from a 2-of-40 one.
 `.trim();
 
 export const TYPE_HIERARCHY_DESCRIPTION = `
 What a type extends and what extends it, in both directions at once.
 
-Answers the question a class name alone cannot: whether overriding a method here changes behaviour
-somewhere else, and which base actually declares the thing you are looking at. Subtypes come from
-the same index as references, so a subclass in another file is found without opening it.
+Answers what a class name alone cannot: whether overriding a method here changes behaviour elsewhere,
+and which base actually declares the thing you are looking at. A subclass in another file is found
+without opening it.
 
-Unresolved bases are LISTED rather than dropped. A base outside the workspace, like an engine class
-or a library type, is a real supertype this index cannot name, and omitting it would read as
-extending nothing.
+Unresolved bases are LISTED rather than dropped, since a base outside the workspace is a real
+supertype this index cannot name, and omitting it would read as extending nothing.
 `.trim();
 
 export const FILE_HISTORY_DESCRIPTION = `
 How much a file changes and how long it has existed, from git.
 
-Churn is lines rather than commits, because forty commits that each moved one line and two that
-rewrote the file are different things a commit count cannot separate. Use it to weigh how settled
-code is before trusting or rewriting it.
+Churn is lines rather than commits, since forty one-line commits and two rewrites are different
+things a commit count cannot separate. Use it to weigh how settled code is before rewriting it.
 
-Says when the history window ran out instead of reporting a floor as a date, so an old file is never
-made to look new.
+Says when the history window ran out rather than reporting a floor as a date, so an old file is
+never made to look new.
 `.trim();
 
 export const SYMBOL_HISTORY_DESCRIPTION = `
 Commits whose message names this symbol. The closest thing here to a reason.
 
-Every other question answers what the code IS or who touches it. This one finds where somebody
-wrote down WHY, which is usually the only record of a decision that a reference graph cannot show:
-why a cache was added, what a workaround was working around, which bug a guard exists for.
+Every other question answers what the code IS or who touches it. This finds where somebody wrote down
+WHY: why a cache was added, what a workaround was working around, which bug a guard exists for.
 
 Use before changing something whose shape looks arbitrary. Matched on a word boundary and
-case-sensitively, so it finds the symbol rather than the letters, and each result says how many
-files that commit touched so a mention inside a sweep is not read as a deliberate one.
+case-sensitively, and each row says how many files that commit touched, so a mention inside a sweep
+is not read as a deliberate one.
 `.trim();
 
 export const RECORD_ANSWER_DESCRIPTION = `
 Save what you just figured out about a symbol, so the next agent does not re-derive it.
 
-Whenever working here teaches you what something IS, its role, its trick, why it is shaped the way
-it is, spend one call recording it: prose plus the fact ids you drew it from, using ids from
-symbol_facts. The store refuses an answer that cites nothing, cites ids that do not resolve, or
-cites only other symbols' facts, so a stored answer is always grounded in inputs that existed when
-it was written. YOU are the model here; this tool never calls one.
+When working here teaches you what something IS, spend one call recording it: prose plus the fact ids
+you drew it from, using ids from symbol_facts. The store refuses an answer that cites nothing, cites
+ids that do not resolve, or cites only other symbols' facts. YOU are the model; this never calls one.
 
-KEEP THE PROSE TERSE. One or two sentences is the target and a short paragraph is the ceiling. Every
-later reader pays for it, so write the part a reader cannot see and stop.
+KEEP THE PROSE TERSE. One or two sentences is the target, a short paragraph the ceiling. Every later
+reader pays for it, so write the part they cannot already see and stop.
 
-Citing only the subject's own declaration is accepted but marked THIN: structurally a paraphrase of
-what a reader already sees. A cheap-looking leaf with a lone declaration and nothing else nearby
-will read this way; citing one more fact, a reference, a literal, or a child answer, grounds it in
-something the declaration alone does not say.
+Citing only the subject's own declaration is accepted but marked THIN, being a paraphrase of the
+signature. One more fact, a reference, a literal, or a child answer, grounds it in something else.
 
-Answers may cite other answers' ids, which is how a parent's description leans on its children's.
-When a cited fact later changes, the answer reports stale by itself; nothing has to remember why.
+Answers may cite other answers' ids, which is how a parent leans on its children. When a cited fact
+changes, the answer reports stale by itself.
 `.trim();
 
 export const RECALL_ANSWER_DESCRIPTION = `

@@ -162,7 +162,7 @@ export function renderRenamePlan(plan: RenamePlan): string {
  */
 export function renderLiterals(result: LiteralsResult): string {
 	if (result.total === 0) {
-		return `No literal matched.\n\nThis searches decoded values, so it sees through quoting rather than matching source text.`;
+		return "No literal matched. This searches decoded values, not source text.";
 	}
 
 	const byModule = new Map<string, string[]>();
@@ -305,7 +305,7 @@ export function renderFileHistory(result: {
  */
 export function renderKnowledge(recalled: RecalledAnswer | null): string {
 	if (recalled === null) {
-		return "  knowledge: none recorded. record_answer saves what you conclude, citing ids from symbol_facts; knowledge_gaps with this id maps what is unknown beneath it.";
+		return "  knowledge: none recorded. record_answer to save what you conclude.";
 	}
 
 	const grade = recalled.answer.thin ? " THIN" : "";
@@ -444,16 +444,14 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 		// context verbatim; the answers land in the store either way, which is where they are read.
 		lines.push(
 			"",
-			"Short list. Close these now, in order: symbol_facts for each, then record_answer with the cited ids. Leaves come first, so each answer can lean on the ones before it. If you can spawn a subagent, hand it this loop and continue when it returns; the answers land in the store either way.",
+			"Close these in order, leaves first: symbol_facts, then record_answer citing those ids. A subagent can run the loop; the answers land in the store either way.",
 		);
 	} else {
 		lines.push(
 			"",
-			`${gaps.total} is more than a working agent should absorb mid-task. If your user agrees, hand this to ONE background agent:`,
+			`${gaps.total} is too many to absorb mid-task. With your user's agreement, hand ONE background agent this loop:`,
 			"",
-			`  Loop until knowledge_gaps${root === undefined ? "" : ` (root ${where})`} returns empty: take the first row, call symbol_facts, read what it points at, and record_answer with the cited fact ids. Leaves come first, so later answers may cite earlier ones' ids.`,
-			"",
-			"Meanwhile continue your own task; the encyclopedia builds behind you.",
+			`  Until knowledge_gaps${root === undefined ? "" : ` (root ${where})`} returns empty: take the first row, symbol_facts, then record_answer citing those ids. Leaves first, so later answers can cite earlier ones.`,
 		);
 	}
 	return lines.join("\n");
@@ -542,9 +540,7 @@ export function renderOverview(result: {
 	// exists, and an honest "none yet" with the pointer when it does not.
 	if (result.knowledge !== undefined) {
 		if (result.knowledge.answers === 0) {
-			lines.push(
-				"knowledge: none recorded yet. describe_symbol shows recorded knowledge when it exists; knowledge_gaps lists what is worth writing.",
-			);
+			lines.push("knowledge: none recorded yet. knowledge_gaps lists what is worth writing.");
 		} else {
 			// Absent means the staleness scan was skipped at this size, which is a different claim
 			// from zero stale, and the wording keeps the two apart.
@@ -607,7 +603,7 @@ export function renderHubs(
 		const where = row.declaration ? `${line(row.declaration)}  in ${row.declaration.module}` : row.symbolId;
 		lines.push(`  ${String(row.count).padStart(4)}  ${where}`);
 	}
-	lines.push("Counts are bounded by what binding resolved, so this ranks the index rather than the truth.");
+	lines.push("Counts are bounded by what binding resolved.");
 	return lines.join("\n");
 }
 
@@ -679,7 +675,7 @@ export function renderGraph(name: string, summary: GraphSummary): string {
 		if (summary.cycle.length > 10) lines.push(`    ... ${summary.cycle.length - 10} more`);
 	}
 
-	lines.push("Counts are bounded by what binding resolved, so they describe the index, not the code.");
+	lines.push("Counts are bounded by what binding resolved.");
 	return lines.join("\n");
 }
 
