@@ -1,12 +1,21 @@
-import type { ProjectStore } from "@nyaa-lexicon/core";
+import type { DaemonLock, ProjectStore } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
-import { deleteProjectStoreTool, listProjectStoresTool, type ManageDeps } from "../manage";
+import { deleteProjectStoreTool, listProjectStoresTool, type ManageDeps, stopProjectDaemonTool } from "../manage";
 
 ////////////////////////////////
 //  Helpers
 
 const NOW = 1_700_000_000_000;
 const DAY = 86_400_000;
+
+const LOCK: DaemonLock = {
+	port: 42_000,
+	token: "a".repeat(32),
+	pid: 4242,
+	protocolVersion: "1.4.0",
+	workspaceRoot: "/home/dev/proj",
+	startedAt: NOW,
+};
 
 function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 	return {
@@ -20,10 +29,16 @@ function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 	};
 }
 
-function deps(stores: ProjectStore[], remove?: ManageDeps["remove"]): ManageDeps {
+function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: Partial<ManageDeps> = {}): ManageDeps {
 	return {
 		list: () => stores,
 		remove: remove ?? (() => ({ deleted: false, reason: "not wired" })),
+		lock: () => LOCK,
+		shutdown: async () => ({ stopping: true }),
+		gone: () => true,
+		wait: async () => {},
+		now: () => NOW,
+		...overrides,
 	};
 }
 
@@ -123,5 +138,79 @@ describe("deleting a project store", () => {
 
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("pid 7");
+	});
+});
+
+describe("stopping a project daemon", () => {
+	it("succeeds when no daemon is running", async () => {
+		const result = await stopProjectDaemonTool(deps([store()]), () => [], { key: "proj-abc123" });
+
+		expect(result.isError).toBeUndefined();
+		expect(textOf(result)).toContain("already stopped");
+	});
+
+	it("names list_project_stores for an unknown key", async () => {
+		const result = await stopProjectDaemonTool(deps([store()]), () => [], { key: "missing" });
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("list_project_stores");
+	});
+
+	it("refuses a daemon bound in this session", async () => {
+		let called = false;
+		const result = await stopProjectDaemonTool(
+			deps([store({ livePid: 4242 })], undefined, {
+				shutdown: async () => {
+					called = true;
+					return { stopping: true };
+				},
+			}),
+			() => [{ key: "proj-abc123" }],
+			{ key: "proj-abc123" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("unbind_project");
+		expect(called).toBe(false);
+	});
+
+	it("waits until the daemon is gone before succeeding", async () => {
+		let stopped = false;
+		let calls = 0;
+		const result = await stopProjectDaemonTool(
+			deps([store({ livePid: 4242 })], undefined, {
+				shutdown: async (lock) => {
+					calls += 1;
+					expect(lock).toEqual(LOCK);
+					stopped = true;
+					return { stopping: true };
+				},
+				gone: () => stopped,
+			}),
+			() => [],
+			{ key: "proj-abc123" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(textOf(result)).toContain("Stopped daemon pid 4242");
+		expect(calls).toBe(1);
+	});
+
+	it("reports a daemon that does not stop before the deadline", async () => {
+		let now = 0;
+		const result = await stopProjectDaemonTool(
+			deps([store({ livePid: 4242 })], undefined, {
+				gone: () => false,
+				wait: async (ms) => {
+					now += ms;
+				},
+				now: () => now,
+			}),
+			() => [],
+			{ key: "proj-abc123" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("did not stop");
 	});
 });

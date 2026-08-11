@@ -6,7 +6,21 @@
 // They bypass the daemon: the daemon they could ask serves THIS workspace, and the question is
 // about the others.
 
-import { deleteProjectStore, listProjectStores, type ProjectStore, processIsAlive } from "@nyaa-lexicon/core";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import {
+	callDaemon,
+	currentHost,
+	type DaemonLock,
+	DaemonLockSchema,
+	deleteProjectStore,
+	findDaemon,
+	listProjectStores,
+	type ProjectStore,
+	processIsAlive,
+	stateRoot,
+	workspacePaths,
+} from "@nyaa-lexicon/core";
 import { z } from "zod";
 
 ////////////////////////////////
@@ -21,6 +35,11 @@ interface ToolResult {
 export interface ManageDeps {
 	list: () => ProjectStore[];
 	remove: (key: string) => ReturnType<typeof deleteProjectStore>;
+	lock: (store: ProjectStore) => DaemonLock | null;
+	shutdown: (lock: DaemonLock) => Promise<unknown>;
+	gone: (store: ProjectStore, pid: number) => boolean;
+	wait: (ms: number) => Promise<void>;
+	now: () => number;
 }
 
 ////////////////////////////////
@@ -48,13 +67,25 @@ Refused while a daemon is serving that store; stop it first. A store for a works
 is rebuilt on next use, so deleting it costs a re-scan rather than the project.
 `.trim();
 
+export const STOP_DAEMON_DESCRIPTION = `
+Stop the daemon serving one project's index, by the key list_project_stores reports.
+
+Safe to call when it is already stopped: that is success, because nothing is serving the store.
+Refused for a project bound in this session; call unbind_project first. Use this before
+delete_project_store when that tool reports a live daemon.
+`.trim();
+
 export const ListStoresInput = {};
 
 export const DeleteStoreInput = {
 	key: z.string().min(1).describe("The store key, exactly as list_project_stores reports it"),
 };
 
+export const StopDaemonInput = DeleteStoreInput;
+
 const BYTES_PER_MB = 1024 * 1024;
+const STOP_TIMEOUT_MS = 5_000;
+const STOP_POLL_MS = 100;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -63,11 +94,50 @@ function text(body: string, isError = false): ToolResult {
 	return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
 }
 
+function daemonLockFile(store: ProjectStore): string {
+	const host = currentHost();
+	return store.workspaceRoot === null
+		? path.join(stateRoot(host), store.key, "daemon.json")
+		: workspacePaths(host, store.workspaceRoot).lockFile;
+}
+
+function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
+	let raw: string;
+	try {
+		raw = readFileSync(daemonLockFile(store), "utf8");
+	} catch {
+		return null;
+	}
+
+	try {
+		const parsed = DaemonLockSchema.safeParse(JSON.parse(raw));
+		return parsed.success && processIsAlive(parsed.data.pid) ? parsed.data : null;
+	} catch {
+		return null;
+	}
+}
+
 /** Live deps, for production call sites. */
 export function liveDeps(): ManageDeps {
 	return {
 		list: () => listProjectStores(processIsAlive),
 		remove: (key) => deleteProjectStore(key, processIsAlive),
+		lock: (store) => {
+			if (store.workspaceRoot === null) return legacyDaemonLock(store);
+			const decision = findDaemon(store.workspaceRoot);
+			if (decision.action === "connect") return decision.lock;
+			if (decision.action === "replace" && decision.lock.workspaceRoot === store.workspaceRoot) {
+				return decision.lock;
+			}
+			return null;
+		},
+		shutdown: (lock) => callDaemon(lock, "shutdown", {}),
+		gone: (store, pid) => {
+			if (!processIsAlive(pid)) return true;
+			return !existsSync(daemonLockFile(store));
+		},
+		wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		now: () => Date.now(),
 	};
 }
 
@@ -138,4 +208,55 @@ export function deleteProjectStoreTool(deps: ManageDeps, args: { key: string }):
 	return text(
 		`Deleted ${outcome.key}, freeing ${describeSize(outcome.bytes)}. It rebuilds on next use if its workspace still exists.`,
 	);
+}
+
+function shutdownWasAccepted(reply: unknown): boolean {
+	return typeof reply === "object" && reply !== null && "stopping" in reply && reply.stopping === true;
+}
+
+export async function stopProjectDaemonTool(
+	deps: ManageDeps,
+	bound: () => Array<{ key: string }>,
+	args: { key: string },
+): Promise<ToolResult> {
+	const store = deps.list().find((candidate) => candidate.key === args.key);
+	if (store === undefined) {
+		return text(`No store named ${args.key}; call list_project_stores to get a real store key.`, true);
+	}
+
+	if (bound().some((project) => project.key === args.key)) {
+		return text(`Refusing to stop ${args.key}: it is bound in this session. Call unbind_project first.`, true);
+	}
+
+	if (store.livePid === null) {
+		return text(`No daemon is serving ${args.key}; it is already stopped.`);
+	}
+
+	const pid = store.livePid;
+	const lock = deps.lock(store);
+	if (lock === null) {
+		if (deps.gone(store, pid)) return text(`No daemon is serving ${args.key}; it is already stopped.`);
+		return text(`Could not find a usable daemon lock for ${args.key}; it is still serving pid ${pid}.`, true);
+	}
+
+	let reply: unknown;
+	try {
+		reply = await deps.shutdown(lock);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return text(`Could not ask pid ${pid} to stop serving ${args.key}: ${reason}`, true);
+	}
+	if (!shutdownWasAccepted(reply)) {
+		return text(`Daemon pid ${pid} did not acknowledge the shutdown request for ${args.key}.`, true);
+	}
+
+	const started = deps.now();
+	while (!deps.gone(store, pid)) {
+		if (deps.now() - started >= STOP_TIMEOUT_MS) {
+			return text(`Daemon pid ${pid} did not stop serving ${args.key} within ${STOP_TIMEOUT_MS}ms.`, true);
+		}
+		await deps.wait(STOP_POLL_MS);
+	}
+
+	return text(`Stopped daemon pid ${pid} serving ${args.key}.`);
 }

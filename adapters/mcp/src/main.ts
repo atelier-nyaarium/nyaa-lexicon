@@ -44,6 +44,9 @@ import {
 	listProjectStoresTool,
 	liveDeps,
 	type ManageDeps,
+	STOP_DAEMON_DESCRIPTION,
+	StopDaemonInput,
+	stopProjectDaemonTool,
 } from "./manage.js";
 import {
 	CO_CHANGED_WITH_DESCRIPTION,
@@ -296,6 +299,7 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 	const gapsShape = KnowledgeGapsInput as any;
 	const listStoresShape = ListStoresInput as any;
 	const deleteStoreShape = DeleteStoreInput as any;
+	const stopDaemonShape = StopDaemonInput as any;
 	const listProjectsShape = ListProjectsInput as any;
 	const registerProjectShape = RegisterProjectInput as any;
 	const bindProjectShape = BindProjectInput as any;
@@ -506,6 +510,12 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 		"delete_project_store",
 		{ title: "Delete Project Store", description: DELETE_STORE_DESCRIPTION, inputSchema: deleteStoreShape },
 		adapt(async (args) => deleteProjectStoreTool(manage, args)),
+	);
+
+	server.registerTool(
+		"stop_project_daemon",
+		{ title: "Stop Project Daemon", description: STOP_DAEMON_DESCRIPTION, inputSchema: stopDaemonShape },
+		adapt(async (args) => stopProjectDaemonTool(manage, () => binds.bound(), args)),
 	);
 
 	return server;
