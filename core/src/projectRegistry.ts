@@ -1,7 +1,7 @@
-// Which projects this machine knows, and which are bound right now.
+// Which projects this machine knows.
 //
-// Nothing is discovered any more. A workspace exists here because somebody registered it, and is
-// asked about because somebody bound it, which is what lets one hot index serve every session.
+// Nothing is discovered any more; a workspace exists here because somebody registered it. Which of
+// them a given session ASKS about is sessionBinds, and deliberately not persisted here.
 //
 // Single owner of the registry file; call sites take the whole state or nothing.
 
@@ -18,18 +18,17 @@ export interface RegisteredProject {
 	root: string;
 	/** A short name the agent can type instead of the key. Unique within the registry. */
 	name: string;
+	/** Whether the ASKING session bound it. Never persisted; sessionBinds fills it in. */
 	bound: boolean;
 }
 
 interface RegistryFile {
-	projects: Array<{ key: string; root: string; name: string; bound: boolean }>;
+	projects: Array<{ key: string; root: string; name: string }>;
 }
 
 export type RegisterOutcome =
 	| { registered: true; project: RegisteredProject; already: boolean }
 	| { registered: false; reason: string };
-
-export type BindOutcome = { bound: true; project: RegisteredProject } | { bound: false; reason: string };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -49,10 +48,14 @@ export function readRegistry(host: PlatformEnv = currentHost()): RegisteredProje
 	try {
 		const parsed = JSON.parse(raw) as RegistryFile;
 		if (!Array.isArray(parsed.projects)) return [];
-		return parsed.projects.filter(
-			(entry) =>
-				typeof entry?.key === "string" && typeof entry?.root === "string" && typeof entry?.name === "string",
-		);
+		return parsed.projects
+			.filter(
+				(entry) =>
+					typeof entry?.key === "string" &&
+					typeof entry?.root === "string" &&
+					typeof entry?.name === "string",
+			)
+			.map((entry) => ({ ...entry, bound: false }));
 	} catch {
 		return [];
 	}
@@ -63,7 +66,8 @@ function writeRegistry(host: PlatformEnv, projects: RegisteredProject[]): void {
 	const file = registryFile(host);
 	mkdirSync(path.dirname(file), { recursive: true });
 	const staging = `${file}.${process.pid}.tmp`;
-	writeFileSync(staging, JSON.stringify({ projects } satisfies RegistryFile, null, 2));
+	const stored = projects.map(({ key, root, name }) => ({ key, root, name }));
+	writeFileSync(staging, JSON.stringify({ projects: stored } satisfies RegistryFile, null, 2));
 	renameSync(staging, file);
 }
 
@@ -80,10 +84,6 @@ function uniqueName(root: string, taken: RegisteredProject[]): string {
 /** A project by key or by name, so an agent can use whichever the listing showed it. */
 export function findProject(reference: string, projects: RegisteredProject[]): RegisteredProject | null {
 	return projects.find((project) => project.key === reference || project.name === reference) ?? null;
-}
-
-export function boundProjects(host: PlatformEnv = currentHost()): RegisteredProject[] {
-	return readRegistry(host).filter((project) => project.bound);
 }
 
 ////////////////////////////////
@@ -106,38 +106,6 @@ export function registerProject(
 	const project: RegisteredProject = { key, root: resolved, name: uniqueName(resolved, projects), bound: false };
 	writeRegistry(host, [...projects, project]);
 	return { registered: true, project, already: false };
-}
-
-/** Binding is additive: several projects stay bound at once, and each is asked in turn. */
-export function bindProject(reference: string, host: PlatformEnv = currentHost()): BindOutcome {
-	const projects = readRegistry(host);
-	const target = findProject(reference, projects);
-	if (target === null) {
-		return {
-			bound: false,
-			reason: `no project called ${reference}; call list_projects, or register_project first`,
-		};
-	}
-
-	const bound = { ...target, bound: true };
-	writeRegistry(
-		host,
-		projects.map((project) => (project.key === target.key ? bound : project)),
-	);
-	return { bound: true, project: bound };
-}
-
-export function unbindProject(reference: string, host: PlatformEnv = currentHost()): BindOutcome {
-	const projects = readRegistry(host);
-	const target = findProject(reference, projects);
-	if (target === null) return { bound: false, reason: `no project called ${reference}` };
-
-	const released = { ...target, bound: false };
-	writeRegistry(
-		host,
-		projects.map((project) => (project.key === target.key ? released : project)),
-	);
-	return { bound: true, project: released };
 }
 
 /** Dropped from the registry entirely. The index it built survives until deleted separately. */

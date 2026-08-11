@@ -55,16 +55,12 @@ export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } 
 export { type DaemonLock, DaemonLockSchema, decideFromLock, type LockDecision } from "./lockFile.js";
 export { currentHost, type PlatformEnv, stateRoot, workspaceKey, workspacePaths } from "./paths.js";
 export {
-	type BindOutcome,
-	bindProject,
-	boundProjects,
 	findProject,
 	forgetProject,
 	type RegisteredProject,
 	type RegisterOutcome,
 	readRegistry,
 	registerProject,
-	unbindProject,
 } from "./projectRegistry.js";
 export {
 	type DeleteOutcome,
@@ -111,6 +107,7 @@ export {
 	type SymbolSummary,
 	type TypeHierarchy,
 } from "./service.js";
+export { type BindOutcome, createSessionBinds, type SessionBinds } from "./sessionBinds.js";
 export {
 	ConnectionLostError,
 	connectFrames,

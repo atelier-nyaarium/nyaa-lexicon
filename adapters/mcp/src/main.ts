@@ -6,9 +6,9 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-	boundProjects,
 	ConnectionLostError,
 	connectFrames,
+	createSessionBinds,
 	ensureDaemon,
 	type FrameClient,
 	IndexStore,
@@ -266,6 +266,8 @@ export type BackendSource = ToolBackend | ((project: RegisteredProject) => ToolB
 export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bindingDeps?: BindingDeps): McpServer {
 	const server = new McpServer(SERVER_INFO);
 	const routed = typeof source === "function" ? source : null;
+	// One set per server, so binds die with the session that made them.
+	const binds = createSessionBinds(() => readRegistry());
 
 	// The SDK's callback type is wider than ours in ways the strict optional settings will not
 	// unify, so each handler is adapted once here rather than loosening the tool signatures.
@@ -309,9 +311,9 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 		async (args: any): Promise<any> => {
 			if (routed === null) return handler(source as ToolBackend, args);
 
-			const bound = boundProjects();
+			const bound = binding.list().filter((project) => project.bound);
 			if (bound.length === 0) {
-				return { content: [{ type: "text", text: nothingBoundMessage(readRegistry()) }], isError: true };
+				return { content: [{ type: "text", text: nothingBoundMessage(binding.list()) }], isError: true };
 			}
 			if (bound.length === 1 && bound[0] !== undefined) return handler(routed(bound[0]), args);
 
@@ -463,7 +465,7 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 	);
 
 	// Never gated on a binding: these are how an agent RECOVERS from having none.
-	const binding = bindingDeps ?? liveBindingDeps();
+	const binding = bindingDeps ?? liveBindingDeps(binds);
 
 	server.registerTool(
 		"list_projects",

@@ -1,16 +1,9 @@
 // The tools that decide which codebases lexicon is talking about.
 //
-// Nothing is discovered. A project is known because it was registered and asked because it was
-// bound, and both live on disk, so every session sees the same set and shares one hot index.
+// Nothing is discovered. A project is known because it was registered, which is durable, and asked
+// because this session bound it, which is not. The warm index is what outlives the session.
 
-import {
-	admitWorkspace,
-	bindProject,
-	type RegisteredProject,
-	readRegistry,
-	registerProject,
-	unbindProject,
-} from "@nyaa-lexicon/core";
+import { admitWorkspace, type RegisteredProject, registerProject, type SessionBinds } from "@nyaa-lexicon/core";
 import { z } from "zod";
 
 ////////////////////////////////
@@ -25,8 +18,8 @@ interface ToolResult {
 export interface BindingDeps {
 	list: () => RegisteredProject[];
 	register: (root: string) => ReturnType<typeof registerProject>;
-	bind: (reference: string) => ReturnType<typeof bindProject>;
-	unbind: (reference: string) => ReturnType<typeof unbindProject>;
+	bind: SessionBinds["bind"];
+	unbind: SessionBinds["unbind"];
 }
 
 ////////////////////////////////
@@ -50,9 +43,10 @@ per codebase. Registering an already-known project is safe and simply reports it
 export const BIND_PROJECT_DESCRIPTION = `
 Make a registered project one of the codebases queries answer from.
 
-Binding is what makes an index hot, and it persists, so other sessions share the same warm index
-rather than each building one. Several projects can be bound at once; every query then answers from
-each, labelled by project.
+A bind lasts for this session only, so bind at the start of a session before asking anything. The
+INDEX it warms outlives the session and is shared, so re-binding costs a call rather than a rescan.
+
+Several projects can be bound at once; every query then answers from each, labelled by project.
 `.trim();
 
 export const UNBIND_PROJECT_DESCRIPTION = `
@@ -76,13 +70,13 @@ function text(body: string, isError = false): ToolResult {
 	return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
 }
 
-/** Live deps, for production call sites. */
-export function liveBindingDeps(): BindingDeps {
+/** Live deps, for production call sites. Binds come from the session, registration from disk. */
+export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	return {
-		list: () => readRegistry(),
+		list: () => binds.all(),
 		register: (root) => registerProject(root, (candidate) => admitWorkspace(candidate)),
-		bind: (reference) => bindProject(reference),
-		unbind: (reference) => unbindProject(reference),
+		bind: (reference) => binds.bind(reference),
+		unbind: (reference) => binds.unbind(reference),
 	};
 }
 
@@ -129,7 +123,9 @@ export function registerProjectTool(deps: BindingDeps, args: { root: string }): 
 export function bindProjectTool(deps: BindingDeps, args: { project: string }): ToolResult {
 	const outcome = deps.bind(args.project);
 	if (!outcome.bound) return text(outcome.reason, true);
-	return text(`Bound ${outcome.project.name}. Its index warms on the next query and stays warm for other sessions.`);
+	return text(
+		`Bound ${outcome.project.name}. Its index warms on the next query and stays warm for other sessions. The bind itself lasts only this session.`,
+	);
 }
 
 export function unbindProjectTool(deps: BindingDeps, args: { project: string }): ToolResult {

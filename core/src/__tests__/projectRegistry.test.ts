@@ -3,15 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PlatformEnv } from "../paths";
-import {
-	bindProject,
-	boundProjects,
-	findProject,
-	forgetProject,
-	readRegistry,
-	registerProject,
-	unbindProject,
-} from "../projectRegistry";
+import { findProject, forgetProject, readRegistry, registerProject } from "../projectRegistry";
 
 ////////////////////////////////
 //  Helpers
@@ -74,58 +66,13 @@ describe("registering", () => {
 	});
 });
 
-describe("binding", () => {
-	it("binds and unbinds by name", () => {
+// A bind belongs to a session, so the file must not carry one: a restart that inherited yesterday's
+// bindings would answer from codebases nobody asked about.
+describe("what the file does not keep", () => {
+	it("never persists a binding, whatever the value in memory was", () => {
 		registerProject(dir("alpha"), admitAll, host);
 
-		expect(bindProject("alpha", host)).toMatchObject({ bound: true });
-		expect(boundProjects(host).map((project) => project.name)).toEqual(["alpha"]);
-
-		unbindProject("alpha", host);
-		expect(boundProjects(host)).toEqual([]);
-	});
-
-	it("binds by key too, since that is what the listing leads with", () => {
-		const outcome = registerProject(dir("alpha"), admitAll, host);
-		if (!outcome.registered) throw new Error(outcome.reason);
-
-		expect(bindProject(outcome.project.key, host)).toMatchObject({ bound: true });
-	});
-
-	// The whole point of binding many: one question, several codebases.
-	it("holds several bindings at once", () => {
-		registerProject(dir("alpha"), admitAll, host);
-		registerProject(dir("beta"), admitAll, host);
-		bindProject("alpha", host);
-		bindProject("beta", host);
-
-		expect(boundProjects(host).map((project) => project.name)).toEqual(["alpha", "beta"]);
-	});
-
-	it("survives being read back by another process, which is what makes it shared", () => {
-		registerProject(dir("alpha"), admitAll, host);
-		bindProject("alpha", host);
-
-		expect(boundProjects({ ...host }).map((project) => project.name)).toEqual(["alpha"]);
-	});
-
-	it("tells an agent what to do when the name is unknown", () => {
-		const outcome = bindProject("ghost", host);
-
-		expect(outcome.bound).toBe(false);
-		if (outcome.bound) return;
-		expect(outcome.reason).toContain("list_projects");
-	});
-
-	it("unbinding one leaves the others bound", () => {
-		registerProject(dir("alpha"), admitAll, host);
-		registerProject(dir("beta"), admitAll, host);
-		bindProject("alpha", host);
-		bindProject("beta", host);
-
-		unbindProject("alpha", host);
-
-		expect(boundProjects(host).map((project) => project.name)).toEqual(["beta"]);
+		expect(readRegistry(host)).toMatchObject([{ name: "alpha", bound: false }]);
 	});
 });
 
