@@ -34,7 +34,9 @@ Bound projects are the ones every other tool answers from. Not listed means neve
 export const REGISTER_PROJECT_DESCRIPTION = `
 Teach lexicon about a codebase, by absolute path to its root.
 
-Registering neither indexes it nor makes it answerable; bind_project does both. Re-registering is safe.
+Registering neither indexes it nor makes it answerable.
+
+bind_project does both. Re-registering is safe.
 `.trim();
 
 export const BIND_PROJECT_DESCRIPTION = `
@@ -53,11 +55,11 @@ Stop answering queries from this project. It stays registered and its index surv
 export const ListProjectsInput = {};
 
 export const RegisterProjectInput = {
-	root: z.string().min(1).describe("Absolute path to the codebase's root directory"),
+	root: z.string().min(1).describe(`Absolute path to the codebase's root directory`),
 };
 
 export const BindProjectInput = {
-	project: z.string().min(1).describe("Project name or key, exactly as list_projects reports it"),
+	project: z.string().min(1).describe(`Project name or key, exactly as list_projects reports it`),
 };
 
 ////////////////////////////////

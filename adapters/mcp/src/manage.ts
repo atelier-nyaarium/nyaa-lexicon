@@ -46,8 +46,12 @@ export interface ManageDeps {
 //  Constants
 
 export const LIST_STORES_DESCRIPTION = `
-Every code index this machine holds, with its size, when it was last written, whether a daemon is
-serving it, and whether the project it indexed still exists on disk.
+Every code index this machine holds.
+
+- Its size.
+- When it was last written.
+- Whether a daemon is serving it.
+- Whether the project it indexed still exists on disk.
 
 Use it to find indexes worth reclaiming. A large repository's index runs to hundreds of megabytes.
 
@@ -60,8 +64,9 @@ Permanently delete one project's index, by the key list_project_stores reports.
 IRREVERSIBLE, and it takes the recorded ANSWERS with it. Show the user the row and get their
 agreement before calling this.
 
-Refused while a daemon is serving that store; stop_project_daemon first. A store whose workspace
-still exists rebuilds on next use.
+Refused while a daemon is serving that store.
+
+stop_project_daemon first. A store whose workspace still exists rebuilds on next use.
 `.trim();
 
 export const STOP_DAEMON_DESCRIPTION = `
@@ -75,7 +80,7 @@ Use before delete_project_store when that tool reports a live daemon.
 export const ListStoresInput = {};
 
 export const DeleteStoreInput = {
-	key: z.string().min(1).describe("The store key, exactly as list_project_stores reports it"),
+	key: z.string().min(1).describe(`The store key, exactly as list_project_stores reports it`),
 };
 
 export const StopDaemonInput = DeleteStoreInput;
