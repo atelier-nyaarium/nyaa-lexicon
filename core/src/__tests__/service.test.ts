@@ -29,7 +29,7 @@ let service: LexiconService;
 async function boot() {
 	supervisor = new ProviderSupervisor();
 	await supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 15_000 }, dir);
-	service = new LexiconService(store, supervisor, (module) => files.get(module) ?? null);
+	service = new LexiconService(store, supervisor, (module) => files.get(module) ?? null, dir);
 }
 
 beforeEach(() => {

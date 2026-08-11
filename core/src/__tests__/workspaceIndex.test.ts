@@ -61,6 +61,9 @@ function fakeSupervisor(discovered: string[] = []): ProviderSupervisor {
 			if (method === "parseFile") {
 				const request = params as { module: string; contentHash: string; text: string };
 				if (request.text.includes("POISON")) throw new Error("poisoned file");
+				const diagnostics = request.text.includes("SYNTAX")
+					? [{ severity: "error" as const, message: "syntax error" }]
+					: [];
 				const declarations = [...request.text.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)].map((match) =>
 					declaration(request.module, match[1] as string),
 				);
@@ -71,7 +74,7 @@ function fakeSupervisor(discovered: string[] = []): ProviderSupervisor {
 					references: [],
 					imports: importsFrom(request.text),
 					literals: [],
-					diagnostics: [],
+					diagnostics,
 				};
 			}
 			if (method === "resolveImport") {
@@ -130,6 +133,59 @@ describe("workspace roots", () => {
 		]);
 		expect(service.findByName("Extra")).toHaveLength(1);
 	});
+
+	it("forgets a root that vanishes before the next scan", async () => {
+		initGit();
+		put("root.fake", "export class Root {}\n");
+		execFileSync("git", ["add", "root.fake"], { cwd: root });
+		service = new LexiconService(
+			store,
+			fakeSupervisor(["root.fake"]),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+		rmSync(path.join(root, "root.fake"));
+		const outcomes = await service.indexWorkspace();
+
+		expect(service.findByName("Root")).toEqual([]);
+		expect(outcomes).toContainEqual({ module: "root.fake", action: "forgotten", reason: "file is gone" });
+	});
+
+	it("moves indexed facts with a live rename batch", async () => {
+		initGit();
+		put("before.fake", "export class Before {}\n");
+		service = new LexiconService(
+			store,
+			fakeSupervisor(),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+		rmSync(path.join(root, "before.fake"));
+		put("after.fake", "export class After {}\n");
+		await service.applyBatch([
+			{ kind: "deleted", module: "before.fake" },
+			{ kind: "changed", module: "after.fake", contentHash: "after-1" },
+		]);
+
+		expect(service.findByName("Before")).toEqual([]);
+		expect(service.findByName("After")).toHaveLength(1);
+	});
 });
 
 describe("root exclusions and includes", () => {
@@ -172,11 +228,12 @@ describe("root exclusions and includes", () => {
 });
 
 describe("reachability and failures", () => {
-	it("keeps an out-of-scope import while referenced and prunes it after refactoring", async () => {
+	it("keeps an out-of-scope import tree while referenced and prunes it after a live refactor", async () => {
 		initGit();
-		put(".gitignore", "reachable.fake\n");
-		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
-		put("reachable.fake", "export class Reachable {}\n");
+		put(".gitignore", "reachable.fake\nleaf.fake\n");
+		put("root.fake", "export class Root {}\n");
+		put("reachable.fake", 'export class Reachable {}\nimport "./leaf.fake";\n');
+		put("leaf.fake", "export class Leaf {}\n");
 		service = new LexiconService(
 			store,
 			fakeSupervisor(),
@@ -191,17 +248,83 @@ describe("reachability and failures", () => {
 		);
 
 		await service.indexWorkspace();
+		expect(service.findByName("Reachable")).toEqual([]);
+		expect(service.findByName("Leaf")).toEqual([]);
+
+		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
+		await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-2" }]);
 		expect(service.findByName("Reachable")).toHaveLength(1);
+		expect(service.findByName("Leaf")).toHaveLength(1);
 
 		put("root.fake", "export class Root {}\n");
-		const outcomes = await service.indexWorkspace();
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-3" }]);
 
 		expect(service.findByName("Reachable")).toEqual([]);
+		expect(service.findByName("Leaf")).toEqual([]);
 		expect(outcomes).toContainEqual({
 			module: "reachable.fake",
 			action: "forgotten",
 			reason: "no longer a root or reachable",
 		});
+		expect(outcomes).toContainEqual({
+			module: "leaf.fake",
+			action: "forgotten",
+			reason: "no longer a root or reachable",
+		});
+	});
+
+	it("prunes an imported tree when its only root is deleted", async () => {
+		initGit();
+		put(".gitignore", "reachable.fake\nleaf.fake\n");
+		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
+		put("reachable.fake", 'export class Reachable {}\nimport "./leaf.fake";\n');
+		put("leaf.fake", "export class Leaf {}\n");
+		service = new LexiconService(
+			store,
+			fakeSupervisor(),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+		rmSync(path.join(root, "root.fake"));
+		await service.applyBatch([{ kind: "deleted", module: "root.fake" }]);
+
+		expect(service.findByName("Root")).toEqual([]);
+		expect(service.findByName("Reachable")).toEqual([]);
+		expect(service.findByName("Leaf")).toEqual([]);
+	});
+
+	it("indexes an import tree to its fixpoint", async () => {
+		initGit();
+		put(".gitignore", "hidden/\n");
+		put("root.fake", 'export class Root {}\nimport "./hidden/0.fake";\n');
+		for (let depth = 0; depth < 12; depth++) {
+			const next = depth === 11 ? "" : `\nimport "./${depth + 1}.fake";`;
+			put(`hidden/${depth}.fake`, `export class Depth${depth} {}${next}\n`);
+		}
+		service = new LexiconService(
+			store,
+			fakeSupervisor(),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+
+		expect(service.findByName("Depth11")).toHaveLength(1);
 	});
 
 	it("keeps prior facts and continues after a poisoned workspace file", async () => {
@@ -236,6 +359,45 @@ describe("reachability and failures", () => {
 		expect(service.findByName("GoodUpdated")).toHaveLength(1);
 		expect(service.indexStatus()).toMatchObject({ state: "ready", failures: 1 });
 		expect(service.overview().index).toMatchObject({ failures: 1 });
+	});
+
+	it("keeps prior facts while a live file has syntax errors", async () => {
+		initGit();
+		put(".gitignore", "reachable.fake\n");
+		put("root.fake", 'export class Before {}\nimport "./reachable.fake";\n');
+		put("reachable.fake", "export class Reachable {}\n");
+		service = new LexiconService(
+			store,
+			fakeSupervisor(),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+		put("root.fake", "SYNTAX\nexport class After {}\n");
+		const broken = await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-broken" }]);
+
+		expect(broken).toContainEqual({
+			module: "root.fake",
+			action: "skipped",
+			reason: "parse failed",
+			failure: "syntax error",
+		});
+		expect(service.findByName("Before")).toHaveLength(1);
+		expect(service.findByName("After")).toEqual([]);
+		expect(service.findByName("Reachable")).toHaveLength(1);
+
+		put("root.fake", "export class After {}\n");
+		await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-green" }]);
+		expect(service.findByName("Before")).toEqual([]);
+		expect(service.findByName("After")).toHaveLength(1);
+		expect(service.findByName("Reachable")).toEqual([]);
 	});
 
 	it("isolates a poisoned closure target", async () => {

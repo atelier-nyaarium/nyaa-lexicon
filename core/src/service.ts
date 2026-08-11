@@ -323,9 +323,6 @@ export const INLINE_GAP_THRESHOLD = 20;
  */
 export const PATTERN_SCAN_LIMIT = 20_000;
 
-/** Import closure is a fixpoint; this only stops a pathological graph from walking forever. */
-const MAX_CLOSURE_PASSES = 10;
-
 /** Resolving by module reads every import, since the index stores specifiers unresolved. */
 const ALL_IMPORTS_SCAN = 20_000;
 
@@ -380,6 +377,8 @@ export class LexiconService {
 	/** This process's scan only. `stored` is read from the index when the status is asked for. */
 	private status: Omit<IndexStatus, "stored"> = { state: "unstarted", done: 0, total: 0, failures: 0 };
 	private scope: FileScope | null = null;
+	private discovered = new Set<string>();
+	private roots = new Set<string>();
 	private readonly cache = new ResultCache();
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
@@ -405,11 +404,13 @@ export class LexiconService {
 
 		const text = this.readFile(module);
 		if (text === null) {
-			this.store.forgetFile(module);
+			this.forgetFile(module);
 			return { module, action: "forgotten", reason: "file is gone" };
 		}
 
 		const facts = await this.supervisor.ask(module, "parseFile", { module, contentHash, text });
+		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+		if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("; "));
 		this.store.replaceFile(
 			module,
 			contentHash,
@@ -431,38 +432,34 @@ export class LexiconService {
 	 */
 	async indexWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
 		this.status = { state: "discovering", done: 0, total: 0, failures: 0 };
-		const discovered: string[] = [];
+		this.discovered = new Set<string>();
 		for (const provider of this.supervisor.running()) {
 			const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
 				workspaceRoot: this.workspaceRoot,
 			});
-			discovered.push(...project.files);
+			for (const module of project.files) this.discovered.add(module);
 		}
 
-		this.scope = fileScopeFor(this.workspaceRoot);
-		const named = includedFiles(this.workspaceRoot, this.scope.include);
-		const namedSet = new Set(named);
-		const roots = [...new Set([...(this.scope.known ?? []), ...discovered, ...named])].filter(
-			(module) => this.scope?.allows(module) ?? true,
-		);
-		const generated = generatedFiles(this.workspaceRoot, roots);
-		const modules = roots
-			.filter((module) => namedSet.has(module) || !generated.has(module))
-			.filter((module) => this.supervisor.route(module).owned);
+		this.roots = this.rootModules();
+		const modules = [...this.roots];
 
 		const outcomes: IndexOutcome[] = [];
+		const seen = new Set<string>();
 		this.status = { state: "indexing", done: 0, total: modules.length, failures: 0 };
 		for (const [done, module] of modules.entries()) {
+			let outcome: IndexOutcome;
 			try {
-				outcomes.push(await this.indexOne(module));
+				outcome = await this.indexOne(module);
 			} catch (error) {
-				outcomes.push(this.failedOutcome(module, error));
+				outcome = this.failedOutcome(module, error);
 			}
+			outcomes.push(outcome);
+			if (outcome.action === "forgotten") this.roots.delete(module);
+			else seen.add(module);
 			this.status = { state: "indexing", done: done + 1, total: modules.length, failures: this.status.failures };
 			onProgress?.(done + 1, modules.length);
 		}
 
-		const seen = new Set(modules);
 		outcomes.push(...(await this.followImports(seen)));
 		outcomes.push(...this.prune(seen));
 		this.status = { state: "ready", done: outcomes.length, total: outcomes.length, failures: this.status.failures };
@@ -476,11 +473,9 @@ export class LexiconService {
 
 	private async indexOne(module: string): Promise<IndexOutcome> {
 		const text = this.readFile(module);
-		// A file the project lists but cannot be read is skipped, not fatal: a generated or
-		// gitignored entry disappearing mid-scan is ordinary.
-		return text === null
-			? { module, action: "skipped", reason: "unreadable" }
-			: this.indexFile(module, hashOf(text));
+		if (text !== null) return this.indexFile(module, hashOf(text));
+		this.forgetFile(module);
+		return { module, action: "forgotten", reason: "file is gone" };
 	}
 
 	private failedOutcome(module: string, error: unknown): IndexOutcome {
@@ -499,10 +494,10 @@ export class LexiconService {
 	 * Only workspace-RESOLVED specifiers are followed. An external one would drag a package tree in
 	 * behind it, so the closure is bounded by construction rather than by a limit.
 	 */
-	private async followImports(seen: Set<string>): Promise<IndexOutcome[]> {
+	private async followImports(seen: Set<string>, indexExisting = true): Promise<IndexOutcome[]> {
 		const outcomes: IndexOutcome[] = [];
 
-		for (let pass = 0; pass < MAX_CLOSURE_PASSES; pass++) {
+		while (true) {
 			const found: string[] = [];
 			for (const module of [...seen]) {
 				for (const statement of this.store.importsIn(module)) {
@@ -514,6 +509,7 @@ export class LexiconService {
 			}
 			if (found.length === 0) break;
 			for (const module of found) {
+				if (!indexExisting && this.store.contentHashOf(module) !== null) continue;
 				try {
 					outcomes.push(await this.indexOne(module));
 				} catch (error) {
@@ -528,11 +524,30 @@ export class LexiconService {
 		const outcomes: IndexOutcome[] = [];
 		for (const module of this.store.indexedFiles()) {
 			if (reachable.has(module)) continue;
-			this.store.forgetFile(module);
+			this.forgetFile(module);
 			outcomes.push({ module, action: "forgotten", reason: "no longer a root or reachable" });
 		}
-		if (outcomes.length > 0) this.cache.invalidate();
 		return outcomes;
+	}
+
+	private rootModules(extra: Iterable<string> = []): Set<string> {
+		this.scope = fileScopeFor(this.workspaceRoot);
+		const named = includedFiles(this.workspaceRoot, this.scope.include);
+		const namedSet = new Set(named);
+		const candidates = [...new Set([...(this.scope.known ?? []), ...this.discovered, ...named, ...extra])].filter(
+			(module) => this.scope?.allows(module) ?? true,
+		);
+		const generated = generatedFiles(this.workspaceRoot, candidates);
+		return new Set(
+			candidates
+				.filter((module) => namedSet.has(module) || !generated.has(module))
+				.filter((module) => this.supervisor.route(module).owned),
+		);
+	}
+
+	private forgetFile(module: string): void {
+		this.store.forgetFile(module);
+		this.cache.invalidate();
 	}
 
 	/**
@@ -553,6 +568,14 @@ export class LexiconService {
 	/** Applies a watcher batch, one decision per file. */
 	async applyBatch(events: FileEvent[]): Promise<IndexOutcome[]> {
 		const outcomes: IndexOutcome[] = [];
+		const previousRoots = this.roots;
+		const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
+		const roots = this.rootModules(changed);
+		for (const event of events) {
+			if (event.kind === "deleted") roots.delete(event.module);
+		}
+		this.roots = roots;
+		const attempted = new Set<string>();
 
 		for (const event of events) {
 			const decision = decideInvalidation(event, {
@@ -561,7 +584,7 @@ export class LexiconService {
 			});
 
 			if (decision.action === "forget") {
-				this.store.forgetFile(decision.module);
+				this.forgetFile(decision.module);
 				outcomes.push({ module: decision.module, action: "forgotten" });
 				continue;
 			}
@@ -569,13 +592,35 @@ export class LexiconService {
 				outcomes.push({ module: decision.module, action: "skipped", reason: decision.reason });
 				continue;
 			}
+			if (!roots.has(decision.module) && this.store.contentHashOf(decision.module) === null) {
+				outcomes.push({ module: decision.module, action: "skipped", reason: "outside roots and reachability" });
+				continue;
+			}
+			attempted.add(decision.module);
 			try {
-				outcomes.push(await this.indexFile(decision.module, decision.contentHash));
+				const outcome = await this.indexFile(decision.module, decision.contentHash);
+				outcomes.push(outcome);
+				if (outcome.action === "forgotten") roots.delete(decision.module);
 			} catch (error) {
 				outcomes.push(this.failedOutcome(decision.module, error));
 			}
 		}
 
+		for (const module of roots) {
+			if (previousRoots.has(module) || attempted.has(module) || this.store.contentHashOf(module) !== null)
+				continue;
+			try {
+				const outcome = await this.indexOne(module);
+				outcomes.push(outcome);
+				if (outcome.action === "forgotten") roots.delete(module);
+			} catch (error) {
+				outcomes.push(this.failedOutcome(module, error));
+			}
+		}
+
+		const seen = new Set(roots);
+		outcomes.push(...(await this.followImports(seen, false)));
+		outcomes.push(...this.prune(seen));
 		return outcomes;
 	}
 
