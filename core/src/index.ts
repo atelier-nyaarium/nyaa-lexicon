@@ -55,6 +55,18 @@ export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } 
 export { type DaemonLock, DaemonLockSchema, decideFromLock, type LockDecision } from "./lockFile.js";
 export { currentHost, type PlatformEnv, stateRoot, workspaceKey, workspacePaths } from "./paths.js";
 export {
+	type BindOutcome,
+	bindProject,
+	boundProjects,
+	findProject,
+	forgetProject,
+	type RegisteredProject,
+	type RegisterOutcome,
+	readRegistry,
+	registerProject,
+	unbindProject,
+} from "./projectRegistry.js";
+export {
 	type DeleteOutcome,
 	deleteProjectStore,
 	listProjectStores,
@@ -127,4 +139,4 @@ export {
 	type WatchOptions,
 	watchWorkspace,
 } from "./watcher.js";
-export { type Admission, admitWorkspace } from "./workspaceAdmission.js";
+export { type Admission, type AdmissionContext, admitWorkspace } from "./workspaceAdmission.js";
