@@ -46,41 +46,35 @@ export interface ManageDeps {
 //  Constants
 
 export const LIST_STORES_DESCRIPTION = `
-Every code index this machine holds.
+# \`list_project_stores\`
 
-- Its size.
-- When it was last written.
-- Whether a daemon is serving it.
-- Whether the project it indexed still exists on disk.
+List local indexes with size, write time, daemon state, and workspace state.
 
-Use it to find indexes worth reclaiming. A large repository's index runs to hundreds of megabytes.
-
-The key each row reports is what delete_project_store and stop_project_daemon require.
+Use each row's key with \`delete_project_store\` or \`stop_project_daemon\`.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
-Permanently delete one project's index, by the key list_project_stores reports.
+# \`delete_project_store\`
 
-IRREVERSIBLE, and it takes the recorded ANSWERS with it. Show the user the row and get their
-agreement before calling this.
+Permanently delete an index and its recorded answers. **Irreversible.**
 
-Refused while a daemon is serving that store.
+Confirm the store row with the user first. Refused while its daemon is serving it.
 
-stop_project_daemon first. A store whose workspace still exists rebuilds on next use.
+Call \`stop_project_daemon\` first. Existing workspaces reindex on use.
 `.trim();
 
 export const STOP_DAEMON_DESCRIPTION = `
-Stop the daemon serving one project's index, by the key list_project_stores reports.
+# \`stop_project_daemon\`
 
-Already stopped is success. Refused for a project bound in this session; unbind_project first.
+Stop the daemon serving an index. Already stopped is success.
 
-Use before delete_project_store when that tool reports a live daemon.
+Refused while the project is bound. Call \`unbind_project\` first. Use before \`delete_project_store\` for a live daemon.
 `.trim();
 
 export const ListStoresInput = {};
 
 export const DeleteStoreInput = {
-	key: z.string().min(1).describe(`The store key, exactly as list_project_stores reports it`),
+	key: z.string().min(1).describe(`Store key from \`list_project_stores\`.`),
 };
 
 export const StopDaemonInput = DeleteStoreInput;

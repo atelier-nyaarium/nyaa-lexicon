@@ -167,478 +167,396 @@ export interface SymbolArgs {
 //  Schemas
 
 export const DescribeSymbolInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 };
 
 export const FindReferencesInput = {
 	name: z.string().min(1).optional(),
 	symbolId: z.string().min(1).optional(),
 	module: z.string().min(1).optional(),
-	limit: z.number().int().positive().max(500).optional().describe(`Default 50.`),
+	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
 export const ResolveImportInput = {
-	fromModule: z.string().min(1).describe(`Workspace-relative path of the importing file.`),
-	specifier: z.string().min(1).describe(`The specifier exactly as written in the import.`),
+	fromModule: z.string().min(1).describe(`Workspace-relative importer path.`),
+	specifier: z.string().min(1).describe(`Import specifier as written.`),
 };
 
 export const TypeOfInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 };
 
 export const FindLiteralsInput = {
-	value: z.string().optional().describe(`Exact decoded value. Indexed, so this is the cheap one.`),
-	pattern: z.string().optional().describe(`JavaScript regular expression, matched against the value.`),
-	kind: z.enum(["string", "number", "boolean"]).optional().describe(`Defaults to string for a pattern search.`),
-	min: z.number().optional().describe(`Numeric lower bound, inclusive.`),
-	max: z.number().optional().describe(`Numeric upper bound, inclusive.`),
-	limit: z.number().int().positive().max(500).optional().describe(`Default 50.`),
+	value: z.string().optional().describe(`Exact decoded value.`),
+	pattern: z.string().optional().describe(`JavaScript regular expression.`),
+	kind: z
+		.enum(["string", "number", "boolean"])
+		.optional()
+		.describe(`Literal kind. Default for \`pattern\`: \`string\`.`),
+	min: z.number().optional().describe(`Inclusive numeric minimum.`),
+	max: z.number().optional().describe(`Inclusive numeric maximum.`),
+	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
 export const GraphOfInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 };
 
 export const SearchSymbolsInput = {
-	text: z.string().min(1).describe(`Substring of the symbol name. Case-sensitive.`),
+	text: z.string().min(1).describe(`Case-sensitive symbol-name substring.`),
 	kind: z
 		.string()
 		.min(1)
 		.optional()
 		.describe(
 			`
-- class
-- function
-- method
-- constant
-- interface
-- and so on
-`.trim(),
+Filter declaration kind.
+
+Examples: \`class\`, \`function\`, \`method\`, \`constant\`, \`interface\`.
+			`.trim(),
 		),
-	module: z.string().min(1).optional().describe(`Substring of the file path, to scope the search.`),
-	limit: z.number().int().positive().max(300).optional().describe(`Default 50.`),
+	module: z.string().min(1).optional().describe(`File-path substring.`),
+	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
 export const OutlineModuleInput = {
-	module: z.string().min(1).describe(`Workspace-relative path of the file.`),
+	module: z.string().min(1).describe(`Workspace-relative file path.`),
 };
 
 export const FindImportsInput = {
-	specifier: z.string().min(1).optional().describe(`Substring of the specifier as written in source.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path; answers who imports this file.`),
-	limit: z.number().int().positive().max(300).optional().describe(`Default 50.`),
+	specifier: z.string().min(1).optional().describe(`Written import-specifier substring.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative path to find importers.`),
+	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
 export const HubsInput = {
-	limit: z.number().int().positive().max(100).optional().describe(`Default 20.`),
+	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
 export const OverviewInput = {};
 
 export const CoChangedWithInput = {
-	module: z.string().min(1).describe(`Workspace-relative path of the file to ask about.`),
-	limit: z.number().int().positive().max(100).optional().describe(`Default 20.`),
+	module: z.string().min(1).describe(`Workspace-relative file path.`),
+	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
 export const TypeHierarchyInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 };
 
 export const FileHistoryInput = {
-	module: z.string().min(1).describe(`Workspace-relative path of the file to ask about.`),
+	module: z.string().min(1).describe(`Workspace-relative file path.`),
 };
 
 export const SymbolHistoryInput = {
-	name: z.string().min(1).describe(`Symbol name as written. Case-sensitive, and at least 3 characters.`),
-	limit: z.number().int().positive().max(100).optional().describe(`Default 20.`),
+	name: z.string().min(1).describe(`Case-sensitive symbol name with at least \`3\` characters.`),
+	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
 const QUESTIONS = ["describe", "why", "relate", "contract", "effects", "usage"] as const;
 
 export const RecordAnswerInput = {
-	symbolId: z.string().min(1).describe(`Exact symbol id the answer is about, from an earlier tool answer.`),
-	question: z.enum(QUESTIONS).describe(`Which question the prose answers.`),
+	symbolId: z.string().min(1).describe(`Exact \`symbolId\` from an earlier result.`),
+	question: z.enum(QUESTIONS).describe(`Question class the prose answers.`),
 	prose: z
 		.string()
 		.min(1)
 		.describe(
 			`
-The answer, TERSE.
+Answer text.
 
-One or two sentences, a short paragraph at most.
-
-Say only what the facts cannot.
-`.trim(),
+Use \`1\` or \`2\` sentences. State only what facts do not.
+			`.trim(),
 		),
 	citations: z
 		.array(z.string().min(1))
 		.min(1)
 		.describe(
 			`
-Fact ids consumed, whole and exactly as symbol_facts prints them.
+Fact IDs from \`symbol_facts\`.
 
-Never the trailing digest alone.
-
-Other answers' ids may be cited too.
-`.trim(),
+Use each complete ID, never its digest alone. Other answer IDs are allowed.
+			`.trim(),
 		),
-	model: z.string().min(1).optional().describe(`Who wrote it, e.g. a model name.`),
+	model: z.string().min(1).optional().describe(`Author, such as a model name.`),
 	resolvesDoubt: z
 		.string()
 		.min(1)
 		.optional()
-		.describe(`The standing doubt's id, from recall. Without it a doubt rides forward onto the new answer.`),
-	omitting: z
-		.string()
-		.min(1)
-		.optional()
-		.describe(`When replacing a live answer without citing all its facts: what you dropped and why.`),
+		.describe(
+			`
+Doubt ID from \`recall_answer\`.
+
+Without it, the doubt carries forward.
+			`.trim(),
+		),
+	omitting: z.string().min(1).optional().describe(`Omitted facts and why.`),
 };
 
 export const RecallAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
-	question: z.enum(QUESTIONS).optional().describe(`One question class. Omit for everything recorded about it.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	question: z.enum(QUESTIONS).optional().describe(`Question class. Omit for all recorded answers.`),
 };
 
 export const InvalidateAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
-	reason: z.string().min(1).describe(`Why the recorded answer is no longer trusted. The next writer reads this.`),
-	question: z.enum(QUESTIONS).optional().describe(`One question class. Omit to doubt everything recorded about it.`),
-	by: z.string().min(1).optional().describe(`Who is declaring the doubt, e.g. a model name.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	reason: z.string().min(1).describe(`Why the answer is untrusted.`),
+	question: z.enum(QUESTIONS).optional().describe(`Question class. Omit for all recorded answers.`),
+	by: z.string().min(1).optional().describe(`Author declaring the doubt.`),
 };
 
 export const ReaffirmAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
-	question: z.enum(QUESTIONS).describe(`Which recorded answer is being re-affirmed.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	question: z.enum(QUESTIONS).describe(`Recorded answer's question class.`),
 	citations: z
 		.array(z.string().min(1))
 		.optional()
 		.describe(
-			`Current fact ids replacing retired ones, from symbol_facts. Omit when only clearing a doubt.`.trim(),
+			`
+Current fact IDs from \`symbol_facts\`.
+
+Omit when clearing a doubt.
+			`.trim(),
 		),
-	model: z.string().min(1).optional().describe(`Who is vouching, e.g. a model name.`),
-	resolvesDoubt: z.string().min(1).optional().describe(`The standing doubt's id, from recall. Required to clear it.`),
+	model: z.string().min(1).optional().describe(`Author vouching for the answer.`),
+	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\` to clear.`),
 };
 
 export const KnowledgeGapsInput = {
-	name: z.string().min(1).optional().describe(`Root symbol name. Omit both name and symbolId for workspace gaps.`),
-	symbolId: z.string().min(1).optional().describe(`Exact root symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate the name.`),
-	question: z.enum(QUESTIONS).optional().describe(`Default describe.`),
-	limit: z.number().int().positive().max(300).optional().describe(`Default 60.`),
+	name: z.string().min(1).optional().describe(`Root symbol name. Omit \`name\` and \`symbolId\` for workspace gaps.`),
+	symbolId: z.string().min(1).optional().describe(`Exact root \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	question: z.enum(QUESTIONS).optional().describe(`Question class. Default: \`describe\`.`),
+	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`60\`.`),
 };
 
 export const SymbolFactsInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
-	limit: z.number().int().positive().max(200).optional().describe(`Per kind, default 40.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	limit: z.number().int().positive().max(200).optional().describe(`Results per kind. Default: \`40\`.`),
 };
 
 export const PrepareRenameInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit if you already have symbolId.`),
-	symbolId: z.string().min(1).optional().describe(`Exact symbol id, from an earlier answer.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path, to disambiguate a name.`),
-	newName: z.string().min(1).describe(`The name you intend to give it.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	newName: z.string().min(1).describe(`Replacement symbol name.`),
 };
 
 ////////////////////////////////
 //  Constants
 
 export const DESCRIBE_DESCRIPTION = `
-What a symbol is, as its signature surface rather than its source.
+# \`describe_symbol\`
 
-Answers with:
+Show a symbol's declaration, direct members, reference count, and recorded knowledge.
 
-- The declaration and its direct members.
-- How many places reference it.
-- Any recorded knowledge, served with a staleness check.
-
-Use instead of reading a file for a class's shape without its bodies, or to see how widely something
-is used before touching it.
-
-Give symbolId when you have one, otherwise name, plus module if the name is not unique.
+Use \`symbolId\` when known. Otherwise use \`name\`, adding \`module\` when needed.
 `.trim();
 
 export const REFERENCES_DESCRIPTION = `
-Every USE of a symbol, resolved through imports and re-exports rather than matched by name.
+# \`find_references\`
 
-A same-named local elsewhere is excluded and an alias is followed. Results are grouped by file.
-They are capped, and the cap is reported.
+List every bound use, grouped by file. Follows aliases and re-exports.
 
-Import and export STATEMENTS are not uses and are not listed. For every occurrence a rewrite would
-touch, call prepare_rename.
+Excludes import and export statements. Call \`prepare_rename\` before a rewrite.
 `.trim();
 
 export const RESOLVE_IMPORT_DESCRIPTION = `
-Where an import specifier actually lands.
+# \`resolve_import\`
 
-Follows:
+Resolve an import specifier through path mappings, package exports, and re-exports.
 
-- Path mappings.
-- Package exports.
-- Re-export chains, so it answers for a barrel import.
-
-Distinguishes a file in the workspace, a dependency outside it, and a specifier that resolves to
-nothing. Resolving to nothing is a finding, not an error.
+Distinguishes workspace files, external dependencies, and unresolved specifiers. Unresolved is a result, not an error.
 `.trim();
 
 export const PREPARE_RENAME_DESCRIPTION = `
-Everything a rename would touch, before touching any of it. Reads only.
+# \`prepare_rename\`
 
-Lists every occurrence resolved through real binding, including the declaration, grouped by file.
+Preview every bound occurrence, including the declaration, grouped by file. Read-only.
 
-Also reports what it cannot promise: occurrences spelled the same that never bound, and whether the
-symbol is exported past the edge of the index.
+Reports same-spelling unbound occurrences and export-boundary limits.
 `.trim();
 
 export const RENAME_SYMBOL_DESCRIPTION = `
-Rename a symbol everywhere it is used. THIS WRITES FILES.
+# \`rename_symbol\`
 
-Renames:
+Rename every bound declaration, use, import, and re-export. **Writes files.**
 
-- The declaration.
-- Every use resolved through real binding.
-- Every import and re-export that reaches it.
-
-Then re-indexes what it touched.
-
-All or nothing. If any occurrence should change and cannot be changed safely, nothing is written and
-you are told which ones and why. Call prepare_rename first for the blast radius.
+Reindexes touched files. If any occurrence cannot change safely, it writes nothing. Call \`prepare_rename\` first.
 `.trim();
 
 export const FIND_LITERALS_DESCRIPTION = `
-Find literal VALUES written in the code:
+# \`find_literals\`
 
-- An exact string.
-- A regex.
-- A number range.
+Find exact values, regular expressions, or numeric ranges in decoded literal values.
 
-Searches decoded values, so it sees through quoting. Reaches text no symbol query can: a Python
-__all__ entry, the signal name in connect("..."), a magic string two files share, a hard-coded timeout.
-
-Prefer it over grep for the VALUE rather than the line. Every hit carries the declaration it sits inside.
+Use for values rather than textual spelling. Each hit includes its declaration.
 `.trim();
 
 export const GRAPH_OF_DESCRIPTION = `
-How a symbol sits in the reference graph:
+# \`graph_of\`
 
-- Fan-in.
-- Fan-out.
-- Whether it is in a cycle.
+Show a symbol's fan-in, fan-out, and cycles.
 
-Fan-in is how many places use it, fan-out how many distinct symbols it uses. A cycle is reported with
-every member.
-
-Use before refactoring, to tell a hub from a leaf. Numbers are bounded by what binding resolved, so a
-low fan-in can mean barely used or barely resolved.
+Counts cover resolved bindings. Use before refactoring to distinguish hubs from leaves.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `
-What this repository is, at a glance. Call it first in a codebase you do not know.
+# \`overview\`
 
-- Files, symbols, references, imports and literals indexed.
-- The biggest modules.
-- How much recorded knowledge exists.
-- Whether scope came from git or was walked off the disk.
+Summarize indexed files, symbols, references, imports, literals, largest modules, knowledge, and scope.
+
+Call first in an unfamiliar codebase.
 `.trim();
 
 export const SEARCH_SYMBOLS_DESCRIPTION = `
-Find declarations whose NAME contains some text. Where browsing starts, and how you get a name for
-describe_symbol.
+# \`search_symbols\`
 
-Filter by kind (class, function, method, interface, constant) and by a path substring.
+Find declared names containing text. Filter by \`kind\` and \`module\`.
 
-Searches DECLARED names, not text. A name inside a comment or string will not match, and a symbol
-reached through an alias still matches its real name.
+Does not search comments, strings, or alias spellings.
 `.trim();
 
 export const OUTLINE_MODULE_DESCRIPTION = `
-Everything one file declares, nested by container.
+# \`outline_module\`
 
-- Classes with their methods.
-- Functions.
-- Constants.
+List a file's declarations, nested by container, with signatures.
 
-Each with its signature. Costs a fraction of the source.
-
-Use instead of reading a file when you want its shape.
+Use for source shape without reading bodies.
 `.trim();
 
 export const FIND_IMPORTS_DESCRIPTION = `
-Which files import something, by the specifier as written or by the file it resolves to.
+# \`find_imports\`
 
-Give a specifier substring for every place importing it as written:
+Find importers by written \`specifier\` or resolved \`module\` path.
 
-- "discord.js"
-- "~/actions"
-- "res://"
-
-Give a module path for who imports THAT file.
-
-Reads the import graph rather than searching text, so it works in every language. A text search for
-specifiers works in TypeScript and silently returns nothing in Python.
+Uses the import graph across languages.
 `.trim();
 
 export const HUBS_DESCRIPTION = `
-The most-referenced symbols here, most used first.
+# \`hubs\`
 
-A hub is where a change is expensive and where reading pays off most.
+Rank the most-referenced symbols.
 
-Counts are bounded by what binding resolved.
+Counts cover resolved bindings.
 `.trim();
 
 export const CO_CHANGED_WITH_DESCRIPTION = `
-Files that get edited in the same commits as this one, from git history.
+# \`co_changed_with\`
 
-Finds relationships no reference edge can:
+Find files edited with a target in Git history.
 
-- A test enforcing an invariant by grep.
-- Two files held in sync by a fixture.
-- A doc that goes stale when a behaviour changes.
-
-Use before changing something to find what usually changes with it. Each row gives both counts, so a
-9-of-10 partner reads differently from a 2-of-40 one.
+Each result includes paired co-change counts. Use before changing code to find related tests, fixtures, and documentation.
 `.trim();
 
 export const TYPE_HIERARCHY_DESCRIPTION = `
-What a type extends and what extends it, in both directions at once.
+# \`type_hierarchy\`
 
-Tells you whether overriding a method here changes behaviour elsewhere, and which base actually
-declares the thing you are looking at. A subclass in another file is found without opening it.
+Show supertypes and subtypes.
 
-Unresolved bases are LISTED rather than dropped. A base outside the workspace is a real supertype
-this index cannot name.
+Lists unresolved and external bases.
 `.trim();
 
 export const FILE_HISTORY_DESCRIPTION = `
-How much a file changes and how long it has existed, from git.
+# \`file_history\`
 
-Churn is lines rather than commits. Forty one-line commits and two rewrites are different things.
+Show a file's age and line churn from Git.
 
-Says when the history window ran out rather than reporting a floor as a date.
-
-Use to weigh how settled code is before rewriting it.
+Reports when the history window ends.
 `.trim();
 
 export const SYMBOL_HISTORY_DESCRIPTION = `
-Commits whose message names this symbol. The closest thing here to a reason.
+# \`symbol_history\`
 
-Finds where somebody wrote down WHY:
+Find case-sensitive, word-boundary commit messages that name a symbol.
 
-- Why a cache was added.
-- What a workaround was working around.
-- Which bug a guard exists for.
-
-Matched on a word boundary and case-sensitively. Each row says how many files that commit touched,
-so a mention inside a sweep is not read as a deliberate one.
-
-Use before changing something whose shape looks arbitrary.
+Each result includes its changed-file count. Use for historical rationale.
 `.trim();
 
 export const RECORD_ANSWER_DESCRIPTION = `
-Save what you just figured out about a symbol, so the next agent does not re-derive it.
+# \`record_answer\`
 
-Prose plus the fact ids you drew it from, using ids from symbol_facts. The store refuses an answer
-that cites nothing, cites ids that do not resolve, or cites only other symbols' facts. YOU are the
-model; this never calls one.
+Save a concise answer about a symbol with fact IDs from \`symbol_facts\`.
 
-KEEP THE PROSE TERSE. One or two sentences is the target, a short paragraph the ceiling. Write the
-part a reader cannot already see and stop.
+Use complete, current IDs and include at least one fact for the subject. Keep prose to \`1\` or \`2\` sentences.
 
-Citing only the subject's own declaration is marked THIN. Add a reference, a literal, or a child
-answer.
+Other answer IDs are allowed. Declaration-only answers are \`THIN\`. Cited answers become stale when supporting facts change.
 
-Answers may cite other answers' ids. When a cited fact changes, the answer reports stale by itself.
+Does not call a model.
 `.trim();
 
 export const RECALL_ANSWER_DESCRIPTION = `
-The full recorded answer for one symbol, with its health: STALE, SHAKY, or DOUBTED.
+# \`recall_answer\`
 
-describe_symbol already serves the describe answer inline. This is the recall for every other
-question class, and the first step of re-affirming or clearing a doubt.
+Retrieve a recorded answer with health: \`STALE\`, \`SHAKY\`, or \`DOUBTED\`.
 
-Omit question for everything recorded about the symbol.
+\`describe_symbol\` includes \`describe\`. Omit \`question\` for all recorded answers.
 `.trim();
 
 export const INVALIDATE_ANSWER_DESCRIPTION = `
-Flag a recorded answer you no longer trust, without rewriting it.
+# \`invalidate_answer\`
 
-Use right after changing code in a way that shifts what a symbol MEANS, where the facts still
-resolve but the explanation describes the old purpose.
+Flag a recorded answer as untrusted without rewriting it.
 
-The doubt shows on every recall.
+Use when code changes alter a symbol's meaning while facts still resolve.
 
-It cascades as SHAKY into answers built on this one and joins knowledge_gaps as recheck demand.
+The doubt appears on recall, propagates to dependent answers, and becomes a \`knowledge_gaps\` recheck.
 
-The reason you give is what the next writer reads. Clearing it requires citing its id, which only a
-recall shows.
+Use \`recall_answer\` to get the doubt ID required to clear it.
 `.trim();
 
 export const REAFFIRM_ANSWER_DESCRIPTION = `
-Vouch that a recorded answer still holds, healing its ground instead of rewriting it.
+# \`reaffirm_answer\`
 
-STALE ids: verify the prose against symbol_facts, then call this with the current fact ids.
-Same prose, re-grounded, no re-authoring.
+Re-ground a verified answer with current fact IDs from \`symbol_facts\`, without rewriting prose.
 
-DOUBTED: verify, then call this citing the doubt's id as resolvesDoubt.
+For \`DOUBTED\` answers, cite the doubt ID as \`resolvesDoubt\`.
 
-Re-grounding mints a new answer id. Answers citing the old one go stale and heal the same way,
-leaves first. Only re-affirm what you have re-checked; this call IS the vouching.
+This mints a new answer ID. Reaffirm only answers you rechecked.
 `.trim();
 
 export const KNOWLEDGE_GAPS_DESCRIPTION = `
-What is not yet understood here: symbols whose recorded knowledge is missing or gone doubtful.
+# \`knowledge_gaps\`
 
-With a root symbol, the dependency tree beneath it comes back LEAVES FIRST, mapping what you are
-about to lean on. Answer the rows in order with record_answer, so every parent can lean on its
-children.
+List symbols with missing, stale, or doubted knowledge.
 
-With no root, the workspace's gaps by measured demand, stale answers first.
+With a root, results are dependency leaves first. Record them in order with \`record_answer\`.
 
-Answered entries drop out. Keep calling until it returns empty.
+Without a root, ranks workspace demand with stale answers first.
+
+Answered rows drop out.
 `.trim();
 
 export const SYMBOL_FACTS_DESCRIPTION = `
-Every indexed fact about one symbol, each with an id that can be cited and later re-checked.
+# \`symbol_facts\`
 
-- The declaration.
-- The references.
-- The literals written inside it.
-- The imports that resolve to it.
+List a symbol's declaration, references, literals, and resolved imports with citeable IDs.
 
-Each id is a digest of that fact's own contents, so an id that stops resolving is exactly a fact
-that changed.
-
-Use when you want the evidence rather than a summary, or when you intend to record WHY.
+An ID stops resolving when its fact changes. Use as evidence for \`record_answer\`.
 `.trim();
 
 export const TYPE_OF_DESCRIPTION = `
-What type a symbol actually has, including when the source never says.
+# \`type_of\`
 
-Says which of three it is:
+Show a symbol's type as \`declared\`, \`inferred\` with a basis, or \`unknown\` with a reason.
 
-- Declared in source.
-- Inferred with the basis stated.
-- Unknown with a reason.
-
-Unknown is a real answer, never a failure.
-
-Use for anything unannotated, where the declaration tells you nothing.
+\`unknown\` is a result, not an error. Use for unannotated symbols.
 `.trim();
 
 ////////////////////////////////

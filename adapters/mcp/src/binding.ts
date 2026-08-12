@@ -26,40 +26,43 @@ export interface BindingDeps {
 //  Constants
 
 export const LIST_PROJECTS_DESCRIPTION = `
-Every codebase lexicon knows about, and which are bound.
+# \`list_projects\`
 
-Bound projects are the ones every other tool answers from. Not listed means never registered.
+List registered projects and their bound status.
+
+Only bound projects supply query results.
 `.trim();
 
 export const REGISTER_PROJECT_DESCRIPTION = `
-Teach lexicon about a codebase, by absolute path to its root.
+# \`register_project\`
 
-Registering neither indexes it nor makes it answerable.
+Register a codebase by its absolute root path.
 
-bind_project does both. Re-registering is safe.
+This does not index or bind it. \`bind_project\` does both. Re-registering is safe.
 `.trim();
 
 export const BIND_PROJECT_DESCRIPTION = `
-Make a registered project one of the codebases queries answer from.
+# \`bind_project\`
 
-A bind lasts this session only. The index it warms outlives the session, so re-binding costs a call
-rather than a rescan.
+Bind a registered project for this session.
 
-Several can be bound at once. Every query answers from each, labelled by project.
+Its index stays warm. Multiple projects can be bound; query results identify their project.
 `.trim();
 
 export const UNBIND_PROJECT_DESCRIPTION = `
-Stop answering queries from this project. It stays registered and its index survives.
+# \`unbind_project\`
+
+Stop querying a project. Its registration and index remain.
 `.trim();
 
 export const ListProjectsInput = {};
 
 export const RegisterProjectInput = {
-	root: z.string().min(1).describe(`Absolute path to the codebase's root directory`),
+	root: z.string().min(1).describe(`Absolute codebase root path.`),
 };
 
 export const BindProjectInput = {
-	project: z.string().min(1).describe(`Project name or key, exactly as list_projects reports it`),
+	project: z.string().min(1).describe(`Project name or key from \`list_projects\`.`),
 };
 
 ////////////////////////////////
