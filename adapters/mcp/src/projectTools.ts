@@ -420,11 +420,11 @@ async function runQueryBatch(
 	const projectSections: string[] = [];
 	for (const route of routes) {
 		const querySections: string[] = [];
-		for (const [index, query] of queries.entries()) {
+		for (const query of queries) {
 			const result = await handler(route.backend, query);
 			failed ||= result.isError === true;
 			const body = result.content.map((chunk) => chunk.text).join("\n");
-			querySections.push(queries.length === 1 ? body : `=== Query ${index + 1}\n${body}`);
+			querySections.push(body);
 		}
 		const body = querySections.join("\n\n");
 		projectSections.push(route.name === undefined ? body : `=== ${route.name}\n${body}`);

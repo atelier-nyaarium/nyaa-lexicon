@@ -176,14 +176,12 @@ describe("query project routing", () => {
 		const options: Array<Record<string, unknown>> = [];
 		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
 
-		const result = await call(client, "search_symbols", {
+		await call(client, "search_symbols", {
 			queries: [{ text: "Needle" }, { text: "Other" }],
 		});
 
 		expect(routes).toEqual(["alpha"]);
 		expect(options).toEqual([{ text: "Needle" }, { text: "Other" }]);
-		expect(textOf(result)).toContain("=== Query 1");
-		expect(textOf(result)).toContain("=== Query 2");
 	});
 
 	it("batches queries through a fixed backend", async () => {
