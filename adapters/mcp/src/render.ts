@@ -1,8 +1,6 @@
 // Turning answers into what an agent reads.
 //
-// Pure, because this is where the token budget is actually spent and it deserves tests. The rule
-// throughout: a summary plus a handle to go deeper, never one dump. An agent pays for every line
-// and loses the thread long before a human would scroll past it.
+// Pure, because output formatting deserves direct tests.
 
 import {
 	type DescribeResult,
@@ -21,12 +19,6 @@ import {
 import type { TypeInfo } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
-//  Constants
-
-/** Members shown before the rest become a count. A class surface, not a class listing. */
-export const MEMBER_PREVIEW = 20;
-
-////////////////////////////////
 //  Functions & Helpers
 
 function line(summary: SymbolSummary): string {
@@ -36,13 +28,8 @@ function line(summary: SymbolSummary): string {
 	return `${summary.kind} ${summary.name}${exported}${summary.signature ? `: ${summary.signature}` : ""}`;
 }
 
-/**
- * One symbol as its surface. The compression that makes this beat reading the file.
- *
- * `from` pages past the cap. Without it a 48-member class had 28 members no call could reach, so
- * the cap protected the token budget by making part of the answer permanently unavailable.
- */
-export function renderDescribe(result: DescribeResult, from = 0): string {
+/** One symbol as its complete surface. */
+export function renderDescribe(result: DescribeResult): string {
 	// The line span makes "read the body" a range read of exactly those lines, never a file read.
 	const at =
 		result.symbol.lines === undefined
@@ -53,13 +40,8 @@ export function renderDescribe(result: DescribeResult, from = 0): string {
 	if (result.symbol.docComment) lines.push(`  doc ${result.symbol.docComment.split("\n")[0]}`);
 
 	if (result.members.length > 0) {
-		const shown = result.members.slice(from, from + MEMBER_PREVIEW);
-		const upto = from + shown.length;
-		lines.push(`  members ${from + 1} to ${upto} of ${result.members.length}:`);
-		for (const member of shown) lines.push(`    ${line(member)}`);
-		if (upto < result.members.length) {
-			lines.push(`    ... ${result.members.length - upto} more; call again with from: ${upto}`);
-		}
+		lines.push("  members:");
+		for (const member of result.members) lines.push(`    ${line(member)}`);
 	}
 
 	// A count rather than the list: the caller decides whether that is worth its own call.

@@ -1,6 +1,6 @@
 import type { DescribeResult, ReferencesResult, SymbolSummary } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
-import { MEMBER_PREVIEW, renderDescribe, renderReferences } from "../render";
+import { renderDescribe, renderReferences } from "../render";
 import { describeSymbol, findReferences, prepareRename, resolveImport, type ToolBackend, typeOfSymbol } from "../tools";
 
 ////////////////////////////////
@@ -154,31 +154,19 @@ describe("rendering a description", () => {
 	it("shows the surface, the id, and a use count rather than the uses", () => {
 		const rendered = renderDescribe(described);
 		expect(rendered).toContain("class Cart");
-		expect(rendered).toContain("members 1 to 2 of 2");
+		expect(rendered).toContain("members:");
 		expect(rendered).toContain("used in 3 places");
 		expect(rendered).toContain("call find_references");
 	});
 
-	it("caps a long member list, since a class listing is not a class surface", () => {
+	it("shows every member without pagination", () => {
 		const many = { ...described, members: Array.from({ length: 60 }, (_, i) => summary(`m${i}`)) };
 		const rendered = renderDescribe(many);
 
-		expect(rendered).toContain(`members 1 to ${MEMBER_PREVIEW} of 60`);
-		expect(rendered).toContain(`... ${60 - MEMBER_PREVIEW} more`);
-		expect(rendered.split("\n").length).toBeLessThan(MEMBER_PREVIEW + 12);
-	});
-
-	// The cap protected the token budget by making part of the answer permanently unreachable: a
-	// 48-member class had 28 members no call could get to. It says how to get the rest now.
-	it("pages past the cap rather than hiding the rest forever", () => {
-		const many = { ...described, members: Array.from({ length: 60 }, (_, i) => summary(`m${i}`)) };
-
-		expect(renderDescribe(many)).toContain(`call again with from: ${MEMBER_PREVIEW}`);
-
-		const second = renderDescribe(many, MEMBER_PREVIEW);
-		expect(second).toContain(`members ${MEMBER_PREVIEW + 1} to ${MEMBER_PREVIEW * 2} of 60`);
-		expect(second).toContain("m25");
-		expect(second).not.toContain("m5 ");
+		expect(rendered).toContain("members:");
+		expect(rendered).toContain("function m0");
+		expect(rendered).toContain("function m59");
+		expect(rendered).not.toContain("call again with from");
 	});
 
 	it("says nothing about references when there are none to ask for", () => {
