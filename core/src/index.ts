@@ -39,6 +39,7 @@ export {
 	DEFAULT_WIDTH_LIMIT,
 	type FileChange,
 	type FileHistory,
+	type FileHistoryCommit,
 	fileHistoryFor,
 	filesOf,
 	type HistoryReport,

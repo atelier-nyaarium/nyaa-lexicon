@@ -175,6 +175,23 @@ describe("churn and age", () => {
 		expect(fileHistoryFor("a.ts", window)).toMatchObject({ firstSeen: 100, lastTouched: 300 });
 	});
 
+	it("keeps recent commit details with the aggregate history", () => {
+		const commits = [
+			{
+				hash: "new",
+				at: 300,
+				message: "Refresh parser\n\nKeep symbols stable.",
+				changes: [{ path: "a.ts", added: 5, deleted: 1 }],
+			},
+			{ hash: "old", at: 100, message: "Add parser", changes: [{ path: "a.ts", added: 40, deleted: 0 }] },
+		];
+
+		expect(fileHistoryFor("a.ts", commits).recent).toEqual([
+			{ hash: "new", at: 300, added: 5, deleted: 1, subject: "Refresh parser" },
+			{ hash: "old", at: 100, added: 40, deleted: 0, subject: "Add parser" },
+		]);
+	});
+
 	// A file the window bottomed out on was already there. Reporting its floor as its age is how the
 	// oldest file in a repository ends up looking like the newest.
 	it("says when the window ran out rather than reporting a floor as a date", () => {

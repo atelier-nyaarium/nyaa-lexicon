@@ -1023,7 +1023,7 @@ export class LexiconService {
 	}
 
 	/**
-	 * Churn and age for one file, from the same commits co-change reads.
+	 * History for one file, from the same commits co-change reads.
 	 *
 	 * Cached alongside co-change and keyed separately, since a caller usually wants one or the other.
 	 */

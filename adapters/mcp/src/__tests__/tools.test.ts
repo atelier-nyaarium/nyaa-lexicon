@@ -44,6 +44,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			commits: 0,
 			linesAdded: 0,
 			linesDeleted: 0,
+			recent: [],
 			firstSeen: null,
 			lastTouched: null,
 			truncated: false,

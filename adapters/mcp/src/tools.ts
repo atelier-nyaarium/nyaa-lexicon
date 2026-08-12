@@ -447,9 +447,9 @@ Each row shows a paired change count and share.
 export const FILE_HISTORY_DESCRIPTION = `
 # \`file_history\`
 
-Show Git age and line churn for a file.
+Show a file's Git age and churn.
 
-Reports the history window.
+Includes recent commits with dates, line changes, and subjects.
 `.trim();
 
 export const SYMBOL_HISTORY_DESCRIPTION = `

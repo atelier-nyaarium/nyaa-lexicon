@@ -203,7 +203,5 @@ export function bindProjectTool(deps: BindingDeps, args: { project: string }): T
 export function unbindProjectTool(deps: BindingDeps, args: { project: string }): ToolResult {
 	const outcome = deps.unbind(args.project);
 	if (!outcome.bound) return text(outcome.reason, true);
-	return text(
-		`# Project unbound\n\nUnbound \`${outcome.project.name}\`.`,
-	);
+	return text(`# Project unbound\n\nUnbound \`${outcome.project.name}\`.`);
 }

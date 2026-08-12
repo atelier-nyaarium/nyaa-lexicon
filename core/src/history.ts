@@ -56,6 +56,7 @@ export interface FileHistory {
 	commits: number;
 	linesAdded: number;
 	linesDeleted: number;
+	recent: FileHistoryCommit[];
 	/** Author time of the oldest and newest commit touching it, unix seconds. */
 	firstSeen: number | null;
 	lastTouched: number | null;
@@ -67,6 +68,14 @@ export interface FileHistory {
 	 * how a young-looking number gets attached to the oldest file in the repository.
 	 */
 	truncated: boolean;
+}
+
+export interface FileHistoryCommit {
+	hash: string;
+	at: number;
+	added: number;
+	deleted: number;
+	subject: string;
 }
 
 export interface CoChange {
@@ -104,6 +113,8 @@ export const DEFAULT_WIDTH_LIMIT = 40;
 const MESSAGE_END = String.fromCharCode(1);
 
 export const DEFAULT_MENTION_LIMIT = 20;
+
+const DEFAULT_FILE_HISTORY_RECENT = 20;
 
 /**
  * Shorter names are not searched at all.
@@ -204,7 +215,7 @@ export function filesOf(commit: Commit): string[] {
 }
 
 /**
- * Churn and age for one file.
+ * History for one file.
  *
  * Counted over the same commits co-change reads, so one history read answers all three questions.
  * Sweeps are NOT dropped here: a formatter run genuinely touched this file, and while that tells
@@ -214,6 +225,7 @@ export function fileHistoryFor(module: string, commits: Commit[]): FileHistory {
 	let count = 0;
 	let linesAdded = 0;
 	let linesDeleted = 0;
+	const recent: FileHistoryCommit[] = [];
 	let firstSeen: number | null = null;
 	let lastTouched: number | null = null;
 
@@ -224,15 +236,24 @@ export function fileHistoryFor(module: string, commits: Commit[]): FileHistory {
 		count++;
 		linesAdded += change.added;
 		linesDeleted += change.deleted;
+		if (recent.length < DEFAULT_FILE_HISTORY_RECENT) {
+			recent.push({
+				hash: commit.hash,
+				at: commit.at,
+				added: change.added,
+				deleted: change.deleted,
+				subject: commit.message.split("\n")[0] ?? "",
+			});
+		}
 		// Newest first, so the last one seen is the oldest.
 		lastTouched ??= commit.at;
 		firstSeen = commit.at;
 	}
 
 	const oldest = commits.at(-1);
-	const truncated = oldest !== undefined && oldest.changes.some((entry) => entry.path === module);
+	const truncated = oldest?.changes.some((entry) => entry.path === module) ?? false;
 
-	return { module, commits: count, linesAdded, linesDeleted, firstSeen, lastTouched, truncated };
+	return { module, commits: count, linesAdded, linesDeleted, recent, firstSeen, lastTouched, truncated };
 }
 
 /**

@@ -304,6 +304,7 @@ export function renderFileHistory(result: {
 	commits: number;
 	linesAdded: number;
 	linesDeleted: number;
+	recent: Array<{ hash: string; at: number; added: number; deleted: number; subject: string }>;
 	firstSeen: number | null;
 	lastTouched: number | null;
 	truncated: boolean;
@@ -332,6 +333,18 @@ export function renderFileHistory(result: {
 				? `- First seen: ${ago(result.firstSeen)} (as far back as this read went)`
 				: `- First seen: ${ago(result.firstSeen)}`,
 		);
+	}
+	if (result.recent.length > 0) {
+		lines.push("", "## Recent commits", "", "| When | Commit | Lines | Subject |", "| --- | --- | ---: | --- |");
+		for (const commit of result.recent) {
+			const subject = commit.subject.replaceAll("|", "\\|");
+			lines.push(
+				`| ${ago(commit.at)} | \`${commit.hash.slice(0, 7)}\` | +${commit.added} / -${commit.deleted} | ${subject} |`,
+			);
+		}
+		if (result.commits > result.recent.length) {
+			lines.push("", `> ${result.commits - result.recent.length} older commits not shown.`);
+		}
 	}
 	return lines.join("\n");
 }
