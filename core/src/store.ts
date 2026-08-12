@@ -890,6 +890,30 @@ export class IndexStore {
 		};
 	}
 
+	/** Counts facts whose modules satisfy a live workspace predicate. */
+	totalsForModules(includeModule: (module: string) => boolean): {
+		files: number;
+		symbols: number;
+		references: number;
+		imports: number;
+		literals: number;
+	} {
+		const count = (table: "files" | (typeof FACT_TABLES)[number]): number => {
+			const rows = this.db.prepare(`SELECT module, COUNT(*) AS n FROM ${table} GROUP BY module`).all() as Array<{
+				module: string;
+				n: number;
+			}>;
+			return rows.reduce((total, row) => (includeModule(row.module) ? total + row.n : total), 0);
+		};
+		return {
+			files: count("files"),
+			symbols: count("symbols"),
+			references: count("refs"),
+			imports: count("imports"),
+			literals: count("literals"),
+		};
+	}
+
 	/** Every symbol with a given name, across the workspace. The entry point for a name-only ask. */
 	declarationsNamed(name: string): StoredDeclaration[] {
 		const rows = this.db.prepare("SELECT * FROM symbols WHERE name = ? ORDER BY module, startLine").all(name);

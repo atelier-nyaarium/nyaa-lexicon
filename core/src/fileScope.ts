@@ -55,6 +55,19 @@ export const CONFIG_FILE = "lexicon.json";
 /** Stops an include glob from walking a deep tree forever. Deeper than any real source layout. */
 const MAX_INCLUDE_DEPTH = 12;
 
+/** Whether a workspace-relative module is outside the workspace or under a dependency directory. */
+export function isExternalModule(workspaceRoot: string, module: string): boolean {
+	const root = path.resolve(workspaceRoot);
+	const absolute = path.resolve(root, module);
+	const relative = path.relative(root, absolute);
+	return (
+		relative.startsWith(`..${path.sep}`) ||
+		relative === ".." ||
+		path.isAbsolute(relative) ||
+		relative.split(path.sep).includes("node_modules")
+	);
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 

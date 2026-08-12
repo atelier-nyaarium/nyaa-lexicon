@@ -3,7 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { describeScope, fileScopeFor, generatedFiles, gitFiles, globToRegExp, includedFiles } from "../fileScope";
+import {
+	describeScope,
+	fileScopeFor,
+	generatedFiles,
+	gitFiles,
+	globToRegExp,
+	includedFiles,
+	isExternalModule,
+} from "../fileScope";
 
 ////////////////////////////////
 //  Helpers
@@ -80,6 +88,15 @@ describe("what git says belongs to the project", () => {
 });
 
 describe("the scoping rule", () => {
+	it("recognizes dependency and outside-workspace modules", () => {
+		const root = repo({ "src/a.ts": "" });
+
+		expect(isExternalModule(root, "src/a.ts")).toBe(false);
+		expect(isExternalModule(root, "node_modules/pkg/index.d.ts")).toBe(true);
+		expect(isExternalModule(root, "packages/node_modules_helper.ts")).toBe(false);
+		expect(isExternalModule(root, "../outside.ts")).toBe(true);
+	});
+
 	it("reads generated declarations from git attributes", () => {
 		const root = repo({
 			".gitattributes": "generated/** linguist-generated\n",

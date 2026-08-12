@@ -28,7 +28,14 @@ import {
 	type RecordOutcome,
 } from "./answers.js";
 import { type FileEdits, writeAll } from "./applyEdits.js";
-import { describeScope, type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
+import {
+	describeScope,
+	type FileScope,
+	fileScopeFor,
+	generatedFiles,
+	includedFiles,
+	isExternalModule,
+} from "./fileScope.js";
 import { findCycles } from "./graph.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
 import { decideInvalidation, type FileEvent } from "./invalidation.js";
@@ -515,8 +522,8 @@ export class LexiconService {
 	 * program however your VCS feels about it, while a secrets file nobody imports never becomes
 	 * reachable, which is why this is safe in a way that simply un-ignoring a directory is not.
 	 *
-	 * Only workspace-RESOLVED specifiers are followed. An external one would drag a package tree in
-	 * behind it, so the closure is bounded by construction rather than by a limit.
+	 * Workspace-resolved specifiers follow their implementation. An external one may contribute a
+	 * bounded surface, never the package implementation tree.
 	 */
 	private async followImports(
 		seen: Set<string>,
@@ -788,7 +795,9 @@ export class LexiconService {
 
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */
 	overview(topModules = 15) {
-		const modules = this.store.moduleSummary();
+		const includeModule = (module: string) => !isExternalModule(this.workspaceRoot, module);
+		const modules = this.store.moduleSummary().filter(({ module }) => includeModule(module));
+		const totals = this.store.totalsForModules(includeModule);
 
 		// Knowledge coverage belongs in the first answer a fresh agent reads. The layer was
 		// discoverable only through describe's inline line, so an agent arriving with an ordinary
@@ -810,7 +819,7 @@ export class LexiconService {
 		const doubted = this.store.doubtedCount();
 
 		return {
-			...this.store.totals(),
+			...totals,
 			scope: this.scopeReport(),
 			index: this.indexStatus(),
 			modules: modules.length,

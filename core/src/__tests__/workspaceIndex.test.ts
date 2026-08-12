@@ -330,6 +330,37 @@ describe("reachability and failures", () => {
 		});
 	});
 
+	it("omits dependency modules from the overview", async () => {
+		initGit();
+		put(".gitignore", "node_modules/\n");
+		put("root.fake", 'export class Root {}\nimport "external:node_modules/fixture/index.fake";\n');
+		put("node_modules/fixture/index.fake", "export class External {}\n");
+		service = new LexiconService(
+			store,
+			fakeSupervisor(),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+
+		expect(service.overview()).toMatchObject({
+			files: 1,
+			symbols: 1,
+			references: 0,
+			imports: 1,
+			literals: 0,
+			modules: 1,
+			largest: [{ module: "root.fake", symbols: 1 }],
+		});
+	});
+
 	it("keeps an out-of-scope import tree while referenced and prunes it after a live refactor", async () => {
 		initGit();
 		put(".gitignore", "reachable.fake\nleaf.fake\n");
