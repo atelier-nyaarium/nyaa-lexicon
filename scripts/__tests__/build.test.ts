@@ -157,6 +157,15 @@ describe("dirtyTrackedFiles", () => {
 		expect(dirtyTrackedFiles(out)).toEqual([]);
 	});
 
+	it("ignores tracked files under root and workspace dist directories", () => {
+		const out = [
+			"1 .M N... 100644 100644 100644 aaa bbb dist/main.js",
+			"1 .M N... 100644 100644 100644 aaa bbb core/dist/index.js",
+			"1 .M N... 100644 100644 100644 aaa bbb core/src/index.ts",
+		].join("\n");
+		expect(dirtyTrackedFiles(out)).toEqual(["core/src/index.ts"]);
+	});
+
 	it("takes the new path from a rename record, not the original", () => {
 		const line = "2 R. N... 100644 100644 100644 aaa bbb R100 new/path.ts\told/path.ts";
 		expect(dirtyTrackedFiles(line)).toEqual(["new/path.ts"]);
