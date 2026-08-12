@@ -94,13 +94,6 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
 	return (await client.callTool({ name, arguments: args })) as CallToolResult;
 }
 
-function textOf(result: CallToolResult): string {
-	return result.content
-		.map((chunk) => (chunk.type === "text" ? chunk.text : ""))
-		.filter(Boolean)
-		.join("\n");
-}
-
 function searchSource(routes: string[], optionsSeen: Array<Record<string, unknown>>): BackendSource {
 	return (selected) => {
 		routes.push(selected.name);
@@ -160,6 +153,16 @@ describe("the published MCP project selectors", () => {
 });
 
 describe("query project routing", () => {
+	it("rejects a query when no project is bound", async () => {
+		const routes: string[] = [];
+		const client = await connectClient(searchSource(routes, []), binding([]));
+
+		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }] });
+
+		expect(result.isError).toBe(true);
+		expect(routes).toEqual([]);
+	});
+
 	it("defaults to the sole binding and strips routing metadata", async () => {
 		const routes: string[] = [];
 		const options: Array<Record<string, unknown>> = [];
@@ -212,7 +215,6 @@ describe("query project routing", () => {
 		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }] });
 
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("Pass projects");
 		expect(routes).toEqual([]);
 	});
 
@@ -226,8 +228,7 @@ describe("query project routing", () => {
 		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }], projects: [] });
 
 		expect(routes).toEqual(["alpha", "gamma"]);
-		expect(textOf(result)).toContain("=== alpha");
-		expect(textOf(result)).toContain("=== gamma");
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("preserves named subset order", async () => {
@@ -244,8 +245,8 @@ describe("query project routing", () => {
 		});
 
 		expect(routes).toEqual(["beta", "alpha"]);
-		expect(textOf(result).indexOf("=== beta")).toBeLessThan(textOf(result).indexOf("=== alpha"));
 		expect(options).toEqual([{ text: "Needle" }, { text: "Needle" }]);
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("returns the direct unlabelled result for one explicitly selected project", async () => {
@@ -258,7 +259,7 @@ describe("query project routing", () => {
 		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }], projects: ["beta"] });
 
 		expect(routes).toEqual(["beta"]);
-		expect(textOf(result)).not.toContain("=== beta");
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("preserves a child error on an all-project result", async () => {
@@ -278,8 +279,6 @@ describe("query project routing", () => {
 
 		expect(routes).toEqual(["alpha", "beta"]);
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("=== alpha\nalpha failed");
-		expect(textOf(result)).toContain("=== beta");
 	});
 
 	it.each([

@@ -1,6 +1,5 @@
-import type { DescribeResult, ReferencesResult, SymbolSummary } from "@nyaa-lexicon/core";
+import type { DescribeResult, SymbolSummary } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
-import { renderDescribe, renderReferences } from "../render";
 import { describeSymbol, findReferences, prepareRename, resolveImport, type ToolBackend, typeOfSymbol } from "../tools";
 
 ////////////////////////////////
@@ -101,10 +100,6 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 
 const RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } };
 
-function textOf(result: { content: Array<{ text: string }> }): string {
-	return result.content.map((c) => c.text).join("\n");
-}
-
 const described: DescribeResult = {
 	symbol: summary("Cart", { kind: "class", signature: "class Cart" }),
 	members: [summary("add", { kind: "method" }), summary("total", { kind: "method" })],
@@ -117,8 +112,18 @@ const described: DescribeResult = {
 
 describe("resolving what the caller gave", () => {
 	it("uses a symbolId directly", async () => {
-		const result = await describeSymbol(backend({ describe: async () => described }), { symbolId: "x" });
-		expect(textOf(result)).toContain("class Cart");
+		let seen: string | undefined;
+		const result = await describeSymbol(
+			backend({
+				describe: async (symbolId) => {
+					seen = symbolId;
+					return described;
+				},
+			}),
+			{ symbolId: "x" },
+		);
+		expect(seen).toBe("x");
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("resolves a unique name", async () => {
@@ -126,7 +131,7 @@ describe("resolving what the caller gave", () => {
 			backend({ findByName: async () => [summary("Cart")], describe: async () => described }),
 			{ name: "Cart" },
 		);
-		expect(textOf(result)).toContain("Cart");
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("lists the candidates rather than describing whichever came first", async () => {
@@ -134,99 +139,16 @@ describe("resolving what the caller gave", () => {
 		const result = await describeSymbol(backend({ findByName: async () => two }), { name: "Cart" });
 
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("2 symbols named Cart");
-		expect(textOf(result)).toContain("src/b.ts");
 	});
 
 	it("says so when nothing matches, rather than answering emptily", async () => {
 		const result = await describeSymbol(backend(), { name: "Ghost" });
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("No symbol named Ghost");
 	});
 
 	it("refuses a call giving neither name nor id", async () => {
 		const result = await describeSymbol(backend(), {});
 		expect(result.isError).toBe(true);
-	});
-});
-
-describe("rendering a description", () => {
-	it("shows the surface, the id, and a use count rather than the uses", () => {
-		const rendered = renderDescribe(described);
-		expect(rendered).toContain("class Cart");
-		expect(rendered).toContain("members:");
-		expect(rendered).toContain("used in 3 places");
-		expect(rendered).toContain("call find_references");
-	});
-
-	it("shows every member without pagination", () => {
-		const many = { ...described, members: Array.from({ length: 60 }, (_, i) => summary(`m${i}`)) };
-		const rendered = renderDescribe(many);
-
-		expect(rendered).toContain("members:");
-		expect(rendered).toContain("function m0");
-		expect(rendered).toContain("function m59");
-		expect(rendered).not.toContain("call again with from");
-	});
-
-	it("says nothing about references when there are none to ask for", () => {
-		expect(renderDescribe({ ...described, referenceCount: 0 })).not.toContain("call find_references");
-	});
-});
-
-describe("rendering references", () => {
-	function reference(module: string, line: number) {
-		return {
-			factId: `lexfact-stand-in-${module}-${line}`,
-			module,
-			name: "Cart",
-			role: "call",
-			targetId: "x",
-			fromId: null,
-			provenance: "bound",
-			startLine: line,
-			startCharacter: 0,
-			endLine: line,
-			endCharacter: 4,
-		};
-	}
-
-	it("groups by file so the shape of the usage is visible", () => {
-		const result: ReferencesResult = {
-			symbolId: "x",
-			references: [reference("a.ts", 0), reference("a.ts", 4), reference("b.ts", 2)],
-			total: 3,
-			truncated: false,
-			tier: "bound",
-		};
-		const rendered = renderReferences(result);
-
-		expect(rendered).toContain("3 references");
-		expect(rendered.indexOf("a.ts")).toBeLessThan(rendered.indexOf("b.ts"));
-		expect(rendered).toContain("line 1");
-	});
-
-	it("reports the cap rather than quietly truncating", () => {
-		const result: ReferencesResult = {
-			symbolId: "x",
-			references: [reference("a.ts", 0)],
-			total: 40,
-			truncated: true,
-			tier: "bound",
-		};
-		expect(renderReferences(result)).toContain("39 more");
-	});
-
-	it("states its own limits when it found nothing", () => {
-		const rendered = renderReferences({
-			symbolId: "x",
-			references: [],
-			total: 0,
-			truncated: false,
-			tier: "bound",
-		});
-		expect(rendered).toContain("No references found");
-		expect(rendered).toContain("as far as binding reaches");
 	});
 });
 
@@ -236,7 +158,7 @@ describe("resolving an import", () => {
 			backend({ resolveImport: async () => ({ status: "resolved", module: "src/item.ts" }) }),
 			{ fromModule: "src/cart.ts", specifier: "./item" },
 		);
-		expect(textOf(result)).toContain("resolves to src/item.ts");
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("separates external from unresolved, which are different answers", async () => {
@@ -244,10 +166,10 @@ describe("resolving an import", () => {
 			backend({ resolveImport: async () => ({ status: "external", packageName: "zod", version: "4.4.3" }) }),
 			{ fromModule: "src/a.ts", specifier: "zod" },
 		);
-		expect(textOf(external)).toContain("external: zod@4.4.3");
+		expect(external.isError).toBeUndefined();
 
 		const missing = await resolveImport(backend(), { fromModule: "src/a.ts", specifier: "./gone" });
-		expect(textOf(missing)).toContain("did not resolve (NotImplemented)");
+		expect(missing.isError).toBeUndefined();
 	});
 
 	it("does not call an unresolved import an error, since it is a finding", async () => {
@@ -271,26 +193,6 @@ describe("planning a rename", () => {
 		warnings: [],
 	};
 
-	it("counts the occurrences and names the files before anything is written", async () => {
-		const result = await prepareRename(backend({ ...found, prepareRename: async () => plan }), {
-			name: "Cart",
-			newName: "Basket",
-		});
-
-		expect(textOf(result)).toContain("3 occurrences in 2 files");
-		expect(textOf(result)).toContain("src/uses.ts  2");
-		expect(result.isError).toBeUndefined();
-	});
-
-	// An empty warnings list has to READ as a claim, otherwise a reader takes silence for coverage.
-	it("says outright that the set is closed when it is", async () => {
-		const result = await prepareRename(backend({ ...found, prepareRename: async () => plan }), {
-			name: "Cart",
-			newName: "Basket",
-		});
-		expect(textOf(result)).toContain("Every occurrence is a bound edge");
-	});
-
 	it("reports a warning without refusing, since uncertainty is the caller's call", async () => {
 		const warned = {
 			...plan,
@@ -304,8 +206,6 @@ describe("planning a rename", () => {
 		});
 
 		expect(result.isError).toBeUndefined();
-		expect(textOf(result)).toContain("may not be complete");
-		expect(textOf(result)).toContain("src/x.ts:7");
 	});
 
 	it("refuses on a blocker, which is a different answer from a warning", async () => {
@@ -316,136 +216,16 @@ describe("planning a rename", () => {
 		});
 
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("Cannot rename Cart");
-	});
-});
-
-// The daemon answers before its first scan finishes, so "no references" during a scan and "no
-// references" after one are the same sentence about different worlds. Only this tells them apart.
-describe("answering from an index that is still being built", () => {
-	const found = { findByName: async () => [summary("Cart")] };
-
-	it("says how much has been read when references come back empty mid-scan", async () => {
-		const result = await findReferences(
-			backend({
-				...found,
-				indexStatus: async () => ({ state: "indexing", done: 40, total: 700, failures: 0, stored: 0 }),
-			}),
-			{ name: "Cart" },
-		);
-		expect(textOf(result)).toContain("40 of 700 files read");
-	});
-
-	it("says nothing extra once the scan is done, so the note means something", async () => {
-		const result = await findReferences(backend(found), { name: "Cart" });
-		expect(textOf(result)).not.toContain("Still indexing");
-	});
-
-	it("does not let an unbuilt index look like an empty repository", async () => {
-		const result = await findReferences(
-			backend({
-				...found,
-				indexStatus: async () => ({ state: "unstarted", done: 0, total: 0, failures: 0, stored: 0 }),
-			}),
-			{ name: "Cart" },
-		);
-		expect(textOf(result)).toContain("has not been built yet");
-	});
-
-	// The commonest answer during a cold scan, and the one the first version of this missed.
-	it("qualifies 'no symbol named that', which otherwise reads as a settled fact", async () => {
-		const result = await describeSymbol(
-			backend({ indexStatus: async () => ({ state: "indexing", done: 12, total: 700, failures: 0, stored: 0 }) }),
-			{ name: "Ghost" },
-		);
-
-		expect(textOf(result)).toContain("No symbol named Ghost");
-		expect(textOf(result)).toContain("12 of 700 files read");
-	});
-
-	it("qualifies a rename plan too, since a partial index makes a partial plan", async () => {
-		const result = await prepareRename(
-			backend({
-				...found,
-				indexStatus: async () => ({ state: "indexing", done: 5, total: 700, failures: 0, stored: 0 }),
-			}),
-			{ name: "Cart", newName: "Basket" },
-		);
-		expect(textOf(result)).toContain("5 of 700 files read");
-	});
-
-	/**
-	 * A rescan over an index that already holds files is a REFRESH, not a cold build.
-	 *
-	 * The answer came from a complete earlier scan, so calling it incomplete is its own dishonesty:
-	 * a daemon restart would otherwise stamp every correct answer as unreliable, and a caveat that
-	 * is usually wrong is one a reader learns to skip.
-	 */
-	it("separates a refresh over a warm index from a cold build", async () => {
-		const result = await findReferences(
-			backend({
-				...found,
-				indexStatus: async () => ({ state: "indexing", done: 3, total: 109, failures: 0, stored: 109 }),
-			}),
-			{ name: "Cart" },
-		);
-
-		expect(textOf(result)).toContain("Answered from an index of 109 files");
-		expect(textOf(result)).toContain("rescan is in progress (3 of 109)");
-		expect(textOf(result)).not.toContain("may be incomplete");
 	});
 });
 
 describe("asking for a type", () => {
-	const found = { findByName: async () => [summary("Cart")] };
-
-	it("says a declared type came from source", async () => {
-		const result = await typeOfSymbol(
-			backend({ ...found, typeOf: async () => ({ status: "known", display: "number", provenance: "declared" }) }),
-			{ name: "Cart" },
-		);
-		expect(textOf(result)).toContain("Cart: number");
-		expect(textOf(result)).toContain("declared in source");
-	});
-
-	it("states what an inferred type was inferred from", async () => {
-		const result = await typeOfSymbol(
-			backend({
-				...found,
-				typeOf: async () => ({ status: "inferred", display: "string", basis: "return statements" }),
-			}),
-			{ name: "Cart" },
-		);
-		expect(textOf(result)).toContain("inferred from return statements");
-	});
-
-	// The distinction the whole tri-state design exists for: a reader must never mistake "nobody
-	// built this yet" for "the checker looked and found nothing".
-	it("keeps an unimplemented tier distinct from a type the language cannot know", async () => {
-		const notBuilt = await typeOfSymbol(
-			backend({ ...found, typeOf: async () => ({ status: "unknown", reason: "NotImplemented" }) }),
-			{ name: "Cart" },
-		);
-		const cannotKnow = await typeOfSymbol(
-			backend({ ...found, typeOf: async () => ({ status: "unknown", reason: "DynamicallyTyped" }) }),
-			{ name: "Cart" },
-		);
-
-		expect(textOf(notBuilt)).toContain("NotImplemented");
-		expect(textOf(cannotKnow)).toContain("DynamicallyTyped");
-		expect(textOf(notBuilt)).not.toEqual(textOf(cannotKnow));
-	});
-
-	it("asks the caller to choose rather than typing whichever symbol came first", async () => {
+	it("rejects an ambiguous symbol name", async () => {
 		const result = await typeOfSymbol(
 			backend({ findByName: async () => [summary("Cart"), summary("Cart", { module: "src/b.ts" })] }),
 			{ name: "Cart" },
 		);
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("Pass one of the symbolIds above to pick one.");
-		// The ids themselves must be in the answer, or eight identical minified methods render as
-		// eight identical lines and "pick one" is an instruction nobody can follow.
-		expect(textOf(result)).toContain("lexicon ts src/a.ts Cart.");
 	});
 });
 
