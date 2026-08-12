@@ -26,10 +26,13 @@ interface ToolResult {
 export interface BindingDeps {
 	list: () => SessionProject[];
 	indexTimes?: () => ReadonlyMap<string, number | null>;
-	register: (
-		root: string,
-	) =>
-		| { registered: true; project: SessionProject; already: boolean; sync: SessionSyncOutcome }
+	register: (root: string) =>
+		| {
+				registered: true;
+				project: SessionProject;
+				already: boolean;
+				sync: SessionSyncOutcome;
+		  }
 		| { registered: false; reason: string };
 	bind: SessionBinds["bind"];
 	unbind: SessionBinds["unbind"];
@@ -51,38 +54,41 @@ export const REGISTER_PROJECT_DESCRIPTION = `
 
 Register a codebase by its absolute root path.
 
-This does not index or bind it. \`bind_project\` does both. Re-registering is safe.
+Registration does not index or bind it. \`bind_project\` starts its indexer for this session.
 `.trim();
 
 export const BIND_PROJECT_DESCRIPTION = `
 # \`bind_project\`
 
-Bind this session to a project's indexer.
+Bind to a project indexer for this session.
 
-Use a project name from \`list_projects\`. Multiple project indexers can be bound.
+Use a project name from \`list_projects\`.
 `.trim();
 
 export const UNBIND_PROJECT_DESCRIPTION = `
 # \`unbind_project\`
 
-Stop querying a project. Its registration and index remain.
+Stop querying a project indexer.
 `.trim();
 
 export const ListProjectsInput = {};
 
 export const RegisterProjectInput = {
-	root: z.string().min(1).describe(`Absolute codebase root path.`),
+	root: z.string().min(1).describe(`Absolute workspace root path.`),
 };
 
 export const BindProjectInput = {
-	project: z.string().min(1).describe(`Project name from \`list_projects\`.`),
+	project: z.string().min(1).describe(`Project name shown by \`list_projects\`.`),
 };
 
 ////////////////////////////////
 //  Functions & Helpers
 
 function text(body: string, isError = false): ToolResult {
-	return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
+	return {
+		content: [{ type: "text", text: body }],
+		...(isError ? { isError: true } : {}),
+	};
 }
 
 /** Live deps, for production call sites. Binds come from the session, registration from disk. */
@@ -96,7 +102,10 @@ export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 			const sync = binds.sync();
 			const project = binds.all().find((entry) => entry.key === outcome.project.key);
 			if (project === undefined)
-				return { registered: false, reason: "registered project is missing from this session" };
+				return {
+					registered: false,
+					reason: "registered project is missing from this session",
+				};
 			return { registered: true, project, already: outcome.already, sync };
 		},
 		bind: (reference) => binds.bind(reference),
@@ -114,7 +123,9 @@ export function nothingBoundMessage(_projects: SessionProject[]): string {
 export function listProjectsTool(deps: BindingDeps): ToolResult {
 	const projects = deps.list();
 	if (projects.length === 0) {
-		return text("No project is registered. Call `register_project` with the absolute path to a codebase's root.");
+		return text(
+			"# Projects\n\nNo project is registered. Call `register_project` with the absolute path to a codebase's root.",
+		);
 	}
 
 	const indexTimes = deps.indexTimes?.() ?? new Map<string, number | null>();
@@ -144,7 +155,7 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 				.join("  "),
 		)
 		.join("\n");
-	return text(table);
+	return text(`# Projects\n\n${table}`);
 }
 
 export function registerProjectTool(deps: BindingDeps, args: { root: string }): ToolResult {
@@ -157,24 +168,42 @@ export function registerProjectTool(deps: BindingDeps, args: { root: string }): 
 	if (outcome.already) {
 		const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
 		return text(
-			[`${outcome.project.name} is already registered at ${outcome.project.root}.`, ...renamed, next].join("\n"),
+			[
+				`# Project already registered`,
+				"",
+				`\`${outcome.project.name}\``,
+				`\`${outcome.project.root}\``,
+				...renamed,
+				"",
+				next,
+			].join("\n"),
 		);
 	}
 
 	const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
-	return text([`Registered ${outcome.project.name} at ${outcome.project.root}.`, ...renamed, next].join("\n"));
+	return text(
+		[
+			"# Project registered",
+			"",
+			`\`${outcome.project.name}\``,
+			`\`${outcome.project.root}\``,
+			...renamed,
+			"",
+			next,
+		].join("\n"),
+	);
 }
 
 export function bindProjectTool(deps: BindingDeps, args: { project: string }): ToolResult {
 	const outcome = deps.bind(args.project);
 	if (!outcome.bound) return text(outcome.reason, true);
-	return text(
-		`Bound ${outcome.project.name} indexer. The bind lasts for this session.`,
-	);
+	return text(`# Project bound\n\nBound the \`${outcome.project.name}\` indexer for this session.`);
 }
 
 export function unbindProjectTool(deps: BindingDeps, args: { project: string }): ToolResult {
 	const outcome = deps.unbind(args.project);
 	if (!outcome.bound) return text(outcome.reason, true);
-	return text(`Unbound ${outcome.project.name}. It stays registered and its index is untouched.`);
+	return text(
+		`# Project unbound\n\nUnbound \`${outcome.project.name}\`. It stays registered and its index is untouched.`,
+	);
 }

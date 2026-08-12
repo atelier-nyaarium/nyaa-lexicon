@@ -74,7 +74,7 @@ Refused while the project is bound. Call \`unbind_project\` first. Use before \`
 export const ListStoresInput = {};
 
 export const DeleteStoreInput = {
-	key: z.string().min(1).describe(`Store key from \`list_project_stores\`.`),
+	key: z.string().min(1).describe(`Store key shown by \`list_project_stores\`.`),
 };
 
 export const StopDaemonInput = DeleteStoreInput;
@@ -87,7 +87,10 @@ const STOP_POLL_MS = 100;
 //  Functions & Helpers
 
 function text(body: string, isError = false): ToolResult {
-	return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
+	return {
+		content: [{ type: "text", text: body }],
+		...(isError ? { isError: true } : {}),
+	};
 }
 
 function daemonLockFile(store: ProjectStore): string {
@@ -154,7 +157,7 @@ function describeAge(modifiedAt: number | null, now: number): string {
 /** An index that never recorded its workspace reads as UNVERIFIED, never orphaned: folding the two
  * once offered nine live projects for deletion. */
 export function renderStores(stores: ProjectStore[], now: number): string {
-	if (stores.length === 0) return "This machine holds no indexes.";
+	if (stores.length === 0) return "# Project indexes\n\nThis machine holds no indexes.";
 
 	const lines = stores.map((store) => {
 		const where = store.workspaceRoot ?? "(this index predates recording its workspace)";
@@ -166,7 +169,14 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 					: store.workspace === "missing"
 						? "ORPHANED, its workspace is gone"
 						: "UNVERIFIED, it does not say what it indexed";
-		return `${store.key}\n  ${where}\n  ${describeSize(store.bytes)}, written ${describeAge(store.modifiedAt, now)}, ${state}`;
+		return [
+			`## \`${store.key}\``,
+			"",
+			`- Workspace: ${where}`,
+			`- Size: ${describeSize(store.bytes)}`,
+			`- Written: ${describeAge(store.modifiedAt, now)}`,
+			`- State: ${state}`,
+		].join("\n");
 	});
 
 	const orphaned = stores.filter((store) => store.workspace === "missing");
@@ -188,7 +198,15 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 		);
 	}
 
-	return `${stores.length} indexed ${stores.length === 1 ? "project" : "projects"}:\n\n${lines.join("\n\n")}\n\n${notes.join(" ")}`;
+	return [
+		`# ${stores.length} indexed ${stores.length === 1 ? "project" : "projects"}`,
+		"",
+		lines.join("\n\n"),
+		"",
+		"## Notes",
+		"",
+		notes.map((note) => `- ${note}`).join("\n"),
+	].join("\n");
 }
 
 ////////////////////////////////
@@ -202,7 +220,7 @@ export function deleteProjectStoreTool(deps: ManageDeps, args: { key: string }):
 	const outcome = deps.remove(args.key);
 	if (!outcome.deleted) return text(outcome.reason, true);
 	return text(
-		`Deleted ${outcome.key}, freeing ${describeSize(outcome.bytes)}. It rebuilds on next use if its workspace still exists.`,
+		`# Project index deleted\n\nDeleted \`${outcome.key}\`, freeing ${describeSize(outcome.bytes)}. It rebuilds on next use if its workspace still exists.`,
 	);
 }
 
@@ -217,22 +235,31 @@ export async function stopProjectDaemonTool(
 ): Promise<ToolResult> {
 	const store = deps.list().find((candidate) => candidate.key === args.key);
 	if (store === undefined) {
-		return text(`No store named ${args.key}; call \`list_project_stores\` to get a real store key.`, true);
+		return text(
+			`# Store not found\n\nNo store named \`${args.key}\`; call \`list_project_stores\` to get a real store key.`,
+			true,
+		);
 	}
 
 	if (bound().some((project) => project.key === args.key)) {
-		return text(`Refusing to stop ${args.key}: it is bound in this session. Call \`unbind_project\` first.`, true);
+		return text(
+			`# Daemon not stopped\n\nRefusing to stop \`${args.key}\`: it is bound in this session. Call \`unbind_project\` first.`,
+			true,
+		);
 	}
 
 	if (store.livePid === null) {
-		return text(`No daemon is serving ${args.key}; it is already stopped.`);
+		return text(`# Daemon already stopped\n\nNo daemon is serving \`${args.key}\`.`);
 	}
 
 	const pid = store.livePid;
 	const lock = deps.lock(store);
 	if (lock === null) {
-		if (deps.gone(store, pid)) return text(`No daemon is serving ${args.key}; it is already stopped.`);
-		return text(`Could not find a usable daemon lock for ${args.key}; it is still serving pid ${pid}.`, true);
+		if (deps.gone(store, pid)) return text(`# Daemon already stopped\n\nNo daemon is serving \`${args.key}\`.`);
+		return text(
+			`# Daemon not stopped\n\nCould not find a usable daemon lock for \`${args.key}\`; it is still serving pid ${pid}.`,
+			true,
+		);
 	}
 
 	let reply: unknown;
@@ -240,19 +267,28 @@ export async function stopProjectDaemonTool(
 		reply = await deps.shutdown(lock);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
-		return text(`Could not ask pid ${pid} to stop serving ${args.key}: ${reason}`, true);
+		return text(
+			`# Daemon not stopped\n\nCould not ask pid ${pid} to stop serving \`${args.key}\`: ${reason}`,
+			true,
+		);
 	}
 	if (!shutdownWasAccepted(reply)) {
-		return text(`Daemon pid ${pid} did not acknowledge the shutdown request for ${args.key}.`, true);
+		return text(
+			`# Daemon not stopped\n\nDaemon pid ${pid} did not acknowledge the shutdown request for \`${args.key}\`.`,
+			true,
+		);
 	}
 
 	const started = deps.now();
 	while (!deps.gone(store, pid)) {
 		if (deps.now() - started >= STOP_TIMEOUT_MS) {
-			return text(`Daemon pid ${pid} did not stop serving ${args.key} within ${STOP_TIMEOUT_MS}ms.`, true);
+			return text(
+				`# Daemon not stopped\n\nDaemon pid ${pid} did not stop serving \`${args.key}\` within ${STOP_TIMEOUT_MS}ms.`,
+				true,
+			);
 		}
 		await deps.wait(STOP_POLL_MS);
 	}
 
-	return text(`Stopped daemon pid ${pid} serving ${args.key}.`);
+	return text(`# Daemon stopped\n\nStopped daemon pid ${pid} serving \`${args.key}\`.`);
 }

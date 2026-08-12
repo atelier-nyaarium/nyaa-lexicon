@@ -86,7 +86,13 @@ export interface ToolBackend {
 		moduleRegex?: string | undefined;
 		limit?: number | undefined;
 	}) => Promise<ImportsResult>;
-	hubs: (limit?: number) => Promise<Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }>>;
+	hubs: (limit?: number) => Promise<
+		Array<{
+			symbolId: string;
+			count: number;
+			declaration: SymbolSummary | null;
+		}>
+	>;
 	overview: () => Promise<OverviewResult>;
 	typeHierarchy: (symbolId: string) => Promise<TypeHierarchy>;
 	fileHistory: (module: string) => Promise<FileHistory>;
@@ -189,9 +195,9 @@ export const DescribeSymbolInput = {
 };
 
 export const FindReferencesInput = {
-	name: z.string().min(1).optional(),
-	symbolId: z.string().min(1).optional(),
-	module: z.string().min(1).optional(),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
@@ -212,7 +218,7 @@ export const FindLiteralsInput = {
 	kind: z
 		.enum(["string", "number", "boolean"])
 		.optional()
-		.describe(`Literal kind. Default for \`regex\`: \`string\`.`),
+		.describe(`Literal kind. Defaults to \`string\` for regex.`),
 	min: z.number().optional().describe(`Inclusive numeric minimum.`),
 	max: z.number().optional().describe(`Inclusive numeric maximum.`),
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
@@ -225,8 +231,8 @@ export const GraphOfInput = {
 };
 
 export const SearchSymbolsInput = {
-	text: z.string().min(1).optional().describe(`Case-sensitive name substring.`),
-	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/foo\\w*bar/i\`.`),
+	text: z.string().min(1).optional().describe(`Case-sensitive name substring. Use instead of \`regex\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal. Use instead of \`text\`.`),
 	kind: z.string().min(1).optional().describe(`Declaration kind filter.`),
 	module: z.string().min(1).optional().describe(`Module path substring.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
@@ -238,9 +244,9 @@ export const OutlineModuleInput = {
 
 export const FindImportsInput = {
 	specifier: z.string().min(1).optional().describe(`Written import-specifier substring.`),
-	specifierRegex: z.string().min(1).optional().describe(`Regex literal for written import specifiers.`),
+	specifierRegex: z.string().min(1).optional().describe(`Regex for written import specifiers.`),
 	module: z.string().min(1).optional().describe(`Resolved workspace-relative module path.`),
-	moduleRegex: z.string().min(1).optional().describe(`Regex literal for resolved module paths.`),
+	moduleRegex: z.string().min(1).optional().describe(`Regex for resolved module paths.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
@@ -274,15 +280,15 @@ const QUESTIONS = ["describe", "why", "relate", "contract", "effects", "usage"] 
 
 export const RecordAnswerInput = {
 	symbolId: z.string().min(1).describe(`Exact \`symbolId\` from an earlier result.`),
-	question: z.enum(QUESTIONS).describe(`Question class the prose answers.`),
+	question: z.enum(QUESTIONS).describe(`Question answered by \`prose\`.`),
 	prose: z
 		.string()
 		.min(1)
 		.describe(
 			`
-Answer text.
+			Answer in \`1\` or \`2\` sentences.
 
-Use \`1\` or \`2\` sentences. State only what facts do not.
+			State only what the citations add.
 			`.trim(),
 		),
 	citations: z
@@ -290,24 +296,24 @@ Use \`1\` or \`2\` sentences. State only what facts do not.
 		.min(1)
 		.describe(
 			`
-Fact IDs from \`symbol_facts\`.
+			Complete IDs from \`symbol_facts\`.
 
-Use each complete ID, never its digest alone. Other answer IDs are allowed.
+			Use full IDs, not digests. Other answer IDs are allowed.
 			`.trim(),
 		),
-	model: z.string().min(1).optional().describe(`Author, such as a model name.`),
+	model: z.string().min(1).optional().describe(`Author or model name.`),
 	resolvesDoubt: z
 		.string()
 		.min(1)
 		.optional()
 		.describe(
 			`
-Doubt ID from \`recall_answer\`.
+			Doubt ID from \`recall_answer\`.
 
-Without it, the doubt carries forward.
+			Omit to carry the doubt forward.
 			`.trim(),
 		),
-	omitting: z.string().min(1).optional().describe(`Omitted facts and why.`),
+	omitting: z.string().min(1).optional().describe(`Facts intentionally left out.`),
 };
 
 export const RecallAnswerInput = {
@@ -336,20 +342,20 @@ export const ReaffirmAnswerInput = {
 		.optional()
 		.describe(
 			`
-Current fact IDs from \`symbol_facts\`.
+			Current fact IDs from \`symbol_facts\`.
 
-Omit when clearing a doubt.
+			Omit to clear a doubt.
 			`.trim(),
 		),
-	model: z.string().min(1).optional().describe(`Author vouching for the answer.`),
-	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\` to clear.`),
+	model: z.string().min(1).optional().describe(`Author or model name.`),
+	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\`.`),
 };
 
 export const KnowledgeGapsInput = {
-	name: z.string().min(1).optional().describe(`Root symbol name. Omit \`name\` and \`symbolId\` for workspace gaps.`),
+	name: z.string().min(1).optional().describe(`Root symbol name. Omit for workspace gaps.`),
 	symbolId: z.string().min(1).optional().describe(`Exact root \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-	question: z.enum(QUESTIONS).optional().describe(`Question class. Default: \`describe\`.`),
+	question: z.enum(QUESTIONS).optional().describe(`Question class. Defaults to \`describe\`.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`60\`.`),
 };
 
@@ -397,17 +403,17 @@ Distinguishes workspace files, external dependencies, and unresolved specifiers.
 export const PREPARE_RENAME_DESCRIPTION = `
 # \`prepare_rename\`
 
-Preview every bound occurrence, including the declaration, grouped by file. Read-only.
+Preview a rename across every bound declaration and use.
 
-Reports same-spelling unbound occurrences and export-boundary limits.
+Groups touched files and reports unbound spelling matches or export limits.
 `.trim();
 
 export const RENAME_SYMBOL_DESCRIPTION = `
 # \`rename_symbol\`
 
-Rename every bound declaration, use, import, and re-export. **Writes files.**
+Rename a bound symbol across declarations, uses, imports, and re-exports.
 
-Reindexes touched files. If any occurrence cannot change safely, it writes nothing. Call \`prepare_rename\` first.
+Writes files and reindexes them. A blocked plan writes nothing. Call \`prepare_rename\` first.
 `.trim();
 
 export const FIND_LITERALS_DESCRIPTION = `
@@ -423,13 +429,13 @@ export const GRAPH_OF_DESCRIPTION = `
 
 Show a symbol's fan-in, fan-out, and cycles.
 
-Counts cover resolved bindings. Use before refactoring to distinguish hubs from leaves.
+Counts cover resolved bindings.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `
 # \`overview\`
 
-Summarize selected workspaces: files, symbols, references, imports, literals, largest modules, knowledge, and scope.
+Summarize selected workspaces: files, symbols, references, imports, literals, largest modules, knowledge, and index coverage.
 
 Use first in an unfamiliar codebase.
 `.trim();
@@ -461,9 +467,7 @@ Set exactly one of \`specifier\`, \`specifierRegex\`, \`module\`, or \`moduleReg
 export const HUBS_DESCRIPTION = `
 # \`hubs\`
 
-Rank the most-referenced symbols.
-
-Counts cover resolved bindings.
+Rank symbols by resolved reference count.
 `.trim();
 
 export const CO_CHANGED_WITH_DESCRIPTION = `
@@ -471,85 +475,75 @@ export const CO_CHANGED_WITH_DESCRIPTION = `
 
 Find files edited with a target in Git history.
 
-Each result includes paired co-change counts. Use before changing code to find related tests, fixtures, and documentation.
+Each row shows a paired change count and share.
 `.trim();
 
 export const TYPE_HIERARCHY_DESCRIPTION = `
 # \`type_hierarchy\`
 
-Show supertypes and subtypes.
+Show direct supertypes and subtypes.
 
-Lists unresolved and external bases.
+Lists bases outside the index.
 `.trim();
 
 export const FILE_HISTORY_DESCRIPTION = `
 # \`file_history\`
 
-Show a file's age and line churn from Git.
+Show Git age and line churn for a file.
 
-Reports when the history window ends.
+Reports the history window.
 `.trim();
 
 export const SYMBOL_HISTORY_DESCRIPTION = `
 # \`symbol_history\`
 
-Find case-sensitive, word-boundary commit messages that name a symbol.
+Find Git commits whose message names a symbol.
 
-Each result includes its changed-file count. Use for historical rationale.
+Matches case and word boundaries. Each row includes its changed-file count.
 `.trim();
 
 export const RECORD_ANSWER_DESCRIPTION = `
 # \`record_answer\`
 
-Save a concise answer about a symbol with fact IDs from \`symbol_facts\`.
+Save a concise answer about a symbol with citations.
 
-Use complete, current IDs and include at least one fact for the subject. Keep prose to \`1\` or \`2\` sentences.
+Use complete current IDs from \`symbol_facts\`. Declaration-only answers are \`THIN\`.
 
-Other answer IDs are allowed. Declaration-only answers are \`THIN\`. Cited answers become stale when supporting facts change.
-
-Does not call a model.
+Cited answers become stale when supporting facts change.
 `.trim();
 
 export const RECALL_ANSWER_DESCRIPTION = `
 # \`recall_answer\`
 
-Retrieve a recorded answer with health: \`STALE\`, \`SHAKY\`, or \`DOUBTED\`.
+Retrieve recorded answers and their health.
 
-\`describe_symbol\` includes \`describe\`. Omit \`question\` for all recorded answers.
+Reports \`STALE\`, \`SHAKY\`, and \`DOUBTED\`. \`describe_symbol\` includes \`describe\`.
 `.trim();
 
 export const INVALIDATE_ANSWER_DESCRIPTION = `
 # \`invalidate_answer\`
 
-Flag a recorded answer as untrusted without rewriting it.
+Mark a recorded answer untrusted without changing its prose.
 
-Use when code changes alter a symbol's meaning while facts still resolve.
-
-The doubt appears on recall, propagates to dependent answers, and becomes a \`knowledge_gaps\` recheck.
-
-Use \`recall_answer\` to get the doubt ID required to clear it.
+The doubt appears on recall and creates \`knowledge_gaps\` demand.
 `.trim();
 
 export const REAFFIRM_ANSWER_DESCRIPTION = `
 # \`reaffirm_answer\`
 
-Re-ground a verified answer with current fact IDs from \`symbol_facts\`, without rewriting prose.
+Re-ground a recorded answer with current citations without changing its prose.
 
-For \`DOUBTED\` answers, cite the doubt ID as \`resolvesDoubt\`.
-
-This mints a new answer ID. Reaffirm only answers you rechecked.
+Use \`resolvesDoubt\` to clear a doubt. This mints a new answer ID.
 `.trim();
 
 export const KNOWLEDGE_GAPS_DESCRIPTION = `
 # \`knowledge_gaps\`
 
-List symbols with missing, stale, or doubted knowledge.
+List missing, stale, or doubted knowledge.
 
-With a root, results are dependency leaves first. Record them in order with \`record_answer\`.
+With a root, return dependency leaves first.
 
-Without a root, ranks workspace demand with stale answers first.
-
-Answered rows drop out.
+Without a root, rank workspace demand. Record results with \`record_answer\`.
 `.trim();
 
 export const SYMBOL_FACTS_DESCRIPTION = `
@@ -563,16 +557,19 @@ An ID stops resolving when its fact changes. Use as evidence for \`record_answer
 export const TYPE_OF_DESCRIPTION = `
 # \`type_of\`
 
-Show a symbol's type as \`declared\`, \`inferred\` with a basis, or \`unknown\` with a reason.
+Show a symbol's resolved type.
 
-\`unknown\` is a result, not an error. Use for unannotated symbols.
+Distinguishes declared, inferred, and unknown results.
 `.trim();
 
 ////////////////////////////////
 //  Functions & Helpers
 
 function text(body: string, isError = false): ToolResult {
-	return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
+	return {
+		content: [{ type: "text", text: body }],
+		...(isError ? { isError: true } : {}),
+	};
 }
 
 /**
@@ -591,19 +588,24 @@ async function withIndexState(backend: ToolBackend, body: string): Promise<strin
 	const failureNote =
 		status.failures === 0
 			? ""
-			: `\n\n${status.failures} file${status.failures === 1 ? "" : "s"} failed to parse; prior facts were kept.`;
-	if (status.state === "ready") return `${body}${failureNote}`;
+			: `${status.failures} file${status.failures === 1 ? "" : "s"} failed to parse; prior facts were kept.`;
+	const withFailure = (answer: string) => (failureNote === "" ? answer : `${answer}\n\n> ${failureNote}`);
+	if (status.state === "ready") return withFailure(body);
 
 	// A scan in progress over an index that already holds files is a REFRESH, not a cold build. The
 	// answer came from a complete previous scan, and calling that incomplete is its own dishonesty:
 	// a daemon restart would otherwise stamp every correct answer as unreliable.
 	if (status.stored > 0) {
-		return `${body}\n\nAnswered from an index of ${status.stored} files. A rescan is in progress (${status.done} of ${status.total}), so anything edited since the last scan may not be reflected.${failureNote}`;
+		return withFailure(
+			`${body}\n\n> Answered from an index of ${status.stored} files. A rescan is in progress (${status.done} of ${status.total}), so anything edited since the last scan may not be reflected.`,
+		);
 	}
 	if (status.state === "indexing") {
-		return `${body}\n\nStill indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.${failureNote}`;
+		return withFailure(
+			`${body}\n\n> Still indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.`,
+		);
 	}
-	return `${body}\n\nThe index has not been built yet, so this answer covers nothing.${failureNote}`;
+	return withFailure(`${body}\n\n> The index has not been built yet, so this answer covers nothing.`);
 }
 
 /**
@@ -614,10 +616,10 @@ async function withIndexState(backend: ToolBackend, body: string): Promise<strin
  */
 async function resolveOne(backend: ToolBackend, args: SymbolArgs): Promise<{ symbolId: string } | { problem: string }> {
 	if (args.symbolId) return { symbolId: args.symbolId };
-	if (!args.name) return { problem: "Give either symbolId or name." };
+	if (!args.name) return { problem: "Give either `symbolId` or `name`." };
 
 	const candidates = await backend.findByName(args.name, args.module);
-	if (candidates.length === 0) return { problem: `No symbol named ${args.name} is indexed.` };
+	if (candidates.length === 0) return { problem: `No symbol named \`${args.name}\` is indexed.` };
 	if (candidates.length > 1) return { problem: renderCandidates(args.name, candidates) };
 	return { symbolId: (candidates[0] as SymbolSummary).symbolId };
 }
@@ -637,7 +639,7 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 		return text(
 			await withIndexState(
 				backend,
-				`No symbol with id ${resolved.symbolId} is indexed. Ids must be copied verbatim from an "id ..." line or a gaps row, including any trailing period.`,
+				`No symbol with ID \`${resolved.symbolId}\` is indexed. Copy IDs verbatim from a result row.`,
 			),
 			true,
 		);
@@ -646,7 +648,7 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 	// invitation when it does not. The recall itself counts the miss, which is what feeds the
 	// gap ledger with real demand rather than guesses.
 	const recalled = await backend.recallAnswer(resolved.symbolId, "describe");
-	return text(`${renderDescribe(described)}\n${renderKnowledge(recalled)}`);
+	return text(`${renderDescribe(described)}\n\n${renderKnowledge(recalled)}`);
 }
 
 export async function findReferences(
@@ -830,12 +832,16 @@ export async function recallAnswer(
 			true,
 		);
 	}
-	return text(recalled.map((answer) => renderKnowledge(answer)).join("\n"));
+	return text(recalled.map((answer) => renderKnowledge(answer)).join("\n\n"));
 }
 
 export async function invalidateAnswer(
 	backend: ToolBackend,
-	args: SymbolArgs & { reason: string; question?: QuestionClass | undefined; by?: string | undefined },
+	args: SymbolArgs & {
+		reason: string;
+		question?: QuestionClass | undefined;
+		by?: string | undefined;
+	},
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
@@ -866,7 +872,10 @@ export async function reaffirmAnswer(
 
 export async function knowledgeGaps(
 	backend: ToolBackend,
-	args: SymbolArgs & { question?: QuestionClass | undefined; limit?: number | undefined },
+	args: SymbolArgs & {
+		question?: QuestionClass | undefined;
+		limit?: number | undefined;
+	},
 ): Promise<ToolResult> {
 	// A root is optional here, unlike every other symbol-taking tool: no root means the workspace.
 	let root: string | undefined;
@@ -896,7 +905,7 @@ export async function symbolFacts(
 
 	const facts = await backend.factsFor(resolved.symbolId, args.limit);
 	if (facts === null)
-		return text(await withIndexState(backend, `No symbol with id ${resolved.symbolId} is indexed.`), true);
+		return text(await withIndexState(backend, `No symbol with ID \`${resolved.symbolId}\` is indexed.`), true);
 	return text(await withIndexState(backend, renderFacts(facts)));
 }
 
@@ -918,13 +927,19 @@ export async function resolveImport(
 ): Promise<ToolResult> {
 	const resolution = await backend.resolveImport(args.fromModule, args.specifier);
 
-	if (resolution.status === "resolved") return text(`${args.specifier} resolves to ${resolution.module}`);
+	if (resolution.status === "resolved") {
+		return text(`# Import resolved\n\n\`${args.specifier}\` resolves to \`${resolution.module}\`.`);
+	}
 	if (resolution.status === "external") {
 		const version = resolution.version ? `@${resolution.version}` : "";
-		return text(`${args.specifier} is external: ${resolution.packageName}${version}`);
+		return text(
+			`# External import\n\n\`${args.specifier}\` is external.\n\n- Package: \`${resolution.packageName}${version}\``,
+		);
 	}
 	// Not an error: a specifier nothing resolves is a finding, and the reason says whose limit it is.
-	return text(`${args.specifier} did not resolve (${resolution.reason})${detailOf(resolution)}`);
+	return text(
+		`# Import unresolved\n\n\`${args.specifier}\` did not resolve.\n\n- Reason: ${resolution.reason}${detailOf(resolution)}`,
+	);
 }
 
 function detailOf(resolution: ImportResolution): string {

@@ -116,16 +116,16 @@ const QUERY_PROJECTS = z
 	.refine((names) => new Set(names).size === names.length, `Project names must be unique.`)
 	.meta({ uniqueItems: true })
 	.optional()
-	.describe(`Exact bound project names from \`list_projects\`. \`[]\` selects all bound.`);
+	.describe(`Bound project names from \`list_projects\`. \`[]\` selects all bound projects.`);
 
 const MUTATION_PROJECT = z.string().min(1).optional().describe(`Bound project name from \`list_projects\`.`);
 
-const QUERY_BATCH_NOTE = `\n\nRun one or more queries in \`queries\`. \`projects\` applies to every query.`;
+const QUERY_BATCH_NOTE = `\n\nRun one or more query objects in \`queries\`. \`projects\` applies to each.`;
 
 function queryBatch(input: Record<string, z.ZodType>, validation?: QueryValidation): z.ZodType {
 	const query = z.strictObject(input);
 	const validated = validation === undefined ? query : query.refine(validation.check, validation.message);
-	return z.array(validated).min(1).describe(`Queries to run.`);
+	return z.array(validated).min(1).describe(`One or more query objects.`);
 }
 
 export const PROJECT_TOOL_DEFINITIONS = [
@@ -344,10 +344,12 @@ function resolveNamed(names: string[], all: SessionProject[], bound: SessionProj
 	for (const name of names) {
 		const project = byName.get(name);
 		if (project === undefined) {
-			return text(`No project named ${name} is registered in this session. Call \`list_projects\`.`);
+			return text(
+				`# Project not found\n\nNo project named \`${name}\` is registered in this session. Call \`list_projects\`.`,
+			);
 		}
 		if (!boundKeys.has(project.key)) {
-			return text(`${name} is registered but not bound. Call \`bind_project\` first.`);
+			return text(`# Project not bound\n\n\`${name}\` is registered but not bound. Call \`bind_project\` first.`);
 		}
 		selected.push(project);
 	}
@@ -368,7 +370,7 @@ function selectProjects(
 		if (project === undefined) {
 			if (bound.length === 1 && bound[0] !== undefined) return { projects: [bound[0]], args };
 			return text(
-				`Several projects are bound: ${bound.map((entry) => entry.name).join(", ")}. Pass project with one binding name.`,
+				`# Project selection required\n\nSeveral projects are bound: ${bound.map((entry) => `\`${entry.name}\``).join(", ")}. Pass \`project\` with one binding name.`,
 			);
 		}
 		const selected = resolveNamed([project], all, bound);
@@ -379,7 +381,7 @@ function selectProjects(
 	if (projects === undefined) {
 		if (bound.length === 1 && bound[0] !== undefined) return { projects: [bound[0]], args };
 		return text(
-			`Several projects are bound: ${bound.map((entry) => entry.name).join(", ")}. Pass projects with binding names, or [] for all.`,
+			`# Project selection required\n\nSeveral projects are bound: ${bound.map((entry) => `\`${entry.name}\``).join(", ")}. Pass \`projects\` with binding names, or \`[]\` for all.`,
 		);
 	}
 	if (projects.length === 0) return { projects: bound, args };
@@ -414,7 +416,7 @@ async function runSelected(
 	for (const project of selection.projects) {
 		const result = await handler(routed(project), selection.args);
 		failed ||= result.isError === true;
-		sections.push(`=== ${project.name}\n\n${result.content.map((chunk) => chunk.text).join("\n")}`);
+		sections.push(`## Project: \`${project.name}\`\n\n${result.content.map((chunk) => chunk.text).join("\n")}`);
 	}
 	return { content: [{ type: "text", text: sections.join("\n\n") }], ...(failed ? { isError: true } : {}) };
 }
@@ -439,7 +441,7 @@ async function runQueryBatch(
 			querySections.push(body);
 		}
 		const body = querySections.join("\n\n");
-		projectSections.push(route.name === undefined ? body : `=== ${route.name}\n\n${body}`);
+		projectSections.push(route.name === undefined ? body : `## Project: \`${route.name}\`\n\n${body}`);
 	}
 
 	const text = projectSections.join("\n\n");
