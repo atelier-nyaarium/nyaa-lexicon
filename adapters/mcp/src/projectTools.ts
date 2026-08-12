@@ -332,10 +332,10 @@ function resolveNamed(names: string[], all: SessionProject[], bound: SessionProj
 	for (const name of names) {
 		const project = byName.get(name);
 		if (project === undefined) {
-			return text(`No project named ${name} is registered in this session. Call list_projects.`);
+			return text(`No project named ${name} is registered in this session. Call \`list_projects\`.`);
 		}
 		if (!boundKeys.has(project.key)) {
-			return text(`${name} is registered but not bound. Call bind_project first.`);
+			return text(`${name} is registered but not bound. Call \`bind_project\` first.`);
 		}
 		selected.push(project);
 	}

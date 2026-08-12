@@ -780,7 +780,7 @@ export async function recallAnswer(
 		return text(
 			await withIndexState(
 				backend,
-				`${which} recorded about ${resolved.symbolId}. record_answer writes one, citing ids from symbol_facts.`,
+				`${which} recorded about ${resolved.symbolId}. \`record_answer\` writes one, citing ids from \`symbol_facts\`.`,
 			),
 			true,
 		);

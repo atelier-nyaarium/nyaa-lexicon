@@ -217,11 +217,11 @@ export async function stopProjectDaemonTool(
 ): Promise<ToolResult> {
 	const store = deps.list().find((candidate) => candidate.key === args.key);
 	if (store === undefined) {
-		return text(`No store named ${args.key}; call list_project_stores to get a real store key.`, true);
+		return text(`No store named ${args.key}; call \`list_project_stores\` to get a real store key.`, true);
 	}
 
 	if (bound().some((project) => project.key === args.key)) {
-		return text(`Refusing to stop ${args.key}: it is bound in this session. Call unbind_project first.`, true);
+		return text(`Refusing to stop ${args.key}: it is bound in this session. Call \`unbind_project\` first.`, true);
 	}
 
 	if (store.livePid === null) {

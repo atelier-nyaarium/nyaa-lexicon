@@ -105,7 +105,7 @@ export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 }
 
 export function nothingBoundMessage(_projects: SessionProject[]): string {
-	return "No project is bound. Call list_projects for the list of projects. Bind with bind_project.";
+	return "No project is bound. Call `list_projects` for the list of projects. Bind with `bind_project`.";
 }
 
 ////////////////////////////////
@@ -114,7 +114,7 @@ export function nothingBoundMessage(_projects: SessionProject[]): string {
 export function listProjectsTool(deps: BindingDeps): ToolResult {
 	const projects = deps.list();
 	if (projects.length === 0) {
-		return text("No project is registered. Call register_project with the absolute path to a codebase's root.");
+		return text("No project is registered. Call `register_project` with the absolute path to a codebase's root.");
 	}
 
 	const indexTimes = deps.indexTimes?.() ?? new Map<string, number | null>();
@@ -152,16 +152,16 @@ export function registerProjectTool(deps: BindingDeps, args: { root: string }): 
 	if (!outcome.registered) return text(outcome.reason, true);
 	const renamed = outcome.sync.renames.map((entry) => `${entry.from} is now ${entry.to} for ${entry.root}.`);
 	const recovery = outcome.sync.bindingsCleared
-		? "All session bindings were cleared. Call list_projects, match full roots, then bind_project."
+		? "All session bindings were cleared. Call `list_projects`, match full roots, then `bind_project`."
 		: null;
 	if (outcome.already) {
-		const next = recovery ?? `Call bind_project with ${outcome.project.name} to answer from it.`;
+		const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
 		return text(
 			[`${outcome.project.name} is already registered at ${outcome.project.root}.`, ...renamed, next].join("\n"),
 		);
 	}
 
-	const next = recovery ?? `Call bind_project with ${outcome.project.name} to answer from it.`;
+	const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
 	return text([`Registered ${outcome.project.name} at ${outcome.project.root}.`, ...renamed, next].join("\n"));
 }
 

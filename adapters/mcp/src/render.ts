@@ -46,7 +46,7 @@ export function renderDescribe(result: DescribeResult): string {
 
 	// A count rather than the list: the caller decides whether that is worth its own call.
 	lines.push(`  used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}`);
-	if (result.referenceCount > 0) lines.push("  call find_references for the list");
+	if (result.referenceCount > 0) lines.push("  call `find_references` for the list");
 	return lines.join("\n");
 }
 
@@ -287,7 +287,7 @@ export function renderFileHistory(result: {
  */
 export function renderKnowledge(recalled: RecalledAnswer | null): string {
 	if (recalled === null) {
-		return "  knowledge: none recorded. record_answer to save what you conclude.";
+		return "  knowledge: none recorded. Call `record_answer` to save what you conclude.";
 	}
 
 	const grade = recalled.answer.thin ? " THIN" : "";
@@ -296,12 +296,12 @@ export function renderKnowledge(recalled: RecalledAnswer | null): string {
 		const by = recalled.answer.doubt.by === undefined ? "" : ` by ${recalled.answer.doubt.by}`;
 		lines.push(
 			`  DOUBTED${by}: ${recalled.answer.doubt.reason}`,
-			`    To clear: verify against the code, then record_answer or reaffirm_answer citing resolvesDoubt ${recalled.answer.doubt.factId}`,
+			`    To clear: verify against the code, then call \`record_answer\` or \`reaffirm_answer\` citing resolvesDoubt ${recalled.answer.doubt.factId}`,
 		);
 	}
 	if (recalled.stale.length > 0) {
 		lines.push(
-			`  STALE: ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed since this was written. Re-check against symbol_facts, then reaffirm_answer with current citations, or record_answer to rewrite.`,
+			`  STALE: ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed since this was written. Re-check against \`symbol_facts\`, then call \`reaffirm_answer\` with current citations, or \`record_answer\` to rewrite.`,
 		);
 	}
 	if (recalled.inheritedStale.length > 0) {
@@ -426,14 +426,14 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 		// context verbatim; the answers land in the store either way, which is where they are read.
 		lines.push(
 			"",
-			"Close these in order, leaves first: symbol_facts, then record_answer citing those ids. A subagent can run the loop; the answers land in the store either way.",
+			"Close these in order, leaves first: `symbol_facts`, then `record_answer` citing those ids. A subagent can run the loop; the answers land in the store either way.",
 		);
 	} else {
 		lines.push(
 			"",
 			`${gaps.total} is too many to absorb mid-task. With your user's agreement, hand ONE background agent this loop:`,
 			"",
-			`  Until knowledge_gaps${root === undefined ? "" : ` (root ${where})`} returns empty: take the first row, symbol_facts, then record_answer citing those ids. Leaves first, so later answers can cite earlier ones.`,
+			`  Until \`knowledge_gaps\`${root === undefined ? "" : ` (root ${where})`} returns empty: take the first row, \`symbol_facts\`, then \`record_answer\` citing those ids. Leaves first, so later answers can cite earlier ones.`,
 		);
 	}
 	return lines.join("\n");
@@ -524,7 +524,7 @@ export function renderOverview(result: {
 	// exists, and an honest "none yet" with the pointer when it does not.
 	if (result.knowledge !== undefined) {
 		if (result.knowledge.answers === 0) {
-			lines.push("Knowledge: none recorded yet. knowledge_gaps lists what is worth writing.");
+			lines.push("Knowledge: none recorded yet. `knowledge_gaps` lists what is worth writing.");
 		} else {
 			// Absent means the staleness scan was skipped at this size, which is a different claim
 			// from zero stale, and the wording keeps the two apart.
@@ -539,7 +539,7 @@ export function renderOverview(result: {
 					? ""
 					: `, ${result.knowledge.doubted} doubted`;
 			lines.push(
-				`Knowledge: ${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. knowledge_gaps lists what is missing.`,
+				`Knowledge: ${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. \`knowledge_gaps\` lists what is missing.`,
 			);
 		}
 	}
