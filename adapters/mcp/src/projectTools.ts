@@ -87,8 +87,17 @@ interface ProjectToolDefinition {
 	handler: (...args: never[]) => Promise<ToolResult>;
 }
 
+interface QueryValidationInput extends Record<string, unknown> {
+	text?: unknown;
+	regex?: unknown;
+	specifier?: unknown;
+	specifierRegex?: unknown;
+	module?: unknown;
+	moduleRegex?: unknown;
+}
+
 interface QueryValidation {
-	check: (query: Record<string, unknown>) => boolean;
+	check: (query: QueryValidationInput) => boolean;
 	message: string;
 }
 
@@ -118,7 +127,10 @@ const QUERY_BATCH_NOTE = `\n\nRun one or more query objects in \`queries\`. \`pr
 
 function queryBatch(input: Record<string, z.ZodType>, validation?: QueryValidation): z.ZodType {
 	const query = z.strictObject(input);
-	const validated = validation === undefined ? query : query.refine(validation.check, validation.message);
+	const validated =
+		validation === undefined
+			? query
+			: query.refine((value) => validation.check(value as QueryValidationInput), validation.message);
 	return z.array(validated).min(1).describe(`One or more query objects.`);
 }
 
@@ -266,7 +278,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		description: SEARCH_SYMBOLS_DESCRIPTION,
 		scope: "query",
 		queryValidation: {
-			check: (query) => (query["text"] === undefined) !== (query["regex"] === undefined),
+			check: (query) => (query.text === undefined) !== (query.regex === undefined),
 			message: "Set exactly one of `text` or `regex`.",
 		},
 		input: SearchSymbolsInput,
@@ -287,7 +299,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		scope: "query",
 		queryValidation: {
 			check: (query) =>
-				[query["specifier"], query["specifierRegex"], query["module"], query["moduleRegex"]].filter(
+				[query.specifier, query.specifierRegex, query.module, query.moduleRegex].filter(
 					(value) => value !== undefined,
 				).length === 1,
 			message: "Set exactly one of `specifier`, `specifierRegex`, `module`, or `moduleRegex`.",

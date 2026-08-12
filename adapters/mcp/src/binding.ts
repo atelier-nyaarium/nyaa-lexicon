@@ -204,6 +204,6 @@ export function unbindProjectTool(deps: BindingDeps, args: { project: string }):
 	const outcome = deps.unbind(args.project);
 	if (!outcome.bound) return text(outcome.reason, true);
 	return text(
-		`# Project unbound\n\nUnbound \`${outcome.project.name}\`. It stays registered and its index is untouched.`,
+		`# Project unbound\n\nUnbound \`${outcome.project.name}\`.`,
 	);
 }

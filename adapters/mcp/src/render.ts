@@ -2,18 +2,17 @@
 //
 // Pure, because output formatting deserves direct tests.
 
-import {
-	type DescribeResult,
-	INLINE_GAP_THRESHOLD,
-	type InvalidateOutcome,
-	type KnowledgeGaps,
-	type LiteralsResult,
-	type RecalledAnswer,
-	type RecordOutcome,
-	type ReferencesResult,
-	type RenameOutcome,
-	type RenamePlan,
-	type SymbolSummary,
+import type {
+	DescribeResult,
+	InvalidateOutcome,
+	KnowledgeGaps,
+	LiteralsResult,
+	RecalledAnswer,
+	RecordOutcome,
+	ReferencesResult,
+	RenameOutcome,
+	RenamePlan,
+	SymbolSummary,
 } from "@nyaa-lexicon/core";
 import type { TypeInfo } from "@nyaa-lexicon/protocol";
 
@@ -337,64 +336,71 @@ export function renderFileHistory(result: {
 	return lines.join("\n");
 }
 
-/** Recorded knowledge, or a short invitation to write it. */
-export function renderKnowledge(recalled: RecalledAnswer | null): string {
-	if (recalled === null) {
-		return "## Knowledge\n\nNone recorded. Call `record_answer` to save what you conclude.";
-	}
+function questionTitle(question: string): string {
+	return question.slice(0, 1).toUpperCase() + question.slice(1);
+}
 
-	const grade = recalled.answer.thin ? " THIN" : "";
-	const lines = ["## Knowledge", "", `### ${recalled.answer.question}${grade}`, "", recalled.answer.prose];
+/** Recorded knowledge, or a short invitation to write it. */
+export function renderKnowledge(recalled: RecalledAnswer | null, question = "knowledge"): string {
+	if (recalled === null)
+		return `## ${questionTitle(question)}\n\nNo answer recorded. Call \`record_answer\` to save one.`;
+
+	const lines = [
+		`## ${questionTitle(recalled.answer.question)}`,
+		"",
+		recalled.answer.prose,
+		"",
+		`\`${recalled.answer.factId}\``,
+	];
+	if (recalled.answer.thin) lines.push("", "**THIN:** Only the declaration was cited.");
+	const status: string[] = [];
 	if (recalled.answer.doubt !== undefined) {
 		const by = recalled.answer.doubt.by === undefined ? "" : ` (${recalled.answer.doubt.by})`;
 		lines.push(
 			"",
 			"#### Doubt",
 			"",
-			`- ${recalled.answer.doubt.reason}${by}`,
-			`- Clear with \`record_answer\` or \`reaffirm_answer\`, citing resolvesDoubt \`${recalled.answer.doubt.factId}\``,
+			`${recalled.answer.doubt.reason}${by}`,
+			"",
+			`\`${recalled.answer.doubt.factId}\``,
+			"",
+			"Clear with `record_answer` or `reaffirm_answer`, citing this doubt ID as `resolvesDoubt`.",
 		);
 	}
 	if (recalled.stale.length > 0) {
-		lines.push(
-			"",
-			`- **STALE:** ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed since this was written. Re-check against \`symbol_facts\`, then call \`reaffirm_answer\` with current citations, or \`record_answer\` to rewrite.`,
+		status.push(
+			`**STALE:** ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed. Re-check \`symbol_facts\`, then call \`reaffirm_answer\` or \`record_answer\`.`,
 		);
 	}
 	if (recalled.inheritedStale.length > 0) {
-		lines.push(
-			"",
-			`- **SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose own ground moved. Re-affirm those first.`,
+		status.push(
+			`**SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose citations changed. Re-affirm those first.`,
 		);
 	}
 	if (recalled.doubtedUpstream.length > 0) {
-		lines.push(
-			"",
-			`- **SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Recall those, read the doubt, and address it first.`,
+		status.push(
+			`**SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Address those first.`,
 		);
 	}
+	if (status.length > 0) lines.push("", "### Status", "", status.join("\n"));
 	return lines.join("\n");
 }
 
 export function renderRecordOutcome(outcome: RecordOutcome): string {
 	if (outcome.recorded) {
-		// The grade goes to the WRITER at the moment of writing, which is the one moment a better
-		// answer costs nothing extra: the facts are already in front of them.
-		const thin = outcome.answer.thin
-			? "Marked THIN: nothing cited reaches beyond the declaration, so this reads as a paraphrase of the signature. Citing a reference, a literal or a child answer would ground it in something a reader cannot already see."
-			: undefined;
-		// A carried doubt is stated to the one writer who can still address it, at the one moment the
-		// context to address it is already loaded.
 		const carried = outcome.doubtCarried === undefined ? undefined : outcome.doubtCarried;
-		const lines = ["# Answer recorded", "", `**ID:** \`${outcome.answer.factId}\``];
-		if (thin !== undefined) lines.push("", `> ${thin}`);
+		const lines = ["# Answer recorded", "", `\`${outcome.answer.factId}\``];
+		if (outcome.answer.thin) lines.push("", "**THIN:** Only the declaration was cited.");
 		if (carried !== undefined) {
 			lines.push(
 				"",
-				"## Doubt carried forward",
+				"## Doubt",
 				"",
-				`- ${carried.reason}`,
-				`- If your rewrite addresses it, record again citing resolvesDoubt \`${carried.factId}\``,
+				carried.reason,
+				"",
+				`\`${carried.factId}\``,
+				"",
+				"Cite this ID as `resolvesDoubt` to clear the doubt.",
 			);
 		}
 		return lines.join("\n");
@@ -405,7 +411,7 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 		for (const factId of outcome.unresolved ?? []) lines.push(`- \`${factId}\``);
 	}
 	if (outcome.uncovered !== undefined && outcome.uncovered.length > 0) {
-		lines.push("", "## Uncovered citations", "", "The incumbent's still-live citations this write does not cover:");
+		lines.push("", "## Uncovered citations", "", "Citations from the existing answer:");
 		for (const factId of outcome.uncovered) lines.push(`- \`${factId}\``);
 	}
 	return lines.join("\n");
@@ -413,16 +419,21 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 
 /** What declaring a doubt did, question by question, with the id the eventual clearer must cite. */
 export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
-	if (outcome.refused !== undefined) return `# Nothing doubted\n\n${outcome.refused}.`;
+	if (outcome.refused !== undefined) return `# Doubt not recorded\n\n${outcome.refused}.`;
 
-	const lines: string[] = ["# Answers doubted", "", `**Symbol:** \`${outcome.symbolId}\``];
+	const title = outcome.doubted.length > 0 ? "# Doubt recorded" : "# Gap recorded";
+	const lines: string[] = [title, "", `**Symbol:** \`${outcome.symbolId}\``];
 	for (const entry of outcome.doubted) {
+		const by = entry.doubt.by === undefined ? "" : ` (${entry.doubt.by})`;
 		lines.push(
 			"",
-			`## ${entry.question}`,
+			`## ${questionTitle(entry.question)}`,
 			"",
-			"- Readers now see the doubt, and answers leaning on this one show **SHAKY**.",
-			`- Clear by citing \`${entry.doubt.factId}\``,
+			`${entry.doubt.reason}${by}`,
+			"",
+			`\`${entry.doubt.factId}\``,
+			"",
+			"Clear with `record_answer` or `reaffirm_answer`, citing this doubt ID as `resolvesDoubt`.",
 		);
 	}
 	if (outcome.noAnswer.length > 0) {
@@ -430,96 +441,60 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 			"",
 			"## No answer",
 			"",
-			`No ${outcome.noAnswer.join(", ")} answer exists to doubt; counted as gap demand instead.`,
+			`No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`knowledge_gaps\`.`,
 		);
 	}
 	return lines.join("\n");
 }
 
-/**
- * The gap list, wearing one of two proses.
- *
- * Below the threshold the ask is imperative, because a working agent can close a short list without
- * losing its task. At or past it, the honest advice is a background agent, and the prose carries a
- * ready task description so accepting costs the user one sentence. The threshold is the seam
- * between "do it now" and "this is a project", and both proses say which side they are on.
- */
 export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefined): string {
 	const where = root === undefined ? "this workspace" : root;
 	if (gaps.total === 0) {
-		const externals =
-			gaps.external > 0 ? ` ${gaps.external} dependencies are outside the index and cannot be answered.` : "";
-		return `# Knowledge gaps\n\nNo knowledge gaps under \`${where}\`.${externals}`;
+		const lines = [`# Knowledge gaps`, "", `No ${gaps.question} gaps under \`${where}\`.`];
+		if (gaps.external > 0)
+			lines.push("", `> ${gaps.external} dependencies are outside the index and cannot be answered.`);
+		return lines.join("\n");
 	}
 
-	const lines: string[] = [];
+	const lines: string[] = ["# Knowledge gaps", ""];
 	const scope =
 		gaps.seeded === true
-			? "worth writing first, ranked by fan-in"
+			? `the most-referenced unanswered ${gaps.question} answers`
 			: root === undefined
-				? "in this workspace, by demand"
-				: `under ${where}, leaves first`;
-	// The question is named in the headline, because gaps are PER QUESTION: a symbol whose `relate`
-	// was just written still legitimately appears in the `describe` list, and without the label that
-	// reads as the filter failing rather than as a different question being open.
-	lines.push(`# ${gaps.total} ${gaps.question} gap${gaps.total === 1 ? "" : "s"} ${scope}`);
+				? `${gaps.question} gaps in this workspace, ranked by demand`
+				: `${gaps.question} gaps under ${where}, leaves first`;
+	lines.push(`${gaps.total} ${scope}.`);
 	if (gaps.seeded === true) {
-		lines.push(
-			"",
-			"> Nobody has asked anything yet, so these are the most-referenced unanswered symbols rather than measured demand.",
-		);
+		lines.push("", "> No demand is recorded yet, so these are candidates rather than measured gaps.");
 	}
 
+	lines.push("", "| Symbol | Module | State | Asked | Fan-in |", "| --- | --- | --- | ---: | ---: |");
 	for (const row of gaps.rows) {
-		// The descriptor tail rather than the bare name, because in a minified module half the tree
-		// is parameters named $ and v, and a row that cannot be turned back into a symbol_facts call
-		// is a to-do list nobody can act on. The tail plus the module reconstructs the full id.
 		const tail = row.symbolId.split(" ").slice(3).join(" ");
-		const name =
-			row.name === undefined ? `\`${row.symbolId}\`` : `**${row.kind}** \`${tail}\` in \`${row.module}\``;
-		const asked = row.askCount > 0 ? `; asked ${row.askCount}x` : "";
-		const mark = row.why === "stale" ? "; **STALE**" : row.why === "doubted" ? "; **DOUBTED**" : "";
-		// The ledger and the health sweep span every question class, so a row for a different
-		// question than the headline says which one, or it reads as the filter failing.
-		const which = row.question === gaps.question ? "" : ` (${row.question})`;
-		lines.push(`- ${name}${mark}${which}${asked}; fan-in ${row.fanIn}`);
+		const symbol = row.name === undefined ? `\`${tail}\`` : `**${row.kind ?? "symbol"}** \`${tail}\``;
+		const state = row.why === "stale" ? "**STALE**" : row.why === "doubted" ? "**DOUBTED**" : "MISSING";
+		const question = row.question === gaps.question ? "" : ` (${row.question})`;
+		lines.push(
+			`| ${symbol}${question} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
+		);
 	}
 	if (gaps.total > gaps.rows.length) lines.push("", `> ${gaps.total - gaps.rows.length} more gaps not shown.`);
-	// The reconstruction rule shown by example rather than described, so a row becomes a
-	// symbol_facts call without anyone knowing the id grammar. The example came from the store, so
-	// nothing here spells a scheme by hand, which the grammar residue test would rightly refuse.
 	const first = gaps.rows[0];
 	if (first !== undefined) lines.push("", `**Full ID example:** \`${first.symbolId}\``);
 	if (gaps.truncated) lines.push("", "> The dependency walk hit its cap, so the total above is a floor.");
 	if (gaps.staleScanSkipped === true) {
-		lines.push(
-			"",
-			"> The knowledge base is too large to health-check every answer here: doubted ones are still listed, but an answer gone stale since anyone last asked will only surface on recall.",
-		);
+		lines.push("", "> The index skipped its full staleness scan. Stale answers surface when recalled.");
 	}
 	if (gaps.external > 0) {
 		lines.push("", `> ${gaps.external} dependencies are outside the index: nothing citable exists for them.`);
 	}
 
-	if (gaps.total < INLINE_GAP_THRESHOLD) {
-		// A subagent when one exists, because the loop's round trips otherwise sit in the asker's
-		// context verbatim; the answers land in the store either way, which is where they are read.
-		lines.push(
-			"",
-			"## Next step",
-			"",
-			"Close these in order, leaves first: `symbol_facts`, then `record_answer` citing those ids. A subagent can run the loop; the answers land in the store either way.",
-		);
-	} else {
-		lines.push(
-			"",
-			"## Next step",
-			"",
-			`${gaps.total} is too many to absorb mid-task. With your user's agreement, hand one background agent this loop:`,
-			"",
-			`> Until \`knowledge_gaps\`${root === undefined ? "" : ` (root ${where})`} returns empty: take the first row, \`symbol_facts\`, then \`record_answer\` citing those ids. Leaves first, so later answers can cite earlier ones.`,
-		);
-	}
+	lines.push(
+		"",
+		"## Next step",
+		"",
+		"For each row, call `symbol_facts`, then `record_answer` with the fact IDs. Work leaves first.",
+	);
 	return lines.join("\n");
 }
 
@@ -556,12 +531,7 @@ export function renderMentions(result: {
 	return lines.join("\n");
 }
 
-/**
- * The facts behind an answer, grouped by kind.
- *
- * Ids are printed in full rather than abbreviated, since the whole point is that one can be pasted
- * back to check whether it still holds.
- */
+/** The facts behind an answer, grouped by kind. */
 export function renderFacts(result: {
 	symbolId: string;
 	facts: Array<{
@@ -573,16 +543,46 @@ export function renderFacts(result: {
 	truncated: string[];
 }): string {
 	const lines = [`# Facts about \`${result.symbolId}\``];
+	const factsByKind = new Map<string, typeof result.facts>();
+	for (const fact of result.facts) {
+		const group = factsByKind.get(fact.kind) ?? [];
+		group.push(fact);
+		factsByKind.set(fact.kind, group);
+	}
 
-	for (const kind of ["declaration", "reference", "import", "literal", "answer"]) {
-		const group = result.facts.filter((fact) => fact.kind === kind);
+	const answers = factsByKind.get("answer") ?? [];
+	const descriptions = answers.filter((fact) => fact.summary.startsWith("describe: "));
+	if (descriptions.length > 0) {
+		lines.push("", "## Description", "");
+		for (const fact of descriptions) lines.push(fact.summary.slice("describe: ".length), "", `\`${fact.factId}\``);
+	}
+
+	const headings: Record<string, string> = {
+		declaration: "Declaration",
+		reference: "References",
+		import: "Imports",
+		literal: "Literals",
+	};
+	for (const kind of ["declaration", "reference", "import", "literal"]) {
+		const group = factsByKind.get(kind) ?? [];
 		if (group.length === 0) continue;
-		lines.push("", `## ${kind} (${group.length})`, "");
-		for (const fact of group) lines.push(`- ${fact.summary}\n  ID: \`${fact.factId}\``);
+		lines.push("", `## ${headings[kind]}`, "");
+		for (const fact of group) lines.push(`- ${fact.summary}`, `  \`${fact.factId}\``);
+	}
+
+	const otherAnswers = answers.filter((fact) => !fact.summary.startsWith("describe: "));
+	if (otherAnswers.length > 0) {
+		lines.push("", "## Recorded answers", "");
+		for (const fact of otherAnswers) {
+			const separator = fact.summary.indexOf(": ");
+			const question = separator < 0 ? "Answer" : questionTitle(fact.summary.slice(0, separator));
+			const prose = separator < 0 ? fact.summary : fact.summary.slice(separator + 2);
+			lines.push(`### ${question}`, "", prose, "", `\`${fact.factId}\``);
+		}
 	}
 
 	if (result.truncated.length > 0) {
-		lines.push("", `> Capped: ${result.truncated.join(", ")}. Raise limit to see the rest.`);
+		lines.push("", `> More ${result.truncated.join(" and ")} facts are not shown. Raise \`limit\`.`);
 	}
 	return lines.join("\n");
 }

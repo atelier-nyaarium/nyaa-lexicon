@@ -254,7 +254,7 @@ export const FileHistoryInput = {
 };
 
 export const SymbolHistoryInput = {
-	name: z.string().min(1).describe(`Case-sensitive symbol name with at least \`3\` characters.`),
+	name: z.string().min(1).describe(`Case-sensitive symbol name. Minimum \`3\` characters.`),
 	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
@@ -262,15 +262,13 @@ const QUESTIONS = ["describe", "why", "relate", "contract", "effects", "usage"] 
 
 export const RecordAnswerInput = {
 	symbolId: z.string().min(1).describe(`Exact \`symbolId\` from an earlier result.`),
-	question: z.enum(QUESTIONS).describe(`Question answered by \`prose\`.`),
+	question: z.enum(QUESTIONS).describe(`Answer category for \`prose\`.`),
 	prose: z
 		.string()
 		.min(1)
 		.describe(
 			`
-			Answer in \`1\` or \`2\` sentences.
-
-			State only what the citations add.
+			Answer in \`1\` or \`2\` sentences. State what the citations establish.
 			`.trim(),
 		),
 	citations: z
@@ -278,9 +276,7 @@ export const RecordAnswerInput = {
 		.min(1)
 		.describe(
 			`
-			Complete IDs from \`symbol_facts\`.
-
-			Use full IDs, not digests. Other answer IDs are allowed.
+			Current full fact IDs from \`symbol_facts\`.
 			`.trim(),
 		),
 	model: z.string().min(1).optional().describe(`Author or model name.`),
@@ -290,43 +286,39 @@ export const RecordAnswerInput = {
 		.optional()
 		.describe(
 			`
-			Doubt ID from \`recall_answer\`.
-
-			Omit to carry the doubt forward.
+			Doubt ID from \`recall_answer\`. Omit to carry it forward.
 			`.trim(),
 		),
-	omitting: z.string().min(1).optional().describe(`Facts intentionally left out.`),
+	omitting: z.string().min(1).optional().describe(`Why an existing citation is omitted.`),
 };
 
 export const RecallAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-	question: z.enum(QUESTIONS).optional().describe(`Question class. Omit for all recorded answers.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
+	question: z.enum(QUESTIONS).optional().describe(`Answer category. Omit to show every answer.`),
 };
 
 export const InvalidateAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-	reason: z.string().min(1).describe(`Why the answer is untrusted.`),
-	question: z.enum(QUESTIONS).optional().describe(`Question class. Omit for all recorded answers.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
+	reason: z.string().min(1).describe(`Reason for the doubt.`),
+	question: z.enum(QUESTIONS).optional().describe(`Answer category. Omit to doubt every recorded answer.`),
 	by: z.string().min(1).optional().describe(`Author declaring the doubt.`),
 };
 
 export const ReaffirmAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-	question: z.enum(QUESTIONS).describe(`Recorded answer's question class.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
+	question: z.enum(QUESTIONS).describe(`Answer category to refresh.`),
 	citations: z
 		.array(z.string().min(1))
 		.optional()
 		.describe(
 			`
-			Current fact IDs from \`symbol_facts\`.
-
-			Omit to clear a doubt.
+			Current full fact IDs from \`symbol_facts\`. Omit when only clearing a doubt.
 			`.trim(),
 		),
 	model: z.string().min(1).optional().describe(`Author or model name.`),
@@ -336,16 +328,16 @@ export const ReaffirmAnswerInput = {
 export const KnowledgeGapsInput = {
 	name: z.string().min(1).optional().describe(`Root symbol name. Omit for workspace gaps.`),
 	symbolId: z.string().min(1).optional().describe(`Exact root \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-	question: z.enum(QUESTIONS).optional().describe(`Question class. Defaults to \`describe\`.`),
-	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`60\`.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
+	question: z.enum(QUESTIONS).optional().describe(`Answer category. Defaults to \`describe\`.`),
+	limit: z.number().int().positive().max(300).optional().describe(`Maximum gaps. Default: \`60\`.`),
 };
 
 export const SymbolFactsInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-	limit: z.number().int().positive().max(200).optional().describe(`Results per kind. Default: \`40\`.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
+	limit: z.number().int().positive().max(200).optional().describe(`Maximum facts per kind. Default: \`40\`.`),
 };
 
 export const PrepareRenameInput = {
@@ -463,61 +455,59 @@ Reports the history window.
 export const SYMBOL_HISTORY_DESCRIPTION = `
 # \`symbol_history\`
 
-Find Git commits whose message names a symbol.
+Find Git commits whose subject names a symbol.
 
-Matches case and word boundaries. Each row includes its changed-file count.
+Matches case and word boundaries. Includes changed-file counts.
 `.trim();
 
 export const RECORD_ANSWER_DESCRIPTION = `
 # \`record_answer\`
 
-Save a concise answer about a symbol with citations.
+Save a cited answer for a symbol.
 
-Use complete current IDs from \`symbol_facts\`. Declaration-only answers are \`THIN\`.
-
-Cited answers become stale when supporting facts change.
+Use current full IDs from \`symbol_facts\`. Supporting changes make the answer stale.
 `.trim();
 
 export const RECALL_ANSWER_DESCRIPTION = `
 # \`recall_answer\`
 
-Retrieve recorded answers and their health.
+Show recorded answers and their health.
 
-Reports \`STALE\`, \`SHAKY\`, and \`DOUBTED\`. \`describe_symbol\` includes \`describe\`.
+Reports \`STALE\`, \`SHAKY\`, and \`DOUBTED\`.
 `.trim();
 
 export const INVALIDATE_ANSWER_DESCRIPTION = `
 # \`invalidate_answer\`
 
-Mark a recorded answer untrusted without changing its prose.
+Mark recorded answers doubtful without changing their prose.
 
-The doubt appears on recall and creates \`knowledge_gaps\` demand.
+The doubt reopens demand in \`knowledge_gaps\`.
 `.trim();
 
 export const REAFFIRM_ANSWER_DESCRIPTION = `
 # \`reaffirm_answer\`
 
-Re-ground a recorded answer with current citations without changing its prose.
+Refresh an answer's citations or clear its doubt.
 
-Use \`resolvesDoubt\` to clear a doubt. This mints a new answer ID.
+Use \`resolvesDoubt\` to clear a doubt.
 `.trim();
 
 export const KNOWLEDGE_GAPS_DESCRIPTION = `
 # \`knowledge_gaps\`
 
-List missing, stale, or doubted knowledge.
+List missing, stale, or doubted answers.
 
-With a root, return dependency leaves first.
+With a root, list dependency gaps leaves first.
 
-Without a root, rank workspace demand. Record results with \`record_answer\`.
+Use \`symbol_facts\`, then \`record_answer\` to close a gap.
 `.trim();
 
 export const SYMBOL_FACTS_DESCRIPTION = `
 # \`symbol_facts\`
 
-List a symbol's declaration, references, literals, and resolved imports with citeable IDs.
+Show a symbol's declaration and supporting facts with citable IDs.
 
-An ID stops resolving when its fact changes. Use as evidence for \`record_answer\`.
+Use the IDs as citations for \`record_answer\`.
 `.trim();
 
 export const TYPE_OF_DESCRIPTION = `
@@ -614,7 +604,7 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 	// invitation when it does not. The recall itself counts the miss, which is what feeds the
 	// gap ledger with real demand rather than guesses.
 	const recalled = await backend.recallAnswer(resolved.symbolId, "describe");
-	return text(`${renderDescribe(described)}\n\n${renderKnowledge(recalled)}`);
+	return text(`${renderDescribe(described)}\n\n${renderKnowledge(recalled, "describe")}`);
 }
 
 export async function findReferences(
