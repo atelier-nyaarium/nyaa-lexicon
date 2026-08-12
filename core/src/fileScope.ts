@@ -267,5 +267,5 @@ export function describeScope(scope: FileScope): string {
 	if (scope.mode === "walk") return "no git repository; walked the tree with the default ignore list";
 	const included = scope.include.length > 0 ? `, plus ${scope.include.length} explicit include(s)` : "";
 	const denied = scope.deny.length > 0 ? `, ${scope.deny.length} deny pattern(s)` : "";
-	return `${scope.known?.size ?? 0} files git tracks or does not ignore${included}${denied}`;
+	return `${scope.known?.size ?? 0} files${included}${denied}`;
 }

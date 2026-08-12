@@ -184,8 +184,4 @@ describe("the scoping rule", () => {
 		expect(describeScope(scope)).toContain("no git repository");
 	});
 
-	it("says how the file set was decided, so two very different numbers are never confused", () => {
-		const root = repo({ "src/a.ts": "" });
-		expect(describeScope(fileScopeFor(root))).toMatch(/files git tracks/);
-	});
 });

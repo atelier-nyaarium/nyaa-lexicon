@@ -513,18 +513,18 @@ export function renderOverview(result: {
 }): string {
 	const lines = [
 		`${result.files} files, ${result.symbols} symbols, ${result.references} references, ${result.imports} imports, ${result.literals} literals`,
-		`scope: ${result.scope}`,
-		`index: ${result.index.state}${result.index.state === "ready" ? "" : ` (${result.index.done} of ${result.index.total})`}`,
+		`Workspace: ${result.scope}`,
+		`Index: ${result.index.state}${result.index.state === "ready" ? "" : ` (${result.index.done} of ${result.index.total})`}`,
 	];
 	const failures = result.index.failures ?? 0;
-	if (failures > 0) lines.push(`index failures: ${failures}; prior facts were kept`);
+	if (failures > 0) lines.push(`Index failures: ${failures}; prior facts were kept`);
 
 	// The front door mentions the knowledge layer, because an agent arriving with an ordinary task
 	// has no reason to call a tool it has never heard of. One line each way: coverage when it
 	// exists, and an honest "none yet" with the pointer when it does not.
 	if (result.knowledge !== undefined) {
 		if (result.knowledge.answers === 0) {
-			lines.push("knowledge: none recorded yet. knowledge_gaps lists what is worth writing.");
+			lines.push("Knowledge: none recorded yet. knowledge_gaps lists what is worth writing.");
 		} else {
 			// Absent means the staleness scan was skipped at this size, which is a different claim
 			// from zero stale, and the wording keeps the two apart.
@@ -539,12 +539,12 @@ export function renderOverview(result: {
 					? ""
 					: `, ${result.knowledge.doubted} doubted`;
 			lines.push(
-				`knowledge: ${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. describe_symbol serves them; knowledge_gaps lists what is missing.`,
+				`Knowledge: ${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. knowledge_gaps lists what is missing.`,
 			);
 		}
 	}
 
-	lines.push("", "largest modules:");
+	lines.push("", "Largest modules:");
 	for (const module of result.largest) lines.push(`  ${String(module.symbols).padStart(5)}  ${module.module}`);
 	return lines.join("\n");
 }
