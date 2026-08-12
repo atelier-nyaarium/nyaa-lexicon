@@ -43,7 +43,7 @@ describe("listing projects", () => {
 		expect(textOf(listProjectsTool(deps([])))).toContain("register_project");
 	});
 
-	it("marks bound rows and reports the bound count", () => {
+	it("marks bound rows", () => {
 		const shown = textOf(listProjectsTool(deps([project({ bound: true }), project({ name: "beta" })])));
 		const [, boundRow, unboundRow] = shown.split("\n");
 
@@ -51,7 +51,7 @@ describe("listing projects", () => {
 		expect(shown).toContain("/home/dev/alpha");
 		expect(boundRow?.trimStart().startsWith("●")).toBe(true);
 		expect(unboundRow?.trimStart().startsWith("●")).toBe(false);
-		expect(shown).toContain("1 of 2 bound");
+		expect(shown.split("\n")).toHaveLength(3);
 	});
 
 	it("sorts projects by their newest index time", () => {
@@ -67,7 +67,6 @@ describe("listing projects", () => {
 		);
 
 		expect(shown.indexOf("beta")).toBeLessThan(shown.indexOf("alpha"));
-		expect(shown).toContain("1 of 2 bound");
 	});
 });
 

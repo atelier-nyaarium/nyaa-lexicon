@@ -150,15 +150,7 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 				.join("  "),
 		)
 		.join("\n");
-	const bound = projects.filter((project) => project.bound).length;
-	const summary =
-		bound === 0
-			? "Nothing is bound, so queries have nowhere to look. Call bind_project."
-			: bound === 1
-				? `1 of ${projects.length} bound; project selectors may be omitted.`
-				: `${bound} of ${projects.length} bound; choose projects explicitly, or use \`projects: []\` for all.`;
-
-	return text(`${table}\n\n${summary}`);
+	return text(table);
 }
 
 export function registerProjectTool(deps: BindingDeps, args: { root: string }): ToolResult {
