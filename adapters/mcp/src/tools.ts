@@ -420,7 +420,7 @@ Counts cover resolved bindings. Use before refactoring to distinguish hubs from 
 export const OVERVIEW_DESCRIPTION = `
 # \`overview\`
 
-Summarize the workspace: files, symbols, references, imports, literals, largest modules, knowledge, and scope.
+Summarize selected workspaces: files, symbols, references, imports, literals, largest modules, knowledge, and scope.
 
 Use first in an unfamiliar codebase.
 `.trim();

@@ -33,6 +33,8 @@ const QUERY_TOOLS = [
 	"type_of",
 ] as const;
 
+const BATCH_QUERY_TOOLS = QUERY_TOOLS.filter((name) => name !== "overview");
+
 const MUTATION_TOOLS = ["invalidate_answer", "reaffirm_answer", "record_answer", "rename_symbol"] as const;
 
 const MANAGEMENT_PROPERTIES = {
@@ -123,7 +125,7 @@ describe("the published MCP project selectors", () => {
 		expect(listed.tools.map((tool) => tool.name).sort()).toEqual(expected);
 		expect(new Set(listed.tools.map((tool) => tool.name))).toHaveLength(30);
 
-		for (const name of QUERY_TOOLS) {
+		for (const name of BATCH_QUERY_TOOLS) {
 			const tool = listed.tools.find((candidate) => candidate.name === name);
 			const properties = tool?.inputSchema.properties as SelectorProperties;
 			expect(properties.queries).toMatchObject({ type: "array", minItems: 1 });
@@ -136,6 +138,15 @@ describe("the published MCP project selectors", () => {
 			expect(properties.project).toBeUndefined();
 			expect(tool?.inputSchema.required ?? []).toContain("queries");
 		}
+
+		const overview = listed.tools.find((candidate) => candidate.name === "overview");
+		const overviewProperties = overview?.inputSchema.properties as SelectorProperties;
+		expect(overviewProperties.queries).toBeUndefined();
+		expect(overviewProperties.projects).toMatchObject({
+			type: "array",
+			items: { type: "string", minLength: 1 },
+			uniqueItems: true,
+		});
 
 		for (const name of MUTATION_TOOLS) {
 			const tool = listed.tools.find((candidate) => candidate.name === name);
@@ -153,6 +164,32 @@ describe("the published MCP project selectors", () => {
 });
 
 describe("query project routing", () => {
+	it("uses projects to select overview indexers", async () => {
+		const routes: string[] = [];
+		const source: BackendSource = (selected) => {
+			routes.push(selected.name);
+			return backend({
+				overview: async () => ({
+					files: 0,
+					symbols: 0,
+					references: 0,
+					imports: 0,
+					literals: 0,
+					modules: 0,
+					scope: "test",
+					index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0 },
+					largest: [],
+				}),
+			});
+		};
+		const client = await connectClient(source, binding([project("alpha", true), project("beta", true)]));
+
+		const result = await call(client, "overview", { projects: ["beta"] });
+
+		expect(routes).toEqual(["beta"]);
+		expect(result.isError).toBeUndefined();
+	});
+
 	it("rejects a query when no project is bound", async () => {
 		const routes: string[] = [];
 		const client = await connectClient(searchSource(routes, []), binding([]));

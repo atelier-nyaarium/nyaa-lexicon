@@ -87,6 +87,7 @@ interface ProjectToolDefinition {
 	title: string;
 	description: string;
 	scope: ProjectToolScope;
+	batch?: boolean;
 	input: Record<string, z.ZodType>;
 	handler: (...args: never[]) => Promise<ToolResult>;
 }
@@ -278,6 +279,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		title: "Overview",
 		description: OVERVIEW_DESCRIPTION,
 		scope: "query",
+		batch: false,
 		input: OverviewInput,
 		handler: (backend) => overview(backend),
 	},
@@ -442,29 +444,28 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 	const routed = typeof source === "function" ? source : null;
 
 	for (const definition of PROJECT_TOOL_DEFINITIONS) {
+		const batched = definition.scope === "query" && (!("batch" in definition) || definition.batch !== false);
 		const handler = definition.handler as unknown as (
 			backend: ToolBackend,
 			args: Record<string, unknown>,
 		) => Promise<ToolResult>;
-		const selector =
-			definition.scope === "query"
-				? { queries: queryBatch(definition.input), projects: QUERY_PROJECTS }
+		const selector = batched
+			? { queries: queryBatch(definition.input), projects: QUERY_PROJECTS }
+			: definition.scope === "query"
+				? { ...definition.input, projects: QUERY_PROJECTS }
 				: { ...definition.input, project: MUTATION_PROJECT };
 		const inputSchema = z.strictObject(selector);
 		server.registerTool(
 			definition.name,
 			{
 				title: definition.title,
-				description:
-					definition.scope === "query"
-						? `${definition.description}${QUERY_BATCH_NOTE}`
-						: definition.description,
+				description: batched ? `${definition.description}${QUERY_BATCH_NOTE}` : definition.description,
 				inputSchema,
 			},
 			async (raw: Record<string, unknown>): Promise<ToolResult & Record<string, unknown>> => {
 				if (routed === null) {
 					const args = stripSelector(definition.scope, raw);
-					if (definition.scope === "query") {
+					if (batched) {
 						return serverResult(
 							await runQueryBatch(
 								[{ backend: source as ToolBackend }],
@@ -477,7 +478,7 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 				}
 				const selection = selectProjects(definition.scope, binding, raw);
 				if (isToolResult(selection)) return serverResult(selection);
-				if (definition.scope === "query") {
+				if (batched) {
 					return serverResult(
 						await runQueryBatch(
 							selection.projects.map((project) => ({ name: project.name, backend: routed(project) })),
