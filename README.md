@@ -54,9 +54,11 @@ holds, across every project.
 Register codebases once, then bind the ones used by the current MCP session. `list_projects` shows
 each binding name beside its full root.
 
-Read tools accept `projects`. Omit it when one project is bound, pass names for a subset, or pass
-`[]` for every bound project. `rename_symbol`, `record_answer`, `invalidate_answer`, and
-`reaffirm_answer` accept one optional `project` instead and never fan out.
+Read tools accept a `queries` array. Each item uses that tool's normal fields, and one MCP call can
+run several items. The outer `projects` selector applies to every item. Omit it when one project is
+bound, pass names for a subset, or pass `[]` for every bound project. `rename_symbol`,
+`record_answer`, `invalidate_answer`, and `reaffirm_answer` accept one optional `project` instead
+and never fan out.
 
 Binding names are session-local. Same-named roots use `app-1`, `app-2`, and so on. A plugin reload
 compacts the names, so call `list_projects` again and match the full root.

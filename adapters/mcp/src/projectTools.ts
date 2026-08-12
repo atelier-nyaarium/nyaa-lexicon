@@ -96,6 +96,11 @@ interface Selection {
 	args: Record<string, unknown>;
 }
 
+interface Route {
+	name?: string;
+	backend: ToolBackend;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -113,6 +118,15 @@ const MUTATION_PROJECT = z
 	.min(1)
 	.optional()
 	.describe(`Bound project name from \`list_projects\`. Omit when exactly one is bound.`);
+
+const QUERY_BATCH_NOTE = `\n\nPass one or more query objects in \`queries\`. The outer \`projects\` selector applies to every query.`;
+
+function queryBatch(input: Record<string, z.ZodType>): z.ZodType {
+	return z
+		.array(z.strictObject(input))
+		.min(1)
+		.describe(`One or more query objects. Each object uses this tool's query fields.`);
+}
 
 export const PROJECT_TOOL_DEFINITIONS = [
 	{
@@ -393,6 +407,33 @@ async function runSelected(
 	return { content: [{ type: "text", text: sections.join("\n\n") }], ...(failed ? { isError: true } : {}) };
 }
 
+async function runQueryBatch(
+	routes: Route[],
+	queries: Record<string, unknown>[],
+	handler: (backend: ToolBackend, args: Record<string, unknown>) => Promise<ToolResult>,
+): Promise<ToolResult> {
+	if (routes.length === 1 && queries.length === 1 && routes[0] !== undefined && queries[0] !== undefined) {
+		return handler(routes[0].backend, queries[0]);
+	}
+
+	let failed = false;
+	const projectSections: string[] = [];
+	for (const route of routes) {
+		const querySections: string[] = [];
+		for (const [index, query] of queries.entries()) {
+			const result = await handler(route.backend, query);
+			failed ||= result.isError === true;
+			const body = result.content.map((chunk) => chunk.text).join("\n");
+			querySections.push(queries.length === 1 ? body : `=== Query ${index + 1}\n${body}`);
+		}
+		const body = querySections.join("\n\n");
+		projectSections.push(route.name === undefined ? body : `=== ${route.name}\n${body}`);
+	}
+
+	const text = projectSections.join("\n\n");
+	return { content: [{ type: "text", text }], ...(failed ? { isError: true } : {}) };
+}
+
 function serverResult(result: ToolResult): ToolResult & Record<string, unknown> {
 	return result as ToolResult & Record<string, unknown>;
 }
@@ -405,17 +446,46 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 			backend: ToolBackend,
 			args: Record<string, unknown>,
 		) => Promise<ToolResult>;
-		const selector = definition.scope === "query" ? { projects: QUERY_PROJECTS } : { project: MUTATION_PROJECT };
-		const inputSchema = z.strictObject({ ...definition.input, ...selector });
+		const selector =
+			definition.scope === "query"
+				? { queries: queryBatch(definition.input), projects: QUERY_PROJECTS }
+				: { ...definition.input, project: MUTATION_PROJECT };
+		const inputSchema = z.strictObject(selector);
 		server.registerTool(
 			definition.name,
-			{ title: definition.title, description: definition.description, inputSchema },
+			{
+				title: definition.title,
+				description:
+					definition.scope === "query"
+						? `${definition.description}${QUERY_BATCH_NOTE}`
+						: definition.description,
+				inputSchema,
+			},
 			async (raw: Record<string, unknown>): Promise<ToolResult & Record<string, unknown>> => {
 				if (routed === null) {
-					return serverResult(await handler(source as ToolBackend, stripSelector(definition.scope, raw)));
+					const args = stripSelector(definition.scope, raw);
+					if (definition.scope === "query") {
+						return serverResult(
+							await runQueryBatch(
+								[{ backend: source as ToolBackend }],
+								(args as { queries: Record<string, unknown>[] }).queries,
+								handler,
+							),
+						);
+					}
+					return serverResult(await handler(source as ToolBackend, args));
 				}
 				const selection = selectProjects(definition.scope, binding, raw);
 				if (isToolResult(selection)) return serverResult(selection);
+				if (definition.scope === "query") {
+					return serverResult(
+						await runQueryBatch(
+							selection.projects.map((project) => ({ name: project.name, backend: routed(project) })),
+							(selection.args as { queries: Record<string, unknown>[] }).queries,
+							handler,
+						),
+					);
+				}
 				return serverResult(await runSelected(selection, routed, handler));
 			},
 		);

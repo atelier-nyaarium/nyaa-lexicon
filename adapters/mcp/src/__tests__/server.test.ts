@@ -47,9 +47,10 @@ const MANAGEMENT_PROPERTIES = {
 
 const clients: Client[] = [];
 
-type SelectorProperties = Record<string, Record<string, unknown>> & {
+type SelectorProperties = {
 	project?: Record<string, unknown>;
 	projects?: Record<string, unknown>;
+	queries?: { items?: Record<string, unknown> };
 };
 
 ////////////////////////////////
@@ -132,13 +133,15 @@ describe("the published MCP project selectors", () => {
 		for (const name of QUERY_TOOLS) {
 			const tool = listed.tools.find((candidate) => candidate.name === name);
 			const properties = tool?.inputSchema.properties as SelectorProperties;
+			expect(properties.queries).toMatchObject({ type: "array", minItems: 1 });
+			expect(properties.queries?.items).toMatchObject({ type: "object", additionalProperties: false });
 			expect(properties.projects).toMatchObject({
 				type: "array",
 				items: { type: "string", minLength: 1 },
 				uniqueItems: true,
 			});
 			expect(properties.project).toBeUndefined();
-			expect(tool?.inputSchema.required ?? []).not.toContain("projects");
+			expect(tool?.inputSchema.required ?? []).toContain("queries");
 		}
 
 		for (const name of MUTATION_TOOLS) {
@@ -162,10 +165,43 @@ describe("query project routing", () => {
 		const options: Array<Record<string, unknown>> = [];
 		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
 
-		await call(client, "search_symbols", { text: "Needle" });
+		await call(client, "search_symbols", { queries: [{ text: "Needle" }] });
 
 		expect(routes).toEqual(["alpha"]);
 		expect(options).toEqual([{ text: "Needle" }]);
+	});
+
+	it("runs several queries in one call", async () => {
+		const routes: string[] = [];
+		const options: Array<Record<string, unknown>> = [];
+		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
+
+		const result = await call(client, "search_symbols", {
+			queries: [{ text: "Needle" }, { text: "Other" }],
+		});
+
+		expect(routes).toEqual(["alpha"]);
+		expect(options).toEqual([{ text: "Needle" }, { text: "Other" }]);
+		expect(textOf(result)).toContain("=== Query 1");
+		expect(textOf(result)).toContain("=== Query 2");
+	});
+
+	it("batches queries through a fixed backend", async () => {
+		const seen: string[] = [];
+		const client = await connectClient(
+			backend({
+				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+				searchSymbols: async (text) => {
+					seen.push(text);
+					return { text, symbols: [], total: 0, truncated: false };
+				},
+			}),
+			binding([project("alpha", true)]),
+		);
+
+		await call(client, "search_symbols", { queries: [{ text: "Needle" }, { text: "Other" }] });
+
+		expect(seen).toEqual(["Needle", "Other"]);
 	});
 
 	it("requires an explicit selector when several projects are bound", async () => {
@@ -175,7 +211,7 @@ describe("query project routing", () => {
 			binding([project("alpha", true), project("beta", true)]),
 		);
 
-		const result = await call(client, "search_symbols", { text: "Needle" });
+		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }] });
 
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("Pass projects");
@@ -189,7 +225,7 @@ describe("query project routing", () => {
 			binding([project("alpha", true), project("beta", false), project("gamma", true)]),
 		);
 
-		const result = await call(client, "search_symbols", { text: "Needle", projects: [] });
+		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }], projects: [] });
 
 		expect(routes).toEqual(["alpha", "gamma"]);
 		expect(textOf(result)).toContain("=== alpha");
@@ -205,7 +241,7 @@ describe("query project routing", () => {
 		);
 
 		const result = await call(client, "search_symbols", {
-			text: "Needle",
+			queries: [{ text: "Needle" }],
 			projects: ["beta", "alpha"],
 		});
 
@@ -221,7 +257,7 @@ describe("query project routing", () => {
 			binding([project("alpha", true), project("beta", true)]),
 		);
 
-		const result = await call(client, "search_symbols", { text: "Needle", projects: ["beta"] });
+		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }], projects: ["beta"] });
 
 		expect(routes).toEqual(["beta"]);
 		expect(textOf(result)).not.toContain("=== beta");
@@ -240,7 +276,7 @@ describe("query project routing", () => {
 		};
 		const client = await connectClient(source, binding([project("alpha", true), project("beta", true)]));
 
-		const result = await call(client, "find_imports", { specifier: "pkg", projects: [] });
+		const result = await call(client, "find_imports", { queries: [{ specifier: "pkg" }], projects: [] });
 
 		expect(routes).toEqual(["alpha", "beta"]);
 		expect(result.isError).toBe(true);
@@ -261,7 +297,7 @@ describe("query project routing", () => {
 			binding([project("alpha", true), project("beta", false), project("app-1", true)]),
 		);
 
-		const result = await call(client, "search_symbols", { text: "Needle", projects });
+		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }], projects });
 
 		expect(result.isError).toBe(true);
 		expect(routes).toEqual([]);
@@ -272,7 +308,7 @@ describe("query project routing", () => {
 		const client = await connectClient(searchSource(routes, []), binding([project("alpha", true)]));
 
 		const result = await call(client, "search_symbols", {
-			text: "Needle",
+			queries: [{ text: "Needle" }],
 			projects: ["alpha", "alpha"],
 		});
 
@@ -284,7 +320,7 @@ describe("query project routing", () => {
 		const routes: string[] = [];
 		const client = await connectClient(searchSource(routes, []), binding([project("alpha", true)]));
 
-		const result = await call(client, "search_symbols", { text: "Needle", project: "alpha" });
+		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }], project: "alpha" });
 
 		expect(result.isError).toBe(true);
 		expect(routes).toEqual([]);
