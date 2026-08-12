@@ -57,9 +57,9 @@ This does not index or bind it. \`bind_project\` does both. Re-registering is sa
 export const BIND_PROJECT_DESCRIPTION = `
 # \`bind_project\`
 
-Bind a registered project for this session.
+Bind this session to a project's indexer.
 
-Use the binding name from \`list_projects\`. Multiple projects can be bound.
+Use a project name from \`list_projects\`. Multiple project indexers can be bound.
 `.trim();
 
 export const UNBIND_PROJECT_DESCRIPTION = `
@@ -75,7 +75,7 @@ export const RegisterProjectInput = {
 };
 
 export const BindProjectInput = {
-	project: z.string().min(1).describe(`Binding name from \`list_projects\`.`),
+	project: z.string().min(1).describe(`Project name from \`list_projects\`.`),
 };
 
 ////////////////////////////////
@@ -104,14 +104,8 @@ export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	};
 }
 
-/** What a query says when it has nowhere to look. The only guidance an agent gets, so it names the
- * exact next call rather than describing the situation. */
-export function nothingBoundMessage(projects: SessionProject[]): string {
-	if (projects.length === 0) {
-		return "No project is registered, so there is nothing to answer from. Call register_project with the absolute path to the codebase's root, then bind_project.";
-	}
-	const names = projects.map((project) => project.name).join(", ");
-	return `No project is bound, so there is nothing to answer from. Registered: ${names}. Call bind_project with one of those, or register_project for a codebase not listed.`;
+export function nothingBoundMessage(_projects: SessionProject[]): string {
+	return "No project is bound. Call list_projects for the list of projects. Bind with bind_project.";
 }
 
 ////////////////////////////////

@@ -138,15 +138,10 @@ describe("binding and unbinding", () => {
 });
 
 describe("what a query says when it cannot answer", () => {
-	// This message is the whole recovery path, so it names calls rather than describing the state.
-	it("tells an empty registry to register first", () => {
-		expect(nothingBoundMessage([])).toContain("register_project");
-	});
+	it("gives the same recovery path regardless of the registered projects", () => {
+		const expected = "No project is bound. Call list_projects for the list of projects. Bind with bind_project.";
 
-	it("lists what is registered when the problem is only that none are bound", () => {
-		const message = nothingBoundMessage([project(), project({ name: "beta" })]);
-
-		expect(message).toContain("alpha, beta");
-		expect(message).toContain("bind_project");
+		expect(nothingBoundMessage([])).toBe(expected);
+		expect(nothingBoundMessage([project(), project({ name: "beta" })])).toBe(expected);
 	});
 });
