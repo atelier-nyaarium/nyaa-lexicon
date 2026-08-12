@@ -13,7 +13,7 @@ Bun workspace monorepo. Five packages, and the boundaries are real.
 - `protocol/` - zod schemas, the symbol and fact id grammars, the conformance suite. Runs without
   the core, so a provider team is never blocked on us.
 - `core/` - daemon, SQLite store, provider supervisor, every query, the knowledge layer.
-- `adapters/mcp/` - 25 agent-facing tools over stdio.
+- `adapters/mcp/` - agent-facing tools over stdio.
 - `adapters/lsp/` - the editor face, answering from the same service class.
 - `providers/<language>/` - one per language, separate process, own runtime, speaks the protocol.
 - `docs/` - architecture, provider-protocol, knowledge-layer, parsing.

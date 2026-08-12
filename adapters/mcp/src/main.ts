@@ -14,8 +14,8 @@ import {
 	IndexStore,
 	LexiconService,
 	ProviderSupervisor,
-	type RegisteredProject,
 	readRegistry,
+	type SessionProject,
 	startProviders,
 } from "@nyaa-lexicon/core";
 import packageJson from "../../../package.json";
@@ -28,7 +28,6 @@ import {
 	ListProjectsInput,
 	listProjectsTool,
 	liveBindingDeps,
-	nothingBoundMessage,
 	REGISTER_PROJECT_DESCRIPTION,
 	RegisterProjectInput,
 	registerProjectTool,
@@ -48,78 +47,8 @@ import {
 	StopDaemonInput,
 	stopProjectDaemonTool,
 } from "./manage.js";
-import {
-	CO_CHANGED_WITH_DESCRIPTION,
-	CoChangedWithInput,
-	coChangedWith,
-	DESCRIBE_DESCRIPTION,
-	DescribeSymbolInput,
-	describeSymbol,
-	FILE_HISTORY_DESCRIPTION,
-	FIND_IMPORTS_DESCRIPTION,
-	FIND_LITERALS_DESCRIPTION,
-	FileHistoryInput,
-	FindImportsInput,
-	FindLiteralsInput,
-	FindReferencesInput,
-	fileHistory,
-	findImports,
-	findLiterals,
-	findReferences,
-	GRAPH_OF_DESCRIPTION,
-	GraphOfInput,
-	graphOf,
-	HUBS_DESCRIPTION,
-	HubsInput,
-	hubs,
-	INVALIDATE_ANSWER_DESCRIPTION,
-	InvalidateAnswerInput,
-	invalidateAnswer,
-	KNOWLEDGE_GAPS_DESCRIPTION,
-	KnowledgeGapsInput,
-	knowledgeGaps,
-	OUTLINE_MODULE_DESCRIPTION,
-	OutlineModuleInput,
-	OVERVIEW_DESCRIPTION,
-	OverviewInput,
-	outlineModule,
-	overview,
-	PREPARE_RENAME_DESCRIPTION,
-	PrepareRenameInput,
-	prepareRename,
-	REAFFIRM_ANSWER_DESCRIPTION,
-	RECALL_ANSWER_DESCRIPTION,
-	RECORD_ANSWER_DESCRIPTION,
-	REFERENCES_DESCRIPTION,
-	RENAME_SYMBOL_DESCRIPTION,
-	RESOLVE_IMPORT_DESCRIPTION,
-	ReaffirmAnswerInput,
-	RecallAnswerInput,
-	RecordAnswerInput,
-	ResolveImportInput,
-	reaffirmAnswer,
-	recallAnswer,
-	recordAnswer,
-	renameSymbol,
-	resolveImport,
-	SEARCH_SYMBOLS_DESCRIPTION,
-	SearchSymbolsInput,
-	SYMBOL_FACTS_DESCRIPTION,
-	SYMBOL_HISTORY_DESCRIPTION,
-	SymbolFactsInput,
-	SymbolHistoryInput,
-	searchSymbols,
-	symbolFacts,
-	symbolHistory,
-	type ToolBackend,
-	type ToolResult,
-	TYPE_HIERARCHY_DESCRIPTION,
-	TYPE_OF_DESCRIPTION,
-	TypeHierarchyInput,
-	TypeOfInput,
-	typeHierarchy,
-	typeOfSymbol,
-} from "./tools.js";
+import { type BackendSource, registerProjectTools } from "./projectTools.js";
+import type { ToolBackend, ToolResult } from "./tools.js";
 
 ////////////////////////////////
 //  Constants
@@ -263,40 +192,15 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 	};
 }
 
-/** One fixed backend, or one per bound project. Tests pass a backend; production routes. */
-export type BackendSource = ToolBackend | ((project: RegisteredProject) => ToolBackend);
-
 export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bindingDeps?: BindingDeps): McpServer {
 	const server = new McpServer(SERVER_INFO);
-	const routed = typeof source === "function" ? source : null;
-	// One set per server, so binds die with the session that made them.
-	const binds = createSessionBinds(() => readRegistry());
+	// One catalog per server, so names and binds die with the MCP session that made them.
+	const binding = bindingDeps ?? liveBindingDeps(createSessionBinds(() => readRegistry()));
+	registerProjectTools(server, source, binding);
 
 	// The SDK's callback type is wider than ours in ways the strict optional settings will not
 	// unify, so each handler is adapted once here rather than loosening the tool signatures.
 	// biome-ignore-start lint/suspicious/noExplicitAny: MCP SDK type compat
-	const describeShape = DescribeSymbolInput as any;
-	const referencesShape = FindReferencesInput as any;
-	const importShape = ResolveImportInput as any;
-	const typeShape = TypeOfInput as any;
-	const renameShape = PrepareRenameInput as any;
-	const literalShape = FindLiteralsInput as any;
-	const graphShape = GraphOfInput as any;
-	const coChangeShape = CoChangedWithInput as any;
-	const searchShape = SearchSymbolsInput as any;
-	const outlineShape = OutlineModuleInput as any;
-	const importsShape = FindImportsInput as any;
-	const hubsShape = HubsInput as any;
-	const overviewShape = OverviewInput as any;
-	const hierarchyShape = TypeHierarchyInput as any;
-	const fileHistoryShape = FileHistoryInput as any;
-	const factsShape = SymbolFactsInput as any;
-	const symbolHistoryShape = SymbolHistoryInput as any;
-	const recordShape = RecordAnswerInput as any;
-	const recallShape = RecallAnswerInput as any;
-	const invalidateShape = InvalidateAnswerInput as any;
-	const reaffirmShape = ReaffirmAnswerInput as any;
-	const gapsShape = KnowledgeGapsInput as any;
 	const listStoresShape = ListStoresInput as any;
 	const deleteStoreShape = DeleteStoreInput as any;
 	const stopDaemonShape = StopDaemonInput as any;
@@ -307,169 +211,7 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 		(handler: (args: any) => Promise<ToolResult>) =>
 		async (args: any): Promise<any> =>
 			handler(args);
-
-	// Every question goes to each bound project in turn, labelled, because "which codebase" is the
-	// one thing the agent knows and lexicon cannot infer.
-	const perProject =
-		(handler: (backend: ToolBackend, args: any) => Promise<ToolResult>) =>
-		async (args: any): Promise<any> => {
-			if (routed === null) return handler(source as ToolBackend, args);
-
-			const bound = binding.list().filter((project) => project.bound);
-			if (bound.length === 0) {
-				return { content: [{ type: "text", text: nothingBoundMessage(binding.list()) }], isError: true };
-			}
-			if (bound.length === 1 && bound[0] !== undefined) return handler(routed(bound[0]), args);
-
-			const sections: string[] = [];
-			for (const project of bound) {
-				const result = await handler(routed(project), args);
-				sections.push(`=== ${project.name}\n${result.content.map((chunk) => chunk.text).join("\n")}`);
-			}
-			return { content: [{ type: "text", text: sections.join("\n\n") }] };
-		};
 	// biome-ignore-end lint/suspicious/noExplicitAny: MCP SDK type compat
-
-	server.registerTool(
-		"describe_symbol",
-		{ title: "Describe Symbol", description: DESCRIBE_DESCRIPTION, inputSchema: describeShape },
-		perProject((backend, args) => describeSymbol(backend, args)),
-	);
-
-	server.registerTool(
-		"find_references",
-		{ title: "Find References", description: REFERENCES_DESCRIPTION, inputSchema: referencesShape },
-		perProject((backend, args) => findReferences(backend, args)),
-	);
-
-	server.registerTool(
-		"resolve_import",
-		{ title: "Resolve Import", description: RESOLVE_IMPORT_DESCRIPTION, inputSchema: importShape },
-		perProject((backend, args) => resolveImport(backend, args)),
-	);
-
-	server.registerTool(
-		"type_of",
-		{ title: "Type Of", description: TYPE_OF_DESCRIPTION, inputSchema: typeShape },
-		perProject((backend, args) => typeOfSymbol(backend, args)),
-	);
-
-	server.registerTool(
-		"prepare_rename",
-		{ title: "Prepare Rename", description: PREPARE_RENAME_DESCRIPTION, inputSchema: renameShape },
-		perProject((backend, args) => prepareRename(backend, args)),
-	);
-
-	server.registerTool(
-		"rename_symbol",
-		{ title: "Rename Symbol", description: RENAME_SYMBOL_DESCRIPTION, inputSchema: renameShape },
-		perProject((backend, args) => renameSymbol(backend, args)),
-	);
-
-	server.registerTool(
-		"find_literals",
-		{ title: "Find Literals", description: FIND_LITERALS_DESCRIPTION, inputSchema: literalShape },
-		perProject((backend, args) => findLiterals(backend, args)),
-	);
-
-	server.registerTool(
-		"graph_of",
-		{ title: "Graph Of", description: GRAPH_OF_DESCRIPTION, inputSchema: graphShape },
-		perProject((backend, args) => graphOf(backend, args)),
-	);
-
-	server.registerTool(
-		"co_changed_with",
-		{ title: "Co-changed With", description: CO_CHANGED_WITH_DESCRIPTION, inputSchema: coChangeShape },
-		perProject((backend, args) => coChangedWith(backend, args)),
-	);
-
-	server.registerTool(
-		"type_hierarchy",
-		{ title: "Type Hierarchy", description: TYPE_HIERARCHY_DESCRIPTION, inputSchema: hierarchyShape },
-		perProject((backend, args) => typeHierarchy(backend, args)),
-	);
-
-	server.registerTool(
-		"file_history",
-		{ title: "File History", description: FILE_HISTORY_DESCRIPTION, inputSchema: fileHistoryShape },
-		perProject((backend, args) => fileHistory(backend, args)),
-	);
-
-	server.registerTool(
-		"symbol_facts",
-		{ title: "Symbol Facts", description: SYMBOL_FACTS_DESCRIPTION, inputSchema: factsShape },
-		perProject((backend, args) => symbolFacts(backend, args)),
-	);
-
-	server.registerTool(
-		"symbol_history",
-		{ title: "Symbol History", description: SYMBOL_HISTORY_DESCRIPTION, inputSchema: symbolHistoryShape },
-		perProject((backend, args) => symbolHistory(backend, args)),
-	);
-
-	server.registerTool(
-		"record_answer",
-		{ title: "Record Answer", description: RECORD_ANSWER_DESCRIPTION, inputSchema: recordShape },
-		perProject((backend, args) => recordAnswer(backend, args)),
-	);
-
-	server.registerTool(
-		"recall_answer",
-		{ title: "Recall Answer", description: RECALL_ANSWER_DESCRIPTION, inputSchema: recallShape },
-		perProject((backend, args) => recallAnswer(backend, args)),
-	);
-
-	server.registerTool(
-		"invalidate_answer",
-		{ title: "Invalidate Answer", description: INVALIDATE_ANSWER_DESCRIPTION, inputSchema: invalidateShape },
-		perProject((backend, args) => invalidateAnswer(backend, args)),
-	);
-
-	server.registerTool(
-		"reaffirm_answer",
-		{ title: "Reaffirm Answer", description: REAFFIRM_ANSWER_DESCRIPTION, inputSchema: reaffirmShape },
-		perProject((backend, args) => reaffirmAnswer(backend, args)),
-	);
-
-	server.registerTool(
-		"knowledge_gaps",
-		{ title: "Knowledge Gaps", description: KNOWLEDGE_GAPS_DESCRIPTION, inputSchema: gapsShape },
-		perProject((backend, args) => knowledgeGaps(backend, args)),
-	);
-
-	server.registerTool(
-		"overview",
-		{ title: "Overview", description: OVERVIEW_DESCRIPTION, inputSchema: overviewShape },
-		perProject((backend) => overview(backend)),
-	);
-
-	server.registerTool(
-		"search_symbols",
-		{ title: "Search Symbols", description: SEARCH_SYMBOLS_DESCRIPTION, inputSchema: searchShape },
-		perProject((backend, args) => searchSymbols(backend, args)),
-	);
-
-	server.registerTool(
-		"outline_module",
-		{ title: "Outline Module", description: OUTLINE_MODULE_DESCRIPTION, inputSchema: outlineShape },
-		perProject((backend, args) => outlineModule(backend, args)),
-	);
-
-	server.registerTool(
-		"find_imports",
-		{ title: "Find Imports", description: FIND_IMPORTS_DESCRIPTION, inputSchema: importsShape },
-		perProject((backend, args) => findImports(backend, args)),
-	);
-
-	server.registerTool(
-		"hubs",
-		{ title: "Hubs", description: HUBS_DESCRIPTION, inputSchema: hubsShape },
-		perProject((backend, args) => hubs(backend, args)),
-	);
-
-	// Never gated on a binding: these are how an agent RECOVERS from having none.
-	const binding = bindingDeps ?? liveBindingDeps(binds);
 
 	server.registerTool(
 		"list_projects",
@@ -515,7 +257,9 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 	server.registerTool(
 		"stop_project_daemon",
 		{ title: "Stop Project Daemon", description: STOP_DAEMON_DESCRIPTION, inputSchema: stopDaemonShape },
-		adapt(async (args) => stopProjectDaemonTool(manage, () => binds.bound(), args)),
+		adapt(async (args) =>
+			stopProjectDaemonTool(manage, () => binding.list().filter((project) => project.bound), args),
+		),
 	);
 
 	return server;
@@ -533,7 +277,7 @@ async function main(argv: string[]): Promise<void> {
 	// No workspace is guessed from the environment or the working directory. Which codebase to
 	// answer about is the agent's to state, and it states it by binding.
 	const backends = new Map<string, ToolBackend>();
-	const backendFor = (project: RegisteredProject): ToolBackend => {
+	const backendFor = (project: SessionProject): ToolBackend => {
 		const existing = backends.get(project.key);
 		if (existing !== undefined) return existing;
 		const created = daemonBackend(project.root);

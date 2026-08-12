@@ -5,8 +5,8 @@ import { createSessionBinds } from "../sessionBinds";
 ////////////////////////////////
 //  Helpers
 
-function project(name: string): RegisteredProject {
-	return { key: `${name}-key`, root: `/home/dev/${name}`, name, bound: false };
+function project(name: string, parent = "/home/dev"): RegisteredProject {
+	return { key: `${parent}/${name}-key`, root: `${parent}/${name}` };
 }
 
 const registry = [project("alpha"), project("beta")];
@@ -19,33 +19,34 @@ describe("binding within a session", () => {
 		expect(createSessionBinds(() => registry).bound()).toEqual([]);
 	});
 
-	it("binds and unbinds by name", () => {
+	it("binds and unbinds by session name", () => {
 		const binds = createSessionBinds(() => registry);
 
 		binds.bind("alpha");
-		expect(binds.bound().map((p) => p.name)).toEqual(["alpha"]);
+		expect(binds.bound().map((entry) => entry.name)).toEqual(["alpha"]);
 
 		binds.unbind("alpha");
 		expect(binds.bound()).toEqual([]);
 	});
 
-	it("binds by key too, since the listing leads with it", () => {
+	it("does not expose the durable key as a binding selector", () => {
 		const binds = createSessionBinds(() => registry);
-		expect(binds.bind("alpha-key")).toMatchObject({ bound: true });
+
+		expect(binds.bind(registry[0]?.key ?? "")).toMatchObject({ bound: false });
+		expect(binds.bound()).toEqual([]);
 	});
 
-	// The whole point of binding many: one question, several codebases.
-	it("holds several at once, and unbinding one leaves the rest", () => {
+	it("holds several bindings and removes only the selected one", () => {
 		const binds = createSessionBinds(() => registry);
 		binds.bind("alpha");
 		binds.bind("beta");
-		expect(binds.bound().map((p) => p.name)).toEqual(["alpha", "beta"]);
+		expect(binds.bound().map((entry) => entry.name)).toEqual(["alpha", "beta"]);
 
 		binds.unbind("alpha");
-		expect(binds.bound().map((p) => p.name)).toEqual(["beta"]);
+		expect(binds.bound().map((entry) => entry.name)).toEqual(["beta"]);
 	});
 
-	it("binding twice is not two bindings", () => {
+	it("binding twice is one binding", () => {
 		const binds = createSessionBinds(() => registry);
 		binds.bind("alpha");
 		binds.bind("alpha");
@@ -53,14 +54,14 @@ describe("binding within a session", () => {
 		expect(binds.bound()).toHaveLength(1);
 	});
 
-	it("flags the whole registry, so a listing shows bound and unbound together", () => {
+	it("lists the whole catalog with session bound state", () => {
 		const binds = createSessionBinds(() => registry);
 		binds.bind("beta");
 
-		expect(binds.all().map((p) => `${p.name}:${p.bound}`)).toEqual(["alpha:false", "beta:true"]);
+		expect(binds.all().map((entry) => `${entry.name}:${entry.bound}`)).toEqual(["alpha:false", "beta:true"]);
 	});
 
-	it("tells an agent what to do when the name is unknown", () => {
+	it("tells an agent how to recover from an unknown name", () => {
 		const outcome = createSessionBinds(() => registry).bind("ghost");
 
 		expect(outcome.bound).toBe(false);
@@ -68,7 +69,6 @@ describe("binding within a session", () => {
 		expect(outcome.reason).toContain("list_projects");
 	});
 
-	// Two sessions, one machine: what one binds must not appear in the other.
 	it("keeps one session's bindings out of another's", () => {
 		const mine = createSessionBinds(() => registry);
 		const theirs = createSessionBinds(() => registry);
@@ -78,12 +78,127 @@ describe("binding within a session", () => {
 		expect(theirs.bound()).toEqual([]);
 	});
 
-	it("sees a project registered after the session started", () => {
+	it("sees a uniquely named project registered after the session started", () => {
 		let known = [project("alpha")];
 		const binds = createSessionBinds(() => known);
 
 		known = [...known, project("gamma")];
 
 		expect(binds.bind("gamma")).toMatchObject({ bound: true });
+	});
+});
+
+describe("session project names", () => {
+	it("numbers every member of a fresh basename collision in registry order", () => {
+		const projects = [project("app", "/work/one"), project("app", "/work/two")];
+
+		expect(
+			createSessionBinds(() => projects)
+				.all()
+				.map((entry) => entry.name),
+		).toEqual(["app-1", "app-2"]);
+	});
+
+	it("keeps every generated name globally unique", () => {
+		const projects = [project("app", "/work/one"), project("app-1", "/work/other"), project("app", "/work/two")];
+
+		expect(
+			createSessionBinds(() => projects)
+				.all()
+				.map((entry) => entry.name),
+		).toEqual(["app-1", "app-1-2", "app-2"]);
+	});
+
+	it("renames a bare name as soon as a live collision appears", () => {
+		let known = [project("app", "/work/one")];
+		const binds = createSessionBinds(() => known);
+		const first = known[0];
+
+		known = [...known, project("app", "/work/two")];
+
+		expect(binds.sync()).toEqual({
+			renames: [{ key: first?.key, root: first?.root, from: "app", to: "app-1" }],
+			bindingsCleared: false,
+		});
+		expect(binds.all().map((entry) => entry.name)).toEqual(["app-1", "app-2"]);
+		expect(binds.bind("app")).toMatchObject({ bound: false });
+	});
+
+	it("clears every binding when a live rename touches a bound project", () => {
+		let known = [project("app", "/work/one"), project("other")];
+		const binds = createSessionBinds(() => known);
+		binds.bind("app");
+		binds.bind("other");
+
+		known = [...known, project("app", "/work/two")];
+
+		expect(binds.sync().bindingsCleared).toBe(true);
+		expect(binds.bound()).toEqual([]);
+	});
+
+	it("reconciles and clears bindings through ordinary catalog access", () => {
+		let known = [project("app", "/work/one"), project("other")];
+		const binds = createSessionBinds(() => known);
+		binds.bind("app");
+		binds.bind("other");
+
+		known = [...known, project("app", "/work/two")];
+
+		expect(binds.bound()).toEqual([]);
+		expect(binds.all().map((entry) => entry.name)).toEqual(["app-1", "other", "app-2"]);
+	});
+
+	it("preserves bindings when a live rename touches only an unbound project", () => {
+		let known = [project("app", "/work/one"), project("other")];
+		const binds = createSessionBinds(() => known);
+		binds.bind("other");
+
+		known = [...known, project("app", "/work/two")];
+
+		expect(binds.sync().bindingsCleared).toBe(false);
+		expect(binds.bound().map((entry) => entry.name)).toEqual(["other"]);
+	});
+
+	it("keeps surviving names sticky until a new session compacts them", () => {
+		let known = [project("app", "/work/one"), project("app", "/work/two")];
+		const session = createSessionBinds(() => known);
+		const survivor = known[1];
+
+		known = survivor === undefined ? [] : [survivor];
+
+		expect(session.all().map((entry) => entry.name)).toEqual(["app-2"]);
+		expect(
+			createSessionBinds(() => known)
+				.all()
+				.map((entry) => entry.name),
+		).toEqual(["app"]);
+	});
+
+	it("does not reuse a retired name until the session restarts", () => {
+		const survivor = project("app", "/work/two");
+		let known = [project("app", "/work/one"), survivor];
+		const session = createSessionBinds(() => known);
+
+		known = [survivor];
+		session.sync();
+		known = [...known, project("app", "/work/three")];
+
+		expect(session.all().map((entry) => entry.name)).toEqual(["app-2", "app-3"]);
+		expect(
+			createSessionBinds(() => known)
+				.all()
+				.map((entry) => entry.name),
+		).toEqual(["app-1", "app-2"]);
+	});
+
+	it("keeps independently derived names in simultaneous sessions", () => {
+		let known = [project("app", "/work/one")];
+		const older = createSessionBinds(() => known);
+		known = [...known, project("app", "/work/two")];
+		const newer = createSessionBinds(() => known);
+
+		expect(older.sync().renames).toHaveLength(1);
+		expect(newer.sync().renames).toEqual([]);
+		expect(older.all().map((entry) => entry.name)).toEqual(newer.all().map((entry) => entry.name));
 	});
 });

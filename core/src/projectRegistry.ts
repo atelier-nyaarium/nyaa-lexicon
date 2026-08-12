@@ -13,17 +13,13 @@ import { currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.
 //  Interfaces & Types
 
 export interface RegisteredProject {
-	/** Stable directory name, and how every tool refers to a project. */
+	/** Stable directory name for index storage and daemon identity. */
 	key: string;
 	root: string;
-	/** A short name the agent can type instead of the key. Unique within the registry. */
-	name: string;
-	/** Whether the ASKING session bound it. Never persisted; sessionBinds fills it in. */
-	bound: boolean;
 }
 
 interface RegistryFile {
-	projects: Array<{ key: string; root: string; name: string }>;
+	projects: Array<{ key: string; root: string; name?: string }>;
 }
 
 export type RegisterOutcome =
@@ -49,13 +45,8 @@ export function readRegistry(host: PlatformEnv = currentHost()): RegisteredProje
 		const parsed = JSON.parse(raw) as RegistryFile;
 		if (!Array.isArray(parsed.projects)) return [];
 		return parsed.projects
-			.filter(
-				(entry) =>
-					typeof entry?.key === "string" &&
-					typeof entry?.root === "string" &&
-					typeof entry?.name === "string",
-			)
-			.map((entry) => ({ ...entry, bound: false }));
+			.filter((entry) => typeof entry?.key === "string" && typeof entry?.root === "string")
+			.map(({ key, root }) => ({ key, root }));
 	} catch {
 		return [];
 	}
@@ -66,24 +57,14 @@ function writeRegistry(host: PlatformEnv, projects: RegisteredProject[]): void {
 	const file = registryFile(host);
 	mkdirSync(path.dirname(file), { recursive: true });
 	const staging = `${file}.${process.pid}.tmp`;
-	const stored = projects.map(({ key, root, name }) => ({ key, root, name }));
+	const stored = projects.map(({ key, root }) => ({ key, root }));
 	writeFileSync(staging, JSON.stringify({ projects: stored } satisfies RegistryFile, null, 2));
 	renameSync(staging, file);
 }
 
-/** The basename, suffixed only when another project already took it. */
-function uniqueName(root: string, taken: RegisteredProject[]): string {
-	const base = path.basename(path.resolve(root)).replace(/[^A-Za-z0-9._-]/g, "-") || "project";
-	if (!taken.some((project) => project.name === base)) return base;
-	for (let n = 2; ; n++) {
-		const candidate = `${base}-${n}`;
-		if (!taken.some((project) => project.name === candidate)) return candidate;
-	}
-}
-
-/** A project by key or by name, so an agent can use whichever the listing showed it. */
+/** Durable registry lookup. Session-facing names belong to sessionBinds. */
 export function findProject(reference: string, projects: RegisteredProject[]): RegisteredProject | null {
-	return projects.find((project) => project.key === reference || project.name === reference) ?? null;
+	return projects.find((project) => project.key === reference || project.root === reference) ?? null;
 }
 
 ////////////////////////////////
@@ -103,7 +84,7 @@ export function registerProject(
 	const existing = projects.find((project) => project.key === key);
 	if (existing !== undefined) return { registered: true, project: existing, already: true };
 
-	const project: RegisteredProject = { key, root: resolved, name: uniqueName(resolved, projects), bound: false };
+	const project: RegisteredProject = { key, root: resolved };
 	writeRegistry(host, [...projects, project]);
 	return { registered: true, project, already: false };
 }

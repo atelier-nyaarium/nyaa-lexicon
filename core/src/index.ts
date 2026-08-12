@@ -108,7 +108,14 @@ export {
 	type SymbolSummary,
 	type TypeHierarchy,
 } from "./service.js";
-export { type BindOutcome, createSessionBinds, type SessionBinds } from "./sessionBinds.js";
+export {
+	type BindOutcome,
+	createSessionBinds,
+	type ProjectRename,
+	type SessionBinds,
+	type SessionProject,
+	type SessionSyncOutcome,
+} from "./sessionBinds.js";
 export {
 	ConnectionLostError,
 	connectFrames,

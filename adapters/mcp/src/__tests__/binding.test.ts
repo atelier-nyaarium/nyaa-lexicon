@@ -1,4 +1,4 @@
-import type { RegisteredProject } from "@nyaa-lexicon/core";
+import type { SessionProject } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
 import {
 	type BindingDeps,
@@ -12,14 +12,19 @@ import {
 ////////////////////////////////
 //  Helpers
 
-function project(overrides: Partial<RegisteredProject> = {}): RegisteredProject {
+function project(overrides: Partial<SessionProject> = {}): SessionProject {
 	return { key: "alpha-abc123", root: "/home/dev/alpha", name: "alpha", bound: false, ...overrides };
 }
 
-function deps(projects: RegisteredProject[], overrides: Partial<BindingDeps> = {}): BindingDeps {
+function deps(projects: SessionProject[], overrides: Partial<BindingDeps> = {}): BindingDeps {
 	return {
 		list: () => projects,
-		register: () => ({ registered: true, project: project(), already: false }),
+		register: () => ({
+			registered: true,
+			project: project(),
+			already: false,
+			sync: { renames: [], bindingsCleared: false },
+		}),
 		bind: () => ({ bound: true, project: project({ bound: true }) }),
 		unbind: () => ({ bound: true, project: project() }),
 		...overrides,
@@ -60,11 +65,38 @@ describe("registering", () => {
 	});
 
 	it("reports an already-known project without treating it as an error", () => {
-		const already = deps([], { register: () => ({ registered: true, project: project(), already: true }) });
+		const already = deps([], {
+			register: () => ({
+				registered: true,
+				project: project(),
+				already: true,
+				sync: { renames: [], bindingsCleared: false },
+			}),
+		});
 		const result = registerProjectTool(already, { root: "/home/dev/alpha" });
 
 		expect(result.isError).toBeUndefined();
 		expect(textOf(result)).toContain("already registered");
+	});
+
+	it("reports collision renames and cleared bindings", () => {
+		const collision = deps([], {
+			register: () => ({
+				registered: true,
+				project: project({ name: "app-2", root: "/work/two/app" }),
+				already: false,
+				sync: {
+					renames: [{ key: "app-key", root: "/work/one/app", from: "app", to: "app-1" }],
+					bindingsCleared: true,
+				},
+			}),
+		});
+
+		const shown = textOf(registerProjectTool(collision, { root: "/work/two/app" }));
+
+		expect(shown).toContain("app is now app-1");
+		expect(shown).toContain("All session bindings were cleared");
+		expect(shown).toContain("list_projects");
 	});
 
 	// A refusal that reads as success is how somebody believes they registered their home directory.

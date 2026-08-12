@@ -3,7 +3,13 @@
 // Nothing is discovered. A project is known because it was registered, which is durable, and asked
 // because this session bound it, which is not. The warm index is what outlives the session.
 
-import { admitWorkspace, type RegisteredProject, registerProject, type SessionBinds } from "@nyaa-lexicon/core";
+import {
+	admitWorkspace,
+	registerProject,
+	type SessionBinds,
+	type SessionProject,
+	type SessionSyncOutcome,
+} from "@nyaa-lexicon/core";
 import { z } from "zod";
 
 ////////////////////////////////
@@ -16,8 +22,12 @@ interface ToolResult {
 
 /** Injected so tests drive the registry without touching a real state directory. */
 export interface BindingDeps {
-	list: () => RegisteredProject[];
-	register: (root: string) => ReturnType<typeof registerProject>;
+	list: () => SessionProject[];
+	register: (
+		root: string,
+	) =>
+		| { registered: true; project: SessionProject; already: boolean; sync: SessionSyncOutcome }
+		| { registered: false; reason: string };
 	bind: SessionBinds["bind"];
 	unbind: SessionBinds["unbind"];
 }
@@ -30,7 +40,7 @@ export const LIST_PROJECTS_DESCRIPTION = `
 
 List registered projects and their bound status.
 
-Only bound projects supply query results.
+Binding names last for this MCP session. Match full roots after a reload.
 `.trim();
 
 export const REGISTER_PROJECT_DESCRIPTION = `
@@ -46,7 +56,7 @@ export const BIND_PROJECT_DESCRIPTION = `
 
 Bind a registered project for this session.
 
-Its index stays warm. Multiple projects can be bound; query results identify their project.
+Use the binding name from \`list_projects\`. Multiple projects can be bound.
 `.trim();
 
 export const UNBIND_PROJECT_DESCRIPTION = `
@@ -62,7 +72,7 @@ export const RegisterProjectInput = {
 };
 
 export const BindProjectInput = {
-	project: z.string().min(1).describe(`Project name or key from \`list_projects\`.`),
+	project: z.string().min(1).describe(`Binding name from \`list_projects\`.`),
 };
 
 ////////////////////////////////
@@ -76,7 +86,15 @@ function text(body: string, isError = false): ToolResult {
 export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	return {
 		list: () => binds.all(),
-		register: (root) => registerProject(root, (candidate) => admitWorkspace(candidate)),
+		register: (root) => {
+			const outcome = registerProject(root, (candidate) => admitWorkspace(candidate));
+			if (!outcome.registered) return outcome;
+			const sync = binds.sync();
+			const project = binds.all().find((entry) => entry.key === outcome.project.key);
+			if (project === undefined)
+				return { registered: false, reason: "registered project is missing from this session" };
+			return { registered: true, project, already: outcome.already, sync };
+		},
 		bind: (reference) => binds.bind(reference),
 		unbind: (reference) => binds.unbind(reference),
 	};
@@ -84,7 +102,7 @@ export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 
 /** What a query says when it has nowhere to look. The only guidance an agent gets, so it names the
  * exact next call rather than describing the situation. */
-export function nothingBoundMessage(projects: RegisteredProject[]): string {
+export function nothingBoundMessage(projects: SessionProject[]): string {
 	if (projects.length === 0) {
 		return "No project is registered, so there is nothing to answer from. Call register_project with the absolute path to the codebase's root, then bind_project.";
 	}
@@ -108,7 +126,9 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 	const summary =
 		bound === 0
 			? "Nothing is bound, so queries have nowhere to look. Call bind_project."
-			: `${bound} of ${projects.length} bound; queries answer from ${bound === 1 ? "it" : "each of them"}.`;
+			: bound === 1
+				? `1 of ${projects.length} bound; project selectors may be omitted.`
+				: `${bound} of ${projects.length} bound; choose projects explicitly, or use \`projects: []\` for all.`;
 
 	return text(`${rows.join("\n")}\n\n${summary}`);
 }
@@ -116,10 +136,19 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 export function registerProjectTool(deps: BindingDeps, args: { root: string }): ToolResult {
 	const outcome = deps.register(args.root);
 	if (!outcome.registered) return text(outcome.reason, true);
+	const renamed = outcome.sync.renames.map((entry) => `${entry.from} is now ${entry.to} for ${entry.root}.`);
+	const recovery = outcome.sync.bindingsCleared
+		? "All session bindings were cleared. Call list_projects, match full roots, then bind_project."
+		: null;
 	if (outcome.already) {
-		return text(`${outcome.project.name} is already registered. Call bind_project to answer from it.`);
+		const next = recovery ?? `Call bind_project with ${outcome.project.name} to answer from it.`;
+		return text(
+			[`${outcome.project.name} is already registered at ${outcome.project.root}.`, ...renamed, next].join("\n"),
+		);
 	}
-	return text(`Registered ${outcome.project.name} at ${outcome.project.root}. Call bind_project to answer from it.`);
+
+	const next = recovery ?? `Call bind_project with ${outcome.project.name} to answer from it.`;
+	return text([`Registered ${outcome.project.name} at ${outcome.project.root}.`, ...renamed, next].join("\n"));
 }
 
 export function bindProjectTool(deps: BindingDeps, args: { project: string }): ToolResult {

@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PlatformEnv } from "../paths";
+import { type PlatformEnv, stateRoot } from "../paths";
 import { findProject, forgetProject, readRegistry, registerProject } from "../projectRegistry";
 
 ////////////////////////////////
@@ -34,11 +34,11 @@ describe("registering", () => {
 		expect(readRegistry(host)).toEqual([]);
 	});
 
-	it("keeps a registered project, named after its directory and not yet bound", () => {
+	it("keeps stable identity without session naming state", () => {
 		const outcome = registerProject(dir("alpha"), admitAll, host);
 
 		expect(outcome).toMatchObject({ registered: true, already: false });
-		expect(readRegistry(host)).toMatchObject([{ name: "alpha", bound: false }]);
+		expect(readRegistry(host)).toEqual([{ key: expect.stringMatching(/^alpha-/), root: path.join(home, "alpha") }]);
 	});
 
 	it("registering twice is the same project, reported as already there", () => {
@@ -49,13 +49,25 @@ describe("registering", () => {
 		expect(readRegistry(host)).toHaveLength(1);
 	});
 
-	// Two checkouts called `app` are the common case, and a name that silently means either is worse
-	// than an ugly one.
-	it("gives two projects sharing a basename distinct names", () => {
+	it("does not persist names for projects sharing a basename", () => {
 		registerProject(dir("one", "app"), admitAll, host);
 		registerProject(dir("two", "app"), admitAll, host);
 
-		expect(readRegistry(host).map((project) => project.name)).toEqual(["app", "app-2"]);
+		const stored = JSON.parse(readFileSync(path.join(stateRoot(host), "projects.json"), "utf8"));
+		expect(stored.projects).toEqual([
+			{ key: expect.any(String), root: path.join(home, "one", "app") },
+			{ key: expect.any(String), root: path.join(home, "two", "app") },
+		]);
+	});
+
+	it("reads registry files written before names moved into sessions", () => {
+		mkdirSync(stateRoot(host), { recursive: true });
+		writeFileSync(
+			path.join(stateRoot(host), "projects.json"),
+			JSON.stringify({ projects: [{ key: "alpha-key", root: "/work/alpha", name: "alpha" }] }),
+		);
+
+		expect(readRegistry(host)).toEqual([{ key: "alpha-key", root: "/work/alpha" }]);
 	});
 
 	it("refuses a root the admission rules reject, and passes the reason through", () => {
@@ -66,21 +78,22 @@ describe("registering", () => {
 	});
 });
 
-// A bind belongs to a session, so the file must not carry one: a restart that inherited yesterday's
-// bindings would answer from codebases nobody asked about.
 describe("what the file does not keep", () => {
-	it("never persists a binding, whatever the value in memory was", () => {
+	it("never persists a session-facing name or binding", () => {
 		registerProject(dir("alpha"), admitAll, host);
 
-		expect(readRegistry(host)).toMatchObject([{ name: "alpha", bound: false }]);
+		const raw = readFileSync(path.join(stateRoot(host), "projects.json"), "utf8");
+		expect(raw).not.toContain("name");
+		expect(raw).not.toContain("bound");
 	});
 });
 
 describe("forgetting", () => {
 	it("drops a project from the registry", () => {
 		registerProject(dir("alpha"), admitAll, host);
+		const [registered] = readRegistry(host);
 
-		expect(forgetProject("alpha", host)).toBe(true);
+		expect(forgetProject(registered?.key ?? "", host)).toBe(true);
 		expect(readRegistry(host)).toEqual([]);
 	});
 
@@ -89,13 +102,14 @@ describe("forgetting", () => {
 	});
 });
 
-describe("looking one up", () => {
-	it("finds by either handle, and answers null otherwise", () => {
-		registerProject(dir("alpha"), admitAll, host);
+describe("looking up durable identity", () => {
+	it("finds by key or exact root, and answers null otherwise", () => {
+		const root = dir("alpha");
+		registerProject(root, admitAll, host);
 		const projects = readRegistry(host);
 
-		expect(findProject("alpha", projects)?.name).toBe("alpha");
-		expect(findProject(projects[0]?.key ?? "", projects)?.name).toBe("alpha");
+		expect(findProject(root, projects)?.root).toBe(root);
+		expect(findProject(projects[0]?.key ?? "", projects)?.root).toBe(root);
 		expect(findProject("ghost", projects)).toBeNull();
 	});
 });

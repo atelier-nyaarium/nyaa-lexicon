@@ -49,6 +49,18 @@ cites the facts it was drawn from. See [docs/knowledge-layer.md](docs/knowledge-
 **Housekeeping.** `list_project_stores` and `delete_project_store` manage the indexes this machine
 holds, across every project.
 
+## Project selection
+
+Register codebases once, then bind the ones used by the current MCP session. `list_projects` shows
+each binding name beside its full root.
+
+Read tools accept `projects`. Omit it when one project is bound, pass names for a subset, or pass
+`[]` for every bound project. `rename_symbol`, `record_answer`, `invalidate_answer`, and
+`reaffirm_answer` accept one optional `project` instead and never fan out.
+
+Binding names are session-local. Same-named roots use `app-1`, `app-2`, and so on. A plugin reload
+compacts the names, so call `list_projects` again and match the full root.
+
 ## How it runs
 
 One daemon per workspace, shared by every session that finds it. Clients hold a connection while
