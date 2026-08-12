@@ -705,7 +705,7 @@ export function renderImports(result: {
 }
 
 /** The most-referenced symbols, which is where reading pays off most. */
-export function renderHubs(
+export function renderMostReferenced(
 	rows: Array<{
 		symbolId: string;
 		count: number;

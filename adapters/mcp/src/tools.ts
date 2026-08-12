@@ -36,7 +36,7 @@ import {
 	renderFileHistory,
 	renderGraph,
 	renderHierarchy,
-	renderHubs,
+	renderMostReferenced,
 	renderImports,
 	renderInvalidateOutcome,
 	renderKnowledge,
@@ -250,7 +250,7 @@ export const FindImportsInput = {
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
-export const HubsInput = {
+export const MostReferencedInput = {
 	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
@@ -464,8 +464,8 @@ Find importers by written specifier or resolved module path. Use substring, exac
 Set exactly one of \`specifier\`, \`specifierRegex\`, \`module\`, or \`moduleRegex\`. Uses the import graph across languages.
 `.trim();
 
-export const HUBS_DESCRIPTION = `
-# \`hubs\`
+export const MOST_REFERENCED_DESCRIPTION = `
+# \`most_referenced\`
 
 Rank symbols by resolved reference count.
 `.trim();
@@ -767,8 +767,8 @@ export async function findImports(
 	}
 }
 
-export async function hubs(backend: ToolBackend, args: { limit?: number | undefined }): Promise<ToolResult> {
-	return text(await withIndexState(backend, renderHubs(await backend.hubs(args.limit))));
+export async function mostReferenced(backend: ToolBackend, args: { limit?: number | undefined }): Promise<ToolResult> {
+	return text(await withIndexState(backend, renderMostReferenced(await backend.hubs(args.limit))));
 }
 
 export async function coChangedWith(

@@ -1613,7 +1613,7 @@ export class LexiconService {
 			// The cold-start fallback. An empty ledger means nobody has asked yet, not that nothing is
 			// worth writing, and answering "no gaps" on a workspace with no knowledge at all would
 			// read as completion. Fan-in is the only demand signal that exists before any asks, which
-			// is the doc's "pre-warm only high fan-in hubs" made queryable.
+			// is the doc's "pre-warm only high fan-in symbols" made queryable.
 			const seeded = this.store
 				.mostReferenced(limit * 3)
 				.filter((hub) => this.store.answer(hub.symbolId, question) === null)
@@ -1708,7 +1708,7 @@ export class LexiconService {
 	}
 
 	/** The most-referenced symbols, which is hub rank. */
-	hubs(limit = 20): Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }> {
+	mostReferenced(limit = 20): Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }> {
 		return this.store.mostReferenced(limit).map((row) => {
 			const declaration = this.store.declaration(row.symbolId);
 			return { ...row, declaration: declaration === null ? null : toSummary(declaration) };

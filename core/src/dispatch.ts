@@ -120,8 +120,9 @@ export function createDispatch(service: LexiconService) {
 				return service.graphOf(BySymbol.parse(params).symbolId);
 			case "cycles":
 				return service.cycles(Paged.parse(params).limit);
+			case "mostReferenced":
 			case "hubs":
-				return service.hubs(Paged.parse(params).limit);
+				return service.mostReferenced(Paged.parse(params).limit);
 			case "cacheStats":
 				return service.cacheStats();
 			case "searchSymbols": {
