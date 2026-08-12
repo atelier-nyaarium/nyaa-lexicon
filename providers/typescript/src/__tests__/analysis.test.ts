@@ -148,6 +148,80 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
+	it("reuses one compiler generation for unchanged indexed files", () => {
+		const files = {
+			"tsconfig.json": JSON.stringify({ include: ["*.ts"] }),
+			"a.ts": "export const a: number = 1;\n",
+			"b.ts": "export const b: number = 2;\n",
+			"c.ts": "export const c: number = 3;\n",
+		};
+		const root = workspace(files);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+
+		for (const module of ["a.ts", "b.ts", "c.ts"] as const) {
+			provider.parseFile({ module, contentHash: module, text: files[module] });
+		}
+
+		expect(provider.programStats()).toMatchObject({ programGenerations: 1 });
+		provider.shutdown();
+	});
+
+	it("advances the compiler generation when the saved file changes", () => {
+		const initial = "export const value: number = 1;\n";
+		const changed = 'export const value: string = "next";\n';
+		const root = workspace({ "tsconfig.json": JSON.stringify({ include: ["*.ts"] }), "value.ts": initial });
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+
+		provider.parseFile({ module: "value.ts", contentHash: "v1", text: initial });
+		writeFileSync(path.join(root, "value.ts"), changed);
+		const facts = provider.parseFile({ module: "value.ts", contentHash: "v2", text: changed });
+		const valueId = facts.declarations.find((declaration) => declaration.name === "value")?.symbolId;
+		provider.parseFile({ module: "value.ts", contentHash: "v2-repeat", text: changed });
+
+		expect(provider.typeOf({ symbolId: valueId ?? "" })).toMatchObject({
+			status: "known",
+			display: "string",
+			provenance: "declared",
+		});
+		expect(provider.programStats()).toMatchObject({ programGenerations: 2 });
+		provider.shutdown();
+	});
+
+	it("rebuilds dependent type lookup after another file changes", () => {
+		const files = {
+			"tsconfig.json": JSON.stringify({ include: ["*.ts"] }),
+			"base.ts": "export class Model {}\n",
+			"use.ts": 'import { Model } from "./base"; export const value: Model = new Model();\n',
+			"touch.ts": "export const touch = 1;\n",
+		};
+		const root = workspace(files);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+
+		const base = provider.parseFile({ module: "base.ts", contentHash: "base", text: files["base.ts"] });
+		const use = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
+		provider.parseFile({ module: "touch.ts", contentHash: "touch", text: files["touch.ts"] });
+		const modelId = base.declarations.find((declaration) => declaration.name === "Model")?.symbolId;
+		const valueId = use.declarations.find((declaration) => declaration.name === "value")?.symbolId;
+
+		provider.parseFile({
+			module: "touch.ts",
+			contentHash: "touch-v2",
+			text: "export const touch = 2;\n",
+		});
+
+		expect(provider.typeOf({ symbolId: valueId ?? "" })).toMatchObject({
+			status: "known",
+			display: "Model",
+			provenance: "declared",
+			symbolId: modelId,
+		});
+		expect(provider.programStats()).toMatchObject({ programGenerations: 2 });
+		provider.shutdown();
+	});
+
 	it("reports overload declarations as ambiguous candidates", () => {
 		const text = [
 			"export function choose(value: string): string;",

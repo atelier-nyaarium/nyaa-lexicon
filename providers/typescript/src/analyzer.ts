@@ -52,6 +52,7 @@ interface MappedDeclaration {
 }
 
 interface FallbackProgram {
+	key: string;
 	version: number;
 	program: ts.Program;
 }
@@ -64,13 +65,13 @@ export class TypeScriptAnalyzer {
 	private readonly projectOptions: ts.CompilerOptions;
 	private readonly scripts = new Set<string>();
 	private readonly overlays = new Map<string, Overlay>();
-	private readonly extracted = new Map<
-		string,
-		{ version: number; program: ts.Program | undefined; value: ExtractedWithNodes }
-	>();
-	private readonly fallbackPrograms = new Map<string, FallbackProgram>();
+	private readonly extracted = new Map<string, { version: number; value: ExtractedWithNodes }>();
+	private extractedProgram: ts.Program | undefined;
+	private cachedFallbackProgram: FallbackProgram | undefined;
 	private readonly service: ts.LanguageService;
 	private projectVersion = 0;
+	private observedProgram: ts.Program | undefined;
+	private programGenerations = 0;
 	private firstProgramReadyAt: number | undefined;
 	private firstProgramWorkspaceFiles = 0;
 
@@ -106,10 +107,16 @@ export class TypeScriptAnalyzer {
 
 	updateFile(module: string, text: string): ts.SourceFile | undefined {
 		const fileName = this.fileName(module);
-		const previous = this.overlays.get(this.key(fileName));
-		this.overlays.set(this.key(fileName), { text, version: (previous?.version ?? 0) + 1 });
-		this.projectVersion += 1;
-		this.extracted.delete(this.key(fileName));
+		const key = this.key(fileName);
+		const previous = this.overlays.get(key);
+		if (previous === undefined) {
+			const diskText = ts.sys.readFile(fileName);
+			this.overlays.set(key, { text, version: diskText === text ? 0 : 1 });
+			if (diskText !== text) this.invalidateProgram();
+		} else if (previous.text !== text) {
+			this.overlays.set(key, { text, version: previous.version + 1 });
+			this.invalidateProgram();
+		}
 		const context = this.sourceContext(module);
 		return isSourceFailure(context) ? undefined : context.source;
 	}
@@ -119,11 +126,12 @@ export class TypeScriptAnalyzer {
 		const version = this.overlays.get(key)?.version ?? 0;
 		const context = this.sourceContext(module);
 		const program = isSourceFailure(context) ? undefined : context.program;
+		this.syncExtractionProgram(program);
 		const cached = this.extracted.get(key);
-		if (cached?.version === version && cached.program === program) return cached.value;
+		if (cached?.version === version) return cached.value;
 
 		const value = extractFileWithNodes(module, source, isSourceFailure(context) ? undefined : context.checker);
-		this.extracted.set(key, { version, program, value });
+		this.extracted.set(key, { version, value });
 		return value;
 	}
 
@@ -183,17 +191,28 @@ export class TypeScriptAnalyzer {
 		return makeRenameEdits(params, context.source, context.checker);
 	}
 
-	programStats(): { rootFiles: number; workspaceFiles: number; firstProgramMs: number | undefined } {
+	programStats(): {
+		rootFiles: number;
+		workspaceFiles: number;
+		firstProgramMs: number | undefined;
+		programGenerations: number;
+	} {
 		const program = this.program();
 		return {
 			rootFiles: program?.getRootFileNames().length ?? 0,
 			workspaceFiles: this.firstProgramWorkspaceFiles,
 			firstProgramMs: this.firstProgramReadyAt,
+			programGenerations: this.programGenerations,
 		};
 	}
 
 	dispose(): void {
 		this.service.dispose();
+		this.extracted.clear();
+		this.overlays.clear();
+		this.extractedProgram = undefined;
+		this.cachedFallbackProgram = undefined;
+		this.observedProgram = undefined;
 	}
 
 	private typeOfSymbolId(symbolId: string): TypeInfo {
@@ -421,8 +440,8 @@ export class TypeScriptAnalyzer {
 	private fallbackProgram(fileName: string): ts.Program | undefined {
 		const key = this.key(fileName);
 		const version = this.overlays.get(key)?.version ?? 0;
-		const cached = this.fallbackPrograms.get(key);
-		if (cached?.version === version) return cached.program;
+		const cached = this.cachedFallbackProgram;
+		if (cached?.key === key && cached.version === version) return cached.program;
 
 		const options: ts.CompilerOptions = { ...this.projectOptions, allowJs: true, noResolve: true };
 		const host = ts.createCompilerHost(options, true);
@@ -437,7 +456,7 @@ export class TypeScriptAnalyzer {
 			return defaultGetSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
 		};
 		const program = ts.createProgram([fileName], options, host);
-		this.fallbackPrograms.set(key, { version, program });
+		this.cachedFallbackProgram = { key, version, program };
 		return program;
 	}
 
@@ -454,14 +473,31 @@ export class TypeScriptAnalyzer {
 		if (this.readFile(fileName) === undefined) return sourceFailure("ParseError", "the file does not exist");
 		if (!this.scripts.has(fileName)) {
 			this.scripts.add(fileName);
-			this.projectVersion += 1;
+			this.invalidateProgram();
 		}
 		return undefined;
+	}
+
+	private invalidateProgram(): void {
+		this.projectVersion += 1;
+		this.extracted.clear();
+		this.extractedProgram = undefined;
+		this.cachedFallbackProgram = undefined;
+	}
+
+	private syncExtractionProgram(program: ts.Program | undefined): void {
+		if (this.extractedProgram === program) return;
+		this.extracted.clear();
+		this.extractedProgram = program;
 	}
 
 	private program(): ts.Program | undefined {
 		const started = Date.now();
 		const program = this.service.getProgram();
+		if (program !== undefined && program !== this.observedProgram) {
+			this.observedProgram = program;
+			this.programGenerations += 1;
+		}
 		if (this.firstProgramReadyAt === undefined && program !== undefined) {
 			this.firstProgramReadyAt = Date.now() - started;
 			this.firstProgramWorkspaceFiles = program
