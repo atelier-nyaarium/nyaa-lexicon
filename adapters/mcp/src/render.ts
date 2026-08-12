@@ -58,7 +58,7 @@ export function renderDescribe(result: DescribeResult): string {
 
 /** Uses of a symbol, grouped by file so the shape of the usage is visible at a glance. */
 export function renderReferences(result: ReferencesResult): string {
-	if (result.total === 0) return `No references found.\n\nThis is honest only as far as binding reaches.`;
+	if (result.total === 0) return `No references found.`;
 
 	const byModule = new Map<string, string[]>();
 	for (const reference of result.references) {

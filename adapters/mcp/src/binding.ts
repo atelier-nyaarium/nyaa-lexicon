@@ -169,7 +169,7 @@ export function bindProjectTool(deps: BindingDeps, args: { project: string }): T
 	const outcome = deps.bind(args.project);
 	if (!outcome.bound) return text(outcome.reason, true);
 	return text(
-		`Bound ${outcome.project.name}. Its index warms on the next query and stays warm for other sessions. The bind itself lasts only this session.`,
+		`Bound ${outcome.project.name} indexer. The bind lasts for this session.`,
 	);
 }
 
