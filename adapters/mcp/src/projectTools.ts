@@ -287,6 +287,10 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		title: "Search Symbols",
 		description: SEARCH_SYMBOLS_DESCRIPTION,
 		scope: "query",
+		queryValidation: {
+			check: (query) => (query["text"] === undefined) !== (query["regex"] === undefined),
+			message: "Set exactly one of `text` or `regex`.",
+		},
 		input: SearchSymbolsInput,
 		handler: searchSymbols,
 	},
@@ -304,8 +308,11 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		description: FIND_IMPORTS_DESCRIPTION,
 		scope: "query",
 		queryValidation: {
-			check: (query) => (query["specifier"] === undefined) !== (query["module"] === undefined),
-			message: "Set exactly one of `specifier` or `module`.",
+			check: (query) =>
+				[query["specifier"], query["specifierRegex"], query["module"], query["moduleRegex"]].filter(
+					(value) => value !== undefined,
+				).length === 1,
+			message: "Set exactly one of `specifier`, `specifierRegex`, `module`, or `moduleRegex`.",
 		},
 		input: FindImportsInput,
 		handler: findImports,

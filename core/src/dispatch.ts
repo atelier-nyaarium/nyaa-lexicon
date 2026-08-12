@@ -18,7 +18,7 @@ const IndexFile = z.object({ module: z.string().min(1), contentHash: z.string().
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) });
 const Literals = z.object({
 	value: z.string().optional(),
-	pattern: z.string().optional(),
+	regex: z.string().min(1).optional(),
 	kind: z.string().optional(),
 	min: z.number().optional(),
 	max: z.number().optional(),
@@ -30,12 +30,15 @@ const Shared = z.object({
 });
 const Paged = z.object({ limit: z.number().int().positive().optional() });
 const CoChange = z.object({ module: z.string().min(1), limit: z.number().int().positive().optional() });
-const Search = z.object({
-	text: z.string().min(1),
-	kind: z.string().min(1).optional(),
-	module: z.string().min(1).optional(),
-	limit: z.number().int().positive().optional(),
-});
+const Search = z
+	.object({
+		text: z.string().min(1).optional(),
+		regex: z.string().min(1).optional(),
+		kind: z.string().min(1).optional(),
+		module: z.string().min(1).optional(),
+		limit: z.number().int().positive().optional(),
+	})
+	.refine((args) => (args.text === undefined) !== (args.regex === undefined), `Set exactly one of text or regex.`);
 const ByModule = z.object({ module: z.string().min(1) });
 const ResolveFacts = z.object({ factIds: z.array(z.string().min(1)).min(1) });
 const Mentions = z.object({ name: z.string().min(1), limit: z.number().int().positive().optional() });
@@ -70,7 +73,9 @@ const Gaps = z.object({
 });
 const FindImports = z.object({
 	specifier: z.string().min(1).optional(),
+	specifierRegex: z.string().min(1).optional(),
 	module: z.string().min(1).optional(),
+	moduleRegex: z.string().min(1).optional(),
 	limit: z.number().int().positive().optional(),
 });
 

@@ -40,6 +40,7 @@ import { findCycles } from "./graph.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
 import { decideInvalidation, type FileEvent } from "./invalidation.js";
 import { ResultCache } from "./resultCache.js";
+import { compileSearchRegex } from "./search.js";
 import type {
 	IndexStore,
 	StoredDeclaration,
@@ -150,7 +151,7 @@ export interface RenamePlan {
 /** How a literal search was expressed. Carried back so an answer says what it answered. */
 export interface LiteralQuery {
 	value?: string | undefined;
-	pattern?: string | undefined;
+	regex?: string | undefined;
 	kind?: string | undefined;
 	min?: number | undefined;
 	max?: number | undefined;
@@ -161,7 +162,7 @@ export interface LiteralsResult {
 	literals: StoredLiteral[];
 	total: number;
 	truncated: boolean;
-	/** Set when a pattern search stopped reading before the end of the table. */
+	/** Set when a regex search stopped reading before the end of the table. */
 	scanIncomplete?: boolean;
 }
 
@@ -323,16 +324,16 @@ const GAP_TREE_CAP = 500;
 export const INLINE_GAP_THRESHOLD = 20;
 
 /**
- * How many literals a pattern search will read before giving up.
+ * How many literals a regex search will read before giving up.
  *
- * SQLite has no REGEXP here, so a pattern is matched in application code and the read is what
+ * SQLite has no REGEXP here, so a regex is matched in application code and the read is what
  * costs. Stopping is fine; stopping SILENTLY is not, which is why the result carries a flag saying
  * the scan did not finish.
  */
-export const PATTERN_SCAN_LIMIT = 20_000;
+export const REGEX_SCAN_LIMIT = 20_000;
 
-/** Resolving by module reads every import, since the index stores specifiers unresolved. */
-const ALL_IMPORTS_SCAN = 20_000;
+/** Resolving or regex-searching imports reads at most this many rows. */
+const IMPORT_SCAN_LIMIT = 20_000;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -742,12 +743,21 @@ export class LexiconService {
 		}));
 	}
 
-	/** Symbols whose name contains this text. The entry point when you cannot spell it yet. */
+	/** Search declared symbols by a name substring or regular expression. */
 	searchSymbols(
-		text: string,
-		options: { kind?: string | undefined; module?: string | undefined; limit?: number | undefined } = {},
+		text: string | undefined,
+		options: {
+			regex?: string | undefined;
+			kind?: string | undefined;
+			module?: string | undefined;
+			limit?: number | undefined;
+		} = {},
 	) {
+		if ((text === undefined) === (options.regex === undefined)) {
+			throw new Error(`Set exactly one of text or regex.`);
+		}
 		const found = this.store.searchSymbols(text, {
+			...(options.regex === undefined ? {} : { regex: options.regex }),
 			...(options.kind === undefined ? {} : { kind: options.kind }),
 			...(options.module === undefined ? {} : { module: options.module }),
 			limit: (options.limit ?? DEFAULT_REFERENCE_LIMIT) + 1,
@@ -755,6 +765,7 @@ export class LexiconService {
 		const limit = options.limit ?? DEFAULT_REFERENCE_LIMIT;
 		return {
 			text,
+			...(options.regex === undefined ? {} : { regex: options.regex }),
 			symbols: found.slice(0, limit).map(toSummary),
 			total: found.length,
 			truncated: found.length > limit,
@@ -770,27 +781,74 @@ export class LexiconService {
 	 */
 	async findImports(query: {
 		specifier?: string | undefined;
+		specifierRegex?: string | undefined;
 		module?: string | undefined;
+		moduleRegex?: string | undefined;
 		limit?: number | undefined;
 	}) {
 		const limit = query.limit ?? DEFAULT_REFERENCE_LIMIT;
+		const targets = [query.specifier, query.specifierRegex, query.module, query.moduleRegex].filter(
+			(value) => value !== undefined,
+		).length;
+		if (targets !== 1) throw new Error("Set exactly one import search target.");
 
 		if (query.specifier !== undefined) {
 			const found = this.store.importsMatching(query.specifier, limit + 1);
 			return { query, imports: found.slice(0, limit), total: found.length, truncated: found.length > limit };
 		}
-		if (query.module === undefined) throw new Error("give a specifier or a module");
+		if (query.specifierRegex !== undefined) {
+			const expression = compileSearchRegex(query.specifierRegex);
+			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
+			const matched = scanned.filter((statement) => {
+				expression.lastIndex = 0;
+				return expression.test(statement.specifier);
+			});
+			const result = {
+				query,
+				imports: matched.slice(0, limit),
+				total: matched.length,
+				truncated: matched.length > limit,
+			};
+			return scanned.length >= IMPORT_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+		}
+		if (query.module !== undefined) {
+			const target = query.module;
+			const matched: StoredImport[] = [];
+			for (const statement of this.store.importsForScan(IMPORT_SCAN_LIMIT)) {
+				const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
+				if (landed !== null && importTarget(landed)?.module === target) matched.push(statement);
+				if (matched.length > limit) break;
+			}
+			return {
+				query,
+				imports: matched.slice(0, limit),
+				total: matched.length,
+				truncated: matched.length > limit,
+			};
+		}
 
-		// By resolved module, which needs the provider: the index stores specifiers unresolved
-		// because resolving all of them at index time costs a round trip per import.
-		const target = query.module;
+		if (query.moduleRegex === undefined) throw new Error("Set exactly one import search target.");
+		const expression = compileSearchRegex(query.moduleRegex);
+		const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
 		const matched: StoredImport[] = [];
-		for (const statement of this.store.importsMatching("", ALL_IMPORTS_SCAN)) {
+		for (const statement of scanned) {
 			const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
-			if (landed !== null && importTarget(landed)?.module === target) matched.push(statement);
+			if (landed !== null) {
+				const module = importTarget(landed)?.module;
+				if (module !== undefined) {
+					expression.lastIndex = 0;
+					if (expression.test(module)) matched.push(statement);
+				}
+			}
 			if (matched.length > limit) break;
 		}
-		return { query, imports: matched.slice(0, limit), total: matched.length, truncated: matched.length > limit };
+		const result = {
+			query,
+			imports: matched.slice(0, limit),
+			total: matched.length,
+			truncated: matched.length > limit,
+		};
+		return scanned.length >= IMPORT_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
 	}
 
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */
@@ -848,13 +906,13 @@ export class LexiconService {
 	//  Literals
 
 	/**
-	 * Find literal values: an exact one, a pattern, or a numeric range.
+	 * Find literal values: an exact one, a regex, or a numeric range.
 	 *
 	 * This is the tier that makes text searchable as facts. A name inside a string is not a
 	 * reference and never was, so it appears in no other table: a rename could leave `__all__`
 	 * stale and a GDScript signal reached by `connect("name")` was invisible entirely.
 	 *
-	 * An exact value and a numeric range are indexed reads. A pattern is not, because SQLite has no
+	 * An exact value and a numeric range are indexed reads. A regex is not, because SQLite has no
 	 * REGEXP here, so it reads a bounded page and says when it stopped early.
 	 */
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
@@ -869,28 +927,23 @@ export class LexiconService {
 			return page(query, this.store.literalsInRange(low, high, limit + 1), limit);
 		}
 
-		if (query.pattern !== undefined) {
-			let expression: RegExp;
-			try {
-				expression = new RegExp(query.pattern);
-			} catch (error) {
-				throw new Error(
-					`pattern is not a valid regular expression: ${error instanceof Error ? error.message : error}`,
-				);
-			}
-
-			const scanned = this.store.literalsOfKind(query.kind ?? "string", PATTERN_SCAN_LIMIT);
-			const matched = scanned.filter((literal) => expression.test(literal.value));
+		if (query.regex !== undefined) {
+			const expression = compileSearchRegex(query.regex);
+			const scanned = this.store.literalsOfKind(query.kind ?? "string", REGEX_SCAN_LIMIT);
+			const matched = scanned.filter((literal) => {
+				expression.lastIndex = 0;
+				return expression.test(literal.value);
+			});
 			const result = page(query, matched, limit);
 			// A truncated scan and a truncated page are different truncations, and a caller that
 			// cannot tell them apart reads "50 results" as "50 exist".
-			return scanned.length >= PATTERN_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
 		}
 
 		// The refusal shows the shapes, because naming the parameters alone was measured to fail: a
 		// caller trying `text:` read the naming sentence and still never found `value`.
 		throw new Error(
-			'give a value, a pattern, or a numeric range, e.g. { value: "cycleCheckpoint" } or { pattern: "^cycle" } or { min: 0, max: 100 }',
+			'give a value, a regex, or a numeric range, e.g. { value: "cycleCheckpoint" } or { regex: "/^cycle/" } or { min: 0, max: 100 }',
 		);
 	}
 

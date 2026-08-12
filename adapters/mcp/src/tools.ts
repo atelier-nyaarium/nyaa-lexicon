@@ -25,6 +25,7 @@ import type {
 	SymbolSummary,
 	TypeHierarchy,
 } from "@nyaa-lexicon/core";
+import { compileSearchRegex } from "@nyaa-lexicon/core";
 import type { ImportResolution, TypeInfo } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import {
@@ -69,13 +70,20 @@ export interface ToolBackend {
 	graphOf: (symbolId: string) => Promise<GraphSummary>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
 	searchSymbols: (
-		text: string,
-		options: { kind?: string | undefined; module?: string | undefined; limit?: number | undefined },
+		text: string | undefined,
+		options: {
+			regex?: string | undefined;
+			kind?: string | undefined;
+			module?: string | undefined;
+			limit?: number | undefined;
+		},
 	) => Promise<SearchResult>;
 	outlineModule: (module: string) => Promise<Array<SymbolSummary & { containerId?: string }>>;
 	findImports: (query: {
 		specifier?: string | undefined;
+		specifierRegex?: string | undefined;
 		module?: string | undefined;
+		moduleRegex?: string | undefined;
 		limit?: number | undefined;
 	}) => Promise<ImportsResult>;
 	hubs: (limit?: number) => Promise<Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }>>;
@@ -115,17 +123,25 @@ export interface MentionsResult {
 }
 
 export interface SearchResult {
-	text: string;
+	text: string | undefined;
+	regex?: string;
 	symbols: SymbolSummary[];
 	total: number;
 	truncated: boolean;
 }
 
 export interface ImportsResult {
-	query: { specifier?: string | undefined; module?: string | undefined; limit?: number | undefined };
+	query: {
+		specifier?: string | undefined;
+		specifierRegex?: string | undefined;
+		module?: string | undefined;
+		moduleRegex?: string | undefined;
+		limit?: number | undefined;
+	};
 	imports: StoredImport[];
 	total: number;
 	truncated: boolean;
+	scanIncomplete?: boolean;
 }
 
 export interface OverviewResult {
@@ -192,11 +208,11 @@ export const TypeOfInput = {
 
 export const FindLiteralsInput = {
 	value: z.string().optional().describe(`Exact decoded value.`),
-	pattern: z.string().optional().describe(`JavaScript regular expression.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/^cycle/i\`.`),
 	kind: z
 		.enum(["string", "number", "boolean"])
 		.optional()
-		.describe(`Literal kind. Default for \`pattern\`: \`string\`.`),
+		.describe(`Literal kind. Default for \`regex\`: \`string\`.`),
 	min: z.number().optional().describe(`Inclusive numeric minimum.`),
 	max: z.number().optional().describe(`Inclusive numeric maximum.`),
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
@@ -209,7 +225,8 @@ export const GraphOfInput = {
 };
 
 export const SearchSymbolsInput = {
-	text: z.string().min(1).describe(`Case-sensitive name substring.`),
+	text: z.string().min(1).optional().describe(`Case-sensitive name substring.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/foo\\w*bar/i\`.`),
 	kind: z.string().min(1).optional().describe(`Declaration kind filter.`),
 	module: z.string().min(1).optional().describe(`Module path substring.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
@@ -221,7 +238,9 @@ export const OutlineModuleInput = {
 
 export const FindImportsInput = {
 	specifier: z.string().min(1).optional().describe(`Written import-specifier substring.`),
+	specifierRegex: z.string().min(1).optional().describe(`Regex literal for written import specifiers.`),
 	module: z.string().min(1).optional().describe(`Resolved workspace-relative module path.`),
+	moduleRegex: z.string().min(1).optional().describe(`Regex literal for resolved module paths.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
@@ -394,7 +413,7 @@ Reindexes touched files. If any occurrence cannot change safely, it writes nothi
 export const FIND_LITERALS_DESCRIPTION = `
 # \`find_literals\`
 
-Find exact values, regular expressions, or numeric ranges in decoded literal values.
+Find exact values, regex matches, or numeric ranges in decoded literal values.
 
 Use for values rather than textual spelling. Each hit includes its declaration.
 `.trim();
@@ -418,7 +437,7 @@ Use first in an unfamiliar codebase.
 export const SEARCH_SYMBOLS_DESCRIPTION = `
 # \`search_symbols\`
 
-Find declared names containing a substring. Filter by declaration kind or module path.
+Find declared names by substring or regular expression. Set exactly one of \`text\` or \`regex\`.
 
 Does not search comments, strings, or aliases.
 `.trim();
@@ -434,9 +453,9 @@ Use for source shape without reading bodies.
 export const FIND_IMPORTS_DESCRIPTION = `
 # \`find_imports\`
 
-Find importers by written specifier or resolved module path.
+Find importers by written specifier or resolved module path. Use substring, exact path, or regex.
 
-Set exactly one of \`specifier\` or \`module\`. Uses the import graph across languages.
+Set exactly one of \`specifier\`, \`specifierRegex\`, \`module\`, or \`moduleRegex\`. Uses the import graph across languages.
 `.trim();
 
 export const HUBS_DESCRIPTION = `
@@ -689,8 +708,24 @@ export async function overview(backend: ToolBackend): Promise<ToolResult> {
 
 export async function searchSymbols(
 	backend: ToolBackend,
-	args: { text: string; kind?: string | undefined; module?: string | undefined; limit?: number | undefined },
+	args: {
+		text?: string | undefined;
+		regex?: string | undefined;
+		kind?: string | undefined;
+		module?: string | undefined;
+		limit?: number | undefined;
+	},
 ): Promise<ToolResult> {
+	if ((args.text === undefined) === (args.regex === undefined)) {
+		return text("Set exactly one of `text` or `regex`.", true);
+	}
+	if (args.regex !== undefined) {
+		try {
+			compileSearchRegex(args.regex);
+		} catch (error) {
+			return text(error instanceof Error ? error.message : String(error), true);
+		}
+	}
 	const found = await backend.searchSymbols(args.text, args);
 	return text(await withIndexState(backend, renderSymbolSearch(found)));
 }
@@ -701,10 +736,27 @@ export async function outlineModule(backend: ToolBackend, args: { module: string
 
 export async function findImports(
 	backend: ToolBackend,
-	args: { specifier?: string | undefined; module?: string | undefined; limit?: number | undefined },
+	args: {
+		specifier?: string | undefined;
+		specifierRegex?: string | undefined;
+		module?: string | undefined;
+		moduleRegex?: string | undefined;
+		limit?: number | undefined;
+	},
 ): Promise<ToolResult> {
-	if ((args.specifier === undefined) === (args.module === undefined)) {
-		return text("Set exactly one of `specifier` or `module`.", true);
+	const targets = [args.specifier, args.specifierRegex, args.module, args.moduleRegex].filter(
+		(value) => value !== undefined,
+	).length;
+	if (targets !== 1) {
+		return text("Set exactly one of `specifier`, `specifierRegex`, `module`, or `moduleRegex`.", true);
+	}
+	for (const regex of [args.specifierRegex, args.moduleRegex]) {
+		if (regex === undefined) continue;
+		try {
+			compileSearchRegex(regex);
+		} catch (error) {
+			return text(error instanceof Error ? error.message : String(error), true);
+		}
 	}
 	try {
 		return text(await withIndexState(backend, renderImports(await backend.findImports(args))));

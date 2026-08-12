@@ -549,8 +549,13 @@ export function renderImports(result: {
 	imports: Array<{ module: string; specifier: string; name?: string; reExport: boolean }>;
 	total: number;
 	truncated: boolean;
+	scanIncomplete?: boolean;
 }): string {
-	if (result.total === 0) return "No imports matched.";
+	if (result.total === 0) {
+		return result.scanIncomplete
+			? "No imports matched in the scanned portion; the import scan stopped before the end of the index."
+			: "No imports matched.";
+	}
 
 	const byModule = new Map<string, Set<string>>();
 	for (const statement of result.imports) {
@@ -573,7 +578,9 @@ export function renderImports(result: {
 		`${byModule.size} file${byModule.size === 1 ? "" : "s"}, ${result.total} import entries`,
 		rows,
 	);
-	return result.truncated ? `${body}\n\n... more; raise limit` : body;
+	let rendered = result.truncated ? `${body}\n\n... more; raise limit` : body;
+	if (result.scanIncomplete) rendered += "\n\nThe import scan stopped before the end of the index.";
+	return rendered;
 }
 
 /** The most-referenced symbols, which is where reading pays off most. */
@@ -593,12 +600,14 @@ export function renderHubs(
 
 /** Symbols found by a name search, grouped by file. Where browsing starts. */
 export function renderSymbolSearch(result: {
-	text: string;
+	text: string | undefined;
+	regex?: string;
 	symbols: SymbolSummary[];
 	total: number;
 	truncated: boolean;
 }): string {
-	if (result.total === 0) return `No symbol name contains ${JSON.stringify(result.text)}.`;
+	const query = result.regex === undefined ? JSON.stringify(result.text) : `regex ${JSON.stringify(result.regex)}`;
+	if (result.total === 0) return `No symbol name matches ${query}.`;
 
 	const byModule = new Map<string, string[]>();
 	for (const symbol of result.symbols) {
@@ -608,7 +617,7 @@ export function renderSymbolSearch(result: {
 	}
 
 	const body = renderGroupedModules(
-		`${result.total} symbol${result.total === 1 ? "" : "s"} matching ${JSON.stringify(result.text)}`,
+		`${result.total} symbol${result.total === 1 ? "" : "s"} matching ${query}`,
 		byModule,
 	);
 	return result.truncated ? `${body}\n\n... more; raise limit or narrow by kind or module` : body;

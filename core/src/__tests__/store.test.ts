@@ -79,6 +79,19 @@ describe("writing a file's facts", () => {
 		}
 	});
 
+	it("filters declarations by a regular expression", () => {
+		store.replaceFile(
+			"src/a.ts",
+			"h1",
+			[declaration("FooBar"), declaration("fooBaz", "src/a.ts"), declaration("other", "src/a.ts")],
+			[],
+		);
+
+		const found = store.searchSymbols(undefined, { regex: "/foo\\w*bar/i", limit: 50 });
+
+		expect(found.map((entry) => entry.name)).toEqual(["FooBar"]);
+	});
+
 	it("preserves optional fields, and omits them rather than storing null", () => {
 		store.replaceFile("src/a.ts", "h1", [declaration("add", "src/a.ts", { signature: "add(): void" })], []);
 

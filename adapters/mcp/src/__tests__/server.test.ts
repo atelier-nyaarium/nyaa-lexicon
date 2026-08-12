@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { SessionProject } from "@nyaa-lexicon/core";
+import type { LiteralQuery, SessionProject } from "@nyaa-lexicon/core";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BindingDeps } from "../binding";
 import { buildServer } from "../main";
@@ -103,7 +103,13 @@ function searchSource(routes: string[], optionsSeen: Array<Record<string, unknow
 			indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
 			searchSymbols: async (text, options) => {
 				optionsSeen.push(options);
-				return { text, symbols: [], total: 0, truncated: false };
+				return {
+					text,
+					...(typeof options.regex === "string" ? { regex: options.regex } : {}),
+					symbols: [],
+					total: 0,
+					truncated: false,
+				};
 			},
 		});
 	};
@@ -167,6 +173,7 @@ describe("query project routing", () => {
 	it.each([
 		["no filter", {}],
 		["two filters", { specifier: "pkg", module: "src/item.ts" }],
+		["two regex filters", { specifierRegex: "/pkg/", moduleRegex: "/src/" }],
 	])("rejects find_imports with %s", async (_case, query) => {
 		const routes: string[] = [];
 		const source: BackendSource = (selected) => {
@@ -179,6 +186,32 @@ describe("query project routing", () => {
 
 		expect(result.isError).toBe(true);
 		expect(routes).toEqual([]);
+	});
+
+	it("rejects a malformed import regex", async () => {
+		const client = await connectClient(searchSource([], []), binding([project("alpha", true)]));
+
+		const result = await call(client, "find_imports", { queries: [{ specifierRegex: "/(unclosed/" }] });
+
+		expect(result.isError).toBe(true);
+	});
+
+	it("forwards an import specifier regex", async () => {
+		const seen: unknown[] = [];
+		const source: BackendSource = () =>
+			backend({
+				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+				findImports: async (query) => {
+					seen.push(query);
+					return { query, imports: [], total: 0, truncated: false };
+				},
+			});
+		const client = await connectClient(source, binding([project("alpha", true)]));
+
+		const result = await call(client, "find_imports", { queries: [{ specifierRegex: "/@scope\\//i" }] });
+
+		expect(result.isError).toBeUndefined();
+		expect(seen).toEqual([{ specifierRegex: "/@scope\\//i" }]);
 	});
 
 	it("uses projects to select overview indexers", async () => {
@@ -207,6 +240,24 @@ describe("query project routing", () => {
 		expect(result.isError).toBeUndefined();
 	});
 
+	it("forwards literal regex searches", async () => {
+		const seen: LiteralQuery[] = [];
+		const source: BackendSource = () =>
+			backend({
+				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+				findLiterals: async (query) => {
+					seen.push(query);
+					return { query, literals: [], total: 0, truncated: false };
+				},
+			});
+		const client = await connectClient(source, binding([project("alpha", true)]));
+
+		const result = await call(client, "find_literals", { queries: [{ regex: "/^cycle/i" }] });
+
+		expect(result.isError).toBeUndefined();
+		expect(seen).toEqual([{ regex: "/^cycle/i" }]);
+	});
+
 	it("rejects a query when no project is bound", async () => {
 		const routes: string[] = [];
 		const client = await connectClient(searchSource(routes, []), binding([]));
@@ -228,6 +279,43 @@ describe("query project routing", () => {
 		expect(options).toEqual([{ text: "Needle" }]);
 	});
 
+	it("forwards a valid regex search", async () => {
+		const routes: string[] = [];
+		const options: Array<Record<string, unknown>> = [];
+		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
+
+		const result = await call(client, "search_symbols", { queries: [{ regex: "/foo\\w*bar/i" }] });
+
+		expect(result.isError).toBeUndefined();
+		expect(routes).toEqual(["alpha"]);
+		expect(options).toEqual([{ regex: "/foo\\w*bar/i" }]);
+	});
+
+	it("rejects an invalid regex before querying", async () => {
+		const routes: string[] = [];
+		const options: Array<Record<string, unknown>> = [];
+		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
+
+		const result = await call(client, "search_symbols", { queries: [{ regex: "/foo(/" }] });
+
+		expect(result.isError).toBe(true);
+		expect(options).toEqual([]);
+	});
+
+	it.each([
+		["missing", {}],
+		["both", { text: "foo", regex: "/foo/" }],
+	])("requires exactly one search selector: %s", async (_case, query) => {
+		const routes: string[] = [];
+		const options: Array<Record<string, unknown>> = [];
+		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
+
+		const result = await call(client, "search_symbols", { queries: [query] });
+
+		expect(result.isError).toBe(true);
+		expect(options).toEqual([]);
+	});
+
 	it("runs several queries in one call", async () => {
 		const routes: string[] = [];
 		const options: Array<Record<string, unknown>> = [];
@@ -247,7 +335,7 @@ describe("query project routing", () => {
 			backend({
 				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
 				searchSymbols: async (text) => {
-					seen.push(text);
+					if (text !== undefined) seen.push(text);
 					return { text, symbols: [], total: 0, truncated: false };
 				},
 			}),

@@ -103,7 +103,7 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		findLiterals: (query) => ask("findLiterals", query),
 		graphOf: (symbolId) => ask("graphOf", { symbolId }),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
-		searchSymbols: (text, options) => ask("searchSymbols", { text, ...options }),
+		searchSymbols: (text, options) => ask("searchSymbols", { ...(text === undefined ? {} : { text }), ...options }),
 		outlineModule: (module) => ask("outlineModule", { module }),
 		findImports: (query) => ask("findImports", query),
 		hubs: (limit) => ask("hubs", { limit }),

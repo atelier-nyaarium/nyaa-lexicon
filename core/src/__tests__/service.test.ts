@@ -871,9 +871,9 @@ describe("searching literals", () => {
 		expect(found.literals.map((l) => l.module).sort()).toEqual(["a.ts", "b.ts"]);
 	});
 
-	it("matches a pattern rather than only an exact value", () => {
-		expect(service.findLiterals({ pattern: "^thing_" }).total).toBe(2);
-		expect(service.findLiterals({ pattern: "nothing" }).total).toBe(0);
+	it("matches a regex rather than only an exact value", () => {
+		expect(service.findLiterals({ regex: "/^thing_/" }).total).toBe(2);
+		expect(service.findLiterals({ regex: "/nothing/" }).total).toBe(0);
 	});
 
 	// A range has to be arithmetic. As strings "5000" sorts before "30", so a string comparison
@@ -883,8 +883,8 @@ describe("searching literals", () => {
 		expect(found.literals.map((l) => l.value)).toEqual(["5000"]);
 	});
 
-	it("says a bad pattern is a bad pattern, rather than answering that nothing matched", () => {
-		expect(() => service.findLiterals({ pattern: "(unclosed" })).toThrow(/regular expression/);
+	it("rejects an invalid regex", () => {
+		expect(() => service.findLiterals({ regex: "/(unclosed/" })).toThrow();
 	});
 
 	// The whole reason for the tier: no graph edge connects two files that share a magic string.
@@ -892,6 +892,42 @@ describe("searching literals", () => {
 		const shared = service.sharedLiterals(2);
 		expect(shared.map((row) => row.value)).toEqual(["thing_happened"]);
 		expect(shared[0]).toMatchObject({ files: 2, uses: 2 });
+	});
+});
+
+describe("searching imports", () => {
+	beforeEach(() => {
+		service = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		store.replaceFile(
+			"a.ts",
+			"h1",
+			[],
+			[],
+			[
+				{ specifier: "@scope/one", imported: [], reExport: false },
+				{ specifier: "./two", imported: [], reExport: false },
+			],
+		);
+	});
+
+	it("matches written specifiers with a regex", async () => {
+		const found = await service.findImports({ specifierRegex: "/@scope\\//i" });
+
+		expect(found.imports.map((entry) => entry.specifier)).toEqual(["@scope/one"]);
+	});
+
+	it("matches resolved modules with a regex", async () => {
+		const resolving = {
+			ask: async (_module: string, method: string, params: { specifier: string }) =>
+				method === "resolveImport"
+					? { status: "resolved", module: params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts" }
+					: {},
+		} as unknown as ProviderSupervisor;
+		service = new LexiconService(store, resolving, () => null, dir);
+
+		const found = await service.findImports({ moduleRegex: "/src\\/two\\.ts$/" });
+
+		expect(found.imports.map((entry) => entry.specifier)).toEqual(["./two"]);
 	});
 });
 

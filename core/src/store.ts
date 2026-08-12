@@ -19,6 +19,7 @@ import {
 	referenceFactId,
 } from "@nyaa-lexicon/protocol";
 import type { Answer, Doubt } from "./answers.js";
+import { compileSearchRegex } from "./search.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -842,16 +843,24 @@ export class IndexStore {
 		return rows.map(rowToImport);
 	}
 
-	/**
-	 * Symbols whose name contains this text, which is how browsing starts.
-	 *
-	 * A substring rather than an exact name, because the whole point is finding something you
-	 * cannot already spell. Filtered in SQL rather than read and sifted, so a big workspace costs
-	 * an indexed scan rather than every row.
-	 */
-	searchSymbols(text: string, options: { kind?: string; module?: string; limit: number }): StoredDeclaration[] {
-		const clauses = ["name LIKE ? ESCAPE '\\'"];
-		const values: Array<string | number> = [`%${text.replace(/[%_\\]/g, "\\$&")}%`];
+	/** Import rows for bounded application-side searches. */
+	importsForScan(scanLimit: number): StoredImport[] {
+		const rows = this.db.prepare("SELECT * FROM imports ORDER BY module, startLine LIMIT ?").all(scanLimit);
+		return rows.map(rowToImport);
+	}
+
+	/** Search declarations by name substring or regular expression. */
+	searchSymbols(
+		text: string | undefined,
+		options: { regex?: string | undefined; kind?: string; module?: string; limit: number },
+	): StoredDeclaration[] {
+		const regex = options.regex === undefined ? undefined : compileSearchRegex(options.regex);
+		const clauses: string[] = [];
+		const values: Array<string | number> = [];
+		if (text !== undefined) {
+			clauses.push("name LIKE ? ESCAPE '\\'");
+			values.push(`%${text.replace(/[%_\\]/g, "\\$&")}%`);
+		}
 		if (options.kind !== undefined) {
 			clauses.push("kind = ?");
 			values.push(options.kind);
@@ -860,12 +869,22 @@ export class IndexStore {
 			clauses.push("module LIKE ? ESCAPE '\\'");
 			values.push(`%${options.module.replace(/[%_\\]/g, "\\$&")}%`);
 		}
-		values.push(options.limit);
+		if (clauses.length === 0) clauses.push("1 = 1");
+		const limit = regex === undefined ? " LIMIT ?" : "";
+		if (regex === undefined) values.push(options.limit);
 
 		const rows = this.db
-			.prepare(`SELECT * FROM symbols WHERE ${clauses.join(" AND ")} ORDER BY module, startLine LIMIT ?`)
-			.all(...values);
-		return rows.map(rowToDeclaration);
+			.prepare(`SELECT * FROM symbols WHERE ${clauses.join(" AND ")} ORDER BY module, startLine${limit}`)
+			.all(...values)
+			.map(rowToDeclaration);
+		if (regex === undefined) return rows;
+
+		return rows
+			.filter((row) => {
+				regex.lastIndex = 0;
+				return regex.test(row.name);
+			})
+			.slice(0, options.limit);
 	}
 
 	/** Imports whose specifier contains this text. "Which files import X", by the name as written. */
@@ -955,7 +974,7 @@ export class IndexStore {
 	/**
 	 * Every literal, for a caller that must match them itself.
 	 *
-	 * SQLite has no REGEXP without an extension, and node:sqlite ships none, so a pattern search
+	 * SQLite has no REGEXP without an extension, and node:sqlite ships none, so a regex search
 	 * reads and filters. Bounded by the caller rather than unbounded here, because a workspace has
 	 * far more literals than symbols and an unbounded read is how a query becomes a hang.
 	 */
