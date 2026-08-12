@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { composeSymbolId, type Declaration, type Reference } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IndexStore, SCHEMA_VERSION } from "../store";
 
 ////////////////////////////////
@@ -61,6 +61,22 @@ describe("writing a file's facts", () => {
 		expect(store.contentHashOf("src/a.ts")).toBe("h1");
 		expect(store.declarationsIn("src/a.ts").map((d) => d.name)).toEqual(["add"]);
 		expect(store.declaration(idOf("add"))?.name).toBe("add");
+	});
+
+	it("returns the newest file index time", () => {
+		vi.useFakeTimers();
+		try {
+			const first = new Date("2026-01-01T00:00:00Z").getTime();
+			const second = new Date("2026-01-02T00:00:00Z").getTime();
+			vi.setSystemTime(first);
+			store.replaceFile("src/a.ts", "h1", [declaration("a")], []);
+			vi.setSystemTime(second);
+			store.replaceFile("src/b.ts", "h1", [declaration("b", "src/b.ts")], []);
+
+			expect(store.newestIndexedAt()).toBe(second);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("preserves optional fields, and omits them rather than storing null", () => {

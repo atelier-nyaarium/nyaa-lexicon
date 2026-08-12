@@ -183,5 +183,4 @@ describe("the scoping rule", () => {
 		expect(scope.allows("anything/at/all.ts")).toBe(true);
 		expect(describeScope(scope)).toContain("no git repository");
 	});
-
 });

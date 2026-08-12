@@ -30,6 +30,8 @@ export interface ProjectStore {
 	bytes: number;
 	/** Last write to the index, epoch millis, or null when there is no index file. */
 	modifiedAt: number | null;
+	/** Newest per-file indexing time, epoch millis, or null when no file has been indexed. */
+	lastIndexedAt: number | null;
 	/** The pid serving it right now, or null. A live daemon blocks deletion. */
 	livePid: number | null;
 }
@@ -59,17 +61,32 @@ function pidOf(dir: string, isAlive: (pid: number) => boolean): number | null {
 }
 
 /** The workspace an index was built from. Null when it is too old to carry the key, never a guess. */
-function workspaceOf(indexFile: string): string | null {
-	if (!existsSync(indexFile)) return null;
+function indexMetadata(indexFile: string): { workspaceRoot: string | null; lastIndexedAt: number | null } {
+	if (!existsSync(indexFile)) return { workspaceRoot: null, lastIndexedAt: null };
 	let db: DatabaseSync | null = null;
 	try {
 		db = new DatabaseSync(indexFile, { readOnly: true });
-		const row = db.prepare("SELECT value FROM meta WHERE key = ?").get("workspaceRoot") as
-			| { value: string }
-			| undefined;
-		return row?.value ?? null;
+		let workspaceRoot: string | null = null;
+		try {
+			const row = db.prepare("SELECT value FROM meta WHERE key = ?").get("workspaceRoot") as
+				| { value: string }
+				| undefined;
+			workspaceRoot = row?.value ?? null;
+		} catch {
+			// Older stores may not have a meta table yet.
+		}
+		let lastIndexedAt: number | null = null;
+		try {
+			const row = db.prepare("SELECT indexedAt FROM files ORDER BY indexedAt DESC LIMIT 1").get() as
+				| { indexedAt: number }
+				| undefined;
+			lastIndexedAt = row?.indexedAt ?? null;
+		} catch {
+			// Older stores may not have per-file timestamps yet.
+		}
+		return { workspaceRoot, lastIndexedAt };
 	} catch {
-		return null;
+		return { workspaceRoot: null, lastIndexedAt: null };
 	} finally {
 		db?.close();
 	}
@@ -102,7 +119,7 @@ export function listProjectStores(
 	const stores = entries.map((key): ProjectStore => {
 		const dir = path.join(root, key);
 		const indexFile = path.join(dir, "index.sqlite");
-		const workspaceRoot = workspaceOf(indexFile);
+		const { workspaceRoot, lastIndexedAt } = indexMetadata(indexFile);
 		const { bytes, modifiedAt } = sizeOf(indexFile);
 		return {
 			key,
@@ -110,6 +127,7 @@ export function listProjectStores(
 			workspace: workspaceRoot === null ? "unknown" : existsSync(workspaceRoot) ? "present" : "missing",
 			bytes,
 			modifiedAt,
+			lastIndexedAt,
 			livePid: pidOf(dir, isAlive),
 		};
 	});

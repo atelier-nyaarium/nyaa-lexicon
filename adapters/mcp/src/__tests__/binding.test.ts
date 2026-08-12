@@ -51,10 +51,19 @@ describe("listing projects", () => {
 		expect(shown).toContain("bind_project");
 	});
 
-	it("counts the bound ones once there are some", () => {
-		const shown = textOf(listProjectsTool(deps([project({ bound: true }), project({ name: "beta" })])));
+	it("sorts projects by their newest index time", () => {
+		const shown = textOf(
+			listProjectsTool({
+				...deps([project({ bound: true }), project({ name: "beta", key: "beta-key" })]),
+				indexTimes: () =>
+					new Map([
+						["alpha-abc123", 100],
+						["beta-key", 200],
+					]),
+			}),
+		);
 
-		expect(shown).toContain("BOUND");
+		expect(shown.indexOf("beta")).toBeLessThan(shown.indexOf("alpha"));
 		expect(shown).toContain("1 of 2 bound");
 	});
 });

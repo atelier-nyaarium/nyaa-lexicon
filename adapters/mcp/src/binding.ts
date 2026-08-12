@@ -5,6 +5,8 @@
 
 import {
 	admitWorkspace,
+	listProjectStores,
+	processIsAlive,
 	registerProject,
 	type SessionBinds,
 	type SessionProject,
@@ -23,6 +25,7 @@ interface ToolResult {
 /** Injected so tests drive the registry without touching a real state directory. */
 export interface BindingDeps {
 	list: () => SessionProject[];
+	indexTimes?: () => ReadonlyMap<string, number | null>;
 	register: (
 		root: string,
 	) =>
@@ -38,7 +41,7 @@ export interface BindingDeps {
 export const LIST_PROJECTS_DESCRIPTION = `
 # \`list_projects\`
 
-List registered projects and their bound status.
+List registered projects and their last indexed time.
 
 Binding names last for this MCP session. Match full roots after a reload.
 `.trim();
@@ -86,6 +89,7 @@ function text(body: string, isError = false): ToolResult {
 export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	return {
 		list: () => binds.all(),
+		indexTimes: () => new Map(listProjectStores(processIsAlive).map((store) => [store.key, store.lastIndexedAt])),
 		register: (root) => {
 			const outcome = registerProject(root, (candidate) => admitWorkspace(candidate));
 			if (!outcome.registered) return outcome;
@@ -119,9 +123,32 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 		return text("No project is registered. Call register_project with the absolute path to a codebase's root.");
 	}
 
-	const rows = projects.map(
-		(project) => `${project.bound ? "BOUND  " : "       "}${project.name}\n  ${project.root}`,
+	const indexTimes = deps.indexTimes?.() ?? new Map<string, number | null>();
+	const rows = projects
+		.map((project) => ({
+			project,
+			lastIndexedAt: indexTimes.get(project.key) ?? null,
+		}))
+		.sort((left, right) => {
+			const byTime = (right.lastIndexedAt ?? -Infinity) - (left.lastIndexedAt ?? -Infinity);
+			return byTime || left.project.name.localeCompare(right.project.name);
+		});
+	const cells = rows.map(({ project, lastIndexedAt }) => [
+		project.name,
+		lastIndexedAt === null ? "never" : new Date(lastIndexedAt).toISOString().slice(0, 19).replace("T", " "),
+		project.root,
+	]);
+	const headers = ["Project", "Last Indexed", "Workspace"];
+	const widths = headers.map((header, column) =>
+		Math.max(header.length, ...cells.map((row) => row[column]?.length ?? 0)),
 	);
+	const table = [headers, ...cells]
+		.map((row) =>
+			row
+				.map((cell, column) => (column === row.length - 1 ? cell : cell.padEnd(widths[column] ?? cell.length)))
+				.join("  "),
+		)
+		.join("\n");
 	const bound = projects.filter((project) => project.bound).length;
 	const summary =
 		bound === 0
@@ -130,7 +157,7 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 				? `1 of ${projects.length} bound; project selectors may be omitted.`
 				: `${bound} of ${projects.length} bound; choose projects explicitly, or use \`projects: []\` for all.`;
 
-	return text(`${rows.join("\n")}\n\n${summary}`);
+	return text(`${table}\n\n${summary}`);
 }
 
 export function registerProjectTool(deps: BindingDeps, args: { root: string }): ToolResult {

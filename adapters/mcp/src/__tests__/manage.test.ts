@@ -24,6 +24,7 @@ function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 		workspace: "present",
 		bytes: 5 * 1024 * 1024,
 		modifiedAt: NOW,
+		lastIndexedAt: NOW,
 		livePid: null,
 		...overrides,
 	};

@@ -128,6 +128,7 @@ CREATE TABLE files (
   contentHash TEXT NOT NULL,
   indexedAt   INTEGER NOT NULL
 );
+CREATE INDEX files_indexed_at ON files(indexedAt);
 
 CREATE TABLE symbols (
   symbolId    TEXT PRIMARY KEY,
@@ -438,6 +439,9 @@ export class IndexStore {
 			restoreKnowledge(db, salvaged);
 			rebuilt = version !== 0;
 		}
+
+		// Index additions are safe to apply in place, so existing stores get this lookup without a rebuild.
+		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
 
 		// Written on every open rather than only after a rebuild, so an index built before this check
 		// existed adopts the current fingerprint instead of rebuilding forever.
@@ -755,6 +759,13 @@ export class IndexStore {
 			| { contentHash: string }
 			| undefined;
 		return row?.contentHash ?? null;
+	}
+
+	newestIndexedAt(): number | null {
+		const row = this.db.prepare("SELECT indexedAt FROM files ORDER BY indexedAt DESC LIMIT 1").get() as
+			| { indexedAt: number }
+			| undefined;
+		return row?.indexedAt ?? null;
 	}
 
 	declaration(symbolId: string): StoredDeclaration | null {

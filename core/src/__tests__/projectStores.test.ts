@@ -71,6 +71,16 @@ describe("listing what this machine has indexed", () => {
 		expect(store?.livePid).toBeNull();
 	});
 
+	it("reports the newest file indexing time", () => {
+		const paths = workspacePaths(host, workDir);
+		mkdirSync(paths.dir, { recursive: true });
+		const indexed = IndexStore.open(paths.index, null, workDir).store;
+		indexed.replaceFile("src/a.ts", "h1", [], []);
+		indexed.close();
+
+		expect(listProjectStores(NOBODY_ALIVE, host)[0]?.lastIndexedAt).toBeTypeOf("number");
+	});
+
 	// The whole reason the path is recorded: a hashed directory name cannot tell you whether the
 	// project it indexed still exists, and that is exactly what "delete the long gone ones" needs.
 	it("flags a store whose workspace is gone from disk", () => {
