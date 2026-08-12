@@ -164,6 +164,23 @@ describe("the published MCP project selectors", () => {
 });
 
 describe("query project routing", () => {
+	it.each([
+		["no filter", {}],
+		["two filters", { specifier: "pkg", module: "src/item.ts" }],
+	])("rejects find_imports with %s", async (_case, query) => {
+		const routes: string[] = [];
+		const source: BackendSource = (selected) => {
+			routes.push(selected.name);
+			return backend({ findImports: async () => ({ query: {}, imports: [], total: 0, truncated: false }) });
+		};
+		const client = await connectClient(source, binding([project("alpha", true)]));
+
+		const result = await call(client, "find_imports", { queries: [query] });
+
+		expect(result.isError).toBe(true);
+		expect(routes).toEqual([]);
+	});
+
 	it("uses projects to select overview indexers", async () => {
 		const routes: string[] = [];
 		const source: BackendSource = (selected) => {

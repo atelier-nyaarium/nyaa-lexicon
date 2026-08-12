@@ -209,19 +209,9 @@ export const GraphOfInput = {
 };
 
 export const SearchSymbolsInput = {
-	text: z.string().min(1).describe(`Case-sensitive symbol-name substring.`),
-	kind: z
-		.string()
-		.min(1)
-		.optional()
-		.describe(
-			`
-Filter declaration kind.
-
-Examples: \`class\`, \`function\`, \`method\`, \`constant\`, \`interface\`.
-			`.trim(),
-		),
-	module: z.string().min(1).optional().describe(`File-path substring.`),
+	text: z.string().min(1).describe(`Case-sensitive name substring.`),
+	kind: z.string().min(1).optional().describe(`Declaration kind filter.`),
+	module: z.string().min(1).optional().describe(`Module path substring.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
@@ -231,7 +221,7 @@ export const OutlineModuleInput = {
 
 export const FindImportsInput = {
 	specifier: z.string().min(1).optional().describe(`Written import-specifier substring.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative path to find importers.`),
+	module: z.string().min(1).optional().describe(`Resolved workspace-relative module path.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
@@ -428,15 +418,15 @@ Use first in an unfamiliar codebase.
 export const SEARCH_SYMBOLS_DESCRIPTION = `
 # \`search_symbols\`
 
-Find declared names containing text. Filter by \`kind\` and \`module\`.
+Find declared names containing a substring. Filter by declaration kind or module path.
 
-Does not search comments, strings, or alias spellings.
+Does not search comments, strings, or aliases.
 `.trim();
 
 export const OUTLINE_MODULE_DESCRIPTION = `
 # \`outline_module\`
 
-List a file's declarations, nested by container, with signatures.
+List indexed declarations in a file, nested by container.
 
 Use for source shape without reading bodies.
 `.trim();
@@ -444,9 +434,9 @@ Use for source shape without reading bodies.
 export const FIND_IMPORTS_DESCRIPTION = `
 # \`find_imports\`
 
-Find importers by written \`specifier\` or resolved \`module\` path.
+Find importers by written specifier or resolved module path.
 
-Uses the import graph across languages.
+Set exactly one of \`specifier\` or \`module\`. Uses the import graph across languages.
 `.trim();
 
 export const HUBS_DESCRIPTION = `
@@ -713,6 +703,9 @@ export async function findImports(
 	backend: ToolBackend,
 	args: { specifier?: string | undefined; module?: string | undefined; limit?: number | undefined },
 ): Promise<ToolResult> {
+	if ((args.specifier === undefined) === (args.module === undefined)) {
+		return text("Set exactly one of `specifier` or `module`.", true);
+	}
 	try {
 		return text(await withIndexState(backend, renderImports(await backend.findImports(args))));
 	} catch (error) {

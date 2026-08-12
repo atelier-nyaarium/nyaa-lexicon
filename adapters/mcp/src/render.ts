@@ -28,6 +28,12 @@ function line(summary: SymbolSummary): string {
 	return `${summary.kind} ${summary.name}${exported}${summary.signature ? `: ${summary.signature}` : ""}`;
 }
 
+function renderGroupedModules(title: string, groups: Iterable<readonly [string, readonly string[]]>): string {
+	const sections = [`# ${title}`];
+	for (const [module, rows] of groups) sections.push(`\`${module}\`\n${rows.join("\n")}`);
+	return sections.join("\n\n");
+}
+
 /** One symbol as its complete surface. */
 export function renderDescribe(result: DescribeResult): string {
 	// The line span makes "read the body" a range read of exactly those lines, never a file read.
@@ -57,20 +63,14 @@ export function renderReferences(result: ReferencesResult): string {
 	const byModule = new Map<string, string[]>();
 	for (const reference of result.references) {
 		const rows = byModule.get(reference.module) ?? [];
-		rows.push(`    line ${reference.startLine + 1}  ${reference.role}`);
+		rows.push(`  line ${reference.startLine + 1}  ${reference.role}`);
 		byModule.set(reference.module, rows);
 	}
 
-	const lines = [`${result.total} reference${result.total === 1 ? "" : "s"}:`];
-	for (const [module, rows] of byModule) {
-		lines.push(`  ${module}`);
-		lines.push(...rows);
-	}
-
-	if (result.truncated) {
-		lines.push(`  ... ${result.total - result.references.length} more; raise limit to see them`);
-	}
-	return lines.join("\n");
+	const body = renderGroupedModules(`${result.total} reference${result.total === 1 ? "" : "s"}`, byModule);
+	return result.truncated
+		? `${body}\n\n... ${result.total - result.references.length} more; raise limit to see them`
+		: body;
 }
 
 /**
@@ -156,21 +156,16 @@ export function renderLiterals(result: LiteralsResult): string {
 		// module prefix is dropped because the row already sits under its module header.
 		const container =
 			literal.containerId === null ? "" : `  in ${literal.containerId.split(" ").slice(3).join(" ")}`;
-		rows.push(`    line ${literal.range.start.line + 1}  ${literal.kind}  ${JSON.stringify(shown)}${container}`);
+		rows.push(`  line ${literal.range.start.line + 1}  ${literal.kind}  ${JSON.stringify(shown)}${container}`);
 		byModule.set(literal.module, rows);
 	}
 
-	const lines = [`${result.total} literal${result.total === 1 ? "" : "s"}:`];
-	for (const [module, rows] of byModule) {
-		lines.push(`  ${module}`);
-		lines.push(...rows);
-	}
-
-	if (result.truncated) lines.push(`  ... ${result.total - result.literals.length} more; raise limit to see them`);
+	let body = renderGroupedModules(`${result.total} literal${result.total === 1 ? "" : "s"}`, byModule);
+	if (result.truncated) body += `\n\n... ${result.total - result.literals.length} more; raise limit to see them`;
 	if (result.scanIncomplete) {
-		lines.push("The scan stopped before the end of the index, so matches beyond it were not looked at.");
+		body += "\n\nThe scan stopped before the end of the index, so matches beyond it were not looked at.";
 	}
-	return lines.join("\n");
+	return body;
 }
 
 /**
@@ -555,7 +550,7 @@ export function renderImports(result: {
 	total: number;
 	truncated: boolean;
 }): string {
-	if (result.total === 0) return "No import matched.\n\nThis reads the import graph, not source text.";
+	if (result.total === 0) return "No imports matched.";
 
 	const byModule = new Map<string, Set<string>>();
 	for (const statement of result.imports) {
@@ -567,13 +562,18 @@ export function renderImports(result: {
 		byModule.set(statement.module, specifiers);
 	}
 
-	const lines = [`${byModule.size} file${byModule.size === 1 ? "" : "s"}, ${result.total} import entries:`];
+	const rows = new Map<string, string[]>();
 	for (const [module, specifiers] of byModule) {
-		lines.push(`  ${module}`);
-		for (const specifier of specifiers) lines.push(`    ${specifier}`);
+		rows.set(
+			module,
+			Array.from(specifiers, (specifier) => `  ${specifier}`),
+		);
 	}
-	if (result.truncated) lines.push("  ... more; raise limit");
-	return lines.join("\n");
+	const body = renderGroupedModules(
+		`${byModule.size} file${byModule.size === 1 ? "" : "s"}, ${result.total} import entries`,
+		rows,
+	);
+	return result.truncated ? `${body}\n\n... more; raise limit` : body;
 }
 
 /** The most-referenced symbols, which is where reading pays off most. */
@@ -582,9 +582,9 @@ export function renderHubs(
 ): string {
 	if (rows.length === 0) return "Nothing is referenced yet.";
 
-	const lines = ["Most referenced:"];
+	const lines = ["# Most referenced", ""];
 	for (const row of rows) {
-		const where = row.declaration ? `${line(row.declaration)}  in ${row.declaration.module}` : row.symbolId;
+		const where = row.declaration ? `${line(row.declaration)}  in \`${row.declaration.module}\`` : row.symbolId;
 		lines.push(`  ${String(row.count).padStart(4)}  ${where}`);
 	}
 	lines.push("Counts are bounded by what binding resolved.");
@@ -603,22 +603,20 @@ export function renderSymbolSearch(result: {
 	const byModule = new Map<string, string[]>();
 	for (const symbol of result.symbols) {
 		const rows = byModule.get(symbol.module) ?? [];
-		rows.push(`    ${line(symbol)}`);
+		rows.push(`  ${line(symbol)}`);
 		byModule.set(symbol.module, rows);
 	}
 
-	const lines = [`${result.total} symbol${result.total === 1 ? "" : "s"} matching ${JSON.stringify(result.text)}:`];
-	for (const [module, rows] of byModule) {
-		lines.push(`  ${module}`);
-		lines.push(...rows);
-	}
-	if (result.truncated) lines.push(`  ... more; raise limit or narrow by kind or module`);
-	return lines.join("\n");
+	const body = renderGroupedModules(
+		`${result.total} symbol${result.total === 1 ? "" : "s"} matching ${JSON.stringify(result.text)}`,
+		byModule,
+	);
+	return result.truncated ? `${body}\n\n... more; raise limit or narrow by kind or module` : body;
 }
 
 /** Everything one file declares, nested by container. The "open the file" answer. */
 export function renderOutline(module: string, declarations: Array<SymbolSummary & { containerId?: string }>): string {
-	if (declarations.length === 0) return `${module} declares nothing that is indexed.`;
+	if (declarations.length === 0) return `\`${module}\` declares nothing that is indexed.`;
 
 	const children = new Map<string, typeof declarations>();
 	const roots: typeof declarations = [];
@@ -633,7 +631,7 @@ export function renderOutline(module: string, declarations: Array<SymbolSummary 
 		children.set(parent, list);
 	}
 
-	const lines = [`${module}  (${declarations.length} declarations)`];
+	const lines = [`# \`${module}\` (${declarations.length} declarations)`, ""];
 	const walk = (nodes: typeof declarations, depth: number) => {
 		for (const node of nodes) {
 			lines.push(`${"  ".repeat(depth + 1)}${line(node)}`);

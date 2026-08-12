@@ -88,8 +88,14 @@ interface ProjectToolDefinition {
 	description: string;
 	scope: ProjectToolScope;
 	batch?: boolean;
+	queryValidation?: QueryValidation;
 	input: Record<string, z.ZodType>;
 	handler: (...args: never[]) => Promise<ToolResult>;
+}
+
+interface QueryValidation {
+	check: (query: Record<string, unknown>) => boolean;
+	message: string;
 }
 
 interface Selection {
@@ -110,23 +116,16 @@ const QUERY_PROJECTS = z
 	.refine((names) => new Set(names).size === names.length, `Project names must be unique.`)
 	.meta({ uniqueItems: true })
 	.optional()
-	.describe(
-		`Bound project names from \`list_projects\`. Omit when exactly one is bound. \`[]\` selects every bound project.`,
-	);
+	.describe(`Exact bound project names from \`list_projects\`. \`[]\` selects all bound.`);
 
-const MUTATION_PROJECT = z
-	.string()
-	.min(1)
-	.optional()
-	.describe(`Bound project name from \`list_projects\`. Omit when exactly one is bound.`);
+const MUTATION_PROJECT = z.string().min(1).optional().describe(`Bound project name from \`list_projects\`.`);
 
-const QUERY_BATCH_NOTE = `\n\nPass one or more query objects in \`queries\`. The outer \`projects\` selector applies to every query.`;
+const QUERY_BATCH_NOTE = `\n\nRun one or more queries in \`queries\`. \`projects\` applies to every query.`;
 
-function queryBatch(input: Record<string, z.ZodType>): z.ZodType {
-	return z
-		.array(z.strictObject(input))
-		.min(1)
-		.describe(`One or more query objects. Each object uses this tool's query fields.`);
+function queryBatch(input: Record<string, z.ZodType>, validation?: QueryValidation): z.ZodType {
+	const query = z.strictObject(input);
+	const validated = validation === undefined ? query : query.refine(validation.check, validation.message);
+	return z.array(validated).min(1).describe(`Queries to run.`);
 }
 
 export const PROJECT_TOOL_DEFINITIONS = [
@@ -304,6 +303,10 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		title: "Find Imports",
 		description: FIND_IMPORTS_DESCRIPTION,
 		scope: "query",
+		queryValidation: {
+			check: (query) => (query["specifier"] === undefined) !== (query["module"] === undefined),
+			message: "Set exactly one of `specifier` or `module`.",
+		},
 		input: FindImportsInput,
 		handler: findImports,
 	},
@@ -404,7 +407,7 @@ async function runSelected(
 	for (const project of selection.projects) {
 		const result = await handler(routed(project), selection.args);
 		failed ||= result.isError === true;
-		sections.push(`=== ${project.name}\n${result.content.map((chunk) => chunk.text).join("\n")}`);
+		sections.push(`=== ${project.name}\n\n${result.content.map((chunk) => chunk.text).join("\n")}`);
 	}
 	return { content: [{ type: "text", text: sections.join("\n\n") }], ...(failed ? { isError: true } : {}) };
 }
@@ -429,7 +432,7 @@ async function runQueryBatch(
 			querySections.push(body);
 		}
 		const body = querySections.join("\n\n");
-		projectSections.push(route.name === undefined ? body : `=== ${route.name}\n${body}`);
+		projectSections.push(route.name === undefined ? body : `=== ${route.name}\n\n${body}`);
 	}
 
 	const text = projectSections.join("\n\n");
@@ -445,12 +448,13 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 
 	for (const definition of PROJECT_TOOL_DEFINITIONS) {
 		const batched = definition.scope === "query" && (!("batch" in definition) || definition.batch !== false);
+		const queryValidation = "queryValidation" in definition ? definition.queryValidation : undefined;
 		const handler = definition.handler as unknown as (
 			backend: ToolBackend,
 			args: Record<string, unknown>,
 		) => Promise<ToolResult>;
 		const selector = batched
-			? { queries: queryBatch(definition.input), projects: QUERY_PROJECTS }
+			? { queries: queryBatch(definition.input, queryValidation), projects: QUERY_PROJECTS }
 			: definition.scope === "query"
 				? { ...definition.input, projects: QUERY_PROJECTS }
 				: { ...definition.input, project: MUTATION_PROJECT };
