@@ -43,12 +43,15 @@ describe("listing projects", () => {
 		expect(textOf(listProjectsTool(deps([])))).toContain("register_project");
 	});
 
-	it("marks which are bound, and says queries have nowhere to look when none are", () => {
-		const shown = textOf(listProjectsTool(deps([project()])));
+	it("marks bound rows and reports the bound count", () => {
+		const shown = textOf(listProjectsTool(deps([project({ bound: true }), project({ name: "beta" })])));
+		const [, boundRow, unboundRow] = shown.split("\n");
 
 		expect(shown).toContain("alpha");
 		expect(shown).toContain("/home/dev/alpha");
-		expect(shown).toContain("bind_project");
+		expect(boundRow?.trimStart().startsWith("●")).toBe(true);
+		expect(unboundRow?.trimStart().startsWith("●")).toBe(false);
+		expect(shown).toContain("1 of 2 bound");
 	});
 
 	it("sorts projects by their newest index time", () => {

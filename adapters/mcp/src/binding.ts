@@ -134,11 +134,12 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 			return byTime || left.project.name.localeCompare(right.project.name);
 		});
 	const cells = rows.map(({ project, lastIndexedAt }) => [
+		project.bound ? "●" : "",
 		project.name,
 		lastIndexedAt === null ? "never" : new Date(lastIndexedAt).toISOString().slice(0, 19).replace("T", " "),
 		project.root,
 	]);
-	const headers = ["Project", "Last Indexed", "Workspace"];
+	const headers = ["", "Project", "Last Indexed", "Workspace"];
 	const widths = headers.map((header, column) =>
 		Math.max(header.length, ...cells.map((row) => row[column]?.length ?? 0)),
 	);
