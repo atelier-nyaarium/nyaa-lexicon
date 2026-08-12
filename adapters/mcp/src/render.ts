@@ -4,7 +4,6 @@
 
 import {
 	type DescribeResult,
-	type GraphSummary,
 	INLINE_GAP_THRESHOLD,
 	type InvalidateOutcome,
 	type KnowledgeGaps,
@@ -39,6 +38,54 @@ function renderGroupedModules(title: string, groups: Iterable<readonly [string, 
 	return sections.join("\n\n");
 }
 
+function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): void {
+	lines.push("", "## Type hierarchy", "");
+	const hasRelationships =
+		result.supertypes.length > 0 ||
+		result.subtypes.length > 0 ||
+		result.ancestors.length > 0 ||
+		result.unboundSupertypes.length > 0;
+	if (!hasRelationships) {
+		lines.push("No supertypes or subtypes in the index.");
+		return;
+	}
+
+	const list = (label: string, entries: SymbolSummary[]) => {
+		if (entries.length === 0) return;
+		lines.push(`### ${label}`, "");
+		for (const entry of entries) lines.push(`- ${line(entry)}  \`${entry.module}\``);
+	};
+	list("Extends", result.supertypes);
+	list("Extended by", result.subtypes);
+
+	const indirect = result.ancestors.filter(
+		(ancestor) => !result.supertypes.some((direct) => direct.symbolId === ancestor.symbolId),
+	);
+	if (indirect.length > 0) {
+		lines.push("### Further up", "", `- ${indirect.map((ancestor) => `\`${ancestor.name}\``).join(" <- ")}`);
+	}
+	if (result.unboundSupertypes.length > 0) {
+		lines.push("### Outside the index", "");
+		for (const name of result.unboundSupertypes) lines.push(`- \`${name}\``);
+	}
+}
+
+function appendDependencies(lines: string[], summary: DescribeResult["graph"]): void {
+	const via = summary.viaMembers === undefined ? "" : ` across the symbol and its ${summary.viaMembers} members`;
+	lines.push(
+		"",
+		"## Dependencies",
+		"",
+		`- Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}`,
+	);
+	if (summary.cycle) {
+		lines.push("", "### Cycle", "");
+		for (const member of summary.cycle.slice(0, 10)) lines.push(`- \`${member}\``);
+		if (summary.cycle.length > 10) lines.push("", `> ${summary.cycle.length - 10} more cycle members not shown.`);
+	}
+	lines.push("", "> Counts use resolved indexed bindings.");
+}
+
 /** One symbol as its complete surface. */
 export function renderDescribe(result: DescribeResult): string {
 	// The line span makes "read the body" a range read of exactly those lines, never a file read.
@@ -66,9 +113,10 @@ export function renderDescribe(result: DescribeResult): string {
 		for (const member of result.members) lines.push(symbolBullet(member));
 	}
 
-	// A count rather than the list: the caller decides whether that is worth its own call.
 	lines.push("", "## Usage", "", `Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.`);
 	if (result.referenceCount > 0) lines.push("Call `find_references` for the list.");
+	appendHierarchy(lines, result.hierarchy);
+	appendDependencies(lines, result.graph);
 	return lines.join("\n");
 }
 
@@ -247,52 +295,6 @@ export function renderCoChange(result: {
 			"",
 			`> ${result.skippedWideCommits} commits touching over ${result.widthLimit} files were ignored as sweeps.`,
 		);
-	}
-	return lines.join("\n");
-}
-
-/**
- * Both directions of a type hierarchy at once.
- *
- * Unresolved bases get their own line rather than being dropped, so a class extending an engine or
- * library type does not read as extending nothing.
- */
-export function renderHierarchy(result: {
-	symbolId: string;
-	supertypes: Array<{ name: string; kind: string; module: string }>;
-	subtypes: Array<{ name: string; kind: string; module: string }>;
-	ancestors: Array<{ name: string; module: string }>;
-	unboundSupertypes: string[];
-}): string {
-	const lines: string[] = ["# Type hierarchy", "", `**Symbol:** \`${result.symbolId}\``];
-	const list = (label: string, entries: Array<{ name: string; kind: string; module: string }>) => {
-		if (entries.length === 0) return;
-		lines.push("", `## ${label}`, "");
-		for (const entry of entries) lines.push(`- **${entry.kind}** \`${entry.name}\`  \`${entry.module}\``);
-	};
-
-	list("Extends", result.supertypes);
-	list("Extended by", result.subtypes);
-
-	// Only when it adds something the direct list did not already say.
-	const indirect = result.ancestors.filter(
-		(ancestor) => !result.supertypes.some((direct) => direct.name === ancestor.name),
-	);
-	if (indirect.length > 0) {
-		lines.push("", "## Further up", "", `- ${indirect.map((ancestor) => `\`${ancestor.name}\``).join(" <- ")}`);
-	}
-
-	if (
-		result.supertypes.length === 0 &&
-		result.subtypes.length === 0 &&
-		indirect.length === 0 &&
-		result.unboundSupertypes.length === 0
-	) {
-		return `# Type hierarchy\n\n\`${result.symbolId}\` has no supertypes or subtypes in the index.`;
-	}
-	if (result.unboundSupertypes.length > 0) {
-		lines.push("", "## Outside the index", "");
-		for (const name of result.unboundSupertypes) lines.push(`- \`${name}\``);
 	}
 	return lines.join("\n");
 }
@@ -777,28 +779,6 @@ export function renderOutline(module: string, declarations: Array<SymbolSummary 
 		}
 	};
 	walk(roots, 0);
-	return lines.join("\n");
-}
-
-/** Where a symbol sits in the graph, with the caveat that makes the numbers readable. */
-export function renderGraph(name: string, summary: GraphSummary): string {
-	const via = summary.viaMembers === undefined ? "" : ` (across it and its ${summary.viaMembers} members)`;
-	const lines = [
-		`# Graph: \`${name}\``,
-		"",
-		"## Fan-in/out",
-		"",
-		`- Used by: ${summary.fanIn} place${summary.fanIn === 1 ? "" : "s"}`,
-		`- Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}`,
-	];
-
-	if (summary.cycle) {
-		lines.push("", `## Cycle (${summary.cycle.length})`, "");
-		for (const member of summary.cycle.slice(0, 10)) lines.push(`- \`${member}\``);
-		if (summary.cycle.length > 10) lines.push("", `> ${summary.cycle.length - 10} more cycle members not shown.`);
-	}
-
-	lines.push("", "> Counts are bounded by what binding resolved.");
 	return lines.join("\n");
 }
 

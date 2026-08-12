@@ -116,8 +116,6 @@ export function createDispatch(service: LexiconService) {
 				const args = Shared.parse(params);
 				return service.sharedLiterals(args.minimumFiles, args.limit);
 			}
-			case "graphOf":
-				return service.graphOf(BySymbol.parse(params).symbolId);
 			case "cycles":
 				return service.cycles(Paged.parse(params).limit);
 			case "mostReferenced":
@@ -145,8 +143,6 @@ export function createDispatch(service: LexiconService) {
 				const args = Mentions.parse(params);
 				return service.commitsMentioning(args.name, args.limit);
 			}
-			case "typeHierarchy":
-				return service.typeHierarchy(BySymbol.parse(params).symbolId);
 			case "factsFor": {
 				const args = References.parse(params);
 				return service.factsFor(args.symbolId, args.limit);

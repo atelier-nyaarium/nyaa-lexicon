@@ -77,6 +77,8 @@ export interface DescribeResult {
 	members: SymbolSummary[];
 	/** How many places use it, so a caller decides whether to ask for the list. */
 	referenceCount: number;
+	graph: GraphSummary;
+	hierarchy: TypeHierarchy;
 	tier: AnswerTier;
 }
 
@@ -721,6 +723,8 @@ export class LexiconService {
 			symbol: toSummary(declaration),
 			members,
 			referenceCount: this.store.referencesTo(symbolId).length,
+			graph: this.graphSummary(symbolId),
+			hierarchy: this.typeHierarchy(symbolId),
 			tier: "bound",
 		};
 	}
@@ -962,7 +966,7 @@ export class LexiconService {
 	 * than about the code. A caller told otherwise would read a low fan-in as "barely used" when it
 	 * may only mean "barely resolved".
 	 */
-	graphOf(symbolId: string): GraphSummary {
+	private graphSummary(symbolId: string): GraphSummary {
 		const cycle = findCycles(this.store.allEdges()).find((found) => found.members.includes(symbolId));
 
 		// Members counted too, because a reference inside a method belongs to the METHOD. Asking a

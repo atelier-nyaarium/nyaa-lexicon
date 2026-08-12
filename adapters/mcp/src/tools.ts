@@ -8,7 +8,6 @@ import type {
 	DescribeResult,
 	FactSet,
 	FileHistory,
-	GraphSummary,
 	IndexStatus,
 	InvalidateOutcome,
 	KnowledgeGaps,
@@ -23,7 +22,6 @@ import type {
 	RenamePlan,
 	StoredImport,
 	SymbolSummary,
-	TypeHierarchy,
 } from "@nyaa-lexicon/core";
 import { compileSearchRegex } from "@nyaa-lexicon/core";
 import type { ImportResolution, TypeInfo } from "@nyaa-lexicon/protocol";
@@ -34,15 +32,13 @@ import {
 	renderDescribe,
 	renderFacts,
 	renderFileHistory,
-	renderGraph,
-	renderHierarchy,
-	renderMostReferenced,
 	renderImports,
 	renderInvalidateOutcome,
 	renderKnowledge,
 	renderKnowledgeGaps,
 	renderLiterals,
 	renderMentions,
+	renderMostReferenced,
 	renderOutline,
 	renderOverview,
 	renderRecordOutcome,
@@ -67,7 +63,6 @@ export interface ToolBackend {
 	renameSymbol: (symbolId: string, newName: string) => Promise<RenameOutcome>;
 	indexStatus: () => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
-	graphOf: (symbolId: string) => Promise<GraphSummary>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
 	searchSymbols: (
 		text: string | undefined,
@@ -94,7 +89,6 @@ export interface ToolBackend {
 		}>
 	>;
 	overview: () => Promise<OverviewResult>;
-	typeHierarchy: (symbolId: string) => Promise<TypeHierarchy>;
 	fileHistory: (module: string) => Promise<FileHistory>;
 	factsFor: (symbolId: string, limit?: number) => Promise<FactSet | null>;
 	commitsMentioning: (name: string, limit?: number) => Promise<MentionsResult>;
@@ -224,12 +218,6 @@ export const FindLiteralsInput = {
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
-export const GraphOfInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
-	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
-};
-
 export const SearchSymbolsInput = {
 	text: z.string().min(1).optional().describe(`Case-sensitive name substring. Use instead of \`regex\`.`),
 	regex: z.string().min(1).optional().describe(`Regex literal. Use instead of \`text\`.`),
@@ -259,12 +247,6 @@ export const OverviewInput = {};
 export const CoChangedWithInput = {
 	module: z.string().min(1).describe(`Workspace-relative file path.`),
 	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
-};
-
-export const TypeHierarchyInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
-	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 };
 
 export const FileHistoryInput = {
@@ -379,7 +361,7 @@ export const PrepareRenameInput = {
 export const DESCRIBE_DESCRIPTION = `
 # \`describe_symbol\`
 
-Show a symbol's declaration, direct members, reference count, and recorded knowledge.
+Show a symbol's declaration, members, type hierarchy, dependencies, usage, and recorded knowledge.
 
 Use \`symbolId\` when known. Otherwise use \`name\`, adding \`module\` when needed.
 `.trim();
@@ -422,14 +404,6 @@ export const FIND_LITERALS_DESCRIPTION = `
 Find exact values, regex matches, or numeric ranges in decoded literal values.
 
 Use for values rather than textual spelling. Each hit includes its declaration.
-`.trim();
-
-export const GRAPH_OF_DESCRIPTION = `
-# \`graph_of\`
-
-Show a symbol's fan-in, fan-out, and cycles.
-
-Counts cover resolved bindings.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `
@@ -476,14 +450,6 @@ export const CO_CHANGED_WITH_DESCRIPTION = `
 Find files edited with a target in Git history.
 
 Each row shows a paired change count and share.
-`.trim();
-
-export const TYPE_HIERARCHY_DESCRIPTION = `
-# \`type_hierarchy\`
-
-Show direct supertypes and subtypes.
-
-Lists bases outside the index.
 `.trim();
 
 export const FILE_HISTORY_DESCRIPTION = `
@@ -778,13 +744,6 @@ export async function coChangedWith(
 	return text(renderCoChange(await backend.coChangedWith(args.module, args.limit)));
 }
 
-export async function typeHierarchy(backend: ToolBackend, args: SymbolArgs): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
-
-	return text(await withIndexState(backend, renderHierarchy(await backend.typeHierarchy(resolved.symbolId))));
-}
-
 export async function fileHistory(backend: ToolBackend, args: { module: string }): Promise<ToolResult> {
 	return text(renderFileHistory(await backend.fileHistory(args.module)));
 }
@@ -907,18 +866,6 @@ export async function symbolFacts(
 	if (facts === null)
 		return text(await withIndexState(backend, `No symbol with ID \`${resolved.symbolId}\` is indexed.`), true);
 	return text(await withIndexState(backend, renderFacts(facts)));
-}
-
-export async function graphOf(backend: ToolBackend, args: SymbolArgs): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
-
-	return text(
-		await withIndexState(
-			backend,
-			renderGraph(args.name ?? resolved.symbolId, await backend.graphOf(resolved.symbolId)),
-		),
-	);
 }
 
 export async function resolveImport(

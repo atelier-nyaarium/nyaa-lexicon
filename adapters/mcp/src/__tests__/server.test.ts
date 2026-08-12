@@ -18,9 +18,8 @@ const QUERY_TOOLS = [
 	"find_imports",
 	"find_literals",
 	"find_references",
-	"graph_of",
-	"hubs",
 	"knowledge_gaps",
+	"most_referenced",
 	"outline_module",
 	"overview",
 	"prepare_rename",
@@ -29,7 +28,6 @@ const QUERY_TOOLS = [
 	"search_symbols",
 	"symbol_facts",
 	"symbol_history",
-	"type_hierarchy",
 	"type_of",
 ] as const;
 
@@ -129,7 +127,7 @@ describe("the published MCP project selectors", () => {
 		const expected = [...QUERY_TOOLS, ...MUTATION_TOOLS, ...Object.keys(MANAGEMENT_PROPERTIES)].sort();
 
 		expect(listed.tools.map((tool) => tool.name).sort()).toEqual(expected);
-		expect(new Set(listed.tools.map((tool) => tool.name))).toHaveLength(30);
+		expect(new Set(listed.tools.map((tool) => tool.name))).toHaveLength(28);
 
 		for (const name of BATCH_QUERY_TOOLS) {
 			const tool = listed.tools.find((candidate) => candidate.name === name);

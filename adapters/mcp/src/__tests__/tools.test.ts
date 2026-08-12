@@ -35,18 +35,10 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		}),
 		indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
 		findLiterals: async (query) => ({ query, literals: [], total: 0, truncated: false }),
-		graphOf: async (symbolId) => ({ symbolId, fanIn: 0, fanOut: 0 }),
 		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
 		outlineModule: async () => [],
 		findImports: async (query) => ({ query, imports: [], total: 0, truncated: false }),
 		hubs: async () => [],
-		typeHierarchy: async (symbolId) => ({
-			symbolId,
-			supertypes: [],
-			subtypes: [],
-			ancestors: [],
-			unboundSupertypes: [],
-		}),
 		fileHistory: async (module) => ({
 			module,
 			commits: 0,
@@ -104,6 +96,14 @@ const described: DescribeResult = {
 	symbol: summary("Cart", { kind: "class", signature: "class Cart" }),
 	members: [summary("add", { kind: "method" }), summary("total", { kind: "method" })],
 	referenceCount: 3,
+	graph: { symbolId: "lexicon ts src/a.ts Cart#", fanIn: 3, fanOut: 2 },
+	hierarchy: {
+		symbolId: "lexicon ts src/a.ts Cart#",
+		supertypes: [],
+		subtypes: [],
+		ancestors: [],
+		unboundSupertypes: [],
+	},
 	tier: "bound",
 };
 

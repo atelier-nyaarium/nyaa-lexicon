@@ -29,7 +29,7 @@ Unknown with a reason, never as a guess or a gap.
 
 **Structure.** `describe_symbol`, `outline_module`, `search_symbols`, `overview`, `most_referenced`.
 
-**Direction.** `find_references`, `resolve_import`, `find_imports`, `graph_of`, `type_hierarchy`.
+**Direction.** `find_references`, `resolve_import`, `find_imports`.
 Reverse lookup is an indexed read, not a search.
 
 **Types.** `type_of`, declared or inferred, with the basis stated.
