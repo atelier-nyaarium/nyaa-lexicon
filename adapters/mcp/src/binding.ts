@@ -41,9 +41,9 @@ export interface BindingDeps {
 export const LIST_PROJECTS_DESCRIPTION = `
 # \`list_projects\`
 
-List registered projects and their last indexed time.
+List registered projects with their last indexed time and workspace path.
 
-Binding names last for this MCP session. Match full roots after a reload.
+A \`●\` marks projects bound in this session.
 `.trim();
 
 export const REGISTER_PROJECT_DESCRIPTION = `
