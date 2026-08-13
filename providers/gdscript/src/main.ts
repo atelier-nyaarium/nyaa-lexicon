@@ -28,9 +28,7 @@ export const TIERS = {
 	types: true,
 	literals: true,
 	metrics: true,
-	// The extractor recovers from anything rather than failing, so unparseable text yields no
-	// diagnostic and a caller validating candidate text would read that silence as approval.
-	syntaxDiagnostics: false,
+	syntaxDiagnostics: true,
 } as const;
 
 export const REFERENCE_ROLES = ["call", "read", "write", "import", "extends", "typeUse"] as const;
@@ -82,7 +80,7 @@ export class GDScriptProvider {
 			references,
 			imports: extracted.imports,
 			literals: extracted.literals,
-			diagnostics: [],
+			diagnostics: extracted.diagnostics,
 		};
 	}
 

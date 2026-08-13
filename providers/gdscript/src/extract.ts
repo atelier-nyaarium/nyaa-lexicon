@@ -1,8 +1,15 @@
 // Maps the scanner's facts onto the protocol's shared declaration types.
 
-import { composeSymbolId, type Declaration, type Literal, type Reference } from "@nyaa-lexicon/protocol";
+import {
+	composeSymbolId,
+	type Declaration,
+	type Diagnostic,
+	type Literal,
+	type Reference,
+} from "@nyaa-lexicon/protocol";
 import {
 	extractDeclarationsCore,
+	extractDiagnosticsCore,
 	extractImportsCore,
 	extractLiteralsCore,
 	extractReferencesCore,
@@ -22,6 +29,7 @@ export function extractFile(
 	references: Reference[];
 	imports: ReturnType<typeof extractImportsCore>;
 	literals: Literal[];
+	diagnostics: Diagnostic[];
 } {
 	const declarations = extractDeclarationsCore(module, text, composeSymbolId);
 	return {
@@ -29,6 +37,7 @@ export function extractFile(
 		references: extractReferencesCore(module, text, composeSymbolId),
 		imports: extractImportsCore(module, text, composeSymbolId),
 		literals: extractLiteralsCore(module, text, declarations),
+		diagnostics: extractDiagnosticsCore(module, text),
 	};
 }
 
