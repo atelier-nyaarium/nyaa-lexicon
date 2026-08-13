@@ -5,6 +5,7 @@
 // A provider team runs this without the core existing, which is the point of the suite.
 
 import { loadCorpus } from "./corpus.js";
+import { loadMoveCases } from "./moveCorpus.js";
 import { formatReport, runSuite } from "./runner.js";
 
 async function main(argv: string[]): Promise<void> {
@@ -13,7 +14,7 @@ async function main(argv: string[]): Promise<void> {
 		process.exit(2);
 	}
 
-	const report = await runSuite({ command: argv, cases: loadCorpus() });
+	const report = await runSuite({ command: argv, cases: loadCorpus(), moveCases: loadMoveCases() });
 	console.log(formatReport(report));
 	// Skipped is not failure: a provider is allowed to reach only the tiers it declares.
 	process.exit(report.failed === 0 ? 0 : 1);

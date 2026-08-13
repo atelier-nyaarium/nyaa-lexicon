@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { type ProviderTiers, ProviderTiersSchema } from "../methods.js";
+import { MoveBlockedReasonSchema, MoveEditsRequestSchema, MoveRefusalSchema } from "../move.js";
 import { SymbolKindSchema, VisibilitySchema } from "../symbols.js";
 import { UnknownReasonSchema } from "../values.js";
 
@@ -162,6 +163,35 @@ export const ConformanceCaseSchema = z
 
 export type ConformanceCase = z.infer<typeof ConformanceCaseSchema>;
 
+export const MoveExpectationSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("ready"), files: z.record(z.string().min(1), z.string()) }),
+		z.object({ kind: z.literal("blocked"), reasons: z.array(MoveBlockedReasonSchema).optional() }),
+		z.object({ kind: z.literal("refused"), reason: MoveRefusalSchema }),
+	])
+	.meta({ id: "MoveExpectation" });
+
+export const MoveFixtureSchema = z
+	.object({
+		files: z.record(z.string().min(1), z.string()),
+		request: MoveEditsRequestSchema,
+		expect: MoveExpectationSchema,
+	})
+	.meta({ id: "MoveFixture" });
+
+export type MoveFixture = z.infer<typeof MoveFixtureSchema>;
+
+export const MoveCaseSchema = z
+	.object({
+		id: z.string().min(1),
+		/** Prose for the failure report, so a red case explains itself. */
+		about: z.string().min(1),
+		fixtures: z.record(z.string().min(1), MoveFixtureSchema),
+	})
+	.meta({ id: "MoveCase" });
+
+export type MoveCase = z.infer<typeof MoveCaseSchema>;
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -174,6 +204,9 @@ export type ConformanceCase = z.infer<typeof ConformanceCaseSchema>;
  *
  * A case with no fixture in the provider's language skips for the same reason, and the gap is the
  * corpus's rather than the provider's.
+ *
+ * Move is ungated. A provider refusing it as NotImplemented skips, while any implemented answer
+ * is checked against the case.
  */
 export type CaseOutcome = "passed" | "failed" | "skipped";
 

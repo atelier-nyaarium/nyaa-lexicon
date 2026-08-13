@@ -1,13 +1,15 @@
 // A deliberately minimal provider, shipped with the suite.
 //
-// It answers the tiers it declares and NotImplemented everywhere else, which is what proves the
-// suite reports a partial provider as partial rather than as broken. Also the smallest complete
-// example of the protocol a provider team can read.
+// It answers the tiers it declares, a minimal move subset, and NotImplemented everywhere else.
+// This proves the suite reports a partial provider as partial rather than as broken.
 //
 // Its "analysis" is a toy regex over exported declarations. That is fine: what it demonstrates is
 // the SHAPE of an honest provider, not how to analyze a language.
 
+import path from "node:path";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
+import type { TextEdit } from "../edits.js";
+import type { MoveEditsRequest, MoveEditsResponse } from "../move.js";
 import {
 	notImplementedBinding,
 	notImplementedImport,
@@ -18,7 +20,7 @@ import {
 	serveProvider,
 } from "../serve.js";
 import { composeSymbolId } from "../symbolId.js";
-import type { Declaration } from "../symbols.js";
+import type { Declaration, Range } from "../symbols.js";
 import { PROTOCOL_VERSION } from "../version.js";
 
 ////////////////////////////////
@@ -51,6 +53,95 @@ function lineOf(text: string, index: number): number {
 	let line = 0;
 	for (let i = 0; i < index; i++) if (text[i] === "\n") line++;
 	return line;
+}
+
+function positionAt(text: string, offset: number): Range["start"] {
+	const before = text.slice(0, offset);
+	const lineStart = before.lastIndexOf("\n") + 1;
+	return { line: before.split("\n").length - 1, character: offset - lineStart };
+}
+
+function offsetAt(text: string, position: Range["start"]): number | undefined {
+	const lines = text.split("\n");
+	const line = lines[position.line];
+	if (line === undefined || position.character > line.length) return undefined;
+	let offset = 0;
+	for (let index = 0; index < position.line; index++) offset += (lines[index]?.length ?? 0) + 1;
+	return offset + position.character;
+}
+
+function rangeAt(text: string, start: number, end: number): Range {
+	return { start: positionAt(text, start), end: positionAt(text, end) };
+}
+
+function sameModule(left: string, right: string): boolean {
+	return path.posix.normalize(left.replaceAll("\\", "/")) === path.posix.normalize(right.replaceAll("\\", "/"));
+}
+
+function relativeSpecifier(fromModule: string, toModule: string): string {
+	const target = toModule.endsWith(".ref") ? toModule.slice(0, -4) : toModule;
+	const relative = path.posix.relative(path.posix.dirname(fromModule), target);
+	return relative.startsWith(".") ? relative : `./${relative}`;
+}
+
+function namedImportEdit(request: MoveEditsRequest, index: number): TextEdit | undefined {
+	const site = request.importSites[index];
+	if (
+		site === undefined ||
+		site.importKind !== "named" ||
+		site.reExport ||
+		site.importedName !== request.name ||
+		(site.localName !== undefined && site.localName !== request.name)
+	) {
+		return undefined;
+	}
+
+	const nameStart = offsetAt(request.text, site.range.start);
+	const nameEnd = offsetAt(request.text, site.range.end);
+	if (nameStart === undefined || nameEnd === undefined || request.text.slice(nameStart, nameEnd) !== request.name) {
+		return undefined;
+	}
+
+	const statementStart = request.text.lastIndexOf("\n", nameStart) + 1;
+	const nextLine = request.text.indexOf("\n", nameEnd);
+	const statementEnd = nextLine === -1 ? request.text.length : nextLine;
+	const statement = request.text.slice(statementStart, statementEnd);
+	const match = /^import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+(["'])([^"']+)\2;?\s*$/.exec(statement);
+	if (match?.[1] !== request.name || match[3] !== site.specifier) return undefined;
+
+	const specifierStart = statement.lastIndexOf(site.specifier);
+	if (specifierStart === -1) return undefined;
+	const absoluteStart = statementStart + specifierStart;
+	return {
+		range: rangeAt(request.text, absoluteStart, absoluteStart + site.specifier.length),
+		newText: relativeSpecifier(request.module, request.toModule),
+	};
+}
+
+export function makeReferenceMoveEdits(request: MoveEditsRequest): MoveEditsResponse {
+	if (
+		request.exists &&
+		sameModule(request.module, request.toModule) &&
+		extractDeclarations(request.module, request.text).some((declaration) => declaration.name === request.name)
+	) {
+		return { status: "refused", reason: "TargetCollision" };
+	}
+
+	if (
+		request.role.removal !== undefined ||
+		request.role.insertion !== undefined ||
+		request.dependencies.length > 0 ||
+		request.sites.length > 0 ||
+		request.importSites.length === 0
+	) {
+		return notImplementedMove("the reference provider only repoints named imports");
+	}
+
+	const edits = request.importSites.map((_, index) => namedImportEdit(request, index));
+	if (edits.some((edit) => edit === undefined)) {
+		return notImplementedMove("the reference provider only repoints simple named imports");
+	}
+	return { status: "ready", edits: edits.filter((edit) => edit !== undefined), blocked: [] };
 }
 
 export function extractDeclarations(module: string, text: string): Declaration[] {
@@ -113,14 +204,13 @@ export const referenceHandlers: ProviderHandlers = {
 	resolveImport: () => notImplementedImport("the reference provider does not resolve imports"),
 	bind: () => notImplementedBinding("the reference provider does not bind references"),
 	typeOf: () => notImplementedType("the reference provider does not infer types"),
-	// Refused whole, not "ready with zero edits". The second reads as "nothing needed changing",
-	// which for a provider that cannot rewrite anything is the wrong answer entirely.
+	// Refused whole, not "ready with zero edits", because rename is not implemented here.
 	renameEdits: () => ({
 		status: "refused",
 		reason: "NotImplemented",
 		detail: "the reference provider does not rewrite text",
 	}),
-	moveEdits: () => notImplementedMove("the reference provider does not rewrite text"),
+	moveEdits: makeReferenceMoveEdits,
 	shutdown: () => ({}),
 };
 

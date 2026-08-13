@@ -2,11 +2,14 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkFacts, checkImport, checkType, describeIdParts } from "../conformance/check";
 import { casesForTier, corpusLanguages, loadCorpus } from "../conformance/corpus";
+import { loadMoveCases } from "../conformance/moveCorpus";
 import { extractDeclarations, REFERENCE_TIERS } from "../conformance/referenceProvider";
 import { formatReport, runSuite } from "../conformance/runner";
-import type { ConformanceCase } from "../conformance/types";
+import type { ConformanceCase, MoveCase } from "../conformance/types";
+import type { MoveEditsRequest } from "../move";
 import type { FileFacts } from "../project";
 import { composeSymbolId } from "../symbolId";
+import type { Range } from "../symbols";
 
 ////////////////////////////////
 //  Helpers
@@ -40,6 +43,117 @@ function decl(name: string, extra: Record<string, unknown> = {}) {
 		visibility: "public" as const,
 		exported: true,
 		...extra,
+	};
+}
+
+function positionAt(text: string, offset: number): Range["start"] {
+	const before = text.slice(0, offset);
+	const lineStart = before.lastIndexOf("\n") + 1;
+	return { line: before.split("\n").length - 1, character: offset - lineStart };
+}
+
+function rangeForText(text: string, value: string): Range {
+	const start = text.indexOf(value);
+	if (start === -1) throw new Error(`missing test text: ${value}`);
+	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+}
+
+function referenceNamedMove(id: string, expectedSpecifier: string): MoveCase {
+	const text = 'import { add } from "./cart";\nadd(1, 2);\n';
+	return {
+		id,
+		about: "A simple named import repoint for the reference provider.",
+		fixtures: {
+			reference: {
+				files: {
+					"src/cart.ref": "export function add() {}\n",
+					"src/items.ref": "",
+					"src/use.ref": text,
+				},
+				request: {
+					module: "src/use.ref",
+					text,
+					exists: true,
+					symbolId: "lexicon reference src/cart.ref add.",
+					name: "add",
+					fromModule: "src/cart.ref",
+					toModule: "src/items.ref",
+					role: {},
+					importSites: [
+						{
+							range: rangeForText(text, "add"),
+							specifier: "./cart",
+							importKind: "named",
+							importedName: "add",
+							localName: "add",
+							reExport: false,
+						},
+					],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/use.ref": `import { add } from "${expectedSpecifier}";\nadd(1, 2);\n`,
+					},
+				},
+			},
+		},
+	};
+}
+
+function referenceUnsupportedMove(): MoveCase {
+	const request: MoveEditsRequest = {
+		module: "src/items.ref",
+		text: "",
+		exists: false,
+		symbolId: "lexicon reference src/cart.ref add.",
+		name: "add",
+		fromModule: "src/cart.ref",
+		toModule: "src/items.ref",
+		role: { insertion: { text: "export function add() {}\n" } },
+		importSites: [],
+		dependencies: [],
+		sites: [],
+	};
+	return {
+		id: "move/reference-not-implemented",
+		about: "An unsupported move proves NotImplemented is a skip.",
+		fixtures: {
+			reference: {
+				files: { "src/cart.ref": "export function add() {}\n" },
+				request,
+				expect: { kind: "ready", files: { "src/items.ref": "export function add() {}\n" } },
+			},
+		},
+	};
+}
+
+function referenceCollisionMove(): MoveCase {
+	const text = "export const add = 1;\n";
+	return {
+		id: "move/reference-target-collision",
+		about: "A target collision proves refusal expectations pass.",
+		fixtures: {
+			reference: {
+				files: { "src/cart.ref": "export function add() {}\n", "src/items.ref": text },
+				request: {
+					module: "src/items.ref",
+					text,
+					exists: true,
+					symbolId: "lexicon reference src/cart.ref add.",
+					name: "add",
+					fromModule: "src/cart.ref",
+					toModule: "src/items.ref",
+					role: {},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: { kind: "refused", reason: "TargetCollision" },
+			},
+		},
 	};
 }
 
@@ -79,6 +193,51 @@ describe("corpus", () => {
 	it("partitions by tier, which is how a team runs only what it claims", () => {
 		expect(casesForTier("declarations").every((c) => c.tier === "declarations")).toBe(true);
 		expect(casesForTier("nonexistent")).toEqual([]);
+	});
+
+	it("validates the complete move case table", () => {
+		expect(loadMoveCases().map((testCase) => testCase.id)).toEqual([
+			"move/importer-named-import-repointed",
+			"move/importer-aliased-import-keeps-alias",
+			"move/importer-type-only-stays-type-only",
+			"move/importer-namespace-import-blocks",
+			"move/target-imports-exported-sibling-back",
+			"move/target-private-sibling-blocks",
+			"move/target-carries-external-import",
+			"move/target-builtin-needs-nothing",
+			"move/target-rerenders-relative-specifier",
+			"move/target-new-file",
+			"move/target-existing-appends",
+			"move/target-collision-refuses",
+			"move/source-removal-and-self-import",
+			"move/barrel-named-reexport-repointed",
+			"move/barrel-star-reexport-blocks",
+			"move/dynamic-dependency-blocks",
+			"move/tsconfig-alias-specifier",
+		]);
+	});
+
+	it("keeps each existing move request's text equal to its workspace file", () => {
+		for (const testCase of loadMoveCases()) {
+			for (const fixture of Object.values(testCase.fixtures)) {
+				if (fixture.request.exists) {
+					expect(fixture.request.text, testCase.id).toBe(fixture.files[fixture.request.module]);
+				} else {
+					expect(fixture.request.text, testCase.id).toBe("");
+					expect(fixture.files[fixture.request.module], testCase.id).toBeUndefined();
+				}
+			}
+		}
+	});
+
+	it("names the requested module in every ready post-state", () => {
+		for (const testCase of loadMoveCases()) {
+			for (const fixture of Object.values(testCase.fixtures)) {
+				if (fixture.expect.kind === "ready") {
+					expect(fixture.expect.files, testCase.id).toHaveProperty(fixture.request.module);
+				}
+			}
+		}
 	});
 });
 
@@ -198,13 +357,24 @@ describe("the reference provider", () => {
 
 describe("running the suite against a real process", () => {
 	it("passes a legitimately partial provider, reporting its undeclared tiers as skipped", async () => {
-		const report = await runSuite({ command: ["bun", "run", PROVIDER], cases: loadCorpus(), timeoutMs: 15_000 });
+		const report = await runSuite({
+			command: ["bun", "run", PROVIDER],
+			cases: loadCorpus(),
+			moveCases: loadMoveCases(),
+			timeoutMs: 15_000,
+		});
 
 		expect(report.providerId).toBe("reference-provider");
 		// The whole tiering claim: undeclared tiers are skipped, and nothing it claims fails.
 		expect(report.failed, formatReport(report)).toBe(0);
 		expect(report.passed).toBeGreaterThan(0);
 		expect(report.skipped).toBeGreaterThan(0);
+		expect(report.results.find((result) => result.caseId === "move/importer-named-import-repointed")).toMatchObject(
+			{
+				outcome: "skipped",
+				problems: ["no reference fixture"],
+			},
+		);
 	}, 30_000);
 
 	it("fails a case the provider genuinely gets wrong, rather than passing vacuously", async () => {
@@ -219,5 +389,28 @@ describe("running the suite against a real process", () => {
 
 		expect(report.failed).toBe(1);
 		expect(report.results.find((result) => result.outcome === "failed")?.problems[0]).toMatch(/not reported/);
+	}, 30_000);
+
+	it("makes move cases pass, fail, and skip through provider responses", async () => {
+		const moveCases = [
+			referenceNamedMove("move/reference-pass", "./items"),
+			referenceNamedMove("move/reference-fail", "./wrong"),
+			referenceUnsupportedMove(),
+			referenceCollisionMove(),
+		];
+		const report = await runSuite({
+			command: ["bun", "run", PROVIDER],
+			cases: [],
+			moveCases,
+			timeoutMs: 15_000,
+		});
+		const outcome = (id: string) => report.results.find((result) => result.caseId === id);
+
+		expect(outcome("move/reference-pass")).toMatchObject({ outcome: "passed", problems: [] });
+		expect(outcome("move/reference-fail")).toMatchObject({ outcome: "failed" });
+		expect(outcome("move/reference-fail")?.problems[0]).toMatch(/post-state/);
+		expect(outcome("move/reference-not-implemented")).toMatchObject({ outcome: "skipped" });
+		expect(outcome("move/reference-not-implemented")?.problems[0]).toMatch(/NotImplemented/);
+		expect(outcome("move/reference-target-collision")).toMatchObject({ outcome: "passed", problems: [] });
 	}, 30_000);
 });
