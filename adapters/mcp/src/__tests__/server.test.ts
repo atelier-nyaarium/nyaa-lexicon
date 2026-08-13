@@ -41,6 +41,7 @@ const MUTATION_TOOLS = [
 	"reaffirm_answer",
 	"record_answer",
 	"refactor_commit",
+	"refactor_move",
 	"refactor_rename",
 	"refactor_replace",
 	"refactor_revert",

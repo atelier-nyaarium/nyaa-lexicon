@@ -2,6 +2,8 @@ import path from "node:path";
 import {
 	type Binding,
 	type Diagnostic,
+	type MoveEditsRequest,
+	type MoveEditsResponse,
 	parseSymbolId,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
@@ -11,6 +13,8 @@ import {
 import ts from "typescript";
 import { contextualPropertySymbol, type ExtractedWithNodes, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
+import { makeMoveEdits } from "./move.js";
+import type { SpecifierRenderer } from "./project.js";
 import { type LoadedProject, toModule } from "./project.js";
 import { makeRenameEdits } from "./rename.js";
 
@@ -189,6 +193,30 @@ export class TypeScriptAnalyzer {
 			return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
 		}
 		return makeRenameEdits(params, context.source, context.checker);
+	}
+
+	moveEdits(params: MoveEditsRequest, renderSpecifier: SpecifierRenderer): MoveEditsResponse {
+		const source = ts.createSourceFile(
+			this.fileName(params.module),
+			params.text,
+			ts.ScriptTarget.ESNext,
+			true,
+			scriptKindOf(params.module),
+		);
+		if (parseDiagnosticsOf(source).length > 0) {
+			return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
+		}
+
+		let checker: ts.TypeChecker | undefined;
+		if (params.exists) {
+			if (this.updateFile(params.module, params.text) === undefined) {
+				return { status: "refused", reason: "ParseError", detail: "the module could not be loaded" };
+			}
+			const context = this.sourceContext(params.module);
+			if (!isSourceFailure(context)) checker = context.checker;
+		}
+
+		return makeMoveEdits(params, source, checker, renderSpecifier);
 	}
 
 	programStats(): {
@@ -580,6 +608,10 @@ function rangeOfSpan(source: ts.SourceFile, start: number, length: number) {
 		start: source.getLineAndCharacterOfPosition(start),
 		end: source.getLineAndCharacterOfPosition(end),
 	};
+}
+
+function parseDiagnosticsOf(source: ts.SourceFile): readonly ts.Diagnostic[] {
+	return (source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
 }
 
 function declarationsOf(symbol: ts.Symbol): ts.Declaration[] {

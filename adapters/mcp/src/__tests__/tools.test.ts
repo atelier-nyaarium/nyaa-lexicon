@@ -89,6 +89,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		refactorCommit: async () => ({ committed: true, issues: [] }),
 		refactorReplace: async () => ({ replaced: true, module: "src/a.ts", issues: [] }),
 		refactorRename: async () => ({ renamed: true, modules: ["src/a.ts"], issues: [] }),
+		refactorMove: async () => ({ moved: true, modules: ["src/a.ts", "src/b.ts"], issues: [] }),
 		...overrides,
 	};
 }

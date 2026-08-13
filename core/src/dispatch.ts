@@ -101,6 +101,8 @@ const SymbolSourceArgs = z.object({
 
 const Commit = z.object({ force: z.boolean().optional() });
 
+const Move = z.object({ symbolId: z.string().min(1), toModule: z.string().min(1) });
+
 const Replace = z.object({
 	symbolId: z.string().min(1).optional(),
 	factId: z.string().min(1).optional(),
@@ -113,6 +115,79 @@ export interface ReplaceOutcome {
 	module?: string;
 	issues: RefactorIssue[];
 	reason?: string;
+}
+
+export interface MoveOutcome {
+	moved: boolean;
+	modules?: string[];
+	migrated?: { answers: number; gaps: number };
+	issues: RefactorIssue[];
+	reason?: string;
+}
+
+/**
+ * A move as one transaction step.
+ *
+ * Every module gets one provider request describing only its own part, and a blocked site anywhere
+ * stops the whole thing: a move that relocates a declaration and leaves half its importers pointing
+ * at the old module is worse than one that did not start.
+ */
+async function refactorMove(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { symbolId: string; toModule: string },
+): Promise<MoveOutcome> {
+	if (!transactions.openTransaction()) {
+		return { moved: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
+	}
+
+	const plan = service.planMove(args.symbolId, args.toModule);
+	if (!plan.ok) return { moved: false, issues: [], reason: plan.reason };
+
+	const edits = await service.moveEdits(plan);
+	if (!edits.ok) return { moved: false, issues: edits.issues, reason: edits.reason };
+
+	return write(async () => {
+		if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
+			return { moved: false, issues: [], reason: `${plan.fromModule} changed while the move was planned` };
+		}
+
+		const touched = edits.files.map((file) => file.module);
+		const begun = transactions.beginStep("move", touched, { from: plan.fromModule, to: plan.toModule });
+		if (!begun.ok) return { moved: false, issues: [], reason: begun.reason };
+
+		const idMap = new Map<string, string>();
+		for (const id of plan.closure) {
+			const rebased = service.rebaseIntoModule(id, plan.symbolId, plan.toModule);
+			if (rebased !== null) idMap.set(id, rebased);
+		}
+
+		try {
+			for (const file of edits.files) service.writeModule(file.module, file.text);
+		} catch (error) {
+			transactions.undo();
+			return {
+				moved: false,
+				issues: [],
+				reason: `the move could not be written: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+
+		transactions.completeStep(begun.stepNo, "written");
+		// Target first, so every other module rebinds against a declaration that already exists in
+		// its new home rather than against one that has just vanished.
+		for (const module of [plan.toModule, ...touched.filter((m) => m !== plan.toModule)]) {
+			await service.indexFile(module, "");
+		}
+		transactions.completeStep(begun.stepNo, "reindexed");
+
+		const migrated = service.migrateKnowledge(idMap);
+		transactions.recordIssues(begun.stepNo, edits.issues);
+		transactions.completeStep(begun.stepNo, "finalized");
+
+		return { moved: true, modules: touched, migrated, issues: edits.issues };
+	});
 }
 
 /** What a rename did, with what it carried across and what it could not promise. */
@@ -388,6 +463,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			case "refactorRename": {
 				const args = Rename.parse(params);
 				return refactorRename(service, transactions(), write, args);
+			}
+			case "refactorMove": {
+				const args = Move.parse(params);
+				return refactorMove(service, transactions(), write, args);
 			}
 			default:
 				throw new Error(`unknown method: ${method}`);

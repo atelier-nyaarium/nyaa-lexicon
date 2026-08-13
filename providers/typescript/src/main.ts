@@ -2,7 +2,8 @@
 
 import {
 	type IndexDepth,
-	notImplementedMove,
+	type MoveEditsRequest,
+	type MoveEditsResponse,
 	PROTOCOL_VERSION,
 	type ProviderHandlers,
 	parseSymbolId,
@@ -15,7 +16,8 @@ import { TypeScriptAnalyzer } from "./analyzer.js";
 import { isDeclarationModule, isLikelyBundle } from "./bundle.js";
 import { LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
-import { type LoadedProject, loadProject, resolveSpecifier, toModule } from "./project.js";
+import { isValidTargetModule } from "./move.js";
+import { type LoadedProject, loadProject, renderSpecifier, resolveSpecifier, toModule } from "./project.js";
 import { extractSurfaceFile } from "./surface.js";
 
 ////////////////////////////////
@@ -182,6 +184,20 @@ export class TypeScriptProvider {
 		return this.analyzed().renameEdits(params);
 	}
 
+	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
+		if (!isValidTargetModule(this.workspaceRoot, params.toModule)) {
+			return {
+				status: "refused",
+				reason: "InvalidTarget",
+				detail: `the target is not a TypeScript module: ${params.toModule}`,
+			};
+		}
+		const options = this.loaded().options;
+		return this.analyzed().moveEdits(params, (fromModule, targetModule, preferredSpecifier) =>
+			renderSpecifier(this.workspaceRoot, fromModule, targetModule, options, preferredSpecifier),
+		);
+	}
+
 	programStats() {
 		return this.analyzed().programStats();
 	}
@@ -214,7 +230,7 @@ export function handlersFor(provider: TypeScriptProvider): ProviderHandlers {
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: () => notImplementedMove("the TypeScript provider does not move declarations yet"),
+		moveEdits: (params) => provider.moveEdits(params),
 		shutdown: () => provider.shutdown(),
 	};
 }

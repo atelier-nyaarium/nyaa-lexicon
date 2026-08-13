@@ -932,6 +932,36 @@ export function renderReplaceOutcome(outcome: {
 	return lines.join("\n");
 }
 
+/** A move step. A blocked site stops the whole move, so a refusal names what could not be written. */
+export function renderMoveOutcome(
+	toModule: string,
+	outcome: {
+		moved: boolean;
+		modules?: string[];
+		migrated?: { answers: number; gaps: number };
+		issues: RefactorIssue[];
+		reason?: string;
+	},
+): string {
+	if (!outcome.moved) {
+		const lines = ["# Not moved", "", outcome.reason ?? "the move could not be carried out"];
+		if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
+		return lines.join("\n");
+	}
+
+	const modules = outcome.modules ?? [];
+	const lines = [
+		`# Moved to \`${toModule}\``,
+		"",
+		`${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map((m) => `\`${m}\``).join(", ")}`,
+	];
+	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
+		lines.push("", `Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
+	}
+	if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
+	return lines.join("\n");
+}
+
 /** A rename step, including what it carried across and what the index could not promise. */
 export function renderRenameStep(
 	newName: string,

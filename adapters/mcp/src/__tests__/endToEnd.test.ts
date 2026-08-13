@@ -60,6 +60,7 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		refactorCommit: (force) => ask("refactorCommit", { force }),
 		refactorReplace: (args) => ask("refactorReplace", args),
 		refactorRename: (symbolId, newName) => ask("refactorRename", { symbolId, newName }),
+		refactorMove: (symbolId, toModule) => ask("refactorMove", { symbolId, toModule }),
 		findLiterals: (query) => ask("findLiterals", query),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
 		searchSymbols: (text, options) => ask("searchSymbols", { text, ...options }),

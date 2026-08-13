@@ -15,16 +15,21 @@ import {
 	doubtFactId,
 	type FactKind,
 	type FileFacts,
+	type ImportOrigin,
 	type ImportResolution,
 	type IndexDepth,
 	isParameterSymbol,
 	isWithin,
+	type MoveDependency,
+	type MoveEditsRequest,
+	type MoveImportSite,
 	ownerOf,
 	parseSymbolId,
 	type Range,
 	type RenameSite,
 	rebaseSymbolId,
 	type TypeInfo,
+	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
 import {
 	type Answer,
@@ -339,6 +344,37 @@ export type ReplacementPlan =
 	  }
 	| { ok: false; reason: string };
 
+/**
+ * A move worked out but not yet written.
+ *
+ * The closure is the moved declaration plus everything declared inside it, which is what the id
+ * migration and the dependency walk are both scoped to.
+ */
+export type MovePlan =
+	| {
+			ok: true;
+			symbolId: string;
+			name: string;
+			fromModule: string;
+			toModule: string;
+			/** The declaration's own text, which is what gets inserted at the target. */
+			text: string;
+			removal: Range;
+			closure: string[];
+			dependencies: MoveDependency[];
+			/** Modules importing the moved symbol, which need their specifier re-pointed. */
+			referencing: string[];
+			/** Whether anything left behind in the source module still uses it. */
+			usedAtSource: boolean;
+			baseHash: string;
+	  }
+	| { ok: false; reason: string };
+
+/** Whole new contents per module, so the writer never re-derives an edit it did not check. */
+export type MoveEditsOutcome =
+	| { ok: true; files: Array<{ module: string; text: string }>; issues: RefactorIssue[] }
+	| { ok: false; issues: RefactorIssue[]; reason: string };
+
 /** The plan rides along either way, so a refusal can say what it would have done. */
 export type RenameOutcome =
 	| { renamed: true; plan: RenamePlan; modules: string[] }
@@ -420,6 +456,28 @@ function sameRange(a: Range, b: Range): boolean {
  * correct code. Reporting them would make every edit that calls a method look like breakage, which
  * is what a first run against a real file showed.
  */
+/**
+ * A stored provenance back to the reason it came from.
+ *
+ * An unbound reference stores its reason in the provenance column. Anything else there belongs to
+ * a binding that succeeded, which has no reason, so the honest answer is that the index does not
+ * hold the target.
+ */
+function unknownReasonOf(provenance: string): UnknownReason {
+	return UNKNOWN_REASONS.includes(provenance as UnknownReason) ? (provenance as UnknownReason) : "NotIndexed";
+}
+
+const UNKNOWN_REASONS: UnknownReason[] = [
+	"NotImplemented",
+	"DynamicallyTyped",
+	"ExternalDependency",
+	"ParseError",
+	"RecursionLimit",
+	"Ambiguous",
+	"RuntimeConstructed",
+	"NotIndexed",
+];
+
 function isDangling(reason: string): boolean {
 	return reason !== "ExternalDependency" && reason !== "NotIndexed" && reason !== "DynamicallyTyped";
 }
@@ -953,6 +1011,265 @@ export class LexiconService {
 			baseHash: hashOf(before),
 			issues,
 		};
+	}
+
+	/**
+	 * What moving one declaration to another module would involve, without writing anything.
+	 *
+	 * The core works out WHICH modules are touched and WHAT the moved body depends on, both of
+	 * which come out of the index. Rendering the text is the provider's, so this stops at handing
+	 * each module a request.
+	 */
+	planMove(symbolId: string, toModule: string): MovePlan {
+		const declaration = this.store.declaration(symbolId);
+		if (!declaration) return { ok: false, reason: `${symbolId} is not in the index` };
+		if (declaration.module === toModule) return { ok: false, reason: `${symbolId} is already in ${toModule}` };
+
+		const source = this.symbolSource({ symbolId });
+		if (!source.found) return { ok: false, reason: source.reason };
+
+		const closure = this.store.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
+
+		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId);
+
+		// Modules whose imports name the moved symbol, plus the source itself when something left
+		// behind still uses it.
+		const referencing = new Set(
+			this.store
+				.referencesTo(symbolId)
+				.map((reference) => reference.module)
+				.filter((module) => module !== declaration.module),
+		);
+		const usedAtSource = this.store
+			.referencesTo(symbolId)
+			.some((reference) => reference.module === declaration.module && !this.inRange(reference, source.range));
+
+		return {
+			ok: true,
+			symbolId,
+			name: declaration.name,
+			fromModule: declaration.module,
+			toModule,
+			text: source.text,
+			removal: source.range,
+			closure,
+			dependencies,
+			referencing: [...referencing],
+			usedAtSource,
+			baseHash: source.contentHash,
+		};
+	}
+
+	/**
+	 * Asks every involved module's provider for its part of a move.
+	 *
+	 * One blocked site anywhere fails the whole move. A relocated declaration whose importers still
+	 * point at the old module is code that does not build, which is worse than not starting.
+	 */
+	async moveEdits(plan: Extract<MovePlan, { ok: true }>): Promise<MoveEditsOutcome> {
+		const requests = this.moveRequests(plan);
+		const files: Array<{ module: string; text: string }> = [];
+		const blocked: RefactorIssue[] = [];
+
+		for (const request of requests) {
+			const before = request.exists ? (this.readFile(request.module) ?? "") : "";
+			const answer = await this.supervisor.ask(request.module, "moveEdits", { ...request, text: before });
+
+			if (answer.status === "refused") {
+				return {
+					ok: false,
+					issues: [],
+					reason: `${request.module}: ${answer.reason}${detailOf(answer.detail)}`,
+				};
+			}
+			for (const site of answer.blocked) {
+				blocked.push({
+					kind: site.reason,
+					detail: `${request.module}: ${site.detail ?? "cannot be rewritten safely"}`,
+					module: request.module,
+				});
+			}
+			if (answer.edits.length === 0) continue;
+
+			const applied = applyEdits(before, answer.edits);
+			if ("problem" in applied) {
+				return { ok: false, issues: [], reason: `${request.module}: ${applied.problem}` };
+			}
+			files.push({ module: request.module, text: applied.text });
+		}
+
+		if (blocked.length > 0) {
+			return { ok: false, issues: blocked, reason: "some occurrences cannot be rewritten" };
+		}
+		return { ok: true, files, issues: [] };
+	}
+
+	/** One request per involved module, each describing only that module's part. */
+	private moveRequests(plan: Extract<MovePlan, { ok: true }>): MoveEditsRequest[] {
+		const shared = {
+			symbolId: plan.symbolId,
+			name: plan.name,
+			fromModule: plan.fromModule,
+			toModule: plan.toModule,
+		};
+
+		const requests: MoveEditsRequest[] = [
+			{
+				...shared,
+				module: plan.fromModule,
+				text: "",
+				exists: true,
+				role: { removal: plan.removal },
+				importSites: [],
+				// The source keeps needing the symbol when something left behind still calls it.
+				dependencies: plan.usedAtSource
+					? [
+							{
+								name: plan.name,
+								origin: { kind: "workspaceModule", symbolId: plan.symbolId, module: plan.toModule },
+							},
+						]
+					: [],
+				sites: [],
+			},
+			{
+				...shared,
+				module: plan.toModule,
+				text: "",
+				exists: this.readFile(plan.toModule) !== null,
+				role: { insertion: { text: plan.text } },
+				importSites: [],
+				dependencies: plan.dependencies,
+				sites: [],
+			},
+		];
+
+		for (const module of plan.referencing) {
+			requests.push({
+				...shared,
+				module,
+				text: "",
+				exists: true,
+				role: {},
+				importSites: this.importSitesForMove(module, plan.name),
+				dependencies: [],
+				sites: [],
+			});
+		}
+
+		return requests;
+	}
+
+	/** Import statements in one module naming the moved symbol, which must now address its target. */
+	private importSitesForMove(module: string, name: string): MoveImportSite[] {
+		const sites: MoveImportSite[] = [];
+		for (const statement of this.store.importsIn(module)) {
+			if (statement.name !== name && statement.local !== name) continue;
+			if (statement.range === undefined) continue;
+			sites.push({
+				range: statement.range,
+				specifier: statement.specifier,
+				importKind: statement.name === undefined ? "namespace" : "named",
+				...(statement.name === undefined ? {} : { importedName: statement.name }),
+				...(statement.local === undefined ? {} : { localName: statement.local }),
+				reExport: statement.reExport,
+			});
+		}
+		return sites;
+	}
+
+	/** Re-mints one id of a moved closure for its new module. */
+	rebaseIntoModule(id: string, movedId: string, toModule: string): string | null {
+		const parsed = parseSymbolId(movedId);
+		if (parsed === null) return null;
+		return rebaseSymbolId(id, movedId, composeSymbolId({ ...parsed, module: toModule }));
+	}
+
+	/** Whether a stored reference sits inside a range, which is how the moved body is bounded. */
+	private inRange(reference: { startLine: number; startCharacter: number }, range: Range): boolean {
+		if (reference.startLine < range.start.line || reference.startLine > range.end.line) return false;
+		if (reference.startLine === range.start.line && reference.startCharacter < range.start.character) return false;
+		if (reference.startLine === range.end.line && reference.startCharacter > range.end.character) return false;
+		return true;
+	}
+
+	/**
+	 * Every name the moved body uses, with what the index proved about where it comes from.
+	 *
+	 * Walked over the whole closure rather than over references owned by the moved symbol, because
+	 * a moved class's body references belong to its METHODS and a top-level initializer may be
+	 * owned by nothing at all.
+	 */
+	private dependenciesOf(module: string, closure: string[], symbolId: string): MoveDependency[] {
+		const inside = new Set(closure);
+		const source = this.symbolSource({ symbolId });
+		if (!source.found) return [];
+
+		const seen = new Set<string>();
+		const dependencies: MoveDependency[] = [];
+
+		for (const reference of this.store.referencesIn(module)) {
+			if (!this.inRange(reference, source.range)) continue;
+			if (seen.has(reference.name)) continue;
+			seen.add(reference.name);
+
+			const target = reference.targetId;
+			if (target !== null && inside.has(target)) {
+				dependencies.push({ name: reference.name, origin: { kind: "insideClosure", symbolId: target } });
+				continue;
+			}
+
+			if (target !== null) {
+				const declaration = this.store.declaration(target);
+				if (declaration?.module === module) {
+					dependencies.push({
+						name: reference.name,
+						origin: {
+							kind: "sourceModule",
+							symbolId: target,
+							name: declaration.name,
+							...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
+						},
+					});
+					continue;
+				}
+				if (declaration) {
+					dependencies.push({
+						name: reference.name,
+						origin: { kind: "workspaceModule", symbolId: target, module: declaration.module },
+					});
+					continue;
+				}
+			}
+
+			const via = this.importOriginFor(module, reference.name);
+			if (via !== null) {
+				dependencies.push({ name: reference.name, origin: { kind: "external", via } });
+				continue;
+			}
+
+			dependencies.push({
+				name: reference.name,
+				origin: { kind: "unresolved", reason: unknownReasonOf(reference.provenance) },
+			});
+		}
+
+		return dependencies;
+	}
+
+	/** The import statement that brought a name into a module, when one did. */
+	private importOriginFor(module: string, name: string): ImportOrigin | null {
+		for (const statement of this.store.importsIn(module)) {
+			if (statement.name !== name && statement.local !== name) continue;
+			return {
+				specifier: statement.specifier,
+				// A statement naming no export binds the module itself, which is a namespace import.
+				importKind: statement.name === undefined ? "namespace" : "named",
+				...(statement.name === undefined ? {} : { importedName: statement.name }),
+				...(statement.local === undefined ? {} : { localName: statement.local }),
+			};
+		}
+		return null;
 	}
 
 	/**

@@ -113,7 +113,13 @@ export type MoveDependency = z.infer<typeof MoveDependencySchema>;
 /** An import in this module naming the moved symbol, whose specifier addresses the target module. */
 export const MoveImportSiteSchema = z
 	.object({
-		/** The whole import statement, since a specifier rewrite may restructure it. */
+		/**
+		 * The imported NAME's span, not the whole statement.
+		 *
+		 * The index stores the rewritable name rather than the statement around it, so this locates
+		 * the statement rather than delimiting it. A provider widens from here to whatever it needs
+		 * to rewrite, which it can do because it has the text.
+		 */
 		range: RangeSchema,
 		specifier: z.string().min(1),
 		importKind: ImportKindSchema,

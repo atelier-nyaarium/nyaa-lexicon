@@ -8,6 +8,7 @@ import path from "node:path";
 import { type ImportResolution, normalizeModulePath } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { configuredSurfaceCandidates, isDeclarationModule, isLikelyBundle, surfaceGlobMatches } from "./bundle.js";
+import { claimsExtension } from "./file-types.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -176,6 +177,253 @@ export function resolveSpecifier(
 	return surfaceDepth(module, resolved.resolvedFileName, surfaceGlobs) === "surface"
 		? { status: "resolved", module, depth: "surface" }
 		: { status: "resolved", module };
+}
+
+////////////////////////////////
+//  Reverse Resolution
+
+export type SpecifierRenderResult =
+	| { specifier: string }
+	| { reason: "NoImportPath" | "AmbiguousImportPath"; detail: string };
+
+export type SpecifierRenderer = (
+	fromModule: string,
+	targetModule: string,
+	preferredSpecifier?: string,
+) => SpecifierRenderResult;
+
+/** Render a module specifier that the existing resolver can send back to the target module. */
+export function renderSpecifier(
+	workspaceRoot: string,
+	fromModule: string,
+	targetModule: string,
+	options: ts.CompilerOptions,
+	preferredSpecifier?: string,
+): SpecifierRenderResult {
+	const root = path.resolve(workspaceRoot);
+	const from = moduleAbsolute(root, fromModule);
+	const target = moduleAbsolute(root, targetModule);
+	if (from === undefined || target === undefined) {
+		return { reason: "NoImportPath", detail: "the importing or target module is not a TypeScript module" };
+	}
+
+	const targetExists = ts.sys.fileExists(target);
+	const candidates = dedupeCandidates([
+		{
+			specifier: relativeSpecifier(fromModule, targetModule, options, preferredSpecifier),
+			kind: "relative" as const,
+		},
+		...pathAliasCandidates(root, target, options),
+		...packageCandidates(root, fromModule, target, targetModule, options),
+	]);
+	const preferredKind = preferredSpecifier === undefined ? undefined : candidateKind(preferredSpecifier, options);
+	const preferred =
+		preferredKind === undefined ? candidates : candidates.filter((candidate) => candidate.kind === preferredKind);
+	const considered = preferred.length > 0 ? preferred : candidates;
+	const valid = targetExists
+		? considered.filter((candidate) =>
+				resolvesToTarget(root, fromModule, candidate.specifier, targetModule, options),
+			)
+		: considered;
+
+	if (valid.length === 1) return { specifier: valid[0]?.specifier as string };
+	if (valid.length > 1) {
+		return {
+			reason: "AmbiguousImportPath",
+			detail: `several specifiers address ${targetModule}`,
+		};
+	}
+	return { reason: "NoImportPath", detail: `no specifier addresses ${targetModule} from ${fromModule}` };
+}
+
+interface RenderCandidate {
+	specifier: string;
+	kind: "relative" | "alias" | "package";
+}
+
+function moduleAbsolute(root: string, module: string): string | undefined {
+	if (!claimsExtension(module)) return undefined;
+	try {
+		const normalized = normalizeModulePath(module);
+		const absolute = path.resolve(root, normalized);
+		return toModule(root, absolute) === normalized ? absolute : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function relativeSpecifier(
+	fromModule: string,
+	targetModule: string,
+	options: ts.CompilerOptions,
+	preferredSpecifier: string | undefined,
+): string {
+	const targetBase = stripModuleExtension(targetModule);
+	const relativeBase = toPosix(path.relative(path.posix.dirname(fromModule), targetBase));
+	const base = relativeBase === "" ? "" : relativeBase;
+	const extension = relativeImportExtension(targetModule, options, preferredSpecifier);
+	const rendered = `${base}${extension}`;
+	return rendered.startsWith(".") ? rendered : `./${rendered}`;
+}
+
+function relativeImportExtension(
+	targetModule: string,
+	options: ts.CompilerOptions,
+	preferredSpecifier: string | undefined,
+): string {
+	const targetExtension = moduleExtension(targetModule);
+	if (preferredSpecifier?.startsWith(".")) {
+		const preferredPath = preferredSpecifier.split(/[?#]/, 1)[0] ?? preferredSpecifier;
+		const preferredExtension = path.posix.extname(preferredPath);
+		if ([".js", ".jsx", ".mjs", ".cjs"].includes(preferredExtension)) {
+			return runtimeExtension(targetExtension);
+		}
+		if ([".ts", ".tsx", ".mts", ".cts", ".d.ts"].includes(preferredExtension)) {
+			return targetExtension;
+		}
+		return "";
+	}
+	if (isNodeEsm(options)) {
+		if ([".ts", ".tsx", ".mts", ".cts", ".d.ts"].includes(targetExtension))
+			return runtimeExtension(targetExtension);
+		if ([".js", ".jsx", ".mjs", ".cjs"].includes(targetExtension)) return targetExtension;
+	}
+	return "";
+}
+
+function runtimeExtension(extension: string): string {
+	if (extension === ".mts") return ".mjs";
+	if (extension === ".cts") return ".cjs";
+	if (extension === ".tsx") return ".jsx";
+	if (extension === ".d.ts") return ".js";
+	if (extension === ".ts") return ".js";
+	return extension;
+}
+
+function isNodeEsm(options: ts.CompilerOptions): boolean {
+	return (
+		options.moduleResolution === ts.ModuleResolutionKind.Node16 ||
+		options.moduleResolution === ts.ModuleResolutionKind.NodeNext
+	);
+}
+
+function pathAliasCandidates(root: string, target: string, options: ts.CompilerOptions): RenderCandidate[] {
+	if (options.paths === undefined) return [];
+	const baseUrl = options.baseUrl ?? root;
+	const candidates: RenderCandidate[] = [];
+	for (const [pattern, substitutions] of Object.entries(options.paths)) {
+		for (const substitution of substitutions ?? []) {
+			const star = substitution.indexOf("*");
+			if (star === -1) {
+				const candidateTarget = path.resolve(baseUrl, substitution);
+				if (stripExtension(candidateTarget) !== stripExtension(target)) continue;
+				candidates.push({ specifier: pattern, kind: "alias" });
+				continue;
+			}
+
+			const prefix = path.resolve(baseUrl, substitution.slice(0, star));
+			const suffix = substitution.slice(star + 1);
+			const relative = path.relative(prefix, target);
+			if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) continue;
+			const relativeWithoutExtension = stripModuleExtension(toPosix(relative));
+			const suffixWithoutExtension = stripModuleExtension(toPosix(suffix));
+			if (suffixWithoutExtension !== "" && !relativeWithoutExtension.endsWith(suffixWithoutExtension)) continue;
+			const wildcard =
+				suffixWithoutExtension === ""
+					? relativeWithoutExtension
+					: relativeWithoutExtension.slice(0, -suffixWithoutExtension.length);
+			candidates.push({ specifier: pattern.replace("*", wildcard), kind: "alias" });
+		}
+	}
+	return candidates;
+}
+
+function packageCandidates(
+	root: string,
+	fromModule: string,
+	target: string,
+	targetModule: string,
+	options: ts.CompilerOptions,
+): RenderCandidate[] {
+	const packageInfo = nearestPackage(target, root);
+	if (packageInfo === undefined || packageInfo.exports === false) return [];
+	const relative = stripModuleExtension(toPosix(path.relative(packageInfo.root, target)));
+	if (relative.startsWith("..")) return [];
+	const suffix = relative === "index" ? "" : `/${relative}`;
+	const specifier = `${packageInfo.name}${suffix}`;
+	return resolvesToTarget(root, fromModule, specifier, targetModule, options) ? [{ specifier, kind: "package" }] : [];
+}
+
+function nearestPackage(target: string, root: string): { name: string; root: string; exports: boolean } | undefined {
+	let directory = path.dirname(target);
+	while (directory === root || directory.startsWith(`${root}${path.sep}`)) {
+		const packagePath = path.join(directory, "package.json");
+		const text = ts.sys.readFile(packagePath);
+		if (text !== undefined) {
+			try {
+				const value = JSON.parse(text) as { name?: unknown; exports?: unknown };
+				if (typeof value.name === "string") {
+					return { name: value.name, root: directory, exports: value.exports !== undefined };
+				}
+			} catch {
+				return undefined;
+			}
+		}
+		if (directory === root) break;
+		directory = path.dirname(directory);
+	}
+	return undefined;
+}
+
+function candidateKind(specifier: string, options: ts.CompilerOptions): RenderCandidate["kind"] {
+	if (specifier.startsWith(".")) return "relative";
+	if (Object.keys(options.paths ?? {}).some((pattern) => matchesPathPattern(pattern, specifier))) return "alias";
+	return "package";
+}
+
+function matchesPathPattern(pattern: string, specifier: string): boolean {
+	const star = pattern.indexOf("*");
+	if (star === -1) return pattern === specifier;
+	return specifier.startsWith(pattern.slice(0, star)) && specifier.endsWith(pattern.slice(star + 1));
+}
+
+function resolvesToTarget(
+	root: string,
+	fromModule: string,
+	specifier: string,
+	targetModule: string,
+	options: ts.CompilerOptions,
+): boolean {
+	const result = resolveSpecifier(root, fromModule, specifier, options);
+	if (result.status === "resolved") return result.module === targetModule;
+	return result.status === "external" && result.surface?.module === targetModule;
+}
+
+function dedupeCandidates(candidates: RenderCandidate[]): RenderCandidate[] {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		if (seen.has(candidate.specifier)) return false;
+		seen.add(candidate.specifier);
+		return true;
+	});
+}
+
+function moduleExtension(module: string): string {
+	if (module.endsWith(".d.ts")) return ".d.ts";
+	return path.posix.extname(module);
+}
+
+function stripModuleExtension(module: string): string {
+	const extension = moduleExtension(module);
+	return extension === "" ? module : module.slice(0, -extension.length);
+}
+
+function stripExtension(value: string): string {
+	return stripModuleExtension(toPosix(value));
+}
+
+function toPosix(value: string): string {
+	return value.replace(/\\/g, "/");
 }
 
 /** Runtime-root imports need an explicit bundle boundary because TypeScript treats them as URLs. */

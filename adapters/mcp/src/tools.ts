@@ -42,6 +42,7 @@ import {
 	renderLiterals,
 	renderMentions,
 	renderMostReferenced,
+	renderMoveOutcome,
 	renderOutline,
 	renderOverview,
 	renderRecordOutcome,
@@ -78,6 +79,16 @@ export interface ToolBackend {
 		factId?: string | undefined;
 		newText: string;
 	}) => Promise<{ replaced: boolean; module?: string; issues: RefactorIssue[]; reason?: string }>;
+	refactorMove: (
+		symbolId: string,
+		toModule: string,
+	) => Promise<{
+		moved: boolean;
+		modules?: string[];
+		migrated?: { answers: number; gaps: number };
+		issues: RefactorIssue[];
+		reason?: string;
+	}>;
 	refactorRename: (
 		symbolId: string,
 		newName: string,
@@ -386,6 +397,13 @@ export const SymbolFactsInput = {
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum facts per kind. Default: \`40\`.`),
 };
 
+export const RefactorMoveInput = {
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+	toModule: z.string().min(1).describe(`Workspace-relative path to move it to. Created if absent.`),
+};
+
 export const RefactorRenameInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
@@ -418,6 +436,16 @@ export const RESOLVE_IMPORT_DESCRIPTION = `
 Resolve an import specifier through path mappings, package exports, and re-exports.
 
 Distinguishes workspace files, external dependencies, and unresolved specifiers. Unresolved is a result, not an error.
+`.trim();
+
+export const REFACTOR_MOVE_DESCRIPTION = `
+# \`refactor_move\`
+
+Move a declaration to another module, rewriting the imports that reach it.
+
+Creates the target if it does not exist. Imports in every referencing file are re-pointed, and the
+moved body's own dependencies are imported into its new home. A site that cannot be rewritten
+safely stops the whole move rather than relocating the declaration and stranding its importers.
 `.trim();
 
 export const REFACTOR_RENAME_DESCRIPTION = `
@@ -739,6 +767,18 @@ export async function typeOfSymbol(backend: ToolBackend, args: SymbolArgs): Prom
 	// The name is only for the rendered line, so falling back to the id keeps the answer readable
 	// when the caller passed an id and never told us a name.
 	return text(renderType(args.name ?? resolved.symbolId, type));
+}
+
+export async function refactorMove(backend: ToolBackend, args: SymbolArgs & { toModule: string }): Promise<ToolResult> {
+	const resolved = await resolveOne(backend, args);
+	if ("problem" in resolved) return text(resolved.problem, true);
+
+	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule).catch((error: unknown) => ({
+		moved: false,
+		issues: [] as RefactorIssue[],
+		reason: error instanceof Error ? error.message : String(error),
+	}));
+	return text(renderMoveOutcome(args.toModule, outcome), !outcome.moved);
 }
 
 export async function refactorRename(

@@ -421,6 +421,56 @@ describe("planning a replacement", () => {
 	});
 });
 
+describe("planning a move", () => {
+	async function plant() {
+		await boot();
+		files.set("cart.ref", "export class Cart {}\nexport class Item {}\n");
+		files.set("use.ref", "export class User {}\n");
+		await service.indexFile("cart.ref", "h1");
+		await service.indexFile("use.ref", "h1");
+		const cart = service.findByName("Cart")[0]?.symbolId;
+		if (!cart) throw new Error("expected Cart");
+		return cart;
+	}
+
+	it("names both ends and the text that travels", async () => {
+		const cart = await plant();
+
+		const plan = service.planMove(cart, "basket.ref");
+
+		expect(plan.ok).toBe(true);
+		if (!plan.ok) throw new Error("expected a plan");
+		expect(plan.fromModule).toBe("cart.ref");
+		expect(plan.toModule).toBe("basket.ref");
+		expect(plan.text).toContain("class Cart");
+		expect(plan.closure).toContain(cart);
+	});
+
+	it("refuses a move to where it already is", async () => {
+		const cart = await plant();
+		expect(service.planMove(cart, "cart.ref")).toMatchObject({ ok: false });
+	});
+
+	it("says so when the symbol is not indexed", async () => {
+		await boot();
+		expect(service.planMove("lexicon reference a.ref Ghost#", "b.ref")).toMatchObject({ ok: false });
+	});
+
+	// A provider that cannot move must refuse rather than answer with no edits, or the core would
+	// relocate the declaration and leave every importer pointing at the old module.
+	it("reports a provider's refusal rather than writing nothing and calling it done", async () => {
+		const cart = await plant();
+		const plan = service.planMove(cart, "basket.ref");
+		if (!plan.ok) throw new Error("expected a plan");
+
+		const outcome = await service.moveEdits(plan);
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) throw new Error("expected a refusal");
+		expect(outcome.reason).toContain("NotImplemented");
+	});
+});
+
 describe("carrying knowledge across a rename", () => {
 	// A member's id embeds its container's name, so renaming the container re-mints the member too.
 	// Migrating only the container would leave everything written about its members unresolvable.
