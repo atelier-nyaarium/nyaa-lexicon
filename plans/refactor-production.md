@@ -6,8 +6,13 @@ The bar, set by the owner: no release while any tool on any language answers Not
 | | replace syntax gate | rename | move |
 |---|---|---|---|
 | TypeScript | yes | yes | yes |
-| Python | yes | yes | NO (lane 2b) |
-| GDScript | NO (lane 3a) | yes | NO (lane 3b) |
+| Python | yes | yes | yes |
+| GDScript | yes | yes | yes |
+
+**The bar is met.** No tool on any language answers a blanket NotImplemented; `notImplementedMove`
+appears nowhere in `providers/`. What remains NotImplemented is per-case and honest: a construct a
+provider understands but will not rewrite (namespace imports, star re-exports, `__all__` string
+entries), which is the closed-enum reason doing its job.
 
 ## Workflow
 
@@ -36,13 +41,29 @@ Three languages now; more are added the moment this workflow proves out.
    true, closing the SyntaxUnchecked hole in replace. (b) `moveEdits`: no import statements;
    `class_name` registration may need zero site edits, `preload`/`load` path literals are string
    rewrites the contract already carries as literal sites.
-4. **Fixtures and polish.** DONE except cosmetics: annotated-constant fixture landed (45fc2b0)
-   and exported-declarations documented as a deliberate skip, since GDScript has no export concept
-   and absence is its honest answer; `_claimedHash` removed end to end (20ea615). Move output
-   cosmetics (merge duplicate imports, blank line) WAIT on lane 2 landing, because changing the
-   TypeScript provider's output rewrites the same corpus expectations the Python thread owns.
+4. **Fixtures and polish.** DONE. Annotated-constant fixture landed (45fc2b0) and
+   exported-declarations documented as a deliberate skip, since GDScript has no export concept and
+   absence is its honest answer; `_claimedHash` removed end to end (20ea615); move cosmetics landed
+   after lane 2 cleared the corpus (79219c5).
 5. **Release.** One `bun run build` when the table is all yes. Includes the banner fix already in
    source (`c85fa94`).
+
+## What driving it found that the suites did not
+
+Every lane was verified by suites AND by driving `dist/main.js` over real MCP, and the second one
+kept finding things:
+
+- `refactor_move` on a GDScript `class_name` class relocated ONLY the `class_name` line, orphaning
+  every method behind it. The root declaration's range was one line, because the script IS the
+  class. 52 provider tests and 6 corpus rows passed over that defect.
+- The same move then blocked on `DynamicDependency` for `int`. The core listed every benign unbound
+  reference as a dependency, so a provider had to block on builtins; the inventory now excludes the
+  reasons the index never claims to place.
+- GDScript's bind pass returned the parse-time `NotImplemented` placeholder after searching the
+  whole workspace. It now answers why nothing matched: `DynamicallyTyped` for a member whose
+  receiver is unknown, `NotIndexed` for a bare name.
+- Python's `positionAt` searched at the offset rather than before it, minting a negative character
+  for a module whose first byte is a newline.
 
 ## Rulings made (contract owner decisions, binding on threads)
 
@@ -65,6 +86,12 @@ Three languages now; more are added the moment this workflow proves out.
 | A: move case table | codex_b6ab4174bf98539a417b7888fe55ca8b | gpt-5.6-sol | protocol/src/conformance, protocol/src/__tests__ | LANDED: 17 rows, 16 pass, 1 mismatch reported |
 | B: python disambiguators | codex_94250922d00562dc521188b1bbb722ff | gpt-5.6-sol | providers/python | LANDED: all six cases, ruling received mid-flight |
 | C: gdscript diagnostics | codex_2a5f24221296fff7e84e154e43b1b886 | gpt-5.6-sol | providers/gdscript | LANDED: four diagnostics, tier true, case SKIP -> PASS |
+| D: python moveEdits | codex_ae1e69c4b2e03d64daa384c8bc551a58 | gpt-5.6-luna | providers/python, moveCorpus | LANDED: 15 corpus rows; its sandbox could not run Vitest, so 4 harness defects and 1 real bug were caught here |
+| E: gdscript moveEdits | codex_3f96af51ee0ee3d61fa14c9d5236a352 | gpt-5.6-luna | providers/gdscript, own corpus file | LANDED: 6 rows, 52 tests, loader honesty tightened on its own review |
+
+Sol was used for the inventing steps only, per the owner's usage budget; both move
+implementations ran on Luna against the case table as executable spec. A model switch means a new
+thread: Codex pins the model for an agent's lifetime.
 
 Threads were told: no commits, dist/ is a disposable byproduct, spec mismatches are REPORTED not
 absorbed, planted violations must go red before a test is trusted.
