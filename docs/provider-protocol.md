@@ -22,6 +22,7 @@ resolveImport(from, spec)    -> ImportResolution
 bind(reference)              -> Binding
 typeOf(target)               -> TypeInfo
 renameEdits(request)         -> RenameEditsResponse
+moveEdits(request)           -> MoveEditsResponse
 shutdown()
 ```
 
@@ -49,6 +50,12 @@ a role outside that list fails conformance. So the declaration cannot over-claim
 
 The tiers are a planning hint and a coverage report. Nothing consults them before making a call.
 
+`syntaxDiagnostics` is the one tier that is not about coverage. It says parseFile reports a syntax
+error as an error diagnostic, which is what lets a caller validate candidate text before writing
+it. A lenient extractor recovers from anything and returns nothing, so silence from a provider that
+never declared the tier means unchecked rather than clean. Absent is therefore different from
+false, and conformance fails a provider that declares it and then stays quiet on invalid text.
+
 ## Positions
 
 Ranges are UTF-16 code units, pinned in the schema and proven by a shared conformance case whose
@@ -70,6 +77,30 @@ that correctly needs no change. A single blocked site writes nothing at all.
 `ownerCalls` carries the calls to the declaration that owns the symbol being renamed, per file. A
 named argument spells a parameter at a site written as the function's name, so no search for the
 old name would ever find it.
+
+## Move
+
+Same split as rename, one request per module involved. `protocol/src/move.ts` holds the schemas.
+
+The core sends a DEPENDENCY INVENTORY: every name the moved body uses, each with what the index
+proved about where it comes from. `DependencyOrigin` distinguishes a name declared inside the moved
+closure, one left behind in the source module, one from another workspace module, one resolving
+outside the workspace, and one the index could not place. There is deliberately no `builtin`
+member, because deciding whether a name needs an import at all is language knowledge and a core
+that classified builtins would be branching on language.
+
+An inventory is complete by contract. A provider never reads an absent entry as "no import needed",
+which is the failure that would relocate a declaration and leave its dependencies dangling.
+
+Rendering the new specifier belongs to the provider, inside `moveEdits`, since tsconfig paths,
+package export maps and alias schemes are things only it knows. It answers with the edit, or
+refuses that site with `NoImportPath` or `AmbiguousImportPath`.
+
+A target that does not exist yet arrives with `exists: false` and empty text. The provider parses
+the supplied text and answers as usual; the file is created by applying the edits.
+
+`MoveBlockedReason` and `MoveRefusal` are separate enums from rename's despite five shared
+spellings, so neither contract needs the other's agreement to gain a member.
 
 ## Transport
 
