@@ -144,6 +144,26 @@ its range and any edit above an untouched problem would otherwise make it look n
 A provider that never declared `syntaxDiagnostics` yields a `SyntaxUnchecked` issue. Its silence is
 not approval, and saying so is the difference between an unchecked replacement and a checked one.
 
+### Moving
+
+`LexiconService.planMove` works out the closure (the declaration plus everything declared inside
+it), walks every reference in that range to build the dependency inventory, and lists the modules
+whose imports name the moved symbol. Each involved module then gets one `moveEdits` request
+describing only its own part: the source removes, the target inserts and imports what the body
+needs, and each importer re-points its specifier. A blocked site anywhere fails the whole move,
+because a relocated declaration whose importers still point at the old module does not build.
+
+The target is created when absent, journaled as having not existed, so undo deletes it rather than
+leaving an empty file behind. Reindexing puts the target first, so everything else rebinds against
+a declaration that already exists in its new home.
+
+Whether the repair actually landed is asked of the reindexed facts rather than of the edits: a
+specifier can be well formed and point nowhere, and that shows up as an importer whose reference no
+longer binds.
+
+Only the TypeScript provider implements `moveEdits` today. The others refuse `NotImplemented`, so
+a move in those languages is declined rather than half-done.
+
 ### Renaming
 
 A rename is one step of a transaction, journaled like any other, and it carries two things a plain
