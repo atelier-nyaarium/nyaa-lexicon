@@ -1124,6 +1124,16 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 		endsInString: false,
 	};
 	const root = makeImplicitClass(compose, module, rootLine, rootName, className);
+	// The script IS the class, so the root's range spans the whole file. A one-line range here made
+	// a class-level move relocate only the class_name line and orphan every member behind it.
+	const lastLine = lines[lines.length - 1];
+	root.range = {
+		start: { line: 0, character: 0 },
+		end:
+			lastLine === undefined
+				? { line: 0, character: 0 }
+				: { line: lastLine.line, character: lastLine.text.length },
+	};
 	const rootDocComment = scriptDocumentation(lines);
 	if (rootDocComment !== undefined) root.docComment = rootDocComment;
 	const declarations: DeclarationFact[] = [root];

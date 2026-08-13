@@ -131,6 +131,24 @@ export class GDScriptBindingIndex {
 					detail: "the autoload target has no indexed GDScript declaration",
 				};
 			}
+			// The parse-time placeholder says binding is not implemented, but this IS the binding
+			// pass and it searched the workspace. After a completed search the honest answer depends
+			// on WHY nothing matched: a member access hangs off a receiver whose type is unknown,
+			// while a bare name (builtin, engine class or typo) is simply not in the index.
+			if (reference.binding.reason === "NotImplemented") {
+				if (this.memberAccess(module, reference)) {
+					return {
+						status: "unbound",
+						reason: "DynamicallyTyped",
+						detail: "the receiver's type decides this member, and it is not known",
+					};
+				}
+				return {
+					status: "unbound",
+					reason: "NotIndexed",
+					detail: "no indexed GDScript declaration matches this name",
+				};
+			}
 			return reference.binding;
 		}
 		if (candidates.length > 1) return ambiguousBinding();

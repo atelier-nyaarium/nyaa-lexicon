@@ -1274,9 +1274,15 @@ export class LexiconService {
 				continue;
 			}
 
+			// A benign unbound reference is a builtin or an external the index never claims to place;
+			// listing it would make every provider block on `int` or `max`. Only reasons that mark a
+			// genuinely unplaceable name flow through, and the provider decides what those block.
+			const reason = unknownReasonOf(reference.provenance);
+			if (!isDangling(reason)) continue;
+
 			dependencies.push({
 				name: reference.name,
-				origin: { kind: "unresolved", reason: unknownReasonOf(reference.provenance) },
+				origin: { kind: "unresolved", reason },
 			});
 		}
 

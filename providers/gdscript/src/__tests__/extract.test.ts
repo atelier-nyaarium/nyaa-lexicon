@@ -33,6 +33,12 @@ test("extracts the GDScript declaration forms used by the project", () => {
 		"Inner",
 		"call",
 	]);
+	// The script IS the class: a one-line root range once made a class-level move relocate only
+	// the class_name line and orphan every member behind it.
+	expect(declarations.find((declaration) => declaration.name === "Example")?.range).toEqual({
+		start: { line: 0, character: 0 },
+		end: { line: 12, character: "\t\tpass".length },
+	});
 	expect(declarations.find((declaration) => declaration.name === "changed")?.kind).toBe("event");
 	expect(declarations.find((declaration) => declaration.name === "_local")?.visibility).toBe("local");
 	expect(declarations.find((declaration) => declaration.name === "call")?.containerId).toBe(
@@ -523,8 +529,10 @@ func run(target: Node, value: int) -> void:
 	});
 	expect(baseRead?.binding).toEqual(extendsReference?.binding);
 	expect(helperCall?.binding.status).toBe("bound");
-	expect(memberCall?.binding).toMatchObject({ status: "unbound", reason: "NotImplemented" });
-	expect(memberWrite?.binding).toMatchObject({ status: "unbound", reason: "NotImplemented" });
+	// The bind pass searched and found nothing, so it answers WHY rather than repeating the
+	// parse-time "not implemented": a member hangs off a receiver whose type is unknown.
+	expect(memberCall?.binding).toMatchObject({ status: "unbound", reason: "DynamicallyTyped" });
+	expect(memberWrite?.binding).toMatchObject({ status: "unbound", reason: "DynamicallyTyped" });
 	expect(
 		provider.bind({
 			module: "user.gd",

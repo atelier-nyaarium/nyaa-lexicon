@@ -456,6 +456,46 @@ describe("planning a move", () => {
 		expect(service.planMove(cart, "cart.ref")).toMatchObject({ ok: false });
 	});
 
+	// The inventory never lists what the index cannot claim to place. Builtins and externals bind
+	// unbound for benign reasons, and listing them made every provider block a class move on `int`.
+	it("excludes benign unbound references and keeps genuinely unplaceable ones", () => {
+		const span = { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } };
+		const move = {
+			symbolId: "lexicon reference a.ref Move#",
+			kind: "class" as const,
+			name: "Move",
+			range: span,
+			selectionRange: span,
+			visibility: "public" as const,
+		};
+		const use = (name: string, reason: "ExternalDependency" | "DynamicallyTyped" | "NotIndexed" | "Ambiguous") => ({
+			name,
+			range: span,
+			role: "read" as const,
+			fromId: move.symbolId,
+			binding: { status: "unbound" as const, reason },
+		});
+		files.set("a.ref", "export class Move {}\n");
+		const built = new LexiconService(store, new ProviderSupervisor(), (m) => files.get(m) ?? null, dir);
+		store.replaceFile(
+			"a.ref",
+			built.currentHashOf("a.ref") as string,
+			[move],
+			[
+				use("max", "ExternalDependency"),
+				use("int", "DynamicallyTyped"),
+				use("ghost", "NotIndexed"),
+				use("mystery", "Ambiguous"),
+			],
+		);
+
+		const plan = built.planMove(move.symbolId, "b.ref");
+
+		expect(plan.ok).toBe(true);
+		if (!plan.ok) throw new Error("expected a plan");
+		expect(plan.dependencies).toEqual([{ name: "mystery", origin: { kind: "unresolved", reason: "Ambiguous" } }]);
+	});
+
 	it("says so when the symbol is not indexed", async () => {
 		await boot();
 		expect(service.planMove("lexicon reference a.ref Ghost#", "b.ref")).toMatchObject({ ok: false });
