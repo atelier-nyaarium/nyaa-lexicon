@@ -213,6 +213,71 @@ describe("move edits", () => {
 		});
 	});
 
+	// Two statements for one specifier is valid code but reads as a mistake, so a name the target
+	// can already reach through an existing import joins it instead.
+	it("folds a new name into an existing import for the same specifier", () => {
+		const target = 'import { existing } from "./source";\n\nexport const kept = 1;\n';
+		const body = "export function moved() { return sibling; }\n";
+		const response = move(
+			workspace({ "source.ts": "export const sibling = 1;\nexport const existing = 2;\n", "target.ts": target }),
+			{
+				module: "target.ts",
+				text: target,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: body } },
+				importSites: [],
+				dependencies: [
+					{
+						name: "sibling",
+						origin: { kind: "sourceModule", symbolId: "source.sibling.", name: "sibling", exported: true },
+					},
+				],
+				sites: [],
+			},
+		);
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(response.blocked).toEqual([]);
+		expect(applyEdits(target, response.edits)).toEqual({
+			text: `import { existing, sibling } from "./source";\n\nexport const kept = 1;\n\n${body}`,
+		});
+	});
+
+	it("keeps its own statement when the existing import is type-only", () => {
+		const target = 'import type { Shape } from "./source";\n';
+		const body = "export function moved() { return sibling; }\n";
+		const response = move(
+			workspace({ "source.ts": "export const sibling = 1;\nexport type Shape = string;\n", "target.ts": target }),
+			{
+				module: "target.ts",
+				text: target,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: body } },
+				importSites: [],
+				dependencies: [
+					{
+						name: "sibling",
+						origin: { kind: "sourceModule", symbolId: "source.sibling.", name: "sibling", exported: true },
+					},
+				],
+				sites: [],
+			},
+		);
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(applyEdits(target, response.edits)).toEqual({
+			text: `import type { Shape } from "./source";\nimport { sibling } from "./source";\n\n\n${body}`,
+		});
+	});
+
 	it("blocks a private sibling with PrivateSibling", () => {
 		const response = move(workspace({ "target.ts": "" }), {
 			module: "target.ts",

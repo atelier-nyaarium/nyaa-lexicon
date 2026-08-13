@@ -189,7 +189,17 @@ export function makeMoveEdits(
 		if (plan.statement !== undefined) pendingImports.add(plan.statement);
 	}
 
-	if (pendingImports.size > 0) {
+	// Names that fit an import statement already in this module join it rather than starting a
+	// second one for the same specifier. Merging is refused when another edit already rewrites
+	// that statement, since two edits over one span cannot both apply.
+	const standalone: string[] = [];
+	for (const statement of pendingImports) {
+		const merged = mergeIntoExistingImport(source, statement, edits);
+		if (merged === undefined) standalone.push(statement);
+		else edits.push(merged);
+	}
+
+	if (standalone.length > 0) {
 		const position = importInsertionPosition(source);
 		const insertion = positionAt(source, position);
 		if (insertion === undefined) {
@@ -198,7 +208,7 @@ export function makeMoveEdits(
 			const prefix = position > 0 && source.text[position - 1] !== "\n" ? "\n" : "";
 			edits.push({
 				range: { start: insertion, end: insertion },
-				newText: `${prefix}${[...pendingImports].join("\n")}\n`,
+				newText: `${prefix}${standalone.join("\n")}\n`,
 			});
 		}
 	}
@@ -218,6 +228,15 @@ export function makeMoveEdits(
 					"the insertion position is outside the module",
 				),
 			);
+		} else if (request.role.insertion.position === undefined && needsBlankLine(source.text)) {
+			// Appending to a file that already ends in content: separate the declarations, or the
+			// moved body ends up welded to whatever was last in the target.
+			const point = positionAt(source, position);
+			if (point === undefined) {
+				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
+			} else {
+				edits.push({ range: { start: point, end: point }, newText: `\n${request.role.insertion.text}` });
+			}
 		} else {
 			const point = positionAt(source, position);
 			if (point === undefined) {
@@ -548,6 +567,50 @@ function rangeOfOffsets(source: ts.SourceFile, start: number, end: number): Rang
 	return startPosition === undefined || endPosition === undefined
 		? undefined
 		: { start: startPosition, end: endPosition };
+}
+
+/** True when the target already ends in content, so an appended declaration needs separating. */
+function needsBlankLine(text: string): boolean {
+	return text.trim().length > 0 && !text.endsWith("\n\n");
+}
+
+/**
+ * Folds a plain `import { name } from "spec";` into an existing statement for the same specifier.
+ *
+ * Only a plain named import merges into a plain named import: a default or namespace clause, a
+ * type-only statement, or a span another edit already rewrites all keep their own statement,
+ * because guessing at those shapes is how a rewrite silently changes what a name means.
+ */
+function mergeIntoExistingImport(source: ts.SourceFile, statement: string, edits: TextEdit[]): TextEdit | undefined {
+	const parsed = /^import \{ (\w+(?: as \w+)?) \} from ("[^"]+"|'[^']+');$/.exec(statement);
+	if (parsed === null) return undefined;
+	const clause = parsed[1] as string;
+	const specifier = (parsed[2] as string).slice(1, -1);
+
+	for (const candidate of source.statements) {
+		if (!ts.isImportDeclaration(candidate) || !ts.isStringLiteral(candidate.moduleSpecifier)) continue;
+		if (candidate.moduleSpecifier.text !== specifier) continue;
+		const bindings = candidate.importClause?.namedBindings;
+		if (candidate.importClause === undefined || candidate.importClause.name !== undefined) continue;
+		if (candidate.importClause.isTypeOnly || bindings === undefined || !ts.isNamedImports(bindings)) continue;
+
+		const range = rangeOfOffsets(source, candidate.getStart(source), candidate.getEnd());
+		if (range === undefined) return undefined;
+		if (edits.some((edit) => rangesOverlap(edit.range, range))) return undefined;
+
+		const names = bindings.elements.map((element) => element.getText(source));
+		return {
+			range,
+			newText: `import { ${[...names, clause].join(", ")} } from ${quoteSpecifier(specifier, '"')};`,
+		};
+	}
+	return undefined;
+}
+
+function rangesOverlap(left: Range, right: Range): boolean {
+	const before = (a: Range["start"], b: Range["start"]) =>
+		a.line === b.line ? a.character < b.character : a.line < b.line;
+	return before(left.start, right.end) && before(right.start, left.end);
 }
 
 function importInsertionPosition(source: ts.SourceFile): number {

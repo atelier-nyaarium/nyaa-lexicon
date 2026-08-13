@@ -865,8 +865,9 @@ const MOVE_CASES: MoveCase[] = [
 				expect: {
 					kind: "ready",
 					files: {
+						// A blank line separates the appended declaration from what the target already held.
 						"src/items.ts":
-							"export const existing = 1;\nexport function add(left: number, right: number) { return left + right; }\n",
+							"export const existing = 1;\n\nexport function add(left: number, right: number) { return left + right; }\n",
 					},
 				},
 			},
