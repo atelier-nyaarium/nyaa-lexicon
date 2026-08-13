@@ -1,8 +1,13 @@
 # Architecture
 
 Five packages. `protocol/` owns the wire types and the two id grammars, `core/` owns the daemon,
-the store and every query, `adapters/mcp` and `adapters/lsp` are two faces on the same service, and
-`providers/<language>/` are separate processes that only ever emit facts.
+the store and every query, `adapters/mcp` and `adapters/lsp` are two faces on the same service
+CLASS, and `providers/<language>/` are separate processes that only ever emit facts.
+
+The two faces are not the same INSTANCE. The MCP adapter answers from the daemon; the LSP adapter
+still builds its own index in its own process. That is why it cannot write: a rename from there
+would be invisible to the daemon's workspace gate and to any open refactor transaction, so it
+refuses rather than writing behind their backs.
 
 ## The daemon
 

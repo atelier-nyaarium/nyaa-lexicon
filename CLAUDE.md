@@ -14,7 +14,8 @@ Bun workspace monorepo. Five packages, and the boundaries are real.
   the core, so a provider team is never blocked on us.
 - `core/` - daemon, SQLite store, provider supervisor, every query, the knowledge layer.
 - `adapters/mcp/` - agent-facing tools over stdio.
-- `adapters/lsp/` - the editor face, answering from the same service class.
+- `adapters/lsp/` - the editor face, answering from the same service class but its own instance,
+  which is why it reads and does not write.
 - `providers/<language>/` - one per language, separate process, own runtime, speaks the protocol.
 - `docs/` - architecture, provider-protocol, knowledge-layer, parsing.
 

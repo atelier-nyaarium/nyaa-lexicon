@@ -11,7 +11,6 @@ import type {
 	RecordOutcome,
 	RefactorIssue,
 	ReferencesResult,
-	RenameOutcome,
 	RenamePlan,
 	SymbolSource,
 	SymbolSummary,
@@ -166,9 +165,9 @@ export function renderType(name: string, type: TypeInfo): string {
 /**
  * What a rename would touch, and what the index cannot promise about it.
  *
- * Blockers are printed before the file list and warnings after it. A caller that stops reading at
- * the first line still learns it cannot proceed, and one that reads to the end still learns where
- * the answer runs out.
+ * Kept for the editor's prepareRename, which asks whether a rename is offerable before the user
+ * types a new name. No MCP tool renders it: there, a rename is a transaction step and its answer
+ * is the step's outcome.
  */
 export function renderRenamePlan(plan: RenamePlan): string {
 	if (plan.blockers.length > 0) {
@@ -792,36 +791,6 @@ export function renderOutline(module: string, declarations: Array<SymbolSummary 
 		}
 	};
 	walk(roots, 0);
-	return lines.join("\n");
-}
-
-/** What a rename did, or what stopped it. A refusal still shows the plan it would have run. */
-export function renderRenameOutcome(outcome: RenameOutcome): string {
-	if (!outcome.renamed) {
-		const lines = ["# Rename not applied", "", `**Reason:** ${outcome.reason}`];
-		for (const blocker of outcome.plan.blockers) {
-			lines.push("", `## ${blocker.kind}`, "", blocker.detail);
-			for (const site of blocker.sites ?? []) lines.push(`- \`${site.module}:${site.line}\``);
-		}
-		lines.push("", "> Nothing was written.");
-		return lines.join("\n");
-	}
-
-	const lines = [
-		"# Rename applied",
-		"",
-		`\`${outcome.plan.oldName}\` -> \`${outcome.plan.newName}\``,
-		"",
-		"## Files",
-		"",
-	];
-	for (const module of outcome.modules) lines.push(`- \`${module}\``);
-	// Carried through to the successful case on purpose: a rename can be complete over everything
-	// the index sees and still have missed something outside it, and that stays true after writing.
-	if (outcome.plan.warnings.length > 0) {
-		lines.push("", "## Warnings", "");
-		for (const warning of outcome.plan.warnings) lines.push(`- **${warning.kind}:** ${warning.detail}`);
-	}
 	return lines.join("\n");
 }
 
