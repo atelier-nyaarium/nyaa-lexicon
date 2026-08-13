@@ -712,7 +712,7 @@ function literalContainerMatcher(
 }
 
 export function extractLiteralsCore(module: string, text: string, declarations: DeclarationFact[]): Literal[] {
-	if (!module.endsWith(".gd")) return [];
+	if (!module.endsWith(".gd") || text.length === 0) return [];
 	const literals: Literal[] = [];
 	const starts = lineStarts(text);
 	const containerFor = literalContainerMatcher(starts, readLines(text), declarations);

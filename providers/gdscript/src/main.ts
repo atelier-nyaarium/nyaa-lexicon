@@ -2,7 +2,8 @@
 
 import {
 	type ImportResolution,
-	notImplementedMove,
+	type MoveEditsRequest,
+	type MoveEditsResponse,
 	PROTOCOL_VERSION,
 	type ProviderHandlers,
 	type RenameEditsRequest,
@@ -13,6 +14,7 @@ import {
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { GDScriptBindingIndex } from "./binding.js";
 import { extractFile, LANGUAGE } from "./extract.js";
+import { makeMoveEdits } from "./move.js";
 import { discoverProject } from "./project.js";
 import { renameGdscript } from "./rename.js";
 import { GDScriptTypeIndex } from "./types.js";
@@ -110,6 +112,10 @@ export class GDScriptProvider {
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
 		return renameGdscript(params, (name) => this.bindingIndex.hasRegisteredClassName(name));
 	}
+
+	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
+		return makeMoveEdits(params, this.bindingIndex);
+	}
 }
 
 export function handlersFor(provider: GDScriptProvider): ProviderHandlers {
@@ -121,7 +127,7 @@ export function handlersFor(provider: GDScriptProvider): ProviderHandlers {
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: () => notImplementedMove("the GDScript provider does not move declarations yet"),
+		moveEdits: (params) => provider.moveEdits(params),
 		shutdown: () => ({}),
 	};
 }

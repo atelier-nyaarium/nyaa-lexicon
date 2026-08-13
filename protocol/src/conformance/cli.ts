@@ -6,6 +6,7 @@
 
 import { loadCorpus } from "./corpus.js";
 import { loadMoveCases } from "./moveCorpus.js";
+import { loadGdscriptMoveCases } from "./moveCorpusGdscript.js";
 import { formatReport, runSuite } from "./runner.js";
 
 async function main(argv: string[]): Promise<void> {
@@ -14,7 +15,11 @@ async function main(argv: string[]): Promise<void> {
 		process.exit(2);
 	}
 
-	const report = await runSuite({ command: argv, cases: loadCorpus(), moveCases: loadMoveCases() });
+	const report = await runSuite({
+		command: argv,
+		cases: loadCorpus(),
+		moveCases: [...loadMoveCases(), ...loadGdscriptMoveCases()],
+	});
 	console.log(formatReport(report));
 	// Skipped is not failure: a provider is allowed to reach only the tiers it declares.
 	process.exit(report.failed === 0 ? 0 : 1);

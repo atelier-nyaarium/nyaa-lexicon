@@ -9,6 +9,12 @@ import { discoverProject } from "./project.js";
 type ReferenceRole = Reference["role"];
 type Range = Declaration["range"];
 
+export interface GDScriptLoaderBinding {
+	localName: string;
+	loader: "preload" | "load";
+	specifier: string;
+}
+
 //////// Helpers
 
 function positionInRange(range: Range, position: Range["start"]): boolean {
@@ -213,6 +219,39 @@ export class GDScriptBindingIndex {
 			if (classNames.has(name)) return true;
 		}
 		return false;
+	}
+
+	isRegisteredClassNameSymbol(symbolId: string): boolean {
+		this.ensureWorkspaceIndex();
+		for (const declarations of this.declarationsByModule.values()) {
+			if (
+				declarations.some(
+					(declaration) => declaration.symbolId === symbolId && declaration.languageKind === "class_name",
+				)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	loaderBinding(module: string, localName: string, targetModule: string): GDScriptLoaderBinding | undefined {
+		this.ensureWorkspaceIndex();
+		const source = this.sourceByModule.get(module);
+		if (source === undefined) return undefined;
+		const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
+		const matches: GDScriptLoaderBinding[] = [];
+		const pattern =
+			/^\s*const\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)\s*=\s*(preload|load)\s*\(\s*&?\s*(["'])([^"']+)\3\s*\)/gmu;
+		for (const match of source.matchAll(pattern)) {
+			const name = match[1] as string;
+			const loader = match[2] as "preload" | "load";
+			const specifier = match[4] as string;
+			if (name !== localName) continue;
+			const resolved = moduleForResource(this.workspaceRoot, scope, specifier, module);
+			if (resolved === targetModule) matches.push({ localName: name, loader, specifier });
+		}
+		return matches.length === 1 ? (matches[0] as GDScriptLoaderBinding) : undefined;
 	}
 
 	private candidates(module: string, reference: Reference): Declaration[] {
