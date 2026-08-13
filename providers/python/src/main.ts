@@ -62,7 +62,7 @@ export const REFERENCE_ROLES = ["call", "read", "write", "extends", "typeUse"] a
 //////// Types
 
 type Range = Declaration["range"];
-type RawDescriptor = Pick<Descriptor, "kind" | "name">;
+type RawDescriptor = Pick<Descriptor, "kind" | "name" | "disambiguator">;
 
 interface RawDeclaration {
 	name: string;

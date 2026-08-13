@@ -15,12 +15,30 @@ FINAL_MODULES = {"typing", "typing_extensions"}
 
 # //////// Helpers
 
-def descriptor(kind, name):
-    return {"kind": kind, "name": name}
+def descriptor(kind, name, disambiguator=None):
+    value = {"kind": kind, "name": name}
+    if disambiguator is not None:
+        value["disambiguator"] = disambiguator
+    return value
 
 
 def descriptor_key(descriptors):
     return tuple((item["kind"], item["name"]) for item in descriptors)
+
+
+def descriptor_identity_key(descriptors):
+    return tuple((item["kind"], item["name"], item.get("disambiguator")) for item in descriptors)
+
+
+def declaration_storage_key(descriptors):
+    return tuple(
+        (item["name"], item.get("disambiguator") if item["kind"] == "method" else None)
+        for item in descriptors
+    )
+
+
+def descriptors_from_identity_key(key):
+    return [descriptor(kind, name, disambiguator) for kind, name, disambiguator in key]
 
 
 def diagnostic(message):
@@ -151,6 +169,7 @@ class Analyzer:
         self.tree = None
         self.final_names = set()
         self.final_modules = set()
+        self.descriptor_occurrences = {}
         self.declaration_occurrences = {}
         self.conditional_declarations = set()
         self.scope_infos = {}
@@ -159,6 +178,7 @@ class Analyzer:
         self.type_annotations = []
         self.import_bindings = []
         self.declaration_nodes = {}
+        self.declaration_paths = {}
         self.node_scope_paths = {}
         self.inferred_types = []
         self.literals = []
@@ -390,6 +410,17 @@ class Analyzer:
         self.scope_infos[key] = info
         return info
 
+    def descriptor_for(self, scope_path, value):
+        key = descriptor_key(scope_path) + ((value["kind"], value["name"]),)
+        ordinal = self.descriptor_occurrences.get(key, 0)
+        self.descriptor_occurrences[key] = ordinal + 1
+        if ordinal == 0:
+            return value
+        return {**value, "disambiguator": str(ordinal)}
+
+    def declaration_path(self, node, scope_path, descriptor_kind):
+        return self.declaration_paths.get(id(node), scope_path + [descriptor(descriptor_kind, node.name)])
+
     def add_scope_name(self, info, name, conditional):
         info["locals"].add(name)
         if conditional:
@@ -444,7 +475,11 @@ class Analyzer:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.add_scope_name(info, node.name, conditional)
                 child_kind = "class" if isinstance(node, ast.ClassDef) else "function"
-                child_path = scope_path + [descriptor("type" if child_kind == "class" else "method", node.name)]
+                child_path = self.declaration_path(
+                    node,
+                    scope_path,
+                    "type" if child_kind == "class" else "method",
+                )
                 self.mark_declaration_conditional(scope_path, node.name, conditional)
                 if child_kind == "function":
                     child_info = self.ensure_scope(child_path, child_kind)
@@ -652,7 +687,7 @@ class Analyzer:
 
     def refresh_type_descriptors(self):
         for raw in self.declarations.values():
-            path_key = descriptor_key(raw["descriptorPath"])
+            path_key = descriptor_identity_key(raw["descriptorPath"])
             nodes = self.declaration_nodes.get(path_key, [])
             node = nodes[-1] if nodes else None
             annotation = None
@@ -732,10 +767,11 @@ class Analyzer:
                 raw["typeForwardReference"] = isinstance(node.annotation, ast.Constant) and isinstance(
                     node.annotation.value, str
                 )
-        key = tuple(item["name"] for item in descriptor_path)
+        key = declaration_storage_key(descriptor_path)
+        identity_key = descriptor_identity_key(descriptor_path)
         self.declaration_occurrences.setdefault(descriptor_key(descriptor_path), []).append(raw)
         self.declarations[key] = raw
-        self.declaration_nodes.setdefault(descriptor_key(descriptor_path), []).append(node)
+        self.declaration_nodes.setdefault(identity_key, []).append(node)
 
     def add_assignment(self, node, scope_path, scope_kind, module_scope, parent_exported):
         for target in assignment_targets(node):
@@ -771,7 +807,11 @@ class Analyzer:
             for argument in arguments:
                 if argument.annotation is not None:
                     self.add_type_annotation(argument, argument.arg, argument.annotation, scope_path)
-        descriptor_path = scope_path + [descriptor(descriptor_kind, node.name)]
+        leaf_descriptor = descriptor(descriptor_kind, node.name)
+        if descriptor_kind == "method":
+            leaf_descriptor = self.descriptor_for(scope_path, leaf_descriptor)
+        descriptor_path = scope_path + [leaf_descriptor]
+        self.declaration_paths[id(node)] = descriptor_path
         self.add_declaration(
             node,
             node,
@@ -811,7 +851,11 @@ class Analyzer:
             if isinstance(node, ASSIGNMENT_NODES) or isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
                 if module_scope or scope_kind == "class":
                     self.add_assignment(node, scope_path, scope_kind, module_scope, parent_exported)
-            for nested in self.nested_statements(node):
+            nested_groups = sorted(
+                self.nested_statements(node),
+                key=lambda group: (group[0].lineno, group[0].col_offset),
+            )
+            for nested in nested_groups:
                 self.walk_statements(nested, scope_path, scope_kind, module_scope, parent_exported)
 
     def analyze(self, tree):
@@ -977,13 +1021,13 @@ class LiteralVisitor(ast.NodeVisitor):
         self.scope_path = old_path
 
     def visit_ClassDef(self, node):
-        self.visit_declaration(node, self.scope_path + [descriptor("type", node.name)])
+        self.visit_declaration(node, self.analyzer.declaration_path(node, self.scope_path, "type"))
 
     def visit_FunctionDef(self, node):
-        self.visit_declaration(node, self.scope_path + [descriptor("method", node.name)])
+        self.visit_declaration(node, self.analyzer.declaration_path(node, self.scope_path, "method"))
 
     def visit_AsyncFunctionDef(self, node):
-        self.visit_declaration(node, self.scope_path + [descriptor("method", node.name)])
+        self.visit_declaration(node, self.analyzer.declaration_path(node, self.scope_path, "method"))
 
     def visit_JoinedStr(self, node):
         if all(isinstance(value, ast.Constant) and isinstance(value.value, str) for value in node.values):
@@ -1071,7 +1115,7 @@ class InferenceAnalyzer:
             node = nodes[-1]
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            path = [descriptor(kind, name) for kind, name in key]
+            path = descriptors_from_identity_key(key)
             self.function_nodes[key] = (path, node)
             scope_key = descriptor_key(path[:-1])
             self.functions_by_scope.setdefault((scope_key, node.name), []).append(path)
@@ -1292,7 +1336,7 @@ class InferenceAnalyzer:
         return True
 
     def infer_function(self, path, stack, depth):
-        key = descriptor_key(path)
+        key = descriptor_identity_key(path)
         if key in self.memo:
             return self.memo[key]
         if key in stack or depth >= self.MAX_DEPTH:
@@ -1343,7 +1387,7 @@ class InferenceAnalyzer:
         return None
 
     def infer_declaration(self, path, raw):
-        key = descriptor_key(path)
+        key = descriptor_identity_key(path)
         nodes = self.analyzer.declaration_nodes.get(key, [])
         node = nodes[-1] if nodes else None
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1429,7 +1473,7 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.visit_decorators_and_bases(node)
         old_path = self.scope_path
         old_kind = self.scope_kind
-        self.scope_path = old_path + [descriptor("type", node.name)]
+        self.scope_path = self.analyzer.declaration_path(node, old_path, "type")
         self.scope_kind = "class"
         for child in node.body:
             self.visit(child)
@@ -1440,7 +1484,7 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.visit_function_header(node)
         old_path = self.scope_path
         old_kind = self.scope_kind
-        self.scope_path = old_path + [descriptor("method", node.name)]
+        self.scope_path = self.analyzer.declaration_path(node, old_path, "method")
         self.scope_kind = "function"
         for child in node.body:
             self.visit(child)
@@ -1769,7 +1813,7 @@ class RenameVisitor(ast.NodeVisitor):
             self.visit(node.returns)
 
         old_path = self.scope_path
-        self.scope_path = old_path + [descriptor("method", node.name)]
+        self.scope_path = self.analyzer.declaration_path(node, old_path, "method")
         arguments = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
         for argument in arguments:
             self.add_candidate(argument.arg, self.argument_range(argument), "parameter", True)
@@ -1796,7 +1840,7 @@ class RenameVisitor(ast.NodeVisitor):
         for keyword_node in node.keywords:
             self.visit(keyword_node.value)
         old_path = self.scope_path
-        self.scope_path = old_path + [descriptor("type", node.name)]
+        self.scope_path = self.analyzer.declaration_path(node, old_path, "type")
         for child in node.body:
             self.visit(child)
         self.scope_path = old_path

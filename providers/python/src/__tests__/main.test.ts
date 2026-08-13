@@ -92,6 +92,221 @@ describe("Python provider project behavior", () => {
 		expect(provider.bind({ module: "main.py", name: "helper", range: helper.range })).toEqual(helper.binding);
 	});
 
+	it("disambiguates module redefinitions while keeping duplicate lookup ambiguous", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"def target():",
+			"    pass",
+			"def f():",
+			"    return target()",
+			"def f():",
+			"    return target()",
+			"f()",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const functions = facts.declarations.filter((declaration) => declaration.name === "f");
+		const ids = functions.map((declaration) => declaration.symbolId);
+		const second = functions[1];
+		if (second === undefined) throw new Error("second f declaration missing");
+
+		expect(ids).toEqual([
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [{ kind: "method", name: "f" }],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [{ kind: "method", name: "f", disambiguator: "1" }],
+			}),
+		]);
+		expect(
+			facts.references.filter((reference) => reference.name === "target").map((reference) => reference.fromId),
+		).toEqual(ids);
+		expect(facts.references.find((reference) => reference.name === "f")?.binding).toMatchObject({
+			status: "unbound",
+			reason: "Ambiguous",
+		});
+		expect(provider.bind({ module: "main.py", name: "f", range: second.selectionRange })).toEqual({
+			status: "bound",
+			symbolId: second.symbolId,
+			provenance: "bound",
+		});
+	});
+
+	it("disambiguates conditional definitions in document order", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"if enabled:",
+			"    def f():",
+			"        return 1",
+			"else:",
+			"    def f():",
+			"        return 2",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(
+			facts.declarations
+				.filter((declaration) => declaration.name === "f")
+				.map((declaration) => declaration.symbolId),
+		).toEqual([
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [{ kind: "method", name: "f" }],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [{ kind: "method", name: "f", disambiguator: "1" }],
+			}),
+		]);
+	});
+
+	it("disambiguates property getter and setter declarations", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"class Item:",
+			"    @property",
+			"    def value(self):",
+			"        return self._value",
+			"    @value.setter",
+			"    def value(self, new_value):",
+			"        self._value = new_value",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(
+			facts.declarations
+				.filter((declaration) => declaration.name === "value" && declaration.kind === "method")
+				.map((declaration) => declaration.symbolId),
+		).toEqual([
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "type", name: "Item" },
+					{ kind: "method", name: "value" },
+				],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "type", name: "Item" },
+					{ kind: "method", name: "value", disambiguator: "1" },
+				],
+			}),
+		]);
+	});
+
+	it("counts duplicate names within their enclosing scope", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f():", "    pass", "class Item:", "    def f(self):", "        pass"].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const ids = facts.declarations
+			.filter((declaration) => declaration.name === "f")
+			.map((declaration) => declaration.symbolId);
+
+		expect(ids).toEqual([
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [{ kind: "method", name: "f" }],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "type", name: "Item" },
+					{ kind: "method", name: "f" },
+				],
+			}),
+		]);
+	});
+
+	it("separates nested definition counters by enclosing scope", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"def left():",
+			"    def helper():",
+			"        pass",
+			"def right():",
+			"    def helper():",
+			"        pass",
+			"def repeated():",
+			"    def helper():",
+			"        pass",
+			"    def helper():",
+			"        pass",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(
+			facts.declarations
+				.filter((declaration) => declaration.name === "helper")
+				.map((declaration) => declaration.symbolId),
+		).toEqual([
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "method", name: "left" },
+					{ kind: "method", name: "helper" },
+				],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "method", name: "right" },
+					{ kind: "method", name: "helper" },
+				],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "method", name: "repeated" },
+					{ kind: "method", name: "helper" },
+				],
+			}),
+			composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [
+					{ kind: "method", name: "repeated" },
+					{ kind: "method", name: "helper", disambiguator: "1" },
+				],
+			}),
+		]);
+	});
+
+	it("repeats symbol ids deterministically", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f():", "    pass", "def f():", "    pass"].join("\n");
+		const first = provider.parseFile({ module: "main.py", contentHash: "first", text });
+		const second = provider.parseFile({ module: "main.py", contentHash: "second", text });
+
+		expect(second.declarations.map((declaration) => declaration.symbolId)).toEqual(
+			first.declarations.map((declaration) => declaration.symbolId),
+		);
+	});
+
 	it("indexes all function parameter forms with owned symbol ids", () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
