@@ -220,7 +220,9 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "renameSymbol": {
 				const args = Rename.parse(params);
-				return service.renameSymbol(args.symbolId, args.newName);
+				// Writes several files and reindexes them, so it belongs behind the same gate as a
+				// refactor step. Its own reindexing runs already held, never re-acquiring.
+				return write(() => service.renameSymbol(args.symbolId, args.newName));
 			}
 			case "indexFile": {
 				const args = IndexFile.parse(params);
