@@ -5,7 +5,13 @@
 // concurrently.
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { isCompatibleProtocol, METHOD_SCHEMAS, PROTOCOL_VERSION, type ProviderMethod } from "@nyaa-lexicon/protocol";
+import {
+	isCompatibleProtocol,
+	METHOD_SCHEMAS,
+	PROTOCOL_VERSION,
+	type ProviderMethod,
+	type ProviderTiers,
+} from "@nyaa-lexicon/protocol";
 import {
 	createMessageConnection,
 	type MessageConnection,
@@ -30,7 +36,7 @@ type MethodResponse<K extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[
 
 interface RunningProvider {
 	claims: ProviderClaims;
-	tiers: Record<string, boolean>;
+	tiers: ProviderTiers;
 	child: ChildProcess;
 	connection: MessageConnection;
 	queue: RequestQueue;
@@ -158,7 +164,7 @@ export class ProviderSupervisor {
 	}
 
 	/** Whether a provider declared a tier, so a bulk pass can skip what it would refuse. */
-	declares(providerId: string, tier: string): boolean {
+	declares(providerId: string, tier: keyof ProviderTiers): boolean {
 		return this.providers.get(providerId)?.tiers[tier] === true;
 	}
 

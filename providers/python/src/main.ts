@@ -11,6 +11,7 @@ import {
 	type ImportResolution,
 	type Literal,
 	notImplementedImport,
+	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	type ProviderHandlers,
@@ -53,6 +54,7 @@ export const TIERS = {
 	types: true,
 	literals: true,
 	metrics: true,
+	syntaxDiagnostics: true,
 } as const;
 
 export const REFERENCE_ROLES = ["call", "read", "write", "extends", "typeUse"] as const;
@@ -828,6 +830,7 @@ export function handlersFor(provider: PythonProvider): ProviderHandlers {
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
+		moveEdits: () => notImplementedMove("the Python provider does not move declarations yet"),
 		shutdown: () => ({}),
 	};
 }

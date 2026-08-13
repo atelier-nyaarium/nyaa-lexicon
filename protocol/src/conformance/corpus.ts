@@ -118,6 +118,20 @@ const CASES: ConformanceCase[] = [
 		declarations: [],
 	},
 	{
+		id: "broken-syntax-is-an-error-diagnostic",
+		tier: "syntaxDiagnostics",
+		about: "A provider claiming syntax diagnostics reports an error for text that cannot parse.",
+		// Unambiguously invalid under any reading, so a lenient extractor that recovers and reports
+		// nothing fails here rather than passing on silence.
+		fixtures: {
+			[TYPESCRIPT]: { files: { "src/broken.ts": "export function add( {\n" }, subject: "src/broken.ts" },
+			[REFERENCE]: { files: { "src/broken.ref": "export class {\n" }, subject: "src/broken.ref" },
+			[PYTHON]: { files: { "src/broken.py": "def add(:\n    pass\n" }, subject: "src/broken.py" },
+			[GDSCRIPT]: { files: { "src/broken.gd": "func add(:\n\tpass\n" }, subject: "src/broken.gd" },
+		},
+		parseErrors: "required",
+	},
+	{
 		id: "import-resolves-to-module",
 		tier: "imports",
 		about: "A relative specifier resolves to a workspace-relative module path.",

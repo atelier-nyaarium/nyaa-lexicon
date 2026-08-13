@@ -324,3 +324,48 @@ export function ownerOf(text: string): string | null {
 export function isParameterSymbol(text: string): boolean {
 	return parseSymbolId(text)?.descriptors.at(-1)?.kind === "parameter";
 }
+
+function sameDescriptor(a: Descriptor, b: Descriptor): boolean {
+	return a.kind === b.kind && a.name === b.name && a.disambiguator === b.disambiguator;
+}
+
+/**
+ * Whether `text` is `ancestor` or something declared inside it.
+ *
+ * Structural, not a store lookup: a member's id already carries its container's descriptors, so
+ * the chain answers this without asking anything about the code.
+ */
+export function isWithin(text: string, ancestor: string): boolean {
+	const id = parseSymbolId(text);
+	const root = parseSymbolId(ancestor);
+	if (id === null || root === null) return false;
+	if (id.local !== undefined || root.local !== undefined) return false;
+	if (id.language !== root.language || id.module !== root.module) return false;
+	if (id.descriptors.length < root.descriptors.length) return false;
+	return root.descriptors.every((d, i) => sameDescriptor(d, id.descriptors[i] as Descriptor));
+}
+
+/**
+ * Re-mint `text` for a container rename or a module move.
+ *
+ * Both operations change a declaration's id, and because descriptors chain, both change every id
+ * beneath it: renaming a class re-mints its methods and their parameters. This is the single
+ * owner of that rewrite, so no caller has to take a string apart to do it.
+ *
+ * Null when `text` is not `from` or inside it, and for locals, whose ordinal names no chain and so
+ * cannot be traced to the declaration that held them.
+ */
+export function rebaseSymbolId(text: string, from: string, to: string): string | null {
+	if (!isWithin(text, from)) return null;
+
+	const id = parseSymbolId(text) as SymbolId;
+	const oldRoot = parseSymbolId(from) as SymbolId;
+	const newRoot = parseSymbolId(to);
+	if (newRoot === null || newRoot.local !== undefined) return null;
+
+	return composeSymbolId({
+		language: newRoot.language,
+		module: newRoot.module,
+		descriptors: [...newRoot.descriptors, ...id.descriptors.slice(oldRoot.descriptors.length)],
+	});
+}

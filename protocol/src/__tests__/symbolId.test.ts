@@ -4,12 +4,14 @@ import {
 	isLocalSymbol,
 	isParameterSymbol,
 	isSymbolId,
+	isWithin,
 	moduleOf,
 	normalizeModulePath,
 	ownerOf,
 	parseSymbolId,
 	parseSymbolIdResult,
 	quoteName,
+	rebaseSymbolId,
 	type SymbolId,
 } from "../symbolId";
 
@@ -424,5 +426,111 @@ describe("who a symbol belongs to", () => {
 		expect(isParameterSymbol(composeSymbolId(parameter))).toBe(true);
 		expect(isParameterSymbol(composeSymbolId(CART))).toBe(false);
 		expect(isParameterSymbol("nonsense")).toBe(false);
+	});
+});
+
+describe("re-minting a subtree when its container is renamed or its module moves", () => {
+	const cartClass = composeSymbolId({
+		language: "typescript",
+		module: "src/cart.ts",
+		descriptors: [{ kind: "type", name: "Cart" }],
+	});
+	const addMethod = composeSymbolId(CART);
+	const addQuantity = composeSymbolId({
+		...CART,
+		descriptors: [...CART.descriptors, { kind: "parameter", name: "quantity" }],
+	});
+
+	const basketClass = composeSymbolId({
+		language: "typescript",
+		module: "src/cart.ts",
+		descriptors: [{ kind: "type", name: "Basket" }],
+	});
+	const movedClass = composeSymbolId({
+		language: "typescript",
+		module: "src/basket/index.ts",
+		descriptors: [{ kind: "type", name: "Cart" }],
+	});
+
+	// A member's id carries its container's descriptors, so renaming a class re-mints every id
+	// beneath it and migrating only the class strands them.
+	it("carries a rename down to members and their parameters", () => {
+		expect(rebaseSymbolId(cartClass, cartClass, basketClass)).toBe(basketClass);
+		expect(rebaseSymbolId(addMethod, cartClass, basketClass)).toBe(
+			composeSymbolId({ ...CART, descriptors: [{ kind: "type", name: "Basket" }, CART.descriptors[1] as never] }),
+		);
+		expect(rebaseSymbolId(addQuantity, cartClass, basketClass)).toBe(
+			composeSymbolId({
+				...CART,
+				descriptors: [
+					{ kind: "type", name: "Basket" },
+					{ kind: "method", name: "add" },
+					{ kind: "parameter", name: "quantity" },
+				],
+			}),
+		);
+	});
+
+	it("carries a move down the same way, since only the module field differs", () => {
+		expect(rebaseSymbolId(addMethod, cartClass, movedClass)).toBe(
+			composeSymbolId({ ...CART, module: "src/basket/index.ts" }),
+		);
+		expect(moduleOf(rebaseSymbolId(addQuantity, cartClass, movedClass) as string)).toBe("src/basket/index.ts");
+	});
+
+	it("leaves anything outside the subtree alone", () => {
+		const sibling = composeSymbolId({
+			language: "typescript",
+			module: "src/cart.ts",
+			descriptors: [{ kind: "type", name: "Item" }],
+		});
+		const otherModule = composeSymbolId({
+			language: "typescript",
+			module: "src/other.ts",
+			descriptors: [{ kind: "type", name: "Cart" }],
+		});
+
+		expect(rebaseSymbolId(sibling, cartClass, basketClass)).toBeNull();
+		expect(rebaseSymbolId(otherModule, cartClass, basketClass)).toBeNull();
+	});
+
+	// A name is not a prefix of a longer name that starts with it, or renaming Cart would drag
+	// CartItem along with it.
+	it("matches whole descriptors rather than name prefixes", () => {
+		const cartItem = composeSymbolId({
+			language: "typescript",
+			module: "src/cart.ts",
+			descriptors: [{ kind: "type", name: "CartItem" }],
+		});
+		expect(rebaseSymbolId(cartItem, cartClass, basketClass)).toBeNull();
+	});
+
+	// A term and a type of the same name are different symbols, so one's rename is not the other's.
+	it("distinguishes descriptors that differ only by kind", () => {
+		const cartTerm = composeSymbolId({
+			language: "typescript",
+			module: "src/cart.ts",
+			descriptors: [{ kind: "term", name: "Cart" }],
+		});
+		expect(rebaseSymbolId(cartTerm, cartClass, basketClass)).toBeNull();
+	});
+
+	it("reports a local as unrebaseable, since its ordinal names no chain", () => {
+		const local = composeSymbolId({ language: "typescript", module: "src/cart.ts", descriptors: [], local: 2 });
+
+		expect(rebaseSymbolId(local, cartClass, basketClass)).toBeNull();
+		expect(isWithin(local, cartClass)).toBe(false);
+	});
+
+	it("answers null for malformed input rather than throwing", () => {
+		expect(rebaseSymbolId("nonsense", cartClass, basketClass)).toBeNull();
+		expect(rebaseSymbolId(addMethod, "nonsense", basketClass)).toBeNull();
+		expect(rebaseSymbolId(addMethod, cartClass, "nonsense")).toBeNull();
+	});
+
+	it("reads containment straight off the chain", () => {
+		expect(isWithin(addQuantity, cartClass)).toBe(true);
+		expect(isWithin(cartClass, cartClass)).toBe(true);
+		expect(isWithin(cartClass, addMethod)).toBe(false);
 	});
 });

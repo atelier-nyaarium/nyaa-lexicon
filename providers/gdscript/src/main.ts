@@ -2,6 +2,7 @@
 
 import {
 	type ImportResolution,
+	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProviderHandlers,
 	type RenameEditsRequest,
@@ -27,6 +28,9 @@ export const TIERS = {
 	types: true,
 	literals: true,
 	metrics: true,
+	// The extractor recovers from anything rather than failing, so unparseable text yields no
+	// diagnostic and a caller validating candidate text would read that silence as approval.
+	syntaxDiagnostics: false,
 } as const;
 
 export const REFERENCE_ROLES = ["call", "read", "write", "import", "extends", "typeUse"] as const;
@@ -119,6 +123,7 @@ export function handlersFor(provider: GDScriptProvider): ProviderHandlers {
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
+		moveEdits: () => notImplementedMove("the GDScript provider does not move declarations yet"),
 		shutdown: () => ({}),
 	};
 }

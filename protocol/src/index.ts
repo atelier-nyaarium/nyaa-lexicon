@@ -22,6 +22,7 @@ export {
 	type WelcomeFrame,
 	WelcomeFrameSchema,
 } from "./daemonWire.js";
+export { applyEdits, type TextEdit, TextEditSchema } from "./edits.js";
 export {
 	answerFactId,
 	composeFactId,
@@ -51,10 +52,33 @@ export {
 	PROVIDER_METHODS,
 	ProviderErrorSchema,
 	type ProviderMethod,
+	type ProviderTiers,
 	ProviderTiersSchema,
 	ResolveImportRequestSchema,
 	TypeOfRequestSchema,
 } from "./methods.js";
+export {
+	type DependencyOrigin,
+	DependencyOriginSchema,
+	type ImportKind,
+	ImportKindSchema,
+	type ImportOrigin,
+	ImportOriginSchema,
+	type MoveBlockedReason,
+	MoveBlockedReasonSchema,
+	type MoveBlockedSite,
+	MoveBlockedSiteSchema,
+	type MoveDependency,
+	MoveDependencySchema,
+	type MoveEditsRequest,
+	MoveEditsRequestSchema,
+	type MoveEditsResponse,
+	MoveEditsResponseSchema,
+	type MoveImportSite,
+	MoveImportSiteSchema,
+	type MoveRefusal,
+	MoveRefusalSchema,
+} from "./move.js";
 export {
 	type FileFacts,
 	FileFactsSchema,
@@ -84,12 +108,11 @@ export {
 	RenameRefusalSchema,
 	type RenameSite,
 	RenameSiteSchema,
-	type TextEdit,
-	TextEditSchema,
 } from "./rename.js";
 export {
 	notImplementedBinding,
 	notImplementedImport,
+	notImplementedMove,
 	notImplementedType,
 	type ProviderHandlers,
 	runProviderOnStdio,
@@ -106,6 +129,7 @@ export {
 	isLocalSymbol,
 	isParameterSymbol,
 	isSymbolId,
+	isWithin,
 	moduleOf,
 	normalizeModulePath,
 	ownerOf,
@@ -113,6 +137,7 @@ export {
 	parseSymbolIdResult,
 	quoteName,
 	readIdField,
+	rebaseSymbolId,
 	SYMBOL_SCHEME,
 	type SymbolId,
 } from "./symbolId.js";

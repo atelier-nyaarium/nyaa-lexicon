@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyEdits, writeAll } from "../applyEdits";
+import { writeAll } from "../applyEdits";
 
 ////////////////////////////////
 //  Helpers
@@ -37,45 +37,6 @@ afterEach(() => {
 
 ////////////////////////////////
 //  Tests
-
-describe("applying edits to one file", () => {
-	it("replaces a span", () => {
-		expect(applyEdits("const add = 1;\n", [edit(0, 6, 9, "sum")])).toEqual({ text: "const sum = 1;\n" });
-	});
-
-	// The defect this function exists to prevent: an earlier replacement of a different length
-	// moves every later coordinate, so applying in reading order corrupts everything after the
-	// first edit whose replacement is not the same width.
-	it("applies several edits without letting earlier ones shift later ones", () => {
-		const text = "add(add, add);\n";
-		const result = applyEdits(text, [edit(0, 0, 3, "sum"), edit(0, 4, 7, "total"), edit(0, 9, 12, "x")]);
-
-		expect(result).toEqual({ text: "sum(total, x);\n" });
-	});
-
-	it("gives the same answer whatever order the provider returned them in", () => {
-		const text = "add(add, add);\n";
-		const forwards = [edit(0, 0, 3, "sum"), edit(0, 4, 7, "total"), edit(0, 9, 12, "x")];
-
-		expect(applyEdits(text, [...forwards].reverse())).toEqual(applyEdits(text, forwards));
-	});
-
-	it("spans lines", () => {
-		const result = applyEdits("a\nbb\nccc\n", [edit(1, 0, 2, "X"), edit(2, 1, 3, "Y")]);
-		expect(result).toEqual({ text: "a\nX\ncY\n" });
-	});
-
-	// Two edits claiming the same characters is a provider bug. Picking a winner would turn a
-	// detectable fault into a silently wrong file.
-	it("refuses overlapping edits rather than choosing between them", () => {
-		const result = applyEdits("const add = 1;\n", [edit(0, 6, 9, "sum"), edit(0, 8, 11, "x")]);
-		expect(result).toEqual({ problem: "two edits overlap, so the result would depend on order" });
-	});
-
-	it("refuses an edit past the end of the file", () => {
-		expect(applyEdits("a\n", [edit(9, 0, 1, "x")])).toMatchObject({ problem: expect.stringContaining("outside") });
-	});
-});
 
 describe("writing a whole rename", () => {
 	it("writes every file when every file can be written", () => {

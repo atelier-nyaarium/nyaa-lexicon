@@ -1,9 +1,10 @@
-// The seven provider methods as request and response pairs.
+// The provider methods as request and response pairs.
 //
 // Every provider implements every method. A missing capability answers through the value types
 // (Unknown with a reason), never by omitting a method, so the core cannot branch on language.
 
 import { z } from "zod";
+import { MoveEditsRequestSchema, MoveEditsResponseSchema } from "./move.js";
 import { FileFactsSchema, ImportResolutionSchema, IndexDepthSchema, ProjectModelSchema } from "./project.js";
 import { RenameEditsRequestSchema, RenameEditsResponseSchema } from "./rename.js";
 import { RangeSchema, ReferenceRoleSchema } from "./symbols.js";
@@ -31,6 +32,15 @@ export const ProviderTiersSchema = z
 		literals: z.boolean(),
 		/** Size and shape per declaration. */
 		metrics: z.boolean(),
+		/**
+		 * Whether parseFile reports a syntax error as an error diagnostic.
+		 *
+		 * The one tier that is not about coverage: a provider parsing leniently returns no
+		 * diagnostics for text that does not compile, so a caller validating candidate text before
+		 * writing it would read silence as approval. Absent means unstated, which a validating
+		 * caller must report as unchecked rather than as passing.
+		 */
+		syntaxDiagnostics: z.boolean().optional(),
 	})
 	.meta({ id: "ProviderTiers" });
 
@@ -122,6 +132,7 @@ export const PROVIDER_METHODS = [
 	"bind",
 	"typeOf",
 	"renameEdits",
+	"moveEdits",
 	"shutdown",
 ] as const;
 
@@ -136,6 +147,7 @@ export const METHOD_SCHEMAS = {
 	bind: { request: BindRequestSchema, response: BindingSchema },
 	typeOf: { request: TypeOfRequestSchema, response: TypeInfoSchema },
 	renameEdits: { request: RenameEditsRequestSchema, response: RenameEditsResponseSchema },
+	moveEdits: { request: MoveEditsRequestSchema, response: MoveEditsResponseSchema },
 	shutdown: { request: z.object({}), response: z.object({}) },
 } as const satisfies Record<ProviderMethod, { request: z.ZodType; response: z.ZodType }>;
 

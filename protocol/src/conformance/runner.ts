@@ -8,6 +8,7 @@ import path from "node:path";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
 import { METHOD_SCHEMAS, type ProviderMethod } from "../methods.js";
+import { composeSymbolId } from "../symbolId.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import { checkFacts, checkImport, checkType } from "./check.js";
 import type { CaseResult, ConformanceCase, ConformanceFixtureSchema, SuiteReport, Tier } from "./types.js";
@@ -112,12 +113,18 @@ async function runCase(
 	const text = fixture.files[fixture.subject];
 	if (text === undefined) return [`subject ${fixture.subject} is not among the fixture's files`];
 
-	if (testCase.declarations || testCase.references || fixture.declarations) {
-		const facts = await session.call("parseFile", {
-			module: fixture.subject,
-			contentHash: hashOf(text),
-			text,
-		});
+	const expectedType = fixture.typeOf ?? testCase.typeOf;
+	// One parse per case, since three checks want the same facts and a provider is free to answer
+	// a second identical request differently once its own state has moved on.
+	const parses =
+		Boolean(testCase.declarations || testCase.references || fixture.declarations) ||
+		Boolean(testCase.parseErrors) ||
+		Boolean(expectedType);
+	const facts = parses
+		? await session.call("parseFile", { module: fixture.subject, contentHash: hashOf(text), text })
+		: null;
+
+	if (facts && (testCase.declarations || testCase.references || fixture.declarations)) {
 		problems.push(...checkFacts(testCase, facts, language));
 		// A declared role list is a promise about coverage, so emitting outside it is the same
 		// over-claim as declaring a tier that is not built. Undeclared coverage stays unchecked.
@@ -130,6 +137,17 @@ async function runCase(
 		}
 	}
 
+	if (facts && testCase.parseErrors) {
+		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+
+		if (testCase.parseErrors === "required" && errors.length === 0) {
+			problems.push("syntaxDiagnostics is declared but unparseable text produced no error diagnostic");
+		}
+		if (testCase.parseErrors === "forbidden" && errors.length > 0) {
+			problems.push(`valid text produced ${errors.length} error diagnostic(s): ${errors[0]?.message}`);
+		}
+	}
+
 	// The fixture's own list wins when it has one, since a specifier is this language's syntax.
 	for (const expected of fixture.imports ?? testCase.imports ?? []) {
 		const resolution = await session.call("resolveImport", {
@@ -139,13 +157,7 @@ async function runCase(
 		problems.push(...checkImport(expected, resolution));
 	}
 
-	const expectedType = fixture.typeOf ?? testCase.typeOf;
-	if (expectedType) {
-		const facts = await session.call("parseFile", {
-			module: fixture.subject,
-			contentHash: hashOf(text),
-			text,
-		});
+	if (facts && expectedType) {
 		const target = facts.declarations.find((d) => d.name === expectedType.name);
 		if (!target) {
 			problems.push(`type of ${expectedType.name}: the declaration was not reported`);
@@ -155,6 +167,50 @@ async function runCase(
 	}
 
 	return problems;
+}
+
+/**
+ * Every provider answers moveEdits, and one that cannot move refuses rather than agreeing.
+ *
+ * Ungated by tier: a ready response with no edits and no blocked sites is indistinguishable from a
+ * move that had nothing to do, so the core would relocate a declaration and leave every import
+ * pointing at the old module.
+ */
+async function checkMoveIsAnswered(session: ProviderSession): Promise<CaseResult> {
+	const problems: string[] = [];
+
+	try {
+		const answer = await session.call("moveEdits", {
+			module: "src/probe-target",
+			text: "",
+			exists: false,
+			symbolId: composeSymbolId({
+				language: "probe",
+				module: "src/probe-source",
+				descriptors: [{ kind: "term", name: "probe" }],
+			}),
+			name: "probe",
+			fromModule: "src/probe-source",
+			toModule: "src/probe-target",
+			role: {},
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		});
+
+		if (answer.status === "ready" && answer.edits.length === 0 && answer.blocked.length === 0) {
+			problems.push("moveEdits answered ready with nothing to do, which reads as a move that succeeded");
+		}
+	} catch (error) {
+		problems.push(error instanceof Error ? error.message : String(error));
+	}
+
+	return {
+		caseId: "moveEdits-is-answered",
+		tier: "protocol",
+		outcome: problems.length === 0 ? "passed" : "failed",
+		problems,
+	};
 }
 
 /**
@@ -222,6 +278,10 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				results.push({ caseId: testCase.id, tier, outcome: "failed", problems: [message] });
 			}
 		}
+
+		// Last, so the provider has been through discovery. A provider that really moves needs its
+		// project model, and probing it cold would test a state nothing else puts it in.
+		results.push(await checkMoveIsAnswered(session));
 
 		return {
 			providerId: info.providerId,

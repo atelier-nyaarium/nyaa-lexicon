@@ -10,15 +10,11 @@
 // way at all would make every provider reimplement the reference index.
 
 import { z } from "zod";
+import { TextEditSchema } from "./edits.js";
 import { RangeSchema } from "./symbols.js";
 
 ////////////////////////////////
 //  Schemas
-
-/** One replacement, in the coordinates of the text the request carried. */
-export const TextEditSchema = z.object({ range: RangeSchema, newText: z.string() }).meta({ id: "TextEdit" });
-
-export type TextEdit = z.infer<typeof TextEditSchema>;
 
 /**
  * Why a provider will not rewrite one occurrence it was handed.

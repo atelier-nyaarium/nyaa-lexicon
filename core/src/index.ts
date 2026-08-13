@@ -10,7 +10,7 @@ export {
 	type RecalledAnswer,
 	type RecordOutcome,
 } from "./answers.js";
-export { type ApplyOutcome, applyEdits, type FileEdits, writeAll } from "./applyEdits.js";
+export { type ApplyOutcome, type FileEdits, writeAll } from "./applyEdits.js";
 export { callDaemon, findDaemon, processIsAlive } from "./client.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
 export { createDispatch } from "./dispatch.js";

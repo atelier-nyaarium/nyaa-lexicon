@@ -1,11 +1,11 @@
-// Turning text edits into new file contents, and writing them without leaving a half-rename.
+// Writing a set of edits to disk without leaving a half-rename.
 //
-// Pure application is separated from the writing so the interesting part, applying several edits
-// to one string without them shifting each other, is testable without a filesystem.
+// The splice itself lives in the protocol package beside TextEdit, so the conformance suite checks
+// provider edits with the same code that applies them here.
 
 import { renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { TextEdit } from "@nyaa-lexicon/protocol";
+import { applyEdits, type TextEdit } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -19,54 +19,6 @@ export type ApplyOutcome = { applied: true; modules: string[] } | { applied: fal
 
 ////////////////////////////////
 //  Functions & Helpers
-
-/** Line and character to an index, so edits can be sorted and spliced in one coordinate system. */
-function offsetOf(lineStarts: number[], position: { line: number; character: number }): number | null {
-	const start = lineStarts[position.line];
-	if (start === undefined) return null;
-	return start + position.character;
-}
-
-function lineStartsOf(text: string): number[] {
-	const starts = [0];
-	for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
-	return starts;
-}
-
-/**
- * Apply every edit to one file's text.
- *
- * Applied back to front, so an earlier edit never moves the coordinates of a later one. Sorting
- * here rather than trusting the provider means a provider that returns edits in reading order and
- * one that returns them in any other order both produce the same file.
- *
- * Overlapping edits are refused rather than resolved. Two edits claiming the same characters is a
- * provider bug, and picking a winner would turn it into a silently wrong file.
- */
-export function applyEdits(text: string, edits: TextEdit[]): { text: string } | { problem: string } {
-	const lineStarts = lineStartsOf(text);
-	const spans: Array<{ start: number; end: number; newText: string }> = [];
-
-	for (const edit of edits) {
-		const start = offsetOf(lineStarts, edit.range.start);
-		const end = offsetOf(lineStarts, edit.range.end);
-		if (start === null || end === null)
-			return { problem: `an edit is outside the file at line ${edit.range.start.line}` };
-		if (end < start) return { problem: `an edit ends before it starts at line ${edit.range.start.line}` };
-		spans.push({ start, end, newText: edit.newText });
-	}
-
-	spans.sort((a, b) => a.start - b.start);
-	for (let i = 1; i < spans.length; i++) {
-		const previous = spans[i - 1] as { end: number };
-		const current = spans[i] as { start: number };
-		if (current.start < previous.end) return { problem: "two edits overlap, so the result would depend on order" };
-	}
-
-	let out = text;
-	for (const span of [...spans].reverse()) out = out.slice(0, span.start) + span.newText + out.slice(span.end);
-	return { text: out };
-}
 
 /**
  * Write every file, or none of them.

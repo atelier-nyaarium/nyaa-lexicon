@@ -4,7 +4,7 @@
 // TypeScript.
 
 import { z } from "zod";
-import { ProviderTiersSchema } from "../methods.js";
+import { type ProviderTiers, ProviderTiersSchema } from "../methods.js";
 import { SymbolKindSchema, VisibilitySchema } from "../symbols.js";
 import { UnknownReasonSchema } from "../values.js";
 
@@ -148,6 +148,15 @@ export const ConformanceCaseSchema = z
 		 * no member was dropped.
 		 */
 		typeOf: ExpectedTypeSchema.optional(),
+		/**
+		 * What parsing this fixture must say about its syntax.
+		 *
+		 * `required` is the only check on the `syntaxDiagnostics` claim. A provider that recovers
+		 * from anything returns no diagnostic for text that does not compile, so a caller validating
+		 * candidate text before writing it reads that silence as approval. Declaring the tier and
+		 * then staying quiet is the over-claim this case exists to catch.
+		 */
+		parseErrors: z.enum(["required", "forbidden"]).optional(),
 	})
 	.meta({ id: "ConformanceCase" });
 
@@ -170,7 +179,8 @@ export type CaseOutcome = "passed" | "failed" | "skipped";
 
 export interface CaseResult {
 	caseId: string;
-	tier: Tier;
+	/** `protocol` for checks about the wire contract itself, which no tier can gate. */
+	tier: Tier | "protocol";
 	outcome: CaseOutcome;
 	/** Why it failed or was skipped. Empty on a pass. */
 	problems: string[];
@@ -180,7 +190,7 @@ export interface SuiteReport {
 	providerId: string;
 	language: string;
 	/** Tiers the provider declared, which decides what was run rather than skipped. */
-	tiers: Record<Tier, boolean>;
+	tiers: ProviderTiers;
 	results: CaseResult[];
 	passed: number;
 	failed: number;

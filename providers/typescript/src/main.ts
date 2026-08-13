@@ -2,6 +2,7 @@
 
 import {
 	type IndexDepth,
+	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProviderHandlers,
 	parseSymbolId,
@@ -30,6 +31,7 @@ export const TIERS = {
 	types: true,
 	literals: true,
 	metrics: true,
+	syntaxDiagnostics: true,
 } as const;
 
 /**
@@ -212,6 +214,7 @@ export function handlersFor(provider: TypeScriptProvider): ProviderHandlers {
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
+		moveEdits: () => notImplementedMove("the TypeScript provider does not move declarations yet"),
 		shutdown: () => provider.shutdown(),
 	};
 }

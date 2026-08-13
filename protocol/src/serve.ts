@@ -7,6 +7,7 @@ import { createMessageConnection, StreamMessageReader, StreamMessageWriter } fro
 import type { z } from "zod";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { PROVIDER_METHODS } from "./methods.js";
+import type { MoveEditsResponse } from "./move.js";
 import type { ImportResolution } from "./project.js";
 import type { Binding, TypeInfo } from "./values.js";
 
@@ -64,4 +65,8 @@ export function notImplementedType(detail: string): TypeInfo {
 
 export function notImplementedImport(detail: string): ImportResolution {
 	return { status: "unresolved", reason: "NotImplemented", detail };
+}
+
+export function notImplementedMove(detail: string): MoveEditsResponse {
+	return { status: "refused", reason: "NotImplemented", detail };
 }

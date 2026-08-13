@@ -11,6 +11,7 @@ import type { createMessageConnection } from "vscode-jsonrpc/node";
 import {
 	notImplementedBinding,
 	notImplementedImport,
+	notImplementedMove,
 	notImplementedType,
 	type ProviderHandlers,
 	runProviderOnStdio,
@@ -35,6 +36,7 @@ export const REFERENCE_TIERS = {
 	types: false,
 	literals: false,
 	metrics: false,
+	syntaxDiagnostics: false,
 } as const;
 
 /** `export class Foo` / `export function foo` / `export const foo`, and nothing cleverer. */
@@ -118,6 +120,7 @@ export const referenceHandlers: ProviderHandlers = {
 		reason: "NotImplemented",
 		detail: "the reference provider does not rewrite text",
 	}),
+	moveEdits: () => notImplementedMove("the reference provider does not rewrite text"),
 	shutdown: () => ({}),
 };
 

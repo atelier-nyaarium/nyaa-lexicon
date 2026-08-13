@@ -218,6 +218,6 @@ describe("running the suite against a real process", () => {
 		const report = await runSuite({ command: ["bun", "run", PROVIDER], cases: [wrong], timeoutMs: 15_000 });
 
 		expect(report.failed).toBe(1);
-		expect(report.results[0]?.problems[0]).toMatch(/not reported/);
+		expect(report.results.find((result) => result.outcome === "failed")?.problems[0]).toMatch(/not reported/);
 	}, 30_000);
 });
