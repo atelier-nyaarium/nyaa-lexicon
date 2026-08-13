@@ -365,10 +365,20 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				return read(() => transactions().status());
 			case "refactorTrack":
 				return write(() => transactions().track(ByModule.parse(params).module));
+			// Restoring puts back text the index does not describe, so the facts for those files are
+			// of a version that no longer exists on disk.
 			case "refactorUndo":
-				return write(() => transactions().undo());
+				return write(async () => {
+					const outcome = transactions().undo();
+					for (const module of outcome.modules ?? []) await service.indexFile(module, "");
+					return outcome;
+				});
 			case "refactorRevert":
-				return write(() => transactions().revert());
+				return write(async () => {
+					const outcome = transactions().revert();
+					for (const module of outcome.modules) await service.indexFile(module, "");
+					return outcome;
+				});
 			case "refactorCommit":
 				return write(() => transactions().commit(Commit.parse(params)));
 			case "refactorReplace": {

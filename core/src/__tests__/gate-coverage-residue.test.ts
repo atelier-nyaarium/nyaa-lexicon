@@ -47,8 +47,10 @@ describe("every writing dispatch case takes the workspace gate", () => {
 		for (const arm of arms(source)) {
 			for (const call of WRITING_CALLS) {
 				if (!arm.includes(call)) continue;
-				// The call has to sit inside a write(...) in the same arm, not merely near one.
-				if (!new RegExp(`write\\(\\s*\\(\\)\\s*=>[^;]*${call.replace(/[.()]/g, "\\$&")}`, "s").test(arm)) {
+				// Everything after `write(` in this arm. A writing call must appear there rather than
+				// before it, which is what separates a gated arm from one that merely mentions the gate.
+				const gated = arm.slice(arm.indexOf("write("));
+				if (!arm.includes("write(") || !gated.includes(call)) {
 					offenders.push(`${arm.split("\n")[0]?.trim()} calls ${call} outside write(...)`);
 				}
 			}

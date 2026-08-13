@@ -417,6 +417,11 @@ export class TransactionManager {
 			return;
 		}
 
+		// A file already holding its before-image is left alone. Rewriting identical bytes would
+		// change its timestamp and wake the watcher for nothing.
+		const current = this.snapshot(image.module);
+		if (current.existed && current.hash === image.beforeHash) return;
+
 		const bytes = image.beforeHash === null ? null : this.store.blob(image.beforeHash);
 		if (bytes === null) return;
 
