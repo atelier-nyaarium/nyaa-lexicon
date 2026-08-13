@@ -417,6 +417,19 @@ From Phase 3:
   reference provider, whose toy grammar has no standard library and no syntax errors, so an entire
   class of wrongness is invisible to them by construction.
 
+From Phase 4:
+
+- REMOVING A TOOL COSTS AS MUCH AS ADDING ONE, and the compiler only finds two thirds of it. The
+  type errors led to every backend and stub, but the two render functions left behind were dead
+  with no error, the README still described the removed tools, and the plugin manifest still
+  advertised them. Only reading the lap-1 blast-radius checklist caught those. A tool inventory
+  that the README and manifest were generated from would make this mechanical.
+- A WRAPPER TYPE COST TWO DEBUG CYCLES. `recallAnswer` returns a `RecalledAnswer` whose prose sits
+  at `.answer.prose`, and a test written against `.prose` fails with "expected undefined", which
+  reads exactly like the feature being broken. I went looking for a migration bug that did not
+  exist. Naming the wrapper for what it adds, or exposing the prose at the top level, would have
+  spent that time somewhere useful.
+
 - DRIVING THE REAL SERVER NEEDED A BORROWED `node_modules`. The repo has no MCP client dependency,
   so the only way to speak to the shipped stdio server was to symlink another project's modules
   into a scratch directory. That probe found two real defects nothing else did, so the friction is
