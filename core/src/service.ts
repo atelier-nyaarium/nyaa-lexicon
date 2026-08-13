@@ -319,6 +319,8 @@ export type SymbolSource =
 interface UnboundTally {
 	name: string;
 	role: string;
+	/** Why the provider could not bind it, so a report says more than "does not resolve". */
+	reason: string;
 	count: number;
 }
 
@@ -417,13 +419,15 @@ function isDangling(reason: string): boolean {
  * The parts ride along with the count so nothing has to split the key back apart, which is where a
  * delimiter would have to be chosen and where choosing wrong is invisible.
  */
-function countUnbound(rows: Array<{ name: string; role: string }>): Map<string, UnboundTally> {
+function countUnbound(rows: Array<{ name: string; role: string; reason: string }>): Map<string, UnboundTally> {
 	const counts = new Map<string, UnboundTally>();
 	for (const row of rows) {
+		// Keyed without the reason, so the same broken name reported under a different reason is
+		// still recognized as the problem that was already there.
 		const key = `${row.role}:${row.name}`;
 		const tally = counts.get(key);
 		if (tally) tally.count++;
-		else counts.set(key, { name: row.name, role: row.role, count: 1 });
+		else counts.set(key, { name: row.name, role: row.role, reason: row.reason, count: 1 });
 	}
 	return counts;
 }
@@ -1046,19 +1050,23 @@ export class LexiconService {
 			this.store
 				.referencesIn(module)
 				.filter((row) => row.targetId === null && isDangling(row.provenance))
-				.map((row) => ({ name: row.name, role: row.role })),
+				.map((row) => ({ name: row.name, role: row.role, reason: row.provenance })),
 		);
 		const nowUnbound = countUnbound(
 			candidate.references
 				.filter((reference) => reference.binding.status === "unbound" && isDangling(reference.binding.reason))
-				.map((reference) => ({ name: reference.name, role: reference.role })),
+				.map((reference) => ({
+					name: reference.name,
+					role: reference.role,
+					reason: reference.binding.status === "unbound" ? reference.binding.reason : "",
+				})),
 		);
 
 		for (const [key, tally] of nowUnbound) {
 			if (tally.count <= (wasUnbound.get(key)?.count ?? 0)) continue;
 			issues.push({
 				kind: "UnboundReference",
-				detail: `${tally.name} (${tally.role}) does not resolve to anything indexed`,
+				detail: `${tally.name} (${tally.role}) does not resolve: ${tally.reason}`,
 				module,
 			});
 		}
