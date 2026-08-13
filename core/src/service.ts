@@ -1178,6 +1178,34 @@ export class LexiconService {
 		return sites;
 	}
 
+	/**
+	 * Whether the moved symbol is still reachable from everywhere that used it.
+	 *
+	 * Run after the reindex, because the question is about what the providers concluded rather than
+	 * what the edits looked like. A specifier that is syntactically fine and points nowhere produces
+	 * exactly this: an importer whose reference no longer binds.
+	 */
+	checkMoveLanded(name: string, modules: string[]): RefactorIssue[] {
+		const issues: RefactorIssue[] = [];
+
+		for (const module of modules) {
+			for (const reference of this.store.referencesIn(module)) {
+				if (reference.name !== name) continue;
+				if (reference.targetId !== null) continue;
+				if (!isDangling(reference.provenance)) continue;
+
+				issues.push({
+					kind: "UnresolvedAfterMove",
+					detail: `${name} no longer resolves here: ${reference.provenance}`,
+					module,
+					line: reference.startLine + 1,
+				});
+			}
+		}
+
+		return issues;
+	}
+
 	/** Re-mints one id of a moved closure for its new module. */
 	rebaseIntoModule(id: string, movedId: string, toModule: string): string | null {
 		const parsed = parseSymbolId(movedId);

@@ -183,10 +183,13 @@ async function refactorMove(
 		transactions.completeStep(begun.stepNo, "reindexed");
 
 		const migrated = service.migrateKnowledge(idMap);
-		transactions.recordIssues(begun.stepNo, edits.issues);
+		// Asked of the reindexed facts rather than of the edits, since a specifier can be well formed
+		// and still point nowhere.
+		const issues = [...edits.issues, ...service.checkMoveLanded(plan.name, touched)];
+		transactions.recordIssues(begun.stepNo, issues);
 		transactions.completeStep(begun.stepNo, "finalized");
 
-		return { moved: true, modules: touched, migrated, issues: edits.issues };
+		return { moved: true, modules: touched, migrated, issues };
 	});
 }
 
