@@ -406,6 +406,19 @@ describe("planning a replacement", () => {
 		const plan = await service.planReplacement({ symbolId: "lexicon reference a.ref Ghost#" }, "x");
 		expect(plan).toMatchObject({ ok: false });
 	});
+
+	// The splice was cut from one exact version. The writer compares against this before applying,
+	// so an edit that landed in between is detected instead of overwritten.
+	it("reports the hash of the text it spliced from", async () => {
+		const target = await plant();
+		const plan = await service.planReplacement({ symbolId: target }, "export class Cart { x = 1; }");
+		if (!plan.ok) throw new Error("expected a plan");
+
+		expect(plan.baseHash).toBe(service.currentHashOf("a.ref"));
+
+		files.set("a.ref", `// someone else got here first\n${CART}`);
+		expect(service.currentHashOf("a.ref")).not.toBe(plan.baseHash);
+	});
 });
 
 describe("answering about a symbol", () => {

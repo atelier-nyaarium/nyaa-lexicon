@@ -325,7 +325,15 @@ interface UnboundTally {
 }
 
 export type ReplacementPlan =
-	| { ok: true; module: string; text: string; range: Range; issues: RefactorIssue[] }
+	| {
+			ok: true;
+			module: string;
+			text: string;
+			range: Range;
+			/** Of the text the splice was cut from, so the writer can prove nothing moved since. */
+			baseHash: string;
+			issues: RefactorIssue[];
+	  }
 	| { ok: false; reason: string };
 
 /** The plan rides along either way, so a refusal can say what it would have done. */
@@ -934,7 +942,20 @@ export class LexiconService {
 
 		await this.reparseFromDisk(source.module);
 
-		return { ok: true, module: source.module, text: spliced.text, range: source.range, issues };
+		return {
+			ok: true,
+			module: source.module,
+			text: spliced.text,
+			range: source.range,
+			baseHash: hashOf(before),
+			issues,
+		};
+	}
+
+	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */
+	currentHashOf(module: string): string | null {
+		const text = this.readFile(module);
+		return text === null ? null : hashOf(text);
 	}
 
 	/**

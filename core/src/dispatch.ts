@@ -137,8 +137,9 @@ async function refactorReplace(
 	if (!plan.ok) return { replaced: false, issues: [], reason: plan.reason };
 
 	return write(async () => {
-		const current = service.symbolSource(args);
-		if (!current.found) {
+		// The plan was spliced from one exact version of the file. Anything that changed it since
+		// invalidates the splice, and writing anyway would overwrite whatever made the change.
+		if (service.currentHashOf(plan.module) !== plan.baseHash) {
 			return { replaced: false, issues: [], reason: `${plan.module} changed while the replacement was planned` };
 		}
 
