@@ -46,6 +46,9 @@ const CASES: ConformanceCase[] = [
 			// LIMIT is annotated Final because that is Python's constant, and a bare `LIMIT = 1` is a
 			// variable the language lets anyone reassign. Matching the syntax rather than the spelling
 			// is what keeps one expectation meaningful across languages.
+			// GDScript has NO fixture on purpose: the language has no export concept, its extractor
+			// answers `exported` with absence, and a fixture would have to drop the flag this case is
+			// about. The skip is the honest outcome, not a gap.
 			[PYTHON]: {
 				files: {
 					"src/cart.py":
@@ -254,6 +257,12 @@ const CASES: ConformanceCase[] = [
 		about: "An explicitly annotated declaration reports that type.",
 		fixtures: {
 			[TYPESCRIPT]: { files: { "src/cart.ts": "export const LIMIT: number = 1;\n" }, subject: "src/cart.ts" },
+			// The display is per-fixture because `number` and `int` are one sentence in two spellings.
+			[GDSCRIPT]: {
+				files: { "src/cart.gd": "class_name Cart\nextends Node\n\nconst LIMIT: int = 1\n" },
+				subject: "src/cart.gd",
+				typeOf: { name: "LIMIT", display: "int" },
+			},
 		},
 		typeOf: { name: "LIMIT", display: "number" },
 	},
