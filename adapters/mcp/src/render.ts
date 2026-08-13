@@ -932,6 +932,37 @@ export function renderRefactorStatus(status: TransactionStatus): string {
 	return lines.join("\n");
 }
 
+/**
+ * A replacement, with what it broke.
+ *
+ * A step with issues is still applied and still says so. Refusing would leave the caller with no
+ * way to make a change whose fallout it intends to fix in the next step.
+ */
+export function renderReplaceOutcome(outcome: {
+	replaced: boolean;
+	module?: string;
+	issues: RefactorIssue[];
+	reason?: string;
+}): string {
+	if (!outcome.replaced) {
+		return `# Not replaced\n\n${outcome.reason ?? "the replacement could not be applied"}`;
+	}
+
+	const lines = [`# Replaced in \`${outcome.module}\``, ""];
+	if (outcome.issues.length === 0) {
+		lines.push("Nothing else stopped resolving. `refactor_commit` would succeed.");
+		return lines.join("\n");
+	}
+
+	lines.push(
+		`Applied, but it introduced ${outcome.issues.length} issue${outcome.issues.length === 1 ? "" : "s"}.`,
+		"Fix them in a later step, `refactor_undo` this one, or commit with force.",
+		"",
+		...renderIssues(outcome.issues),
+	);
+	return lines.join("\n");
+}
+
 export function renderRefactorCommit(outcome: {
 	committed: boolean;
 	issues: RefactorIssue[];

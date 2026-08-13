@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { QUESTION_CLASSES, type QuestionClass } from "./answers.js";
 import type { LexiconService } from "./service.js";
-import type { TransactionManager } from "./transactions.js";
+import type { RefactorIssue, TransactionManager } from "./transactions.js";
 import type { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
@@ -100,6 +100,73 @@ const SymbolSourceArgs = z.object({
 });
 
 const Commit = z.object({ force: z.boolean().optional() });
+
+const Replace = z.object({
+	symbolId: z.string().min(1).optional(),
+	factId: z.string().min(1).optional(),
+	newText: z.string(),
+});
+
+/** What a replacement did, or why it did nothing. Issues ride along either way. */
+export interface ReplaceOutcome {
+	replaced: boolean;
+	module?: string;
+	issues: RefactorIssue[];
+	reason?: string;
+}
+
+/**
+ * Plan first, outside the gate, then write inside it.
+ *
+ * Planning parses a candidate and asks the index what would break, which is the slow half and
+ * needs no exclusivity. The gate is held only across journal, write and reindex, and the file's
+ * hash is rechecked once held: anything that changed it in between invalidates the plan that was
+ * just made, and applying anyway would overwrite whatever changed it.
+ */
+async function refactorReplace(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { symbolId?: string | undefined; factId?: string | undefined; newText: string },
+): Promise<ReplaceOutcome> {
+	if (!transactions.openTransaction()) {
+		return { replaced: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
+	}
+
+	const plan = await service.planReplacement(args, args.newText);
+	if (!plan.ok) return { replaced: false, issues: [], reason: plan.reason };
+
+	return write(async () => {
+		const current = service.symbolSource(args);
+		if (!current.found) {
+			return { replaced: false, issues: [], reason: `${plan.module} changed while the replacement was planned` };
+		}
+
+		const begun = transactions.beginStep("replace", [plan.module], { range: plan.range });
+		if (!begun.ok) return { replaced: false, issues: [], reason: begun.reason };
+
+		try {
+			service.writeModule(plan.module, plan.text);
+		} catch (error) {
+			// Journaled but not written, so the step is removed rather than left for recovery to
+			// puzzle over on a daemon that is still running.
+			transactions.undo();
+			return {
+				replaced: false,
+				issues: [],
+				reason: `${plan.module} could not be written: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+
+		transactions.completeStep(begun.stepNo, "written");
+		await service.indexFile(plan.module, "");
+		transactions.completeStep(begun.stepNo, "reindexed");
+		transactions.recordIssues(begun.stepNo, plan.issues);
+		transactions.completeStep(begun.stepNo, "finalized");
+
+		return { replaced: true, module: plan.module, issues: plan.issues };
+	});
+}
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -242,6 +309,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				return write(() => transactions().revert());
 			case "refactorCommit":
 				return write(() => transactions().commit(Commit.parse(params)));
+			case "refactorReplace": {
+				const args = Replace.parse(params);
+				return refactorReplace(service, transactions(), write, args);
+			}
 			default:
 				throw new Error(`unknown method: ${method}`);
 		}

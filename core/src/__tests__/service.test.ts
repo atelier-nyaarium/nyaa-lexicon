@@ -342,6 +342,72 @@ describe("reading a symbol's source", () => {
 	});
 });
 
+describe("planning a replacement", () => {
+	const CART = "export class Cart {}\n";
+
+	async function plant(text = CART) {
+		await boot();
+		files.set("a.ref", text);
+		await service.indexFile("a.ref", "h1");
+		const target = service.findByName("Cart")[0]?.symbolId;
+		if (!target) throw new Error("expected Cart");
+		return target;
+	}
+
+	it("splices the new text into the file without writing it", async () => {
+		const target = await plant(`${CART}export class Other {}\n`);
+
+		const plan = await service.planReplacement({ symbolId: target }, "export class Cart { x = 1; }");
+
+		expect(plan.ok).toBe(true);
+		if (!plan.ok) throw new Error("expected a plan");
+		expect(plan.text).toContain("x = 1");
+		expect(plan.text).toContain("Other");
+		// Nothing on disk moved: the caller writes, under the gate, after deciding.
+		expect(files.get("a.ref")).toBe(`${CART}export class Other {}\n`);
+	});
+
+	// The reference provider declares no syntax diagnostics, so it cannot reject anything. Silence
+	// from a provider that never claimed to check is reported rather than read as approval.
+	it("says the syntax went unchecked when the provider does not report errors", async () => {
+		const target = await plant();
+
+		const plan = await service.planReplacement({ symbolId: target }, "export class Cart { broken");
+
+		expect(plan.ok).toBe(true);
+		if (!plan.ok) throw new Error("expected a plan");
+		expect(plan.issues.map((issue) => issue.kind)).toContain("SyntaxUnchecked");
+	});
+
+	// The id embeds the name, so a rename here would strand every caller and every recorded answer.
+	it("refuses a replacement that renames the declaration", async () => {
+		const target = await plant();
+
+		const plan = await service.planReplacement({ symbolId: target }, "export class Basket {}");
+
+		expect(plan).toMatchObject({ ok: false });
+		if (plan.ok) throw new Error("expected a refusal");
+		expect(plan.reason).toContain("refactor_rename");
+	});
+
+	// Deleting is a real refactor. The fallout is reported rather than the change being refused.
+	it("allows a deletion and reports what still points at it", async () => {
+		const target = await plant();
+		files.set("b.ref", "export class User {}\n");
+		await service.indexFile("b.ref", "h1");
+
+		const plan = await service.planReplacement({ symbolId: target }, "// removed");
+
+		expect(plan.ok).toBe(true);
+	});
+
+	it("says so when the address names nothing", async () => {
+		await boot();
+		const plan = await service.planReplacement({ symbolId: "lexicon reference a.ref Ghost#" }, "x");
+		expect(plan).toMatchObject({ ok: false });
+	});
+});
+
 describe("answering about a symbol", () => {
 	it("describes a symbol and counts its uses without listing them", async () => {
 		await boot();

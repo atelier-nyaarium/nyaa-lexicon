@@ -51,6 +51,7 @@ import {
 	renderReferences,
 	renderRenameOutcome,
 	renderRenamePlan,
+	renderReplaceOutcome,
 	renderSymbolSearch,
 	renderSymbolSource,
 	renderType,
@@ -75,6 +76,11 @@ export interface ToolBackend {
 	refactorUndo: () => Promise<{ undone: boolean; stepNo?: number; modules?: string[]; reason?: string }>;
 	refactorRevert: () => Promise<{ reverted: boolean; modules: string[]; reason?: string }>;
 	refactorCommit: (force?: boolean) => Promise<{ committed: boolean; issues: RefactorIssue[]; reason?: string }>;
+	refactorReplace: (args: {
+		symbolId?: string | undefined;
+		factId?: string | undefined;
+		newText: string;
+	}) => Promise<{ replaced: boolean; module?: string; issues: RefactorIssue[]; reason?: string }>;
 	indexStatus: () => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
@@ -231,6 +237,12 @@ export const RefactorTrackInput = {
 
 export const RefactorCommitInput = {
 	force: z.boolean().optional().describe(`Commit despite outstanding issues.`),
+};
+
+export const RefactorReplaceInput = {
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	factId: z.string().min(1).optional().describe(`A literal's \`factId\` from \`find_literals\`.`),
+	newText: z.string().min(1).describe(`Replacement for the whole span \`symbol_source\` returned.`),
 };
 
 export const FindLiteralsInput = {
@@ -464,6 +476,18 @@ export const REFACTOR_COMMIT_DESCRIPTION = `
 Keep what is on disk and close the transaction. Nothing is undoable afterwards.
 
 Refuses while issues are outstanding. \`force\` accepts them deliberately.
+`.trim();
+
+export const REFACTOR_REPLACE_DESCRIPTION = `
+# \`refactor_replace\`
+
+Replace one symbol's whole span with new text, checked before it is written.
+
+Text that does not parse is refused before touching disk. Text that parses is applied, then what it
+broke is reported: symbols that vanished while other files still use them, and names that stopped
+resolving. Read the span with \`symbol_source\` first and send back the edited whole.
+
+Renaming the declaration itself is refused; use \`refactor_rename\`.
 `.trim();
 
 export const REFACTOR_REVERT_DESCRIPTION = `
@@ -799,6 +823,18 @@ export async function refactorRevert(backend: ToolBackend): Promise<ToolResult> 
 
 export async function refactorCommit(backend: ToolBackend, args: { force?: boolean }): Promise<ToolResult> {
 	return rendered(async () => renderRefactorCommit(await backend.refactorCommit(args.force)));
+}
+
+export async function refactorReplace(
+	backend: ToolBackend,
+	args: { symbolId?: string | undefined; factId?: string | undefined; newText: string },
+): Promise<ToolResult> {
+	const outcome = await backend.refactorReplace(args).catch((error: unknown) => ({
+		replaced: false,
+		issues: [] as RefactorIssue[],
+		reason: error instanceof Error ? error.message : String(error),
+	}));
+	return text(renderReplaceOutcome(outcome), !outcome.replaced);
 }
 
 export async function findLiterals(

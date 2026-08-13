@@ -94,6 +94,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		refactorUndo: async () => ({ undone: false, reason: "nothing to undo" }),
 		refactorRevert: async () => ({ reverted: true, modules: [] }),
 		refactorCommit: async () => ({ committed: true, issues: [] }),
+		refactorReplace: async () => ({ replaced: true, module: "src/a.ts", issues: [] }),
 		...overrides,
 	};
 }

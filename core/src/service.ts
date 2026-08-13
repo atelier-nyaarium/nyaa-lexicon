@@ -5,14 +5,19 @@
 // or a provider process.
 
 import { createHash } from "node:crypto";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
 	answerFactId,
+	applyEdits,
 	type Binding,
 	doubtFactId,
 	type FactKind,
+	type FileFacts,
 	type ImportResolution,
 	type IndexDepth,
 	isParameterSymbol,
+	isWithin,
 	ownerOf,
 	type Range,
 	type RenameSite,
@@ -50,6 +55,7 @@ import type {
 	StoredReference,
 } from "./store.js";
 import type { ProviderSupervisor } from "./supervisor.js";
+import type { RefactorIssue } from "./transactions.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -303,6 +309,23 @@ export type SymbolSource =
 	  }
 	| { found: false; reason: string; stale?: boolean };
 
+/**
+ * A replacement worked out but not yet written.
+ *
+ * Carries the whole new file rather than an edit, because the splice was already checked against
+ * the text it was cut from and re-deriving it at write time is how the two come to disagree.
+ */
+/** How many times one name in one role failed to bind, kept with the parts so nothing re-splits. */
+interface UnboundTally {
+	name: string;
+	role: string;
+	count: number;
+}
+
+export type ReplacementPlan =
+	| { ok: true; module: string; text: string; range: Range; issues: RefactorIssue[] }
+	| { ok: false; reason: string };
+
 /** The plan rides along either way, so a refusal can say what it would have done. */
 export type RenameOutcome =
 	| { renamed: true; plan: RenamePlan; modules: string[] }
@@ -366,6 +389,43 @@ function hashOf(text: string): string {
 
 function detailOf(detail: string | undefined): string {
 	return detail === undefined ? "" : `: ${detail}`;
+}
+
+function sameRange(a: Range, b: Range): boolean {
+	return (
+		a.start.line === b.start.line &&
+		a.start.character === b.start.character &&
+		a.end.line === b.end.line &&
+		a.end.character === b.end.character
+	);
+}
+
+/**
+ * Whether a name failing to bind means the code is broken, or merely outside the index.
+ *
+ * A standard library call answers ExternalDependency and a local answers NotIndexed, and both are
+ * correct code. Reporting them would make every edit that calls a method look like breakage, which
+ * is what a first run against a real file showed.
+ */
+function isDangling(reason: string): boolean {
+	return reason !== "ExternalDependency" && reason !== "NotIndexed" && reason !== "DynamicallyTyped";
+}
+
+/**
+ * Counts by name and role, which is what survives an edit that moves every range below it.
+ *
+ * The parts ride along with the count so nothing has to split the key back apart, which is where a
+ * delimiter would have to be chosen and where choosing wrong is invisible.
+ */
+function countUnbound(rows: Array<{ name: string; role: string }>): Map<string, UnboundTally> {
+	const counts = new Map<string, UnboundTally>();
+	for (const row of rows) {
+		const key = `${row.role}:${row.name}`;
+		const tally = counts.get(key);
+		if (tally) tally.count++;
+		else counts.set(key, { name: row.name, role: row.role, count: 1 });
+	}
+	return counts;
 }
 
 /**
@@ -808,6 +868,202 @@ export class LexiconService {
 		if (sliced === null) return { found: false, reason: `the stored range falls outside ${module}` };
 
 		return { found: true, module, name, kind, range, text: sliced, contentHash: hashOf(text) };
+	}
+
+	/**
+	 * What replacing one symbol's text would do, without writing anything.
+	 *
+	 * Everything expensive happens here and nothing touches disk, so a caller can hold the workspace
+	 * gate for the write alone. The candidate is parsed by the owning provider, which is what turns
+	 * "this text is different" into "these symbols moved and these references stopped binding".
+	 */
+	async planReplacement(
+		address: { symbolId?: string | undefined; factId?: string | undefined },
+		newText: string,
+	): Promise<ReplacementPlan> {
+		const source = this.symbolSource(address);
+		if (!source.found) return { ok: false, reason: source.reason };
+
+		const guard = this.replacementGuard(address, source);
+		if (guard) return { ok: false, reason: guard };
+
+		const before = this.readFile(source.module);
+		if (before === null) return { ok: false, reason: `${source.module} is not on disk any more` };
+
+		const spliced = applyEdits(before, [{ range: source.range, newText }]);
+		if ("problem" in spliced) return { ok: false, reason: spliced.problem };
+
+		const route = this.supervisor.route(source.module);
+		if (!route.owned) return { ok: false, reason: `no provider owns ${source.module}` };
+
+		const candidate = await this.supervisor.ask(source.module, "parseFile", {
+			module: source.module,
+			contentHash: hashOf(spliced.text),
+			text: spliced.text,
+		});
+
+		const errors = candidate.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+		if (errors.length > 0) {
+			// Restored before returning: the provider now holds the rejected text, and a later
+			// question would be answered from a version that was never written.
+			await this.reparseFromDisk(source.module);
+			return { ok: false, reason: `the replacement does not parse: ${errors.map((e) => e.message).join("; ")}` };
+		}
+
+		const renamed = this.renamedDeclaration(address, candidate, source);
+		if (renamed) {
+			await this.reparseFromDisk(source.module);
+			return { ok: false, reason: renamed };
+		}
+
+		const issues = this.impactOf(source.module, candidate);
+
+		// Silence from a provider that never claimed to report syntax errors is not approval. Said
+		// out loud, because the alternative is a caller believing the candidate was checked.
+		if (!this.supervisor.declares(route.providerId, "syntaxDiagnostics")) {
+			issues.push({
+				kind: "SyntaxUnchecked",
+				detail: `the provider for ${source.module} does not report syntax errors, so the replacement was not checked`,
+				module: source.module,
+			});
+		}
+
+		await this.reparseFromDisk(source.module);
+
+		return { ok: true, module: source.module, text: spliced.text, range: source.range, issues };
+	}
+
+	/**
+	 * Writes one module's whole text, temp file then rename.
+	 *
+	 * The caller holds the workspace gate and has already journaled what was there, so this only
+	 * has to make the replacement itself uninterruptible.
+	 */
+	writeModule(module: string, text: string): void {
+		const full = path.join(this.workspaceRoot, module);
+		const temporary = `${full}.lexicon-tmp`;
+		mkdirSync(path.dirname(full), { recursive: true });
+		writeFileSync(temporary, text);
+		renameSync(temporary, full);
+	}
+
+	/** Puts the provider back on the text that is actually there, after parsing a candidate. */
+	private async reparseFromDisk(module: string): Promise<void> {
+		const text = this.readFile(module);
+		if (text === null) return;
+		await this.supervisor
+			.ask(module, "parseFile", { module, contentHash: hashOf(text), text })
+			.catch(() => undefined);
+	}
+
+	/** Reasons a replacement is refused before it is even parsed. */
+	private replacementGuard(
+		address: { symbolId?: string | undefined },
+		source: Extract<SymbolSource, { found: true }>,
+	): string | null {
+		if (address.symbolId === undefined) return null;
+
+		// Two declarations sharing an id means the store kept one and discarded the other, so the
+		// address names something the index cannot tell apart.
+		const sharing = this.store
+			.declarationsIn(source.module)
+			.filter((declaration) => declaration.symbolId === address.symbolId);
+		if (sharing.length > 1) {
+			return `${address.symbolId} names more than one declaration in ${source.module}, so it cannot be replaced safely`;
+		}
+
+		// One statement can declare several names, giving each the same span. Replacing that span
+		// would rewrite siblings the caller never addressed.
+		const overlapping = this.store.declarationsIn(source.module).filter((declaration) => {
+			if (declaration.symbolId === address.symbolId) return false;
+			if (isWithin(declaration.symbolId, address.symbolId as string)) return false;
+			if (isWithin(address.symbolId as string, declaration.symbolId)) return false;
+			return sameRange(declaration.range, source.range);
+		});
+		if (overlapping.length > 0) {
+			const names = overlapping.map((declaration) => declaration.name).join(", ");
+			return `${source.name} shares its span with ${names}, so replacing it would rewrite them too`;
+		}
+
+		return null;
+	}
+
+	/**
+	 * A replacement that renames its own declaration, which replace must not carry out.
+	 *
+	 * The id embeds the name, so the old symbol simply disappears and a new one takes its place.
+	 * Nothing would migrate the knowledge written about it or rewrite the callers, which is exactly
+	 * what rename exists to do.
+	 */
+	private renamedDeclaration(
+		address: { symbolId?: string | undefined },
+		candidate: FileFacts,
+		source: Extract<SymbolSource, { found: true }>,
+	): string | null {
+		if (address.symbolId === undefined) return null;
+		if (candidate.declarations.some((declaration) => declaration.symbolId === address.symbolId)) return null;
+
+		// The id is gone, which is either a rename or a deletion. Deleting is a real refactor and is
+		// allowed; the orphan check reports what still points at it. A rename is refused, because
+		// only rename rewrites the callers and carries the knowledge across.
+		const before = new Set(this.store.declarationsIn(source.module).map((declaration) => declaration.symbolId));
+		const old = this.store.declaration(address.symbolId);
+		const replacement = candidate.declarations.find(
+			(declaration) =>
+				!before.has(declaration.symbolId) &&
+				declaration.kind === old?.kind &&
+				declaration.containerId === old?.containerId,
+		);
+		if (!replacement) return null;
+
+		return `the replacement renames ${source.name} to ${replacement.name}, which replace cannot do. Keep the name, or use refactor_rename.`;
+	}
+
+	/**
+	 * What the candidate breaks, minus what was already broken.
+	 *
+	 * Subtracted by (name, role, reason) rather than by fact id, because a fact id contains its
+	 * range: any edit above an untouched problem would otherwise make it look newly introduced.
+	 */
+	private impactOf(module: string, candidate: FileFacts): RefactorIssue[] {
+		const issues: RefactorIssue[] = [];
+
+		const before = this.store.declarationsIn(module);
+		const after = new Set(candidate.declarations.map((declaration) => declaration.symbolId));
+		for (const declaration of before) {
+			if (after.has(declaration.symbolId)) continue;
+			const users = this.store.referencesTo(declaration.symbolId).filter((row) => row.module !== module);
+			if (users.length === 0) continue;
+
+			issues.push({
+				kind: "OrphanedReference",
+				detail: `${declaration.name} is gone but still used in ${[...new Set(users.map((u) => u.module))].join(", ")}`,
+				module,
+			});
+		}
+
+		const wasUnbound = countUnbound(
+			this.store
+				.referencesIn(module)
+				.filter((row) => row.targetId === null && isDangling(row.provenance))
+				.map((row) => ({ name: row.name, role: row.role })),
+		);
+		const nowUnbound = countUnbound(
+			candidate.references
+				.filter((reference) => reference.binding.status === "unbound" && isDangling(reference.binding.reason))
+				.map((reference) => ({ name: reference.name, role: reference.role })),
+		);
+
+		for (const [key, tally] of nowUnbound) {
+			if (tally.count <= (wasUnbound.get(key)?.count ?? 0)) continue;
+			issues.push({
+				kind: "UnboundReference",
+				detail: `${tally.name} (${tally.role}) does not resolve to anything indexed`,
+				module,
+			});
+		}
+
+		return issues;
 	}
 
 	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */
