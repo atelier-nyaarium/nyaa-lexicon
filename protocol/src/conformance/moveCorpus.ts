@@ -8,10 +8,19 @@ import { type MoveCase, MoveCaseSchema } from "./types.js";
 //  Constants
 
 const TYPESCRIPT = "typescript";
+const PYTHON = "python";
 
 /** Composed, never spelled: the id grammar has one owner and a hand-spelled kind suffix drifts. */
 function callableId(module: string, name: string): string {
 	return composeSymbolId({ language: TYPESCRIPT, module, descriptors: [{ kind: "method", name }] });
+}
+
+function pythonCallableId(module: string, name: string): string {
+	return composeSymbolId({ language: PYTHON, module, descriptors: [{ kind: "method", name }] });
+}
+
+function pythonVariableId(module: string, name: string): string {
+	return composeSymbolId({ language: PYTHON, module, descriptors: [{ kind: "term", name }] });
 }
 
 const ADD_SYMBOL_ID = callableId("src/cart.ts", "add");
@@ -117,6 +126,86 @@ const TSCONFIG_ALIAS_FILES = {
 	"src/use.ts": 'import { add } from "@app/cart";\nexport const total = add(1, 2);\n',
 };
 
+const PYTHON_IMPORTER_NAMED_FILES = {
+	"cart.py": "def add(left, right):\n    return left + right\n",
+	"items.py": "",
+	"use.py": "from cart import add\ntotal = add(1, 2)\n",
+};
+
+const PYTHON_IMPORTER_ALIASED_FILES = {
+	"cart.py": "def add(left, right):\n    return left + right\n",
+	"items.py": "",
+	"use.py": "from cart import add as total\nvalue = total(1, 2)\n",
+};
+
+const PYTHON_IMPORTER_NAMESPACE_FILES = {
+	"cart.py": "def add(left, right):\n    return left + right\n",
+	"items.py": "",
+	"use.py": "import cart\ntotal = cart.add(1, 2)\n",
+};
+
+const PYTHON_TARGET_EXPORTED_SIBLING_FILES = {
+	"src/cart.py": "def helper(value):\n    return value * 2\ndef add(value):\n    return helper(value)\n",
+	"src/items.py": "",
+};
+
+const PYTHON_TARGET_PRIVATE_SIBLING_FILES = {
+	"src/cart.py": "def helper(value):\n    return value * 2\ndef add(value):\n    return helper(value)\n",
+	"src/items.py": "",
+};
+
+const PYTHON_TARGET_EXTERNAL_FILES = {
+	"src/cart.py": "from zod import z\nschema = z.string()\n",
+	"src/items.py": "",
+};
+
+const PYTHON_TARGET_BUILTIN_FILES = {
+	"src/cart.py": "def add(left, right):\n    return max(left, right)\n",
+	"src/items.py": "",
+};
+
+const PYTHON_TARGET_RELATIVE_FILES = {
+	"src/cart.py": "from .util import helper\ndef add(value):\n    return helper(value)\n",
+	"src/util.py": "def helper(value):\n    return value * 2\n",
+	"src/nested/items.py": "",
+};
+
+const PYTHON_TARGET_NEW_FILE_FILES = {
+	"src/cart.py": "def add(left, right):\n    return left + right\n",
+};
+
+const PYTHON_TARGET_EXISTING_FILES = {
+	"src/cart.py": "def add(left, right):\n    return left + right\n",
+	"src/items.py": "existing = 1\n",
+};
+
+const PYTHON_TARGET_COLLISION_FILES = {
+	"src/cart.py": "def add(left, right):\n    return left + right\n",
+	"src/items.py": "add = 1\n",
+};
+
+const PYTHON_SOURCE_SELF_IMPORT_FILES = {
+	"src/cart.py": "marker = 1\ndef add(left, right):\n    return left + right\ndef total():\n    return add(1, 2)\n",
+	"src/items.py": "def add(left, right):\n    return left + right\n",
+};
+
+const PYTHON_BARREL_INIT_FILES = {
+	"src/cart.py": "def add(left, right):\n    return left + right\n",
+	"src/items.py": "",
+	"src/__init__.py": "from .cart import add\n",
+};
+
+const PYTHON_BARREL_STAR_FILES = {
+	"src/cart.py": "def add(left, right):\n    return left + right\n",
+	"src/items.py": "",
+	"src/__init__.py": "from .cart import *\n",
+};
+
+const PYTHON_TARGET_DYNAMIC_FILES = {
+	"src/cart.py": "def add(name):\n    return load(name)\n",
+	"src/items.py": "",
+};
+
 const MOVE_CASES: MoveCase[] = [
 	{
 		id: "move/importer-named-import-repointed",
@@ -151,6 +240,35 @@ const MOVE_CASES: MoveCase[] = [
 					files: {
 						"src/use.ts": 'import { add } from "./items";\nexport const total = add(1, 2);\n',
 					},
+				},
+			},
+			[PYTHON]: {
+				files: PYTHON_IMPORTER_NAMED_FILES,
+				request: {
+					module: "use.py",
+					text: fileText(PYTHON_IMPORTER_NAMED_FILES, "use.py"),
+					exists: true,
+					symbolId: pythonCallableId("cart.py", "add"),
+					name: "add",
+					fromModule: "cart.py",
+					toModule: "items.py",
+					role: {},
+					importSites: [
+						{
+							range: rangeForText(PYTHON_IMPORTER_NAMED_FILES, "use.py", "add"),
+							specifier: "cart",
+							importKind: "named",
+							importedName: "add",
+							localName: "add",
+							reExport: false,
+						},
+					],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: { "use.py": "from items import add\ntotal = add(1, 2)\n" },
 				},
 			},
 		},
@@ -188,6 +306,35 @@ const MOVE_CASES: MoveCase[] = [
 					files: {
 						"src/use.ts": 'import { add as sum } from "./items";\nexport const total = sum(1, 2);\n',
 					},
+				},
+			},
+			[PYTHON]: {
+				files: PYTHON_IMPORTER_ALIASED_FILES,
+				request: {
+					module: "use.py",
+					text: fileText(PYTHON_IMPORTER_ALIASED_FILES, "use.py"),
+					exists: true,
+					symbolId: pythonCallableId("cart.py", "add"),
+					name: "add",
+					fromModule: "cart.py",
+					toModule: "items.py",
+					role: {},
+					importSites: [
+						{
+							range: rangeForText(PYTHON_IMPORTER_ALIASED_FILES, "use.py", "add"),
+							specifier: "cart",
+							importKind: "named",
+							importedName: "add",
+							localName: "total",
+							reExport: false,
+						},
+					],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: { "use.py": "from items import add as total\nvalue = total(1, 2)\n" },
 				},
 			},
 		},
@@ -259,6 +406,31 @@ const MOVE_CASES: MoveCase[] = [
 				},
 				expect: { kind: "blocked" },
 			},
+			[PYTHON]: {
+				files: PYTHON_IMPORTER_NAMESPACE_FILES,
+				request: {
+					module: "use.py",
+					text: fileText(PYTHON_IMPORTER_NAMESPACE_FILES, "use.py"),
+					exists: true,
+					symbolId: pythonCallableId("cart.py", "add"),
+					name: "add",
+					fromModule: "cart.py",
+					toModule: "items.py",
+					role: {},
+					importSites: [
+						{
+							range: rangeForText(PYTHON_IMPORTER_NAMESPACE_FILES, "use.py", "cart"),
+							specifier: "cart",
+							importKind: "namespace",
+							localName: "cart",
+							reExport: false,
+						},
+					],
+					dependencies: [],
+					sites: [rangeForText(PYTHON_IMPORTER_NAMESPACE_FILES, "use.py", "add")],
+				},
+				expect: { kind: "blocked" },
+			},
 		},
 	},
 	{
@@ -300,6 +472,38 @@ const MOVE_CASES: MoveCase[] = [
 					},
 				},
 			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_EXPORTED_SIBLING_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_EXPORTED_SIBLING_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(value):\n    return helper(value)\n" } },
+					importSites: [],
+					dependencies: [
+						{
+							name: "helper",
+							origin: {
+								kind: "sourceModule",
+								symbolId: pythonCallableId("src/cart.py", "helper"),
+								name: "helper",
+								exported: true,
+							},
+						},
+					],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/items.py": "from .cart import helper\ndef add(value):\n    return helper(value)\n",
+					},
+				},
+			},
 		},
 	},
 	{
@@ -326,6 +530,33 @@ const MOVE_CASES: MoveCase[] = [
 							origin: {
 								kind: "sourceModule",
 								symbolId: callableId("src/cart.ts", "helper"),
+								name: "helper",
+								exported: false,
+							},
+						},
+					],
+					sites: [],
+				},
+				expect: { kind: "blocked", reasons: ["PrivateSibling"] },
+			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_PRIVATE_SIBLING_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_PRIVATE_SIBLING_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(value):\n    return helper(value)\n" } },
+					importSites: [],
+					dependencies: [
+						{
+							name: "helper",
+							origin: {
+								kind: "sourceModule",
+								symbolId: pythonCallableId("src/cart.py", "helper"),
 								name: "helper",
 								exported: false,
 							},
@@ -377,6 +608,45 @@ const MOVE_CASES: MoveCase[] = [
 					},
 				},
 			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_EXTERNAL_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_EXTERNAL_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonVariableId("src/cart.py", "schema"),
+					name: "schema",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "schema = z.string()\n" } },
+					importSites: [],
+					dependencies: [
+						{
+							name: "z",
+							origin: {
+								kind: "external",
+								via: {
+									specifier: "zod",
+									importKind: "named",
+									importedName: "z",
+									localName: "z",
+									range: rangeForText(
+										PYTHON_TARGET_EXTERNAL_FILES,
+										"src/cart.py",
+										"z",
+										fileText(PYTHON_TARGET_EXTERNAL_FILES, "src/cart.py").indexOf("import"),
+									),
+								},
+							},
+						},
+					],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: { "src/items.py": "from zod import z\nschema = z.string()\n" },
+				},
+			},
 		},
 	},
 	{
@@ -408,6 +678,26 @@ const MOVE_CASES: MoveCase[] = [
 						"src/items.ts":
 							"export function add(left: number, right: number) { return Math.max(left, right); }\n",
 					},
+				},
+			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_BUILTIN_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_BUILTIN_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(left, right):\n    return max(left, right)\n" } },
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: { "src/items.py": "def add(left, right):\n    return max(left, right)\n" },
 				},
 			},
 		},
@@ -457,6 +747,44 @@ const MOVE_CASES: MoveCase[] = [
 					},
 				},
 			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_RELATIVE_FILES,
+				request: {
+					module: "src/nested/items.py",
+					text: fileText(PYTHON_TARGET_RELATIVE_FILES, "src/nested/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/nested/items.py",
+					role: { insertion: { text: "def add(value):\n    return helper(value)\n" } },
+					importSites: [],
+					dependencies: [
+						{
+							name: "helper",
+							origin: {
+								kind: "workspaceModule",
+								symbolId: pythonCallableId("src/util.py", "helper"),
+								module: "src/util.py",
+								via: {
+									specifier: ".util",
+									importKind: "named",
+									importedName: "helper",
+									localName: "helper",
+									range: rangeForText(PYTHON_TARGET_RELATIVE_FILES, "src/cart.py", "helper"),
+								},
+							},
+						},
+					],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/nested/items.py": "from ..util import helper\ndef add(value):\n    return helper(value)\n",
+					},
+				},
+			},
 		},
 	},
 	{
@@ -487,6 +815,26 @@ const MOVE_CASES: MoveCase[] = [
 					files: {
 						"src/items.ts": "export function add(left: number, right: number) { return left + right; }\n",
 					},
+				},
+			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_NEW_FILE_FILES,
+				request: {
+					module: "src/items.py",
+					text: "",
+					exists: false,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(left, right):\n    return left + right\n" } },
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: { "src/items.py": "def add(left, right):\n    return left + right\n" },
 				},
 			},
 		},
@@ -522,6 +870,28 @@ const MOVE_CASES: MoveCase[] = [
 					},
 				},
 			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_EXISTING_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_EXISTING_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(left, right):\n    return left + right\n" } },
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/items.py": "existing = 1\ndef add(left, right):\n    return left + right\n",
+					},
+				},
+			},
 		},
 	},
 	{
@@ -543,6 +913,23 @@ const MOVE_CASES: MoveCase[] = [
 							text: "export function add(left: number, right: number) { return left + right; }\n",
 						},
 					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: { kind: "refused", reason: "TargetCollision" },
+			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_COLLISION_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_COLLISION_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(left, right):\n    return left + right\n" } },
 					importSites: [],
 					dependencies: [],
 					sites: [],
@@ -593,6 +980,43 @@ const MOVE_CASES: MoveCase[] = [
 					},
 				},
 			},
+			[PYTHON]: {
+				files: PYTHON_SOURCE_SELF_IMPORT_FILES,
+				request: {
+					module: "src/cart.py",
+					text: fileText(PYTHON_SOURCE_SELF_IMPORT_FILES, "src/cart.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: {
+						removal: rangeForText(
+							PYTHON_SOURCE_SELF_IMPORT_FILES,
+							"src/cart.py",
+							"def add(left, right):\n    return left + right\n",
+						),
+					},
+					importSites: [],
+					dependencies: [
+						{
+							name: "add",
+							origin: {
+								kind: "workspaceModule",
+								symbolId: pythonCallableId("src/items.py", "add"),
+								module: "src/items.py",
+							},
+						},
+					],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/cart.py": "from .items import add\nmarker = 1\ndef total():\n    return add(1, 2)\n",
+					},
+				},
+			},
 		},
 	},
 	{
@@ -628,6 +1052,35 @@ const MOVE_CASES: MoveCase[] = [
 					files: { "src/index.ts": 'export { add } from "./items";\n' },
 				},
 			},
+			[PYTHON]: {
+				files: PYTHON_BARREL_INIT_FILES,
+				request: {
+					module: "src/__init__.py",
+					text: fileText(PYTHON_BARREL_INIT_FILES, "src/__init__.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: {},
+					importSites: [
+						{
+							range: rangeForText(PYTHON_BARREL_INIT_FILES, "src/__init__.py", "add"),
+							specifier: ".cart",
+							importKind: "named",
+							importedName: "add",
+							localName: "add",
+							reExport: true,
+						},
+					],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: { "src/__init__.py": "from .items import add\n" },
+				},
+			},
 		},
 	},
 	{
@@ -649,6 +1102,30 @@ const MOVE_CASES: MoveCase[] = [
 						{
 							range: rangeForText(BARREL_STAR_FILES, "src/index.ts", "*"),
 							specifier: "./cart",
+							importKind: "wildcard",
+							reExport: true,
+						},
+					],
+					dependencies: [],
+					sites: [],
+				},
+				expect: { kind: "blocked" },
+			},
+			[PYTHON]: {
+				files: PYTHON_BARREL_STAR_FILES,
+				request: {
+					module: "src/__init__.py",
+					text: fileText(PYTHON_BARREL_STAR_FILES, "src/__init__.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: {},
+					importSites: [
+						{
+							range: rangeForText(PYTHON_BARREL_STAR_FILES, "src/__init__.py", "*"),
+							specifier: ".cart",
 							importKind: "wildcard",
 							reExport: true,
 						},
@@ -681,6 +1158,29 @@ const MOVE_CASES: MoveCase[] = [
 							name: "load",
 							origin: { kind: "unresolved", reason: "RuntimeConstructed" },
 							range: rangeForText(TARGET_DYNAMIC_FILES, "src/cart.ts", "load"),
+						},
+					],
+					sites: [],
+				},
+				expect: { kind: "blocked", reasons: ["DynamicDependency"] },
+			},
+			[PYTHON]: {
+				files: PYTHON_TARGET_DYNAMIC_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_TARGET_DYNAMIC_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: { insertion: { text: "def add(name):\n    return load(name)\n" } },
+					importSites: [],
+					dependencies: [
+						{
+							name: "load",
+							origin: { kind: "unresolved", reason: "RuntimeConstructed" },
+							range: rangeForText(PYTHON_TARGET_DYNAMIC_FILES, "src/cart.py", "load"),
 						},
 					],
 					sites: [],

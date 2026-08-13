@@ -166,7 +166,9 @@ class Analyzer:
         self.declarations = {}
         self.references = []
         self.imports = []
+        self.import_statements = []
         self.tree = None
+        self.module_docstring = None
         self.final_names = set()
         self.final_modules = set()
         self.descriptor_occurrences = {}
@@ -860,6 +862,9 @@ class Analyzer:
 
     def analyze(self, tree):
         self.tree = tree
+        if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
+            if isinstance(tree.body[0].value.value, str):
+                self.module_docstring = self.range_of(tree.body[0])
         self.export_names = self.find_export_names()
         self.find_final_bindings()
         self.walk_statements(tree.body, [], "module", True, False)
@@ -881,6 +886,8 @@ class Analyzer:
             "declarations": list(self.declarations.values()),
             "references": self.references,
             "imports": self.imports,
+            "importStatements": self.import_statements,
+            "moduleDocstring": self.module_docstring,
             "importBindings": self.import_bindings,
             "scopeInfos": [
                 {
@@ -1684,9 +1691,19 @@ class ReferenceVisitor(ast.NodeVisitor):
             self.visit(keyword.value)
 
     def visit_Import(self, node):
+        aliases = []
         for alias in node.names:
             local_name = alias.asname or alias.name.split(".")[0]
             imported_name = self.analyzer.imported_name(alias, local_only=True)
+            aliases.append(
+                {
+                    "name": alias.name,
+                    "localName": local_name,
+                    "range": imported_name["localRange"],
+                    "localRange": imported_name["localRange"],
+                    "star": False,
+                }
+            )
             # A local import is a re-export only when __all__ names that local binding.
             self.analyzer.imports.append(
                 {
@@ -1705,18 +1722,47 @@ class ReferenceVisitor(ast.NodeVisitor):
                     "star": False,
                 }
             )
+        self.analyzer.import_statements.append(
+            {
+                "kind": "import",
+                "specifier": node.names[0].name if node.names else "",
+                "range": self.analyzer.range_of(node),
+                "reExport": False,
+                "aliases": aliases,
+            }
+        )
 
     def visit_ImportFrom(self, node):
         specifier = "." * node.level + (node.module or "")
         if specifier == "":
             specifier = "."
         imported = []
+        aliases = []
         for alias in node.names:
             name = self.analyzer.imported_name(alias)
             if name is not None:
                 imported.append(name)
+            aliases.append(
+                {
+                    "name": alias.name,
+                    "localName": alias.asname or alias.name,
+                    "range": self.analyzer.range_of(alias),
+                    "importedRange": None if name is None else name["range"],
+                    "localRange": None if name is None else name.get("localRange", name["range"]),
+                    "star": alias.name == "*",
+                }
+            )
         re_export = self.analyzer.is_from_reexport(node.names, self.scope_path)
         self.analyzer.imports.append({"specifier": specifier, "imported": imported, "reExport": re_export})
+        self.analyzer.import_statements.append(
+            {
+                "kind": "from",
+                "specifier": specifier,
+                "range": self.analyzer.range_of(node),
+                "reExport": re_export,
+                "aliases": aliases,
+            }
+        )
         for alias in node.names:
             if alias.name == "*":
                 self.analyzer.import_bindings.append(
@@ -2193,6 +2239,8 @@ def extract(module, text):
             "declarations": [],
             "references": [],
             "imports": [],
+            "importStatements": [],
+            "moduleDocstring": None,
             "importBindings": [],
             "scopeInfos": [],
             "typeAnnotations": [],

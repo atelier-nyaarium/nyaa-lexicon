@@ -10,8 +10,9 @@ import {
 	type ImportedName,
 	type ImportResolution,
 	type Literal,
+	type MoveEditsRequest,
+	type MoveEditsResponse,
 	notImplementedImport,
-	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	type ProviderHandlers,
@@ -25,6 +26,7 @@ import {
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
+import { isValidTargetModule, makeMoveEdits } from "./move";
 import { Python3Dispatch } from "./python3";
 
 //////// Constants
@@ -128,6 +130,23 @@ interface RawImportBinding {
 	star: boolean;
 }
 
+interface RawImportAlias {
+	name: string;
+	localName: string;
+	range: Range;
+	importedRange?: Range | null;
+	localRange?: Range | null;
+	star: boolean;
+}
+
+interface RawImportStatement {
+	kind: "import" | "from";
+	specifier: string;
+	range: Range;
+	reExport: boolean;
+	aliases: RawImportAlias[];
+}
+
 interface RawScopeInfo {
 	scopePath: RawDescriptor[];
 	kind: "module" | "class" | "function";
@@ -159,6 +178,8 @@ interface RawFacts {
 	declarations: RawDeclaration[];
 	references: RawReference[];
 	imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
+	importStatements: RawImportStatement[];
+	moduleDocstring?: Range | null;
 	importBindings: RawImportBinding[];
 	scopeInfos: RawScopeInfo[];
 	typeAnnotations: RawTypeAnnotation[];
@@ -230,6 +251,8 @@ function extractFacts(python3: Python3Dispatch, module: string, text: string): R
 			declarations: [],
 			references: [],
 			imports: [],
+			importStatements: [],
+			moduleDocstring: null,
 			importBindings: [],
 			scopeInfos: [],
 			typeAnnotations: [],
@@ -757,6 +780,17 @@ export class PythonProvider {
 			: typeOfAnnotation(annotation, (reference) => this.typeSymbolForReference(params.module, facts, reference));
 	}
 
+	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
+		if (!isValidTargetModule(params.toModule)) {
+			return {
+				status: "refused",
+				reason: "InvalidTarget",
+				detail: `the target is not a Python module: ${params.toModule}`,
+			};
+		}
+		return makeMoveEdits(params, extractFacts(this.python3, params.module, params.text));
+	}
+
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
 		try {
 			const response = this.python3.runJson<RenameEditsResponse>([HELPER_PATH], {
@@ -830,7 +864,7 @@ export function handlersFor(provider: PythonProvider): ProviderHandlers {
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: () => notImplementedMove("the Python provider does not move declarations yet"),
+		moveEdits: (params) => provider.moveEdits(params),
 		shutdown: () => ({}),
 	};
 }
