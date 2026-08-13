@@ -361,3 +361,23 @@ Recorded, not fixed.
 - Nothing else in Phase 1 was worse than ordinary. The id-grammar residue test caught a
   hand-written symbol id in the conformance probe on the first run, which is the mechanism
   working rather than crust.
+
+From Phase 2:
+
+- SQL LIVES IN A JS TEMPLATE LITERAL, so a backtick in a SQL comment silently ends the string and
+  the failure surfaces as three unrelated TypeScript parse errors dozens of lines away. Writing
+  `` `phase` `` in a column comment cost more time than the column did. The store's SCHEMA constant
+  is the only place this can happen, and nothing warns.
+- ADDING A TOOL TOUCHES SEVEN FILES: the backend interface, the daemon backend, the local backend,
+  the handler, the input schema, the description, and the definitions table, plus two test stubs
+  that fail to compile until updated. The compiler does catch every one, so this is tax rather than
+  risk, but it makes a small tool an expensive change and makes a batch of seven feel like
+  transcription.
+- TWO TEST BACKENDS EXIST that must both grow every new method (`adapters/mcp/src/__tests__`
+  tools.test and endToEnd.test each build their own `ToolBackend`). Neither is wrong, but a shared
+  stub factory would have made the seven-tool batch one edit instead of three.
+- DRIVING THE REAL SERVER NEEDED A BORROWED `node_modules`. The repo has no MCP client dependency,
+  so the only way to speak to the shipped stdio server was to symlink another project's modules
+  into a scratch directory. That probe found two real defects nothing else did, so the friction is
+  worth removing: a dev-dependency on the MCP SDK client would make the highest-value verification
+  step a one-liner instead of a scavenger hunt.
