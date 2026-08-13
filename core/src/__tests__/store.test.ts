@@ -244,6 +244,63 @@ describe("opening the index", () => {
 		expect(second.store.declarationsIn("src/a.ts")).toEqual([]);
 		second.store.close();
 	});
+
+	// Facts are derivable from source and a blob is not. A rebuild that dropped the journal would
+	// strand a half-applied refactor with nothing left that knows how to undo it.
+	it("carries an unfinished refactor across a rebuild", async () => {
+		const file = path.join(dir, "journal.sqlite");
+		const before = new TextEncoder().encode("export function add() {}\n");
+
+		const first = IndexStore.open(file);
+		first.store.journal((db) => {
+			db.prepare("INSERT INTO refactor_transactions (id, state, startedAt) VALUES (?, ?, ?)").run(
+				"t1",
+				"open",
+				1,
+			);
+			db.prepare(
+				"INSERT INTO refactor_steps (transactionId, stepNo, kind, phase, createdAt) VALUES (?, ?, ?, ?, ?)",
+			).run("t1", 1, "replace", "written", 1);
+			db.prepare(
+				`INSERT INTO refactor_images (transactionId, scope, stepNo, module, existedBefore, beforeHash)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+			).run("t1", "step", 1, "src/a.ts", 1, "blob-a");
+		});
+		first.store.putBlob("blob-a", before);
+		first.store.close();
+
+		const { DatabaseSync } = await import("node:sqlite");
+		const raw = new DatabaseSync(file);
+		raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
+		raw.close();
+
+		const second = IndexStore.open(file);
+		expect(second.rebuilt).toBe(true);
+
+		const open = second.store.journal((db) => db.prepare("SELECT * FROM refactor_transactions").all());
+		expect(open).toEqual([{ id: "t1", state: "open", startedAt: 1 }]);
+		expect(second.store.blob("blob-a")).toEqual(before);
+		second.store.close();
+	});
+
+	it("drops a blob once no image still points at it", () => {
+		const file = path.join(dir, "prune.sqlite");
+		const opened = IndexStore.open(file);
+
+		opened.store.putBlob("orphan", new TextEncoder().encode("gone"));
+		opened.store.putBlob("kept", new TextEncoder().encode("held"));
+		opened.store.journal((db) => {
+			db.prepare(
+				`INSERT INTO refactor_images (transactionId, scope, stepNo, module, existedBefore, beforeHash)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+			).run("t1", "baseline", 0, "src/a.ts", 1, "kept");
+		});
+
+		expect(opened.store.pruneBlobs()).toBe(1);
+		expect(opened.store.blob("orphan")).toBeNull();
+		expect(opened.store.blob("kept")).not.toBeNull();
+		opened.store.close();
+	});
 });
 
 /**

@@ -112,7 +112,7 @@ export type StoredFact =
 // 13: answers carry a declared doubt. Mechanical staleness cannot see semantic drift, so an agent
 //    that changed a function's purpose needs a way to flag the recorded explanation without
 //    rewriting it, and the flag must survive a re-record by a writer who never saw it.
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 // Every range is stored whole. Keeping only a start meant the index could say where something was
 // and never what text it occupied, which is the difference between navigating and editing.
@@ -270,6 +270,66 @@ CREATE TABLE gaps (
   lastAsked INTEGER NOT NULL,
   PRIMARY KEY (symbolId, question)
 );
+
+-- The refactor journal. One open transaction per workspace, enforced by the partial index below
+-- rather than by whoever happens to check first.
+CREATE TABLE refactor_transactions (
+  id        TEXT PRIMARY KEY,
+  state     TEXT NOT NULL,
+  startedAt INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX refactor_one_open ON refactor_transactions(state) WHERE state = 'open';
+
+-- The phase is what recovery reads. A crash between any two of these leaves a state that has to
+-- be distinguishable from the others, so it is committed before the work it names, not after.
+CREATE TABLE refactor_steps (
+  transactionId TEXT NOT NULL,
+  stepNo        INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  phase         TEXT NOT NULL,
+  -- The plan as decided, so applying never recomputes it and cannot drift from what was reported.
+  plan          TEXT,
+  createdAt     INTEGER NOT NULL,
+  PRIMARY KEY (transactionId, stepNo)
+);
+
+-- Content addressed, so snapshotting every layer of a long transaction stores each distinct file
+-- version once rather than once per layer. Bytes, not text: a file that is not valid UTF-8 still
+-- has to come back byte-identical.
+CREATE TABLE refactor_blobs (
+  hash  TEXT PRIMARY KEY,
+  bytes BLOB NOT NULL
+);
+
+-- The scope separates the transaction's opening image of a file from each step's. Revert reads
+-- the baseline, undo reads the step, and collapsing them would make one of the two wrong.
+--
+-- Existence is recorded on both sides because absent and empty are different files: a target the
+-- transaction created has existedBefore 0, and undoing it means deleting rather than writing "".
+CREATE TABLE refactor_images (
+  transactionId TEXT NOT NULL,
+  scope         TEXT NOT NULL,
+  stepNo        INTEGER,
+  module        TEXT NOT NULL,
+  existedBefore INTEGER NOT NULL,
+  beforeHash    TEXT,
+  existsAfter   INTEGER,
+  afterHash     TEXT,
+  PRIMARY KEY (transactionId, scope, stepNo, module)
+);
+CREATE INDEX refactor_images_txn ON refactor_images(transactionId);
+
+-- Problems a step introduced, kept per step so status can say which one to look at, and so a
+-- commit refusal names the step rather than the workspace.
+CREATE TABLE refactor_issues (
+  transactionId TEXT NOT NULL,
+  stepNo        INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  detail        TEXT NOT NULL,
+  module        TEXT,
+  line          INTEGER
+);
+CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
 `;
 
 /**
@@ -293,22 +353,58 @@ const FINGERPRINT_KEY = "indexerFingerprint";
  */
 const WORKSPACE_KEY = "workspaceRoot";
 
-/** What survives a rebuild: the tables holding work no re-index can regenerate. */
-interface SalvagedKnowledge {
-	answers: Array<Record<string, unknown>>;
-	gaps: Array<Record<string, unknown>>;
-}
+/** Tables a rebuild carries across, because no re-index can regenerate what is in them. */
+const SALVAGED_TABLES = [
+	"answers",
+	"gaps",
+	"refactor_transactions",
+	"refactor_steps",
+	"refactor_blobs",
+	"refactor_images",
+	"refactor_issues",
+] as const;
 
-/** Read by column NAME, so rows written under an older schema carry what they have. */
+/** Journal tables, whose loss is worse than a failed open: it strands edits already on disk. */
+const JOURNAL_TABLES = SALVAGED_TABLES.filter((table) => table.startsWith("refactor_"));
+
+/** What survives a rebuild, keyed by table so a new salvaged table needs no new field. */
+type SalvagedKnowledge = Record<string, Array<Record<string, unknown>>>;
+
+/**
+ * Read by column NAME, so rows written under an older schema carry what they have.
+ *
+ * A knowledge table that cannot be read salvages empty, since an answer nobody can parse is not
+ * worth failing an open over. A JOURNAL table that cannot be read throws: it describes files
+ * already written to disk, and opening as though the transaction never existed would strand a
+ * half-applied refactor with nothing left that knows how to undo it.
+ */
 function salvageKnowledge(db: DatabaseSync): SalvagedKnowledge {
-	const read = (table: string): Array<Record<string, unknown>> => {
-		try {
-			return db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
-		} catch {
-			return [];
+	const exists = new Set(
+		(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
+			(row) => row.name,
+		),
+	);
+
+	const salvaged: SalvagedKnowledge = {};
+	for (const table of SALVAGED_TABLES) {
+		if (!exists.has(table)) {
+			salvaged[table] = [];
+			continue;
 		}
-	};
-	return { answers: read("answers"), gaps: read("gaps") };
+		try {
+			salvaged[table] = db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
+		} catch (error) {
+			if (JOURNAL_TABLES.includes(table)) {
+				throw new Error(
+					`the refactor journal in ${table} could not be read, so an unfinished refactor cannot be recovered: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+			salvaged[table] = [];
+		}
+	}
+	return salvaged;
 }
 
 function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge): void {
@@ -317,7 +413,7 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge): void {
 		 doubtId, doubtReason, doubtAt, doubtBy)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
-	for (const row of salvaged.answers) {
+	for (const row of salvaged["answers"] ?? []) {
 		const [symbolId, prose, factId] = [row["symbolId"], row["prose"], row["factId"]];
 		// A row missing its identity or prose is corruption, and restoring it would enshrine that.
 		if (typeof symbolId !== "string" || typeof prose !== "string" || typeof factId !== "string") continue;
@@ -340,7 +436,7 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge): void {
 	}
 
 	const gap = db.prepare("INSERT OR REPLACE INTO gaps (symbolId, question, askCount, lastAsked) VALUES (?, ?, ?, ?)");
-	for (const row of salvaged.gaps) {
+	for (const row of salvaged["gaps"] ?? []) {
 		const symbolId = row["symbolId"];
 		if (typeof symbolId !== "string") continue;
 		gap.run(
@@ -349,6 +445,32 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge): void {
 			typeof row["askCount"] === "number" ? row["askCount"] : 1,
 			typeof row["lastAsked"] === "number" ? row["lastAsked"] : 0,
 		);
+	}
+
+	for (const table of JOURNAL_TABLES) restoreByColumn(db, table, salvaged[table] ?? []);
+}
+
+/**
+ * Restores rows into whatever columns the new schema shares with the old ones.
+ *
+ * Column-wise rather than positional, so adding a journal column keeps old rows loadable instead
+ * of dropping every one of them the first time the schema moves. A row losing a column it no
+ * longer has is fine; a row losing its whole transaction is not.
+ */
+function restoreByColumn(db: DatabaseSync, table: string, rows: Array<Record<string, unknown>>): void {
+	if (rows.length === 0) return;
+
+	const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+		(column) => column.name,
+	);
+
+	for (const row of rows) {
+		const present = columns.filter((column) => row[column] !== undefined);
+		if (present.length === 0) continue;
+		const statement = db.prepare(
+			`INSERT OR REPLACE INTO ${table} (${present.join(", ")}) VALUES (${present.map(() => "?").join(", ")})`,
+		);
+		statement.run(...present.map((column) => row[column] as string | number | null | Uint8Array));
 	}
 }
 
@@ -373,11 +495,12 @@ export class IndexStore {
 	private constructor(private readonly db: DatabaseSync) {}
 
 	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. */
-	private inTransaction(work: () => void): void {
+	private inTransaction<T>(work: () => T): T {
 		this.db.exec("BEGIN");
 		try {
-			work();
+			const result = work();
 			this.db.exec("COMMIT");
+			return result;
 		} catch (error) {
 			this.db.exec("ROLLBACK");
 			throw error;
@@ -434,10 +557,20 @@ export class IndexStore {
 			const tables = db
 				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
 				.all() as Array<{ name: string }>;
-			for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
-			db.exec(SCHEMA);
+
+			// One transaction over drop, create and restore. Crashing between them would otherwise
+			// leave a store with no journal and a workspace with a half-applied refactor in it.
+			db.exec("BEGIN");
+			try {
+				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
+				db.exec(SCHEMA);
+				restoreKnowledge(db, salvaged);
+				db.exec("COMMIT");
+			} catch (error) {
+				db.exec("ROLLBACK");
+				throw error;
+			}
 			db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-			restoreKnowledge(db, salvaged);
 			rebuilt = version !== 0;
 		}
 
@@ -594,6 +727,42 @@ export class IndexStore {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db.prepare("DELETE FROM files WHERE module = ?").run(module);
 		});
+	}
+
+	////////////////////////////////
+	//  Refactor journal
+	//
+	// Rows only. Everything that decides what they MEAN lives in TransactionManager, which a
+	// residue test holds as the single owner of the concept.
+
+	/** Runs `work` inside one SQLite transaction, exposed so the journal writes atomically. */
+	journal<T>(work: (db: DatabaseSync) => T): T {
+		return this.inTransaction(() => work(this.db));
+	}
+
+	/** Content addressed, so re-snapshotting an unchanged file costs a lookup and no bytes. */
+	putBlob(hash: string, bytes: Uint8Array): void {
+		this.db.prepare("INSERT OR IGNORE INTO refactor_blobs (hash, bytes) VALUES (?, ?)").run(hash, bytes);
+	}
+
+	blob(hash: string): Uint8Array | null {
+		const row = this.db.prepare("SELECT bytes FROM refactor_blobs WHERE hash = ?").get(hash) as
+			| { bytes: Uint8Array }
+			| undefined;
+		return row?.bytes ?? null;
+	}
+
+	/** Blobs no image still points at. Called after a transaction settles, never during one. */
+	pruneBlobs(): number {
+		const result = this.db
+			.prepare(
+				`DELETE FROM refactor_blobs WHERE hash NOT IN (
+				   SELECT beforeHash FROM refactor_images WHERE beforeHash IS NOT NULL
+				   UNION SELECT afterHash FROM refactor_images WHERE afterHash IS NOT NULL
+				 )`,
+			)
+			.run();
+		return Number(result.changes);
 	}
 
 	/**
