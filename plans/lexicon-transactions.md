@@ -350,7 +350,17 @@ Two deviations from the bullets:
   `protocol/src/rename.ts` and provider renameEdits implementations STAY (provider contract, not
   the removed tools).
 
-## Phase 5 - refactor_move
+## Phase 5 - refactor_move ✅ (TypeScript only)
+
+- TYPESCRIPT ONLY. Python and GDScript still answer `NotImplemented`, so `refactor_move` refuses
+  for those languages rather than half-working. Backlogged; the contract is frozen and TypeScript
+  proves it holds, so each is now independent provider work.
+- The contract was WRONG about `MoveImportSite.range` and only driving a real move showed it. It
+  promised the whole import statement, which the core cannot supply: the index stores the
+  rewritable NAME's span. Every real move blocked with `ParseError` until the contract was
+  corrected to say the range locates the statement rather than delimiting it.
+- Python's deterministic symbol-id disambiguators did not land, so the collision-refusal fallback
+  in `refactor_replace` stays for that language.
 
 - Core orchestration: closure computation (declaration + descendants), dependency inventory
   construction, cut + insert (create target if absent: virtual admission, directory creation,
@@ -429,6 +439,15 @@ From Phase 4:
   reads exactly like the feature being broken. I went looking for a migration bug that did not
   exist. Naming the wrapper for what it adds, or exposing the prose at the top level, would have
   spent that time somewhere useful.
+
+From Phase 5:
+
+- A CONTRACT CAN BE WRONG IN A WAY NO TEST CATCHES. `MoveImportSite.range` was specified as the
+  whole import statement, the provider was built and tested against that reading, and 95 provider
+  tests passed. The core cannot produce that range at all, so the first real move blocked on every
+  importer. Both sides were self-consistent and the pair was broken. The fixture that would have
+  caught it is one the core actually sends, which is why the end-to-end probe keeps earning its
+  keep over unit tests on either side.
 
 - DRIVING THE REAL SERVER NEEDED A BORROWED `node_modules`. The repo has no MCP client dependency,
   so the only way to speak to the shipped stdio server was to symlink another project's modules
