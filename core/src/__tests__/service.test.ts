@@ -96,13 +96,29 @@ describe("applying a watcher batch", () => {
 		expect(service.findByName("B")).toEqual([]);
 	}, 30_000);
 
+	// The hash compared is of the text that was indexed, so a re-save of identical content is
+	// recognized whatever the caller claims. The watcher hashes the same way, so this is the shape
+	// a real touch-without-editing arrives in.
 	it("skips a re-save whose content did not move, without asking the provider", async () => {
 		await boot();
 		files.set("a.ref", "export class A {}\n");
 		await service.indexFile("a.ref", "h1");
+		const indexed = store.contentHashOf("a.ref") as string;
 
-		const outcomes = await service.applyBatch([{ kind: "changed", module: "a.ref", contentHash: "h1" }]);
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "a.ref", contentHash: indexed }]);
 		expect(outcomes[0]).toMatchObject({ action: "skipped", reason: "content is unchanged" });
+	}, 30_000);
+
+	// A caller's hash is a claim about a file it read at some earlier moment. Storing it would file
+	// the facts of one version under the name of another.
+	it("stores the hash of the text it read, not the one it was handed", async () => {
+		await boot();
+		files.set("a.ref", "export class A {}\n");
+		await service.indexFile("a.ref", "a-stale-label");
+
+		expect(store.contentHashOf("a.ref")).not.toBe("a-stale-label");
+		const source = service.symbolSource({ symbolId: service.findByName("A")[0]?.symbolId as string });
+		expect(source.found).toBe(true);
 	}, 30_000);
 });
 
@@ -267,6 +283,62 @@ describe("type hierarchy and citable facts", () => {
 		store.replaceFile("a.ref", "h2", [{ ...base, signature: "class Base extends Other" }], []);
 
 		expect(built.resolveFacts(cited).missing).toEqual(cited);
+	});
+});
+
+describe("reading a symbol's source", () => {
+	const CART = "export class Cart {\n\tadd() {}\n}\n";
+
+	it("returns the declaration's own text, not the whole file", async () => {
+		await boot();
+		files.set("a.ref", `${CART}export function other() {}\n`);
+		await service.indexFile("a.ref", "h1");
+		const target = service.findByName("Cart")[0]?.symbolId;
+		if (!target) throw new Error("expected Cart");
+
+		const source = service.symbolSource({ symbolId: target });
+
+		expect(source).toMatchObject({ found: true, module: "a.ref", name: "Cart" });
+		if (!source.found) throw new Error("expected a hit");
+		expect(source.text).toContain("class Cart");
+		expect(source.text).not.toContain("other");
+	});
+
+	// The range comes back so a replacement writes where the text was read from, rather than
+	// re-deriving a range that could disagree with the one that produced the text.
+	it("returns the range that text occupies, and slices to it exactly", async () => {
+		await boot();
+		files.set("a.ref", `${CART}export function other() {}\n`);
+		await service.indexFile("a.ref", "h1");
+		const target = service.findByName("Cart")[0]?.symbolId;
+		if (!target) throw new Error("expected Cart");
+
+		const source = service.symbolSource({ symbolId: target });
+		if (!source.found) throw new Error("expected a hit");
+
+		const text = files.get("a.ref") as string;
+		const lines = text.split("\n");
+		expect(lines[source.range.start.line]?.slice(source.range.start.character)).toContain("class Cart");
+	});
+
+	// Slicing a stale range yields something that looks like source and is not the symbol.
+	it("refuses when the file changed since it was indexed", async () => {
+		await boot();
+		files.set("a.ref", CART);
+		await service.indexFile("a.ref", "h1");
+		const target = service.findByName("Cart")[0]?.symbolId;
+		if (!target) throw new Error("expected Cart");
+
+		files.set("a.ref", `// a line nobody indexed\n${CART}`);
+		const source = service.symbolSource({ symbolId: target });
+
+		expect(source).toMatchObject({ found: false, stale: true });
+	});
+
+	it("says so when the address names nothing", async () => {
+		await boot();
+		expect(service.symbolSource({ symbolId: "lexicon reference a.ref Ghost#" })).toMatchObject({ found: false });
+		expect(service.symbolSource({})).toMatchObject({ found: false });
 	});
 });
 

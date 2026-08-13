@@ -283,6 +283,26 @@ export interface GraphSummary {
 	cycle?: string[];
 }
 
+/**
+ * One symbol's text as it stands on disk, with the range that text occupies.
+ *
+ * The range rides along because it is what a replacement overwrites: a caller that read the text
+ * here and edited it needs to say WHERE it goes back, and re-deriving that would let the two
+ * disagree.
+ */
+export type SymbolSource =
+	| {
+			found: true;
+			module: string;
+			name: string;
+			kind: string;
+			range: Range;
+			text: string;
+			/** Of the same read the text came from, so a later write can prove nothing moved. */
+			contentHash: string;
+	  }
+	| { found: false; reason: string; stale?: boolean };
+
 /** The plan rides along either way, so a refusal can say what it would have done. */
 export type RenameOutcome =
 	| { renamed: true; plan: RenamePlan; modules: string[] }
@@ -346,6 +366,27 @@ function hashOf(text: string): string {
 
 function detailOf(detail: string | undefined): string {
 	return detail === undefined ? "" : `: ${detail}`;
+}
+
+/**
+ * The text a range covers, in the same UTF-16 coordinates every edit uses.
+ *
+ * Null rather than a clamped slice when the range runs past the file: a range that no longer fits
+ * describes text that moved, and returning the nearest thing would be a plausible wrong answer.
+ */
+function sliceRange(text: string, range: Range): string | null {
+	const starts = [0];
+	for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
+
+	const from = starts[range.start.line];
+	const to = starts[range.end.line];
+	if (from === undefined || to === undefined) return null;
+
+	const start = from + range.start.character;
+	const end = to + range.end.character;
+	if (end > text.length || end < start) return null;
+
+	return text.slice(start, end);
 }
 
 /** A package remains external even when it offers one safe module for surface indexing. */
@@ -432,22 +473,20 @@ export class LexiconService {
 			return { module, action: "forgotten", reason: "file is gone" };
 		}
 
+		// Of the text actually read, never the caller's. A watcher hashes at event time and this
+		// reads later, so trusting the argument would store facts from one version of a file under
+		// the hash of another, and every staleness check downstream would compare the wrong pair.
+		const readHash = hashOf(text);
+
 		const facts = await this.supervisor.ask(module, "parseFile", {
 			module,
-			contentHash,
+			contentHash: readHash,
 			text,
 			...(depth === "surface" ? { depth } : {}),
 		});
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 		if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("; "));
-		this.store.replaceFile(
-			module,
-			contentHash,
-			facts.declarations,
-			facts.references,
-			facts.imports,
-			facts.literals,
-		);
+		this.store.replaceFile(module, readHash, facts.declarations, facts.references, facts.imports, facts.literals);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
 		this.cache.invalidate();
 		return { module, action: "indexed", declarations: facts.declarations.length };
@@ -732,6 +771,69 @@ export class LexiconService {
 	/** One declaration with its ranges, which `describe` deliberately does not carry. */
 	declarationOf(symbolId: string): StoredDeclaration | null {
 		return this.store.declaration(symbolId);
+	}
+
+	/**
+	 * The exact source text one address occupies, plus the range a replacement would overwrite.
+	 *
+	 * Read once and sliced from that same read, so the hash reported is the hash of the text
+	 * returned. Hashing a second read would let a file change in between and hand back a slice that
+	 * never existed at the hash it claims.
+	 *
+	 * A stale index refuses rather than slicing: the stored range describes text that has moved, so
+	 * cutting at it produces something that looks like source and is not the symbol.
+	 */
+	symbolSource(address: { symbolId?: string; factId?: string }): SymbolSource {
+		const located = this.locate(address);
+		if ("problem" in located) return { found: false, reason: located.problem };
+
+		const { module, range, name, kind } = located;
+		const text = this.readFile(module);
+		if (text === null) return { found: false, reason: `${module} is not on disk any more` };
+
+		const stored = this.store.contentHashOf(module);
+		if (stored !== null && stored !== hashOf(text)) {
+			return {
+				found: false,
+				reason: `${module} changed since it was indexed, so its ranges are stale`,
+				stale: true,
+			};
+		}
+
+		const sliced = sliceRange(text, range);
+		if (sliced === null) return { found: false, reason: `the stored range falls outside ${module}` };
+
+		return { found: true, module, name, kind, range, text: sliced, contentHash: hashOf(text) };
+	}
+
+	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */
+	private locate(address: {
+		symbolId?: string;
+		factId?: string;
+	}): { module: string; range: Range; name: string; kind: string } | { problem: string } {
+		if (address.symbolId !== undefined) {
+			const declaration = this.store.declaration(address.symbolId);
+			if (!declaration) return { problem: `${address.symbolId} is not in the index` };
+			return {
+				module: declaration.module,
+				range: declaration.range,
+				name: declaration.name,
+				kind: declaration.kind,
+			};
+		}
+
+		if (address.factId !== undefined) {
+			const fact = this.store.factById(address.factId);
+			if (!fact) return { problem: `${address.factId} names nothing in the index any more` };
+			if (fact.fact !== "literal") {
+				return {
+					problem: `${address.factId} names a ${fact.fact}, and only a literal is addressable by fact id`,
+				};
+			}
+			return { module: fact.module, range: fact.range, name: fact.value, kind: `${fact.kind} literal` };
+		}
+
+		return { problem: "give either a symbolId or a literal's factId" };
 	}
 
 	/** Everything declared in one file, in source order. What an editor outline is built from. */
