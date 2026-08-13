@@ -1356,6 +1356,24 @@ export class LexiconService {
 		return { answers, gaps };
 	}
 
+	/**
+	 * Modules whose text on disk is not what the index describes.
+	 *
+	 * Any rewrite planned from stored ranges is wrong for these: the ranges describe text that has
+	 * moved. A rename against a stale module rewrites the occurrences it can still find and misses
+	 * the ones that shifted, which produces a file where the import says one name and the call says
+	 * another.
+	 */
+	staleModules(modules: Iterable<string>): string[] {
+		const stale: string[] = [];
+		for (const module of modules) {
+			const indexed = this.store.contentHashOf(module);
+			if (indexed === null) continue;
+			if (this.currentHashOf(module) !== indexed) stale.push(module);
+		}
+		return stale;
+	}
+
 	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */
 	currentHashOf(module: string): string | null {
 		const text = this.readFile(module);

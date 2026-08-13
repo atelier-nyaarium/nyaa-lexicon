@@ -154,6 +154,16 @@ async function refactorMove(
 		}
 
 		const touched = edits.files.map((file) => file.module);
+		// Import sites were chosen from stored ranges, so the same staleness rule applies here.
+		const stale = service.staleModules(plan.referencing);
+		if (stale.length > 0) {
+			return {
+				moved: false,
+				issues: [],
+				reason: `${stale.join(", ")} changed since being indexed, so the move would rewrite stale positions`,
+			};
+		}
+
 		const begun = transactions.beginStep("move", touched, { from: plan.fromModule, to: plan.toModule });
 		if (!begun.ok) return { moved: false, issues: [], reason: begun.reason };
 
@@ -234,6 +244,17 @@ async function refactorRename(
 	const alsoBound = service.modulesBoundTo(idMap.keys()).filter((module) => !edited.includes(module));
 
 	return write(async () => {
+		// Every site was chosen from stored ranges. A module that has changed since it was indexed
+		// has moved those ranges, so rewriting it would hit some occurrences and miss others.
+		const stale = service.staleModules(edited);
+		if (stale.length > 0) {
+			return {
+				renamed: false,
+				issues: [],
+				reason: `${stale.join(", ")} changed since being indexed, so the rename would rewrite stale positions`,
+			};
+		}
+
 		const begun = transactions.beginStep("rename", [...edited, ...alsoBound], plan);
 		if (!begun.ok) return { renamed: false, issues: [], reason: begun.reason };
 
