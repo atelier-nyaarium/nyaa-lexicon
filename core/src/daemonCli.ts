@@ -18,7 +18,9 @@ import { LexiconService } from "./service.js";
 import { DaemonStartingError } from "./socketTransport.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
+import { TransactionManager } from "./transactions.js";
 import { admitWorkspace } from "./workspaceAdmission.js";
+import { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
 //  Constants
@@ -116,7 +118,20 @@ async function main(argv: string[]): Promise<void> {
 		root,
 	);
 
-	const dispatch = createDispatch(service);
+	const gate = new WorkspaceGate();
+	const transactions = new TransactionManager(store, root);
+
+	// Before the handler is published, so nothing can ask about a workspace still holding a
+	// half-applied step. The lock is already claimed, so no other daemon is writing here.
+	const recovered = await gate.exclusive(async () => transactions.recover());
+	if (recovered.recovered) {
+		console.log(`recovered refactor ${recovered.transactionId}: restored ${recovered.restored.length} file(s)`);
+		if (recovered.conflicts.length > 0) {
+			console.log(`left alone, changed by someone else: ${recovered.conflicts.join(", ")}`);
+		}
+	}
+
+	const dispatch = createDispatch(service, { gate, transactions });
 
 	// Warming is opt-in, and the opt-in is having indexed here before. A directory nobody meant to
 	// index costs nothing until something asks about it.

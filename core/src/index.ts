@@ -107,6 +107,7 @@ export {
 	type RenameFile,
 	type RenameOutcome,
 	type RenamePlan,
+	type SymbolSource,
 	type SymbolSummary,
 	type TypeHierarchy,
 } from "./service.js";
@@ -138,6 +139,16 @@ export {
 } from "./store.js";
 export { type ProviderSpec, ProviderSupervisor } from "./supervisor.js";
 export {
+	type FileImage,
+	type ImageScope,
+	type RefactorIssue,
+	type StepKind,
+	type StepPhase,
+	TransactionManager,
+	type TransactionStatus,
+	type TransactionStep,
+} from "./transactions.js";
+export {
 	hashContent,
 	isIgnored,
 	type RunningWatcher,
@@ -147,3 +158,4 @@ export {
 	watchWorkspace,
 } from "./watcher.js";
 export { type Admission, admitWorkspace } from "./workspaceAdmission.js";
+export { type GateStats, WorkspaceGate } from "./workspaceGate.js";

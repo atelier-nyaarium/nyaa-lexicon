@@ -99,6 +99,13 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
 		prepareRename: (symbolId, newName) => ask("prepareRename", { symbolId, newName }),
 		renameSymbol: (symbolId, newName) => ask("renameSymbol", { symbolId, newName }),
+		symbolSource: (address) => ask("symbolSource", address),
+		refactorStart: () => ask("refactorStart", {}),
+		refactorStatus: () => ask("refactorStatus", {}),
+		refactorTrack: (module) => ask("refactorTrack", { module }),
+		refactorUndo: () => ask("refactorUndo", {}),
+		refactorRevert: () => ask("refactorRevert", {}),
+		refactorCommit: (force) => ask("refactorCommit", { force }),
 		indexStatus: () => ask("indexStatus", {}),
 		findLiterals: (query) => ask("findLiterals", query),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
@@ -128,6 +135,9 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
  * held behind a scan of the workspace. The cost is that each session builds its own index, which
  * is exactly what the daemon exists to avoid; this is the fallback, not the design.
  */
+const NO_JOURNAL =
+	"refactor transactions need the daemon, whose index is on disk; this session is running its own in-memory index, where an undo record would not survive the process";
+
 export function localBackend(workspaceRoot: string): ToolBackend {
 	let ready: Promise<LexiconService> | null = null;
 
@@ -165,6 +175,15 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 		typeOf: async (symbolId) => (await service()).typeOf(symbolId),
 		prepareRename: async (symbolId, newName) => (await service()).prepareRename(symbolId, newName),
 		renameSymbol: async (symbolId, newName) => (await service()).renameSymbol(symbolId, newName),
+		symbolSource: async (address) => (await service()).symbolSource(address),
+		// A journal in an in-memory index dies with the process, so this backend would offer an undo
+		// it could not honour and leave written files with no record of what they replaced.
+		refactorStart: async () => ({ started: false, id: "", reason: NO_JOURNAL }),
+		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		refactorTrack: async () => ({ tracked: false, reason: NO_JOURNAL }),
+		refactorUndo: async () => ({ undone: false, reason: NO_JOURNAL }),
+		refactorRevert: async () => ({ reverted: false, modules: [], reason: NO_JOURNAL }),
+		refactorCommit: async () => ({ committed: false, issues: [], reason: NO_JOURNAL }),
 		indexStatus: async () => (await service()).indexStatus(),
 		findLiterals: async ({ limit, ...query }) => (await service()).findLiterals(query, limit),
 		coChangedWith: async (module, limit) => (await service()).coChangedWith(module, limit),

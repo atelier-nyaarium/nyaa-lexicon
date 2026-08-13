@@ -312,7 +312,11 @@ export class TransactionManager {
 	}
 
 	/** Keeps what is on disk and drops the journal, so nothing can be undone afterwards. */
-	commit(options: { force?: boolean } = {}): { committed: boolean; issues: RefactorIssue[]; reason?: string } {
+	commit(options: { force?: boolean | undefined } = {}): {
+		committed: boolean;
+		issues: RefactorIssue[];
+		reason?: string;
+	} {
 		const open = this.openTransaction();
 		if (!open) return { committed: false, issues: [], reason: "no refactor transaction is open" };
 

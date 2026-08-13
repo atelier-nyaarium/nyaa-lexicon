@@ -17,11 +17,14 @@ import type {
 	QuestionClass,
 	RecalledAnswer,
 	RecordOutcome,
+	RefactorIssue,
 	ReferencesResult,
 	RenameOutcome,
 	RenamePlan,
 	StoredImport,
+	SymbolSource,
 	SymbolSummary,
+	TransactionStatus,
 } from "@nyaa-lexicon/core";
 import { compileSearchRegex } from "@nyaa-lexicon/core";
 import type { ImportResolution, TypeInfo } from "@nyaa-lexicon/protocol";
@@ -42,10 +45,14 @@ import {
 	renderOutline,
 	renderOverview,
 	renderRecordOutcome,
+	renderRefactorCommit,
+	renderRefactorStart,
+	renderRefactorStatus,
 	renderReferences,
 	renderRenameOutcome,
 	renderRenamePlan,
 	renderSymbolSearch,
+	renderSymbolSource,
 	renderType,
 } from "./render.js";
 
@@ -61,6 +68,13 @@ export interface ToolBackend {
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
 	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
 	renameSymbol: (symbolId: string, newName: string) => Promise<RenameOutcome>;
+	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
+	refactorStart: () => Promise<{ started: boolean; id: string; reason?: string }>;
+	refactorStatus: () => Promise<TransactionStatus>;
+	refactorTrack: (module: string) => Promise<{ tracked: boolean; reason?: string }>;
+	refactorUndo: () => Promise<{ undone: boolean; stepNo?: number; modules?: string[]; reason?: string }>;
+	refactorRevert: () => Promise<{ reverted: boolean; modules: string[]; reason?: string }>;
+	refactorCommit: (force?: boolean) => Promise<{ committed: boolean; issues: RefactorIssue[]; reason?: string }>;
 	indexStatus: () => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
@@ -204,6 +218,19 @@ export const TypeOfInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
+};
+
+export const SymbolSourceInput = {
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	factId: z.string().min(1).optional().describe(`A literal's \`factId\` from \`find_literals\`.`),
+};
+
+export const RefactorTrackInput = {
+	module: z.string().min(1).describe(`Workspace-relative path you are about to edit by hand.`),
+};
+
+export const RefactorCommitInput = {
+	force: z.boolean().optional().describe(`Commit despite outstanding issues.`),
 };
 
 export const FindLiteralsInput = {
@@ -388,6 +415,63 @@ export const RENAME_SYMBOL_DESCRIPTION = `
 Rename a bound symbol across declarations, uses, imports, and re-exports.
 
 Writes files and reindexes them. A blocked plan writes nothing. Call \`prepare_rename\` first.
+`.trim();
+
+export const SYMBOL_SOURCE_DESCRIPTION = `
+# \`symbol_source\`
+
+Read one symbol's exact source text by id, without reading the file around it.
+
+Answers with the text and the range it occupies, so a rewrite goes back where it came from. Refuses
+a stale index rather than slicing a range that has moved.
+`.trim();
+
+export const REFACTOR_START_DESCRIPTION = `
+# \`refactor_start\`
+
+Open the workspace's refactor transaction, and return the rules for operating it.
+
+Every other \`refactor_\` tool needs one open. One per workspace, shared by every session.
+`.trim();
+
+export const REFACTOR_STATUS_DESCRIPTION = `
+# \`refactor_status\`
+
+Show the open transaction: its steps, tracked files, and outstanding issues.
+
+Answers "none open" as a result, not an error. Also how you find what another session already did.
+`.trim();
+
+export const REFACTOR_TRACK_DESCRIPTION = `
+# \`refactor_track\`
+
+Snapshot a file BEFORE you edit it by hand, so undo and revert can put it back.
+
+An untracked edit cannot be undone and survives revert. Tracking twice keeps the first snapshot.
+`.trim();
+
+export const REFACTOR_UNDO_DESCRIPTION = `
+# \`refactor_undo\`
+
+Remove the newest step, restoring the files it wrote.
+
+Refuses when one of those files changed since, rather than overwriting whatever changed it.
+`.trim();
+
+export const REFACTOR_COMMIT_DESCRIPTION = `
+# \`refactor_commit\`
+
+Keep what is on disk and close the transaction. Nothing is undoable afterwards.
+
+Refuses while issues are outstanding. \`force\` accepts them deliberately.
+`.trim();
+
+export const REFACTOR_REVERT_DESCRIPTION = `
+# \`refactor_revert\`
+
+Return every tracked file to how the transaction found it, and close it.
+
+Discards manual edits made since, including ones made after a step.
 `.trim();
 
 export const FIND_LITERALS_DESCRIPTION = `
@@ -648,6 +732,73 @@ export async function renameSymbol(backend: ToolBackend, args: SymbolArgs & { ne
 
 	const outcome = await backend.renameSymbol(resolved.symbolId, args.newName);
 	return text(await withIndexState(backend, renderRenameOutcome(outcome)), !outcome.renamed);
+}
+
+/**
+ * Every refactor tool renders its own failure.
+ *
+ * A thrown request escapes as a transport error, which tells the caller nothing about the state
+ * the transaction is in. Mid-refactor that is the difference between "retry" and "you have files
+ * on disk from a step that did not finish".
+ */
+async function rendered(work: () => Promise<string>): Promise<ToolResult> {
+	try {
+		return text(await work());
+	} catch (error) {
+		return text(
+			`the refactor could not be carried out: ${error instanceof Error ? error.message : String(error)}`,
+			true,
+		);
+	}
+}
+
+export async function symbolSource(
+	backend: ToolBackend,
+	args: { symbolId?: string | undefined; factId?: string | undefined },
+): Promise<ToolResult> {
+	const source = await backend.symbolSource(args);
+	return text(await withIndexState(backend, renderSymbolSource(source)), !source.found);
+}
+
+export async function refactorStart(backend: ToolBackend): Promise<ToolResult> {
+	return rendered(async () => renderRefactorStart(await backend.refactorStart()));
+}
+
+export async function refactorStatus(backend: ToolBackend): Promise<ToolResult> {
+	return rendered(async () => renderRefactorStatus(await backend.refactorStatus()));
+}
+
+export async function refactorTrack(backend: ToolBackend, args: { module: string }): Promise<ToolResult> {
+	return rendered(async () => {
+		const outcome = await backend.refactorTrack(args.module);
+		return outcome.tracked
+			? `Tracking \`${args.module}\`. Its current contents are the state \`refactor_revert\` returns it to.`
+			: (outcome.reason ?? "the file could not be tracked");
+	});
+}
+
+export async function refactorUndo(backend: ToolBackend): Promise<ToolResult> {
+	return rendered(async () => {
+		const outcome = await backend.refactorUndo();
+		if (!outcome.undone) return `Nothing was undone. ${outcome.reason ?? ""}`.trim();
+		return `Undid step ${outcome.stepNo}, restoring ${(outcome.modules ?? []).map((m) => `\`${m}\``).join(", ")}.`;
+	});
+}
+
+export async function refactorRevert(backend: ToolBackend): Promise<ToolResult> {
+	return rendered(async () => {
+		const outcome = await backend.refactorRevert();
+		if (!outcome.reverted) return `Nothing was reverted. ${outcome.reason ?? ""}`.trim();
+		return outcome.modules.length === 0
+			? "Reverted. No file had been changed."
+			: `Reverted ${outcome.modules.length} file(s) to how the transaction found them: ${outcome.modules
+					.map((m) => `\`${m}\``)
+					.join(", ")}.`;
+	});
+}
+
+export async function refactorCommit(backend: ToolBackend, args: { force?: boolean }): Promise<ToolResult> {
+	return rendered(async () => renderRefactorCommit(await backend.refactorCommit(args.force)));
 }
 
 export async function findLiterals(

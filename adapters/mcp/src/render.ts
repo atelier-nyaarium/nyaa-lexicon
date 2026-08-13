@@ -9,10 +9,13 @@ import type {
 	LiteralsResult,
 	RecalledAnswer,
 	RecordOutcome,
+	RefactorIssue,
 	ReferencesResult,
 	RenameOutcome,
 	RenamePlan,
+	SymbolSource,
 	SymbolSummary,
+	TransactionStatus,
 } from "@nyaa-lexicon/core";
 import type { TypeInfo } from "@nyaa-lexicon/protocol";
 
@@ -749,7 +752,9 @@ export function renderSymbolSearch(result: {
 	const byModule = new Map<string, string[]>();
 	for (const symbol of result.symbols) {
 		const rows = byModule.get(symbol.module) ?? [];
-		rows.push(symbolBullet(symbol));
+		// The id rides along because it is the address every other tool takes. Without it a search
+		// hit has to be looked up again before it can be read, replaced or renamed.
+		rows.push(symbolBullet(symbol), `  ID: \`${symbol.symbolId}\``);
 		byModule.set(symbol.module, rows);
 	}
 
@@ -818,6 +823,132 @@ export function renderRenameOutcome(outcome: RenameOutcome): string {
 		for (const warning of outcome.plan.warnings) lines.push(`- **${warning.kind}:** ${warning.detail}`);
 	}
 	return lines.join("\n");
+}
+
+////////////////////////////////
+//  Refactor
+
+/** Fenced, since the whole point is text a caller edits and hands back verbatim. */
+export function renderSymbolSource(source: SymbolSource): string {
+	if (!source.found) {
+		return source.stale === true
+			? `# Symbol source\n\n${source.reason}. Ask again once it has been re-indexed.`
+			: `# Symbol source\n\n${source.reason}`;
+	}
+
+	const { start, end } = source.range;
+	return [
+		`# \`${source.name}\``,
+		"",
+		`${source.kind} in \`${source.module}\`, lines ${start.line + 1} to ${end.line + 1}.`,
+		"",
+		"```",
+		source.text,
+		"```",
+	].join("\n");
+}
+
+/** One renderer for issues, used by status and by a refused commit so they cannot drift apart. */
+export function renderIssues(issues: RefactorIssue[]): string[] {
+	if (issues.length === 0) return [];
+
+	const lines = ["## Issues", ""];
+	for (const issue of issues) {
+		const where = issue.module === undefined ? "" : ` (\`${issue.module}\`${issue.line ? `:${issue.line}` : ""})`;
+		const step = issue.stepNo === undefined ? "" : ` [step ${issue.stepNo}]`;
+		lines.push(`- **${issue.kind}:**${step} ${issue.detail}${where}`);
+	}
+	return lines;
+}
+
+/**
+ * The operating rules, returned at start rather than documented elsewhere.
+ *
+ * Tracking is honour-based: nothing can stop an agent editing a file behind the transaction's
+ * back, so the one moment it is certain to read this is the moment it opens one.
+ */
+export function renderRefactorStart(outcome: { started: boolean; id: string; reason?: string }): string {
+	if (!outcome.started) {
+		return [
+			"# Refactor already open",
+			"",
+			`Transaction \`${outcome.id}\` is already open on this workspace. One transaction at a time.`,
+			"",
+			"Call `refactor_status` to see it, then continue it, `refactor_commit` it, or `refactor_revert` it.",
+		].join("\n");
+	}
+
+	return [
+		`# Refactor \`${outcome.id}\` open`,
+		"",
+		"## Before you edit anything by hand",
+		"",
+		"Call `refactor_track` on the file FIRST. Only tracked files and files a refactor tool touched",
+		"can be put back. An untracked edit is invisible to undo and survives revert.",
+		"",
+		"## How it unwinds",
+		"",
+		"- `refactor_undo` removes the newest step. It refuses if that step's files changed since,",
+		"  rather than overwriting whatever changed them.",
+		"- `refactor_revert` returns every tracked file to how this transaction found it, discarding",
+		"  manual edits made since.",
+		"- `refactor_commit` keeps what is on disk and ends the transaction. Nothing is undoable after.",
+		"  It refuses while issues are outstanding; pass `force` to accept them deliberately.",
+		"",
+		"## While it is open",
+		"",
+		"Re-fetch addresses after every step. Ranges move, so a symbolId or range read before a step",
+		"may not describe the same text after it.",
+		"",
+		"Any session may operate this transaction. There is no owner token, so `refactor_status` is",
+		"how you find out what someone else already did.",
+	].join("\n");
+}
+
+export function renderRefactorStatus(status: TransactionStatus): string {
+	if (!status.open) {
+		return "# Refactor status\n\nNo transaction is open. Call `refactor_start` to begin one.";
+	}
+
+	const lines = [`# Refactor \`${status.id}\``, ""];
+
+	if (status.steps.length === 0) lines.push("No steps yet.");
+	else {
+		lines.push("## Steps", "");
+		for (const step of status.steps) {
+			const files = step.modules.length === 0 ? "no files" : step.modules.map((m) => `\`${m}\``).join(", ");
+			lines.push(`${step.stepNo}. **${step.kind}** (${step.phase}): ${files}`);
+		}
+	}
+
+	if (status.tracked.length > 0) {
+		lines.push("", "## Tracked", "", status.tracked.map((module) => `- \`${module}\``).join("\n"));
+	}
+
+	const issues = renderIssues(status.issues);
+	if (issues.length > 0) lines.push("", ...issues);
+	else if (status.steps.length > 0) lines.push("", "No outstanding issues. `refactor_commit` would succeed.");
+
+	return lines.join("\n");
+}
+
+export function renderRefactorCommit(outcome: {
+	committed: boolean;
+	issues: RefactorIssue[];
+	reason?: string;
+}): string {
+	if (outcome.committed) {
+		const note = outcome.issues.length > 0 ? ` ${outcome.issues.length} issue(s) were accepted by force.` : "";
+		return `# Committed\n\nThe transaction is closed and nothing is undoable now.${note}`;
+	}
+
+	return [
+		"# Not committed",
+		"",
+		outcome.reason ?? "the transaction could not be committed",
+		"",
+		...renderIssues(outcome.issues),
+	].join("\n");
 }
 
 /**

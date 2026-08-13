@@ -87,6 +87,13 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			modules: ["src/a.ts"],
 			plan: { symbolId, oldName: "Cart", newName, files: [], occurrences: 0, blockers: [], warnings: [] },
 		}),
+		symbolSource: async () => ({ found: false, reason: "not stubbed" }),
+		refactorStart: async () => ({ started: true, id: "rt-test" }),
+		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		refactorTrack: async () => ({ tracked: true }),
+		refactorUndo: async () => ({ undone: false, reason: "nothing to undo" }),
+		refactorRevert: async () => ({ reverted: true, modules: [] }),
+		refactorCommit: async () => ({ committed: true, issues: [] }),
 		...overrides,
 	};
 }

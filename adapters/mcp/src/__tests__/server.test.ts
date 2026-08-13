@@ -24,16 +24,30 @@ const QUERY_TOOLS = [
 	"overview",
 	"prepare_rename",
 	"recall_answer",
+	"refactor_status",
 	"resolve_import",
 	"search_symbols",
 	"symbol_facts",
 	"symbol_history",
+	"symbol_source",
 	"type_of",
 ] as const;
 
-const BATCH_QUERY_TOOLS = QUERY_TOOLS.filter((name) => name !== "overview");
+// Both take no per-query arguments worth batching: overview describes the workspace, and a
+// workspace holds one transaction, so asking twice in one call could only ask the same thing.
+const BATCH_QUERY_TOOLS = QUERY_TOOLS.filter((name) => name !== "overview" && name !== "refactor_status");
 
-const MUTATION_TOOLS = ["invalidate_answer", "reaffirm_answer", "record_answer", "rename_symbol"] as const;
+const MUTATION_TOOLS = [
+	"invalidate_answer",
+	"reaffirm_answer",
+	"record_answer",
+	"refactor_commit",
+	"refactor_revert",
+	"refactor_start",
+	"refactor_track",
+	"refactor_undo",
+	"rename_symbol",
+] as const;
 
 const MANAGEMENT_PROPERTIES = {
 	bind_project: ["project"],
@@ -127,7 +141,9 @@ describe("the published MCP project selectors", () => {
 		const expected = [...QUERY_TOOLS, ...MUTATION_TOOLS, ...Object.keys(MANAGEMENT_PROPERTIES)].sort();
 
 		expect(listed.tools.map((tool) => tool.name).sort()).toEqual(expected);
-		expect(new Set(listed.tools.map((tool) => tool.name))).toHaveLength(28);
+		// Against the list above rather than a literal, so this stays a duplicate check instead of
+		// becoming a second inventory to keep in step with the first.
+		expect(new Set(listed.tools.map((tool) => tool.name))).toHaveLength(expected.length);
 
 		for (const name of BATCH_QUERY_TOOLS) {
 			const tool = listed.tools.find((candidate) => candidate.name === name);

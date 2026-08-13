@@ -6,6 +6,21 @@
 import { z } from "zod";
 import { QUESTION_CLASSES, type QuestionClass } from "./answers.js";
 import type { LexiconService } from "./service.js";
+import type { TransactionManager } from "./transactions.js";
+import type { WorkspaceGate } from "./workspaceGate.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+/**
+ * Absent for a caller with no workspace to protect, such as a test driving the service directly.
+ *
+ * Present, every mutation runs alone and every read runs without seeing a half-written step.
+ */
+export interface RefactorDeps {
+	gate: WorkspaceGate;
+	transactions: TransactionManager;
+}
 
 ////////////////////////////////
 //  Schemas
@@ -79,6 +94,13 @@ const FindImports = z.object({
 	limit: z.number().int().positive().optional(),
 });
 
+const SymbolSourceArgs = z.object({
+	symbolId: z.string().min(1).optional(),
+	factId: z.string().min(1).optional(),
+});
+
+const Commit = z.object({ force: z.boolean().optional() });
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -88,7 +110,18 @@ const FindImports = z.object({
  * An unknown method throws rather than answering null, so a client built against a newer daemon
  * learns the method is missing instead of reading an empty answer as a real one.
  */
-export function createDispatch(service: LexiconService) {
+export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
+	/** Mutations take the gate; a caller with no gate is a test driving the service directly. */
+	const write = <T>(work: () => Promise<T> | T): Promise<T> =>
+		refactor ? refactor.gate.exclusive(async () => work()) : Promise.resolve(work());
+	const read = <T>(work: () => Promise<T> | T): Promise<T> =>
+		refactor ? refactor.gate.shared(async () => work()) : Promise.resolve(work());
+
+	function transactions(): TransactionManager {
+		if (!refactor) throw new Error("this daemon was built without refactor support");
+		return refactor.transactions;
+	}
+
 	return async (method: string, params: unknown): Promise<unknown> => {
 		switch (method) {
 			case "findByName": {
@@ -191,8 +224,22 @@ export function createDispatch(service: LexiconService) {
 			}
 			case "indexFile": {
 				const args = IndexFile.parse(params);
-				return service.indexFile(args.module, args.contentHash);
+				return write(() => service.indexFile(args.module, args.contentHash));
 			}
+			case "symbolSource":
+				return read(() => service.symbolSource(SymbolSourceArgs.parse(params)));
+			case "refactorStart":
+				return write(() => transactions().start());
+			case "refactorStatus":
+				return read(() => transactions().status());
+			case "refactorTrack":
+				return write(() => transactions().track(ByModule.parse(params).module));
+			case "refactorUndo":
+				return write(() => transactions().undo());
+			case "refactorRevert":
+				return write(() => transactions().revert());
+			case "refactorCommit":
+				return write(() => transactions().commit(Commit.parse(params)));
 			default:
 				throw new Error(`unknown method: ${method}`);
 		}
