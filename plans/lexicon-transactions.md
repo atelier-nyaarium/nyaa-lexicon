@@ -231,7 +231,19 @@ Three bullets above resolved differently from their first wording, deliberately:
     is not a test. The contract they test is still frozen here, which is what the provider agents
     build against.
 
-## Phase 2 - Journal and transaction core
+## Phase 2 - Journal and transaction core ✅
+
+Shipped differently from the bullets below in three places, deliberately:
+
+- RECOVERY ROLLS BACK a written-but-unfinalized step rather than finishing it. The bullet says
+  reindex and finalize; a step that never reached finalized was never reported as done, so putting
+  the files back is the answer that matches what any caller was told. Restored files are reindexed
+  immediately, since the index still describes text that no longer exists.
+- The WATCHER still carries its event-time hash. The half that mattered is closed: `indexFile`
+  hashes the text it actually reads, so facts can no longer be filed under another version's name.
+  What remains is a stale event hash causing a skipped reindex, which the next event corrects.
+- `indexFile` keeps a `_claimedHash` parameter it ignores. Backlogged rather than removed, since
+  the behaviour is right and the removal is twenty mechanical call sites.
 
 - Store: SCHEMA_VERSION bump. Tables: `refactor_transactions` (id, state, startedAt),
   `refactor_steps` (txn, stepNo, kind, PHASE: journaled -> written -> reindexed -> finalized,

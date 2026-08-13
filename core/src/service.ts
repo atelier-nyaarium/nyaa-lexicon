@@ -458,8 +458,12 @@ export class LexiconService {
 	 *
 	 * Skips rather than throws when nobody owns the file, since a workspace is full of files no
 	 * provider claims and each one is not an error.
+	 *
+	 * `_claimedHash` is what the caller believed the file was when it decided to call. It is not
+	 * stored, because this reads the file itself and the two can differ; the hash kept is of the
+	 * text handed to the provider.
 	 */
-	async indexFile(module: string, contentHash: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
+	async indexFile(module: string, _claimedHash: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const route = this.supervisor.route(module);
 		if (!route.owned) {
@@ -783,7 +787,7 @@ export class LexiconService {
 	 * A stale index refuses rather than slicing: the stored range describes text that has moved, so
 	 * cutting at it produces something that looks like source and is not the symbol.
 	 */
-	symbolSource(address: { symbolId?: string; factId?: string }): SymbolSource {
+	symbolSource(address: { symbolId?: string | undefined; factId?: string | undefined }): SymbolSource {
 		const located = this.locate(address);
 		if ("problem" in located) return { found: false, reason: located.problem };
 
@@ -808,8 +812,8 @@ export class LexiconService {
 
 	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */
 	private locate(address: {
-		symbolId?: string;
-		factId?: string;
+		symbolId?: string | undefined;
+		factId?: string | undefined;
 	}): { module: string; range: Range; name: string; kind: string } | { problem: string } {
 		if (address.symbolId !== undefined) {
 			const declaration = this.store.declaration(address.symbolId);

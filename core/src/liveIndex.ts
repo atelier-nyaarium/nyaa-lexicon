@@ -14,6 +14,13 @@ import { watchWorkspace } from "./watcher.js";
 export interface LiveIndexOptions {
 	service: LexiconService;
 	workspaceRoot: string;
+	/**
+	 * Held for the whole batch, so a reindex cannot land between the files of one refactor step.
+	 *
+	 * Absent in tests that drive the watcher alone. In the daemon it is the same gate every
+	 * mutation takes, which is what makes the two orderable at all.
+	 */
+	gate?: { exclusive: <T>(work: () => Promise<T>) => Promise<T> };
 	debounceMs?: number;
 	onApplied?: (outcomes: IndexOutcome[]) => void;
 	/** Called instead of throwing, since the watcher callback has no caller to catch anything. */
@@ -38,7 +45,12 @@ export interface LiveIndex {
  * watcher callback would take the whole daemon down over one unreadable file.
  */
 export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
-	const queue = serializeBatches((events) => options.service.applyBatch(events), options.onApplied, options.onError);
+	const apply = (events: Parameters<LexiconService["applyBatch"]>[0]) =>
+		options.gate
+			? options.gate.exclusive(() => options.service.applyBatch(events))
+			: options.service.applyBatch(events);
+
+	const queue = serializeBatches(apply, options.onApplied, options.onError);
 
 	const watcher = watchWorkspace({
 		workspaceRoot: options.workspaceRoot,
