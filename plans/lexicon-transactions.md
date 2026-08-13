@@ -292,7 +292,16 @@ Shipped differently from the bullets below in three places, deliberately:
 - Dispatch + daemonWire methods + ToolBackend/daemonBackend plumbing. Every refactor tool
   catches and renders; nothing escapes as a transport error.
 
-## Phase 3 - refactor_replace
+## Phase 3 - refactor_replace ✅
+
+Two rulings came from driving the built server rather than from the bullets:
+
+- An unbound reference is only an issue when its reason says the index should have known it.
+  Reporting every `ExternalDependency` and `NotIndexed` made a call to `.trim()` look like
+  breakage, which would have made the issue list worthless on its first real use.
+- DELETING a symbol is allowed and reported, not refused. The rename guard originally could not
+  tell a deletion from a rename, since both make the old id vanish; it now looks for a replacement
+  declaration in the same slot and only refuses when one exists.
 
 - Address by symbolId/factId only; refuse collided (unaddressable) symbol ids; refuse
   sibling-overlapping ranges; refuse when the candidate parse renames the addressed declaration
@@ -376,6 +385,20 @@ From Phase 2:
 - TWO TEST BACKENDS EXIST that must both grow every new method (`adapters/mcp/src/__tests__`
   tools.test and endToEnd.test each build their own `ToolBackend`). Neither is wrong, but a shared
   stub factory would have made the seven-tool batch one edit instead of three.
+From Phase 3:
+
+- THE INVISIBLE NUL RETURNED, from the other direction. A raw NUL landed inside a string literal in
+  `core/src/service.ts`, in a `split()` delimiter. The residue test caught it, but nothing else
+  could: the Read tool renders it as nothing, and the Edit tool then cannot match the region at all,
+  because the search text is missing a byte the file has. Locating it needed a script that printed
+  the line as JSON. The residue test earns its place twice over, and the lesson is that Edit failing
+  to match a region you can plainly see is itself the symptom.
+- ONLY THE REAL SERVER FOUND THE REAL BUGS. Both Phase 3 defects that mattered, standard library
+  calls reported as breakage and deletion being mistaken for a rename, passed every unit test and
+  died within a minute of driving `dist/main.js` over MCP. The unit tests use the conformance
+  reference provider, whose toy grammar has no standard library and no syntax errors, so an entire
+  class of wrongness is invisible to them by construction.
+
 - DRIVING THE REAL SERVER NEEDED A BORROWED `node_modules`. The repo has no MCP client dependency,
   so the only way to speak to the shipped stdio server was to symlink another project's modules
   into a scratch directory. That probe found two real defects nothing else did, so the friction is
