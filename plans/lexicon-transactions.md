@@ -245,6 +245,15 @@ Shipped differently from the bullets below in three places, deliberately:
 - `indexFile` keeps a `_claimedHash` parameter it ignores. Backlogged rather than removed, since
   the behaviour is right and the removal is twenty mechanical call sites.
 
+### Bug Classes
+
+- MECHANISM: the workspace gate. CLASS: a write path that nobody routed through it. Round one was
+  watcher batches, which reindex on their own schedule; round two was `renameSymbol`, which writes
+  several files and was left ungated when the refactor methods were wired. Both were the same
+  mistake, because taking the gate is opt-in at each call site and forgetting is silent. Closed by
+  a residue test over `dispatch.ts` that fails when a write-capable method is reached outside
+  `write(...)`, so the next one is a failing build rather than a race.
+
 - Store: SCHEMA_VERSION bump. Tables: `refactor_transactions` (id, state, startedAt),
   `refactor_steps` (txn, stepNo, kind, PHASE: journaled -> written -> reindexed -> finalized,
   snapshotted plan JSON, createdAt), `refactor_blobs` (content-addressed by raw-byte hash),
