@@ -242,6 +242,18 @@ function rewriteImportSite(
 	toModule: string,
 	renderSpecifier: SpecifierRenderer,
 ): { edit?: TextEdit; blocked?: MoveBlockedSite } {
+	// A specifier rewrite is only sound when the statement names exactly the moved symbol. These
+	// kinds bind every export of the source, so repointing them repoints symbols that did not move.
+	if (site.importKind === "namespace" || site.importKind === "wildcard" || site.importKind === "sideEffect") {
+		return {
+			blocked: blockedSite(
+				site.range,
+				"NotImplemented",
+				`a ${site.importKind} ${site.reExport ? "re-export" : "import"} binds the whole module, and splitting it is not implemented`,
+			),
+		};
+	}
+
 	const offsets = offsetsForRange(source, site.range);
 	if (offsets === undefined)
 		return { blocked: blockedSite(site.range, "ParseError", "the import range is outside the module") };

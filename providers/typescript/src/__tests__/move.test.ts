@@ -82,6 +82,70 @@ describe("move edits", () => {
 		});
 	});
 
+	// The table's first catch: the provider rewrote `export * from "./old"` to point at the target,
+	// which repoints every OTHER symbol the barrel re-exported. A whole-module binding must block.
+	it("blocks a star re-export instead of repointing the whole module", () => {
+		const text = 'export * from "./old";\n';
+		const response = move(
+			workspace({ "barrel.ts": text, "old.ts": "export function moved() {}\n", "new.ts": "" }),
+			{
+				module: "barrel.ts",
+				text,
+				exists: true,
+				symbolId: "lexicon typescript old.ts moved.",
+				name: "moved",
+				fromModule: "old.ts",
+				toModule: "new.ts",
+				role: {},
+				importSites: [
+					{
+						range: rangeForText(text, "./old"),
+						specifier: "./old",
+						importKind: "wildcard",
+						reExport: true,
+					},
+				],
+				dependencies: [],
+				sites: [],
+			},
+		);
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(response.edits).toEqual([]);
+		expect(response.blocked).toHaveLength(1);
+		expect(response.blocked[0]?.reason).toBe("NotImplemented");
+	});
+
+	it("blocks a namespace import site the same way", () => {
+		const text = 'import * as old from "./old";\nold.moved();\n';
+		const response = move(workspace({ "use.ts": text, "old.ts": "export function moved() {}\n", "new.ts": "" }), {
+			module: "use.ts",
+			text,
+			exists: true,
+			symbolId: "lexicon typescript old.ts moved.",
+			name: "moved",
+			fromModule: "old.ts",
+			toModule: "new.ts",
+			role: {},
+			importSites: [
+				{
+					range: rangeForText(text, "old", text.indexOf("* as ")),
+					specifier: "./old",
+					importKind: "namespace",
+					localName: "old",
+					reExport: false,
+				},
+			],
+			dependencies: [],
+			sites: [],
+		});
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(response.edits).toEqual([]);
+		expect(response.blocked).toHaveLength(1);
+		expect(response.blocked[0]?.reason).toBe("NotImplemented");
+	});
+
 	it("uses an imported name span to locate the enclosing import statement", () => {
 		const text = 'import { add } from "./cart";\nadd(1, 2);\n';
 		const importText = 'import { add } from "./cart";';
