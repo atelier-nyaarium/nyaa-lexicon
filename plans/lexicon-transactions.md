@@ -372,7 +372,18 @@ Two deviations from the bullets:
   suite. Python/GDScript deterministic symbol-id disambiguators ride along here (retiring the
   collision-refusal fallback from Phase 3 where they land).
 
-## Phase 6 - Docs, dogfood, release
+## Phase 6 - Docs, dogfood, release ✅
+
+The dogfood run found the worst defect of the whole plan, which every unit test passed:
+
+- RENAME AND MOVE PLANNED FROM STALE RANGES. A tracked manual edit between two steps shifted the
+  lines in a file, and the next rename rewrote the occurrences it could still find while missing
+  the ones that had moved. The result was a file whose import said `Basket` and whose call still
+  said `Cart`. Replace already guarded this with a base-hash recheck; rename and move did not.
+  Both now refuse when any module they would rewrite has changed since it was indexed.
+- The `refactor_revert` file-list question was asked and answered: revert stays all-or-nothing,
+  since a partial revert leaves a state no step describes. A per-file `refactor_restore` is the
+  honest shape if it is ever wanted, and is backlogged rather than bolted on as an argument.
 
 - docs/architecture.md section (+ knowledge-layer note on answer migration; correct the LSP
   "same service" claim once unification lands); tool descriptions to the "earns a call" bar
@@ -439,6 +450,15 @@ From Phase 4:
   reads exactly like the feature being broken. I went looking for a migration bug that did not
   exist. Naming the wrapper for what it adds, or exposing the prose at the top level, would have
   spent that time somewhere useful.
+
+From Phase 6:
+
+- THE END-TO-END PROBE FOUND WHAT 842 TESTS DID NOT, for the fourth time. The stale-range rename
+  needed three things at once to appear: a real provider, a manual edit between two steps, and the
+  index not having caught up. No unit test combines those, because each layer's tests hold the
+  others still. Every serious defect this plan produced was found by driving the shipped server,
+  and none were found by the suite. That is not an argument against the suite, which caught plenty
+  of small things, but the ratio is worth remembering when deciding what "verified" means here.
 
 From Phase 5:
 
