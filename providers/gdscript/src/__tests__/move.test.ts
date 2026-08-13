@@ -120,6 +120,31 @@ describe("move edits", () => {
 		expect(result.text).toBe("extends Node\n\nfunc keep() -> void:\n\tpass\n\n");
 	});
 
+	// A GDScript declaration range stops at the header, which is what the core sends. Taking it
+	// literally relocated `func moved() -> void:` and left `pass` behind, in two files that no
+	// longer parse. Found by driving a real move, caught by the syntax gate, reverted.
+	it("refuses a removal that would strand a block body", () => {
+		const source = "extends Node\n\nfunc moved() -> void:\n\tpass\n";
+		const root = workspace({ "source.gd": source, "target.gd": "" });
+		const result = apply(root, source, {
+			module: "source.gd",
+			text: source,
+			exists: true,
+			symbolId: methodId("source.gd", "source", "moved"),
+			name: "moved",
+			fromModule: "source.gd",
+			toModule: "target.gd",
+			role: { removal: rangeForText(source, "func moved() -> void:") },
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		});
+
+		expect(result.response.blocked).toHaveLength(1);
+		expect(result.response.blocked[0]?.reason).toBe("NotImplemented");
+		expect(result.text).toBe(source);
+	});
+
 	it("inserts the complete declaration into a new file", () => {
 		const moved = "func moved() -> void:\n\tpass\n";
 		const root = workspace({ "source.gd": moved });
