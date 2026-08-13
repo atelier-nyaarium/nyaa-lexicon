@@ -79,3 +79,40 @@ visited set alone returns an arbitrary answer rather than a correct one.
 A provider is a single request-response process, so the supervisor owns one queue per provider.
 Serializing there means no call site has to know, and a slow request delays only its own language.
 A provider that dies rejects its waiters at once rather than leaving each to time out in turn.
+
+That queue orders one provider's calls, not the workspace. The daemon answers frames concurrently
+and the watcher reindexes on its own schedule, so `WorkspaceGate` orders everything that writes:
+refactor steps, undo and revert, rename, indexing, and watcher batches. Writers run alone; readers
+that touch the filesystem run together but never during a write, so nothing observes the middle of
+a multi-file change.
+
+Acquiring the gate is the linearization point. A step takes its number, rechecks its hashes and
+writes inside one hold, so two callers racing on the same file cannot both conclude their
+preconditions still hold. Taking it is opt-in per call site, which was forgotten twice, so a
+residue test now fails the build when a writing dispatch case sits outside it.
+
+Nothing acquires the gate twice. Whatever a held operation calls runs already held, which is why
+the service methods do not take it defensively.
+
+## Refactor transactions
+
+A transaction is a stack of steps over one workspace, at most one open at a time. Writes go to
+disk as they happen, and `TransactionManager` journals what each file looked like first, so undo
+and revert are restores rather than replays. `docs/provider-protocol.md` covers the provider half.
+
+Snapshots are raw bytes in a content-addressed table, so a file that is not valid UTF-8 comes back
+byte-identical and re-snapshotting an unchanged file costs a lookup. Two scopes are kept apart: the
+baseline is what the transaction first saw and is what revert restores, while each step's images
+are what undo restores. Collapsing them would make one of the two wrong.
+
+Undo refuses when a file no longer holds what its step wrote. That check is what stops it eating a
+manual edit made afterwards, and it is why every layer snapshots what it actually read rather than
+the baseline.
+
+The journal survives an index rebuild, because facts are derivable from source and an undo record
+is not. A journal table that cannot be read fails the open rather than being treated as absent:
+opening as though the transaction never existed would strand files already written to disk.
+
+Recovery runs at startup before the daemon answers anything, and judges each file by what it holds
+rather than by the phase alone. A file matching neither its before nor its after image belongs to
+someone else and is reported as a conflict, never overwritten.
