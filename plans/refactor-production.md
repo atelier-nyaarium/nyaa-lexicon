@@ -36,9 +36,11 @@ Three languages now; more are added the moment this workflow proves out.
    true, closing the SyntaxUnchecked hole in replace. (b) `moveEdits`: no import statements;
    `class_name` registration may need zero site edits, `preload`/`load` path literals are string
    rewrites the contract already carries as literal sites.
-4. **Fixtures and polish.** Two GDScript conformance fixtures (exported-declarations,
-   type-of-annotated-constant); move output cosmetics (merge duplicate imports, blank line before
-   appended declaration); drop the vestigial `_claimedHash` parameter.
+4. **Fixtures and polish.** DONE except cosmetics: annotated-constant fixture landed (45fc2b0)
+   and exported-declarations documented as a deliberate skip, since GDScript has no export concept
+   and absence is its honest answer; `_claimedHash` removed end to end (20ea615). Move output
+   cosmetics (merge duplicate imports, blank line) WAIT on lane 2 landing, because changing the
+   TypeScript provider's output rewrites the same corpus expectations the Python thread owns.
 5. **Release.** One `bun run build` when the table is all yes. Includes the banner fix already in
    source (`c85fa94`).
 
