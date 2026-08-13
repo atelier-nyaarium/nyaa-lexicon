@@ -17,6 +17,9 @@ const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 /** Service calls that touch disk or replace stored facts. Add a method here when you add one. */
 const WRITING_CALLS = ["service.indexFile", "transactions().start", "transactions().track"];
 
+/** Calls that put files back, each of which leaves the index describing the version it replaced. */
+const RESTORING_CALLS = ["transactions().undo", "transactions().revert"];
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -60,5 +63,20 @@ describe("every writing dispatch case takes the workspace gate", () => {
 			offenders,
 			"a dispatch case that writes must run inside the workspace gate, or it can interleave with a refactor step.",
 		).toEqual([]);
+	});
+
+	// Restoring puts back text the index does not describe, so a restore that skips the reindex
+	// leaves the store answering about a version that is no longer on disk. Forgotten twice.
+	it("reindexes whatever it restores", () => {
+		const offenders: string[] = [];
+
+		for (const arm of arms(source)) {
+			const restores = RESTORING_CALLS.filter((call) => arm.includes(call));
+			if (restores.length === 0) continue;
+			if (!arm.includes("service.indexFile"))
+				offenders.push(`${arm.split("\n")[0]?.trim()} restores without reindexing`);
+		}
+
+		expect(offenders, "a dispatch case that restores files must reindex them.").toEqual([]);
 	});
 });

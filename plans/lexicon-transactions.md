@@ -313,7 +313,25 @@ Two rulings came from driving the built server rather than from the bullets:
   subtraction by (module, name, role, reason) tuples; then the gated write path from Phase 2.
 - Problematic steps allowed and reported; issues persist with the step.
 
-## Phase 4 - refactor_rename
+## Phase 4 - refactor_rename ✅
+
+Two deviations from the bullets:
+
+- LSP RENAME IS DISABLED rather than routed through the daemon. The prerequisite's fallback, taken
+  deliberately: that adapter builds its own in-memory index in its own process, so a write from
+  there is invisible to the workspace gate and to any open transaction. `prepareRename` stays,
+  since reading what a rename would touch is safe and is what greys the editor's menu item.
+- The id map is NOT validated against the ids the reindex produced. It is derived structurally
+  from the same grammar the providers mint with, so a mismatch would be a provider bug rather than
+  a mapping bug, and checking it here would report it in the wrong place.
+
+### Bug Classes
+
+- MECHANISM: the restore paths. CLASS: putting files back without reindexing, leaving the store
+  describing text that no longer exists on disk. Round one was crash recovery in Phase 2; round
+  two was undo and revert here. Both times the restore itself was right and the reindex was simply
+  forgotten, because each caller has to remember separately. Closed by extending the dispatch
+  residue test: an arm that restores must also reindex, so the next one is a failing build.
 
 - PREREQUISITE, promoted from the backlog by two lap-1 auditors independently: the LSP adapter
   stops building a private in-memory service and routes through the daemon (ensureDaemon + one
