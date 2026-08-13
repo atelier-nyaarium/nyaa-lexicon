@@ -116,3 +116,25 @@ opening as though the transaction never existed would strand files already writt
 Recovery runs at startup before the daemon answers anything, and judges each file by what it holds
 rather than by the phase alone. A file matching neither its before nor its after image belongs to
 someone else and is reported as a conflict, never overwritten.
+
+### Replacing a symbol
+
+`LexiconService.planReplacement` does everything expensive and touches nothing: it splices the new
+text into the file it read, asks the owning provider to parse the result, and compares that against
+the index. The write happens separately, under the gate, and rechecks that the file still hashes to
+what the splice was cut from. Planning outside the gate keeps a parse off the critical section;
+rechecking inside it is what stops a plan being applied to a file that moved underneath it.
+
+Two answers are refused rather than reported. Text that does not parse never reaches disk. A
+replacement that renames its own declaration is sent to rename instead, since only rename rewrites
+the callers and carries the recorded knowledge across. Deleting is allowed, because that is a real
+refactor, and what still points at the deleted symbol comes back as an issue.
+
+Issues are what the change broke, minus what was already broken. A name that fails to bind is only
+reported when the reason says the index should have known it: a standard library call answers
+ExternalDependency and a local answers NotIndexed, and reporting those made every ordinary edit look
+like breakage. Subtraction is by name and role rather than by fact id, because a fact id contains
+its range and any edit above an untouched problem would otherwise make it look new.
+
+A provider that never declared `syntaxDiagnostics` yields a `SyntaxUnchecked` issue. Its silence is
+not approval, and saying so is the difference between an unchecked replacement and a checked one.
