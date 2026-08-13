@@ -175,7 +175,7 @@ Engineering rulings (delegated; amended by lap 1):
 - A step's plan is snapshotted into the step record, never recomputed at apply time (fixes the
   audit-found prepare/apply drift in the current rename).
 
-## Phase 1 - Protocol contract (freeze first, providers depend on it)
+## Phase 1 - Protocol contract (freeze first, providers depend on it) ✅
 
 The parallel provider agents build against this and nothing else, so it freezes as exact zod
 schemas plus conformance cases, not prose.
@@ -325,3 +325,18 @@ Three bullets above resolved differently from their first wording, deliberately:
 
 Test density bar (0.4 test-lines per source-line) applies per phase; a phase without its tests is
 not done.
+
+## Painpoints
+
+Recorded, not fixed.
+
+- `ProviderTiers` was widened to a `Record<..., boolean>` in two places, `core/src/supervisor.ts`
+  (`RunningProvider.tiers`) and `protocol/src/conformance/types.ts` (`SuiteReport.tiers`). Adding
+  one OPTIONAL tier field broke both with an error about `undefined` not being assignable, far
+  from the change that caused it. The widening bought nothing: both call sites index with a known
+  key. Anything adding an optional field to a schema that some consumer has flattened into a
+  Record will hit this again, and the next such field is likely, since honest capability flags
+  want to be optional so absent stays different from false.
+- Nothing else in Phase 1 was worse than ordinary. The id-grammar residue test caught a
+  hand-written symbol id in the conformance probe on the first run, which is the mechanism
+  working rather than crust.
