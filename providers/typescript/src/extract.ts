@@ -73,12 +73,36 @@ function parameterRangeOf(node: ts.ParameterDeclaration | ts.BindingElement, sou
 	};
 }
 
+/**
+ * Only the comment block touching the declaration, because leading trivia runs back to the
+ * PREVIOUS token: taking its first comment swallows section banners and file headers, which a
+ * move would then carry into the destination file.
+ */
 function declarationRangeOf(node: ts.Node, source: ts.SourceFile) {
 	const comments = ts.getLeadingCommentRanges(source.text, node.pos) ?? [];
-	const declarationStart = comments[0]?.pos ?? node.getStart(source);
+	const declarationStart = docCommentStart(source.text, comments, node.getStart(source));
 	const start = source.getLineAndCharacterOfPosition(declarationStart);
 	const end = source.getLineAndCharacterOfPosition(node.getEnd());
 	return { start, end };
+}
+
+/** A blank line ends the block, so what sits above one is the file's rather than the symbol's. */
+function docCommentStart(text: string, comments: readonly ts.CommentRange[], nodeStart: number): number {
+	let start = nodeStart;
+	for (let i = comments.length - 1; i >= 0; i--) {
+		const comment = comments[i] as ts.CommentRange;
+		if (blankLineBetween(text, comment.end, start)) break;
+		start = comment.pos;
+	}
+	return start;
+}
+
+function blankLineBetween(text: string, from: number, to: number): boolean {
+	let newlines = 0;
+	for (let i = from; i < to; i++) {
+		if (text[i] === "\n" && ++newlines > 1) return true;
+	}
+	return false;
 }
 
 function nameRange(node: ts.Node, source: ts.SourceFile, name: ts.Node | undefined) {

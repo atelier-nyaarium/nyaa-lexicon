@@ -246,6 +246,39 @@ export enum Color { Red }
 		expect(found?.range.start.line).toBe(2);
 	});
 
+	// Leading trivia runs back to the previous token, so the naive read of it hands a move the
+	// file's section banner to carry into the destination.
+	it("stops the range at a blank line, leaving a section banner with the file", () => {
+		const source = [
+			"////////////////////////////////",
+			"//  Functions & Helpers",
+			"",
+			"/** Adds things. */",
+			"export function add() {}",
+		].join("\n");
+
+		const found = named(source, "add");
+		expect(textAt(source, found?.range as NonNullable<typeof found>["range"])).toBe(
+			"/** Adds things. */\nexport function add() {}",
+		);
+	});
+
+	it("takes no comment at all when a blank line separates the nearest one", () => {
+		const source = ["// belongs to the file", "", "export function add() {}"].join("\n");
+
+		const found = named(source, "add");
+		expect(textAt(source, found?.range as NonNullable<typeof found>["range"])).toBe("export function add() {}");
+	});
+
+	it("keeps a multi-line comment block that touches the declaration", () => {
+		const source = ["// first line", "// second line", "export function add() {}"].join("\n");
+
+		const found = named(source, "add");
+		expect(textAt(source, found?.range as NonNullable<typeof found>["range"])).toBe(
+			"// first line\n// second line\nexport function add() {}",
+		);
+	});
+
 	it("keeps whole declaration ranges and exact name selections", () => {
 		const source = [
 			"/** documented default */",
