@@ -67,6 +67,22 @@ the incumbent's live citations or explaining the omission.
 Re-affirming is the heal: the same prose re-grounded on current ids in one call, which retires the
 old id so anything citing it heals the same way, leaves first.
 
+## When a symbol's id changes
+
+A symbol id embeds the symbol's name and its module, and a member's id embeds its container's, so
+renaming a class or moving it to another file re-mints its whole subtree: its methods, their
+parameters, everything declared inside it. Nothing about the code changed meaning, but every id
+written about it stops resolving.
+
+Answers and gaps are therefore MIGRATED across those id changes, not left to rot. A rename or move
+builds the old-to-new mapping from the id grammar before it writes anything, since afterwards the
+old ids name nothing, and carries the rows over. Prose survives; its citations go stale on their
+own, which is correct, because the facts underneath really did change identity.
+
+An answer already written about the destination id is kept rather than overwritten. It describes
+the code as it stands, and replacing it with the incoming symbol's would be a silent downgrade of
+the more current of the two.
+
 ## Rules
 
 - **Narration never edits facts.** The answer path can only resolve ids, so a hallucinated edge has

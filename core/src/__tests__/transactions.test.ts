@@ -273,6 +273,26 @@ describe("recovering after a crash", () => {
 		expect(read("a.ts")).toBe("then edited by someone else\n");
 	});
 
+	// The real shape: the process holding the journal dies, and a fresh daemon opens the same store
+	// and has to work out what happened from rows alone.
+	it("recovers across a process that died, from the journal on disk", () => {
+		const begun = manager.beginStep("replace", ["a.ts"]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "written by the step\n");
+		manager.completeStep(begun.stepNo, "written");
+
+		// Everything in memory goes away, as it would on a crash.
+		store.close();
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		const reopened = new TransactionManager(store, root);
+
+		const outcome = reopened.recover();
+
+		expect(outcome).toMatchObject({ recovered: true, restored: ["a.ts"] });
+		expect(read("a.ts")).toBe("original\n");
+		expect(reopened.status().steps).toEqual([]);
+	});
+
 	it("sweeps a temporary file left by a write that died mid-rename", () => {
 		manager.beginStep("replace", ["a.ts"]);
 		write("a.ts.lexicon-tmp", "partial\n");
