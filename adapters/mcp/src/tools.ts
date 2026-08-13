@@ -268,7 +268,7 @@ export const RecordAnswerInput = {
 		.min(1)
 		.describe(
 			`
-			Answer in \`1\` or \`2\` sentences. State what the citations establish.
+			State what the cited facts establish in roughly 1 to 2 concise incomplete sentences. May be longer if it's too complex for ≤2.
 			`.trim(),
 		),
 	citations: z
@@ -289,7 +289,7 @@ export const RecordAnswerInput = {
 			Doubt ID from \`recall_answer\`. Omit to carry it forward.
 			`.trim(),
 		),
-	omitting: z.string().min(1).optional().describe(`Why an existing citation is omitted.`),
+	omitting: z.string().min(1).optional().describe(`Why an existing fact ID is omitted.`),
 };
 
 export const RecallAnswerInput = {
@@ -461,15 +461,19 @@ Matches case and word boundaries. Includes changed-file counts.
 `.trim();
 
 export const RECORD_ANSWER_DESCRIPTION = `
-# \`record_answer\`
+# Record Answer
 
-Save a cited answer for a symbol.
+Save an answer grounded in cited facts.
 
-Use current full IDs from \`symbol_facts\`. Supporting changes make the answer stale.
+Use current full fact IDs from \`symbol_facts\`. Changes to supporting facts make the answer stale.
+
+Answer should be 1 to 2 concise incomplete sentences. May be longer if it's too complex for ≤2.
+
+Capitalize first letters of a sentence. Punctuate.
 `.trim();
 
 export const RECALL_ANSWER_DESCRIPTION = `
-# \`recall_answer\`
+# Recall Answer
 
 Show recorded answers and their health.
 
@@ -477,7 +481,7 @@ Reports \`STALE\`, \`SHAKY\`, and \`DOUBTED\`.
 `.trim();
 
 export const INVALIDATE_ANSWER_DESCRIPTION = `
-# \`invalidate_answer\`
+# Invalidate Answer
 
 Mark recorded answers doubtful without changing their prose.
 
@@ -485,29 +489,29 @@ The doubt reopens demand in \`knowledge_gaps\`.
 `.trim();
 
 export const REAFFIRM_ANSWER_DESCRIPTION = `
-# \`reaffirm_answer\`
+# Reaffirm Answer
 
-Refresh an answer's citations or clear its doubt.
+Refresh an answer's evidence or clear its doubt.
 
 Use \`resolvesDoubt\` to clear a doubt.
 `.trim();
 
 export const KNOWLEDGE_GAPS_DESCRIPTION = `
-# \`knowledge_gaps\`
+# Knowledge Gaps
 
 List missing, stale, or doubted answers.
 
 With a root, list dependency gaps leaves first.
 
-Use \`symbol_facts\`, then \`record_answer\` to close a gap.
+Use \`symbol_facts\` for each gap.
 `.trim();
 
 export const SYMBOL_FACTS_DESCRIPTION = `
-# \`symbol_facts\`
+# Symbol Facts
 
-Show a symbol's declaration and supporting facts with citable IDs.
+Show a symbol's declaration and supporting facts with full fact IDs.
 
-Use the IDs as citations for \`record_answer\`.
+Use the full fact IDs as citations for \`record_answer\`.
 `.trim();
 
 export const TYPE_OF_DESCRIPTION = `

@@ -356,7 +356,7 @@ function questionTitle(question: string): string {
 /** Recorded knowledge, or a short invitation to write it. */
 export function renderKnowledge(recalled: RecalledAnswer | null, question = "knowledge"): string {
 	if (recalled === null)
-		return `## ${questionTitle(question)}\n\nNo answer recorded. Call \`record_answer\` to save one.`;
+		return `## ${questionTitle(question)}\n\nNo answer recorded. Call \`symbol_facts\` for the current supporting facts.`;
 
 	const lines = [
 		`## ${questionTitle(recalled.answer.question)}`,
@@ -387,7 +387,7 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = "kno
 	}
 	if (recalled.inheritedStale.length > 0) {
 		status.push(
-			`**SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose citations changed. Re-affirm those first.`,
+			`**SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose supporting facts changed. Re-affirm those first.`,
 		);
 	}
 	if (recalled.doubtedUpstream.length > 0) {
@@ -420,11 +420,11 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 	}
 	const lines = ["# Answer not recorded", "", outcome.reason];
 	if ((outcome.unresolved ?? []).length > 0) {
-		lines.push("", "## Unresolved citations", "");
+		lines.push("", "## Unresolved fact IDs", "");
 		for (const factId of outcome.unresolved ?? []) lines.push(`- \`${factId}\``);
 	}
 	if (outcome.uncovered !== undefined && outcome.uncovered.length > 0) {
-		lines.push("", "## Uncovered citations", "", "Citations from the existing answer:");
+		lines.push("", "## Uncovered fact IDs", "", "Fact IDs from the existing answer:");
 		for (const factId of outcome.uncovered) lines.push(`- \`${factId}\``);
 	}
 	return lines.join("\n");
@@ -502,12 +502,7 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 		lines.push("", `> ${gaps.external} dependencies are outside the index: nothing citable exists for them.`);
 	}
 
-	lines.push(
-		"",
-		"## Next step",
-		"",
-		"For each row, call `symbol_facts`, then `record_answer` with the fact IDs. Work leaves first.",
-	);
+	lines.push("", "## Next step", "", "For each row, call `symbol_facts`.");
 	return lines.join("\n");
 }
 
