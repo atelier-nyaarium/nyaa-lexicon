@@ -143,3 +143,21 @@ its range and any edit above an untouched problem would otherwise make it look n
 
 A provider that never declared `syntaxDiagnostics` yields a `SyntaxUnchecked` issue. Its silence is
 not approval, and saying so is the difference between an unchecked replacement and a checked one.
+
+### Renaming
+
+A rename is one step of a transaction, journaled like any other, and it carries two things a plain
+text rewrite would drop.
+
+The first is recorded knowledge. A symbol id embeds its name, and a member's id embeds its
+container's, so renaming a class re-mints its methods and their parameters too. `renameIdMap` builds
+the whole old-to-new mapping from the id grammar before anything is written, since afterwards the
+old ids resolve to nothing. Answers and gaps move across it. An answer already written about the
+destination is kept, because it describes the code as it stands and replacing it would be a silent
+downgrade.
+
+The second is files that never change. A module calling a renamed class's METHOD contains no
+occurrence of the class name, so it gets no edit, yet its stored references point at ids that are
+about to stop existing. `modulesBoundTo` finds them and they are reindexed alongside the edited
+ones, declaring module first so dependents rebind against declarations that already carry the new
+ids.
