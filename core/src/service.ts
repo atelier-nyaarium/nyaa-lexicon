@@ -11,6 +11,7 @@ import {
 	answerFactId,
 	applyEdits,
 	type Binding,
+	composeSymbolId,
 	doubtFactId,
 	type FactKind,
 	type FileFacts,
@@ -19,8 +20,10 @@ import {
 	isParameterSymbol,
 	isWithin,
 	ownerOf,
+	parseSymbolId,
 	type Range,
 	type RenameSite,
+	rebaseSymbolId,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import {
@@ -950,6 +953,62 @@ export class LexiconService {
 			baseHash: hashOf(before),
 			issues,
 		};
+	}
+
+	/**
+	 * Every id a rename re-mints, old to new.
+	 *
+	 * A member's id carries its container's descriptors, so renaming a class re-mints its methods
+	 * and their parameters too. Migrating only the class itself would strand everything written
+	 * about them under ids nothing resolves.
+	 */
+	renameIdMap(symbolId: string, newName: string): Map<string, string> {
+		const declaration = this.store.declaration(symbolId);
+		const map = new Map<string, string>();
+		if (!declaration) return map;
+
+		const parsed = parseSymbolId(symbolId);
+		if (parsed === null || parsed.local !== undefined) return map;
+
+		const last = parsed.descriptors.at(-1);
+		if (last === undefined) return map;
+		const renamed = composeSymbolId({
+			...parsed,
+			descriptors: [...parsed.descriptors.slice(0, -1), { ...last, name: newName }],
+		});
+
+		for (const candidate of this.store.symbolIdsIn(declaration.module)) {
+			const rebased = rebaseSymbolId(candidate, symbolId, renamed);
+			if (rebased !== null) map.set(candidate, rebased);
+		}
+		return map;
+	}
+
+	/**
+	 * Modules whose stored facts name an id the rename re-mints, whether or not their text changes.
+	 *
+	 * A file calling a renamed class's METHOD contains no occurrence of the class name, so it gets
+	 * no edit, yet its reference rows point at ids that are about to stop existing. Left alone it
+	 * would keep answering with them.
+	 */
+	modulesBoundTo(ids: Iterable<string>): string[] {
+		const modules = new Set<string>();
+		for (const id of ids) {
+			for (const reference of this.store.referencesTo(id)) modules.add(reference.module);
+		}
+		return [...modules];
+	}
+
+	/** Moves recorded knowledge across a whole re-minted subtree, deepest ids included. */
+	migrateKnowledge(map: Map<string, string>): { answers: number; gaps: number } {
+		let answers = 0;
+		let gaps = 0;
+		for (const [from, to] of map) {
+			const moved = this.store.migrateKnowledge(from, to);
+			answers += moved.answers;
+			gaps += moved.gaps;
+		}
+		return { answers, gaps };
 	}
 
 	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */

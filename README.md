@@ -40,8 +40,11 @@ value, so a name inside a quoted string is findable and numbers compare as numbe
 **History.** `file_history`, `co_changed_with`, `symbol_history`. What changes alongside a file is
 the strongest signal no reference edge carries.
 
-**Rename.** `prepare_rename` proposes, `rename_symbol` performs, and a single blocked site writes
-nothing at all.
+**Refactoring.** `symbol_source` reads one symbol's exact text by id. Everything that writes runs
+inside a transaction: `refactor_start`, then `refactor_replace`, `refactor_rename` and
+`refactor_track`, ending in `refactor_commit` or `refactor_revert`, with `refactor_undo` for the
+newest step. Text that does not parse never reaches disk, a single blocked site writes nothing at
+all, and what a change broke is reported rather than assumed away.
 
 **Knowledge.** `record_answer` and its siblings store prose about a symbol, but only prose that
 cites the facts it was drawn from. See [docs/knowledge-layer.md](docs/knowledge-layer.md).
@@ -56,9 +59,9 @@ each binding name beside its full root.
 
 Read tools accept a `queries` array. Each item uses that tool's normal fields, and one MCP call can
 run several items. The outer `projects` selector applies to every item. Omit it when one project is
-bound, pass names for a subset, or pass `[]` for every bound project. `rename_symbol`,
-`record_answer`, `invalidate_answer`, and `reaffirm_answer` accept one optional `project` instead
-and never fan out.
+bound, pass names for a subset, or pass `[]` for every bound project. Every `refactor_` tool, plus
+`record_answer`, `invalidate_answer`, and `reaffirm_answer`, accepts one optional `project` instead
+and never fans out.
 
 Binding names are session-local. Same-named roots use `app-1`, `app-2`, and so on. A plugin reload
 compacts the names, so call `list_projects` again and match the full root.

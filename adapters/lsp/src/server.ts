@@ -377,27 +377,19 @@ export class LspServer {
 		return plan.blockers.length > 0 ? null : { range: found.selectionRange, placeholder: found.name };
 	}
 
-	/** textDocument/rename, as a WorkspaceEdit. Refuses whole rather than editing part of it. */
-	async rename(
-		uri: string,
-		position: Position,
-		newName: string,
-	): Promise<{ changes: Record<string, Array<{ range: Range; newText: string }>> } | null> {
-		const found = this.symbolAt(uri, position);
-		if (found === null) return null;
-
-		const outcome = await this.service.renameSymbol(found.symbolId, newName);
-		if (!outcome.renamed) return null;
-
-		// The service already wrote the files, so the edit returned here is a record of what changed
-		// rather than an instruction. An editor that applies it again gets the same text.
-		const changes: Record<string, Array<{ range: Range; newText: string }>> = {};
-		for (const file of outcome.plan.files) {
-			changes[toUri(this.workspaceRoot, file.module)] = file.sites.map((site) => ({
-				range: site.range,
-				newText: newName,
-			}));
-		}
-		return { changes };
+	/**
+	 * textDocument/rename, refused while this adapter owns a private index.
+	 *
+	 * Renaming writes files. This process holds its own in-memory index and its own provider set,
+	 * so its writes are invisible to the daemon's workspace gate and to any refactor transaction
+	 * open there: it could rewrite a file mid-step, and the journal would restore text that had
+	 * been overwritten by an editor nobody told it about.
+	 *
+	 * Refusing is the honest answer until this adapter answers from the daemon, at which point the
+	 * rename becomes one transaction like any other. `prepareRename` stays, since reading what a
+	 * rename WOULD touch is safe and is what the editor greys the menu item on.
+	 */
+	async rename(): Promise<{ changes: Record<string, Array<{ range: Range; newText: string }>> } | null> {
+		return null;
 	}
 }

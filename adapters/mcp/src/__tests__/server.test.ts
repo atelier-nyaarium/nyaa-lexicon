@@ -22,7 +22,6 @@ const QUERY_TOOLS = [
 	"most_referenced",
 	"outline_module",
 	"overview",
-	"prepare_rename",
 	"recall_answer",
 	"refactor_status",
 	"resolve_import",
@@ -42,12 +41,12 @@ const MUTATION_TOOLS = [
 	"reaffirm_answer",
 	"record_answer",
 	"refactor_commit",
+	"refactor_rename",
 	"refactor_replace",
 	"refactor_revert",
 	"refactor_start",
 	"refactor_track",
 	"refactor_undo",
-	"rename_symbol",
 ] as const;
 
 const MANAGEMENT_PROPERTIES = {

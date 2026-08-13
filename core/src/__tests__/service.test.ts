@@ -421,6 +421,67 @@ describe("planning a replacement", () => {
 	});
 });
 
+describe("carrying knowledge across a rename", () => {
+	// A member's id embeds its container's name, so renaming the container re-mints the member too.
+	// Migrating only the container would leave everything written about its members unresolvable.
+	it("maps the whole subtree, not just the renamed symbol", async () => {
+		await boot();
+		files.set("a.ref", "export class Cart {}\n");
+		await service.indexFile("a.ref", "h1");
+		const cart = service.findByName("Cart")[0]?.symbolId;
+		if (!cart) throw new Error("expected Cart");
+
+		const map = service.renameIdMap(cart, "Basket");
+
+		expect(map.get(cart)).toContain("Basket");
+		for (const [from, to] of map) {
+			expect(from).not.toBe(to);
+			expect(to).toContain("Basket");
+		}
+	});
+
+	it("moves an answer to the new id, leaving nothing under the old one", async () => {
+		await boot();
+		files.set("a.ref", "export class Cart {}\n");
+		await service.indexFile("a.ref", "h1");
+		const cart = service.findByName("Cart")[0]?.symbolId;
+		if (!cart) throw new Error("expected Cart");
+
+		const facts = await service.factsFor(cart);
+		const citation = facts?.facts[0]?.factId;
+		if (!citation) throw new Error("expected a citable fact");
+		const wrote = await service.recordAnswer(cart, "describe", "A shopping cart.", [citation]);
+		if (!wrote.recorded) throw new Error(`answer not recorded: ${wrote.reason}`);
+
+		const map = service.renameIdMap(cart, "Basket");
+		const moved = service.migrateKnowledge(map);
+		const newId = map.get(cart) as string;
+
+		expect(moved.answers).toBe(1);
+		expect(service.recallAnswer(newId, "describe")?.answer.prose).toBe("A shopping cart.");
+		expect(service.recallAnswer(cart, "describe")).toBeNull();
+	});
+
+	// The new id's own answer was written about the code as it stands. Overwriting it with the old
+	// symbol's would be a silent downgrade, so the old one is dropped instead.
+	it("keeps an answer already written about the new id", async () => {
+		await boot();
+		files.set("a.ref", "export class Cart {}\nexport class Basket {}\n");
+		await service.indexFile("a.ref", "h1");
+		const cart = service.findByName("Cart")[0]?.symbolId as string;
+		const basket = service.findByName("Basket")[0]?.symbolId as string;
+
+		const cite = async (id: string) => (await service.factsFor(id))?.facts[0]?.factId as string;
+		await service.recordAnswer(cart, "describe", "The old one.", [await cite(cart)]);
+		await service.recordAnswer(basket, "describe", "The one that stays.", [await cite(basket)]);
+
+		service.migrateKnowledge(new Map([[cart, basket]]));
+
+		expect(service.recallAnswer(basket, "describe")?.answer.prose).toBe("The one that stays.");
+		expect(service.recallAnswer(cart, "describe")).toBeNull();
+	});
+});
+
 describe("answering about a symbol", () => {
 	it("describes a symbol and counts its uses without listing them", async () => {
 		await boot();

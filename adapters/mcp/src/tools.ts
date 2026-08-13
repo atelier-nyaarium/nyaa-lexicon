@@ -49,8 +49,7 @@ import {
 	renderRefactorStart,
 	renderRefactorStatus,
 	renderReferences,
-	renderRenameOutcome,
-	renderRenamePlan,
+	renderRenameStep,
 	renderReplaceOutcome,
 	renderSymbolSearch,
 	renderSymbolSource,
@@ -67,8 +66,6 @@ export interface ToolBackend {
 	findReferences: (symbolId: string, limit?: number) => Promise<ReferencesResult>;
 	resolveImport: (fromModule: string, specifier: string) => Promise<ImportResolution>;
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
-	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
-	renameSymbol: (symbolId: string, newName: string) => Promise<RenameOutcome>;
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
 	refactorStart: () => Promise<{ started: boolean; id: string; reason?: string }>;
 	refactorStatus: () => Promise<TransactionStatus>;
@@ -81,6 +78,16 @@ export interface ToolBackend {
 		factId?: string | undefined;
 		newText: string;
 	}) => Promise<{ replaced: boolean; module?: string; issues: RefactorIssue[]; reason?: string }>;
+	refactorRename: (
+		symbolId: string,
+		newName: string,
+	) => Promise<{
+		renamed: boolean;
+		modules?: string[];
+		migrated?: { answers: number; gaps: number };
+		issues: RefactorIssue[];
+		reason?: string;
+	}>;
 	indexStatus: () => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
@@ -379,7 +386,7 @@ export const SymbolFactsInput = {
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum facts per kind. Default: \`40\`.`),
 };
 
-export const PrepareRenameInput = {
+export const RefactorRenameInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
@@ -413,20 +420,14 @@ Resolve an import specifier through path mappings, package exports, and re-expor
 Distinguishes workspace files, external dependencies, and unresolved specifiers. Unresolved is a result, not an error.
 `.trim();
 
-export const PREPARE_RENAME_DESCRIPTION = `
-# \`prepare_rename\`
+export const REFACTOR_RENAME_DESCRIPTION = `
+# \`refactor_rename\`
 
-Preview a rename across every bound declaration and use.
+Rename a bound symbol across declarations, uses, imports, and re-exports, as a transaction step.
 
-Groups touched files and reports unbound spelling matches or export limits.
-`.trim();
-
-export const RENAME_SYMBOL_DESCRIPTION = `
-# \`rename_symbol\`
-
-Rename a bound symbol across declarations, uses, imports, and re-exports.
-
-Writes files and reindexes them. A blocked plan writes nothing. Call \`prepare_rename\` first.
+Nothing is written unless every occurrence can be. Recorded knowledge follows the symbol and its
+members, whose ids are re-minted too. Files that only used the old name through a member are
+reindexed even though their text does not change.
 `.trim();
 
 export const SYMBOL_SOURCE_DESCRIPTION = `
@@ -740,22 +741,19 @@ export async function typeOfSymbol(backend: ToolBackend, args: SymbolArgs): Prom
 	return text(renderType(args.name ?? resolved.symbolId, type));
 }
 
-export async function prepareRename(backend: ToolBackend, args: SymbolArgs & { newName: string }): Promise<ToolResult> {
+export async function refactorRename(
+	backend: ToolBackend,
+	args: SymbolArgs & { newName: string },
+): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(resolved.problem, true);
 
-	const plan = await backend.prepareRename(resolved.symbolId, args.newName);
-	// A blocked plan is an error result: the caller asked whether it could rename, and the answer
-	// is no. Warnings are not, since the caller can weigh those and proceed.
-	return text(await withIndexState(backend, renderRenamePlan(plan)), plan.blockers.length > 0);
-}
-
-export async function renameSymbol(backend: ToolBackend, args: SymbolArgs & { newName: string }): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
-
-	const outcome = await backend.renameSymbol(resolved.symbolId, args.newName);
-	return text(await withIndexState(backend, renderRenameOutcome(outcome)), !outcome.renamed);
+	const outcome = await backend.refactorRename(resolved.symbolId, args.newName).catch((error: unknown) => ({
+		renamed: false,
+		issues: [] as RefactorIssue[],
+		reason: error instanceof Error ? error.message : String(error),
+	}));
+	return text(renderRenameStep(args.newName, outcome), !outcome.renamed);
 }
 
 /**

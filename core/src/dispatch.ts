@@ -115,6 +115,72 @@ export interface ReplaceOutcome {
 	reason?: string;
 }
 
+/** What a rename did, with what it carried across and what it could not promise. */
+export interface RenameStepOutcome {
+	renamed: boolean;
+	modules?: string[];
+	migrated?: { answers: number; gaps: number };
+	issues: RefactorIssue[];
+	reason?: string;
+}
+
+/**
+ * A rename as one transaction step, journaled like any other.
+ *
+ * The plan is computed outside the gate and the ids it will re-mint are worked out before anything
+ * moves, because afterwards the old ids no longer resolve and there is nothing left to map from.
+ */
+async function refactorRename(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { symbolId: string; newName: string },
+): Promise<RenameStepOutcome> {
+	if (!transactions.openTransaction()) {
+		return { renamed: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
+	}
+
+	const plan = await service.prepareRename(args.symbolId, args.newName);
+	if (plan.blockers.length > 0) {
+		return {
+			renamed: false,
+			issues: plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
+			reason: plan.blockers[0]?.detail ?? "the rename is blocked",
+		};
+	}
+
+	const idMap = service.renameIdMap(args.symbolId, args.newName);
+	const edited = plan.files.map((file) => file.module);
+	// Worked out before the write, since afterwards these ids resolve to nothing and the modules
+	// holding stale bindings would be unfindable.
+	const alsoBound = service.modulesBoundTo(idMap.keys()).filter((module) => !edited.includes(module));
+
+	return write(async () => {
+		const begun = transactions.beginStep("rename", [...edited, ...alsoBound], plan);
+		if (!begun.ok) return { renamed: false, issues: [], reason: begun.reason };
+
+		const outcome = await service.renameSymbol(args.symbolId, args.newName);
+		if (!outcome.renamed) {
+			transactions.undo();
+			return { renamed: false, issues: [], reason: outcome.reason };
+		}
+
+		transactions.completeStep(begun.stepNo, "written");
+
+		// The declaring module is reindexed first by renameSymbol, so dependents rebind against
+		// declarations that already carry the new ids.
+		for (const module of alsoBound) await service.indexFile(module, "");
+		transactions.completeStep(begun.stepNo, "reindexed");
+
+		const migrated = service.migrateKnowledge(idMap);
+		const issues = plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail }));
+		transactions.recordIssues(begun.stepNo, issues);
+		transactions.completeStep(begun.stepNo, "finalized");
+
+		return { renamed: true, modules: [...outcome.modules, ...alsoBound], migrated, issues };
+	});
+}
+
 /**
  * Plan first, outside the gate, then write inside it.
  *
@@ -282,15 +348,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "typeOf":
 				return service.typeOf(BySymbol.parse(params).symbolId);
+			// Read-only, and kept because the editor asks it to decide whether to offer a rename.
 			case "prepareRename": {
 				const args = Rename.parse(params);
-				return service.prepareRename(args.symbolId, args.newName);
-			}
-			case "renameSymbol": {
-				const args = Rename.parse(params);
-				// Writes several files and reindexes them, so it belongs behind the same gate as a
-				// refactor step. Its own reindexing runs already held, never re-acquiring.
-				return write(() => service.renameSymbol(args.symbolId, args.newName));
+				return read(() => service.prepareRename(args.symbolId, args.newName));
 			}
 			case "indexFile": {
 				const args = IndexFile.parse(params);
@@ -313,6 +374,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			case "refactorReplace": {
 				const args = Replace.parse(params);
 				return refactorReplace(service, transactions(), write, args);
+			}
+			case "refactorRename": {
+				const args = Rename.parse(params);
+				return refactorRename(service, transactions(), write, args);
 			}
 			default:
 				throw new Error(`unknown method: ${method}`);

@@ -97,8 +97,6 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		findReferences: (symbolId, limit) => ask("findReferences", { symbolId, limit }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
-		prepareRename: (symbolId, newName) => ask("prepareRename", { symbolId, newName }),
-		renameSymbol: (symbolId, newName) => ask("renameSymbol", { symbolId, newName }),
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
 		refactorStatus: () => ask("refactorStatus", {}),
@@ -107,6 +105,7 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		refactorRevert: () => ask("refactorRevert", {}),
 		refactorCommit: (force) => ask("refactorCommit", { force }),
 		refactorReplace: (args) => ask("refactorReplace", args),
+		refactorRename: (symbolId, newName) => ask("refactorRename", { symbolId, newName }),
 		indexStatus: () => ask("indexStatus", {}),
 		findLiterals: (query) => ask("findLiterals", query),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
@@ -174,8 +173,6 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 		findReferences: async (symbolId, limit) => (await service()).findReferences(symbolId, limit),
 		resolveImport: async (fromModule, specifier) => (await service()).resolveImport(fromModule, specifier),
 		typeOf: async (symbolId) => (await service()).typeOf(symbolId),
-		prepareRename: async (symbolId, newName) => (await service()).prepareRename(symbolId, newName),
-		renameSymbol: async (symbolId, newName) => (await service()).renameSymbol(symbolId, newName),
 		symbolSource: async (address) => (await service()).symbolSource(address),
 		// A journal in an in-memory index dies with the process, so this backend would offer an undo
 		// it could not honour and leave written files with no record of what they replaced.
@@ -186,6 +183,7 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 		refactorRevert: async () => ({ reverted: false, modules: [], reason: NO_JOURNAL }),
 		refactorCommit: async () => ({ committed: false, issues: [], reason: NO_JOURNAL }),
 		refactorReplace: async () => ({ replaced: false, issues: [], reason: NO_JOURNAL }),
+		refactorRename: async () => ({ renamed: false, issues: [], reason: NO_JOURNAL }),
 		indexStatus: async () => (await service()).indexStatus(),
 		findLiterals: async ({ limit, ...query }) => (await service()).findLiterals(query, limit),
 		coChangedWith: async (module, limit) => (await service()).coChangedWith(module, limit),

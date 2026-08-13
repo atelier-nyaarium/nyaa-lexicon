@@ -1,6 +1,13 @@
 import type { DescribeResult, SymbolSummary } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
-import { describeSymbol, findReferences, prepareRename, resolveImport, type ToolBackend, typeOfSymbol } from "../tools";
+import {
+	describeSymbol,
+	findReferences,
+	refactorRename,
+	resolveImport,
+	type ToolBackend,
+	typeOfSymbol,
+} from "../tools";
 
 ////////////////////////////////
 //  Helpers
@@ -24,15 +31,6 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		findReferences: async (symbolId) => ({ symbolId, references: [], total: 0, truncated: false, tier: "bound" }),
 		resolveImport: async () => ({ status: "unresolved", reason: "NotImplemented" }),
 		typeOf: async () => ({ status: "unknown", reason: "NotImplemented" }),
-		prepareRename: async (symbolId, newName) => ({
-			symbolId,
-			oldName: "Cart",
-			newName,
-			files: [],
-			occurrences: 0,
-			blockers: [],
-			warnings: [],
-		}),
 		indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
 		findLiterals: async (query) => ({ query, literals: [], total: 0, truncated: false }),
 		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
@@ -82,11 +80,6 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			skippedWideCommits: 0,
 			widthLimit: 40,
 		}),
-		renameSymbol: async (symbolId, newName) => ({
-			renamed: true,
-			modules: ["src/a.ts"],
-			plan: { symbolId, oldName: "Cart", newName, files: [], occurrences: 0, blockers: [], warnings: [] },
-		}),
 		symbolSource: async () => ({ found: false, reason: "not stubbed" }),
 		refactorStart: async () => ({ started: true, id: "rt-test" }),
 		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
@@ -95,6 +88,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		refactorRevert: async () => ({ reverted: true, modules: [] }),
 		refactorCommit: async () => ({ committed: true, issues: [] }),
 		refactorReplace: async () => ({ replaced: true, module: "src/a.ts", issues: [] }),
+		refactorRename: async () => ({ renamed: true, modules: ["src/a.ts"], issues: [] }),
 		...overrides,
 	};
 }
@@ -187,44 +181,55 @@ describe("resolving an import", () => {
 	});
 });
 
-describe("planning a rename", () => {
+describe("renaming as a transaction step", () => {
 	const found = { findByName: async () => [summary("Cart")] };
-	const plan = {
-		symbolId: "x",
-		oldName: "Cart",
-		newName: "Basket",
-		files: [
-			{ module: "src/cart.ts", sites: [{ range: RANGE }] },
-			{ module: "src/uses.ts", sites: [{ range: RANGE }, { range: RANGE }] },
-		],
-		occurrences: 3,
-		blockers: [],
-		warnings: [],
-	};
 
-	it("reports a warning without refusing, since uncertainty is the caller's call", async () => {
+	// A warning is somewhere the index cannot promise completeness. Refusing on one would refuse
+	// most real renames, so it is reported and the caller decides.
+	it("applies despite a warning, and shows it", async () => {
 		const warned = {
-			...plan,
-			warnings: [
-				{ kind: "SameSpellingUnbound", detail: "2 did not bind", sites: [{ module: "src/x.ts", line: 7 }] },
-			],
+			renamed: true,
+			modules: ["src/cart.ts"],
+			issues: [{ kind: "SameSpellingUnbound", detail: "2 occurrences did not bind" }],
 		};
-		const result = await prepareRename(backend({ ...found, prepareRename: async () => warned }), {
+		const result = await refactorRename(backend({ ...found, refactorRename: async () => warned }), {
 			name: "Cart",
 			newName: "Basket",
 		});
 
 		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("SameSpellingUnbound");
 	});
 
 	it("refuses on a blocker, which is a different answer from a warning", async () => {
-		const blocked = { ...plan, blockers: [{ kind: "SameName", detail: "already named Cart" }] };
-		const result = await prepareRename(backend({ ...found, prepareRename: async () => blocked }), {
+		const blocked = {
+			renamed: false,
+			issues: [{ kind: "SameName", detail: "already named Cart" }],
+			reason: "already named Cart",
+		};
+		const result = await refactorRename(backend({ ...found, refactorRename: async () => blocked }), {
 			name: "Cart",
 			newName: "Cart",
 		});
 
 		expect(result.isError).toBe(true);
+	});
+
+	// The prose written about a symbol is the one thing a re-index cannot rebuild, so a rename that
+	// carried some says so rather than leaving the caller to wonder.
+	it("says what knowledge it carried across", async () => {
+		const migrated = {
+			renamed: true,
+			modules: ["src/cart.ts"],
+			migrated: { answers: 3, gaps: 1 },
+			issues: [],
+		};
+		const result = await refactorRename(backend({ ...found, refactorRename: async () => migrated }), {
+			name: "Cart",
+			newName: "Basket",
+		});
+
+		expect(result.content[0]?.text).toContain("3 answer(s)");
 	});
 });
 

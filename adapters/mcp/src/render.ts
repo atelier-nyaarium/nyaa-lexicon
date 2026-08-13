@@ -963,6 +963,39 @@ export function renderReplaceOutcome(outcome: {
 	return lines.join("\n");
 }
 
+/** A rename step, including what it carried across and what the index could not promise. */
+export function renderRenameStep(
+	newName: string,
+	outcome: {
+		renamed: boolean;
+		modules?: string[];
+		migrated?: { answers: number; gaps: number };
+		issues: RefactorIssue[];
+		reason?: string;
+	},
+): string {
+	if (!outcome.renamed) {
+		const lines = ["# Not renamed", "", outcome.reason ?? "the rename could not be carried out"];
+		if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
+		return lines.join("\n");
+	}
+
+	const modules = outcome.modules ?? [];
+	const lines = [
+		`# Renamed to ${newName}`,
+		"",
+		`${modules.length} file${modules.length === 1 ? "" : "s"} reindexed: ${modules.map((m) => `\`${m}\``).join(", ")}`,
+	];
+
+	// Worth saying: the prose written about a symbol is the one thing a re-index cannot rebuild.
+	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
+		lines.push("", `Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
+	}
+
+	if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
+	return lines.join("\n");
+}
+
 export function renderRefactorCommit(outcome: {
 	committed: boolean;
 	issues: RefactorIssue[];

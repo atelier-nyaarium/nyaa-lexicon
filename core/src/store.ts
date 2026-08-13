@@ -892,6 +892,46 @@ export class IndexStore {
 	}
 
 	/** Every answer about one symbol, whatever was asked. */
+	/**
+	 * Moves recorded knowledge from one symbol id to another.
+	 *
+	 * Renaming and moving both re-mint an id, and the prose written about a symbol is the one thing
+	 * here no re-index can regenerate. A row whose destination already has an answer is left alone:
+	 * the new id's own answer was written about the code as it stands, and overwriting it with the
+	 * old symbol's would be a silent downgrade.
+	 */
+	migrateKnowledge(fromId: string, toId: string): { answers: number; gaps: number } {
+		return this.inTransaction(() => {
+			const answers = this.db
+				.prepare(
+					`UPDATE OR IGNORE answers SET symbolId = ? WHERE symbolId = ?
+					 AND question NOT IN (SELECT question FROM answers WHERE symbolId = ?)`,
+				)
+				.run(toId, fromId, toId);
+			const gaps = this.db
+				.prepare(
+					`UPDATE OR IGNORE gaps SET symbolId = ? WHERE symbolId = ?
+					 AND question NOT IN (SELECT question FROM gaps WHERE symbolId = ?)`,
+				)
+				.run(toId, fromId, toId);
+
+			// Anything left behind names a symbol that no longer exists, and keeping it would leave
+			// prose attached to an id nothing can resolve.
+			this.db.prepare("DELETE FROM answers WHERE symbolId = ?").run(fromId);
+			this.db.prepare("DELETE FROM gaps WHERE symbolId = ?").run(fromId);
+
+			return { answers: Number(answers.changes), gaps: Number(gaps.changes) };
+		});
+	}
+
+	/** Every symbol id the index holds for one module, which is the subtree a rename re-mints. */
+	symbolIdsIn(module: string): string[] {
+		const rows = this.db.prepare("SELECT symbolId FROM symbols WHERE module = ?").all(module) as Array<{
+			symbolId: string;
+		}>;
+		return rows.map((row) => row.symbolId);
+	}
+
 	answersFor(symbolId: string): Answer[] {
 		const rows = this.db.prepare("SELECT * FROM answers WHERE symbolId = ? ORDER BY question").all(symbolId);
 		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));

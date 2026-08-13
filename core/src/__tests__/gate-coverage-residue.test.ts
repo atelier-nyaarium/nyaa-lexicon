@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 
 /** Service calls that touch disk or replace stored facts. Add a method here when you add one. */
-const WRITING_CALLS = ["service.indexFile", "service.renameSymbol", "transactions().start", "transactions().track"];
+const WRITING_CALLS = ["service.indexFile", "transactions().start", "transactions().track"];
 
 ////////////////////////////////
 //  Functions & Helpers

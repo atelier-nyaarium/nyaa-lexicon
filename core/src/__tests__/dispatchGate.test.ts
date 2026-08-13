@@ -20,34 +20,41 @@ function tracingService(log: string[]) {
 
 	return {
 		indexFile: () => traced("indexFile"),
-		renameSymbol: () => traced("renameSymbol"),
 		symbolSource: () => ({ found: false, reason: "stub" }),
 	} as unknown as LexiconService;
 }
 
-function stubTransactions(): TransactionManager {
-	return { status: () => ({ open: false, steps: [], tracked: [], issues: [] }) } as unknown as TransactionManager;
+function stubTransactions(log: string[]): TransactionManager {
+	return {
+		status: () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		track: async () => {
+			log.push("track:start");
+			await tick();
+			log.push("track:end");
+			return { tracked: true };
+		},
+	} as unknown as TransactionManager;
 }
 
 ////////////////////////////////
 //  Tests
 
 describe("gating daemon mutations", () => {
-	// The daemon answers frames concurrently, so without the gate a rename's writes and a reindex
-	// could interleave inside the same file.
+	// The daemon answers frames concurrently, so without the gate two writes could interleave
+	// inside the same file.
 	it("never overlaps two mutations, whatever order they arrive in", async () => {
 		const log: string[] = [];
 		const dispatch = createDispatch(tracingService(log), {
 			gate: new WorkspaceGate(),
-			transactions: stubTransactions(),
+			transactions: stubTransactions(log),
 		});
 
 		await Promise.all([
-			dispatch("renameSymbol", { symbolId: "lexicon ts a.ts x.", newName: "y" }),
+			dispatch("refactorTrack", { module: "a.ts" }),
 			dispatch("indexFile", { module: "a.ts", contentHash: "h" }),
 		]);
 
-		expect(log).toEqual(["renameSymbol:start", "renameSymbol:end", "indexFile:start", "indexFile:end"]);
+		expect(log).toEqual(["track:start", "track:end", "indexFile:start", "indexFile:end"]);
 	});
 
 	// Without a gate the service is driven directly, which is what a test harness does.

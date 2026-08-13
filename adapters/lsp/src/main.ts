@@ -208,7 +208,7 @@ async function main(): Promise<void> {
 				return;
 
 			case "textDocument/rename":
-				reply(message.id, await lsp.rename(uri, position, params.newName ?? ""));
+				reply(message.id, await lsp.rename());
 				return;
 
 			default:
