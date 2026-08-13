@@ -592,11 +592,10 @@ export class LexiconService {
 	 * Skips rather than throws when nobody owns the file, since a workspace is full of files no
 	 * provider claims and each one is not an error.
 	 *
-	 * `_claimedHash` is what the caller believed the file was when it decided to call. It is not
-	 * stored, because this reads the file itself and the two can differ; the hash kept is of the
-	 * text handed to the provider.
+	 * Deliberately takes no caller-claimed hash: this reads the file itself and hashes that read,
+	 * so facts are never filed under the hash of a different version.
 	 */
-	async indexFile(module: string, _claimedHash: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
+	async indexFile(module: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const route = this.supervisor.route(module);
 		if (!route.owned) {
@@ -683,7 +682,7 @@ export class LexiconService {
 	): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const text = this.readFile(module);
-		if (text !== null) return this.indexFile(module, hashOf(text), depth);
+		if (text !== null) return this.indexFile(module, depth);
 		this.forgetFile(module);
 		return { module, action: "forgotten", reason: "file is gone" };
 	}
@@ -835,7 +834,6 @@ export class LexiconService {
 			try {
 				const outcome = await this.indexFile(
 					decision.module,
-					decision.contentHash,
 					this.depths.get(decision.module) ?? this.rootDepth(decision.module),
 				);
 				outcomes.push(outcome);
@@ -2822,8 +2820,7 @@ export class LexiconService {
 		// Re-indexed immediately, since every edited file's facts are now wrong and a rename is
 		// usually followed by another question about the same symbols.
 		for (const module of written.modules) {
-			const text = this.readFile(module);
-			if (text !== null) await this.indexFile(module, hashOf(text));
+			if (this.readFile(module) !== null) await this.indexFile(module);
 		}
 		return { renamed: true, plan, modules: written.modules };
 	}

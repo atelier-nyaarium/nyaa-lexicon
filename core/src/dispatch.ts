@@ -29,7 +29,7 @@ const FindByName = z.object({ name: z.string().min(1), module: z.string().min(1)
 const BySymbol = z.object({ symbolId: z.string().min(1) });
 const References = z.object({ symbolId: z.string().min(1), limit: z.number().int().positive().optional() });
 const Resolve = z.object({ fromModule: z.string().min(1), specifier: z.string().min(1) });
-const IndexFile = z.object({ module: z.string().min(1), contentHash: z.string().min(1) });
+const IndexFile = z.object({ module: z.string().min(1) });
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) });
 const Literals = z.object({
 	value: z.string().optional(),
@@ -188,7 +188,7 @@ async function refactorMove(
 		// Target first, so every other module rebinds against a declaration that already exists in
 		// its new home rather than against one that has just vanished.
 		for (const module of [plan.toModule, ...touched.filter((m) => m !== plan.toModule)]) {
-			await service.indexFile(module, "");
+			await service.indexFile(module);
 		}
 		transactions.completeStep(begun.stepNo, "reindexed");
 
@@ -268,7 +268,7 @@ async function refactorRename(
 
 		// The declaring module is reindexed first by renameSymbol, so dependents rebind against
 		// declarations that already carry the new ids.
-		for (const module of alsoBound) await service.indexFile(module, "");
+		for (const module of alsoBound) await service.indexFile(module);
 		transactions.completeStep(begun.stepNo, "reindexed");
 
 		const migrated = service.migrateKnowledge(idMap);
@@ -325,7 +325,7 @@ async function refactorReplace(
 		}
 
 		transactions.completeStep(begun.stepNo, "written");
-		await service.indexFile(plan.module, "");
+		await service.indexFile(plan.module);
 		transactions.completeStep(begun.stepNo, "reindexed");
 		transactions.recordIssues(begun.stepNo, plan.issues);
 		transactions.completeStep(begun.stepNo, "finalized");
@@ -454,7 +454,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "indexFile": {
 				const args = IndexFile.parse(params);
-				return write(() => service.indexFile(args.module, args.contentHash));
+				return write(() => service.indexFile(args.module));
 			}
 			case "symbolSource":
 				return read(() => service.symbolSource(SymbolSourceArgs.parse(params)));
@@ -469,13 +469,13 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			case "refactorUndo":
 				return write(async () => {
 					const outcome = transactions().undo();
-					for (const module of outcome.modules ?? []) await service.indexFile(module, "");
+					for (const module of outcome.modules ?? []) await service.indexFile(module);
 					return outcome;
 				});
 			case "refactorRevert":
 				return write(async () => {
 					const outcome = transactions().revert();
-					for (const module of outcome.modules) await service.indexFile(module, "");
+					for (const module of outcome.modules) await service.indexFile(module);
 					return outcome;
 				});
 			case "refactorCommit":

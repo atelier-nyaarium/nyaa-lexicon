@@ -128,7 +128,7 @@ async function main(argv: string[]): Promise<void> {
 		// Restoring puts back text the index does not describe, so the facts for those files are of
 		// a version that no longer exists. Reindexed here rather than left to the warm scan, which
 		// is opt-in and may never run.
-		for (const module of outcome.restored) await service.indexFile(module, "");
+		for (const module of outcome.restored) await service.indexFile(module);
 		return outcome;
 	});
 	if (recovered.recovered) {

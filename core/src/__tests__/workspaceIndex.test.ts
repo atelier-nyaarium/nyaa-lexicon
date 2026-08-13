@@ -226,7 +226,7 @@ describe("root exclusions and includes", () => {
 			root,
 		);
 
-		await expect(service.indexFile("reference.fake", "reference-1")).resolves.toEqual({
+		await expect(service.indexFile("reference.fake")).resolves.toEqual({
 			module: "reference.fake",
 			action: "skipped",
 			reason: "denied by scope",

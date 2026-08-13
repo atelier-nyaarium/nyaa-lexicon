@@ -26,7 +26,7 @@ let supervisor: ProviderSupervisor;
 let service: LexiconService;
 
 async function index(module: string): Promise<void> {
-	const outcome = await service.indexFile(module, "h1");
+	const outcome = await service.indexFile(module);
 	if (outcome.action !== "indexed") throw new Error(`${module}: ${outcome.action} ${outcome.reason ?? ""}`);
 }
 

@@ -52,7 +52,7 @@ describe("indexing a file end to end", () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\nexport function add() {}\n");
 
-		const outcome = await service.indexFile("a.ref", "h1");
+		const outcome = await service.indexFile("a.ref");
 
 		expect(outcome).toMatchObject({ action: "indexed", declarations: 2 });
 		expect(service.findByName("Cart").map((s) => s.kind)).toEqual(["class"]);
@@ -62,7 +62,7 @@ describe("indexing a file end to end", () => {
 		await boot();
 		files.set("README.md", "# hi");
 
-		expect(await service.indexFile("README.md", "h1")).toMatchObject({
+		expect(await service.indexFile("README.md")).toMatchObject({
 			action: "skipped",
 			reason: "unclaimed",
 		});
@@ -71,10 +71,10 @@ describe("indexing a file end to end", () => {
 	it("forgets a file that vanished between the event and the read", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 
 		files.delete("a.ref");
-		expect(await service.indexFile("a.ref", "h2")).toMatchObject({ action: "forgotten" });
+		expect(await service.indexFile("a.ref")).toMatchObject({ action: "forgotten" });
 		expect(service.findByName("Cart")).toEqual([]);
 	}, 30_000);
 });
@@ -84,7 +84,7 @@ describe("applying a watcher batch", () => {
 		await boot();
 		files.set("a.ref", "export class A {}\n");
 		files.set("b.ref", "export class B {}\n");
-		await service.indexFile("b.ref", "hb");
+		await service.indexFile("b.ref");
 
 		const outcomes = await service.applyBatch([
 			{ kind: "changed", module: "a.ref", contentHash: "ha" },
@@ -102,23 +102,28 @@ describe("applying a watcher batch", () => {
 	it("skips a re-save whose content did not move, without asking the provider", async () => {
 		await boot();
 		files.set("a.ref", "export class A {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const indexed = store.contentHashOf("a.ref") as string;
 
 		const outcomes = await service.applyBatch([{ kind: "changed", module: "a.ref", contentHash: indexed }]);
 		expect(outcomes[0]).toMatchObject({ action: "skipped", reason: "content is unchanged" });
 	}, 30_000);
 
-	// A caller's hash is a claim about a file it read at some earlier moment. Storing it would file
-	// the facts of one version under the name of another.
-	it("stores the hash of the text it read, not the one it was handed", async () => {
+	// The claimed-hash parameter is gone entirely, so misfiling facts under a stale caller hash is
+	// impossible by construction. What remains checkable: the stored hash tracks the read content.
+	it("stores a hash derived from the text it read", async () => {
 		await boot();
 		files.set("a.ref", "export class A {}\n");
-		await service.indexFile("a.ref", "a-stale-label");
+		await service.indexFile("a.ref");
+		const first = store.contentHashOf("a.ref");
 
-		expect(store.contentHashOf("a.ref")).not.toBe("a-stale-label");
-		const source = service.symbolSource({ symbolId: service.findByName("A")[0]?.symbolId as string });
-		expect(source.found).toBe(true);
+		files.set("a.ref", "export class A {}\nexport class B {}\n");
+		await service.indexFile("a.ref");
+		expect(store.contentHashOf("a.ref")).not.toBe(first);
+
+		files.set("a.ref", "export class A {}\n");
+		await service.indexFile("a.ref");
+		expect(store.contentHashOf("a.ref")).toBe(first);
 	}, 30_000);
 });
 
@@ -292,7 +297,7 @@ describe("reading a symbol's source", () => {
 	it("returns the declaration's own text, not the whole file", async () => {
 		await boot();
 		files.set("a.ref", `${CART}export function other() {}\n`);
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 
@@ -309,7 +314,7 @@ describe("reading a symbol's source", () => {
 	it("returns the range that text occupies, and slices to it exactly", async () => {
 		await boot();
 		files.set("a.ref", `${CART}export function other() {}\n`);
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 
@@ -325,7 +330,7 @@ describe("reading a symbol's source", () => {
 	it("refuses when the file changed since it was indexed", async () => {
 		await boot();
 		files.set("a.ref", CART);
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 
@@ -348,7 +353,7 @@ describe("planning a replacement", () => {
 	async function plant(text = CART) {
 		await boot();
 		files.set("a.ref", text);
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 		return target;
@@ -394,7 +399,7 @@ describe("planning a replacement", () => {
 	it("allows a deletion and reports what still points at it", async () => {
 		const target = await plant();
 		files.set("b.ref", "export class User {}\n");
-		await service.indexFile("b.ref", "h1");
+		await service.indexFile("b.ref");
 
 		const plan = await service.planReplacement({ symbolId: target }, "// removed");
 
@@ -426,8 +431,8 @@ describe("planning a move", () => {
 		await boot();
 		files.set("cart.ref", "export class Cart {}\nexport class Item {}\n");
 		files.set("use.ref", "export class User {}\n");
-		await service.indexFile("cart.ref", "h1");
-		await service.indexFile("use.ref", "h1");
+		await service.indexFile("cart.ref");
+		await service.indexFile("use.ref");
 		const cart = service.findByName("Cart")[0]?.symbolId;
 		if (!cart) throw new Error("expected Cart");
 		return cart;
@@ -477,7 +482,7 @@ describe("carrying knowledge across a rename", () => {
 	it("maps the whole subtree, not just the renamed symbol", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const cart = service.findByName("Cart")[0]?.symbolId;
 		if (!cart) throw new Error("expected Cart");
 
@@ -493,7 +498,7 @@ describe("carrying knowledge across a rename", () => {
 	it("moves an answer to the new id, leaving nothing under the old one", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const cart = service.findByName("Cart")[0]?.symbolId;
 		if (!cart) throw new Error("expected Cart");
 
@@ -517,7 +522,7 @@ describe("carrying knowledge across a rename", () => {
 	it("keeps an answer already written about the new id", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\nexport class Basket {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const cart = service.findByName("Cart")[0]?.symbolId as string;
 		const basket = service.findByName("Basket")[0]?.symbolId as string;
 
@@ -536,7 +541,7 @@ describe("answering about a symbol", () => {
 	it("describes a symbol and counts its uses without listing them", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 
 		const found = service.findByName("Cart")[0];
 		if (!found) throw new Error("expected Cart");
@@ -554,7 +559,7 @@ describe("answering about a symbol", () => {
 	it("caps a reference list and says so, since an agent pays for every row", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
-		await service.indexFile("a.ref", "h1");
+		await service.indexFile("a.ref");
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 
@@ -582,8 +587,8 @@ describe("answering about a symbol", () => {
 		await boot();
 		files.set("a.ref", "export class Same {}\n");
 		files.set("b.ref", "export class Same {}\n");
-		await service.indexFile("a.ref", "h1");
-		await service.indexFile("b.ref", "h2");
+		await service.indexFile("a.ref");
+		await service.indexFile("b.ref");
 
 		expect(service.findByName("Same")).toHaveLength(2);
 		expect(service.findByName("Same", "a.ref")).toHaveLength(1);

@@ -101,7 +101,7 @@ beforeEach(async () => {
 	daemon = outcome.daemon;
 
 	files.set("cart.ref", "export class Cart {}\nexport function add() {}\n");
-	await callDaemon(daemon.lock, "indexFile", { module: "cart.ref", contentHash: "h1" });
+	await callDaemon(daemon.lock, "indexFile", { module: "cart.ref" });
 });
 
 afterEach(async () => {
@@ -141,7 +141,7 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 
 	it("reflects a re-index, so an edit is visible without restarting anything", async () => {
 		files.set("cart.ref", "export class Cart {}\nexport class Basket {}\n");
-		await callDaemon(daemon.lock, "indexFile", { module: "cart.ref", contentHash: "h2" });
+		await callDaemon(daemon.lock, "indexFile", { module: "cart.ref" });
 
 		const added = await describeSymbol(backendOverDaemon(dir), { name: "Basket" });
 		expect(added.isError).toBeUndefined();
