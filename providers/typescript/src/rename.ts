@@ -1,7 +1,9 @@
 import {
 	type BlockedSite,
 	coordinatesOf,
+	planEdits,
 	type Range,
+	RENAME_EDIT_CONFLICT,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	type RenameSite,
@@ -475,37 +477,21 @@ function matchesName(site: SiteContext, oldName: string): boolean {
 }
 
 function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: BlockedSite[]): RenameEditsResponse {
-	const unique = new Map<string, TextEdit>();
-	for (const edit of edits) {
-		const offsets = coordinates.offsetsForRange(edit.range);
-		if (offsets === undefined) {
-			blocked.push({
-				range: edit.range,
-				reason: "ParseError",
-				detail: "an edit range is outside the module",
-			});
-			continue;
-		}
-		unique.set(`${offsets.start}:${offsets.end}`, edit);
+	const plan = planEdits(coordinates, edits);
+
+	for (const { edit, conflict } of plan.conflicts) {
+		blocked.push({ range: edit.range, ...RENAME_EDIT_CONFLICT[conflict] });
 	}
-	const sorted = [...unique.entries()]
-		.map(([key, edit]) => ({ start: Number(key.split(":")[0]), end: Number(key.split(":")[1]), edit }))
-		.sort((left, right) => left.start - right.start || left.end - right.end);
-	const safe: TextEdit[] = [];
-	let previousEnd = -1;
-	for (const item of sorted) {
-		if (item.start < previousEnd) {
-			blocked.push({
-				range: item.edit.range,
-				reason: "NotImplemented",
-				detail: "the rename sites produce overlapping edits",
-			});
-			continue;
-		}
-		safe.push(item.edit);
-		previousEnd = item.end;
+	// Unreachable while every rename site is a name span, which has width. Reported rather than
+	// assumed away, because the day a site is zero-width the join would pick an order silently.
+	for (const { offset, edit } of plan.joined) {
+		blocked.push({
+			range: edit.range,
+			reason: "NotImplemented",
+			detail: `two rename insertions share one point at offset ${offset}`,
+		});
 	}
-	return { status: "ready", edits: safe, blocked };
+	return { status: "ready", edits: plan.edits, blocked };
 }
 
 function isLegalIdentifier(value: string): boolean {

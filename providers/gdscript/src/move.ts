@@ -1,5 +1,6 @@
 import {
 	coordinatesOf,
+	MOVE_EDIT_CONFLICT,
 	type MoveBlockedReason,
 	type MoveBlockedSite,
 	type MoveDependency,
@@ -7,7 +8,7 @@ import {
 	type MoveEditsResponse,
 	type MoveImportSite,
 	normalizeModulePath,
-	type OffsetRange,
+	planEdits,
 	type Range,
 	type TextCoordinates,
 	type TextEdit,
@@ -278,38 +279,14 @@ function isClassNameMove(request: MoveEditsRequest, bindings: GDScriptBindingInd
 //  Ranges & Edits
 
 function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: MoveBlockedSite[]): MoveEditsResponse {
-	const unique = new Map<string, TextEdit>();
-	for (const edit of edits) {
-		const offsets = coordinates.offsetsForRange(edit.range);
-		if (offsets === undefined) {
-			blocked.push(blockedSite(edit.range, "ParseError", "an edit range is outside the module"));
-			continue;
-		}
-		const key = `${offsets.start}:${offsets.end}`;
-		const previous = unique.get(key);
-		if (previous === undefined) {
-			unique.set(key, edit);
-		} else if (previous.newText !== edit.newText && offsets.start === offsets.end) {
-			unique.set(key, { range: edit.range, newText: `${previous.newText}${edit.newText}` });
-		} else if (previous.newText !== edit.newText) {
-			blocked.push(blockedSite(edit.range, "NotImplemented", "the move produces duplicate edits"));
-		}
+	const plan = planEdits(coordinates, edits);
+	for (const { edit, conflict } of plan.conflicts) {
+		const named = MOVE_EDIT_CONFLICT[conflict];
+		blocked.push(blockedSite(edit.range, named.reason, named.detail));
 	}
-
-	const sorted = [...unique.values()]
-		.map((edit) => ({ edit, ...(coordinates.offsetsForRange(edit.range) as OffsetRange) }))
-		.sort((left, right) => left.start - right.start || left.end - right.end);
-	const safe: TextEdit[] = [];
-	let previousEnd = -1;
-	for (const item of sorted) {
-		if (item.start < previousEnd) {
-			blocked.push(blockedSite(item.edit.range, "NotImplemented", "the move produces overlapping edits"));
-			continue;
-		}
-		safe.push(item.edit);
-		previousEnd = Math.max(previousEnd, item.end);
-	}
-	return { status: "ready", edits: safe, blocked };
+	// Joined insertions are deliberate here: collecting several for one point is how a move adds
+	// more than one dependency to a file.
+	return { status: "ready", edits: plan.edits, blocked };
 }
 
 function dependencyInsertionPosition(text: string): number {

@@ -3,7 +3,9 @@ import {
 	type BlockedSite,
 	coordinatesOf,
 	type Declaration,
+	planEdits,
 	type Range,
+	RENAME_EDIT_CONFLICT,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	type TextCoordinates,
@@ -176,7 +178,10 @@ function blocked(range: Range, reason: BlockedSite["reason"], detail: string): B
 	return { range, reason, detail };
 }
 
-function refused(reason: "InvalidName" | "ReservedWord" | "Collision" | "ParseError", detail: string) {
+function refused(
+	reason: "InvalidName" | "ReservedWord" | "Collision" | "ParseError" | "NotImplemented",
+	detail: string,
+) {
 	return { status: "refused", reason, detail } as const;
 }
 
@@ -270,21 +275,17 @@ export function renameGdscript(
 		}
 	}
 
-	edits.sort((left, right) => positionCompare(right.range.start, left.range.start));
-	for (let index = 1; index < edits.length; index++) {
-		const previous = edits[index - 1] as TextEdit;
-		const current = edits[index] as TextEdit;
-		const previousOffsets = coordinates.offsetsForRange(previous.range);
-		const currentOffsets = coordinates.offsetsForRange(current.range);
-		if (
-			previousOffsets === undefined ||
-			currentOffsets === undefined ||
-			currentOffsets.end > previousOffsets.start
-		) {
-			return refused("ParseError", "rename sites overlap");
-		}
+	// The shared analysis, not a sixth hand-rolled overlap check. This one refuses the whole request
+	// where the TypeScript side blocks the site, which comes to the same thing: core aborts a rename
+	// with any blocked site anyway. Refusing keeps this provider's existing contract.
+	const plan = planEdits(coordinates, edits);
+	const conflict = plan.conflicts[0];
+	if (conflict !== undefined) {
+		const named = RENAME_EDIT_CONFLICT[conflict.conflict];
+		return refused(named.reason, named.detail);
 	}
-	const rewritten = applyEdits(params.text, edits);
+
+	const rewritten = applyEdits(params.text, plan.edits);
 	if ("problem" in rewritten) return refused("ParseError", "the proposed edits do not produce parseable GDScript");
 	try {
 		extractFile(params.module, rewritten.text);

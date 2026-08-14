@@ -23,7 +23,14 @@ export {
 	type WelcomeFrame,
 	WelcomeFrameSchema,
 } from "./daemonWire.js";
-export { applyEdits, type TextEdit, TextEditSchema } from "./edits.js";
+export {
+	applyEdits,
+	type EditConflict,
+	type EditPlan,
+	planEdits,
+	type TextEdit,
+	TextEditSchema,
+} from "./edits.js";
 export {
 	answerFactId,
 	composeFactId,
@@ -65,6 +72,7 @@ export {
 	ImportKindSchema,
 	type ImportOrigin,
 	ImportOriginSchema,
+	MOVE_EDIT_CONFLICT,
 	type MoveBlockedReason,
 	MoveBlockedReasonSchema,
 	type MoveBlockedSite,
@@ -101,6 +109,7 @@ export {
 	type BlockedSiteReason,
 	BlockedSiteReasonSchema,
 	BlockedSiteSchema,
+	RENAME_EDIT_CONFLICT,
 	type RenameEditsRequest,
 	RenameEditsRequestSchema,
 	type RenameEditsResponse,

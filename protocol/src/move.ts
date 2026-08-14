@@ -11,7 +11,7 @@
 // classified or the move blocks. Silence is never read as "no import needed".
 
 import { z } from "zod";
-import { TextEditSchema } from "./edits.js";
+import { type EditConflict, TextEditSchema } from "./edits.js";
 import { PositionSchema, RangeSchema } from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
 
@@ -174,6 +174,18 @@ export const MoveBlockedReasonSchema = z
 	.meta({ id: "MoveBlockedReason" });
 
 export type MoveBlockedReason = z.infer<typeof MoveBlockedReasonSchema>;
+
+/**
+ * How a move names what `planEdits` found, in one place for every provider.
+ *
+ * Shared because three providers said the same three things in their own words, and the wording is
+ * what an agent reads when a move refuses. Drift here is a user-visible inconsistency for no reason.
+ */
+export const MOVE_EDIT_CONFLICT: Record<EditConflict, { reason: MoveBlockedReason; detail: string }> = {
+	unaddressable: { reason: "ParseError", detail: "an edit range is outside the module" },
+	duplicate: { reason: "NotImplemented", detail: "the move produces duplicate edits" },
+	overlapping: { reason: "NotImplemented", detail: "the move produces overlapping edits" },
+};
 
 export const MoveBlockedSiteSchema = z
 	.object({ range: RangeSchema.optional(), reason: MoveBlockedReasonSchema, detail: z.string().optional() })

@@ -6,7 +6,7 @@
 // the splice, which is the bug class where two appliers disagree about overlapping ranges.
 
 import { z } from "zod";
-import { coordinatesOf } from "./coordinates.js";
+import { coordinatesOf, type TextCoordinates } from "./coordinates.js";
 import { RangeSchema } from "./symbols.js";
 
 ////////////////////////////////
@@ -18,7 +18,101 @@ export const TextEditSchema = z.object({ range: RangeSchema, newText: z.string()
 export type TextEdit = z.infer<typeof TextEditSchema>;
 
 ////////////////////////////////
+//  Interfaces & Types
+
+/**
+ * Why an edit cannot travel with the others. A closed set, because a caller has to map each one
+ * into its own vocabulary and an open string would let a new case pass unnoticed.
+ */
+export type EditConflict =
+	/** Its range does not address text in this file. */
+	| "unaddressable"
+	/** Another edit claims the same characters and says something different. */
+	| "duplicate"
+	/** It starts inside a span an earlier edit already claims. */
+	| "overlapping";
+
+export interface EditPlan {
+	/** Applicable together, ordered by position, identical spans folded to one. */
+	edits: TextEdit[];
+	/** What had to be left out, in the order the conflicts were found. */
+	conflicts: Array<{ edit: TextEdit; conflict: EditConflict }>;
+	/**
+	 * Points where two or more DIFFERENT insertions were joined into one, in the order given.
+	 *
+	 * Reported rather than hidden because the two callers of this analysis disagree about it, and
+	 * that disagreement is a policy worth seeing. A provider joins them, since collecting several
+	 * insertions for one point is how it adds two imports. The applier refuses them, since by the
+	 * time a final edit set reaches it, an ambiguous order is a provider bug rather than a shorthand.
+	 */
+	joined: Array<{ offset: number; edit: TextEdit }>;
+}
+
+////////////////////////////////
 //  Functions & Helpers
+
+/**
+ * Work out what a set of edits means, without applying any of them.
+ *
+ * ONE analysis, because there were five: the applier below, and a `validateEdits` in each of the
+ * four provider modules that rewrite text. They agreed by luck rather than by construction, and had
+ * already drifted on joined insertions. Deciding twice what a set of edits means is the bug class
+ * this module's header claims to have closed, so it had better only be decided here.
+ *
+ * What each caller does with the result is still the caller's. This function has no policy, only
+ * findings.
+ */
+export function planEdits(coordinates: TextCoordinates, edits: TextEdit[]): EditPlan {
+	const conflicts: EditPlan["conflicts"] = [];
+	const unique = new Map<string, { edit: TextEdit; start: number; end: number }>();
+	const joinedPoints = new Set<number>();
+
+	for (const edit of edits) {
+		const offsets = coordinates.offsetsForRange(edit.range);
+		if (offsets === undefined) {
+			conflicts.push({ edit, conflict: "unaddressable" });
+			continue;
+		}
+
+		const key = `${offsets.start}:${offsets.end}`;
+		const previous = unique.get(key);
+		if (previous === undefined) {
+			unique.set(key, { edit, ...offsets });
+			continue;
+		}
+		// Identical text at identical coordinates is one edit collected twice, not a conflict.
+		if (previous.edit.newText === edit.newText) continue;
+
+		if (offsets.start === offsets.end) {
+			unique.set(key, {
+				edit: { range: edit.range, newText: `${previous.edit.newText}${edit.newText}` },
+				...offsets,
+			});
+			joinedPoints.add(offsets.start);
+			continue;
+		}
+		conflicts.push({ edit, conflict: "duplicate" });
+	}
+
+	// Read back after the fold, so the edit reported is the joined one a caller can point at.
+	const joined = [...joinedPoints].map((offset) => ({
+		offset,
+		edit: (unique.get(`${offset}:${offset}`) as { edit: TextEdit }).edit,
+	}));
+
+	const sorted = [...unique.values()].sort((left, right) => left.start - right.start || left.end - right.end);
+	const safe: TextEdit[] = [];
+	let previousEnd = -1;
+	for (const item of sorted) {
+		if (item.start < previousEnd) {
+			conflicts.push({ edit: item.edit, conflict: "overlapping" });
+			continue;
+		}
+		safe.push(item.edit);
+		previousEnd = Math.max(previousEnd, item.end);
+	}
+	return { edits: safe, conflicts, joined };
+}
 
 /**
  * Apply every edit to one file's text.
@@ -33,37 +127,28 @@ export type TextEdit = z.infer<typeof TextEditSchema>;
  */
 export function applyEdits(text: string, edits: TextEdit[]): { text: string } | { problem: string } {
 	const coordinates = coordinatesOf(text);
-	const spans: Array<{ start: number; end: number; newText: string }> = [];
+	const plan = planEdits(coordinates, edits);
 
-	for (const edit of edits) {
-		const offsets = coordinates.offsetsForRange(edit.range);
-		if (offsets === undefined) {
-			const { line, character } = edit.range.start;
+	const first = plan.conflicts[0];
+	if (first !== undefined) {
+		const { line, character } = first.edit.range.start;
+		if (first.conflict === "unaddressable") {
 			return { problem: `an edit does not address text, at line ${line} character ${character}` };
 		}
-		spans.push({ start: offsets.start, end: offsets.end, newText: edit.newText });
+		return { problem: "two edits overlap, so the result would depend on order" };
 	}
 
-	spans.sort((a, b) => a.start - b.start || a.end - b.end);
-	for (let i = 1; i < spans.length; i++) {
-		const previous = spans[i - 1] as { start: number; end: number; newText: string };
-		const current = spans[i] as { start: number; end: number; newText: string };
-		if (current.start < previous.end) return { problem: "two edits overlap, so the result would depend on order" };
-		if (current.start === current.end && previous.start === previous.end && current.start === previous.start) {
-			if (current.newText === previous.newText) continue;
-			return {
-				problem: `two insertions share one point, so the result would depend on order at offset ${current.start}`,
-			};
-		}
+	const joined = plan.joined[0];
+	if (joined !== undefined) {
+		return {
+			problem: `two insertions share one point, so the result would depend on order at offset ${joined.offset}`,
+		};
 	}
 
 	let out = text;
-	const seen = new Set<string>();
-	for (const span of [...spans].reverse()) {
-		const key = `${span.start}:${span.end}:${span.newText}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out = out.slice(0, span.start) + span.newText + out.slice(span.end);
+	for (const edit of [...plan.edits].reverse()) {
+		const offsets = coordinates.offsetsForRange(edit.range) as { start: number; end: number };
+		out = out.slice(0, offsets.start) + edit.newText + out.slice(offsets.end);
 	}
 	return { text: out };
 }

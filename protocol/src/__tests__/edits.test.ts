@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyEdits } from "../edits.js";
+import { coordinatesOf } from "../coordinates.js";
+import { applyEdits, planEdits } from "../edits.js";
 
 ////////////////////////////////
 //  Helpers
@@ -86,5 +87,64 @@ describe("applying edits to one file", () => {
 		expect(applyEdits("b();\n", [edit(0, 0, 0, 'import { b } from "./b";\n')])).toEqual({
 			text: 'import { b } from "./b";\nb();\n',
 		});
+	});
+});
+
+// The analysis five modules used to do for themselves. They had already drifted: one silently
+// dropped a conflicting edit, another called an overlap a ParseError and refused the whole request.
+describe("planning a set of edits", () => {
+	const plan = (text: string, edits: ReturnType<typeof edit>[]) => planEdits(coordinatesOf(text), edits);
+
+	it("keeps applicable edits in position order however they were collected", () => {
+		const result = plan("add(add);\n", [edit(0, 4, 7, "sum"), edit(0, 0, 3, "sum")]);
+		expect(result.conflicts).toEqual([]);
+		expect(result.edits.map((e) => e.range.start.character)).toEqual([0, 4]);
+	});
+
+	it("folds an identical edit collected twice, which is not a conflict", () => {
+		const result = plan("add();\n", [edit(0, 0, 3, "sum"), edit(0, 0, 3, "sum")]);
+		expect(result.edits).toHaveLength(1);
+		expect(result.conflicts).toEqual([]);
+	});
+
+	// The drift that mattered: TypeScript rename used to overwrite the first edit and say nothing,
+	// so a rename could quietly rewrite one of two disagreeing edits and report success.
+	it("reports two different texts for one span rather than picking one", () => {
+		const result = plan("add();\n", [edit(0, 0, 3, "sum"), edit(0, 0, 3, "total")]);
+		expect(result.conflicts.map((c) => c.conflict)).toEqual(["duplicate"]);
+		expect(result.edits).toHaveLength(1);
+	});
+
+	it("reports an edit whose range does not address the text", () => {
+		const result = plan("add();\n", [edit(9, 0, 3, "sum")]);
+		expect(result.conflicts.map((c) => c.conflict)).toEqual(["unaddressable"]);
+		expect(result.edits).toEqual([]);
+	});
+
+	it("keeps the earlier of two overlapping edits and reports the later", () => {
+		const result = plan("abcdef\n", [edit(0, 0, 4, "X"), edit(0, 2, 6, "Y")]);
+		expect(result.edits.map((e) => e.newText)).toEqual(["X"]);
+		expect(result.conflicts.map((c) => c.conflict)).toEqual(["overlapping"]);
+	});
+
+	// Two edits that merely touch do not overlap. Off by one here silently drops a valid edit.
+	it("treats abutting edits as applicable together", () => {
+		const result = plan("abcdef\n", [edit(0, 0, 3, "X"), edit(0, 3, 6, "Y")]);
+		expect(result.edits).toHaveLength(2);
+		expect(result.conflicts).toEqual([]);
+	});
+
+	// Joining is what lets a move add two imports at one point. It is REPORTED rather than hidden,
+	// because applyEdits refuses what a provider accepts and that difference has to be visible.
+	it("joins different insertions at one point, in the order given, and says it did", () => {
+		const result = plan("b();\n", [edit(0, 0, 0, "A\n"), edit(0, 0, 0, "B\n")]);
+		expect(result.edits.map((e) => e.newText)).toEqual(["A\nB\n"]);
+		expect(result.joined.map((j) => j.offset)).toEqual([0]);
+		expect(result.conflicts).toEqual([]);
+	});
+
+	it("gives a joined point an edit a caller can point at", () => {
+		const result = plan("b();\n", [edit(0, 0, 0, "A"), edit(0, 0, 0, "B")]);
+		expect(result.joined[0]?.edit.range.start).toEqual({ line: 0, character: 0 });
 	});
 });

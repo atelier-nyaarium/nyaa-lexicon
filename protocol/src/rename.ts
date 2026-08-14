@@ -10,7 +10,7 @@
 // way at all would make every provider reimplement the reference index.
 
 import { z } from "zod";
-import { TextEditSchema } from "./edits.js";
+import { type EditConflict, TextEditSchema } from "./edits.js";
 import { RangeSchema } from "./symbols.js";
 
 ////////////////////////////////
@@ -64,6 +64,20 @@ export const RenameRefusalSchema = z
 	.meta({ id: "RenameRefusal" });
 
 export type RenameRefusal = z.infer<typeof RenameRefusalSchema>;
+
+/**
+ * How a rename names what `planEdits` found. Here rather than in the providers that read it,
+ * because two copies of this had already drifted onto different reasons for the same condition.
+ *
+ * The reason is narrowed to the two names BlockedSiteReason and RenameRefusal share, so one
+ * mapping serves a provider that blocks the site and a provider that refuses the whole request.
+ */
+export const RENAME_EDIT_CONFLICT: Record<EditConflict, { reason: BlockedSiteReason & RenameRefusal; detail: string }> =
+	{
+		unaddressable: { reason: "ParseError", detail: "an edit range is outside the module" },
+		duplicate: { reason: "NotImplemented", detail: "the rename sites produce conflicting edits" },
+		overlapping: { reason: "NotImplemented", detail: "the rename sites produce overlapping edits" },
+	};
 
 /**
  * One occurrence the core believes belongs to the symbol.
