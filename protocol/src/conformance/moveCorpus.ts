@@ -1,5 +1,6 @@
 // Move cases stay separate from analysis cases because move is an ungated provider method.
 
+import { coordinatesOf } from "../coordinates.js";
 import { composeSymbolId } from "../symbolId.js";
 import type { Range } from "../symbols.js";
 import { type MoveCase, MoveCaseSchema } from "./types.js";
@@ -1232,12 +1233,6 @@ const MOVE_CASES: MoveCase[] = [
 ////////////////////////////////
 //  Functions & Helpers
 
-function positionAt(text: string, offset: number): Range["start"] {
-	const before = text.slice(0, offset);
-	const lineStart = before.lastIndexOf("\n") + 1;
-	return { line: before.split("\n").length - 1, character: offset - lineStart };
-}
-
 function fileText(files: Record<string, string>, module: string): string {
 	const text = files[module];
 	if (text === undefined) throw new Error(`missing move fixture file: ${module}`);
@@ -1248,7 +1243,9 @@ function rangeForText(files: Record<string, string>, module: string, value: stri
 	const text = fileText(files, module);
 	const start = text.indexOf(value, from);
 	if (start === -1) throw new Error(`missing move fixture text in ${module}: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`unaddressable move fixture range in ${module}: ${value}`);
+	return range;
 }
 
 /** The move corpus, validated before a provider sees it. */

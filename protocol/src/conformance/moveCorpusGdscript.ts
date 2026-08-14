@@ -1,5 +1,6 @@
 // GDScript move cases stay separate because loader paths and class_name registration are language-specific.
 
+import { coordinatesOf } from "../coordinates.js";
 import { composeSymbolId } from "../symbolId.js";
 import type { Range } from "../symbols.js";
 import { type MoveCase, MoveCaseSchema } from "./types.js";
@@ -214,16 +215,10 @@ export function loadGdscriptMoveCases(): MoveCase[] {
 ////////////////////////////////
 //  Helpers
 
-function positionAt(text: string, offset: number): Range["start"] {
-	const before = text.slice(0, offset);
-	return {
-		line: before.split("\n").length - 1,
-		character: offset - (before.lastIndexOf("\n") + 1),
-	};
-}
-
 function rangeForText(text: string, value: string): Range {
 	const start = text.indexOf(value);
 	if (start < 0) throw new Error(`missing GDScript move fixture text: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`unaddressable GDScript move fixture range: ${value}`);
+	return range;
 }

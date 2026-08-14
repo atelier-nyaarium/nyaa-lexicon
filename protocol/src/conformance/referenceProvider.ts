@@ -8,6 +8,7 @@
 
 import path from "node:path";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
+import { coordinatesOf } from "../coordinates.js";
 import type { TextEdit } from "../edits.js";
 import type { MoveEditsRequest, MoveEditsResponse } from "../move.js";
 import {
@@ -55,23 +56,14 @@ function lineOf(text: string, index: number): number {
 	return line;
 }
 
-function positionAt(text: string, offset: number): Range["start"] {
-	const before = text.slice(0, offset);
-	const lineStart = before.lastIndexOf("\n") + 1;
-	return { line: before.split("\n").length - 1, character: offset - lineStart };
-}
-
 function offsetAt(text: string, position: Range["start"]): number | undefined {
-	const lines = text.split("\n");
-	const line = lines[position.line];
-	if (line === undefined || position.character > line.length) return undefined;
-	let offset = 0;
-	for (let index = 0; index < position.line; index++) offset += (lines[index]?.length ?? 0) + 1;
-	return offset + position.character;
+	return coordinatesOf(text).offsetAt(position);
 }
 
 function rangeAt(text: string, start: number, end: number): Range {
-	return { start: positionAt(text, start), end: positionAt(text, end) };
+	const range = coordinatesOf(text).rangeAt(start, end);
+	if (range === undefined) throw new Error(`unaddressable reference-provider range: ${start} to ${end}`);
+	return range;
 }
 
 function sameModule(left: string, right: string): boolean {
