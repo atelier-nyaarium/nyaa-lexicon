@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { IndexOutcome } from "../indexer";
 import type { FileEvent } from "../invalidation";
 import { serializeBatches } from "../liveIndex";
-import type { IndexOutcome } from "../service";
 
 ////////////////////////////////
 //  Helpers

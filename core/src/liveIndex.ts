@@ -4,8 +4,9 @@
 // one at a time, because two overlapping re-indexes of the same file race on the same store rows,
 // and a burst landing mid-apply is ordinary rather than rare.
 
+import type { IndexOutcome } from "./indexer.js";
 import type { FileEvent } from "./invalidation.js";
-import type { IndexOutcome, LexiconService } from "./service.js";
+import type { LexiconService } from "./service.js";
 import { watchWorkspace } from "./watcher.js";
 
 ////////////////////////////////

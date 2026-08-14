@@ -50,6 +50,7 @@ export {
 	type Mention,
 	readHistory,
 } from "./history.js";
+export { type IndexOutcome, type IndexStatus, WorkspaceIndexer } from "./indexer.js";
 export {
 	type AnswerTier,
 	type CallHierarchy,
@@ -115,8 +116,6 @@ export { type CacheStats, ResultCache } from "./resultCache.js";
 export { modulesFor, type ProviderClaims, type Route, routeModule } from "./routing.js";
 export { compileSearchRegex } from "./search.js";
 export {
-	type IndexOutcome,
-	type IndexStatus,
 	LexiconService,
 	type RenameConcern,
 	type RenameEditPlan,
