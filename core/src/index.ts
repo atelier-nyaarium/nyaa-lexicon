@@ -111,17 +111,23 @@ export {
 	type StartReport,
 	startProviders,
 } from "./providers.js";
+export {
+	type MoveEditsOutcome,
+	type MovePlan,
+	RefactorPlanner,
+	type RenameConcern,
+	type RenameEditPlan,
+	type RenameFile,
+	type RenamePlan,
+	type ReplacementPlan,
+} from "./refactorPlanner.js";
 export { type QueueStats, RequestQueue } from "./requestQueue.js";
 export { type CacheStats, ResultCache } from "./resultCache.js";
 export { modulesFor, type ProviderClaims, type Route, routeModule } from "./routing.js";
 export { compileSearchRegex } from "./search.js";
 export {
 	LexiconService,
-	type RenameConcern,
-	type RenameEditPlan,
-	type RenameFile,
 	type RenameOutcome,
-	type RenamePlan,
 } from "./service.js";
 export {
 	type BindOutcome,

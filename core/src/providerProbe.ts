@@ -12,7 +12,14 @@
 // Here the restore is structural. It is a finally, so there is no exit path that can skip it, and
 // the planner cannot even see the seam.
 
-import type { FileFacts, ProviderTiers } from "@nyaa-lexicon/protocol";
+import type {
+	FileFacts,
+	MoveEditsRequest,
+	MoveEditsResponse,
+	ProviderTiers,
+	RenameEditsRequest,
+	RenameEditsResponse,
+} from "@nyaa-lexicon/protocol";
 import type { ProviderSupervisor } from "./supervisor.js";
 import { hashContent } from "./watcher.js";
 
@@ -34,6 +41,15 @@ export interface ProviderProbe {
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
 	/** Parse text that is NOT on disk. The provider's view of the module is restored before this returns. */
 	parseCandidate(module: string, text: string): Promise<CandidateParse>;
+	/**
+	 * The edits a rename or a move would make in one module.
+	 *
+	 * Safe to sit beside parseCandidate because these ASK rather than SET: a provider answering them
+	 * returns edits and does not change what it believes the file says. Only parseFile does that,
+	 * which is the whole reason parseCandidate has to clean up after itself and these do not.
+	 */
+	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
+	moveEdits(module: string, request: MoveEditsRequest): Promise<MoveEditsResponse>;
 }
 
 ////////////////////////////////
@@ -62,6 +78,10 @@ export function liveProbe(supervisor: ProviderSupervisor, readFile: (module: str
 		},
 
 		declares: (providerId, tier) => supervisor.declares(providerId, tier),
+
+		renameEdits: (module, request) => supervisor.ask(module, "renameEdits", request),
+
+		moveEdits: (module, request) => supervisor.ask(module, "moveEdits", request),
 
 		async parseCandidate(module, text) {
 			try {
