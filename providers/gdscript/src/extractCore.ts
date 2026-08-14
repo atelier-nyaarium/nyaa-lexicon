@@ -1,4 +1,14 @@
-import type { Diagnostic, ImportedName, Literal, Metrics, Reference } from "@nyaa-lexicon/protocol";
+import {
+	coordinatesOf,
+	type Diagnostic,
+	type ImportedName,
+	type Literal,
+	type Metrics,
+	type Position,
+	type Range,
+	type Reference,
+	type TextCoordinates,
+} from "@nyaa-lexicon/protocol";
 
 //////// Types
 
@@ -26,16 +36,6 @@ export interface DeclarationFact {
 	signature?: string;
 	containerId?: string;
 	metrics?: Metrics;
-}
-
-interface Position {
-	line: number;
-	character: number;
-}
-
-interface Range {
-	start: Position;
-	end: Position;
 }
 
 interface SourceLine {
@@ -539,15 +539,21 @@ function basenameOf(module: string): string {
 
 //////// Declarations
 
-function rangeOf(line: SourceLine): Range {
-	return rangeOfLines(line, line);
+function contentEndCharacter(line: SourceLine): number {
+	return line.text.endsWith("\r") ? line.text.length - 1 : line.text.length;
 }
 
-function rangeOfLines(start: SourceLine, end: SourceLine): Range {
-	return {
-		start: { line: start.line, character: 0 },
-		end: { line: end.line, character: end.text.length },
-	};
+function rangeOf(coordinates: TextCoordinates, line: SourceLine): Range {
+	return rangeOfLines(coordinates, line, line);
+}
+
+function rangeOfLines(coordinates: TextCoordinates, start: SourceLine, end: SourceLine): Range {
+	const startOffset = coordinates.offsetAt({ line: start.line, character: 0 });
+	const endOffset = coordinates.offsetAt({ line: end.line, character: contentEndCharacter(end) });
+	if (startOffset === undefined || endOffset === undefined) throw new Error("source line has no coordinate");
+	const range = coordinates.rangeAt(startOffset, endOffset);
+	if (range === undefined) throw new Error("source line range is invalid");
+	return range;
 }
 
 export function headerEndLine(lines: readonly { code: string }[], declaration: Pick<DeclarationFact, "range">): number {
@@ -562,29 +568,6 @@ function selectionRangeOf(line: SourceLine, token: Token): Range {
 		start: { line: line.line, character: token.start },
 		end: { line: line.line, character: token.start + token.name.length },
 	};
-}
-
-function lineStarts(text: string): number[] {
-	const starts = [0];
-	for (let index = 0; index < text.length; index++) {
-		if (text[index] === "\n") starts.push(index + 1);
-	}
-	return starts;
-}
-
-function positionAt(starts: number[], offset: number): Position {
-	let low = 0;
-	let high = starts.length;
-	while (low + 1 < high) {
-		const middle = Math.floor((low + high) / 2);
-		if ((starts[middle] as number) <= offset) low = middle;
-		else high = middle;
-	}
-	return { line: low, character: offset - (starts[low] as number) };
-}
-
-function rangeAtOffsets(starts: number[], start: number, end: number): Range {
-	return { start: positionAt(starts, start), end: positionAt(starts, end) };
 }
 
 function decodeStringContent(content: string): string {
@@ -683,21 +666,20 @@ function numericEnd(text: string, start: number): number {
 }
 
 function literalContainerMatcher(
-	starts: number[],
+	coordinates: TextCoordinates,
 	lines: SourceLine[],
 	declarations: DeclarationFact[],
 ): (offset: number) => string | undefined {
 	const spans = declarations
-		.map((declaration) => ({
-			declaration,
-			start: (starts[declaration.range.start.line] as number) + declaration.range.start.character,
-			endLine: declaration.kind === "method" ? bodyEndLine(lines, declaration) - 1 : declaration.range.end.line,
-		}))
-		.map((span) => ({
-			declaration: span.declaration,
-			start: span.start,
-			end: (starts[span.endLine] as number) + (lines[span.endLine] as SourceLine).text.length,
-		}))
+		.flatMap((declaration) => {
+			const endLine =
+				declaration.kind === "method" ? bodyEndLine(lines, declaration) - 1 : declaration.range.end.line;
+			const line = lines[endLine] as SourceLine | undefined;
+			if (line === undefined) return [];
+			const start = coordinates.offsetAt(declaration.range.start);
+			const end = coordinates.offsetAt({ line: endLine, character: contentEndCharacter(line) });
+			return start === undefined || end === undefined ? [] : [{ declaration, start, end }];
+		})
 		.sort((left, right) => left.start - right.start || right.end - left.end);
 	const active: typeof spans = [];
 	let next = 0;
@@ -721,8 +703,8 @@ function literalContainerMatcher(
 export function extractLiteralsCore(module: string, text: string, declarations: DeclarationFact[]): Literal[] {
 	if (!module.endsWith(".gd") || text.length === 0) return [];
 	const literals: Literal[] = [];
-	const starts = lineStarts(text);
-	const containerFor = literalContainerMatcher(starts, readLines(text), declarations);
+	const coordinates = coordinatesOf(text);
+	const containerFor = literalContainerMatcher(coordinates, readLines(text), declarations);
 	const importedLiteralRanges = new Set(
 		literalImportSyntax(module, text).map((literal) => `${literal.start}:${literal.end}`),
 	);
@@ -749,10 +731,12 @@ export function extractLiteralsCore(module: string, text: string, declarations: 
 				index = string.end;
 				continue;
 			}
-			addLiteral(
-				{ kind: "string", value: string.value, range: rangeAtOffsets(starts, start, string.end) },
-				start,
-			);
+			const range = coordinates.rangeAt(start, string.end);
+			if (range === undefined) {
+				index = string.end;
+				continue;
+			}
+			addLiteral({ kind: "string", value: string.value, range }, start);
 			index = string.end;
 			continue;
 		}
@@ -770,7 +754,8 @@ export function extractLiteralsCore(module: string, text: string, declarations: 
 			}
 			const word = text.slice(index, end);
 			if (word === "true" || word === "false") {
-				addLiteral({ kind: "boolean", value: word, range: rangeAtOffsets(starts, index, end) }, index);
+				const range = coordinates.rangeAt(index, end);
+				if (range !== undefined) addLiteral({ kind: "boolean", value: word, range }, index);
 			}
 			index = end;
 			continue;
@@ -779,8 +764,10 @@ export function extractLiteralsCore(module: string, text: string, declarations: 
 			const end = numericEnd(text, index);
 			const value = text.slice(index, end);
 			const number = Number(value.replaceAll("_", ""));
-			if (end > index && Number.isFinite(number))
-				addLiteral({ kind: "number", value, number, range: rangeAtOffsets(starts, index, end) }, index);
+			if (end > index && Number.isFinite(number)) {
+				const range = coordinates.rangeAt(index, end);
+				if (range !== undefined) addLiteral({ kind: "number", value, number, range }, index);
+			}
 			index = end;
 			continue;
 		}
@@ -891,6 +878,7 @@ function declarationKindFor(keyword: ParsedKeyword, local: boolean): Declaration
 function makeDeclaration(
 	compose: ComposeSymbolId,
 	module: string,
+	coordinates: TextCoordinates,
 	line: SourceLine,
 	token: Token,
 	keyword: ParsedKeyword,
@@ -909,7 +897,7 @@ function makeDeclaration(
 		kind: declarationKindFor(keyword, local),
 		...(languageKind === undefined ? {} : { languageKind }),
 		name,
-		range: rangeOf(line),
+		range: rangeOf(coordinates, line),
 		selectionRange: selectionRangeOf(line, token),
 		visibility,
 		...(exported === undefined ? {} : { exported }),
@@ -921,6 +909,7 @@ function makeDeclaration(
 function makeImplicitClass(
 	compose: ComposeSymbolId,
 	module: string,
+	coordinates: TextCoordinates,
 	line: SourceLine,
 	name: string,
 	className: Token | null,
@@ -937,7 +926,7 @@ function makeImplicitClass(
 		kind: "class",
 		languageKind: className === null ? "script" : "class_name",
 		name,
-		range: rangeOf(line),
+		range: rangeOf(coordinates, line),
 		selectionRange: selectionRangeOf(line, token),
 		visibility: visibilityOf(name, false),
 		...(className === null || signature === undefined ? {} : { signature }),
@@ -1115,6 +1104,7 @@ function multilineEnumMember(line: SourceLine): Token | null {
 }
 
 function extractGdscript(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
+	const coordinates = coordinatesOf(text);
 	const lines = readLines(text);
 	const tokens = referenceTokens(lines);
 	const classLine = lines
@@ -1130,17 +1120,12 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 		stringStarts: [],
 		endsInString: false,
 	};
-	const root = makeImplicitClass(compose, module, rootLine, rootName, className);
+	const root = makeImplicitClass(compose, module, coordinates, rootLine, rootName, className);
 	// The script IS the class, so the root's range spans the whole file. A one-line range here made
 	// a class-level move relocate only the class_name line and orphan every member behind it.
-	const lastLine = lines[lines.length - 1];
-	root.range = {
-		start: { line: 0, character: 0 },
-		end:
-			lastLine === undefined
-				? { line: 0, character: 0 }
-				: { line: lastLine.line, character: lastLine.text.length },
-	};
+	const firstLine = lines[0] ?? rootLine;
+	const lastLine = lines[lines.length - 1] ?? firstLine;
+	root.range = rangeOfLines(coordinates, firstLine, lastLine);
 	const rootDocComment = scriptDocumentation(lines);
 	if (rootDocComment !== undefined) root.docComment = rootDocComment;
 	const declarations: DeclarationFact[] = [root];
@@ -1162,6 +1147,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 			activeFunctionHeader.lines.push(line);
 			if (functionHeaderComplete(activeFunctionHeader.lines)) {
 				activeFunctionHeader.declaration.range = rangeOfLines(
+					coordinates,
 					activeFunctionHeader.lines[0] as SourceLine,
 					line,
 				);
@@ -1203,6 +1189,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 					const declaration = makeDeclaration(
 						compose,
 						module,
+						coordinates,
 						line,
 						member,
 						"const",
@@ -1241,6 +1228,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 				const declaration = makeDeclaration(
 					compose,
 					module,
+					coordinates,
 					line,
 					parsed.name,
 					parsed.keyword,
@@ -1263,6 +1251,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 				const declaration = makeDeclaration(
 					compose,
 					module,
+					coordinates,
 					line,
 					parsed.name,
 					parsed.keyword,
@@ -1277,6 +1266,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 					const memberDeclaration = makeDeclaration(
 						compose,
 						module,
+						coordinates,
 						line,
 						member,
 						"const",
@@ -1316,6 +1306,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 			const declaration = makeDeclaration(
 				compose,
 				module,
+				coordinates,
 				line,
 				parsed.name,
 				parsed.keyword,
@@ -1326,7 +1317,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 			);
 			attachDocumentation(declaration, lines, lineIndex, documentedLines);
 			if (parsed.keyword === "var") {
-				declaration.range = rangeOfLines(line, accessorEndLine(lines, lineIndex, indent));
+				declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lines, lineIndex, indent));
 			}
 			declarations.push(declaration);
 			if (parsed.keyword !== "func") continue;
@@ -1355,7 +1346,7 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 		const end = lines[bodyEndLine(lines, declaration) - 1] as SourceLine | undefined;
 		return start === undefined || end === undefined
 			? declaration
-			: { ...declaration, range: rangeOfLines(start, end) };
+			: { ...declaration, range: rangeOfLines(coordinates, start, end) };
 	});
 }
 
@@ -1512,12 +1503,14 @@ function addDeclarationMetrics(declarations: DeclarationFact[], text: string): D
 
 function extractGeneric(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
 	const declarations: DeclarationFact[] = [];
+	const coordinates = coordinatesOf(text);
 	for (const line of readLines(text)) {
 		const parsed = parseLineHead(line, true);
 		if (parsed === null || parsed.name === null) continue;
 		const declaration = makeDeclaration(
 			compose,
 			module,
+			coordinates,
 			line,
 			parsed.name,
 			parsed.keyword,
@@ -2224,19 +2217,20 @@ interface LiteralImportSyntax {
 
 function literalImportSyntax(module: string, text: string): LiteralImportSyntax[] {
 	if (!module.endsWith(".gd")) return [];
+	const coordinates = coordinatesOf(text);
 	const lines = readLines(text);
-	const starts = lineStarts(text);
 	const syntax: LiteralImportSyntax[] = [];
 	for (const line of lines) {
 		const extendsPath = literalExtendsPath(line);
 		if (extendsPath !== null) {
-			syntax.push({
-				specifier: extendsPath.path,
-				start: (starts[line.line] as number) + extendsPath.start - 1,
-				end: (starts[line.line] as number) + extendsPath.start + extendsPath.path.length + 1,
+			const start = coordinates.offsetAt({ line: line.line, character: extendsPath.start - 1 });
+			const end = coordinates.offsetAt({
 				line: line.line,
-				loaderStart: -1,
+				character: extendsPath.start + extendsPath.path.length + 1,
 			});
+			if (start !== undefined && end !== undefined) {
+				syntax.push({ specifier: extendsPath.path, start, end, line: line.line, loaderStart: -1 });
+			}
 		}
 		for (const match of line.text.matchAll(/\b(preload|load)\s*\(\s*&?\s*(["'])([^"']+)\2/g)) {
 			const loaderStart = match.index ?? -1;
@@ -2246,13 +2240,16 @@ function literalImportSyntax(module: string, text: string): LiteralImportSyntax[
 			if (loaderStart < 0 || specifier === "" || !line.code.startsWith(loader, loaderStart)) continue;
 			const quoteStart = full.indexOf(match[2] ?? "");
 			const typedPrefix = quoteStart > 0 && full[quoteStart - 1] === "&" ? 1 : 0;
-			syntax.push({
-				specifier,
-				start: (starts[line.line] as number) + loaderStart + quoteStart - typedPrefix,
-				end: (starts[line.line] as number) + loaderStart + full.lastIndexOf(match[2] ?? "") + 1,
+			const start = coordinates.offsetAt({
 				line: line.line,
-				loaderStart,
+				character: loaderStart + quoteStart - typedPrefix,
 			});
+			const end = coordinates.offsetAt({
+				line: line.line,
+				character: loaderStart + full.lastIndexOf(match[2] ?? "") + 1,
+			});
+			if (start !== undefined && end !== undefined)
+				syntax.push({ specifier, start, end, line: line.line, loaderStart });
 		}
 	}
 	return syntax;
@@ -2281,18 +2278,16 @@ function typeExpressionEnd(tokens: ReferenceToken[], start: number, stops: Set<s
 	return tokens.length;
 }
 
-function sourceBetween(lines: SourceLine[], start: ReferenceToken, end: ReferenceToken): string {
-	if (start.line === end.line)
-		return (lines[start.line] as SourceLine).text.slice(start.character, end.character + end.value.length);
-	const parts = [(lines[start.line] as SourceLine).text.slice(start.character)];
-	for (let line = start.line + 1; line < end.line; line++) parts.push((lines[line] as SourceLine).text);
-	parts.push((lines[end.line] as SourceLine).text.slice(0, end.character + end.value.length));
-	return parts.join("\n");
+function sourceBetween(coordinates: TextCoordinates, start: ReferenceToken, end: ReferenceToken): string | undefined {
+	return coordinates.sliceRange({
+		start: { line: start.line, character: start.character },
+		end: { line: end.line, character: end.character + end.value.length },
+	});
 }
 
 function typeFact(
+	coordinates: TextCoordinates,
 	tokens: ReferenceToken[],
-	lines: SourceLine[],
 	start: number,
 	end: number,
 	targetRange: Range,
@@ -2302,8 +2297,8 @@ function typeFact(
 	const first = tokens[start] as ReferenceToken;
 	const last = tokens[end - 1] as ReferenceToken;
 	if (first.kind === "newline" || last.kind === "newline") return null;
-	const display = sourceBetween(lines, first, last).trim();
-	if (display === "") return null;
+	const display = sourceBetween(coordinates, first, last)?.trim();
+	if (display === undefined || display === "") return null;
 	return {
 		...(symbolId === undefined ? {} : { symbolId }),
 		targetRange,
@@ -2316,8 +2311,8 @@ function typeFact(
 }
 
 function addParameterTypeFacts(
+	coordinates: TextCoordinates,
 	tokens: ReferenceToken[],
-	lines: SourceLine[],
 	start: number,
 	end: number,
 	facts: TypeAnnotationFact[],
@@ -2354,8 +2349,8 @@ function addParameterTypeFacts(
 				candidate.selectionRange.start.character === name.character,
 		);
 		const fact = typeFact(
+			coordinates,
 			tokens,
-			lines,
 			colon + 1,
 			Math.min(typeEnd, to),
 			referenceRange(name),
@@ -2385,6 +2380,7 @@ export function extractTypeAnnotationsCore(
 	compose: ComposeSymbolId,
 ): TypeAnnotationFact[] {
 	if (!module.endsWith(".gd")) return [];
+	const coordinates = coordinatesOf(text);
 	const lines = readLines(text);
 	const declarations = extractGdscript(module, text, compose);
 	const tokens = referenceTokens(lines);
@@ -2400,7 +2396,14 @@ export function extractTypeAnnotationsCore(
 			const colon = nextReferenceToken(tokens, nameIndex);
 			if (colon >= 0 && (tokens[colon] as ReferenceToken).value === ":") {
 				const typeEnd = typeExpressionEnd(tokens, colon + 1, new Set(["=", ",", ";", "in"]));
-				const fact = typeFact(tokens, lines, colon + 1, typeEnd, referenceRange(name), declaration.symbolId);
+				const fact = typeFact(
+					coordinates,
+					tokens,
+					colon + 1,
+					typeEnd,
+					referenceRange(name),
+					declaration.symbolId,
+				);
 				if (fact !== null) facts.push(fact);
 			}
 		}
@@ -2411,8 +2414,8 @@ export function extractTypeAnnotationsCore(
 		const close = matchingReferenceToken(tokens, open, "(", ")");
 		if (close < 0) continue;
 		addParameterTypeFacts(
+			coordinates,
 			tokens,
-			lines,
 			open + 1,
 			close,
 			facts,
@@ -2425,7 +2428,7 @@ export function extractTypeAnnotationsCore(
 			if (token === undefined || token.line > headerEndLine(lines, declaration)) break;
 			if (token.value !== "->") continue;
 			const typeEnd = typeExpressionEnd(tokens, index + 1, new Set([":"]));
-			const fact = typeFact(tokens, lines, index + 1, typeEnd, referenceRange(name), declaration.symbolId);
+			const fact = typeFact(coordinates, tokens, index + 1, typeEnd, referenceRange(name), declaration.symbolId);
 			if (fact !== null) facts.push(fact);
 			break;
 		}
@@ -2452,6 +2455,7 @@ function importedLoaderName(declarations: DeclarationFact[], line: number, loade
 
 export function extractImportsCore(module: string, text: string, compose: ComposeSymbolId): ImportFact[] {
 	if (!module.endsWith(".gd")) return [];
+	const coordinates = coordinatesOf(text);
 	const lines = readLines(text);
 	const declarations = extractGdscript(module, text, compose);
 	const imports: ImportFact[] = [];
@@ -2485,8 +2489,8 @@ export function extractImportsCore(module: string, text: string, compose: Compos
 		if (close < 0) continue;
 		const closing = tokens[close] as ReferenceToken | undefined;
 		if (closing === undefined) continue;
-		const specifier = sourceBetween(lines, token, closing).trim();
-		if (specifier === "") continue;
+		const specifier = sourceBetween(coordinates, token, closing)?.trim();
+		if (specifier === undefined || specifier === "") continue;
 		imports.push({
 			specifier,
 			imported: importedLoaderName(declarations, token.line, token.character),

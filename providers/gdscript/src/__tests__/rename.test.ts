@@ -1,37 +1,15 @@
 import path from "node:path";
-import type { RenameSite } from "@nyaa-lexicon/protocol";
+import { applyEdits, coordinatesOf, type RenameSite } from "@nyaa-lexicon/protocol";
 import { expect, test } from "vitest";
 import { extractFile } from "../extract.js";
 import { GDScriptProvider } from "../main.js";
 
-function offsetAt(text: string, position: { line: number; character: number }): number {
-	const lines = text.split("\n");
-	return lines.slice(0, position.line).reduce((total, line) => total + line.length + 1, 0) + position.character;
-}
-
 function rangeFor(text: string, value: string) {
 	const offset = text.indexOf(value);
 	if (offset < 0) throw new Error(`test text missing ${value}`);
-	const before = text.slice(0, offset);
-	const line = before.split("\n").length - 1;
-	const character = offset - (before.lastIndexOf("\n") + 1);
-	return { start: { line, character }, end: { line, character: character + value.length } };
-}
-
-function applyEdits(
-	text: string,
-	edits: {
-		range: { start: { line: number; character: number }; end: { line: number; character: number } };
-		newText: string;
-	}[],
-) {
-	let result = text;
-	for (const edit of edits) {
-		const start = offsetAt(text, edit.range.start);
-		const end = offsetAt(text, edit.range.end);
-		result = result.slice(0, start) + edit.newText + result.slice(end);
-	}
-	return result;
+	const range = coordinatesOf(text).rangeAt(offset, offset + value.length);
+	if (range === undefined) throw new Error(`test range is outside text: ${value}`);
+	return range;
 }
 
 test("returns non-overlapping edits that reparse when applied in response order", () => {
@@ -62,11 +40,28 @@ func run() -> void:
 	if (result.status !== "ready") return;
 	expect(result.edits).toHaveLength(2);
 	const rewritten = applyEdits(text, result.edits);
-	expect(() => extractFile("rename.gd", rewritten)).not.toThrow();
+	if ("problem" in rewritten) throw new Error(rewritten.problem);
+	expect(() => extractFile("rename.gd", rewritten.text)).not.toThrow();
 	expect(
-		extractFile("rename.gd", rewritten).declarations.some((declaration) => declaration.name === "new_value"),
+		extractFile("rename.gd", rewritten.text).declarations.some((declaration) => declaration.name === "new_value"),
 	).toBe(true);
 	expect(result.edits[0]?.range.start.line).toBeGreaterThanOrEqual(result.edits[1]?.range.start.line ?? 0);
+});
+
+test("refuses a position between CRLF terminators", () => {
+	const provider = new GDScriptProvider();
+	provider.initialize("/workspace");
+	const text = "var old_name := 1\r\n";
+
+	expect(
+		provider.renameEdits({
+			module: "crlf.gd",
+			text,
+			oldName: "old_name",
+			newName: "new_name",
+			sites: [{ range: { start: { line: 0, character: 18 }, end: { line: 0, character: 18 } } }],
+		}),
+	).toEqual({ status: "refused", reason: "ParseError", detail: "a rename site has an invalid range" });
 });
 
 test("refuses illegal, reserved, and colliding names", () => {

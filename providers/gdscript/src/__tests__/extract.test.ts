@@ -1,15 +1,13 @@
 import path from "node:path";
-import { composeSymbolId } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, coordinatesOf } from "@nyaa-lexicon/protocol";
 import { expect, test } from "vitest";
 import { extractDeclarationsCore, extractReferencesCore } from "../extractCore.js";
 import { GDScriptProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 
 function rangeAt(text: string, offset: number) {
-	const before = text.slice(0, offset);
-	const line = before.split("\n").length - 1;
-	const lineStart = before.lastIndexOf("\n") + 1;
-	const character = offset - lineStart;
-	return { start: { line, character }, end: { line, character } };
+	const position = coordinatesOf(text).positionAt(offset);
+	if (position === undefined) throw new Error(`test offset is outside text: ${offset}`);
+	return { start: position, end: position };
 }
 
 test("extracts the GDScript declaration forms used by the project", () => {
@@ -81,11 +79,19 @@ test("uses a method range for complete symbol source", () => {
 	const method = declarations.find((declaration) => declaration.name === "add");
 	if (method === undefined) throw new Error("method declaration missing");
 
-	const source = text
-		.split("\n")
-		.slice(method.range.start.line, method.range.end.line + 1)
-		.join("\n");
+	const source = coordinatesOf(text).sliceRange(method.range);
+	if (source === undefined) throw new Error("method range is outside test text");
 	expect(source).toBe("func add(a, b):\n\treturn a + b");
+});
+
+test("ends emitted CRLF ranges before the line terminator", () => {
+	const declarations = extractDeclarationsCore("crlf.gd", "func run():\r\n\tpass\r\n", composeSymbolId);
+	const run = declarations.find((declaration) => declaration.name === "run");
+
+	expect(run?.range).toEqual({
+		start: { line: 0, character: 0 },
+		end: { line: 1, character: "\tpass".length },
+	});
 });
 
 test("attaches consecutive GDScript documentation comments to declarations", () => {

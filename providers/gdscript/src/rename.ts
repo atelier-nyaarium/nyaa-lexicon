@@ -1,10 +1,13 @@
-import type {
-	BlockedSite,
-	Declaration,
-	Range,
-	RenameEditsRequest,
-	RenameEditsResponse,
-	TextEdit,
+import {
+	applyEdits,
+	type BlockedSite,
+	coordinatesOf,
+	type Declaration,
+	type Range,
+	type RenameEditsRequest,
+	type RenameEditsResponse,
+	type TextCoordinates,
+	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import { extractFile } from "./extract.js";
 import { extractGdscriptParameterNames, isGdscriptIdentifier } from "./extractCore.js";
@@ -53,30 +56,6 @@ const GDSCRIPT_KEYWORDS = new Set([
 
 function positionCompare(left: Range["start"], right: Range["start"]): number {
 	return left.line - right.line || left.character - right.character;
-}
-
-function lineStarts(text: string): number[] {
-	const starts = [0];
-	for (let index = 0; index < text.length; index++) {
-		if (text[index] === "\n") starts.push(index + 1);
-	}
-	return starts;
-}
-
-function offsetAt(starts: number[], text: string, position: Range["start"]): number | null {
-	const start = starts[position.line];
-	if (start === undefined) return null;
-	const lineEnd = text.indexOf("\n", start);
-	const end = lineEnd < 0 ? text.length : lineEnd;
-	if (position.character < 0 || start + position.character > end) return null;
-	return start + position.character;
-}
-
-function offsetsForRange(starts: number[], text: string, range: Range): { start: number; end: number } | null {
-	const start = offsetAt(starts, text, range.start);
-	const end = offsetAt(starts, text, range.end);
-	if (start === null || end === null || end < start) return null;
-	return { start, end };
 }
 
 function sameRange(left: Range, right: Range): boolean {
@@ -142,7 +121,7 @@ function stringSpanFor(spans: StringSpan[], start: number, end: number): StringS
 }
 
 function lineText(text: string, line: number): string {
-	return text.split("\n")[line] ?? "";
+	return text.split(/\r?\n/u)[line] ?? "";
 }
 
 function declarationAt(declarations: Declaration[], range: Range): Declaration | undefined {
@@ -154,21 +133,40 @@ function isExportedProperty(text: string, declaration: Declaration): boolean {
 	return /^\s*@export(?:\b|_)/.test(line);
 }
 
-function isClassNameLine(text: string, range: Range): boolean {
-	const line = lineText(text, range.start.line);
-	return /\bclass_name\s*$/.test(line.slice(0, range.start.character));
+function isClassNameLine(coordinates: TextCoordinates, range: Range): boolean {
+	const before = coordinates.sliceRange({
+		start: { line: range.start.line, character: 0 },
+		end: range.start,
+	});
+	return before !== undefined && /\bclass_name\s*$/.test(before);
 }
 
-function isLoaderLocal(text: string, range: Range): boolean {
+function isLoaderLocal(coordinates: TextCoordinates, text: string, range: Range): boolean {
 	const line = lineText(text, range.start.line);
-	const before = line.slice(0, range.start.character);
-	const after = line.slice(range.end.character);
-	return /\b(?:const|var)\s*$/.test(before) && /^\s*(?::[^=]*)?=\s*(?:preload|load)\s*\(/.test(after);
+	const before = coordinates.sliceRange({
+		start: { line: range.start.line, character: 0 },
+		end: range.start,
+	});
+	const after = coordinates.sliceRange({
+		start: range.end,
+		end: { line: range.end.line, character: line.length },
+	});
+	return (
+		before !== undefined &&
+		after !== undefined &&
+		/\b(?:const|var)\s*$/.test(before) &&
+		/^\s*(?::[^=]*)?=\s*(?:preload|load)\s*\(/.test(after)
+	);
 }
 
-function isDynamicLoaderCall(text: string, range: Range, role: string | undefined): boolean {
+function isDynamicLoaderCall(
+	coordinates: TextCoordinates,
+	text: string,
+	range: Range,
+	role: string | undefined,
+): boolean {
 	if (role !== "call" && role !== "import") return false;
-	const current = lineText(text, range.start.line).slice(range.start.character, range.end.character);
+	const current = coordinates.sliceRange(range);
 	if (current !== "load" && current !== "preload") return false;
 	const line = lineText(text, range.start.line);
 	return /\b(?:preload|load)\s*\(\s*(?!["'])/.test(line);
@@ -180,16 +178,6 @@ function blocked(range: Range, reason: BlockedSite["reason"], detail: string): B
 
 function refused(reason: "InvalidName" | "ReservedWord" | "Collision" | "ParseError", detail: string) {
 	return { status: "refused", reason, detail } as const;
-}
-
-function applyEdits(text: string, edits: TextEdit[], starts: number[]): string {
-	let result = text;
-	for (const edit of edits) {
-		const offsets = offsetsForRange(starts, text, edit.range);
-		if (offsets === null) throw new Error("invalid edit range");
-		result = result.slice(0, offsets.start) + edit.newText + result.slice(offsets.end);
-	}
-	return result;
 }
 
 export function renameGdscript(
@@ -217,16 +205,17 @@ export function renameGdscript(
 	if (hasRegisteredClassName(params.newName))
 		return refused("Collision", "the new name is already a registered class_name");
 
-	const starts = lineStarts(params.text);
+	const coordinates = coordinatesOf(params.text);
 	const spans = stringSpans(params.text);
 	const edits: TextEdit[] = [];
 	const blockedSites: BlockedSite[] = [];
 	const seenEdits = new Set<string>();
 	const seenBlocked = new Set<string>();
 	for (const site of params.sites) {
-		const offsets = offsetsForRange(starts, params.text, site.range);
-		if (offsets === null) return refused("ParseError", "a rename site has an invalid range");
-		const current = params.text.slice(offsets.start, offsets.end);
+		const offsets = coordinates.offsetsForRange(site.range);
+		if (offsets === undefined) return refused("ParseError", "a rename site has an invalid range");
+		const current = coordinates.sliceRange(site.range);
+		if (current === undefined) return refused("ParseError", "a rename site has an invalid range");
 		if (current === params.newName) continue;
 		const stringSpan = stringSpanFor(spans, offsets.start, offsets.end);
 		let block: BlockedSite | undefined;
@@ -239,7 +228,7 @@ export function renameGdscript(
 			);
 		} else {
 			const declaration = declarationAt(facts.declarations, site.range);
-			if (declaration?.languageKind === "class_name" || isClassNameLine(params.text, site.range)) {
+			if (declaration?.languageKind === "class_name" || isClassNameLine(coordinates, site.range)) {
 				block = blocked(
 					site.range,
 					"ExternalContract",
@@ -253,13 +242,13 @@ export function renameGdscript(
 				);
 			} else if (declaration !== undefined && isExportedProperty(params.text, declaration)) {
 				block = blocked(site.range, "ExternalContract", "@export property names are stored in scene files");
-			} else if (site.role === "import" && isLoaderLocal(params.text, site.range)) {
+			} else if (site.role === "import" && isLoaderLocal(coordinates, params.text, site.range)) {
 				block = blocked(
 					site.range,
 					"ExternalContract",
 					"the local import binding is not the source export name",
 				);
-			} else if (isDynamicLoaderCall(params.text, site.range, site.role)) {
+			} else if (isDynamicLoaderCall(coordinates, params.text, site.range, site.role)) {
 				block = blocked(site.range, "NotImplemented", "computed loader paths are not safely renameable");
 			} else if (current !== params.oldName) {
 				block = blocked(site.range, "NotImplemented", "the site is not an identifier span");
@@ -285,14 +274,20 @@ export function renameGdscript(
 	for (let index = 1; index < edits.length; index++) {
 		const previous = edits[index - 1] as TextEdit;
 		const current = edits[index] as TextEdit;
-		const previousOffsets = offsetsForRange(starts, params.text, previous.range);
-		const currentOffsets = offsetsForRange(starts, params.text, current.range);
-		if (previousOffsets === null || currentOffsets === null || currentOffsets.end > previousOffsets.start) {
+		const previousOffsets = coordinates.offsetsForRange(previous.range);
+		const currentOffsets = coordinates.offsetsForRange(current.range);
+		if (
+			previousOffsets === undefined ||
+			currentOffsets === undefined ||
+			currentOffsets.end > previousOffsets.start
+		) {
 			return refused("ParseError", "rename sites overlap");
 		}
 	}
+	const rewritten = applyEdits(params.text, edits);
+	if ("problem" in rewritten) return refused("ParseError", "the proposed edits do not produce parseable GDScript");
 	try {
-		extractFile(params.module, applyEdits(params.text, edits, starts));
+		extractFile(params.module, rewritten.text);
 	} catch {
 		return refused("ParseError", "the proposed edits do not produce parseable GDScript");
 	}

@@ -1,4 +1,5 @@
 import {
+	coordinatesOf,
 	type MoveBlockedReason,
 	type MoveBlockedSite,
 	type MoveDependency,
@@ -6,19 +7,13 @@ import {
 	type MoveEditsResponse,
 	type MoveImportSite,
 	normalizeModulePath,
+	type OffsetRange,
 	type Range,
+	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import type { GDScriptBindingIndex } from "./binding.js";
 import { extractDeclarations, extractFile } from "./extract.js";
-
-////////////////////////////////
-//  Types
-
-interface OffsetRange {
-	start: number;
-	end: number;
-}
 
 ////////////////////////////////
 //  Main
@@ -31,6 +26,7 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 			detail: "GDScript move targets must be workspace-relative .gd modules",
 		};
 	}
+	const coordinates = coordinatesOf(request.text);
 
 	const facts = extractFile(request.module, request.text);
 	if (facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
@@ -66,7 +62,7 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 	const blocked: MoveBlockedSite[] = [];
 	const edits: TextEdit[] = [];
 	if (request.role.removal !== undefined) {
-		if (offsetsForRange(request.text, request.role.removal) === undefined) {
+		if (coordinates.offsetsForRange(request.role.removal) === undefined) {
 			blocked.push(blockedSite(request.role.removal, "ParseError", "the removal range is outside the module"));
 		} else {
 			edits.push({ range: request.role.removal, newText: "" });
@@ -74,15 +70,19 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 	}
 
 	for (const site of request.importSites) {
-		blocked.push(blockedImportSite(request, site));
+		blocked.push(blockedImportSite(request, site, coordinates));
 	}
 	for (const site of request.sites) {
-		const offsets = offsetsForRange(request.text, site);
+		const offsets = coordinates.offsetsForRange(site);
 		if (offsets === undefined) {
 			blocked.push(blockedSite(site, "ParseError", "the site range is outside the module"));
 			continue;
 		}
-		const siteText = request.text.slice(offsets.start, offsets.end);
+		const siteText = coordinates.sliceRange(site);
+		if (siteText === undefined) {
+			blocked.push(blockedSite(site, "ParseError", "the site range is outside the module"));
+			continue;
+		}
 		const pathReason = resourceReason(siteText);
 		if (pathReason !== undefined) {
 			blocked.push(
@@ -105,7 +105,7 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 	}
 	if (dependencyInsertions.length > 0) {
 		const position = dependencyInsertionPosition(request.text);
-		const point = positionAt(request.text, position);
+		const point = coordinates.positionAt(position);
 		if (point === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the dependency insertion point is outside the module" });
 		} else {
@@ -120,7 +120,7 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 		const position =
 			request.role.insertion.position === undefined
 				? request.text.length
-				: offsetForPosition(request.text, request.role.insertion.position);
+				: coordinates.offsetAt(request.role.insertion.position);
 		if (position === undefined) {
 			blocked.push(
 				blockedSite(
@@ -132,7 +132,7 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 				),
 			);
 		} else {
-			const point = positionAt(request.text, position);
+			const point = coordinates.positionAt(position);
 			if (point === undefined) {
 				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
 			} else {
@@ -141,7 +141,7 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 		}
 	}
 
-	return validateEdits(request.text, edits, blocked);
+	return validateEdits(coordinates, edits, blocked);
 }
 
 ////////////////////////////////
@@ -243,8 +243,12 @@ function workspaceDependencyPlan(
 ////////////////////////////////
 //  Site Classification
 
-function blockedImportSite(request: MoveEditsRequest, site: MoveImportSite): MoveBlockedSite {
-	if (offsetsForRange(request.text, site.range) === undefined) {
+function blockedImportSite(
+	request: MoveEditsRequest,
+	site: MoveImportSite,
+	coordinates: TextCoordinates,
+): MoveBlockedSite {
+	if (coordinates.offsetsForRange(site.range) === undefined) {
 		return blockedSite(site.range, "ParseError", "the import site range is outside the module");
 	}
 	const reason = resourceReason(site.specifier);
@@ -273,10 +277,10 @@ function isClassNameMove(request: MoveEditsRequest, bindings: GDScriptBindingInd
 ////////////////////////////////
 //  Ranges & Edits
 
-function validateEdits(text: string, edits: TextEdit[], blocked: MoveBlockedSite[]): MoveEditsResponse {
+function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: MoveBlockedSite[]): MoveEditsResponse {
 	const unique = new Map<string, TextEdit>();
 	for (const edit of edits) {
-		const offsets = offsetsForRange(text, edit.range);
+		const offsets = coordinates.offsetsForRange(edit.range);
 		if (offsets === undefined) {
 			blocked.push(blockedSite(edit.range, "ParseError", "an edit range is outside the module"));
 			continue;
@@ -293,7 +297,7 @@ function validateEdits(text: string, edits: TextEdit[], blocked: MoveBlockedSite
 	}
 
 	const sorted = [...unique.values()]
-		.map((edit) => ({ edit, ...(offsetsForRange(text, edit.range) as OffsetRange) }))
+		.map((edit) => ({ edit, ...(coordinates.offsetsForRange(edit.range) as OffsetRange) }))
 		.sort((left, right) => left.start - right.start || left.end - right.end);
 	const safe: TextEdit[] = [];
 	let previousEnd = -1;
@@ -306,41 +310,6 @@ function validateEdits(text: string, edits: TextEdit[], blocked: MoveBlockedSite
 		previousEnd = Math.max(previousEnd, item.end);
 	}
 	return { status: "ready", edits: safe, blocked };
-}
-
-function offsetsForRange(text: string, range: Range): OffsetRange | undefined {
-	const start = offsetForPosition(text, range.start);
-	const end = offsetForPosition(text, range.end);
-	return start === undefined || end === undefined || end < start ? undefined : { start, end };
-}
-
-function offsetForPosition(text: string, position: Range["start"]): number | undefined {
-	if (position.line < 0 || position.character < 0) return undefined;
-	const starts = lineStarts(text);
-	const lineStart = starts[position.line];
-	if (lineStart === undefined) return undefined;
-	const nextLineStart = starts[position.line + 1] ?? text.length;
-	const lineEnd = nextLineStart > lineStart && text[nextLineStart - 1] === "\n" ? nextLineStart - 1 : nextLineStart;
-	return lineStart + position.character <= lineEnd ? lineStart + position.character : undefined;
-}
-
-function positionAt(text: string, offset: number): Range["start"] | undefined {
-	if (offset < 0 || offset > text.length) return undefined;
-	const starts = lineStarts(text);
-	let line = starts.length - 1;
-	for (let index = 0; index < starts.length; index++) {
-		if ((starts[index] as number) > offset) {
-			line = index - 1;
-			break;
-		}
-	}
-	return { line, character: offset - (starts[line] as number) };
-}
-
-function lineStarts(text: string): number[] {
-	const starts = [0];
-	for (let index = 0; index < text.length; index++) if (text[index] === "\n") starts.push(index + 1);
-	return starts;
 }
 
 function dependencyInsertionPosition(text: string): number {

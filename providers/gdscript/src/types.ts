@@ -2,8 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
 	composeSymbolId,
+	coordinatesOf,
 	type Declaration,
 	parseSymbolId,
+	type TextCoordinates,
 	type TypeInfo,
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
@@ -73,6 +75,7 @@ interface FunctionFact {
 interface InferenceContext {
 	module: string;
 	resolver: TypeResolver;
+	coordinates: TextCoordinates;
 	lines: InferenceLine[];
 	declarations: Declaration[];
 	annotations: TypeAnnotationFact[];
@@ -695,6 +698,7 @@ function annotationForDeclaration(
 function parameterEnvironment(
 	functionFact: FunctionFact,
 	annotations: TypeAnnotationFact[],
+	coordinates: TextCoordinates,
 	lines: InferenceLine[],
 	module: string,
 	resolver: TypeResolver,
@@ -711,7 +715,8 @@ function parameterEnvironment(
 		if (isReturnAnnotation) continue;
 		const line = lines[annotation.targetRange.start.line] as InferenceLine | undefined;
 		if (line === undefined) continue;
-		const name = line.text.slice(annotation.targetRange.start.character, annotation.targetRange.end.character);
+		const name = coordinates.sliceRange(annotation.targetRange);
+		if (name === undefined) continue;
 		if (name !== "") environment.set(name, known(annotationValue(annotation.display, module, resolver)));
 	}
 	return environment;
@@ -806,6 +811,7 @@ function localEnvironment(functionFact: FunctionFact, context: InferenceContext)
 	for (const [name, result] of parameterEnvironment(
 		functionFact,
 		context.annotations,
+		context.coordinates,
 		context.lines,
 		context.module,
 		context.resolver,
@@ -878,10 +884,12 @@ function inferFile(
 	text: string,
 	resolver: TypeResolver,
 ): Map<string, TypeInfo> {
+	const coordinates = coordinatesOf(text);
 	const lines = inferenceLines(text);
 	const context: InferenceContext = {
 		module,
 		resolver,
+		coordinates,
 		lines,
 		declarations,
 		annotations,

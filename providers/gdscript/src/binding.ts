@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import type { Binding, Declaration, ImportResolution, Reference } from "@nyaa-lexicon/protocol";
+import {
+	type Binding,
+	coordinatesOf,
+	type Declaration,
+	type ImportResolution,
+	type Reference,
+} from "@nyaa-lexicon/protocol";
 import { extractDeclarations, extractFile } from "./extract.js";
 import { discoverProject } from "./project.js";
 
@@ -330,8 +336,13 @@ export class GDScriptBindingIndex {
 	}
 
 	private memberAccess(module: string, reference: Reference): boolean {
-		const line = this.sourceByModule.get(module)?.split(/\r?\n/)[reference.range.start.line] ?? "";
-		return /\.\s*$/.test(line.slice(0, reference.range.start.character));
+		const source = this.sourceByModule.get(module);
+		if (source === undefined) return false;
+		const prefix = coordinatesOf(source).sliceRange({
+			start: { line: reference.range.start.line, character: 0 },
+			end: reference.range.start,
+		});
+		return prefix !== undefined && /\.\s*$/.test(prefix);
 	}
 
 	private preloadType(module: string, name: string): Declaration | undefined {

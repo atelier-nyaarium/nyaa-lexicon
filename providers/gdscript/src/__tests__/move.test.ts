@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyEdits, composeSymbolId, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
+import { applyEdits, composeSymbolId, coordinatesOf, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadGdscriptMoveCases } from "../../../../protocol/src/conformance/moveCorpusGdscript.js";
 import { MoveCaseSchema } from "../../../../protocol/src/conformance/types.js";
@@ -21,26 +21,18 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-function positionAt(text: string, offset: number) {
-	const before = text.slice(0, offset);
-	return {
-		line: before.split("\n").length - 1,
-		character: offset - (before.lastIndexOf("\n") + 1),
-	};
-}
-
 function rangeForText(text: string, value: string, from = 0): Range {
 	const start = text.indexOf(value, from);
 	if (start < 0) throw new Error(`missing move test text: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`test range is outside text: ${value}`);
+	return range;
 }
 
 function textAtRange(text: string, range: Range): string {
-	const lines = text.split("\n").slice(range.start.line, range.end.line + 1);
-	const last = lines.length - 1;
-	if (lines[0] !== undefined) lines[0] = lines[0].slice(range.start.character);
-	if (lines[last] !== undefined) lines[last] = lines[last].slice(0, range.end.character);
-	return lines.join("\n");
+	const result = coordinatesOf(text).sliceRange(range);
+	if (result === undefined) throw new Error("test range is outside text");
+	return result;
 }
 
 function classId(module: string, name: string): string {
