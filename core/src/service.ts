@@ -50,6 +50,7 @@ import {
 	isExternalModule,
 } from "./fileScope.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
+import { ImportResolver, importTarget } from "./imports.js";
 import {
 	type AnswerTier,
 	type CallHierarchy,
@@ -335,9 +336,6 @@ const GAP_TREE_CAP = 500;
  */
 export const INLINE_GAP_THRESHOLD = 20;
 
-/** Resolving or regex-searching imports reads at most this many rows. */
-const IMPORT_SCAN_LIMIT = 20_000;
-
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -422,16 +420,6 @@ function sliceRange(text: string, range: Range): string | null {
 }
 
 /** A package remains external even when it offers one safe module for surface indexing. */
-function importTarget(resolution: ImportResolution): { module: string; depth: IndexDepth } | null {
-	if (resolution.status === "resolved") {
-		return { module: resolution.module, depth: resolution.depth ?? "full" };
-	}
-	if (resolution.status === "external" && resolution.surface !== undefined) {
-		return { module: resolution.surface.module, depth: "surface" };
-	}
-	return null;
-}
-
 ////////////////////////////////
 //  Class
 
@@ -443,6 +431,19 @@ export class LexiconService {
 		private readonly workspaceRoot = ".",
 	) {
 		this.reads = new IndexReadModel(store);
+		// The port. Caching and the surface globs are decisions about this workspace, so they are
+		// answered here rather than inside a module whose subject is imports.
+		this.imports = new ImportResolver(store, (fromModule, specifier) => {
+			const surfaceGlobs = this.currentScope().bundles;
+			const configKey = surfaceGlobs.join("\u0000");
+			return this.cache.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
+				this.supervisor.ask(fromModule, "resolveImport", {
+					fromModule,
+					specifier,
+					...(surfaceGlobs.length === 0 ? {} : { surfaceGlobs }),
+				}),
+			);
+		});
 	}
 
 	/** This process's scan only. `stored` is read from the index when the status is asked for. */
@@ -460,6 +461,9 @@ export class LexiconService {
 	 * be unable to reach a provider or the disk by construction.
 	 */
 	readonly reads: IndexReadModel;
+
+	/** Import questions. Reaches one provider capability and its store, nothing else. */
+	readonly imports: ImportResolver;
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
 	cacheStats() {
@@ -519,6 +523,17 @@ export class LexiconService {
 
 	mostReferenced(limit = 20): Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }> {
 		return this.reads.mostReferenced(limit);
+	}
+
+	////////////////////////////////
+	//  Imports, answered by ImportResolver
+
+	resolveImport(fromModule: string, specifier: string): Promise<ImportResolution> {
+		return this.imports.resolveImport(fromModule, specifier);
+	}
+
+	findImports(...args: Parameters<ImportResolver["findImports"]>): ReturnType<ImportResolver["findImports"]> {
+		return this.imports.findImports(...args);
 	}
 
 	////////////////////////////////
@@ -1048,31 +1063,13 @@ export class LexiconService {
 				text: "",
 				exists: true,
 				role: {},
-				importSites: this.importSitesForMove(module, plan.name),
+				importSites: this.imports.importSitesForMove(module, plan.name),
 				dependencies: [],
 				sites: [],
 			});
 		}
 
 		return requests;
-	}
-
-	/** Import statements in one module naming the moved symbol, which must now address its target. */
-	private importSitesForMove(module: string, name: string): MoveImportSite[] {
-		const sites: MoveImportSite[] = [];
-		for (const statement of this.store.importsIn(module)) {
-			if (statement.name !== name && statement.local !== name) continue;
-			if (statement.range === undefined) continue;
-			sites.push({
-				range: statement.range,
-				specifier: statement.specifier,
-				importKind: statement.name === undefined ? "namespace" : "named",
-				...(statement.name === undefined ? {} : { importedName: statement.name }),
-				...(statement.local === undefined ? {} : { localName: statement.local }),
-				reExport: statement.reExport,
-			});
-		}
-		return sites;
 	}
 
 	/**
@@ -1167,7 +1164,7 @@ export class LexiconService {
 				}
 			}
 
-			const via = this.importOriginFor(module, reference.name);
+			const via = this.imports.importOriginFor(module, reference.name);
 			if (via !== null) {
 				dependencies.push({ name: reference.name, origin: { kind: "external", via } });
 				continue;
@@ -1186,21 +1183,6 @@ export class LexiconService {
 		}
 
 		return dependencies;
-	}
-
-	/** The import statement that brought a name into a module, when one did. */
-	private importOriginFor(module: string, name: string): ImportOrigin | null {
-		for (const statement of this.store.importsIn(module)) {
-			if (statement.name !== name && statement.local !== name) continue;
-			return {
-				specifier: statement.specifier,
-				// A statement naming no export binds the module itself, which is a namespace import.
-				importKind: statement.name === undefined ? "namespace" : "named",
-				...(statement.name === undefined ? {} : { importedName: statement.name }),
-				...(statement.local === undefined ? {} : { localName: statement.local }),
-			};
-		}
-		return null;
 	}
 
 	/**
@@ -1446,85 +1428,6 @@ export class LexiconService {
 		return { problem: "give either a symbolId or a literal's factId" };
 	}
 
-	/**
-	 * Which files import a specifier, or which import a particular module.
-	 *
-	 * Reads the imports table rather than the literals tier, which is what makes it uniform. A
-	 * TypeScript specifier IS a string in source and a Python one is not, so any answer built on
-	 * literal search works in one language and silently returns nothing in the other.
-	 */
-	async findImports(query: {
-		specifier?: string | undefined;
-		specifierRegex?: string | undefined;
-		module?: string | undefined;
-		moduleRegex?: string | undefined;
-		limit?: number | undefined;
-	}) {
-		const limit = query.limit ?? DEFAULT_REFERENCE_LIMIT;
-		const targets = [query.specifier, query.specifierRegex, query.module, query.moduleRegex].filter(
-			(value) => value !== undefined,
-		).length;
-		if (targets !== 1) throw new Error("Set exactly one import search target.");
-
-		if (query.specifier !== undefined) {
-			const found = this.store.importsMatching(query.specifier, limit + 1);
-			return { query, imports: found.slice(0, limit), total: found.length, truncated: found.length > limit };
-		}
-		if (query.specifierRegex !== undefined) {
-			const expression = compileSearchRegex(query.specifierRegex);
-			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
-			const matched = scanned.filter((statement) => {
-				expression.lastIndex = 0;
-				return expression.test(statement.specifier);
-			});
-			const result = {
-				query,
-				imports: matched.slice(0, limit),
-				total: matched.length,
-				truncated: matched.length > limit,
-			};
-			return scanned.length >= IMPORT_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
-		}
-		if (query.module !== undefined) {
-			const target = query.module;
-			const matched: StoredImport[] = [];
-			for (const statement of this.store.importsForScan(IMPORT_SCAN_LIMIT)) {
-				const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
-				if (landed !== null && importTarget(landed)?.module === target) matched.push(statement);
-				if (matched.length > limit) break;
-			}
-			return {
-				query,
-				imports: matched.slice(0, limit),
-				total: matched.length,
-				truncated: matched.length > limit,
-			};
-		}
-
-		if (query.moduleRegex === undefined) throw new Error("Set exactly one import search target.");
-		const expression = compileSearchRegex(query.moduleRegex);
-		const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
-		const matched: StoredImport[] = [];
-		for (const statement of scanned) {
-			const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
-			if (landed !== null) {
-				const module = importTarget(landed)?.module;
-				if (module !== undefined) {
-					expression.lastIndex = 0;
-					if (expression.test(module)) matched.push(statement);
-				}
-			}
-			if (matched.length > limit) break;
-		}
-		const result = {
-			query,
-			imports: matched.slice(0, limit),
-			total: matched.length,
-			truncated: matched.length > limit,
-		};
-		return scanned.length >= IMPORT_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
-	}
-
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */
 	overview(topModules = 15) {
 		const includeModule = (module: string) => !isExternalModule(this.workspaceRoot, module);
@@ -1670,7 +1573,7 @@ export class LexiconService {
 		}
 		if (literals.length > limit) truncated.push("literal");
 
-		for (const site of await this.importSitesFor(declaration.module, declaration.name)) {
+		for (const site of await this.imports.importSitesFor(declaration.module, declaration.name)) {
 			add(site.factId, "import", site.module, `imported by ${site.module}`);
 		}
 
@@ -2162,24 +2065,6 @@ export class LexiconService {
 		return { resolved, missing };
 	}
 
-	/**
-	 * Where a specifier lands. Asked of the provider, since the index does not hold specifiers.
-	 *
-	 * Cached because it is the one hot question here: it costs a provider round trip, a rename asks
-	 * it once per same-named import, and the re-export walk asks the same handful repeatedly.
-	 */
-	async resolveImport(fromModule: string, specifier: string): Promise<ImportResolution> {
-		const surfaceGlobs = this.currentScope().bundles;
-		const configKey = surfaceGlobs.join("\u0000");
-		return this.cache.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
-			this.supervisor.ask(fromModule, "resolveImport", {
-				fromModule,
-				specifier,
-				...(surfaceGlobs.length === 0 ? {} : { surfaceGlobs }),
-			}),
-		);
-	}
-
 	/** A reference's binding, for a caller holding a position rather than an id. */
 	async bind(module: string, name: string, range: { start: { line: number; character: number } }): Promise<Binding> {
 		return this.supervisor.ask(module, "bind", {
@@ -2229,7 +2114,7 @@ export class LexiconService {
 			byModule.set(reference.module, sites);
 		}
 
-		for (const site of await this.importSitesFor(declaration.module, oldName)) {
+		for (const site of await this.imports.importSitesFor(declaration.module, oldName)) {
 			const sites = byModule.get(site.module) ?? [];
 			sites.push({ range: site.range, role: "import" });
 			byModule.set(site.module, sites);
@@ -2366,36 +2251,6 @@ export class LexiconService {
 	}
 
 	/**
-	 * Import statements that write this name AND whose specifier lands on the declaring module.
-	 *
-	 * Only the alias's source half is a site. `import { foo as bar }` renames `foo` and leaves every
-	 * use of `bar` alone, so rewriting the local span here would break the file it was meant to fix.
-	 *
-	 * Specifiers are resolved here rather than at index time. Resolving all of them while indexing
-	 * costs a provider round trip per import across the whole workspace, to answer a question only
-	 * the handful sharing a name with a rename target ever ask.
-	 */
-	private async importSitesFor(
-		declaringModule: string,
-		name: string,
-	): Promise<Array<{ module: string; range: Range; factId: string }>> {
-		const statements = this.store.importsNamed(name);
-		const resolve = this.resolutionCache();
-		const exposing = await this.modulesExposing(declaringModule, statements, resolve);
-
-		const found: Array<{ module: string; range: Range; factId: string }> = [];
-		for (const statement of statements) {
-			// A row without a span names no export, so there is nothing here for a rename to rewrite.
-			// The row exists for the import GRAPH, which is a different question.
-			if (statement.range === undefined) continue;
-			const landed = await resolve(statement.module, statement.specifier);
-			if (landed !== null && exposing.has(landed))
-				found.push({ module: statement.module, range: statement.range, factId: statement.factId });
-		}
-		return found;
-	}
-
-	/**
 	 * What a rename WOULD write, without writing it.
 	 *
 	 * Separated from `renameSymbol` because two callers need the edits and only one of them applies
@@ -2470,58 +2325,6 @@ export class LexiconService {
 			if (this.readFile(module) !== null) await this.indexFile(module);
 		}
 		return { renamed: true, plan, modules: written.modules };
-	}
-
-	/** One provider round trip per distinct specifier, since the re-export walk revisits them. */
-	private resolutionCache(): (fromModule: string, specifier: string) => Promise<string | null> {
-		const seen = new Map<string, Promise<string | null>>();
-
-		return (fromModule, specifier) => {
-			// Escaped, never raw: a raw NUL makes the whole file binary to git and invisible to grep.
-			const key = `${fromModule}\0${specifier}`;
-			let answer = seen.get(key);
-			if (answer === undefined) {
-				answer = this.resolveImport(fromModule, specifier)
-					.then((r) => (r.status === "resolved" ? r.module : null))
-					.catch(() => null);
-				seen.set(key, answer);
-			}
-			return answer;
-		};
-	}
-
-	/**
-	 * Every module through which this name can be reached, the declaring one included.
-	 *
-	 * A barrel is the normal case, not an exotic one: `import { X } from "@scope/pkg"` resolves to
-	 * the package entry, while X is declared in some file that entry re-exports. Demanding the two
-	 * be the same module made every such import invisible to a rename, which was found by asking
-	 * this tool about its own `ProviderHandlers` and getting 9 of 12 occurrences.
-	 *
-	 * A fixpoint rather than one hop, because barrels chain. Bounded by the number of re-export
-	 * rows, so a cycle of barrels terminates instead of walking forever.
-	 */
-	private async modulesExposing(
-		declaringModule: string,
-		statements: StoredImport[],
-		resolve: (fromModule: string, specifier: string) => Promise<string | null>,
-	): Promise<Set<string>> {
-		const exposing = new Set([declaringModule]);
-		const reExports = statements.filter((statement) => statement.reExport);
-
-		for (let pass = 0; pass <= reExports.length; pass++) {
-			let grew = false;
-			for (const statement of reExports) {
-				if (exposing.has(statement.module)) continue;
-				const landed = await resolve(statement.module, statement.specifier);
-				if (landed !== null && exposing.has(landed)) {
-					exposing.add(statement.module);
-					grew = true;
-				}
-			}
-			if (!grew) break;
-		}
-		return exposing;
 	}
 
 	/**
