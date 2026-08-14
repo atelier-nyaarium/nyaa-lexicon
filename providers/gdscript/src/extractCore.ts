@@ -12,103 +12,25 @@ import {
 
 //////// Types
 
-export type DescriptorKind = "namespace" | "type" | "term" | "method" | "parameter" | "typeParameter" | "meta";
+import type {
+	ActiveEnum,
+	ActiveFunctionHeader,
+	ComposeSymbolId,
+	DeclarationFact,
+	DeclarationKind,
+	Descriptor,
+	ParsedKeyword,
+	ParsedLine,
+	RawLine,
+	ReferenceBlock,
+	ReferenceToken,
+	Scope,
+	SourceLine,
+	Token,
+	Visibility,
+} from "./parse-model.js";
 
-export interface Descriptor {
-	kind: DescriptorKind;
-	name: string;
-}
-
-export type DeclarationKind = "class" | "method" | "property" | "event" | "enum" | "function" | "variable" | "constant";
-
-export type Visibility = "public" | "private" | "local" | "fileLocal";
-
-export interface DeclarationFact {
-	symbolId: string;
-	kind: DeclarationKind;
-	languageKind?: string;
-	name: string;
-	range: Range;
-	selectionRange: Range;
-	visibility: Visibility;
-	exported?: boolean;
-	docComment?: string;
-	signature?: string;
-	containerId?: string;
-	metrics?: Metrics;
-}
-
-interface SourceLine {
-	line: number;
-	text: string;
-	code: string;
-	hasString: boolean;
-	stringStarts: number[];
-	endsInString: boolean;
-}
-
-interface ReferenceToken {
-	kind: "identifier" | "symbol" | "newline";
-	value: string;
-	line: number;
-	character: number;
-}
-
-interface ReferenceBlock {
-	startLine: number;
-	endLine: number;
-	indent: number;
-	containerId: string;
-	functionId?: string;
-}
-
-interface RawLine {
-	line: number;
-	text: string;
-}
-
-interface Token {
-	name: string;
-	start: number;
-}
-
-type ParsedKeyword = "class_name" | "extends" | "func" | "var" | "const" | "signal" | "enum" | "class" | "for";
-
-interface ParsedLine {
-	keyword: ParsedKeyword;
-	name: Token | null;
-	static: boolean;
-	annotated: boolean;
-}
-
-interface Scope {
-	indent: number;
-	descriptors: Descriptor[];
-	containerId: string;
-	functionScope: boolean;
-}
-
-interface ActiveEnum {
-	indent: number;
-	descriptors: Descriptor[];
-	containerId: string;
-	names: Set<string>;
-}
-
-interface ActiveFunctionHeader {
-	indent: number;
-	scope: Scope;
-	declaration: DeclarationFact;
-	lines: SourceLine[];
-}
-
-interface ComposeInput {
-	language: string;
-	module: string;
-	descriptors: Descriptor[];
-}
-
-type ComposeSymbolId = (input: ComposeInput) => string;
+export type { DeclarationFact, DeclarationKind, Descriptor, Visibility } from "./parse-model.js";
 
 //////// Cursor
 

@@ -56,10 +56,6 @@ const GDSCRIPT_KEYWORDS = new Set([
 	"yield",
 ]);
 
-function positionCompare(left: Range["start"], right: Range["start"]): number {
-	return left.line - right.line || left.character - right.character;
-}
-
 function sameRange(left: Range, right: Range): boolean {
 	return (
 		left.start.line === right.start.line &&
