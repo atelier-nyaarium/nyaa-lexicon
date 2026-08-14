@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composeSymbolId } from "@nyaa-lexicon/protocol";
+import { applyEdits, composeSymbolId, coordinatesOf } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { PythonProvider } from "../main";
 import { Python3Dispatch } from "../python3";
@@ -20,37 +20,16 @@ function workspace(files: Record<string, string>): string {
 }
 
 function rangeAt(text: string, index: number) {
-	const before = text.slice(0, index);
-	const line = before.split("\n").length - 1;
-	const character = index - before.lastIndexOf("\n") - 1;
-	return { start: { line, character }, end: { line, character: character + 1 } };
+	const range = coordinatesOf(text).rangeAt(index, index + 1);
+	if (range === undefined) throw new Error(`invalid test range at ${index}`);
+	return range;
 }
 
 function spanAt(text: string, index: number, value: string) {
-	const before = text.slice(0, index);
-	const line = before.split("\n").length - 1;
-	const character = index - before.lastIndexOf("\n") - 1;
-	return { start: { line, character }, end: { line, character: character + value.length } };
+	const range = coordinatesOf(text).rangeAt(index, index + value.length);
+	if (range === undefined) throw new Error(`invalid test range for ${value}`);
+	return range;
 }
-
-function offsetAt(text: string, position: { line: number; character: number }) {
-	const lines = text.split("\n");
-	let offset = 0;
-	for (let line = 0; line < position.line; line += 1) offset += (lines[line] ?? "").length + 1;
-	return offset + position.character;
-}
-
-function applyEdits(text: string, edits: { range: Range; newText: string }[]) {
-	return [...edits]
-		.sort((left, right) => offsetAt(text, right.range.start) - offsetAt(text, left.range.start))
-		.reduce((current, edit) => {
-			const start = offsetAt(current, edit.range.start);
-			const end = offsetAt(current, edit.range.end);
-			return current.slice(0, start) + edit.newText + current.slice(end);
-		}, text);
-}
-
-type Range = { start: { line: number; character: number }; end: { line: number; character: number } };
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -568,7 +547,8 @@ describe("Python provider project behavior", () => {
 		});
 		if (response.status !== "ready") throw new Error("rename was refused");
 		const rewritten = applyEdits(text, response.edits);
-		const reparsed = provider.parseFile({ module: "main.py", contentHash: "rewritten", text: rewritten });
+		if ("problem" in rewritten) throw new Error(rewritten.problem);
+		const reparsed = provider.parseFile({ module: "main.py", contentHash: "rewritten", text: rewritten.text });
 		expect(reparsed.diagnostics).toEqual([]);
 	});
 
@@ -616,7 +596,9 @@ describe("Python provider project behavior", () => {
 			blocked: [],
 		});
 		if (response.status !== "ready") throw new Error("rename was refused");
-		expect(applyEdits(text, response.edits)).toContain("__all__ = ['new']");
+		const rewritten = applyEdits(text, response.edits);
+		if ("problem" in rewritten) throw new Error(rewritten.problem);
+		expect(rewritten.text).toContain("__all__ = ['new']");
 	});
 
 	it("refuses parameter renames and collisions", () => {
@@ -672,9 +654,11 @@ describe("Python provider project behavior", () => {
 			blocked: [],
 		});
 		if (response.status !== "ready") throw new Error("rename was refused");
-		expect(applyEdits(text, response.edits)).toContain("run(new=1)");
-		expect(applyEdits(text, response.edits)).toContain("run(2)");
-		expect(applyEdits(text, response.edits)).toContain("other(old=3)");
+		const rewritten = applyEdits(text, response.edits);
+		if ("problem" in rewritten) throw new Error(rewritten.problem);
+		expect(rewritten.text).toContain("run(new=1)");
+		expect(rewritten.text).toContain("run(2)");
+		expect(rewritten.text).toContain("other(old=3)");
 	});
 
 	it("rewrites owner calls in a file with no parameter sites", () => {

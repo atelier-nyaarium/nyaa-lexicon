@@ -1,18 +1,19 @@
 import path from "node:path";
-import type {
-	MoveBlockedReason,
-	MoveDependency,
-	MoveEditsRequest,
-	MoveEditsResponse,
-	MoveImportSite,
-	Range,
-	TextEdit,
+import {
+	coordinatesOf,
+	type MoveBlockedReason,
+	type MoveDependency,
+	type MoveEditsRequest,
+	type MoveEditsResponse,
+	type MoveImportSite,
+	type OffsetRange,
+	type Range,
+	type TextCoordinates,
+	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-type OffsetRange = { start: number; end: number };
 
 export interface PythonMoveFacts {
 	declarations: Array<{ name: string; containerPath: unknown[] }>;
@@ -46,6 +47,7 @@ type RenderedSpecifier = { specifier: string } | { reason: MoveBlockedReason; de
 //  Main
 
 export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts): MoveEditsResponse {
+	const coordinates = coordinatesOf(request.text);
 	const syntaxError = facts.diagnostics.find((diagnostic) => diagnostic.severity === "error");
 	if (syntaxError !== undefined) {
 		return { status: "refused", reason: "ParseError", detail: syntaxError.message };
@@ -63,7 +65,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 	const edits: TextEdit[] = [];
 
 	if (request.role.removal !== undefined) {
-		if (offsetsForRange(request.text, request.role.removal) === undefined) {
+		if (coordinates.offsetsForRange(request.role.removal) === undefined) {
 			blocked.push(blockedSite(request.role.removal, "ParseError", "the removal range is outside the module"));
 		} else {
 			edits.push({ range: request.role.removal, newText: "" });
@@ -71,7 +73,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 	}
 
 	for (const site of request.importSites) {
-		const result = rewriteImportSite(request, facts, site);
+		const result = rewriteImportSite(request, coordinates, facts, site);
 		if (result.blocked !== undefined) blocked.push(result.blocked);
 		if (result.edit !== undefined) edits.push(result.edit);
 	}
@@ -99,8 +101,8 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 	}
 
 	if (pendingImports.size > 0) {
-		const position = importInsertionPosition(request.text, facts);
-		const point = positionAt(request.text, position);
+		const position = importInsertionPosition(request.text, coordinates, facts);
+		const point = coordinates.positionAt(position);
 		if (point === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
 		} else {
@@ -116,7 +118,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 		const position =
 			request.role.insertion.position === undefined
 				? request.text.length
-				: offsetForPosition(request.text, request.role.insertion.position);
+				: coordinates.offsetAt(request.role.insertion.position);
 		if (position === undefined) {
 			blocked.push(
 				blockedSite(
@@ -128,7 +130,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 				),
 			);
 		} else {
-			const point = positionAt(request.text, position);
+			const point = coordinates.positionAt(position);
 			if (point === undefined) {
 				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
 			} else {
@@ -137,7 +139,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 		}
 	}
 
-	return validateEdits(request.text, edits, blocked);
+	return validateEdits(coordinates, edits, blocked);
 }
 
 ////////////////////////////////
@@ -145,6 +147,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 
 function rewriteImportSite(
 	request: MoveEditsRequest,
+	coordinates: TextCoordinates,
 	facts: PythonMoveFacts,
 	site: MoveImportSite,
 ): { edit?: TextEdit; blocked?: { range?: Range; reason: MoveBlockedReason; detail: string } } {
@@ -186,7 +189,7 @@ function rewriteImportSite(
 	if ("reason" in rendered) return { blocked: blockedSite(site.range, rendered.reason, rendered.detail) };
 	if (rendered.specifier === site.specifier) return {};
 
-	const offsets = offsetsForRange(request.text, statement.range);
+	const offsets = coordinates.offsetsForRange(statement.range);
 	if (offsets === undefined) {
 		return { blocked: blockedSite(site.range, "ParseError", "the import statement range is outside the module") };
 	}
@@ -379,16 +382,16 @@ function sameModule(left: string, right: string): boolean {
 ////////////////////////////////
 //  Insertion & Ranges
 
-function importInsertionPosition(text: string, facts: PythonMoveFacts): number {
+function importInsertionPosition(text: string, coordinates: TextCoordinates, facts: PythonMoveFacts): number {
 	let position = 0;
 	if (text.startsWith("#!")) position = afterLine(text, text.indexOf("\n") < 0 ? text.length : text.indexOf("\n"));
 	if (facts.moduleDocstring !== undefined && facts.moduleDocstring !== null) {
-		const offsets = offsetsForRange(text, facts.moduleDocstring);
+		const offsets = coordinates.offsetsForRange(facts.moduleDocstring);
 		if (offsets !== undefined) position = Math.max(position, afterLine(text, offsets.end));
 	}
 	for (const statement of facts.importStatements) {
 		if (statement.kind !== "from" || statement.specifier !== "__future__") continue;
-		const offsets = offsetsForRange(text, statement.range);
+		const offsets = coordinates.offsetsForRange(statement.range);
 		if (offsets === undefined || !isTopLevel(text, offsets.start)) continue;
 		position = Math.max(position, afterLine(text, offsets.end));
 	}
@@ -410,36 +413,6 @@ function afterLine(text: string, offset: number): number {
 	return newline < 0 ? text.length : newline + 1;
 }
 
-function offsetsForRange(text: string, range: Range): OffsetRange | undefined {
-	const start = offsetForPosition(text, range.start);
-	const end = offsetForPosition(text, range.end);
-	return start === undefined || end === undefined || end < start ? undefined : { start, end };
-}
-
-function offsetForPosition(text: string, position: Range["start"]): number | undefined {
-	if (position.line < 0 || position.character < 0) return undefined;
-	let lineStart = 0;
-	for (let line = 0; line < position.line; line += 1) {
-		const newline = text.indexOf("\n", lineStart);
-		if (newline < 0) return undefined;
-		lineStart = newline + 1;
-	}
-	if (position.line > 0 && lineStart > text.length) return undefined;
-	const newline = text.indexOf("\n", lineStart);
-	const lineEnd = newline < 0 ? text.length : newline - (newline > lineStart && text[newline - 1] === "\r" ? 1 : 0);
-	if (lineStart + position.character > lineEnd) return undefined;
-	return lineStart + position.character;
-}
-
-function positionAt(text: string, offset: number): Range["start"] | undefined {
-	if (offset < 0 || offset > text.length) return undefined;
-	const line = text.slice(0, offset).split("\n").length - 1;
-	// Never search AT the offset: a module whose first byte is a newline would otherwise yield a
-	// line start past the offset and mint a negative character.
-	const lineStart = offset === 0 ? 0 : text.lastIndexOf("\n", offset - 1) + 1;
-	return { line, character: offset - lineStart };
-}
-
 function rangeContains(outer: Range, inner: Range): boolean {
 	return comparePosition(outer.start, inner.start) <= 0 && comparePosition(inner.end, outer.end) <= 0;
 }
@@ -452,13 +425,13 @@ function comparePosition(left: Range["start"], right: Range["start"]): number {
 //  Validation
 
 function validateEdits(
-	text: string,
+	coordinates: TextCoordinates,
 	edits: TextEdit[],
 	blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }>,
 ): MoveEditsResponse {
 	const unique = new Map<string, TextEdit>();
 	for (const edit of edits) {
-		const offsets = offsetsForRange(text, edit.range);
+		const offsets = coordinates.offsetsForRange(edit.range);
 		if (offsets === undefined) {
 			blocked.push(blockedSite(edit.range, "ParseError", "an edit range is outside the module"));
 			continue;
@@ -476,7 +449,7 @@ function validateEdits(
 
 	const sorted = [...unique.values()]
 		.map((edit) => {
-			const offsets = offsetsForRange(text, edit.range) as OffsetRange;
+			const offsets = coordinates.offsetsForRange(edit.range) as OffsetRange;
 			return { edit, ...offsets };
 		})
 		.sort((left, right) => left.start - right.start || left.end - right.end);

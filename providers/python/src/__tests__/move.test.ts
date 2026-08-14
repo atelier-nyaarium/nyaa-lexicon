@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyEdits, composeSymbolId, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
+import { applyEdits, composeSymbolId, coordinatesOf, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { PythonProvider } from "../main";
 
@@ -31,13 +31,9 @@ function span(text: string, value: string, from = 0): Range {
 }
 
 function rangeAt(text: string, start: number, length: number): Range {
-	const before = text.slice(0, start);
-	const line = before.split("\n").length - 1;
-	const character = start - before.lastIndexOf("\n") - 1;
-	return {
-		start: { line, character },
-		end: { line, character: character + length },
-	};
+	const range = coordinatesOf(text).rangeAt(start, start + length);
+	if (range === undefined) throw new Error(`invalid test range at ${start}`);
+	return range;
 }
 
 function apply(text: string, request: MoveEditsRequest, files: Record<string, string>) {
@@ -87,6 +83,42 @@ afterEach(() => {
 });
 
 describe("Python move edits", () => {
+	it("refuses insertion positions that do not address content", () => {
+		const cases = [
+			{ text: "value = 1\n", position: { line: 0, character: 99 } },
+			{ text: "value = 1\n", position: { line: 0, character: -1 } },
+			{ text: "ab\r\n", position: { line: 0, character: 3 } },
+		];
+
+		for (const { text, position } of cases) {
+			const response = provider({ "target.py": text }).moveEdits({
+				module: "target.py",
+				text,
+				exists: true,
+				symbolId: symbolId("source.py", "moved"),
+				name: "moved",
+				fromModule: "source.py",
+				toModule: "target.py",
+				role: { insertion: { text: "moved = 1\n", position } },
+				importSites: [],
+				dependencies: [],
+				sites: [],
+			});
+
+			expect(response).toEqual({
+				status: "ready",
+				edits: [],
+				blocked: [
+					{
+						range: { start: position, end: position },
+						reason: "ParseError",
+						detail: "the insertion position is outside the module",
+					},
+				],
+			});
+		}
+	});
+
 	it("splits a multi-name import and keeps the moved alias", () => {
 		const text = "from .cart import keep, add as total\nvalue = total(1, 2)\n";
 		const request = namedImportRequest(text, "add", "src/cart.py", "src/items.py");

@@ -109,6 +109,33 @@ const CASES: ConformanceCase[] = [
 		},
 	},
 	{
+		id: "declaration-range-with-trailing-newline",
+		tier: "declarations",
+		about: "A declaration stays addressable when a trailing newline creates a final empty line.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/cart.ts": "\nexport const cart = 1;\n" },
+				subject: "src/cart.ts",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 13 } }],
+			},
+			[REFERENCE]: {
+				files: { "src/cart.ref": "\nexport const cart = 1;\n" },
+				subject: "src/cart.ref",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 13 } }],
+			},
+			[PYTHON]: {
+				files: { "src/cart.py": "\ncart = 1\n" },
+				subject: "src/cart.py",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 0 } }],
+			},
+			[GDSCRIPT]: {
+				files: { "src/cart.gd": "\nvar cart = 1\n" },
+				subject: "src/cart.gd",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 4 } }],
+			},
+		},
+	},
+	{
 		id: "empty-file",
 		tier: "declarations",
 		about: "A file with nothing in it reports nothing, and does not error.",
