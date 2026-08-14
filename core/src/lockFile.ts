@@ -25,6 +25,13 @@ export const DaemonLockSchema = z
 		 * mismatch, which is the truth about any daemon old enough not to stamp it.
 		 */
 		buildVersion: z.string().min(1).optional(),
+		/**
+		 * Which BUNDLE, so a rebuild at one version is noticed too.
+		 *
+		 * The version moves once a release; a developer rebuilds twenty times inside it, and every one
+		 * of those leaves a daemon serving code the checkout no longer has.
+		 */
+		bundleStamp: z.string().min(1).optional(),
 		workspaceRoot: z.string().min(1),
 		startedAt: z.number().int().nonnegative(),
 	})
@@ -63,6 +70,8 @@ export interface LockContext {
 	ourProtocolVersion: string;
 	/** This build's version. A daemon on another build has another method table. */
 	ourBuildVersion: string;
+	/** This build's bundle stamp, or null where there is no bundle to stamp. */
+	ourBundleStamp?: string | null;
 	workspaceRoot: string;
 }
 
@@ -124,6 +133,18 @@ export function decideFromLock(context: LockContext): LockDecision {
 			action: "replace",
 			lock,
 			reason: `the daemon runs ${lock.buildVersion ?? "a build too old to say"}, we run ${context.ourBuildVersion}`,
+			cause: "build",
+		};
+	}
+
+	// Same version, different bundle: a rebuild. Only checked when we HAVE a stamp to compare, so a
+	// checkout with no bundle still connects instead of replacing a daemon on no evidence.
+	const ours = context.ourBundleStamp;
+	if (ours != null && lock.bundleStamp !== ours) {
+		return {
+			action: "replace",
+			lock,
+			reason: `the daemon runs a different bundle of ${context.ourBuildVersion}, so it was rebuilt since it started`,
 			cause: "build",
 		};
 	}

@@ -5,6 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { bundleStamp } from "./ensureDaemon.js";
 import type { DaemonLock, LockDecision } from "./lockFile.js";
 import { decideFromLock } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
@@ -40,6 +41,7 @@ export function findDaemon(workspaceRoot: string, host: PlatformEnv = currentHos
 		isAlive: processIsAlive,
 		ourProtocolVersion: PROTOCOL_VERSION,
 		ourBuildVersion: BUILD_VERSION,
+		ourBundleStamp: bundleStamp(),
 		workspaceRoot,
 	});
 }

@@ -86,6 +86,41 @@ describe("the build version is exact, because the method table is not negotiable
 	});
 });
 
+// The version moves once a release; a developer rebuilds many times inside one. Every one of those
+// rebuilds used to leave a daemon serving code the checkout no longer had, and it cost a probe run
+// that reported success against the previous bundle.
+describe("a rebuild at one version is noticed too", () => {
+	const stamped = (bundleStamp: string | undefined, ourStamp: string | null | undefined) =>
+		decideFromLock({
+			raw: JSON.stringify({ ...LOCK, ...(bundleStamp === undefined ? {} : { bundleStamp }) }),
+			isAlive: () => true,
+			ourProtocolVersion: "0.2.0",
+			ourBuildVersion: "1.10.2",
+			...(ourStamp === undefined ? {} : { ourBundleStamp: ourStamp }),
+			workspaceRoot: "/home/me/proj",
+		});
+
+	it("replaces a daemon running a different bundle of the same version", () => {
+		const decision = stamped("4000:111", "4100:222");
+		expect(decision.action).toBe("replace");
+		expect(decision.action === "replace" && decision.reason).toMatch(/rebuilt since it started/);
+	});
+
+	it("connects when the bundle is the same one", () => {
+		expect(stamped("4000:111", "4000:111")).toMatchObject({ action: "connect" });
+	});
+
+	it("replaces a daemon whose lock predates the stamp, since it cannot say what it runs", () => {
+		expect(stamped(undefined, "4000:111")).toMatchObject({ action: "replace" });
+	});
+
+	// No bundle to compare is no evidence, and no evidence must never justify killing a daemon.
+	it("connects when we have no bundle to stamp", () => {
+		expect(stamped("4000:111", null)).toMatchObject({ action: "connect" });
+		expect(stamped(undefined, null)).toMatchObject({ action: "connect" });
+	});
+});
+
 describe("an unusable lock file is spawn, never a guess", () => {
 	it("spawns on unreadable JSON", () => {
 		expect(

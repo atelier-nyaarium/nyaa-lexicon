@@ -9,7 +9,7 @@
 // that finds the daemon gone simply starts another.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { callDaemon, findDaemon } from "./client.js";
 import type { DaemonLock } from "./lockFile.js";
@@ -62,6 +62,26 @@ function startChild(command: string[]): void {
 export function daemonCommand(workspaceRoot: string, root = lexiconRoot()): string[] | null {
 	const bundle = path.join(root, "dist", "daemon.js");
 	return existsSync(bundle) ? [process.execPath, bundle, workspaceRoot] : null;
+}
+
+/**
+ * Which bundle a daemon is running, closely enough to notice a rebuild.
+ *
+ * The version alone is not enough, and that gap has already cost a false verification here: a
+ * developer rebuilds twenty times at one version, and every rebuild leaves a daemon serving the
+ * previous code while the lock still says the version matches. Size and modification time change on
+ * every build and cost one stat, where hashing four megabytes on every lookup would not.
+ *
+ * Null when the bundle cannot be read, which is a source checkout that was never built. Absent on
+ * both sides compares equal, so nothing here breaks a workspace with no bundle at all.
+ */
+export function bundleStamp(root = lexiconRoot()): string | null {
+	try {
+		const found = statSync(path.join(root, "dist", "daemon.js"));
+		return `${found.size}:${Math.trunc(found.mtimeMs)}`;
+	} catch {
+		return null;
+	}
 }
 
 /**

@@ -11,6 +11,7 @@ import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } 
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { processIsAlive } from "./client.js";
+import { bundleStamp } from "./ensureDaemon.js";
 import { type DaemonLock, DaemonLockSchema } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { DaemonStartingError, type FrameServer, serveFrames } from "./socketTransport.js";
@@ -153,6 +154,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		pid: process.pid,
 		protocolVersion: PROTOCOL_VERSION,
 		buildVersion: BUILD_VERSION,
+		...(bundleStamp() === null ? {} : { bundleStamp: bundleStamp() }),
 		workspaceRoot: options.workspaceRoot,
 		startedAt: Date.now(),
 	});
