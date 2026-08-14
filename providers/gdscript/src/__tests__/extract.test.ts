@@ -1093,3 +1093,32 @@ func sample(first, second):
 	expect(sample?.metrics).toEqual({ lines: 8, parameters: 2, nesting: 1, branches: 4 });
 	expect(value?.metrics).toEqual({ lines: 1 });
 });
+
+// Both inputs below are pathological but legal: the path text also occurs EARLIER in the same
+// match, which is the only way to tell a capture offset apart from a search for the same text.
+// The old code searched, so it located the class name and the loader word instead of the path.
+test("an extends path is located by its capture rather than by searching the match", () => {
+	const provider = new GDScriptProvider();
+	provider.initialize("/workspace");
+	const text = 'class Weapon extends "Weapon"\n';
+
+	const facts = provider.parseFile({ module: "weapon.gd", contentHash: "weapon", text });
+	const reference = facts.references.find((entry) => entry.role === "extends");
+
+	expect(reference?.name).toBe("Weapon");
+	// Inside the quotes at character 22, not the class name at character 6.
+	expect(reference?.range.start).toEqual({ line: 0, character: 22 });
+});
+
+test("a loader path is located by its capture rather than by searching the match", () => {
+	const provider = new GDScriptProvider();
+	provider.initialize("/workspace");
+	const text = 'const Script = preload("load")\n';
+
+	const facts = provider.parseFile({ module: "user.gd", contentHash: "user", text });
+	const reference = facts.references.find((entry) => entry.role === "import");
+
+	expect(reference?.name).toBe("load");
+	// Inside the quotes at character 24, not the "load" inside "preload" at character 18.
+	expect(reference?.range.start).toEqual({ line: 0, character: 24 });
+});

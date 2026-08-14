@@ -367,11 +367,15 @@ function attachDocumentation(
 	documentedLines.add(lineIndex);
 }
 
+// The `d` flag, not indexOf: searching the match for the path text finds the FIRST occurrence,
+// which in `class Foo extends "Foo"` is the class name. That put the reference range on the wrong
+// span whenever a script extended a path spelled like something earlier on its own line.
 function literalExtendsPath(line: SourceLine): { path: string; start: number } | null {
-	const match = /^\s*(?:class\s+[\p{L}_][\p{L}\p{M}\p{N}_]*\s+)?extends\s+("|')([^"']+)\1/u.exec(line.text);
+	const match = /^\s*(?:class\s+[\p{L}_][\p{L}\p{M}\p{N}_]*\s+)?extends\s+("|')([^"']+)\1/du.exec(line.text);
 	const path = match?.[2];
-	if (match === null || path === undefined) return null;
-	return { path, start: match.index + match[0].indexOf(path) };
+	const at = match?.indices?.[2]?.[0];
+	if (match === null || path === undefined || at === undefined) return null;
+	return { path, start: at };
 }
 
 //////// Line scanner
@@ -2087,13 +2091,15 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 	for (const line of lines) {
 		const extendsPath = literalExtendsPath(line);
 		if (extendsPath !== null) addPathReference(line, extendsPath.path, extendsPath.start, "extends");
-		for (const match of line.text.matchAll(/\b(preload|load)\s*\(\s*&?\s*(["'])([^"']+)\2/g)) {
+		// Same reason as literalExtendsPath: indexOf found the loader word in `preload("preload")`.
+		for (const match of line.text.matchAll(/\b(preload|load)\s*\(\s*&?\s*(["'])([^"']+)\2/dg)) {
 			const loaderStart = match.index ?? -1;
 			const loader = match[1] ?? "";
 			const name = match[3] ?? "";
-			if (loaderStart < 0 || name === "" || !line.code.startsWith(loader, loaderStart)) continue;
+			const pathStart = match.indices?.[3]?.[0];
+			if (loaderStart < 0 || name === "" || pathStart === undefined) continue;
+			if (!line.code.startsWith(loader, loaderStart)) continue;
 			literalLoaderPositions.add(`${line.line}:${loaderStart}`);
-			const pathStart = loaderStart + match[0].indexOf(name);
 			addPathReference(line, name, pathStart, "import");
 		}
 	}
