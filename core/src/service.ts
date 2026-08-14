@@ -71,7 +71,7 @@ import { decideInvalidation, type FileEvent } from "./invalidation.js";
 import { KnowledgeLedger } from "./knowledge.js";
 import { ResultCache } from "./resultCache.js";
 import { compileSearchRegex } from "./search.js";
-import { writeSourceFile } from "./sourceWriter.js";
+import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type {
 	IndexStore,
 	StoredDeclaration,
@@ -120,26 +120,6 @@ export interface RenamePlan {
 	blockers: RenameConcern[];
 	warnings: RenameConcern[];
 }
-
-/**
- * One symbol's text as it stands on disk, with the range that text occupies.
- *
- * The range rides along because it is what a replacement overwrites: a caller that read the text
- * here and edited it needs to say WHERE it goes back, and re-deriving that would let the two
- * disagree.
- */
-export type SymbolSource =
-	| {
-			found: true;
-			module: string;
-			name: string;
-			kind: string;
-			range: Range;
-			text: string;
-			/** Of the same read the text came from, so a later write can prove nothing moved. */
-			contentHash: string;
-	  }
-	| { found: false; reason: string; stale?: boolean };
 
 /**
  * A replacement worked out but not yet written.
@@ -287,10 +267,6 @@ function countUnbound(rows: Array<{ name: string; role: string; reason: string }
  * describes text that moved, and returning the nearest thing would be a plausible wrong answer.
  * The owner enforces exactly that, which is why this is a call and not an implementation.
  */
-function sliceRange(text: string, range: Range): string | null {
-	return coordinatesOf(text).sliceRange(range) ?? null;
-}
-
 /** A package remains external even when it offers one safe module for surface indexing. */
 ////////////////////////////////
 //  Class
@@ -323,12 +299,16 @@ export class LexiconService {
 		this.indexer = new WorkspaceIndexer(store, supervisor, readFile, workspaceRoot, this.cache, (from, specifier) =>
 			this.imports.resolveImport(from, specifier),
 		);
+		this.source = new SourceWorkspace(store, readFile, workspaceRoot);
 	}
 
 	private readonly cache = new ResultCache();
 
 	/** Getting facts in, and the only thing here allowed to change what the index holds. */
 	readonly indexer: WorkspaceIndexer;
+
+	/** The workspace as text on disk, which is the half the index is checked against. */
+	readonly source: SourceWorkspace;
 
 	/**
 	 * Every question answered from the index alone.
@@ -368,6 +348,25 @@ export class LexiconService {
 
 	indexStatus(): ReturnType<WorkspaceIndexer["indexStatus"]> {
 		return this.indexer.indexStatus();
+	}
+
+	////////////////////////////////
+	//  Source text, answered by SourceWorkspace
+
+	symbolSource(...args: Parameters<SourceWorkspace["symbolSource"]>): SymbolSource {
+		return this.source.symbolSource(...args);
+	}
+
+	currentHashOf(module: string): string | null {
+		return this.source.currentHashOf(module);
+	}
+
+	staleModules(modules: string[]): string[] {
+		return this.source.staleModules(modules);
+	}
+
+	writeModule(module: string, text: string): void {
+		this.source.writeModule(module, text);
 	}
 
 	private currentScope(): FileScope {
@@ -497,39 +496,6 @@ export class LexiconService {
 	//  Answering
 
 	/**
-	 * The exact source text one address occupies, plus the range a replacement would overwrite.
-	 *
-	 * Read once and sliced from that same read, so the hash reported is the hash of the text
-	 * returned. Hashing a second read would let a file change in between and hand back a slice that
-	 * never existed at the hash it claims.
-	 *
-	 * A stale index refuses rather than slicing: the stored range describes text that has moved, so
-	 * cutting at it produces something that looks like source and is not the symbol.
-	 */
-	symbolSource(address: { symbolId?: string | undefined; factId?: string | undefined }): SymbolSource {
-		const located = this.locate(address);
-		if ("problem" in located) return { found: false, reason: located.problem };
-
-		const { module, range, name, kind } = located;
-		const text = this.readFile(module);
-		if (text === null) return { found: false, reason: `${module} is not on disk any more` };
-
-		const stored = this.store.contentHashOf(module);
-		if (stored !== null && stored !== hashContent(text)) {
-			return {
-				found: false,
-				reason: `${module} changed since it was indexed, so its ranges are stale`,
-				stale: true,
-			};
-		}
-
-		const sliced = sliceRange(text, range);
-		if (sliced === null) return { found: false, reason: `the stored range falls outside ${module}` };
-
-		return { found: true, module, name, kind, range, text: sliced, contentHash: hashContent(text) };
-	}
-
-	/**
 	 * What replacing one symbol's text would do, without writing anything.
 	 *
 	 * Everything expensive happens here and nothing touches disk, so a caller can hold the workspace
@@ -540,7 +506,7 @@ export class LexiconService {
 		address: { symbolId?: string | undefined; factId?: string | undefined },
 		newText: string,
 	): Promise<ReplacementPlan> {
-		const source = this.symbolSource(address);
+		const source = this.source.symbolSource(address);
 		if (!source.found) return { ok: false, reason: source.reason };
 
 		const guard = this.replacementGuard(address, source);
@@ -611,7 +577,7 @@ export class LexiconService {
 		if (!declaration) return { ok: false, reason: `${symbolId} is not in the index` };
 		if (declaration.module === toModule) return { ok: false, reason: `${symbolId} is already in ${toModule}` };
 
-		const source = this.symbolSource({ symbolId });
+		const source = this.source.symbolSource({ symbolId });
 		if (!source.found) return { ok: false, reason: source.reason };
 
 		const closure = this.store.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
@@ -798,7 +764,7 @@ export class LexiconService {
 	 */
 	private dependenciesOf(module: string, closure: string[], symbolId: string): MoveDependency[] {
 		const inside = new Set(closure);
-		const source = this.symbolSource({ symbolId });
+		const source = this.source.symbolSource({ symbolId });
 		if (!source.found) return [];
 
 		const seen = new Set<string>();
@@ -901,40 +867,6 @@ export class LexiconService {
 			for (const reference of this.store.referencesTo(id)) modules.add(reference.module);
 		}
 		return [...modules];
-	}
-
-	/**
-	 * Modules whose text on disk is not what the index describes.
-	 *
-	 * Any rewrite planned from stored ranges is wrong for these: the ranges describe text that has
-	 * moved. A rename against a stale module rewrites the occurrences it can still find and misses
-	 * the ones that shifted, which produces a file where the import says one name and the call says
-	 * another.
-	 */
-	staleModules(modules: Iterable<string>): string[] {
-		const stale: string[] = [];
-		for (const module of modules) {
-			const indexed = this.store.contentHashOf(module);
-			if (indexed === null) continue;
-			if (this.currentHashOf(module) !== indexed) stale.push(module);
-		}
-		return stale;
-	}
-
-	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */
-	currentHashOf(module: string): string | null {
-		const text = this.readFile(module);
-		return text === null ? null : hashContent(text);
-	}
-
-	/**
-	 * Writes one module's whole text, temp file then rename.
-	 *
-	 * The caller holds the workspace gate and has already journaled what was there, so this only
-	 * has to make the replacement itself uninterruptible.
-	 */
-	writeModule(module: string, text: string): void {
-		writeSourceFile(path.join(this.workspaceRoot, module), text);
 	}
 
 	/** Puts the provider back on the text that is actually there, after parsing a candidate. */
@@ -1058,36 +990,6 @@ export class LexiconService {
 		}
 
 		return issues;
-	}
-
-	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */
-	private locate(address: {
-		symbolId?: string | undefined;
-		factId?: string | undefined;
-	}): { module: string; range: Range; name: string; kind: string } | { problem: string } {
-		if (address.symbolId !== undefined) {
-			const declaration = this.store.declaration(address.symbolId);
-			if (!declaration) return { problem: `${address.symbolId} is not in the index` };
-			return {
-				module: declaration.module,
-				range: declaration.range,
-				name: declaration.name,
-				kind: declaration.kind,
-			};
-		}
-
-		if (address.factId !== undefined) {
-			const fact = this.store.factById(address.factId);
-			if (!fact) return { problem: `${address.factId} names nothing in the index any more` };
-			if (fact.fact !== "literal") {
-				return {
-					problem: `${address.factId} names a ${fact.fact}, and only a literal is addressable by fact id`,
-				};
-			}
-			return { module: fact.module, range: fact.range, name: fact.value, kind: `${fact.kind} literal` };
-		}
-
-		return { problem: "give either a symbolId or a literal's factId" };
 	}
 
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */

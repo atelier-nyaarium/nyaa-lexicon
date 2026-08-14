@@ -122,7 +122,6 @@ export {
 	type RenameFile,
 	type RenameOutcome,
 	type RenamePlan,
-	type SymbolSource,
 } from "./service.js";
 export {
 	type BindOutcome,
@@ -141,6 +140,7 @@ export {
 	requestOnce,
 	serveFrames,
 } from "./socketTransport.js";
+export { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 export {
 	IndexStore,
 	SCHEMA_VERSION,
