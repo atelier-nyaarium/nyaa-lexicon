@@ -1,15 +1,20 @@
 // The editor-facing adapter.
 //
-// Thin on purpose. Every answer comes from the same `LexiconService` the MCP tools use, so the two
-// surfaces cannot drift into disagreeing about the same repository. What differs is only the
-// vocabulary: LSP speaks in positions and URIs where MCP speaks in names and symbol ids.
+// Thin on purpose. Every answer comes from the same index the MCP tools read, normally the
+// workspace daemon's, so the two surfaces cannot drift into disagreeing about the same repository.
+// What differs is only the vocabulary: LSP speaks in positions and URIs where MCP speaks in names
+// and symbol ids.
+//
+// Every read is awaited because the index is usually in another process. Nothing here knows or
+// cares which, and that is the point of taking a `LexiconReads` rather than a service.
 //
 // Positions are the whole translation problem. LSP counts UTF-16 code units within a line, and the
 // index stores whatever the provider reported. Both are zero-based lines, so the mapping is the
 // identity for every character below U+FFFF and wrong above it. That is a real limitation, stated
 // here rather than discovered later in a file full of emoji.
 
-import type { LexiconService, StoredDeclaration } from "@nyaa-lexicon/core";
+import type { StoredDeclaration } from "@nyaa-lexicon/core";
+import type { LexiconReads } from "./reads.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -145,7 +150,7 @@ function contains(range: Range, position: Position): boolean {
  */
 export class LspServer {
 	constructor(
-		private readonly service: LexiconService,
+		private readonly service: LexiconReads,
 		private readonly workspaceRoot: string,
 	) {}
 
@@ -155,12 +160,12 @@ export class LspServer {
 	 * Innermost wins: a method inside a class contains the cursor just as the class does, and the
 	 * one an editor user means is always the tighter of the two.
 	 */
-	symbolAt(uri: string, position: Position): StoredDeclaration | null {
+	async symbolAt(uri: string, position: Position): Promise<StoredDeclaration | null> {
 		const module = toModule(this.workspaceRoot, uri);
 		if (module === null) return null;
 
 		let best: StoredDeclaration | null = null;
-		for (const declaration of this.service.declarationsIn(module)) {
+		for (const declaration of await this.service.declarationsIn(module)) {
 			if (!contains(declaration.range, position)) continue;
 			if (best === null || contains(best.range, declaration.range.start)) best = declaration;
 		}
@@ -168,17 +173,17 @@ export class LspServer {
 	}
 
 	/** textDocument/definition. The declaration's NAME span, which is what an editor highlights. */
-	definition(uri: string, position: Position): Location | null {
-		const found = this.symbolAt(uri, position);
+	async definition(uri: string, position: Position): Promise<Location | null> {
+		const found = await this.symbolAt(uri, position);
 		return found === null ? null : locationOf(this.workspaceRoot, found);
 	}
 
 	/** textDocument/references, on bound edges only. A name match would be worse than nothing here. */
-	references(uri: string, position: Position, includeDeclaration = true): Location[] {
-		const found = this.symbolAt(uri, position);
+	async references(uri: string, position: Position, includeDeclaration = true): Promise<Location[]> {
+		const found = await this.symbolAt(uri, position);
 		if (found === null) return [];
 
-		const locations = this.service.findReferences(found.symbolId, 1000).references.map((reference) => ({
+		const locations = (await this.service.findReferences(found.symbolId, 1000)).references.map((reference) => ({
 			uri: toUri(this.workspaceRoot, reference.module),
 			range: {
 				start: { line: reference.startLine, character: reference.startCharacter },
@@ -190,7 +195,7 @@ export class LspServer {
 
 	/** textDocument/hover. The signature, the doc comment, and how widely it is used. */
 	async hover(uri: string, position: Position): Promise<Hover | null> {
-		const found = this.symbolAt(uri, position);
+		const found = await this.symbolAt(uri, position);
 		if (found === null) return null;
 
 		const lines = [`\`\`\`\n${found.signature ?? `${found.kind} ${found.name}`}\n\`\`\``];
@@ -204,7 +209,9 @@ export class LspServer {
 		// Recorded knowledge is exactly what a hover is for: what a previous reader concluded, next
 		// to what the code says. Marked when its ground has moved, so stale prose never reads as
 		// current. Served without counting a gap, since a hover is browsing rather than demand.
-		const recalled = this.service.recallAnswers(found.symbolId).find((r) => r.answer.question === "describe");
+		const recalled = (await this.service.recallAnswers(found.symbolId)).find(
+			(r) => r.answer.question === "describe",
+		);
 		if (recalled !== undefined) {
 			const doubted = recalled.answer.doubt !== undefined || recalled.doubtedUpstream.length > 0;
 			const mark = doubted
@@ -215,7 +222,7 @@ export class LspServer {
 			lines.push(`${recalled.answer.prose}${mark}`);
 		}
 
-		const described = this.service.describe(found.symbolId);
+		const described = await this.service.describe(found.symbolId);
 		if (described && described.referenceCount > 0) lines.push(`Used in ${described.referenceCount} places.`);
 		return { contents: { kind: "markdown", value: lines.join("\n\n") }, range: found.selectionRange };
 	}
@@ -228,7 +235,7 @@ export class LspServer {
 	 * rather than a jump to something adjacent.
 	 */
 	async typeDefinition(uri: string, position: Position): Promise<Location | null> {
-		const found = this.symbolAt(uri, position);
+		const found = await this.symbolAt(uri, position);
 		if (found === null) return null;
 
 		const type = await this.service.typeOf(found.symbolId);
@@ -242,19 +249,18 @@ export class LspServer {
 	 * The same rows textDocument/references reads, filtered to the two heritage roles, which is why
 	 * this needed no new provider capability.
 	 */
-	implementation(uri: string, position: Position): Location[] {
-		const found = this.symbolAt(uri, position);
+	async implementation(uri: string, position: Position): Promise<Location[]> {
+		const found = await this.symbolAt(uri, position);
 		if (found === null) return [];
 
-		return this.service
-			.typeHierarchy(found.symbolId)
-			.subtypes.map((subtype) => this.locationOfSymbol(subtype.symbolId))
-			.filter((location): location is Location => location !== null);
+		const { subtypes } = await this.service.typeHierarchy(found.symbolId);
+		const located = await Promise.all(subtypes.map((subtype) => this.locationOfSymbol(subtype.symbolId)));
+		return located.filter((location): location is Location => location !== null);
 	}
 
 	/** textDocument/prepareTypeHierarchy. The item an editor then asks to expand. */
-	prepareTypeHierarchy(uri: string, position: Position): TypeHierarchyItem[] {
-		const found = this.symbolAt(uri, position);
+	async prepareTypeHierarchy(uri: string, position: Position): Promise<TypeHierarchyItem[]> {
+		const found = await this.symbolAt(uri, position);
 		return found === null ? [] : [this.hierarchyItem(found)];
 	}
 
@@ -268,20 +274,22 @@ export class LspServer {
 	 * promises to hand back untouched. Re-deriving it from the item's position instead would break
 	 * the moment the file was edited between the prepare and the expansion.
 	 */
-	typeHierarchyStep(params: unknown, direction: "supertypes" | "subtypes"): TypeHierarchyItem[] {
+	async typeHierarchyStep(params: unknown, direction: "supertypes" | "subtypes"): Promise<TypeHierarchyItem[]> {
 		const symbolId = (params as { item?: { data?: unknown } } | undefined)?.item?.data;
 		if (typeof symbolId !== "string") return [];
 
-		return this.service
-			.typeHierarchy(symbolId)
-			[direction].map((summary) => this.service.declarationOf(summary.symbolId))
+		const hierarchy = await this.service.typeHierarchy(symbolId);
+		const declarations = await Promise.all(
+			hierarchy[direction].map((summary) => this.service.declarationOf(summary.symbolId)),
+		);
+		return declarations
 			.filter((declaration): declaration is StoredDeclaration => declaration !== null)
 			.map((declaration) => this.hierarchyItem(declaration));
 	}
 
 	/** textDocument/prepareCallHierarchy. Same item shape as the type hierarchy, same `data` trick. */
-	prepareCallHierarchy(uri: string, position: Position): TypeHierarchyItem[] {
-		const found = this.symbolAt(uri, position);
+	async prepareCallHierarchy(uri: string, position: Position): Promise<TypeHierarchyItem[]> {
+		const found = await this.symbolAt(uri, position);
 		return found === null ? [] : [this.hierarchyItem(found)];
 	}
 
@@ -292,16 +300,16 @@ export class LspServer {
 	 * queried symbol's file in the outgoing one, which is what the spec asks for and falls out of
 	 * recording every reference at its use site.
 	 */
-	callHierarchyStep(params: unknown, direction: "incoming" | "outgoing"): CallHierarchyEntry[] {
+	async callHierarchyStep(params: unknown, direction: "incoming" | "outgoing"): Promise<CallHierarchyEntry[]> {
 		const symbolId = (params as { item?: { data?: unknown } } | undefined)?.item?.data;
 		if (typeof symbolId !== "string") return [];
 
-		const hierarchy = this.service.callHierarchy(symbolId);
+		const hierarchy = await this.service.callHierarchy(symbolId);
 		const edges = direction === "incoming" ? hierarchy.incoming : hierarchy.outgoing;
 
 		const entries: CallHierarchyEntry[] = [];
 		for (const edge of edges) {
-			const declaration = this.service.declarationOf(edge.symbol.symbolId);
+			const declaration = await this.service.declarationOf(edge.symbol.symbolId);
 			if (declaration === null) continue;
 			const item = this.hierarchyItem(declaration);
 			entries.push(
@@ -325,17 +333,17 @@ export class LspServer {
 		};
 	}
 
-	private locationOfSymbol(symbolId: string): Location | null {
-		const declaration = this.service.declarationOf(symbolId);
+	private async locationOfSymbol(symbolId: string): Promise<Location | null> {
+		const declaration = await this.service.declarationOf(symbolId);
 		return declaration === null ? null : locationOf(this.workspaceRoot, declaration);
 	}
 
 	/** textDocument/documentSymbol, nested by container so an outline reads as the file's shape. */
-	documentSymbol(uri: string): DocumentSymbol[] {
+	async documentSymbol(uri: string): Promise<DocumentSymbol[]> {
 		const module = toModule(this.workspaceRoot, uri);
 		if (module === null) return [];
 
-		const declarations = this.service.declarationsIn(module);
+		const declarations = await this.service.declarationsIn(module);
 		const nodes = new Map<string, DocumentSymbol>();
 		for (const declaration of declarations) {
 			nodes.set(declaration.symbolId, {
@@ -370,7 +378,7 @@ export class LspServer {
 	 * a refusal, which is exactly the check the MCP side makes.
 	 */
 	async prepareRename(uri: string, position: Position): Promise<{ range: Range; placeholder: string } | null> {
-		const found = this.symbolAt(uri, position);
+		const found = await this.symbolAt(uri, position);
 		if (found === null) return null;
 
 		const plan = await this.service.prepareRename(found.symbolId, `${found.name}_`);
@@ -378,18 +386,36 @@ export class LspServer {
 	}
 
 	/**
-	 * textDocument/rename, refused while this adapter owns a private index.
+	 * textDocument/rename. The edits, for the EDITOR to apply.
 	 *
-	 * Renaming writes files. This process holds its own in-memory index and its own provider set,
-	 * so its writes are invisible to the daemon's workspace gate and to any refactor transaction
-	 * open there: it could rewrite a file mid-step, and the journal would restore text that had
-	 * been overwritten by an editor nobody told it about.
+	 * Nothing is written here, which is what LSP asks for and also what makes this safe: the editor
+	 * owns its buffers, and a server writing underneath open ones is how a rename comes back as
+	 * unsaved-changes conflicts.
 	 *
-	 * Refusing is the honest answer until this adapter answers from the daemon, at which point the
-	 * rename becomes one transaction like any other. `prepareRename` stays, since reading what a
-	 * rename WOULD touch is safe and is what the editor greys the menu item on.
+	 * Refused while a refactor transaction is open. That transaction holds journaled images of the
+	 * files it touched, and its undo restores them; a rename lexicon handed the editor in the middle
+	 * would be written outside the journal and then silently reverted by it. Null is the LSP way to
+	 * say the rename cannot be offered, and the editor reports it rather than writing nothing.
 	 */
-	async rename(): Promise<{ changes: Record<string, Array<{ range: Range; newText: string }>> } | null> {
-		return null;
+	async rename(
+		uri: string,
+		position: Position,
+		newName: string,
+	): Promise<{ changes: Record<string, Array<{ range: Range; newText: string }>> } | null> {
+		const found = await this.symbolAt(uri, position);
+		if (found === null) return null;
+		if (await this.service.transactionOpen()) return null;
+
+		const planned = await this.service.renameEdits(found.symbolId, newName);
+		if (!planned.ok) return null;
+
+		const changes: Record<string, Array<{ range: Range; newText: string }>> = {};
+		for (const file of planned.files) {
+			changes[toUri(this.workspaceRoot, file.module)] = file.edits.map((edit) => ({
+				range: edit.range,
+				newText: edit.newText,
+			}));
+		}
+		return { changes };
 	}
 }

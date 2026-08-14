@@ -9,6 +9,7 @@ import type { DaemonLock, LockDecision } from "./lockFile.js";
 import { decideFromLock } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { requestOnce } from "./socketTransport.js";
+import { BUILD_VERSION } from "./version.js";
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -38,6 +39,7 @@ export function findDaemon(workspaceRoot: string, host: PlatformEnv = currentHos
 		raw,
 		isAlive: processIsAlive,
 		ourProtocolVersion: PROTOCOL_VERSION,
+		ourBuildVersion: BUILD_VERSION,
 		workspaceRoot,
 	});
 }

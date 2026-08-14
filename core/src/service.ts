@@ -381,6 +381,11 @@ export type RenameOutcome =
 	| { renamed: true; plan: RenamePlan; modules: string[] }
 	| { renamed: false; plan: RenamePlan; reason: string };
 
+/** A rename worked out but not applied, for a caller that will apply it itself. */
+export type RenameEditPlan =
+	| { ok: true; plan: RenamePlan; files: FileEdits[] }
+	| { ok: false; plan: RenamePlan; reason: string };
+
 ////////////////////////////////
 //  Constants
 
@@ -2757,23 +2762,28 @@ export class LexiconService {
 	}
 
 	/**
-	 * Perform a rename, or explain why it did not happen. Nothing is written unless all of it can be.
+	 * What a rename WOULD write, without writing it.
+	 *
+	 * Separated from `renameSymbol` because two callers need the edits and only one of them applies
+	 * them: an editor asks for a WorkspaceEdit and applies it itself. Computing them twice, once here
+	 * and once in a copy that skips the write, is how the two would come to disagree about which
+	 * occurrences a rename touches.
 	 *
 	 * The plan's blockers stop it before a provider is asked anything. Then every file's edits are
-	 * gathered, and a single blocked site anywhere aborts the whole operation: a blocked site means
+	 * gathered, and a single blocked site anywhere fails the whole operation: a blocked site means
 	 * an occurrence that SHOULD change and cannot, so applying the rest would leave the codebase in
 	 * a state that no longer builds, which is worse than not starting.
 	 */
-	async renameSymbol(symbolId: string, newName: string): Promise<RenameOutcome> {
+	async renameEdits(symbolId: string, newName: string): Promise<RenameEditPlan> {
 		const plan = await this.prepareRename(symbolId, newName);
-		if (plan.blockers.length > 0) return { renamed: false, plan, reason: plan.blockers[0]?.detail ?? "blocked" };
+		if (plan.blockers.length > 0) return { ok: false, plan, reason: plan.blockers[0]?.detail ?? "blocked" };
 
 		const files: FileEdits[] = [];
 		const blocked: RenameConcern[] = [];
 
 		for (const file of plan.files) {
 			const text = this.readFile(file.module);
-			if (text === null) return { renamed: false, plan, reason: `${file.module} could not be read` };
+			if (text === null) return { ok: false, plan, reason: `${file.module} could not be read` };
 
 			const answer = await this.supervisor.ask(file.module, "renameEdits", {
 				module: file.module,
@@ -2785,7 +2795,7 @@ export class LexiconService {
 			});
 
 			if (answer.status === "refused") {
-				return { renamed: false, plan, reason: `${file.module}: ${answer.reason}${detailOf(answer.detail)}` };
+				return { ok: false, plan, reason: `${file.module}: ${answer.reason}${detailOf(answer.detail)}` };
 			}
 			for (const site of answer.blocked) {
 				blocked.push({
@@ -2799,11 +2809,21 @@ export class LexiconService {
 
 		if (blocked.length > 0) {
 			return {
-				renamed: false,
+				ok: false,
 				plan: { ...plan, blockers: blocked },
 				reason: "some occurrences cannot be rewritten",
 			};
 		}
+		return { ok: true, plan, files };
+	}
+
+	/**
+	 * Perform a rename, or explain why it did not happen. Nothing is written unless all of it can be.
+	 */
+	async renameSymbol(symbolId: string, newName: string): Promise<RenameOutcome> {
+		const planned = await this.renameEdits(symbolId, newName);
+		if (!planned.ok) return { renamed: false, plan: planned.plan, reason: planned.reason };
+		const { plan, files } = planned;
 
 		const written = writeAll(this.workspaceRoot, files, this.readFile);
 		if (!written.applied) {

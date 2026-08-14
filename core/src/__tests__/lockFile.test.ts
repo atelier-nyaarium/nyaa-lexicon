@@ -9,16 +9,20 @@ const LOCK: DaemonLock = {
 	token: "t".repeat(32),
 	pid: 4242,
 	protocolVersion: "0.2.0",
+	buildVersion: "1.10.2",
 	workspaceRoot: "/home/me/proj",
 	startedAt: 1,
 };
 
-function decide(overrides: { lock?: Partial<DaemonLock> | null; alive?: boolean; ours?: string } = {}) {
+function decide(
+	overrides: { lock?: Partial<DaemonLock> | null; alive?: boolean; ours?: string; ourBuild?: string } = {},
+) {
 	const raw = overrides.lock === null ? null : JSON.stringify({ ...LOCK, ...overrides.lock });
 	return decideFromLock({
 		raw,
 		isAlive: () => overrides.alive ?? true,
 		ourProtocolVersion: overrides.ours ?? "0.2.0",
+		ourBuildVersion: overrides.ourBuild ?? "1.10.2",
 		workspaceRoot: "/home/me/proj",
 	});
 }
@@ -58,6 +62,30 @@ describe("finding a daemon", () => {
 	});
 });
 
+// A real incident, not a hypothetical: a 1.9.0 daemon kept serving this workspace after the
+// checkout moved to 1.10.2, and every call to a method added in between answered `unknown method`.
+describe("the build version is exact, because the method table is not negotiable", () => {
+	it("replaces a daemon from another build even at the same protocol major", () => {
+		const decision = decide({ lock: { buildVersion: "1.9.0" } });
+		expect(decision.action).toBe("replace");
+		expect(decision.action === "replace" && decision.reason).toMatch(/1\.9\.0/);
+	});
+
+	it("replaces on a PATCH difference, since a patch can still add a method", () => {
+		expect(decide({ lock: { buildVersion: "1.10.1" } })).toMatchObject({ action: "replace" });
+	});
+
+	it("replaces a lock too old to name its build rather than hoping it is current", () => {
+		const decision = decide({ lock: { buildVersion: undefined } });
+		expect(decision.action).toBe("replace");
+		expect(decision.action === "replace" && decision.reason).toMatch(/too old/);
+	});
+
+	it("still connects when the builds match", () => {
+		expect(decide({ lock: { buildVersion: "1.10.2" }, ourBuild: "1.10.2" })).toMatchObject({ action: "connect" });
+	});
+});
+
 describe("an unusable lock file is spawn, never a guess", () => {
 	it("spawns on unreadable JSON", () => {
 		expect(
@@ -65,6 +93,7 @@ describe("an unusable lock file is spawn, never a guess", () => {
 				raw: "{ not json",
 				isAlive: () => true,
 				ourProtocolVersion: "0.2.0",
+				ourBuildVersion: "1.10.2",
 				workspaceRoot: "/home/me/proj",
 			}),
 		).toMatchObject({ action: "spawn" });
@@ -80,6 +109,7 @@ describe("an unusable lock file is spawn, never a guess", () => {
 			raw: JSON.stringify({ ...LOCK, token: undefined }),
 			isAlive: () => true,
 			ourProtocolVersion: "0.2.0",
+			ourBuildVersion: "1.10.2",
 			workspaceRoot: "/home/me/proj",
 		});
 		expect(decision).toMatchObject({ action: "spawn" });

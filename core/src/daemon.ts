@@ -14,6 +14,7 @@ import { processIsAlive } from "./client.js";
 import { type DaemonLock, DaemonLockSchema } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { DaemonStartingError, type FrameServer, serveFrames } from "./socketTransport.js";
+import { BUILD_VERSION } from "./version.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -151,6 +152,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		token,
 		pid: process.pid,
 		protocolVersion: PROTOCOL_VERSION,
+		buildVersion: BUILD_VERSION,
 		workspaceRoot: options.workspaceRoot,
 		startedAt: Date.now(),
 	});

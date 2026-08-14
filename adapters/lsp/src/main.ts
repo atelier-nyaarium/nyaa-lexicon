@@ -7,7 +7,16 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { IndexStore, LexiconService, ProviderSupervisor, startProviders } from "@nyaa-lexicon/core";
+import {
+	type DaemonChannel,
+	daemonChannel,
+	ensureDaemon,
+	IndexStore,
+	LexiconService,
+	ProviderSupervisor,
+	startProviders,
+} from "@nyaa-lexicon/core";
+import { daemonReads, deferredReads, type LexiconReads, localReads } from "./reads.js";
 import { LspServer, pathFromUri } from "./server.js";
 import { createReader, encode, type Message } from "./transport.js";
 
@@ -37,10 +46,15 @@ const CAPABILITIES = {
 
 /** Everything that cannot exist until the editor has named a workspace. */
 interface Served {
+	lsp: LspServer;
+	/** Releases whatever the answer source turned out to need: a socket, or a provider set. */
+	close(): void;
+}
+
+/** An index in this process. Held so `exit` can shut its providers down. */
+interface LocalIndex {
 	store: IndexStore;
 	supervisor: ProviderSupervisor;
-	service: LexiconService;
-	lsp: LspServer;
 }
 
 ////////////////////////////////
@@ -54,9 +68,17 @@ function rootFrom(params: unknown): string | null {
 	return typeof uri === "string" ? pathFromUri(uri) : null;
 }
 
-function serve(workspaceRoot: string): Served {
+/**
+ * The fallback index, built and scanned in this process.
+ *
+ * Only reached when no daemon can be started, which in practice means a checkout with no built
+ * bundle. It answers correctly and shares nothing, which is the trade being made knowingly.
+ */
+async function buildLocal(workspaceRoot: string, hold: (index: LocalIndex) => void): Promise<LexiconReads> {
 	const { store } = IndexStore.open(":memory:");
 	const supervisor = new ProviderSupervisor();
+	hold({ store, supervisor });
+
 	const service = new LexiconService(
 		store,
 		supervisor,
@@ -69,7 +91,52 @@ function serve(workspaceRoot: string): Served {
 		},
 		workspaceRoot,
 	);
-	return { store, supervisor, service, lsp: new LspServer(service, workspaceRoot) };
+
+	await startProviders(supervisor, workspaceRoot);
+	const outcomes = await service.indexWorkspace();
+	const indexed = outcomes.filter((outcome) => outcome.action === "indexed").length;
+	process.stderr.write(`indexed ${indexed} files in this process\n`);
+	return localReads(service);
+}
+
+/**
+ * Answers for one workspace, preferring the daemon.
+ *
+ * The daemon is preferred for two reasons that both bite hardest here. An editor and the agents
+ * working beside it must read ONE index or they will disagree about the same repository. And the
+ * daemon's linger counts connected clients, so an editor answering from a private index is invisible
+ * to it: the daemon can shut down under someone who is actively editing.
+ *
+ * Which source it will be is not decided now. `initialize` must be answered immediately, and
+ * deciding may mean spawning a daemon and waiting for its lock, so the choice is deferred to the
+ * first request that needs an answer.
+ */
+function serve(workspaceRoot: string): Served {
+	let channel: DaemonChannel | null = null;
+	let local: LocalIndex | null = null;
+
+	const reads = deferredReads(async () => {
+		const daemon = await ensureDaemon({ workspaceRoot });
+		if (daemon.connected) {
+			process.stderr.write(`answering from the daemon on port ${daemon.lock.port}\n`);
+			channel = daemonChannel(workspaceRoot);
+			return daemonReads(channel);
+		}
+
+		process.stderr.write(`no daemon (${daemon.reason}); indexing in this process instead\n`);
+		return buildLocal(workspaceRoot, (index) => {
+			local = index;
+		});
+	});
+
+	return {
+		lsp: new LspServer(reads, workspaceRoot),
+		close(): void {
+			channel?.close();
+			local?.supervisor.stopAll();
+			local?.store.close();
+		},
+	};
 }
 
 ////////////////////////////////
@@ -110,18 +177,10 @@ async function main(): Promise<void> {
 				return;
 			}
 
+			// Answered before anything is connected or scanned, so an editor is never held waiting on a
+			// workspace before it can show anything at all.
 			served = serve(workspaceRoot);
-			const { supervisor, service } = served;
 			reply(message.id, { capabilities: CAPABILITIES, serverInfo: { name: "nyaa-lexicon" } });
-			// Indexing starts AFTER the handshake is answered, so an editor is never held waiting on a
-			// workspace scan before it can show anything at all.
-			void startProviders(supervisor, workspaceRoot)
-				.then(() => service.indexWorkspace())
-				.then((outcomes) => {
-					const indexed = outcomes.filter((outcome) => outcome.action === "indexed").length;
-					process.stderr.write(`indexed ${indexed} files\n`);
-				})
-				.catch((error) => process.stderr.write(`indexing failed: ${error}\n`));
 			return;
 		}
 
@@ -133,8 +192,7 @@ async function main(): Promise<void> {
 		}
 
 		if (message.method === "exit") {
-			served?.supervisor.stopAll();
-			served?.store.close();
+			served?.close();
 			process.exit(0);
 		}
 
@@ -158,15 +216,15 @@ async function main(): Promise<void> {
 				return;
 
 			case "textDocument/definition":
-				reply(message.id, lsp.definition(uri, position));
+				reply(message.id, await lsp.definition(uri, position));
 				return;
 
 			case "textDocument/references":
-				reply(message.id, lsp.references(uri, position, params.context?.includeDeclaration ?? true));
+				reply(message.id, await lsp.references(uri, position, params.context?.includeDeclaration ?? true));
 				return;
 
 			case "textDocument/documentSymbol":
-				reply(message.id, lsp.documentSymbol(uri));
+				reply(message.id, await lsp.documentSymbol(uri));
 				return;
 
 			case "textDocument/typeDefinition":
@@ -174,33 +232,33 @@ async function main(): Promise<void> {
 				return;
 
 			case "textDocument/implementation":
-				reply(message.id, lsp.implementation(uri, position));
+				reply(message.id, await lsp.implementation(uri, position));
 				return;
 
 			// Prepare returns the item an editor then expands. Ours is the symbol under the cursor, and
 			// the two expansions below read the same heritage rows in opposite directions.
 			case "textDocument/prepareTypeHierarchy":
-				reply(message.id, lsp.prepareTypeHierarchy(uri, position));
+				reply(message.id, await lsp.prepareTypeHierarchy(uri, position));
 				return;
 
 			case "typeHierarchy/supertypes":
-				reply(message.id, lsp.typeHierarchyStep(message.params, "supertypes"));
+				reply(message.id, await lsp.typeHierarchyStep(message.params, "supertypes"));
 				return;
 
 			case "typeHierarchy/subtypes":
-				reply(message.id, lsp.typeHierarchyStep(message.params, "subtypes"));
+				reply(message.id, await lsp.typeHierarchyStep(message.params, "subtypes"));
 				return;
 
 			case "textDocument/prepareCallHierarchy":
-				reply(message.id, lsp.prepareCallHierarchy(uri, position));
+				reply(message.id, await lsp.prepareCallHierarchy(uri, position));
 				return;
 
 			case "callHierarchy/incomingCalls":
-				reply(message.id, lsp.callHierarchyStep(message.params, "incoming"));
+				reply(message.id, await lsp.callHierarchyStep(message.params, "incoming"));
 				return;
 
 			case "callHierarchy/outgoingCalls":
-				reply(message.id, lsp.callHierarchyStep(message.params, "outgoing"));
+				reply(message.id, await lsp.callHierarchyStep(message.params, "outgoing"));
 				return;
 
 			case "textDocument/prepareRename":
@@ -208,7 +266,7 @@ async function main(): Promise<void> {
 				return;
 
 			case "textDocument/rename":
-				reply(message.id, await lsp.rename());
+				reply(message.id, await lsp.rename(uri, position, params.newName ?? ""));
 				return;
 
 			default:

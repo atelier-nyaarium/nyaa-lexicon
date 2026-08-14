@@ -132,22 +132,47 @@ def utf16_length(value):
 
 
 def codepoint_index(value, utf16_column):
+    if utf16_column < 0:
+        return None
     used = 0
     for index, character in enumerate(value):
-        if used >= utf16_column:
+        if used == utf16_column:
             return index
-        used += 2 if ord(character) > 0xFFFF else 1
-    return len(value)
+        width = 2 if ord(character) > 0xFFFF else 1
+        if utf16_column < used + width:
+            return None
+        used += width
+    return len(value) if used == utf16_column else None
 
 
 def text_for_range(text, value):
     lines = text.splitlines(keepends=True)
+    if not lines:
+        lines = [""]
+    elif text.endswith("\n"):
+        lines.append("")
     start = value["start"]
     end = value["end"]
-    if start["line"] < 0 or end["line"] >= len(lines):
-        return ""
-    start_character = codepoint_index(lines[start["line"]], start["character"])
-    end_character = codepoint_index(lines[end["line"]], end["character"])
+    if (
+        start["line"] < 0
+        or end["line"] < 0
+        or start["line"] >= len(lines)
+        or end["line"] >= len(lines)
+        or compare_position(start, end) > 0
+    ):
+        return None
+
+    def content(line):
+        if line.endswith("\r\n"):
+            return line[:-2]
+        if line.endswith("\n") or line.endswith("\r"):
+            return line[:-1]
+        return line
+
+    start_character = codepoint_index(content(lines[start["line"]]), start["character"])
+    end_character = codepoint_index(content(lines[end["line"]]), end["character"])
+    if start_character is None or end_character is None:
+        return None
     if start["line"] == end["line"]:
         return lines[start["line"]][start_character:end_character]
     parts = [lines[start["line"]][start_character:]]
@@ -1998,7 +2023,8 @@ def candidate_matches(candidate, site_range, text, old_name):
     if candidate["kind"] in {"allString", "stringAnnotation", "stringLiteral"}:
         if not range_contains(candidate_range, site_range) and not ranges_equal(candidate_range, site_range):
             return False
-        return candidate["name"] == old_name or old_name in text_for_range(text, site_range)
+        site_text = text_for_range(text, site_range)
+        return site_text is not None and (candidate["name"] == old_name or old_name in site_text)
     return candidate["name"] == old_name and (
         ranges_equal(candidate_range, site_range) or range_contains(site_range, candidate_range)
     )
@@ -2137,7 +2163,15 @@ def rename_edits(module, text, old_name, new_name, sites, owner_calls=None):
     blocked_by_site = {}
     for index, (site, matches) in enumerate(matched_sites):
         if len(matches) == 0:
-            if text_for_range(text, site["range"]) == new_name:
+            site_text = text_for_range(text, site["range"])
+            if site_text is None:
+                blocked_by_site[index] = blocked_site(
+                    site,
+                    "ParseError",
+                    "the supplied range does not address text",
+                )
+                continue
+            if site_text == new_name:
                 continue
             blocked_by_site[index] = blocked_site(
                 site,

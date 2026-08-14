@@ -18,6 +18,13 @@ export const DaemonLockSchema = z
 		pid: z.number().int().positive(),
 		/** Protocol version the daemon speaks, so a client on a different major replaces it. */
 		protocolVersion: z.string().min(1),
+		/**
+		 * The BUILD the daemon runs, which decides its method table.
+		 *
+		 * Optional only so a lock written before this field existed still parses; absent is read as a
+		 * mismatch, which is the truth about any daemon old enough not to stamp it.
+		 */
+		buildVersion: z.string().min(1).optional(),
 		workspaceRoot: z.string().min(1),
 		startedAt: z.number().int().nonnegative(),
 	})
@@ -45,6 +52,8 @@ export interface LockContext {
 	/** Whether that pid is alive. Injected, since asking is a syscall and this stays pure. */
 	isAlive: (pid: number) => boolean;
 	ourProtocolVersion: string;
+	/** This build's version. A daemon on another build has another method table. */
+	ourBuildVersion: string;
 	workspaceRoot: string;
 }
 
@@ -88,6 +97,18 @@ export function decideFromLock(context: LockContext): LockDecision {
 			action: "replace",
 			lock,
 			reason: `the daemon speaks ${lock.protocolVersion}, we speak ${context.ourProtocolVersion}`,
+		};
+	}
+
+	// EXACT, not same-major. The contract between a client and a daemon is the method table, and any
+	// release can add to it; a client built after the daemon asks for methods it does not have and
+	// gets `unknown method` for a tool that shipped. Measured against a 1.9.0 daemon still serving
+	// this workspace after the checkout moved to 1.10.2.
+	if (lock.buildVersion !== context.ourBuildVersion) {
+		return {
+			action: "replace",
+			lock,
+			reason: `the daemon runs ${lock.buildVersion ?? "a build too old to say"}, we run ${context.ourBuildVersion}`,
 		};
 	}
 

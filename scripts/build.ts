@@ -110,6 +110,11 @@ const DERIVED_SITES: DerivedSite[] = [
 		needle: "version: packageJson.version",
 		what: "the MCP server's declared version",
 	},
+	{
+		file: path.join("core", "src", "version.ts"),
+		needle: "packageJson.version",
+		what: "the build version a daemon stamps into its lock",
+	},
 ];
 
 ////////////////////////////////

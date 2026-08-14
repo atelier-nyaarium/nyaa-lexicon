@@ -6,11 +6,8 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-	ConnectionLostError,
-	connectFrames,
 	createSessionBinds,
-	ensureDaemon,
-	type FrameClient,
+	daemonChannel,
 	IndexStore,
 	LexiconService,
 	ProviderSupervisor,
@@ -68,28 +65,12 @@ export const SERVER_INFO = { name: "nyaa-lexicon", version: packageJson.version 
  * A backend that forwards every question to the daemon over one persistent connection.
  *
  * The open connection IS this session's presence: the daemon counts it, and its close is what
- * eventually arms the daemon's shutdown. A dropped connection is re-established through
- * ensureDaemon, which spawns a fresh daemon if the old one is gone.
+ * eventually arms the daemon's shutdown. Holding it open, and getting it back when it drops, is
+ * `daemonChannel`'s job rather than this file's, since the editor adapter needs the same rule and
+ * two copies of a retry rule is how two surfaces come to disagree about when a daemon is gone.
  */
 export function daemonBackend(workspaceRoot: string): ToolBackend {
-	let client: FrameClient | null = null;
-
-	async function ask<T>(method: string, params: unknown): Promise<T> {
-		for (let attempt = 0; attempt < 2; attempt++) {
-			if (client === null || client.closed) {
-				const daemon = await ensureDaemon({ workspaceRoot });
-				if (!daemon.connected) throw new Error(`no indexer for ${workspaceRoot}: ${daemon.reason}`);
-				client = await connectFrames(daemon.lock.port, daemon.lock.token);
-			}
-			try {
-				return (await client.request(method, params)) as T;
-			} catch (error) {
-				if (!(error instanceof ConnectionLostError)) throw error;
-				client = null;
-			}
-		}
-		throw new Error(`the daemon for ${workspaceRoot} dropped the connection twice; giving up`);
-	}
+	const { ask } = daemonChannel(workspaceRoot);
 
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),

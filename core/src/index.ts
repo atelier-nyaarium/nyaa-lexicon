@@ -1,5 +1,8 @@
 // The core's public surface. Adapters take named symbols from here, never from the domain files.
 
+// Re-exported because it names the answer of a core method. An adapter must not have to depend on
+// the protocol package to spell the return type of something core hands it.
+export type { TypeInfo } from "@nyaa-lexicon/protocol";
 export {
 	type Answer,
 	type Doubt,
@@ -13,6 +16,7 @@ export {
 export { type ApplyOutcome, type FileEdits, writeAll } from "./applyEdits.js";
 export { callDaemon, findDaemon, processIsAlive } from "./client.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
+export { type DaemonChannel, daemonChannel } from "./daemonChannel.js";
 export { createDispatch } from "./dispatch.js";
 export { daemonCommand, type EnsureResult, ensureDaemon } from "./ensureDaemon.js";
 export {
@@ -104,6 +108,7 @@ export {
 	type LiteralsResult,
 	type ReferencesResult,
 	type RenameConcern,
+	type RenameEditPlan,
 	type RenameFile,
 	type RenameOutcome,
 	type RenamePlan,

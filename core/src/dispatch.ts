@@ -363,6 +363,16 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "describe":
 				return service.describe(BySymbol.parse(params).symbolId);
+			// The four below exist for the editor, which asks by position rather than by name and so
+			// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.
+			case "declarationOf":
+				return service.declarationOf(BySymbol.parse(params).symbolId);
+			case "declarationsIn":
+				return service.declarationsIn(ByModule.parse(params).module);
+			case "typeHierarchy":
+				return service.typeHierarchy(BySymbol.parse(params).symbolId);
+			case "callHierarchy":
+				return service.callHierarchy(BySymbol.parse(params).symbolId);
 			case "findReferences": {
 				const args = References.parse(params);
 				return service.findReferences(args.symbolId, args.limit);
@@ -451,6 +461,12 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			case "prepareRename": {
 				const args = Rename.parse(params);
 				return read(() => service.prepareRename(args.symbolId, args.newName));
+			}
+			// The edits a rename would make, for a caller that applies them itself. Nothing is written
+			// here, so it takes the shared lock like any other read.
+			case "renameEdits": {
+				const args = Rename.parse(params);
+				return read(() => service.renameEdits(args.symbolId, args.newName));
 			}
 			case "indexFile": {
 				const args = IndexFile.parse(params);
