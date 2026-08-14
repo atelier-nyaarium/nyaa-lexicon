@@ -7,7 +7,12 @@ import {
 	type TypeInfo,
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
-import { extractDeclarationsCore, extractTypeAnnotationsCore, type TypeAnnotationFact } from "./extractCore.js";
+import {
+	extractDeclarationsCore,
+	extractTypeAnnotationsCore,
+	headerEndLine,
+	type TypeAnnotationFact,
+} from "./extractCore.js";
 
 //////// Types
 
@@ -653,13 +658,14 @@ function functionFacts(lines: InferenceLine[], declarations: Declaration[]): Map
 		if (declaration.kind !== "method") continue;
 		const header = lines[declaration.range.start.line] as InferenceLine | undefined;
 		if (header === undefined) continue;
-		const bodyStart = declaration.range.end.line + 1;
+		const headerEnd = headerEndLine(lines, declaration);
+		const bodyStart = headerEnd + 1;
 		facts.set(declaration.name, {
 			declaration,
 			headerIndent: header.indent,
 			bodyStart,
 			bodyEnd: blockEnd(lines, bodyStart, header.indent, lines.length),
-			inlineBody: functionHeaderInlineBody(lines[declaration.range.end.line] as InferenceLine),
+			inlineBody: functionHeaderInlineBody(lines[headerEnd] as InferenceLine),
 		});
 	}
 	return facts;
@@ -694,12 +700,13 @@ function parameterEnvironment(
 	resolver: TypeResolver,
 ): Map<string, EvalResult> {
 	const environment = new Map<string, EvalResult>();
+	const headerEnd = headerEndLine(lines, functionFact.declaration);
 	for (const annotation of annotations) {
 		const isReturnAnnotation = annotation.symbolId === functionFact.declaration.symbolId;
 		const isParameterAnnotation =
 			annotation.symbolId !== functionFact.declaration.symbolId &&
 			annotation.targetRange.start.line >= functionFact.declaration.range.start.line &&
-			annotation.targetRange.start.line <= functionFact.declaration.range.end.line;
+			annotation.targetRange.start.line <= headerEnd;
 		if (!isReturnAnnotation && !isParameterAnnotation) continue;
 		if (isReturnAnnotation) continue;
 		const line = lines[annotation.targetRange.start.line] as InferenceLine | undefined;

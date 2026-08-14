@@ -68,16 +68,6 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 	if (request.role.removal !== undefined) {
 		if (offsetsForRange(request.text, request.role.removal) === undefined) {
 			blocked.push(blockedSite(request.role.removal, "ParseError", "the removal range is outside the module"));
-		} else if (ownsUnrangedBody(request.text, request.role.removal)) {
-			// A GDScript declaration range stops at the header, so removing it would relocate
-			// `func add() -> int:` and leave `return a + b` behind. Refuse rather than emit that.
-			blocked.push(
-				blockedSite(
-					request.role.removal,
-					"NotImplemented",
-					"moving a declaration out of its block body is not implemented for GDScript",
-				),
-			);
 		} else {
 			edits.push({ range: request.role.removal, newText: "" });
 		}
@@ -316,35 +306,6 @@ function validateEdits(text: string, edits: TextEdit[], blocked: MoveBlockedSite
 		previousEnd = Math.max(previousEnd, item.end);
 	}
 	return { status: "ready", edits: safe, blocked };
-}
-
-/**
- * True when the range ends on a block header whose indented body sits outside it.
- *
- * The whole-script root class covers its file and passes; a `func` or inner `class` does not,
- * and taking only its header would split a declaration across two files.
- */
-function ownsUnrangedBody(text: string, range: Range): boolean {
-	const lines = text.split("\n");
-	const header = lines[range.end.line];
-	if (header === undefined || !stripComment(header).trimEnd().endsWith(":")) return false;
-
-	const headerIndent = indentWidth(lines[range.start.line] ?? "");
-	for (let index = range.end.line + 1; index < lines.length; index++) {
-		const line = lines[index] as string;
-		if (line.trim() === "") continue;
-		return indentWidth(line) > headerIndent;
-	}
-	return false;
-}
-
-function stripComment(line: string): string {
-	const hash = line.indexOf("#");
-	return hash < 0 ? line : line.slice(0, hash);
-}
-
-function indentWidth(line: string): number {
-	return (line.match(/^[ \t]*/)?.[0] ?? "").length;
 }
 
 function offsetsForRange(text: string, range: Range): OffsetRange | undefined {

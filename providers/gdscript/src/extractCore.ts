@@ -550,6 +550,13 @@ function rangeOfLines(start: SourceLine, end: SourceLine): Range {
 	};
 }
 
+export function headerEndLine(lines: readonly { code: string }[], declaration: Pick<DeclarationFact, "range">): number {
+	for (let line = declaration.range.start.line; line < lines.length; line++) {
+		if ((lines[line]?.code ?? "").trimEnd().endsWith(":")) return line;
+	}
+	return declaration.range.end.line;
+}
+
 function selectionRangeOf(line: SourceLine, token: Token): Range {
 	return {
 		start: { line: line.line, character: token.start },
@@ -1342,24 +1349,38 @@ function extractGdscript(module: string, text: string, compose: ComposeSymbolId)
 		}
 	}
 
-	return declarations;
+	return declarations.map((declaration) => {
+		if (declaration.kind !== "method" && declaration.languageKind !== "innerClass") return declaration;
+		const start = lines[declaration.range.start.line] as SourceLine | undefined;
+		const end = lines[bodyEndLine(lines, declaration) - 1] as SourceLine | undefined;
+		return start === undefined || end === undefined
+			? declaration
+			: { ...declaration, range: rangeOfLines(start, end) };
+	});
 }
 
 function bodyEndLine(lines: SourceLine[], declaration: DeclarationFact): number {
 	const header = lines[declaration.range.start.line] as SourceLine | undefined;
 	if (header === undefined) return declaration.range.end.line + 1;
 	const headerIndent = indentOf(header.text);
-	let end = declaration.range.end.line + 1;
-	for (; end < lines.length; end++) {
-		const line = lines[end] as SourceLine;
-		if (!isIgnorable(line) && indentOf(line.text) <= headerIndent) break;
+	const headerEnd = headerEndLine(lines, declaration);
+	let last = headerEnd;
+	for (let index = headerEnd + 1; index < lines.length; index++) {
+		const line = lines[index] as SourceLine;
+		const indent = indentOf(line.text);
+		if (isIgnorable(line)) {
+			if (line.text.trim() !== "" && indent > headerIndent) last = index;
+			continue;
+		}
+		if (indent <= headerIndent) break;
+		last = index;
 	}
-	return end;
+	return last + 1;
 }
 
 function functionParameterCount(lines: SourceLine[], declaration: DeclarationFact): number {
 	const code = lines
-		.slice(declaration.range.start.line, declaration.range.end.line + 1)
+		.slice(declaration.range.start.line, headerEndLine(lines, declaration) + 1)
 		.map((line) => line.code)
 		.join("\n");
 	const open = code.indexOf("(");
@@ -1472,11 +1493,12 @@ function metricsForDeclaration(lines: SourceLine[], declaration: DeclarationFact
 		lines: declaration.range.end.line - declaration.range.start.line + 1,
 	};
 	if (declaration.kind !== "method") return metrics;
+	const headerEnd = headerEndLine(lines, declaration);
 	const end = bodyEndLine(lines, declaration);
-	const lastBodyLine = Math.max(declaration.range.end.line, end - 1);
+	const lastBodyLine = Math.max(headerEnd, end - 1);
 	metrics.lines = lastBodyLine - declaration.range.start.line + 1;
 	metrics.parameters = functionParameterCount(lines, declaration);
-	const bodyStart = declaration.range.end.line + 1;
+	const bodyStart = headerEnd + 1;
 	if (bodyStart < end && lines.slice(bodyStart, end).some(meaningfulLine)) {
 		Object.assign(metrics, bodyMetrics(lines, bodyStart, end));
 	}
@@ -1914,7 +1936,7 @@ function referenceBlocks(lines: SourceLine[], declarations: DeclarationFact[]): 
 		const indent = indentOf(line.text);
 		blocks.push({
 			startLine: declaration.range.start.line,
-			endLine: referenceBlockEnd(lines, declaration.range.end.line, indent),
+			endLine: referenceBlockEnd(lines, headerEndLine(lines, declaration), indent),
 			indent,
 			containerId: declaration.symbolId,
 			...(declaration.kind === "method" ? { functionId: declaration.symbolId } : {}),
@@ -2400,7 +2422,7 @@ export function extractTypeAnnotationsCore(
 		);
 		for (let index = close + 1; index <= tokens.length; index++) {
 			const token = tokens[index] as ReferenceToken | undefined;
-			if (token === undefined || token.line > declaration.range.end.line) break;
+			if (token === undefined || token.line > headerEndLine(lines, declaration)) break;
 			if (token.value !== "->") continue;
 			const typeEnd = typeExpressionEnd(tokens, index + 1, new Set([":"]));
 			const fact = typeFact(tokens, lines, index + 1, typeEnd, referenceRange(name), declaration.symbolId);

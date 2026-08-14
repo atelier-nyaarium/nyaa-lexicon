@@ -47,6 +47,47 @@ test("extracts the GDScript declaration forms used by the project", () => {
 	expect(declarations.every((declaration) => declaration.exported === undefined)).toBe(true);
 });
 
+test("extends block declaration ranges through their owned bodies", () => {
+	const text = `func add(a, b):
+	var sum := a + b
+	return sum
+
+class Inner:
+	var value := 1
+	func get_value():
+		return value
+
+var after := 0
+`;
+	const declarations = extractDeclarationsCore("scripts/ranges.gd", text, composeSymbolId);
+	const add = declarations.find((declaration) => declaration.name === "add");
+	const inner = declarations.find((declaration) => declaration.name === "Inner");
+
+	expect(add?.range).toEqual({
+		start: { line: 0, character: 0 },
+		end: { line: 2, character: "\treturn sum".length },
+	});
+	expect(inner?.range).toEqual({
+		start: { line: 4, character: 0 },
+		end: { line: 7, character: "\t\treturn value".length },
+	});
+});
+
+test("uses a method range for complete symbol source", () => {
+	const text = `func add(a, b):
+	return a + b
+`;
+	const declarations = extractDeclarationsCore("scripts/source.gd", text, composeSymbolId);
+	const method = declarations.find((declaration) => declaration.name === "add");
+	if (method === undefined) throw new Error("method declaration missing");
+
+	const source = text
+		.split("\n")
+		.slice(method.range.start.line, method.range.end.line + 1)
+		.join("\n");
+	expect(source).toBe("func add(a, b):\n\treturn a + b");
+});
+
 test("attaches consecutive GDScript documentation comments to declarations", () => {
 	const declarations = extractDeclarationsCore(
 		"scripts/docs.gd",
@@ -144,7 +185,7 @@ var after := 1
 	const solve = declarations.find((declaration) => declaration.name === "solve");
 	const local = declarations.find((declaration) => declaration.name === "local");
 
-	expect(solve?.range.end).toEqual({ line: 3, character: 9 });
+	expect(solve?.range.end).toEqual({ line: 4, character: "\tvar local := value".length });
 	expect(solve?.signature).toBe("static func solve(\nvalue: int,\n) -> int:");
 	expect(local?.kind).toBe("variable");
 	expect(local?.containerId).toBe(solve?.symbolId);

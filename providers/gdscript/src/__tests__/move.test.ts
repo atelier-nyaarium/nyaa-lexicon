@@ -5,6 +5,7 @@ import { applyEdits, composeSymbolId, type MoveEditsRequest, type Range } from "
 import { afterEach, describe, expect, it } from "vitest";
 import { loadGdscriptMoveCases } from "../../../../protocol/src/conformance/moveCorpusGdscript.js";
 import { MoveCaseSchema } from "../../../../protocol/src/conformance/types.js";
+import { extractDeclarationsCore } from "../extractCore.js";
 import { GDScriptProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -32,6 +33,14 @@ function rangeForText(text: string, value: string, from = 0): Range {
 	const start = text.indexOf(value, from);
 	if (start < 0) throw new Error(`missing move test text: ${value}`);
 	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+}
+
+function textAtRange(text: string, range: Range): string {
+	const lines = text.split("\n").slice(range.start.line, range.end.line + 1);
+	const last = lines.length - 1;
+	if (lines[0] !== undefined) lines[0] = lines[0].slice(range.start.character);
+	if (lines[last] !== undefined) lines[last] = lines[last].slice(0, range.end.character);
+	return lines.join("\n");
 }
 
 function classId(module: string, name: string): string {
@@ -120,29 +129,47 @@ describe("move edits", () => {
 		expect(result.text).toBe("extends Node\n\nfunc keep() -> void:\n\tpass\n\n");
 	});
 
-	// A GDScript declaration range stops at the header, which is what the core sends. Taking it
-	// literally relocated `func moved() -> void:` and left `pass` behind, in two files that no
-	// longer parse. Found by driving a real move, caught by the syntax gate, reverted.
-	it("refuses a removal that would strand a block body", () => {
-		const source = "extends Node\n\nfunc moved() -> void:\n\tpass\n";
+	it("moves a method with its block body", () => {
+		const source = "extends Node\n\nfunc moved() -> int:\n\treturn 1";
+		const declaration = extractDeclarationsCore("source.gd", source, composeSymbolId).find(
+			(candidate) => candidate.name === "moved",
+		);
+		if (declaration === undefined) throw new Error("method declaration missing");
+		const moved = textAtRange(source, declaration.range);
 		const root = workspace({ "source.gd": source, "target.gd": "" });
-		const result = apply(root, source, {
+		const sourceResult = apply(root, source, {
 			module: "source.gd",
 			text: source,
 			exists: true,
-			symbolId: methodId("source.gd", "source", "moved"),
+			symbolId: declaration.symbolId,
 			name: "moved",
 			fromModule: "source.gd",
 			toModule: "target.gd",
-			role: { removal: rangeForText(source, "func moved() -> void:") },
+			role: { removal: declaration.range },
 			importSites: [],
 			dependencies: [],
 			sites: [],
 		});
 
-		expect(result.response.blocked).toHaveLength(1);
-		expect(result.response.blocked[0]?.reason).toBe("NotImplemented");
-		expect(result.text).toBe(source);
+		expect(sourceResult.response.blocked).toEqual([]);
+		expect(sourceResult.text).toBe("extends Node\n\n");
+
+		const targetResult = apply(root, "", {
+			module: "target.gd",
+			text: "",
+			exists: false,
+			symbolId: declaration.symbolId,
+			name: "moved",
+			fromModule: "source.gd",
+			toModule: "target.gd",
+			role: { insertion: { text: moved } },
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		});
+
+		expect(targetResult.response.blocked).toEqual([]);
+		expect(targetResult.text).toBe(moved);
 	});
 
 	it("inserts the complete declaration into a new file", () => {
