@@ -13,14 +13,14 @@
     },
     "adapters/lsp": {
       "name": "@nyaa-lexicon/adapter-lsp",
-      "version": "0.1.1",
+      "version": "1.10.2",
       "dependencies": {
         "@nyaa-lexicon/core": "workspace:*",
       },
     },
     "adapters/mcp": {
       "name": "@nyaa-lexicon/adapter-mcp",
-      "version": "0.1.1",
+      "version": "1.10.2",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "@nyaa-lexicon/core": "workspace:*",
@@ -30,7 +30,7 @@
     },
     "core": {
       "name": "@nyaa-lexicon/core",
-      "version": "0.1.1",
+      "version": "1.10.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -39,15 +39,47 @@
     },
     "protocol": {
       "name": "@nyaa-lexicon/protocol",
-      "version": "0.1.1",
+      "version": "1.10.2",
       "dependencies": {
         "vscode-jsonrpc": "9.0.1",
         "zod": "4.4.3",
       },
     },
+    "providers/c": {
+      "name": "@nyaa-lexicon/provider-c",
+      "version": "1.10.2",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "vscode-jsonrpc": "9.0.1",
+      },
+    },
+    "providers/cpp": {
+      "name": "@nyaa-lexicon/provider-cpp",
+      "version": "1.10.2",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "vscode-jsonrpc": "9.0.1",
+      },
+    },
+    "providers/csharp": {
+      "name": "@nyaa-lexicon/provider-csharp",
+      "version": "1.10.2",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "vscode-jsonrpc": "9.0.1",
+      },
+    },
     "providers/gdscript": {
       "name": "@nyaa-lexicon/provider-gdscript",
-      "version": "0.1.1",
+      "version": "1.10.2",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "vscode-jsonrpc": "9.0.1",
+      },
+    },
+    "providers/kotlin": {
+      "name": "@nyaa-lexicon/provider-kotlin",
+      "version": "1.10.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -55,7 +87,15 @@
     },
     "providers/python": {
       "name": "@nyaa-lexicon/provider-python",
-      "version": "0.1.0",
+      "version": "1.10.2",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "vscode-jsonrpc": "9.0.1",
+      },
+    },
+    "providers/rust": {
+      "name": "@nyaa-lexicon/provider-rust",
+      "version": "1.10.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -63,7 +103,7 @@
     },
     "providers/typescript": {
       "name": "@nyaa-lexicon/provider-typescript",
-      "version": "0.1.1",
+      "version": "1.10.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "typescript": "6.0.3",
@@ -104,9 +144,19 @@
 
     "@nyaa-lexicon/protocol": ["@nyaa-lexicon/protocol@workspace:protocol"],
 
+    "@nyaa-lexicon/provider-c": ["@nyaa-lexicon/provider-c@workspace:providers/c"],
+
+    "@nyaa-lexicon/provider-cpp": ["@nyaa-lexicon/provider-cpp@workspace:providers/cpp"],
+
+    "@nyaa-lexicon/provider-csharp": ["@nyaa-lexicon/provider-csharp@workspace:providers/csharp"],
+
     "@nyaa-lexicon/provider-gdscript": ["@nyaa-lexicon/provider-gdscript@workspace:providers/gdscript"],
 
+    "@nyaa-lexicon/provider-kotlin": ["@nyaa-lexicon/provider-kotlin@workspace:providers/kotlin"],
+
     "@nyaa-lexicon/provider-python": ["@nyaa-lexicon/provider-python@workspace:providers/python"],
+
+    "@nyaa-lexicon/provider-rust": ["@nyaa-lexicon/provider-rust@workspace:providers/rust"],
 
     "@nyaa-lexicon/provider-typescript": ["@nyaa-lexicon/provider-typescript@workspace:providers/typescript"],
 

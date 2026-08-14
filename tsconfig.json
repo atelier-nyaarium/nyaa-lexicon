@@ -9,6 +9,11 @@
 		{ "path": "./providers/typescript" },
 		{ "path": "./providers/python" },
 		{ "path": "./providers/gdscript" },
+		{ "path": "./providers/c" },
+		{ "path": "./providers/cpp" },
+		{ "path": "./providers/csharp" },
+		{ "path": "./providers/rust" },
+		{ "path": "./providers/kotlin" },
 		{ "path": "./scripts" }
 	]
 }

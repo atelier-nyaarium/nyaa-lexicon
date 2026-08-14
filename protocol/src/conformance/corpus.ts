@@ -26,6 +26,11 @@ const REFERENCE = "reference";
 const TYPESCRIPT = "typescript";
 const PYTHON = "python";
 const GDSCRIPT = "gdscript";
+const C = "c";
+const CPP = "cpp";
+const CSHARP = "csharp";
+const RUST = "rust";
+const KOTLIN = "kotlin";
 
 const CASES: ConformanceCase[] = [
 	{
@@ -56,6 +61,52 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/cart.py",
 			},
+			// C spells a type as a struct, so the kind expectation is per-fixture rather than shared.
+			// External linkage is what "exported" means for C: everything file-scope and non-static.
+			[C]: {
+				files: {
+					"src/cart.c": "struct Cart { int value; };\nint add(void) { return 0; }\nconst int LIMIT = 1;\n",
+				},
+				subject: "src/cart.c",
+				declarations: [
+					{ name: "Cart", kind: "struct", exported: true },
+					{ name: "add", kind: "function", exported: true },
+					{ name: "LIMIT", kind: "constant", exported: true },
+				],
+			},
+			// C++20 module export syntax, which needs the module declaration to be grammatical.
+			[CPP]: {
+				files: {
+					"src/cart.cpp":
+						"export module cart;\nexport class Cart {};\nexport int add() { return 0; }\nexport const int LIMIT = 1;\n",
+				},
+				subject: "src/cart.cpp",
+			},
+			[CSHARP]: {
+				files: {
+					"src/cart.cs": "public class Cart { public static void add() {} public const int LIMIT = 1; }\n",
+				},
+				subject: "src/cart.cs",
+				declarations: [
+					{ name: "Cart", kind: "class", exported: true },
+					{ name: "add", kind: "method", exported: true, container: "Cart" },
+					{ name: "LIMIT", kind: "constant", exported: true, container: "Cart" },
+				],
+			},
+			[RUST]: {
+				files: { "src/cart.rs": "pub struct Cart {}\npub fn add() {}\npub const LIMIT: i32 = 1;\n" },
+				subject: "src/cart.rs",
+				declarations: [
+					{ name: "Cart", kind: "struct", exported: true },
+					{ name: "add", kind: "function", exported: true },
+					{ name: "LIMIT", kind: "constant", exported: true },
+				],
+			},
+			// Kotlin's default visibility is public, which is what "exported" means here.
+			[KOTLIN]: {
+				files: { "src/Cart.kt": "package cart\n\nclass Cart\nfun add() {}\nconst val LIMIT = 1\n" },
+				subject: "src/Cart.kt",
+			},
 		},
 		declarations: [
 			{ name: "Cart", kind: "class", exported: true },
@@ -72,6 +123,11 @@ const CASES: ConformanceCase[] = [
 			[REFERENCE]: { files: { "src/cart.ref": "export class Cart {}\n" }, subject: "src/cart.ref" },
 			[PYTHON]: { files: { "src/cart.py": "class Cart:\n    pass\n" }, subject: "src/cart.py" },
 			[GDSCRIPT]: { files: { "src/cart.gd": "class_name Cart\nextends Node\n" }, subject: "src/cart.gd" },
+			[C]: { files: { "src/cart.c": "struct Cart { int value; };\n" }, subject: "src/cart.c" },
+			[CPP]: { files: { "src/cart.cpp": "class Cart {};\n" }, subject: "src/cart.cpp" },
+			[CSHARP]: { files: { "src/cart.cs": "public class Cart {}\n" }, subject: "src/cart.cs" },
+			[RUST]: { files: { "src/cart.rs": "pub struct Cart {}\n" }, subject: "src/cart.rs" },
+			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nclass Cart\n" }, subject: "src/Cart.kt" },
 		},
 		// The one expectation that must hold in every language: a class is a `type` descriptor. Three
 		// syntaxes with nothing in common still have to mint the same id shape, because the id is the
@@ -106,6 +162,33 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.gd",
 				declarations: [{ name: "y", nameStart: { line: 2, character: 18 } }],
 			},
+			// `/* ` is 3, the astral is 2, ` */ struct ` is 11, so C lands one further right than the
+			// five-letter class keyword puts C++.
+			[C]: {
+				files: { "src/cart.c": `/* ${ASTRAL} */ struct Cart { int value; };\n` },
+				subject: "src/cart.c",
+				declarations: [{ name: "Cart", nameStart: { line: 0, character: 16 } }],
+			},
+			[CPP]: {
+				files: { "src/cart.cpp": `/* ${ASTRAL} */ class Cart {};\n` },
+				subject: "src/cart.cpp",
+				declarations: [{ name: "Cart", nameStart: { line: 0, character: 15 } }],
+			},
+			[CSHARP]: {
+				files: { "src/cart.cs": `/* ${ASTRAL} */ public class Cart {}\n` },
+				subject: "src/cart.cs",
+				declarations: [{ name: "Cart", nameStart: { line: 0, character: 22 } }],
+			},
+			[RUST]: {
+				files: { "src/cart.rs": `/* ${ASTRAL} */ pub struct Cart {}\n` },
+				subject: "src/cart.rs",
+				declarations: [{ name: "Cart", nameStart: { line: 0, character: 20 } }],
+			},
+			[KOTLIN]: {
+				files: { "src/Cart.kt": `/* ${ASTRAL} */ class Cart\n` },
+				subject: "src/Cart.kt",
+				declarations: [{ name: "Cart", nameStart: { line: 0, character: 15 } }],
+			},
 		},
 	},
 	{
@@ -133,6 +216,31 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.gd",
 				declarations: [{ name: "cart", nameStart: { line: 1, character: 4 } }],
 			},
+			[C]: {
+				files: { "src/cart.c": "\nint cart = 1;\n" },
+				subject: "src/cart.c",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 4 } }],
+			},
+			[CPP]: {
+				files: { "src/cart.cpp": "\nint cart = 1;\n" },
+				subject: "src/cart.cpp",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 4 } }],
+			},
+			[CSHARP]: {
+				files: { "src/cart.cs": "\npublic class Cart {}\n" },
+				subject: "src/cart.cs",
+				declarations: [{ name: "Cart", nameStart: { line: 1, character: 13 } }],
+			},
+			[RUST]: {
+				files: { "src/cart.rs": "\npub const cart: i32 = 1;\n" },
+				subject: "src/cart.rs",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 10 } }],
+			},
+			[KOTLIN]: {
+				files: { "src/Cart.kt": "\nclass Cart\n" },
+				subject: "src/Cart.kt",
+				declarations: [{ name: "Cart", nameStart: { line: 1, character: 6 } }],
+			},
 		},
 	},
 	{
@@ -144,6 +252,11 @@ const CASES: ConformanceCase[] = [
 			[REFERENCE]: { files: { "src/empty.ref": "\n" }, subject: "src/empty.ref" },
 			[PYTHON]: { files: { "src/empty.py": "\n" }, subject: "src/empty.py" },
 			[GDSCRIPT]: { files: { "src/empty.gd": "\n" }, subject: "src/empty.gd" },
+			[C]: { files: { "src/empty.c": "\n" }, subject: "src/empty.c" },
+			[CPP]: { files: { "src/empty.cpp": "\n" }, subject: "src/empty.cpp" },
+			[CSHARP]: { files: { "src/empty.cs": "\n" }, subject: "src/empty.cs" },
+			[RUST]: { files: { "src/empty.rs": "\n" }, subject: "src/empty.rs" },
+			[KOTLIN]: { files: { "src/Empty.kt": "\n" }, subject: "src/Empty.kt" },
 		},
 		declarations: [],
 	},
@@ -158,6 +271,11 @@ const CASES: ConformanceCase[] = [
 			[REFERENCE]: { files: { "src/broken.ref": "export class {\n" }, subject: "src/broken.ref" },
 			[PYTHON]: { files: { "src/broken.py": "def add(:\n    pass\n" }, subject: "src/broken.py" },
 			[GDSCRIPT]: { files: { "src/broken.gd": "func add(:\n\tpass\n" }, subject: "src/broken.gd" },
+			[C]: { files: { "src/broken.c": "int add( {\n" }, subject: "src/broken.c" },
+			[CPP]: { files: { "src/broken.cpp": "int add( {\n" }, subject: "src/broken.cpp" },
+			[CSHARP]: { files: { "src/broken.cs": "public class {\n" }, subject: "src/broken.cs" },
+			[RUST]: { files: { "src/broken.rs": "fn add( {\n" }, subject: "src/broken.rs" },
+			[KOTLIN]: { files: { "src/Broken.kt": "fun add( {\n" }, subject: "src/Broken.kt" },
 		},
 		parseErrors: "required",
 	},
@@ -192,6 +310,48 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/cart.gd",
 				imports: [{ specifier: "res://src/item.gd", status: "resolved", module: "src/item.gd" }],
+			},
+			[C]: {
+				files: {
+					"src/cart.c": '#include "item.h"\n',
+					"src/item.h": "struct Item { int value; };\n",
+				},
+				subject: "src/cart.c",
+				imports: [{ specifier: "item.h", status: "resolved", module: "src/item.h" }],
+			},
+			[CPP]: {
+				files: {
+					"src/cart.cpp": '#include "item.hpp"\n',
+					"src/item.hpp": "struct Item {};\n",
+				},
+				subject: "src/cart.cpp",
+				imports: [{ specifier: "item.hpp", status: "resolved", module: "src/item.hpp" }],
+			},
+			// C# and Kotlin import a namespace or package, not a path, so resolution goes through the
+			// provider's own parse of which workspace file declares that name.
+			[CSHARP]: {
+				files: {
+					"src/cart.cs": "using Demo.Item;\nnamespace Demo { public class Cart { public Item Value; } }\n",
+					"src/item.cs": "namespace Demo.Item { public class Item {} }\n",
+				},
+				subject: "src/cart.cs",
+				imports: [{ specifier: "Demo.Item", status: "resolved", module: "src/item.cs" }],
+			},
+			[RUST]: {
+				files: {
+					"src/lib.rs": "pub mod item;\nuse crate::item::Item;\n",
+					"src/item.rs": "pub struct Item;\n",
+				},
+				subject: "src/lib.rs",
+				imports: [{ specifier: "crate::item::Item", status: "resolved", module: "src/item.rs" }],
+			},
+			[KOTLIN]: {
+				files: {
+					"src/Cart.kt": "package cart\nimport item.Item\nfun use(): Item = Item()\n",
+					"src/Item.kt": "package item\nclass Item\n",
+				},
+				subject: "src/Cart.kt",
+				imports: [{ specifier: "item.Item", status: "resolved", module: "src/Item.kt" }],
 			},
 		},
 		imports: [{ specifier: "./item", status: "resolved", module: "src/item.ts" }],
@@ -229,6 +389,36 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.gd",
 				imports: [{ specifier: "res://src/enemy.tscn", status: "external" }],
 			},
+			// The C-family standard headers and the Rust/Kotlin standard libraries are the dependency
+			// every toolchain has, same reasoning as Python's ast above.
+			[C]: {
+				files: { "src/cart.c": "#include <stdio.h>\n" },
+				subject: "src/cart.c",
+				imports: [{ specifier: "stdio.h", status: "external" }],
+			},
+			[CPP]: {
+				files: { "src/cart.cpp": "#include <vector>\n" },
+				subject: "src/cart.cpp",
+				imports: [{ specifier: "vector", status: "external" }],
+			},
+			[CSHARP]: {
+				files: { "src/cart.cs": "using System;\npublic class Cart {}\n" },
+				subject: "src/cart.cs",
+				imports: [{ specifier: "System", status: "external" }],
+			},
+			[RUST]: {
+				files: { "src/lib.rs": "use std::collections::HashMap;\n" },
+				subject: "src/lib.rs",
+				imports: [{ specifier: "std::collections::HashMap", status: "external" }],
+			},
+			[KOTLIN]: {
+				files: {
+					"src/Cart.kt":
+						"package cart\nimport kotlin.collections.List\nval items: List<String> = emptyList()\n",
+				},
+				subject: "src/Cart.kt",
+				imports: [{ specifier: "kotlin.collections.List", status: "external" }],
+			},
 		},
 		imports: [{ specifier: "zod", status: "external" }],
 	},
@@ -250,6 +440,31 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/cart.gd",
 				imports: [{ specifier: "res://src/gone.gd", status: "unresolved" }],
+			},
+			[C]: {
+				files: { "src/cart.c": '#include "gone.h"\n' },
+				subject: "src/cart.c",
+				imports: [{ specifier: "gone.h", status: "unresolved" }],
+			},
+			[CPP]: {
+				files: { "src/cart.cpp": '#include "gone.hpp"\n' },
+				subject: "src/cart.cpp",
+				imports: [{ specifier: "gone.hpp", status: "unresolved" }],
+			},
+			[CSHARP]: {
+				files: { "src/cart.cs": "using Missing.Namespace;\npublic class Cart {}\n" },
+				subject: "src/cart.cs",
+				imports: [{ specifier: "Missing.Namespace", status: "unresolved" }],
+			},
+			[RUST]: {
+				files: { "src/lib.rs": "use crate::gone::Gone;\n" },
+				subject: "src/lib.rs",
+				imports: [{ specifier: "crate::gone::Gone", status: "unresolved" }],
+			},
+			[KOTLIN]: {
+				files: { "src/Cart.kt": "package cart\nimport missing.Gone\nfun use(): Gone = Gone()\n" },
+				subject: "src/Cart.kt",
+				imports: [{ specifier: "missing.Gone", status: "unresolved" }],
 			},
 		},
 		imports: [{ specifier: "./gone", status: "unresolved" }],
@@ -275,6 +490,26 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/cart.gd",
 			},
+			[C]: {
+				files: { "src/cart.c": "int add(void) { return 0; }\nint run(void) { return add(); }\n" },
+				subject: "src/cart.c",
+			},
+			[CPP]: {
+				files: { "src/cart.cpp": "int add() { return 0; }\nint run() { return add(); }\n" },
+				subject: "src/cart.cpp",
+			},
+			[CSHARP]: {
+				files: { "src/cart.cs": "public class Cart { public void add() {} public void run() { add(); } }\n" },
+				subject: "src/cart.cs",
+			},
+			[RUST]: {
+				files: { "src/lib.rs": "pub fn add() {}\npub fn run() { add(); }\n" },
+				subject: "src/lib.rs",
+			},
+			[KOTLIN]: {
+				files: { "src/Cart.kt": "package cart\nfun add() {}\nfun run() { add() }\n" },
+				subject: "src/Cart.kt",
+			},
 		},
 		references: [{ name: "add", status: "bound", bindsTo: "add" }],
 	},
@@ -289,6 +524,31 @@ const CASES: ConformanceCase[] = [
 				files: { "src/cart.gd": "class_name Cart\nextends Node\n\nconst LIMIT: int = 1\n" },
 				subject: "src/cart.gd",
 				typeOf: { name: "LIMIT", display: "int" },
+			},
+			[C]: {
+				files: { "src/cart.c": "const int LIMIT = 1;\n" },
+				subject: "src/cart.c",
+				typeOf: { name: "LIMIT", display: "int" },
+			},
+			[CPP]: {
+				files: { "src/cart.cpp": "const int LIMIT = 1;\n" },
+				subject: "src/cart.cpp",
+				typeOf: { name: "LIMIT", display: "int" },
+			},
+			[CSHARP]: {
+				files: { "src/cart.cs": "public class Cart { public const int LIMIT = 1; }\n" },
+				subject: "src/cart.cs",
+				typeOf: { name: "LIMIT", display: "int" },
+			},
+			[RUST]: {
+				files: { "src/cart.rs": "pub const LIMIT: i32 = 1;\n" },
+				subject: "src/cart.rs",
+				typeOf: { name: "LIMIT", display: "i32" },
+			},
+			[KOTLIN]: {
+				files: { "src/Cart.kt": "package cart\nconst val LIMIT: Int = 1\n" },
+				subject: "src/Cart.kt",
+				typeOf: { name: "LIMIT", display: "Int" },
 			},
 		},
 		typeOf: { name: "LIMIT", display: "number" },
@@ -307,6 +567,14 @@ const CASES: ConformanceCase[] = [
 				files: { "src/cart.gd": "class_name Cart\nextends Node\n\nconst LIMIT: int = 1\n" },
 				subject: "src/cart.gd",
 			},
+			[C]: { files: { "src/cart.c": "const int LIMIT = 1;\n" }, subject: "src/cart.c" },
+			[CPP]: { files: { "src/cart.cpp": "const int LIMIT = 1;\n" }, subject: "src/cart.cpp" },
+			[CSHARP]: {
+				files: { "src/cart.cs": "public class Cart { public const int LIMIT = 1; }\n" },
+				subject: "src/cart.cs",
+			},
+			[RUST]: { files: { "src/cart.rs": "pub const LIMIT: i32 = 1;\n" }, subject: "src/cart.rs" },
+			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nconst val LIMIT: Int = 1\n" }, subject: "src/Cart.kt" },
 		},
 		typeOf: { name: "LIMIT", status: "known" },
 	},
@@ -389,6 +657,23 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/cart.gd",
 			},
+			// C++'s spelling of an uninferrable branch is a template-dependent return. The reason is
+			// pinned so the provider must say WHY it does not know, not merely that it does not.
+			[CPP]: {
+				files: {
+					"src/cart.cpp":
+						"template <typename T> auto pick(bool choose, T mystery) { if (choose) return 1; return mystery(); }\n",
+				},
+				subject: "src/cart.cpp",
+				typeOf: { name: "pick", status: "unknown", reason: "NotImplemented" },
+			},
+			[KOTLIN]: {
+				files: {
+					"src/Cart.kt":
+						'package cart\nfun pick(flag: Boolean, mystery: () -> String) {\n\tif (flag) return "foo"\n\treturn mystery()\n}\n',
+				},
+				subject: "src/Cart.kt",
+			},
 		},
 		typeOf: { name: "pick", status: "unknown" },
 	},
@@ -406,6 +691,14 @@ const CASES: ConformanceCase[] = [
 				files: { "src/cart.gd": "class_name Cart\nextends Node\n\nvar LIMIT = 1\n" },
 				subject: "src/cart.gd",
 			},
+			// C has no fixture on purpose: an object declaration without a declared type is not C.
+			[CPP]: { files: { "src/cart.cpp": "auto LIMIT = 1;\n" }, subject: "src/cart.cpp" },
+			[CSHARP]: {
+				files: { "src/cart.cs": "public class Cart { public void Initialize() { var LIMIT = 1; } }\n" },
+				subject: "src/cart.cs",
+			},
+			[RUST]: { files: { "src/cart.rs": "pub const LIMIT = 1;\n" }, subject: "src/cart.rs" },
+			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nval LIMIT = 1\n" }, subject: "src/Cart.kt" },
 		},
 		// Status only. `inferred` is the whole claim: the source never said this, we concluded it,
 		// and a consumer weighs that differently from an annotation it can go and read.

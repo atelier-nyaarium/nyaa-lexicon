@@ -1,0 +1,14 @@
+{
+	"name": "@nyaa-lexicon/provider-rust",
+	"version": "1.10.2",
+	"private": true,
+	"type": "module",
+	"description": "Rust provider for nyaa-lexicon",
+	"exports": {
+		".": "./src/main.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"vscode-jsonrpc": "9.0.1"
+	}
+}
