@@ -248,6 +248,21 @@ export enum Color { Red }
 
 	// Leading trivia runs back to the previous token, so the naive read of it hands a move the
 	// file's section banner to carry into the destination.
+	// Overloads are separate symbols and must stay separable; merged declarations are ONE symbol in
+	// TypeScript, so numbering them minted an ordinal the composer could not render and dropped.
+	it("numbers overloads and leaves a merged interface and class sharing one id", () => {
+		const overloads = extract(
+			["export function f(x: string): string;", "export function f(x: number): number;"].join("\n"),
+		).declarations.filter((declaration) => declaration.name === "f");
+		expect(new Set(overloads.map((declaration) => declaration.symbolId)).size).toBe(overloads.length);
+
+		const merged = extract(["export interface Box {}", "export class Box {}"].join("\n")).declarations.filter(
+			(declaration) => declaration.name === "Box",
+		);
+		expect(merged.length).toBeGreaterThan(1);
+		expect(new Set(merged.map((declaration) => declaration.symbolId)).size).toBe(1);
+	});
+
 	it("stops the range at a blank line, leaving a section banner with the file", () => {
 		const source = [
 			"////////////////////////////////",

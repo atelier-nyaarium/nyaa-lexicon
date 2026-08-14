@@ -250,6 +250,21 @@ describe("audit findings", () => {
 		).toThrow();
 	});
 
+	// Only a method has a slot to render one. Dropping it instead collapsed two symbols the caller
+	// meant to keep apart onto one id, which looks exactly like a correct answer.
+	it("refuses a disambiguator on a kind that cannot render one", () => {
+		for (const kind of ["type", "term", "namespace", "meta", "parameter", "typeParameter"] as const) {
+			expect(() =>
+				composeSymbolId({ ...CART, descriptors: [{ kind, name: "Thing", disambiguator: "1" }] }),
+			).toThrow(/only a method descriptor can carry a disambiguator/);
+		}
+	});
+
+	it("still composes those kinds when no disambiguator is set", () => {
+		expect(composeSymbolId({ ...CART, descriptors: [{ kind: "type", name: "Thing" }] })).toContain("Thing#");
+		expect(composeSymbolId({ ...CART, descriptors: [{ kind: "term", name: "thing" }] })).toContain("thing.");
+	});
+
 	it("does not let a crafted disambiguator impersonate a longer descriptor chain", () => {
 		const chain = composeSymbolId({
 			...CART,

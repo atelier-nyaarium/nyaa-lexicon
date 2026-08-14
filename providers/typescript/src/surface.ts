@@ -380,6 +380,8 @@ function parameterBindings(name: ts.BindingName): ts.Identifier[] {
 	return name.elements.flatMap((element) => (ts.isBindingElement(element) ? parameterBindings(element.name) : []));
 }
 
+// Only a method renders a disambiguator, so only a method counts occurrences. Numbering other
+// kinds produced an ordinal the composer dropped, which reads like disambiguation and is not.
 function descriptor(
 	occurrences: Map<string, number>,
 	parents: Descriptor[],
@@ -387,6 +389,7 @@ function descriptor(
 	name: string,
 	descriptorKind: "type" | "method" | "term" | "parameter" = kind,
 ): Descriptor {
+	if (descriptorKind !== "method") return { kind: descriptorKind, name };
 	const key = `${parents.map((item) => `${item.kind}:${item.name}`).join("/")}/${descriptorKind}:${name}`;
 	const ordinal = occurrences.get(key) ?? 0;
 	occurrences.set(key, ordinal + 1);

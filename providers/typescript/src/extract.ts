@@ -591,7 +591,11 @@ export function extractFileWithNodes(
 		ts.forEachChild(node, (child) => classifyReferenceTree(child, childInType));
 	}
 
+	// Only a method can carry a disambiguator, because only a method renders one. Counting other
+	// kinds produced an ordinal the composer silently dropped, which reads like disambiguation and
+	// is not. Two same-named types in one scope MERGE in TypeScript, so one id is the right answer.
 	function descriptorFor(scope: Scope, descriptor: Descriptor): Descriptor {
+		if (descriptor.kind !== "method") return descriptor;
 		const prefix = scope.descriptors.map((item) => `${item.kind}:${item.name}`).join("/");
 		const key = `${prefix}/${descriptor.kind}:${descriptor.name}`;
 		const ordinal = occurrences.get(key) ?? 0;

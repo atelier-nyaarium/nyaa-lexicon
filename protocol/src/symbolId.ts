@@ -121,14 +121,21 @@ export function quoteName(name: string): string {
 
 function encodeDescriptor(d: Descriptor): string {
 	const name = quoteName(d.name);
-	if (d.kind === "parameter") return `(${name})`;
-	if (d.kind === "typeParameter") return `[${name}]`;
 	if (d.kind === "method") {
 		if (d.disambiguator !== undefined && !DISAMBIGUATOR_RE.test(d.disambiguator)) {
 			throw new Error(`disambiguator must match ${DISAMBIGUATOR_RE}, got: ${JSON.stringify(d.disambiguator)}`);
 		}
 		return `${name}(${d.disambiguator ?? ""}).`;
 	}
+
+	// Refused rather than ignored: only a method has a slot to render one, so dropping it would
+	// silently collapse two symbols the caller meant to keep apart onto one id.
+	if (d.disambiguator !== undefined) {
+		throw new Error(`only a method descriptor can carry a disambiguator, got kind: ${d.kind}`);
+	}
+
+	if (d.kind === "parameter") return `(${name})`;
+	if (d.kind === "typeParameter") return `[${name}]`;
 	return `${name}${KIND_SUFFIX[d.kind]}`;
 }
 
