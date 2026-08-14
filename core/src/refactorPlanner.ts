@@ -1,13 +1,7 @@
 // Working out what a refactor WOULD do, and writing none of it.
 //
-// The split from the workflow is the point. Everything here is a question about the current state:
-// which occurrences belong to this symbol, what would break, which specifier would have to be
-// re-pointed. Nothing here can write a file or reindex one, so a plan is always safe to ask for,
-// and a caller can show one to a human before anything moves.
-//
-// Providers are reached only through ProviderProbe, which is why planning a replacement cannot
-// leave a provider holding text nobody wrote: the probe restores it, in a finally, on every path.
-// That used to be the planner's own responsibility, discharged by hand once per exit.
+// Nothing here writes or reindexes, so a plan is always safe to ask for. Providers only through
+// ProviderProbe, which restores its own state in a finally.
 
 import type {
 	Binding,
@@ -208,13 +202,7 @@ export type RenameEditPlan =
 ////////////////////////////////
 //  Class
 
-/**
- * Refactor plans, and nothing that carries one out.
- *
- * Takes readFile rather than going through SourceWorkspace for everything, because asking a
- * provider to produce edits needs the file's whole text and that is a different question from
- * "what text does this symbol occupy".
- */
+/** Takes readFile too: a provider needs a file's whole text, not one symbol's span. */
 export class RefactorPlanner {
 	constructor(
 		private readonly store: IndexStore,
@@ -877,15 +865,11 @@ export class RefactorPlanner {
 	/**
 	 * What a rename WOULD write, without writing it.
 	 *
-	 * Separated from `renameSymbol` because two callers need the edits and only one of them applies
-	 * them: an editor asks for a WorkspaceEdit and applies it itself. Computing them twice, once here
-	 * and once in a copy that skips the write, is how the two would come to disagree about which
-	 * occurrences a rename touches.
+	 * Separate from `renameSymbol` because an editor applies the edits itself, and computing them
+	 * twice is how the two disagree about which occurrences a rename touches.
 	 *
-	 * The plan's blockers stop it before a provider is asked anything. Then every file's edits are
-	 * gathered, and a single blocked site anywhere fails the whole operation: a blocked site means
-	 * an occurrence that SHOULD change and cannot, so applying the rest would leave the codebase in
-	 * a state that no longer builds, which is worse than not starting.
+	 * One blocked site fails the whole operation: it is an occurrence that should change and cannot,
+	 * so applying the rest leaves code that no longer builds.
 	 */
 	async renameEdits(symbolId: string, newName: string): Promise<RenameEditPlan> {
 		const plan = await this.prepareRename(symbolId, newName);

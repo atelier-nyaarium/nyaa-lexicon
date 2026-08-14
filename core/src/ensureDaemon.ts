@@ -67,13 +67,8 @@ export function daemonCommand(workspaceRoot: string, root = lexiconRoot()): stri
 /**
  * Which bundle a daemon is running, closely enough to notice a rebuild.
  *
- * The version alone is not enough, and that gap has already cost a false verification here: a
- * developer rebuilds twenty times at one version, and every rebuild leaves a daemon serving the
- * previous code while the lock still says the version matches. Size and modification time change on
- * every build and cost one stat, where hashing four megabytes on every lookup would not.
- *
- * Null when the bundle cannot be read, which is a source checkout that was never built. Absent on
- * both sides compares equal, so nothing here breaks a workspace with no bundle at all.
+ * The version moves once a release; a rebuild inside one leaves a daemon serving older code. Size
+ * and mtime cost one stat, where hashing the bundle on every lookup would not. Null when unbuilt.
  */
 export function bundleStamp(root = lexiconRoot()): string | null {
 	try {
@@ -87,13 +82,8 @@ export function bundleStamp(root = lexiconRoot()): string | null {
 /**
  * Retire a daemon that cannot serve us, but only on positive evidence that nothing is in flight.
  *
- * The gate is one question, asked of the outgoing daemon: is a refactor transaction open? That
- * transaction holds the only copy of the images its undo would restore, and killing the process
- * loses them, which is the single thing the journal exists to prevent.
- *
- * Anything other than a clear "no" leaves it running. A daemon too old to answer, or wedged and not
- * answering at all, is exactly the daemon whose state we cannot reason about, so an unclear answer
- * must not read as consent. The manual path through stop_project_daemon stays for those.
+ * An open transaction holds the only copy of the images its undo would restore. Anything but a
+ * clear no leaves it running, since an unclear answer must never read as consent.
  */
 async function retire(
 	lock: DaemonLock,
@@ -131,11 +121,8 @@ function errorText(error: unknown): string {
 /**
  * Connect to the workspace's daemon, starting one if there is none.
  *
- * A daemon serving ANOTHER workspace is reported rather than touched: it is answering correctly for
- * somebody else, and stopping it is not a call a client gets to make. One serving OUR workspace on a
- * dialect we cannot use is different. Every session reaching it is as stuck as we are, so retiring
- * it serves them rather than harming them, and their channels reconnect to the replacement on the
- * connection loss they already handle.
+ * A daemon serving ANOTHER workspace is reported rather than touched. One serving ours on a dialect
+ * we cannot use is retired instead, since every session reaching it is equally stuck.
  */
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<EnsureResult> {
 	const look = options.look ?? (() => findDaemon(options.workspaceRoot));

@@ -102,14 +102,8 @@ async function buildLocal(workspaceRoot: string, hold: (index: LocalIndex) => vo
 /**
  * Answers for one workspace, preferring the daemon.
  *
- * The daemon is preferred for two reasons that both bite hardest here. An editor and the agents
- * working beside it must read ONE index or they will disagree about the same repository. And the
- * daemon's linger counts connected clients, so an editor answering from a private index is invisible
- * to it: the daemon can shut down under someone who is actively editing.
- *
- * Which source it will be is not decided now. `initialize` must be answered immediately, and
- * deciding may mean spawning a daemon and waiting for its lock, so the choice is deferred to the
- * first request that needs an answer.
+ * An editor answering from a private index disagrees with the agents beside it, and is invisible to
+ * the daemon's linger count, so it can shut down mid-edit. The choice is deferred, not made here.
  */
 function serve(workspaceRoot: string): Served {
 	let channel: DaemonChannel | null = null;

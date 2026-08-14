@@ -1,12 +1,10 @@
 // The editor-facing adapter.
 //
-// Thin on purpose. Every answer comes from the same index the MCP tools read, normally the
-// workspace daemon's, so the two surfaces cannot drift into disagreeing about the same repository.
-// What differs is only the vocabulary: LSP speaks in positions and URIs where MCP speaks in names
-// and symbol ids.
+// Thin on purpose. Answers come from the same index the MCP tools read, so the two surfaces cannot
+// disagree about a repository. Only the vocabulary differs: positions and URIs, not names and ids.
 //
-// Every read is awaited because the index is usually in another process. Nothing here knows or
-// cares which, and that is the point of taking a `LexiconReads` rather than a service.
+// Every read is awaited because the index is usually in another process, and taking a
+// `LexiconReads` rather than a service is what keeps that invisible here.
 //
 // Positions are the whole translation problem. LSP counts UTF-16 code units within a line, and the
 // index stores whatever the provider reported. Both are zero-based lines, so the mapping is the
@@ -392,10 +390,8 @@ export class LspServer {
 	 * owns its buffers, and a server writing underneath open ones is how a rename comes back as
 	 * unsaved-changes conflicts.
 	 *
-	 * Refused while a refactor transaction is open. That transaction holds journaled images of the
-	 * files it touched, and its undo restores them; a rename lexicon handed the editor in the middle
-	 * would be written outside the journal and then silently reverted by it. Null is the LSP way to
-	 * say the rename cannot be offered, and the editor reports it rather than writing nothing.
+	 * Refused while a refactor transaction is open: edits handed over mid-transaction land outside
+	 * its journal, and its undo would silently revert them.
 	 */
 	async rename(
 		uri: string,

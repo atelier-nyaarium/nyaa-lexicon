@@ -1,11 +1,7 @@
 // The workspace as text on disk, and how a symbol maps onto it.
 //
-// The counterpart to the index: one side knows what the code MEANS, this side knows what it SAYS
-// right now. Keeping them apart is what makes staleness expressible at all, since a stale answer is
-// exactly the case where the two disagree, and a module that conflated them could not notice.
-//
-// Writing goes through sourceWriter.ts, which owns the atomic replace and the temporary suffix that
-// crash recovery greps for. This module decides WHAT to write; that one decides how.
+// Kept apart from the index because a stale answer IS the two disagreeing. Decides what to write;
+// sourceWriter.ts decides how.
 
 import path from "node:path";
 import { coordinatesOf, type Range } from "@nyaa-lexicon/protocol";
@@ -47,13 +43,7 @@ export type SymbolSource =
 ////////////////////////////////
 //  Class
 
-/**
- * Reading and writing the workspace's own text.
- *
- * Takes readFile rather than reaching for node:fs, because a caller driving this over a virtual
- * workspace, a test fixture or an editor's unsaved buffer is the same question with a different
- * source of truth.
- */
+/** Takes readFile, not node:fs: a fixture and an unsaved buffer are the same question. */
 export class SourceWorkspace {
 	constructor(
 		private readonly store: IndexStore,

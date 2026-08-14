@@ -1,13 +1,7 @@
-// Recorded knowledge, and the facts an answer is allowed to cite.
+// Recorded knowledge, and the facts an answer may cite.
 //
-// One owner rather than the two the decomposition plan named, and the reason is worth writing down:
-// "what counts as a citable fact" turned out not to be a separate concept from "the ledger of
-// answers citing them". Every fact here exists to be cited, staleness is defined by the cited facts
-// moving, and splitting them would have produced a module whose only real consumer was its
-// neighbour. That is a shuffle, not a separation.
-//
-// Everything here reads the index and the import resolver. Nothing starts a provider, touches the
-// disk, or writes a source file, which is what keeps recording an answer cheap enough to do often.
+// One owner: every fact exists to be cited, and staleness is cited facts moving. Reads only, so
+// recording an answer stays cheap enough to be a habit.
 
 import { answerFactId, doubtFactId, type FactKind } from "@nyaa-lexicon/protocol";
 import {
@@ -133,13 +127,7 @@ export const INLINE_GAP_THRESHOLD = 20;
 ////////////////////////////////
 //  Class
 
-/**
- * The knowledge layer over one index.
- *
- * Held by LexiconService, which delegates to it. Takes the import resolver because a fact set
- * includes the import statements that brought a name into a file, and those are resolution's to
- * answer rather than something to re-derive here.
- */
+/** Takes the resolver because a fact set includes the imports that brought a name in. */
 export class KnowledgeLedger {
 	constructor(
 		private readonly store: IndexStore,
@@ -147,12 +135,9 @@ export class KnowledgeLedger {
 	) {}
 
 	/**
-	 * How many recorded answers stand on facts that have moved, or undefined past the cap.
+	 * Answers standing on facts that moved, or undefined past the cap.
 	 *
-	 * Undefined rather than a partial count, because a number covering part of the base reads as the
-	 * whole. It costs one citation resolve per answer and the caller is the most-used tool there is,
-	 * so past the cap it is honestly skipped. Stale entries still surface one at a time on recall and
-	 * in knowledge_gaps, which is where someone acting on one would look anyway.
+	 * Undefined rather than partial: a count covering part of the base reads as the whole.
 	 */
 	staleAnswerCount(): number | undefined {
 		if (this.store.answerCounts().total > STALE_SCAN_CAP) return undefined;

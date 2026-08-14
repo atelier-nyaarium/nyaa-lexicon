@@ -1,16 +1,7 @@
-// Asking a provider about text that is not on disk, without leaving it believing that text.
+// Asking a provider about text that is not on disk.
 //
-// Planning a replacement has to know whether the candidate parses, and the only thing that can
-// answer is the provider that owns the file. But `parseFile` is how the canonical view is SET, so
-// asking it about a candidate leaves the provider holding a version nobody wrote, and every later
-// question about that file is answered from it.
-//
-// The old shape put a restore call on each exit path of the planner. That is the "forgot to call
-// refresh" bug class exactly: three restores today, and the fourth early return someone adds is a
-// provider quietly serving phantom facts, with nothing failing until a much later question.
-//
-// Here the restore is structural. It is a finally, so there is no exit path that can skip it, and
-// the planner cannot even see the seam.
+// `parseFile` SETS the canonical view, so a candidate leaves the provider holding text nobody
+// wrote. Restoring is a finally here; by hand it missed exits.
 
 import type {
 	FileFacts,
@@ -28,26 +19,14 @@ import { hashContent } from "./watcher.js";
 
 export type CandidateParse = { parsed: true; facts: FileFacts } | { parsed: false; reason: string };
 
-/**
- * What planning needs from the provider set, and nothing more.
- *
- * Narrow on purpose. A planner holding the whole supervisor could start a provider, re-index a file
- * or set the canonical view, and none of those are things planning is allowed to do.
- */
+/** What planning may ask a provider. Narrow so it cannot start one or set the canonical view. */
 export interface ProviderProbe {
-	/** Which provider owns a module, when one does. */
 	owner(module: string): { owned: true; providerId: string } | { owned: false; reason: string };
-	/** Whether that provider claims a tier, so silence is never read as approval. */
+	/** Silence from a provider is never approval. */
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
-	/** Parse text that is NOT on disk. The provider's view of the module is restored before this returns. */
+	/** Restores the provider's view before returning. */
 	parseCandidate(module: string, text: string): Promise<CandidateParse>;
-	/**
-	 * The edits a rename or a move would make in one module.
-	 *
-	 * Safe to sit beside parseCandidate because these ASK rather than SET: a provider answering them
-	 * returns edits and does not change what it believes the file says. Only parseFile does that,
-	 * which is the whole reason parseCandidate has to clean up after itself and these do not.
-	 */
+	/** These ASK rather than SET, so no restore is needed. */
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
 	moveEdits(module: string, request: MoveEditsRequest): Promise<MoveEditsResponse>;
 }
@@ -60,8 +39,7 @@ export function liveProbe(supervisor: ProviderSupervisor, readFile: (module: str
 	async function restore(module: string): Promise<void> {
 		const text = readFile(module);
 		if (text === null) return;
-		// Swallowed: this is the repair, and a failure to repair must not replace the caller's own
-		// answer with an error about the repair.
+		// Swallowed: a failed repair must not replace the caller's answer.
 		await supervisor
 			.ask(module, "parseFile", { module, contentHash: hashContent(text), text })
 			.catch(() => undefined);

@@ -1,13 +1,6 @@
-// One persistent connection to a workspace's daemon, and the rule for getting it back.
+// One persistent daemon connection, reconnected rather than reported.
 //
-// Every long-lived client needs the same three things and gets them wrong in the same three ways:
-// the connection must be persistent (the daemon counts open connections to decide whether anyone is
-// still here), it must be re-established rather than reported when it drops, and re-establishing
-// must go through ensureDaemon so a client that outlives its daemon starts another instead of
-// failing for the rest of the session.
-//
-// This existed once, inside the MCP adapter. The editor adapter needed the same thing, and a second
-// copy of a retry rule is how two surfaces come to disagree about when a daemon is gone.
+// The open connection is how the daemon counts who is still here.
 
 import { ensureDaemon } from "./ensureDaemon.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./socketTransport.js";
@@ -16,7 +9,7 @@ import { ConnectionLostError, connectFrames, type FrameClient } from "./socketTr
 //  Interfaces & Types
 
 export interface DaemonChannel {
-	/** Ask the daemon one question, reconnecting once if the connection died since the last one. */
+	/** Reconnects once if the connection died. */
 	ask<T>(method: string, params?: unknown): Promise<T>;
 	close(): void;
 }
@@ -25,14 +18,9 @@ export interface DaemonChannel {
 //  Functions & Helpers
 
 /**
- * A channel to the daemon serving `workspaceRoot`, connected lazily on the first question.
+ * Connected lazily, so a handshake never waits on spawning a daemon.
  *
- * Lazily on purpose: a client's startup handshake must not be held behind spawning a daemon, and a
- * session that never asks anything should never start one.
- *
- * One retry, not a loop. A connection lost between two questions is ordinary and worth re-opening;
- * a second loss on the freshly opened connection means something is wrong that retrying will not
- * fix, and a client silently retrying forever is indistinguishable from a hang.
+ * One retry, not a loop: retrying forever looks like a hang.
  */
 export function daemonChannel(workspaceRoot: string): DaemonChannel {
 	let client: FrameClient | null = null;

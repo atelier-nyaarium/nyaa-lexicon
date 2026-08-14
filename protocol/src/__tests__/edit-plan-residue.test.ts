@@ -3,16 +3,9 @@ import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Holds edits.ts as the only module that decides what a SET of edits means.
+ * Holds edits.ts as the only module deciding what a SET of edits means.
  *
- * Bug class killed: five private copies of the same analysis, in the four provider modules that
- * rewrite text and in the applier. They had already drifted. TypeScript rename silently overwrote
- * one of two disagreeing edits for the same span and reported success; GDScript rename refused the
- * whole request on an overlap and called it a ParseError, which it is not.
- *
- * The rule is DELEGATION, not naming. A `validateEdits` that routes through planEdits is fine and
- * there are five of them; the same name doing its own overlap sweep is not. So the test looks for
- * the sweep, and requires any file doing it to be the owner.
+ * Five copies had drifted. The rule is DELEGATION, not naming, so the sweep finds the overlap scan.
  */
 const PACKAGES = ["protocol", "core", "adapters", "providers"].map((dir) =>
 	join(import.meta.dirname, "..", "..", "..", dir),
@@ -21,18 +14,12 @@ const PACKAGES = ["protocol", "core", "adapters", "providers"].map((dir) =>
 /** The one owner. */
 const OWNER = "edits.ts";
 
-/**
- * This file, which names the forbidden idioms in its own patterns. Excluded by name rather than by
- * making the patterns dodge themselves, since a rule bent to avoid matching itself is a weaker rule.
- */
+/** Excluded by name, since a pattern bent to dodge itself is a weaker pattern. */
 const RULE = "edit-plan-residue.test.ts";
 
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "tmp", "fixtures"]);
 
-/**
- * Sweeping a sorted edit list for overlap. Every copy this replaced carried a running end offset
- * and compared the next start against it, because there is no other way to do it in one pass.
- */
+/** A running end offset compared against the next start. Every copy carried one. */
 const OVERLAP_SWEEP = [
 	/\b(?:previousEnd|lastEnd|priorEnd)\b/,
 	/\bpreviousOffsets\s*\.\s*(?:start|end)\b/,

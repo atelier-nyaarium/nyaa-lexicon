@@ -18,19 +18,9 @@ export const DaemonLockSchema = z
 		pid: z.number().int().positive(),
 		/** Protocol version the daemon speaks, so a client on a different major replaces it. */
 		protocolVersion: z.string().min(1),
-		/**
-		 * The BUILD the daemon runs, which decides its method table.
-		 *
-		 * Optional only so a lock written before this field existed still parses; absent is read as a
-		 * mismatch, which is the truth about any daemon old enough not to stamp it.
-		 */
+		/** The BUILD the daemon runs, which decides its method table. Absent reads as a mismatch. */
 		buildVersion: z.string().min(1).optional(),
-		/**
-		 * Which BUNDLE, so a rebuild at one version is noticed too.
-		 *
-		 * The version moves once a release; a developer rebuilds twenty times inside it, and every one
-		 * of those leaves a daemon serving code the checkout no longer has.
-		 */
+		/** Which BUNDLE, so a rebuild inside one version is noticed too. */
 		bundleStamp: z.string().min(1).optional(),
 		workspaceRoot: z.string().min(1),
 		startedAt: z.number().int().nonnegative(),
@@ -56,9 +46,8 @@ export type LockDecision =
 /**
  * Why a daemon has to go, which decides whether a client may retire it on its own.
  *
- * `otherWorkspace` is somebody else's daemon answering correctly for somebody else, and stopping it
- * is not a call we get to make. The other two are OUR workspace's daemon speaking a dialect we
- * cannot use, where every session reaching it is as stuck as we are, so retiring it helps them too.
+ * `otherWorkspace` is answering correctly for somebody else. The other two are ours on a dialect
+ * nobody reaching it can use.
  */
 export type ReplaceCause = "otherWorkspace" | "protocol" | "build";
 
@@ -124,10 +113,7 @@ export function decideFromLock(context: LockContext): LockDecision {
 		};
 	}
 
-	// EXACT, not same-major. The contract between a client and a daemon is the method table, and any
-	// release can add to it; a client built after the daemon asks for methods it does not have and
-	// gets `unknown method` for a tool that shipped. Measured against a 1.9.0 daemon still serving
-	// this workspace after the checkout moved to 1.10.2.
+	// EXACT, not same-major: the contract is the method table, and any release can add to it.
 	if (lock.buildVersion !== context.ourBuildVersion) {
 		return {
 			action: "replace",

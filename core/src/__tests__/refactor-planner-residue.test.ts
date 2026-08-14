@@ -5,14 +5,7 @@ import { describe, expect, it } from "vitest";
 /**
  * Holds RefactorPlanner to planning.
  *
- * The property this buys is worth more than tidiness: a plan is always safe to ask for. A caller
- * can show one to a human, or throw it away, and nothing has happened. That stops being true the
- * moment one planning path writes a file or reindexes one, and it stops being true SILENTLY, since
- * a plan that also acted looks exactly like a plan that did not.
- *
- * Providers are reachable only through ProviderProbe. That is what keeps planning a replacement
- * from leaving a provider holding text nobody wrote: the probe restores it in a finally, where the
- * planner used to do it by hand once per exit path and would eventually miss one.
+ * A plan must be safe to ask for, and one that also acted looks exactly like one that did not.
  */
 const MODULE = join(import.meta.dirname, "..", "refactorPlanner.ts");
 

@@ -3,16 +3,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Holds SourceWorkspace to the disk side of the workspace.
+ * Holds SourceWorkspace to the disk side.
  *
- * This one guards a decision as much as a boundary. `reparseFromDisk` looks like it belongs here
- * and does not: it exists to undo the damage of parsing candidate text through the canonical
- * provider, which is a provider-state problem wearing a source-reading costume. Letting it in would
- * put a supervisor on this class, and then "read the workspace" and "ask a provider" would be the
- * same call again.
- *
- * The right fix for that is an isolated candidate parse that never dirties provider state, which
- * removes the need instead of relocating it. Until that exists, this rule keeps the door shut.
+ * Repairing provider state looks like source reading and is not; admitting it adds a supervisor.
  */
 const MODULE = join(import.meta.dirname, "..", "sourceWorkspace.ts");
 

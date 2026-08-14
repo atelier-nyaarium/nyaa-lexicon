@@ -2,17 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/**
- * Holds IndexReadModel to the one property that makes it worth having: a store and nothing else.
- *
- * The point is not tidiness. A caller asking the index a question needs to know it is cheap and
- * safe, and that stops being knowable the moment one query can start a provider, read a file or
- * take a lock. service.ts had exactly that mix, which is why nothing there could be reasoned about
- * without reading the body.
- *
- * Written as a sweep over what the module REACHES rather than over what it is called, since the
- * whole file is read queries and any of them could grow a dependency.
- */
+/** Holds IndexReadModel to a store. A query that could start a provider is not knowably cheap. */
 const MODULE = join(import.meta.dirname, "..", "indexReads.ts");
 
 /** Reaching any of these means a read is no longer only a read. */

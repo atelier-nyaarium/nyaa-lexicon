@@ -1,22 +1,7 @@
-// The composition root, and the one face both adapters talk to.
+// Composition root. Owns the wiring, delegates the rest.
 //
-// It owns almost no behaviour any more. What it owns is the WIRING: which owner gets which
-// dependency, and which narrow port each of them is handed instead of the supervisor. Those are
-// decisions about this workspace rather than about any one subject, which is why they live here
-// and why the modules below cannot make them for themselves.
-//
-// The owners, and the one thing each may not do:
-//   IndexReadModel     reads the index                  cannot reach a provider or the disk
-//   ImportResolver     resolves specifiers              cannot start a provider, cache, or see scope
-//   KnowledgeLedger    answers and the facts they cite  cannot write or wait on a provider
-//   WorkspaceIndexer   gets facts in                    the ONLY writer of the index
-//   SourceWorkspace    the text on disk                 cannot parse it
-//   RefactorPlanner    what a refactor WOULD do         cannot write or reindex
-// Each of those is a residue test, not a convention.
-//
-// The delegating methods below exist so the daemon's method table and both adapters keep one
-// import. They are pass-throughs on purpose: a facade that starts making decisions is the thing
-// this file used to be.
+// Each owner is handed a narrow port rather than the supervisor, and a residue test holds it there.
+// The methods below are pass-throughs on purpose.
 
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -118,19 +103,6 @@ export type RenameOutcome =
 	| { renamed: false; plan: RenamePlan; reason: string };
 
 ////////////////////////////////
-//  Constants
-
-////////////////////////////////
-//  Functions & Helpers
-
-/**
- * The text a range covers, in the same UTF-16 coordinates every edit uses.
- *
- * Null rather than a clamped slice when the range runs past the file: a range that no longer fits
- * describes text that moved, and returning the nearest thing would be a plausible wrong answer.
- * The owner enforces exactly that, which is why this is a call and not an implementation.
- */
-/** A package remains external even when it offers one safe module for surface indexing. */
 ////////////////////////////////
 //  Class
 
@@ -142,8 +114,7 @@ export class LexiconService {
 		private readonly workspaceRoot = ".",
 	) {
 		this.reads = new IndexReadModel(store);
-		// The port. Caching and the surface globs are decisions about this workspace, so they are
-		// answered here rather than inside a module whose subject is imports.
+		// Caching and surface globs are workspace decisions, so they are answered here.
 		this.imports = new ImportResolver(store, (fromModule, specifier) => {
 			const surfaceGlobs = this.currentScope().bundles;
 			const configKey = surfaceGlobs.join("\u0000");
@@ -156,9 +127,7 @@ export class LexiconService {
 			);
 		});
 		this.knowledge = new KnowledgeLedger(store, this.imports);
-		// Deferred through an arrow rather than passed directly, because the resolver's own port reads
-		// the scope back off the indexer. Both sides are called at query time, so neither has to exist
-		// when the other is constructed.
+		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
 		this.indexer = new WorkspaceIndexer(store, supervisor, readFile, workspaceRoot, this.cache, (from, specifier) =>
 			this.imports.resolveImport(from, specifier),
 		);
@@ -169,30 +138,23 @@ export class LexiconService {
 
 	private readonly cache = new ResultCache();
 
-	/** Getting facts in, and the only thing here allowed to change what the index holds. */
+	/** The only writer of the index. */
 	readonly indexer: WorkspaceIndexer;
 
-	/** The workspace as text on disk, which is the half the index is checked against. */
+	/** The text on disk, which the index is checked against. */
 	readonly source: SourceWorkspace;
 
-	/** What planning is allowed to ask a provider, which is less than the supervisor offers. */
+	/** Less than the supervisor offers, on purpose. */
 	readonly probe: ProviderProbe;
 
-	/** What a refactor WOULD do. Nothing here writes; renameSymbol below is the one that does. */
+	/** Plans only. renameSymbol below is what writes. */
 	readonly planner: RefactorPlanner;
 
-	/**
-	 * Every question answered from the index alone.
-	 *
-	 * Delegated rather than reimplemented, and public so a caller that only reads can take this and
-	 * be unable to reach a provider or the disk by construction.
-	 */
+	/** Public so a read-only caller can take this and reach nothing else. */
 	readonly reads: IndexReadModel;
 
-	/** Import questions. Reaches one provider capability and its store, nothing else. */
 	readonly imports: ImportResolver;
 
-	/** Recorded answers and the facts they cite. */
 	readonly knowledge: KnowledgeLedger;
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */

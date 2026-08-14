@@ -3,15 +3,9 @@ import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Holds WorkspaceIndexer as the only module that changes what the index holds.
+ * Holds WorkspaceIndexer as the only writer of the index.
  *
- * Bug class killed: two writers to one index. A rescan and a file event race, the loser's facts
- * survive, and nothing downstream can tell. It cannot be caught from the outside either, because
- * both orders leave an index that looks entirely plausible; only the file's own hash disagrees with
- * the facts filed under it, and only sometimes.
- *
- * The rule is the WRITE, not the module. A caller may ask the indexer to index a file as often as
- * it likes. What it may not do is reach past it to the store's replace and forget.
+ * Two writers race and either order looks plausible. The rule is the WRITE, not the module.
  */
 const PACKAGES = ["core", "adapters", "protocol", "providers"].map((dir) =>
 	join(import.meta.dirname, "..", "..", "..", dir),
@@ -70,10 +64,8 @@ describe("one module writes the index", () => {
 		expect(all.map((file) => basename(file))).toContain(OWNER);
 	});
 
-	// Tests are OUT of scope here, unlike the coordinate sweep, and the difference is worth stating.
-	// There, a fixture doing its own arithmetic could be wrong in exactly the way production was.
-	// Here, a test seeding the store is constructing a state on purpose and racing nothing. The bug
-	// class is two write paths in a running system, so that is what the sweep covers.
+	// Tests are OUT of scope: a fixture seeding the store races nothing. The class is two write
+	// paths in a running system.
 	it("has nobody in production but the indexer replacing or forgetting a file's facts", () => {
 		const offenders: string[] = [];
 		const exempt = new Set([OWNER, STORE, RULE]);

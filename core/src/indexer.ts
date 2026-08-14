@@ -1,14 +1,7 @@
-// Getting facts into the index, and the only module allowed to change what is in it.
+// Getting facts in, and the only module that changes what the index holds.
 //
-// The single-owner rule here is narrow and load-bearing: every call that replaces or forgets a
-// file's facts lives in this class, enforced by a residue test. Two writers to one index is the
-// bug class where a rescan and a file event race and the loser's facts survive, and it is a class
-// that cannot be tested away from the outside because both orders produce a plausible index.
-//
-// Unlike the read model and the import resolver, this one legitimately reaches wide. Indexing IS
-// the operation that reads files, asks providers and writes the store, so a narrow port here would
-// be a fiction. What it does not own is what a fact MEANS: the store's shape, the resolution of a
-// specifier, and the scope of the workspace all belong elsewhere and arrive as dependencies.
+// Two writers race and the loser leaves a plausible-looking index, so a residue test holds this as
+// the only one. Reaches wide on purpose: indexing IS reading files and asking providers.
 
 import type { ImportResolution, IndexDepth } from "@nyaa-lexicon/protocol";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
@@ -51,13 +44,7 @@ export interface IndexStatus {
 ////////////////////////////////
 //  Class
 
-/**
- * The workspace indexer.
- *
- * Owns the state a scan accumulates: what has been discovered, which modules are roots, how deeply
- * each was read, and how the current scan is going. That state is why this is a class rather than a
- * set of functions, and why there is one of it per service.
- */
+/** Owns what a scan accumulates: discovered files, roots, depths, progress. */
 export class WorkspaceIndexer {
 	constructor(
 		private readonly store: IndexStore,
@@ -76,12 +63,7 @@ export class WorkspaceIndexer {
 	private roots = new Set<string>();
 	private depths = new Map<string, IndexDepth>();
 
-	/**
-	 * The scope, read from disk on first use and refreshed at the start of every workspace scan.
-	 *
-	 * Public because the import resolver's surface globs come from it, and because a caller asking
-	 * what is in scope is asking the thing that decided.
-	 */
+	/** Refreshed at the start of every scan. Public for the resolver's surface globs. */
 	currentScope(): FileScope {
 		this.scope ??= fileScopeFor(this.workspaceRoot);
 		return this.scope;

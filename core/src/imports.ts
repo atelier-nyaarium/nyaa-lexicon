@@ -1,14 +1,7 @@
 // Which module a specifier names, and which statements brought a name into a file.
 //
-// Its own owner because import resolution is the one concept that both halves of the service need
-// and neither owns: the knowledge layer cites an import statement as a fact, and the rename planner
-// has to know which statements would have to be repointed. Answering it in two places would let
-// them disagree about what a specifier resolves to, which is the same fact under two names.
-//
-// The provider is reached through a PORT, not a supervisor. Everything language-specific about
-// resolving a specifier, along with the caching and the surface globs that decide how deeply a
-// package is read, sits behind one injected function. This module cannot start a provider, cannot
-// see the scope, and cannot cache; it asks its port and reads its store.
+// The knowledge layer and the rename planner both need this, and two answers would be one fact
+// under two names. Providers through a port, never a supervisor.
 
 import type { ImportOrigin, ImportResolution, IndexDepth, MoveImportSite, Range } from "@nyaa-lexicon/protocol";
 import { DEFAULT_REFERENCE_LIMIT } from "./indexReads.js";
@@ -35,23 +28,13 @@ export function importTarget(resolution: ImportResolution): { module: string; de
 ////////////////////////////////
 //  Interfaces & Types
 
-/**
- * The single provider capability an import resolver needs.
- *
- * A function rather than a supervisor, so this module cannot grow a second reason to talk to a
- * provider without the signature changing and someone noticing. Whoever supplies it owns the
- * caching and the surface globs, which are decisions about the workspace rather than about imports.
- */
+/** The one provider capability this needs. Its supplier owns caching and surface globs. */
 export type ResolveSpecifier = (fromModule: string, specifier: string) => Promise<ImportResolution>;
 
 ////////////////////////////////
 //  Class
 
-/**
- * Import questions, answered from the index plus one provider capability.
- *
- * Held by LexiconService, which supplies the port and delegates to it.
- */
+/** Import questions, answered from the index plus one provider capability. */
 export class ImportResolver {
 	constructor(
 		private readonly store: IndexStore,

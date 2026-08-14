@@ -1,13 +1,7 @@
-// Every question answered from the index alone, and the shapes those answers take.
+// Every question answered from the index alone.
 //
-// This is the read half of the service, and its defining property is what it CANNOT reach. It has
-// a store and nothing else: no provider supervisor, no file reads, no scope, no cache, no writes.
-// That is enforced by a residue test rather than left to discipline, because the moment a query
-// can start a provider or touch the disk, "ask the index" stops being a cheap, safe operation and
-// every caller has to start wondering which of the two it is getting.
-//
-// Extracted from service.ts, which had grown to answer every question class at once. This group
-// was the cleanest seam in it: fourteen methods that between them touched only the store.
+// A store and nothing else, held by a residue test. A query that could start a provider or touch
+// the disk would stop being knowably cheap.
 
 import type { Range } from "@nyaa-lexicon/protocol";
 import { findCycles } from "./graph.js";
@@ -160,12 +154,7 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 ////////////////////////////////
 //  Class
 
-/**
- * Read queries against one index.
- *
- * Held by LexiconService, which delegates to it rather than reimplementing it, and usable on its
- * own by anything that has a store and only wants to ask questions of it.
- */
+/** Read queries against one index. Usable alone by anything holding a store. */
 export class IndexReadModel {
 	constructor(private readonly store: IndexStore) {}
 

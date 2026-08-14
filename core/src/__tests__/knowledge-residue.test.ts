@@ -3,17 +3,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Holds the knowledge layer to reading, so recording what you concluded stays cheap.
+ * Holds the knowledge layer to reading.
  *
- * The reason is behavioural rather than aesthetic. An agent is meant to record an answer as a
- * matter of course, and it will stop doing that the moment the call can block on a provider or a
- * lock. Keeping the ledger to its store and the import resolver is what makes "write down what you
- * worked out" a cheap habit rather than a decision.
- *
- * It also keeps the honest-incompleteness property checkable: staleness is defined here, once, by
- * whether cited facts still resolve. A second definition somewhere with its own provider access
- * could disagree about whether an answer is current, which is the one lie this project exists to
- * stop telling.
+ * Recording stops being a habit once it can block. Staleness is defined here, once.
  */
 const MODULE = join(import.meta.dirname, "..", "knowledge.ts");
 

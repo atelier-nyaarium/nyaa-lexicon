@@ -2,17 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/**
- * Holds ImportResolver to its port.
- *
- * The whole value of this seam is that resolving a specifier is the ONE thing here that needs a
- * provider, so it goes through a single injected function. Reaching a supervisor directly would put
- * the language-specific half back inside a module whose subject is language-neutral, and then
- * "which module does this specifier name" would have two answers again.
- *
- * Scope and caching are excluded for the same reason: they are decisions about a workspace, and a
- * module that could make them would have to be read to know whether an answer was fresh.
- */
+/** Holds ImportResolver to its port, so the language-specific half stays out of it. */
 const MODULE = join(import.meta.dirname, "..", "imports.ts");
 
 const FORBIDDEN = [

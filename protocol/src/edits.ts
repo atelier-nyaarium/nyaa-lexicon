@@ -20,10 +20,7 @@ export type TextEdit = z.infer<typeof TextEditSchema>;
 ////////////////////////////////
 //  Interfaces & Types
 
-/**
- * Why an edit cannot travel with the others. A closed set, because a caller has to map each one
- * into its own vocabulary and an open string would let a new case pass unnoticed.
- */
+/** Why an edit cannot travel with the others. Closed, so a new case cannot pass unnoticed. */
 export type EditConflict =
 	/** Its range does not address text in this file. */
 	| "unaddressable"
@@ -40,10 +37,8 @@ export interface EditPlan {
 	/**
 	 * Points where two or more DIFFERENT insertions were joined into one, in the order given.
 	 *
-	 * Reported rather than hidden because the two callers of this analysis disagree about it, and
-	 * that disagreement is a policy worth seeing. A provider joins them, since collecting several
-	 * insertions for one point is how it adds two imports. The applier refuses them, since by the
-	 * time a final edit set reaches it, an ambiguous order is a provider bug rather than a shorthand.
+	 * Reported rather than hidden, since the callers disagree: a provider joins them to add two
+	 * imports, the applier refuses them as an ambiguous order.
 	 */
 	joined: Array<{ offset: number; edit: TextEdit }>;
 }
@@ -54,13 +49,8 @@ export interface EditPlan {
 /**
  * Work out what a set of edits means, without applying any of them.
  *
- * ONE analysis, because there were five: the applier below, and a `validateEdits` in each of the
- * four provider modules that rewrite text. They agreed by luck rather than by construction, and had
- * already drifted on joined insertions. Deciding twice what a set of edits means is the bug class
- * this module's header claims to have closed, so it had better only be decided here.
- *
- * What each caller does with the result is still the caller's. This function has no policy, only
- * findings.
+ * One analysis, where five had drifted apart. Findings only, no policy: what a caller does with a
+ * conflict is still the caller's.
  */
 export function planEdits(coordinates: TextCoordinates, edits: TextEdit[]): EditPlan {
 	const conflicts: EditPlan["conflicts"] = [];
