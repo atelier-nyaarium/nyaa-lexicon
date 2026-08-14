@@ -69,6 +69,7 @@ import {
 } from "./indexReads.js";
 import { decideInvalidation, type FileEvent } from "./invalidation.js";
 import { KnowledgeLedger } from "./knowledge.js";
+import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { ResultCache } from "./resultCache.js";
 import { compileSearchRegex } from "./search.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
@@ -300,6 +301,7 @@ export class LexiconService {
 			this.imports.resolveImport(from, specifier),
 		);
 		this.source = new SourceWorkspace(store, readFile, workspaceRoot);
+		this.probe = liveProbe(supervisor, readFile);
 	}
 
 	private readonly cache = new ResultCache();
@@ -309,6 +311,9 @@ export class LexiconService {
 
 	/** The workspace as text on disk, which is the half the index is checked against. */
 	readonly source: SourceWorkspace;
+
+	/** What planning is allowed to ask a provider, which is less than the supervisor offers. */
+	readonly probe: ProviderProbe;
 
 	/**
 	 * Every question answered from the index alone.
@@ -518,42 +523,28 @@ export class LexiconService {
 		const spliced = applyEdits(before, [{ range: source.range, newText }]);
 		if ("problem" in spliced) return { ok: false, reason: spliced.problem };
 
-		const route = this.supervisor.route(source.module);
-		if (!route.owned) return { ok: false, reason: `no provider owns ${source.module}` };
+		const owner = this.probe.owner(source.module);
+		if (!owner.owned) return { ok: false, reason: `no provider owns ${source.module}` };
 
-		const candidate = await this.supervisor.ask(source.module, "parseFile", {
-			module: source.module,
-			contentHash: hashContent(spliced.text),
-			text: spliced.text,
-		});
+		// The probe restores the provider's view of the module before it returns, on every path, so
+		// nothing below has to remember to.
+		const candidate = await this.probe.parseCandidate(source.module, spliced.text);
+		if (!candidate.parsed) return { ok: false, reason: `the replacement does not parse: ${candidate.reason}` };
 
-		const errors = candidate.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
-		if (errors.length > 0) {
-			// Restored before returning: the provider now holds the rejected text, and a later
-			// question would be answered from a version that was never written.
-			await this.reparseFromDisk(source.module);
-			return { ok: false, reason: `the replacement does not parse: ${errors.map((e) => e.message).join("; ")}` };
-		}
+		const renamed = this.renamedDeclaration(address, candidate.facts, source);
+		if (renamed) return { ok: false, reason: renamed };
 
-		const renamed = this.renamedDeclaration(address, candidate, source);
-		if (renamed) {
-			await this.reparseFromDisk(source.module);
-			return { ok: false, reason: renamed };
-		}
-
-		const issues = this.impactOf(source.module, candidate);
+		const issues = this.impactOf(source.module, candidate.facts);
 
 		// Silence from a provider that never claimed to report syntax errors is not approval. Said
 		// out loud, because the alternative is a caller believing the candidate was checked.
-		if (!this.supervisor.declares(route.providerId, "syntaxDiagnostics")) {
+		if (!this.probe.declares(owner.providerId, "syntaxDiagnostics")) {
 			issues.push({
 				kind: "SyntaxUnchecked",
 				detail: `the provider for ${source.module} does not report syntax errors, so the replacement was not checked`,
 				module: source.module,
 			});
 		}
-
-		await this.reparseFromDisk(source.module);
 
 		return {
 			ok: true,
@@ -867,15 +858,6 @@ export class LexiconService {
 			for (const reference of this.store.referencesTo(id)) modules.add(reference.module);
 		}
 		return [...modules];
-	}
-
-	/** Puts the provider back on the text that is actually there, after parsing a candidate. */
-	private async reparseFromDisk(module: string): Promise<void> {
-		const text = this.readFile(module);
-		if (text === null) return;
-		await this.supervisor
-			.ask(module, "parseFile", { module, contentHash: hashContent(text), text })
-			.catch(() => undefined);
 	}
 
 	/** Reasons a replacement is refused before it is even parsed. */
