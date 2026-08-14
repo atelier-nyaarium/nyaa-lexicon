@@ -8,8 +8,9 @@
 // byte-identical, and hashing decoded text would let two different files share an image.
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 
 ////////////////////////////////
@@ -425,10 +426,7 @@ export class TransactionManager {
 		const bytes = image.beforeHash === null ? null : this.store.blob(image.beforeHash);
 		if (bytes === null) return;
 
-		mkdirSync(path.dirname(full), { recursive: true });
-		const temporary = `${full}.lexicon-tmp`;
-		writeFileSync(temporary, bytes);
-		renameSync(temporary, full);
+		writeSourceFile(full, bytes);
 	}
 
 	/** Left behind when a write died between its temp file and its rename. */
@@ -437,10 +435,7 @@ export class TransactionManager {
 			db.prepare("SELECT DISTINCT module FROM refactor_images").all(),
 		) as Array<{ module: string }>;
 
-		for (const row of rows) {
-			const temporary = `${this.full(row.module)}.lexicon-tmp`;
-			if (existsSync(temporary)) rmSync(temporary, { force: true });
-		}
+		for (const row of rows) sweepTemporary(this.full(row.module));
 	}
 
 	////////////////////////////////

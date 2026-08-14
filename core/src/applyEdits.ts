@@ -3,9 +3,9 @@
 // The splice itself lives in the protocol package beside TextEdit, so the conformance suite checks
 // provider edits with the same code that applies them here.
 
-import { renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { applyEdits, type TextEdit } from "@nyaa-lexicon/protocol";
+import { writeSourceFile } from "./sourceWriter.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -48,11 +48,8 @@ export function writeAll(
 	}
 
 	for (const file of staged) {
-		const full = path.join(workspaceRoot, file.module);
-		const temporary = `${full}.lexicon-tmp`;
 		try {
-			writeFileSync(temporary, file.text);
-			renameSync(temporary, full);
+			writeSourceFile(path.join(workspaceRoot, file.module), file.text);
 		} catch (error) {
 			return {
 				applied: false,

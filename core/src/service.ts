@@ -5,7 +5,6 @@
 // or a provider process.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
 	answerFactId,
@@ -55,6 +54,7 @@ import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor,
 import { decideInvalidation, type FileEvent } from "./invalidation.js";
 import { ResultCache } from "./resultCache.js";
 import { compileSearchRegex } from "./search.js";
+import { writeSourceFile } from "./sourceWriter.js";
 import type {
 	IndexStore,
 	StoredDeclaration,
@@ -1382,11 +1382,7 @@ export class LexiconService {
 	 * has to make the replacement itself uninterruptible.
 	 */
 	writeModule(module: string, text: string): void {
-		const full = path.join(this.workspaceRoot, module);
-		const temporary = `${full}.lexicon-tmp`;
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(temporary, text);
-		renameSync(temporary, full);
+		writeSourceFile(path.join(this.workspaceRoot, module), text);
 	}
 
 	/** Puts the provider back on the text that is actually there, after parsing a candidate. */
