@@ -73,6 +73,17 @@ export {
 	type Invalidation,
 	type InvalidationContext,
 } from "./invalidation.js";
+export {
+	type CitedFact,
+	DEFAULT_FACT_LIMIT,
+	DEFAULT_GAP_LIMIT,
+	type FactSet,
+	type GapRow,
+	INLINE_GAP_THRESHOLD,
+	type InvalidateOutcome,
+	type KnowledgeGaps,
+	KnowledgeLedger,
+} from "./knowledge.js";
 export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } from "./lifetime.js";
 export { type DaemonLock, DaemonLockSchema, decideFromLock, type LockDecision } from "./lockFile.js";
 export { currentHost, type PlatformEnv, stateRoot, workspaceKey, workspacePaths } from "./paths.js";
@@ -104,15 +115,8 @@ export { type CacheStats, ResultCache } from "./resultCache.js";
 export { modulesFor, type ProviderClaims, type Route, routeModule } from "./routing.js";
 export { compileSearchRegex } from "./search.js";
 export {
-	type CitedFact,
-	DEFAULT_FACT_LIMIT,
-	type FactSet,
-	type GapRow,
-	INLINE_GAP_THRESHOLD,
 	type IndexOutcome,
 	type IndexStatus,
-	type InvalidateOutcome,
-	type KnowledgeGaps,
 	LexiconService,
 	type RenameConcern,
 	type RenameEditPlan,
