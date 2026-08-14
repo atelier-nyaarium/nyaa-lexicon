@@ -12,6 +12,7 @@ import {
 	applyEdits,
 	type Binding,
 	composeSymbolId,
+	coordinatesOf,
 	doubtFactId,
 	type FactKind,
 	type FileFacts,
@@ -506,20 +507,10 @@ function countUnbound(rows: Array<{ name: string; role: string; reason: string }
  *
  * Null rather than a clamped slice when the range runs past the file: a range that no longer fits
  * describes text that moved, and returning the nearest thing would be a plausible wrong answer.
+ * The owner enforces exactly that, which is why this is a call and not an implementation.
  */
 function sliceRange(text: string, range: Range): string | null {
-	const starts = [0];
-	for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
-
-	const from = starts[range.start.line];
-	const to = starts[range.end.line];
-	if (from === undefined || to === undefined) return null;
-
-	const start = from + range.start.character;
-	const end = to + range.end.character;
-	if (end > text.length || end < start) return null;
-
-	return text.slice(start, end);
+	return coordinatesOf(text).sliceRange(range) ?? null;
 }
 
 /** A package remains external even when it offers one safe module for surface indexing. */
