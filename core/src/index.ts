@@ -51,6 +51,22 @@ export {
 	readHistory,
 } from "./history.js";
 export {
+	type AnswerTier,
+	type CallHierarchy,
+	type CallHierarchyEdge,
+	DEFAULT_LITERAL_LIMIT,
+	DEFAULT_REFERENCE_LIMIT,
+	type DescribeResult,
+	type GraphSummary,
+	IndexReadModel,
+	type LiteralQuery,
+	type LiteralsResult,
+	REGEX_SCAN_LIMIT,
+	type ReferencesResult,
+	type SymbolSummary,
+	type TypeHierarchy,
+} from "./indexReads.js";
+export {
 	coalesce,
 	decideInvalidation,
 	type FileEvent,
@@ -88,33 +104,22 @@ export { type CacheStats, ResultCache } from "./resultCache.js";
 export { modulesFor, type ProviderClaims, type Route, routeModule } from "./routing.js";
 export { compileSearchRegex } from "./search.js";
 export {
-	type AnswerTier,
-	type CallHierarchy,
-	type CallHierarchyEdge,
 	type CitedFact,
 	DEFAULT_FACT_LIMIT,
-	DEFAULT_REFERENCE_LIMIT,
-	type DescribeResult,
 	type FactSet,
 	type GapRow,
-	type GraphSummary,
 	INLINE_GAP_THRESHOLD,
 	type IndexOutcome,
 	type IndexStatus,
 	type InvalidateOutcome,
 	type KnowledgeGaps,
 	LexiconService,
-	type LiteralQuery,
-	type LiteralsResult,
-	type ReferencesResult,
 	type RenameConcern,
 	type RenameEditPlan,
 	type RenameFile,
 	type RenameOutcome,
 	type RenamePlan,
 	type SymbolSource,
-	type SymbolSummary,
-	type TypeHierarchy,
 } from "./service.js";
 export {
 	type BindOutcome,
