@@ -44,7 +44,16 @@ export type DaemonLock = z.infer<typeof DaemonLockSchema>;
 export type LockDecision =
 	| { action: "connect"; lock: DaemonLock }
 	| { action: "spawn"; reason: string }
-	| { action: "replace"; lock: DaemonLock; reason: string };
+	| { action: "replace"; lock: DaemonLock; reason: string; cause: ReplaceCause };
+
+/**
+ * Why a daemon has to go, which decides whether a client may retire it on its own.
+ *
+ * `otherWorkspace` is somebody else's daemon answering correctly for somebody else, and stopping it
+ * is not a call we get to make. The other two are OUR workspace's daemon speaking a dialect we
+ * cannot use, where every session reaching it is as stuck as we are, so retiring it helps them too.
+ */
+export type ReplaceCause = "otherWorkspace" | "protocol" | "build";
 
 export interface LockContext {
 	/** Raw file contents, or null when there is no lock file. */
@@ -89,7 +98,12 @@ export function decideFromLock(context: LockContext): LockDecision {
 	// A lock naming another workspace means this one's file was overwritten, and connecting would
 	// serve a different repo's index under our path.
 	if (lock.workspaceRoot !== context.workspaceRoot) {
-		return { action: "replace", lock, reason: `the daemon serves ${lock.workspaceRoot}` };
+		return {
+			action: "replace",
+			lock,
+			reason: `the daemon serves ${lock.workspaceRoot}`,
+			cause: "otherWorkspace",
+		};
 	}
 
 	if (!sameMajor(lock.protocolVersion, context.ourProtocolVersion)) {
@@ -97,6 +111,7 @@ export function decideFromLock(context: LockContext): LockDecision {
 			action: "replace",
 			lock,
 			reason: `the daemon speaks ${lock.protocolVersion}, we speak ${context.ourProtocolVersion}`,
+			cause: "protocol",
 		};
 	}
 
@@ -109,6 +124,7 @@ export function decideFromLock(context: LockContext): LockDecision {
 			action: "replace",
 			lock,
 			reason: `the daemon runs ${lock.buildVersion ?? "a build too old to say"}, we run ${context.ourBuildVersion}`,
+			cause: "build",
 		};
 	}
 
