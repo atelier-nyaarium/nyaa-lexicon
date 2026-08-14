@@ -6,6 +6,7 @@ import { loadMoveCases } from "../conformance/moveCorpus";
 import { extractDeclarations, REFERENCE_TIERS } from "../conformance/referenceProvider";
 import { formatReport, runSuite } from "../conformance/runner";
 import type { ConformanceCase, MoveCase } from "../conformance/types";
+import { coordinatesOf } from "../coordinates";
 import type { MoveEditsRequest } from "../move";
 import type { FileFacts } from "../project";
 import { composeSymbolId } from "../symbolId";
@@ -46,16 +47,12 @@ function decl(name: string, extra: Record<string, unknown> = {}) {
 	};
 }
 
-function positionAt(text: string, offset: number): Range["start"] {
-	const before = text.slice(0, offset);
-	const lineStart = before.lastIndexOf("\n") + 1;
-	return { line: before.split("\n").length - 1, character: offset - lineStart };
-}
-
 function rangeForText(text: string, value: string): Range {
 	const start = text.indexOf(value);
 	if (start === -1) throw new Error(`missing test text: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`unaddressable test range: ${value}`);
+	return range;
 }
 
 function referenceNamedMove(id: string, expectedSpecifier: string): MoveCase {
