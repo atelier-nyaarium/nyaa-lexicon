@@ -24,6 +24,8 @@ export const PositionSchema = z
 
 export const RangeSchema = z.object({ start: PositionSchema, end: PositionSchema }).meta({ id: "Range" });
 
+export type Position = z.infer<typeof PositionSchema>;
+
 export type Range = z.infer<typeof RangeSchema>;
 
 /** LSP's closed set. Language flavour rides on `languageKind`, so providers never mint kinds. */

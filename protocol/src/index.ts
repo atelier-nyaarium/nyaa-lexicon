@@ -1,6 +1,7 @@
 // The provider protocol's public surface. Importers take named symbols from here, never from the
 // domain files, so a split or rename inside stays invisible to core and providers.
 
+export { coordinatesOf, type OffsetRange, type TextCoordinates } from "./coordinates.js";
 export { Cursor, err, formatFailure, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
 export {
 	type ClientFrame,
@@ -148,6 +149,7 @@ export {
 	DiagnosticSchema,
 	type Metrics,
 	MetricsSchema,
+	type Position,
 	PositionSchema,
 	type Range,
 	RangeSchema,

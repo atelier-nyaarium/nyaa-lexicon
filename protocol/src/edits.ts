@@ -6,6 +6,7 @@
 // the splice, which is the bug class where two appliers disagree about overlapping ranges.
 
 import { z } from "zod";
+import { coordinatesOf } from "./coordinates.js";
 import { RangeSchema } from "./symbols.js";
 
 ////////////////////////////////
@@ -19,50 +20,50 @@ export type TextEdit = z.infer<typeof TextEditSchema>;
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Line and character to an index, so edits can be sorted and spliced in one coordinate system. */
-function offsetOf(lineStarts: number[], position: { line: number; character: number }): number | null {
-	const start = lineStarts[position.line];
-	if (start === undefined) return null;
-	return start + position.character;
-}
-
-function lineStartsOf(text: string): number[] {
-	const starts = [0];
-	for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
-	return starts;
-}
-
 /**
  * Apply every edit to one file's text.
  *
- * Applied back to front, so an earlier edit never moves the coordinates of a later one. Sorting
- * here rather than trusting the provider means a provider that returns edits in reading order and
- * one that returns them in any other order both produce the same file.
+ * Applied back to front, so an earlier edit never moves the coordinates of a later one, and the
+ * result does not depend on the order the caller happened to collect them in.
  *
- * Overlapping edits are refused rather than resolved. Two edits claiming the same characters is a
- * provider bug, and picking a winner would turn it into a silently wrong file.
+ * Refuses rather than resolves, in three ways, because each alternative is a silently wrong file:
+ * a position that does not address a character, two edits claiming the same characters, and two
+ * insertions at one point whose order would decide the output. A caller that means to combine two
+ * insertions says so by passing one edit.
  */
 export function applyEdits(text: string, edits: TextEdit[]): { text: string } | { problem: string } {
-	const lineStarts = lineStartsOf(text);
+	const coordinates = coordinatesOf(text);
 	const spans: Array<{ start: number; end: number; newText: string }> = [];
 
 	for (const edit of edits) {
-		const start = offsetOf(lineStarts, edit.range.start);
-		const end = offsetOf(lineStarts, edit.range.end);
-		if (start === null || end === null)
-			return { problem: `an edit is outside the file at line ${edit.range.start.line}` };
-		if (end < start) return { problem: `an edit ends before it starts at line ${edit.range.start.line}` };
-		spans.push({ start, end, newText: edit.newText });
+		const offsets = coordinates.offsetsForRange(edit.range);
+		if (offsets === undefined) {
+			const { line, character } = edit.range.start;
+			return { problem: `an edit does not address text, at line ${line} character ${character}` };
+		}
+		spans.push({ start: offsets.start, end: offsets.end, newText: edit.newText });
 	}
 
-	spans.sort((a, b) => a.start - b.start);
+	spans.sort((a, b) => a.start - b.start || a.end - b.end);
 	for (let i = 1; i < spans.length; i++) {
-		const previous = spans[i - 1] as { end: number };
-		const current = spans[i] as { start: number };
+		const previous = spans[i - 1] as { start: number; end: number; newText: string };
+		const current = spans[i] as { start: number; end: number; newText: string };
 		if (current.start < previous.end) return { problem: "two edits overlap, so the result would depend on order" };
+		if (current.start === current.end && previous.start === previous.end && current.start === previous.start) {
+			if (current.newText === previous.newText) continue;
+			return {
+				problem: `two insertions share one point, so the result would depend on order at offset ${current.start}`,
+			};
+		}
 	}
 
 	let out = text;
-	for (const span of [...spans].reverse()) out = out.slice(0, span.start) + span.newText + out.slice(span.end);
+	const seen = new Set<string>();
+	for (const span of [...spans].reverse()) {
+		const key = `${span.start}:${span.end}:${span.newText}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out = out.slice(0, span.start) + span.newText + out.slice(span.end);
+	}
 	return { text: out };
 }
