@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyEdits, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
+import { applyEdits, coordinatesOf, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { TypeScriptProvider } from "../main";
 
@@ -18,16 +18,12 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-function positionAt(text: string, offset: number) {
-	const before = text.slice(0, offset);
-	const lineStart = before.lastIndexOf("\n") + 1;
-	return { line: before.split("\n").length - 1, character: offset - lineStart };
-}
-
 function rangeForText(text: string, value: string, from = 0): Range {
 	const start = text.indexOf(value, from);
 	if (start === -1) throw new Error(`missing test text: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`invalid test text range: ${value}`);
+	return range;
 }
 
 function move(root: string, request: MoveEditsRequest) {
@@ -43,6 +39,42 @@ afterEach(() => {
 });
 
 describe("move edits", () => {
+	it("refuses insertion positions that do not address content", () => {
+		const cases = [
+			{ text: "const existing = 1;\n", position: { line: 0, character: 99 } },
+			{ text: "const existing = 1;\n", position: { line: 0, character: -1 } },
+			{ text: "ab\r\n", position: { line: 0, character: 3 } },
+		];
+
+		for (const { text, position } of cases) {
+			const response = move(workspace({ "target.ts": text }), {
+				module: "target.ts",
+				text,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: "export const moved = 1;\n", position } },
+				importSites: [],
+				dependencies: [],
+				sites: [],
+			});
+
+			expect(response).toEqual({
+				status: "ready",
+				edits: [],
+				blocked: [
+					{
+						range: { start: position, end: position },
+						reason: "ParseError",
+						detail: "the insertion position is outside the module",
+					},
+				],
+			});
+		}
+	});
+
 	it("rewrites an import specifier while preserving its alias", () => {
 		const text = 'import { moved as local } from "./old";\nlocal();\n';
 		const importText = 'import { moved as local } from "./old";';

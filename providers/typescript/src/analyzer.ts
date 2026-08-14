@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
 	type Binding,
+	coordinatesOf,
 	type Diagnostic,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
@@ -142,7 +143,8 @@ export class TypeScriptAnalyzer {
 	bind(module: string, name: string, range: Range): Binding {
 		const context = this.sourceContext(module);
 		if (isSourceFailure(context)) return unknownBinding(context.reason, context.detail);
-		const position = positionOf(context.source, range.start);
+		const position = coordinatesOf(context.source.text).offsetAt(range.start);
+		if (position === undefined) return unknownBinding("RuntimeConstructed", "the range is not a source token");
 		const token = tokenAt(context.source, position, name);
 		if (token === undefined) return unknownBinding("RuntimeConstructed", "the name is not a source token");
 		return this.bindSymbol(context.checker, token);
@@ -157,7 +159,9 @@ export class TypeScriptAnalyzer {
 
 		const context = this.sourceContext(params.module);
 		if (isSourceFailure(context)) return unknownType(context.reason, context.detail);
-		const token = tokenAt(context.source, positionOf(context.source, params.range.start));
+		const position = coordinatesOf(context.source.text).offsetAt(params.range.start);
+		if (position === undefined) return unknownType("RuntimeConstructed", "the range is not a source token");
+		const token = tokenAt(context.source, position);
 		if (token === undefined) return unknownType("RuntimeConstructed", "the range is not a source token");
 		const symbol = context.checker.getSymbolAtLocation(token);
 		if (symbol === undefined) {
@@ -170,14 +174,19 @@ export class TypeScriptAnalyzer {
 	diagnostics(module: string): Diagnostic[] {
 		const context = this.sourceContext(module);
 		if (isSourceFailure(context)) return [diagnosticOf(module, context)];
-		return context.program.getSyntacticDiagnostics(context.source).map((diagnostic) => ({
-			severity: "error" as const,
-			message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-			...(diagnostic.start === undefined || diagnostic.length === undefined
-				? {}
-				: { range: rangeOfSpan(context.source, diagnostic.start, diagnostic.length) }),
-			path: module,
-		}));
+		const coordinates = coordinatesOf(context.source.text);
+		return context.program.getSyntacticDiagnostics(context.source).map((diagnostic) => {
+			const range =
+				diagnostic.start === undefined || diagnostic.length === undefined
+					? undefined
+					: coordinates.rangeAt(diagnostic.start, diagnostic.start + diagnostic.length);
+			return {
+				severity: "error" as const,
+				message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+				...(range === undefined ? {} : { range }),
+				path: module,
+			};
+		});
 	}
 
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
@@ -579,10 +588,6 @@ export class TypeScriptAnalyzer {
 ////////////////////////////////
 //  Functions & Helpers
 
-function positionOf(source: ts.SourceFile, position: Position): number {
-	return source.getPositionOfLineAndCharacter(position.line, position.character);
-}
-
 function tokenAt(source: ts.SourceFile, position: number, name?: string): ts.Node | undefined {
 	if (source.end === 0) return undefined;
 	const wanted = name;
@@ -600,14 +605,6 @@ function tokenAt(source: ts.SourceFile, position: number, name?: string): ts.Nod
 	}
 	walk(source);
 	return found;
-}
-
-function rangeOfSpan(source: ts.SourceFile, start: number, length: number) {
-	const end = start + length;
-	return {
-		start: source.getLineAndCharacterOfPosition(start),
-		end: source.getLineAndCharacterOfPosition(end),
-	};
 }
 
 function parseDiagnosticsOf(source: ts.SourceFile): readonly ts.Diagnostic[] {

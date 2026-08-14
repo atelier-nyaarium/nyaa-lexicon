@@ -1,4 +1,4 @@
-import { parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { extractFile } from "../extract";
@@ -37,32 +37,27 @@ function descriptorsOf(symbolId: string): string[] {
 	return (parseSymbolId(symbolId)?.descriptors ?? []).map((d) => `${d.kind}:${d.name}`);
 }
 
-function positionAt(text: string, offset: number) {
-	const before = text.slice(0, offset);
-	const lineStart = before.lastIndexOf("\n") + 1;
-	return { line: before.split("\n").length - 1, character: offset - lineStart };
-}
-
 function rangeForText(text: string, value: string, from = 0) {
 	const start = text.indexOf(value, from);
 	if (start === -1) throw new Error(`missing test text: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`invalid test text range: ${value}`);
+	return range;
 }
 
 function offsetAt(text: string, position: { line: number; character: number }) {
-	return (
-		text
-			.split("\n")
-			.slice(0, position.line)
-			.reduce((offset, line) => offset + line.length + 1, 0) + position.character
-	);
+	const offset = coordinatesOf(text).offsetAt(position);
+	if (offset === undefined) throw new Error("invalid test position");
+	return offset;
 }
 
 function textAt(
 	text: string,
 	range: { start: { line: number; character: number }; end: { line: number; character: number } },
 ) {
-	return text.slice(offsetAt(text, range.start), offsetAt(text, range.end));
+	const value = coordinatesOf(text).sliceRange(range);
+	if (value === undefined) throw new Error("invalid test range");
+	return value;
 }
 
 ////////////////////////////////

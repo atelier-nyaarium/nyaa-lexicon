@@ -1,5 +1,6 @@
 import {
 	composeSymbolId,
+	coordinatesOf,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
@@ -498,14 +499,19 @@ function importedName(
 function syntaxDiagnostics(module: string, source: ts.SourceFile): Diagnostic[] {
 	const diagnostics =
 		(source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
-	return diagnostics.map((diagnostic) => ({
-		severity: "error",
-		message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-		path: module,
-		...(diagnostic.start === undefined || diagnostic.length === undefined
-			? {}
-			: { range: rangeOfSpan(source, diagnostic.start, diagnostic.length) }),
-	}));
+	const coordinates = coordinatesOf(source.text);
+	return diagnostics.map((diagnostic) => {
+		const range =
+			diagnostic.start === undefined || diagnostic.length === undefined
+				? undefined
+				: coordinates.rangeAt(diagnostic.start, diagnostic.start + diagnostic.length);
+		return {
+			severity: "error",
+			message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+			path: module,
+			...(range === undefined ? {} : { range }),
+		};
+	});
 }
 
 ////////////////////////////////
@@ -515,13 +521,6 @@ function rangeOf(node: ts.Node, source: ts.SourceFile) {
 	return {
 		start: source.getLineAndCharacterOfPosition(node.getStart(source)),
 		end: source.getLineAndCharacterOfPosition(node.getEnd()),
-	};
-}
-
-function rangeOfSpan(source: ts.SourceFile, start: number, length: number) {
-	return {
-		start: source.getLineAndCharacterOfPosition(start),
-		end: source.getLineAndCharacterOfPosition(start + length),
 	};
 }
 

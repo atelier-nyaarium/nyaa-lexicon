@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { TypeScriptAnalyzer } from "../analyzer";
 import { TypeScriptProvider } from "../main";
@@ -24,27 +24,18 @@ function workspace(files: Record<string, string>): string {
 }
 
 function rangeAt(text: string, offset: number) {
-	const before = text.slice(0, offset);
-	const line = before.split("\n").length - 1;
-	const lineStart = before.lastIndexOf("\n") + 1;
-	const character = offset - lineStart;
-	return { start: { line, character }, end: { line, character } };
-}
-
-function offsetAt(text: string, position: { line: number; character: number }) {
-	return (
-		text
-			.split("\n")
-			.slice(0, position.line)
-			.reduce((offset, line) => offset + line.length + 1, 0) + position.character
-	);
+	const range = coordinatesOf(text).rangeAt(offset, offset);
+	if (range === undefined) throw new Error("invalid test offset");
+	return range;
 }
 
 function textAt(
 	text: string,
 	range: { start: { line: number; character: number }; end: { line: number; character: number } },
 ) {
-	return text.slice(offsetAt(text, range.start), offsetAt(text, range.end));
+	const value = coordinatesOf(text).sliceRange(range);
+	if (value === undefined) throw new Error("invalid test range");
+	return value;
 }
 
 afterEach(() => {
@@ -958,6 +949,26 @@ describe("checker-backed analysis", () => {
 });
 
 describe("source admission", () => {
+	it("refuses an out-of-range source position", () => {
+		const module = "stale.ts";
+		const text = "export const value = 1;\n";
+		const root = workspace({ [module]: text });
+		const analyzer = new TypeScriptAnalyzer(root, loadProject(root));
+		const range = { start: { line: 0, character: 99 }, end: { line: 0, character: 100 } };
+
+		expect(analyzer.bind(module, "value", range)).toEqual({
+			status: "unbound",
+			reason: "RuntimeConstructed",
+			detail: "the range is not a source token",
+		});
+		expect(analyzer.typeOf({ module, range })).toEqual({
+			status: "unknown",
+			reason: "RuntimeConstructed",
+			detail: "the range is not a source token",
+		});
+		analyzer.dispose();
+	});
+
 	it("reports compiler diagnostics for several readable files from cold programs", () => {
 		const files = {
 			"a.ts": "export const a = ;\n",

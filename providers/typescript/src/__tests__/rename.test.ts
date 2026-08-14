@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Range, RenameEditsRequest, TextEdit } from "@nyaa-lexicon/protocol";
+import { applyEdits, coordinatesOf, type Range, type RenameEditsRequest } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { TypeScriptProvider } from "../main";
@@ -15,39 +15,16 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-function positionAt(text: string, offset: number) {
-	const before = text.slice(0, offset);
-	const lineStart = before.lastIndexOf("\n") + 1;
-	return { line: before.split("\n").length - 1, character: offset - lineStart };
-}
-
 function rangeForText(text: string, value: string, from = 0): Range {
 	const start = text.indexOf(value, from);
 	if (start === -1) throw new Error(`missing test text: ${value}`);
-	return { start: positionAt(text, start), end: positionAt(text, start + value.length) };
+	const range = coordinatesOf(text).rangeAt(start, start + value.length);
+	if (range === undefined) throw new Error(`invalid test text range: ${value}`);
+	return range;
 }
 
 function site(text: string, value: string, from = 0) {
 	return { range: rangeForText(text, value, from) };
-}
-
-function applyEdits(text: string, edits: TextEdit[]): string {
-	let result = text;
-	for (const edit of [...edits].reverse()) {
-		const start = offsetAt(result, edit.range.start);
-		const end = offsetAt(result, edit.range.end);
-		result = `${result.slice(0, start)}${edit.newText}${result.slice(end)}`;
-	}
-	return result;
-}
-
-function offsetAt(text: string, position: { line: number; character: number }): number {
-	return (
-		text
-			.split("\n")
-			.slice(0, position.line)
-			.reduce((offset, line) => offset + line.length + 1, 0) + position.character
-	);
 }
 
 function syntaxErrors(text: string, module = "rename.ts"): readonly ts.Diagnostic[] {
@@ -68,6 +45,24 @@ afterEach(() => {
 });
 
 describe("rename edits", () => {
+	it("blocks a site range that does not address content", () => {
+		const text = "const oldName = 1;\n";
+		const range = { start: { line: 0, character: 99 }, end: { line: 0, character: 100 } };
+		const response = rename(workspace({ "stale.ts": text }), {
+			module: "stale.ts",
+			text,
+			oldName: "oldName",
+			newName: "newName",
+			sites: [{ range }],
+		});
+
+		expect(response).toEqual({
+			status: "ready",
+			edits: [],
+			blocked: [{ range, reason: "ParseError", detail: "the site range is outside the module" }],
+		});
+	});
+
 	it("returns sorted exact edits that apply to reparsable text", () => {
 		const text = "export const oldName = 1;\nexport function run() { return oldName; }\n";
 		const response = rename(workspace({ "rename.ts": text }), {
@@ -87,10 +82,12 @@ describe("rename edits", () => {
 			blocked: [],
 		});
 		if (response.status !== "ready") throw new Error("rename was refused");
-		expect(applyEdits(text, response.edits)).toBe(
-			"export const newName = 1;\nexport function run() { return newName; }\n",
-		);
-		expect(syntaxErrors(applyEdits(text, response.edits))).toEqual([]);
+		expect(applyEdits(text, response.edits)).toEqual({
+			text: "export const newName = 1;\nexport function run() { return newName; }\n",
+		});
+		const applied = applyEdits(text, response.edits);
+		if ("problem" in applied) throw new Error(applied.problem);
+		expect(syntaxErrors(applied.text)).toEqual([]);
 	});
 
 	it("applies a rename after an astral character on the same line", () => {
@@ -105,8 +102,9 @@ describe("rename edits", () => {
 
 		if (response.status !== "ready") throw new Error("rename was refused");
 		const renamed = applyEdits(text, response.edits);
-		expect(renamed).toBe('const marker = "😀"; const newName = 1;\nnewName;\n');
-		expect(syntaxErrors(renamed)).toEqual([]);
+		if ("problem" in renamed) throw new Error(renamed.problem);
+		expect(renamed.text).toBe('const marker = "😀"; const newName = 1;\nnewName;\n');
+		expect(syntaxErrors(renamed.text)).toEqual([]);
 	});
 
 	it("expands object and destructuring shorthand without changing the property key", () => {
@@ -123,7 +121,9 @@ describe("rename edits", () => {
 			range: rangeForText(objectText, "oldName", objectText.indexOf("{ oldName")),
 			newText: "oldName: newName",
 		});
-		expect(syntaxErrors(applyEdits(objectText, objectResponse.edits))).toEqual([]);
+		const objectApplied = applyEdits(objectText, objectResponse.edits);
+		if ("problem" in objectApplied) throw new Error(objectApplied.problem);
+		expect(syntaxErrors(objectApplied.text)).toEqual([]);
 
 		const destructuringText = "const source = { oldName: 1 };\nconst { oldName } = source;\noldName;\n";
 		const destructuringResponse = rename(workspace({ "destructuring.ts": destructuringText }), {
@@ -141,7 +141,9 @@ describe("rename edits", () => {
 			range: rangeForText(destructuringText, "oldName", destructuringText.indexOf("const {")),
 			newText: "oldName: newName",
 		});
-		expect(syntaxErrors(applyEdits(destructuringText, destructuringResponse.edits))).toEqual([]);
+		const destructuringApplied = applyEdits(destructuringText, destructuringResponse.edits);
+		if ("problem" in destructuringApplied) throw new Error(destructuringApplied.problem);
+		expect(syntaxErrors(destructuringApplied.text)).toEqual([]);
 	});
 
 	it("rewrites only the source side of an aliased import", () => {

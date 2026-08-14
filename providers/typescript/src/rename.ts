@@ -1,10 +1,12 @@
-import type {
-	BlockedSite,
-	Range,
-	RenameEditsRequest,
-	RenameEditsResponse,
-	RenameSite,
-	TextEdit,
+import {
+	type BlockedSite,
+	coordinatesOf,
+	type Range,
+	type RenameEditsRequest,
+	type RenameEditsResponse,
+	type RenameSite,
+	type TextCoordinates,
+	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 
@@ -96,9 +98,8 @@ const AMBIENT_NODE_FLAG = (ts.NodeFlags as unknown as { Ambient?: number }).Ambi
 interface SiteContext {
 	site: RenameSite;
 	token: ts.Node | undefined;
-	start: number;
-	end: number;
 	text: string;
+	valid: boolean;
 }
 
 interface SiteResult {
@@ -114,7 +115,8 @@ export function makeRenameEdits(
 	source: ts.SourceFile,
 	checker: ts.TypeChecker,
 ): RenameEditsResponse {
-	const sites = request.sites.map((site) => siteContext(source, site));
+	const coordinates = coordinatesOf(source.text);
+	const sites = request.sites.map((site) => siteContext(source, coordinates, site));
 	const privateTarget = request.oldName.startsWith("#") || sites.some((site) => site.text.startsWith("#"));
 	const candidateName = request.newName.startsWith("#") ? request.newName.slice(1) : request.newName;
 
@@ -137,10 +139,20 @@ export function makeRenameEdits(
 		};
 	}
 
-	const results = matchingSites.map((site) => classifySite(source, site, request, candidateName));
-	const blocked = results.flatMap((result) => (result.blocked === undefined ? [] : [result.blocked]));
+	const results = matchingSites.map((site) => classifySite(source, coordinates, site, request, candidateName));
+	const invalidSites: BlockedSite[] = sites
+		.filter((site) => !site.valid)
+		.map((site) => ({
+			range: site.site.range,
+			reason: "ParseError",
+			detail: "the site range is outside the module",
+		}));
+	const blocked = [
+		...invalidSites,
+		...results.flatMap((result) => (result.blocked === undefined ? [] : [result.blocked])),
+	];
 	const edits = results.flatMap((result) => (result.edit === undefined ? [] : [result.edit]));
-	return validateEdits(source, edits, blocked);
+	return validateEdits(coordinates, edits, blocked);
 }
 
 ////////////////////////////////
@@ -148,6 +160,7 @@ export function makeRenameEdits(
 
 function classifySite(
 	source: ts.SourceFile,
+	coordinates: TextCoordinates,
 	site: SiteContext,
 	request: RenameEditsRequest,
 	candidateName: string,
@@ -175,7 +188,10 @@ function classifySite(
 	if (!matchesName(site, request.oldName) || request.oldName === request.newName) return {};
 	const replacement = token.kind === ts.SyntaxKind.PrivateIdentifier ? `#${candidateName}` : candidateName;
 	if (isObjectShorthand(token)) {
-		return { edit: { range: widerRange(source, token), newText: `${request.oldName}: ${replacement}` } };
+		const range = widerRange(source, coordinates, token);
+		return range === undefined
+			? blocked(site.site.range, "ParseError", "the rename span is outside the module")
+			: { edit: { range, newText: `${request.oldName}: ${replacement}` } };
 	}
 	if (isDestructuringShorthand(token)) {
 		return { edit: { range: site.site.range, newText: `${request.oldName}: ${replacement}` } };
@@ -192,10 +208,10 @@ function isDestructuringShorthand(token: ts.Node): boolean {
 	return ts.isBindingElement(parent) && parent.propertyName === undefined && parent.name === token;
 }
 
-function widerRange(source: ts.SourceFile, token: ts.Node): Range {
+function widerRange(source: ts.SourceFile, coordinates: TextCoordinates, token: ts.Node): Range | undefined {
 	const parent = token.parent;
 	const node = ts.isShorthandPropertyAssignment(parent) || ts.isBindingElement(parent) ? parent : token;
-	return rangeOfOffsets(source, node.getStart(source), node.getEnd());
+	return coordinates.rangeAt(node.getStart(source), node.getEnd());
 }
 
 ////////////////////////////////
@@ -425,12 +441,11 @@ function isUppercaseName(name: string): boolean {
 ////////////////////////////////
 //  Ranges & Validation
 
-function siteContext(source: ts.SourceFile, site: RenameSite): SiteContext {
-	const start = offsetAt(source, site.range.start);
-	const end = offsetAt(source, site.range.end);
-	const text = start >= 0 && end >= start ? source.text.slice(start, end) : "";
-	const token = start >= 0 && start < source.end ? tokenAt(source, start) : undefined;
-	return { site, token, start, end, text };
+function siteContext(source: ts.SourceFile, coordinates: TextCoordinates, site: RenameSite): SiteContext {
+	const offsets = coordinates.offsetsForRange(site.range);
+	if (offsets === undefined) return { site, token: undefined, text: "", valid: false };
+	const token = offsets.start < source.end ? tokenAt(source, offsets.start) : undefined;
+	return { site, token, text: source.text.slice(offsets.start, offsets.end), valid: true };
 }
 
 function tokenAt(source: ts.SourceFile, position: number): ts.Node | undefined {
@@ -459,12 +474,19 @@ function matchesName(site: SiteContext, oldName: string): boolean {
 	return false;
 }
 
-function validateEdits(source: ts.SourceFile, edits: TextEdit[], blocked: BlockedSite[]): RenameEditsResponse {
+function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: BlockedSite[]): RenameEditsResponse {
 	const unique = new Map<string, TextEdit>();
 	for (const edit of edits) {
-		const start = offsetAt(source, edit.range.start);
-		const end = offsetAt(source, edit.range.end);
-		unique.set(`${start}:${end}`, edit);
+		const offsets = coordinates.offsetsForRange(edit.range);
+		if (offsets === undefined) {
+			blocked.push({
+				range: edit.range,
+				reason: "ParseError",
+				detail: "an edit range is outside the module",
+			});
+			continue;
+		}
+		unique.set(`${offsets.start}:${offsets.end}`, edit);
 	}
 	const sorted = [...unique.entries()]
 		.map(([key, edit]) => ({ start: Number(key.split(":")[0]), end: Number(key.split(":")[1]), edit }))
@@ -505,18 +527,6 @@ function isLegalIdentifier(value: string): boolean {
 		((source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? []).length ===
 			0
 	);
-}
-
-function offsetAt(source: ts.SourceFile, position: { line: number; character: number }): number {
-	try {
-		return source.getPositionOfLineAndCharacter(position.line, position.character);
-	} catch {
-		return -1;
-	}
-}
-
-function rangeOfOffsets(source: ts.SourceFile, start: number, end: number): Range {
-	return { start: source.getLineAndCharacterOfPosition(start), end: source.getLineAndCharacterOfPosition(end) };
 }
 
 function blocked(range: Range, reason: BlockedSite["reason"], detail: string): SiteResult {

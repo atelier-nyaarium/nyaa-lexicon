@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+	coordinatesOf,
 	type MoveBlockedReason,
 	type MoveBlockedSite,
 	type MoveDependency,
@@ -7,7 +8,9 @@ import {
 	type MoveEditsResponse,
 	type MoveImportSite,
 	normalizeModulePath,
+	type OffsetRange,
 	type Range,
+	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
@@ -25,11 +28,6 @@ interface ExistingImport {
 interface ImportSiteNode {
 	node: ts.ImportDeclaration | ts.ExportDeclaration | ts.ImportEqualsDeclaration;
 	literal: ts.StringLiteral;
-}
-
-interface OffsetRange {
-	start: number;
-	end: number;
 }
 
 ////////////////////////////////
@@ -143,6 +141,7 @@ export function makeMoveEdits(
 	checker: ts.TypeChecker | undefined,
 	renderSpecifier: SpecifierRenderer,
 ): MoveEditsResponse {
+	const coordinates = coordinatesOf(source.text);
 	const syntaxErrors = parseDiagnostics(source);
 	if (syntaxErrors.length > 0) {
 		return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
@@ -164,7 +163,7 @@ export function makeMoveEdits(
 		.filter((site): site is ImportSiteNode => site !== undefined);
 
 	if (request.role.removal !== undefined) {
-		const offsets = offsetsForRange(source, request.role.removal);
+		const offsets = coordinates.offsetsForRange(request.role.removal);
 		if (offsets === undefined) {
 			blocked.push(blockedSite(request.role.removal, "ParseError", "the removal range is outside the module"));
 		} else {
@@ -173,7 +172,15 @@ export function makeMoveEdits(
 	}
 
 	for (const site of request.importSites) {
-		const result = rewriteImportSite(source, site, importSites, request.module, request.toModule, renderSpecifier);
+		const result = rewriteImportSite(
+			source,
+			coordinates,
+			site,
+			importSites,
+			request.module,
+			request.toModule,
+			renderSpecifier,
+		);
 		if (result.blocked !== undefined) blocked.push(result.blocked);
 		if (result.edit !== undefined) edits.push(result.edit);
 	}
@@ -194,14 +201,14 @@ export function makeMoveEdits(
 	// that statement, since two edits over one span cannot both apply.
 	const standalone: string[] = [];
 	for (const statement of pendingImports) {
-		const merged = mergeIntoExistingImport(source, statement, edits);
+		const merged = mergeIntoExistingImport(source, coordinates, statement, edits);
 		if (merged === undefined) standalone.push(statement);
 		else edits.push(merged);
 	}
 
 	if (standalone.length > 0) {
 		const position = importInsertionPosition(source);
-		const insertion = positionAt(source, position);
+		const insertion = coordinates.positionAt(position);
 		if (insertion === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
 		} else {
@@ -217,7 +224,7 @@ export function makeMoveEdits(
 		const position =
 			request.role.insertion.position === undefined
 				? source.text.length
-				: offsetForPosition(source, request.role.insertion.position);
+				: coordinates.offsetAt(request.role.insertion.position);
 		if (position === undefined) {
 			blocked.push(
 				blockedSite(
@@ -231,14 +238,14 @@ export function makeMoveEdits(
 		} else if (request.role.insertion.position === undefined && needsBlankLine(source.text)) {
 			// Appending to a file that already ends in content: separate the declarations, or the
 			// moved body ends up welded to whatever was last in the target.
-			const point = positionAt(source, position);
+			const point = coordinates.positionAt(position);
 			if (point === undefined) {
 				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
 			} else {
 				edits.push({ range: { start: point, end: point }, newText: `\n${request.role.insertion.text}` });
 			}
 		} else {
-			const point = positionAt(source, position);
+			const point = coordinates.positionAt(position);
 			if (point === undefined) {
 				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
 			} else {
@@ -247,7 +254,7 @@ export function makeMoveEdits(
 		}
 	}
 
-	return validateEdits(source, edits, blocked);
+	return validateEdits(coordinates, edits, blocked);
 }
 
 ////////////////////////////////
@@ -255,6 +262,7 @@ export function makeMoveEdits(
 
 function rewriteImportSite(
 	source: ts.SourceFile,
+	coordinates: TextCoordinates,
 	site: MoveImportSite,
 	statements: ImportSiteNode[],
 	fromModule: string,
@@ -273,7 +281,7 @@ function rewriteImportSite(
 		};
 	}
 
-	const offsets = offsetsForRange(source, site.range);
+	const offsets = coordinates.offsetsForRange(site.range);
 	if (offsets === undefined)
 		return { blocked: blockedSite(site.range, "ParseError", "the import range is outside the module") };
 
@@ -294,7 +302,7 @@ function rewriteImportSite(
 	const literalEnd = statement.literal.getEnd();
 	const statementStart = statement.node.getStart(source);
 	const statementEnd = statement.node.getEnd();
-	const statementRange = rangeOfOffsets(source, statementStart, statementEnd);
+	const statementRange = coordinates.rangeAt(statementStart, statementEnd);
 	if (statementRange === undefined || literalStart < statementStart || literalEnd > statementEnd) {
 		return { blocked: blockedSite(site.range, "ParseError", "the import range does not contain its specifier") };
 	}
@@ -539,36 +547,6 @@ function isBuiltinName(name: string, checker: ts.TypeChecker | undefined, source
 ////////////////////////////////
 //  Ranges & Validation
 
-function offsetsForRange(source: ts.SourceFile, range: Range): OffsetRange | undefined {
-	const start = offsetForPosition(source, range.start);
-	const end = offsetForPosition(source, range.end);
-	return start === undefined || end === undefined || end < start ? undefined : { start, end };
-}
-
-function offsetForPosition(source: ts.SourceFile, position: { line: number; character: number }): number | undefined {
-	if (position.line < 0 || position.character < 0) return undefined;
-	try {
-		const offset = source.getPositionOfLineAndCharacter(position.line, position.character);
-		const actual = source.getLineAndCharacterOfPosition(offset);
-		return actual.line === position.line && actual.character === position.character ? offset : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function positionAt(source: ts.SourceFile, offset: number): { line: number; character: number } | undefined {
-	if (offset < 0 || offset > source.text.length) return undefined;
-	return source.getLineAndCharacterOfPosition(offset);
-}
-
-function rangeOfOffsets(source: ts.SourceFile, start: number, end: number): Range | undefined {
-	const startPosition = positionAt(source, start);
-	const endPosition = positionAt(source, end);
-	return startPosition === undefined || endPosition === undefined
-		? undefined
-		: { start: startPosition, end: endPosition };
-}
-
 /** True when the target already ends in content, so an appended declaration needs separating. */
 function needsBlankLine(text: string): boolean {
 	return text.trim().length > 0 && !text.endsWith("\n\n");
@@ -581,7 +559,12 @@ function needsBlankLine(text: string): boolean {
  * type-only statement, or a span another edit already rewrites all keep their own statement,
  * because guessing at those shapes is how a rewrite silently changes what a name means.
  */
-function mergeIntoExistingImport(source: ts.SourceFile, statement: string, edits: TextEdit[]): TextEdit | undefined {
+function mergeIntoExistingImport(
+	source: ts.SourceFile,
+	coordinates: TextCoordinates,
+	statement: string,
+	edits: TextEdit[],
+): TextEdit | undefined {
 	const parsed = /^import \{ (\w+(?: as \w+)?) \} from ("[^"]+"|'[^']+');$/.exec(statement);
 	if (parsed === null) return undefined;
 	const clause = parsed[1] as string;
@@ -594,7 +577,7 @@ function mergeIntoExistingImport(source: ts.SourceFile, statement: string, edits
 		if (candidate.importClause === undefined || candidate.importClause.name !== undefined) continue;
 		if (candidate.importClause.isTypeOnly || bindings === undefined || !ts.isNamedImports(bindings)) continue;
 
-		const range = rangeOfOffsets(source, candidate.getStart(source), candidate.getEnd());
+		const range = coordinates.rangeAt(candidate.getStart(source), candidate.getEnd());
 		if (range === undefined) return undefined;
 		if (edits.some((edit) => rangesOverlap(edit.range, range))) return undefined;
 
@@ -633,10 +616,10 @@ function isImportLike(statement: ts.Statement): boolean {
 	);
 }
 
-function validateEdits(source: ts.SourceFile, edits: TextEdit[], blocked: MoveBlockedSite[]): MoveEditsResponse {
+function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: MoveBlockedSite[]): MoveEditsResponse {
 	const unique = new Map<string, TextEdit>();
 	for (const edit of edits) {
-		const offsets = offsetsForRange(source, edit.range);
+		const offsets = coordinates.offsetsForRange(edit.range);
 		if (offsets === undefined) {
 			blocked.push(blockedSite(edit.range, "ParseError", "an edit range is outside the module"));
 			continue;
@@ -654,7 +637,7 @@ function validateEdits(source: ts.SourceFile, edits: TextEdit[], blocked: MoveBl
 
 	const sorted = [...unique.values()]
 		.map((edit) => {
-			const offsets = offsetsForRange(source, edit.range) as OffsetRange;
+			const offsets = coordinates.offsetsForRange(edit.range) as OffsetRange;
 			return { edit, ...offsets };
 		})
 		.sort((left, right) => left.start - right.start || left.end - right.end);
