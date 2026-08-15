@@ -101,7 +101,7 @@ export type StoredFact =
 //    with the name, so `import os` and `import * as ns` were absent from the import graph entirely.
 // 8: a factId on every row. A symbol had a citable id and no other fact did, so the knowledge
 //    layer's contract that an answer lists what it consumed had nothing to list.
-// 9: a meta table holding the fingerprint of the code that wrote the facts. A per-file hash cannot
+// 9: a meta table holding the compatibility key for stored facts. A per-file hash cannot
 //    see a provider changing how it classifies, because the files it describes have not moved.
 // 10: answers, the knowledge layer's read side. Kept in the same database as the facts they cite so
 //    a rebuild of the index cannot leave citations pointing into a store that no longer exists.
@@ -352,8 +352,8 @@ CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
  */
 const FACT_TABLES = ["refs", "symbols", "imports", "literals"] as const;
 
-/** Where the indexer fingerprint lives in the meta table. */
-const FINGERPRINT_KEY = "indexerFingerprint";
+/** Meta key for store compatibility. */
+const COMPATIBILITY_KEY = "storeCompatibility";
 
 /** Where the last scan's coverage arithmetic lives in the meta table. */
 const SCAN_SUMMARY_KEY = "scanSummary";
@@ -522,19 +522,13 @@ export class IndexStore {
 	}
 
 	/**
-	 * Opens the index, rebuilding from empty when it cannot be trusted.
-	 *
-	 * An index is always derivable from source, so a wrong version or an unreadable file is a
-	 * re-index rather than data loss. Migrating instead would mean carrying every past shape
-	 * forever to protect something we can regenerate.
-	 *
-	 * `fingerprint` identifies the code that WROTE the facts. A schema bump catches a changed shape;
-	 * this catches a changed meaning, which no per-file hash can see because the files did not move.
-	 * Absent means the caller has no fingerprint to offer and the check is skipped.
+	 * Opens or rebuilds the index.
+	 * `compatibility` is the writing major.
+	 * Schema mismatch triggers rebuild.
 	 */
 	static open(
 		file: string,
-		fingerprint?: string | null,
+		compatibility?: string | null,
 		workspaceRoot?: string,
 	): { store: IndexStore; rebuilt: boolean; reason?: string } {
 		const db = new DatabaseSync(file);
@@ -550,10 +544,10 @@ export class IndexStore {
 		}
 
 		// Read before any rebuild drops the table it lives in.
-		const stored = version === SCHEMA_VERSION ? readMeta(db, FINGERPRINT_KEY) : null;
-		if (version === SCHEMA_VERSION && fingerprint != null && stored !== null && stored !== fingerprint) {
+		const stored = version === SCHEMA_VERSION ? readMeta(db, COMPATIBILITY_KEY) : null;
+		if (version === SCHEMA_VERSION && compatibility != null && stored !== null && stored !== compatibility) {
 			version = -1;
-			reason = "the providers or protocol changed since this index was written";
+			reason = "a major version has shipped since this index was written";
 		} else if (version !== SCHEMA_VERSION && version !== 0) {
 			reason = "the index schema changed";
 		}
@@ -591,9 +585,8 @@ export class IndexStore {
 		// Index additions are safe to apply in place, so existing stores get this lookup without a rebuild.
 		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
 
-		// Written on every open rather than only after a rebuild, so an index built before this check
-		// existed adopts the current fingerprint instead of rebuilding forever.
-		if (fingerprint != null) writeMeta(db, FINGERPRINT_KEY, fingerprint);
+		// Persist the key on every open.
+		if (compatibility != null) writeMeta(db, COMPATIBILITY_KEY, compatibility);
 		if (workspaceRoot !== undefined) writeMeta(db, WORKSPACE_KEY, workspaceRoot);
 
 		return { store: new IndexStore(db), rebuilt, ...(reason === undefined ? {} : { reason }) };

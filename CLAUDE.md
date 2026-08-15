@@ -79,6 +79,13 @@ and `.claude-plugin/plugin.json` is SET from it, and the MCP server DERIVES its 
 time. Bumping and building are one command because a `dist/` built at a version the manifests do not
 claim looks correct and is not.
 
+**Provider extraction changes require a MAJOR release.** Major releases retire stored facts. If a
+provider changes a kind, name, range, binding or literal for unchanged source, ship a major.
+Correcting `typeParameter` to `interface` is this case.
+
+Patch and minor releases preserve stores. Build updates every provider manifest, so core-only
+releases do not invalidate facts.
+
 `dist` means exactly one thing here: the shipped bundle. Package `tsc` output goes to `.tsbuild/`.
 
 Node 22.5+ required, for `node:sqlite`.

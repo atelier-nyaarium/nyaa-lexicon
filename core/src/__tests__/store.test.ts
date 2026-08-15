@@ -372,38 +372,37 @@ describe("citable facts", () => {
  * all of them and the index keeps serving answers from a provider version that no longer exists.
  */
 describe("noticing that the indexer itself changed", () => {
-	it("keeps an index whose indexer is unchanged", () => {
+	it("keeps an index written under the same major", () => {
 		const file = path.join(dir, "same.sqlite");
-		const first = IndexStore.open(file, "fingerprint-a");
+		const first = IndexStore.open(file, "1");
 		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
 		first.store.close();
 
-		const second = IndexStore.open(file, "fingerprint-a");
+		const second = IndexStore.open(file, "1");
 
 		expect(second.rebuilt).toBe(false);
 		expect(second.store.declarationsIn("src/a.ts").map((d) => d.name)).toEqual(["add"]);
 		second.store.close();
 	});
 
-	it("rebuilds when the indexer changed, and says that is why", () => {
+	it("rebuilds when a major has shipped, and says that is why", () => {
 		const file = path.join(dir, "moved.sqlite");
-		const first = IndexStore.open(file, "fingerprint-a");
+		const first = IndexStore.open(file, "1");
 		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
 		first.store.close();
 
-		const second = IndexStore.open(file, "fingerprint-b");
+		const second = IndexStore.open(file, "2");
 
 		expect(second.rebuilt).toBe(true);
-		expect(second.reason).toMatch(/providers or protocol changed/);
+		expect(second.reason).toMatch(/major version has shipped/);
 		expect(second.store.declarationsIn("src/a.ts")).toEqual([]);
 		second.store.close();
 	});
 
-	// Absent is "no fingerprint to compare", which is a different answer from "they match". Treating
-	// it as a mismatch would rebuild the index on every start for any caller that cannot compute one.
-	it("skips the check when the caller offers no fingerprint", () => {
+	// Null means no comparison.
+	it("skips the check when the caller offers no compatibility key", () => {
 		const file = path.join(dir, "none.sqlite");
-		const first = IndexStore.open(file, "fingerprint-a");
+		const first = IndexStore.open(file, "1");
 		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
 		first.store.close();
 
@@ -414,19 +413,18 @@ describe("noticing that the indexer itself changed", () => {
 		second.store.close();
 	});
 
-	// An index written before this check existed has no stored fingerprint. It adopts the current one
-	// rather than rebuilding, since nothing is known to be wrong with it.
-	it("adopts a fingerprint rather than rebuilding when none was stored", () => {
+	// Missing keys adopt the current major.
+	it("adopts a key rather than rebuilding when none was stored", () => {
 		const file = path.join(dir, "adopt.sqlite");
 		const first = IndexStore.open(file);
 		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
 		first.store.close();
 
-		const second = IndexStore.open(file, "fingerprint-a");
+		const second = IndexStore.open(file, "1");
 		expect(second.rebuilt).toBe(false);
 		second.store.close();
 
-		const third = IndexStore.open(file, "fingerprint-a");
+		const third = IndexStore.open(file, "1");
 		expect(third.rebuilt).toBe(false);
 		third.store.close();
 	});

@@ -31,7 +31,7 @@ export {
 	readScopeConfig,
 	type ScopeConfig,
 } from "./fileScope.js";
-export { indexerFingerprint } from "./fingerprint.js";
+export { storeCompatibilityKey } from "./fingerprint.js";
 export { type Cycle, type Edge, findCycles } from "./graph.js";
 export {
 	type CoChange,

@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { startDaemon } from "./daemon.js";
 import { createDispatch } from "./dispatch.js";
-import { indexerFingerprint } from "./fingerprint.js";
+import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
 import { currentHost, workspacePaths } from "./paths.js";
@@ -96,7 +96,7 @@ async function main(argv: string[]): Promise<void> {
 	console.log(`listening on 127.0.0.1:${daemon.lock.port} for ${root}`);
 	console.log(`lock ${paths.lockFile}`);
 
-	const { store, rebuilt, reason } = IndexStore.open(paths.index, indexerFingerprint(lexiconRoot()), root);
+	const { store, rebuilt, reason } = IndexStore.open(paths.index, storeCompatibilityKey(lexiconRoot()), root);
 	if (rebuilt) console.log(`${reason ?? "the index could not be trusted"}; rebuilt from empty`);
 
 	const supervisor = new ProviderSupervisor();
