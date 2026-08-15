@@ -248,3 +248,50 @@ describe("warmup pass", () => {
 		expect(service.indexStatus().failures).toBe(0);
 	});
 });
+
+describe("accounting for every file the scan saw", () => {
+	// The parts must sum, or a reader cannot tell a defect from a readme.
+	it("splits tracked files into disjoint parts that add up", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		put("README.md", "# readme\n");
+		put("data.json", "{}\n");
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, []));
+
+		await service.warmupWorkspace();
+		const scan = store.readScanSummary();
+
+		expect(scan).not.toBeNull();
+		const { tracked, claimed, unclaimed, generated, denied } = scan as NonNullable<typeof scan>;
+		expect(claimed).toBe(2);
+		// At least the readme and the json. The harness also writes its sqlite files here, and they
+		// are unclaimed too, which is exactly the kind of file this accounting exists to explain.
+		expect(unclaimed).toBeGreaterThanOrEqual(2);
+		expect(claimed + unclaimed + generated + denied).toBe(tracked);
+	});
+
+	// A watcher batch recomputed the counts and then never stored them.
+	it("refreshes the stored summary after a watcher batch", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+		expect(store.readScanSummary()?.claimed).toBe(1);
+
+		put("b.fake", "export class B {}\n");
+		await service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b1" }]);
+
+		expect(store.readScanSummary()?.claimed).toBe(2);
+	});
+
+	// Defaulting a missing part would print arithmetic that does not sum.
+	it("refuses a summary missing any part", () => {
+		store.writeScanSummary({ tracked: 5, claimed: 5, unclaimed: 0, generated: 0, denied: 0 });
+		expect(store.readScanSummary()?.tracked).toBe(5);
+
+		// biome-ignore lint/suspicious/noExplicitAny: writing a legacy shape is the point.
+		store.writeScanSummary({ discovered: 5, claimed: 5 } as any);
+		expect(store.readScanSummary()).toBeNull();
+	});
+});

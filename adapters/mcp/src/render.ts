@@ -617,17 +617,18 @@ export function renderOverview(result: {
 		done: number;
 		total: number;
 		failures?: number;
+		stored?: number;
 		fullFiles?: number;
 		outlineFiles?: number;
 	};
-	scan?: { discovered: number; claimed: number; unclaimed: number; denied: number };
+	scan?: { tracked: number; claimed: number; unclaimed: number; generated: number; denied: number };
 	parseFailures?: Array<{ module: string; reason: string }>;
 	largest: Array<{ module: string; symbols: number }>;
 	knowledge?: { answers: number; stale?: number; doubted?: number };
 }): string {
 	const lines = ["# Workspace overview", "", "## Workspace", "", `\`${result.scope}\``, "", "## Index", ""];
 
-	// Show progress only for states with meaningful totals.
+	// Show progress for counted states.
 	const counted = ["warming", "indexing", "upgrading"].includes(result.index.state);
 	const stateNote =
 		result.index.state === "unstarted"
@@ -637,26 +638,41 @@ export function renderOverview(result: {
 
 	const outline = result.index.outlineFiles ?? 0;
 	if (outline > 0) {
-		lines.push(
-			`- Depth: ${result.index.fullFiles ?? 0} files at final depth, ${outline} outline only; reference and literal counts are lower bounds until the upgrade finishes`,
-		);
+		lines.push(`- Depth: ${result.index.fullFiles ?? 0} modules at final depth, ${outline} outline only`);
+		lines.push("  - reference and literal counts are lower bounds until the upgrade finishes");
 	}
 
 	const failures = result.index.failures ?? 0;
 	if (failures > 0) {
-		const named = (result.parseFailures ?? []).slice(0, 5);
-		const list =
-			named.length > 0
-				? ` (${named.map((f) => f.module).join(", ")}${failures > named.length ? ", ..." : ""})`
-				: "";
-		lines.push(`- Files failed to parse: ${failures}${list}; any facts indexed before the failure were kept`);
+		lines.push(`- Files failed to parse: ${failures}; any facts indexed before the failure were kept`);
 	}
 
-	// Scan totals expose discovered files that were not indexed.
+	// Scan parts sum to total.
 	if (result.scan !== undefined) {
-		lines.push(
-			`- Last scan: ${result.scan.discovered} files discovered, ${result.scan.claimed} claimed by providers, ${result.scan.unclaimed} unclaimed, ${result.scan.denied} outside scope`,
-		);
+		const { tracked, claimed, unclaimed, generated, denied } = result.scan;
+		lines.push(`- Last scan: ${tracked} files seen`);
+		lines.push(`  - ${claimed} claimed by providers`);
+		lines.push(`  - ${unclaimed} of no provider's language`);
+		if (generated > 0) lines.push(`  - ${generated} generated`);
+		if (denied > 0) lines.push(`  - ${denied} outside scope`);
+	}
+
+	// Keep every path; group only repeated reasons.
+	const named = result.parseFailures ?? [];
+	if (named.length > 0) {
+		const byReason = new Map<string, string[]>();
+		for (const failure of named) {
+			const modules = byReason.get(failure.reason) ?? [];
+			modules.push(failure.module);
+			byReason.set(failure.reason, modules);
+		}
+		const ranked = [...byReason.entries()].sort((a, b) => b[1].length - a[1].length);
+
+		lines.push("", "## Failed to parse", "");
+		for (const [reason, modules] of ranked) {
+			lines.push(`- ${reason}${modules.length === 1 ? "" : ` (${modules.length} files)`}`);
+			for (const module of modules) lines.push(`  - \`${module}\``);
+		}
 	}
 
 	lines.push(
@@ -668,15 +684,21 @@ export function renderOverview(result: {
 		`| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |`,
 	);
 
-	// The front door mentions the knowledge layer, because an agent arriving with an ordinary task
-	// has no reason to call a tool it has never heard of. One line each way: coverage when it
-	// exists, and an honest "none yet" with the pointer when it does not.
+	// Self-contained: the depth line is absent once nothing is outline, so pointing at it would
+	// reference a line that is not on the page.
+	const external = (result.index.stored ?? result.files) - result.files;
+	if (external > 0) {
+		lines.push(
+			"",
+			`> Counts cover workspace files. The index holds ${external} external surface module${external === 1 ? "" : "s"} besides, ${result.index.stored} in total.`,
+		);
+	}
+
 	if (result.knowledge !== undefined) {
 		if (result.knowledge.answers === 0) {
 			lines.push("", "## Knowledge", "", "None recorded yet. `knowledge_gaps` lists what is worth writing.");
 		} else {
-			// Absent means the staleness scan was skipped at this size, which is a different claim
-			// from zero stale, and the wording keeps the two apart.
+			// Absent means staleness was skipped.
 			const stale =
 				result.knowledge.stale === undefined
 					? ", staleness not scanned at this size"

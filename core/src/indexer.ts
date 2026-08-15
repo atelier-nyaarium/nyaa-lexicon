@@ -24,6 +24,15 @@ export interface IndexOutcome {
 	declarations?: number;
 }
 
+/** Parts sum to `tracked`. */
+export interface ScanBreakdown {
+	tracked: number;
+	claimed: number;
+	unclaimed: number;
+	generated: number;
+	denied: number;
+}
+
 /**
  * How complete the index is. `unstarted` and `ready` both answer instantly and mean opposite things.
  *
@@ -68,6 +77,9 @@ export class WorkspaceIndexer {
 	private discovered = new Set<string>();
 	private roots = new Set<string>();
 	private depths = new Map<string, IndexDepth>();
+
+	/** Counts sum to `tracked`. */
+	private breakdown: ScanBreakdown | null = null;
 
 	/** Full-parse orders run between background files. */
 	private orders: Array<{ modules: string[]; resolve: () => void; reject: (error: unknown) => void }> = [];
@@ -279,19 +291,7 @@ export class WorkspaceIndexer {
 	}
 
 	private writeScanSummary(): void {
-		const discovered = [...this.discovered];
-		// Disjoint categories: a denied file is not also counted unclaimed, so the arithmetic adds up.
-		const denied = discovered.filter((module) => this.currentScope().denies(module));
-		const deniedSet = new Set(denied);
-		const unclaimed = discovered.filter(
-			(module) => !deniedSet.has(module) && !this.supervisor.route(module).owned,
-		).length;
-		this.store.writeScanSummary({
-			discovered: discovered.length,
-			claimed: this.roots.size,
-			unclaimed,
-			denied: denied.length,
-		});
+		if (this.breakdown !== null) this.store.writeScanSummary(this.breakdown);
 	}
 
 	private async indexOne(
@@ -396,15 +396,21 @@ export class WorkspaceIndexer {
 		this.scope = fileScopeFor(this.workspaceRoot);
 		const named = includedFiles(this.workspaceRoot, this.scope.include);
 		const namedSet = new Set(named);
-		const candidates = [...new Set([...(this.scope.known ?? []), ...this.discovered, ...named, ...extra])].filter(
-			(module) => this.scope?.allows(module) ?? true,
-		);
+		const everything = [...new Set([...(this.scope.known ?? []), ...this.discovered, ...named, ...extra])];
+		const candidates = everything.filter((module) => this.scope?.allows(module) ?? true);
 		const generated = generatedFiles(this.workspaceRoot, candidates);
-		return new Set(
-			candidates
-				.filter((module) => namedSet.has(module) || !generated.has(module))
-				.filter((module) => this.supervisor.route(module).owned),
-		);
+		const reachable = candidates.filter((module) => namedSet.has(module) || !generated.has(module));
+		const roots = new Set(reachable.filter((module) => this.supervisor.route(module).owned));
+
+		// Hold all sets here.
+		this.breakdown = {
+			tracked: everything.length,
+			claimed: roots.size,
+			unclaimed: reachable.length - roots.size,
+			generated: candidates.length - reachable.length,
+			denied: everything.length - candidates.length,
+		};
+		return roots;
 	}
 
 	private rootDepth(module: string): IndexDepth {
@@ -454,6 +460,8 @@ export class WorkspaceIndexer {
 		}
 		this.roots = roots;
 		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
+		// Persisted here too, or a watcher batch leaves overview describing the previous scan.
+		this.writeScanSummary();
 		const attempted = new Set<string>();
 
 		for (const event of events) {

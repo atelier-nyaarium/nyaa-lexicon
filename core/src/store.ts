@@ -46,6 +46,15 @@ export interface StoredDeclaration extends Declaration {
 	module: string;
 }
 
+/** Scan counts. */
+export interface ScanCounts {
+	tracked: number;
+	claimed: number;
+	unclaimed: number;
+	generated: number;
+	denied: number;
+}
+
 /** One literal value written in one place. */
 export interface StoredLiteral {
 	factId: string;
@@ -789,20 +798,25 @@ export class IndexStore {
 	}
 
 	/** Persists scan counts used to explain coverage gaps. */
-	writeScanSummary(summary: { discovered: number; claimed: number; unclaimed: number; denied: number }): void {
+	writeScanSummary(summary: ScanCounts): void {
 		writeMeta(this.db, SCAN_SUMMARY_KEY, JSON.stringify({ ...summary, at: Date.now() }));
 	}
 
-	readScanSummary(): { discovered: number; claimed: number; unclaimed: number; denied: number; at: number } | null {
+	readScanSummary(): (ScanCounts & { at: number }) | null {
 		const raw = readMeta(this.db, SCAN_SUMMARY_KEY);
 		if (raw === null) return null;
 		try {
-			return JSON.parse(raw) as {
-				discovered: number;
-				claimed: number;
-				unclaimed: number;
-				denied: number;
-				at: number;
+			const parsed = JSON.parse(raw) as Partial<ScanCounts> & { at?: number };
+			// Every part or none. A defaulted field would print arithmetic that does not sum.
+			const parts = [parsed.tracked, parsed.claimed, parsed.unclaimed, parsed.generated, parsed.denied];
+			if (parts.some((part) => typeof part !== "number")) return null;
+			return {
+				tracked: parsed.tracked as number,
+				claimed: parsed.claimed as number,
+				unclaimed: parsed.unclaimed as number,
+				generated: parsed.generated as number,
+				denied: parsed.denied as number,
+				at: parsed.at ?? 0,
 			};
 		} catch {
 			return null;
