@@ -361,6 +361,17 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 		return refactor.transactions;
 	}
 
+	/**
+	 * Tier 1: a symbol answer full-parses its tree ahead of the background upgrade, then answers.
+	 *
+	 * The one spelling of the shortcut. A case that wires the tree by hand instead of through here
+	 * is the drift the tier test fails on.
+	 */
+	const treeFirst = async <T>(symbolId: string, answer: () => Promise<T> | T): Promise<T> => {
+		await service.ensureTreeFor(symbolId);
+		return answer();
+	};
+
 	return async (method: string, params: unknown): Promise<unknown> => {
 		switch (method) {
 			case "findByName": {
@@ -369,8 +380,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "describe": {
 				const args = BySymbol.parse(params);
-				await service.ensureTreeFor(args.symbolId);
-				return service.describe(args.symbolId);
+				return treeFirst(args.symbolId, () => service.describe(args.symbolId));
 			}
 			// The four below exist for the editor, which asks by position rather than by name and so
 			// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.
@@ -380,18 +390,15 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				return service.declarationsIn(ByModule.parse(params).module);
 			case "typeHierarchy": {
 				const args = BySymbol.parse(params);
-				await service.ensureTreeFor(args.symbolId);
-				return service.typeHierarchy(args.symbolId);
+				return treeFirst(args.symbolId, () => service.typeHierarchy(args.symbolId));
 			}
 			case "callHierarchy": {
 				const args = BySymbol.parse(params);
-				await service.ensureTreeFor(args.symbolId);
-				return service.callHierarchy(args.symbolId);
+				return treeFirst(args.symbolId, () => service.callHierarchy(args.symbolId));
 			}
 			case "findReferences": {
 				const args = References.parse(params);
-				await service.ensureTreeFor(args.symbolId);
-				return service.findReferences(args.symbolId, args.limit);
+				return treeFirst(args.symbolId, () => service.findReferences(args.symbolId, args.limit));
 			}
 			case "resolveImport": {
 				const args = Resolve.parse(params);
@@ -436,8 +443,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				return service.commitsMentioning(args.name, args.limit);
 			}
 			case "factsFor": {
+				// Tier 1 too: its answer carries the declaring module's references and literals,
+				// which outline facts genuinely lack.
 				const args = References.parse(params);
-				return service.factsFor(args.symbolId, args.limit);
+				return treeFirst(args.symbolId, () => service.factsFor(args.symbolId, args.limit));
 			}
 			case "resolveFacts":
 				return service.resolveFacts(ResolveFacts.parse(params).factIds);
@@ -473,8 +482,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "typeOf": {
 				const args = BySymbol.parse(params);
-				await service.ensureTreeFor(args.symbolId);
-				return service.typeOf(args.symbolId);
+				return treeFirst(args.symbolId, () => service.typeOf(args.symbolId));
 			}
 			// Rename planning requires complete reference facts.
 			// Read-only, and kept because the editor asks it to decide whether to offer a rename.

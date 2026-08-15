@@ -76,3 +76,46 @@ describe("gating daemon mutations", () => {
 		await expect(dispatch("noSuchMethod", {})).rejects.toThrow(/unknown method/);
 	});
 });
+
+describe("the tree-first tier", () => {
+	// One list. A method added to the shortcut without extending this test, or removed from it
+	// without shrinking this test, fails here rather than drifting silently.
+	const TIER_ONE = ["describe", "typeHierarchy", "callHierarchy", "findReferences", "typeOf", "factsFor"] as const;
+
+	function treeTracingService(log: string[]) {
+		const answer = (name: string) => () => {
+			log.push(name);
+			return null;
+		};
+		return {
+			ensureTreeFor: async (symbolId: string) => {
+				log.push(`tree:${symbolId}`);
+			},
+			describe: answer("describe"),
+			typeHierarchy: answer("typeHierarchy"),
+			callHierarchy: answer("callHierarchy"),
+			findReferences: answer("findReferences"),
+			typeOf: answer("typeOf"),
+			factsFor: answer("factsFor"),
+			symbolSource: answer("symbolSource"),
+		} as unknown as LexiconService;
+	}
+
+	it.each(TIER_ONE)("full-parses the symbol's tree before answering %s", async (method) => {
+		const log: string[] = [];
+		const dispatch = createDispatch(treeTracingService(log));
+
+		await dispatch(method, { symbolId: "lexicon ts src/a.ts X." });
+
+		expect(log).toEqual(["tree:lexicon ts src/a.ts X.", method]);
+	});
+
+	it("does not tree-parse for a tier-3 symbol answer", async () => {
+		const log: string[] = [];
+		const dispatch = createDispatch(treeTracingService(log));
+
+		await dispatch("symbolSource", { symbolId: "lexicon ts src/a.ts X." });
+
+		expect(log).toEqual(["symbolSource"]);
+	});
+});
