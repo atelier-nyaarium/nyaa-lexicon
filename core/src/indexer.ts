@@ -10,7 +10,7 @@ import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
 import type { ResultCache } from "./resultCache.js";
 import type { IndexStore } from "./store.js";
-import type { ProviderSupervisor } from "./supervisor.js";
+import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
 import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
@@ -311,9 +311,13 @@ export class WorkspaceIndexer {
 
 	private failedOutcome(module: string, error: unknown): IndexOutcome {
 		const failure = error instanceof Error ? error.message : String(error);
+		this.upgradeFailed.add(module);
+		// Provider outages do not blame files.
+		if (error instanceof ProviderUnavailableError) {
+			return { module, action: "skipped", reason: "provider unavailable", failure };
+		}
 		// Persist the failure for coverage reporting.
 		this.store.recordFailure(module, failure);
-		this.upgradeFailed.add(module);
 		return { module, action: "skipped", reason: "parse failed", failure };
 	}
 

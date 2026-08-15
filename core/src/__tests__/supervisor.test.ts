@@ -99,4 +99,31 @@ describe("when a provider dies", () => {
 		).rejects.toThrow(/not running/);
 		expect(supervisor.running()).toEqual([]);
 	}, 30_000);
+
+	// A real SIGKILL, because a shutdown request leaves the reference provider running and an
+	// earlier version of this test passed without any death ever happening.
+	it("respawns after an unexpected death and answers from the new process", async () => {
+		await start();
+		const firstPid = supervisor.pidOf("reference-provider");
+		expect(firstPid).not.toBeNull();
+		process.kill(firstPid as number, "SIGKILL");
+
+		const parse = () =>
+			supervisor.ask("a.ref", "parseFile", {
+				module: "a.ref",
+				contentHash: "h2",
+				text: "export class Cart {}\n",
+			});
+		const deadline = Date.now() + 20_000;
+		let answered: Awaited<ReturnType<typeof parse>> | null = null;
+		while (answered === null && Date.now() < deadline) {
+			answered = await parse().catch(() => null);
+			if (answered === null) await new Promise((resolve) => setTimeout(resolve, 250));
+		}
+
+		expect(answered?.declarations.map((declaration) => declaration.name)).toEqual(["Cart"]);
+		// The pid moving is the proof a NEW process answered, not a survivor.
+		expect(supervisor.pidOf("reference-provider")).not.toBe(firstPid);
+		expect(supervisor.running()).toHaveLength(1);
+	}, 30_000);
 });

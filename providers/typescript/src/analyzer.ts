@@ -12,7 +12,7 @@ import {
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { contextualPropertySymbol, type ExtractedWithNodes, extractFileWithNodes, LANGUAGE } from "./extract.js";
+import { contextualPropertySymbol, type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
 import { makeMoveEdits } from "./move.js";
 import type { SpecifierRenderer } from "./project.js";
@@ -56,12 +56,6 @@ interface MappedDeclaration {
 	node: ts.Declaration;
 }
 
-interface FallbackProgram {
-	key: string;
-	version: number;
-	program: ts.Program;
-}
-
 ////////////////////////////////
 //  Class
 
@@ -70,12 +64,10 @@ export class TypeScriptAnalyzer {
 	private readonly projectOptions: ts.CompilerOptions;
 	private readonly scripts = new Set<string>();
 	private readonly overlays = new Map<string, Overlay>();
-	private readonly extracted = new Map<string, { version: number; value: ExtractedWithNodes }>();
-	private extractedProgram: ts.Program | undefined;
-	private cachedFallbackProgram: FallbackProgram | undefined;
+	private readonly extracted = new Map<string, { version: number; contentHash: string; value: Extracted }>();
 	private readonly service: ts.LanguageService;
 	private projectVersion = 0;
-	private observedProgram: ts.Program | undefined;
+	private countedProgramVersion: number | undefined;
 	private programGenerations = 0;
 	private firstProgramReadyAt: number | undefined;
 	private firstProgramWorkspaceFiles = 0;
@@ -126,17 +118,17 @@ export class TypeScriptAnalyzer {
 		return isSourceFailure(context) ? undefined : context.source;
 	}
 
-	extract(module: string, source: ts.SourceFile): ExtractedWithNodes {
+	extract(module: string, source: ts.SourceFile, contentHash?: string): Extracted {
 		const key = this.key(source.fileName);
 		const version = this.overlays.get(key)?.version ?? 0;
 		const context = this.sourceContext(module);
-		const program = isSourceFailure(context) ? undefined : context.program;
-		this.syncExtractionProgram(program);
+		const activeSource = isSourceFailure(context) ? source : context.source;
+		const sourceHash = contentHash ?? hashText(activeSource.text);
 		const cached = this.extracted.get(key);
-		if (cached?.version === version) return cached.value;
+		if (cached?.version === version && cached.contentHash === sourceHash) return cached.value;
 
-		const value = extractFileWithNodes(module, source, isSourceFailure(context) ? undefined : context.checker);
-		this.extracted.set(key, { version, value });
+		const value = extractFile(module, activeSource, isSourceFailure(context) ? undefined : context.checker);
+		this.extracted.set(key, { version, contentHash: sourceHash, value });
 		return value;
 	}
 
@@ -247,9 +239,6 @@ export class TypeScriptAnalyzer {
 		this.service.dispose();
 		this.extracted.clear();
 		this.overlays.clear();
-		this.extractedProgram = undefined;
-		this.cachedFallbackProgram = undefined;
-		this.observedProgram = undefined;
 	}
 
 	private typeOfSymbolId(symbolId: string): TypeInfo {
@@ -260,7 +249,7 @@ export class TypeScriptAnalyzer {
 
 		const context = this.sourceContext(parsed.module);
 		if (isSourceFailure(context)) return unknownType(context.reason, context.detail);
-		const extracted = this.extract(parsed.module, context.source);
+		const extracted = extractFileWithNodes(parsed.module, context.source, context.checker);
 		const matches = [...extracted.declarationNodes.entries()].filter(([, id]) => id === symbolId);
 		if (matches.length === 0) return unknownType("ParseError", "the symbol id has no declaration");
 		if (matches.length > 1) return unknownType("Ambiguous", "the symbol id maps to several declarations");
@@ -279,7 +268,7 @@ export class TypeScriptAnalyzer {
 	private typeOfSymbol(checker: ts.TypeChecker, symbol: ts.Symbol, location: ts.Node): TypeInfo {
 		const target = resolveAlias(checker, symbol);
 		const declarations = declarationsOf(target);
-		const mapped = declarations.map((node) => this.mapDeclaration(node));
+		const mapped = this.mapDeclarations(declarations);
 		if (mapped.length > 0 && mapped.every((item) => item.external)) {
 			return unknownType("ExternalDependency", "the declaration is outside the workspace");
 		}
@@ -341,12 +330,14 @@ export class TypeScriptAnalyzer {
 		if (declarations.length !== 1) return undefined;
 		const declaration = declarations[0];
 		if (declaration === undefined) return undefined;
-		const mapped = this.mapDeclaration(declaration);
+		const mapped = this.mapDeclarations([declaration])[0];
+		if (mapped === undefined) return undefined;
 		return mapped.external ? undefined : mapped.id;
 	}
 
 	private symbolIdOfDeclaration(declaration: ts.Declaration): string | undefined {
-		const mapped = this.mapDeclaration(declaration);
+		const mapped = this.mapDeclarations([declaration])[0];
+		if (mapped === undefined) return undefined;
 		return mapped.external ? undefined : mapped.id;
 	}
 
@@ -370,7 +361,7 @@ export class TypeScriptAnalyzer {
 			const failure = this.symbolDeclarationFailure(checker, symbol, symbolNode);
 			return unknownBinding(failure.reason, failure.detail);
 		}
-		const mapped = declarations.map((node) => this.mapDeclaration(node));
+		const mapped = this.mapDeclarations(declarations);
 		const candidates = mapped.flatMap((item) => (item.id === undefined ? [] : [item.id])).sort();
 		if (candidates.length > 1) return { status: "ambiguous", candidates, provenance: "bound" };
 		if (candidates.length === 1) return { status: "bound", symbolId: candidates[0] as string, provenance: "bound" };
@@ -475,11 +466,6 @@ export class TypeScriptAnalyzer {
 	}
 
 	private fallbackProgram(fileName: string): ts.Program | undefined {
-		const key = this.key(fileName);
-		const version = this.overlays.get(key)?.version ?? 0;
-		const cached = this.cachedFallbackProgram;
-		if (cached?.key === key && cached.version === version) return cached.program;
-
 		const options: ts.CompilerOptions = { ...this.projectOptions, allowJs: true, noResolve: true };
 		const host = ts.createCompilerHost(options, true);
 		const defaultGetSourceFile = host.getSourceFile.bind(host);
@@ -492,9 +478,7 @@ export class TypeScriptAnalyzer {
 			}
 			return defaultGetSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
 		};
-		const program = ts.createProgram([fileName], options, host);
-		this.cachedFallbackProgram = { key, version, program };
-		return program;
+		return ts.createProgram([fileName], options, host);
 	}
 
 	private admit(module: string, fileName: string): SourceFailure | undefined {
@@ -518,21 +502,13 @@ export class TypeScriptAnalyzer {
 	private invalidateProgram(): void {
 		this.projectVersion += 1;
 		this.extracted.clear();
-		this.extractedProgram = undefined;
-		this.cachedFallbackProgram = undefined;
-	}
-
-	private syncExtractionProgram(program: ts.Program | undefined): void {
-		if (this.extractedProgram === program) return;
-		this.extracted.clear();
-		this.extractedProgram = program;
 	}
 
 	private program(): ts.Program | undefined {
 		const started = Date.now();
 		const program = this.service.getProgram();
-		if (program !== undefined && program !== this.observedProgram) {
-			this.observedProgram = program;
+		if (program !== undefined && this.countedProgramVersion !== this.projectVersion) {
+			this.countedProgramVersion = this.projectVersion;
 			this.programGenerations += 1;
 		}
 		if (this.firstProgramReadyAt === undefined && program !== undefined) {
@@ -546,14 +522,25 @@ export class TypeScriptAnalyzer {
 		return program;
 	}
 
-	private mapDeclaration(node: ts.Declaration): MappedDeclaration {
-		const source = node.getSourceFile();
-		if (this.isExternal(source.fileName)) return { id: undefined, external: true, node };
-		const module = this.toModule(source.fileName);
-		if (module === null) return { id: undefined, external: true, node };
-		const extracted = this.extract(module, source);
-		const id = extracted.declarationNodes.get(node);
-		return { id, external: false, node };
+	private mapDeclarations(nodes: readonly ts.Declaration[]): MappedDeclaration[] {
+		const idsByFile = new Map<string, Map<string, string[]>>();
+		return nodes.map((node) => {
+			const source = node.getSourceFile();
+			if (this.isExternal(source.fileName)) return { id: undefined, external: true, node };
+			const module = this.toModule(source.fileName);
+			if (module === null) return { id: undefined, external: true, node };
+			let ids = idsByFile.get(source.fileName);
+			if (ids === undefined) {
+				ids = new Map<string, string[]>();
+				for (const declaration of this.extract(module, source).declarations) {
+					const key = positionKey(declaration.selectionRange);
+					ids.set(key, [...(ids.get(key) ?? []), declaration.symbolId]);
+				}
+				idsByFile.set(source.fileName, ids);
+			}
+			const matches = ids.get(selectionKeyOf(node, source));
+			return { id: matches?.length === 1 ? matches[0] : undefined, external: false, node };
+		});
 	}
 
 	private fileName(module: string): string {
@@ -661,6 +648,41 @@ function resolveAlias(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
 
 function asDeclaration(node: ts.Node): ts.Declaration | undefined {
 	return node as ts.Declaration;
+}
+
+function positionKey(range: { start: Position; end: Position }): string {
+	return `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
+}
+
+function hashText(text: string): string {
+	let hash = 2166136261;
+	for (let index = 0; index < text.length; index += 1) {
+		hash ^= text.charCodeAt(index);
+		hash = Math.imul(hash, 16777619);
+	}
+	return String(hash >>> 0);
+}
+
+function selectionKeyOf(node: ts.Declaration, source: ts.SourceFile): string {
+	const selection = selectionNodeOf(node, source);
+	return positionKey({
+		start: source.getLineAndCharacterOfPosition(selection.getStart(source)),
+		end: source.getLineAndCharacterOfPosition(selection.getEnd()),
+	});
+}
+
+function selectionNodeOf(node: ts.Declaration, source: ts.SourceFile): ts.Node {
+	const name = (node as { name?: ts.Node }).name;
+	if (name !== undefined && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name))) {
+		return name;
+	}
+	if (ts.isConstructorDeclaration(node)) {
+		return node.getChildren(source).find((child) => child.kind === ts.SyntaxKind.ConstructorKeyword) ?? node;
+	}
+	const modifier = ts.canHaveModifiers(node)
+		? (ts.getModifiers(node) ?? []).find((child) => child.kind === ts.SyntaxKind.DefaultKeyword)
+		: undefined;
+	return modifier ?? node.getChildren(source).find((child) => child.kind === ts.SyntaxKind.DefaultKeyword) ?? node;
 }
 
 function symbolAtDeclaration(checker: ts.TypeChecker, declaration: ts.Declaration): ts.Symbol | undefined {

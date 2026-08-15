@@ -40,13 +40,28 @@ interface RunningProvider {
 	child: ChildProcess;
 	connection: MessageConnection;
 	queue: RequestQueue;
+	/** Rejects when the process dies, so an IN-FLIGHT request fails typed, not by timing out. */
+	closed: Promise<never>;
 	spec: ProviderSpec;
+	workspaceRoot: string;
+	/** Unexpected deaths so far. At the cap the provider stays dead rather than crash-looping. */
+	deaths: number;
+	/** Set by stop(), so a deliberate teardown is never mistaken for a crash to respawn from. */
+	stopping: boolean;
 }
+
+/** A provider outage is not a file parse failure. */
+export class ProviderUnavailableError extends Error {}
 
 ////////////////////////////////
 //  Constants
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Unexpected deaths one provider gets before it stays dead. */
+const MAX_RESPAWNS = 3;
+
+const RESPAWN_DELAY_MS = 500;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -122,14 +137,101 @@ export class ProviderSupervisor {
 			...(parsed.filenames === undefined ? {} : { filenames: parsed.filenames }),
 		};
 
-		this.providers.set(claims.providerId, { ...running, claims, tiers: parsed.tiers, spec });
+		// A second start under the same id must reap the incumbent, not orphan it behind the map.
+		const incumbent = this.providers.get(claims.providerId);
+		if (incumbent !== undefined) {
+			incumbent.stopping = true;
+			this.stopProcess(incumbent);
+		}
+
+		const entry: RunningProvider = {
+			...running,
+			claims,
+			tiers: parsed.tiers,
+			spec,
+			workspaceRoot,
+			deaths: 0,
+			stopping: false,
+		};
+		this.providers.set(claims.providerId, entry);
+		this.watchForExit(entry);
 		return claims;
+	}
+
+	/** The serving process id, for a caller that must kill or inspect the real child. */
+	pidOf(providerId: string): number | null {
+		return this.providers.get(providerId)?.child.pid ?? null;
+	}
+
+	/** Respawn on an unexpected death, up to the cap. The claims keep routing so failures classify. */
+	private watchForExit(entry: RunningProvider): void {
+		const onExit = (code: number | null) => {
+			const current = this.providers.get(entry.claims.providerId);
+			if (current === undefined || current.child !== entry.child || current.stopping) return;
+			current.deaths += 1;
+			if (current.deaths > MAX_RESPAWNS) {
+				console.log(`provider ${entry.claims.providerId} died ${current.deaths} times; staying dead`);
+				return;
+			}
+			console.log(
+				`provider ${entry.claims.providerId} exited with code ${code}; respawning (${current.deaths} of ${MAX_RESPAWNS})`,
+			);
+			setTimeout(() => void this.respawn(current), RESPAWN_DELAY_MS).unref?.();
+		};
+		// A death inside the handshake await has already fired 'exit'; catching up here means the
+		// watcher can never miss it.
+		if (entry.child.exitCode !== null) onExit(entry.child.exitCode);
+		else entry.child.once("exit", onExit);
+	}
+
+	/** A respawn abandoned by teardown must never publish a child a stopped daemon cannot reap. */
+	private stillWanted(previous: RunningProvider): boolean {
+		return this.providers.get(previous.claims.providerId) === previous && !previous.stopping;
+	}
+
+	private async respawn(previous: RunningProvider): Promise<void> {
+		if (!this.stillWanted(previous)) return;
+		let running: Pick<RunningProvider, "child" | "connection" | "queue" | "closed"> | undefined;
+		try {
+			running = this.spawnProcess(previous.spec, previous.workspaceRoot);
+			const timeout = previous.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+			const info = await withTimeout(
+				running.connection.sendRequest("initialize", {
+					workspaceRoot: previous.workspaceRoot,
+					protocolVersion: PROTOCOL_VERSION,
+				}),
+				timeout,
+				"initialize",
+			);
+			METHOD_SCHEMAS.initialize.response.parse(info);
+		} catch (error) {
+			// The half-started child is reaped, and the failed attempt costs a death so retries
+			// stay bounded by the same cap as crashes.
+			if (running !== undefined) this.stopProcess(running);
+			console.log(
+				`provider ${previous.claims.providerId} respawn failed: ${error instanceof Error ? error.message : error}`,
+			);
+			previous.deaths += 1;
+			if (this.stillWanted(previous) && previous.deaths <= MAX_RESPAWNS) {
+				setTimeout(() => void this.respawn(previous), RESPAWN_DELAY_MS).unref?.();
+			}
+			return;
+		}
+		// Re-checked across the handshake await: a stop that landed meanwhile owns the teardown.
+		if (!this.stillWanted(previous)) {
+			this.stopProcess(running);
+			return;
+		}
+		const entry: RunningProvider = { ...previous, ...running };
+		this.providers.set(previous.claims.providerId, entry);
+		this.watchForExit(entry);
+		console.log(`provider ${previous.claims.providerId} respawned`);
 	}
 
 	private spawnProcess(
 		spec: ProviderSpec,
 		workspaceRoot: string,
-	): Omit<RunningProvider, "claims" | "tiers" | "spec"> {
+	): Pick<RunningProvider, "child" | "connection" | "queue" | "closed"> {
 		const [bin, ...args] = spec.command as [string, ...string[]];
 		// cwd stated rather than inherited: the daemon's own cwd is its state dir, not the project.
 		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], cwd: workspaceRoot });
@@ -142,14 +244,23 @@ export class ProviderSupervisor {
 		connection.listen();
 
 		const queue = new RequestQueue();
-		// A dead process must reject its waiters immediately. Leaving them pending makes every
-		// caller wait out its own timeout in turn, which reads as the daemon being stuck.
-		child.on("exit", (code) => queue.close(new Error(`provider exited with code ${code}`)));
+		let closeNow: (error: Error) => void = () => {};
+		const closed = new Promise<never>((_, reject) => {
+			closeNow = reject;
+		});
+		// Raced by callers, so a settled race must never surface as an unhandled rejection here.
+		closed.catch(() => {});
+		const die = (error: ProviderUnavailableError) => {
+			// Queue closure and the closed signal classify queued and in-flight work alike.
+			queue.close(error);
+			closeNow(error);
+		};
+		child.on("exit", (code) => die(new ProviderUnavailableError(`provider exited with code ${code}`)));
 		// The spawn gate in start() consumes the pre-spawn 'error'; this one covers anything the
 		// process emits after it, so it can never again be an uncaught crash of the daemon.
-		child.on("error", (error) => queue.close(new Error(`provider errored: ${error.message}`)));
+		child.on("error", (error) => die(new ProviderUnavailableError(`provider errored: ${error.message}`)));
 
-		return { child, connection, queue };
+		return { child, connection, queue, closed };
 	}
 
 	////////////////////////////////
@@ -195,7 +306,24 @@ export class ProviderSupervisor {
 		const timeout = provider.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
 		return provider.queue.run(async () => {
-			const raw = await withTimeout(provider.connection.sendRequest(method, params), timeout, method);
+			let raw: unknown;
+			try {
+				// The closed race fails a request in flight at the moment of death, typed.
+				raw = await Promise.race([
+					withTimeout(provider.connection.sendRequest(method, params), timeout, method),
+					provider.closed,
+				]);
+			} catch (error) {
+				// A transport write error can beat the exit event; a dead child retypes it so the
+				// failure never reads as the file's.
+				if (
+					!(error instanceof ProviderUnavailableError) &&
+					(provider.child.exitCode !== null || provider.child.killed)
+				) {
+					throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
+				}
+				throw error;
+			}
 			// Validated here so a malformed answer fails at the provider that produced it, rather
 			// than as a confusing shape error somewhere downstream.
 			return METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
@@ -214,6 +342,7 @@ export class ProviderSupervisor {
 	stop(providerId: string): void {
 		const provider = this.providers.get(providerId);
 		if (!provider) return;
+		provider.stopping = true;
 		this.stopProcess(provider);
 		this.providers.delete(providerId);
 	}

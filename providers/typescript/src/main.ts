@@ -145,7 +145,7 @@ export class TypeScriptProvider {
 		const source =
 			analyzer.updateFile(params.module, params.text) ??
 			ts.createSourceFile(params.module, params.text, ts.ScriptTarget.ESNext, true, scriptKindOf(params.module));
-		const extracted = analyzer.extract(params.module, source);
+		const extracted = analyzer.extract(params.module, source, params.contentHash);
 		const references = extracted.references.map((reference) => ({
 			...reference,
 			binding: analyzer.bindReference(params.module, reference.name, {

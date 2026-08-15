@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
 import { IndexStore } from "../store";
-import type { ProviderSupervisor } from "../supervisor";
+import { type ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
 
 ////////////////////////////////
 //  Helpers
@@ -67,6 +67,7 @@ function depthSupervisor(discovered: string[], honorOutline: boolean, seen: Pars
 			if (method === "parseFile") {
 				const request = params as { module: string; contentHash: string; text: string; depth?: IndexDepth };
 				seen.push({ module: request.module, ...(request.depth === undefined ? {} : { depth: request.depth }) });
+				if (request.text.includes("DEAD")) throw new ProviderUnavailableError("provider exited with code null");
 				if (request.text.includes("POISON")) throw new Error("poisoned file");
 				const declarations = [...request.text.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)].map((match) =>
 					declaration(request.module, match[1] as string),
@@ -230,5 +231,20 @@ describe("warmup pass", () => {
 		put("bad.fake", "export class Fixed {}\n");
 		await service.indexFile("bad.fake");
 		expect(store.parseFailures()).toEqual([]);
+	});
+
+	it("classifies a dead provider as unavailable, blaming no file", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		put("gone.fake", "DEAD\n");
+		service = serviceOver(depthSupervisor(["a.fake", "gone.fake"], true, []));
+
+		const outcomes = await service.warmupWorkspace();
+		const skipped = outcomes.find((outcome) => outcome.module === "gone.fake");
+
+		expect(skipped).toMatchObject({ action: "skipped", reason: "provider unavailable" });
+		// Provider outages do not create per-file failure records.
+		expect(store.parseFailures()).toEqual([]);
+		expect(service.indexStatus().failures).toBe(0);
 	});
 });

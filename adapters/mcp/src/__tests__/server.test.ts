@@ -394,7 +394,8 @@ describe("query project routing", () => {
 		expect(seen).toEqual(["Needle", "Other"]);
 	});
 
-	it("requires an explicit selector when several projects are bound", async () => {
+	// Omission and [] select the same project set.
+	it("treats an omitted selector as all bound projects, same as []", async () => {
 		const routes: string[] = [];
 		const client = await connectClient(
 			searchSource(routes, []),
@@ -403,8 +404,8 @@ describe("query project routing", () => {
 
 		const result = await call(client, "search_symbols", { queries: [{ text: "Needle" }] });
 
-		expect(result.isError).toBe(true);
-		expect(routes).toEqual([]);
+		expect(result.isError).toBeUndefined();
+		expect(routes).toEqual(["alpha", "beta"]);
 	});
 
 	it("uses an empty array for all bound projects", async () => {

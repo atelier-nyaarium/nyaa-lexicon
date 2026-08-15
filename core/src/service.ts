@@ -95,6 +95,12 @@ import type { RefactorIssue } from "./transactions.js";
 import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
+//  Constants
+
+/** How long a tree-first answer waits on its priority parse before serving outline facts. */
+const ENSURE_TREE_BUDGET_MS = 10_000;
+
+////////////////////////////////
 //  Interfaces & Types
 
 /** The plan rides along either way, so a refusal can say what it would have done. */
@@ -208,7 +214,10 @@ export class LexiconService {
 			const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
 			if (landed !== null && landed.status === "resolved") closure.add(landed.module);
 		}
-		await this.indexer.requestFull([...closure]);
+		// Best effort under a budget: a hung provider must cost the answer seconds, not a request
+		// timeout. The order keeps running behind whatever answers meanwhile.
+		const budget = new Promise<void>((resolve) => setTimeout(resolve, ENSURE_TREE_BUDGET_MS).unref?.());
+		await Promise.race([this.indexer.requestFull([...closure]).catch(() => {}), budget]);
 	}
 
 	////////////////////////////////

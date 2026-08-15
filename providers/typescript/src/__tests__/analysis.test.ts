@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { TypeScriptAnalyzer } from "../analyzer";
 import { TypeScriptProvider } from "../main";
@@ -137,6 +138,22 @@ describe("checker-backed analysis", () => {
 			display: "number",
 		});
 		provider.shutdown();
+	});
+
+	it("refreshes fallback facts when source text changes at one overlay version", () => {
+		const root = workspace({});
+		const analyzer = new TypeScriptAnalyzer(root, loadProject(root));
+		const source = (text: string) =>
+			ts.createSourceFile("missing.ts", text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+
+		const first = analyzer.extract("missing.ts", source("export function RenameOutcome() {}\n"));
+		const second = analyzer.extract("missing.ts", source("export function FreshOutcome() {}\n"));
+
+		expect({
+			first: first.declarations.find((declaration) => declaration.name === "RenameOutcome")?.name,
+			hasFresh: second.declarations.some((declaration) => declaration.name === "FreshOutcome"),
+		}).toEqual({ first: "RenameOutcome", hasFresh: true });
+		analyzer.dispose();
 	});
 
 	it("reuses one compiler generation for unchanged indexed files", () => {

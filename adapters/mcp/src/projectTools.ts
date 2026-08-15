@@ -140,7 +140,7 @@ const QUERY_PROJECTS = z
 	.refine((names) => new Set(names).size === names.length, `Project names must be unique.`)
 	.meta({ uniqueItems: true })
 	.optional()
-	.describe(`Bound project names from \`list_projects\`. \`[]\` selects all bound projects.`);
+	.describe(`Bound project names from \`list_projects\`. Omitted or \`[]\` selects all bound projects.`);
 
 const MUTATION_PROJECT = z.string().min(1).optional().describe(`Bound project name from \`list_projects\`.`);
 
@@ -454,13 +454,8 @@ function selectProjects(
 	}
 
 	const { projects, ...args } = raw as Record<string, unknown> & { projects?: string[] };
-	if (projects === undefined) {
-		if (bound.length === 1 && bound[0] !== undefined) return { projects: [bound[0]], args };
-		return text(
-			`# Project selection required\n\nSeveral projects are bound: ${bound.map((entry) => `\`${entry.name}\``).join(", ")}. Pass \`projects\` with binding names, or \`[]\` for all.`,
-		);
-	}
-	if (projects.length === 0) return { projects: bound, args };
+	// Omission and [] both select all bound projects.
+	if (projects === undefined || projects.length === 0) return { projects: bound, args };
 	const selected = resolveNamed(projects, all, bound);
 	return Array.isArray(selected) ? { projects: selected, args } : selected;
 }
