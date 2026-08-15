@@ -682,27 +682,35 @@ function text(body: string, isError = false): ToolResult {
  */
 async function withIndexState(backend: ToolBackend, body: string): Promise<string> {
 	const status = await backend.indexStatus();
-	const failureNote =
-		status.failures === 0
-			? ""
-			: `${status.failures} file${status.failures === 1 ? "" : "s"} failed to parse; prior facts were kept.`;
-	const withFailure = (answer: string) => (failureNote === "" ? answer : `${answer}\n\n> ${failureNote}`);
-	if (status.state === "ready") return withFailure(body);
+	const notes: string[] = [];
 
-	// A scan in progress over an index that already holds files is a REFRESH, not a cold build. The
-	// answer came from a complete previous scan, and calling that incomplete is its own dishonesty:
-	// a daemon restart would otherwise stamp every correct answer as unreliable.
-	if (status.stored > 0) {
-		return withFailure(
-			`${body}\n\n> Answered from an index of ${status.stored} files. A rescan is in progress (${status.done} of ${status.total}), so anything edited since the last scan may not be reflected.`,
+	if (status.failures > 0) {
+		notes.push(
+			`${status.failures} file${status.failures === 1 ? "" : "s"} failed to parse; any facts indexed before the failure were kept.`,
 		);
 	}
-	if (status.state === "indexing") {
-		return withFailure(
-			`${body}\n\n> Still indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.`,
+
+	// Outline facts make reference and literal counts lower bounds.
+	const outline = status.outlineFiles ?? 0;
+	if (outline > 0) {
+		notes.push(
+			`${outline} of ${outline + (status.fullFiles ?? 0)} files hold outline facts only (names and imports), so reference and literal counts are lower bounds until the upgrade finishes.`,
 		);
+	} else if (status.state !== "ready") {
+		// A stored index remains usable during a rescan, but edited files may be missing.
+		if (status.stored > 0) {
+			const progress = status.total > 0 ? ` (${status.done} of ${status.total})` : "";
+			notes.push(
+				`Answered from an index of ${status.stored} files. A rescan is in progress${progress}, so anything edited since the last scan may not be reflected.`,
+			);
+		} else if (status.state === "warming" || status.state === "indexing") {
+			notes.push(`Still indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.`);
+		} else {
+			notes.push("The index has not been built yet, so this answer covers nothing.");
+		}
 	}
-	return withFailure(`${body}\n\n> The index has not been built yet, so this answer covers nothing.`);
+
+	return notes.length === 0 ? body : `${body}\n\n${notes.map((note) => `> ${note}`).join("\n")}`;
 }
 
 /**

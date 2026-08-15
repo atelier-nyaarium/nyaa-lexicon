@@ -183,6 +183,34 @@ export class LexiconService {
 		return this.indexer.indexStatus();
 	}
 
+	warmupWorkspace(
+		...args: Parameters<WorkspaceIndexer["warmupWorkspace"]>
+	): ReturnType<WorkspaceIndexer["warmupWorkspace"]> {
+		return this.indexer.warmupWorkspace(...args);
+	}
+
+	upgradeRemaining(): Promise<void> {
+		return this.indexer.upgradeRemaining();
+	}
+
+	/** Upgrades a symbol's module and direct imports before graph queries. */
+	async ensureTreeFor(symbolId: string): Promise<void> {
+		const parsed = parseSymbolId(symbolId);
+		if (parsed === null) return;
+		await this.ensureTreeForModule(parsed.module);
+	}
+
+	async ensureTreeForModule(module: string): Promise<void> {
+		if (this.store.depthTotals().outline === 0) return;
+		const closure = new Set([module]);
+		for (const statement of this.store.importsIn(module)) {
+			if (closure.size > 32) break;
+			const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
+			if (landed !== null && landed.status === "resolved") closure.add(landed.module);
+		}
+		await this.indexer.requestFull([...closure]);
+	}
+
 	////////////////////////////////
 	//  Source text, answered by SourceWorkspace
 
@@ -404,10 +432,13 @@ export class LexiconService {
 		// A COUNT query, so unlike staleness it stays cheap at any size and is never skipped.
 		const doubted = this.store.doubtedCount();
 
+		const scan = this.store.readScanSummary();
 		return {
 			...totals,
 			scope: this.scopeReport(),
 			index: this.indexStatus(),
+			...(scan === null ? {} : { scan }),
+			parseFailures: this.store.parseFailures(),
 			modules: modules.length,
 			largest: modules.slice(0, topModules),
 			knowledge: {

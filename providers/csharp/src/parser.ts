@@ -378,9 +378,10 @@ export class CsharpParser {
 	constructor(
 		private readonly module: string,
 		private readonly text: string,
+		private readonly outline = false,
 	) {
 		this.cursor = new Cursor(text);
-		this.lexed = tokenize(text);
+		this.lexed = tokenize(text, { collectLiterals: !outline });
 		this.tokens = this.lexed.tokens;
 		this.diagnostics = [...this.lexed.diagnostics];
 	}
@@ -391,8 +392,8 @@ export class CsharpParser {
 			this.parseScope(0, this.tokens.length - 1, undefined);
 		}
 		const finalized = this.finalizeDeclarations();
-		const references = this.extractReferences(finalized.metadata);
-		const literals = this.extractLiterals(finalized.metadata);
+		const references = this.outline ? [] : this.extractReferences(finalized.metadata);
+		const literals = this.outline ? [] : this.extractLiterals(finalized.metadata);
 		const diagnostics = this.diagnostics
 			.map((item) => ({ ...item, path: this.module }))
 			.sort((left, right) => {
@@ -845,7 +846,7 @@ export class CsharpParser {
 		const primaryOpen = this.value(afterName) === "(" ? afterName : -1;
 		const primaryClose = primaryOpen < 0 ? -1 : this.matching(primaryOpen, "(", ")", end);
 		if (primaryClose >= 0) type.parameterCount = this.parseParameters(primaryOpen, primaryClose, type);
-		this.markBaseTypes(nameIndex, bodyOpen >= 0 ? bodyOpen : codeEnd, type);
+		if (!this.outline) this.markBaseTypes(nameIndex, bodyOpen >= 0 ? bodyOpen : codeEnd, type);
 		if (bodyOpen >= 0) {
 			if (kind === "enum") this.parseEnumMembers(bodyOpen + 1, bodyClose < 0 ? end : bodyClose, type);
 			else this.parseScope(bodyOpen + 1, bodyClose < 0 ? end : bodyClose, type);
@@ -1231,11 +1232,14 @@ export class CsharpParser {
 			const endToken = this.token(finish >= 0 ? finish : next) ?? nameToken;
 			const typeEnd = this.previousSignificant(next, current);
 			const typeText =
-				inferred || typeEnd < current
-					? undefined
-					: this.sourceSpan(item as Token, this.token(typeEnd) as Token);
-			const initializer = this.initializerToken(current, finish >= 0 ? finish : end, next);
-			const inferredType = inferred && initializer !== undefined ? displayForLiteral(initializer) : undefined;
+				!this.outline && !inferred && typeEnd >= current
+					? this.sourceSpan(item as Token, this.token(typeEnd) as Token)
+					: undefined;
+			const initializer = this.outline
+				? undefined
+				: this.initializerToken(current, finish >= 0 ? finish : end, next);
+			const inferredType =
+				!this.outline && inferred && initializer !== undefined ? displayForLiteral(initializer) : undefined;
 			const local = this.addDeclaration({
 				kind: "variable",
 				languageKind: "local",
@@ -1289,7 +1293,7 @@ export class CsharpParser {
 			exported: exportedFor(visibility, parent),
 			signature: this.signature(codeStartIndex, boundary.index),
 			docComment: doc?.text,
-			typeText: this.typeTextBeforeName(start, nameIndex),
+			...(this.outline ? {} : { typeText: this.typeTextBeforeName(start, nameIndex) }),
 			nameTokenOffsets: [name.startOffset],
 		});
 		this.recordTypeSpan(this.spanBeforeName(start, nameIndex), property);
@@ -1328,7 +1332,7 @@ export class CsharpParser {
 		}
 		const close = boundary.kind === "body" ? this.matching(boundary.index, "{", "}", end) : -1;
 		const visibility = visibilityFor(modifiers, parent, "event");
-		const typeText = this.typeTextBeforeName(start + 1, firstNameIndex);
+		const typeText = this.outline ? undefined : this.typeTextBeforeName(start + 1, firstNameIndex);
 		for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
 			const segment = segments[segmentIndex] as { start: number; end: number };
 			const nameIndex = this.findDeclaratorName(segment.start, segment.end);
@@ -1378,7 +1382,7 @@ export class CsharpParser {
 			this.report("Field declaration needs a name.", this.token(start));
 			return this.advanceBoundary(boundary, end);
 		}
-		const typeText = this.typeTextBeforeName(start, firstName);
+		const typeText = this.outline ? undefined : this.typeTextBeforeName(start, firstName);
 		const kind: SymbolKind = modifiers.has("const") ? "constant" : "field";
 		const visibility = visibilityFor(modifiers, parent, kind);
 		for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
@@ -1389,7 +1393,9 @@ export class CsharpParser {
 			this.ignoredOffsets.add(name.startOffset);
 			const initializer = this.initializerToken(segment.start, segment.end, nameIndex);
 			const inferredType =
-				typeText === undefined && initializer !== undefined ? displayForLiteral(initializer) : undefined;
+				!this.outline && typeText === undefined && initializer !== undefined
+					? displayForLiteral(initializer)
+					: undefined;
 			const field = this.addDeclaration({
 				kind,
 				languageKind: kind === "constant" ? "const" : "field",
@@ -1642,7 +1648,7 @@ export class CsharpParser {
 	}
 
 	private recordTypeSpan(span: TypeSpan | undefined, declaration: RawDeclaration): void {
-		if (span === undefined) return;
+		if (this.outline || span === undefined) return;
 		for (let current = span.start; current < span.end; current++) {
 			const item = this.token(current);
 			if (item?.kind === "identifier" && !MODIFIERS.has(item.value)) this.typeTokenIndices.add(current);

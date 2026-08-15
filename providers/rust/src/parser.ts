@@ -250,6 +250,7 @@ export class RustParser {
 	constructor(
 		private readonly module: string,
 		private readonly text: string,
+		private readonly depth: "full" | "outline" = "full",
 	) {
 		this.scan = tokenize(text);
 		this.tokens = this.scan.tokens;
@@ -264,8 +265,8 @@ export class RustParser {
 	parse(): ParsedFile {
 		this.parseItems(0, this.tokens.length, { descriptors: [], kind: "root" });
 		const declarations = this.rawDeclarations.map((raw) => raw.declaration);
-		const references = this.extractReferences();
-		const literals = this.extractLiterals();
+		const references = this.depth === "outline" ? [] : this.extractReferences();
+		const literals = this.depth === "outline" ? [] : this.extractLiterals();
 		const diagnostics = this.diagnostics();
 		return {
 			module: this.module,
@@ -276,9 +277,9 @@ export class RustParser {
 			literals,
 			diagnostics,
 			rawDeclarations: this.rawDeclarations,
-			rawReferences: this.rawReferences,
+			rawReferences: this.depth === "outline" ? [] : this.rawReferences,
 			importBindings: this.importBindings,
-			typeAnswers: this.typeAnswers,
+			typeAnswers: this.depth === "outline" ? new Map() : this.typeAnswers,
 			lineTokens: this.scan.lineTokens,
 		};
 	}
@@ -557,7 +558,7 @@ export class RustParser {
 		};
 		this.rawDeclarations.push(raw);
 		this.declarationNameTokens.add(this.tokens.indexOf(nameToken));
-		if (options.typeDisplay !== undefined) {
+		if (this.depth !== "outline" && options.typeDisplay !== undefined) {
 			this.typeAnswers.set(symbolId, {
 				status: "known",
 				display: options.typeDisplay,
@@ -639,14 +640,24 @@ export class RustParser {
 		const endToken = tokenAt(this.tokens, endIndex);
 		if (endToken === undefined) return end;
 		if (bodyEnd < 0 && semicolon < 0) this.addDiagnostic("function has no body or semicolon", endToken);
-		const returnInfo = this.returnType(close + 1, bodyOpen < end ? bodyOpen : endIndex);
+		const returnInfo =
+			this.depth === "outline" ? undefined : this.returnType(close + 1, bodyOpen < end ? bodyOpen : endIndex);
 		const descriptor = this.methodDescriptor(context, nameToken.value);
-		const parameterTypes = this.parameterTypes(open + 1, close);
 		const signatureEnd = bodyOpen < endIndex ? bodyOpen : endIndex + 1;
 		const baseSignature = sourceOfTokens(this.text, this.tokens, start, signatureEnd);
 		const signature =
 			context.implTrait === undefined ? baseSignature : `${baseSignature} (impl ${context.implTrait})`;
 		const kind = context.kind === "impl" || context.kind === "trait" ? "method" : "function";
+		const typeOptions =
+			this.depth === "outline"
+				? {}
+				: {
+						typeDisplay:
+							returnInfo === undefined
+								? `fn(${this.parameterTypes(open + 1, close).join(", ")})`
+								: `fn(${this.parameterTypes(open + 1, close).join(", ")}) -> ${returnInfo.display}`,
+						...(returnInfo?.typeName === undefined ? {} : { typeName: returnInfo.typeName }),
+					};
 		const raw = this.addRawDeclaration(
 			nameToken,
 			prefix.start,
@@ -659,21 +670,20 @@ export class RustParser {
 			prefix.exported,
 			{
 				signature,
-				...(returnInfo === undefined
-					? { typeDisplay: `fn(${parameterTypes.join(", ")})` }
+				...typeOptions,
+				...(this.depth === "outline"
+					? {}
 					: {
-							typeDisplay: `fn(${parameterTypes.join(", ")}) -> ${returnInfo.display}`,
-							...(returnInfo.typeName === undefined ? {} : { typeName: returnInfo.typeName }),
+							metrics: {
+								lines: endToken.end.line - prefix.start.start.line + 1,
+								parameters: this.parameterCount(open + 1, close),
+								...(bodyEnd < 0 ? {} : this.bodyMetrics(bodyOpen + 1, bodyEnd)),
+							},
 						}),
-				metrics: {
-					lines: endToken.end.line - prefix.start.start.line + 1,
-					parameters: this.parameterCount(open + 1, close),
-					...(bodyEnd < 0 ? {} : this.bodyMetrics(bodyOpen + 1, bodyEnd)),
-				},
 			},
 		);
-		this.parseParameters(open + 1, close, raw);
-		if (bodyEnd >= 0) {
+		if (this.depth !== "outline") this.parseParameters(open + 1, close, raw);
+		if (bodyEnd >= 0 && this.depth !== "outline") {
 			raw.functionId = raw.declaration.symbolId;
 			this.parseLocals(bodyOpen + 1, bodyEnd, raw);
 		}
@@ -908,10 +918,11 @@ export class RustParser {
 			const name = named ? first.value : String(tupleIndex++);
 			const synthetic = named ? nameToken : { ...first, value: name };
 			const typeStart = colon >= 0 ? colon + 1 : fieldStart;
-			const typeDisplay = sourceOfTokens(this.text, this.tokens, typeStart, to);
-			const typeName = this.simpleTypeName(typeStart, to);
+			const typeDisplay =
+				this.depth === "outline" ? undefined : sourceOfTokens(this.text, this.tokens, typeStart, to);
+			const typeName = this.depth === "outline" ? undefined : this.simpleTypeName(typeStart, to);
 			const descriptor: RustDescriptor = { kind: "term", name };
-			const fieldTypeRange = rangeOfTokens(this.tokens, typeStart, to);
+			const fieldTypeRange = this.depth === "outline" ? undefined : rangeOfTokens(this.tokens, typeStart, to);
 			this.addRawDeclaration(
 				synthetic,
 				tokenAt(this.tokens, from) ?? first,
@@ -928,7 +939,7 @@ export class RustParser {
 				fieldPrefix.visibility,
 				fieldPrefix.exported,
 				{
-					typeDisplay,
+					...(typeDisplay === undefined ? {} : { typeDisplay }),
 					...(typeName === undefined ? {} : { typeName }),
 					...(fieldTypeRange === undefined ? {} : { typeRange: fieldTypeRange }),
 				},
@@ -1094,8 +1105,11 @@ export class RustParser {
 		}
 		const endIndex = this.statementEnd(start, end);
 		const equal = this.topLevelToken(start + 2, endIndex, "=");
-		const typeDisplay = equal >= 0 ? sourceOfTokens(this.text, this.tokens, equal + 1, endIndex) : undefined;
-		const typeName = equal >= 0 ? this.simpleTypeName(equal + 1, endIndex) : undefined;
+		const typeDisplay =
+			this.depth === "outline" || equal < 0
+				? undefined
+				: sourceOfTokens(this.text, this.tokens, equal + 1, endIndex);
+		const typeName = this.depth === "outline" || equal < 0 ? undefined : this.simpleTypeName(equal + 1, endIndex);
 		this.addRawDeclaration(
 			name,
 			prefix.start,
@@ -1125,9 +1139,13 @@ export class RustParser {
 		const colon = this.topLevelToken(nameIndex + 1, endIndex, ":");
 		const equal = this.topLevelToken(nameIndex + 1, endIndex, "=");
 		const typeEnd = equal >= 0 ? equal : endIndex;
-		const typeDisplay = colon >= 0 ? sourceOfTokens(this.text, this.tokens, colon + 1, typeEnd) : undefined;
-		const typeName = colon >= 0 ? this.simpleTypeName(colon + 1, typeEnd) : undefined;
-		const typeRange = colon >= 0 ? rangeOfTokens(this.tokens, colon + 1, typeEnd) : undefined;
+		const typeDisplay =
+			this.depth === "outline" || colon < 0
+				? undefined
+				: sourceOfTokens(this.text, this.tokens, colon + 1, typeEnd);
+		const typeName = this.depth === "outline" || colon < 0 ? undefined : this.simpleTypeName(colon + 1, typeEnd);
+		const typeRange =
+			this.depth === "outline" || colon < 0 ? undefined : rangeOfTokens(this.tokens, colon + 1, typeEnd);
 		const raw = this.addRawDeclaration(
 			name,
 			prefix.start,
@@ -1148,7 +1166,7 @@ export class RustParser {
 						}),
 			},
 		);
-		if (typeDisplay === undefined && equal >= 0) {
+		if (this.depth !== "outline" && typeDisplay === undefined && equal >= 0) {
 			const inferred = this.literalInitializer(equal + 1, endIndex);
 			if (inferred !== undefined)
 				this.typeAnswers.set(raw.declaration.symbolId, {
@@ -1683,6 +1701,6 @@ export class RustParser {
 	}
 }
 
-export function parseRustFile(module: string, text: string): ParsedFile {
-	return new RustParser(module, text).parse();
+export function parseRustFile(module: string, text: string, depth: "full" | "outline" = "full"): ParsedFile {
+	return new RustParser(module, text, depth).parse();
 }

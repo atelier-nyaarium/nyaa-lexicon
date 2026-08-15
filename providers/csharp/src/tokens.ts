@@ -228,11 +228,12 @@ function addLiteral(literals: Token[], item: Token): void {
 	if (item.kind === "string" || item.kind === "number" || item.kind === "boolean") literals.push(item);
 }
 
-export function tokenize(text: string): LexedSource {
+export function tokenize(text: string, options: { collectLiterals?: boolean } = {}): LexedSource {
 	const cursor = new Cursor(text);
 	const tokens: Token[] = [];
 	const literals: Token[] = [];
 	const diagnostics: Diagnostic[] = [];
+	const collectLiterals = options.collectLiterals ?? true;
 	while (cursor.good()) {
 		const before = cursor.offset;
 		const character = cursor.peek();
@@ -298,21 +299,21 @@ export function tokenize(text: string): LexedSource {
 				}
 				if (parsed.invalidNewline)
 					diagnostics.push(diagnostic("String literal cannot contain a newline.", item.start, item.end));
-				addLiteral(literals, item);
+				if (collectLiterals) addLiteral(literals, item);
 			}
 		} else if (isDigit(character)) {
 			const start = cursor.mark();
 			const value = readNumber(cursor);
 			const item = token(cursor, "number", value, start);
 			tokens.push(item);
-			addLiteral(literals, item);
+			if (collectLiterals) addLiteral(literals, item);
 		} else if (isIdentifierStart(character)) {
 			const start = cursor.mark();
 			const value = cursor.readWhile(isIdentifierPart);
 			const kind: TokenKind = value === "true" || value === "false" ? "boolean" : "identifier";
 			const item = token(cursor, kind, value, start);
 			tokens.push(item);
-			addLiteral(literals, item);
+			if (collectLiterals) addLiteral(literals, item);
 		} else {
 			const start = cursor.mark();
 			const operator = OPERATORS.find((candidate) => sameAscii(cursor, candidate));

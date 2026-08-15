@@ -4,6 +4,7 @@ import {
 	type Binding,
 	type Declaration,
 	type ImportResolution,
+	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -190,20 +191,24 @@ export class CsharpProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
-		const facts = new CsharpParser(params.module, params.text).parse();
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+		const outline = params.depth === "outline";
+		const facts = new CsharpParser(params.module, params.text, outline).parse();
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
 			declarations: facts.declarations,
-			references: facts.references.map((reference) => ({
-				...reference,
-				binding: this.bindingForReference(params.module, facts, reference),
-			})),
+			references: outline
+				? []
+				: facts.references.map((reference) => ({
+						...reference,
+						binding: this.bindingForReference(params.module, facts, reference),
+					})),
 			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
-			literals: facts.literals,
+			literals: outline ? [] : facts.literals,
 			diagnostics: facts.diagnostics,
+			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}
 

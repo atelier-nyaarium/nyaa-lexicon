@@ -10,8 +10,8 @@ import { UnknownReasonSchema } from "./values.js";
 ////////////////////////////////
 //  Schemas
 
-/** How much of a module a provider may expose to the index. */
-export const IndexDepthSchema = z.enum(["full", "surface"]).meta({ id: "IndexDepth" });
+/** `surface` limits exposed facts; `outline` limits extraction to declarations and imports. */
+export const IndexDepthSchema = z.enum(["full", "surface", "outline"]).meta({ id: "IndexDepth" });
 
 export type IndexDepth = z.infer<typeof IndexDepthSchema>;
 
@@ -153,6 +153,8 @@ export const FileFactsSchema = z
 		/** Empty is honest only when the provider declares the tier false, like every other list here. */
 		literals: z.array(LiteralSchema),
 		diagnostics: z.array(DiagnosticSchema),
+		/** Extraction depth. Absent means full; outline means a full pass remains owed. */
+		depth: IndexDepthSchema.optional(),
 	})
 	.meta({ id: "FileFacts" });
 

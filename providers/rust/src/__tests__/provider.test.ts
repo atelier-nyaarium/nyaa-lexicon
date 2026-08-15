@@ -188,6 +188,50 @@ test("answers every protocol method, including explicit refusals", () => {
 	expect(handlers.shutdown({})).toEqual({});
 });
 
+test("honors outline depth for declarations and imports only", () => {
+	const provider = new RustProvider();
+	provider.initialize("/workspace");
+	const facts = provider.parseFile({
+		module: "src/lib.rs",
+		contentHash: "outline",
+		depth: "outline",
+		text: `use std::fmt::Display;
+pub struct Item;
+fn run(value: Item) { println!("value"); }
+`,
+	});
+	const item = facts.declarations.find((declaration) => declaration.name === "Item");
+
+	expect(facts.depth).toBe("outline");
+	expect(item).toBeDefined();
+	expect(facts.imports).toHaveLength(1);
+	expect(facts.imports[0]).toMatchObject({
+		specifier: "std::fmt::Display",
+		imported: [{ name: "Display", local: "Display", range: expect.any(Object), localRange: expect.any(Object) }],
+		reExport: false,
+	});
+	expect(facts.references).toEqual([]);
+	expect(facts.literals).toEqual([]);
+	if (item === undefined) throw new Error("outline declaration missing");
+	expect(provider.typeOf({ symbolId: item.symbolId })).toMatchObject({ status: "unknown" });
+});
+
+test("reports outline syntax diagnostics", () => {
+	const provider = new RustProvider();
+	provider.initialize("/workspace");
+	const facts = provider.parseFile({
+		module: "src/broken.rs",
+		contentHash: "outline-broken",
+		depth: "outline",
+		text: "pub fn broken(\n",
+	});
+
+	expect(facts.depth).toBe("outline");
+	expect(facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+	expect(facts.references).toEqual([]);
+	expect(facts.literals).toEqual([]);
+});
+
 test("typeOf accepts a declaration range and reports unknown inputs honestly", () => {
 	const root = workspace({ "src/lib.rs": "pub const LIMIT: i32 = 1;\n" });
 	const provider = new RustProvider();

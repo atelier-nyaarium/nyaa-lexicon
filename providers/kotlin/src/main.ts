@@ -4,6 +4,7 @@ import {
 	type Binding,
 	type Declaration,
 	type ImportResolution,
+	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -193,17 +194,19 @@ export class KotlinProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
-		const facts = parseKotlin(params.module, params.text);
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+		const outline = params.depth === "outline";
+		const facts = parseKotlin(params.module, params.text, outline);
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
 			declarations: facts.declarations,
-			references: this.wireReferences(facts),
+			references: outline ? [] : this.wireReferences(facts),
 			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
-			literals: facts.literals,
+			literals: outline ? [] : facts.literals,
 			diagnostics: facts.diagnostics,
+			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}
 

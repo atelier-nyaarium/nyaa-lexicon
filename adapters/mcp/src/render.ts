@@ -612,23 +612,52 @@ export function renderOverview(result: {
 	literals: number;
 	modules: number;
 	scope: string;
-	index: { state: string; done: number; total: number; failures?: number };
+	index: {
+		state: string;
+		done: number;
+		total: number;
+		failures?: number;
+		fullFiles?: number;
+		outlineFiles?: number;
+	};
+	scan?: { discovered: number; claimed: number; unclaimed: number; denied: number };
+	parseFailures?: Array<{ module: string; reason: string }>;
 	largest: Array<{ module: string; symbols: number }>;
 	knowledge?: { answers: number; stale?: number; doubted?: number };
 }): string {
-	const lines = [
-		"# Workspace overview",
-		"",
-		"## Workspace",
-		"",
-		`\`${result.scope}\``,
-		"",
-		"## Index",
-		"",
-		`- State: ${result.index.state}${result.index.state === "ready" ? "" : ` (${result.index.done} of ${result.index.total})`}`,
-	];
+	const lines = ["# Workspace overview", "", "## Workspace", "", `\`${result.scope}\``, "", "## Index", ""];
+
+	// Show progress only for states with meaningful totals.
+	const counted = ["warming", "indexing", "upgrading"].includes(result.index.state);
+	const stateNote =
+		result.index.state === "unstarted"
+			? "serving stored facts; nothing rescanned this run"
+			: `${result.index.state}${counted ? ` (${result.index.done} of ${result.index.total})` : ""}`;
+	lines.push(`- State: ${stateNote}`);
+
+	const outline = result.index.outlineFiles ?? 0;
+	if (outline > 0) {
+		lines.push(
+			`- Depth: ${result.index.fullFiles ?? 0} files at final depth, ${outline} outline only; reference and literal counts are lower bounds until the upgrade finishes`,
+		);
+	}
+
 	const failures = result.index.failures ?? 0;
-	if (failures > 0) lines.push(`- Files failed: ${failures}; prior facts were kept`);
+	if (failures > 0) {
+		const named = (result.parseFailures ?? []).slice(0, 5);
+		const list =
+			named.length > 0
+				? ` (${named.map((f) => f.module).join(", ")}${failures > named.length ? ", ..." : ""})`
+				: "";
+		lines.push(`- Files failed to parse: ${failures}${list}; any facts indexed before the failure were kept`);
+	}
+
+	// Scan totals expose discovered files that were not indexed.
+	if (result.scan !== undefined) {
+		lines.push(
+			`- Last scan: ${result.scan.discovered} files discovered, ${result.scan.claimed} claimed by providers, ${result.scan.unclaimed} unclaimed, ${result.scan.denied} outside scope`,
+		);
+	}
 
 	lines.push(
 		"",

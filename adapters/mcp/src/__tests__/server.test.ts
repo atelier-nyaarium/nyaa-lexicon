@@ -113,7 +113,15 @@ function searchSource(routes: string[], optionsSeen: Array<Record<string, unknow
 	return (selected) => {
 		routes.push(selected.name);
 		return backend({
-			indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+			indexStatus: async () => ({
+				state: "ready",
+				done: 1,
+				total: 1,
+				failures: 0,
+				stored: 1,
+				fullFiles: 1,
+				outlineFiles: 0,
+			}),
 			searchSymbols: async (text, options) => {
 				optionsSeen.push(options);
 				return {
@@ -215,7 +223,15 @@ describe("query project routing", () => {
 		const seen: unknown[] = [];
 		const source: BackendSource = () =>
 			backend({
-				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 0,
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
 				findImports: async (query) => {
 					seen.push(query);
 					return { query, imports: [], total: 0, truncated: false };
@@ -242,7 +258,7 @@ describe("query project routing", () => {
 					literals: 0,
 					modules: 0,
 					scope: "test",
-					index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0 },
+					index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0, fullFiles: 0, outlineFiles: 0 },
 					largest: [],
 				}),
 			});
@@ -259,7 +275,15 @@ describe("query project routing", () => {
 		const seen: LiteralQuery[] = [];
 		const source: BackendSource = () =>
 			backend({
-				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 0,
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
 				findLiterals: async (query) => {
 					seen.push(query);
 					return { query, literals: [], total: 0, truncated: false };
@@ -348,7 +372,15 @@ describe("query project routing", () => {
 		const seen: string[] = [];
 		const client = await connectClient(
 			backend({
-				indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 0,
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
 				searchSymbols: async (text) => {
 					if (text !== undefined) seen.push(text);
 					return { text, symbols: [], total: 0, truncated: false };

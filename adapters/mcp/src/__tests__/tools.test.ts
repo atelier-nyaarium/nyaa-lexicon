@@ -31,7 +31,15 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		findReferences: async (symbolId) => ({ symbolId, references: [], total: 0, truncated: false, tier: "bound" }),
 		resolveImport: async () => ({ status: "unresolved", reason: "NotImplemented" }),
 		typeOf: async () => ({ status: "unknown", reason: "NotImplemented" }),
-		indexStatus: async () => ({ state: "ready", done: 1, total: 1, failures: 0, stored: 1 }),
+		indexStatus: async () => ({
+			state: "ready",
+			done: 1,
+			total: 1,
+			failures: 0,
+			stored: 1,
+			fullFiles: 1,
+			outlineFiles: 0,
+		}),
 		findLiterals: async (query) => ({ query, literals: [], total: 0, truncated: false }),
 		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
 		outlineModule: async () => [],
@@ -69,7 +77,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			literals: 0,
 			modules: 0,
 			scope: "test",
-			index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0 },
+			index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0, fullFiles: 0, outlineFiles: 0 },
 			largest: [],
 		}),
 		coChangedWith: async (module) => ({
@@ -257,5 +265,53 @@ describe("find_references passes its limit through", () => {
 			{ symbolId: "x", limit: 5 },
 		);
 		expect(seen).toBe(5);
+	});
+});
+
+describe("index-state honesty notes", () => {
+	it("marks counts as lower bounds while outline files remain", async () => {
+		const result = await findReferences(
+			backend({
+				indexStatus: async () => ({
+					state: "upgrading",
+					done: 3,
+					total: 10,
+					failures: 0,
+					stored: 10,
+					fullFiles: 3,
+					outlineFiles: 7,
+				}),
+			}),
+			{ symbolId: "x" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("lower bounds");
+		expect(text).toContain("7 of 10");
+	});
+
+	it("says nothing extra once every file is full and ready", async () => {
+		const result = await findReferences(backend(), { symbolId: "x" });
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).not.toContain("lower bounds");
+		expect(text).not.toContain("Still indexing");
+	});
+
+	it("counts persisted failures even when the state is ready", async () => {
+		const result = await findReferences(
+			backend({
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 2,
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
+			}),
+			{ symbolId: "x" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("2 files failed to parse");
 	});
 });

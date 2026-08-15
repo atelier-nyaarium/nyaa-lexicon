@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseSymbolId } from "@nyaa-lexicon/protocol";
+import { FileFactsSchema, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { afterEach, expect, test } from "vitest";
 import { KotlinProvider } from "../main.js";
 
@@ -209,6 +209,40 @@ test("reports declared types, literal inference, literal facts, and syntax error
 
 	const broken = provider.parseFile({ module: "Broken.kt", contentHash: "broken", text: "fun add( {\n" });
 	expect(broken.diagnostics.some((item) => item.severity === "error")).toBe(true);
+});
+
+test("honors outline depth while retaining declarations, imports, and diagnostics", () => {
+	const provider = new KotlinProvider();
+	provider.initialize(process.cwd());
+	const outline = provider.parseFile({
+		module: "Outline.kt",
+		contentHash: "outline",
+		depth: "outline",
+		text: [
+			"package demo",
+			"import kotlin.collections.List",
+			"class Box { fun run(values: List<Int>): String = values.first().toString() }",
+			"val count = 1",
+		].join("\n"),
+	});
+	const broken = provider.parseFile({
+		module: "BrokenOutline.kt",
+		contentHash: "broken-outline",
+		depth: "outline",
+		text: "class Broken {\n",
+	});
+
+	expect(outline.depth).toBe("outline");
+	expect(outline.declarations.map((item) => item.name)).toEqual(
+		expect.arrayContaining(["demo", "Box", "run", "count"]),
+	);
+	expect(outline.imports).toMatchObject([{ specifier: "kotlin.collections.List" }]);
+	expect(outline.references).toEqual([]);
+	expect(outline.literals).toEqual([]);
+	expect(broken.depth).toBe("outline");
+	expect(broken.diagnostics.some((item) => item.severity === "error")).toBe(true);
+	FileFactsSchema.parse(outline);
+	FileFactsSchema.parse(broken);
 });
 
 test("walks Kotlin files while excluding generated and dependency directories", () => {

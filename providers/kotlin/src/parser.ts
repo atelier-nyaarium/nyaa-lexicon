@@ -1154,6 +1154,7 @@ class KotlinParser {
 	constructor(
 		private readonly module: string,
 		text: string,
+		private readonly outline = false,
 	) {
 		const lexed = lex(text, module);
 		this.tokens = lexed.tokens;
@@ -1169,8 +1170,8 @@ class KotlinParser {
 		});
 		this.addMetrics();
 		this.addDelimiterDiagnostics();
-		const literals = this.extractLiterals();
-		const references = this.extractReferences();
+		const literals = this.outline ? [] : this.extractLiterals();
+		const references = this.outline ? [] : this.extractReferences();
 		const declarations = this.declarations.map((meta) => meta.declaration);
 		return {
 			module: this.module,
@@ -1663,6 +1664,7 @@ class KotlinParser {
 	}
 
 	private collectHeritage(start: number, end: number): void {
+		if (this.outline) return;
 		const colon = findTopLevel(this.tokens, start, end, ":");
 		if (colon < 0) return;
 		let guard = colon;
@@ -1775,7 +1777,7 @@ class KotlinParser {
 	}
 
 	private addTypeFact(declaration: DeclarationMeta, start: number, end: number, display: string): void {
-		if (display === "") return;
+		if (this.outline || display === "") return;
 		const annotationRange = rangeOfTokens(this.tokens, start, end);
 		this.typeFacts.push({
 			symbolId: declaration.declaration.symbolId,
@@ -1788,6 +1790,7 @@ class KotlinParser {
 	}
 
 	private addInferredLiteral(declaration: DeclarationMeta, index: number): void {
+		if (this.outline) return;
 		const literal = literalType(this.tokens[index]);
 		if (literal === null) return;
 		this.typeFacts.push({
@@ -1808,8 +1811,8 @@ class KotlinParser {
 			if (nameIndex < 0 || !isNameToken(this.tokens[nameIndex])) continue;
 			const name = this.tokens[nameIndex]?.value;
 			if (name === undefined) continue;
-			const colon = findTopLevel(this.tokens, nameIndex + 1, segment.end + 1, ":");
-			const equals = findTopLevel(this.tokens, nameIndex + 1, segment.end + 1, "=");
+			const colon = this.outline ? -1 : findTopLevel(this.tokens, nameIndex + 1, segment.end + 1, ":");
+			const equals = this.outline ? -1 : findTopLevel(this.tokens, nameIndex + 1, segment.end + 1, "=");
 			const typeEnd = colon < 0 ? -1 : this.findTypeEnd(colon + 1, equals >= 0 ? equals : segment.end + 1);
 			const display = typeEnd >= colon + 1 ? typeName(this.tokens, colon + 1, typeEnd) : undefined;
 			const parameterModifiers = [
@@ -1921,12 +1924,14 @@ class KotlinParser {
 				? bodyClose
 				: end - 1
 			: statementEnd(this.tokens, keywordIndex, end);
-		const colon = findTopLevel(this.tokens, close + 1, equals >= 0 ? equals : bodyOpen >= 0 ? bodyOpen : end, ":");
+		const colon = this.outline
+			? -1
+			: findTopLevel(this.tokens, close + 1, equals >= 0 ? equals : bodyOpen >= 0 ? bodyOpen : end, ":");
 		const typeEnd =
 			colon < 0 ? -1 : this.findTypeEnd(colon + 1, equals >= 0 ? equals : bodyOpen >= 0 ? bodyOpen : end);
 		const returnType = typeEnd >= colon + 1 ? typeName(this.tokens, colon + 1, typeEnd) : undefined;
 		const receiver = this.tokens.slice(keywordIndex + 1, nameIndex).some((token) => symbolValue(token) === ".");
-		if (receiver) {
+		if (receiver && !this.outline) {
 			for (let index = keywordIndex + 1; index < nameIndex; index++) {
 				if (isIdentifierToken(this.tokens[index])) this.typeIndexes.add(index);
 			}
@@ -2000,12 +2005,17 @@ class KotlinParser {
 			return declarationEnd + 1;
 		}
 		const equals = findTopLevel(this.tokens, nameIndex + 1, declarationEnd + 1, "=");
-		const colon = findTopLevel(this.tokens, nameIndex + 1, equals >= 0 ? equals : declarationEnd + 1, ":");
+		const colon = this.outline
+			? -1
+			: findTopLevel(this.tokens, nameIndex + 1, equals >= 0 ? equals : declarationEnd + 1, ":");
 		const typeEnd = colon < 0 ? -1 : this.findTypeEnd(colon + 1, equals >= 0 ? equals : declarationEnd + 1);
 		const display = typeEnd >= colon + 1 ? typeName(this.tokens, colon + 1, typeEnd) : undefined;
 		const initializerStart = equals < 0 ? -1 : equals + 1;
 		const name = this.tokens[nameIndex]?.value ?? "property";
-		if (this.tokens.slice(keywordIndex + 1, nameIndex).some((token) => symbolValue(token) === ".")) {
+		if (
+			!this.outline &&
+			this.tokens.slice(keywordIndex + 1, nameIndex).some((token) => symbolValue(token) === ".")
+		) {
 			for (let index = keywordIndex + 1; index < nameIndex; index++) {
 				if (isIdentifierToken(this.tokens[index])) this.typeIndexes.add(index);
 			}
@@ -2066,8 +2076,8 @@ class KotlinParser {
 			signature: renderTokens(this.tokens, start, declarationEnd),
 			...(doc === undefined ? {} : { doc }),
 		});
-		const equals = findTopLevel(this.tokens, nameIndex + 1, declarationEnd + 1, "=");
-		if (meta !== null && equals >= 0 && equals + 1 <= declarationEnd) {
+		const equals = this.outline ? -1 : findTopLevel(this.tokens, nameIndex + 1, declarationEnd + 1, "=");
+		if (!this.outline && meta !== null && equals >= 0 && equals + 1 <= declarationEnd) {
 			const display = typeName(this.tokens, equals + 1, declarationEnd);
 			if (display !== undefined) this.addTypeFact(meta, equals + 1, declarationEnd, display);
 		}
@@ -2438,6 +2448,6 @@ class KotlinParser {
 	}
 }
 
-export function parseKotlin(module: string, text: string): KotlinFile {
-	return new KotlinParser(module, text).parse();
+export function parseKotlin(module: string, text: string, outline = false): KotlinFile {
+	return new KotlinParser(module, text, outline).parse();
 }

@@ -1020,3 +1020,43 @@ describe("source admission", () => {
 		analyzer.dispose();
 	});
 });
+
+describe("outline depth", () => {
+	it("echoes outline with declarations and imports only", () => {
+		const files = { "cart.ts": 'import { z } from "./zed";\nexport class Cart {}\nconst noise = "literal";\n' };
+		const root = workspace(files);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+
+		const facts = provider.parseFile({
+			module: "cart.ts",
+			contentHash: "cart",
+			text: files["cart.ts"],
+			depth: "outline",
+		});
+
+		expect(facts.depth).toBe("outline");
+		expect(facts.declarations.map((declaration) => declaration.name)).toContain("Cart");
+		expect(facts.imports.map((statement) => statement.specifier)).toEqual(["./zed"]);
+		expect(facts.references).toEqual([]);
+		expect(facts.literals).toEqual([]);
+		provider.shutdown();
+	});
+
+	it("still reports a syntax error at outline depth", () => {
+		const files = { "broken.ts": "export function add( {\n" };
+		const root = workspace(files);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+
+		const facts = provider.parseFile({
+			module: "broken.ts",
+			contentHash: "broken",
+			text: files["broken.ts"],
+			depth: "outline",
+		});
+
+		expect(facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+		provider.shutdown();
+	});
+});

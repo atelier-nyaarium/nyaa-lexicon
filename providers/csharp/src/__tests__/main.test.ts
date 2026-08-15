@@ -276,6 +276,33 @@ describe("C# protocol behavior", () => {
 		expect(broken.diagnostics.some((item) => item.severity === "error")).toBe(true);
 	});
 
+	it("honors outline depth while retaining declarations, imports, and diagnostics", () => {
+		const provider = new CsharpProvider();
+		provider.initialize("/workspace");
+		const outline = provider.parseFile({
+			module: "outline.cs",
+			contentHash: "hash",
+			depth: "outline",
+			text: "using Demo; public class C { public void Run() { Missing(); } const int Value = 1; }",
+		});
+		const broken = provider.parseFile({
+			module: "broken-outline.cs",
+			contentHash: "hash",
+			depth: "outline",
+			text: "public class {\n",
+		});
+
+		expect(outline.depth).toBe("outline");
+		expect(outline.declarations.map((item) => item.name)).toEqual(expect.arrayContaining(["C", "Run", "Value"]));
+		expect(outline.imports).toMatchObject([{ specifier: "Demo" }]);
+		expect(outline.references).toEqual([]);
+		expect(outline.literals).toEqual([]);
+		expect(broken.depth).toBe("outline");
+		expect(broken.diagnostics.some((item) => item.severity === "error")).toBe(true);
+		FileFactsSchema.parse(outline);
+		FileFactsSchema.parse(broken);
+	});
+
 	it("walks C# files while excluding build outputs", () => {
 		const root = workspace({
 			"src/a.cs": "public class A {}",

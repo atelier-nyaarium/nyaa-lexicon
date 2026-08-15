@@ -14,7 +14,7 @@ import ts from "typescript";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { TypeScriptAnalyzer } from "./analyzer.js";
 import { isDeclarationModule, isLikelyBundle } from "./bundle.js";
-import { LANGUAGE } from "./extract.js";
+import { extractFile, LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
 import { isValidTargetModule } from "./move.js";
 import { type LoadedProject, loadProject, renderSpecifier, resolveSpecifier, toModule } from "./project.js";
@@ -108,6 +108,35 @@ export class TypeScriptProvider {
 				module: params.module,
 				contentHash: params.contentHash,
 				...extracted,
+				// Echoed so a self-detected surface is never stored as full under an outline request.
+				depth: "surface" as const,
+			};
+		}
+
+		// Outline parsing skips binding and type analysis.
+		if (params.depth === "outline") {
+			const source = ts.createSourceFile(
+				params.module,
+				params.text,
+				ts.ScriptTarget.ESNext,
+				true,
+				scriptKindOf(params.module),
+			);
+			const extracted = extractFile(params.module, source);
+			// Outline parsing reports syntax diagnostics without binding analysis.
+			const parseProblems = (source as unknown as { parseDiagnostics?: ts.Diagnostic[] }).parseDiagnostics ?? [];
+			return {
+				module: params.module,
+				contentHash: params.contentHash,
+				declarations: extracted.declarations,
+				references: [],
+				imports: extracted.imports,
+				literals: [],
+				diagnostics: parseProblems.map((problem) => ({
+					severity: "error" as const,
+					message: ts.flattenDiagnosticMessageText(problem.messageText, " "),
+				})),
+				depth: "outline" as const,
 			};
 		}
 

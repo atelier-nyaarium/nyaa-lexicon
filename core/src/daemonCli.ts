@@ -149,15 +149,26 @@ async function main(argv: string[]): Promise<void> {
 	function warm(): void {
 		scan ??= (async () => {
 			const started = Date.now();
-			const outcomes = await service.indexWorkspace();
+			// The first pass stores declarations and imports for immediate answers.
+			const outcomes = await service.warmupWorkspace();
 			const indexed = outcomes.filter((o) => o.action === "indexed");
 			const failures = outcomes.filter((o) => o.failure !== undefined);
 			const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
 			console.log(`scope: ${service.scopeReport()}`);
-			console.log(`indexed ${indexed.length} files, ${symbols} symbols, ${Date.now() - started}ms`);
+			console.log(`warmed ${indexed.length} files, ${symbols} declarations, ${Date.now() - started}ms`);
 			if (failures.length > 0)
 				console.log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
 			everScanned = true;
+
+			void service.upgradeRemaining().then(
+				() => {
+					const status = service.indexStatus();
+					console.log(
+						`upgraded to full facts, ${Date.now() - started}ms total (${status.failures} failures)`,
+					);
+				},
+				(error) => console.log(`upgrade failed: ${error instanceof Error ? error.message : error}`),
+			);
 
 			// Watching starts with warming: a watcher over an unasked-for workspace would index it
 			// on the next file change anyway.
@@ -188,14 +199,13 @@ async function main(argv: string[]): Promise<void> {
 		// Asking about the workspace IS the request to index it.
 		warm();
 
-		// A first scan makes the caller wait: "no such symbol" from an empty store reads as settled.
-		// A rescan does not, since there is a real index to answer from meanwhile.
+		// The first answer requires declarations and imports; full facts may remain pending.
 		if (!everScanned) {
 			const status = service.indexStatus();
 			throw new DaemonStartingError(
-				`the first index is still building (${status.done} of ${status.total})`,
+				`warming the index (${status.done} of ${status.total} files outlined)`,
 				FIRST_SCAN_PATIENCE_MS,
-				"the first index",
+				"the warmup pass",
 			);
 		}
 		return dispatch(method, params);

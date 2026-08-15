@@ -31,14 +31,20 @@ export interface IndexOutcome {
  * which outlives any one process. The two are separate because they answer different questions, and
  * a consumer that has only the first will call a fully populated index empty every time a daemon
  * restarts.
+ *
+ * `warming` stores outlines; `upgrading` fills full facts. Failures come from persisted records.
  */
 export interface IndexStatus {
-	state: "unstarted" | "discovering" | "indexing" | "ready";
+	state: "unstarted" | "discovering" | "warming" | "indexing" | "upgrading" | "ready";
 	done: number;
 	total: number;
 	failures: number;
 	/** Files the index already holds, from this scan or any earlier one. */
 	stored: number;
+	/** Stored files not still owing a full pass. */
+	fullFiles: number;
+	/** Stored files still owing a full pass; reference counts are lower bounds while nonzero. */
+	outlineFiles: number;
 }
 
 ////////////////////////////////
@@ -56,12 +62,17 @@ export class WorkspaceIndexer {
 		private readonly resolve: (fromModule: string, specifier: string) => Promise<ImportResolution>,
 	) {}
 
-	/** This process's scan only. `stored` is read from the index when the status is asked for. */
-	private status: Omit<IndexStatus, "stored"> = { state: "unstarted", done: 0, total: 0, failures: 0 };
+	/** Scan progress is process-local; stored counts come from the database. */
+	private status: Pick<IndexStatus, "state" | "done" | "total"> = { state: "unstarted", done: 0, total: 0 };
 	private scope: FileScope | null = null;
 	private discovered = new Set<string>();
 	private roots = new Set<string>();
 	private depths = new Map<string, IndexDepth>();
+
+	/** Full-parse orders run between background files. */
+	private orders: Array<{ modules: string[]; resolve: () => void; reject: (error: unknown) => void }> = [];
+	private pumping: Promise<void> | null = null;
+	private upgradeWanted = false;
 
 	/** Refreshed at the start of every scan. Public for the resolver's surface globs. */
 	currentScope(): FileScope {
@@ -78,7 +89,7 @@ export class WorkspaceIndexer {
 	 * Deliberately takes no caller-claimed hash: this reads the file itself and hashes that read,
 	 * so facts are never filed under the hash of a different version.
 	 */
-	async indexFile(module: string, depth: IndexDepth = "full"): Promise<IndexOutcome> {
+	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const route = this.supervisor.route(module);
 		if (!route.owned) {
@@ -97,15 +108,39 @@ export class WorkspaceIndexer {
 		// the hash of another, and every staleness check downstream would compare the wrong pair.
 		const readHash = hashContent(text);
 
+		// Preserve deeper facts when the requested depth is cheaper.
+		if (skipIfCurrent && this.store.contentHashOf(module) === readHash) {
+			const held = this.store.depthOf(module);
+			const satisfied = held === "full" || held === "surface" || held === depth;
+			if (satisfied) return { module, action: "skipped", reason: "already indexed at this depth" };
+		}
+
 		const facts = await this.supervisor.ask(module, "parseFile", {
 			module,
 			contentHash: readHash,
 			text,
-			...(depth === "surface" ? { depth } : {}),
+			...(depth === "full" ? {} : { depth }),
 		});
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
-		if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("; "));
-		this.store.replaceFile(module, readHash, facts.declarations, facts.references, facts.imports, facts.literals);
+		if (errors.length > 0) {
+			// Recorded here so every caller's failure reaches coverage, not only the scan loops.
+			const failure = errors.map((diagnostic) => diagnostic.message).join("; ");
+			this.store.recordFailure(module, failure);
+			throw new Error(failure);
+		}
+		// An absent depth means full facts, except surface remains a permission ceiling.
+		const storedDepth = facts.depth ?? (depth === "surface" ? "surface" : "full");
+		this.store.replaceFile(
+			module,
+			readHash,
+			facts.declarations,
+			facts.references,
+			facts.imports,
+			facts.literals,
+			storedDepth,
+		);
+		// A success re-admits the module to the background backlog.
+		this.upgradeFailed.delete(module);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
 		this.cache.invalidate();
 		return { module, action: "indexed", declarations: facts.declarations.length };
@@ -118,7 +153,19 @@ export class WorkspaceIndexer {
 	 * flooding it would only trade a readable progress order for the same wall clock.
 	 */
 	async indexWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		this.status = { state: "discovering", done: 0, total: 0, failures: 0 };
+		return this.scanWorkspace("full", onProgress);
+	}
+
+	/** Stores declarations and imports before full facts. */
+	async warmupWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
+		return this.scanWorkspace("outline", onProgress);
+	}
+
+	private async scanWorkspace(
+		floor: "full" | "outline",
+		onProgress?: (done: number, total: number) => void,
+	): Promise<IndexOutcome[]> {
+		this.status = { state: "discovering", done: 0, total: 0 };
 		this.discovered = new Set<string>();
 		for (const provider of this.supervisor.running()) {
 			const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
@@ -128,46 +175,145 @@ export class WorkspaceIndexer {
 		}
 
 		this.roots = this.rootModules();
-		this.depths = new Map([...this.roots].map((module) => [module, this.rootDepth(module)]));
+		this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
+		this.writeScanSummary();
 		const modules = [...this.roots];
 
 		const outcomes: IndexOutcome[] = [];
 		const seen = new Set<string>();
-		this.status = { state: "indexing", done: 0, total: modules.length, failures: 0 };
+		const scanning = floor === "outline" ? "warming" : "indexing";
+		this.status = { state: scanning, done: 0, total: modules.length };
 		for (const [done, module] of modules.entries()) {
 			let outcome: IndexOutcome;
 			try {
-				outcome = await this.indexOne(module);
+				outcome = await this.indexOne(module, undefined, floor === "outline");
 			} catch (error) {
 				outcome = this.failedOutcome(module, error);
 			}
 			outcomes.push(outcome);
 			if (outcome.action === "forgotten") this.roots.delete(module);
 			else seen.add(module);
-			this.status = { state: "indexing", done: done + 1, total: modules.length, failures: this.status.failures };
+			this.status = { state: scanning, done: done + 1, total: modules.length };
 			onProgress?.(done + 1, modules.length);
 		}
 
-		outcomes.push(...(await this.followImports(seen)));
+		outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
 		outcomes.push(...this.prune(seen));
-		this.status = { state: "ready", done: outcomes.length, total: outcomes.length, failures: this.status.failures };
+		this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
 		return outcomes;
+	}
+
+	/** Queues full parses ahead of the background upgrade. */
+	requestFull(modules: string[]): Promise<void> {
+		const owed = modules.filter((module) => {
+			const depth = this.store.depthOf(module);
+			return depth === "outline";
+		});
+		if (owed.length === 0) return Promise.resolve();
+		return new Promise<void>((resolve, reject) => {
+			this.orders.push({ modules: owed, resolve, reject });
+			this.ensurePumping();
+		});
+	}
+
+	/** Drains the outline backlog, yielding between files. */
+	upgradeRemaining(): Promise<void> {
+		this.upgradeWanted = true;
+		this.ensurePumping();
+		return this.pumping ?? Promise.resolve();
+	}
+
+	private ensurePumping(): void {
+		this.pumping ??= this.pump().finally(() => {
+			this.pumping = null;
+			// Restart if work arrived before completion.
+			if (this.orders.length > 0 || this.upgradeWanted) this.ensurePumping();
+		});
+	}
+
+	/** The one full-parse loop. Orders first, then the store's outline backlog, one file per turn. */
+	private async pump(): Promise<void> {
+		while (true) {
+			const order = this.orders.shift();
+			if (order !== undefined) {
+				try {
+					for (const module of order.modules) {
+						if (this.store.depthOf(module) !== "outline") continue;
+						await this.upgradeOne(module);
+					}
+					order.resolve();
+				} catch (error) {
+					order.reject(error);
+				}
+				continue;
+			}
+
+			if (!this.upgradeWanted) return;
+			const backlog = this.store.outlineModules().filter((module) => !this.upgradeFailed.has(module));
+			const next = backlog[0];
+			if (next === undefined) {
+				this.upgradeWanted = false;
+				this.status = { state: "ready", done: this.status.total, total: this.status.total };
+				return;
+			}
+			this.status = {
+				state: "upgrading",
+				done: Math.max(0, this.status.total - backlog.length),
+				total: Math.max(this.status.total, backlog.length),
+			};
+			await this.upgradeOne(next);
+		}
+	}
+
+	/** Attempts one outline module without discarding stored facts on failure. */
+	private async upgradeOne(module: string): Promise<void> {
+		this.depths.set(module, "full");
+		try {
+			const outcome = await this.indexOne(module, "full");
+			// A row skipped for scope or ownership stays outline in the store, so it must leave the
+			// backlog or the pump spins on it forever.
+			if (outcome.action === "skipped") this.upgradeFailed.add(module);
+		} catch (error) {
+			this.failedOutcome(module, error);
+		}
+	}
+
+	private writeScanSummary(): void {
+		const discovered = [...this.discovered];
+		// Disjoint categories: a denied file is not also counted unclaimed, so the arithmetic adds up.
+		const denied = discovered.filter((module) => this.currentScope().denies(module));
+		const deniedSet = new Set(denied);
+		const unclaimed = discovered.filter(
+			(module) => !deniedSet.has(module) && !this.supervisor.route(module).owned,
+		).length;
+		this.store.writeScanSummary({
+			discovered: discovered.length,
+			claimed: this.roots.size,
+			unclaimed,
+			denied: denied.length,
+		});
 	}
 
 	private async indexOne(
 		module: string,
 		depth = this.depths.get(module) ?? this.rootDepth(module),
+		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
 		const text = this.readFile(module);
-		if (text !== null) return this.indexFile(module, depth);
+		if (text !== null) return this.indexFile(module, depth, skipIfCurrent);
 		this.forgetFile(module);
 		return { module, action: "forgotten", reason: "file is gone" };
 	}
 
+	/** Exclude failures from the retryable background backlog. */
+	private upgradeFailed = new Set<string>();
+
 	private failedOutcome(module: string, error: unknown): IndexOutcome {
 		const failure = error instanceof Error ? error.message : String(error);
-		this.status = { ...this.status, failures: this.status.failures + 1 };
+		// Persist the failure for coverage reporting.
+		this.store.recordFailure(module, failure);
+		this.upgradeFailed.add(module);
 		return { module, action: "skipped", reason: "parse failed", failure };
 	}
 
@@ -185,6 +331,7 @@ export class WorkspaceIndexer {
 		seen: Set<string>,
 		indexExisting = true,
 		previousDepths: ReadonlyMap<string, IndexDepth> = new Map(),
+		floor: "full" | "outline" = "full",
 	): Promise<IndexOutcome[]> {
 		const outcomes: IndexOutcome[] = [];
 
@@ -195,7 +342,11 @@ export class WorkspaceIndexer {
 					const landed = await this.resolve(module, statement.specifier).catch(() => null);
 					const target = landed === null ? null : importTarget(landed);
 					if (target === null || this.currentScope().denies(target.module)) continue;
-					const depth = this.currentScope().surface(target.module) ? "surface" : target.depth;
+					const depth = this.currentScope().surface(target.module)
+						? "surface"
+						: floor === "outline" && target.depth === "full"
+							? "outline"
+							: target.depth;
 					const prior = this.depths.get(target.module);
 					if (seen.has(target.module) && !(prior === "surface" && depth === "full")) continue;
 					seen.add(target.module);
@@ -212,7 +363,9 @@ export class WorkspaceIndexer {
 				)
 					continue;
 				try {
-					outcomes.push(await this.indexOne(module));
+					// Same restart guard as the root loop: an unchanged imported file holding full
+					// facts must not be demoted by an outline-floor rescan.
+					outcomes.push(await this.indexOne(module, undefined, floor === "outline"));
 				} catch (error) {
 					outcomes.push(this.failedOutcome(module, error));
 				}
@@ -227,6 +380,10 @@ export class WorkspaceIndexer {
 			if (reachable.has(module)) continue;
 			this.forgetFile(module);
 			outcomes.push({ module, action: "forgotten", reason: "no longer a root or reachable" });
+		}
+		// A failure row for a file that was never stored has no files row to sweep it away with.
+		for (const { module } of this.store.parseFailures()) {
+			if (!reachable.has(module) && this.store.contentHashOf(module) === null) this.store.clearFailure(module);
 		}
 		return outcomes;
 	}
@@ -250,6 +407,12 @@ export class WorkspaceIndexer {
 		return this.currentScope().surface(module) ? "surface" : "full";
 	}
 
+	/** Surface is a ceiling, not a starting depth. */
+	private scanDepth(module: string, floor: "full" | "outline"): IndexDepth {
+		const ceiling = this.rootDepth(module);
+		return ceiling === "surface" ? "surface" : floor;
+	}
+
 	private forgetFile(module: string): void {
 		this.store.forgetFile(module);
 		this.cache.invalidate();
@@ -264,10 +427,15 @@ export class WorkspaceIndexer {
 	 * references" from "not read yet".
 	 */
 	indexStatus(): IndexStatus {
-		// Read from the store rather than counted as we go, because the index survives the process
-		// that built it and a fresh daemon over a warm index has scanned nothing while holding
-		// everything.
-		return { ...this.status, stored: this.store.totals().files };
+		// Store-derived counts survive restarts.
+		const depths = this.store.depthTotals();
+		return {
+			...this.status,
+			stored: this.store.totals().files,
+			failures: this.store.parseFailures().length,
+			fullFiles: depths.full + depths.surface,
+			outlineFiles: depths.outline,
+		};
 	}
 
 	/** Applies a watcher batch, one decision per file. */

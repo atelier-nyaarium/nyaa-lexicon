@@ -4,6 +4,7 @@ import {
 	type Binding,
 	type Declaration,
 	type Diagnostic,
+	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -118,15 +119,16 @@ export class RustProvider {
 		return this.resolver.reset(this.workspaceRoot);
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+		const outline = params.depth === "outline";
 		let facts: ParsedFile;
 		try {
-			facts = parseRustFile(params.module, params.text);
+			facts = parseRustFile(params.module, params.text, outline ? "outline" : "full");
 		} catch (error) {
 			facts = parseFailure(params.module, error instanceof Error ? error.message : String(error));
 		}
 		this.parsedFacts.set(params.module, facts);
-		const references = this.wireReferences(facts);
+		const references = outline ? [] : this.wireReferences(facts);
 		facts.references = references;
 		return {
 			module: params.module,
@@ -136,6 +138,7 @@ export class RustProvider {
 			imports: facts.imports,
 			literals: facts.literals,
 			diagnostics: facts.diagnostics,
+			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}
 

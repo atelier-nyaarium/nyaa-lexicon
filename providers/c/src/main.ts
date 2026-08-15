@@ -5,6 +5,7 @@ import {
 	type Declaration,
 	type Diagnostic,
 	type ImportResolution,
+	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -281,7 +282,7 @@ export class CProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const stored = this.parseAndStore(params.module, params.contentHash, params.text);
 		const bindingCache = new Map<string, Binding>();
 		return {

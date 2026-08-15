@@ -9,6 +9,7 @@ import {
 	type Declaration,
 	declarationFactId,
 	type Import,
+	type IndexDepth,
 	importFactId,
 	type Literal,
 	literalFactId,
@@ -112,7 +113,7 @@ export type StoredFact =
 // 13: answers carry a declared doubt. Mechanical staleness cannot see semantic drift, so an agent
 //    that changed a function's purpose needs a way to flag the recorded explanation without
 //    rewriting it, and the flag must survive a re-record by a writer who never saw it.
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 // Every range is stored whole. Keeping only a start meant the index could say where something was
 // and never what text it occupied, which is the difference between navigating and editing.
@@ -127,9 +128,19 @@ CREATE TABLE meta (
 CREATE TABLE files (
   module      TEXT PRIMARY KEY,
   contentHash TEXT NOT NULL,
-  indexedAt   INTEGER NOT NULL
+  indexedAt   INTEGER NOT NULL,
+  -- Outline rows require a full parse.
+  depth       TEXT NOT NULL DEFAULT 'full'
 );
 CREATE INDEX files_indexed_at ON files(indexedAt);
+CREATE INDEX files_depth ON files(depth);
+
+-- Parse failures persist until a successful parse or file removal.
+CREATE TABLE parse_failures (
+  module   TEXT PRIMARY KEY,
+  reason   TEXT NOT NULL,
+  failedAt INTEGER NOT NULL
+);
 
 CREATE TABLE symbols (
   symbolId    TEXT PRIMARY KEY,
@@ -343,6 +354,9 @@ const FACT_TABLES = ["refs", "symbols", "imports", "literals"] as const;
 
 /** Where the indexer fingerprint lives in the meta table. */
 const FINGERPRINT_KEY = "indexerFingerprint";
+
+/** Where the last scan's coverage arithmetic lives in the meta table. */
+const SCAN_SUMMARY_KEY = "scanSummary";
 
 /**
  * Where the indexed workspace's path lives in the meta table.
@@ -602,12 +616,15 @@ export class IndexStore {
 		references: Reference[],
 		imports: Import[] = [],
 		literals: Literal[] = [],
+		depth: IndexDepth = "full",
 	): void {
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
-				.prepare("INSERT OR REPLACE INTO files (module, contentHash, indexedAt) VALUES (?, ?, ?)")
-				.run(module, contentHash, Date.now());
+				.prepare("INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth) VALUES (?, ?, ?, ?)")
+				.run(module, contentHash, Date.now(), depth);
+			// A successful parse clears its failure record.
+			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 
 			const symbol = this.db.prepare(
 				`INSERT OR REPLACE INTO symbols
@@ -726,7 +743,77 @@ export class IndexStore {
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db.prepare("DELETE FROM files WHERE module = ?").run(module);
+			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 		});
+	}
+
+	/** The depth a module's stored facts were extracted at, or null when it is not indexed. */
+	depthOf(module: string): IndexDepth | null {
+		const row = this.db.prepare("SELECT depth FROM files WHERE module = ?").get(module) as
+			| { depth: IndexDepth }
+			| undefined;
+		return row?.depth ?? null;
+	}
+
+	/** Modules still owing a full pass, in module order for deterministic upgrades. */
+	outlineModules(): string[] {
+		return (
+			this.db.prepare("SELECT module FROM files WHERE depth = 'outline' ORDER BY module").all() as Array<{
+				module: string;
+			}>
+		).map((row) => row.module);
+	}
+
+	/** How many stored files hold facts at each depth, for coverage reporting. */
+	depthTotals(): { full: number; surface: number; outline: number } {
+		const rows = this.db.prepare("SELECT depth, COUNT(*) AS n FROM files GROUP BY depth").all() as Array<{
+			depth: string;
+			n: number;
+		}>;
+		const totals = { full: 0, surface: 0, outline: 0 };
+		for (const row of rows) {
+			if (row.depth === "full" || row.depth === "surface" || row.depth === "outline") totals[row.depth] = row.n;
+		}
+		return totals;
+	}
+
+	/** Remembers a parse failure so coverage can name it after this process is gone. */
+	recordFailure(module: string, reason: string): void {
+		this.db
+			.prepare("INSERT OR REPLACE INTO parse_failures (module, reason, failedAt) VALUES (?, ?, ?)")
+			.run(module, reason, Date.now());
+	}
+
+	clearFailure(module: string): void {
+		this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
+	}
+
+	parseFailures(): Array<{ module: string; reason: string }> {
+		return this.db.prepare("SELECT module, reason FROM parse_failures ORDER BY module").all() as Array<{
+			module: string;
+			reason: string;
+		}>;
+	}
+
+	/** Persists scan counts used to explain coverage gaps. */
+	writeScanSummary(summary: { discovered: number; claimed: number; unclaimed: number; denied: number }): void {
+		writeMeta(this.db, SCAN_SUMMARY_KEY, JSON.stringify({ ...summary, at: Date.now() }));
+	}
+
+	readScanSummary(): { discovered: number; claimed: number; unclaimed: number; denied: number; at: number } | null {
+		const raw = readMeta(this.db, SCAN_SUMMARY_KEY);
+		if (raw === null) return null;
+		try {
+			return JSON.parse(raw) as {
+				discovered: number;
+				claimed: number;
+				unclaimed: number;
+				denied: number;
+				at: number;
+			};
+		} catch {
+			return null;
+		}
 	}
 
 	////////////////////////////////

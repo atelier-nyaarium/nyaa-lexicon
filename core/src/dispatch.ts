@@ -142,6 +142,8 @@ async function refactorMove(
 		return { moved: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
 	}
 
+	// Outline modules may contain missed sites.
+	await service.upgradeRemaining();
 	const plan = service.planMove(args.symbolId, args.toModule);
 	if (!plan.ok) return { moved: false, issues: [], reason: plan.reason };
 
@@ -228,6 +230,8 @@ async function refactorRename(
 		return { renamed: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
 	}
 
+	// Outline modules may contain missed sites.
+	await service.upgradeRemaining();
 	const plan = await service.prepareRename(args.symbolId, args.newName);
 	if (plan.blockers.length > 0) {
 		return {
@@ -298,6 +302,8 @@ async function refactorReplace(
 		return { replaced: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
 	}
 
+	// Vanished-symbol checks read the reference graph, which outline modules have not filled yet.
+	await service.upgradeRemaining();
 	const plan = await service.planReplacement(args, args.newText);
 	if (!plan.ok) return { replaced: false, issues: [], reason: plan.reason };
 
@@ -361,20 +367,30 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				const args = FindByName.parse(params);
 				return service.findByName(args.name, args.module);
 			}
-			case "describe":
-				return service.describe(BySymbol.parse(params).symbolId);
+			case "describe": {
+				const args = BySymbol.parse(params);
+				await service.ensureTreeFor(args.symbolId);
+				return service.describe(args.symbolId);
+			}
 			// The four below exist for the editor, which asks by position rather than by name and so
 			// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.
 			case "declarationOf":
 				return service.declarationOf(BySymbol.parse(params).symbolId);
 			case "declarationsIn":
 				return service.declarationsIn(ByModule.parse(params).module);
-			case "typeHierarchy":
-				return service.typeHierarchy(BySymbol.parse(params).symbolId);
-			case "callHierarchy":
-				return service.callHierarchy(BySymbol.parse(params).symbolId);
+			case "typeHierarchy": {
+				const args = BySymbol.parse(params);
+				await service.ensureTreeFor(args.symbolId);
+				return service.typeHierarchy(args.symbolId);
+			}
+			case "callHierarchy": {
+				const args = BySymbol.parse(params);
+				await service.ensureTreeFor(args.symbolId);
+				return service.callHierarchy(args.symbolId);
+			}
 			case "findReferences": {
 				const args = References.parse(params);
+				await service.ensureTreeFor(args.symbolId);
 				return service.findReferences(args.symbolId, args.limit);
 			}
 			case "resolveImport": {
@@ -455,17 +471,23 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				const args = Gaps.parse(params);
 				return service.knowledgeGaps(args.root, args.question, args.limit);
 			}
-			case "typeOf":
-				return service.typeOf(BySymbol.parse(params).symbolId);
+			case "typeOf": {
+				const args = BySymbol.parse(params);
+				await service.ensureTreeFor(args.symbolId);
+				return service.typeOf(args.symbolId);
+			}
+			// Rename planning requires complete reference facts.
 			// Read-only, and kept because the editor asks it to decide whether to offer a rename.
 			case "prepareRename": {
 				const args = Rename.parse(params);
+				await service.upgradeRemaining();
 				return read(() => service.prepareRename(args.symbolId, args.newName));
 			}
 			// The edits a rename would make, for a caller that applies them itself. Nothing is written
 			// here, so it takes the shared lock like any other read.
 			case "renameEdits": {
 				const args = Rename.parse(params);
+				await service.upgradeRemaining();
 				return read(() => service.renameEdits(args.symbolId, args.newName));
 			}
 			case "indexFile": {

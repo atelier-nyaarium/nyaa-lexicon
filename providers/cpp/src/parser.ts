@@ -1379,7 +1379,10 @@ class StructuralParser {
 			signature: joinTokens(this.tokens, prefix.startIndex, end + 1),
 			docComment: documentationBefore(this.tokens, prefix.startIndex),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end + 1),
-			type: { status: "known", display: joinTokens(this.tokens, prefix.keywordIndex + 1, nameIndex) || "type" },
+			type: {
+				status: "known",
+				display: joinTokens(this.tokens, prefix.keywordIndex + 1, nameIndex) || "type",
+			},
 			templateDependent: scope.templateDependent,
 			parameterNames: new Set(),
 		});

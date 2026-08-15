@@ -23,7 +23,8 @@ export type Compatibility =
 // change; the major bump is what makes a client meeting a leftover HTTP daemon replace it rather
 // than hang on a handshake the old server cannot speak.
 // 1.1.0: imports may expose an indexable surface and parseFile may request surface depth.
-export const PROTOCOL_VERSION = "1.1.0" as const;
+// Outline requests and extraction-depth metadata are part of the 1.2 wire contract.
+export const PROTOCOL_VERSION = "1.2.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

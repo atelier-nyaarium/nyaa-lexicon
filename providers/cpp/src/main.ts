@@ -3,6 +3,7 @@ import path from "node:path";
 import {
 	type Binding,
 	type ImportResolution,
+	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -157,7 +158,7 @@ export class CppProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const facts = parseCppFile(params.module, params.text);
 		this.parsedFacts.set(params.module, facts);
 		return {
