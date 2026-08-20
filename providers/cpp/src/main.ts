@@ -2,6 +2,7 @@ import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "no
 import path from "node:path";
 import {
 	type Binding,
+	comparePositions,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -102,12 +103,9 @@ function projectDiagnostic(root: string, message: string): ProjectModel {
 	};
 }
 
-function comparePosition(left: Range["start"], right: Range["start"]): number {
-	return left.line - right.line || left.character - right.character;
-}
-
+// Inclusive at both ends.
 function contains(range: Range, position: Range["start"]): boolean {
-	return comparePosition(range.start, position) <= 0 && comparePosition(position, range.end) <= 0;
+	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
 function namesOf(id: string): string[] {

@@ -1,6 +1,12 @@
 // Owns GDScript type annotation facts and their source ranges.
 
-import { coordinatesOf, type Position, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import {
+	comparePositions,
+	coordinatesOf,
+	type Position,
+	type Range,
+	type TextCoordinates,
+} from "@nyaa-lexicon/protocol";
 import { extractGdscript, headerEndLine } from "./declarations.js";
 import type { ComposeSymbolId, DeclarationFact, ReferenceToken } from "./parse-model.js";
 import { referenceRange, sourceBetween } from "./references.js";
@@ -17,7 +23,7 @@ export interface TypeAnnotationFact {
 //////// Type facts
 
 function tokenIndexAt(tokens: ReferenceToken[], position: Position): number {
-	return tokens.findIndex((token) => token.line === position.line && token.character === position.character);
+	return tokens.findIndex((token) => comparePositions(token, position) === 0);
 }
 
 function typeExpressionEnd(tokens: ReferenceToken[], start: number, stops: Set<string>, allowNewline = false): number {
@@ -98,9 +104,7 @@ function addParameterTypeFacts(
 		const typeEnd = typeExpressionEnd(tokens, colon + 1, new Set(["=", ",", ")", ";"]), true);
 		const name = tokens[nameIndex] as ReferenceToken;
 		const parameter = parameterDeclarations.find(
-			(candidate) =>
-				candidate.selectionRange.start.line === name.line &&
-				candidate.selectionRange.start.character === name.character,
+			(candidate) => comparePositions(candidate.selectionRange.start, name) === 0,
 		);
 		const fact = typeFact(
 			coordinates,

@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+	comparePositions,
 	coordinatesOf,
 	MOVE_EDIT_CONFLICT,
 	type MoveBlockedReason,
@@ -414,12 +415,9 @@ function afterLine(text: string, offset: number): number {
 	return newline < 0 ? text.length : newline + 1;
 }
 
+// Inclusive at both ends.
 function rangeContains(outer: Range, inner: Range): boolean {
-	return comparePosition(outer.start, inner.start) <= 0 && comparePosition(inner.end, outer.end) <= 0;
-}
-
-function comparePosition(left: Range["start"], right: Range["start"]): number {
-	return left.line === right.line ? left.character - right.character : left.line - right.line;
+	return comparePositions(outer.start, inner.start) <= 0 && comparePositions(inner.end, outer.end) <= 0;
 }
 
 ////////////////////////////////

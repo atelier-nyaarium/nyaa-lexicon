@@ -9,6 +9,7 @@ import {
 	type Position,
 	type Range,
 	type Reference,
+	sameRange,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 
@@ -2379,13 +2380,7 @@ class KotlinParser {
 	}
 
 	private tokenForRange(range: Range): number {
-		return this.tokens.findIndex(
-			(token) =>
-				token.start.line === range.start.line &&
-				token.start.character === range.start.character &&
-				token.end.line === range.end.line &&
-				token.end.character === range.end.character,
-		);
+		return this.tokens.findIndex((token) => sameRange(token, range));
 	}
 
 	private extractReferences(): ReferenceInfo[] {

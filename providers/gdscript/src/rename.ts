@@ -8,6 +8,7 @@ import {
 	RENAME_EDIT_CONFLICT,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
+	sameRange,
 	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
@@ -55,15 +56,6 @@ const GDSCRIPT_KEYWORDS = new Set([
 	"while",
 	"yield",
 ]);
-
-function sameRange(left: Range, right: Range): boolean {
-	return (
-		left.start.line === right.start.line &&
-		left.start.character === right.start.character &&
-		left.end.line === right.end.line &&
-		left.end.character === right.end.character
-	);
-}
 
 function stringSpans(text: string): StringSpan[] {
 	const spans: StringSpan[] = [];

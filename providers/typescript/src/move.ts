@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+	comparePositions,
 	coordinatesOf,
 	MOVE_EDIT_CONFLICT,
 	type MoveBlockedReason,
@@ -592,9 +593,7 @@ function mergeIntoExistingImport(
 }
 
 function rangesOverlap(left: Range, right: Range): boolean {
-	const before = (a: Range["start"], b: Range["start"]) =>
-		a.line === b.line ? a.character < b.character : a.line < b.line;
-	return before(left.start, right.end) && before(right.start, left.end);
+	return comparePositions(left.start, right.end) < 0 && comparePositions(right.start, left.end) < 0;
 }
 
 function importInsertionPosition(source: ts.SourceFile): number {

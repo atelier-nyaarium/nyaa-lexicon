@@ -1,6 +1,6 @@
 // Owns GDScript syntax diagnostics and delimiter state.
 
-import type { Diagnostic, Position, Range } from "@nyaa-lexicon/protocol";
+import { comparePositions, type Diagnostic, type Position, type Range } from "@nyaa-lexicon/protocol";
 import { indentationEnd, indentOf, isIgnorable } from "./line-syntax.js";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
 import { scanSource } from "./source-scan.js";
@@ -134,6 +134,6 @@ export function extractDiagnosticsCore(module: string, text: string): Diagnostic
 	return diagnostics.sort((left, right) => {
 		const leftStart = left.range?.start ?? { line: Number.MAX_SAFE_INTEGER, character: Number.MAX_SAFE_INTEGER };
 		const rightStart = right.range?.start ?? { line: Number.MAX_SAFE_INTEGER, character: Number.MAX_SAFE_INTEGER };
-		return leftStart.line - rightStart.line || leftStart.character - rightStart.character;
+		return comparePositions(leftStart, rightStart);
 	});
 }

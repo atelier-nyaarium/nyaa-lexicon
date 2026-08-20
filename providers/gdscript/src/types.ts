@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
+	comparePositions,
 	composeSymbolId,
 	coordinatesOf,
 	type Declaration,
@@ -90,10 +91,7 @@ interface InferenceContext {
 //////// Helpers
 
 function positionInRange(range: Range, position: Range["start"]): boolean {
-	if (position.line < range.start.line || position.line > range.end.line) return false;
-	if (position.line === range.start.line && position.character < range.start.character) return false;
-	if (position.line === range.end.line && position.character > range.end.character) return false;
-	return true;
+	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
 function absoluteModule(workspaceRoot: string, module: string): string | null {

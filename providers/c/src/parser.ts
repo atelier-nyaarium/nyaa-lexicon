@@ -1,4 +1,5 @@
 import {
+	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
@@ -418,12 +419,8 @@ function descriptorKey(path: DescriptorPath): string {
 		.join("/");
 }
 
-function comparePosition(left: Range["start"], right: Range["start"]): number {
-	return left.line - right.line || left.character - right.character;
-}
-
 function containsPosition(range: Range, position: Range["start"]): boolean {
-	return comparePosition(range.start, position) <= 0 && comparePosition(position, range.end) <= 0;
+	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
 function renderTokens(tokens: CToken[], start: number, end: number): string {
@@ -639,7 +636,7 @@ class CParser {
 		this.diagnostics.sort((left, right) => {
 			const a = left.range?.start ?? { line: Number.MAX_SAFE_INTEGER, character: Number.MAX_SAFE_INTEGER };
 			const b = right.range?.start ?? { line: Number.MAX_SAFE_INTEGER, character: Number.MAX_SAFE_INTEGER };
-			return comparePosition(a, b);
+			return comparePositions(a, b);
 		});
 		return {
 			module: this.module,

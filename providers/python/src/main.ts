@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	type Binding,
+	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
@@ -21,6 +22,7 @@ import {
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	runProviderOnStdio,
+	sameRange,
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
@@ -476,17 +478,9 @@ function projectDiagnostic(root: string, message: string): ProjectModel {
 	};
 }
 
-function comparePosition(left: Range["start"], right: Range["start"]): number {
-	if (left.line !== right.line) return left.line - right.line;
-	return left.character - right.character;
-}
-
+// Inclusive at both ends.
 function containsPosition(range: Range, position: Range["start"]): boolean {
-	return comparePosition(range.start, position) <= 0 && comparePosition(position, range.end) <= 0;
-}
-
-function sameRange(left: Range, right: Range): boolean {
-	return comparePosition(left.start, right.start) === 0 && comparePosition(left.end, right.end) === 0;
+	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
 function samePath(left: RawDescriptor[], right: RawDescriptor[]): boolean {

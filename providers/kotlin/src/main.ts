@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
+	comparePositions,
 	type Declaration,
 	type ImportResolution,
 	type IndexDepth,
@@ -55,12 +56,8 @@ export { LANGUAGE, REFERENCE_ROLES };
 
 type RangeLike = Declaration["range"];
 
-function comparePosition(left: RangeLike["start"], right: RangeLike["start"]): number {
-	return left.line - right.line || left.character - right.character;
-}
-
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
-	return comparePosition(range.start, position) <= 0 && comparePosition(position, range.end) <= 0;
+	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
 function modulePath(root: string, absolute: string): string | null {

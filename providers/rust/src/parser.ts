@@ -1,4 +1,5 @@
 import {
+	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
@@ -334,7 +335,7 @@ export class RustParser {
 				line: Number.MAX_SAFE_INTEGER,
 				character: Number.MAX_SAFE_INTEGER,
 			};
-			return leftStart.line - rightStart.line || leftStart.character - rightStart.character;
+			return comparePositions(leftStart, rightStart);
 		});
 	}
 
@@ -1511,16 +1512,8 @@ export class RustParser {
 		for (const raw of this.rawDeclarations) {
 			const range = raw.typeRange;
 			if (range === undefined) continue;
-			if (
-				range.start.line < token.start.line ||
-				(range.start.line === token.start.line && range.start.character <= token.start.character)
-			) {
-				if (
-					range.end.line > token.end.line ||
-					(range.end.line === token.end.line && range.end.character >= token.end.character)
-				)
-					return true;
-			}
+			if (comparePositions(range.start, token.start) <= 0 && comparePositions(range.end, token.end) >= 0)
+				return true;
 		}
 		const previous = tokenAt(this.tokens, index - 1)?.value;
 		return (
@@ -1545,11 +1538,8 @@ export class RustParser {
 		const references: Reference[] = [];
 		for (const binding of this.importBindings) {
 			if (binding.sourceName === null || binding.sourceRange === undefined) continue;
-			const token = this.tokens.find(
-				(candidate) =>
-					candidate.start.line === binding.sourceRange?.start.line &&
-					candidate.start.character === binding.sourceRange?.start.character,
-			);
+			const sourceStart = binding.sourceRange.start;
+			const token = this.tokens.find((candidate) => comparePositions(candidate.start, sourceStart) === 0);
 			if (token === undefined) continue;
 			const reference: Reference = {
 				name: binding.sourceName,

@@ -1,4 +1,5 @@
 import {
+	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
@@ -587,8 +588,8 @@ class StructuralParser {
 			this.diagnostics.some(
 				(item) =>
 					item.message === message &&
-					item.range?.start.line === range.start.line &&
-					item.range?.start.character === range.start.character,
+					item.range !== undefined &&
+					comparePositions(item.range.start, range.start) === 0,
 			)
 		)
 			return;
@@ -605,11 +606,7 @@ class StructuralParser {
 				line: Number.MAX_SAFE_INTEGER,
 				character: Number.MAX_SAFE_INTEGER,
 			};
-			return (
-				leftStart.line - rightStart.line ||
-				leftStart.character - rightStart.character ||
-				left.message.localeCompare(right.message)
-			);
+			return comparePositions(leftStart, rightStart) || left.message.localeCompare(right.message);
 		});
 	}
 

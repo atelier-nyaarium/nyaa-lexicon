@@ -1,4 +1,5 @@
 import {
+	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
@@ -399,7 +400,7 @@ export class CsharpParser {
 			.sort((left, right) => {
 				const a = left.range?.start ?? { line: Number.MAX_SAFE_INTEGER, character: Number.MAX_SAFE_INTEGER };
 				const b = right.range?.start ?? { line: Number.MAX_SAFE_INTEGER, character: Number.MAX_SAFE_INTEGER };
-				return a.line - b.line || a.character - b.character;
+				return comparePositions(a, b);
 			});
 		return {
 			module: this.module,
@@ -1923,9 +1924,7 @@ export class CsharpParser {
 	}
 
 	private tokenForRange(range: Range): Token | undefined {
-		return this.tokens.find(
-			(item) => item.start.line === range.start.line && item.start.character === range.start.character,
-		);
+		return this.tokens.find((item) => comparePositions(item.start, range.start) === 0);
 	}
 
 	private containerAt(offset: number, metadata: Map<string, DeclarationMeta>): DeclarationMeta | undefined {
