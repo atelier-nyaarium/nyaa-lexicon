@@ -458,6 +458,64 @@ const CASES: ConformanceCase[] = [
 		comments: [`// ${ASTRAL} tail`],
 	},
 	{
+		id: "a-doc-comment-and-its-declaration-relate-one-of-two-ways",
+		tier: "comments",
+		about: "A declaration's range either covers its doc comment or begins on the line after it.",
+		// Providers disagree here and both answers are kept. The point is that there is no THIRD
+		// answer: core attaches documentation by exactly these two shapes, so a range starting
+		// anywhere else loses every doc comment in that language while the suite stays green.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/doc.ts": "/** What work does. */\nexport function work(): number {\n\treturn 1;\n}\n" },
+				subject: "src/doc.ts",
+				documentation: { declaration: "work", comment: "/** What work does. */" },
+			},
+			[REFERENCE]: {
+				files: { "src/doc.ref": "// What work does.\nexport function work() {}\n" },
+				subject: "src/doc.ref",
+				documentation: { declaration: "work", comment: "// What work does." },
+			},
+			[PYTHON]: {
+				files: { "src/doc.py": "# What work does.\ndef work():\n\treturn 1\n" },
+				subject: "src/doc.py",
+				documentation: { declaration: "work", comment: "# What work does." },
+			},
+			[GDSCRIPT]: {
+				files: { "src/doc.gd": "# What work does.\nfunc work():\n\treturn 1\n" },
+				subject: "src/doc.gd",
+				documentation: { declaration: "work", comment: "# What work does." },
+			},
+			[C]: {
+				files: { "src/doc.c": "/** What work does. */\nint work(void) {\n\treturn 1;\n}\n" },
+				subject: "src/doc.c",
+				documentation: { declaration: "work", comment: "/** What work does. */" },
+			},
+			[CPP]: {
+				files: { "src/doc.cpp": "/** What work does. */\nint work() {\n\treturn 1;\n}\n" },
+				subject: "src/doc.cpp",
+				documentation: { declaration: "work", comment: "/** What work does. */" },
+			},
+			[CSHARP]: {
+				files: {
+					"src/Doc.cs":
+						"public class Doc {\n\t/// What work does.\n\tpublic int Work() {\n\t\treturn 1;\n\t}\n}\n",
+				},
+				subject: "src/Doc.cs",
+				documentation: { declaration: "Work", comment: "/// What work does." },
+			},
+			[RUST]: {
+				files: { "src/doc.rs": "/// What work does.\npub fn work() -> i32 {\n\t1\n}\n" },
+				subject: "src/doc.rs",
+				documentation: { declaration: "work", comment: "/// What work does." },
+			},
+			[KOTLIN]: {
+				files: { "src/Doc.kt": "/** What work does. */\nfun work(): Int {\n\treturn 1\n}\n" },
+				subject: "src/Doc.kt",
+				documentation: { declaration: "work", comment: "/** What work does. */" },
+			},
+		},
+	},
+	{
 		id: "a-marker-inside-a-spliced-string-is-not-a-comment",
 		tier: "comments",
 		about: "Where the language splices backslash-newline, a string continues across it and its markers stay text.",

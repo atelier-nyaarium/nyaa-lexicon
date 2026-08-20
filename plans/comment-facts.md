@@ -380,6 +380,19 @@ Both conventions produce leading attachments in volume, which is the evidence th
 c, typescript and csharp INCLUDE the doc in the declaration's range (first disjunct fires),
 while rust, kotlin and python EXCLUDE it (second disjunct fires, read from the source text).
 
+The convention table is no longer prose. A shared conformance case, `a-doc-comment-and-its-
+declaration-relate-one-of-two-ways`, asserts that a declaration's range either covers its doc
+comment or begins on the line after it. Measured by temporarily accepting only the first half, the
+suite reported exactly the split the plan predicted: INCLUDE for c, typescript and csharp; EXCLUDE
+for cpp, python, gdscript, rust and kotlin. Neither answer is corrected. A THIRD answer now fails
+the suite, which is the point: it would lose every doc comment in that language while every
+existing check stayed green.
+
+The runner's parse predicate was also DERIVED rather than hand-listed while adding that case. The
+Phase 1 painpoint recorded that a new expectation kind costs five edits and that missing two of
+them makes cases pass while asserting nothing; this case would have been the third instance, so
+the list became one array that every expectation kind joins by existing.
+
 Zero trailing in this repo is not a defect: the house rule puts comments on their own line, and
 trailing shows up immediately in corpora that write them.
 

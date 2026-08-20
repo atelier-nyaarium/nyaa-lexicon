@@ -144,7 +144,39 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	// Every span, not only expected ones: right text under a lying range attaches to the wrong symbol.
 	if (source !== undefined) problems.push(...checkCommentRanges(source, facts.comments ?? []));
 
+	const documented = fixture?.documentation ?? testCase.documentation;
+	if (documented !== undefined) problems.push(...checkDocumentation(documented, facts));
+
 	return problems;
+}
+
+/**
+ * A doc comment and its declaration must sit in one of the two shapes core can attach.
+ *
+ * Either the declaration's range already covers the comment, or the declaration begins on the line
+ * after the comment ends. Any third arrangement is not a style difference: it is a language whose
+ * documentation silently stops being found, with every suite still green.
+ */
+function checkDocumentation(expected: { declaration: string; comment: string }, facts: FileFacts): string[] {
+	const declaration = facts.declarations.find((item) => item.name === expected.declaration);
+	if (declaration === undefined) return [`documentation: declaration ${expected.declaration} is not reported`];
+
+	const comment = (facts.comments ?? []).find((item) => item.text === expected.comment);
+	if (comment === undefined) {
+		return [`documentation: comment ${JSON.stringify(expected.comment)} is not reported`];
+	}
+
+	const covers =
+		declaration.range.start.line === comment.range.start.line &&
+		declaration.range.start.character === comment.range.start.character;
+	const follows = declaration.range.start.line === comment.range.end.line + 1;
+	if (covers || follows) return [];
+
+	return [
+		`documentation: ${expected.declaration} starts at ${declaration.range.start.line}:${declaration.range.start.character}, ` +
+			`which neither covers its doc comment (starting ${comment.range.start.line}:${comment.range.start.character}) ` +
+			`nor follows it (ending line ${comment.range.end.line}). Core attaches documentation by those two shapes only.`,
+	];
 }
 
 /** A span's range must cut its own text back out of the source, or core's position math is fiction. */

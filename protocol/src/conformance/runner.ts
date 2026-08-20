@@ -123,20 +123,26 @@ async function runCase(
 	const text = fixture.files[fixture.subject];
 	if (text === undefined) return [`subject ${fixture.subject} is not among the fixture's files`];
 
+	// DERIVED, never hand-listed. Every expectation a case can state about parsed facts is named
+	// once here, so adding a new kind cannot half-register: forgetting this line means the case
+	// never runs, and a case that never runs PASSES. That has happened, to six cases at once.
+	const factExpectations = [
+		fixture.declarations ?? testCase.declarations,
+		testCase.references,
+		fixture.comments ?? testCase.comments,
+		fixture.documentation ?? testCase.documentation,
+	];
+	const checksFacts = factExpectations.some((expectation) => expectation !== undefined);
+
 	const expectedType = fixture.typeOf ?? testCase.typeOf;
-	const expectedComments = fixture.comments ?? testCase.comments;
-	// One parse per case, since three checks want the same facts and a provider is free to answer
+	// One parse per case, since several checks want the same facts and a provider is free to answer
 	// a second identical request differently once its own state has moved on.
-	const parses =
-		Boolean(testCase.declarations || testCase.references || fixture.declarations) ||
-		Boolean(testCase.parseErrors) ||
-		Boolean(expectedComments) ||
-		Boolean(expectedType);
+	const parses = checksFacts || Boolean(testCase.parseErrors) || Boolean(expectedType);
 	const facts = parses
 		? await session.call("parseFile", { module: fixture.subject, contentHash: hashOf(text), text })
 		: null;
 
-	if (facts && (testCase.declarations || testCase.references || fixture.declarations || expectedComments)) {
+	if (facts && checksFacts) {
 		problems.push(...checkFacts(testCase, facts, language, text));
 		// A declared role list is a promise about coverage, so emitting outside it is the same
 		// over-claim as declaring a tier that is not built. Undeclared coverage stays unchecked.

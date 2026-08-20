@@ -87,6 +87,15 @@ export const ExpectedTypeSchema = z
 	})
 	.meta({ id: "ExpectedType" });
 
+/** A declaration and the comment above it, named so their ranges can be compared. */
+export const DocumentedSchema = z
+	.object({
+		declaration: z.string().min(1),
+		/** Verbatim, matching one of the reported comment spans exactly. */
+		comment: z.string().min(1),
+	})
+	.meta({ id: "Documented" });
+
 /** One language's source for a case: the repo to write, and which file the case asks about. */
 export const ConformanceFixtureSchema = z
 	.object({
@@ -125,6 +134,7 @@ export const ConformanceFixtureSchema = z
 		 * every other language overrides it.
 		 */
 		comments: z.array(z.string()).optional(),
+		documentation: DocumentedSchema.optional(),
 	})
 	.meta({ id: "ConformanceFixture" });
 
@@ -164,6 +174,15 @@ export const ConformanceCaseSchema = z
 		 * positive: a marker inside a string passes an at-least check and poisons search.
 		 */
 		comments: z.array(z.string()).optional(),
+		/**
+		 * A declaration and the comment documenting it, whose RANGES must relate in one of two ways.
+		 *
+		 * Providers disagree about whether a declaration's range already covers its own doc comment.
+		 * Both answers are fine and neither is corrected. A THIRD answer is not fine: core attaches
+		 * documentation by exactly these two shapes, so a provider that starts its range anywhere else
+		 * loses every doc comment in its language, silently and with a green suite.
+		 */
+		documentation: DocumentedSchema.optional(),
 		/**
 		 * What parsing this fixture must say about its syntax.
 		 *
