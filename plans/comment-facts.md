@@ -277,6 +277,39 @@ out gdscript, did NOT reproduce at the provider layer - typescript's extractor r
 of the agents' own JSON-RPC harnesses. C and C++ ignoring `depth` is real but not a lie: they do
 full work and correctly omit the `depth` marker, so the answer is complete rather than mislabelled.
 
+### Bug Classes
+
+**Mechanism:** eight independent hand-written lexers, each of which must get "what is a string"
+right before it can get "what is a comment" right.
+
+**Class: an incomplete string grammar becomes a false comment.** A comment is defined by what is
+NOT a string, so every hole in a language's string rules surfaces as prose that is not there. This
+phase patched it FOUR times, in four different providers:
+
+1. kotlin - a non-raw string ended at the first quote inside a `${...}` template, and the
+   remainder was reported as a comment.
+2. rust - `/**/` was read as a doc opener, consumed its own closer, and ran to EOF.
+3. cpp - a string ended at a backslash-newline, so a marker on the continuation line was prose.
+4. csharp - interpolation holes were never tracked, so a quote inside one ended the string.
+
+Four rounds in one mechanism is a design signal, not luck. Worth stating plainly: the comment tier
+did not CREATE these. Each was already mis-lexing strings, which silently produced a wrong literal
+nobody checked. Emitting comments turned a quiet wrong value into a loud wrong claim, which is why
+four of them fell out in one phase. That is the tier earning its keep, and also the argument that
+more remain in the languages nobody attacked this round.
+
+**Class: parallel lexers that must agree and have no test forcing them to.** c and cpp are near
+twins, and cpp was missing backslash-newline splicing in BOTH its comment reader and its string
+reader while c had both. Two instances, one cause: nothing compared them.
+
+**What would eliminate them, for `architecture-fan-out`:** the per-case-per-language fixture table
+is written by hand, so a string form is only tested where someone thought to write it. Declare each
+language's string-form inventory (raw, verbatim, interpolated, triple-quoted, spliced, prefixed)
+on the provider contract, and DERIVE a comment case per (language, form) instead of hand-authoring
+fixtures. A language would then be unable to declare a form it has not proven it lexes, and the c
+and cpp asymmetry becomes unexpressible rather than merely unnoticed. The six cases added this lap
+are the manual version of that table and should be the seed for it.
+
 ## Phase 3 - Core
 
 - Attachment runs AT INDEX TIME inside the replaceFile flow, with the module's source text in
