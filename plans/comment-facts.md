@@ -145,6 +145,13 @@ Ships as PROTOCOL 2.0.0 plus package major. Release posture, all decided and aud
   positive plus adversarial negatives (markers inside string literals, shebang lines,
   unterminated blocks, nested blocks). Compatibility tests: 2.0 rejects 1.x wire; additive
   within 2.x passes.
+- GREW during Phase 2's audit laps, since the protocol is where a provider defect gets held for
+  every language at once. `checkFacts` now also verifies that EVERY reported span's range slices
+  its own text back out of the source, expected or not. Six more shared cases landed, each one
+  written to fail before its fix: CRLF line endings, backslash-newline splicing in a comment and
+  again in a string, comment columns in UTF-16 code units, a marker inside a nested interpolation,
+  and a comment inside an interpolation hole. The reference provider gained comment lexing and its
+  own line-ending tests, because the yardstick has to be right for the grades to mean anything.
 - lockFile: ordered protocol rule + flipped-direction tests. protocol/CLAUDE.md written.
 
 ### Bug Classes
@@ -158,11 +165,19 @@ rather than deferred: comment expectations moved onto the FIXTURE, mirroring the
 per-fixture declarations override, which makes the class inexpressible because the expectation
 now lives where the syntax does. Nothing carried to architecture-fan-out.
 
-## Phase 2 - Providers (workflow fan-out, one agent per provider)
+## Phase 2 - Providers (workflow fan-out, one agent per provider) ✅
 
 Emit raw comment spans from the lexer and declare the comments tier, PRESERVING declaration
 ranges. Inventory accepted-wrong extraction assertions for the major train. Conformance green per
 provider.
+
+SHIPPED: all eight emit from their own tokenizer, never a second marker scanner. Gate clean, 1503
+tests, all eight providers at 0 conformance failures. Five defects were found and fixed across the
+audit laps (c's CRLF, cpp's comment splicing, cpp's string splicing, csharp's interpolation holes,
+typescript's reduced-depth claim), each one first reproduced as a shared case that went red.
+Four provider corpus tests now range-check ~86,000 comment spans from real repositories on every
+run. The architecture lap concluded with NO structural change: see `### Bug Classes` below for the
+refutation, which is the substantive output of that lap.
 
 RESEQUENCED at implementation time: docComment DELETION moves to Phase 3, joining the schema
 removal already moved there. Deleting production here would leave describe showing no
