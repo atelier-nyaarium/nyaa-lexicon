@@ -439,4 +439,40 @@ tier, and nothing tells them where the sites are except the compiler, one file a
 generated "every provider's tiers" table, or a test asserting the set of declaration sites, would
 turn the compiler's scavenger hunt into one list.
 
+Felt building Phase 2.
+
+**The gate fails on formatting that the formatter would fix, and says only "lint FAILED: biome".**
+Four times this phase the gate went red purely because my own edits were unformatted, never because
+anything was wrong. Each one costs a full lint, a `lint:fix`, and another lint to confirm, and the
+summary output buries the two format lines under twenty-seven pre-existing warnings. CLAUDE.md
+already warns to read both halves of the gate, but the real friction is different: the half that
+fails most is the half a script fixes. Running `lint:fix` before `lint` unconditionally would make
+the gate mean "your code is wrong" again.
+
+**Nothing lets you run one conformance case.** `cli.ts` takes only the provider command and calls
+`loadCorpus()` whole, so checking whether one case passes across eight languages means eight full
+suites and a grep, at roughly thirty seconds each. Every fix this phase was verified that way. A
+`--case <id>` filter is a few lines against `RunOptions.cases` and would have paid for itself
+several times over in this phase alone.
+
+**CLAUDE.md sent me through `dist/` for conformance for no reason** - fixed while writing this,
+since a doc that misleads is the misalignment class this project hunts. The run instructions listed
+`node dist/conformance.js` under the heading "Bun has no node:sqlite, so anything touching the store
+cannot run under bun run", but conformance never touches the store. It runs from source under bun
+with identical results and no build. I rebuilt about eight times before reading `cli.ts` and finding
+its own header documenting the source form.
+
+**The four provider corpus tests are four different shapes.** Adding the same range check to c,
+cpp, csharp and rust meant reading four unrelated structures: csharp has a dedicated `corpus.test.ts`,
+cpp buries its corpus test at the bottom of `provider.test.ts`, c buries its at the bottom of a
+much longer `provider.test.ts` behind a two-root loop, and rust has its own file with a different
+skip idiom. Same test, four spellings, no shared helper. This is the c/cpp twin problem wearing
+test clothes, and a shared `checkCommentRanges(provider, files)` helper would collapse it.
+
+**No supported way to drive one provider ad hoc.** Two red-team findings claimed a provider broke
+on a large input, and disproving both meant writing my own probe, because every agent that wants to
+call `parseFile` once has to hand-roll a vscode-jsonrpc handshake. Two of them got that harness
+wrong and reported the harness's failure as the provider's. A tiny `parse-with.js <provider> <file>`
+alongside `index-workspace.js` would make that class of finding self-checking.
+
 

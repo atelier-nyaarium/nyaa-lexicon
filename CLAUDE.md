@@ -60,8 +60,17 @@ bun run build --build-only                       # bundle without bumping or com
 node dist/index-workspace.js <repo> [symbol]     # index a repo, optionally query a name
 node dist/grade.js <switchboard checkout>        # graded checks against a repo whose answers are known
 node dist/daemon.js <repo>                        # the daemon itself
-node dist/conformance.js bun run providers/<language>/src/main.ts
 ```
+
+**Conformance never touches the store, so it does not need the build at all.** Run it from source
+and skip the rebuild while iterating on a provider or the corpus:
+
+```bash
+bun run protocol/src/conformance/cli.ts -- bun run providers/<language>/src/main.ts
+node dist/conformance.js bun run providers/<language>/src/main.ts   # same thing, from the artifact
+```
+
+Use the `dist/` form to check what actually ships, and before a release.
 
 **Dogfooding runs through the installed plugin.** `.mcp.json` resolves through
 `${CLAUDE_PLUGIN_ROOT}`, so this checkout no longer registers a server for itself. Pointing lexicon
@@ -100,7 +109,8 @@ Node 22.5+ required, for `node:sqlite`.
 Ordered by how much they prove:
 
 1. `bun run test` for the unit level.
-2. `node dist/conformance.js ...` if the change touches a provider or the protocol.
+2. Conformance if the change touches a provider or the protocol, all eight providers, not just the
+   one you edited. A corpus case is shared, so an edit for one language runs against every other.
 3. `node dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
    repository questions whose right answers are already known, so it catches "produces output" that
    is not "produces the right output".
