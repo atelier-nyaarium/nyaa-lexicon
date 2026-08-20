@@ -117,6 +117,14 @@ export const ConformanceFixtureSchema = z
 		 * on and the width of the syntax to its left never are.
 		 */
 		declarations: z.array(ExpectedDeclarationSchema).optional(),
+		/**
+		 * Comment expectations only this language can state, replacing the case's when present.
+		 *
+		 * Needed more often than the others: a comment's text IS its syntax, so `#` languages can
+		 * never satisfy a `//` expectation. The case-level list serves the curly-brace family and
+		 * every other language overrides it.
+		 */
+		comments: z.array(z.string()).optional(),
 	})
 	.meta({ id: "ConformanceFixture" });
 
@@ -149,6 +157,13 @@ export const ConformanceCaseSchema = z
 		 * no member was dropped.
 		 */
 		typeOf: ExpectedTypeSchema.optional(),
+		/**
+		 * EXACTLY these comment texts, trimmed, any order, duplicates counted.
+		 *
+		 * Exact unlike every other expectation here, because the failure worth catching is a false
+		 * positive: a marker inside a string passes an at-least check and poisons search.
+		 */
+		comments: z.array(z.string()).optional(),
 		/**
 		 * What parsing this fixture must say about its syntax.
 		 *

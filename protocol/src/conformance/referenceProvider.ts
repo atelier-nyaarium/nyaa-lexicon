@@ -38,6 +38,7 @@ export const REFERENCE_TIERS = {
 	binding: false,
 	types: false,
 	literals: false,
+	comments: false,
 	metrics: false,
 	syntaxDiagnostics: false,
 } as const;

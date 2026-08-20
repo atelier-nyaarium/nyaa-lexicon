@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,6 +20,18 @@ const REFERENCE = path.join(
 );
 
 let supervisor: ProviderSupervisor;
+
+/** Live pids whose command line names this script, so an orphan is visible. */
+function processesMatching(script: string): string[] {
+	try {
+		return execFileSync("pgrep", ["-f", script], { encoding: "utf8" })
+			.split("\n")
+			.filter((line) => line.trim().length > 0);
+	} catch {
+		// pgrep exits 1 when nothing matches, which is the answer this asks for.
+		return [];
+	}
+}
 
 function start() {
 	supervisor = new ProviderSupervisor();
@@ -51,6 +65,36 @@ describe("starting a provider", () => {
 		await expect(
 			supervisor.start({ command: ["lexicon-no-such-binary"], timeoutMs: 5_000 }, tmpdir()),
 		).rejects.toThrow();
+	}, 30_000);
+
+	// A provider from another protocol answers a SHAPE this one rejects. Reaching the wrong shape
+	// through a live pipe is the case a protocol major creates, and the child must not survive it.
+	it("reaps a provider whose handshake answers an unusable shape", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-badshake-"));
+		const script = path.join(root, "stale.ts");
+		const serve = path.join(import.meta.dirname, "..", "..", "..", "protocol", "src", "serve.ts");
+		writeFileSync(
+			script,
+			[
+				`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";`,
+				`void ${JSON.stringify(serve)};`,
+				`const connection = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));`,
+				// Tiers from an older protocol: every field this daemon needs except the newest one.
+				`connection.onRequest("initialize", () => ({ providerId: "stale", language: "stale", extensions: [".stale"], protocolVersion: "2.0.0", tiers: { projectModel: false, declarations: true, references: false, imports: false, binding: false, types: false, literals: false, metrics: false } }));`,
+				`connection.listen();`,
+			].join("\n"),
+		);
+
+		supervisor = new ProviderSupervisor();
+		await expect(supervisor.start({ command: ["bun", "run", script], timeoutMs: 15_000 }, root)).rejects.toThrow();
+		expect(supervisor.running()).toHaveLength(0);
+
+		// The process itself, not the registry: a child of a FAILED start was never registered, so
+		// the registry cannot tell an orphan from a clean exit.
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(processesMatching(script)).toEqual([]);
+
+		rmSync(root, { recursive: true, force: true });
 	}, 30_000);
 });
 

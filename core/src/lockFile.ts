@@ -126,7 +126,9 @@ export function decideFromLock(context: LockContext): LockDecision {
 		};
 	}
 
+	// Newer is ridden, never retired: two sides replacing each other rebuild the index per flip.
 	if (!sameMajor(lock.protocolVersion, context.ourProtocolVersion)) {
+		if (newerBuild(lock.protocolVersion, context.ourProtocolVersion)) return { action: "connect", lock };
 		return {
 			action: "replace",
 			lock,

@@ -4,7 +4,7 @@
 // transport and calls in here.
 
 import type { z } from "zod";
-import type { FileFacts, ImportResolution } from "../project.js";
+import type { CommentSpan, FileFacts, ImportResolution } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
@@ -138,6 +138,26 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 		if (perMatch.every((p) => p.length > 0)) problems.push(...(perMatch[0] as string[]));
 	}
 
+	const wantedComments = fixture?.comments ?? testCase.comments;
+	if (wantedComments !== undefined) problems.push(...checkComments(wantedComments, facts.comments ?? []));
+
+	return problems;
+}
+
+/** Verbatim and multiset: text is compared as written, since a span reaching past its own marker
+ * is exactly the bug this catches, and two identical comments are two facts. */
+function checkComments(expected: string[], actual: CommentSpan[]): string[] {
+	const problems: string[] = [];
+	const remaining = actual.map((comment) => comment.text);
+
+	for (const text of expected) {
+		const at = remaining.indexOf(text);
+		if (at === -1) problems.push(`comment ${JSON.stringify(text)}: not reported`);
+		else remaining.splice(at, 1);
+	}
+	for (const text of remaining) {
+		problems.push(`comment ${JSON.stringify(text)}: reported but not a comment here`);
+	}
 	return problems;
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	commentFactId,
 	composeFactId,
 	declarationFactId,
 	doubtFactId,
@@ -98,6 +99,18 @@ describe("identity is content", () => {
 
 	it("gives the same fact in another file a different id", () => {
 		expect(literalFactId("src/b.ts", LIT)).not.toBe(literalFactId("src/a.ts", LIT));
+	});
+
+	// A citation must stale on a reword: the reason comments are facts, not a declaration field.
+	it("gives a reworded comment a different id, and a moved one too", () => {
+		const comment = { range: LIT.range, text: "// refusal beats clamping" };
+		const reworded = { ...comment, text: "// refusal beats guessing" };
+		const moved = { ...comment, range: { start: { line: 9, character: 0 }, end: { line: 9, character: 25 } } };
+
+		expect(commentFactId("src/a.ts", comment)).toBe(commentFactId("src/a.ts", comment));
+		expect(commentFactId("src/a.ts", reworded)).not.toBe(commentFactId("src/a.ts", comment));
+		expect(commentFactId("src/a.ts", moved)).not.toBe(commentFactId("src/a.ts", comment));
+		expect(parseFactId(commentFactId("src/a.ts", comment))?.kind).toBe("comment");
 	});
 
 	// Absent and empty hash alike only if the encoding lets them, and a tuple slot that can vanish

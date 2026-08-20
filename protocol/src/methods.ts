@@ -30,6 +30,8 @@ export const ProviderTiersSchema = z
 		types: z.boolean(),
 		/** String, number and boolean literals with their positions. */
 		literals: z.boolean(),
+		/** Raw comment spans. False hides the language from comment search entirely. */
+		comments: z.boolean(),
 		/** Size and shape per declaration. */
 		metrics: z.boolean(),
 		/**

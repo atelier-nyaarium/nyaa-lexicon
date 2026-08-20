@@ -256,6 +256,65 @@ describe("checking answers", () => {
 		);
 	});
 
+	// Comments are the one expectation checked EXACTLY, because the failure worth catching is a
+	// lexer reporting a marker inside a string as prose.
+	describe("comments, where an extra is a failure", () => {
+		const span = (text: string, line = 0) => ({
+			range: { start: { line, character: 0 }, end: { line, character: text.length } },
+			text,
+		});
+		const withComments = (texts: string[]) => facts({ comments: texts.map((text, index) => span(text, index)) });
+
+		it("passes on the exact set, in any order", () => {
+			const testCase = { comments: ["// b", "// a"] } as ConformanceCase;
+			expect(checkFacts(testCase, withComments(["// a", "// b"]))).toEqual([]);
+		});
+
+		it("reports a comment the provider invented", () => {
+			const testCase = { comments: ["// a"] } as ConformanceCase;
+			expect(checkFacts(testCase, withComments(["// a", "/* not a comment */"]))).toEqual([
+				'comment "/* not a comment */": reported but not a comment here',
+			]);
+		});
+
+		it("reports a comment the provider missed", () => {
+			const testCase = { comments: ["// a", "// b"] } as ConformanceCase;
+			expect(checkFacts(testCase, withComments(["// a"]))).toEqual(['comment "// b": not reported']);
+		});
+
+		// Two identical comments are two facts; a set would silently accept one of them vanishing.
+		it("counts duplicates rather than collapsing them", () => {
+			const testCase = { comments: ["// same", "// same"] } as ConformanceCase;
+			expect(checkFacts(testCase, withComments(["// same", "// same"]))).toEqual([]);
+			expect(checkFacts(testCase, withComments(["// same"]))).toEqual(['comment "// same": not reported']);
+		});
+
+		it("says nothing when a case states no comment expectation", () => {
+			expect(checkFacts({} as ConformanceCase, withComments(["// anything"]))).toEqual([]);
+		});
+
+		// Comment text IS syntax: a hash language can never satisfy a slash expectation, so the
+		// fixture's list replaces the case's rather than adding to it.
+		it("lets a fixture state its own syntax instead of the case's", () => {
+			const testCase = {
+				comments: ["// shared"],
+				fixtures: { python: { files: {}, subject: "x.py", comments: ["# mine"] } },
+			} as unknown as ConformanceCase;
+
+			expect(checkFacts(testCase, withComments(["# mine"]), "python")).toEqual([]);
+			expect(checkFacts(testCase, withComments(["// shared"]), "python")).toEqual([
+				'comment "# mine": not reported',
+				'comment "// shared": reported but not a comment here',
+			]);
+		});
+
+		// Verbatim, not trimmed: a span reaching past its own marker is the bug this catches.
+		it("compares text as written, so a span with extra whitespace fails", () => {
+			const testCase = { comments: ["// a"] } as ConformanceCase;
+			expect(checkFacts(testCase, withComments(["  // a  "]))).toHaveLength(2);
+		});
+	});
+
 	it("accepts any one of several same-named declarations, since a name cannot pick an overload", () => {
 		const testCase = { declarations: [{ name: "a", kind: "class" as const }] } as ConformanceCase;
 		const both = facts({ declarations: [decl("a"), decl("a", { kind: "class" })] });

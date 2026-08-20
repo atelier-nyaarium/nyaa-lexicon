@@ -13,8 +13,10 @@ describe("protocol version", () => {
 		expect(isCompatibleProtocol(`${major}.9.3`)).toBe(true);
 	});
 
-	it("refuses a different major", () => {
+	it("refuses a different major, in both directions", () => {
 		expect(isCompatibleProtocol(`${major + 1}.0.0`)).toBe(false);
+		// The previous major's wire: a provider still emitting it cannot serve this one.
+		if (major > 0) expect(isCompatibleProtocol(`${major - 1}.9.9`)).toBe(false);
 	});
 
 	it("refuses garbage rather than reading it as compatible", () => {

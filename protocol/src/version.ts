@@ -24,7 +24,9 @@ export type Compatibility =
 // than hang on a handshake the old server cannot speak.
 // 1.1.0: imports may expose an indexable surface and parseFile may request surface depth.
 // Outline requests and extraction-depth metadata are part of the 1.2 wire contract.
-export const PROTOCOL_VERSION = "1.2.0" as const;
+// 2.0.0: comment spans are emitted and docComment is retired, so a declaration no longer carries
+// its own prose; the major is the removal, not the addition.
+export const PROTOCOL_VERSION = "2.0.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

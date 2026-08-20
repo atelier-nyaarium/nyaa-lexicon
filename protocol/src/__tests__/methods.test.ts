@@ -54,6 +54,7 @@ describe("method table", () => {
 				binding: true,
 				types: false,
 				literals: false,
+				comments: false,
 				metrics: false,
 			},
 			referenceRoles: ["call", "read", "write"],
@@ -78,11 +79,21 @@ describe("method table", () => {
 			binding: false,
 			types: false,
 			literals: false,
+			comments: false,
 			metrics: false,
 		};
 		const base = { providerId: "p", language: "toy", extensions: [".t"], protocolVersion: PROTOCOL_VERSION };
 
 		expect(METHOD_SCHEMAS.initialize.response.safeParse({ ...base, tiers }).success).toBe(false);
+		// Every tier is a required claim: a provider silent about one is not a provider claiming false.
+		const { comments: _dropped, ...withoutComments } = tiers;
+		expect(
+			METHOD_SCHEMAS.initialize.response.safeParse({
+				...base,
+				tiers: withoutComments,
+				referenceRoles: ["call"],
+			}).success,
+		).toBe(false);
 		expect(METHOD_SCHEMAS.initialize.response.safeParse({ ...base, tiers, referenceRoles: [] }).success).toBe(
 			false,
 		);
@@ -106,6 +117,7 @@ describe("method table", () => {
 				binding: false,
 				types: false,
 				literals: false,
+				comments: false,
 				metrics: false,
 			},
 		};

@@ -202,6 +202,28 @@ export function versionTargets(root: string): string[] {
 }
 
 /** Throws unless every derived site still recomputes the version from package.json. */
+function protocolMajorOf(text: string): string {
+	const found = /^export const PROTOCOL_VERSION\s*=\s*"(\d+)\.\d+\.\d+"/m.exec(text);
+	if (!found) throw new Error("protocol/src/version.ts no longer states PROTOCOL_VERSION as a plain version");
+	return found[1] as string;
+}
+
+/**
+ * A moved PROTOCOL_VERSION costs a major.
+ *
+ * Not the reverse: an extraction-correction major retires facts without touching the wire, and
+ * demanding a protocol bump there teaches the author to route around this check.
+ */
+export function checkProtocolRelease(root: string, kind: BumpKind, headVersionSource: string): void {
+	const now = protocolMajorOf(readFileSync(path.join(root, "protocol", "src", "version.ts"), "utf8"));
+	const before = protocolMajorOf(headVersionSource);
+	if (now === before || kind === "major") return;
+	throw new Error(
+		`PROTOCOL_VERSION moved from major ${before} to ${now}, which breaks the wire, but this is a ${kind} release.\n` +
+			`Ship it as a major, or restore the protocol version.`,
+	);
+}
+
 export function checkDerivedSites(root: string): void {
 	for (const site of DERIVED_SITES) {
 		const text = readFileSync(path.join(root, site.file), "utf8");
@@ -284,6 +306,18 @@ function main(argv: string[]): void {
 			console.error("\n(untracked files are fine; --build-only skips this check)");
 			process.exit(1);
 		}
+
+		// After the clean-tree gate, so an uncommitted protocol file reads as "commit your work"
+		// rather than as a git error from reading HEAD.
+		let atHead: string;
+		try {
+			atHead = git(["show", "HEAD:protocol/src/version.ts"], ROOT);
+		} catch {
+			console.error("Could not read protocol/src/version.ts at HEAD, so the wire check cannot run.");
+			console.error("Commit the protocol package first, or build with --build-only.");
+			process.exit(1);
+		}
+		checkProtocolRelease(ROOT, kind as BumpKind, atHead);
 	}
 
 	const targets = versionTargets(ROOT);

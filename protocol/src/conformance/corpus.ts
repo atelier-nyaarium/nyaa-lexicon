@@ -261,6 +261,227 @@ const CASES: ConformanceCase[] = [
 		declarations: [],
 	},
 	{
+		id: "every-comment-shape-is-emitted",
+		tier: "comments",
+		about: "A provider reports every comment as a raw span: leading, trailing, inline, and standalone.",
+		// The four shapes core attaches from. No anchor is asserted: that is core's, not a provider's.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"src/comments.ts":
+						"// leading\nexport function work(first: number /* inline */, second: number): number {\n\treturn first + second;\n}\n\nexport const total = 42; // trailing\n\n/* standalone */\n",
+				},
+				subject: "src/comments.ts",
+			},
+			[PYTHON]: {
+				files: {
+					"src/comments.py":
+						"# leading\ndef work(\n\tfirst,\n\t# inline\n\tsecond,\n):\n\treturn first + second\n\n\ntotal = 42  # trailing\n\n# standalone\n",
+				},
+				subject: "src/comments.py",
+				comments: ["# leading", "# inline", "# trailing", "# standalone"],
+			},
+			[GDSCRIPT]: {
+				files: {
+					"src/comments.gd":
+						"# leading\nfunc work(first, second):\n\t# inline\n\treturn first + second\n\nvar total = 42 # trailing\n\n# standalone\n",
+				},
+				subject: "src/comments.gd",
+				comments: ["# leading", "# inline", "# trailing", "# standalone"],
+			},
+			[C]: {
+				files: {
+					"src/comments.c":
+						"// leading\nint work(int first /* inline */, int second) {\n\treturn first + second;\n}\n\nint total = 42; // trailing\n\n/* standalone */\n",
+				},
+				subject: "src/comments.c",
+			},
+			[CPP]: {
+				files: {
+					"src/comments.cpp":
+						"// leading\nint work(int first /* inline */, int second) {\n\treturn first + second;\n}\n\nint total = 42; // trailing\n\n/* standalone */\n",
+				},
+				subject: "src/comments.cpp",
+			},
+			[CSHARP]: {
+				files: {
+					"src/Comments.cs":
+						"// leading\npublic class Comments {\n\tpublic int Work(int first /* inline */, int second) {\n\t\treturn first + second;\n\t}\n\n\tpublic int Total = 42; // trailing\n}\n\n/* standalone */\n",
+				},
+				subject: "src/Comments.cs",
+			},
+			[RUST]: {
+				files: {
+					"src/comments.rs":
+						"// leading\npub fn work(first: i32 /* inline */, second: i32) -> i32 {\n\tfirst + second\n}\n\npub const TOTAL: i32 = 42; // trailing\n\n/* standalone */\n",
+				},
+				subject: "src/comments.rs",
+			},
+			[KOTLIN]: {
+				files: {
+					"src/Comments.kt":
+						"// leading\nfun work(first: Int /* inline */, second: Int): Int {\n\treturn first + second\n}\n\nval total = 42 // trailing\n\n/* standalone */\n",
+				},
+				subject: "src/Comments.kt",
+			},
+		},
+		comments: ["// leading", "/* inline */", "// trailing", "/* standalone */"],
+	},
+	{
+		id: "comment-markers-in-text-are-not-comments",
+		tier: "comments",
+		about: "A marker inside a string literal is not a comment, and the exact set catches it.",
+		// A lexer scanning for markers rather than tokenizing reports the string's contents.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"src/markers.ts":
+						'export const url = "https://example.com/path";\nexport const block = "/* not a comment */";\n// real\n',
+				},
+				subject: "src/markers.ts",
+			},
+			[PYTHON]: {
+				files: { "src/markers.py": 'url = "https://example.com/path"\nhashed = "# not a comment"\n# real\n' },
+				subject: "src/markers.py",
+				comments: ["# real"],
+			},
+			[GDSCRIPT]: {
+				files: {
+					"src/markers.gd": 'var url = "https://example.com/path"\nvar hashed = "# not a comment"\n# real\n',
+				},
+				subject: "src/markers.gd",
+				comments: ["# real"],
+			},
+			[C]: {
+				files: {
+					"src/markers.c":
+						'const char *url = "https://example.com/path";\nconst char *block = "/* not a comment */";\n// real\n',
+				},
+				subject: "src/markers.c",
+			},
+			[CPP]: {
+				files: {
+					"src/markers.cpp":
+						'const char *url = "https://example.com/path";\nconst char *block = "/* not a comment */";\n// real\n',
+				},
+				subject: "src/markers.cpp",
+			},
+			[CSHARP]: {
+				files: {
+					"src/Markers.cs":
+						'public class Markers {\n\tpublic string Url = "https://example.com/path";\n\tpublic string Block = "/* not a comment */";\n}\n// real\n',
+				},
+				subject: "src/Markers.cs",
+			},
+			[RUST]: {
+				files: {
+					"src/markers.rs":
+						'pub const URL: &str = "https://example.com/path";\npub const BLOCK: &str = "/* not a comment */";\n// real\n',
+				},
+				subject: "src/markers.rs",
+			},
+			[KOTLIN]: {
+				files: {
+					"src/Markers.kt":
+						'val url = "https://example.com/path"\nval block = "/* not a comment */"\n// real\n',
+				},
+				subject: "src/Markers.kt",
+			},
+		},
+		comments: ["// real"],
+	},
+	{
+		id: "a-shebang-is-emitted-like-any-comment",
+		tier: "comments",
+		about: "An interpreter line is lexically a comment, so it is reported rather than filtered here.",
+		// Providers report what the language says is a comment. Whether an interpreter line is
+		// PROSE is core's question, and answering it in the lexer would hide the span from the one
+		// layer that can decide.
+		fixtures: {
+			[PYTHON]: {
+				files: { "src/tool.py": "#!/usr/bin/env python3\n# real\n\n\ndef work():\n\treturn 1\n" },
+				subject: "src/tool.py",
+				comments: ["#!/usr/bin/env python3", "# real"],
+			},
+			[GDSCRIPT]: {
+				files: { "src/tool.gd": "#!/usr/bin/env godot\n# real\n\nfunc work():\n\treturn 1\n" },
+				subject: "src/tool.gd",
+				comments: ["#!/usr/bin/env godot", "# real"],
+			},
+		},
+	},
+	{
+		id: "an-unterminated-block-comment-does-not-swallow-the-file",
+		tier: "comments",
+		about: "A block opened and never closed is reported once, not as many spans or none.",
+		// No trailing newline after the opener, so "consumes to EOF" has exactly one spelling. With
+		// one, a provider including the final newline and one excluding it would both be arguably
+		// right and the case would be asserting the corpus author's guess.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/open.ts": "export const before = 1;\n/* opened and never closed" },
+				subject: "src/open.ts",
+			},
+			[C]: {
+				files: { "src/open.c": "int before = 1;\n/* opened and never closed" },
+				subject: "src/open.c",
+			},
+			[CPP]: {
+				files: { "src/open.cpp": "int before = 1;\n/* opened and never closed" },
+				subject: "src/open.cpp",
+			},
+			[CSHARP]: {
+				files: { "src/Open.cs": "public class Open { }\n/* opened and never closed" },
+				subject: "src/Open.cs",
+			},
+			[RUST]: {
+				files: { "src/open.rs": "pub const BEFORE: i32 = 1;\n/* opened and never closed" },
+				subject: "src/open.rs",
+			},
+			[KOTLIN]: {
+				files: { "src/Open.kt": "val before = 1\n/* opened and never closed" },
+				subject: "src/Open.kt",
+			},
+		},
+		comments: ["/* opened and never closed"],
+	},
+	{
+		id: "nested-block-comments-follow-the-language",
+		tier: "comments",
+		about: "Rust and Kotlin nest block comments; the outer span runs to the LAST close, not the first.",
+		// Only the languages whose spec nests. C-family stops at the first `*/`, so the same fixture
+		// would assert opposite truths and belongs in its own case rather than this one.
+		fixtures: {
+			[RUST]: {
+				files: { "src/nest.rs": "/* outer /* inner */ still outer */\npub const AFTER: i32 = 1;\n" },
+				subject: "src/nest.rs",
+			},
+			[KOTLIN]: {
+				files: { "src/Nest.kt": "/* outer /* inner */ still outer */\nval after = 1\n" },
+				subject: "src/Nest.kt",
+			},
+		},
+		comments: ["/* outer /* inner */ still outer */"],
+	},
+	{
+		id: "an-unnested-block-comment-ends-at-the-first-close",
+		tier: "comments",
+		about: "C-family blocks do not nest, so the span ends at the first close and code resumes after it.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/nest.ts": "/* outer /* inner */\nexport const after = 1;\n" },
+				subject: "src/nest.ts",
+			},
+			[C]: { files: { "src/nest.c": "/* outer /* inner */\nint after = 1;\n" }, subject: "src/nest.c" },
+			[CPP]: { files: { "src/nest.cpp": "/* outer /* inner */\nint after = 1;\n" }, subject: "src/nest.cpp" },
+			[CSHARP]: {
+				files: { "src/Nest.cs": "/* outer /* inner */\npublic class Nest { }\n" },
+				subject: "src/Nest.cs",
+			},
+		},
+		comments: ["/* outer /* inner */"],
+	},
+	{
 		id: "broken-syntax-is-an-error-diagnostic",
 		tier: "syntaxDiagnostics",
 		about: "A provider claiming syntax diagnostics reports an error for text that cannot parse.",

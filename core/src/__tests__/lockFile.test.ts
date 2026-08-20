@@ -64,10 +64,22 @@ describe("finding a daemon", () => {
 		expect(seen[0]).toMatchObject({ pid: 4242, pidStart: "12345" });
 	});
 
-	it("replaces a daemon on a different major, which is the stale-daemon case", () => {
-		const decision = decide({ lock: { protocolVersion: "1.0.0" } });
+	it("replaces a daemon on an OLDER protocol major, which is the stale-daemon case", () => {
+		const decision = decide({ lock: { protocolVersion: "1.0.0" }, ours: "2.0.0" });
 		expect(decision.action).toBe("replace");
 		expect(decision.action === "replace" && decision.reason).toMatch(/1\.0\.0/);
+	});
+
+	// Retiring it starts a war: it replaces us back, and every flip rebuilds the index.
+	it("connects to a daemon on a NEWER protocol major rather than dragging the workspace back", () => {
+		expect(decide({ lock: { protocolVersion: "2.0.0" }, ours: "1.2.0" })).toMatchObject({ action: "connect" });
+	});
+
+	// Unreadable is not newer. Riding a daemon whose wire nobody can name is the one outcome worse
+	// than replacing it.
+	it("replaces a daemon whose protocol version does not parse", () => {
+		expect(decide({ lock: { protocolVersion: "2.garbage" }, ours: "1.2.0" })).toMatchObject({ action: "replace" });
+		expect(decide({ lock: { protocolVersion: "nonsense" }, ours: "1.2.0" })).toMatchObject({ action: "replace" });
 	});
 
 	it("connects across a minor difference, since changes are additive within a major", () => {

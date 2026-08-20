@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	checkProtocolRelease,
 	dirtyTrackedFiles,
 	expandWorkspaceEntry,
 	nextVersion,
@@ -179,5 +180,44 @@ describe("dirtyTrackedFiles", () => {
 	it("reports unmerged entries", () => {
 		const line = "u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.ts";
 		expect(dirtyTrackedFiles(line)).toEqual(["conflict.ts"]);
+	});
+});
+
+describe("checkProtocolRelease", () => {
+	const source = (version: string) => `export const PROTOCOL_VERSION = "${version}" as const;\n`;
+
+	function withProtocol(version: string): void {
+		mkdirSync(path.join(root, "protocol", "src"), { recursive: true });
+		writeFileSync(path.join(root, "protocol", "src", "version.ts"), source(version));
+	}
+
+	it("refuses a broken wire shipped as a minor or a patch", () => {
+		withProtocol("2.0.0");
+
+		expect(() => checkProtocolRelease(root, "minor", source("1.2.0"))).toThrow(/breaks the wire/);
+		expect(() => checkProtocolRelease(root, "patch", source("1.2.0"))).toThrow(/breaks the wire/);
+	});
+
+	it("allows a broken wire shipped as a major", () => {
+		withProtocol("2.0.0");
+
+		expect(() => checkProtocolRelease(root, "major", source("1.2.0"))).not.toThrow();
+	});
+
+	// An extraction-correction major retires facts without touching the wire; demanding a protocol
+	// bump there would teach the author to route around this check.
+	it("allows every release kind when the wire did not move", () => {
+		withProtocol("1.3.0");
+
+		for (const kind of ["patch", "minor", "major"] as const) {
+			expect(() => checkProtocolRelease(root, kind, source("1.2.0"))).not.toThrow();
+		}
+	});
+
+	it("refuses to guess when the version is no longer a plain constant", () => {
+		mkdirSync(path.join(root, "protocol", "src"), { recursive: true });
+		writeFileSync(path.join(root, "protocol", "src", "version.ts"), "export const PROTOCOL_VERSION = compute();\n");
+
+		expect(() => checkProtocolRelease(root, "minor", source("1.2.0"))).toThrow(/no longer states/);
 	});
 });

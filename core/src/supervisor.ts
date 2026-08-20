@@ -121,13 +121,20 @@ export class ProviderSupervisor {
 			this.stopProcess(running);
 			throw error;
 		}
-		const parsed = METHOD_SCHEMAS.initialize.response.parse(info);
 
-		if (!isCompatibleProtocol(parsed.protocolVersion)) {
+		// Parsing is inside the guard too: a provider from another protocol answers a SHAPE this
+		// one rejects, and an unreaped child then outlives the daemon that could not use it.
+		let parsed: z.infer<(typeof METHOD_SCHEMAS)["initialize"]["response"]>;
+		try {
+			parsed = METHOD_SCHEMAS.initialize.response.parse(info);
+			if (!isCompatibleProtocol(parsed.protocolVersion)) {
+				throw new Error(
+					`provider ${parsed.providerId} speaks ${parsed.protocolVersion}, we speak ${PROTOCOL_VERSION}`,
+				);
+			}
+		} catch (error) {
 			this.stopProcess(running);
-			throw new Error(
-				`provider ${parsed.providerId} speaks ${parsed.protocolVersion}, we speak ${PROTOCOL_VERSION}`,
-			);
+			throw error;
 		}
 
 		const claims: ProviderClaims = {

@@ -624,7 +624,12 @@ describe("Kotlin project and protocol wiring", () => {
 		expect(info).toMatchObject({ providerId: "kotlin-provider", language: LANGUAGE, extensions: [".kt"] });
 		expect(info.tiers).toEqual(TIERS);
 		expect(info.referenceRoles).toEqual([...REFERENCE_ROLES]);
-		expect(Object.values(TIERS).every((value) => value === true)).toBe(true);
+		// Names what is unclaimed rather than counting: a new tier then reads as one honest gap
+		// instead of a mystery false.
+		const unclaimed = Object.entries(TIERS)
+			.filter(([, claimed]) => !claimed)
+			.map(([tier]) => tier);
+		expect(unclaimed).toEqual(["comments"]);
 	});
 
 	test("keeps parse response identity and includes every fact collection", () => {

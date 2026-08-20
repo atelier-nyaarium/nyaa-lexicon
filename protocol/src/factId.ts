@@ -20,7 +20,7 @@
 
 import { createHash } from "node:crypto";
 import { Cursor, err, ok, type ParseResult } from "./cursor.js";
-import type { ImportedName, Literal } from "./project.js";
+import type { CommentSpan, ImportedName, Literal } from "./project.js";
 import {
 	decodeModuleField,
 	encodeModuleField,
@@ -34,7 +34,7 @@ import type { Declaration, Range, Reference } from "./symbols.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-export type FactKind = "declaration" | "reference" | "import" | "literal" | "answer" | "doubt";
+export type FactKind = "declaration" | "reference" | "import" | "literal" | "comment" | "answer" | "doubt";
 
 export interface FactId {
 	kind: FactKind;
@@ -58,7 +58,7 @@ export const FACT_SCHEME = "lexfact";
  * resolution that catches an edited file. Its digest covers the prose and the citations, so
  * re-recording an answer retires the old id and everything built on it reports stale.
  */
-export const FACT_KINDS = ["declaration", "reference", "import", "literal", "answer", "doubt"] as const;
+export const FACT_KINDS = ["declaration", "reference", "import", "literal", "comment", "answer", "doubt"] as const;
 
 const KIND_SET = new Set<string>(FACT_KINDS);
 
@@ -168,6 +168,11 @@ export function importFactId(module: string, specifier: string, reExport: boolea
 
 export function literalFactId(module: string, l: Literal): string {
 	return composeFactId("literal", module, [l.kind, l.value, l.number, l.containerId, ...rangeFields(l.range)]);
+}
+
+/** Text and place, never the anchor: a re-attached comment is not new prose. */
+export function commentFactId(module: string, c: CommentSpan): string {
+	return composeFactId("comment", module, [c.text, ...rangeFields(c.range)]);
 }
 
 /**

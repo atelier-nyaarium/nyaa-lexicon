@@ -127,6 +127,17 @@ export const LiteralSchema = z
 
 export type Literal = z.infer<typeof LiteralSchema>;
 
+/** Spans only. Attachment is position math, owned by core so eight providers cannot drift. */
+export const CommentSpanSchema = z
+	.object({
+		range: RangeSchema,
+		/** Verbatim, markers included. Empty is not a comment. */
+		text: z.string().min(1),
+	})
+	.meta({ id: "CommentSpan" });
+
+export type CommentSpan = z.infer<typeof CommentSpanSchema>;
+
 export const ProjectModelSchema = z
 	.object({
 		/** Workspace-relative paths this provider claims. Order is not significant. */
@@ -152,6 +163,8 @@ export const FileFactsSchema = z
 		imports: z.array(ImportSchema),
 		/** Empty is honest only when the provider declares the tier false, like every other list here. */
 		literals: z.array(LiteralSchema),
+		/** Absent reads as the `comments` tier being false. */
+		comments: z.array(CommentSpanSchema).optional(),
 		diagnostics: z.array(DiagnosticSchema),
 		/** Extraction depth. Absent means full; outline means a full pass remains owed. */
 		depth: IndexDepthSchema.optional(),
