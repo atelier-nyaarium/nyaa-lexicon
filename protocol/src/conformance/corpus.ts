@@ -273,6 +273,14 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/comments.ts",
 			},
+			[REFERENCE]: {
+				files: {
+					"src/comments.ref":
+						"// leading\nexport function work() {}\n\nexport const total = 42; // trailing\n\n/* standalone */\n",
+				},
+				subject: "src/comments.ref",
+				comments: ["// leading", "// trailing", "/* standalone */"],
+			},
 			[PYTHON]: {
 				files: {
 					"src/comments.py":
@@ -339,6 +347,13 @@ const CASES: ConformanceCase[] = [
 						'export const url = "https://example.com/path";\nexport const block = "/* not a comment */";\n// real\n',
 				},
 				subject: "src/markers.ts",
+			},
+			[REFERENCE]: {
+				files: {
+					"src/markers.ref":
+						'export const url = "https://example.com/path";\nexport const block = "/* not a comment */";\n// real\n',
+				},
+				subject: "src/markers.ref",
 			},
 			[PYTHON]: {
 				files: { "src/markers.py": 'url = "https://example.com/path"\nhashed = "# not a comment"\n# real\n' },
@@ -422,6 +437,10 @@ const CASES: ConformanceCase[] = [
 				files: { "src/open.ts": "export const before = 1;\n/* opened and never closed" },
 				subject: "src/open.ts",
 			},
+			[REFERENCE]: {
+				files: { "src/open.ref": "export const before = 1;\n/* opened and never closed" },
+				subject: "src/open.ref",
+			},
 			[C]: {
 				files: { "src/open.c": "int before = 1;\n/* opened and never closed" },
 				subject: "src/open.c",
@@ -471,6 +490,10 @@ const CASES: ConformanceCase[] = [
 			[TYPESCRIPT]: {
 				files: { "src/nest.ts": "/* outer /* inner */\nexport const after = 1;\n" },
 				subject: "src/nest.ts",
+			},
+			[REFERENCE]: {
+				files: { "src/nest.ref": "/* outer /* inner */\nexport const after = 1;\n" },
+				subject: "src/nest.ref",
 			},
 			[C]: { files: { "src/nest.c": "/* outer /* inner */\nint after = 1;\n" }, subject: "src/nest.c" },
 			[CPP]: { files: { "src/nest.cpp": "/* outer /* inner */\nint after = 1;\n" }, subject: "src/nest.cpp" },

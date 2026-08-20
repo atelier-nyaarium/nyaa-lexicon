@@ -124,17 +124,19 @@ async function runCase(
 	if (text === undefined) return [`subject ${fixture.subject} is not among the fixture's files`];
 
 	const expectedType = fixture.typeOf ?? testCase.typeOf;
+	const expectedComments = fixture.comments ?? testCase.comments;
 	// One parse per case, since three checks want the same facts and a provider is free to answer
 	// a second identical request differently once its own state has moved on.
 	const parses =
 		Boolean(testCase.declarations || testCase.references || fixture.declarations) ||
 		Boolean(testCase.parseErrors) ||
+		Boolean(expectedComments) ||
 		Boolean(expectedType);
 	const facts = parses
 		? await session.call("parseFile", { module: fixture.subject, contentHash: hashOf(text), text })
 		: null;
 
-	if (facts && (testCase.declarations || testCase.references || fixture.declarations)) {
+	if (facts && (testCase.declarations || testCase.references || fixture.declarations || expectedComments)) {
 		problems.push(...checkFacts(testCase, facts, language));
 		// A declared role list is a promise about coverage, so emitting outside it is the same
 		// over-claim as declaring a tier that is not built. Undeclared coverage stays unchecked.

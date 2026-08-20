@@ -38,7 +38,7 @@ export const REFERENCE_TIERS = {
 	binding: false,
 	types: false,
 	literals: false,
-	comments: false,
+	comments: true,
 	metrics: false,
 	syntaxDiagnostics: false,
 } as const;
@@ -65,6 +65,52 @@ function rangeAt(text: string, start: number, end: number): Range {
 	const range = coordinatesOf(text).rangeAt(start, end);
 	if (range === undefined) throw new Error(`unaddressable reference-provider range: ${start} to ${end}`);
 	return range;
+}
+
+/**
+ * Comment spans, scanned with string awareness.
+ *
+ * A marker inside a quoted string is not a comment, which is the one thing the corpus's exact-set
+ * cases exist to catch, so this walks the text rather than pattern-matching it. Blocks do not nest,
+ * matching the C family the toy grammar borrows from.
+ */
+export function extractComments(text: string): Array<{ range: Range; text: string }> {
+	const found: Array<{ range: Range; text: string }> = [];
+	let index = 0;
+
+	while (index < text.length) {
+		const char = text[index];
+
+		if (char === '"' || char === "'" || char === "`") {
+			index++;
+			while (index < text.length && text[index] !== char) {
+				index += text[index] === "\\" ? 2 : 1;
+			}
+			index++;
+			continue;
+		}
+
+		if (char === "/" && text[index + 1] === "/") {
+			const end = text.indexOf("\n", index);
+			const stop = end === -1 ? text.length : end;
+			found.push({ range: rangeAt(text, index, stop), text: text.slice(index, stop) });
+			index = stop;
+			continue;
+		}
+
+		if (char === "/" && text[index + 1] === "*") {
+			const close = text.indexOf("*/", index + 2);
+			// Unterminated runs to the end: the file has no more code to find after it.
+			const stop = close === -1 ? text.length : close + 2;
+			found.push({ range: rangeAt(text, index, stop), text: text.slice(index, stop) });
+			index = stop;
+			continue;
+		}
+
+		index++;
+	}
+
+	return found;
 }
 
 function sameModule(left: string, right: string): boolean {
@@ -190,6 +236,7 @@ export const referenceHandlers: ProviderHandlers = {
 		references: [],
 		imports: [],
 		literals: [],
+		comments: extractComments(params.text),
 		diagnostics: [],
 	}),
 

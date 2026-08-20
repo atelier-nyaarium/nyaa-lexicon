@@ -17,7 +17,7 @@ any branch on language, which a residue test enforces.
 ```
 initialize(root)             -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
 discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
-parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[] }
+parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[] }
 resolveImport(from, spec)    -> ImportResolution
 bind(reference)              -> Binding
 typeOf(target)               -> TypeInfo
@@ -55,6 +55,21 @@ error as an error diagnostic, which is what lets a caller validate candidate tex
 it. A lenient extractor recovers from anything and returns nothing, so silence from a provider that
 never declared the tier means unchecked rather than clean. Absent is therefore different from
 false, and conformance fails a provider that declares it and then stays quiet on invalid text.
+
+## Comments are spans, never attachments
+
+A provider reports each comment as a `CommentSpan`: its range and its verbatim text, markers
+included. It reports nothing about which symbol the comment belongs to.
+
+That division is deliberate. Which declaration a comment documents is position math over ranges the
+core already stores, so eight providers implementing it would be eight chances to disagree about
+one rule. The core groups runs, decides the form (leading, trailing, inline, standalone), picks the
+anchor, and normalizes the text for search.
+
+Report what the language calls a comment, including interpreter lines, and let the core decide what
+is prose. Filtering in the lexer hides the span from the only layer that can judge it. The
+conformance cases for this tier assert the EXACT set, so a marker inside a string literal reported
+as a comment fails rather than passing unnoticed.
 
 ## Positions
 

@@ -122,7 +122,7 @@ Ships as PROTOCOL 2.0.0 plus package major. Release posture, all decided and aud
 - Major-train sweep rides in Phase 2: each provider agent inventories accepted-wrong assertions
   and TODO-shaped extraction debt.
 
-## Phase 1 - Protocol
+## Phase 1 - Protocol ✅
 
 - ProviderTiersSchema gains `comments: z.boolean()`; FileFactsSchema gains
   `comments: z.array(CommentSpanSchema).optional()`; CommentSpanSchema is `{ range, text }` -
@@ -222,5 +222,27 @@ survives, citations of documented declarations go stale and reaffirm repairs), t
 transition ("reload every session promptly", thrash cost stated), the docComment unification,
 the future windowed-compat policy. Follow-up release (not this one): comment factIds citable by
 record_answer.
+
+## Painpoints
+
+Recorded, not fixed. Both were felt building Phase 1.
+
+**A new expectation kind costs five edits, and missing two of them fails SILENTLY.** Adding
+`comments` to the conformance suite meant touching the case schema, the fixture schema, the
+checker, the runner's `parses` predicate, and the runner's check guard. I edited the first three,
+and the two runner sites are the ones that decide whether a case RUNS AT ALL. Missing them made
+all six new cases pass while asserting nothing, and no audit lens caught it: the suite reported
+green, the cases reported PASS, and only reading the runner during crust collection found it. The
+same shape is already there for `typeOf` and `parseErrors`, each hand-wired into the same
+predicate. The fix is for a case to declare what it needs parsed, or for the predicate to be
+derived from the expectation fields present, so a new kind cannot be half-registered. Until then,
+anyone adding an expectation kind must grep `parses` in `ConformanceRunner` first.
+
+**A required tier is an N-file edit with no default.** Adding one boolean to `ProviderTiers`
+broke nine declaration sites and three test fixtures before it type-checked. That is correct for
+honesty (a provider must state its own coverage), but the cost lands entirely on whoever adds the
+tier, and nothing tells them where the sites are except the compiler, one file at a time. A
+generated "every provider's tiers" table, or a test asserting the set of declaration sites, would
+turn the compiler's scavenger hunt into one list.
 
 
