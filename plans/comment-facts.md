@@ -199,6 +199,54 @@ FOUND, NOT FIXED (declaration-tier work, out of this feature's scope):
   never a literal.
 - csharp: shebang is directive trivia, not comment trivia, so C# will not report one.
 
+### Align lap: what the four-lens audit actually found
+
+Two real defects, one wrong test, and one lens correct about a symptom but wrong about its cause.
+The fixes went to the SUITE where a per-provider test would have been the obvious move, because
+eight hand-written tests drift and one shared case cannot.
+
+- **C carried the CRLF carriage return into comment text**, alone among the eight, so the same
+  comment minted a different fact id depending on the checkout's line endings. Its ranges did not
+  resolve against the file either, which no expectation would have caught.
+- **C++ did not splice backslash-newline** in a line comment though C did and the rule is the
+  language's, so it reported a second comment the language does not have and left the continuation
+  looking like code.
+- **TypeScript omitted `comments` at reduced depth and shipped a test asserting the omission.**
+  Absent means the tier is FALSE, which contradicts its own `comments: true`; the `literals: []`
+  and `references: []` beside it are the convention, and `depth` is what carries "a full pass is
+  owed". Behavior and test both corrected.
+- **C# `isTrivia`/`parseScope` changes were flagged as drift and are not.** The lexer had been
+  classifying preprocessor directives as COMMENTS. Emitting spans forced that lie into the open,
+  so directives became their own kind, and the two edits preserve prior behavior under the
+  corrected kind rather than changing it.
+
+Two shared cases now hold the line for every provider and every future language:
+`a-carriage-return-ends-a-line-comment-and-is-not-its-text` and
+`a-spliced-line-comment-is-one-comment`. Both were proven failable by reverting the fix. The
+CRLF case independently caught the same bug in the suite's own reference provider, which is the
+evidence that it is a natural mistake rather than one provider's slip.
+
+`checkFacts` also now verifies EVERY reported span's range slices its own text back out of the
+source, expected or not. Right text under a lying range attaches to the wrong symbol, and Phase 3
+does position math on exactly these ranges.
+
+REJECTED as overcautious: "tests call the extractor rather than parseFile" (each provider has a
+wire-level test, and lexer edge cases belong at the lexer); "these tests pass if emission is
+reverted" (they are negative cases, which is what a negative case does).
+
+NOTED, not fixed here: rust's thrown-parse fallback returns `comments: []` like every other tier
+on that path. It is the pre-existing "a total parse failure is indistinguishable from an empty
+file" class, already backlogged against the TS provider, not something spans introduced.
+
+The pre-commit pass then caught a bug in the CRLF fix itself: the reference provider stripped a
+LONE trailing carriage return, which terminates nothing and is comment text everywhere else. Only
+a CR paired with the newline ends the line. The reference provider is the yardstick the graded
+cases are measured against, so it now has its own line-ending tests.
+
+`source` on `checkFacts` stays optional deliberately. Its sixteen unit tests build synthetic spans
+to exercise the text multiset, and a real source would fail them all on ranges they are not about.
+The range check has its own four tests instead, each proven failable.
+
 ## Phase 3 - Core
 
 - Attachment runs AT INDEX TIME inside the replaceFile flow, with the module's source text in

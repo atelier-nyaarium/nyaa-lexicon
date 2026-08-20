@@ -20,6 +20,7 @@ export interface SurfaceFacts {
 	references: [];
 	imports: Import[];
 	literals: [];
+	comments: [];
 	diagnostics: Diagnostic[];
 }
 
@@ -46,6 +47,7 @@ export function extractSurfaceFile(module: string, text: string): SurfaceFacts {
 		references: [],
 		imports: isDeclarationModule(module) ? declarationImports(source) : [],
 		literals: [],
+		comments: [],
 		diagnostics: syntaxDiagnostics(module, source),
 	};
 }

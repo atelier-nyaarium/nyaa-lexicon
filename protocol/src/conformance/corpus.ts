@@ -336,6 +336,75 @@ const CASES: ConformanceCase[] = [
 		comments: ["// leading", "/* inline */", "// trailing", "/* standalone */"],
 	},
 	{
+		id: "a-carriage-return-ends-a-line-comment-and-is-not-its-text",
+		tier: "comments",
+		about: "Under CRLF a line comment stops before the carriage return, so the same file scores alike either way.",
+		// A trailing \r rides into the text and changes the fact id, so the same comment is two facts
+		// depending on the checkout's line endings.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/crlf.ts": "// leading\r\nexport const total = 42; // trailing\r\n" },
+				subject: "src/crlf.ts",
+			},
+			[REFERENCE]: {
+				files: { "src/crlf.ref": "// leading\r\nexport const total = 42; // trailing\r\n" },
+				subject: "src/crlf.ref",
+			},
+			[PYTHON]: {
+				files: { "src/crlf.py": "# leading\r\ntotal = 42  # trailing\r\n" },
+				subject: "src/crlf.py",
+				comments: ["# leading", "# trailing"],
+			},
+			[GDSCRIPT]: {
+				files: { "src/crlf.gd": "# leading\r\nvar total = 42 # trailing\r\n" },
+				subject: "src/crlf.gd",
+				comments: ["# leading", "# trailing"],
+			},
+			[C]: {
+				files: { "src/crlf.c": "// leading\r\nint total = 42; // trailing\r\n" },
+				subject: "src/crlf.c",
+			},
+			[CPP]: {
+				files: { "src/crlf.cpp": "// leading\r\nint total = 42; // trailing\r\n" },
+				subject: "src/crlf.cpp",
+			},
+			[CSHARP]: {
+				files: {
+					"src/Crlf.cs":
+						"// leading\r\npublic class Crlf {\r\n\tpublic int Total = 42;\r\n}\r\n// trailing\r\n",
+				},
+				subject: "src/Crlf.cs",
+			},
+			[RUST]: {
+				files: { "src/crlf.rs": "// leading\r\npub const TOTAL: i32 = 42; // trailing\r\n" },
+				subject: "src/crlf.rs",
+			},
+			[KOTLIN]: {
+				files: { "src/Crlf.kt": "// leading\r\nval total = 42 // trailing\r\n" },
+				subject: "src/Crlf.kt",
+			},
+		},
+		comments: ["// leading", "// trailing"],
+	},
+	{
+		id: "a-spliced-line-comment-is-one-comment",
+		tier: "comments",
+		about: "Where the language splices backslash-newline, a line comment continues and stays one span.",
+		// Splitting it reports a second comment the language does not have, and leaves the
+		// continuation looking like code.
+		fixtures: {
+			[C]: {
+				files: { "src/spliced.c": "// spliced \\\nstill comment\nint total = 42;\n" },
+				subject: "src/spliced.c",
+			},
+			[CPP]: {
+				files: { "src/spliced.cpp": "// spliced \\\nstill comment\nint total = 42;\n" },
+				subject: "src/spliced.cpp",
+			},
+		},
+		comments: ["// spliced \\\nstill comment"],
+	},
+	{
 		id: "comment-markers-in-text-are-not-comments",
 		tier: "comments",
 		about: "A marker inside a string literal is not a comment, and the exact set catches it.",

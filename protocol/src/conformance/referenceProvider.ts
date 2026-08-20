@@ -92,7 +92,9 @@ export function extractComments(text: string): Array<{ range: Range; text: strin
 
 		if (char === "/" && text[index + 1] === "/") {
 			const end = text.indexOf("\n", index);
-			const stop = end === -1 ? text.length : end;
+			let stop = end === -1 ? text.length : end;
+			// Only a CR paired with the newline ends the line. A lone one is comment text.
+			if (end !== -1 && stop > index && text[stop - 1] === "\r") stop--;
 			found.push({ range: rangeAt(text, index, stop), text: text.slice(index, stop) });
 			index = stop;
 			continue;

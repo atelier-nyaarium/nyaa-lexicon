@@ -4,6 +4,7 @@
 // transport and calls in here.
 
 import type { z } from "zod";
+import { coordinatesOf } from "../coordinates.js";
 import type { CommentSpan, FileFacts, ImportResolution } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Reference } from "../symbols.js";
@@ -109,7 +110,7 @@ function checkReference(expected: ExpectedReference, actual: Reference, byId: Ma
 //  Case checking
 
 /** Compares one file's facts against a case. Missing expectations are failures, extras are not. */
-export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language?: string): string[] {
+export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language?: string, source?: string): string[] {
 	const problems: string[] = [];
 	const byId = new Map(facts.declarations.map((d) => [d.symbolId, d]));
 
@@ -140,7 +141,27 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 
 	const wantedComments = fixture?.comments ?? testCase.comments;
 	if (wantedComments !== undefined) problems.push(...checkComments(wantedComments, facts.comments ?? []));
+	// Every span, not only expected ones: right text under a lying range attaches to the wrong symbol.
+	if (source !== undefined) problems.push(...checkCommentRanges(source, facts.comments ?? []));
 
+	return problems;
+}
+
+/** A span's range must cut its own text back out of the source, or core's position math is fiction. */
+function checkCommentRanges(source: string, actual: CommentSpan[]): string[] {
+	const problems: string[] = [];
+	const coordinates = coordinatesOf(source);
+
+	for (const comment of actual) {
+		const cut = coordinates.sliceRange(comment.range);
+		if (cut === undefined) {
+			problems.push(`comment ${JSON.stringify(comment.text)}: range is outside the file`);
+			continue;
+		}
+		if (cut !== comment.text) {
+			problems.push(`comment ${JSON.stringify(comment.text)}: range covers ${JSON.stringify(cut)} instead`);
+		}
+	}
 	return problems;
 }
 

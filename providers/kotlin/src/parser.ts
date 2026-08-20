@@ -5,7 +5,6 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
-	type FileFacts,
 	type ImportedName,
 	type Literal,
 	type Position,

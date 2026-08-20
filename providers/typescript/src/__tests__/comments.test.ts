@@ -154,7 +154,7 @@ describe("the comments tier on the wire", () => {
 		]);
 	});
 
-	it("claims nothing about comments at a depth that does not extract them", () => {
+	it("reports no comments at a reduced depth, like the literals beside them", () => {
 		const text = "// leading\nexport function work(): number {\n\treturn 1;\n}\n";
 		const root = workspace({ "src/a.ts": text });
 		const provider = new TypeScriptProvider();
@@ -163,7 +163,9 @@ describe("the comments tier on the wire", () => {
 		const outline = provider.parseFile({ module: "src/a.ts", contentHash: "a1", text, depth: "outline" });
 		const surface = provider.parseFile({ module: "src/a.ts", contentHash: "a1", text, depth: "surface" });
 
-		expect("comments" in outline).toBe(false);
-		expect("comments" in surface).toBe(false);
+		// Absent would read as the tier being false, which this provider declares true.
+		expect(outline.comments).toEqual([]);
+		expect(surface.comments).toEqual([]);
+		expect(outline.depth).toBe("outline");
 	});
 });

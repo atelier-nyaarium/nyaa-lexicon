@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { checkFacts, checkImport, checkType, describeIdParts } from "../conformance/check";
 import { casesForTier, corpusLanguages, loadCorpus } from "../conformance/corpus";
 import { loadMoveCases } from "../conformance/moveCorpus";
-import { extractDeclarations, REFERENCE_TIERS } from "../conformance/referenceProvider";
+import { extractComments, extractDeclarations, REFERENCE_TIERS } from "../conformance/referenceProvider";
 import { formatReport, runSuite } from "../conformance/runner";
 import type { ConformanceCase, MoveCase } from "../conformance/types";
 import { coordinatesOf } from "../coordinates";
@@ -313,6 +313,45 @@ describe("checking answers", () => {
 			const testCase = { comments: ["// a"] } as ConformanceCase;
 			expect(checkFacts(testCase, withComments(["  // a  "]))).toHaveLength(2);
 		});
+
+		// Right text under a lying range attaches to the wrong symbol, and no expectation sees it.
+		describe("ranges, checked against the source whenever the caller has it", () => {
+			const source = "// a\nlet x = 1;\n";
+			const at = (text: string, line: number, from: number, to: number) => ({
+				range: { start: { line, character: from }, end: { line, character: to } },
+				text,
+			});
+
+			it("passes when every range cuts its own text back out", () => {
+				const facts = withComments([]);
+				facts.comments = [at("// a", 0, 0, 4)];
+				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toEqual([]);
+			});
+
+			it("catches a range that covers something else", () => {
+				const facts = withComments([]);
+				facts.comments = [at("// a", 1, 0, 4)];
+				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toEqual([
+					'comment "// a": range covers "let " instead',
+				]);
+			});
+
+			it("catches a range that runs off the file", () => {
+				const facts = withComments([]);
+				facts.comments = [at("// a", 9, 0, 4)];
+				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toEqual([
+					'comment "// a": range is outside the file',
+				]);
+			});
+
+			// The expectation list and the range check are independent: an unexpected span is still
+			// range-checked, which is how a provider inventing spans gets caught twice.
+			it("checks spans the case never mentioned", () => {
+				const facts = withComments([]);
+				facts.comments = [at("// a", 1, 0, 4)];
+				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toHaveLength(1);
+			});
+		});
 	});
 
 	it("accepts any one of several same-named declarations, since a name cannot pick an overload", () => {
@@ -408,6 +447,33 @@ describe("the reference provider", () => {
 		expect(REFERENCE_TIERS.declarations).toBe(true);
 		expect(REFERENCE_TIERS.types).toBe(false);
 		expect(REFERENCE_TIERS.binding).toBe(false);
+	});
+
+	// This provider is the suite's own yardstick, so its line endings have to be right for the
+	// cases it grades to mean anything.
+	describe("ends a line comment where the line ends", () => {
+		const textsOf = (source: string) => extractComments(source).map((comment) => comment.text);
+
+		it("leaves a CRLF carriage return out of the text", () => {
+			expect(textsOf("// a\r\n// b\r\n")).toEqual(["// a", "// b"]);
+		});
+
+		it("keeps a lone carriage return, which terminates nothing", () => {
+			expect(textsOf("// a\rb\n")).toEqual(["// a\rb"]);
+			expect(textsOf("// a\r")).toEqual(["// a\r"]);
+		});
+
+		it("runs an unterminated comment to the end of the file", () => {
+			expect(textsOf("// a")).toEqual(["// a"]);
+		});
+
+		it("reports every span at a range that cuts its own text back out", () => {
+			const source = "// a\r\nlet x = 1; // b\r\n";
+			const coordinates = coordinatesOf(source);
+			for (const comment of extractComments(source)) {
+				expect(coordinates.sliceRange(comment.range)).toBe(comment.text);
+			}
+		});
 	});
 });
 

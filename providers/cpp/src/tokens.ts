@@ -118,15 +118,27 @@ function decodeString(value: string): string {
 	return decoded;
 }
 
-// A CRLF carriage return terminates the line, so it is not comment text and no position addresses it.
+/** A CRLF carriage return ends the line, so it is not comment text. */
 function endsLine(cursor: Cursor): boolean {
 	return cursor.peek() === "\n" || (cursor.peek() === "\r" && cursor.peek(1) === "\n");
+}
+
+/** Backslash-newline continues a line comment onto the next line. */
+function continuesLine(cursor: Cursor): boolean {
+	if (cursor.peek() !== "\\") return false;
+	return cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n");
 }
 
 function readLineComment(cursor: Cursor): string {
 	let value = cursor.next();
 	value += cursor.next();
-	while (cursor.good() && !endsLine(cursor)) value += cursor.next();
+	while (cursor.good() && !endsLine(cursor)) {
+		if (continuesLine(cursor)) {
+			value += cursor.next();
+			if (cursor.peek() === "\r") value += cursor.next();
+		}
+		value += cursor.next();
+	}
 	return value;
 }
 

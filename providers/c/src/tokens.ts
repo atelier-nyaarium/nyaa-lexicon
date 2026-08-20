@@ -1,9 +1,6 @@
 import type { CommentSpan, Diagnostic, Position, Range } from "@nyaa-lexicon/protocol";
 import { Cursor, isHorizontalWhitespace } from "./cursor.js";
 
-/** The protocol barrel does not export CommentSpan. */
-export type { CommentSpan };
-
 export type TokenKind = "identifier" | "number" | "string" | "char" | "symbol" | "newline" | "comment";
 
 export interface CToken {
@@ -149,11 +146,16 @@ function continuesLine(cursor: Cursor): boolean {
 	return cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n");
 }
 
+/** A CRLF carriage return ends the line, so it is not comment text. */
+function endsLine(cursor: Cursor): boolean {
+	return cursor.peek() === "\n" || (cursor.peek() === "\r" && cursor.peek(1) === "\n");
+}
+
 function readLineComment(cursor: Cursor): { value: string; end: CursorMarkLike } {
 	cursor.next();
 	cursor.next();
 	let value = "";
-	while (cursor.good() && cursor.peek() !== "\n") {
+	while (cursor.good() && !endsLine(cursor)) {
 		if (continuesLine(cursor)) {
 			value += cursor.next();
 			if (cursor.peek() === "\r") value += cursor.next();

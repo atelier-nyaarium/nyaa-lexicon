@@ -1,4 +1,5 @@
 import {
+	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
 	type Declaration,
@@ -11,7 +12,7 @@ import {
 	type Reference,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
-import { type CommentSpan, type CToken, lexC, previousSignificant, significant, tokenRange } from "./tokens.js";
+import { type CToken, lexC, previousSignificant, significant, tokenRange } from "./tokens.js";
 
 const LANGUAGE = "c";
 

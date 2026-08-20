@@ -62,8 +62,7 @@ const OPERATORS = [
 	"..",
 ] as const;
 
-// Directive forms whose body is tokens rather than free text. Only there does a trailing `//`
-// start a comment; in every other form, and in a quoted path, slashes are the directive's text.
+// Only these take a trailing comment; elsewhere slashes are the directive's own text.
 const TOKENIZED_DIRECTIVES = new Set(["define", "elif", "else", "endif", "if", "line", "nullable", "pragma", "undef"]);
 
 const SIMPLE_ESCAPES: Record<string, string> = {

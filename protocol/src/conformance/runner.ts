@@ -137,7 +137,7 @@ async function runCase(
 		: null;
 
 	if (facts && (testCase.declarations || testCase.references || fixture.declarations || expectedComments)) {
-		problems.push(...checkFacts(testCase, facts, language));
+		problems.push(...checkFacts(testCase, facts, language, text));
 		// A declared role list is a promise about coverage, so emitting outside it is the same
 		// over-claim as declaring a tier that is not built. Undeclared coverage stays unchecked.
 		if (declaredRoles !== undefined) {

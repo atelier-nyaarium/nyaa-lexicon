@@ -5,7 +5,6 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
-	type FileFacts,
 	type Import,
 	type Literal,
 	type Metrics,
@@ -818,8 +817,7 @@ class StructuralParser {
 		return references;
 	}
 
-	/** Every comment the language defines, verbatim. Read from tokens, so a marker inside a string or
-	 * a raw string is never one, and an unterminated block is the single token that ran to end of file. */
+	/** Read from tokens, so a marker inside a string is never one. */
 	private extractComments(): CommentSpan[] {
 		const comments: CommentSpan[] = [];
 		for (const token of this.tokens) {

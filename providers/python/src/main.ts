@@ -9,7 +9,6 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
-	type FileFacts,
 	type ImportedName,
 	type ImportResolution,
 	type Literal,

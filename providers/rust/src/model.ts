@@ -2,7 +2,6 @@ import type {
 	CommentSpan,
 	Declaration,
 	Diagnostic,
-	FileFacts,
 	Import,
 	ImportedName,
 	Literal,

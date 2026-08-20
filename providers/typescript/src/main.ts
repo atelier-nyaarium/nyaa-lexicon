@@ -134,6 +134,7 @@ export class TypeScriptProvider {
 				references: [],
 				imports: extracted.imports,
 				literals: [],
+				comments: [],
 				diagnostics: parseProblems.map((problem) => ({
 					severity: "error" as const,
 					message: ts.flattenDiagnosticMessageText(problem.messageText, " "),
