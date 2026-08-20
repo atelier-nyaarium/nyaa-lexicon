@@ -57,7 +57,6 @@ export interface CsharpFacts {
 }
 
 interface Documentation {
-	text: string;
 	start: Token;
 }
 
@@ -76,7 +75,6 @@ interface RawDeclaration {
 	visibility: Visibility;
 	exported: boolean;
 	signature?: string | undefined;
-	docComment?: string | undefined;
 	typeText?: string | undefined;
 	typeName?: string | undefined;
 	inferredType?: string | undefined;
@@ -96,7 +94,6 @@ type RawDeclarationInput = Omit<
 	| "languageKind"
 	| "parent"
 	| "signature"
-	| "docComment"
 	| "typeText"
 	| "typeName"
 	| "inferredType"
@@ -107,7 +104,6 @@ type RawDeclarationInput = Omit<
 	languageKind?: string | undefined;
 	parent?: RawDeclaration | undefined;
 	signature?: string | undefined;
-	docComment?: string | undefined;
 	typeText?: string | undefined;
 	typeName?: string | undefined;
 	inferredType?: string | undefined;
@@ -509,25 +505,16 @@ export class CsharpParser {
 		for (const item of stack) this.report(`Opening delimiter ${item.value} is not closed.`, item);
 	}
 
-	private documentationFor(lines: string[], start: Token): Documentation | undefined {
-		return lines.length === 0 ? undefined : { text: lines.join("\n"), start };
-	}
-
 	private parseScope(start: number, end: number, parent: RawDeclaration | undefined): void {
 		let index = start;
-		let documentation: string[] = [];
 		let documentationStart: Token | undefined;
 		let lastDocumentationLine = -2;
 		while (index < end) {
 			const current = this.token(index);
 			if (current === undefined) return;
 			if (current.kind === "doc") {
-				if (current.start.line !== lastDocumentationLine + 1) {
-					documentation = [];
-					documentationStart = undefined;
-				}
+				if (current.start.line !== lastDocumentationLine + 1) documentationStart = undefined;
 				documentationStart ??= current;
-				documentation.push(current.value);
 				lastDocumentationLine = current.start.line;
 				index++;
 				continue;
@@ -537,14 +524,12 @@ export class CsharpParser {
 				continue;
 			}
 			if (current.kind === "comment" || current.kind === "directive") {
-				documentation = [];
 				documentationStart = undefined;
 				index++;
 				continue;
 			}
 			if (syntaxValue(current) === "}") return;
 			if (syntaxValue(current) === ";") {
-				documentation = [];
 				documentationStart = undefined;
 				index++;
 				continue;
@@ -554,15 +539,13 @@ export class CsharpParser {
 				index = afterAttributes;
 				continue;
 			}
-			const doc =
-				documentationStart === undefined ? undefined : this.documentationFor(documentation, documentationStart);
+			const doc = documentationStart === undefined ? undefined : { start: documentationStart };
 			const parsed = this.parseAt(index, end, parent, doc);
 			if (parsed <= index) {
 				index = this.skipUnknown(index, end);
 			} else {
 				index = parsed;
 			}
-			documentation = [];
 			documentationStart = undefined;
 			lastDocumentationLine = -2;
 		}
@@ -744,7 +727,6 @@ export class CsharpParser {
 				visibility: "public",
 				exported: true,
 				signature: this.signature(codeStartIndex, next),
-				docComment: doc?.text,
 				nameTokenOffsets: names.map((item) => item.startOffset),
 			});
 			this.namespaceNames.add(fullName);
@@ -771,7 +753,6 @@ export class CsharpParser {
 			visibility: "public",
 			exported: true,
 			signature: this.signature(codeStartIndex, next),
-			docComment: doc?.text,
 			nameTokenOffsets: names.map((item) => item.startOffset),
 		});
 		this.namespaceNames.add(fullName);
@@ -848,7 +829,6 @@ export class CsharpParser {
 			exported: exportedFor(visibilityFor(modifiers, parent, kind), parent),
 			isPartial: modifiers.has("partial"),
 			signature: this.signature(codeStartIndex, codeEnd),
-			docComment: doc?.text,
 			bodyStartToken: bodyOpen < 0 ? undefined : this.token(bodyOpen),
 			bodyEndToken: bodyClose < 0 ? undefined : this.token(bodyClose),
 			nameTokenOffsets: [nameToken.startOffset],
@@ -942,7 +922,7 @@ export class CsharpParser {
 		while (current < end) {
 			const item = this.token(current);
 			if (item?.kind === "doc") {
-				pendingDoc = { text: item.value, start: item };
+				pendingDoc = { start: item };
 				current++;
 				continue;
 			}
@@ -974,7 +954,6 @@ export class CsharpParser {
 				codeStart: name,
 				visibility: "public",
 				exported: parent.exported,
-				docComment: pendingDoc?.text,
 				nameTokenOffsets: [name.startOffset],
 			});
 			pendingDoc = undefined;
@@ -1017,7 +996,6 @@ export class CsharpParser {
 			visibility,
 			exported: exportedFor(visibility, parent),
 			signature: this.signature(codeStartIndex, boundary >= 0 ? boundary : finish),
-			docComment: doc?.text,
 			nameTokenOffsets: [name.startOffset],
 		});
 		const close = open < 0 ? -1 : this.matching(open, "(", ")", finish);
@@ -1112,7 +1090,6 @@ export class CsharpParser {
 			visibility,
 			exported: exportedFor(visibility, parent),
 			signature: this.signature(codeStartIndex, boundary.index),
-			docComment: doc?.text,
 			bodyStartToken: boundary.kind === "body" ? this.token(boundary.index) : undefined,
 			bodyEndToken: bodyClose >= 0 ? this.token(bodyClose) : undefined,
 			nameTokenOffsets,
@@ -1303,7 +1280,6 @@ export class CsharpParser {
 			visibility,
 			exported: exportedFor(visibility, parent),
 			signature: this.signature(codeStartIndex, boundary.index),
-			docComment: doc?.text,
 			...(this.outline ? {} : { typeText: this.typeTextBeforeName(start, nameIndex) }),
 			nameTokenOffsets: [name.startOffset],
 		});
@@ -1363,7 +1339,6 @@ export class CsharpParser {
 				visibility,
 				exported: exportedFor(visibility, parent),
 				signature: this.signature(codeStartIndex, boundary.index),
-				docComment: segmentIndex === 0 ? doc?.text : undefined,
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
 				nameTokenOffsets: [name.startOffset],
 			});
@@ -1420,7 +1395,6 @@ export class CsharpParser {
 				visibility,
 				exported: exportedFor(visibility, parent),
 				signature: this.signature(codeStartIndex, boundary.index),
-				docComment: segmentIndex === 0 ? doc?.text : undefined,
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
 				...(inferredType === undefined ? {} : { inferredType }),
 				nameTokenOffsets: [name.startOffset],
@@ -1808,7 +1782,6 @@ export class CsharpParser {
 				visibility: raw.visibility,
 				exported: raw.exported,
 				...(raw.signature === undefined ? {} : { signature: raw.signature }),
-				...(raw.docComment === undefined ? {} : { docComment: raw.docComment }),
 				...(containerId === undefined ? {} : { containerId }),
 				metrics,
 			};

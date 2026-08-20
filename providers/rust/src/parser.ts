@@ -10,15 +10,7 @@ import {
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { sourceRange } from "./cursor.js";
-import type {
-	DocComment,
-	ImportBinding,
-	ParsedFile,
-	RawDeclaration,
-	RawReference,
-	RustDescriptor,
-	TypeAnswer,
-} from "./model.js";
+import type { ImportBinding, ParsedFile, RawDeclaration, RawReference, RustDescriptor, TypeAnswer } from "./model.js";
 import { type RustToken, tokenize } from "./tokens.js";
 
 const LANGUAGE = "rust";
@@ -245,7 +237,6 @@ export class RustParser {
 	private readonly implTraitTokens = new Set<number>();
 	private readonly implTypeTokens = new Set<number>();
 	private readonly methodCounts = new Map<string, number>();
-	private readonly docsByLine = new Map<number, DocComment[]>();
 	private localOrdinal = 0;
 
 	constructor(
@@ -255,11 +246,6 @@ export class RustParser {
 	) {
 		this.scan = tokenize(text);
 		this.tokens = this.scan.tokens;
-		for (const doc of this.scan.docs) {
-			const line = this.docsByLine.get(doc.line) ?? [];
-			line.push(doc);
-			this.docsByLine.set(doc.line, line);
-		}
 		this.buildMatching();
 	}
 
@@ -544,8 +530,6 @@ export class RustParser {
 			...(options.signature === undefined ? {} : { signature: options.signature }),
 			metrics: options.metrics ?? { lines: endToken.end.line - startToken.start.line + 1 },
 		};
-		const docComment = this.documentationBefore(startToken.start.line);
-		if (docComment !== undefined) declaration.docComment = docComment;
 		const raw: RawDeclaration = {
 			declaration,
 			startOffset: startToken.startOffset,
@@ -568,26 +552,6 @@ export class RustParser {
 			});
 		}
 		return raw;
-	}
-
-	private documentationBefore(line: number): string | undefined {
-		const comments: string[] = [];
-		let current = line - 1;
-		while (current >= 0) {
-			const docs = this.docsByLine.get(current);
-			if (docs?.some((doc) => !doc.inner)) {
-				for (const doc of docs) if (!doc.inner) comments.unshift(doc.text);
-				current--;
-				continue;
-			}
-			const lineTokens = this.scan.lineTokens.get(current) ?? [];
-			if (lineTokens[0]?.value === "#") {
-				current--;
-				continue;
-			}
-			break;
-		}
-		return comments.length === 0 ? undefined : comments.join("\n");
 	}
 
 	private methodDescriptor(context: ParseContext, name: string): RustDescriptor {

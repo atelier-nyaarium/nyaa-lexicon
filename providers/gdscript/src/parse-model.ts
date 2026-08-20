@@ -24,7 +24,6 @@ export interface DeclarationFact {
 	selectionRange: Range;
 	visibility: Visibility;
 	exported?: boolean;
-	docComment?: string;
 	signature?: string;
 	containerId?: string;
 	metrics?: Metrics;

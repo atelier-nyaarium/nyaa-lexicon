@@ -68,22 +68,6 @@ test("decodes Rust escapes and preserves unknown escape spelling", () => {
 	expect(result.tokens[3]?.value).toBe(`\0\x07\b\f\n\r\t\v\\"'😀\\q`);
 });
 
-test("collects outer and inner documentation comments", () => {
-	const result = tokenize(`/// first
-//! ignored for declarations
-/** second */
-/*! inner */
-struct Item;
-`);
-
-	expect(result.docs).toEqual([
-		{ line: 0, text: "first", inner: false },
-		{ line: 1, text: "ignored for declarations", inner: true },
-		{ line: 2, text: "second", inner: false },
-		{ line: 3, text: "inner", inner: true },
-	]);
-});
-
 test("handles nested block comments and reports an incomplete one", () => {
 	const valid = tokenize("/* outer /* inner */ outer */ struct Item;");
 	const invalid = tokenize("/* outer /* inner */ struct Item;");

@@ -196,8 +196,10 @@ export class LspServer {
 		const found = await this.symbolAt(uri, position);
 		if (found === null) return null;
 
+		const described = await this.service.describe(found.symbolId);
 		const lines = [`\`\`\`\n${found.signature ?? `${found.kind} ${found.name}`}\n\`\`\``];
-		if (found.docComment) lines.push(found.docComment);
+		// Derived from the comment attached above it, so a hover and the file cannot disagree.
+		if (described?.symbol.docComment) lines.push(described.symbol.docComment);
 
 		const type = await this.service.typeOf(found.symbolId);
 		// Only when it adds something the signature did not already say. An editor tooltip repeating
@@ -220,7 +222,6 @@ export class LspServer {
 			lines.push(`${recalled.answer.prose}${mark}`);
 		}
 
-		const described = await this.service.describe(found.symbolId);
 		if (described && described.referenceCount > 0) lines.push(`Used in ${described.referenceCount} places.`);
 		return { contents: { kind: "markdown", value: lines.join("\n\n") }, range: found.selectionRange };
 	}

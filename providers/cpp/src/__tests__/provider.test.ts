@@ -109,7 +109,7 @@ describe("C++ provider contract", () => {
 		]);
 	});
 
-	test("reports operator overloads and documentation with source ranges", () => {
+	test("reports operator overloads with source ranges", () => {
 		const text = [
 			"/// Adds two values.",
 			"struct Number {",
@@ -122,9 +122,6 @@ describe("C++ provider contract", () => {
 		expect(operatorDeclaration?.kind).toBe("operator");
 		expect(operatorDeclaration?.languageKind).toBe("operator");
 		expect(operatorDeclaration?.containerId).toContain("Number#");
-		expect(facts.declarations.find((declaration) => declaration.name === "Number")?.docComment).toBe(
-			"Adds two values.",
-		);
 		expect(operatorDeclaration?.selectionRange.start.line).toBe(2);
 	});
 

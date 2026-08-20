@@ -232,10 +232,6 @@ export enum Color { Red }
 		expect(textAt(source, references[0]?.range as (typeof found.references)[number]["range"])).toBe("retries");
 	});
 
-	it("carries a doc comment", () => {
-		expect(named("/** Adds things. */\nexport function add() {}", "add")?.docComment).toBe("Adds things.");
-	});
-
 	it("gives a range that points at the real line", () => {
 		const found = named("\n\nexport class Cart {}", "Cart");
 		expect(found?.range.start.line).toBe(2);

@@ -81,7 +81,6 @@ macro_rules! make_item {
 	expect(packet.kind).toBe("struct");
 	expect(packet.visibility).toBe("internal");
 	expect(packet.exported).toBe(true);
-	expect(packet.docComment).toBe("Packets cross the boundary.");
 	expect(value.kind).toBe("field");
 	expect(value.visibility).toBe("public");
 	expect(value.containerId).toBe(packet.symbolId);
@@ -397,19 +396,6 @@ fn run() {
 		status: "unbound",
 		reason: "RuntimeConstructed",
 	});
-});
-
-test("attaches only outer documentation to declarations across attributes", () => {
-	const { facts } = parse(`/// first line
-/// second line
-#[allow(dead_code)]
-pub fn documented() {}
-//! module documentation
-pub struct Plain;
-`);
-
-	expect(declaration(facts, "documented").docComment).toBe("first line\nsecond line");
-	expect(declaration(facts, "Plain").docComment).toBeUndefined();
 });
 
 test("reports every Rust comment form as a verbatim span", () => {

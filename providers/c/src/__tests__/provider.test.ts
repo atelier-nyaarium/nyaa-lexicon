@@ -399,7 +399,7 @@ describe("C declarations", () => {
 		expect(apply.languageKind).toBe("macro");
 	});
 
-	test("reports visibility, export state, docs, and function metrics", () => {
+	test("reports visibility, export state, and function metrics", () => {
 		const parsed = parseC("model.c", modelText);
 		const packet = parsed.declarations.find((declaration) => declaration.name === "Packet");
 		const hidden = parsed.declarations.find((declaration) => declaration.name === "hidden");
@@ -408,7 +408,6 @@ describe("C declarations", () => {
 		const value = parsed.declarations.find((declaration) => declaration.name === "value");
 		const local = parsed.declarations.find((declaration) => declaration.name === "local");
 
-		expect(packet?.docComment).toBe("Packet docs");
 		expect(packet).toMatchObject({ visibility: "public", exported: true });
 		expect(hidden).toMatchObject({ visibility: "fileLocal", exported: false });
 		expect(global).toMatchObject({ visibility: "public", exported: true });
@@ -518,15 +517,6 @@ describe("C declarations", () => {
 			alias?.symbolId,
 		);
 		expect(item).toBeDefined();
-	});
-
-	test("attaches line documentation to the following declaration", () => {
-		const parsed = parseC("docs.c", "//! Public value\nint value;\n\n/** Function docs */\nint run(void);\n");
-
-		expect(parsed.declarations.find((declaration) => declaration.name === "value")?.docComment).toBe(
-			"Public value",
-		);
-		expect(parsed.declarations.find((declaration) => declaration.name === "run")?.docComment).toBe("Function docs");
 	});
 
 	test("keeps unnamed parameters out of the declaration list", () => {

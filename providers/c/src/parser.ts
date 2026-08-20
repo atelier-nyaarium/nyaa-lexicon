@@ -137,7 +137,6 @@ interface Candidate {
 	visibility: Declaration["visibility"];
 	exported?: boolean;
 	signature?: string;
-	docComment?: string;
 	metrics?: Metrics;
 	typeText?: string;
 	typeStartIndex?: number;
@@ -529,28 +528,27 @@ function lineCount(start: CToken, end: CToken): number {
 	return end.end.line - start.start.line + 1;
 }
 
-function docBefore(tokens: CToken[], start: number): { text: string; start: number } | undefined {
-	const comments: string[] = [];
+function docBefore(tokens: CToken[], start: number): number | undefined {
+	let comments = 0;
 	let first = start;
 	let lineBreaks = 0;
 	for (let index = start - 1; index >= 0; index--) {
 		const token = tokens[index] as CToken;
 		if (token.kind === "newline") {
 			lineBreaks++;
-			if (lineBreaks > comments.length + 1) break;
+			if (lineBreaks > comments + 1) break;
 			continue;
 		}
 		if (token.kind !== "comment") break;
 		if (token.doc === undefined) return undefined;
-		comments.unshift(token.doc);
+		comments++;
 		first = index;
 	}
-	return comments.length === 0 ? undefined : { text: comments.join("\n"), start: first };
+	return comments === 0 ? undefined : first;
 }
 
-function declarationRangeStart(tokens: CToken[], start: number): { index: number; docComment?: string } {
-	const docs = docBefore(tokens, start);
-	return docs === undefined ? { index: start } : { index: docs.start, docComment: docs.text };
+function declarationRangeStart(tokens: CToken[], start: number): number {
+	return docBefore(tokens, start) ?? start;
 }
 
 function hasTopLevelValue(tokens: CToken[], start: number, end: number, wanted: string): boolean {
@@ -851,20 +849,19 @@ class CParser {
 		const functionLike =
 			tokenValue(this.tokens, next) === "(" && this.tokens[next]?.startOffset === nameToken.endOffset;
 		const last = previousCode(this.tokens, directive.end);
-		const docs = declarationRangeStart(this.tokens, index);
+		const rangeStartIndex = declarationRangeStart(this.tokens, index);
 		const declaration = this.addCandidate({
 			name: nameToken.value,
 			declarationKind: functionLike ? "function" : "constant",
 			descriptorKind: functionLike ? "method" : "term",
 			languageKind: "macro",
-			rangeStartIndex: docs.index,
+			rangeStartIndex,
 			rangeEndIndex: last < index ? index : last,
 			selectionIndex: nameIndex,
 			parentPath: [],
 			visibility: "public",
 			exported: true,
 			signature: renderTokens(this.tokens, index, Math.max(index, last + 1)),
-			...(docs.docComment === undefined ? {} : { docComment: docs.docComment }),
 			conditionalKey: this.conditionalByIndex.get(index) ?? "",
 			conditionalGroup: this.conditionalGroupByIndex.get(index) ?? "",
 		});
@@ -1090,7 +1087,7 @@ class CParser {
 	}
 
 	private parseFunction(statement: Statement, candidate: FunctionCandidate, context: ScopeContext): void {
-		const rangeStart = declarationRangeStart(this.tokens, statement.start);
+		const rangeStartIndex = declarationRangeStart(this.tokens, statement.start);
 		const endIndex = statement.terminator === "body" ? (statement.bodyClose ?? statement.last) : statement.last;
 		const returnType = this.typeTextBefore(statement.start, candidate.nameIndex);
 		const visibility =
@@ -1109,7 +1106,7 @@ class CParser {
 					candidate.close,
 				)
 			: {
-					lines: lineCount(this.tokens[rangeStart.index] as CToken, this.tokens[endIndex] as CToken),
+					lines: lineCount(this.tokens[rangeStartIndex] as CToken, this.tokens[endIndex] as CToken),
 					parameters: this.parameterCount(candidate.open, candidate.close),
 				};
 		const declaration = this.addCandidate({
@@ -1117,7 +1114,7 @@ class CParser {
 			declarationKind: "function",
 			descriptorKind: "method",
 			...(body ? {} : { languageKind: "prototype" }),
-			rangeStartIndex: rangeStart.index,
+			rangeStartIndex,
 			rangeEndIndex: endIndex,
 			selectionIndex: candidate.nameIndex,
 			selectionEndIndex: candidate.nameEndIndex,
@@ -1129,7 +1126,6 @@ class CParser {
 				statement.start,
 				statement.terminator === "body" ? (statement.bodyOpen ?? endIndex) : endIndex + 1,
 			),
-			...(rangeStart.docComment === undefined ? {} : { docComment: rangeStart.docComment }),
 			metrics,
 			typeText: returnType.text,
 			typeStartIndex: returnType.start,
@@ -1292,7 +1288,7 @@ class CParser {
 				this.addDiagnostic("Declaration has no declarator name.", start);
 			return;
 		}
-		const rangeStart = declarationRangeStart(this.tokens, statement.start);
+		const rangeStartIndex = declarationRangeStart(this.tokens, statement.start);
 		for (const declarator of names) {
 			const isTypedef = hasTopLevelValue(this.tokens, start, end, "typedef");
 			const isConstant = hasTopLevelValue(this.tokens, start, end, "const");
@@ -1307,7 +1303,7 @@ class CParser {
 							: "variable",
 				descriptorKind: isTypedef ? "type" : "term",
 				...(isTypedef ? { languageKind: "typedef" } : {}),
-				rangeStartIndex: rangeStart.index,
+				rangeStartIndex,
 				rangeEndIndex: statement.last,
 				selectionIndex: declarator.nameIndex,
 				selectionEndIndex: declarator.nameEndIndex,
@@ -1320,7 +1316,6 @@ class CParser {
 						: "local",
 				exported: context.kind === "file" ? !hasTopLevelValue(this.tokens, start, end, "static") : false,
 				signature: renderTokens(this.tokens, statement.start, statement.last + 1),
-				...(rangeStart.docComment === undefined ? {} : { docComment: rangeStart.docComment }),
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
@@ -1347,7 +1342,7 @@ class CParser {
 			tokenValue(this.tokens, nextCode(this.tokens, statement.start, statement.last + 1)) === "typedef";
 		const contentEnd = statement.terminator === "semicolon" ? statement.last : statement.last + 1;
 		const tagName = aggregate.tagIndex < 0 ? undefined : tokenValue(this.tokens, aggregate.tagIndex);
-		const rangeStart = declarationRangeStart(this.tokens, statement.start);
+		const rangeStartIndex = declarationRangeStart(this.tokens, statement.start);
 		const names =
 			aggregate.bodyClose >= 0
 				? this.aggregateDeclaratorNames(aggregate, aggregate.bodyClose + 1, contentEnd, isTypedef)
@@ -1359,14 +1354,13 @@ class CParser {
 				declarationKind: aggregate.keyword === "enum" ? "enum" : "struct",
 				descriptorKind: "type",
 				...(aggregate.keyword === "union" ? { languageKind: "union" } : {}),
-				rangeStartIndex: rangeStart.index,
+				rangeStartIndex,
 				rangeEndIndex: statement.last,
 				selectionIndex: aggregate.tagIndex,
 				parentPath: context.parentPath,
 				visibility: context.kind === "file" ? "public" : "local",
 				exported: context.kind === "file",
 				signature: renderTokens(this.tokens, statement.start, statement.last + 1),
-				...(rangeStart.docComment === undefined ? {} : { docComment: rangeStart.docComment }),
 				typeText: `${aggregate.keyword} ${tagName}`,
 				typeStartIndex: aggregate.keywordIndex,
 				typeEndIndex: aggregate.tagIndex,
@@ -1389,7 +1383,7 @@ class CParser {
 					declarationKind: "class",
 					descriptorKind: "type",
 					languageKind: "typedef",
-					rangeStartIndex: rangeStart.index,
+					rangeStartIndex,
 					rangeEndIndex: statement.last,
 					selectionIndex: declarator.nameIndex,
 					selectionEndIndex: declarator.nameEndIndex,
@@ -1397,7 +1391,6 @@ class CParser {
 					visibility: context.kind === "file" ? "public" : "local",
 					exported: context.kind === "file",
 					signature: renderTokens(this.tokens, statement.start, statement.last + 1),
-					...(rangeStart.docComment === undefined ? {} : { docComment: rangeStart.docComment }),
 					typeText:
 						declarator.typeText ||
 						(tagName === undefined ? aggregate.keyword : `${aggregate.keyword} ${tagName}`),
@@ -1417,7 +1410,7 @@ class CParser {
 					name: declarator.name,
 					declarationKind: "variable",
 					descriptorKind: "term",
-					rangeStartIndex: rangeStart.index,
+					rangeStartIndex,
 					rangeEndIndex: statement.last,
 					selectionIndex: declarator.nameIndex,
 					selectionEndIndex: declarator.nameEndIndex,
@@ -1425,7 +1418,6 @@ class CParser {
 					visibility: context.kind === "file" ? "public" : "local",
 					exported: context.kind === "file",
 					signature: renderTokens(this.tokens, statement.start, statement.last + 1),
-					...(rangeStart.docComment === undefined ? {} : { docComment: rangeStart.docComment }),
 					typeText: declarator.typeText,
 					typeStartIndex: declarator.typeStart,
 					typeEndIndex: declarator.typeEnd,
@@ -1487,19 +1479,18 @@ class CParser {
 			return;
 		}
 		for (const declarator of this.declaratorNames(first, end)) {
-			const rangeStart = declarationRangeStart(this.tokens, first);
+			const rangeStartIndex = declarationRangeStart(this.tokens, first);
 			const field = this.addCandidate({
 				name: declarator.name,
 				declarationKind: "field",
 				descriptorKind: "term",
-				rangeStartIndex: rangeStart.index,
+				rangeStartIndex,
 				rangeEndIndex: end,
 				selectionIndex: declarator.nameIndex,
 				selectionEndIndex: declarator.nameEndIndex,
 				parentPath: container.descriptorPath,
 				visibility: "public",
 				signature: renderTokens(this.tokens, first, end + 1),
-				...(rangeStart.docComment === undefined ? {} : { docComment: rangeStart.docComment }),
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
@@ -1523,7 +1514,7 @@ class CParser {
 				name: token.value,
 				declarationKind: "constant",
 				descriptorKind: "term",
-				rangeStartIndex: declarationRangeStart(this.tokens, segment.start).index,
+				rangeStartIndex: declarationRangeStart(this.tokens, segment.start),
 				rangeEndIndex: last,
 				selectionIndex: nameIndex,
 				parentPath: container.descriptorPath,
@@ -1821,7 +1812,6 @@ class CParser {
 			...(candidate.languageKind === undefined ? {} : { languageKind: candidate.languageKind }),
 			...(candidate.exported === undefined ? {} : { exported: candidate.exported }),
 			...(candidate.signature === undefined ? {} : { signature: candidate.signature }),
-			...(candidate.docComment === undefined ? {} : { docComment: candidate.docComment }),
 			...(containerId === undefined ? {} : { containerId }),
 			...(candidate.metrics === undefined ? {} : { metrics: candidate.metrics }),
 			descriptorPath,

@@ -1,5 +1,5 @@
 import { Cursor, type CursorSpan, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "./cursor.js";
-import type { CommentSpan, DocComment } from "./model.js";
+import type { CommentSpan } from "./model.js";
 
 export type RustTokenKind = "identifier" | "number" | "string" | "char" | "lifetime" | "symbol";
 
@@ -16,7 +16,6 @@ export interface ScanDiagnostic {
 
 export interface ScanResult {
 	tokens: RustToken[];
-	docs: DocComment[];
 	comments: CommentSpan[];
 	diagnostics: ScanDiagnostic[];
 	lineTokens: Map<number, RustToken[]>;
@@ -60,11 +59,6 @@ function matches(cursor: Cursor, text: string): boolean {
 
 function consumeText(cursor: Cursor, text: string): void {
 	for (const _character of text) cursor.next();
-}
-
-function cleanDocText(text: string): string {
-	const trimmed = text.startsWith(" ") ? text.slice(1) : text;
-	return trimmed.replace(/\s+$/u, "");
 }
 
 function decodeString(text: string): string {
@@ -265,31 +259,26 @@ function scanRawString(source: string, cursor: Cursor, prefixLength: number, dia
 	return makeToken(source, "string", sourceRange(source, bodyStart, bodyEnd), span);
 }
 
-function scanLineComment(source: string, cursor: Cursor, docs: DocComment[], comments: CommentSpan[]): void {
+function scanLineComment(source: string, cursor: Cursor, comments: CommentSpan[]): void {
 	const mark = cursor.mark();
 	const inner = cursor.peek(2) === "!";
 	const doc = cursor.peek(2) === "/" || inner;
 	consumeText(cursor, doc ? (inner ? "//!" : "///") : "//");
-	const bodyStart = cursor.offset;
 	readToLineEnd(cursor);
-	if (doc) docs.push({ line: cursor.line, text: cleanDocText(sourceRange(source, bodyStart, cursor.offset)), inner });
 	addComment(source, comments, spanFrom(mark, cursor));
 }
 
 function scanBlockComment(
 	source: string,
 	cursor: Cursor,
-	docs: DocComment[],
 	comments: CommentSpan[],
 	diagnostics: ScanDiagnostic[],
 ): void {
 	const mark = cursor.mark();
 	// `/**/` closes the comment rather than opening a doc one.
 	const doc = cursor.peek(2) === "!" || (cursor.peek(2) === "*" && cursor.peek(3) !== "/");
-	const inner = cursor.peek(2) === "!";
 	consumeText(cursor, "/*");
 	if (doc) cursor.next();
-	const bodyStart = cursor.offset;
 	let depth = 1;
 	let guard = -1;
 	while (cursor.good()) {
@@ -301,14 +290,9 @@ function scanBlockComment(
 			continue;
 		}
 		if (matches(cursor, "*/")) {
-			const bodyEnd = cursor.offset;
 			consumeText(cursor, "*/");
 			depth--;
 			if (depth === 0) {
-				if (doc) {
-					const body = sourceRange(source, bodyStart, bodyEnd);
-					docs.push({ line: mark.line, text: cleanDocText(body), inner });
-				}
 				addComment(source, comments, spanFrom(mark, cursor));
 				return;
 			}
@@ -369,7 +353,6 @@ function addToken(source: string, tokens: RustToken[], lineTokens: Map<number, R
 export function tokenize(source: string): ScanResult {
 	const cursor = new Cursor(source);
 	const tokens: RustToken[] = [];
-	const docs: DocComment[] = [];
 	const comments: CommentSpan[] = [];
 	const diagnostics: ScanDiagnostic[] = [];
 	const lineTokens = new Map<number, RustToken[]>();
@@ -391,11 +374,11 @@ export function tokenize(source: string): ScanResult {
 			continue;
 		}
 		if (matches(cursor, "//")) {
-			scanLineComment(source, cursor, docs, comments);
+			scanLineComment(source, cursor, comments);
 			continue;
 		}
 		if (matches(cursor, "/*")) {
-			scanBlockComment(source, cursor, docs, comments, diagnostics);
+			scanBlockComment(source, cursor, comments, diagnostics);
 			continue;
 		}
 		const mark = cursor.mark();
@@ -462,7 +445,7 @@ export function tokenize(source: string): ScanResult {
 		addToken(source, tokens, lineTokens, makeToken(source, "symbol", value, span));
 	}
 
-	return { tokens, docs, comments, diagnostics, lineTokens };
+	return { tokens, comments, diagnostics, lineTokens };
 }
 
 export function tokenText(source: string, token: RustToken): string {

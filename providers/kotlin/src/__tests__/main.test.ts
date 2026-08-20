@@ -22,7 +22,7 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("extracts Kotlin declarations, containers, signatures, KDoc, and metrics", () => {
+test("extracts Kotlin declarations, containers, signatures, and metrics", () => {
 	const provider = new KotlinProvider();
 	provider.initialize(process.cwd());
 	const text = [
@@ -54,7 +54,6 @@ test("extracts Kotlin declarations, containers, signatures, KDoc, and metrics", 
 	const alias = facts.declarations.find((declaration) => declaration.name === "Alias");
 	const extension = facts.declarations.find((declaration) => declaration.name === "ext");
 
-	expect(cart?.docComment).toBe("Cart docs");
 	expect(parseSymbolId(cart?.symbolId ?? "")?.descriptors).toEqual([{ kind: "type", name: "Cart" }]);
 	expect(id?.kind).toBe("property");
 	expect(id?.containerId).toBe(cart?.symbolId);

@@ -56,6 +56,8 @@ async function main(argv: string[]): Promise<void> {
 	const skipped = outcomes.filter((o) => o.action === "skipped");
 	if (skipped.length > 0) console.log(`${skipped.length} skipped (${skipped[0]?.reason})`);
 
+	console.log(`comments: ${service.commentCounts()}`);
+
 	if (query !== undefined) {
 		const found = service.findByName(query);
 		console.log(`\n${found.length} named ${query}:`);
@@ -64,6 +66,10 @@ async function main(argv: string[]): Promise<void> {
 			console.log(`  ${symbol.kind} ${symbol.name}  ${symbol.module}`);
 			console.log(`    ${symbol.signature ?? "(no signature)"}`);
 			console.log(`    members ${described?.members.length ?? 0}, used in ${described?.referenceCount ?? 0}`);
+			if (described?.symbol.docComment !== undefined) console.log(`    doc: ${described.symbol.docComment}`);
+			for (const comment of service.commentsFor(symbol.symbolId)) {
+				console.log(`    ${comment.form} ${comment.placement}: ${comment.normalized}`);
+			}
 		}
 	}
 

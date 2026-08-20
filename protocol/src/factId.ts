@@ -122,7 +122,6 @@ export function declarationFactId(module: string, d: Declaration): string {
 		d.exported,
 		d.containerId,
 		d.signature,
-		d.docComment,
 		...rangeFields(d.range),
 		...rangeFields(d.selectionRange),
 		d.metrics?.lines,

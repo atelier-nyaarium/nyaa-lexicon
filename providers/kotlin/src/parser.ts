@@ -1475,7 +1475,6 @@ class KotlinParser {
 		functionLike: boolean;
 		typeLike: boolean;
 		signature?: string;
-		doc?: string;
 		bodyStartIndex?: number;
 		bodyEndIndex?: number;
 		parameterCount?: number;
@@ -1502,7 +1501,6 @@ class KotlinParser {
 			visibility: access.visibility,
 			exported: access.exported,
 			...(input.signature === undefined ? {} : { signature: input.signature }),
-			...(input.doc === undefined ? {} : { docComment: input.doc }),
 			...(input.scope.containerId === undefined ? {} : { containerId: input.scope.containerId }),
 			metrics: { lines: range.end.line - range.start.line + 1 },
 		};
@@ -1527,7 +1525,6 @@ class KotlinParser {
 
 	private parseRegion(start: number, end: number, scope: ScopeContext): void {
 		let index = start;
-		let pendingDoc: KotlinToken | undefined;
 		let guard = start - 1;
 		while (index < end) {
 			if (index <= guard) throw new Error("parseRegion failed to advance");
@@ -1537,16 +1534,10 @@ class KotlinParser {
 				index++;
 				continue;
 			}
-			if (token.kind === "doc") {
-				pendingDoc = token;
+			if (token.kind === "doc" || isSeparator(token)) {
 				index++;
 				continue;
 			}
-			if (isSeparator(token)) {
-				index++;
-				continue;
-			}
-			if (pendingDoc !== undefined && token.start.line > pendingDoc.end.line + 1) pendingDoc = undefined;
 			if (this.packageIndexes.has(index) || this.importIndexes.has(index)) {
 				index++;
 				continue;
@@ -1561,8 +1552,6 @@ class KotlinParser {
 			const modifiers = modifiersResult.modifiers;
 			const keywordToken = this.tokens[index];
 			const keyword = keywordToken?.kind === "keyword" ? keywordToken.value : undefined;
-			const doc = pendingDoc?.value;
-			pendingDoc = undefined;
 			const previous = previousToken(this.tokens, index);
 			if (keyword === "class" && previous >= 0 && symbolValue(this.tokens[previous]) === "::") {
 				index = declarationStart + 1;
@@ -1573,27 +1562,27 @@ class KotlinParser {
 				keyword === "interface" ||
 				(keyword === "object" && isNamedObject(this.tokens, index, end, modifiers))
 			) {
-				const next = this.parseType(declarationStart, index, end, scope, modifiers, doc);
+				const next = this.parseType(declarationStart, index, end, scope, modifiers);
 				index = Math.max(index + 1, next);
 				continue;
 			}
 			if (keyword === "typealias") {
-				const next = this.parseTypealias(declarationStart, index, end, scope, modifiers, doc);
+				const next = this.parseTypealias(declarationStart, index, end, scope, modifiers);
 				index = Math.max(index + 1, next);
 				continue;
 			}
 			if (keyword === "fun") {
-				const next = this.parseFunction(declarationStart, index, end, scope, modifiers, doc);
+				const next = this.parseFunction(declarationStart, index, end, scope, modifiers);
 				index = Math.max(index + 1, next);
 				continue;
 			}
 			if (keyword === "val" || keyword === "var") {
-				const next = this.parseProperty(declarationStart, index, end, scope, modifiers, doc);
+				const next = this.parseProperty(declarationStart, index, end, scope, modifiers);
 				index = Math.max(index + 1, next);
 				continue;
 			}
 			if (keyword === "constructor" && scope.kind === "class") {
-				const next = this.parseConstructor(declarationStart, index, end, scope, modifiers, doc);
+				const next = this.parseConstructor(declarationStart, index, end, scope, modifiers);
 				index = Math.max(index + 1, next);
 				continue;
 			}
@@ -1615,7 +1604,6 @@ class KotlinParser {
 		end: number,
 		scope: ScopeContext,
 		modifiers: string[],
-		doc: string | undefined,
 	): number {
 		let nameIndex = nextToken(this.tokens, keywordIndex, end);
 		const companion = modifiers.includes("companion");
@@ -1668,7 +1656,6 @@ class KotlinParser {
 			functionLike: false,
 			typeLike: true,
 			signature: renderTokens(this.tokens, start, headerEnd),
-			...(doc === undefined ? {} : { doc }),
 			...(bodyOpen < 0 || bodyClose < 0 ? {} : { bodyStartIndex: bodyOpen + 1, bodyEndIndex: bodyClose - 1 }),
 		});
 		if (meta === null) return declarationEnd + 1;
@@ -1945,7 +1932,6 @@ class KotlinParser {
 		end: number,
 		scope: ScopeContext,
 		modifiers: string[],
-		doc: string | undefined,
 	): number {
 		const open = functionParameterOpen(this.tokens, keywordIndex + 1, end);
 		if (open < 0) {
@@ -2022,7 +2008,6 @@ class KotlinParser {
 			functionLike: true,
 			typeLike: false,
 			signature: renderTokens(this.tokens, start, headerEnd),
-			...(doc === undefined ? {} : { doc }),
 			...(blockBody && bodyClose >= 0 ? { bodyStartIndex: bodyOpen + 1, bodyEndIndex: bodyClose - 1 } : {}),
 			parameterCount: this.parameterCount(open + 1, close),
 		});
@@ -2057,7 +2042,6 @@ class KotlinParser {
 		end: number,
 		scope: ScopeContext,
 		modifiers: string[],
-		doc: string | undefined,
 	): number {
 		const declarationEnd = statementEnd(this.tokens, keywordIndex, end);
 		const first = nextToken(this.tokens, keywordIndex, declarationEnd + 1);
@@ -2103,7 +2087,6 @@ class KotlinParser {
 			functionLike: false,
 			typeLike: false,
 			signature: renderTokens(this.tokens, start, equals >= 0 ? equals - 1 : declarationEnd),
-			...(doc === undefined ? {} : { doc }),
 		});
 		if (meta !== null && display !== undefined && typeEnd >= colon + 1)
 			this.addTypeFact(meta, colon + 1, typeEnd, display);
@@ -2118,7 +2101,6 @@ class KotlinParser {
 		end: number,
 		scope: ScopeContext,
 		modifiers: string[],
-		doc: string | undefined,
 	): number {
 		const nameIndex = nextToken(this.tokens, keywordIndex, end);
 		if (nameIndex < 0 || !isNameToken(this.tokens[nameIndex])) {
@@ -2141,7 +2123,6 @@ class KotlinParser {
 			functionLike: false,
 			typeLike: true,
 			signature: renderTokens(this.tokens, start, declarationEnd),
-			...(doc === undefined ? {} : { doc }),
 		});
 		const equals = this.outline ? -1 : findTopLevel(this.tokens, nameIndex + 1, declarationEnd + 1, "=");
 		if (!this.outline && meta !== null && equals >= 0 && equals + 1 <= declarationEnd) {
@@ -2157,7 +2138,6 @@ class KotlinParser {
 		end: number,
 		scope: ScopeContext,
 		modifiers: string[],
-		doc: string | undefined,
 	): number {
 		const open = findTopLevel(this.tokens, keywordIndex + 1, end, "(");
 		if (open < 0) {
@@ -2207,7 +2187,6 @@ class KotlinParser {
 			functionLike: true,
 			typeLike: false,
 			signature: renderTokens(this.tokens, start, bodyOpen >= 0 ? bodyOpen - 1 : declarationEnd),
-			...(doc === undefined ? {} : { doc }),
 			...(bodyOpen >= 0 && bodyClose >= 0 ? { bodyStartIndex: bodyOpen + 1, bodyEndIndex: bodyClose - 1 } : {}),
 			parameterCount: this.parameterCount(open + 1, close),
 		});

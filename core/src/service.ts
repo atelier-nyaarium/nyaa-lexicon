@@ -84,6 +84,7 @@ import { compileSearchRegex } from "./search.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type {
 	IndexStore,
+	StoredComment,
 	StoredDeclaration,
 	StoredFact,
 	StoredImport,
@@ -323,6 +324,11 @@ export class LexiconService {
 		return this.reads.declarationsIn(module);
 	}
 
+	/** Everything written about one symbol, in source order. */
+	commentsFor(symbolId: string): StoredComment[] {
+		return this.reads.commentsFor(symbolId);
+	}
+
 	outline(module: string): Array<SymbolSummary & { containerId?: string }> {
 		return this.reads.outline(module);
 	}
@@ -421,6 +427,17 @@ export class LexiconService {
 	/** How the file set was decided, so a caller never confuses 350 files with 136,000. */
 	scopeReport(): string {
 		return describeScope(this.indexer.currentScope());
+	}
+
+	/** Totals per attachment form, so a verifying run can see the tier landed rather than assume it. */
+	commentCounts(): string {
+		const all = this.reads.commentsToScan(Number.MAX_SAFE_INTEGER);
+		if (all.length === 0) return "none";
+		const byForm = new Map<string, number>();
+		for (const comment of all) byForm.set(comment.form, (byForm.get(comment.form) ?? 0) + 1);
+		const anchored = all.filter((comment) => comment.anchorId !== null).length;
+		const forms = [...byForm].sort((left, right) => right[1] - left[1]).map(([form, n]) => `${form} ${n}`);
+		return `${all.length} (${forms.join(", ")}), ${anchored} anchored to a symbol`;
 	}
 
 	////////////////////////////////

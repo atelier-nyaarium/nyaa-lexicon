@@ -39,6 +39,7 @@ export {
 } from "./edits.js";
 export {
 	answerFactId,
+	commentFactId,
 	composeFactId,
 	declarationFactId,
 	doubtFactId,

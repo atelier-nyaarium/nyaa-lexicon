@@ -117,7 +117,7 @@ describe("identity is content", () => {
 	// would let one fact's fields slide into the next slot.
 	it("separates an absent field from an empty one", () => {
 		const absent = declarationFactId("src/a.ts", DECL);
-		const empty = declarationFactId("src/a.ts", { ...DECL, docComment: "" });
+		const empty = declarationFactId("src/a.ts", { ...DECL, signature: "" });
 
 		expect(empty).not.toBe(absent);
 	});

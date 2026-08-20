@@ -114,18 +114,3 @@ test("treats a carriage return as the line terminator rather than comment text",
 test("reports no comments for a file that has none", () => {
 	expect(commentsOf("var total = 42\n")).toEqual([]);
 });
-
-// Comment spans are a separate tier from documentation: emitting them must not change what a
-// declaration carries as its docComment.
-test("emitting spans leaves doc comment attachment alone", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
-	const text = "## Documents the value.\nvar total = 42\n";
-
-	const facts = provider.parseFile({ module: "documented.gd", contentHash: "documented", text });
-
-	expect(facts.declarations.find((declaration) => declaration.name === "total")?.docComment).toBe(
-		"Documents the value.",
-	);
-	expect(facts.comments.map((comment) => comment.text)).toEqual(["## Documents the value."]);
-});

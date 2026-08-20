@@ -64,7 +64,7 @@ describe("C# declarations", () => {
 		expect(facts.diagnostics).toEqual([]);
 		expect(declaration(facts, "Demo", "namespace").languageKind).toBe("fileScopedNamespace");
 		const thing = declaration(facts, "Thing", "class");
-		expect(thing).toMatchObject({ visibility: "public", exported: true, docComment: "The main type." });
+		expect(thing).toMatchObject({ visibility: "public", exported: true });
 		expect(declaration(facts, "Name", "property")).toMatchObject({
 			visibility: "public",
 			containerId: thing.symbolId,

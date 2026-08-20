@@ -4,6 +4,7 @@
 // the only one. Reaches wide on purpose: indexing IS reading files and asking providers.
 
 import type { ImportResolution, IndexDepth } from "@nyaa-lexicon/protocol";
+import { attachComments } from "./commentAttach.js";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
@@ -142,6 +143,8 @@ export class WorkspaceIndexer {
 		}
 		// An absent depth means full facts, except surface remains a permission ceiling.
 		const storedDepth = facts.depth ?? (depth === "surface" ? "surface" : "full");
+		// Attachment happens here rather than in the store, because "nothing between these two" is a
+		// question only the source text answers, and this is the last place holding it.
 		this.store.replaceFile(
 			module,
 			readHash,
@@ -150,6 +153,7 @@ export class WorkspaceIndexer {
 			facts.imports,
 			facts.literals,
 			storedDepth,
+			attachComments(facts.declarations, facts.comments ?? [], text),
 		);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);

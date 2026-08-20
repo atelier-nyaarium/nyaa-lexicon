@@ -108,7 +108,6 @@ export const DeclarationSchema = z
 		exported: z.boolean().optional(),
 		/** Rendered signature. The compression tier reads this instead of the body. */
 		signature: z.string().optional(),
-		docComment: z.string().optional(),
 		/** Enclosing declaration, absent at module top level. */
 		containerId: z.string().min(1).optional(),
 		/** Absent when the provider does not measure, which is not the same as measuring zero. */

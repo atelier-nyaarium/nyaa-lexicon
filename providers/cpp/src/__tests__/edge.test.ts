@@ -237,11 +237,10 @@ describe("C++ parser edges", () => {
 		expect(local?.containerId).toBe(read?.symbolId);
 	});
 
-	test("keeps declaration ranges and documentation attached to symbols", () => {
+	test("starts declaration ranges after a leading doc comment", () => {
 		const text = ["/** Adds a value. */", "int add(int value) {", "\treturn value + 1;", "}"].join("\n");
 		const declaration = declarationNames(text).find((candidate) => candidate.name === "add");
 
-		expect(declaration?.docComment).toBe("Adds a value.");
 		expect(declaration?.range.start).toEqual({ line: 1, character: 0 });
 		expect(declaration?.range.end).toEqual({ line: 3, character: 1 });
 		expect(declaration?.selectionRange).toEqual({

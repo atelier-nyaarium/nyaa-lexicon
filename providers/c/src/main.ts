@@ -160,7 +160,6 @@ function declarationWire(declaration: CDeclaration): Declaration {
 		visibility: declaration.visibility,
 		...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
 		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
-		...(declaration.docComment === undefined ? {} : { docComment: declaration.docComment }),
 		...(declaration.containerId === undefined ? {} : { containerId: declaration.containerId }),
 		...(declaration.metrics === undefined ? {} : { metrics: declaration.metrics }),
 	};

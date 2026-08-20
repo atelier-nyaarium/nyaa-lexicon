@@ -19,12 +19,6 @@ export type RustDescriptor = {
 	disambiguator?: string;
 };
 
-export interface DocComment {
-	line: number;
-	text: string;
-	inner: boolean;
-}
-
 /** Taken from the wire shape, so the span cannot drift from the protocol. */
 export type { CommentSpan };
 

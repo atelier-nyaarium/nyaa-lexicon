@@ -2,16 +2,7 @@
 
 import { coordinatesOf, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import { Cursor } from "./cursor.js";
-import {
-	attachDocumentation,
-	basenameOf,
-	containsCharacter,
-	indentOf,
-	isIgnorable,
-	parseLineHead,
-	parseLineHeads,
-	scriptDocumentation,
-} from "./line-syntax.js";
+import { basenameOf, containsCharacter, indentOf, isIgnorable, parseLineHead, parseLineHeads } from "./line-syntax.js";
 import type {
 	ActiveEnum,
 	ActiveFunctionHeader,
@@ -412,10 +403,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 	const firstLine = lines[0] ?? rootLine;
 	const lastLine = lines[lines.length - 1] ?? firstLine;
 	root.range = rangeOfLines(coordinates, firstLine, lastLine);
-	const rootDocComment = scriptDocumentation(lines);
-	if (rootDocComment !== undefined) root.docComment = rootDocComment;
 	const declarations: DeclarationFact[] = [root];
-	const documentedLines = new Set<number>();
 	const scopes: Scope[] = [
 		{
 			indent: -1,
@@ -489,7 +477,6 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 						"enumMember",
 						visibilityOf(member.name, false),
 					);
-					attachDocumentation(declaration, lines, lineIndex, documentedLines);
 					declarations.push(declaration);
 				}
 				continue;
@@ -523,7 +510,6 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					"innerClass",
 					visibilityOf(parsed.name.name, false),
 				);
-				attachDocumentation(declaration, lines, lineIndex, documentedLines);
 				declarations.push(declaration);
 				scopes.push({
 					indent,
@@ -546,7 +532,6 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					"enum",
 					visibilityOf(parsed.name.name, false),
 				);
-				attachDocumentation(declaration, lines, lineIndex, documentedLines);
 				declarations.push(declaration);
 				for (const member of enumMembers(line)) {
 					const memberDeclaration = makeDeclaration(
@@ -601,7 +586,6 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 				languageKind,
 				visibilityOf(parsed.name.name, local),
 			);
-			attachDocumentation(declaration, lines, lineIndex, documentedLines);
 			if (parsed.keyword === "var") {
 				declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lines, lineIndex, indent));
 			}

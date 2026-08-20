@@ -1,59 +1,7 @@
-// Owns GDScript documentation and line-head syntax.
+// Owns GDScript line-head syntax.
 
 import { Cursor } from "./cursor.js";
-import type { DeclarationFact, ParsedKeyword, ParsedLine, SourceLine } from "./parse-model.js";
-
-//////// Documentation
-
-function documentationLine(text: string): string | null {
-	const match = /^\s*##(.*)$/u.exec(text);
-	if (match === null) return null;
-	const content = match[1] ?? "";
-	return content.startsWith(" ") ? content.slice(1) : content;
-}
-
-export function documentationBefore(lines: SourceLine[], lineIndex: number): string | undefined {
-	const comments: string[] = [];
-	for (let index = lineIndex - 1; index >= 0; index--) {
-		const content = documentationLine((lines[index] as SourceLine).text);
-		if (content === null) break;
-		comments.unshift(content);
-	}
-	return comments.length === 0 ? undefined : comments.join("\n");
-}
-
-function scriptHeaderLine(line: SourceLine): boolean {
-	if (isIgnorable(line) || documentationLine(line.text) !== null) return true;
-	if (/^\s*@/u.test(line.text)) return true;
-	const parsed = parseLineHeads(line);
-	return parsed.length === 1 && (parsed[0]?.keyword === "extends" || parsed[0]?.keyword === "class_name");
-}
-
-export function scriptDocumentation(lines: SourceLine[]): string | undefined {
-	for (let index = 0; index < lines.length; index++) {
-		const line = lines[index] as SourceLine;
-		if (indentOf(line.text) !== 0) continue;
-		const parsed = parseLineHeads(line);
-		if (parsed.length !== 1 || (parsed[0]?.keyword !== "extends" && parsed[0]?.keyword !== "class_name")) continue;
-		const docComment = documentationBefore(lines, index);
-		if (docComment === undefined) continue;
-		if (lines.slice(0, index).every(scriptHeaderLine)) return docComment;
-	}
-	return undefined;
-}
-
-export function attachDocumentation(
-	declaration: DeclarationFact,
-	lines: SourceLine[],
-	lineIndex: number,
-	documentedLines: Set<number>,
-): void {
-	if (documentedLines.has(lineIndex)) return;
-	const docComment = documentationBefore(lines, lineIndex);
-	if (docComment === undefined) return;
-	declaration.docComment = docComment;
-	documentedLines.add(lineIndex);
-}
+import type { ParsedKeyword, ParsedLine, SourceLine } from "./parse-model.js";
 
 //////// Line scanner
 

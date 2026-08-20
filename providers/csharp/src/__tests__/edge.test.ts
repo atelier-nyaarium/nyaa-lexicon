@@ -124,39 +124,6 @@ describe("C# lexical facts", () => {
 		expect(run.metrics).toMatchObject({ nesting: 1, branches: 2 });
 		expect(facts.diagnostics).toEqual([]);
 	});
-
-	it("attaches only consecutive XML documentation lines", () => {
-		const text = [
-			"/// <summary>",
-			"/// First.",
-			"public class First {}",
-			"",
-			"/// Separate.",
-			"public class Second {}",
-			"// ordinary",
-			"/// Not attached.",
-			"public class Third {}",
-		].join("\n");
-		const { facts } = parse(text);
-		expect(
-			one(
-				facts.declarations.filter((item) => item.name === "First"),
-				"First missing",
-			).docComment,
-		).toBe("<summary>\nFirst.");
-		expect(
-			one(
-				facts.declarations.filter((item) => item.name === "Second"),
-				"Second missing",
-			).docComment,
-		).toBe("Separate.");
-		expect(
-			one(
-				facts.declarations.filter((item) => item.name === "Third"),
-				"Third missing",
-			).docComment,
-		).toBe("Not attached.");
-	});
 });
 
 describe("C# declaration structure", () => {

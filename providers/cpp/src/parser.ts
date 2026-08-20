@@ -39,13 +39,9 @@ export interface CppDeclarationRecord {
 	parameterNames: Set<string>;
 }
 
-type DraftInput = Omit<
-	DraftRecord,
-	"languageKind" | "signature" | "docComment" | "metrics" | "type" | "parameterNames"
-> & {
+type DraftInput = Omit<DraftRecord, "languageKind" | "signature" | "metrics" | "type" | "parameterNames"> & {
 	languageKind?: string | undefined;
 	signature?: string | undefined;
-	docComment?: string | undefined;
 	metrics?: Metrics | undefined;
 	type?: DraftType | undefined;
 	parameterNames?: Set<string>;
@@ -91,7 +87,6 @@ interface DraftRecord {
 	nameStartIndex: number;
 	nameEndIndex: number;
 	signature: string | undefined;
-	docComment: string | undefined;
 	metrics: Metrics | undefined;
 	type: DraftType | undefined;
 	templateDependent: boolean;
@@ -301,54 +296,6 @@ function joinTokens(tokens: Token[], startIndex: number, endIndex: number): stri
 		previous = token.text;
 	}
 	return output.trim();
-}
-
-function cleanDoc(text: string): string {
-	const lines = text.split("\n");
-	const cleaned: string[] = [];
-	for (const line of lines) {
-		let value = line.trim();
-		if (value.startsWith("///") || value.startsWith("//!")) value = value.slice(3).trimStart();
-		else if (value.startsWith("/**") || value.startsWith("/*!")) value = value.slice(3);
-		if (value.endsWith("*/")) value = value.slice(0, -2);
-		if (value.startsWith("*")) value = value.slice(1).trimStart();
-		cleaned.push(value.trim());
-	}
-	while (cleaned[0] === "") cleaned.shift();
-	while (cleaned.at(-1) === "") cleaned.pop();
-	return cleaned.join("\n");
-}
-
-function isDocComment(token: Token): boolean {
-	return (
-		token.kind === "comment" &&
-		(token.text.startsWith("///") ||
-			token.text.startsWith("//!") ||
-			token.text.startsWith("/**") ||
-			token.text.startsWith("/*!"))
-	);
-}
-
-function documentationBefore(tokens: Token[], index: number): string | undefined {
-	const parts: string[] = [];
-	let current = index - 1;
-	let newlines = 0;
-	while (current >= 0) {
-		const token = tokenAt(tokens, current);
-		if (token === undefined) break;
-		if (token.kind === "newline") {
-			newlines++;
-			if (newlines > 1) break;
-			current--;
-			continue;
-		}
-		if (!isDocComment(token)) break;
-		parts.unshift(cleanDoc(token.text));
-		newlines = 0;
-		current--;
-	}
-	const value = parts.join("\n").trim();
-	return value === "" ? undefined : value;
 }
 
 function matching(tokens: Token[], openIndex: number, open: string, close: string, limit = tokens.length): number {
@@ -765,7 +712,6 @@ class StructuralParser {
 			...(draft.languageKind === undefined ? {} : { languageKind: draft.languageKind }),
 			...(draft.exported ? { exported: true } : {}),
 			...(draft.signature === undefined ? {} : { signature: draft.signature }),
-			...(draft.docComment === undefined ? {} : { docComment: draft.docComment }),
 			...(draft.parent === null
 				? {}
 				: {
@@ -1110,7 +1056,6 @@ class StructuralParser {
 						nameStartIndex: item.start,
 						nameEndIndex: item.end,
 						signature: joinTokens(this.tokens, prefix.startIndex, end),
-						docComment: documentationBefore(this.tokens, prefix.startIndex),
 						metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 						templateDependent: scope.templateDependent,
 						parameterNames: new Set(),
@@ -1136,7 +1081,6 @@ class StructuralParser {
 				nameStartIndex: item.start,
 				nameEndIndex: item.end,
 				signature: joinTokens(this.tokens, prefix.startIndex, open),
-				docComment: documentationBefore(this.tokens, prefix.startIndex),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: this.templateDependent(scope, prefix),
 				parameterNames: new Set(),
@@ -1179,7 +1123,6 @@ class StructuralParser {
 				nameStartIndex: actualNameIndex,
 				nameEndIndex: actualNameIndex + 1,
 				signature: joinTokens(this.tokens, prefix.startIndex, end),
-				docComment: documentationBefore(this.tokens, prefix.startIndex),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: this.templateDependent(scope, prefix),
 				parameterNames: new Set(),
@@ -1203,7 +1146,6 @@ class StructuralParser {
 			nameStartIndex: actualNameIndex,
 			nameEndIndex: actualNameIndex + 1,
 			signature: joinTokens(this.tokens, prefix.startIndex, body),
-			docComment: documentationBefore(this.tokens, prefix.startIndex),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 			templateDependent,
 			parameterNames: new Set(),
@@ -1251,7 +1193,6 @@ class StructuralParser {
 				nameStartIndex: nameIndex,
 				nameEndIndex: nameIndex + 1,
 				signature: joinTokens(this.tokens, prefix.startIndex, end),
-				docComment: documentationBefore(this.tokens, prefix.startIndex),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: scope.templateDependent,
 				parameterNames: new Set(),
@@ -1274,7 +1215,6 @@ class StructuralParser {
 			nameStartIndex: nameIndex,
 			nameEndIndex: nameIndex + 1,
 			signature: joinTokens(this.tokens, prefix.startIndex, body),
-			docComment: documentationBefore(this.tokens, prefix.startIndex),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 			templateDependent: this.templateDependent(scope, prefix),
 			parameterNames: new Set(),
@@ -1315,7 +1255,6 @@ class StructuralParser {
 					nameStartIndex: nameIndex,
 					nameEndIndex: nameIndex + 1,
 					signature: joinTokens(this.tokens, segmentStart, end),
-					docComment: documentationBefore(this.tokens, segmentStart),
 					metrics: bodyMetrics(this.tokens, segmentStart, end),
 					templateDependent: parent.templateDependent,
 					parameterNames: new Set(),
@@ -1353,7 +1292,6 @@ class StructuralParser {
 				nameStartIndex: nameIndex,
 				nameEndIndex: nameIndex + 1,
 				signature: joinTokens(this.tokens, prefix.startIndex, end + 1),
-				docComment: documentationBefore(this.tokens, prefix.startIndex),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end + 1),
 				type: { status: "known", display: joinTokens(this.tokens, equals + 1, end) || "type" },
 				templateDependent: scope.templateDependent,
@@ -1388,7 +1326,6 @@ class StructuralParser {
 			nameStartIndex: nameIndex,
 			nameEndIndex: nameIndex + 1,
 			signature: joinTokens(this.tokens, prefix.startIndex, end + 1),
-			docComment: documentationBefore(this.tokens, prefix.startIndex),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end + 1),
 			type: {
 				status: "known",
@@ -1559,7 +1496,6 @@ class StructuralParser {
 			nameStartIndex: nameInfo.nameStartIndex,
 			nameEndIndex: nameInfo.nameEndIndex,
 			signature: joinTokens(this.tokens, prefix.startIndex, body >= 0 ? body : bodyOrEnd.end + 1),
-			docComment: documentationBefore(this.tokens, prefix.startIndex),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, Math.max(prefix.startIndex + 1, declarationEnd)),
 			type: templateDependent
 				? unknownTemplateType("template-dependent return type is not resolved")
@@ -1807,7 +1743,6 @@ class StructuralParser {
 			nameStartIndex: nameIndex,
 			nameEndIndex: nameIndex + 1,
 			signature: joinTokens(this.tokens, declarationStart, declarationEnd),
-			docComment: documentationBefore(this.tokens, declarationStart),
 			metrics: bodyMetrics(this.tokens, declarationStart, declarationEnd),
 			type,
 			templateDependent: scope.templateDependent,
@@ -1902,7 +1837,6 @@ class StructuralParser {
 			...input,
 			languageKind: input.languageKind,
 			signature: input.signature,
-			docComment: input.docComment,
 			metrics: input.metrics,
 			type: input.type,
 			parameterNames: input.parameterNames ?? new Set(),

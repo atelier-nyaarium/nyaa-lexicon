@@ -6,7 +6,7 @@
 import type { Range } from "@nyaa-lexicon/protocol";
 import { findCycles } from "./graph.js";
 import { compileSearchRegex } from "./search.js";
-import type { IndexStore, StoredDeclaration, StoredLiteral, StoredReference } from "./store.js";
+import type { IndexStore, StoredComment, StoredDeclaration, StoredLiteral, StoredReference } from "./store.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -144,7 +144,6 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 		visibility: declaration.visibility,
 		...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
 		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
-		...(declaration.docComment === undefined ? {} : { docComment: declaration.docComment }),
 		...(declaration.range === undefined
 			? {}
 			: { lines: { start: declaration.range.start.line, end: declaration.range.end.line } }),
@@ -180,16 +179,39 @@ export class IndexReadModel {
 		const members = this.store
 			.declarationsIn(declaration.module)
 			.filter((d) => d.containerId === symbolId)
-			.map(toSummary);
+			.map((member) => this.withDocumentation(toSummary(member)));
 
 		return {
-			symbol: toSummary(declaration),
+			symbol: this.withDocumentation(toSummary(declaration)),
 			members,
 			referenceCount: this.store.referencesTo(symbolId).length,
 			graph: this.graphSummary(symbolId),
 			hierarchy: this.typeHierarchy(symbolId),
 			tier: "bound",
 		};
+	}
+
+	/**
+	 * A symbol's documentation, which is now the comment attached above it rather than a copy.
+	 *
+	 * Derived rather than stored, so the prose a reader sees and the prose in the file are the same
+	 * string by construction. The normalized form is used because that is what the retired field
+	 * held: markers stripped, wrapping joined.
+	 */
+	private withDocumentation(summary: SymbolSummary): SymbolSummary {
+		const leading = this.store.commentsAnchoredTo(summary.symbolId).find((item) => item.form === "leading");
+		if (leading === undefined || leading.normalized === "") return summary;
+		return { ...summary, docComment: leading.normalized };
+	}
+
+	/** Everything written about one symbol, in source order. */
+	commentsFor(symbolId: string): StoredComment[] {
+		return this.store.commentsAnchoredTo(symbolId);
+	}
+
+	/** Every comment, for a caller that must count or match them itself. */
+	commentsToScan(scanLimit: number): StoredComment[] {
+		return this.store.commentsToScan(scanLimit);
 	}
 
 	/** One declaration with its ranges, which `describe` deliberately does not carry. */

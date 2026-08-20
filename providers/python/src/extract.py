@@ -808,17 +808,13 @@ class Analyzer:
             if signature is not None:
                 raw["signature"] = signature
             raw["metrics"] = self.metrics_of(node)
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            doc = ast.get_docstring(node, clean=False)
-            if doc is not None:
-                raw["docComment"] = doc
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
-                type_text = self.add_type_annotation(node, name, node.returns, descriptor_path[:-1])
-                if type_text is not None:
-                    raw["typeText"] = type_text
-                    raw["typeForwardReference"] = isinstance(node.returns, ast.Constant) and isinstance(
-                        node.returns.value, str
-                    )
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            type_text = self.add_type_annotation(node, name, node.returns, descriptor_path[:-1])
+            if type_text is not None:
+                raw["typeText"] = type_text
+                raw["typeForwardReference"] = isinstance(node.returns, ast.Constant) and isinstance(
+                    node.returns.value, str
+                )
         elif isinstance(node, ast.AnnAssign):
             type_text = self.add_type_annotation(selection_node, name, node.annotation, descriptor_path[:-1])
             if type_text is not None:

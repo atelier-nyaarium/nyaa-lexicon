@@ -59,9 +59,9 @@ function referencesResult(symbolId: string, references: StoredReference[] = []):
 	return { symbolId, references, total: references.length, truncated: false, tier: "bound" };
 }
 
-function described(referenceCount: number): DescribeResult {
+function described(referenceCount: number, docComment?: string): DescribeResult {
 	return {
-		symbol: summary("symbol:item", "item", "function"),
+		symbol: { ...summary("symbol:item", "item", "function"), ...(docComment === undefined ? {} : { docComment }) },
 		members: [],
 		referenceCount,
 		graph: { symbolId: "symbol:item", fanIn: referenceCount, fanOut: 0 },
@@ -233,9 +233,9 @@ describe("navigation", () => {
 describe("hover", () => {
 	const found = declaration("item", {
 		signature: "function item(): unknown",
-		docComment: "The item documentation.",
 		selectionRange: span(2, 4, 2, 8),
 	});
+	const documentation = "The item documentation.";
 
 	it("omits inferred and usage lines for unknown types and marks stale prose", async () => {
 		const server = new LspServer(
@@ -243,7 +243,7 @@ describe("hover", () => {
 				declarationsIn: async () => [found],
 				typeOf: async () => ({ status: "unknown", reason: "NotImplemented" }),
 				recallAnswers: async () => [recalled("Remembered stale prose.", { stale: ["old-fact"] })],
-				describe: async () => described(0),
+				describe: async () => described(0, documentation),
 			}),
 			ROOT,
 		);
@@ -251,7 +251,7 @@ describe("hover", () => {
 		const result = await server.hover(URI, { line: 3, character: 5 });
 
 		expect(result?.contents.value).toContain(found.signature);
-		expect(result?.contents.value).toContain(found.docComment);
+		expect(result?.contents.value).toContain(documentation);
 		expect(result?.contents.value).toContain("Remembered stale prose. *(stale)*");
 		expect(result?.contents.value).not.toContain("*inferred*");
 		expect(result?.contents.value).not.toContain("Used in");

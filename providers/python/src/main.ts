@@ -80,7 +80,6 @@ interface RawDeclaration {
 	visibility: Declaration["visibility"];
 	exported: boolean;
 	signature?: string;
-	docComment?: string;
 	metrics?: {
 		lines?: number;
 		parameters?: number;
@@ -280,7 +279,6 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 		visibility: declaration.visibility,
 		exported: declaration.exported,
 		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
-		...(declaration.docComment === undefined ? {} : { docComment: declaration.docComment }),
 		...(declaration.metrics === undefined ? {} : { metrics: declaration.metrics }),
 		...(declaration.containerPath.length === 0 ? {} : { containerId: idFor(module, declaration.containerPath) }),
 	}));

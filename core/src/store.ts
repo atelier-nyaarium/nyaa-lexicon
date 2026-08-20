@@ -6,6 +6,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import {
+	commentFactId,
 	type Declaration,
 	declarationFactId,
 	type Import,
@@ -20,6 +21,7 @@ import {
 	referenceFactId,
 } from "@nyaa-lexicon/protocol";
 import type { Answer, Doubt } from "./answers.js";
+import type { AttachedComment } from "./commentAttach.js";
 import { compileSearchRegex } from "./search.js";
 
 ////////////////////////////////
@@ -64,6 +66,23 @@ export interface StoredLiteral {
 	number: number | null;
 	containerId: string | null;
 	range: Range;
+}
+
+/** One comment as stored: what it says, where it says it, and what it says it about. */
+export interface StoredComment {
+	factId: string;
+	module: string;
+	raw: string;
+	normalized: string;
+	form: string;
+	placement: string;
+	anchorId: string | null;
+	range: Range;
+}
+
+export interface CommentFilter {
+	form?: string | undefined;
+	module?: string | undefined;
 }
 
 /** One name written by one import statement, with the spans a rewrite would replace. */
@@ -122,7 +141,11 @@ export type StoredFact =
 // 13: answers carry a declared doubt. Mechanical staleness cannot see semantic drift, so an agent
 //    that changed a function's purpose needs a way to flag the recorded explanation without
 //    rewriting it, and the flag must survive a re-record by a writer who never saw it.
-export const SCHEMA_VERSION = 15;
+// 16: comments, with their attachment resolved, and docComment retired from symbols. Doctrine in a
+//    codebase lives in comments, and they were the one thing every fallback to grep was looking
+//    for. A doc comment is now the leading-attached comment rather than a second copy of the same
+//    prose on the declaration, so the two can no longer disagree.
+export const SCHEMA_VERSION = 16;
 
 // Every range is stored whole. Keeping only a start meant the index could say where something was
 // and never what text it occupied, which is the difference between navigating and editing.
@@ -163,7 +186,6 @@ CREATE TABLE symbols (
   exported    INTEGER,
   containerId TEXT,
   signature   TEXT,
-  docComment  TEXT,
   startLine   INTEGER NOT NULL,
   startChar   INTEGER NOT NULL,
   endLine     INTEGER NOT NULL,
@@ -252,6 +274,31 @@ CREATE INDEX literals_value ON literals(value);
 CREATE INDEX literals_number ON literals(number);
 CREATE INDEX literals_fact ON literals(factId);
 CREATE INDEX literals_container ON literals(containerId);
+
+-- Doctrine lives here. Every other fact table answers "what is this code", and this one answers
+-- "what did someone say about it", which was the one question that always fell back to grep.
+CREATE TABLE comments (
+  factId     TEXT NOT NULL,
+  module     TEXT NOT NULL,
+  -- Verbatim, markers included, because a citation quoting a comment must quote the file.
+  raw        TEXT NOT NULL,
+  -- Markers and wrapping removed. Search runs over this so a phrase split across a line break is
+  -- still one phrase; display and citations use raw.
+  normalized TEXT NOT NULL,
+  form       TEXT NOT NULL,
+  placement  TEXT NOT NULL,
+  -- Null when the module is the container: a header, a licence, a banner. Absence is the answer
+  -- here rather than a missing one, which is why nothing guesses a symbol to put in it.
+  anchorId   TEXT,
+  startLine  INTEGER NOT NULL,
+  startChar  INTEGER NOT NULL,
+  endLine    INTEGER NOT NULL,
+  endChar    INTEGER NOT NULL
+);
+CREATE INDEX comments_module ON comments(module);
+CREATE INDEX comments_anchor ON comments(anchorId);
+CREATE INDEX comments_fact ON comments(factId);
+CREATE INDEX comments_form ON comments(form);
 
 -- The knowledge layer's read side. One answer per symbol per question class, replaced rather than
 -- versioned, because a superseded answer is a decision to make deliberately rather than a pile to
@@ -359,7 +406,7 @@ CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
  * separately, a table added to one and not the other leaves a deleted file's rows in the index
  * forever, still answering searches.
  */
-const FACT_TABLES = ["refs", "symbols", "imports", "literals"] as const;
+const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments"] as const;
 
 /** Meta key for store compatibility. */
 const COMPATIBILITY_KEY = "storeCompatibility";
@@ -619,6 +666,7 @@ export class IndexStore {
 		imports: Import[] = [],
 		literals: Literal[] = [],
 		depth: IndexDepth = "full",
+		comments: AttachedComment[] = [],
 	): void {
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
@@ -630,10 +678,10 @@ export class IndexStore {
 
 			const symbol = this.db.prepare(
 				`INSERT OR REPLACE INTO symbols
-				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature, docComment,
+				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
 				  mLines, mParameters, mNesting, mBranches)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
 				symbol.run(
@@ -647,7 +695,6 @@ export class IndexStore {
 					d.exported === undefined ? null : d.exported ? 1 : 0,
 					d.containerId ?? null,
 					d.signature ?? null,
-					d.docComment ?? null,
 					d.range.start.line,
 					d.range.start.character,
 					d.range.end.line,
@@ -735,6 +782,28 @@ export class IndexStore {
 					literal.range.start.character,
 					literal.range.end.line,
 					literal.range.end.character,
+				);
+			}
+
+			const commentRow = this.db.prepare(
+				`INSERT INTO comments (factId, module, raw, normalized, form, placement, anchorId, startLine, startChar, endLine, endChar)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			);
+			for (const comment of comments) {
+				// The anchor is recomputed on every pass and written fresh. Nothing migrates an old
+				// one forward, so a symbol that moved cannot leave a comment pointing at where it was.
+				commentRow.run(
+					commentFactId(module, { range: comment.range, text: comment.raw }),
+					module,
+					comment.raw,
+					comment.normalized,
+					comment.form,
+					comment.placement,
+					comment.anchorId,
+					comment.range.start.line,
+					comment.range.start.character,
+					comment.range.end.line,
+					comment.range.end.character,
 				);
 			}
 		});
@@ -1162,7 +1231,7 @@ export class IndexStore {
 		const values: Array<string | number> = [];
 		if (text !== undefined) {
 			clauses.push("name LIKE ? ESCAPE '\\'");
-			values.push(`%${text.replace(/[%_\\]/g, "\\$&")}%`);
+			values.push(`%${likePattern(text)}%`);
 		}
 		if (options.kind !== undefined) {
 			clauses.push("kind = ?");
@@ -1170,7 +1239,7 @@ export class IndexStore {
 		}
 		if (options.module !== undefined) {
 			clauses.push("module LIKE ? ESCAPE '\\'");
-			values.push(`%${options.module.replace(/[%_\\]/g, "\\$&")}%`);
+			values.push(`%${likePattern(options.module)}%`);
 		}
 		if (clauses.length === 0) clauses.push("1 = 1");
 		const limit = regex === undefined ? " LIMIT ?" : "";
@@ -1288,6 +1357,38 @@ export class IndexStore {
 		return rows.map(rowToLiteral);
 	}
 
+	////////////////////////////////
+	//  Comments
+
+	/** Substring over the NORMALIZED text, so a phrase the writer wrapped still matches. */
+	commentsContaining(text: string, limit: number, filter: CommentFilter = {}): StoredComment[] {
+		const where = ["normalized LIKE ? ESCAPE '\\'"];
+		const values: Array<string | number> = [`%${likePattern(text)}%`];
+		appendCommentFilter(where, values, filter);
+		const rows = this.db
+			.prepare(`SELECT * FROM comments WHERE ${where.join(" AND ")} ORDER BY module, startLine LIMIT ?`)
+			.all(...values, limit);
+		return rows.map(rowToComment);
+	}
+
+	/** Every comment a caller must match itself, for the same reason literals need one: no REGEXP. */
+	commentsToScan(scanLimit: number, filter: CommentFilter = {}): StoredComment[] {
+		const where: string[] = [];
+		const values: Array<string | number> = [];
+		appendCommentFilter(where, values, filter);
+		const clause = where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`;
+		const rows = this.db
+			.prepare(`SELECT * FROM comments ${clause} ORDER BY module, startLine LIMIT ?`)
+			.all(...values, scanLimit);
+		return rows.map(rowToComment);
+	}
+
+	/** What is written about one symbol, which is how describe gets its documentation. */
+	commentsAnchoredTo(symbolId: string): StoredComment[] {
+		const rows = this.db.prepare("SELECT * FROM comments WHERE anchorId = ? ORDER BY startLine").all(symbolId);
+		return rows.map(rowToComment);
+	}
+
 	/**
 	 * Values written in more than one file, commonest first.
 	 *
@@ -1366,7 +1467,6 @@ interface SymbolRow {
 	exported: number | null;
 	containerId: string | null;
 	signature: string | null;
-	docComment: string | null;
 	startLine: number;
 	startChar: number;
 	endLine: number;
@@ -1428,7 +1528,6 @@ function rowToDeclaration(raw: unknown): StoredDeclaration {
 		...(row.exported === null ? {} : { exported: row.exported === 1 }),
 		...(row.containerId === null ? {} : { containerId: row.containerId }),
 		...(row.signature === null ? {} : { signature: row.signature }),
-		...(row.docComment === null ? {} : { docComment: row.docComment }),
 	};
 }
 
@@ -1443,6 +1542,53 @@ interface LiteralRow {
 	startChar: number;
 	endLine: number;
 	endChar: number;
+}
+
+/** Escapes what LIKE treats as wildcards, so a search for `100%` is a search for `100%`. */
+function likePattern(text: string): string {
+	return text.replace(/[%_\\]/g, "\\$&");
+}
+
+function appendCommentFilter(where: string[], values: Array<string | number>, filter: CommentFilter): void {
+	if (filter.form !== undefined) {
+		where.push("form = ?");
+		values.push(filter.form);
+	}
+	if (filter.module !== undefined) {
+		where.push("module = ?");
+		values.push(filter.module);
+	}
+}
+
+interface CommentRow {
+	factId: string;
+	module: string;
+	raw: string;
+	normalized: string;
+	form: string;
+	placement: string;
+	anchorId: string | null;
+	startLine: number;
+	startChar: number;
+	endLine: number;
+	endChar: number;
+}
+
+function rowToComment(raw: unknown): StoredComment {
+	const row = raw as CommentRow;
+	return {
+		factId: row.factId,
+		module: row.module,
+		raw: row.raw,
+		normalized: row.normalized,
+		form: row.form,
+		placement: row.placement,
+		anchorId: row.anchorId,
+		range: {
+			start: { line: row.startLine, character: row.startChar },
+			end: { line: row.endLine, character: row.endChar },
+		},
+	};
 }
 
 function rowToLiteral(raw: unknown): StoredLiteral {

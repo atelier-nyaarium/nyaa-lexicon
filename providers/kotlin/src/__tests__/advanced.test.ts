@@ -94,25 +94,6 @@ describe("Kotlin cursor and structure", () => {
 		expect(entries.every((item) => item.kind === "constant" && item.exported === true)).toBe(true);
 	});
 
-	test("attaches multiline KDoc only across one declaration boundary", () => {
-		const text = [
-			"/**",
-			" * First line.",
-			" * Second line.",
-			" */",
-			"class Documented",
-			"",
-			"/** Detached.",
-			" */",
-			"",
-			"fun plain() {}",
-		].join("\n");
-		const facts = parseKotlin("Docs.kt", text);
-
-		expect(declaration(facts, "Documented")?.docComment).toBe("First line.\nSecond line.");
-		expect(declaration(facts, "plain")?.docComment).toBeUndefined();
-	});
-
 	test("records extension receivers in signatures and type positions", () => {
 		const facts = parseKotlin(
 			"Extensions.kt",

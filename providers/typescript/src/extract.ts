@@ -278,13 +278,6 @@ function signatureOf(node: ts.Node, source: ts.SourceFile): string | undefined {
 	return line === undefined || line === "" ? undefined : line;
 }
 
-function docOf(node: ts.Node): string | undefined {
-	const jsDoc = (node as { jsDoc?: ts.JSDoc[] }).jsDoc;
-	const comment = jsDoc?.[0]?.comment;
-	if (typeof comment === "string") return comment;
-	return undefined;
-}
-
 function isDeclarationName(node: ts.Node): boolean {
 	const parent = node.parent;
 	if (
@@ -683,7 +676,6 @@ export function extractFileWithNodes(
 				exported: true,
 				metrics: metricsOf(node, range),
 				...(signature === undefined ? {} : { signature }),
-				...(docOf(node) === undefined ? {} : { docComment: docOf(node) as string }),
 				...(scope.containerId === undefined ? {} : { containerId: scope.containerId }),
 			});
 
@@ -714,7 +706,6 @@ export function extractFileWithNodes(
 			exported,
 			metrics: metricsOf(node, range),
 			...(signatureOf(node, source) === undefined ? {} : { signature: signatureOf(node, source) as string }),
-			...(docOf(node) === undefined ? {} : { docComment: docOf(node) as string }),
 			...(scope.containerId === undefined ? {} : { containerId: scope.containerId }),
 		});
 

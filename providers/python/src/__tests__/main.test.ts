@@ -494,7 +494,6 @@ describe("Python provider project behavior", () => {
 			{ text: "# standalone", range: spanAt(text, text.indexOf("# standalone"), "# standalone") },
 		]);
 		const declaration = facts.declarations.find((candidate) => candidate.name === "work");
-		expect(declaration?.docComment).toBe("docs");
 		expect(declaration?.range).toEqual({
 			start: { line: 3, character: 0 },
 			end: { line: 9, character: 25 },

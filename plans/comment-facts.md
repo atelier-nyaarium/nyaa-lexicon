@@ -357,7 +357,33 @@ PROTOCOL 2.0.0 that is already shipping, and because the six cases plus the corp
 known instances. The residual risk is accepted and named: forms nobody has attacked yet are
 untested, in all eight languages.
 
-## Phase 3 - Core
+## Phase 3 - Core ✅
+
+SHIPPED. Two owner modules: `commentText` normalizes, `commentAttach` decides form and anchor.
+Attachment runs in the INDEXER rather than the store, because the source text is the only thing
+that can answer "is there a blank line between these two" and the indexer is the last place holding
+it. The store stays persistence.
+
+Verified against real repositories rather than fixtures, which is what proved the two-disjunct
+leading rule actually covers both range conventions:
+
+| corpus | language | comments | leading | trailing | inline | anchored |
+|---|---|---|---|---|---|---|
+| nyaa-lexicon | typescript | 2588 | 1059 | 0 | 0 | 1564 |
+| libuv | c | 5009 | 526 | 93 | 19 | 4258 |
+| ripgrep | rust | 5777 | 1399 | 3 | 0 | 2562 |
+| kotlinx-coroutines | kotlin | 7353 | 1847 | 238 | 7 | 6758 |
+| newtonsoft-json | csharp | 17765 | 2679 | 22 | 7576 |
+| requests | python | 737 | 47 | 14 | 0 | 576 |
+
+Both conventions produce leading attachments in volume, which is the evidence the rule needed:
+c, typescript and csharp INCLUDE the doc in the declaration's range (first disjunct fires),
+while rust, kotlin and python EXCLUDE it (second disjunct fires, read from the source text).
+
+Zero trailing in this repo is not a defect: the house rule puts comments on their own line, and
+trailing shows up immediately in corpora that write them.
+
+## Phase 3 - Core (as planned)
 
 - Attachment runs AT INDEX TIME inside the replaceFile flow, with the module's source text in
   hand (coordinatesOf over it) - this is what makes the adjacency checks decidable: "nothing
