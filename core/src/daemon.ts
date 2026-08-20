@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { processIsAlive } from "./client.js";
+import { lockHolderAlive, processIdentity } from "./client.js";
 import { bundleStamp } from "./ensureDaemon.js";
 import { type DaemonLock, DaemonLockSchema } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
@@ -94,7 +94,7 @@ function claimLock(lockFile: string, lock: DaemonLock): { claimed: true } | { cl
 			}
 
 			const holder = readLock(lockFile);
-			if (holder !== null && processIsAlive(holder.pid)) return { claimed: false, holder };
+			if (holder !== null && lockHolderAlive(holder)) return { claimed: false, holder };
 
 			const grave = `${lockFile}.${process.pid}.stale`;
 			try {
@@ -148,10 +148,12 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		...(options.missedLimit === undefined ? {} : { missedLimit: options.missedLimit }),
 	});
 
+	const identity = processIdentity(process.pid);
 	const lock = DaemonLockSchema.parse({
 		port: server.port,
 		token,
 		pid: process.pid,
+		...(identity === null ? {} : { pidStart: identity.startTicks }),
 		protocolVersion: PROTOCOL_VERSION,
 		buildVersion: BUILD_VERSION,
 		...(bundleStamp() === null ? {} : { bundleStamp: bundleStamp() }),

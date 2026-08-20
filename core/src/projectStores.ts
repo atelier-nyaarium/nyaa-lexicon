@@ -41,8 +41,11 @@ export type DeleteOutcome = { deleted: true; key: string; bytes: number } | { de
 ////////////////////////////////
 //  Functions & Helpers
 
+/** Who may hold a store's lock: pid plus the identity that tells reuse from residence. */
+export type HolderAlive = (holder: { pid: number; pidStart?: string | undefined }) => boolean;
+
 /** The pid of the daemon serving this directory, or null when the lock is absent, junk, or dead. */
-function pidOf(dir: string, isAlive: (pid: number) => boolean): number | null {
+function pidOf(dir: string, isAlive: HolderAlive): number | null {
 	let raw: string;
 	try {
 		raw = readFileSync(path.join(dir, "daemon.json"), "utf8");
@@ -57,7 +60,7 @@ function pidOf(dir: string, isAlive: (pid: number) => boolean): number | null {
 	}
 	const lock = DaemonLockSchema.safeParse(parsed);
 	if (!lock.success) return null;
-	return isAlive(lock.data.pid) ? lock.data.pid : null;
+	return isAlive(lock.data) ? lock.data.pid : null;
 }
 
 /** The workspace an index was built from. Null when it is too old to carry the key, never a guess. */
@@ -102,10 +105,7 @@ function sizeOf(indexFile: string): { bytes: number; modifiedAt: number | null }
 }
 
 /** Every workspace index on this machine, newest first. */
-export function listProjectStores(
-	isAlive: (pid: number) => boolean,
-	host: PlatformEnv = currentHost(),
-): ProjectStore[] {
+export function listProjectStores(isAlive: HolderAlive, host: PlatformEnv = currentHost()): ProjectStore[] {
 	const root = stateRoot(host);
 	let entries: string[];
 	try {
@@ -139,7 +139,7 @@ export function listProjectStores(
  * and the key must match exactly. */
 export function deleteProjectStore(
 	key: string,
-	isAlive: (pid: number) => boolean,
+	isAlive: HolderAlive,
 	host: PlatformEnv = currentHost(),
 ): DeleteOutcome {
 	// The key names a directory, so a separator or a traversal segment in it would leave the state

@@ -4,10 +4,13 @@
 //
 // Indexes once at start, then serves until stopped. The index is a real file rather than memory,
 // so a restart re-uses what it already knows.
+//
+// It runs detached with stdio pointed at the workspace's daemon.log, so every line here is the
+// only record of what happened.
 
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { startDaemon } from "./daemon.js";
+import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { createDispatch } from "./dispatch.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
@@ -19,6 +22,7 @@ import { DaemonStartingError } from "./socketTransport.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
 import { TransactionManager } from "./transactions.js";
+import { BUILD_VERSION } from "./version.js";
 import { admitWorkspace } from "./workspaceAdmission.js";
 import { WorkspaceGate } from "./workspaceGate.js";
 
@@ -30,6 +34,22 @@ const STARTUP_ALLOWANCE_MS = 90_000;
 
 /** Re-offered while the first scan runs. The client's ceiling ends the wait; the scan finishes anyway. */
 const FIRST_SCAN_PATIENCE_MS = 30_000;
+
+/** How long shutdown waits for in-flight answers. Past it, the journal is the safety net. */
+const SETTLE_LIMIT_MS = 30_000;
+
+////////////////////////////////
+//  Functions & Helpers
+
+/** Timestamped per line, because stdout is a log file read long after the fact. */
+function log(lines: string): void {
+	const stamp = new Date().toISOString();
+	for (const line of lines.split("\n")) console.log(`${stamp} ${line}`);
+}
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
 
 ////////////////////////////////
 //  Main
@@ -71,6 +91,86 @@ async function main(argv: string[]): Promise<void> {
 	// Windows the folder cannot be renamed or deleted while a live process sits in it.
 	process.chdir(paths.dir);
 
+	log(`daemon ${BUILD_VERSION} pid ${process.pid} starting for ${root}`);
+
+	////////////////////////////////
+	//  Teardown, before anything to tear down
+
+	// Nullable because a failure or signal can land at ANY startup stage, and teardown must release
+	// whatever exists by then, or the lock and providers outlive the process (issue #7).
+	let daemon: RunningDaemon | null = null;
+	let store: IndexStore | null = null;
+	let supervisor: ProviderSupervisor | null = null;
+	let transactions: TransactionManager | null = null;
+	let live: { stop: () => void } | null = null;
+	let linger: ReturnType<typeof lingerWhileEmpty> | null = null;
+
+	// Requests being answered right now. What shutdown waits out and the linger refuses to orphan.
+	let inFlight = 0;
+	const settledWaiters: Array<() => void> = [];
+	function settled(limitMs: number): Promise<void> {
+		if (inFlight === 0) return Promise.resolve();
+		return new Promise((resolve) => {
+			const limit = setTimeout(resolve, limitMs);
+			limit.unref?.();
+			settledWaiters.push(() => {
+				clearTimeout(limit);
+				resolve();
+			});
+		});
+	}
+
+	// One way out, whatever asked for it: signals, the RPC, the linger, and a startup failure all
+	// land here, so there is no second teardown order to keep in step with this one. The lock goes
+	// first, since removing it is what stops a client connecting to a dead port.
+	let stopping = false;
+	async function shutdown(why: string, code = 0): Promise<void> {
+		if (stopping) return;
+		stopping = true;
+		log(`stopping: ${why}`);
+		// Every step runs and the exit always lands, or one throwing step would leave a zombie
+		// daemon that ignores all further shutdowns.
+		try {
+			linger?.cancel();
+			await settled(SETTLE_LIMIT_MS);
+			if (inFlight > 0) log(`giving up on ${inFlight} request(s) still in flight after ${SETTLE_LIMIT_MS}ms`);
+			if (transactions?.status().open) {
+				log("a refactor transaction stays open in the journal; the next daemon recovers it");
+			}
+			const steps: Array<[string, () => unknown]> = [
+				["lock", () => daemon?.stop()],
+				["watcher", () => live?.stop()],
+				["providers", () => supervisor?.stopAll()],
+				["store", () => store?.close()],
+			];
+			for (const [name, step] of steps) {
+				try {
+					await step();
+				} catch (error) {
+					log(`teardown of the ${name} failed: ${describeError(error)}`);
+				}
+			}
+			log(`stopped (exit ${code})`);
+		} finally {
+			process.exit(code);
+		}
+	}
+
+	for (const signal of ["SIGINT", "SIGTERM"] as const) {
+		process.on(signal, () => void shutdown(signal));
+	}
+	process.on("uncaughtException", (error) => {
+		log(`uncaught exception: ${describeError(error)}`);
+		void shutdown("uncaught exception", 1);
+	});
+	process.on("unhandledRejection", (reason) => {
+		log(`unhandled rejection: ${describeError(reason)}`);
+		void shutdown("unhandled rejection", 1);
+	});
+
+	////////////////////////////////
+	//  Startup
+
 	// Claiming BEFORE the store opens is what resolves two sessions starting a daemon at once: the
 	// loser exits here, having never touched SQLite, and both clients connect to whoever won.
 	// `observe` is deferred because the linger needs the daemon it will stop.
@@ -89,165 +189,168 @@ async function main(argv: string[]): Promise<void> {
 		}),
 	});
 	if (!outcome.claimed) {
-		console.log(`not starting: ${outcome.reason}`);
+		log(`not starting: ${outcome.reason}`);
 		return;
 	}
-	const daemon = outcome.daemon;
-	console.log(`listening on 127.0.0.1:${daemon.lock.port} for ${root}`);
-	console.log(`lock ${paths.lockFile}`);
+	daemon = outcome.daemon;
+	log(`listening on 127.0.0.1:${daemon.lock.port} for ${root}`);
+	log(`lock ${paths.lockFile}`);
 
-	const { store, rebuilt, reason } = IndexStore.open(paths.index, storeCompatibilityKey(lexiconRoot()), root);
-	if (rebuilt) console.log(`${reason ?? "the index could not be trusted"}; rebuilt from empty`);
+	// Everything below runs with the lock held, so failing without releasing it would leave every
+	// future client reading a live pid that serves nothing.
+	try {
+		const opened = IndexStore.open(paths.index, storeCompatibilityKey(lexiconRoot()), root);
+		store = opened.store;
+		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
 
-	const supervisor = new ProviderSupervisor();
-	startingSince = Date.now();
-	waitingFor = "the language providers to start";
-	const providers = await startProviders(supervisor, root);
-	console.log(`providers:\n${describeStart(providers)}`);
+		supervisor = new ProviderSupervisor();
+		startingSince = Date.now();
+		waitingFor = "the language providers to start";
+		const providers = await startProviders(supervisor, root);
+		log(`providers:\n${describeStart(providers)}`);
 
-	const service = new LexiconService(
-		store,
-		supervisor,
-		(module) => {
-			try {
-				return readFileSync(path.join(root, module), "utf8");
-			} catch {
-				return null;
+		const openStore = store;
+		const service = new LexiconService(
+			openStore,
+			supervisor,
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		const gate = new WorkspaceGate();
+		transactions = new TransactionManager(openStore, root);
+		const journal = transactions;
+
+		// Before the handler is published, so nothing can ask about a workspace still holding a
+		// half-applied step. The lock is already claimed, so no other daemon is writing here.
+		const recovered = await gate.exclusive(async () => {
+			const outcome = journal.recover();
+			// Restoring puts back text the index does not describe, so the facts for those files are of
+			// a version that no longer exists. Reindexed here rather than left to the warm scan, which
+			// is opt-in and may never run.
+			for (const module of outcome.restored) await service.indexFile(module);
+			return outcome;
+		});
+		if (recovered.recovered) {
+			log(`recovered refactor ${recovered.transactionId}: restored ${recovered.restored.length} file(s)`);
+			if (recovered.conflicts.length > 0) {
+				log(`left alone, changed by someone else: ${recovered.conflicts.join(", ")}`);
 			}
-		},
-		root,
-	);
-
-	const gate = new WorkspaceGate();
-	const transactions = new TransactionManager(store, root);
-
-	// Before the handler is published, so nothing can ask about a workspace still holding a
-	// half-applied step. The lock is already claimed, so no other daemon is writing here.
-	const recovered = await gate.exclusive(async () => {
-		const outcome = transactions.recover();
-		// Restoring puts back text the index does not describe, so the facts for those files are of
-		// a version that no longer exists. Reindexed here rather than left to the warm scan, which
-		// is opt-in and may never run.
-		for (const module of outcome.restored) await service.indexFile(module);
-		return outcome;
-	});
-	if (recovered.recovered) {
-		console.log(`recovered refactor ${recovered.transactionId}: restored ${recovered.restored.length} file(s)`);
-		if (recovered.conflicts.length > 0) {
-			console.log(`left alone, changed by someone else: ${recovered.conflicts.join(", ")}`);
 		}
-	}
 
-	const dispatch = createDispatch(service, { gate, transactions });
+		const dispatch = createDispatch(service, { gate, transactions: journal });
 
-	// Warming is opt-in, and the opt-in is having indexed here before. A directory nobody meant to
-	// index costs nothing until something asks about it.
-	let scan: Promise<void> | null = null;
-	let live: { stop: () => void } | null = null;
-	// Content means an earlier run scanned it, so only an empty store makes a caller wait.
-	let everScanned = store.totals().files > 0;
-	function warm(): void {
-		scan ??= (async () => {
-			const started = Date.now();
-			// The first pass stores declarations and imports for immediate answers.
-			const outcomes = await service.warmupWorkspace();
-			const indexed = outcomes.filter((o) => o.action === "indexed");
-			const failures = outcomes.filter((o) => o.failure !== undefined);
-			const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
-			console.log(`scope: ${service.scopeReport()}`);
-			console.log(`warmed ${indexed.length} files, ${symbols} declarations, ${Date.now() - started}ms`);
-			if (failures.length > 0)
-				console.log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
-			everScanned = true;
+		// Warming is opt-in, and the opt-in is having indexed here before. A directory nobody meant to
+		// index costs nothing until something asks about it.
+		let scan: Promise<void> | null = null;
+		// Content means an earlier run scanned it, so only an empty store makes a caller wait.
+		let everScanned = openStore.totals().files > 0;
+		function warm(): void {
+			scan ??= (async () => {
+				const started = Date.now();
+				// The first pass stores declarations and imports for immediate answers.
+				const outcomes = await service.warmupWorkspace();
+				const indexed = outcomes.filter((o) => o.action === "indexed");
+				const failures = outcomes.filter((o) => o.failure !== undefined);
+				const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
+				log(`scope: ${service.scopeReport()}`);
+				log(`warmed ${indexed.length} files, ${symbols} declarations, ${Date.now() - started}ms`);
+				if (failures.length > 0)
+					log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
+				everScanned = true;
 
-			void service.upgradeRemaining().then(
-				() => {
-					const status = service.indexStatus();
-					console.log(
-						`upgraded to full facts, ${Date.now() - started}ms total (${status.failures} failures)`,
-					);
-				},
-				(error) => console.log(`upgrade failed: ${error instanceof Error ? error.message : error}`),
-			);
+				void service.upgradeRemaining().then(
+					() => {
+						const status = service.indexStatus();
+						log(`upgraded to full facts, ${Date.now() - started}ms total (${status.failures} failures)`);
+					},
+					(error) => log(`upgrade failed: ${error instanceof Error ? error.message : error}`),
+				);
 
-			// Watching starts with warming: a watcher over an unasked-for workspace would index it
-			// on the next file change anyway.
-			live = startLiveIndex({
-				service,
-				workspaceRoot: root,
-				gate,
-				onApplied: (applied) => {
-					const touched = applied.filter((o) => o.action !== "skipped");
-					const failures = applied.filter((o) => o.failure !== undefined);
-					if (touched.length > 0) console.log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
-					if (failures.length > 0)
-						console.log(`reindex failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
-				},
-				onError: (error) => console.log(`reindex failed: ${error instanceof Error ? error.message : error}`),
-			});
-		})();
-	}
-
-	// `shutdown` is a daemon method rather than a service one, so it is answered here instead of in
-	// the service's table. It answers BEFORE stopping, or the caller reads its own success as a
-	// dropped connection.
-	async function handle(method: string, params: unknown): Promise<unknown> {
-		if (method === "shutdown") {
-			setTimeout(() => void shutdown("asked to shut down"), 0).unref?.();
-			return { stopping: true };
+				// Watching starts with warming: a watcher over an unasked-for workspace would index it
+				// on the next file change anyway.
+				live = startLiveIndex({
+					service,
+					workspaceRoot: root,
+					gate,
+					onApplied: (applied) => {
+						const touched = applied.filter((o) => o.action !== "skipped");
+						const failures = applied.filter((o) => o.failure !== undefined);
+						if (touched.length > 0) log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
+						if (failures.length > 0)
+							log(`reindex failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
+					},
+					onError: (error) => log(`reindex failed: ${error instanceof Error ? error.message : error}`),
+				});
+			})();
 		}
-		// Asking about the workspace IS the request to index it.
-		warm();
 
-		// The first answer requires declarations and imports; full facts may remain pending.
-		if (!everScanned) {
-			const status = service.indexStatus();
-			throw new DaemonStartingError(
-				`warming the index (${status.done} of ${status.total} files outlined)`,
-				FIRST_SCAN_PATIENCE_MS,
-				"the warmup pass",
-			);
+		// `shutdown` is a daemon method rather than a service one, so it is answered here instead of
+		// in the service's table. It answers BEFORE stopping, or the caller reads its own success as
+		// a dropped connection.
+		async function handle(method: string, params: unknown): Promise<unknown> {
+			if (stopping) throw new Error("the daemon is stopping");
+			if (method === "shutdown") {
+				setTimeout(() => void shutdown("asked to shut down"), 0).unref?.();
+				return { stopping: true };
+			}
+			// Asking about the workspace IS the request to index it.
+			warm();
+
+			// The first answer requires declarations and imports; full facts may remain pending.
+			if (!everScanned) {
+				const status = service.indexStatus();
+				throw new DaemonStartingError(
+					`warming the index (${status.done} of ${status.total} files outlined)`,
+					FIRST_SCAN_PATIENCE_MS,
+					"the warmup pass",
+				);
+			}
+			// Counted so shutdown waits for the answer and the linger cannot fire under it.
+			inFlight += 1;
+			try {
+				return await dispatch(method, params);
+			} finally {
+				inFlight -= 1;
+				if (inFlight === 0) for (const waiter of settledWaiters.splice(0)) waiter();
+			}
 		}
-		return dispatch(method, params);
+
+		// Answering BEFORE the first scan, on purpose. Publishing the lock only once indexing
+		// finished meant a client could not find the daemon for the length of a full scan, so every
+		// session paid that scan in its own process instead. An early answer is drawn from a partial
+		// index, which is why the index reports its state rather than letting a caller assume it.
+		daemon.setHandle(handle);
+
+		if (openStore.totals().files > 0) warm();
+		else log("cold: nothing indexed here before, so nothing is scanned until something asks");
+
+		linger = lingerWhileEmpty({
+			afterMs: DEFAULT_LINGER_MS,
+			stop: () => void shutdown(`no clients for ${DEFAULT_LINGER_MS / 60_000} minutes`),
+			// Issue #7: counting only connections stopped the daemon under a running rename the
+			// moment its client timed out and disconnected.
+			holdWhile: () => {
+				if (inFlight > 0) return `${inFlight} request(s) in flight`;
+				if (journal.status().open) return "a refactor transaction is open";
+				return null;
+			},
+			onHeld: (reason) => log(`idle timer fired with ${reason}; staying up`),
+		});
+		// Wired only now that everything it tears down exists. Starting armed rather than waiting
+		// for a first disconnect: a daemon nobody ever connects to must not sit forever either.
+		observe = linger.observe;
+		linger.observe(daemon.connections());
+	} catch (error) {
+		log(`startup failed: ${describeError(error)}`);
+		await shutdown("startup failed", 1);
 	}
-
-	// Answering BEFORE the first scan, on purpose. Publishing the lock only once indexing finished
-	// meant a client could not find the daemon for the length of a full scan, so every session paid
-	// that scan in its own process instead. An early answer is drawn from a partial index, which is
-	// why the index reports its state rather than letting a caller assume it.
-	daemon.setHandle(handle);
-
-	if (store.totals().files > 0) warm();
-	else console.log("cold: nothing indexed here before, so nothing is scanned until something asks");
-
-	// One way out, whatever asked for it: the signal, the RPC, and the linger all land here, so
-	// there is no second teardown order to keep in step with this one. The lock goes first, since
-	// removing it is what stops a client connecting to a dead port.
-	let stopping = false;
-	async function shutdown(why: string): Promise<void> {
-		if (stopping) return;
-		stopping = true;
-		console.log(`stopping: ${why}`);
-		linger.cancel();
-		await daemon.stop();
-		live?.stop();
-		supervisor.stopAll();
-		store.close();
-		process.exit(0);
-	}
-
-	for (const signal of ["SIGINT", "SIGTERM"] as const) {
-		process.on(signal, () => void shutdown(signal));
-	}
-
-	const linger = lingerWhileEmpty({
-		afterMs: DEFAULT_LINGER_MS,
-		stop: () => void shutdown(`no clients for ${DEFAULT_LINGER_MS / 60_000} minutes`),
-	});
-	// Wired only now that everything it tears down exists. Starting armed rather than waiting for
-	// a first disconnect: a daemon nobody ever connects to must not sit forever either.
-	observe = linger.observe;
-	linger.observe(daemon.connections());
 }
 
 if (import.meta.main) await main(process.argv.slice(2));

@@ -336,6 +336,8 @@ export class ProviderSupervisor {
 	private stopProcess(running: { child: ChildProcess; connection: MessageConnection; queue: RequestQueue }): void {
 		running.queue.close(new Error("provider stopped"));
 		running.connection.dispose();
+		// EOF first, the same signal an abnormal daemon death sends, so both paths exercise it.
+		running.child.stdin?.end();
 		running.child.kill();
 	}
 

@@ -12,6 +12,11 @@ export interface LingerOptions {
 	afterMs: number;
 	/** What to run when it fires. */
 	stop: () => void;
+	/** Asked at fire time. A reason re-arms instead of stopping: issue #7 was a daemon
+	 * exiting under a running rename because only connections were counted. */
+	holdWhile?: () => string | null;
+	/** Told each time a hold re-arms. */
+	onHeld?: (reason: string) => void;
 	/** Injected so tests decide rather than wait. */
 	setTimer?: (fn: () => void, ms: number) => unknown;
 	clearTimer?: (handle: unknown) => void;
@@ -49,15 +54,27 @@ export function lingerWhileEmpty(options: LingerOptions): Linger {
 		handle = null;
 	}
 
+	function arm(): void {
+		handle = setTimer(() => {
+			handle = null;
+			if (cancelled) return;
+			const held = options.holdWhile?.() ?? null;
+			if (held !== null) {
+				options.onHeld?.(held);
+				// Re-checked: onHeld may itself have cancelled.
+				if (!cancelled) arm();
+				return;
+			}
+			options.stop();
+		}, options.afterMs);
+	}
+
 	return {
 		observe: (connections) => {
 			if (cancelled) return;
 			disarm();
 			if (connections > 0) return;
-			handle = setTimer(() => {
-				handle = null;
-				options.stop();
-			}, options.afterMs);
+			arm();
 		},
 		armed: () => handle !== null,
 		cancel: () => {

@@ -45,6 +45,25 @@ describe("finding a daemon", () => {
 		expect(decision.action === "spawn" && decision.reason).toMatch(/4242 is gone/);
 	});
 
+	// Issue #7: liveness got only the pid, so identity could not be judged and a reused pid read
+	// as a live daemon. The seam must see the whole holder.
+	it("hands the liveness seam the holder's identity, not a bare pid", () => {
+		const seen: Array<{ pid: number; pidStart?: string | undefined }> = [];
+		decideFromLock({
+			raw: JSON.stringify({ ...LOCK, pidStart: "12345" }),
+			isAlive: (holder) => {
+				seen.push(holder);
+				return true;
+			},
+			ourProtocolVersion: "0.2.0",
+			ourBuildVersion: "1.10.2",
+			workspaceRoot: "/home/me/proj",
+		});
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({ pid: 4242, pidStart: "12345" });
+	});
+
 	it("replaces a daemon on a different major, which is the stale-daemon case", () => {
 		const decision = decide({ lock: { protocolVersion: "1.0.0" } });
 		expect(decision.action).toBe("replace");

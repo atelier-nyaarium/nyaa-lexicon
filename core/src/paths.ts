@@ -60,6 +60,8 @@ export function workspacePaths(host: PlatformEnv, workspaceRoot: string) {
 		/** Where a client finds a running daemon, or learns there is none. */
 		lockFile: path.join(dir, "daemon.json"),
 		index: path.join(dir, "index.sqlite"),
+		/** The daemon's own words. It runs detached, so this is the only place they land. */
+		logFile: path.join(dir, "daemon.log"),
 	};
 }
 

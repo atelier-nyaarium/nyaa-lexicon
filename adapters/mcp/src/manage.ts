@@ -16,8 +16,8 @@ import {
 	deleteProjectStore,
 	findDaemon,
 	listProjectStores,
+	lockHolderAlive,
 	type ProjectStore,
-	processIsAlive,
 	stateRoot,
 	workspacePaths,
 } from "@nyaa-lexicon/core";
@@ -37,7 +37,7 @@ export interface ManageDeps {
 	remove: (key: string) => ReturnType<typeof deleteProjectStore>;
 	lock: (store: ProjectStore) => DaemonLock | null;
 	shutdown: (lock: DaemonLock) => Promise<unknown>;
-	gone: (store: ProjectStore, pid: number) => boolean;
+	gone: (store: ProjectStore, holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	wait: (ms: number) => Promise<void>;
 	now: () => number;
 }
@@ -110,7 +110,7 @@ function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
 
 	try {
 		const parsed = DaemonLockSchema.safeParse(JSON.parse(raw));
-		return parsed.success && processIsAlive(parsed.data.pid) ? parsed.data : null;
+		return parsed.success && lockHolderAlive(parsed.data) ? parsed.data : null;
 	} catch {
 		return null;
 	}
@@ -119,8 +119,8 @@ function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
 /** Live deps, for production call sites. */
 export function liveDeps(): ManageDeps {
 	return {
-		list: () => listProjectStores(processIsAlive),
-		remove: (key) => deleteProjectStore(key, processIsAlive),
+		list: () => listProjectStores(lockHolderAlive),
+		remove: (key) => deleteProjectStore(key, lockHolderAlive),
 		lock: (store) => {
 			if (store.workspaceRoot === null) return legacyDaemonLock(store);
 			const decision = findDaemon(store.workspaceRoot);
@@ -131,8 +131,9 @@ export function liveDeps(): ManageDeps {
 			return null;
 		},
 		shutdown: (lock) => callDaemon(lock, "shutdown", {}),
-		gone: (store, pid) => {
-			if (!processIsAlive(pid)) return true;
+		gone: (store, holder) => {
+			// Identity, not bare liveness: a reused pid must read as gone, not as a refusal to stop.
+			if (!lockHolderAlive(holder)) return true;
 			return !existsSync(daemonLockFile(store));
 		},
 		wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -255,7 +256,9 @@ export async function stopProjectDaemonTool(
 	const pid = store.livePid;
 	const lock = deps.lock(store);
 	if (lock === null) {
-		if (deps.gone(store, pid)) return text(`# Daemon already stopped\n\nNo daemon is serving \`${args.key}\`.`);
+		if (deps.gone(store, { pid })) {
+			return text(`# Daemon already stopped\n\nNo daemon is serving \`${args.key}\`.`);
+		}
 		return text(
 			`# Daemon not stopped\n\nCould not find a usable daemon lock for \`${args.key}\`; it is still serving pid ${pid}.`,
 			true,
@@ -280,7 +283,7 @@ export async function stopProjectDaemonTool(
 	}
 
 	const started = deps.now();
-	while (!deps.gone(store, pid)) {
+	while (!deps.gone(store, lock)) {
 		if (deps.now() - started >= STOP_TIMEOUT_MS) {
 			return text(
 				`# Daemon not stopped\n\nDaemon pid ${pid} did not stop serving \`${args.key}\` within ${STOP_TIMEOUT_MS}ms.`,

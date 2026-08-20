@@ -24,6 +24,7 @@ const options = {
 	workspaceRoot: "/w",
 	wait: async () => {},
 	timeoutMs: 500,
+	alive: () => true,
 };
 
 ////////////////////////////////
@@ -68,11 +69,44 @@ describe("getting a daemon", () => {
 		const result = await ensureDaemon({
 			...options,
 			look: looking([{ action: "spawn", reason: "no daemon is registered" }]),
-			start: () => {},
+			start: () => undefined,
 		});
 
 		expect(result).toMatchObject({ connected: false });
 		expect((result as { reason: string }).reason).toContain("did not publish a lock");
+	});
+
+	// Issue #7: a crashing daemon read as "did not publish a lock within 10000ms", every time,
+	// whatever actually killed it.
+	it("reports how the spawned daemon died instead of waiting out the clock", async () => {
+		let looks = 0;
+		const result = await ensureDaemon({
+			...options,
+			look: () => {
+				looks++;
+				return { action: "spawn", reason: "no daemon is registered" };
+			},
+			start: () => ({ death: () => "exited with code 3" }),
+		});
+
+		expect(result).toMatchObject({ connected: false });
+		expect((result as { reason: string }).reason).toContain("exited with code 3");
+		// Reported on the first poll, not after the full timeout's worth of looking.
+		expect(looks).toBeLessThan(4);
+	});
+
+	it("keeps waiting while the spawned daemon is merely slow", async () => {
+		const result = await ensureDaemon({
+			...options,
+			look: looking([
+				{ action: "spawn", reason: "no daemon is registered" },
+				{ action: "spawn", reason: "still coming up" },
+				{ action: "connect", lock: LOCK },
+			]),
+			start: () => ({ death: () => null }),
+		});
+
+		expect(result).toEqual({ connected: true, lock: LOCK });
 	});
 
 	// Callers ensure a daemon on every request, so this runs constantly. Spawning a second one
@@ -193,6 +227,60 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 
 		expect(stopped).toBe(0);
 		expect(result.connected === false && result.reason).toMatch(/did not answer/);
+	});
+
+	// A signal sent on the old number lands on whoever wears it now, so a holder that stopped being
+	// itself between the lock read and the kill must not be signalled.
+	it("never signals a pid that is no longer the daemon that wrote the lock", async () => {
+		const stopped: number[] = [];
+		await ensureDaemon({
+			...options,
+			look: looking([stale, { action: "spawn", reason: "gone" }, { action: "connect", lock: LOCK }]),
+			ask: async () => ({ open: false }),
+			alive: () => false,
+			stop: (pid) => {
+				stopped.push(pid);
+			},
+			start: () => undefined,
+		});
+
+		expect(stopped).toEqual([]);
+	});
+
+	// Spawning over an unreleased lock hands the newcomer a claim it must lose; refusing names the
+	// actual holdout instead of reporting the newcomer's confusion as ours.
+	it("refuses to spawn while the stopped daemon still holds its lock", async () => {
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			look: looking([stale]),
+			ask: async () => ({ open: false }),
+			stop: () => {},
+			start: () => {
+				started++;
+				return undefined;
+			},
+		});
+
+		expect(started).toBe(0);
+		expect(result.connected === false && result.reason).toMatch(/still holds the lock/);
+	});
+
+	it("connects instead when someone else replaced it first", async () => {
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			look: looking([stale, { action: "connect", lock: LOCK }]),
+			ask: async () => ({ open: false }),
+			stop: () => {},
+			start: () => {
+				started++;
+				return undefined;
+			},
+		});
+
+		expect(started).toBe(0);
+		expect(result).toEqual({ connected: true, lock: LOCK });
 	});
 
 	it("retires a protocol mismatch on our workspace too, not just a build one", async () => {

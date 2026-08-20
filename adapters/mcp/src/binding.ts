@@ -6,7 +6,7 @@
 import {
 	admitWorkspace,
 	listProjectStores,
-	processIsAlive,
+	lockHolderAlive,
 	registerProject,
 	type SessionBinds,
 	type SessionProject,
@@ -95,7 +95,7 @@ function text(body: string, isError = false): ToolResult {
 export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	return {
 		list: () => binds.all(),
-		indexTimes: () => new Map(listProjectStores(processIsAlive).map((store) => [store.key, store.lastIndexedAt])),
+		indexTimes: () => new Map(listProjectStores(lockHolderAlive).map((store) => [store.key, store.lastIndexedAt])),
 		register: (root) => {
 			const outcome = registerProject(root, (candidate) => admitWorkspace(candidate));
 			if (!outcome.registered) return outcome;

@@ -17,8 +17,9 @@ const WRITING_CALLS = ["writeFileSync", "renameSync"];
 
 const TEMPORARY_SUFFIX = "lexicon-tmp";
 
-/** The one writer. daemon.ts and projectRegistry.ts write lexicon's OWN state, never source. */
-const OWNERS = new Set(["sourceWriter.ts", "daemon.ts", "projectRegistry.ts"]);
+/** The one writer. daemon.ts, projectRegistry.ts and ensureDaemon.ts (rotating daemon.log) write
+ * lexicon's OWN state, never source. */
+const OWNERS = new Set(["sourceWriter.ts", "daemon.ts", "projectRegistry.ts", "ensureDaemon.ts"]);
 
 ////////////////////////////////
 //  Functions & Helpers

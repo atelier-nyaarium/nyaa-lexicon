@@ -112,12 +112,15 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 	const heartbeatMs = options.heartbeatMs ?? HEARTBEAT_MS;
 	const missedLimit = options.missedLimit ?? MISSED_LIMIT;
 	const authed = new Set<Socket>();
+	// ALL sockets, so close() cannot be held open by one that never authenticated.
+	const sockets = new Set<Socket>();
 
 	const server: Server = createNetServer((socket) => {
 		let helloed = false;
 		let missed = 0;
 		let pings = 0;
 		socket.setNoDelay(true);
+		sockets.add(socket);
 
 		const helloDeadline = setTimeout(() => {
 			if (!helloed) socket.destroy();
@@ -209,6 +212,7 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 		socket.on("close", () => {
 			clearInterval(heartbeat);
 			clearTimeout(helloDeadline);
+			sockets.delete(socket);
 			if (authed.delete(socket)) options.onConnections?.(authed.size);
 		});
 	});
@@ -221,7 +225,7 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 		port: address.port,
 		connections: () => authed.size,
 		close: async () => {
-			for (const socket of [...authed]) socket.destroy();
+			for (const socket of [...sockets]) socket.destroy();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		},
 	};
@@ -299,7 +303,11 @@ export function connectFrames(port: number, token: string, timeoutMs = CONNECT_T
 			const lost = new ConnectionLostError("the daemon connection closed");
 			for (const waiter of pending.values()) waiter.reject(lost);
 			pending.clear();
-			if (!welcomed) rejectConnect(new ConnectionLostError("the daemon closed the connection before welcoming"));
+			if (!welcomed) {
+				rejectConnect(
+					new ConnectionLostError(`the daemon on port ${port} closed the connection before welcoming`),
+				);
+			}
 		});
 
 		socket.on("connect", () => writeFrame(socket, { kind: "hello", token }));

@@ -16,6 +16,9 @@ export const DaemonLockSchema = z
 		/** Presented on every call. Closes the hole that binding a TCP port opens on a shared box. */
 		token: z.string().min(32),
 		pid: z.number().int().positive(),
+		/** The pid's birth ticks where the platform offers them. A reused pid fails this, so a dead
+		 * daemon can never read as live on pid alone (issue #7). */
+		pidStart: z.string().min(1).optional(),
 		/** Protocol version the daemon speaks, so a client on a different major replaces it. */
 		protocolVersion: z.string().min(1),
 		/** The BUILD the daemon runs, which decides its method table. Absent reads as a mismatch. */
@@ -54,8 +57,9 @@ export type ReplaceCause = "otherWorkspace" | "protocol" | "build";
 export interface LockContext {
 	/** Raw file contents, or null when there is no lock file. */
 	raw: string | null;
-	/** Whether that pid is alive. Injected, since asking is a syscall and this stays pure. */
-	isAlive: (pid: number) => boolean;
+	/** Whether the lock's HOLDER is alive: the pid answering AND still the process that wrote it.
+	 * Injected, since asking is a syscall and this stays pure. */
+	isAlive: (holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	ourProtocolVersion: string;
 	/** This build's version. A daemon on another build has another method table. */
 	ourBuildVersion: string;
@@ -91,7 +95,7 @@ export function decideFromLock(context: LockContext): LockDecision {
 	if (!result.success) return { action: "spawn", reason: "the lock file does not match its schema" };
 	const lock = result.data;
 
-	if (!context.isAlive(lock.pid)) return { action: "spawn", reason: `pid ${lock.pid} is gone` };
+	if (!context.isAlive(lock)) return { action: "spawn", reason: `pid ${lock.pid} is gone` };
 
 	// A lock naming another workspace means this one's file was overwritten, and connecting would
 	// serve a different repo's index under our path.

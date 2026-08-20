@@ -26,6 +26,44 @@ export function processIsAlive(pid: number): boolean {
 	}
 }
 
+/** Fields from /proc/<pid>/stat. comm may hold spaces and parens, so parsing is only stable after
+ * the LAST ')'. Exported pure so hostile comm shapes are testable. */
+export function parseProcStat(stat: string): { startTicks: string; zombie: boolean } | null {
+	const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+	const state = fields[0];
+	const startTicks = fields[19];
+	if (state === undefined || startTicks === undefined || !/^\d+$/.test(startTicks)) return null;
+	return { startTicks, zombie: state === "Z" };
+}
+
+/** A pid's birth, where the platform can say. Reuse mints new ticks, so equal ticks IS identity;
+ * kill(0) alone reads a reused pid and a zombie both as our daemon. */
+export function processIdentity(pid: number): { startTicks: string; zombie: boolean } | null {
+	try {
+		return parseProcStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+/** Liveness a lock can trust: the pid answers and is still the process that wrote the lock.
+ * Unlike processIsAlive, EPERM is not taken on faith: a pid we may not signal is only the holder
+ * if its recorded identity says so, since bare existence proves a stranger reused the number. */
+export function lockHolderAlive(holder: { pid: number; pidStart?: string | undefined }): boolean {
+	try {
+		process.kill(holder.pid, 0);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+		const identity = processIdentity(holder.pid);
+		return identity !== null && !identity.zombie && identity.startTicks === holder.pidStart;
+	}
+	const identity = processIdentity(holder.pid);
+	// No /proc, no verdict: the plain probe stands, as it always has off Linux.
+	if (identity === null) return true;
+	if (identity.zombie) return false;
+	return holder.pidStart === undefined || identity.startTicks === holder.pidStart;
+}
+
 /** Reads the lock file and applies the rules. Absent and unreadable are both "no daemon". */
 export function findDaemon(workspaceRoot: string, host: PlatformEnv = currentHost()): LockDecision {
 	const paths = workspacePaths(host, workspaceRoot);
@@ -38,7 +76,7 @@ export function findDaemon(workspaceRoot: string, host: PlatformEnv = currentHos
 
 	return decideFromLock({
 		raw,
-		isAlive: processIsAlive,
+		isAlive: lockHolderAlive,
 		ourProtocolVersion: PROTOCOL_VERSION,
 		ourBuildVersion: BUILD_VERSION,
 		ourBundleStamp: bundleStamp(),

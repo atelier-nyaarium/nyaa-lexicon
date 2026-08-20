@@ -9,25 +9,34 @@
 // that finds the daemon gone simply starts another.
 
 import { spawn } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
-import { callDaemon, findDaemon } from "./client.js";
+import { callDaemon, findDaemon, lockHolderAlive } from "./client.js";
 import type { DaemonLock } from "./lockFile.js";
+import { currentHost, workspacePaths } from "./paths.js";
 import { lexiconRoot } from "./providers.js";
 
 ////////////////////////////////
 //  Interfaces & Types
+
+/** How the spawned daemon died, if it has. The lock-wait reads this so "did not publish a lock"
+ * can say "exited with code 3" instead (issue #7 was undiagnosable without it). */
+export interface SpawnWatch {
+	death: () => string | null;
+}
 
 export interface EnsureDaemonOptions {
 	workspaceRoot: string;
 	/** How long to wait for a spawned daemon to publish its lock. */
 	timeoutMs?: number;
 	/** Injected so a test never starts a real process. */
-	start?: (command: string[]) => void;
+	start?: (command: string[]) => SpawnWatch | undefined | void;
 	look?: () => ReturnType<typeof findDaemon>;
 	wait?: (ms: number) => Promise<void>;
 	/** Injected so a test never signals a real process. */
 	stop?: (pid: number) => void;
+	/** Whether the lock's holder still lives as itself. Injected for the same reason. */
+	alive?: (holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	/** Asks the outgoing daemon whether anything is in flight. Injected for the same reason. */
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
 }
@@ -41,8 +50,29 @@ export type EnsureResult = { connected: true; lock: DaemonLock } | { connected: 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const POLL_MS = 100;
 
+/** Rotated once past this, keeping one predecessor. Enough for weeks of a healthy daemon. */
+const LOG_ROTATE_BYTES = 1024 * 1024;
+
 ////////////////////////////////
 //  Functions & Helpers
+
+/** One log per workspace, capped by rotation, or null when it cannot be opened. */
+function openLog(logFile: string): number | null {
+	try {
+		mkdirSync(path.dirname(logFile), { recursive: true });
+		if (statSync(logFile).size > LOG_ROTATE_BYTES) {
+			rmSync(`${logFile}.old`, { force: true });
+			renameSync(logFile, `${logFile}.old`);
+		}
+	} catch {
+		// Absent log or failed rotation both mean: append to whatever opens.
+	}
+	try {
+		return openSync(logFile, "a");
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Start a daemon that outlives whoever started it.
@@ -50,12 +80,31 @@ const POLL_MS = 100;
  * Detached on purpose: the daemon serves every session that finds its lock, so tying its life to
  * the first session killed it under the second. The questions detaching opens - a stale lock, two
  * writers racing on one index - are answered by the daemon's exclusive lock claim, not here.
+ *
+ * Its stdio lands in the workspace's daemon.log, so a crash has a record instead of a mute
+ * lock-wait timeout. The child handle is watched, never awaited, so its death during our wait is
+ * reportable while its life stays its own.
  */
-function startChild(command: string[]): void {
+function startChild(command: string[], logFile: string): SpawnWatch | undefined {
 	const [executable, ...args] = command;
-	if (executable === undefined) return;
+	if (executable === undefined) return undefined;
 
-	spawn(executable, args, { stdio: "ignore", detached: true }).unref();
+	const log = openLog(logFile);
+	const child = spawn(executable, args, {
+		stdio: ["ignore", log ?? "ignore", log ?? "ignore"],
+		detached: true,
+	});
+	if (log !== null) closeSync(log);
+
+	let death: string | null = null;
+	child.once("exit", (code, signal) => {
+		death = signal !== null ? `died on ${signal}` : `exited with code ${code}`;
+	});
+	child.once("error", (error) => {
+		death = `could not start: ${error.message}`;
+	});
+	child.unref();
+	return { death: () => death };
 }
 
 /** The bundle, run on the shipping runtime. Absent in a source checkout that was never built. */
@@ -89,6 +138,7 @@ async function retire(
 	lock: DaemonLock,
 	ask: (lock: DaemonLock, method: string) => Promise<unknown>,
 	stop: (pid: number) => void,
+	alive: (holder: { pid: number; pidStart?: string | undefined }) => boolean,
 ): Promise<{ retired: true } | { retired: false; reason: string }> {
 	let status: unknown;
 	try {
@@ -106,6 +156,9 @@ async function retire(
 		};
 	}
 
+	// Re-judged at the last moment: the pid may have been reused since the lock was read, and a
+	// signal sent on the old number lands on whoever wears it now.
+	if (!alive(lock)) return { retired: true };
 	try {
 		stop(lock.pid);
 	} catch (error) {
@@ -128,6 +181,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	const look = options.look ?? (() => findDaemon(options.workspaceRoot));
 	const wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 	const stop = options.stop ?? ((pid) => process.kill(pid, "SIGTERM"));
+	const alive = options.alive ?? lockHolderAlive;
 	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}));
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -137,25 +191,42 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	if (decision.action === "replace") {
 		if (decision.cause === "otherWorkspace") return { connected: false, reason: decision.reason };
 
-		const retired = await retire(decision.lock, ask, stop);
+		const retired = await retire(decision.lock, ask, stop, alive);
 		if (!retired.retired) return { connected: false, reason: `${decision.reason}, and ${retired.reason}` };
 
 		// Its lock goes on the way out, so the wait below is for OUR daemon rather than a race against
 		// the corpse of the one just stopped.
-		for (let waited = 0; waited < timeoutMs; waited += POLL_MS) {
-			if (look().action === "spawn") break;
-			await wait(POLL_MS);
+		let released = false;
+		for (let waited = 0; waited < timeoutMs && !released; waited += POLL_MS) {
+			const next = look();
+			// Someone else already replaced it with a daemon we can use.
+			if (next.action === "connect") return { connected: true, lock: next.lock };
+			released = next.action === "spawn";
+			if (!released) await wait(POLL_MS);
+		}
+		// Spawning over an unreleased lock hands the newcomer a claim it must lose, then reports
+		// the resulting confusion as ours. Refusing names the actual holdout.
+		if (!released) {
+			return {
+				connected: false,
+				reason: `pid ${decision.lock.pid} was asked to stop but still holds the lock after ${timeoutMs}ms`,
+			};
 		}
 	}
 
 	const command = daemonCommand(options.workspaceRoot);
 	if (command === null) return { connected: false, reason: "no built daemon to start; run the build first" };
-	(options.start ?? startChild)(command);
+	const logFile = workspacePaths(currentHost(), options.workspaceRoot).logFile;
+	const watch = (options.start ?? ((argv) => startChild(argv, logFile)))(command);
 
 	for (let waited = 0; waited < timeoutMs; waited += POLL_MS) {
 		await wait(POLL_MS);
 		const next = look();
 		if (next.action === "connect") return { connected: true, lock: next.lock };
+		const death = watch?.death() ?? null;
+		if (death !== null) {
+			return { connected: false, reason: `the daemon ${death} during startup; its log is ${logFile}` };
+		}
 	}
-	return { connected: false, reason: `daemon did not publish a lock within ${timeoutMs}ms` };
+	return { connected: false, reason: `daemon did not publish a lock within ${timeoutMs}ms; its log is ${logFile}` };
 }

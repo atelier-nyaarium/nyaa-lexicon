@@ -46,7 +46,23 @@ export function runProviderOnStdio(handlers: ProviderHandlers): void {
 		new StreamMessageWriter(process.stdout),
 	);
 	serveProvider(connection, handlers);
+	exitWhenClosed(process.stdin);
 	connection.listen();
+}
+
+/**
+ * stdin closing means the daemon is gone, however it went. A provider holding any live handle
+ * would otherwise outlive it as an orphan (issue #7).
+ */
+export function exitWhenClosed(stream: NodeJS.ReadableStream, exit: (code: number) => void = process.exit): void {
+	let left = false;
+	const leave = () => {
+		if (left) return;
+		left = true;
+		exit(0);
+	};
+	stream.on("end", leave);
+	stream.on("close", leave);
 }
 
 ////////////////////////////////
