@@ -405,6 +405,124 @@ const CASES: ConformanceCase[] = [
 		comments: ["// spliced \\\nstill comment"],
 	},
 	{
+		id: "comment-columns-are-utf16-code-units",
+		tier: "comments",
+		about: "An astral character before and inside a comment shifts its columns by two, like every other range.",
+		// `position-is-utf16-code-units` pins this for declarations. A comment range is measured by
+		// separate code in most providers, so it needs its own case: the string puts an astral
+		// character left of the marker to test the START column, and one inside tests the END.
+		// No expectation states a column, because the suite already checks every span's range by
+		// cutting its own text back out, and that is the assertion that can only hold in one unit.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/astral.ts": `export const s = "${ASTRAL}"; // ${ASTRAL} tail\n` },
+				subject: "src/astral.ts",
+			},
+			[REFERENCE]: {
+				files: { "src/astral.ref": `export const s = "${ASTRAL}"; // ${ASTRAL} tail\n` },
+				subject: "src/astral.ref",
+			},
+			[PYTHON]: {
+				files: { "src/astral.py": `s = "${ASTRAL}"  # ${ASTRAL} tail\n` },
+				subject: "src/astral.py",
+				comments: [`# ${ASTRAL} tail`],
+			},
+			[GDSCRIPT]: {
+				files: { "src/astral.gd": `var s = "${ASTRAL}" # ${ASTRAL} tail\n` },
+				subject: "src/astral.gd",
+				comments: [`# ${ASTRAL} tail`],
+			},
+			[C]: {
+				files: { "src/astral.c": `const char *s = "${ASTRAL}"; // ${ASTRAL} tail\n` },
+				subject: "src/astral.c",
+			},
+			[CPP]: {
+				files: { "src/astral.cpp": `const char *s = "${ASTRAL}"; // ${ASTRAL} tail\n` },
+				subject: "src/astral.cpp",
+			},
+			[CSHARP]: {
+				files: {
+					"src/Astral.cs": `public class Astral { public string S = "${ASTRAL}"; } // ${ASTRAL} tail\n`,
+				},
+				subject: "src/Astral.cs",
+			},
+			[RUST]: {
+				files: { "src/astral.rs": `pub const S: &str = "${ASTRAL}"; // ${ASTRAL} tail\n` },
+				subject: "src/astral.rs",
+			},
+			[KOTLIN]: {
+				files: { "src/Astral.kt": `val s = "${ASTRAL}" // ${ASTRAL} tail\n` },
+				subject: "src/Astral.kt",
+			},
+		},
+		comments: [`// ${ASTRAL} tail`],
+	},
+	{
+		id: "a-marker-inside-a-spliced-string-is-not-a-comment",
+		tier: "comments",
+		about: "Where the language splices backslash-newline, a string continues across it and its markers stay text.",
+		// Splicing happens before tokenizing, so a string can hold a marker on a LATER line. A lexer
+		// that splices comments but not strings ends the string at the newline and reads the rest as
+		// prose, which is the false-positive class wearing a second hat.
+		fixtures: {
+			[C]: {
+				files: { "src/spliced.c": 'const char *x = "foo\\\n// /* #bar";\nint y = 1; // real\n' },
+				subject: "src/spliced.c",
+			},
+			[CPP]: {
+				files: { "src/spliced.cpp": 'const char *x = "foo\\\n// /* #bar";\nint y = 1; // real\n' },
+				subject: "src/spliced.cpp",
+			},
+		},
+		comments: ["// real"],
+	},
+	{
+		id: "a-marker-inside-a-nested-interpolation-is-not-a-comment",
+		tier: "comments",
+		about: "An interpolation hole may hold a string of its own, and markers inside that string stay text.",
+		// The hole is code, so it nests: a lexer ending the string at the first inner quote reads the
+		// remainder as source and reports prose that is not there.
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/Nested.cs":
+						'public class Nested {\n\tvoid M() {\n\t\tvar x = $"a // {"b /* c #"} d"; // real\n\t}\n}\n',
+				},
+				subject: "src/Nested.cs",
+			},
+			[KOTLIN]: {
+				files: { "src/Nested.kt": 'fun m() {\n\tval x = "a // ${"b /* c #"} d" // real\n}\n' },
+				subject: "src/Nested.kt",
+			},
+		},
+		comments: ["// real"],
+	},
+	{
+		id: "a-comment-inside-an-interpolation-is-a-comment",
+		tier: "comments",
+		about: "An interpolation hole is code, so prose inside it is reported like prose anywhere else.",
+		// The mirror of the case above. Treating the hole as text loses this comment; treating the
+		// whole string as text loses it too. Only lexing the hole as code finds it.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/hole.ts": "export const x = `a ${1 /* here */} b`; // real\n" },
+				subject: "src/hole.ts",
+			},
+			[CSHARP]: {
+				files: {
+					"src/Hole.cs":
+						'public class Hole {\n\tvoid M() {\n\t\tvar x = $"a {1 /* here */} b"; // real\n\t}\n}\n',
+				},
+				subject: "src/Hole.cs",
+			},
+			[KOTLIN]: {
+				files: { "src/Hole.kt": 'fun m() {\n\tval x = "a ${1 /* here */} b" // real\n}\n' },
+				subject: "src/Hole.kt",
+			},
+		},
+		comments: ["/* here */", "// real"],
+	},
+	{
 		id: "comment-markers-in-text-are-not-comments",
 		tier: "comments",
 		about: "A marker inside a string literal is not a comment, and the exact set catches it.",

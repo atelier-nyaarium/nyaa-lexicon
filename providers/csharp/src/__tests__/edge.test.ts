@@ -53,9 +53,26 @@ describe("C# lexical facts", () => {
 			["string", 'a "quote"'],
 			["string", 'b "quote"'],
 			["string", "raw { value }"],
-			["string", "value {Name}"],
+			// A hole is code, not text: what it renders to is not known here.
+			["string", "value "],
 			["string", "name"],
 		]);
+	});
+
+	it("does not end an interpolated string at a quote inside a hole", () => {
+		const { facts } = parse(
+			'public class Values {\n\tvoid M() {\n\t\tvar x = $"a // {"b /* c #"} d"; // real\n\t}\n}\n',
+		);
+
+		expect(facts.comments.map((item) => item.text)).toEqual(["// real"]);
+	});
+
+	it("reports a comment inside a hole, which is code", () => {
+		const { facts } = parse(
+			'public class Values {\n\tvoid M() {\n\t\tvar x = $"a {1 /* here */} b"; // real\n\t}\n}\n',
+		);
+
+		expect(facts.comments.map((item) => item.text)).toEqual(["/* here */", "// real"]);
 	});
 
 	it("recognizes decimal, hexadecimal, binary, and suffixed numeric literals", () => {

@@ -205,7 +205,13 @@ function readQuoted(cursor: Cursor, prefix: string): { text: string; value: stri
 		const character = cursor.next();
 		text += character;
 		if (character === "\\") {
-			if (!cursor.good() || cursor.peek() === "\n") return { text, value: decodeString(value), closed: false };
+			if (!cursor.good()) return { text, value: decodeString(value), closed: false };
+			// Backslash-newline splices before tokenizing, so the string continues on the next line.
+			if (endsLine(cursor)) {
+				if (cursor.peek() === "\r") text += cursor.next();
+				text += cursor.next();
+				continue;
+			}
 			const escaped = cursor.next();
 			text += escaped;
 			value += character + escaped;

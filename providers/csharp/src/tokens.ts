@@ -154,24 +154,61 @@ function readNumber(cursor: Cursor): string {
 	return value + cursor.readWhile((character) => /[fFdDmMuUlL]$/u.test(character));
 }
 
+/** A hole is code: it nests braces, holds strings of its own, and its comments are comments. */
+function skipInterpolationHole(cursor: Cursor, found: Token[]): void {
+	let depth = 1;
+	cursor.next();
+	while (cursor.good() && depth > 0) {
+		const before = cursor.offset;
+		const character = cursor.peek();
+		if (character === "{") depth++;
+		if (character === "}") depth--;
+		if (sameAscii(cursor, "//")) {
+			const start = cursor.mark();
+			cursor.readWhile((item) => !isNewline(item));
+			found.push(token(cursor, "comment", "", start));
+			continue;
+		}
+		if (sameAscii(cursor, "/*")) {
+			const start = cursor.mark();
+			consumeAscii(cursor, "/*");
+			while (cursor.good() && !sameAscii(cursor, "*/")) cursor.next();
+			if (sameAscii(cursor, "*/")) consumeAscii(cursor, "*/");
+			found.push(token(cursor, "comment", "", start));
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "$" || character === "@") {
+			const nested = readPrefixString(cursor);
+			if (nested !== null) {
+				found.push(...nested.holeComments);
+				continue;
+			}
+		}
+		cursor.next();
+		if (cursor.offset <= before) throw new Error("interpolation scan failed to advance");
+	}
+}
+
 function readString(
 	cursor: Cursor,
 	quote: '"' | "'",
 	verbatim: boolean,
 	rawString: boolean,
-): { value: string; closed: boolean; invalidNewline: boolean } {
+	interpolated: boolean,
+): { value: string; closed: boolean; invalidNewline: boolean; holeComments: Token[] } {
 	let value = "";
 	let invalidNewline = false;
+	const holeComments: Token[] = [];
 	if (rawString) {
 		consumeAscii(cursor, quote.repeat(3));
 		while (cursor.good()) {
 			if (sameAscii(cursor, quote.repeat(3))) {
 				consumeAscii(cursor, quote.repeat(3));
-				return { value, closed: true, invalidNewline };
+				return { value, closed: true, invalidNewline, holeComments };
 			}
 			value += cursor.next();
 		}
-		return { value, closed: false, invalidNewline };
+		return { value, closed: false, invalidNewline, holeComments };
 	}
 	if (cursor.peek() === quote) cursor.next();
 	while (cursor.good()) {
@@ -183,7 +220,23 @@ function readString(
 				continue;
 			}
 			cursor.next();
-			return { value, closed: true, invalidNewline };
+			return { value, closed: true, invalidNewline, holeComments };
+		}
+		if (interpolated && cursor.peek() === "{") {
+			if (cursor.peek(1) === "{") {
+				cursor.next();
+				cursor.next();
+				value += "{";
+				continue;
+			}
+			skipInterpolationHole(cursor, holeComments);
+			continue;
+		}
+		if (interpolated && cursor.peek() === "}" && cursor.peek(1) === "}") {
+			cursor.next();
+			cursor.next();
+			value += "}";
+			continue;
 		}
 		if (!verbatim && isNewline(cursor.peek())) invalidNewline = true;
 		if (!verbatim && cursor.peek() === "\\") {
@@ -192,16 +245,23 @@ function readString(
 		}
 		value += cursor.next();
 	}
-	return { value, closed: false, invalidNewline };
+	return { value, closed: false, invalidNewline, holeComments };
 }
 
-function readPrefixString(
-	cursor: Cursor,
-): { value: string; quote: '"' | "'"; rawString: boolean; closed: boolean; invalidNewline: boolean } | null {
+function readPrefixString(cursor: Cursor): {
+	value: string;
+	quote: '"' | "'";
+	rawString: boolean;
+	closed: boolean;
+	invalidNewline: boolean;
+	holeComments: Token[];
+} | null {
 	const start = cursor.mark();
 	let verbatim = false;
+	let interpolated = false;
 	while (cursor.peek() === "$" || cursor.peek() === "@") {
 		if (cursor.next() === "@") verbatim = true;
+		else interpolated = true;
 	}
 	const quote = cursor.peek();
 	if (quote !== '"' && quote !== "'") {
@@ -209,7 +269,7 @@ function readPrefixString(
 		return null;
 	}
 	const rawString = !verbatim && quote === '"' && cursor.peek(1) === '"' && cursor.peek(2) === '"';
-	const string = readString(cursor, quote, verbatim, rawString);
+	const string = readString(cursor, quote, verbatim, rawString, interpolated);
 	return { ...string, quote, rawString };
 }
 
@@ -337,6 +397,8 @@ export function tokenize(
 				if (parsed.invalidNewline)
 					diagnostics.push(diagnostic("String literal cannot contain a newline.", item.start, item.end));
 				if (collectLiterals) addLiteral(literals, item);
+				// Comments only: the string is one token, so these must not split its span.
+				if (collectComments) comments.push(...parsed.holeComments);
 			}
 		} else if (isDigit(character)) {
 			const start = cursor.mark();

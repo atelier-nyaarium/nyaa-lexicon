@@ -247,6 +247,36 @@ cases are measured against, so it now has its own line-ending tests.
 to exercise the text multiset, and a real source would fail them all on ranges they are not about.
 The range check has its own four tests instead, each proven failable.
 
+### Red team lap: two more false positives, and a large negative result
+
+Six lenses attacked the claim rather than checking it, four of them by RUNNING providers over real
+code instead of reading them. The negative result is the substantive part: roughly 34,000 spans
+from real files across five languages (typescript 3,539, python 13,545, c 5,061, cpp 3,277,
+csharp 8,783) with ZERO range mismatches, zero invalid markers and zero silent drops, plus no
+break from astral characters, BOM, combining marks, empty files, 10,000-line files, mixed line
+endings, or 100-deep nesting.
+
+Three real defects, all the same class the tier exists to prevent, all now shared cases:
+
+- **C++ ended a string at a backslash-newline**, so a marker on the continuation line became a
+  comment. Splicing happens before tokenizing, so a string can legally hold a marker on a LATER
+  line. C already handled this because its escape reader eats the newline; C++ bailed explicitly.
+- **C# never tracked interpolation holes at all.** It noted the `$` prefix and discarded it, so
+  `$"a // {"b"} d"` ended at the quote inside the hole and the rest of the line was read as source.
+- **C# therefore also lost comments INSIDE a hole**, which Kotlin already reports. A hole is code,
+  so its prose is prose. C# now scans holes, nesting braces and strings, and reports what it finds.
+
+The C# fix changes an interpolated string's literal VALUE (`"value {Name}"` becomes `"value "`),
+which is the same change Kotlin already made on this train and rides the same major: a hole is
+code, and what it renders to is not knowable here.
+
+REJECTED after checking against the code: `/*/` reported as one unterminated comment running to
+EOF is CORRECT, not a bug. Two more, a 5MB comment returning nothing from typescript and timing
+out gdscript, did NOT reproduce at the provider layer - typescript's extractor returns one
+5,242,882-character span in 27ms, and gdscript's scan is linear (1MB in 87ms). Both were artifacts
+of the agents' own JSON-RPC harnesses. C and C++ ignoring `depth` is real but not a lie: they do
+full work and correctly omit the `depth` marker, so the answer is complete rather than mislabelled.
+
 ## Phase 3 - Core
 
 - Attachment runs AT INDEX TIME inside the replaceFile flow, with the module's source text in
