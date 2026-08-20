@@ -1227,6 +1227,10 @@ test.skipIf(!corpusPresent)(
 		let imports = 0;
 		const rootCounts: Array<{ root: string; files: number }> = [];
 		const syntaxErrorFiles: string[] = [];
+		// A span whose range does not cut its own text back out attaches to the wrong symbol, and
+		// only real source has the string forms that break that.
+		const strayed: string[] = [];
+		let spans = 0;
 
 		for (const root of [libuvCorpusRoot, ghidraCorpusRoot]) {
 			const provider = new CProvider();
@@ -1247,6 +1251,14 @@ test.skipIf(!corpusPresent)(
 				if (parsed.diagnostics.some((diagnostic) => diagnostic.severity === "error"))
 					syntaxErrorFiles.push(path.relative(process.cwd(), path.join(root, module)).replace(/\\/gu, "/"));
 
+				const coordinates = coordinatesOf(source);
+				for (const comment of parsed.comments ?? []) {
+					spans++;
+					if (coordinates.sliceRange(comment.range) !== comment.text) {
+						strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
+					}
+				}
+
 				if (root === libuvCorpusRoot && module === "src/unix/netbsd.c")
 					expect(declarationOf(parsed, "uv__platform_loop_init")).toMatchObject({
 						name: "uv__platform_loop_init",
@@ -1262,10 +1274,12 @@ test.skipIf(!corpusPresent)(
 
 		const seconds = (performance.now() - started) / 1000;
 		console.log(
-			`[c corpus] roots=${JSON.stringify(rootCounts)} files=${files} bytes=${bytes} declarations=${declarations} references=${references} imports=${imports} syntaxErrorFiles=${syntaxErrorFiles.length} wallSeconds=${seconds.toFixed(3)}`,
+			`[c corpus] roots=${JSON.stringify(rootCounts)} files=${files} bytes=${bytes} declarations=${declarations} references=${references} imports=${imports} comments=${spans} syntaxErrorFiles=${syntaxErrorFiles.length} wallSeconds=${seconds.toFixed(3)}`,
 		);
 		expect(files).toBeGreaterThan(0);
 		expect(syntaxErrorFiles).toEqual([]);
+		expect(strayed).toEqual([]);
+		expect(spans).toBeGreaterThan(0);
 	},
 	120_000,
 );
