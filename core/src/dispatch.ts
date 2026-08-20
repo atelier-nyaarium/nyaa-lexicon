@@ -110,6 +110,17 @@ const Replace = z.object({
 	newText: z.string(),
 });
 
+const Insert = z
+	.object({
+		after: z.string().min(1).optional(),
+		module: z.string().min(1).optional(),
+		text: z.string().min(1),
+	})
+	.refine(
+		(args) => (args.after === undefined) !== (args.module === undefined),
+		`Set exactly one of after or module.`,
+	);
+
 /** What a replacement did, or why it did nothing. Issues ride along either way. */
 export interface ReplaceOutcome {
 	replaced: boolean;
@@ -341,6 +352,92 @@ async function refactorReplace(
 	});
 }
 
+export interface InsertOutcome {
+	inserted: boolean;
+	alreadyInserted?: boolean;
+	module?: string;
+	/** From the post-reindex store, never candidate facts: provider id assignment can differ. */
+	symbolIds?: string[];
+	issues: RefactorIssue[];
+	reason?: string;
+}
+
+/** Insert as one transaction step: the replace pipeline with a computed splice point. */
+async function refactorInsert(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { after?: string | undefined; module?: string | undefined; text: string },
+): Promise<InsertOutcome> {
+	if (!transactions.openTransaction()) {
+		return { inserted: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
+	}
+
+	// Collision and impact answers read the reference graph, which outline modules have not filled.
+	await service.upgradeRemaining();
+	const plan = await service.planInsert(args);
+	if (plan.state === "refused") return { inserted: false, issues: [], reason: plan.reason };
+	if (plan.state === "present") {
+		// The retry answer: success-shaped, so a timeout-and-retry cannot duplicate the block.
+		return { inserted: false, alreadyInserted: true, module: plan.module, symbolIds: [], issues: [] };
+	}
+
+	return write(async () => {
+		// A created module must STILL be absent: another writer landing one between planning and the
+		// gate would be clobbered by a candidate built from empty.
+		const fresh = plan.created
+			? service.currentHashOf(plan.module) === null
+			: service.currentHashOf(plan.module) === plan.baseHash;
+		if (!fresh) {
+			return { inserted: false, issues: [], reason: `${plan.module} changed while the insert was planned` };
+		}
+
+		const held = new Set(service.declarationsIn(plan.module).map((declaration) => declaration.symbolId));
+
+		// The after-image rides in the journal from the start: insert knows its outcome up front,
+		// and a crash between write and completion must read as unfinished work, not a conflict.
+		const begun = transactions.beginStep("insert", [plan.module], { created: plan.created }, [
+			{ module: plan.module, text: plan.candidate },
+		]);
+		if (!begun.ok) return { inserted: false, issues: [], reason: begun.reason };
+
+		try {
+			service.writeModule(plan.module, plan.candidate);
+		} catch (error) {
+			transactions.undo();
+			return {
+				inserted: false,
+				issues: [],
+				reason: `${plan.module} could not be written: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+
+		transactions.completeStep(begun.stepNo, "written");
+		const issues = [...plan.issues];
+		try {
+			await service.indexFile(plan.module);
+		} catch (error) {
+			// The write LANDED. Failing the call would report a lie, and leaving the step unfinalized
+			// would have the next recovery silently revert real text; the stale facts are said instead.
+			issues.push({
+				kind: "ReindexFailed",
+				detail: `${plan.module} was written but not reindexed (${error instanceof Error ? error.message : String(error)}); its stored facts are stale until it indexes`,
+				module: plan.module,
+			});
+		}
+		transactions.completeStep(begun.stepNo, "reindexed");
+		transactions.recordIssues(begun.stepNo, issues);
+		transactions.completeStep(begun.stepNo, "finalized");
+
+		const symbolIds = service
+			.declarationsIn(plan.module)
+			.map((declaration) => declaration.symbolId)
+			.filter((symbolId) => !held.has(symbolId));
+
+		return { inserted: true, module: plan.module, symbolIds, issues };
+	});
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -530,6 +627,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			case "refactorReplace": {
 				const args = Replace.parse(params);
 				return refactorReplace(service, transactions(), write, args);
+			}
+			case "refactorInsert": {
+				const args = Insert.parse(params);
+				return refactorInsert(service, transactions(), write, args);
 			}
 			case "refactorRename": {
 				const args = Rename.parse(params);

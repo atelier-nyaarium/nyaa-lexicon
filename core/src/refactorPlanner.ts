@@ -3,6 +3,7 @@
 // Nothing here writes or reindexes, so a plan is always safe to ask for. Providers only through
 // ProviderProbe, which restores its own state in a finally.
 
+import path from "node:path";
 import type {
 	Binding,
 	FileFacts,
@@ -15,6 +16,7 @@ import type {
 import {
 	applyEdits,
 	composeSymbolId,
+	coordinatesOf,
 	isParameterSymbol,
 	isWithin,
 	ownerOf,
@@ -25,7 +27,7 @@ import type { FileEdits } from "./applyEdits.js";
 import { isExternalModule } from "./fileScope.js";
 import type { ImportResolver } from "./imports.js";
 import { toSummary } from "./indexReads.js";
-import type { ProviderProbe } from "./providerProbe.js";
+import type { CandidateParse, ProviderProbe } from "./providerProbe.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration, StoredReference } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -199,6 +201,52 @@ export type RenameEditPlan =
 	| { ok: true; plan: RenamePlan; files: FileEdits[] }
 	| { ok: false; plan: RenamePlan; reason: string };
 
+export interface InsertArgs {
+	/** Sibling anchor: the new declaration goes directly after this one. */
+	after?: string | undefined;
+	/** Top-level append target; created if absent. Exactly one of the two anchors. */
+	module?: string | undefined;
+	/** The declaration(s), flush-left. The planner owns indentation. */
+	text: string;
+}
+
+/** An insert worked out but not written. `present` is the retry answer: the block already sits
+ * where it would go, so applying again would duplicate it. */
+export type InsertPlan =
+	| {
+			state: "planned";
+			module: string;
+			created: boolean;
+			/** Whole candidate file, splice applied. */
+			candidate: string;
+			/** The exact whole-line block spliced in, indentation applied, framing blanks excluded. */
+			block: string;
+			/** Null when the module is being created. */
+			baseHash: string | null;
+			issues: RefactorIssue[];
+	  }
+	| { state: "present"; module: string }
+	| { state: "refused"; reason: string };
+
+/** Where an insert lands. `line` null means append at end of file. */
+interface SplicePoint {
+	module: string;
+	before: string;
+	created: boolean;
+	line: number | null;
+	indent: string;
+	/** Blank line between block and what follows; true only above a sibling. */
+	trailingBlank: boolean;
+}
+
+function atOrAfter(a: { line: number; character: number }, b: { line: number; character: number }): boolean {
+	return a.line > b.line || (a.line === b.line && a.character >= b.character);
+}
+
+function startsEarlier(a: Range, b: Range): boolean {
+	return b.start.line > a.start.line || (b.start.line === a.start.line && b.start.character > a.start.character);
+}
+
 ////////////////////////////////
 //  Class
 
@@ -266,6 +314,211 @@ export class RefactorPlanner {
 			baseHash: hashContent(before),
 			issues,
 		};
+	}
+
+	/**
+	 * What inserting new declaration(s) would do, without writing anything.
+	 *
+	 * Same shape as a replacement: everything expensive happens here, the caller holds the gate for
+	 * the write alone. Refusal beats guessing at every ambiguous spot.
+	 */
+	async planInsert(args: InsertArgs): Promise<InsertPlan> {
+		const flush = args.text.replace(/\s+$/, "");
+		if (flush.trim().length === 0) return { state: "refused", reason: "nothing to insert" };
+		if ((args.after === undefined) === (args.module === undefined)) {
+			return { state: "refused", reason: "set exactly one of after or module" };
+		}
+
+		const point = args.after !== undefined ? this.afterPoint(args.after) : this.endPoint(args.module as string);
+		if ("refused" in point) return { state: "refused", reason: point.refused };
+
+		const block = flush
+			.split("\n")
+			.map((line) => (line.trim().length === 0 ? "" : point.indent + line))
+			.join("\n");
+
+		if (this.blockPresent(point, block)) return { state: "present", module: point.module };
+
+		const candidate = this.spliceBlock(point, block);
+		if (typeof candidate !== "string") return { state: "refused", reason: candidate.problem };
+
+		const owner = this.probe.owner(point.module);
+		if (!owner.owned) return { state: "refused", reason: `no provider owns ${point.module}: ${owner.reason}` };
+
+		// A provider that THROWS on a malformed candidate (rather than reporting diagnostics) must
+		// still come back as a refusal, not as a raw transport error.
+		let parsed: CandidateParse;
+		try {
+			parsed = await this.probe.parseCandidate(point.module, candidate);
+		} catch (error) {
+			return {
+				state: "refused",
+				reason: `the provider could not parse the candidate: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+		if (!parsed.parsed) return { state: "refused", reason: `the insert does not parse: ${parsed.reason}` };
+
+		const issues = this.impactOf(point.module, parsed.facts);
+		if (!this.probe.declares(owner.providerId, "syntaxDiagnostics")) {
+			issues.push({
+				kind: "SyntaxUnchecked",
+				detail: `the provider for ${point.module} does not report syntax errors, so the insert was not checked`,
+				module: point.module,
+			});
+		}
+		issues.push(...this.collisionWarnings(point.module, parsed.facts));
+
+		return {
+			state: "planned",
+			module: point.module,
+			created: point.created,
+			candidate,
+			block,
+			baseHash: point.created ? null : hashContent(point.before),
+			issues,
+		};
+	}
+
+	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
+	private afterPoint(after: string): SplicePoint | { refused: string } {
+		const anchor = this.store.declaration(after);
+		if (!anchor) return { refused: `${after} is not in the index` };
+		const module = anchor.module;
+		const before = this.readFile(module);
+		if (before === null) return { refused: `${module} is not on disk any more` };
+
+		// The stored ranges address ONE version of the file; a moved file makes them wrong lines.
+		const indexed = this.store.contentHashOf(module);
+		if (indexed !== null && indexed !== hashContent(before)) {
+			return { refused: `${module} changed since it was indexed; reindex and retry` };
+		}
+
+		// The name line is the declaration line; the range starts at leading comments, which may
+		// legally indent differently.
+		if (anchor.selectionRange.start.line !== anchor.selectionRange.end.line) {
+			return { refused: `the provider gives ${anchor.name} no single-line name, so indentation cannot be read` };
+		}
+		const coords = coordinatesOf(before);
+		const nameLine = coords.lineText(anchor.selectionRange.start.line);
+		if (nameLine === undefined) return { refused: `${module} changed since it was indexed; reindex and retry` };
+		const indent = /^[ \t]*/.exec(nameLine)?.[0] ?? "";
+
+		// SAME SCOPE only: without the container filter, a member anchor's "next sibling" was the
+		// next top-level declaration, splicing member-indented text OUTSIDE the container.
+		// Declarator and overload groups share ranges; nested declarations of a later sibling have
+		// their own containerId and never compete.
+		const scope = anchor.containerId ?? null;
+		let next: StoredDeclaration | null = null;
+		for (const candidate of this.store.declarationsIn(module)) {
+			if (candidate.symbolId === anchor.symbolId) continue;
+			if ((candidate.containerId ?? null) !== scope) continue;
+			if (isWithin(candidate.symbolId, anchor.symbolId)) continue;
+			if (sameRange(candidate.range, anchor.range)) continue;
+			if (!atOrAfter(candidate.range.start, anchor.range.end)) continue;
+			if (next === null || startsEarlier(candidate.range, next.range)) next = candidate;
+		}
+
+		const shared = (who: string) => ({
+			refused: `no whole-line insertion point exists after the anchor (${who} leaves it no line of its own); hand-edit or anchor elsewhere`,
+		});
+
+		if (next !== null) {
+			if (next.range.start.line === anchor.range.end.line) return shared(next.name);
+			return { module, before, created: false, line: next.range.start.line, indent, trailingBlank: true };
+		}
+
+		if (anchor.containerId === undefined) {
+			return { module, before, created: false, line: null, indent, trailingBlank: false };
+		}
+		const container = this.store.declaration(anchor.containerId);
+		if (!container) return { refused: `${anchor.containerId} is not in the index` };
+		const endPos = container.range.end;
+		const endLine = coords.lineText(endPos.line);
+		// Computable only when the end line holds nothing but closers: range.end is exclusive, and
+		// with the anchor proven to end on an earlier line, whitespace and closing punctuation ahead
+		// of it (C and C++ ranges end after "};") all belong to the container's own terminator.
+		const clean =
+			endLine !== undefined &&
+			endPos.character >= 1 &&
+			endPos.character <= endLine.length &&
+			!/[^\s}\])>;,]/.test(endLine.slice(0, endPos.character - 1)) &&
+			anchor.range.end.line < endPos.line;
+		if (!clean) return shared(container.name);
+		return { module, before, created: false, line: endPos.line, indent, trailingBlank: false };
+	}
+
+	private endPoint(module: string): SplicePoint | { refused: string } {
+		// "Created if absent" must never mean created OUTSIDE the workspace.
+		if (module.split("/").includes("..") || path.isAbsolute(module)) {
+			return { refused: `${module} is not a workspace-relative path` };
+		}
+		const before = this.readFile(module);
+		return {
+			module,
+			before: before ?? "",
+			created: before === null,
+			line: null,
+			indent: "",
+			trailingBlank: false,
+		};
+	}
+
+	/** The retry answer: true when the exact block already sits where the splice would put it. */
+	private blockPresent(point: SplicePoint, block: string): boolean {
+		if (point.line !== null) {
+			const start = coordinatesOf(point.before).offsetAt({ line: point.line, character: 0 });
+			if (start === undefined) return false;
+			const window = point.before.slice(start, start + block.length);
+			const following = point.before.slice(start + block.length, start + block.length + 1);
+			return window === block && (following === "\n" || following === "");
+		}
+		const trimmed = point.before.replace(/\n+$/, "");
+		if (!trimmed.endsWith(block)) return false;
+		return trimmed.length === block.length || trimmed[trimmed.length - block.length - 1] === "\n";
+	}
+
+	/** Whole-line splice, framed by blank lines where the neighbors are not already blank. */
+	private spliceBlock(point: SplicePoint, block: string): string | { problem: string } {
+		if (point.line !== null) {
+			const coords = coordinatesOf(point.before);
+			const above = point.line === 0 ? undefined : coords.lineText(point.line - 1);
+			const leadingBlank = above !== undefined && above.trim().length > 0 ? "\n" : "";
+			const newText = `${leadingBlank}${block}\n${point.trailingBlank ? "\n" : ""}`;
+			const at = { line: point.line, character: 0 };
+			const applied = applyEdits(point.before, [{ range: { start: at, end: at }, newText }]);
+			return "problem" in applied ? applied : applied.text;
+		}
+
+		if (point.before.length === 0) return `${block}\n`;
+		const base = point.before.endsWith("\n") ? point.before : `${point.before}\n`;
+		const separator = base.endsWith("\n\n") ? "" : "\n";
+		return `${base}${separator}${block}\n`;
+	}
+
+	/** Insert is rename's mirror: a new binder lands among existing uses. Whether that captures
+	 * them is a language question core must not answer, so it is a warning, never a blocker. */
+	private collisionWarnings(module: string, candidate: FileFacts): RefactorIssue[] {
+		const stored = this.store.declarationsIn(module);
+		const storedIds = new Set(stored.map((declaration) => declaration.symbolId));
+		const warnings: RefactorIssue[] = [];
+
+		for (const minted of candidate.declarations) {
+			if (storedIds.has(minted.symbolId)) continue;
+			const scope = minted.containerId ?? null;
+			const declared = stored.filter(
+				(existing) => existing.name === minted.name && (existing.containerId ?? null) === scope,
+			);
+			// Imports are module-level, provably not inside a member container.
+			const imported =
+				scope === null ? this.store.importsBinding(minted.name).filter((entry) => entry.module === module) : [];
+			if (declared.length === 0 && imported.length === 0) continue;
+			warnings.push({
+				kind: "NameAlreadyBound",
+				detail: `${minted.name} is already ${declared.length > 0 ? "declared" : "imported"} here; existing uses of the name may rebind to the inserted declaration`,
+				module,
+			});
+		}
+		return warnings;
 	}
 
 	/**

@@ -60,13 +60,15 @@ describe("parsing a candidate always leaves the provider on the disk text", () =
 		expect(asked).toEqual(["candidate", "on disk"]);
 	});
 
-	it("skips the restore when the file is gone, rather than parsing nothing", async () => {
+	// Skipping here left the provider serving the candidate as the view of a module that does not
+	// exist, poisoning later binds against it.
+	it("restores an absent file to empty, never leaves the candidate standing", async () => {
 		const { asked, supervisor } = supervisorSpy(() => NO_DIAGNOSTICS);
 		const probe = liveProbe(supervisor, () => null);
 
 		await probe.parseCandidate("a.ts", "candidate");
 
-		expect(asked).toEqual(["candidate"]);
+		expect(asked).toEqual(["candidate", ""]);
 	});
 
 	// A failed repair must not replace the caller's answer with an error about the repair.

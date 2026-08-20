@@ -32,6 +32,10 @@ export interface TextCoordinates {
 	offsetsForRange(range: Range): OffsetRange | undefined;
 	rangeAt(start: number, end: number): Range | undefined;
 	sliceRange(range: Range): string | undefined;
+	/** One line's content, terminator excluded. Undefined when the line does not exist. */
+	lineText(line: number): string | undefined;
+	/** Lines in the text; the count of addressable line numbers. */
+	lineCount(): number;
 }
 
 ////////////////////////////////
@@ -98,6 +102,11 @@ export function coordinatesOf(text: string): TextCoordinates {
 			const offsets = offsetsForRange(range);
 			return offsets === undefined ? undefined : text.slice(offsets.start, offsets.end);
 		},
+		lineText(line) {
+			const start = starts[line];
+			return start === undefined ? undefined : text.slice(start, contentEnd(line));
+		},
+		lineCount: () => starts.length,
 	};
 }
 

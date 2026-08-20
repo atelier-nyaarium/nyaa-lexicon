@@ -258,6 +258,10 @@ export class LexiconService {
 		return this.planner.planMove(...args);
 	}
 
+	planInsert(...args: Parameters<RefactorPlanner["planInsert"]>): ReturnType<RefactorPlanner["planInsert"]> {
+		return this.planner.planInsert(...args);
+	}
+
 	prepareRename(...args: Parameters<RefactorPlanner["prepareRename"]>): ReturnType<RefactorPlanner["prepareRename"]> {
 		return this.planner.prepareRename(...args);
 	}

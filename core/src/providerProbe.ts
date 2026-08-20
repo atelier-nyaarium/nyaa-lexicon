@@ -37,8 +37,9 @@ export interface ProviderProbe {
 /** The live probe over a running provider set. */
 export function liveProbe(supervisor: ProviderSupervisor, readFile: (module: string) => string | null): ProviderProbe {
 	async function restore(module: string): Promise<void> {
-		const text = readFile(module);
-		if (text === null) return;
+		// An absent file restores to EMPTY, or the provider keeps serving the candidate as the view
+		// of a module that does not exist.
+		const text = readFile(module) ?? "";
 		// Swallowed: a failed repair must not replace the caller's answer.
 		await supervisor
 			.ask(module, "parseFile", { module, contentHash: hashContent(text), text })

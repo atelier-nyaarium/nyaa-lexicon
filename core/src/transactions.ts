@@ -22,7 +22,7 @@ import type { IndexStore } from "./store.js";
  */
 export type StepPhase = "journaled" | "written" | "reindexed" | "finalized";
 
-export type StepKind = "replace" | "rename" | "move" | "track";
+export type StepKind = "replace" | "rename" | "move" | "insert" | "track";
 
 /** Where a snapshot belongs. The baseline is what revert restores; a step image is what undo does. */
 export type ImageScope = "baseline" | "step";
@@ -187,7 +187,12 @@ export class TransactionManager {
 	 * over-states progress rather than under-stating it. Recovery can undo work that never
 	 * happened; it cannot undo work it has no record of.
 	 */
-	beginStep(kind: StepKind, modules: string[], plan?: unknown): StepOutcome {
+	beginStep(
+		kind: StepKind,
+		modules: string[],
+		plan?: unknown,
+		plannedText?: Array<{ module: string; text: string }>,
+	): StepOutcome {
 		const open = this.openTransaction();
 		if (!open) return { ok: false, reason: "no refactor transaction is open" };
 
@@ -206,7 +211,18 @@ export class TransactionManager {
 			if (!this.imageFor(open.id, "baseline", 0, image.module)) {
 				this.writeImage(open.id, "baseline", 0, image);
 			}
-			this.writeImage(open.id, "step", stepNo, image);
+			// A step that knows its outcome journals it now, or a crash before completion reads as a
+			// conflict. Hashed HERE so the image-hash spelling has one owner.
+			const planned = plannedText?.find((entry) => entry.module === image.module);
+			this.writeImage(
+				open.id,
+				"step",
+				stepNo,
+				image,
+				planned === undefined
+					? undefined
+					: { module: image.module, existed: true, hash: hashBytes(Buffer.from(planned.text, "utf8")) },
+			);
 		}
 
 		return { ok: true, stepNo };
@@ -278,6 +294,9 @@ export class TransactionManager {
 		for (const image of images) {
 			if (image.afterHash === null) continue;
 			const current = this.snapshot(image.module);
+			// Still at its before-image: the write never landed (a planned-after step that failed),
+			// so undoing is a no-op restore, never a discard.
+			if (current.hash === image.beforeHash && current.existed === image.existedBefore) continue;
 			if (current.hash !== image.afterHash) {
 				return {
 					undone: false,
@@ -480,12 +499,28 @@ export class TransactionManager {
 		return row !== undefined;
 	}
 
-	private writeImage(transactionId: string, scope: ImageScope, stepNo: number, image: FileImage): void {
+	private writeImage(
+		transactionId: string,
+		scope: ImageScope,
+		stepNo: number,
+		image: FileImage,
+		plannedAfter?: FileImage,
+	): void {
 		this.store.journal((db) => {
 			db.prepare(
 				`INSERT OR REPLACE INTO refactor_images
-				 (transactionId, scope, stepNo, module, existedBefore, beforeHash) VALUES (?, ?, ?, ?, ?, ?)`,
-			).run(transactionId, scope, stepNo, image.module, image.existed ? 1 : 0, image.hash);
+				 (transactionId, scope, stepNo, module, existedBefore, beforeHash, existsAfter, afterHash)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				transactionId,
+				scope,
+				stepNo,
+				image.module,
+				image.existed ? 1 : 0,
+				image.hash,
+				plannedAfter === undefined ? null : plannedAfter.existed ? 1 : 0,
+				plannedAfter?.hash ?? null,
+			);
 		});
 	}
 

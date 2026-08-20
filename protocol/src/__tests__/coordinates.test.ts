@@ -75,4 +75,14 @@ describe("addressing a position", () => {
 			coordinatesOf("ab\ncd\n").sliceRange({ start: { line: 0, character: 1 }, end: { line: 1, character: 1 } }),
 		).toBe("b\nc");
 	});
+
+	it("answers one line's content without its terminator, and refuses absent lines", () => {
+		const at = coordinatesOf("ab\r\ncd\n");
+
+		expect(at.lineText(0)).toBe("ab");
+		expect(at.lineText(1)).toBe("cd");
+		expect(at.lineText(2)).toBe("");
+		expect(at.lineText(3)).toBeUndefined();
+		expect(at.lineCount()).toBe(3);
+	});
 });

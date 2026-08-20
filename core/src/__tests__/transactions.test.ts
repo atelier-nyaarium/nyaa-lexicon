@@ -301,3 +301,63 @@ describe("recovering after a crash", () => {
 		expect(read("a.ts.lexicon-tmp")).toBeNull();
 	});
 });
+
+// Insert knows its final text before writing, so the outcome rides in the journal from begin. A
+// crash between write and completion must read as unfinished work, never as a conflict.
+describe("a step that journals its outcome up front", () => {
+	const planned = (text: string) => [{ module: "src/new.ts", text }];
+
+	it("removes a created module whose write crashed before completion", () => {
+		manager.start();
+		const text = "function added() {}\n";
+		const begun = manager.beginStep("insert", ["src/new.ts"], undefined, planned(text));
+		expect(begun.ok).toBe(true);
+		write("src/new.ts", text);
+
+		const recovered = new TransactionManager(store, root).recover();
+
+		expect(recovered.restored).toEqual(["src/new.ts"]);
+		expect(recovered.conflicts).toEqual([]);
+		expect(read("src/new.ts")).toBeNull();
+	});
+
+	it("restores an existing module written but not completed", () => {
+		write("src/a.ts", "before\n");
+		manager.start();
+		manager.beginStep("insert", ["src/a.ts"], undefined, [{ module: "src/a.ts", text: "before\nadded\n" }]);
+		write("src/a.ts", "before\nadded\n");
+
+		const recovered = new TransactionManager(store, root).recover();
+
+		expect(recovered.restored).toEqual(["src/a.ts"]);
+		expect(read("src/a.ts")).toBe("before\n");
+	});
+
+	it("still calls a mismatching file a conflict rather than deleting a stranger's work", () => {
+		manager.start();
+		manager.beginStep("insert", ["src/new.ts"], undefined, planned("planned\n"));
+		write("src/new.ts", "someone else's content\n");
+
+		const recovered = new TransactionManager(store, root).recover();
+
+		expect(recovered.conflicts).toEqual(["src/new.ts"]);
+		expect(read("src/new.ts")).toBe("someone else's content\n");
+	});
+
+	// The audit's zombie: a planned-after step whose write FAILED holds its before-image forever,
+	// and an undo that only accepts the after-image wedges every later undo behind it.
+	it("undoes a planned-after step whose write never landed", () => {
+		write("src/a.ts", "before\n");
+		manager.start();
+		const begun = manager.beginStep("insert", ["src/a.ts"], undefined, [
+			{ module: "src/a.ts", text: "before\nadded\n" },
+		]);
+		expect(begun.ok).toBe(true);
+
+		const undone = manager.undo();
+
+		expect(undone.undone).toBe(true);
+		expect(read("src/a.ts")).toBe("before\n");
+		expect(manager.status().steps).toEqual([]);
+	});
+});

@@ -983,6 +983,38 @@ export function renderReplaceOutcome(outcome: {
 	return lines.join("\n");
 }
 
+/** An insert, with what it warned about. `alreadyInserted` is the retry answer, not a failure. */
+export function renderInsertOutcome(outcome: {
+	inserted: boolean;
+	alreadyInserted?: boolean;
+	module?: string;
+	symbolIds?: string[];
+	issues: RefactorIssue[];
+	reason?: string;
+}): string {
+	if (outcome.alreadyInserted === true) {
+		return `# Already inserted\n\nThe exact text already sits at that spot in \`${outcome.module}\`; nothing was written.`;
+	}
+	if (!outcome.inserted) {
+		return `# Not inserted\n\n${outcome.reason ?? "the insert could not be applied"}`;
+	}
+
+	const lines = [`# Inserted into \`${outcome.module}\``, ""];
+	for (const symbolId of outcome.symbolIds ?? []) lines.push(`- ID: \`${symbolId}\``);
+	if ((outcome.symbolIds ?? []).length > 0) lines.push("");
+
+	if (outcome.issues.length === 0) {
+		lines.push("Everything the new text names resolves. `refactor_commit` would succeed.");
+		return lines.join("\n");
+	}
+	lines.push(
+		`Applied, with ${outcome.issues.length} warning${outcome.issues.length === 1 ? "" : "s"} to judge:`,
+		"",
+		...renderIssues(outcome.issues),
+	);
+	return lines.join("\n");
+}
+
 /** A move step. A blocked site stops the whole move, so a refusal names what could not be written. */
 export function renderMoveOutcome(
 	toModule: string,

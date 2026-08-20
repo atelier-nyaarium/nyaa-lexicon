@@ -36,6 +36,7 @@ import {
 	renderFacts,
 	renderFileHistory,
 	renderImports,
+	renderInsertOutcome,
 	renderInvalidateOutcome,
 	renderKnowledge,
 	renderKnowledgeGaps,
@@ -79,6 +80,14 @@ export interface ToolBackend {
 		factId?: string | undefined;
 		newText: string;
 	}) => Promise<{ replaced: boolean; module?: string; issues: RefactorIssue[]; reason?: string }>;
+	refactorInsert: (args: { after?: string | undefined; module?: string | undefined; text: string }) => Promise<{
+		inserted: boolean;
+		alreadyInserted?: boolean;
+		module?: string;
+		symbolIds?: string[];
+		issues: RefactorIssue[];
+		reason?: string;
+	}>;
 	refactorMove: (
 		symbolId: string,
 		toModule: string,
@@ -261,6 +270,16 @@ export const RefactorReplaceInput = {
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	factId: z.string().min(1).optional().describe(`A literal's \`factId\` from \`find_literals\`.`),
 	newText: z.string().min(1).describe(`Replacement for the whole span \`symbol_source\` returned.`),
+};
+
+export const RefactorInsertInput = {
+	after: z.string().min(1).optional().describe(`Sibling anchor: the declaration goes directly after this symbol.`),
+	module: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(`Append at top level of this module instead; created if absent. Set exactly one anchor.`),
+	text: z.string().min(1).describe(`The declaration(s), flush-left. Indentation is applied from the anchor.`),
 };
 
 export const FindLiteralsInput = {
@@ -517,6 +536,19 @@ broke is reported: symbols that vanished while other files still use them, and n
 resolving. Read the span with \`symbol_source\` first and send back the edited whole.
 
 Renaming the declaration itself is refused; use \`refactor_rename\`.
+`.trim();
+
+export const REFACTOR_INSERT_DESCRIPTION = `
+# \`refactor_insert\`
+
+Author new declaration(s) as a transaction step: after a sibling symbol, or appended to a module.
+
+Send the text flush-left; indentation is copied from the anchor. Text that does not parse in place
+is refused before touching disk. Names the new body uses that resolve to nothing are reported, and
+imports are never authored for you. A retry after a timeout answers already-inserted instead of
+duplicating.
+
+Declarations only: statement positions, switch cases, and single-line layouts are refused.
 `.trim();
 
 export const REFACTOR_REVERT_DESCRIPTION = `
@@ -881,6 +913,23 @@ export async function refactorReplace(
 		reason: error instanceof Error ? error.message : String(error),
 	}));
 	return text(renderReplaceOutcome(outcome), !outcome.replaced);
+}
+
+export async function refactorInsert(
+	backend: ToolBackend,
+	args: { after?: string | undefined; module?: string | undefined; text: string },
+): Promise<ToolResult> {
+	if ((args.after === undefined) === (args.module === undefined)) {
+		return text("Set exactly one of `after` or `module`.", true);
+	}
+	const outcome = await backend.refactorInsert(args).catch(
+		(error: unknown): Awaited<ReturnType<ToolBackend["refactorInsert"]>> => ({
+			inserted: false,
+			issues: [],
+			reason: error instanceof Error ? error.message : String(error),
+		}),
+	);
+	return text(renderInsertOutcome(outcome), !outcome.inserted && outcome.alreadyInserted !== true);
 }
 
 export async function findLiterals(

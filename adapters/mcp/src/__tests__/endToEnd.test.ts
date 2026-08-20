@@ -59,6 +59,7 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		refactorRevert: () => ask("refactorRevert", {}),
 		refactorCommit: (force) => ask("refactorCommit", { force }),
 		refactorReplace: (args) => ask("refactorReplace", args),
+		refactorInsert: (args) => ask("refactorInsert", args),
 		refactorRename: (symbolId, newName) => ask("refactorRename", { symbolId, newName }),
 		refactorMove: (symbolId, toModule) => ask("refactorMove", { symbolId, toModule }),
 		findLiterals: (query) => ask("findLiterals", query),
