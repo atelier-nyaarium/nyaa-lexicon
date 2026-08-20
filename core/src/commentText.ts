@@ -38,7 +38,11 @@ const DECORATION = /^[-=*_/#~+]{3,}$/;
 function stripLineMarker(line: string): { text: string; stripped: boolean } {
 	const trimmed = line.trimStart();
 	for (const marker of LINE_MARKERS) {
-		if (trimmed.startsWith(marker)) return { text: trimmed.slice(marker.length), stripped: true };
+		if (!trimmed.startsWith(marker)) continue;
+		// Repeats of the marker's own character are a longer rule, not prose. `////` is a divider,
+		// and stopping at three would leave a slash standing where a word should be.
+		const repeated = trimmed.match(marker[0] === "/" ? /^\/+/ : /^#+/);
+		return { text: trimmed.slice(repeated?.[0].length ?? marker.length), stripped: true };
 	}
 	return { text: trimmed, stripped: false };
 }
@@ -63,6 +67,14 @@ function stripBlock(text: string): { text: string; stripped: boolean } {
 
 function collapse(text: string): string {
 	return text.replace(/\s+/gu, " ").trim();
+}
+
+////////////////////////////////
+//  Shapes
+
+/** A delimited comment, which is its own fact and never joins a run of line comments. */
+export function isBlockComment(raw: string): boolean {
+	return BLOCK_DELIMITERS.some(({ open }) => raw.startsWith(open));
 }
 
 ////////////////////////////////

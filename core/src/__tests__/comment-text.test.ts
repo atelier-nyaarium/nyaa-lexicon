@@ -26,6 +26,11 @@ describe("normalizing comment prose", () => {
 		expect(normalizeCommentText("// ----------\n// the real prose\n// ----------")).toBe("the real prose");
 	});
 
+	it("strips a repeated marker whole rather than leaving one behind", () => {
+		expect(normalizeCommentText("//// doThing()")).toBe("doThing()");
+		expect(normalizeCommentText("### a hash heading")).toBe("a hash heading");
+	});
+
 	it("keeps text whose shape it does not recognize", () => {
 		expect(normalizeCommentText("(* an unknown marker *)")).toBe("(* an unknown marker *)");
 	});

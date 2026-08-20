@@ -74,6 +74,42 @@ describe("attaching comments to what they document", () => {
 		expect(attached[0]?.form).toBe("leading");
 	});
 
+	// Two merged fine while three broke into a pair and a straggler, because the growing group was
+	// asked whether it was still one line. Anything past two is the case that matters.
+	it("joins a run of more than two lines into one fact", () => {
+		const text = "// one\n// two\n// three\n// four\nfunction work() {\n}\n";
+		const attached = attachComments([decl("work", 4, 5)], commentsIn(text), text);
+
+		expect(attached).toHaveLength(1);
+		expect(attached[0]?.normalized).toBe("one two three four");
+		expect(attached[0]?.range.end.line).toBe(3);
+	});
+
+	it("joins a long run without splitting it", () => {
+		const lines = Array.from({ length: 40 }, (_, index) => `// line ${index}`);
+		const text = `${lines.join("\n")}\nfunction work() {\n}\n`;
+		const attached = attachComments([decl("work", 40, 41)], commentsIn(text), text);
+
+		expect(attached).toHaveLength(1);
+		expect(attached[0]?.normalized.split(" ").filter((word) => word === "line")).toHaveLength(40);
+	});
+
+	// A delimited comment is its own fact, so it neither joins a run nor lets one continue past it.
+	it("keeps a block comment out of a line-comment run", () => {
+		const text = "// one\n/* block */\n// three\nfunction work() {\n}\n";
+		const spans = [
+			{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } }, text: "// one" },
+			{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 11 } }, text: "/* block */" },
+			{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 8 } }, text: "// three" },
+		];
+
+		expect(attachComments([decl("work", 3, 4)], spans, text).map((item) => item.normalized)).toEqual([
+			"one",
+			"block",
+			"three",
+		]);
+	});
+
 	it("does not join a run that changes indent", () => {
 		const text = "// outer\n\t// inner\nfunction work() {\n}\n";
 		expect(attachComments([decl("work", 2, 3)], commentsIn(text), text)).toHaveLength(2);

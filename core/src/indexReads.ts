@@ -176,10 +176,12 @@ export class IndexReadModel {
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) return null;
 
+		// Members render as one line each and carry no prose, so deriving their documentation would
+		// be one query per member for text nothing prints.
 		const members = this.store
 			.declarationsIn(declaration.module)
 			.filter((d) => d.containerId === symbolId)
-			.map((member) => this.withDocumentation(toSummary(member)));
+			.map(toSummary);
 
 		return {
 			symbol: this.withDocumentation(toSummary(declaration)),

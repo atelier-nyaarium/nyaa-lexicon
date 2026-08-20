@@ -9,7 +9,7 @@
 // fact is worse than an honest "somewhere in here".
 
 import { type CommentSpan, coordinatesOf, type Declaration, type Range } from "@nyaa-lexicon/protocol";
-import { normalizeCommentText } from "./commentText.js";
+import { isBlockComment, normalizeCommentText } from "./commentText.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -39,6 +39,14 @@ interface Group {
 	ownLine: boolean;
 	/** Code follows it on its last line. */
 	codeAfter: boolean;
+	/**
+	 * Set while a run of single-line comments can still take another line.
+	 *
+	 * Held apart from `range` on purpose: the range grows as lines join, so asking it whether the
+	 * group is still one line answers no after the first merge, and a run of three would break into
+	 * pairs. `lastLine` is what the next line has to follow.
+	 */
+	run?: { indent: number; lastLine: number };
 }
 
 ////////////////////////////////
@@ -86,30 +94,39 @@ function groupComments(comments: CommentSpan[], text: string): Group[] {
 		const ownLine = beforeStart(lineText, comment.range.start.character).trim() === "";
 		const endLine = coordinates.lineText(comment.range.end.line) ?? "";
 		const codeAfter = endLine.slice(comment.range.end.character).trim() !== "";
-		const single = comment.range.start.line === comment.range.end.line;
+		// A delimited comment is its own fact even when it occupies one line.
+		const joinable =
+			ownLine &&
+			!codeAfter &&
+			comment.range.start.line === comment.range.end.line &&
+			!isBlockComment(comment.text);
 
 		const previous = groups.at(-1);
 		const continues =
-			previous !== undefined &&
-			single &&
-			ownLine &&
-			previous.ownLine &&
-			!previous.codeAfter &&
-			previous.range.start.line === previous.range.end.line &&
-			previous.range.start.character === comment.range.start.character &&
-			previous.range.end.line + 1 === comment.range.start.line;
+			previous?.run !== undefined &&
+			joinable &&
+			previous.run.indent === comment.range.start.character &&
+			previous.run.lastLine + 1 === comment.range.start.line;
 
 		// Merged only when the source can produce the merged text. A group whose raw came from one
 		// member while its range covers several would be a fact quoting something it does not span.
-		const merged = continues ? { start: (previous as Group).range.start, end: comment.range.end } : undefined;
+		const merged =
+			continues && previous !== undefined ? { start: previous.range.start, end: comment.range.end } : undefined;
 		const mergedRaw = merged === undefined ? undefined : coordinates.sliceRange(merged);
-		if (merged !== undefined && mergedRaw !== undefined && previous !== undefined) {
+		if (merged !== undefined && mergedRaw !== undefined && previous?.run !== undefined) {
 			previous.range = merged;
 			previous.raw = mergedRaw;
-			previous.codeAfter = codeAfter;
+			previous.run = { indent: previous.run.indent, lastLine: comment.range.end.line };
 			continue;
 		}
-		groups.push({ range: comment.range, raw: comment.text, ownLine, codeAfter });
+
+		groups.push({
+			range: comment.range,
+			raw: comment.text,
+			ownLine,
+			codeAfter,
+			...(joinable ? { run: { indent: comment.range.start.character, lastLine: comment.range.end.line } } : {}),
+		});
 	}
 	return groups;
 }

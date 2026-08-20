@@ -33,6 +33,15 @@ function symbolBullet(summary: SymbolSummary): string {
 	return `- ${line(summary)}`;
 }
 
+/** Describe is a summary, and documentation is normalized to one line, so the cut is by sentence. */
+function summarize(text: string, limit = 200): string {
+	const sentence = text.indexOf(". ");
+	if (sentence > 0 && sentence < limit) return text.slice(0, sentence + 1);
+	if (text.length <= limit) return text;
+	const boundary = text.lastIndexOf(" ", limit);
+	return `${text.slice(0, boundary > 0 ? boundary : limit).trimEnd()} ...`;
+}
+
 function renderGroupedModules(title: string, groups: Iterable<readonly [string, readonly string[]]>): string {
 	const sections = [`# ${title}`];
 	for (const [module, rows] of groups) sections.push(`## \`${module}\`\n\n${rows.join("\n")}`);
@@ -106,7 +115,7 @@ export function renderDescribe(result: DescribeResult): string {
 	];
 
 	if (result.symbol.docComment) {
-		lines.push("", "## Documentation", "", result.symbol.docComment.split("\n")[0] ?? result.symbol.docComment);
+		lines.push("", "## Documentation", "", summarize(result.symbol.docComment));
 	}
 
 	if (result.members.length > 0) {

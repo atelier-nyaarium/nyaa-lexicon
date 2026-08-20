@@ -393,6 +393,39 @@ Phase 1 painpoint recorded that a new expectation kind costs five edits and that
 them makes cases pass while asserting nothing; this case would have been the third instance, so
 the list became one array that every expectation kind joins by existing.
 
+### Red team lap: the grouping rule was wrong past two lines
+
+The find that mattered: **a run of three or more line comments broke into pairs.** After the first
+merge the group spans two lines, and the merge test asked the GROUP whether it was still one line,
+so the third line could never join. Two-line runs merged, which is exactly why every test written
+by hand passed: all of them used two. Ten thousand comment lines produced five thousand facts.
+
+That one bug also explains the wrong-anchor reports from a separate lens, which described a
+"multi-line displacement pattern" in 44 of 81 sampled C++ comments. It was fragments, not anchors.
+
+Fixed by holding the run's own state (`indent` and `lastLine`) apart from the range that grows as
+lines join. Real corpora consolidated on the spot: this repo went 2588 comment facts to 2347, and
+kotlinx-coroutines 7353 to 7045, with `leading` rising slightly because runs that used to end as a
+straggler now reach their declaration.
+
+Also fixed:
+- A single-line BLOCK comment merged into a line-comment run, contradicting the rule written
+  directly above the function. `isBlockComment` now lives in the normalizer, which is where marker
+  shapes are already owned.
+- `describe` derived documentation for every MEMBER, one query each, for prose that members do not
+  render. N+1 queries for text nothing prints.
+- `////` stripped as `///` and left a slash standing where a word should be.
+- MCP's describe printed the FIRST LINE of a doc comment, which was a cap until normalization
+  removed every line break; it then printed whole multi-paragraph comments to a caller paying per
+  token. Now cut at the first sentence, with an honest marker when cut mid-sentence.
+
+REJECTED after checking: an ASCII-art box losing its borders and a doc bullet losing its asterisk
+both lose DECORATION and no words, which is what the normalizer is for and what search needs.
+JSDoc `@returns` now appearing in normalized text is a real difference from the retired field, and
+is kept: describe cuts at the first sentence anyway, and a search for a tag should find it.
+`LIKE '%text%'` cannot use an index, which is true and is the same contract literals already have.
+Tab-versus-spaces indent not merging is defensible: they are different columns.
+
 Zero trailing in this repo is not a defect: the house rule puts comments on their own line, and
 trailing shows up immediately in corpora that write them.
 
