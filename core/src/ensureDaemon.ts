@@ -9,7 +9,7 @@
 // that finds the daemon gone simply starts another.
 
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { callDaemon, findDaemon, lockHolderAlive } from "./client.js";
 import type { DaemonLock } from "./lockFile.js";
@@ -85,7 +85,7 @@ function openLog(logFile: string): number | null {
  * lock-wait timeout. The child handle is watched, never awaited, so its death during our wait is
  * reportable while its life stays its own.
  */
-function startChild(command: string[], logFile: string): SpawnWatch | undefined {
+export function spawnDaemonProcess(command: string[], logFile: string): SpawnWatch | undefined {
 	const [executable, ...args] = command;
 	if (executable === undefined) return undefined;
 
@@ -110,7 +110,12 @@ function startChild(command: string[], logFile: string): SpawnWatch | undefined 
 /** The bundle, run on the shipping runtime. Absent in a source checkout that was never built. */
 export function daemonCommand(workspaceRoot: string, root = lexiconRoot()): string[] | null {
 	const bundle = path.join(root, "dist", "daemon.js");
-	return existsSync(bundle) ? [process.execPath, bundle, workspaceRoot] : null;
+	try {
+		// A directory or dangling symlink wearing the name is not a program.
+		return statSync(bundle).isFile() ? [process.execPath, bundle, workspaceRoot] : null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -217,7 +222,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	const command = daemonCommand(options.workspaceRoot);
 	if (command === null) return { connected: false, reason: "no built daemon to start; run the build first" };
 	const logFile = workspacePaths(currentHost(), options.workspaceRoot).logFile;
-	const watch = (options.start ?? ((argv) => startChild(argv, logFile)))(command);
+	const watch = (options.start ?? ((argv) => spawnDaemonProcess(argv, logFile)))(command);
 
 	for (let waited = 0; waited < timeoutMs; waited += POLL_MS) {
 		await wait(POLL_MS);

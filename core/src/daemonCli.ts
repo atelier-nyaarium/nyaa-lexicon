@@ -12,6 +12,8 @@ import { mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { createDispatch } from "./dispatch.js";
+import { driftedTo } from "./drift.js";
+import { daemonCommand, spawnDaemonProcess } from "./ensureDaemon.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
@@ -38,6 +40,9 @@ const FIRST_SCAN_PATIENCE_MS = 30_000;
 /** How long shutdown waits for in-flight answers. Past it, the journal is the safety net. */
 const SETTLE_LIMIT_MS = 30_000;
 
+/** Drift is asked at most this often, one stat and at most one readdir per ask. */
+const DRIFT_CHECK_EVERY_MS = 30_000;
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -55,9 +60,11 @@ function describeError(error: unknown): string {
 //  Main
 
 async function main(argv: string[]): Promise<void> {
-	const [workspace] = argv;
+	// A successor is told to warm because its predecessor was warm; nobody should notice the swap.
+	const warmRequested = argv.includes("--warm");
+	const [workspace] = argv.filter((arg) => !arg.startsWith("--"));
 	if (workspace === undefined) {
-		console.error("usage: daemon <workspace>");
+		console.error("usage: daemon <workspace> [--warm]");
 		process.exit(2);
 	}
 
@@ -137,22 +144,26 @@ async function main(argv: string[]): Promise<void> {
 			if (transactions?.status().open) {
 				log("a refactor transaction stays open in the journal; the next daemon recovers it");
 			}
-			const steps: Array<[string, () => unknown]> = [
-				["lock", () => daemon?.stop()],
-				["watcher", () => live?.stop()],
-				["providers", () => supervisor?.stopAll()],
-				["store", () => store?.close()],
-			];
-			for (const [name, step] of steps) {
-				try {
-					await step();
-				} catch (error) {
-					log(`teardown of the ${name} failed: ${describeError(error)}`);
-				}
-			}
+			await releaseEverything();
 			log(`stopped (exit ${code})`);
 		} finally {
 			process.exit(code);
+		}
+	}
+
+	async function releaseEverything(): Promise<void> {
+		const steps: Array<[string, () => unknown]> = [
+			["lock", () => daemon?.stop()],
+			["watcher", () => live?.stop()],
+			["providers", () => supervisor?.stopAll()],
+			["store", () => store?.close()],
+		];
+		for (const [name, step] of steps) {
+			try {
+				await step();
+			} catch (error) {
+				log(`teardown of the ${name} failed: ${describeError(error)}`);
+			}
 		}
 	}
 
@@ -291,6 +302,45 @@ async function main(argv: string[]): Promise<void> {
 			})();
 		}
 
+		// The owner's rule for staying current: notice a newer build only between answered requests,
+		// serve the call in hand, and never leave a mutation or an open refactor series behind.
+		const stampAtStart = daemon.lock.bundleStamp ?? null;
+		let lastDriftAsk = 0;
+		async function handOverIfDrifted(): Promise<void> {
+			const target = driftedTo({
+				workspaceRoot: root,
+				root: lexiconRoot(),
+				version: BUILD_VERSION,
+				stampAtStart,
+			});
+			if (target === null) return;
+			// The whole teardown runs INSIDE the exclusive gate: a queued watcher batch acquiring it
+			// between approval and teardown would mutate a store being closed. The gate is never
+			// released; the process exit is what ends it.
+			await gate.exclusive(async () => {
+				if (stopping || inFlight > 0 || journal.status().open) return;
+				stopping = true;
+				log(`handing over: ${target.why}`);
+				try {
+					linger?.cancel();
+					await releaseEverything();
+					// Lock released above, so the successor's claim cannot lose to a corpse.
+					const command = daemonCommand(root, target.root);
+					if (command === null) log(`no runnable bundle under ${target.root}; the next client starts one`);
+					else spawnDaemonProcess([...command, "--warm"], paths.logFile);
+					log("stopped (exit 0) after handover");
+				} finally {
+					process.exit(0);
+				}
+			});
+		}
+		function considerHandover(): void {
+			if (stopping || Date.now() - lastDriftAsk < DRIFT_CHECK_EVERY_MS) return;
+			lastDriftAsk = Date.now();
+			// After the answer is on the wire, never under it.
+			setTimeout(() => void handOverIfDrifted(), 0).unref?.();
+		}
+
 		// `shutdown` is a daemon method rather than a service one, so it is answered here instead of
 		// in the service's table. It answers BEFORE stopping, or the caller reads its own success as
 		// a dropped connection.
@@ -318,7 +368,10 @@ async function main(argv: string[]): Promise<void> {
 				return await dispatch(method, params);
 			} finally {
 				inFlight -= 1;
-				if (inFlight === 0) for (const waiter of settledWaiters.splice(0)) waiter();
+				if (inFlight === 0) {
+					for (const waiter of settledWaiters.splice(0)) waiter();
+					considerHandover();
+				}
 			}
 		}
 
@@ -328,7 +381,7 @@ async function main(argv: string[]): Promise<void> {
 		// index, which is why the index reports its state rather than letting a caller assume it.
 		daemon.setHandle(handle);
 
-		if (openStore.totals().files > 0) warm();
+		if (openStore.totals().files > 0 || warmRequested) warm();
 		else log("cold: nothing indexed here before, so nothing is scanned until something asks");
 
 		linger = lingerWhileEmpty({

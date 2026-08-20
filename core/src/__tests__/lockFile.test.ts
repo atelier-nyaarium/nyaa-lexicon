@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type DaemonLock, decideFromLock } from "../lockFile";
+import { type DaemonLock, decideFromLock, newerBuild } from "../lockFile";
 
 ////////////////////////////////
 //  Helpers
@@ -83,15 +83,22 @@ describe("finding a daemon", () => {
 
 // A real incident, not a hypothetical: a 1.9.0 daemon kept serving this workspace after the
 // checkout moved to 1.10.2, and every call to a method added in between answered `unknown method`.
-describe("the build version is exact, because the method table is not negotiable", () => {
-	it("replaces a daemon from another build even at the same protocol major", () => {
+describe("the build comparison is ordered, because method tables only grow", () => {
+	it("replaces a daemon from an older build even at the same protocol major", () => {
 		const decision = decide({ lock: { buildVersion: "1.9.0" } });
 		expect(decision.action).toBe("replace");
 		expect(decision.action === "replace" && decision.reason).toMatch(/1\.9\.0/);
 	});
 
-	it("replaces on a PATCH difference, since a patch can still add a method", () => {
+	it("replaces on an older PATCH, since a patch can still add a method", () => {
 		expect(decide({ lock: { buildVersion: "1.10.1" } })).toMatchObject({ action: "replace" });
+	});
+
+	// The downgrade war: two sessions on different plugin versions each retiring the other's
+	// daemon on every request. A newer daemon serves our whole table, so it stays.
+	it("connects to a NEWER daemon instead of dragging it back to our build", () => {
+		expect(decide({ lock: { buildVersion: "1.11.0" } })).toMatchObject({ action: "connect" });
+		expect(decide({ lock: { buildVersion: "2.0.0" } })).toMatchObject({ action: "connect" });
 	});
 
 	it("replaces a lock too old to name its build rather than hoping it is current", () => {
@@ -102,6 +109,25 @@ describe("the build version is exact, because the method table is not negotiable
 
 	it("still connects when the builds match", () => {
 		expect(decide({ lock: { buildVersion: "1.10.2" }, ourBuild: "1.10.2" })).toMatchObject({ action: "connect" });
+	});
+});
+
+describe("ordering two build versions", () => {
+	it("orders by release triple, not by string", () => {
+		expect(newerBuild("1.10.0", "1.9.9")).toBe(true);
+		expect(newerBuild("1.9.9", "1.10.0")).toBe(false);
+		expect(newerBuild("2.0.0", "1.99.99")).toBe(true);
+		expect(newerBuild("1.10.2", "1.10.2")).toBe(false);
+	});
+
+	it("answers false for anything unparseable, so no decision rests on a guess", () => {
+		expect(newerBuild("1.x", "1.10.2")).toBe(false);
+		expect(newerBuild("1.10.2", "nonsense")).toBe(false);
+		expect(newerBuild("1.14.0garbage", "1.10.2")).toBe(false);
+	});
+
+	it("reads a prerelease by its release triple", () => {
+		expect(newerBuild("2.0.0-rc.1", "1.10.2")).toBe(true);
 	});
 });
 

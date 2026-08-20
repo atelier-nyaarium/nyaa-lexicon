@@ -75,6 +75,24 @@ function sameMajor(a: string, b: string): boolean {
 	return a.split(".")[0] === b.split(".")[0];
 }
 
+function releaseTriple(version: string): [number, number, number] | null {
+	// Whole semver only: "1.14.0garbage" must not read as a release.
+	const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/.exec(version.trim());
+	if (match === null) return null;
+	return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Strictly newer release. Unparseable answers false, so no decision rests on a guess. */
+export function newerBuild(candidate: string, current: string): boolean {
+	const a = releaseTriple(candidate);
+	const b = releaseTriple(current);
+	if (a === null || b === null) return false;
+	for (let i = 0; i < 3; i++) {
+		if ((a[i] as number) !== (b[i] as number)) return (a[i] as number) > (b[i] as number);
+	}
+	return false;
+}
+
 /**
  * Decide from what is on disk.
  *
@@ -117,8 +135,13 @@ export function decideFromLock(context: LockContext): LockDecision {
 		};
 	}
 
-	// EXACT, not same-major: the contract is the method table, and any release can add to it.
+	// ORDERED, not exact: method tables only grow within a protocol major, so a newer daemon serves
+	// our whole table and replacing it would start a downgrade war between mixed-version sessions.
+	// Only a daemon OLDER than us (or too old to say) cannot serve us.
 	if (lock.buildVersion !== context.ourBuildVersion) {
+		if (lock.buildVersion !== undefined && newerBuild(lock.buildVersion, context.ourBuildVersion)) {
+			return { action: "connect", lock };
+		}
 		return {
 			action: "replace",
 			lock,

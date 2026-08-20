@@ -7,6 +7,7 @@ import { z } from "zod";
 import { QUESTION_CLASSES, type QuestionClass } from "./answers.js";
 import type { LexiconService } from "./service.js";
 import type { RefactorIssue, TransactionManager } from "./transactions.js";
+import { BUILD_VERSION } from "./version.js";
 import type { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
@@ -539,7 +540,8 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				return refactorMove(service, transactions(), write, args);
 			}
 			default:
-				throw new Error(`unknown method: ${method}`);
+				// Names the build, since the likeliest cause is a client and daemon on different ones.
+				throw new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
 		}
 	};
 }

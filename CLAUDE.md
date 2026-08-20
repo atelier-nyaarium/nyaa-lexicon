@@ -83,6 +83,11 @@ claim looks correct and is not.
 provider changes a kind, name, range, binding or literal for unchanged source, ship a major.
 Correcting `typeParameter` to `interface` is this case.
 
+**Removing or renaming a daemon method requires a PROTOCOL major.** Clients connect to daemons
+NEWER than themselves on the premise that method tables only grow within a protocol major. Removals
+have happened (`graphOf`, `renameSymbol`); each now costs a protocol major, or a stale client's
+calls start failing as `unknown method`.
+
 Patch and minor releases preserve stores. Build updates every provider manifest, so core-only
 releases do not invalidate facts.
 
