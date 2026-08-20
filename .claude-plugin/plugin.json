@@ -1,6 +1,6 @@
 {
 	"name": "lexicon",
-	"version": "1.12.0",
+	"version": "1.13.0",
 	"description": "Symbol-level code understanding for agents and editors. Structure, references, types, transactional refactoring with undo, and a knowledge layer that refuses uncited answers.",
 	"author": {
 		"name": "Nyaarium"
