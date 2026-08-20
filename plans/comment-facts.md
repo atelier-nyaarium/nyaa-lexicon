@@ -302,13 +302,45 @@ more remain in the languages nobody attacked this round.
 twins, and cpp was missing backslash-newline splicing in BOTH its comment reader and its string
 reader while c had both. Two instances, one cause: nothing compared them.
 
-**What would eliminate them, for `architecture-fan-out`:** the per-case-per-language fixture table
-is written by hand, so a string form is only tested where someone thought to write it. Declare each
-language's string-form inventory (raw, verbatim, interpolated, triple-quoted, spliced, prefixed)
-on the provider contract, and DERIVE a comment case per (language, form) instead of hand-authoring
-fixtures. A language would then be unable to declare a form it has not proven it lexes, and the c
-and cpp asymmetry becomes unexpressible rather than merely unnoticed. The six cases added this lap
-are the manual version of that table and should be the seed for it.
+**What would eliminate them: nothing available here, and that answer is load-bearing.** Five
+shapes were assessed independently. All five came back "better-tested, not inexpressible",
+INCLUDING the one recommended here first, which is why the recommendation is now withdrawn rather
+than merely qualified.
+
+- **Declare each language's string-form inventory on the contract and derive a case per (language,
+  form).** Withdrawn. The contract cannot prove its own omissions are honest: a provider that
+  simply does not declare `interpolated` never generates the case that would catch it, and nothing
+  detects the omission. The enum is leaky too, mixing delimiters, embedded grammar, preprocessing
+  and prefixes, whose real combinations (verbatim plus interpolated, raw plus prefixed) either
+  explode or go unspecified.
+- **One dense marker gauntlet per language.** A test pattern, not a framework. Nothing requires it
+  to be thorough and nothing detects a lazy one.
+- **A structural invariant over the provider's own output.** Refuted concretely. Comment/literal
+  non-overlap does not fire on ANY of the four bugs: in each, the string ends EARLY, so the false
+  comment sits after the literal rather than inside it. Token tiling does not fire either, because
+  a lexer that labels every byte a comment tiles perfectly. Deriving both tiers from one token list
+  is worth doing for ownership, but the bug is already IN that list.
+- **Differential testing against an external tokenizer.** The only shape that tests the real
+  property, and the environment cannot support it: no rustc and no Kotlin toolchain, and grammars
+  reachable only through a sibling checkout that CI would not have. Each adapter also becomes a
+  second hand-written interpretation layer that can suppress the very disagreement it exists to
+  find.
+
+**The finding worth keeping.** A false comment violates a property that is external to the
+provider's own answers: the span must sit where the LANGUAGE's lexical grammar has a comment opener
+active, rather than inside a string, a char literal, or an interpolation hole. Nothing derivable
+from the provider's own arrays can see that, which is exactly why the range check over ~86,000
+corpus spans is blind to it and why both red-team bugs sailed through. Any future attempt has to
+bring an outside opinion about the grammar, or it is theatre.
+
+**Ranked follow-up, deliberately NOT in this plan:** a planted-marker generator. It plants unique
+markers inside every string form a language has and in real comments, then reuses the exact-multiset
+check already in `check.ts`. Because the generator knows where it planted, it is an oracle without
+needing an external one, which is what makes it cheaper than differential testing and sharper than
+a hand-authored gauntlet. It stays out of this train because it is test-only value against a
+PROTOCOL 2.0.0 that is already shipping, and because the six cases plus the corpus gate cover the
+known instances. The residual risk is accepted and named: forms nobody has attacked yet are
+untested, in all eight languages.
 
 ## Phase 3 - Core
 
@@ -336,6 +368,11 @@ are the manual version of that table and should be the seed for it.
   scanIncomplete). docComment column and StoredDeclaration field removed; describe derives doc
   text from the leading-attached fact; indexReads, MCP render, and LSP hover (server.ts ~200)
   repointed.
+- The PROVIDER-side docComment producers are deleted here too, in the same commit, not in Phase 2.
+  Phase 2 was resequenced to be purely additive precisely so this deletion lands with the code that
+  replaces it; splitting them would ship a release where describe shows no documentation at all.
+  All eight producers, relocated by `grep -rn docComment providers/`, plus the schema field itself.
+  The declaration RANGE conventions stay untouched: Phase 3 reads them, it does not change them.
 
 ## Phase 4 - Surface
 
