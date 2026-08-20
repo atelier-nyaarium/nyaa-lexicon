@@ -1,6 +1,6 @@
 {
 	"name": "nyaa-lexicon",
-	"version": "1.13.0",
+	"version": "1.14.0",
 	"private": true,
 	"type": "module",
 	"description": "Symbol-level code understanding served to agents over MCP and to editors over LSP",
