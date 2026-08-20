@@ -126,13 +126,35 @@ describe("attaching comments to what they document", () => {
 		expect(far?.anchorId).toBeNull();
 	});
 
-	it("anchors an inline comment to the symbol on its left", () => {
+	it("anchors a same-line comment to the symbol on its left", () => {
 		const text = "function work() { } // tail\n";
-		const wide = decl("work", 0, 0);
-		const [found] = attachComments([wide], commentsIn(text), text);
+		const [found] = attachComments([decl("work", 0, 0)], commentsIn(text), text);
 
 		expect(anchorName(found?.anchorId ?? null)).toBe("work");
 		expect(found?.placement).toBe("after");
+	});
+
+	// Embedded rather than trailing: something follows it on the line, so it is not the tail.
+	it("calls a comment with code after it on its line inline", () => {
+		const text = "function work() { } // tail\n";
+		const spans = commentsIn(text).map((item) => ({
+			range: { start: item.range.start, end: { line: 0, character: 22 } },
+			text: "// tai",
+		}));
+		const [found] = attachComments([decl("work", 0, 0)], spans, text);
+
+		expect(found?.form).toBe("inline");
+		expect(found?.placement).toBe("after");
+	});
+
+	// A comment its anchor sits AFTER cannot be trailing, whichever direction the name suggests.
+	it("calls a comment that precedes its only same-line symbol inline, not trailing", () => {
+		const text = "x; // note\nfunction work() { }\n";
+		const onLine = decl("work", 0, 0, 20);
+		const [found] = attachComments([onLine], commentsIn(text), text);
+
+		expect(found?.form).toBe("inline");
+		expect(found?.placement).toBe("before");
 	});
 
 	it("keeps the raw text verbatim while normalizing separately", () => {

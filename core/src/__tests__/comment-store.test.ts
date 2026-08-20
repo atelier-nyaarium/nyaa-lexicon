@@ -67,8 +67,9 @@ describe("storing comments", () => {
 		expect(found?.form).toBe("leading");
 	});
 
-	// Search runs over the normalized column, which is what makes a wrapped phrase findable.
-	it("finds a comment by a phrase its raw text never spells contiguously", () => {
+	// This pins the COLUMN search reads. That the normalized value is right is the normalizer's
+	// test, and that the whole path joins up is comment-indexing's.
+	it("searches the normalized column rather than the raw one", () => {
 		store.replaceFile("src/a.ts", "h1", [declaration("add")], [], [], [], "full", [
 			{
 				...comment("// refuses rather than\n// clamping", idOf("add")),

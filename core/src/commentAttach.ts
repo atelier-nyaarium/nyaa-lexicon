@@ -99,9 +99,13 @@ function groupComments(comments: CommentSpan[], text: string): Group[] {
 			previous.range.start.character === comment.range.start.character &&
 			previous.range.end.line + 1 === comment.range.start.line;
 
-		if (continues && previous !== undefined) {
-			previous.range = { start: previous.range.start, end: comment.range.end };
-			previous.raw = coordinates.sliceRange(previous.range) ?? previous.raw;
+		// Merged only when the source can produce the merged text. A group whose raw came from one
+		// member while its range covers several would be a fact quoting something it does not span.
+		const merged = continues ? { start: (previous as Group).range.start, end: comment.range.end } : undefined;
+		const mergedRaw = merged === undefined ? undefined : coordinates.sliceRange(merged);
+		if (merged !== undefined && mergedRaw !== undefined && previous !== undefined) {
+			previous.range = merged;
+			previous.raw = mergedRaw;
 			previous.codeAfter = codeAfter;
 			continue;
 		}
@@ -141,6 +145,11 @@ function leadingTarget(group: Group, declarations: Declaration[], commentLines: 
 	}
 	if (nearest === undefined) return undefined;
 	if (!onlyCommentLinesBetween(group.range.end.line, nearest.range.start.line, commentLines)) return undefined;
+	// A comment cannot document something outside the scope holding it. Inside a body, the next
+	// declaration below is a SIBLING of the enclosing one, and the comment belongs to the body it
+	// sits in. A member nested in that same scope is still reachable, which is the common case.
+	const scope = enclosing(declarations, group.range);
+	if (scope !== undefined && comparePoints(scope.range.end, nearest.range.start) < 0) return undefined;
 	return nearest;
 }
 
@@ -217,9 +226,12 @@ export function attachComments(declarations: Declaration[], comments: CommentSpa
 		if (!group.ownLine) {
 			const found = sameLineAnchor(group, declarations);
 			if (found !== undefined) {
+				// Trailing means it follows its anchor with nothing after. Anything else on the line,
+				// including an anchor the comment sits BEFORE, is embedded rather than trailing.
+				const embedded = group.codeAfter || found.side === "before";
 				return {
 					...fact,
-					form: group.codeAfter ? ("inline" as const) : ("trailing" as const),
+					form: embedded ? ("inline" as const) : ("trailing" as const),
 					placement: found.side,
 					anchorId: found.anchor.symbolId,
 				};

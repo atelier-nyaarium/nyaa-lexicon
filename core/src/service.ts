@@ -101,6 +101,9 @@ import { hashContent } from "./watcher.js";
 /** How long a tree-first answer waits on its priority parse before serving outline facts. */
 const ENSURE_TREE_BUDGET_MS = 10_000;
 
+/** A reporting cap, not a correctness one. Says so in the output when it bites. */
+const COMMENT_COUNT_SCAN = 200_000;
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -431,13 +434,14 @@ export class LexiconService {
 
 	/** Totals per attachment form, so a verifying run can see the tier landed rather than assume it. */
 	commentCounts(): string {
-		const all = this.reads.commentsToScan(Number.MAX_SAFE_INTEGER);
+		const all = this.reads.commentsToScan(COMMENT_COUNT_SCAN);
 		if (all.length === 0) return "none";
+		const capped = all.length >= COMMENT_COUNT_SCAN ? ` (counted the first ${COMMENT_COUNT_SCAN})` : "";
 		const byForm = new Map<string, number>();
 		for (const comment of all) byForm.set(comment.form, (byForm.get(comment.form) ?? 0) + 1);
 		const anchored = all.filter((comment) => comment.anchorId !== null).length;
 		const forms = [...byForm].sort((left, right) => right[1] - left[1]).map(([form, n]) => `${form} ${n}`);
-		return `${all.length} (${forms.join(", ")}), ${anchored} anchored to a symbol`;
+		return `${all.length} (${forms.join(", ")}), ${anchored} anchored to a symbol${capped}`;
 	}
 
 	////////////////////////////////
