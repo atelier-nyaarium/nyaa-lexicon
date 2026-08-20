@@ -458,6 +458,106 @@ describe("Python provider project behavior", () => {
 		});
 	});
 
+	it("emits every Python comment form verbatim and leaves docstrings alone", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		const info = provider.initialize(root);
+		const text = [
+			"#!/usr/bin/env python3",
+			"# -*- coding: utf-8 -*-",
+			"# leading",
+			"def work(",
+			"    first,",
+			"    # inline",
+			"    second,",
+			"):",
+			'    """docs"""',
+			"    return first + second",
+			"",
+			"",
+			"total = 42  # trailing",
+			"",
+			"#",
+			"# standalone",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(info.tiers.comments).toBe(true);
+		expect(facts.comments).toEqual([
+			{ text: "#!/usr/bin/env python3", range: spanAt(text, text.indexOf("#!"), "#!/usr/bin/env python3") },
+			{ text: "# -*- coding: utf-8 -*-", range: spanAt(text, text.indexOf("# -*-"), "# -*- coding: utf-8 -*-") },
+			{ text: "# leading", range: spanAt(text, text.indexOf("# leading"), "# leading") },
+			{ text: "# inline", range: spanAt(text, text.indexOf("# inline"), "# inline") },
+			{ text: "# trailing", range: spanAt(text, text.indexOf("# trailing"), "# trailing") },
+			{ text: "#", range: spanAt(text, text.indexOf("\n#\n") + 1, "#") },
+			{ text: "# standalone", range: spanAt(text, text.indexOf("# standalone"), "# standalone") },
+		]);
+		const declaration = facts.declarations.find((candidate) => candidate.name === "work");
+		expect(declaration?.docComment).toBe("docs");
+		expect(declaration?.range).toEqual({
+			start: { line: 3, character: 0 },
+			end: { line: 9, character: 25 },
+		});
+	});
+
+	it("never reports a hash inside a string as a comment", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			'url = "https://example.com/path"',
+			"hashed = '# not a comment'",
+			'block = """',
+			"# still not a comment",
+			'"""',
+			'formatted = f"{url}# not a comment either"',
+			"# real",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(facts.comments).toEqual([{ text: "# real", range: spanAt(text, text.indexOf("# real"), "# real") }]);
+	});
+
+	it("measures comment columns in UTF-16 code units", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ['X = "😀"  # tail', "# 😀 lead", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(facts.comments).toEqual([
+			{ text: "# tail", range: { start: { line: 0, character: 10 }, end: { line: 0, character: 16 } } },
+			{ text: "# 😀 lead", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 9 } } },
+		]);
+	});
+
+	it("reports comments from text the parser rejects", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["# kept", "def add(:", "    pass", "# also kept", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(facts.declarations).toEqual([]);
+		expect(facts.comments.map((comment) => comment.text)).toEqual(["# kept", "# also kept"]);
+		expect(facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+	});
+
+	it("keeps the comments read before an unterminated string, which Python has instead of blocks", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["# before", 'value = """opened and never closed', "# inside the string", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(facts.comments).toEqual([
+			{ text: "# before", range: spanAt(text, text.indexOf("# before"), "# before") },
+		]);
+		expect(facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+	});
+
 	it("reports declaration metrics with explicit parameter and branch rules", () => {
 		const root = workspace({});
 		const provider = new PythonProvider();

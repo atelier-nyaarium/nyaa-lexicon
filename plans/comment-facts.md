@@ -160,13 +160,44 @@ now lives where the syntax does. Nothing carried to architecture-fan-out.
 
 ## Phase 2 - Providers (workflow fan-out, one agent per provider)
 
-Emit raw comment spans from the lexer; declare the comments tier; DELETE every docComment
-producer - the full inventory from the audit: c parser.ts ~549-553, cpp parser.ts ~330-348,
-python extract.py ~768-782, typescript extract.ts ~76-90, csharp parser.ts 737-764, 841, 967,
-1010, 1105, 1296, 1356, 1413, gdscript line-syntax.ts 38-54 + declarations.ts 416, kotlin
-parser.ts 377, 622, 1439, rust parser.ts 546-584 - while PRESERVING declaration ranges. Replace
-docComment tests with raw-emission coverage. Inventory accepted-wrong assertions for the train.
-Conformance green per provider.
+Emit raw comment spans from the lexer and declare the comments tier, PRESERVING declaration
+ranges. Inventory accepted-wrong extraction assertions for the major train. Conformance green per
+provider.
+
+RESEQUENCED at implementation time: docComment DELETION moves to Phase 3, joining the schema
+removal already moved there. Deleting production here would leave describe showing no
+documentation until Phase 3 derives it, so every commit in between would ship a regression.
+Phase 2 is therefore purely additive, and Phase 3 removes the old path in the same commit that
+lights the new one. The producer inventory the audit built is carried there:
+c parser.ts ~549-553, cpp parser.ts ~330-348, python extract.py ~768-782,
+typescript extract.ts ~76-90, csharp parser.ts 737-764/841/967/1010/1105/1296/1356/1413,
+gdscript line-syntax.ts 38-54 + declarations.ts 416, kotlin parser.ts 377/622/1439,
+rust parser.ts 546-584. (Line numbers moved when spans were added; Phase 3 should re-locate by
+`grep -n docComment`.)
+
+### Extraction debt inventoried for the major train
+
+Reported by the provider agents while emitting spans. All ride this major or are noted as
+deliberate.
+
+RIDING THIS MAJOR (extraction output changed for unchanged source, which is what a major is for):
+- kotlin: a non-raw double-quoted string now scans its `${...}` template, changing literal VALUES
+  at 62 sites across two real corpora. NOT optional: the old lexing ended the string at the first
+  quote inside a template and reported the remainder as a COMMENT, which is precisely the
+  false-positive class the suite exists to catch.
+- rust: `/**/` was classified as a doc opener, consumed its closing star, and ran to EOF swallowing
+  the rest of the file. Fixed while emitting.
+
+FOUND, NOT FIXED (declaration-tier work, out of this feature's scope):
+- kotlin: a primary-constructor `override val name` is read as parameter `override` and the real
+  property is lost. Confirmed against real code in kotlinx-coroutines.
+- kotlin: an unterminated line string swallows the rest of the file.
+- rust: `////` reads as an outer doc comment; `/***/` still misclassified; multi-line block doc
+  comments never attach to their declaration; a space char literal is lost.
+- typescript: negative numeric literals extract as their positive digits, so a numeric range query
+  cannot find them; BigInt literals produce no literal at all; interpolated template head text is
+  never a literal.
+- csharp: shebang is directive trivia, not comment trivia, so C# will not report one.
 
 ## Phase 3 - Core
 

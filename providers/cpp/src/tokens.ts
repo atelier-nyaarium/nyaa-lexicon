@@ -118,10 +118,15 @@ function decodeString(value: string): string {
 	return decoded;
 }
 
+// A CRLF carriage return terminates the line, so it is not comment text and no position addresses it.
+function endsLine(cursor: Cursor): boolean {
+	return cursor.peek() === "\n" || (cursor.peek() === "\r" && cursor.peek(1) === "\n");
+}
+
 function readLineComment(cursor: Cursor): string {
 	let value = cursor.next();
 	value += cursor.next();
-	while (cursor.good() && cursor.peek() !== "\n") value += cursor.next();
+	while (cursor.good() && !endsLine(cursor)) value += cursor.next();
 	return value;
 }
 

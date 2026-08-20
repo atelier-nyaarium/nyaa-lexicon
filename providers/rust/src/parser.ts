@@ -276,6 +276,7 @@ export class RustParser {
 			references,
 			imports: this.imports,
 			literals,
+			comments: this.depth === "outline" ? [] : this.scan.comments,
 			diagnostics,
 			rawDeclarations: this.rawDeclarations,
 			rawReferences: this.depth === "outline" ? [] : this.rawReferences,

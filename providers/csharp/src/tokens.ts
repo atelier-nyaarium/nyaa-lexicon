@@ -10,6 +10,7 @@ export type TokenKind =
 	| "punctuation"
 	| "doc"
 	| "comment"
+	| "directive"
 	| "newline"
 	| "eof";
 
@@ -26,6 +27,8 @@ export interface Token {
 export interface LexedSource {
 	tokens: Token[];
 	literals: Token[];
+	/** Every line and block comment token, in source order. A directive is not a comment. */
+	comments: Token[];
 	diagnostics: Diagnostic[];
 }
 
@@ -58,6 +61,10 @@ const OPERATORS = [
 	"::",
 	"..",
 ] as const;
+
+// Directive forms whose body is tokens rather than free text. Only there does a trailing `//`
+// start a comment; in every other form, and in a quoted path, slashes are the directive's text.
+const TOKENIZED_DIRECTIVES = new Set(["define", "elif", "else", "endif", "if", "line", "nullable", "pragma", "undef"]);
 
 const SIMPLE_ESCAPES: Record<string, string> = {
 	"0": "\0",
@@ -228,12 +235,21 @@ function addLiteral(literals: Token[], item: Token): void {
 	if (item.kind === "string" || item.kind === "number" || item.kind === "boolean") literals.push(item);
 }
 
-export function tokenize(text: string, options: { collectLiterals?: boolean } = {}): LexedSource {
+export function tokenize(
+	text: string,
+	options: { collectLiterals?: boolean; collectComments?: boolean } = {},
+): LexedSource {
 	const cursor = new Cursor(text);
 	const tokens: Token[] = [];
 	const literals: Token[] = [];
+	const comments: Token[] = [];
 	const diagnostics: Diagnostic[] = [];
 	const collectLiterals = options.collectLiterals ?? true;
+	const collectComments = options.collectComments ?? true;
+	const addComment = (item: Token): void => {
+		tokens.push(item);
+		if (collectComments) comments.push(item);
+	};
 	while (cursor.good()) {
 		const before = cursor.offset;
 		const character = cursor.peek();
@@ -252,10 +268,10 @@ export function tokenize(text: string, options: { collectLiterals?: boolean } = 
 				cursor.next();
 				if (cursor.peek() === " ") cursor.next();
 				const value = cursor.readWhile((item) => !isNewline(item));
-				tokens.push(token(cursor, "doc", value, start));
+				addComment(token(cursor, "doc", value, start));
 			} else {
 				cursor.readWhile((item) => !isNewline(item));
-				tokens.push(token(cursor, "comment", "", start));
+				addComment(token(cursor, "comment", "", start));
 			}
 		} else if (sameAscii(cursor, "/*")) {
 			const start = cursor.mark();
@@ -275,11 +291,33 @@ export function tokenize(text: string, options: { collectLiterals?: boolean } = 
 				diagnostics.push(
 					diagnostic("Block comment has no closing delimiter.", positionOf(start), positionOf(cursor.mark())),
 				);
-			tokens.push(token(cursor, "comment", "", start));
+			addComment(token(cursor, "comment", "", start));
 		} else if (character === "#") {
 			const start = cursor.mark();
-			cursor.readWhile((item) => !isNewline(item));
-			tokens.push(token(cursor, "comment", "", start));
+			cursor.next();
+			cursor.readWhile(isWhitespace);
+			const keyword = cursor.readWhile(isIdentifierPart);
+			const tokenized = TOKENIZED_DIRECTIVES.has(keyword);
+			while (cursor.good() && !isNewline(cursor.peek())) {
+				if (!tokenized) {
+					cursor.next();
+					continue;
+				}
+				if (sameAscii(cursor, "//")) break;
+				if (cursor.peek() === '"') {
+					cursor.next();
+					while (cursor.good() && !isNewline(cursor.peek()) && cursor.peek() !== '"') cursor.next();
+					if (cursor.peek() === '"') cursor.next();
+					continue;
+				}
+				cursor.next();
+			}
+			tokens.push(token(cursor, "directive", keyword, start));
+			if (sameAscii(cursor, "//")) {
+				const commentStart = cursor.mark();
+				cursor.readWhile((item) => !isNewline(item));
+				addComment(token(cursor, "comment", "", commentStart));
+			}
 		} else if (character === "@" && isIdentifierStart(cursor.peek(1))) {
 			const start = cursor.mark();
 			cursor.next();
@@ -328,7 +366,7 @@ export function tokenize(text: string, options: { collectLiterals?: boolean } = 
 		if (cursor.offset <= before) throw new Error("tokenizer failed to advance");
 	}
 	tokens.push(token(cursor, "eof", "", cursor.mark()));
-	return { tokens, literals, diagnostics };
+	return { tokens, literals, comments, diagnostics };
 }
 
 export function positionRange(token: Token): Range {

@@ -125,6 +125,7 @@ describe("C provider protocol", () => {
 		expect(parsed.references).toEqual([]);
 		expect(parsed.imports).toEqual([]);
 		expect(parsed.literals).toEqual([]);
+		expect(parsed.comments).toEqual([]);
 		expect(parsed.diagnostics).toEqual([]);
 	});
 });
@@ -169,6 +170,94 @@ describe("C lexical cursor and tokens", () => {
 
 		expect(symbols).toEqual([";"]);
 		expect(lexed.tokens.find((token) => token.kind === "comment")?.raw).toBe("/* one */");
+	});
+});
+
+describe("C comment spans", () => {
+	function commentTexts(text: string) {
+		const provider = new CProvider();
+		return (facts(provider, "spans.c", text).comments ?? []).map((comment) => comment.text);
+	}
+
+	test("declares the comments tier and carries spans through parseFile", () => {
+		const provider = new CProvider();
+		const text = "// note\nint value = 1;\n";
+
+		const parsed = facts(provider, "spans.c", text);
+
+		expect(TIERS.comments).toBe(true);
+		expect(FileFactsSchema.safeParse(parsed).success).toBe(true);
+		expect(parsed.comments).toEqual([{ range: rangeAt(text, "// note"), text: "// note" }]);
+	});
+
+	test("reports every comment form C has, doc comments included", () => {
+		const text =
+			"// leading\nint work(int first /* inline */, int second) {\n\treturn first + second;\n}\n\n/// doc line\n/** doc block */\nint total = 42; // trailing\n\n/* standalone */\n";
+
+		expect(commentTexts(text)).toEqual([
+			"// leading",
+			"/* inline */",
+			"/// doc line",
+			"/** doc block */",
+			"// trailing",
+			"/* standalone */",
+		]);
+	});
+
+	test("does not report a marker written inside a string or character literal", () => {
+		const text =
+			'const char *url = "https://example.com/path";\nconst char *block = "/* not a comment */";\nchar slash = \'/\';\n// real\n';
+
+		expect(commentTexts(text)).toEqual(["// real"]);
+	});
+
+	test("runs an unterminated block comment to end of file as one span", () => {
+		const provider = new CProvider();
+		const text = "int before = 1;\n/* opened and never closed";
+
+		const parsed = facts(provider, "open.c", text);
+
+		expect(parsed.comments).toEqual([
+			{ range: rangeAt(text, "/* opened and never closed"), text: "/* opened and never closed" },
+		]);
+		expect(declarationOf(parsed, "before")).toBeDefined();
+	});
+
+	test("ends a block comment at the first close, since C blocks do not nest", () => {
+		const provider = new CProvider();
+		const text = "/* outer /* inner */\nint after = 1;\n";
+
+		const parsed = facts(provider, "nest.c", text);
+
+		expect((parsed.comments ?? []).map((comment) => comment.text)).toEqual(["/* outer /* inner */"]);
+		expect(declarationOf(parsed, "after")).toBeDefined();
+	});
+
+	test("continues a line comment across a backslash newline", () => {
+		const provider = new CProvider();
+		const text = "// wraps \\\nstill comment\nint after = 1;\n";
+
+		const parsed = facts(provider, "continued.c", text);
+
+		expect(parsed.comments).toEqual([
+			{ range: rangeAt(text, "// wraps \\\nstill comment"), text: "// wraps \\\nstill comment" },
+		]);
+		expect(declarationOf(parsed, "after")).toBeDefined();
+	});
+
+	test("spans a comment holding astral text in UTF-16 code units", () => {
+		const provider = new CProvider();
+		const text = "int value = 1; /* 😀 */\n";
+
+		const parsed = facts(provider, "utf16.c", text);
+
+		expect(parsed.comments).toEqual([{ range: rangeAt(text, "/* 😀 */"), text: "/* 😀 */" }]);
+	});
+
+	test("reports a retokenized Ghidra warning line as a single comment", () => {
+		const text = "void run(void) {\n  if ((value\n// WARNING: Load size is inaccurate));\n}\n";
+
+		expect(commentTexts(text)).toEqual(["// WARNING: Load size is inaccurate));"]);
 	});
 });
 

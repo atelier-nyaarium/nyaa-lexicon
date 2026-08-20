@@ -1,9 +1,11 @@
 import ast
+import io
 import json
 import keyword
 import math
 import operator
 import sys
+import tokenize
 
 
 # //////// Constants
@@ -179,6 +181,36 @@ def text_for_range(text, value):
     parts.extend(lines[line] for line in range(start["line"] + 1, end["line"]))
     parts.append(lines[end["line"]][:end_character])
     return "".join(parts)
+
+
+# tokenize columns are codepoint indices, unlike the byte offsets ast reports.
+def comment_spans(text):
+    lines = text.splitlines(keepends=True)
+
+    def position(line_number, column):
+        return {
+            "line": line_number - 1,
+            "character": utf16_length(source_line(lines, line_number)[:column]),
+        }
+
+    spans = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type != tokenize.COMMENT:
+                continue
+            spans.append(
+                {
+                    "range": {
+                        "start": position(token.start[0], token.start[1]),
+                        "end": position(token.end[0], token.end[1]),
+                    },
+                    "text": token.string,
+                }
+            )
+    # Lexing halts at the first bad token; comments already read stay facts.
+    except (SyntaxError, tokenize.TokenError, ValueError):
+        pass
+    return spans
 
 
 class Analyzer:
@@ -2266,6 +2298,8 @@ def rename_edits(module, text, old_name, new_name, sites, owner_calls=None):
 # //////// Entry point
 
 def extract(module, text):
+    # Comments are lexical, so a file the parser rejects still reports them.
+    comments = comment_spans(text)
     try:
         tree = ast.parse(text, filename=module, type_comments=True)
     except SyntaxError as error:
@@ -2280,9 +2314,10 @@ def extract(module, text):
             "typeAnnotations": [],
             "inferredTypes": [],
             "literals": [],
+            "comments": comments,
             "diagnostics": [diagnostic(f"parse error: {error}")],
         }
-    return Analyzer(module, text).analyze(tree)
+    return {**Analyzer(module, text).analyze(tree), "comments": comments}
 
 
 def main():

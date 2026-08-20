@@ -1,6 +1,8 @@
 import type {
+	CommentSpan,
 	Declaration,
 	Diagnostic,
+	FileFacts,
 	Import,
 	ImportedName,
 	Literal,
@@ -23,6 +25,9 @@ export interface DocComment {
 	text: string;
 	inner: boolean;
 }
+
+/** Taken from the wire shape, so the span cannot drift from the protocol. */
+export type { CommentSpan };
 
 export interface RawDeclaration {
 	declaration: Declaration;
@@ -74,6 +79,7 @@ export interface ParsedFile {
 	references: Reference[];
 	imports: Import[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 	rawDeclarations: RawDeclaration[];
 	rawReferences: RawReference[];

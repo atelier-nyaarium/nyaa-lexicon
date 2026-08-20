@@ -14,6 +14,7 @@ import ts from "typescript";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { TypeScriptAnalyzer } from "./analyzer.js";
 import { isDeclarationModule, isLikelyBundle } from "./bundle.js";
+import { extractComments } from "./comments.js";
 import { extractFile, LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
 import { isValidTargetModule } from "./move.js";
@@ -32,7 +33,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -162,6 +163,7 @@ export class TypeScriptProvider {
 			references,
 			imports: extracted.imports,
 			literals: extracted.literals,
+			comments: extractComments(source),
 			diagnostics: analyzer.diagnostics(params.module),
 		};
 	}

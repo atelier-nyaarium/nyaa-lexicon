@@ -11,7 +11,7 @@ import {
 	type Reference,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
-import { type CToken, lexC, previousSignificant, significant, tokenRange } from "./tokens.js";
+import { type CommentSpan, type CToken, lexC, previousSignificant, significant, tokenRange } from "./tokens.js";
 
 const LANGUAGE = "c";
 
@@ -54,6 +54,7 @@ export interface ParsedCFile {
 	references: CReference[];
 	imports: CImportFact[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 	typeAnswers: Map<string, CTypeAnswer>;
 }
@@ -581,7 +582,7 @@ function stripTypeText(value: string): string {
 
 export function parseC(module: string, text: string): ParsedCFile {
 	const lexed = lexC(module, text);
-	const parser = new CParser(module, lexed.tokens, lexed.diagnostics);
+	const parser = new CParser(module, lexed.tokens, lexed.comments, lexed.diagnostics);
 	return parser.parse();
 }
 
@@ -611,6 +612,7 @@ class CParser {
 	constructor(
 		private readonly module: string,
 		private readonly tokens: CToken[],
+		private readonly comments: CommentSpan[],
 		initialDiagnostics: Diagnostic[],
 	) {
 		this.diagnostics = [...initialDiagnostics];
@@ -646,6 +648,7 @@ class CParser {
 			references: this.references,
 			imports: this.imports,
 			literals: this.literals,
+			comments: this.comments,
 			diagnostics: this.diagnostics,
 			typeAnswers: this.typeAnswers,
 		};

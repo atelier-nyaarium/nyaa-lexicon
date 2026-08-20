@@ -48,7 +48,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -173,6 +173,7 @@ export class CppProvider {
 			})),
 			imports: facts.imports,
 			literals: facts.literals,
+			comments: facts.comments,
 			diagnostics: facts.diagnostics,
 		};
 	}

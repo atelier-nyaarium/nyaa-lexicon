@@ -33,7 +33,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -203,6 +203,7 @@ export class KotlinProvider {
 			references: outline ? [] : this.wireReferences(facts),
 			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
 			literals: outline ? [] : facts.literals,
+			comments: outline ? [] : facts.comments,
 			diagnostics: facts.diagnostics,
 			...(outline ? { depth: "outline" as const } : {}),
 		};

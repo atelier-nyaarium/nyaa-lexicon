@@ -1,5 +1,8 @@
-import type { Diagnostic, Position, Range } from "@nyaa-lexicon/protocol";
+import type { CommentSpan, Diagnostic, Position, Range } from "@nyaa-lexicon/protocol";
 import { Cursor, isHorizontalWhitespace } from "./cursor.js";
+
+/** The protocol barrel does not export CommentSpan. */
+export type { CommentSpan };
 
 export type TokenKind = "identifier" | "number" | "string" | "char" | "symbol" | "newline" | "comment";
 
@@ -18,6 +21,8 @@ export interface CToken {
 
 export interface LexedC {
 	tokens: CToken[];
+	/** Every comment the language defines, verbatim. */
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 }
 
@@ -138,11 +143,39 @@ interface CursorMarkLike {
 	column: number;
 }
 
+/** Backslash-newline continues a line comment onto the next line. */
+function continuesLine(cursor: Cursor): boolean {
+	if (cursor.peek() !== "\\") return false;
+	return cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n");
+}
+
 function readLineComment(cursor: Cursor): { value: string; end: CursorMarkLike } {
 	cursor.next();
 	cursor.next();
-	const value = cursor.takeWhile((character) => character !== "\n");
+	let value = "";
+	while (cursor.good() && cursor.peek() !== "\n") {
+		if (continuesLine(cursor)) {
+			value += cursor.next();
+			if (cursor.peek() === "\r") value += cursor.next();
+		}
+		value += cursor.next();
+	}
 	return { value, end: cursor.mark() };
+}
+
+/** Comment values carry newlines, so suffix positions are walked rather than added. */
+function advanced(mark: CursorMarkLike, text: string): CursorMarkLike {
+	let { offset, line, column } = mark;
+	for (const character of text) {
+		offset += character.length;
+		if (character === "\n") {
+			line++;
+			column = 0;
+			continue;
+		}
+		column += character.length;
+	}
+	return { offset, line, column };
 }
 
 interface LineCommentInfo {
@@ -166,11 +199,7 @@ function ghidraWarningTokens(
 	const markerEnd = comment.value.indexOf(marker);
 	if (markerEnd < 0) return { tokens: [], diagnostics: [] };
 
-	const suffixStart = {
-		offset: comment.start.offset + 2 + markerEnd + marker.length,
-		line: comment.start.line,
-		column: comment.start.column + 2 + markerEnd + marker.length,
-	};
+	const suffixStart = advanced(comment.start, `//${comment.value.slice(0, markerEnd + marker.length)}`);
 	const saved = cursor.mark();
 	const tokens: CToken[] = [];
 	const diagnostics: Diagnostic[] = [];
@@ -398,6 +427,8 @@ function readToken(module: string, cursor: Cursor, lineStart: boolean, diagnosti
 export function lexC(module: string, text: string): LexedC {
 	const cursor = new Cursor(text);
 	const tokens: CToken[] = [];
+	// Only this loop sees comments: a marker retokenized inside one is not a second comment.
+	const comments: CommentSpan[] = [];
 	const diagnostics: Diagnostic[] = [];
 	let lineStart = true;
 	let guard = -1;
@@ -406,7 +437,11 @@ export function lexC(module: string, text: string): LexedC {
 		if (cursor.offset <= guard) throw new Error("C lexer failed to advance");
 		guard = cursor.offset;
 		const result = readToken(module, cursor, lineStart, diagnostics);
-		if (result.token !== undefined) tokens.push(result.token);
+		if (result.token !== undefined) {
+			tokens.push(result.token);
+			if (result.token.kind === "comment")
+				comments.push({ range: tokenRange(result.token), text: result.token.raw });
+		}
 		lineStart = result.lineStart;
 		if (result.lineComment !== undefined) {
 			const warning = ghidraWarningTokens(module, cursor, result.lineComment);
@@ -416,7 +451,7 @@ export function lexC(module: string, text: string): LexedC {
 		}
 	}
 
-	return { tokens, diagnostics };
+	return { tokens, comments, diagnostics };
 }
 
 export function tokenRange(token: CToken): Range {

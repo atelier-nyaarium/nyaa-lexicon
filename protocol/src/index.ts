@@ -95,6 +95,8 @@ export {
 	MoveRefusalSchema,
 } from "./move.js";
 export {
+	type CommentSpan,
+	CommentSpanSchema,
 	type FileFacts,
 	FileFactsSchema,
 	type Import,

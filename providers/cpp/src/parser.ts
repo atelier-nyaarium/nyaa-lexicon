@@ -1,9 +1,11 @@
 import {
+	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	type FileFacts,
 	type Import,
 	type Literal,
 	type Metrics,
@@ -65,6 +67,7 @@ export interface CppFacts {
 	references: CppReferenceRecord[];
 	imports: Import[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 	records: CppDeclarationRecord[];
 	importFacts: ImportFact[];
@@ -560,6 +563,7 @@ class StructuralParser {
 		}
 		const references = this.extractReferences(recordMap);
 		const literals = this.extractLiterals(recordMap);
+		const comments = this.extractComments();
 		const typeAnswers = new Map<string, TypeInfo>();
 		for (const [draft, record] of recordMap) {
 			if (draft?.type === undefined) continue;
@@ -574,6 +578,7 @@ class StructuralParser {
 			references,
 			imports: this.imports.map((item) => item.imported),
 			literals,
+			comments,
 			diagnostics: this.sortedDiagnostics(),
 			records: [...recordMap.values()],
 			importFacts: this.imports,
@@ -811,6 +816,17 @@ class StructuralParser {
 			});
 		}
 		return references;
+	}
+
+	/** Every comment the language defines, verbatim. Read from tokens, so a marker inside a string or
+	 * a raw string is never one, and an unterminated block is the single token that ran to end of file. */
+	private extractComments(): CommentSpan[] {
+		const comments: CommentSpan[] = [];
+		for (const token of this.tokens) {
+			if (token.kind !== "comment") continue;
+			comments.push({ range: rangeOfToken(token), text: token.text });
+		}
+		return comments;
 	}
 
 	private extractLiterals(recordMap: Map<DraftRecord, CppDeclarationRecord>): Literal[] {

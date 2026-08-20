@@ -1,9 +1,11 @@
 import {
 	type Binding,
+	type CommentSpan,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	type FileFacts,
 	type ImportedName,
 	type Literal,
 	type Position,
@@ -118,8 +120,12 @@ export interface KotlinToken {
 	closed?: boolean;
 }
 
+/** Derived from the wire shape, so a protocol change cannot leave this provider spelling its own. */
+export type { CommentSpan };
+
 interface LexResult {
 	tokens: KotlinToken[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 }
 
@@ -327,6 +333,22 @@ function rangeFromToken(token: KotlinToken): Range {
 	return { start: token.start, end: token.end };
 }
 
+/** Every comment span is cut from the source by offset, so no span can drift off its own markers. */
+class CommentSink {
+	readonly spans: CommentSpan[] = [];
+
+	constructor(private readonly source: string) {}
+
+	take(start: Mark, cursor: SourceCursor): void {
+		const text = this.source.slice(start.offset, cursor.offset);
+		if (text === "") return;
+		this.spans.push({
+			range: { start: { line: start.line, character: start.character }, end: positionOf(cursor) },
+			text,
+		});
+	}
+}
+
 function diagnostic(module: string, message: string, range?: Range): Diagnostic {
 	return { severity: "error", message, ...(range === undefined ? {} : { range }), path: module };
 }
@@ -385,6 +407,18 @@ function docComment(body: string): string {
 	return lines.join("\n").trim();
 }
 
+/** CR belongs to the line terminator, so a span that swallowed it would reach past the comment. */
+function readLineComment(cursor: SourceCursor): string {
+	let raw = "";
+	let guard = -1;
+	while (cursor.good() && cursor.peek() !== "\n" && cursor.peek() !== "\r") {
+		if (cursor.offset <= guard) throw new Error("readLineComment failed to advance");
+		guard = cursor.offset;
+		raw += cursor.next();
+	}
+	return raw;
+}
+
 function readNestedBlockComment(cursor: SourceCursor): { body: string; closed: boolean } {
 	let body = "";
 	let depth = 1;
@@ -421,7 +455,7 @@ function quoteRun(cursor: SourceCursor): number {
 	return count;
 }
 
-function readTemplateExpression(cursor: SourceCursor): { raw: string; closed: boolean } {
+function readTemplateExpression(cursor: SourceCursor, sink: CommentSink): { raw: string; closed: boolean } {
 	let raw = "";
 	let depth = 1;
 	let guard = -1;
@@ -430,25 +464,33 @@ function readTemplateExpression(cursor: SourceCursor): { raw: string; closed: bo
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("readTemplateExpression failed to advance");
 		guard = cursor.offset;
+		// A template expression is code, so a comment inside one is a comment.
 		if (cursor.startsWith("//")) {
+			const comment = cursor.mark();
 			raw += cursor.next();
 			raw += cursor.next();
-			raw += cursor.readUntil("\n");
+			raw += readLineComment(cursor);
+			sink.take(comment, cursor);
 			continue;
 		}
 		if (cursor.startsWith("/*")) {
+			const comment = cursor.mark();
 			raw += cursor.next();
 			raw += cursor.next();
 			const block = readNestedBlockComment(cursor);
 			raw += block.body;
-			if (!block.closed) return { raw, closed: false };
+			if (!block.closed) {
+				sink.take(comment, cursor);
+				return { raw, closed: false };
+			}
 			raw += cursor.next();
 			raw += cursor.next();
+			sink.take(comment, cursor);
 			continue;
 		}
 		const character = cursor.peek();
 		if (character === '"' || character === "'") {
-			const string = lexString(cursor, character);
+			const string = lexString(cursor, character, sink);
 			raw += string.raw;
 			if (!string.closed) return { raw, closed: false };
 			continue;
@@ -469,7 +511,11 @@ function readTemplateExpression(cursor: SourceCursor): { raw: string; closed: bo
 	return { raw, closed: false };
 }
 
-function lexString(cursor: SourceCursor, quote: string): { raw: string; value: string; closed: boolean } {
+function lexString(
+	cursor: SourceCursor,
+	quote: string,
+	sink: CommentSink,
+): { raw: string; value: string; closed: boolean } {
 	let raw = "";
 	let body = "";
 	const triple = quote === '"' && cursor.startsWith('"""');
@@ -481,7 +527,7 @@ function lexString(cursor: SourceCursor, quote: string): { raw: string; value: s
 			if (cursor.offset <= guard) throw new Error("lexRawString failed to advance");
 			guard = cursor.offset;
 			if (cursor.startsWith("${")) {
-				const template = readTemplateExpression(cursor);
+				const template = readTemplateExpression(cursor, sink);
 				raw += template.raw;
 				body += template.raw;
 				if (!template.closed) break;
@@ -514,6 +560,14 @@ function lexString(cursor: SourceCursor, quote: string): { raw: string; value: s
 			raw += cursor.next();
 			closed = true;
 			break;
+		}
+		// A template runs past quotes of its own, so scanning to the next quote would end the string early.
+		if (quote === '"' && cursor.startsWith("${")) {
+			const template = readTemplateExpression(cursor, sink);
+			raw += template.raw;
+			body += template.raw;
+			if (!template.closed) break;
+			continue;
 		}
 		const character = cursor.next();
 		raw += character;
@@ -567,7 +621,14 @@ function lexNumber(cursor: SourceCursor): string {
 function lex(source: string, module: string): LexResult {
 	const cursor = new SourceCursor(source);
 	const tokens: KotlinToken[] = [];
+	const comments = new CommentSink(source);
 	const diagnostics: Diagnostic[] = [];
+	// The grammar allows one shebang line, at offset zero only.
+	if (source.startsWith("#!")) {
+		const shebang = cursor.mark();
+		readLineComment(cursor);
+		comments.take(shebang, cursor);
+	}
 	let guard = -1;
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("lex failed to advance");
@@ -594,7 +655,8 @@ function lex(source: string, module: string): LexResult {
 		if (character === "/" && cursor.peek(1) === "/") {
 			cursor.next();
 			cursor.next();
-			cursor.readUntil("\n");
+			readLineComment(cursor);
+			comments.take(start, cursor);
 			continue;
 		}
 		if (character === "/" && cursor.peek(1) === "*") {
@@ -616,6 +678,7 @@ function lex(source: string, module: string): LexResult {
 					}),
 				);
 			}
+			comments.take(start, cursor);
 			if (doc) {
 				tokens.push({
 					kind: "doc",
@@ -631,7 +694,7 @@ function lex(source: string, module: string): LexResult {
 			continue;
 		}
 		if (character === '"' || character === "'") {
-			const string = lexString(cursor, character);
+			const string = lexString(cursor, character, comments);
 			tokens.push({
 				kind: "string",
 				value: string.value,
@@ -723,7 +786,7 @@ function lex(source: string, module: string): LexResult {
 			endOffset: cursor.offset,
 		});
 	}
-	return { tokens, diagnostics };
+	return { tokens, comments: comments.spans, diagnostics };
 }
 
 interface ScopeContext {
@@ -793,6 +856,7 @@ export interface KotlinFile {
 	references: ReferenceInfo[];
 	imports: ImportInfo[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	typeFacts: TypeFact[];
 	scopeSpans: ScopeSpan[];
 	scopeParents: Map<string, string | undefined>;
@@ -1137,6 +1201,7 @@ function literalType(token: KotlinToken | undefined): { display: string; value: 
 
 class KotlinParser {
 	private readonly tokens: KotlinToken[];
+	private readonly comments: CommentSpan[];
 	private readonly diagnostics: Diagnostic[];
 	private readonly declarations: DeclarationMeta[] = [];
 	private readonly imports: ImportInfo[] = [];
@@ -1159,6 +1224,7 @@ class KotlinParser {
 	) {
 		const lexed = lex(text, module);
 		this.tokens = lexed.tokens;
+		this.comments = lexed.comments;
 		this.diagnostics = [...lexed.diagnostics];
 	}
 
@@ -1183,6 +1249,7 @@ class KotlinParser {
 			references,
 			imports: this.imports,
 			literals,
+			comments: this.outline ? [] : this.comments,
 			typeFacts: this.typeFacts,
 			scopeSpans: this.scopeSpans,
 			scopeParents: this.scopeParents,

@@ -1,13 +1,15 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Declaration, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { type Declaration, parseSymbolId, type Range } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, test } from "vitest";
 import { handlersFor, KotlinProvider, LANGUAGE, REFERENCE_ROLES, TIERS } from "../main.js";
 import { parseKotlin, SourceCursor } from "../parser.js";
 
 const roots: string[] = [];
 const SWITCHBOARD_ANDROID = "/home/nyaarium/projects/switchboard/android";
+/** Kotlin's template opener, spelled out so a fixture does not read as a TypeScript placeholder. */
+const DOLLAR = "$";
 
 function makeWorkspace(files: Record<string, string>): string {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-kotlin-edge-"));
@@ -22,6 +24,20 @@ function makeWorkspace(files: Record<string, string>): string {
 
 function declaration(facts: { declarations: Declaration[] }, name: string, kind?: string) {
 	return facts.declarations.find((item) => item.name === name && (kind === undefined || item.kind === kind));
+}
+
+function comments(facts: { comments: Array<{ text: string }> }): string[] {
+	return facts.comments.map((item) => item.text);
+}
+
+/** Cuts by range the way an editor would, so a span that lied about its position fails the compare. */
+function slice(text: string, range: Range): string {
+	const lines = text.split("\n");
+	const cut = lines.slice(range.start.line, range.end.line + 1);
+	const last = cut.length - 1;
+	cut[last] = (cut[last] as string).slice(0, range.end.character);
+	cut[0] = (cut[0] as string).slice(range.start.character);
+	return cut.join("\n");
 }
 
 afterEach(() => {
@@ -127,6 +143,122 @@ describe("Kotlin lexical coverage", () => {
 		expect(cursor.offset).toBe(mark.offset);
 		expect(cursor.readUntil("*/")).toBe("abc");
 		expect(cursor.startsWith("*/")).toBe(true);
+	});
+});
+
+describe("Kotlin comment spans", () => {
+	test("reports line, block, KDoc, inline, and trailing comments as written", () => {
+		const facts = parseKotlin(
+			"Shapes.kt",
+			[
+				"// leading",
+				"/** Documented. */",
+				"fun work(first: Int /* inline */, second: Int): Int {",
+				"\treturn first + second",
+				"}",
+				"",
+				"val total = 42 // trailing",
+				"",
+				"/* standalone */",
+			].join("\n"),
+		);
+
+		expect(comments(facts)).toEqual([
+			"// leading",
+			"/** Documented. */",
+			"/* inline */",
+			"// trailing",
+			"/* standalone */",
+		]);
+		expect(facts.diagnostics).toEqual([]);
+	});
+
+	test("nests block comments, so the span ends at the last close", () => {
+		const facts = parseKotlin("Nest.kt", "/* outer /* inner */ still outer */\nval after = 1\n");
+
+		expect(comments(facts)).toEqual(["/* outer /* inner */ still outer */"]);
+		expect(declaration(facts, "after")).toBeDefined();
+	});
+
+	test("every span cuts its own text out of the source", () => {
+		const text = "// one\nval x = 1 /* two */\n/**\n * three\n */\nclass Boxed\n";
+		const facts = parseKotlin("Ranges.kt", text);
+
+		expect(facts.comments).toHaveLength(3);
+		for (const comment of facts.comments) expect(slice(text, comment.range)).toBe(comment.text);
+	});
+
+	test("a marker inside a string, char, or raw literal is not a comment", () => {
+		const facts = parseKotlin(
+			"Markers.kt",
+			[
+				'val url = "https://example.com/path"',
+				'val block = "/* not a comment */"',
+				'val escaped = "he said \\"// no\\""',
+				"val slash = '/'",
+				'val raw = """',
+				"not // a comment",
+				"nor /* this */",
+				'"""',
+				"// real",
+			].join("\n"),
+		);
+
+		expect(comments(facts)).toEqual(["// real"]);
+	});
+
+	test("a template holding quotes does not end the string early", () => {
+		const facts = parseKotlin("Template.kt", `val s = "${DOLLAR}{ if (a) "//x" else "" }"\nval after = 1\n`);
+
+		expect(comments(facts)).toEqual([]);
+		expect(declaration(facts, "after")).toBeDefined();
+	});
+
+	test("a comment inside a template expression is a comment", () => {
+		const facts = parseKotlin(
+			"Inside.kt",
+			`val plain = "${DOLLAR}{ 1 /* here */ }"\nval raw = """${DOLLAR}{ 2 // line\n }"""\n`,
+		);
+
+		expect(comments(facts)).toEqual(["/* here */", "// line"]);
+	});
+
+	test("an unterminated block runs to end of file as one span", () => {
+		const facts = parseKotlin("Open.kt", "val before = 1\n/* opened and never closed");
+
+		expect(comments(facts)).toEqual(["/* opened and never closed"]);
+		expect(facts.diagnostics.map((item) => item.message)).toContain("Block comment has no closing delimiter.");
+	});
+
+	test("an unterminated nested block is still one span", () => {
+		const facts = parseKotlin("OpenNest.kt", "val x = 1\n/* outer /* inner */ never closed");
+
+		expect(comments(facts)).toEqual(["/* outer /* inner */ never closed"]);
+	});
+
+	test("a shebang line is reported like any other comment", () => {
+		const facts = parseKotlin("Tool.kt", "#!/usr/bin/env kotlin\n// real\nval x = 1\n");
+
+		expect(comments(facts)).toEqual(["#!/usr/bin/env kotlin", "// real"]);
+		expect(declaration(facts, "x")).toBeDefined();
+		expect(facts.diagnostics).toEqual([]);
+	});
+
+	test("a carriage return ends a line comment instead of joining it", () => {
+		const facts = parseKotlin("Crlf.kt", "val a = 1 // trailing\r\n// next\r\nval b = 2\r\n");
+
+		expect(comments(facts)).toEqual(["// trailing", "// next"]);
+	});
+
+	test("comments ride with full facts and are withheld at outline depth", () => {
+		const provider = new KotlinProvider();
+		provider.initialize(process.cwd());
+		const text = "// leading\nval x = 1\n";
+		const full = provider.parseFile({ module: "Depth.kt", contentHash: "hash", text });
+		const outline = provider.parseFile({ module: "Depth.kt", contentHash: "hash", text, depth: "outline" });
+
+		expect(full.comments?.map((comment) => comment.text)).toEqual(["// leading"]);
+		expect(outline.comments).toEqual([]);
 	});
 });
 
@@ -629,7 +761,7 @@ describe("Kotlin project and protocol wiring", () => {
 		const unclaimed = Object.entries(TIERS)
 			.filter(([, claimed]) => !claimed)
 			.map(([tier]) => tier);
-		expect(unclaimed).toEqual(["comments"]);
+		expect(unclaimed).toEqual([]);
 	});
 
 	test("keeps parse response identity and includes every fact collection", () => {
@@ -647,6 +779,7 @@ describe("Kotlin project and protocol wiring", () => {
 		expect(Array.isArray(response.references)).toBe(true);
 		expect(Array.isArray(response.imports)).toBe(true);
 		expect(Array.isArray(response.literals)).toBe(true);
+		expect(Array.isArray(response.comments)).toBe(true);
 		expect(Array.isArray(response.diagnostics)).toBe(true);
 	});
 

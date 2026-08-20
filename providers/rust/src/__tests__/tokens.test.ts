@@ -90,8 +90,22 @@ test("handles nested block comments and reports an incomplete one", () => {
 
 	expect(valid.diagnostics).toEqual([]);
 	expect(valid.tokens.map((token) => token.value)).toEqual(["struct", "Item", ";"]);
+	expect(valid.comments.map((comment) => comment.text)).toEqual(["/* outer /* inner */ outer */"]);
 	expect(invalid.diagnostics).toHaveLength(1);
 	expect(invalid.diagnostics[0]?.message).toBe("block comment has no closing delimiter");
+	expect(invalid.comments.map((comment) => comment.text)).toEqual(["/* outer /* inner */ struct Item;"]);
+});
+
+test("keeps comment markers inside string and character literals out of the comments", () => {
+	const result = tokenize(`const url = "https://example.com/path";
+const block = "/* not a comment */";
+const raw = r#"// not a comment"#;
+const slash = '/';
+// real
+`);
+
+	expect(result.diagnostics).toEqual([]);
+	expect(result.comments.map((comment) => comment.text)).toEqual(["// real"]);
 });
 
 test("scans numbers, suffixes, raw identifiers, and operators", () => {

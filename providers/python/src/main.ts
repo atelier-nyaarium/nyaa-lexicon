@@ -3,11 +3,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	type Binding,
+	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	type FileFacts,
 	type ImportedName,
 	type ImportResolution,
 	type Literal,
@@ -57,7 +59,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -188,6 +190,7 @@ interface RawFacts {
 	typeAnnotations: RawTypeAnnotation[];
 	inferredTypes: RawInferredType[];
 	literals: RawLiteral[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 }
 
@@ -221,6 +224,7 @@ interface MappedFacts {
 	typeAnnotations: MappedTypeAnnotation[];
 	inferredTypes: RawInferredType[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	typeAnswers: Map<string, TypeAnswer>;
 }
 
@@ -261,6 +265,7 @@ function extractFacts(python3: Python3Dispatch, module: string, text: string): R
 			typeAnnotations: [],
 			inferredTypes: [],
 			literals: [],
+			comments: [],
 			diagnostics: [{ severity: "error", message: detail }],
 		};
 	}
@@ -358,6 +363,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 		typeAnnotations,
 		inferredTypes: raw.inferredTypes,
 		literals,
+		comments: raw.comments,
 		typeAnswers,
 	};
 }
@@ -557,6 +563,7 @@ export class PythonProvider {
 			references: this.wireReferences(params.module, facts),
 			imports: facts.imports,
 			literals: facts.literals,
+			comments: facts.comments,
 			diagnostics: facts.diagnostics,
 		};
 	}

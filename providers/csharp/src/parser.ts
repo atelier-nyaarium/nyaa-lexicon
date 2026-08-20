@@ -1,9 +1,11 @@
 import {
+	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	type FileFacts,
 	type ImportedName,
 	type Literal,
 	type Metrics,
@@ -49,6 +51,7 @@ export interface CsharpFacts {
 	references: Reference[];
 	imports: CsharpImport[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 	metadata: Map<string, DeclarationMeta>;
 	namespaceNames: string[];
@@ -276,7 +279,13 @@ const BUILTIN_TYPES = new Set([
 const ASSIGNMENT_WORDS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "??="]);
 
 function isTrivia(token: Token | undefined): boolean {
-	return token === undefined || token.kind === "comment" || token.kind === "doc" || token.kind === "newline";
+	return (
+		token === undefined ||
+		token.kind === "comment" ||
+		token.kind === "doc" ||
+		token.kind === "directive" ||
+		token.kind === "newline"
+	);
 }
 
 function isIdentifier(token: Token | undefined): token is Token {
@@ -382,7 +391,7 @@ export class CsharpParser {
 		private readonly outline = false,
 	) {
 		this.cursor = new Cursor(text);
-		this.lexed = tokenize(text, { collectLiterals: !outline });
+		this.lexed = tokenize(text, { collectLiterals: !outline, collectComments: !outline });
 		this.tokens = this.lexed.tokens;
 		this.diagnostics = [...this.lexed.diagnostics];
 	}
@@ -395,6 +404,7 @@ export class CsharpParser {
 		const finalized = this.finalizeDeclarations();
 		const references = this.outline ? [] : this.extractReferences(finalized.metadata);
 		const literals = this.outline ? [] : this.extractLiterals(finalized.metadata);
+		const comments = this.outline ? [] : this.extractComments();
 		const diagnostics = this.diagnostics
 			.map((item) => ({ ...item, path: this.module }))
 			.sort((left, right) => {
@@ -409,6 +419,7 @@ export class CsharpParser {
 			references,
 			imports: this.rawImports,
 			literals,
+			comments,
 			diagnostics,
 			metadata: finalized.metadata,
 			namespaceNames: [...this.namespaceNames].sort(),
@@ -526,7 +537,7 @@ export class CsharpParser {
 				index++;
 				continue;
 			}
-			if (current.kind === "comment") {
+			if (current.kind === "comment" || current.kind === "directive") {
 				documentation = [];
 				documentationStart = undefined;
 				index++;
@@ -1957,5 +1968,10 @@ export class CsharpParser {
 			literals.push(literal);
 		}
 		return literals;
+	}
+
+	/** Raw spans off the lexed stream, so a marker inside a string is never one. */
+	private extractComments(): CommentSpan[] {
+		return this.lexed.comments.map((item) => ({ range: positionRange(item), text: item.raw }));
 	}
 }

@@ -1,5 +1,5 @@
 import { Cursor, type CursorSpan, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "./cursor.js";
-import type { DocComment } from "./model.js";
+import type { CommentSpan, DocComment } from "./model.js";
 
 export type RustTokenKind = "identifier" | "number" | "string" | "char" | "lifetime" | "symbol";
 
@@ -17,6 +17,7 @@ export interface ScanDiagnostic {
 export interface ScanResult {
 	tokens: RustToken[];
 	docs: DocComment[];
+	comments: CommentSpan[];
 	diagnostics: ScanDiagnostic[];
 	lineTokens: Map<number, RustToken[]>;
 }
@@ -122,6 +123,24 @@ function decodeString(text: string): string {
 
 function spanFrom(mark: ReturnType<Cursor["mark"]>, cursor: Cursor): CursorSpan {
 	return cursor.span(mark);
+}
+
+function addComment(source: string, comments: CommentSpan[], span: CursorSpan): void {
+	comments.push({
+		range: { start: span.start, end: span.end },
+		text: sourceRange(source, span.startOffset, span.endOffset),
+	});
+}
+
+/** A line comment stops before its terminator, and CRLF is one terminator. */
+function readToLineEnd(cursor: Cursor): void {
+	let guard = -1;
+	while (cursor.good() && cursor.peek() !== "\n") {
+		if (cursor.offset <= guard) throw new Error("line comment reader failed to advance");
+		guard = cursor.offset;
+		if (cursor.peek() === "\r" && cursor.peek(1) === "\n") break;
+		cursor.next();
+	}
 }
 
 function makeToken(source: string, kind: RustTokenKind, value: string, span: CursorSpan): RustToken {
@@ -246,17 +265,27 @@ function scanRawString(source: string, cursor: Cursor, prefixLength: number, dia
 	return makeToken(source, "string", sourceRange(source, bodyStart, bodyEnd), span);
 }
 
-function scanLineComment(cursor: Cursor, docs: DocComment[]): void {
+function scanLineComment(source: string, cursor: Cursor, docs: DocComment[], comments: CommentSpan[]): void {
+	const mark = cursor.mark();
 	const inner = cursor.peek(2) === "!";
 	const doc = cursor.peek(2) === "/" || inner;
 	consumeText(cursor, doc ? (inner ? "//!" : "///") : "//");
-	const body = cursor.readWhile((character) => character !== "\n");
-	if (doc) docs.push({ line: cursor.line, text: cleanDocText(body), inner });
+	const bodyStart = cursor.offset;
+	readToLineEnd(cursor);
+	if (doc) docs.push({ line: cursor.line, text: cleanDocText(sourceRange(source, bodyStart, cursor.offset)), inner });
+	addComment(source, comments, spanFrom(mark, cursor));
 }
 
-function scanBlockComment(source: string, cursor: Cursor, docs: DocComment[], diagnostics: ScanDiagnostic[]): void {
+function scanBlockComment(
+	source: string,
+	cursor: Cursor,
+	docs: DocComment[],
+	comments: CommentSpan[],
+	diagnostics: ScanDiagnostic[],
+): void {
 	const mark = cursor.mark();
-	const doc = cursor.peek(2) === "*" || cursor.peek(2) === "!";
+	// `/**/` closes the comment rather than opening a doc one.
+	const doc = cursor.peek(2) === "!" || (cursor.peek(2) === "*" && cursor.peek(3) !== "/");
 	const inner = cursor.peek(2) === "!";
 	consumeText(cursor, "/*");
 	if (doc) cursor.next();
@@ -280,12 +309,15 @@ function scanBlockComment(source: string, cursor: Cursor, docs: DocComment[], di
 					const body = sourceRange(source, bodyStart, bodyEnd);
 					docs.push({ line: mark.line, text: cleanDocText(body), inner });
 				}
+				addComment(source, comments, spanFrom(mark, cursor));
 				return;
 			}
 			continue;
 		}
 		cursor.next();
 	}
+	// An unterminated block is one span reaching end of file.
+	addComment(source, comments, spanFrom(mark, cursor));
 	diagnostics.push({ message: "block comment has no closing delimiter", span: spanFrom(mark, cursor) });
 }
 
@@ -338,9 +370,17 @@ export function tokenize(source: string): ScanResult {
 	const cursor = new Cursor(source);
 	const tokens: RustToken[] = [];
 	const docs: DocComment[] = [];
+	const comments: CommentSpan[] = [];
 	const diagnostics: ScanDiagnostic[] = [];
 	const lineTokens = new Map<number, RustToken[]>();
 	let guard = -1;
+
+	// A leading `#!` opens a shebang unless it opens an inner attribute.
+	if (source.startsWith("#!") && !source.startsWith("#![")) {
+		const mark = cursor.mark();
+		readToLineEnd(cursor);
+		addComment(source, comments, spanFrom(mark, cursor));
+	}
 
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("tokenizer failed to advance");
@@ -351,11 +391,11 @@ export function tokenize(source: string): ScanResult {
 			continue;
 		}
 		if (matches(cursor, "//")) {
-			scanLineComment(cursor, docs);
+			scanLineComment(source, cursor, docs, comments);
 			continue;
 		}
 		if (matches(cursor, "/*")) {
-			scanBlockComment(source, cursor, docs, diagnostics);
+			scanBlockComment(source, cursor, docs, comments, diagnostics);
 			continue;
 		}
 		const mark = cursor.mark();
@@ -422,7 +462,7 @@ export function tokenize(source: string): ScanResult {
 		addToken(source, tokens, lineTokens, makeToken(source, "symbol", value, span));
 	}
 
-	return { tokens, docs, diagnostics, lineTokens };
+	return { tokens, docs, comments, diagnostics, lineTokens };
 }
 
 export function tokenText(source: string, token: RustToken): string {

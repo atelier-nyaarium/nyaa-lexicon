@@ -29,7 +29,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -83,6 +83,7 @@ export class GDScriptProvider {
 			references,
 			imports: extracted.imports,
 			literals: extracted.literals,
+			comments: extracted.comments,
 			diagnostics: extracted.diagnostics,
 		};
 	}

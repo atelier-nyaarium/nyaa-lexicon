@@ -88,7 +88,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -302,6 +302,7 @@ export class CProvider {
 				reExport,
 			})),
 			literals: stored.parsed.literals,
+			comments: stored.parsed.comments,
 			diagnostics: stored.parsed.diagnostics,
 		};
 	}
@@ -331,6 +332,7 @@ export class CProvider {
 				references: [],
 				imports: [],
 				literals: [],
+				comments: [],
 				diagnostics: [diagnosticForRead(module, error)],
 				typeAnswers: new Map(),
 			};

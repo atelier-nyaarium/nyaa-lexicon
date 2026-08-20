@@ -8,6 +8,8 @@ import {
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import {
+	type CommentSpan,
+	extractCommentsCore,
 	extractDeclarationsCore,
 	extractDiagnosticsCore,
 	extractImportsCore,
@@ -29,6 +31,7 @@ export function extractFile(
 	references: Reference[];
 	imports: ReturnType<typeof extractImportsCore>;
 	literals: Literal[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 } {
 	const declarations = extractDeclarationsCore(module, text, composeSymbolId);
@@ -37,6 +40,7 @@ export function extractFile(
 		references: extractReferencesCore(module, text, composeSymbolId),
 		imports: extractImportsCore(module, text, composeSymbolId),
 		literals: extractLiteralsCore(module, text, declarations),
+		comments: extractCommentsCore(text),
 		diagnostics: extractDiagnosticsCore(module, text),
 	};
 }

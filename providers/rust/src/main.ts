@@ -39,7 +39,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
@@ -85,6 +85,7 @@ function parseFailure(module: string, detail: string): ParsedFile {
 		references: [],
 		imports: [],
 		literals: [],
+		comments: [],
 		diagnostics: [diagnostic],
 		rawDeclarations: [],
 		rawReferences: [],
@@ -137,6 +138,7 @@ export class RustProvider {
 			references,
 			imports: facts.imports,
 			literals: facts.literals,
+			comments: facts.comments,
 			diagnostics: facts.diagnostics,
 			...(outline ? { depth: "outline" as const } : {}),
 		};
