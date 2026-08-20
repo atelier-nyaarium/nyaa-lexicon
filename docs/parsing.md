@@ -68,3 +68,16 @@ parser ends up with no diagnosis at all, because nothing forces one into existen
 Compose against parse, stringify against parse. The property to test is that one is the other's
 inverse across the whole input space you accept, including the ugly parts: embedded delimiters,
 quoting, unicode normalization, and the empty case.
+
+## 12. One lexer decides both what is a string and what is a comment
+
+A comment is defined by what is NOT a string, so a second pass that scans for markers reports the
+contents of string literals as prose the moment the two disagree. Emit comments from the same token
+list that produces literals.
+
+The corollary costs more than the rule: every hole in the string grammar surfaces as a false
+comment. This caught four parsers here in one change, each a string form the lexer did not know it
+had, including an interpolation hole holding a string of its own and a backslash-newline the
+language splices inside strings as well as comments. Nothing the parser reports about itself
+contradicts a false comment, because the bad span is internally consistent, so the only guard is a
+case that plants a marker inside each string form the language has.

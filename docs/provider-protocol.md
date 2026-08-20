@@ -71,6 +71,34 @@ is prose. Filtering in the lexer hides the span from the only layer that can jud
 conformance cases for this tier assert the EXACT set, so a marker inside a string literal reported
 as a comment fails rather than passing unnoticed.
 
+### Emit from the tokenizer you already have
+
+Never add a second pass that scans for markers. A separate scanner holds its own opinion about
+where strings begin and end, and the moment it disagrees with the real lexer you report prose that
+is not there. Every provider here emits comments from the same token list that produces literals.
+
+This is the tier's one recurring defect, and it is worth knowing why before writing a ninth
+language. A comment is defined by what is NOT a string, so every hole in your string grammar
+becomes a false comment. It has bitten four providers: a string ending at the first quote inside an
+interpolation, an empty block comment read as a doc opener and running to end of file, a string
+ending at a backslash-newline that the language splices, and interpolation holes never tracked at
+all. Nothing the provider reports about itself can catch this, so the corpus is the only guard:
+before trusting a new lexer, plant a marker inside every string form the language has.
+
+### Rules the cases enforce
+
+- A CRLF carriage return ends the line and is not comment text. A LONE carriage return terminates
+  nothing and IS comment text.
+- Where the language splices a backslash-newline, it splices inside comments AND inside strings.
+  One spliced line comment is one span, not two.
+- An interpolation hole is code. Markers inside a string nested in a hole are text, and comments
+  written in a hole are comments.
+- An unterminated block comment runs to end of file as a single span, with a diagnostic.
+- Every span's range must slice its own text back out of the source. The suite checks this for
+  every span reported, not only expected ones.
+- At `outline` or `surface` depth, send `comments: []` like the `literals: []` beside it. Absent
+  means the tier is false, which is a different and stronger claim than "did not extract here".
+
 ## Positions
 
 Ranges are UTF-16 code units, pinned in the schema and proven by a shared conformance case whose
