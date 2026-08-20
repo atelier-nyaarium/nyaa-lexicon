@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { QUESTION_CLASSES, type QuestionClass } from "./answers.js";
+import { journaledStep, StepRefusal } from "./refactorStep.js";
 import type { LexiconService } from "./service.js";
 import type { RefactorIssue, TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
@@ -144,77 +145,73 @@ export interface MoveOutcome {
  * stops the whole thing: a move that relocates a declaration and leaves half its importers pointing
  * at the old module is worse than one that did not start.
  */
-async function refactorMove(
+function refactorMove(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId: string; toModule: string },
 ): Promise<MoveOutcome> {
-	if (!transactions.openTransaction()) {
-		return { moved: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
-	}
+	let touched: string[] = [];
+	let migrated: { answers: number; gaps: number } | undefined;
+	const idMap = new Map<string, string>();
 
-	// Outline modules may contain missed sites.
-	await service.upgradeRemaining();
-	const plan = service.planMove(args.symbolId, args.toModule);
-	if (!plan.ok) return { moved: false, issues: [], reason: plan.reason };
+	return journaledStep<MoveOutcome>(
+		{ service, transactions, write },
+		{
+			kind: "move",
+			refuse: (reason, issues) => ({ moved: false, issues, reason }),
+			succeed: (issues) => ({
+				moved: true,
+				modules: touched,
+				...(migrated === undefined ? {} : { migrated }),
+				issues,
+			}),
+			plan: async () => {
+				const plan = service.planMove(args.symbolId, args.toModule);
+				if (!plan.ok) return { refused: plan.reason };
+				const edits = await service.moveEdits(plan);
+				if (!edits.ok) return { refused: edits.reason, issues: edits.issues };
+				touched = edits.files.map((file) => file.module);
 
-	const edits = await service.moveEdits(plan);
-	if (!edits.ok) return { moved: false, issues: edits.issues, reason: edits.reason };
-
-	return write(async () => {
-		if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
-			return { moved: false, issues: [], reason: `${plan.fromModule} changed while the move was planned` };
-		}
-
-		const touched = edits.files.map((file) => file.module);
-		// Import sites were chosen from stored ranges, so the same staleness rule applies here.
-		const stale = service.staleModules(plan.referencing);
-		if (stale.length > 0) {
-			return {
-				moved: false,
-				issues: [],
-				reason: `${stale.join(", ")} changed since being indexed, so the move would rewrite stale positions`,
-			};
-		}
-
-		const begun = transactions.beginStep("move", touched, { from: plan.fromModule, to: plan.toModule });
-		if (!begun.ok) return { moved: false, issues: [], reason: begun.reason };
-
-		const idMap = new Map<string, string>();
-		for (const id of plan.closure) {
-			const rebased = service.rebaseIntoModule(id, plan.symbolId, plan.toModule);
-			if (rebased !== null) idMap.set(id, rebased);
-		}
-
-		try {
-			for (const file of edits.files) service.writeModule(file.module, file.text);
-		} catch (error) {
-			transactions.undo();
-			return {
-				moved: false,
-				issues: [],
-				reason: `the move could not be written: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
-
-		transactions.completeStep(begun.stepNo, "written");
-		// Target first, so every other module rebinds against a declaration that already exists in
-		// its new home rather than against one that has just vanished.
-		for (const module of [plan.toModule, ...touched.filter((m) => m !== plan.toModule)]) {
-			await service.indexFile(module);
-		}
-		transactions.completeStep(begun.stepNo, "reindexed");
-
-		const migrated = service.migrateKnowledge(idMap);
-		// Asked of the reindexed facts rather than of the edits, since a specifier can be well formed
-		// and still point nowhere.
-		const issues = [...edits.issues, ...service.checkMoveLanded(plan.name, touched)];
-		transactions.recordIssues(begun.stepNo, issues);
-		transactions.completeStep(begun.stepNo, "finalized");
-
-		return { moved: true, modules: touched, migrated, issues };
-	});
+				return {
+					planned: {
+						modules: touched,
+						planRecord: { from: plan.fromModule, to: plan.toModule },
+						stale: () => {
+							if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
+								return `${plan.fromModule} changed while the move was planned`;
+							}
+							// Import sites were chosen from stored ranges; the same rule applies.
+							const stale = service.staleModules(plan.referencing);
+							if (stale.length > 0) {
+								return `${stale.join(", ")} changed since being indexed, so the move would rewrite stale positions`;
+							}
+							return null;
+						},
+						begin: () => {
+							for (const id of plan.closure) {
+								const rebased = service.rebaseIntoModule(id, plan.symbolId, plan.toModule);
+								if (rebased !== null) idMap.set(id, rebased);
+							}
+						},
+						apply: () => {
+							for (const file of edits.files) service.writeModule(file.module, file.text);
+						},
+						// Target first, so every other module rebinds against a declaration that
+						// already exists in its new home rather than one that has just vanished.
+						reindex: [plan.toModule, ...touched.filter((m) => m !== plan.toModule)],
+						issues: edits.issues,
+						finish: (issues) => {
+							migrated = service.migrateKnowledge(idMap);
+							// Asked of the reindexed facts, since a specifier can be well formed and
+							// still point nowhere.
+							issues.push(...service.checkMoveLanded(plan.name, touched));
+						},
+					},
+				};
+			},
+		},
+	);
 }
 
 /** What a rename did, with what it carried across and what it could not promise. */
@@ -232,68 +229,73 @@ export interface RenameStepOutcome {
  * The plan is computed outside the gate and the ids it will re-mint are worked out before anything
  * moves, because afterwards the old ids no longer resolve and there is nothing left to map from.
  */
-async function refactorRename(
+function refactorRename(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId: string; newName: string },
 ): Promise<RenameStepOutcome> {
-	if (!transactions.openTransaction()) {
-		return { renamed: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
-	}
+	let modules: string[] = [];
+	let migrated: { answers: number; gaps: number } | undefined;
 
-	// Outline modules may contain missed sites.
-	await service.upgradeRemaining();
-	const plan = await service.prepareRename(args.symbolId, args.newName);
-	if (plan.blockers.length > 0) {
-		return {
-			renamed: false,
-			issues: plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
-			reason: plan.blockers[0]?.detail ?? "the rename is blocked",
-		};
-	}
+	return journaledStep<RenameStepOutcome>(
+		{ service, transactions, write },
+		{
+			kind: "rename",
+			refuse: (reason, issues) => ({ renamed: false, issues, reason }),
+			succeed: (issues) => ({
+				renamed: true,
+				modules,
+				...(migrated === undefined ? {} : { migrated }),
+				issues,
+			}),
+			plan: async () => {
+				const plan = await service.prepareRename(args.symbolId, args.newName);
+				if (plan.blockers.length > 0) {
+					return {
+						refused: plan.blockers[0]?.detail ?? "the rename is blocked",
+						issues: plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
+					};
+				}
 
-	const idMap = service.renameIdMap(args.symbolId, args.newName);
-	const edited = plan.files.map((file) => file.module);
-	// Worked out before the write, since afterwards these ids resolve to nothing and the modules
-	// holding stale bindings would be unfindable.
-	const alsoBound = service.modulesBoundTo(idMap.keys()).filter((module) => !edited.includes(module));
+				const idMap = service.renameIdMap(args.symbolId, args.newName);
+				const edited = plan.files.map((file) => file.module);
+				// Worked out before the write, since afterwards these ids resolve to nothing and the
+				// modules holding stale bindings would be unfindable.
+				const alsoBound = service.modulesBoundTo(idMap.keys()).filter((module) => !edited.includes(module));
 
-	return write(async () => {
-		// Every site was chosen from stored ranges. A module that has changed since it was indexed
-		// has moved those ranges, so rewriting it would hit some occurrences and miss others.
-		const stale = service.staleModules(edited);
-		if (stale.length > 0) {
-			return {
-				renamed: false,
-				issues: [],
-				reason: `${stale.join(", ")} changed since being indexed, so the rename would rewrite stale positions`,
-			};
-		}
-
-		const begun = transactions.beginStep("rename", [...edited, ...alsoBound], plan);
-		if (!begun.ok) return { renamed: false, issues: [], reason: begun.reason };
-
-		const outcome = await service.renameSymbol(args.symbolId, args.newName);
-		if (!outcome.renamed) {
-			transactions.undo();
-			return { renamed: false, issues: [], reason: outcome.reason };
-		}
-
-		transactions.completeStep(begun.stepNo, "written");
-
-		// The declaring module is reindexed first by renameSymbol, so dependents rebind against
-		// declarations that already carry the new ids.
-		for (const module of alsoBound) await service.indexFile(module);
-		transactions.completeStep(begun.stepNo, "reindexed");
-
-		const migrated = service.migrateKnowledge(idMap);
-		const issues = plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail }));
-		transactions.recordIssues(begun.stepNo, issues);
-		transactions.completeStep(begun.stepNo, "finalized");
-
-		return { renamed: true, modules: [...outcome.modules, ...alsoBound], migrated, issues };
-	});
+				return {
+					planned: {
+						modules: [...edited, ...alsoBound],
+						planRecord: plan,
+						stale: () => {
+							// Every site was chosen from stored ranges; a changed module has moved
+							// them, so rewriting would hit some occurrences and miss others.
+							const stale = service.staleModules(edited);
+							if (stale.length > 0) {
+								return `${stale.join(", ")} changed since being indexed, so the rename would rewrite stale positions`;
+							}
+							return null;
+						},
+						// renameSymbol writes AND reindexes the edited files itself; only the
+						// stale-binding modules remain for the executor.
+						apply: async () => {
+							const outcome = await service.renameSymbol(args.symbolId, args.newName);
+							if (!outcome.renamed) {
+								throw new StepRefusal(outcome.reason ?? "the rename could not be applied");
+							}
+							modules = [...outcome.modules, ...alsoBound];
+						},
+						reindex: alsoBound,
+						issues: plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail })),
+						finish: () => {
+							migrated = service.migrateKnowledge(idMap);
+						},
+					},
+				};
+			},
+		},
+	);
 }
 
 /**
@@ -304,52 +306,44 @@ async function refactorRename(
  * hash is rechecked once held: anything that changed it in between invalidates the plan that was
  * just made, and applying anyway would overwrite whatever changed it.
  */
-async function refactorReplace(
+function refactorReplace(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId?: string | undefined; factId?: string | undefined; newText: string },
 ): Promise<ReplaceOutcome> {
-	if (!transactions.openTransaction()) {
-		return { replaced: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
-	}
+	let module = "";
 
-	// Vanished-symbol checks read the reference graph, which outline modules have not filled yet.
-	await service.upgradeRemaining();
-	const plan = await service.planReplacement(args, args.newText);
-	if (!plan.ok) return { replaced: false, issues: [], reason: plan.reason };
+	return journaledStep<ReplaceOutcome>(
+		{ service, transactions, write },
+		{
+			kind: "replace",
+			refuse: (reason, issues) => ({ replaced: false, issues, reason }),
+			succeed: (issues) => ({ replaced: true, module, issues }),
+			plan: async () => {
+				const plan = await service.planReplacement(args, args.newText);
+				if (!plan.ok) return { refused: plan.reason };
+				module = plan.module;
 
-	return write(async () => {
-		// The plan was spliced from one exact version of the file. Anything that changed it since
-		// invalidates the splice, and writing anyway would overwrite whatever made the change.
-		if (service.currentHashOf(plan.module) !== plan.baseHash) {
-			return { replaced: false, issues: [], reason: `${plan.module} changed while the replacement was planned` };
-		}
-
-		const begun = transactions.beginStep("replace", [plan.module], { range: plan.range });
-		if (!begun.ok) return { replaced: false, issues: [], reason: begun.reason };
-
-		try {
-			service.writeModule(plan.module, plan.text);
-		} catch (error) {
-			// Journaled but not written, so the step is removed rather than left for recovery to
-			// puzzle over on a daemon that is still running.
-			transactions.undo();
-			return {
-				replaced: false,
-				issues: [],
-				reason: `${plan.module} could not be written: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
-
-		transactions.completeStep(begun.stepNo, "written");
-		await service.indexFile(plan.module);
-		transactions.completeStep(begun.stepNo, "reindexed");
-		transactions.recordIssues(begun.stepNo, plan.issues);
-		transactions.completeStep(begun.stepNo, "finalized");
-
-		return { replaced: true, module: plan.module, issues: plan.issues };
-	});
+				return {
+					planned: {
+						modules: [plan.module],
+						planRecord: { range: plan.range },
+						plannedText: [{ module: plan.module, text: plan.text }],
+						// The plan was spliced from one exact version of the file; anything that
+						// changed it since invalidates the splice.
+						stale: () =>
+							service.currentHashOf(plan.module) !== plan.baseHash
+								? `${plan.module} changed while the replacement was planned`
+								: null,
+						apply: () => service.writeModule(plan.module, plan.text),
+						reindex: [plan.module],
+						issues: plan.issues,
+					},
+				};
+			},
+		},
+	);
 }
 
 export interface InsertOutcome {
@@ -363,79 +357,69 @@ export interface InsertOutcome {
 }
 
 /** Insert as one transaction step: the replace pipeline with a computed splice point. */
-async function refactorInsert(
+function refactorInsert(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { after?: string | undefined; module?: string | undefined; text: string },
 ): Promise<InsertOutcome> {
-	if (!transactions.openTransaction()) {
-		return { inserted: false, issues: [], reason: "no refactor transaction is open; call refactor_start" };
-	}
+	let module = "";
+	let symbolIds: string[] = [];
+	let held = new Set<string>();
 
-	// Collision and impact answers read the reference graph, which outline modules have not filled.
-	await service.upgradeRemaining();
-	const plan = await service.planInsert(args);
-	if (plan.state === "refused") return { inserted: false, issues: [], reason: plan.reason };
-	if (plan.state === "present") {
-		// The retry answer: success-shaped, so a timeout-and-retry cannot duplicate the block.
-		return { inserted: false, alreadyInserted: true, module: plan.module, symbolIds: [], issues: [] };
-	}
+	return journaledStep<InsertOutcome>(
+		{ service, transactions, write },
+		{
+			kind: "insert",
+			refuse: (reason, issues) => ({ inserted: false, issues, reason }),
+			succeed: (issues) => ({ inserted: true, module, symbolIds, issues }),
+			plan: async () => {
+				const plan = await service.planInsert(args);
+				if (plan.state === "refused") return { refused: plan.reason };
+				if (plan.state === "present") {
+					// The retry answer: success-shaped, so a timeout-and-retry cannot duplicate.
+					return {
+						done: {
+							inserted: false,
+							alreadyInserted: true,
+							module: plan.module,
+							symbolIds: [],
+							issues: [],
+						},
+					};
+				}
+				module = plan.module;
 
-	return write(async () => {
-		// A created module must STILL be absent: another writer landing one between planning and the
-		// gate would be clobbered by a candidate built from empty.
-		const fresh = plan.created
-			? service.currentHashOf(plan.module) === null
-			: service.currentHashOf(plan.module) === plan.baseHash;
-		if (!fresh) {
-			return { inserted: false, issues: [], reason: `${plan.module} changed while the insert was planned` };
-		}
-
-		const held = new Set(service.declarationsIn(plan.module).map((declaration) => declaration.symbolId));
-
-		// The after-image rides in the journal from the start: insert knows its outcome up front,
-		// and a crash between write and completion must read as unfinished work, not a conflict.
-		const begun = transactions.beginStep("insert", [plan.module], { created: plan.created }, [
-			{ module: plan.module, text: plan.candidate },
-		]);
-		if (!begun.ok) return { inserted: false, issues: [], reason: begun.reason };
-
-		try {
-			service.writeModule(plan.module, plan.candidate);
-		} catch (error) {
-			transactions.undo();
-			return {
-				inserted: false,
-				issues: [],
-				reason: `${plan.module} could not be written: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
-
-		transactions.completeStep(begun.stepNo, "written");
-		const issues = [...plan.issues];
-		try {
-			await service.indexFile(plan.module);
-		} catch (error) {
-			// The write LANDED. Failing the call would report a lie, and leaving the step unfinalized
-			// would have the next recovery silently revert real text; the stale facts are said instead.
-			issues.push({
-				kind: "ReindexFailed",
-				detail: `${plan.module} was written but not reindexed (${error instanceof Error ? error.message : String(error)}); its stored facts are stale until it indexes`,
-				module: plan.module,
-			});
-		}
-		transactions.completeStep(begun.stepNo, "reindexed");
-		transactions.recordIssues(begun.stepNo, issues);
-		transactions.completeStep(begun.stepNo, "finalized");
-
-		const symbolIds = service
-			.declarationsIn(plan.module)
-			.map((declaration) => declaration.symbolId)
-			.filter((symbolId) => !held.has(symbolId));
-
-		return { inserted: true, module: plan.module, symbolIds, issues };
-	});
+				return {
+					planned: {
+						modules: [plan.module],
+						planRecord: { created: plan.created },
+						plannedText: [{ module: plan.module, text: plan.candidate }],
+						// A created module must STILL be absent: another writer landing one between
+						// planning and the gate would be clobbered by a candidate built from empty.
+						stale: () => {
+							const fresh = plan.created
+								? service.currentHashOf(plan.module) === null
+								: service.currentHashOf(plan.module) === plan.baseHash;
+							return fresh ? null : `${plan.module} changed while the insert was planned`;
+						},
+						begin: () => {
+							held = new Set(service.declarationsIn(plan.module).map((d) => d.symbolId));
+						},
+						apply: () => service.writeModule(plan.module, plan.candidate),
+						reindex: [plan.module],
+						issues: plan.issues,
+						finish: () => {
+							symbolIds = service
+								.declarationsIn(plan.module)
+								.map((declaration) => declaration.symbolId)
+								.filter((symbolId) => !held.has(symbolId));
+						},
+					},
+				};
+			},
+		},
+	);
 }
 
 ////////////////////////////////

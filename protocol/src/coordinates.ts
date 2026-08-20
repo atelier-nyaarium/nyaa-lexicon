@@ -115,3 +115,13 @@ function lineStartsOf(text: string): number[] {
 	for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
 	return starts;
 }
+
+/** Total order over positions: negative when a precedes b. The ONE spelling of this comparison;
+ * private copies drifted before, which is this module's founding bug class. */
+export function comparePositions(a: Position, b: Position): number {
+	return a.line !== b.line ? a.line - b.line : a.character - b.character;
+}
+
+export function sameRange(a: Range, b: Range): boolean {
+	return comparePositions(a.start, b.start) === 0 && comparePositions(a.end, b.end) === 0;
+}

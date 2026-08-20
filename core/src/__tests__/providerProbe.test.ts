@@ -49,14 +49,19 @@ describe("parsing a candidate always leaves the provider on the disk text", () =
 		expect(asked).toEqual(["candidate", "on disk"]);
 	});
 
-	// The path no hand-written restore ever covered.
-	it("restores when the provider throws", async () => {
+	// Found live: the TS provider THROWS on some malformed candidates instead of reporting
+	// diagnostics, and the raw transport error leaked to every planner. A throw answers as a
+	// refusal, and the restore still runs.
+	it("answers a throwing provider as a refusal, restored", async () => {
 		const { asked, supervisor } = supervisorSpy((text) =>
-			text === "candidate" ? new Error("provider died") : NO_DIAGNOSTICS,
+			text === "candidate" ? new Error("a descriptor name cannot be empty") : NO_DIAGNOSTICS,
 		);
 		const probe = liveProbe(supervisor, () => "on disk");
 
-		await expect(probe.parseCandidate("a.ts", "candidate")).rejects.toThrow("provider died");
+		await expect(probe.parseCandidate("a.ts", "candidate")).resolves.toEqual({
+			parsed: false,
+			reason: "the provider could not parse the candidate: a descriptor name cannot be empty",
+		});
 		expect(asked).toEqual(["candidate", "on disk"]);
 	});
 

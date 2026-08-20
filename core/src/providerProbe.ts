@@ -24,7 +24,8 @@ export interface ProviderProbe {
 	owner(module: string): { owned: true; providerId: string } | { owned: false; reason: string };
 	/** Silence from a provider is never approval. */
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
-	/** Restores the provider's view before returning. */
+	/** Restores the provider's view before returning. Never rejects: a provider that THROWS on a
+	 * malformed candidate answers parsed:false, so every planner refuses instead of leaking. */
 	parseCandidate(module: string, text: string): Promise<CandidateParse>;
 	/** These ASK rather than SET, so no restore is needed. */
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
@@ -74,6 +75,11 @@ export function liveProbe(supervisor: ProviderSupervisor, readFile: (module: str
 					return { parsed: false, reason: errors.map((diagnostic) => diagnostic.message).join("; ") };
 				}
 				return { parsed: true, facts };
+			} catch (error) {
+				return {
+					parsed: false,
+					reason: `the provider could not parse the candidate: ${error instanceof Error ? error.message : String(error)}`,
+				};
 			} finally {
 				await restore(module);
 			}

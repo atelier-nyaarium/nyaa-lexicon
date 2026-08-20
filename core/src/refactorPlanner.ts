@@ -15,6 +15,7 @@ import type {
 } from "@nyaa-lexicon/protocol";
 import {
 	applyEdits,
+	comparePositions,
 	composeSymbolId,
 	coordinatesOf,
 	isParameterSymbol,
@@ -22,12 +23,13 @@ import {
 	ownerOf,
 	parseSymbolId,
 	rebaseSymbolId,
+	sameRange,
 } from "@nyaa-lexicon/protocol";
 import type { FileEdits } from "./applyEdits.js";
 import { isExternalModule } from "./fileScope.js";
 import type { ImportResolver } from "./imports.js";
 import { toSummary } from "./indexReads.js";
-import type { CandidateParse, ProviderProbe } from "./providerProbe.js";
+import type { ProviderProbe } from "./providerProbe.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration, StoredReference } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -38,15 +40,6 @@ import { hashContent } from "./watcher.js";
 
 function detailOf(detail: string | undefined): string {
 	return detail === undefined ? "" : `: ${detail}`;
-}
-
-function sameRange(a: Range, b: Range): boolean {
-	return (
-		a.start.line === b.start.line &&
-		a.start.character === b.start.character &&
-		a.end.line === b.end.line &&
-		a.end.character === b.end.character
-	);
 }
 
 /**
@@ -239,14 +232,6 @@ interface SplicePoint {
 	trailingBlank: boolean;
 }
 
-function atOrAfter(a: { line: number; character: number }, b: { line: number; character: number }): boolean {
-	return a.line > b.line || (a.line === b.line && a.character >= b.character);
-}
-
-function startsEarlier(a: Range, b: Range): boolean {
-	return b.start.line > a.start.line || (b.start.line === a.start.line && b.start.character > a.start.character);
-}
-
 ////////////////////////////////
 //  Class
 
@@ -295,16 +280,8 @@ export class RefactorPlanner {
 		if (renamed) return { ok: false, reason: renamed };
 
 		const issues = this.impactOf(source.module, candidate.facts);
-
-		// Silence from a provider that never claimed to report syntax errors is not approval. Said
-		// out loud, because the alternative is a caller believing the candidate was checked.
-		if (!this.probe.declares(owner.providerId, "syntaxDiagnostics")) {
-			issues.push({
-				kind: "SyntaxUnchecked",
-				detail: `the provider for ${source.module} does not report syntax errors, so the replacement was not checked`,
-				module: source.module,
-			});
-		}
+		const unchecked = this.syntaxUnchecked(owner.providerId, source.module);
+		if (unchecked !== null) issues.push(unchecked);
 
 		return {
 			ok: true,
@@ -345,27 +322,12 @@ export class RefactorPlanner {
 		const owner = this.probe.owner(point.module);
 		if (!owner.owned) return { state: "refused", reason: `no provider owns ${point.module}: ${owner.reason}` };
 
-		// A provider that THROWS on a malformed candidate (rather than reporting diagnostics) must
-		// still come back as a refusal, not as a raw transport error.
-		let parsed: CandidateParse;
-		try {
-			parsed = await this.probe.parseCandidate(point.module, candidate);
-		} catch (error) {
-			return {
-				state: "refused",
-				reason: `the provider could not parse the candidate: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
+		const parsed = await this.probe.parseCandidate(point.module, candidate);
 		if (!parsed.parsed) return { state: "refused", reason: `the insert does not parse: ${parsed.reason}` };
 
 		const issues = this.impactOf(point.module, parsed.facts);
-		if (!this.probe.declares(owner.providerId, "syntaxDiagnostics")) {
-			issues.push({
-				kind: "SyntaxUnchecked",
-				detail: `the provider for ${point.module} does not report syntax errors, so the insert was not checked`,
-				module: point.module,
-			});
-		}
+		const unchecked = this.syntaxUnchecked(owner.providerId, point.module);
+		if (unchecked !== null) issues.push(unchecked);
 		issues.push(...this.collisionWarnings(point.module, parsed.facts));
 
 		return {
@@ -414,8 +376,8 @@ export class RefactorPlanner {
 			if ((candidate.containerId ?? null) !== scope) continue;
 			if (isWithin(candidate.symbolId, anchor.symbolId)) continue;
 			if (sameRange(candidate.range, anchor.range)) continue;
-			if (!atOrAfter(candidate.range.start, anchor.range.end)) continue;
-			if (next === null || startsEarlier(candidate.range, next.range)) next = candidate;
+			if (comparePositions(candidate.range.start, anchor.range.end) < 0) continue;
+			if (next === null || comparePositions(candidate.range.start, next.range.start) < 0) next = candidate;
 		}
 
 		const shared = (who: string) => ({
@@ -493,6 +455,17 @@ export class RefactorPlanner {
 		const base = point.before.endsWith("\n") ? point.before : `${point.before}\n`;
 		const separator = base.endsWith("\n\n") ? "" : "\n";
 		return `${base}${separator}${block}\n`;
+	}
+
+	/** Silence from a provider that never claimed syntax reporting is not approval. Said out loud,
+	 * or a caller believes the candidate was checked. */
+	private syntaxUnchecked(providerId: string, module: string): RefactorIssue | null {
+		if (this.probe.declares(providerId, "syntaxDiagnostics")) return null;
+		return {
+			kind: "SyntaxUnchecked",
+			detail: `the provider for ${module} does not report syntax errors, so the candidate was not checked`,
+			module,
+		};
 	}
 
 	/** Insert is rename's mirror: a new binder lands among existing uses. Whether that captures

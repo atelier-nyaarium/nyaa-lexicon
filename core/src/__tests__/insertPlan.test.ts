@@ -262,23 +262,6 @@ describe("refusing what has no sound splice point", () => {
 		expect(outcome).toMatchObject({ state: "refused" });
 	});
 
-	// Found live: the TS provider THROWS on some malformed candidates instead of reporting
-	// diagnostics, and the raw transport error reached the caller.
-	it("refuses when the provider throws on the candidate, instead of leaking the error", async () => {
-		const world: World = {
-			text: "function alpha() {}\n",
-			declarations: [declarationOf({ name: "alpha", range: range(0, 0, 0, 19) })],
-			parse: () => {
-				throw new Error("a descriptor name cannot be empty");
-			},
-		};
-
-		const outcome = await plan(world, { after: id("alpha"), text: "function broken( {" });
-
-		expect(outcome).toMatchObject({ state: "refused" });
-		expect(outcome.state === "refused" && outcome.reason).toMatch(/could not parse/);
-	});
-
 	it("refuses a candidate the provider cannot parse, before anything touches disk", async () => {
 		const world: World = {
 			text: "function alpha() {}\n",
