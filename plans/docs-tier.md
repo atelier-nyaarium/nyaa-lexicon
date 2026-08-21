@@ -974,6 +974,42 @@ and this is where that turns out to be true of sections and not of keys.
 but one in tests, and every parameter a distinct type, a swap cannot compile and the refactor would
 be churn.
 
+### What the red team broke, and what it found underneath
+
+Six angles, 464 inputs executed. Two defects were the docs tier's own, and three belonged to a
+surface that shipped a release ago.
+
+**A fence holding only whitespace stored a region no search could reach.** It normalizes to nothing,
+so it sat in the table, counted, displayed, and permanently unfindable. Reachable from ordinary
+markdown, since a fence of blank lines is a fence with a value. The provider drops it now: prose with
+no searchable content is not prose.
+
+**A heading path could mix two files.** `containerId` is any string, so a container in another module
+put a foreign heading in a path claiming to describe this one. It stops at a module change, the same
+way it already stopped at a non-heading. The markdown provider never emits either; the guard is core
+refusing to launder one that arrives.
+
+**The three that were not ours, and the important part is that they SHIPPED.** Every one reproduces
+against `find_comments`, live since 1.x, and the docs tier inherited them by mirroring the contract
+correctly:
+
+- A backtracking regex HANGS the process. `/(a+)+b/` against sixty letter `a` never returns, and the
+  daemon is single-queued behind it. This is reachable by an agent typing a plausible pattern.
+- A NUL in the search term matches EVERYTHING, because SQLite truncates the bound pattern at it.
+- A hundred-thousand-character term throws SQLite's own `pattern too complex`.
+
+They live in `likePattern` and `compileSearchRegex`, shared by symbols, comments, literals and
+documents, so one fix covers four tiers and a partial fix would leave them disagreeing. On the board
+as its own unit rather than patched into a feature commit.
+
+**Three findings were rejected, each against the code rather than on tone.** An answer citing a
+neighbour's prose is ACCEPTED by design, since `knowledge-layer.md` says answers compound and the
+refusal is only for citing nothing about the subject; both repros also cited the subject's own
+declaration. `findDocs` throwing on an invalid regex, or on a text and a regex together, is
+`findComments`'s stated contract rather than a defect. And two regions sharing a fact id needs two
+regions at ONE range, which the partition invariant forbids and which `commentFactId` shares by the
+same deliberate design.
+
 **A heading's prose is CITABLE, which it was not when the table first landed.** `factById` resolved
 a doc id immediately, but `factsFor` never offered one, so the citation check refused the only
 evidence an answer about a section could have. Comments were already in that set and documents were

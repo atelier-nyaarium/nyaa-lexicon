@@ -185,6 +185,16 @@ describe("prose regions", () => {
 		expect(parsed.docs.some((region) => region.text.includes("indented code") && region.fenced)).toBe(false);
 	});
 
+	// It would normalize to nothing, so it would store as a region no search could ever reach.
+	test("a fence holding only whitespace yields no region", () => {
+		for (const source of ["# T\n\n```\n   \n```\n", "# T\n\n```\n\t\t\n```\n", "# T\n\n```\n\n\n```\n"]) {
+			expect(parseMarkdown("doc.md", source).docs).toEqual([]);
+		}
+		expect(parseMarkdown("doc.md", "# T\n\n```\n  \nreal\n  \n```\n").docs.map((r) => r.text)).toEqual([
+			"  \nreal\n  ",
+		]);
+	});
+
 	test("a thematic break is punctuation, so it is not a searchable region", () => {
 		const parsed = parseMarkdown("doc.md", document);
 

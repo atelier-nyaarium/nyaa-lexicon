@@ -594,9 +594,9 @@ export class IndexReadModel {
 	/**
 	 * The headings above a symbol, outermost first. Owned here so no renderer rebuilds the walk.
 	 *
-	 * HEADINGS only. An anchor is any string on the wire, so a provider naming a function would
-	 * otherwise put a function in something called a heading path, which is the answer being wrong
-	 * rather than absent. Stopping at the first non-heading keeps the real headings above it.
+	 * HEADINGS only, and only from ONE module. An anchor is any string on the wire, so a provider
+	 * naming a function, or a container in another file, would otherwise put either inside something
+	 * called a heading path: the answer being wrong rather than absent. Stopping keeps what is real.
 	 *
 	 * Bounded rather than trusting the chain to be acyclic: an id containing itself would hang.
 	 */
@@ -604,10 +604,13 @@ export class IndexReadModel {
 		const names: string[] = [];
 		const seen = new Set<string>();
 		let current: string | undefined = symbolId;
+		let module: string | undefined;
 		while (current !== undefined && !seen.has(current)) {
 			seen.add(current);
 			const declaration = this.store.declaration(current);
 			if (declaration === null || declaration.kind !== "heading") break;
+			if (module !== undefined && declaration.module !== module) break;
+			module = declaration.module;
 			names.push(declaration.name);
 			current = declaration.containerId;
 		}

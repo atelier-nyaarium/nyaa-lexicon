@@ -295,7 +295,8 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 
 		const range = coordinates.rangeAt(content.start, content.end);
 		const regionText = text.slice(content.start, content.end);
-		if (range === undefined || regionText === "") continue;
+		// Whitespace alone normalizes to nothing, so it would store as a region no search can reach.
+		if (range === undefined || regionText.trim() === "") continue;
 
 		docs.push({
 			range,

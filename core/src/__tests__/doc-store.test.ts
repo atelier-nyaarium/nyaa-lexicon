@@ -156,6 +156,19 @@ describe("the heading path", () => {
 		expect(reads.findDocs({ text: "under a function" }).docs[0]?.headingPath).toEqual([]);
 	});
 
+	it("stays inside one module, so a path never mixes two files", () => {
+		const local = headingId("Local");
+		const foreign = composeSymbolId({
+			language: "markdown",
+			module: "docs/other.md",
+			descriptors: [{ kind: "namespace", name: "Foreign" }],
+		});
+		write([{ ...heading("Foreign"), symbolId: foreign }], [], "docs/other.md");
+		write([{ ...heading("Local"), symbolId: local, containerId: foreign }], []);
+
+		expect(reads.headingPath(local)).toEqual(["Local"]);
+	});
+
 	it("terminates on a container cycle rather than hanging", () => {
 		const first = headingId("A");
 		const second = headingId("B");
