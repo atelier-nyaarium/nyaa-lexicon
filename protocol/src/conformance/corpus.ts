@@ -213,6 +213,13 @@ const CASES: ConformanceCase[] = [
 				subject: "data.yml",
 				declarations: [{ name: "b", nameStart: { line: 0, character: 10 } }],
 			},
+			// A heading's name would swallow the character, so frontmatter is where markdown can put one
+			// to the LEFT of a name. It also proves the shared reader's offset survives the shift.
+			[MARKDOWN]: {
+				files: { "doc.md": `---\n{a: "${ASTRAL}", b: 1}\n---\n\n# Body\n` },
+				subject: "doc.md",
+				declarations: [{ name: "b", nameStart: { line: 1, character: 10 } }],
+			},
 		},
 	},
 	{
@@ -285,6 +292,7 @@ const CASES: ConformanceCase[] = [
 			// a file a repository is full of.
 			[JSON_LANG]: { files: { "empty.json": "\n" }, subject: "empty.json" },
 			[YAML]: { files: { "empty.yml": "\n" }, subject: "empty.yml" },
+			[MARKDOWN]: { files: { "empty.md": "\n" }, subject: "empty.md" },
 		},
 		declarations: [],
 	},

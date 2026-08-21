@@ -3,7 +3,7 @@
 // Positions come from node OFFSETS through the shared coordinate map, never from mdast's own line
 // and column: only the map counts UTF-16 code units, which is the unit the protocol pins.
 
-import { readYaml, type YamlFacts } from "@nyaa-lexicon/formats";
+import { readYaml, type YamlFacts } from "@nyaa-lexicon/formats/yaml";
 import {
 	composeSymbolId,
 	coordinatesOf,

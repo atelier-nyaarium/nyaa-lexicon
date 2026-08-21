@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { type JsonFacts, readJson } from "@nyaa-lexicon/formats";
+import { type JsonFacts, readJson } from "@nyaa-lexicon/formats/json";
 import {
 	type Binding,
 	coordinatesOf,

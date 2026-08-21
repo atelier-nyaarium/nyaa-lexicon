@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { readYaml, readYamlComments } from "@nyaa-lexicon/formats";
+import { readYaml, readYamlComments } from "@nyaa-lexicon/formats/yaml";
 import {
 	type Binding,
 	coordinatesOf,

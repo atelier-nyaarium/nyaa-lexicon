@@ -315,6 +315,43 @@ async function runMoveCase(session: ProviderSession, testCase: MoveCase, fixture
 }
 
 /**
+ * A tier the provider CLAIMS and this run never actually asked it about.
+ *
+ * The suite skips a case with no fixture for the language, so a provider can declare a tier, be
+ * asked nothing, and report a clean run. That is the tier system's own promise going unchecked.
+ *
+ * The two ways it happens are not the same fault. A tier the CORPUS has no cases for at all is the
+ * corpus's gap and every provider shares it, so it reports rather than fails. A tier with cases that
+ * this language has no fixture for is this provider's gap, and it fails.
+ */
+function untestedClaims(
+	tiers: { [K in Tier]?: boolean | undefined },
+	cases: ConformanceCase[],
+	results: CaseResult[],
+): CaseResult[] {
+	const asked = new Set<string>(results.filter((r) => r.outcome !== "skipped").map((r) => r.tier));
+	const offered = new Set<string>(cases.map((testCase) => testCase.tier));
+
+	const found: CaseResult[] = [];
+	for (const [name, claimed] of Object.entries(tiers)) {
+		// `projectModel` has no cases and is proven by discovery, which every fixture already exercises.
+		if (!claimed || asked.has(name) || name === "projectModel") continue;
+		const corpusHasCases = offered.has(name);
+		found.push({
+			caseId: `claimed-tier-is-tested/${name}`,
+			tier: name as Tier,
+			outcome: corpusHasCases ? "failed" : "skipped",
+			problems: [
+				corpusHasCases
+					? `${name} is declared but every case for it was skipped, so the claim went unchecked`
+					: `${name} is declared and the corpus has no cases for it, which is the corpus's gap`,
+			],
+		});
+	}
+	return found;
+}
+
+/**
  * Runs every case against one provider.
  *
  * A case whose tier the provider does not declare is SKIPPED, not failed. That distinction is the
@@ -412,6 +449,8 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 		// Last, so the provider has been through discovery. A provider that really moves needs its
 		// project model, and probing it cold would test a state nothing else puts it in.
 		results.push(await checkMoveIsAnswered(session));
+
+		results.push(...untestedClaims(info.tiers, options.cases, results));
 
 		return {
 			providerId: info.providerId,

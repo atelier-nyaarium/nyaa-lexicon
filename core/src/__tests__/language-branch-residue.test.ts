@@ -18,6 +18,17 @@ import { describe, expect, it } from "vitest";
  */
 const CORE_SRC = join(import.meta.dirname, "..");
 
+/**
+ * `formats/` too, because it is the one other place the rule can be bent.
+ *
+ * A format reader is shared by several providers and takes the language as DATA. A comparison there
+ * turns one reading into per-language readings, which is the second interpretation the package was
+ * created to prevent.
+ */
+const FORMATS_SRC = join(CORE_SRC, "..", "..", "formats", "src");
+
+const SWEPT = [CORE_SRC, FORMATS_SRC];
+
 /** Names a provider may be called. A comparison against any of these is the smell. */
 const LANGUAGE_NAMES = [
 	"typescript",
@@ -63,14 +74,14 @@ function codeOnly(source: string): string {
 //  Tests
 
 describe("core does not branch on language", () => {
-	it("finds source files to check, so a passing run is never vacuous", () => {
-		expect(sourceFiles(CORE_SRC).length).toBeGreaterThan(0);
+	it("finds source files in every swept directory, so a passing run is never vacuous", () => {
+		for (const dir of SWEPT) expect(sourceFiles(dir).length, dir).toBeGreaterThan(0);
 	});
 
-	it("has no language-name comparison anywhere in core", () => {
+	it("has no language-name comparison anywhere in core or formats", () => {
 		const offenders: string[] = [];
 
-		for (const file of sourceFiles(CORE_SRC)) {
+		for (const file of SWEPT.flatMap(sourceFiles)) {
 			const code = codeOnly(readFileSync(file, "utf8")).toLowerCase();
 			for (const name of LANGUAGE_NAMES) {
 				// A comparison, a switch case, or a keyed lookup against a QUOTED language name.
@@ -82,7 +93,7 @@ describe("core does not branch on language", () => {
 
 		expect(
 			offenders,
-			"core/ must not branch on a language name. The fix is a new field on the provider contract, never the branch. See CLAUDE.md > Mission.",
+			"core/ and formats/ must not branch on a language name. The fix is a new field on the provider contract, never the branch. See CLAUDE.md > Mission.",
 		).toEqual([]);
 	});
 });

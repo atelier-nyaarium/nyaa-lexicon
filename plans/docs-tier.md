@@ -1399,6 +1399,20 @@ Ranked: 1 is the largest and needs a convention decided before any code. 2 is th
 made acute and the one whose absence makes its own comments untrue. 3, 4 and 5 are each small,
 independently committable, and closer to certain.
 
+**3, 4 and 5 were applied. 1 and 2 stay on the board.** Both remaining ones are provider-extraction
+or schema work with an open design question, and neither is answerable inside a verification phase.
+1 needs a disambiguation convention chosen and applied across all eleven providers before a boundary
+refusal is safe; 2 needs the surface decided before the storage half is worth writing. Each is on the
+board with the measurements above, and each is cheapest while `2.0.0` is unpushed.
+
+What landing 4 exposed is worth keeping. The check distinguishes a tier the CORPUS has no cases for
+from one this language has no fixture for, and only the second fails. The first turned out to name
+three tiers, `references`, `literals` and `metrics`, that eight providers claim and the suite has
+never once asked about. `literals` is the one that stings: it is the tier the nyaaskills blind corpus
+exists to exercise, and it had no conformance coverage at all. The markdown provider was the single
+real failure, claiming `declarations`, delivering them, and being asked nothing, which two new
+fixtures now fix.
+
 ## Phase 6 - Verification
 
 - Gate, then conformance across every provider, not only the new ones. A corpus case is shared.

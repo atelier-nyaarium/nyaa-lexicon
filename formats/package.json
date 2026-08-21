@@ -5,7 +5,9 @@
 	"type": "module",
 	"description": "Structured-data readers shared by the providers that read them",
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./yaml": "./src/yaml.ts",
+		"./json": "./src/json.ts"
 	},
 	"dependencies": {
 		"@nyaa-lexicon/protocol": "workspace:*",
