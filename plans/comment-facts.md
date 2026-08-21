@@ -575,6 +575,58 @@ hand at the moment of its fix, and a hand proof decays the moment the code moves
   line (unclaimed files and comment-tier-less providers are invisible; rg wins for exhaustive
   byte audits).
 
+## Phase 4 - Surface ✅
+
+SHIPPED. `findComments` through every layer: read model, service, daemon dispatch, MCP tool with
+its renderer, and the Notes section on describe. Gate clean, all eight providers green.
+
+The literals search contract, deliberately: text or regex but never both, a bounded regex scan that
+declares `scanIncomplete`, a page that never reports its own cap as a total, and a preview capped
+by lines AND width.
+
+### What the audit laps changed
+
+**Two counts were lying.** The substring path fetched `limit + 1` rows and reported that probe as
+`total`, so a search with 1523 matches said 51. It now runs a real `COUNT(*)` through the same
+WHERE builder as the page, which is what makes a count and its page unable to disagree. Verified on
+this repo: a search for "the" reports 1523 with 50 shown.
+
+**An empty search never said it had stopped early.** The renderer returned "No comment matched"
+from an early return that sat above the `scanIncomplete` check, so a regex scan that read 20,000
+rows, gave up, and matched nothing reported a clean absence. Two lenses found it independently.
+`renderLiterals` had the identical bug, copied from it, and both are fixed: the sentence a stopped
+scan owes its caller is needed MOST where it was easiest to drop.
+
+Also fixed: the XOR of text and regex moved into the read model so no entry point can skip it;
+limits are rounded and NaN-guarded rather than reaching SQLite as a type it refuses; ordering
+includes the column, since two comments can share a line; the Notes section is capped at ten with
+the remainder reported; and the preview bounds width, because a minified file's whole comment is
+one line of tens of thousands of characters.
+
+### The honest verdict on whether it beats ripgrep
+
+Tried against this repository, on real questions:
+
+- **"residue test"** returns whole merged explanations, each naming the symbol or module it is
+  attached to. Ripgrep returns matching LINES from the middle of wrapped paragraphs, so this is
+  plainly better: the fact is the whole thought, not the line the word landed on.
+- **"band-aid"** returns NOTHING, and the doctrine is real: it lives in CLAUDE.md. Markdown is not
+  claimed by any provider, so half this project's doctrine is invisible to a comment search. The
+  tool description's coverage line covers it, but the practical shape is worth stating plainly:
+  for a codebase whose rules live in prose files, ripgrep still wins.
+- A natural-language question matches nothing, because this is substring and regex search rather
+  than retrieval. That is what it says it is, and worth remembering before reaching for it.
+
+### Known and accepted
+
+A caller-supplied regex with catastrophic backtracking (`/(a+)+$/`) can hang on a long comment.
+JavaScript's engine backtracks where ripgrep's automaton does not, `find_literals` has carried the
+same exposure since it shipped, and the caller is a local agent searching its own repository. Named
+here rather than half-mitigated with a silent length cap that would turn a hang into a wrong answer.
+
+REJECTED after checking: `anchor: null` on a module-level comment is the designed answer, not a
+gap. Q3 settled that nothing guesses a symbol, and the tool description says so.
+
 ## Phase 5 - Verification
 
 Unit gate, conformance across all eight providers, grade.js (extraction changed - mandatory),

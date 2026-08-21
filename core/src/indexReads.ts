@@ -188,12 +188,23 @@ const DESCRIBE_NOTE_LIMIT = 10;
 /** Lines of a comment carried back. A banner runs to hundreds and no caller asked for them. */
 const COMMENT_PREVIEW_LINES = 8;
 
-/** Capped, and says how much it cut, so a caller never reads a preview as the whole comment. */
+/** And a width, because a minified file's one comment is a single line of tens of thousands. */
+const COMMENT_PREVIEW_WIDTH = 200;
+
+/**
+ * Capped, and says how much it cut, so a caller never reads a preview as the whole comment.
+ *
+ * Bounded by width as well as by lines. A minified file's single comment can be one line and
+ * tens of thousands of characters, which a line cap does nothing about.
+ */
 function preview(raw: string): string {
 	const lines = raw.split("\n");
-	if (lines.length <= COMMENT_PREVIEW_LINES) return raw;
-	const rest = lines.length - COMMENT_PREVIEW_LINES;
-	return `${lines.slice(0, COMMENT_PREVIEW_LINES).join("\n")}\n... ${rest} more line${rest === 1 ? "" : "s"}`;
+	const kept = lines
+		.slice(0, COMMENT_PREVIEW_LINES)
+		.map((line) => (line.length > COMMENT_PREVIEW_WIDTH ? `${line.slice(0, COMMENT_PREVIEW_WIDTH)}...` : line));
+	const rest = lines.length - kept.length;
+	const body = kept.join("\n");
+	return rest === 0 ? body : `${body}\n... ${rest} more line${rest === 1 ? "" : "s"}`;
 }
 
 /** One place that decides what "more than a page" means, so no caller reports a cap as a total. */
@@ -417,7 +428,11 @@ export class IndexReadModel {
 		if (query.text !== undefined && query.regex !== undefined) {
 			throw new Error("give a text or a regex, not both");
 		}
-		const limit = Math.min(Math.max(requested, 1), MAX_COMMENT_LIMIT);
+		// Rounded and NaN-guarded, not just bounded: a fractional limit reaches SQLite as a type it
+		// refuses, and the caller sees a datatype error where a clamp belonged.
+		const limit = Number.isFinite(requested)
+			? Math.min(Math.max(Math.floor(requested), 1), MAX_COMMENT_LIMIT)
+			: DEFAULT_COMMENT_LIMIT;
 		const filter = {
 			...(query.form === undefined ? {} : { form: query.form }),
 			...(query.module === undefined ? {} : { module: query.module }),

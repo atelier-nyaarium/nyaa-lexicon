@@ -118,8 +118,12 @@ describe("searching comments", () => {
 		expect(() => reads.findComments({ text: "a", regex: "/b/" })).toThrow(/not both/);
 	});
 
-	it("clamps a limit past the maximum rather than honouring it", () => {
-		expect(() => reads.findComments({ text: "rather than" }, 10_000)).not.toThrow();
+	// A limit reaches SQLite as a bound parameter, so a fractional or NaN one is a datatype error
+	// where a clamp belonged.
+	it("sanitizes a limit rather than passing it through to the database", () => {
+		for (const limit of [10_000, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() => reads.findComments({ text: "rather than" }, limit)).not.toThrow();
+		}
 	});
 
 	it("says when a page was cut rather than reporting the cap as a total", () => {
@@ -153,6 +157,17 @@ describe("searching comments", () => {
 		const [found] = reads.findComments({ text: "a banner" }).comments;
 		expect(found?.raw.split("\n")).toHaveLength(9);
 		expect(found?.raw).toContain("... 12 more lines");
+	});
+
+	// A minified file's whole comment is one line of tens of thousands of characters, which a line
+	// cap does nothing about.
+	it("caps a comment that is wide rather than tall", () => {
+		const wide = `// ${"W".repeat(5_000)}`;
+		store.replaceFile("src/f.ts", "h1", [], [], [], [], "full", [{ ...comment("a wide one", null), raw: wide }]);
+
+		const [found] = reads.findComments({ text: "a wide one" }).comments;
+		expect(found?.raw.length).toBeLessThan(300);
+		expect(found?.raw.endsWith("...")).toBe(true);
 	});
 });
 
