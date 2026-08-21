@@ -598,7 +598,25 @@ frontmatter: one owner, no second opinion.
 Folds into the `2.0.0` train. The CHANGELOG gains the docs tier, the new `heading` kind, and the
 fallback's effect on what "unclaimed" reports.
 
-## The open scope question, raised by the second audit lap
+## Question 5 - What ships inside 2.0.0, now that Phase 5 is known to be blocked?
+
+Q: The whole set was chosen before the audit found four protocol gaps. Does it still hold?
+A: pending.
+
+The gaps are not evenly spread, which is what makes a middle option real rather than a compromise:
+
+| Format | Blocked on | Weight of the decision |
+| --- | --- | --- |
+| JSON, JSONL, NDJSON, JSON5 | array elements have no name | ONE closed decision |
+| YAML | array elements, plus scalar kinds beyond string/number/boolean | TWO closed decisions |
+| XML | no symbol kind, no identity for repeated siblings | real design |
+| HTML | the same, plus a whole element-selection policy | real design |
+| plain-text fallback | routing cannot express a catch-all at all | a new routing primitive |
+
+JSON and YAML are the two that reuse machinery which already exists: a key is a `property` or
+`field`, its value is a literal. XML, HTML and the fallback each need something invented.
+
+### The open scope question, raised by the second audit lap
 
 **Two angles independently concluded this plan is three trains in one coat,** and recommended
 splitting after Phase 4. That is a scope decision belonging to the owner, who already chose the
