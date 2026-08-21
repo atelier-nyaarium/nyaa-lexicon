@@ -1565,7 +1565,7 @@ not include its build output. Confirmed against a controlled fixture rather than
 directory named `dist` DOES index once a `tsconfig.json` includes it, so the directory name is not
 the obstacle and core excludes nothing here. `CLAUDE.md` now says how to run that corpus.
 
-## Phase 7 - Release
+## Phase 7 - Release ✅
 
 Folds into the `2.0.0` train. The CHANGELOG gains the docs tier, the new `heading` kind, and the
 formats now claimed, which changes what "unclaimed" reports even without the fallback: markdown,
@@ -1580,6 +1580,28 @@ literal hardcoded in TypeScript source has always been reachable the same way, b
 and this release is what changes it. A release note framing the change as a coverage number, while a
 config file's values quietly become searchable, would be the misalignment class in the notes rather
 than in the code. Say it plainly and say which extensions are claimed.
+
+### Phase 7 results
+
+`CHANGELOG.md` folds the docs tier into the existing `2.0.0` entry rather than opening a new one,
+because the version was already sitting at `2.0.0` unpushed and one release gets one entry.
+
+The entry now covers `search_docs` and what a hit answers with, the `heading` kind and what
+`describe_symbol` and `outline_module` do with one, and the three languages added. It states the
+coverage-number shift with every extension named, states that `.json5` is deliberately unclaimed and
+why, and states plainly that a `credentials.json` or a `config/secrets.yml` is now indexed and
+answerable through `find_literals`, with `.env` unclaimed. For provider authors it adds the `docs`
+tier, the `heading` kind, the rule that a comment comes from the same lexical authority as the
+values, and the conformance run now FAILING a claimed tier it never asked about.
+
+**One number was wrong and measuring caught it.** The draft said eleven languages "up from eight"
+without checking. `origin/main` is at `1.14.0` and its README claims THREE, which would have made the
+comparison nonsense. Counting the provider directories at `origin/main` settled it at eight, so the
+README there is simply stale and the entry is right. The release note now names the version it is
+comparing against rather than leaving the baseline implied.
+
+**Not done here, and it is the one thing left:** nothing is pushed. `2.0.0` and this whole train sit
+on `main` ahead of `origin`, by explicit instruction.
 
 ## Question 5 - What ships inside 2.0.0?
 
