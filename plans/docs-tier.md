@@ -652,15 +652,30 @@ one release.**
 Each patch is the same shape: replace the default with exhaustiveness so the compiler refuses. That
 worked, and adding the `doc` fact kind proved it by breaking the build in two of the three at once.
 
-**What is NOT yet fixed is the class itself.** Nothing stops a fourth such map being written, and
-the only reason these three were found is that someone went looking after the first. A residue test
-asserting that every map keyed on a protocol enum is exhaustive would close it, and this project
-already fails builds on residue rules elsewhere. Raised for the architecture pass rather than patched
-again here.
+**A generic residue test was assessed and REJECTED, with numbers.** Forbidding `Record<string,` in
+files touching a protocol enum flags 38 occurrences in source against 3 real instances. Forbidding
+an indexed map followed by `??` flags 46. A rule with a 90 percent false positive rate is deleted by
+the next person who trips over it, and the type system is already the stronger guard at all three
+sites: adding the `doc` fact kind broke the build at two of them. So the class is closed by
+exhaustive typing, not by a grep, and the residual exposure is a FUTURE map nobody types that way.
 
-The runner's `factExpectations` array is arguably a fourth instance wearing different clothes: a
-hand-written list that must grow with a schema, whose omission fails SILENTLY rather than loudly.
-That one has no compiler to lean on, which makes it the worst of the four.
+**The fourth instance was different, and it was the one worth building.** The runner's
+`factExpectations` was a hand-written array that had to grow whenever the case schema gained an
+expectation. Omitting an entry did not fail the build; it made those cases run while asserting
+nothing, which has happened here to six cases at once. Its comment even claimed to be "DERIVED,
+never hand-listed", which was false, so a reader would have believed the class was already shut.
+
+Two changes closed both directions of it:
+
+- **The parse predicate is now derived by EXCLUSION.** A case parses when it states anything that is
+  not metadata, so an unclassified field costs one extra parse instead of skipping every assertion.
+  The failure direction is now wasteful rather than silent.
+- **A test asserts every expectation the schema accepts is actually READ.** That was the other end,
+  and the inversion alone did not cover it: a field the schema accepts and no checker looks at still
+  passes while asserting nothing. The table must cover the schema exactly, so a new field fails here
+  until someone decides who reads it. Proven by planting a field and watching it go red, and it
+  immediately corrected a wrong assumption of mine by showing `typeOf` is answered by its own
+  provider call rather than by `checkFacts`.
 
 ### The known weakness in section identity, argued and accepted
 

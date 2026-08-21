@@ -43,6 +43,9 @@ export interface RunOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Case and fixture fields that state no expectation. Everything else earns a parse. */
+const CASE_METADATA = new Set(["id", "tier", "about", "fixtures", "files", "subject"]);
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -123,27 +126,21 @@ async function runCase(
 	const text = fixture.files[fixture.subject];
 	if (text === undefined) return [`subject ${fixture.subject} is not among the fixture's files`];
 
-	// DERIVED, never hand-listed. Every expectation a case can state about parsed facts is named
-	// once here, so adding a new kind cannot half-register: forgetting this line means the case
-	// never runs, and a case that never runs PASSES. That has happened, to six cases at once.
-	const factExpectations = [
-		fixture.declarations ?? testCase.declarations,
-		testCase.references,
-		fixture.comments ?? testCase.comments,
-		fixture.docs ?? testCase.docs,
-		fixture.documentation ?? testCase.documentation,
-	];
-	const checksFacts = factExpectations.some((expectation) => expectation !== undefined);
+	// Derived by EXCLUSION, so the failure direction is a wasted parse rather than a silent pass.
+	// Naming the expectations that need facts meant forgetting one made its cases run while
+	// asserting nothing, which has happened here to six cases at once. Naming the fields that are
+	// NOT expectations inverts it: a field nobody classifies simply costs one more parse.
+	const stated = Object.keys({ ...testCase, ...fixture }).filter((key) => !CASE_METADATA.has(key));
 
 	const expectedType = fixture.typeOf ?? testCase.typeOf;
 	// One parse per case, since several checks want the same facts and a provider is free to answer
 	// a second identical request differently once its own state has moved on.
-	const parses = checksFacts || Boolean(testCase.parseErrors) || Boolean(expectedType);
+	const parses = stated.length > 0;
 	const facts = parses
 		? await session.call("parseFile", { module: fixture.subject, contentHash: hashOf(text), text })
 		: null;
 
-	if (facts && checksFacts) {
+	if (facts) {
 		problems.push(...checkFacts(testCase, facts, language, text));
 		// A declared role list is a promise about coverage, so emitting outside it is the same
 		// over-claim as declaring a tier that is not built. Undeclared coverage stays unchecked.
