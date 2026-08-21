@@ -476,12 +476,43 @@ Two is not a run, one scope is not nesting, one kind is not a mix, and an empty 
 of them either, because a fragment and a whole comment both look like a plausible fact from the
 outside; only a human reading the file, or an agent told to go break it, could see the difference.
 
-**For `architecture-fan-out`:** the fix is not "write more fixtures", since the next rule will have
-its own minimal instance and someone will write that one too. It is a generator that lays out N
-comments against M declarations at varying nesting and kinds AND knows the intended anchor for
-each, so the arity is swept rather than chosen. That is the same shape as the planted-marker
-generator already backlogged for the string-grammar class, which is worth noticing: both classes
-are "the author picks the example, and the author's blind spot picks it".
+**Assessed, and one shape LANDED.** Five shapes were weighed. Unlike the provider string-grammar
+class, this one is pure position math over inputs core fully controls, and that difference turned
+out to be real: one shape eliminates mechanisms rather than merely testing them.
+
+**Shipped: partition the runs before merging any of them.** Membership in a run is now decided by
+reading each comment's OWN span, in a pass that completes before a single group exists. The old
+shape grew a group and then asked that same growing group whether it was still one line, so the
+answer changed underneath the question. There is now no merged range in scope to ask, which makes
+the pair-splitting bug inexpressible rather than caught, and a typed `joinable` decides block
+versus line once, which does the same for the mixed-kind bug. Two of the four are gone as
+mechanisms. Corpus output is byte-identical across three languages, so this bought structure
+rather than behaviour.
+
+**Not shipped, and why:**
+
+- **Universal invariants** are the weakest option and the assessment is worth keeping: of six
+  candidates (every span in exactly one fact, disjoint ordered ranges, raw equals its slice, fact
+  count bounded, determinism, anchored-within-or-above), NONE would have failed on any of the four
+  bugs. Fragments are individually well-formed, source-backed, ordered and deterministic. That is
+  precisely why they survived every corpus run.
+- **A committed corpus statistics baseline** would have caught all four numerically, since every
+  one moved the totals. But it only ever says "something moved, go look", and a compensating error
+  keeps the counts while moving comments to the wrong symbols. Worth having as a tripwire, never as
+  the oracle.
+- **A self-oracle layout generator** is weaker than it first appears. Its oracle is only sound for
+  layouts whose right answer is unique, and several natural layouts have no true answer, only this
+  project's policy: a comment between two declarations with no blank line is the plain example.
+  Worse, if the generator derives expectations from the same position math, it reproduces the bug
+  faithfully at scale. This also qualifies the planted-marker generator backlogged for the provider
+  class: that one IS a sound oracle, because it plants the marker and therefore knows, while this
+  one would have to decide intent it cannot observe.
+
+**Ranked follow-up, backlogged rather than built:** seeded mutation checks. Four permanent mutants,
+one per shipped defect (read the growing range, drop the scope check, let blocks join runs, treat
+every written gap line as a wall), with the suite required to fail each. It is the only proposal
+that tests the TESTS, which is the actual failure here: each of the four was proven failable by
+hand at the moment of its fix, and a hand proof decays the moment the code moves.
 
 Zero trailing in this repo is not a defect: the house rule puts comments on their own line, and
 trailing shows up immediately in corpora that write them.

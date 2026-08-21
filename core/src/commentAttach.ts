@@ -39,14 +39,6 @@ interface Group {
 	ownLine: boolean;
 	/** Code follows it on its last line. */
 	codeAfter: boolean;
-	/**
-	 * Set while a run of single-line comments can still take another line.
-	 *
-	 * Held apart from `range` on purpose: the range grows as lines join, so asking it whether the
-	 * group is still one line answers no after the first merge, and a run of three would break into
-	 * pairs. `lastLine` is what the next line has to follow.
-	 */
-	run?: { indent: number; lastLine: number };
 }
 
 ////////////////////////////////
@@ -78,6 +70,58 @@ function enclosing(declarations: Declaration[], range: Range): Declaration | und
 ////////////////////////////////
 //  Grouping
 
+/** One comment's relationship to the line holding it, read from the span alone. */
+interface Placed {
+	comment: CommentSpan;
+	ownLine: boolean;
+	codeAfter: boolean;
+	/** Alone on its line, undelimited, one line tall: the only shape that joins a run. */
+	joinable: boolean;
+}
+
+function place(comment: CommentSpan, coordinates: ReturnType<typeof coordinatesOf>): Placed {
+	const lineText = coordinates.lineText(comment.range.start.line) ?? "";
+	const ownLine = beforeStart(lineText, comment.range.start.character).trim() === "";
+	const endLine = coordinates.lineText(comment.range.end.line) ?? "";
+	const codeAfter = endLine.slice(comment.range.end.character).trim() !== "";
+	return {
+		comment,
+		ownLine,
+		codeAfter,
+		joinable:
+			ownLine &&
+			!codeAfter &&
+			comment.range.start.line === comment.range.end.line &&
+			!isBlockComment(comment.text),
+	};
+}
+
+/**
+ * Split into runs, reading only each comment's OWN span.
+ *
+ * Separated from merging on purpose. The previous shape grew a group and then asked that same
+ * growing group whether it was still one line, so the answer changed underneath the question and a
+ * run of three broke into a pair and a straggler. Deciding membership before anything is merged
+ * makes the length of the run unable to affect the decision at all.
+ */
+function partitionRuns(placed: Placed[]): Placed[][] {
+	const runs: Placed[][] = [];
+	for (const item of placed) {
+		const current = runs.at(-1);
+		const last = current?.at(-1);
+		const continues =
+			last !== undefined &&
+			last.joinable &&
+			item.joinable &&
+			last.comment.range.start.character === item.comment.range.start.character &&
+			last.comment.range.end.line + 1 === item.comment.range.start.line;
+
+		if (continues && current !== undefined) current.push(item);
+		else runs.push([item]);
+	}
+	return runs;
+}
+
 /**
  * A run of line comments at one indent, uninterrupted, is ONE fact.
  *
@@ -89,46 +133,32 @@ function groupComments(comments: CommentSpan[], text: string): Group[] {
 	const sorted = [...comments].sort((left, right) => comparePoints(left.range.start, right.range.start));
 	const groups: Group[] = [];
 
-	for (const comment of sorted) {
-		const lineText = coordinates.lineText(comment.range.start.line) ?? "";
-		const ownLine = beforeStart(lineText, comment.range.start.character).trim() === "";
-		const endLine = coordinates.lineText(comment.range.end.line) ?? "";
-		const codeAfter = endLine.slice(comment.range.end.character).trim() !== "";
-		// A delimited comment is its own fact even when it occupies one line.
-		const joinable =
-			ownLine &&
-			!codeAfter &&
-			comment.range.start.line === comment.range.end.line &&
-			!isBlockComment(comment.text);
-
-		const previous = groups.at(-1);
-		const continues =
-			previous?.run !== undefined &&
-			joinable &&
-			previous.run.indent === comment.range.start.character &&
-			previous.run.lastLine + 1 === comment.range.start.line;
-
-		// Merged only when the source can produce the merged text. A group whose raw came from one
-		// member while its range covers several would be a fact quoting something it does not span.
-		const merged =
-			continues && previous !== undefined ? { start: previous.range.start, end: comment.range.end } : undefined;
-		const mergedRaw = merged === undefined ? undefined : coordinates.sliceRange(merged);
-		if (merged !== undefined && mergedRaw !== undefined && previous?.run !== undefined) {
-			previous.range = merged;
-			previous.raw = mergedRaw;
-			previous.run = { indent: previous.run.indent, lastLine: comment.range.end.line };
+	for (const run of partitionRuns(sorted.map((comment) => place(comment, coordinates)))) {
+		const first = run[0] as Placed;
+		const last = run.at(-1) as Placed;
+		if (run.length === 1) {
+			groups.push({ range: first.comment.range, raw: first.comment.text, ...shapeOf(first, last) });
 			continue;
 		}
 
-		groups.push({
-			range: comment.range,
-			raw: comment.text,
-			ownLine,
-			codeAfter,
-			...(joinable ? { run: { indent: comment.range.start.character, lastLine: comment.range.end.line } } : {}),
-		});
+		const range = { start: first.comment.range.start, end: last.comment.range.end };
+		const raw = coordinates.sliceRange(range);
+		// A run the source cannot re-cut is a run whose spans disagree with the file, so each member
+		// stays its own fact rather than one fact quoting text it does not cover.
+		if (raw === undefined) {
+			for (const item of run) {
+				groups.push({ range: item.comment.range, raw: item.comment.text, ...shapeOf(item, item) });
+			}
+			continue;
+		}
+		groups.push({ range, raw, ...shapeOf(first, last) });
 	}
 	return groups;
+}
+
+/** A group starts where its first member does and ends where its last one does. */
+function shapeOf(first: Placed, last: Placed): { ownLine: boolean; codeAfter: boolean } {
+	return { ownLine: first.ownLine, codeAfter: last.codeAfter };
 }
 
 ////////////////////////////////
