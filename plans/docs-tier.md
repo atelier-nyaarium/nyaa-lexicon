@@ -1318,7 +1318,33 @@ recorded in full so the next train starts from evidence rather than from scratch
 
 ## Painpoints
 
-Recorded, not fixed. Felt building Phase 2.
+Recorded, not fixed. Felt building Phase 3.
+
+**A store probe cannot run under bun, so every store experiment is a three-step build.** Bun has no
+`node:sqlite`, which `CLAUDE.md` states plainly, but the consequence in practice is that answering
+"what does the store do with this input" means writing a file, bundling it with `bun build --target
+node`, running it under node, and deleting it. Worse, the bundle has to live in `dist/` rather than a
+scratch directory, because `lexiconRoot` locates the repository from the running file's own path and
+refuses anything outside it. So a throwaway probe is written into a TRACKED directory and has to be
+remembered out again. Every audit agent this phase hit the same wall and solved it the same way.
+
+**`git checkout <file>` is a live grenade in a repo where one file holds a phase.** Undoing a planted
+test violation with it wiped every uncommitted Phase 3 change in `core/src/store.ts`: the table, the
+schema bump, the read methods. Nothing else was lost and the compiler named the gap precisely, but
+the recovery cost more than the plant was worth. A targeted revert of the planted line was available
+and was not used.
+
+**A guard written to close a class contained the class, twice.** The anchor refusal checked whether
+an id appeared among the declarations with kind heading, which is a naive reading of the input rather
+than a check of what the ids MEAN and what the insert will actually keep. A red team walked past it
+with a foreign symbolId and with a duplicate declaration. The lesson is specific: when a store
+invariant validates a write, it has to model the write, and `INSERT OR REPLACE` is part of the write.
+
+**Nothing said the store had a second door.** `journal(db)` hands out the raw database for the
+refactor journal, so any invariant `replaceFile` enforces is reachable around it. That is a
+legitimate design and it is documented nowhere near the invariants it bypasses.
+
+Felt building Phase 2.
 
 **Writing a control-character ESCAPE into source is the hard part, not writing the character.** This
 repo forbids a raw NUL, BOM or zero-width byte, and rightly so. But the editing tools turn
