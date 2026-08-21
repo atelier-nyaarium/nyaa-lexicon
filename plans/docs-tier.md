@@ -1627,6 +1627,30 @@ watched to fail, which is the discipline this file records, and it still matched
 spellings sitting in `node_modules`. Planting proves the check FIRES; it says nothing about coverage.
 Where a check forbids a pattern that already has instances on disk, run it against all of them.
 
+**Audit agents leave scratch files in the working tree, and one of them was a test.** Three fan-outs
+left seven files behind across `formats/`, including `zz_repro_partialfacts/`, `rangecheck-*.ts`, and
+a `zzrepro.test.ts` INSIDE `formats/src/__tests__/`. That last one is the hazard: the vitest glob is
+`**/__tests__/**/*.test.ts`, so an agent's throwaway file in a test directory joins the suite and
+would have been committed by a `git add -A`. Every commit this lap needed a stray check first. The
+agents are told to clean up and mostly do not, so the discipline has to live on this side.
+
+**Triaging a finding while the tree moves under you produces confident nonsense.** Running an audit
+and editing at the same time meant verifiers "refuted" real findings I had already fixed, and the
+verdict column stopped carrying information. Two things I had confirmed by reading the file myself
+came back refuted for exactly that reason. The fan-out has no snapshot, so either the tree holds
+still for the length of a pass or the verdicts are advisory. Neither is written down anywhere.
+
+**A tracked file deleted on disk failed the entire suite with `ENOENT`.** The byte residue sweep
+walks `git ls-files` and reads each path, so between deleting a file and staging the deletion, every
+test in that file fails with a message about a missing file rather than about bytes. Deleting and
+renaming are ordinary, and a sweep over the tracked list has to tolerate the intermediate state.
+Fixed here, but the shape generalizes to any future sweep built the same way.
+
+**A scratch probe cannot run from the repository root.** The root is not a workspace member, so
+`bun run probe.ts` there cannot resolve `@nyaa-lexicon/protocol`, and every throwaway experiment has
+to be written inside a package directory and deleted from there. Small, but it caught me twice and it
+is the reason several of the stray files above landed in `formats/` rather than in `/tmp`.
+
 Felt building Phase 4.
 
 **Adding one MCP tool means editing seven places, and missing the seventh is silent.** The zod input,
