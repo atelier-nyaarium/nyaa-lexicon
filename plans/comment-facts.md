@@ -648,10 +648,28 @@ rather than invented:
 Every one is the same shape: something was bounded, and the sentence describing the bound was
 written independently of the bounding. Where the two are written apart, they drift apart.
 
-**For `architecture-fan-out`:** one paging primitive taking (items, limit, trueTotal?) and DERIVING
-the whole report, used by both tiers, plus one renderer helper owning the cut sentences. The
-renderer half is already started: `incompleteNote` was extracted while fixing instance 2 and is now
-the single owner of that one sentence. The rest of the report is still written twice.
+**Assessed. The live bug was fixed; the refactor was deliberately NOT built.**
+
+`find_literals` carried instance 1 in shipped code: exact-value and numeric-range searches fetched
+`limit + 1` and reported that probe as `total`, so forty matches read as six. That is a wrong
+answer users get today, every assessment called leaving it unacceptable, and it is now fixed with a
+real `COUNT` on both paths plus regression tests. `incompleteNote` already owns the incomplete-scan
+sentence for both tiers.
+
+The larger refactor is backlogged, and the reason is worth keeping because it corrected two of the
+three assessments. Both argued the change should "ride PROTOCOL 2.0.0 as a clean break". It cannot:
+`LiteralsResult` and `findLiterals` appear NOWHERE in `protocol/`, verified by grep. They are core
+and adapters, not the provider wire, so the major gives no free pass and the blast radius is real
+and enumerable. The deciding argument was sequencing: a cross-tier seam introduced immediately
+before the verification and release phases arrives at release untested, while Phase 5 already
+carries all eight providers, grade checks, live hunts and a blind-corpus pass.
+
+The shape, for whoever picks it up: a count whose certainty is part of the value, in the same
+spirit as this project's Unknown-with-a-reason, PLUS one primitive owning its construction. All
+three assessments agreed the union alone eliminates nothing, since `{ kind: "exact", count:
+probeSize }` stays type-valid; it becomes structural only when one primitive derives certainty from
+the read strategy, and only if it takes typed evidence rather than an optional `trueTotal` an
+absent argument would silently default.
 
 ## Phase 5 - Verification
 

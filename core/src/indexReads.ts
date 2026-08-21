@@ -207,14 +207,15 @@ function preview(raw: string): string {
 	return rest === 0 ? body : `${body}\n... ${rest} more line${rest === 1 ? "" : "s"}`;
 }
 
-/** One place that decides what "more than a page" means, so no caller reports a cap as a total. */
-function page(query: LiteralQuery, found: StoredLiteral[], limit: number): LiteralsResult {
-	return {
-		query,
-		literals: found.slice(0, limit),
-		total: found.length,
-		truncated: found.length > limit,
-	};
+/**
+ * One place that decides what "more than a page" means, so no caller reports a cap as a total.
+ *
+ * `total` is the true count where a count query can give one, and the scanned-match count where it
+ * cannot. Passing the page itself would report the cap, which is what it used to do.
+ */
+function page(query: LiteralQuery, found: StoredLiteral[], limit: number, total = found.length): LiteralsResult {
+	const shown = found.slice(0, limit);
+	return { query, literals: shown, total, truncated: total > shown.length };
 }
 
 export function toSummary(declaration: StoredDeclaration): SymbolSummary {
@@ -383,14 +384,15 @@ export class IndexReadModel {
 	 */
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
 		if (query.value !== undefined) {
-			const found = this.store.literalsWithValue(query.value, limit + 1);
-			return page(query, found, limit);
+			const found = this.store.literalsWithValue(query.value, limit);
+			return page(query, found, limit, this.store.countLiteralsWithValue(query.value));
 		}
 
 		if (query.min !== undefined || query.max !== undefined) {
 			const low = query.min ?? Number.NEGATIVE_INFINITY;
 			const high = query.max ?? Number.POSITIVE_INFINITY;
-			return page(query, this.store.literalsInRange(low, high, limit + 1), limit);
+			const found = this.store.literalsInRange(low, high, limit);
+			return page(query, found, limit, this.store.countLiteralsInRange(low, high));
 		}
 
 		if (query.regex !== undefined) {

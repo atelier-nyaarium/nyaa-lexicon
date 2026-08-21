@@ -171,6 +171,35 @@ describe("searching comments", () => {
 	});
 });
 
+// The same defect the comment search shipped with, found in the tier it was copied from.
+describe("a literal search counts every match too", () => {
+	it("reports the true count, not the page it fetched", () => {
+		const many = Array.from({ length: 40 }, () => ({
+			kind: "string" as const,
+			value: "repeated",
+			range: POINT,
+		}));
+		store.replaceFile("src/a.ts", "h1", [], [], [], many);
+
+		const found = reads.findLiterals({ value: "repeated" }, 5);
+		expect(found.literals).toHaveLength(5);
+		expect(found.total).toBe(40);
+		expect(found.truncated).toBe(true);
+	});
+
+	it("reports the true count for a numeric range", () => {
+		const many = Array.from({ length: 30 }, (_, index) => ({
+			kind: "number" as const,
+			value: String(index),
+			number: index,
+			range: POINT,
+		}));
+		store.replaceFile("src/b.ts", "h1", [], [], [], many);
+
+		expect(reads.findLiterals({ min: 0, max: 100 }, 4).total).toBe(30);
+	});
+});
+
 describe("describe carries what else was written", () => {
 	it("lists notes but not the documentation, which prints above", () => {
 		store.replaceFile("src/a.ts", "h1", [declaration("work")], [], [], [], "full", [

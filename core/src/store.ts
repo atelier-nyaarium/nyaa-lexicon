@@ -1333,6 +1333,12 @@ export class IndexStore {
 		return rows.map(rowToLiteral);
 	}
 
+	/** The true count, so a page never reports its own cap as a total. */
+	countLiteralsWithValue(value: string): number {
+		const row = this.db.prepare("SELECT COUNT(*) AS n FROM literals WHERE value = ?").get(value);
+		return (row as { n: number }).n;
+	}
+
 	/** Numeric range, as arithmetic. A string comparison would put "10" before "9". */
 	literalsInRange(low: number, high: number, limit: number): StoredLiteral[] {
 		const rows = this.db
@@ -1341,6 +1347,13 @@ export class IndexStore {
 			)
 			.all(low, high, limit);
 		return rows.map(rowToLiteral);
+	}
+
+	countLiteralsInRange(low: number, high: number): number {
+		const row = this.db
+			.prepare("SELECT COUNT(*) AS n FROM literals WHERE number IS NOT NULL AND number BETWEEN ? AND ?")
+			.get(low, high);
+		return (row as { n: number }).n;
 	}
 
 	/**
