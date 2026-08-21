@@ -374,6 +374,10 @@ Phase 5 needs one for `.yml`. Deciding those separately is how a codebase ends u
 readers that disagree, which is the single-owner defect this project hunts. So every format's parser
 is chosen here, before any provider is written.
 
+Three parsers, after Question 5 scoped the train: **markdown**, the **JSON family** including JSON5,
+and **YAML**. XML and HTML are deferred, so their parsers are not chosen here and should not be
+speculatively picked; the next train chooses them against whatever the ecosystem looks like then.
+
 **The shipping constraint decides more than preference.** Providers are BUNDLED: `providerBundles`
 inlines everything so a host needs no `node_modules`. That means a dependency must be pure
 JavaScript with no native bindings, and its weight is permanent for every consumer. Precedent exists
@@ -530,50 +534,30 @@ over a CommonMark parser rather than a scanner.
 - `describe_symbol` on a heading shows its prose and its children.
 - Tool descriptions carry the coverage honesty line, as the comment tier's do.
 
-## Phase 5 - The remaining formats, one Luna each
+## Phase 5 - Structured data: the JSON family and YAML, one Luna each
 
 Fan out per format, each with its own conformance fixtures.
 
-**The second audit lap found that "needs no new machinery" was wrong, and four protocol gaps sit
-under this phase.** Every one was verified against the code, not taken on assertion. None of them
-is unsolvable; all of them are unsolved, and they are protocol-level, which means they cost a major
-if discovered after this train ships.
+Scoped to the JSON family and YAML by Question 5. Both are adapters over machinery that already
+exists: a key is a declaration, its value is a literal.
 
-1. **Routing cannot express the fallback at all.** `ProviderClaims` in `core/src/routing.ts` carries
-   only `extensions` and an optional `filenames`. There is no catch-all, no negative list, and no
-   precedence. "Claims extensions nothing else does" is not expressible: routing can only report a
-   file as unclaimed, never hand it to a last-resort owner. This needs a NEW routing primitive with
-   explicit precedence, and it is the single largest unlisted item in the plan.
-2. **An array element cannot be a declaration.** `DeclarationSchema.name` is `z.string().min(1)`,
-   required and nonempty. JSON and YAML array elements have no name. Choose and write it down:
-   omit elements, mint synthetic `[0]` names that churn whenever anything is inserted, or extend
-   the schema. All three have costs; none is free.
-3. **YAML scalars exceed `LiteralSchema`,** which is exactly `string | number | boolean`. YAML also
-   has null, timestamps, binary and tagged values. Say which are omitted, which are normalized, and
-   which produce a diagnostic, rather than discovering it in the fixture.
-4. **XML and HTML have no identity story.** `SymbolKindSchema` has no `element` or `attribute`
-   member, and repeated sibling elements collide for the same reason duplicate headings do: only a
-   `method` descriptor may carry a disambiguator. "Elements as declarations" and "headings are
-   headings" are both placeholders, not designs. HTML additionally needs a rule for anonymous
-   elements, attributes, text nodes, script and style content, and malformed recovery.
+**Two decisions come first, both closed, both settled before any provider is written.** The second
+audit lap verified them against the code, and "needs no new machinery" was wrong until they are
+answered.
+
+1. **An array element cannot be a declaration as things stand.** `DeclarationSchema.name` is
+   `z.string().min(1)`, required and nonempty, and JSON and YAML array elements have no name. Pick
+   one and write down why: omit elements entirely, mint synthetic `[0]` names that churn whenever
+   anything is inserted above them, or relax the schema. None is free.
+2. **YAML scalars exceed `LiteralSchema`,** which is exactly `string | number | boolean`. YAML also
+   has null, timestamps, binary and tagged values. Say which are omitted, which are normalized and
+   which produce a diagnostic, rather than meeting it in a fixture.
 
 - **JSON family** (`.json`, `.jsonl`, `.ndjson`, `.json5`): a key is a `property` declaration, its
   value a literal. JSONL is a sequence of independent roots and needs per-record identity. JSON has
-  no comments, so `comments: false` is the honest declaration; JSON5 does have them. Blocked on
-  gap 2 above.
+  no comments, so `comments: false` is the honest declaration; JSON5 does have them.
 - **YAML** (`.yml`, `.yaml`): keys as declarations, values as literals, and REAL comments through
-  the existing comment tier. Aliases, anchors and multi-document files need fixtures. Blocked on
-  gaps 2 and 3.
-- **XML** (`.xml`): blocked on gap 4 until the identity story exists.
-- **HTML** (`.html`): a document, not data. Blocked on gap 4.
-- **The binary guard**, which must land BEFORE the fallback, and which has TWO homes rather than
-  one. Routing already gates the indexer: `indexOne` checks ownership before calling `readFile`, so
-  an unclaimed file is not read today. But `readEvent` in the watcher hashes EVERY changed file as
-  UTF-8 with no routing check at all, which is a condition that exists now rather than one the
-  fallback creates. One module owns the check, both sites route through it, and a residue test
-  fails the build if a third read site appears.
-- **The plain-text fallback**, last, claiming extensions nothing else does. Changes what "unclaimed"
-  means in every coverage report, so the overview wording moves with it.
+  the existing comment tier. Aliases, anchors and multi-document files each get a fixture.
 
 Every parser here was already chosen in Phase 0, so each slice is an adapter over a decided library
 rather than a fresh judgement call. The YAML reader is the same one the markdown provider uses for
@@ -596,12 +580,33 @@ frontmatter: one owner, no second opinion.
 ## Phase 7 - Release
 
 Folds into the `2.0.0` train. The CHANGELOG gains the docs tier, the new `heading` kind, and the
-fallback's effect on what "unclaimed" reports.
+formats now claimed, which changes what "unclaimed" reports even without the fallback: markdown,
+JSON and YAML files that were previously invisible become indexed, so a coverage number moves for
+reasons a reader deserves to have explained.
 
 ## Question 5 - What ships inside 2.0.0, now that Phase 5 is known to be blocked?
 
 Q: The whole set was chosen before the audit found four protocol gaps. Does it still hold?
-A: pending.
+A: B. Markdown, the JSON family and YAML ship in `2.0.0`. XML, HTML and the plain-text fallback are
+deferred to a later major.
+
+> B it is
+
+**Why B, and it was the recommendation:** it draws the line exactly where the work changes
+character. Markdown, JSON and YAML are adapters over machinery that already exists, so they are all
+the same KIND of work. XML, HTML and the fallback each need a new concept invented in the protocol,
+and inventing three of those alongside a new tier, a new symbol kind, a new fact class and a new
+store table is how a release finds nine defects.
+
+It also fails gracefully: if JSON or YAML turns out worse than it looks, either drops out without
+touching anything markdown needs.
+
+Accepted cost: this is not the whole set the owner originally asked for, and the deferred half will
+cost a second index rebuild whenever it lands.
+
+**Correction to the framing I used when asking:** I said B needed three closed decisions. It needs
+TWO. Array elements with no name, which JSON and YAML share, and YAML scalar kinds beyond string,
+number and boolean. The count did not change which option was right.
 
 The gaps are not evenly spread, which is what makes a middle option real rather than a compromise:
 
@@ -649,6 +654,29 @@ and proceeding was correct. What was NOT done is checking whether Phase 5 was bu
 writing it down as four bullet points, and it was not: three of those four bullets are blocked on
 protocol gaps. Agreeing to a scope is fine; describing unsolved work as though it were understood is
 not, and that part is on me.
+
+## Deferred to a later major by Question 5
+
+These left `2.0.0` because each needs a concept INVENTED rather than a decision made. They are
+recorded in full so the next train starts from evidence rather than from scratch.
+
+- **XML** (`.xml`). `SymbolKindSchema` has no `element` or `attribute` member, and repeated sibling
+  elements collide for the same reason duplicate headings do: only a `method` descriptor may carry a
+  disambiguator. Namespace-qualified names need a canonical form. "Elements as declarations" was a
+  placeholder, not a design.
+- **HTML** (`.html`). Everything XML needs, plus an element-selection policy: whether only `h1`
+  through `h6` become headings or every element is a candidate, what an anonymous `div` is called,
+  and what happens to attributes, text nodes, script and style content, and malformed recovery.
+- **The plain-text fallback**, and the routing primitive it requires. `ProviderClaims` in
+  `core/src/routing.ts` carries only `extensions` and an optional `filenames`. There is no
+  catch-all, no negative list and no precedence, so "claims extensions nothing else does" is not
+  expressible today: routing can report a file unclaimed but cannot hand it to a last-resort owner.
+  This is the single largest deferred item, and it also changes what "unclaimed" means in every
+  coverage report, so the overview wording moves with it.
+- **The binary guard**, which deferred with the fallback that needed it. Worth knowing separately:
+  `readEvent` in `core/src/watcher.ts` hashes EVERY changed file as UTF-8 with no routing check at
+  all. That is a live condition TODAY, not one the fallback would create, so it belongs on the board
+  independently of this plan rather than waiting for a train that may be months away.
 
 ## Deferred, recorded so they are not re-litigated
 
