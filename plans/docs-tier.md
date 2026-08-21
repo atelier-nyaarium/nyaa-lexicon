@@ -1243,7 +1243,7 @@ a provenance field that one of ten providers ignores is worse than none.
 **Shipped:** a `formats/` workspace package holding the one reading of YAML and of the JSON family,
 two providers over it, and the markdown provider's frontmatter path rewired to the same reader. The
 package has no root export, only `./yaml` and `./json`, so a consumer imports the reader it reads and
-cannot reach the other one's parser. The gate is green at 1739 tests, all eleven providers pass
+cannot reach the other one's parser. The gate is green at 1742 tests, all eleven providers pass
 conformance from their SHIPPED bundles under node, and `grade.js` answers 8 of 8 against
 switchboard's 1032 files.
 
@@ -1451,7 +1451,7 @@ fixtures now fix.
 
 ### Phase 6 results
 
-**The gate and the suite.** Biome and tsc clean, 1739 tests. All eleven providers pass conformance
+**The gate and the suite.** Biome and tsc clean, 1742 tests. All eleven providers pass conformance
 with zero failures, run twice: from source under bun, and from their SHIPPED bundles under node. The
 second run is the one that counts, and it is the one a green `bun run test` cannot stand in for.
 
