@@ -139,11 +139,15 @@ Two repositories nobody working here reads. **The discipline is the point: no Re
 opening a file. Only lexicon's own tool output.** A tool that can only be evaluated by someone who
 already knows the answer is being graded on a test it has seen.
 
-- **evie-bot** - the SOURCE test. Can it teach you a codebase you have never opened?
+- **evie-bot** - the SOURCE test. Can it teach you a codebase you have never opened? This is the
+  corpus that exercises comments: its prose carries invariants, their enforcement and their failure
+  modes, so a comment tier either surfaces them or does not.
 - **nyaaskills** (its `dist/`) - the HARD test. A single minified bundle where every identifier is
   two characters, so names become noise, the reference graph stays structurally intact and
   semantically useless, and LITERALS carry the entire public contract verbatim. This is where the
   free facts run out and the citation discipline either holds or does not.
+  Minification strips comments, so the comment tier has nothing to report here and finding nothing
+  is the right answer rather than a gap. Use this corpus for literals; use evie-bot for prose.
 
 Corpora clone into `temp/`, which is ignored.
 
