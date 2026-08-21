@@ -366,35 +366,109 @@ worked for the comment tier.
 
 ## Phase 1 - Protocol
 
+Revised by the first audit lap. What changed is recorded under "### What the audit changed" below,
+because the reasoning is worth more than the diff.
+
 - `heading` joins `SymbolKindSchema`. This is the whole Question 4 answer: it is what makes a
   document symbol filterable, countable and honest, and `search_symbols` already takes a `kind`.
-- A `docs` fact channel on `FileFacts`, carrying per-section prose: the text, its range, its
-  anchoring heading, and `fenced` marking which parts came from a code fence.
-- A `docs` tier boolean on `ProviderTiers`, REQUIRED, matching how `comments` was done. Costs 9
-  provider declaration sites plus 3 test fixtures; that is the price of a provider stating its own
-  coverage rather than defaulting.
-- A doc fact id kind, and `factById` gains its branch. The exhaustive switch added in `2.0.0` will
-  refuse to compile until it does, which is the guard working as designed.
+- **`SYMBOL_KIND` in the LSP adapter becomes `Record<SymbolKind, number>`,** in the same commit.
+  Today it is `Record<string, number>` read as `SYMBOL_KIND[declaration.kind] ?? 13`, so a new kind
+  compiles clean and silently renders as an LSP Variable. This is the same silent-default class
+  fixed in `factById` this release, in a second file, and it must be closed before the kind lands.
+- A `docs` fact channel on `FileFacts`. **Facts are per REGION, not per section.** Each carries its
+  own text, range, anchoring heading, and a `fenced` flag. A section is normally prose, then a
+  fence, then more prose, so one flag per section cannot describe it: true would call the prose
+  fenced and false would lose the fence. Per-region also mirrors how comment spans already work.
+- The range contract is stated, not assumed: a region's range covers its content and excludes the
+  fence delimiter lines, so a range always slices its own text back out. The conformance checker
+  already enforces exactly that for comments and gets reused here.
+- **`anchorHeading` is nullable, and the reason is named**: prose before the first heading, and a
+  document with no headings at all, both anchor to the module. That is the same shape the comment
+  tier settled on, where a module-level comment has a null anchor.
+- A `docs` tier boolean on `ProviderTiers`, REQUIRED. **This is an ATOMIC edit, not an additive
+  one:** `InitializeResponseSchema` validates the tier set, so all eight providers plus the
+  reference provider plus 3 test fixtures move in the SAME commit or every provider fails to start.
+- A doc fact id kind, and `factById` gains its branch. Verified rather than assumed: planting a fake
+  member in `FactKind` fails the type check at that switch today.
+- **Duplicate sibling headings need a rule, and the grammar cannot express one.** Only a `method`
+  descriptor may carry a disambiguator, so two sibling headings with identical text collide into one
+  symbolId. Repeated heading text is normal in documents. Decide here and write it down: an
+  occurrence index on the descriptor, or a documented refusal. Do not discover it in Phase 2.
+- **`SymbolSummary` gains `containerId`.** A docs search returns a heading PATH, which means walking
+  ancestors, and today only `outline` re-adds the container through an intersection type. Without
+  this the path cannot be built at all.
 - Conformance cases, shared across languages: a heading tree with nesting, prose attribution, a
-  fence that must not yield a heading, and a fence whose text must be searchable and marked.
+  fence that must not yield a heading, a fence whose text is searchable and marked, a section mixing
+  prose and fence and prose, prose before any heading, and a document with no headings.
+
+### What the audit changed
+
+Seven angles, one Luna each, then every blocker re-checked against the code by hand. Three were
+sharpened rather than accepted, and one was corrected.
+
+**The fact shape was wrong.** `fenced` as one boolean per section cannot describe the ordinary case
+of prose around a fence. Caught before any code existed, which is the entire point of auditing a
+plan rather than a diff.
+
+**The LSP default is a live instance of a class we just closed.** `factById` fell through to the
+literals table for any unhandled fact kind; `SYMBOL_KIND` falls through to Variable for any
+unhandled symbol kind. The second was found only because the first taught us the shape.
+
+**The binary guard finding was corrected, and it matters.** The audit said the guard must sit in the
+shared read path rather than in front of the fallback provider. Half right. Reading the indexer
+shows routing already gates it: `indexOne` checks ownership BEFORE calling `readFile`, so today an
+unclaimed file is never read. But `readEvent` in the watcher hashes EVERY changed file as UTF-8 with
+no routing check whatsoever. So the guard has two homes, not one, and the second is a condition that
+exists today rather than one the fallback introduces.
+
+**Phase boundaries are honest but must say so.** After Phase 2 a markdown provider emits doc facts
+that Phase 3's store cannot yet hold, so they are dropped. That is deliberate and matches how the
+comment train kept its provider phase additive, but a reader of this plan should not have to
+reconstruct that. It is now stated at each boundary.
 
 ## Phase 2 - The markdown provider
 
 The reference implementation. Built by hand, not fanned out, because everything after it copies it.
 
-- Heading detection that SKIPS fenced blocks. `toolsTreeMd` does not, and that is a real bug: a
-  document quoting markdown grows phantom sections.
+**Boundary honesty:** after this phase the provider emits doc facts that the store cannot yet hold,
+so core drops them. That is deliberate, and it is the same additive shape the comment train used so
+that no commit ships a release with a visibly broken tier. It does mean this phase is not
+independently shippable, and the plan says so rather than leaving it to be rediscovered.
+
+**The parser decision is made here, in writing, before code.** `docs/parsing.md` rule 1 says check
+for a library first, and the audit was right that "about fifty lines" was an assertion rather than a
+decision. Markdown is not a line format. Before writing anything, evaluate a maintained parser that
+gives byte offsets for headings and content, and adopt it unless it fails the shipping constraint,
+which is node running a committed bundle with no install step and no native bindings. If a library
+is rejected, the plan records WHY, and the hand-written version ships an explicit grammar subset
+whose unsupported constructs are REPORTED as diagnostics rather than silently misparsed. Eight
+hand-written lexers have already cost this project real bugs, and four of them were this exact class.
+
+- Heading detection must survive the whole trap list, not just fences: indented code blocks at four
+  spaces, tilde fences, closing fences that must match the opener's character and length, setext
+  headings underlined with `=` or `-`, a `#` inside an HTML comment, headings nested in blockquotes
+  or list items, and CRLF. Each gets a fixture. The comment train shipped a CRLF defect in C, so
+  CRLF is not optional here.
 - Headings become declarations with the parent heading as container, giving `outline_module` a table
   of contents for free.
-- Prose under each heading becomes a doc fact, fence contents included and marked.
-- Frontmatter, if present, emits `property` declarations rather than pretending to be prose. This is
-  the mixed-content case that killed the family field, so it has a fixture on day one.
+- Prose under each heading becomes doc facts, one per region, fence regions marked.
+- **Frontmatter cannot be deferred to Phase 5, and the audit caught the circularity.** The markdown
+  provider owns `.md`, and `parseFile` receives a whole module, so the YAML provider never sees it.
+  Either the markdown provider carries a minimal frontmatter reader, or v1 declares frontmatter out
+  of scope and reports it as unindexed. Decide before writing, do not discover mid-phase.
 
 ## Phase 3 - Core
 
 - A `docs` table joining `FACT_TABLES`, with the full replace and forget lifecycle.
 - Attachment is trivial by construction: prose belongs to the heading above it. No resolver, no
-  forms, no placement. That is the whole reason this is a separate tier from comments.
+  forms, no placement. That is the whole reason this is a separate tier from comments. The audit
+  probed the edges and they are all the same answer: text before the first heading, a document with
+  no headings, and a heading with no prose all resolve to a null anchor or an empty set, never to a
+  guess. Prose after a subheading belongs to the subheading, full stop, because position decides.
+- **A heading path helper, which is new work the first draft missed.** A docs result renders
+  `CLAUDE.md > Principles > No band-aids`, which means walking containers upward. Phase 1 adds
+  `containerId` to `SymbolSummary` to make it possible; this is where the walk itself lives, owned
+  in one place so the renderer never rebuilds it.
 - Search over normalized doc text, following the literals and comments contract: text XOR regex,
   bounded scan declaring `scanIncomplete`, a real `COUNT` so a page cannot disagree with its total.
 - Overview counts grouped by kind, so document sections are reported apart from callable symbols
@@ -421,8 +495,12 @@ Fan out per format, each with its own conformance fixtures.
 - **XML** (`.xml`): elements as declarations, attributes as properties, real comments.
 - **HTML** (`.html`): a document, not data. Headings are headings; it is error-tolerant by spec, so
   a malformed file must degrade rather than fail.
-- **The binary guard**, which must land BEFORE the fallback: there is currently no magic-byte or
-  encoding check anywhere in the read path. Its own slice, with a residue test.
+- **The binary guard**, which must land BEFORE the fallback, and which has TWO homes rather than
+  one. Routing already gates the indexer: `indexOne` checks ownership before calling `readFile`, so
+  an unclaimed file is not read today. But `readEvent` in the watcher hashes EVERY changed file as
+  UTF-8 with no routing check at all, which is a condition that exists now rather than one the
+  fallback creates. One module owns the check, both sites route through it, and a residue test
+  fails the build if a third read site appears.
 - **The plain-text fallback**, last, claiming extensions nothing else does. Changes what "unclaimed"
   means in every coverage report, so the overview wording moves with it.
 
