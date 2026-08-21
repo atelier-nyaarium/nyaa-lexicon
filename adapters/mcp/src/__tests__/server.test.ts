@@ -15,6 +15,7 @@ const QUERY_TOOLS = [
 	"co_changed_with",
 	"describe_symbol",
 	"file_history",
+	"find_comments",
 	"find_imports",
 	"find_literals",
 	"find_references",

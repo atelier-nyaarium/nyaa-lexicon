@@ -5,6 +5,8 @@
 // what that is.
 
 import type {
+	CommentQuery,
+	CommentsResult,
 	DescribeResult,
 	FactSet,
 	FileHistory,
@@ -32,6 +34,7 @@ import { z } from "zod";
 import {
 	renderCandidates,
 	renderCoChange,
+	renderComments,
 	renderDescribe,
 	renderFacts,
 	renderFileHistory,
@@ -110,6 +113,7 @@ export interface ToolBackend {
 	}>;
 	indexStatus: () => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
+	findComments: (query: CommentQuery & { limit?: number | undefined }) => Promise<CommentsResult>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
 	searchSymbols: (
 		text: string | undefined,
@@ -294,6 +298,17 @@ export const FindLiteralsInput = {
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
+export const FindCommentsInput = {
+	text: z.string().min(1).optional().describe(`Substring of the prose. Use instead of \`regex\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`.`),
+	form: z
+		.enum(["leading", "trailing", "inline", "standalone"])
+		.optional()
+		.describe(`Where the comment sits relative to its symbol.`),
+	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
+	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
+};
+
 export const SearchSymbolsInput = {
 	text: z.string().min(1).optional().describe(`Case-sensitive name substring. Use instead of \`regex\`.`),
 	regex: z.string().min(1).optional().describe(`Regex literal. Use instead of \`text\`.`),
@@ -436,7 +451,11 @@ export const RefactorRenameInput = {
 export const DESCRIBE_DESCRIPTION = `
 # \`describe_symbol\`
 
-Show a symbol's declaration, members, type hierarchy, dependencies, usage, and recorded knowledge.
+Show a symbol's declaration, members, type hierarchy, dependencies, usage, notes and recorded
+knowledge.
+
+Documentation is the comment above it. Notes are what else was written about it: beside the code,
+or inside its body.
 
 Use \`symbolId\` when known. Otherwise use \`name\`, adding \`module\` when needed.
 `.trim();
@@ -565,6 +584,20 @@ export const FIND_LITERALS_DESCRIPTION = `
 Find exact values, regex matches, or numeric ranges in decoded literal values.
 
 Use for values rather than textual spelling. Each hit includes its declaration.
+`.trim();
+
+export const FIND_COMMENTS_DESCRIPTION = `
+# \`find_comments\`
+
+Find what was WRITTEN about the code: doctrine, rationale, TODOs, warnings.
+
+Matches normalized prose, so markers are stripped and a sentence wrapped across several lines is
+one string. Each hit names the symbol it documents, or the module when it documents no symbol.
+
+Set exactly one of \`text\` or \`regex\`, or neither with \`form\` or \`module\` to list a slice.
+
+Indexed files only. A file no provider claims, or a language whose provider has no comment tier,
+is invisible here. Use ripgrep for an exhaustive byte-level audit.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `
@@ -939,6 +972,23 @@ export async function findLiterals(
 	try {
 		const found = await backend.findLiterals(args);
 		return text(await withIndexState(backend, renderLiterals(found)));
+	} catch (error) {
+		// A bad regex is the caller's mistake and worth saying plainly, rather than an empty result
+		// that reads as "nothing matched".
+		return text(error instanceof Error ? error.message : String(error), true);
+	}
+}
+
+export async function findComments(
+	backend: ToolBackend,
+	args: CommentQuery & { limit?: number | undefined },
+): Promise<ToolResult> {
+	if (args.text !== undefined && args.regex !== undefined) {
+		return text("Set `text` or `regex`, not both.", true);
+	}
+	try {
+		const found = await backend.findComments(args);
+		return text(await withIndexState(backend, renderComments(found)));
 	} catch (error) {
 		// A bad regex is the caller's mistake and worth saying plainly, rather than an empty result
 		// that reads as "nothing matched".

@@ -28,10 +28,20 @@ export interface SymbolSummary {
 	lines?: { start: number; end: number };
 }
 
+/** A note written about a symbol that is not its documentation: beside it, or inside its body. */
+export interface AttachedComment {
+	form: string;
+	placement: string;
+	line: number;
+	text: string;
+}
+
 export interface DescribeResult {
 	symbol: SymbolSummary;
 	/** Direct members, the compression tier: a class as its surface rather than its body. */
 	members: SymbolSummary[];
+	/** Absent when nothing but its own documentation was written about it. */
+	comments?: AttachedComment[];
 	/** How many places use it, so a caller decides whether to ask for the list. */
 	referenceCount: number;
 	graph: GraphSummary;
@@ -60,6 +70,44 @@ export interface LiteralQuery {
 export interface LiteralsResult {
 	query: LiteralQuery;
 	literals: StoredLiteral[];
+	total: number;
+	truncated: boolean;
+	/** Set when a regex search stopped reading before the end of the table. */
+	scanIncomplete?: boolean;
+}
+
+/** How a comment search was expressed. Carried back so an answer says what it answered. */
+export interface CommentQuery {
+	text?: string | undefined;
+	regex?: string | undefined;
+	form?: string | undefined;
+	module?: string | undefined;
+}
+
+/** The symbol a comment was written about, with enough to recognize it without a second call. */
+export interface CommentAnchor {
+	symbolId: string;
+	name: string;
+	kind: string;
+	signature?: string;
+	line: number;
+}
+
+export interface FoundComment {
+	factId: string;
+	module: string;
+	range: Range;
+	form: string;
+	placement: string;
+	/** Verbatim, capped. A banner comment is hundreds of lines and no caller asked for them. */
+	raw: string;
+	/** Null when the module itself is the container: a header, a licence, a banner. */
+	anchor: CommentAnchor | null;
+}
+
+export interface CommentsResult {
+	query: CommentQuery;
+	comments: FoundComment[];
 	total: number;
 	truncated: boolean;
 	/** Set when a regex search stopped reading before the end of the table. */
@@ -125,6 +173,20 @@ export const DEFAULT_REFERENCE_LIMIT = 50;
 /** Page for a literal search. Literals outnumber symbols by a lot, so this is the tighter cap. */
 export const DEFAULT_LITERAL_LIMIT = 50;
 
+/** Page for a comment search, matching literals. */
+export const DEFAULT_COMMENT_LIMIT = 50;
+
+/** Lines of a comment carried back. A banner runs to hundreds and no caller asked for them. */
+const COMMENT_PREVIEW_LINES = 8;
+
+/** Capped, and says how much it cut, so a caller never reads a preview as the whole comment. */
+function preview(raw: string): string {
+	const lines = raw.split("\n");
+	if (lines.length <= COMMENT_PREVIEW_LINES) return raw;
+	const rest = lines.length - COMMENT_PREVIEW_LINES;
+	return `${lines.slice(0, COMMENT_PREVIEW_LINES).join("\n")}\n... ${rest} more line${rest === 1 ? "" : "s"}`;
+}
+
 /** One place that decides what "more than a page" means, so no caller reports a cap as a total. */
 function page(query: LiteralQuery, found: StoredLiteral[], limit: number): LiteralsResult {
 	return {
@@ -183,12 +245,26 @@ export class IndexReadModel {
 			.filter((d) => d.containerId === symbolId)
 			.map(toSummary);
 
+		// Leading is excluded because it IS the documentation printed above. What is left is the
+		// prose a reader would only find by opening the file: a note beside the code, or one written
+		// inside the body.
+		const comments = this.store
+			.commentsAnchoredTo(symbolId)
+			.filter((comment) => comment.form !== "leading")
+			.map((comment) => ({
+				form: comment.form,
+				placement: comment.placement,
+				line: comment.range.start.line,
+				text: comment.normalized,
+			}));
+
 		return {
 			symbol: this.withDocumentation(toSummary(declaration)),
 			members,
 			referenceCount: this.store.referencesTo(symbolId).length,
 			graph: this.graphSummary(symbolId),
 			hierarchy: this.typeHierarchy(symbolId),
+			...(comments.length === 0 ? {} : { comments }),
 			tier: "bound",
 		};
 	}
@@ -315,6 +391,78 @@ export class IndexReadModel {
 		throw new Error(
 			'give a value, a regex, or a numeric range, e.g. { value: "cycleCheckpoint" } or { regex: "/^cycle/" } or { min: 0, max: 100 }',
 		);
+	}
+
+	/**
+	 * Find what was WRITTEN about the code, by substring or regex over the normalized text.
+	 *
+	 * The tier that makes doctrine reachable. Every other tier answers "what is this code"; this one
+	 * answers "what did someone say about it", which was the question that always fell back to grep.
+	 *
+	 * Substring is an indexed-ish read; a regex is not, because SQLite has no REGEXP here, so it
+	 * reads a bounded page and says when it stopped early.
+	 */
+	findComments(query: CommentQuery, limit = DEFAULT_COMMENT_LIMIT): CommentsResult {
+		const filter = {
+			...(query.form === undefined ? {} : { form: query.form }),
+			...(query.module === undefined ? {} : { module: query.module }),
+		};
+
+		if (query.text !== undefined) {
+			const found = this.store.commentsContaining(query.text, limit + 1, filter);
+			return this.pageComments(query, found, limit);
+		}
+
+		if (query.regex !== undefined) {
+			const expression = compileSearchRegex(query.regex);
+			const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
+			const matched = scanned.filter((comment) => {
+				expression.lastIndex = 0;
+				return expression.test(comment.normalized);
+			});
+			const result = this.pageComments(query, matched, limit);
+			// A truncated scan and a truncated page are different truncations, and a caller that
+			// cannot tell them apart reads "50 results" as "50 exist".
+			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+		}
+
+		// Neither given: the whole tier, filtered. Useful for "every TODO in this module".
+		if (query.form !== undefined || query.module !== undefined) {
+			return this.pageComments(query, this.store.commentsToScan(limit + 1, filter), limit);
+		}
+
+		throw new Error('give a text or a regex, e.g. { text: "refuses rather than" } or { regex: "/TODO|FIXME/" }');
+	}
+
+	private pageComments(query: CommentQuery, found: StoredComment[], limit: number): CommentsResult {
+		const anchors = new Map<string, CommentAnchor | null>();
+		const shown = found.slice(0, limit).map((comment) => {
+			if (comment.anchorId !== null && !anchors.has(comment.anchorId)) {
+				anchors.set(comment.anchorId, this.anchorOf(comment.anchorId));
+			}
+			return {
+				factId: comment.factId,
+				module: comment.module,
+				range: comment.range,
+				form: comment.form,
+				placement: comment.placement,
+				raw: preview(comment.raw),
+				anchor: comment.anchorId === null ? null : (anchors.get(comment.anchorId) ?? null),
+			};
+		});
+		return { query, comments: shown, total: found.length, truncated: found.length > limit };
+	}
+
+	private anchorOf(symbolId: string): CommentAnchor | null {
+		const declaration = this.store.declaration(symbolId);
+		if (declaration === null) return null;
+		return {
+			symbolId,
+			name: declaration.name,
+			kind: declaration.kind,
+			...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
+			line: declaration.range.start.line,
+		};
 	}
 
 	/** Values written in more than one file, which is the strongest textual signal of a relationship. */

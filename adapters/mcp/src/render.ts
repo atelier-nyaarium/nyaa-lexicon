@@ -3,6 +3,7 @@
 // Pure, because output formatting deserves direct tests.
 
 import type {
+	CommentsResult,
 	DescribeResult,
 	InvalidateOutcome,
 	KnowledgeGaps,
@@ -123,6 +124,15 @@ export function renderDescribe(result: DescribeResult): string {
 		for (const member of result.members) lines.push(symbolBullet(member));
 	}
 
+	// What someone wrote about it that is not its documentation, which is otherwise only reachable
+	// by opening the file.
+	if (result.comments !== undefined && result.comments.length > 0) {
+		lines.push("", "## Notes", "");
+		for (const comment of result.comments) {
+			lines.push(`- Line ${comment.line + 1} (${comment.form}): ${summarize(comment.text)}`);
+		}
+	}
+
 	lines.push("", "## Usage", "", `Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.`);
 	if (result.referenceCount > 0) lines.push("Call `find_references` for the list.");
 	appendHierarchy(lines, result.hierarchy);
@@ -236,6 +246,43 @@ export function renderRenamePlan(plan: RenamePlan): string {
  * more matched than were shown, while an incomplete scan means the search itself stopped early and
  * matches beyond it were never looked at.
  */
+export function renderComments(result: CommentsResult): string {
+	if (result.total === 0) {
+		return "# Comments\n\nNo comment matched.\n\n> Searches normalized prose, so markers and line wrapping are not matched.";
+	}
+
+	const byModule = new Map<string, string[]>();
+	for (const comment of result.comments) {
+		const rows = byModule.get(comment.module) ?? [];
+		// The anchor is the hop from prose back to structure, which is the whole reason a comment is
+		// a fact rather than a grep hit.
+		const about =
+			comment.anchor === null
+				? `${comment.form} (module)`
+				: `${comment.form} \`${comment.anchor.name}\` (${comment.anchor.kind})`;
+		rows.push(`- Line ${comment.range.start.line + 1}: ${about}\n${indent(comment.raw)}`);
+		byModule.set(comment.module, rows);
+	}
+
+	let body = renderGroupedModules(`${result.total} comment${result.total === 1 ? "" : "s"}`, byModule);
+	if (result.truncated) {
+		const more = result.total - result.comments.length;
+		body += `\n\n> ${more} more comment${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
+	}
+	if (result.scanIncomplete) {
+		body += "\n\n> The scan stopped before the end of the index, so matches beyond it were not looked at.";
+	}
+	return body;
+}
+
+/** Quoted so a comment's own markers cannot be read as this document's markup. */
+function indent(raw: string): string {
+	return raw
+		.split("\n")
+		.map((line) => `      ${line}`)
+		.join("\n");
+}
+
 export function renderLiterals(result: LiteralsResult): string {
 	if (result.total === 0) {
 		return "# Literals\n\nNo literal matched.\n\n> Searches decoded values, not source text.";

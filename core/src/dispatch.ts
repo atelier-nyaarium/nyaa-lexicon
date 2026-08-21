@@ -41,6 +41,13 @@ const Literals = z.object({
 	max: z.number().optional(),
 	limit: z.number().int().positive().optional(),
 });
+const Comments = z.object({
+	text: z.string().min(1).optional(),
+	regex: z.string().min(1).optional(),
+	form: z.enum(["leading", "trailing", "inline", "standalone"]).optional(),
+	module: z.string().min(1).optional(),
+	limit: z.number().int().positive().max(200).optional(),
+});
 const Shared = z.object({
 	minimumFiles: z.number().int().positive().optional(),
 	limit: z.number().int().positive().optional(),
@@ -492,6 +499,11 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				const args = Literals.parse(params);
 				const { limit, ...query } = args;
 				return service.findLiterals(query, limit);
+			}
+			case "findComments": {
+				const args = Comments.parse(params);
+				const { limit, ...query } = args;
+				return service.findComments(query, limit);
 			}
 			case "sharedLiterals": {
 				const args = Shared.parse(params);

@@ -41,6 +41,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			outlineFiles: 0,
 		}),
 		findLiterals: async (query) => ({ query, literals: [], total: 0, truncated: false }),
+		findComments: async (query) => ({ query, comments: [], total: 0, truncated: false }),
 		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
 		outlineModule: async () => [],
 		findImports: async (query) => ({ query, imports: [], total: 0, truncated: false }),

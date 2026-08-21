@@ -16,9 +16,9 @@ import { ProviderSupervisor } from "./supervisor.js";
 //  Main
 
 async function main(argv: string[]): Promise<void> {
-	const [workspace, query] = argv;
+	const [workspace, query, commentQuery] = argv;
 	if (workspace === undefined) {
-		console.error("usage: index-workspace <workspace> [symbolName]");
+		console.error("usage: index-workspace <workspace> [symbolName] [--comments <text>]");
 		process.exit(2);
 	}
 
@@ -57,6 +57,21 @@ async function main(argv: string[]): Promise<void> {
 	if (skipped.length > 0) console.log(`${skipped.length} skipped (${skipped[0]?.reason})`);
 
 	console.log(`comments: ${service.commentCounts()}`);
+
+	if (query === "--comments" && commentQuery !== undefined) {
+		const found = service.findComments(
+			commentQuery.startsWith("/") ? { regex: commentQuery } : { text: commentQuery },
+		);
+		console.log(`\n${found.total} comment${found.total === 1 ? "" : "s"} matching ${commentQuery}:`);
+		for (const comment of found.comments) {
+			const about = comment.anchor === null ? "(module)" : `${comment.anchor.kind} ${comment.anchor.name}`;
+			console.log(`  ${comment.module}:${comment.range.start.line + 1}  ${comment.form} -> ${about}`);
+			for (const line of comment.raw.split("\n")) console.log(`      ${line}`);
+		}
+		supervisor.stopAll();
+		store.close();
+		return;
+	}
 
 	if (query !== undefined) {
 		const found = service.findByName(query);
