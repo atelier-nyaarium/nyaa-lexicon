@@ -89,8 +89,15 @@ function providerBundles(root: string): Array<{ source: string; out: string; ass
 /** Names a smoke failure, so the catch can tell one from a bun error bun already printed. */
 const SMOKE_FAILURE = "failed to start on node";
 
-/** The AMD branch of a UMD wrapper, which survives minification because it is a string array. */
-const UMD_WRAPPER_RE = /typeof\s+define\s*===?\s*"function"\s*&&\s*define\.amd/;
+/**
+ * The AMD branch of a UMD wrapper, which survives minification because `define.amd` cannot be renamed.
+ *
+ * Both operand orders and either quote, because a minifier writes `"function"==typeof define` and
+ * rollup writes single quotes. Matching one spelling caught jsonc-parser and missed sourcemap-codec,
+ * magic-string and dequal, all of them present in this very tree.
+ */
+const UMD_WRAPPER_RE =
+	/(?:typeof\s+define\s*={2,3}\s*["']function["']|["']function["']\s*={2,3}\s*typeof\s+define)\s*&&\s*define\.amd/;
 
 /**
  * No bundle may carry a UMD wrapper.

@@ -118,6 +118,40 @@ describe("failure", () => {
 		expect(read("a: [1,\n").diagnostics.length).toBeGreaterThan(0);
 	});
 
+	it("diagnoses nesting too deep to index rather than throwing", () => {
+		const depth = 200_000;
+		const facts = read(`a: ${"[".repeat(depth)}1${"]".repeat(depth)}\n`);
+		expect(facts.diagnostics.length).toBeGreaterThan(0);
+	});
+
+	it("does not expand an alias, so a bomb stays the size of its source", () => {
+		const bomb = [
+			"a: &a [x, x, x, x, x, x, x, x, x]",
+			"b: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a]",
+			"c: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b]",
+			"d: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c]",
+			"e: [*d, *d, *d, *d, *d, *d, *d, *d, *d]",
+			"",
+		].join("\n");
+		expect(read(bomb).literals.length).toBeLessThan(20);
+	});
+
+	it("declares a repeated key once, keeping the value a reader would get", () => {
+		const facts = read("a: 1\na: 2\n");
+		expect(facts.declarations.map((d) => d.name)).toEqual(["a"]);
+		expect(facts.literals.map((l) => l.value)).toEqual(["2"]);
+	});
+
+	it("says so when a key cannot be named, rather than reporting an empty file", () => {
+		const facts = read("? [a, b]\n: value\n");
+		expect(facts.declarations).toEqual([]);
+		expect(facts.diagnostics.map((d) => d.severity)).toEqual(["info"]);
+	});
+
+	it("takes a merge key as a directive, not a key", () => {
+		expect(names("base: &b\n  x: 1\nuse:\n  <<: *b\n  y: 2\n")).toEqual(["base", "x", "use", "y"]);
+	});
+
 	it("reports nothing and no error for an empty document", () => {
 		const facts = read("\n");
 		expect(facts.declarations).toEqual([]);

@@ -62,7 +62,17 @@ export function readYaml(context: YamlContext): YamlFacts {
 	const declarations: Declaration[] = [];
 	const literals: Literal[] = [];
 	const diagnostics: Diagnostic[] = [];
-	const documents = parseAllDocuments(text);
+
+	// Parsing recurses, and so does the walk below, so nesting deep enough exhausts the stack. That is
+	// a property of the FILE and belongs in a diagnostic; thrown, it stops the scan.
+	let documents: ReturnType<typeof parseAllDocuments> = [];
+	let tooDeep = false;
+	try {
+		documents = parseAllDocuments(text);
+	} catch (failure) {
+		if (!(failure instanceof RangeError)) throw failure;
+		tooDeep = true;
+	}
 
 	function walk(node: unknown, parents: Descriptor[], containerId: string | undefined): void {
 		// An element has no name, so it is no declaration, but its ordinal must still reach the keys
@@ -83,11 +93,35 @@ export function readYaml(context: YamlContext): YamlFacts {
 		}
 		if (!isMap(node)) return;
 
-		for (const pair of node.items) {
-			if (!isPair(pair) || !isScalar(pair.key)) continue;
+		// A repeated key is ONE addressable thing, so only its last occurrence is walked: two of them
+		// would mint one id twice and the store would keep whichever it wrote last.
+		const owner = new Map<string, number>();
+		node.items.forEach((pair, index) => {
+			if (isPair(pair) && isScalar(pair.key)) owner.set(String(pair.key.value), index);
+		});
+
+		for (const [index, pair] of node.items.entries()) {
+			if (!isPair(pair)) continue;
+			// An explicit key that is a sequence or a map has no name a symbol id can carry. Saying so
+			// beats skipping in silence, which leaves a valid file in scope reporting nothing.
+			if (!isScalar(pair.key)) {
+				const span = isNode(pair.key) ? pair.key.range : undefined;
+				const at = span == null ? undefined : coordinates.rangeAt(offset + span[0], offset + span[1]);
+				diagnostics.push({
+					severity: "info",
+					message: "a key that is not a scalar cannot be named, so it is not indexed",
+					path: module,
+					...(at === undefined ? {} : { range: at }),
+				});
+				continue;
+			}
 			const key = pair.key.range;
 			const name = String(pair.key.value);
 			if (key === null || key === undefined || name === "") continue;
+			// A merge key is a directive, not a key. Its target is already indexed under its own anchor,
+			// which is the same reason an alias is not expanded.
+			if (name === "<<") continue;
+			if (owner.get(name) !== index) continue;
 
 			const keyStart = offset + key[0];
 			const keyEnd = offset + key[1];
@@ -148,8 +182,19 @@ export function readYaml(context: YamlContext): YamlFacts {
 			});
 		}
 		const parents = context.parents ?? [];
-		walk(document.contents, many ? [...parents, { kind: "namespace", name: `[${index}]` }] : parents, undefined);
+		try {
+			walk(
+				document.contents,
+				many ? [...parents, { kind: "namespace", name: `[${index}]` }] : parents,
+				undefined,
+			);
+		} catch (failure) {
+			if (!(failure instanceof RangeError)) throw failure;
+			tooDeep = true;
+		}
 	});
+	if (tooDeep) diagnostics.push({ severity: "error", message: "nested too deeply to index", path: module });
+
 	return { declarations, literals, diagnostics };
 }
 
@@ -176,6 +221,12 @@ export function readYamlComments(text: string, offset: number, coordinates: Text
 		}
 	}
 
-	for (const token of new Parser().parse(text)) collect(token);
+	// Deep enough nesting exhausts the stack here too. There is no diagnostic channel on this call, and
+	// `readYaml` already reports the depth for the same file, so the spans found so far are the answer.
+	try {
+		for (const token of new Parser().parse(text)) collect(token);
+	} catch (failure) {
+		if (!(failure instanceof RangeError)) throw failure;
+	}
 	return spans.sort((left, right) => left.range.start.line - right.range.start.line);
 }

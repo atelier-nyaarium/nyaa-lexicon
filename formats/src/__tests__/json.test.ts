@@ -115,4 +115,21 @@ describe("failure", () => {
 		expect(facts.declarations).toEqual([]);
 		expect(facts.diagnostics).toEqual([]);
 	});
+
+	it("diagnoses nesting too deep to index rather than throwing", () => {
+		const depth = 200_000;
+		const facts = read(`${"[".repeat(depth)}1${"]".repeat(depth)}`);
+		expect(facts.diagnostics.length).toBeGreaterThan(0);
+	});
+
+	it("declares a repeated key once, warns, and keeps the value a reader would get", () => {
+		const facts = read('{"a": 1, "a": 2}');
+		expect(facts.declarations.map((d) => d.name)).toEqual(["a"]);
+		expect(facts.literals.map((l) => l.value)).toEqual(["2"]);
+		expect(facts.diagnostics.map((d) => d.severity)).toEqual(["warning"]);
+	});
+
+	it("keeps a repeated key from silencing its siblings, at any depth", () => {
+		expect(names('{"o": {"a": 1, "a": 2, "b": 3}}')).toEqual(["o", "a", "b"]);
+	});
 });

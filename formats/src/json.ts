@@ -88,11 +88,19 @@ export function readJson(context: JsonContext): JsonFacts {
 	const diagnostics: Diagnostic[] = [];
 	const problems: ParseError[] = [];
 
-	const tree = parseTree(text, problems, {
-		disallowComments: !lenient,
-		allowTrailingComma: lenient,
-		allowEmptyContent: true,
-	});
+	// Building the tree recurses too, so it exhausts the stack before the walk ever gets a chance.
+	let tree: Node | undefined;
+	let tooDeep = false;
+	try {
+		tree = parseTree(text, problems, {
+			disallowComments: !lenient,
+			allowTrailingComma: lenient,
+			allowEmptyContent: true,
+		});
+	} catch (failure) {
+		if (!(failure instanceof RangeError)) throw failure;
+		tooDeep = true;
+	}
 
 	for (const problem of problems) {
 		const end = Math.min(problem.offset + problem.length, text.length);
@@ -134,9 +142,29 @@ export function readJson(context: JsonContext): JsonFacts {
 			return;
 		}
 
-		for (const property of node.children ?? []) {
+		// A repeated key is ONE addressable thing, so only its last occurrence is walked: two of them
+		// would mint one id twice and the store would keep whichever it wrote last. The parser does not
+		// complain, so the file's own defect is reported here or nowhere.
+		const properties = node.children ?? [];
+		const owner = new Map<string, number>();
+		properties.forEach((property, index) => {
+			const name = property.children?.[0]?.value;
+			if (typeof name === "string") owner.set(name, index);
+		});
+
+		for (const [index, property] of properties.entries()) {
 			const [key, value] = property.children ?? [];
 			if (key === undefined || typeof key.value !== "string" || key.value === "") continue;
+			if (owner.get(key.value) !== index) {
+				const at = coordinates.rangeAt(offset + key.offset, offset + key.offset + key.length);
+				diagnostics.push({
+					severity: "warning",
+					message: `duplicate key ${JSON.stringify(key.value)}; the last one is indexed`,
+					path: module,
+					...(at === undefined ? {} : { range: at }),
+				});
+				continue;
+			}
 
 			const selectionRange = coordinates.rangeAt(offset + key.offset, offset + key.offset + key.length);
 			const end = value === undefined ? key.offset + key.length : value.offset + value.length;
@@ -158,7 +186,16 @@ export function readJson(context: JsonContext): JsonFacts {
 		}
 	}
 
-	walk(tree, context.parents ?? [], undefined);
+	// A property of the FILE, so it belongs in a diagnostic. Thrown, it becomes a transport error and
+	// stops the scan over a file nobody asked to be fatal.
+	try {
+		if (!tooDeep) walk(tree, context.parents ?? [], undefined);
+	} catch (failure) {
+		if (!(failure instanceof RangeError)) throw failure;
+		tooDeep = true;
+	}
+	if (tooDeep) diagnostics.push({ severity: "error", message: "nested too deeply to index", path: module });
+
 	return {
 		declarations,
 		literals,

@@ -1287,6 +1287,27 @@ project exists to stop: in scope, parses clean, reports no facts.
 **Every one of those is now a conformance case**, in both languages where both can say it, so the
 next reader of this corpus inherits the traps rather than rediscovering them.
 
+**A third pass, red team, found four more by running hostile input rather than reading.** A repeated
+key minted one id twice in BOTH readers, with no complaint from either parser, which is the sibling
+collision again in a shape sequences could not reach. A YAML merge key was declared as a property
+named `<<`. Nesting deep enough threw a `RangeError` out of `parseFile`, which is a transport error
+rather than a diagnostic, from four separate places: both parsers and both walks. And a key that is
+not a scalar was skipped in silence, so a file of explicit keys indexed as empty.
+
+**The build gate it had just added was itself too narrow.** The regex matched one spelling of the AMD
+branch. Three real UMD bundles in this repo's own `node_modules` use the others: single quotes,
+`==` for `===`, and a minifier's reversed `"function"==typeof define`. The gate caught the dependency
+that motivated it and would have missed the next three. Widened to both operand orders and either
+quote, measured at four of four caught and zero false positives over 17 bundles and 535 source files.
+
+**Not fixed, because it is not ours to fix here.** The `yaml` package's parse is QUADRATIC in the
+number of keys in one mapping: 4000 keys take 81ms, 8000 take 377ms, 16000 take 1413ms, and 100000
+take about three minutes. `parseDocument` alone shows the same curve, so it is the library rather
+than `parseAllDocuments` or the walk over it, and the JSON reader is linear across the same sizes.
+Phase 0 chose this library after a spike that did not measure it. A per-format size cap invented here
+would be the band-aid: the read path has no size guard for ANY format, which is already on the board,
+and one owner should set that policy once.
+
 ### Bug Classes
 
 - **A bundle that cannot run on the shipping runtime.** Closed by a static check over every bundle
@@ -1299,6 +1320,12 @@ next reader of this corpus inherits the traps rather than rediscovering them.
   a file and returns zero facts for it.
 - **Two readings of one format.** Closed structurally: frontmatter and `.yml` are the same function,
   so a decision about scalars cannot land in one and miss the other.
+- **A parse failure reaching the caller as a transport error.** Closed for depth in all four places
+  it could happen, each turning a `RangeError` into a diagnostic. The general form is not closed:
+  nothing stops the next reader from letting a different throw escape.
+- **A gate that matches one spelling of the thing it forbids.** Not closed as a class, only widened
+  and measured. The lesson is that a residue check written against the instance that motivated it
+  should be tested against every OTHER instance already on disk before it is trusted.
 
 ## Phase 6 - Verification
 
@@ -1483,6 +1510,11 @@ you.
 **The second audit pass found the regression the first pass caused.** The first pass found four real
 defects; fixing them introduced a fifth that the second pass caught. One pass would have shipped it.
 The cycle's claim that re-audits catch what fix attempts reopen was not theoretical here.
+
+**A gate proven failable is not a gate proven sufficient.** The UMD check was planted against and
+watched to fail, which is the discipline this file records, and it still matched only one of the four
+spellings sitting in `node_modules`. Planting proves the check FIRES; it says nothing about coverage.
+Where a check forbids a pattern that already has instances on disk, run it against all of them.
 
 Felt building Phase 4.
 
