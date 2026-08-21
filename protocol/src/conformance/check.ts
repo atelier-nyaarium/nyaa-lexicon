@@ -4,7 +4,7 @@
 // transport and calls in here.
 
 import type { z } from "zod";
-import { coordinatesOf } from "../coordinates.js";
+import { comparePositions, coordinatesOf } from "../coordinates.js";
 import type { CommentSpan, DocRegion, FileFacts, ImportResolution } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Reference } from "../symbols.js";
@@ -156,7 +156,7 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	const wantedDocs = fixture?.docs ?? testCase.docs;
 	if (wantedDocs !== undefined) problems.push(...checkDocs(wantedDocs, facts.docs ?? [], byId));
 	// The same rule comment spans get: a range that lies attaches prose to the wrong section.
-	if (source !== undefined) problems.push(...checkDocRanges(source, facts.docs ?? []));
+	if (source !== undefined) problems.push(...checkDocRanges(source, facts.docs ?? [], byId));
 
 	return problems;
 }
@@ -231,19 +231,41 @@ function checkDocs(expected: ExpectedDocRegion[], actual: DocRegion[], byId: Map
 	return problems;
 }
 
-/** A doc region's range must slice its own text back, fence delimiters excluded. */
-function checkDocRanges(source: string, actual: DocRegion[]): string[] {
+/**
+ * Every region slices its own text back, and the regions PARTITION the document.
+ *
+ * Disjoint and ascending is the property a store can rely on. Overlapping regions would index the
+ * same bytes twice, so one search returns the same prose as two facts, and a reordered set is a
+ * provider that has changed what the document says while every text matched.
+ */
+function checkDocRanges(source: string, actual: DocRegion[], byId: Map<string, Declaration>): string[] {
 	const problems: string[] = [];
 	const coordinates = coordinatesOf(source);
+	let previous: DocRegion | undefined;
 
 	for (const region of actual) {
+		const at = `doc region ${JSON.stringify(region.text)}`;
 		const cut = coordinates.sliceRange(region.range);
 		if (cut === undefined) {
-			problems.push(`doc region ${JSON.stringify(region.text)}: range is outside the file`);
+			problems.push(`${at}: range is outside the file`);
 			continue;
 		}
-		if (cut !== region.text) {
-			problems.push(`doc region ${JSON.stringify(region.text)}: range covers ${JSON.stringify(cut)} instead`);
+		if (cut !== region.text) problems.push(`${at}: range covers ${JSON.stringify(cut)} instead`);
+
+		if (previous !== undefined && comparePositions(region.range.start, previous.range.end) < 0) {
+			problems.push(
+				`${at}: starts before ${JSON.stringify(previous.text)} ends, so the regions are not disjoint`,
+			);
+		}
+		previous = region;
+
+		// An anchor naming nothing here reads downstream as module-level prose, which is a different
+		// claim from the one the provider made.
+		if (region.anchorId !== undefined) {
+			const heading = byId.get(region.anchorId);
+			if (heading === undefined) problems.push(`${at}: anchorId names no declaration in this file`);
+			else if (heading.kind !== "heading")
+				problems.push(`${at}: anchorId names a ${heading.kind}, not a heading`);
 		}
 	}
 	return problems;

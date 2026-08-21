@@ -335,6 +335,48 @@ describe("checking answers", () => {
 			).toEqual([]);
 		});
 
+		// Regions partition a document. Overlap indexes the same bytes twice, so one search returns
+		// the same prose as two facts, and nothing downstream can assume otherwise.
+		it("reports regions that overlap each other", () => {
+			const source = "abcdef\n";
+			const at = (text: string, from: number) => ({
+				text,
+				fenced: false,
+				range: { start: { line: 0, character: from }, end: { line: 0, character: from + text.length } },
+			});
+			const given = facts({ docs: [at("ab", 0), at("bc", 1)] });
+
+			expect(checkFacts({} as ConformanceCase, given, undefined, source).join(" ")).toMatch(/not disjoint/);
+		});
+
+		// An anchor naming nothing reads downstream as module-level prose, a different claim entirely.
+		it("reports an anchor that names nothing in this file", () => {
+			const source = "prose\n";
+			const region = {
+				text: "prose",
+				fenced: false,
+				anchorId: idFor("Elsewhere"),
+				range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+			};
+
+			expect(checkFacts({} as ConformanceCase, facts({ docs: [region] }), undefined, source).join(" ")).toMatch(
+				/names no declaration/,
+			);
+		});
+
+		it("reports an anchor that names something other than a heading", () => {
+			const source = "prose\n";
+			const region = {
+				text: "prose",
+				fenced: false,
+				anchorId: idFor("work"),
+				range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+			};
+			const given = facts({ docs: [region], declarations: [decl("work")] });
+
+			expect(checkFacts({} as ConformanceCase, given, undefined, source).join(" ")).toMatch(/not a heading/);
+		});
+
 		// Prose and a fence holding the same words are different facts, so this must not pass.
 		it("reports a fence reported as prose", () => {
 			const testCase = { docs: [{ text: "run me", under: "T", fenced: true }] } as ConformanceCase;

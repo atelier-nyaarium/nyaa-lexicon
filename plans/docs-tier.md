@@ -596,6 +596,19 @@ which is the painpoint this repo already recorded for corpus tests. Two tests no
 tier has cases and that the docs cases keep a language that could run them, proven failable by
 retargeting a fixture and watching it go red.
 
+**The red team tightened the contract twice more, before any provider could build against a loose
+one:**
+
+- **Regions must PARTITION the document.** Two regions could overlap or nest and both pass, since
+  each sliced its own text correctly. A store indexing those would hold the same bytes as two facts,
+  so one search returns the same prose twice. They must now be disjoint and ascending, which also
+  turns a reordered set into one clear failure instead of two confusing content mismatches.
+- **An anchor must resolve, to a heading, in this file.** `anchorId` was an arbitrary string, and an
+  anchor naming nothing was silently read as module-level prose, which is a different claim from the
+  one the provider made. Anchoring to a function now fails too.
+
+Both proven failable by neutering each guard and watching its tests go red.
+
 **Deliberately not changed, with reasons:**
 
 - **`docFactId` excludes the anchor,** matching `commentFactId` and its stated reason that a
@@ -615,6 +628,14 @@ retargeting a fixture and watching it go red.
   costs an edit there. That is the comment train's recorded painpoint recurring, and it recurred
   exactly as predicted: `docs` had to be added by hand or the four cases would have run while
   asserting nothing.
+- **A provider can claim a tier and deliver nothing.** Declaring `docs: true` while emitting no
+  regions validates cleanly, because the fact field is optional and its absence means the tier is
+  false. Real, and NOT introduced here: every tier works this way, so `comments: true` with no
+  comments has always been expressible. Fixing it for one tier alone would be the inconsistency.
+  Belongs on the board as a cross-tier question about what a tier claim is worth.
+- **A non-canonical percent-encoding in a module path parses.** `parseSymbolId` canonicalises the
+  decoded value but does not require the encoded field to match what the composer would emit, so two
+  spellings reach one symbol. Pre-existing, unrelated to this train, worth its own look.
 
 ### The known weakness in section identity, argued and accepted
 
