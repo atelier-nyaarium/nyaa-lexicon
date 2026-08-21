@@ -16,7 +16,13 @@ export interface Descriptor {
 	kind: DescriptorKind;
 	name: string;
 	/**
-	 * Tells two same-named siblings apart: an overload's arity, or a repeated heading's occurrence.
+	 * Tells two same-named siblings apart. One field, two meanings, and they differ in DURABILITY.
+	 *
+	 * A method's is arity or overload index, which moves only when the signature moves. A document
+	 * section's is occurrence order, which moves when anything is inserted above it. So a section id
+	 * can change while that section did not, and only an explicit rename or move migrates recorded
+	 * knowledge. Order is used anyway because a repeated heading has no other intrinsic identity,
+	 * and refusing to identify it at all would leave a real section unsearchable.
 	 *
 	 * Carried by `method`, `namespace`, `type` and `meta`. A parameter and a type parameter spend
 	 * their brackets on the name, and a term's dot is the suffix the method form already claims.

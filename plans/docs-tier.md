@@ -561,18 +561,53 @@ because the reasoning is worth more than the diff.
 - A `docs` tier boolean on `ProviderTiers`, REQUIRED. **This is an ATOMIC edit, not an additive
   one:** `InitializeResponseSchema` validates the tier set, so all eight providers plus the
   reference provider plus 3 test fixtures move in the SAME commit or every provider fails to start.
+  The count was right and the SCOPE was not: `dist/` moves with them. Provider discovery spawns the
+  BUNDLE, so the committed bundle failed validation until it was rebuilt, and the live-provider test
+  reported it as a symbol that simply was not there. The real rule is that a required tier is atomic
+  across source, fixtures and the shipped artifact together.
 - A doc fact id kind, and `factById` gains its branch. Verified rather than assumed: planting a fake
   member in `FactKind` fails the type check at that switch today.
-- **Duplicate sibling headings need a rule, and the grammar cannot express one.** Only a `method`
-  descriptor may carry a disambiguator, so two sibling headings with identical text collide into one
-  symbolId. Repeated heading text is normal in documents. Decide here and write it down: an
-  occurrence index on the descriptor, or a documented refusal. Do not discover it in Phase 2.
+- **Duplicate sibling headings: SETTLED, and the tradeoff is recorded rather than hidden.** The
+  grammar now lets `namespace`, `type` and `meta` carry a disambiguator, so the second `## Notes`
+  under one parent is `Parent/Notes(2)/`. `term` is excluded because its `.` suffix IS the method
+  form, and empty parens stay method-only so one symbol keeps exactly one spelling.
 - **`SymbolSummary` gains `containerId`.** A docs search returns a heading PATH, which means walking
   ancestors, and today only `outline` re-adds the container through an intersection type. Without
   this the path cannot be built at all.
 - Conformance cases, shared across languages: a heading tree with nesting, prose attribution, a
   fence that must not yield a heading, a fence whose text is searchable and marked, a section mixing
   prose and fence and prose, prose before any heading, and a document with no headings.
+
+### The known weakness in section identity, argued and accepted
+
+A Codex review roasted the disambiguator decision, its central claim checked out, and the decision
+stands anyway. Both halves are recorded because a tradeoff nobody wrote down gets rediscovered as a
+bug.
+
+**The flaw is real and worse than first framed.** A method's disambiguator is arity, which moves
+only when the signature moves. A section's is occurrence ORDER, which moves when anything is
+inserted above it. And `migrateKnowledge` is called from exactly two places, the refactor rename and
+move paths, so an ordinary edit does not migrate: reorder a document and an answer recorded about a
+shifted section does not go stale, it goes MISSING, keyed to an id the index no longer emits.
+
+**The proposed alternative was refused for a measurable reason.** It was to require author-written
+anchors like `{#notes-install}` and refuse to index duplicates without them. No existing `CLAUDE.md`,
+README or `docs/` folder carries anchors, so for a tool whose purpose is indexing documentation that
+ALREADY EXISTS that makes real sections invisible in every repository, today, with no retroactive
+fix available to an author. It trades a rare fragility for a universal blind spot.
+
+**And the blast radius is narrow.** A disambiguator appears only on duplicate SIBLINGS, so nearly
+every heading has a fully stable id with no occurrence in it. Damage needs three things at once: a
+duplicate-named section, knowledge recorded about that exact section, and a later reorder among
+those specific duplicates.
+
+**The principle applied:** a fragile id beats no id. With one, a section is searchable, outlineable,
+readable and citable. Without one, it does not exist.
+
+**Accepted debt, in writing:** one field now carries two meanings of differing durability. That is a
+smell, named in `Descriptor.disambiguator` rather than glossed. That the `term` exclusion was found
+by a failing test rather than by design is evidence the suffix space was built for method overloads,
+not for a general descriptor-plus-disambiguator idea.
 
 ### What the audit changed
 
@@ -625,6 +660,10 @@ over a CommonMark parser rather than a scanner.
 - **Frontmatter is handled for EVERY markdown extension, never just `.mdc`.** Plain `.md` carries it
   constantly, and treating it as an `.mdc` quirk would mean the phantom-heading misparse survives in
   the common case. The extension is enabled for the provider, not per file type.
+- **A duplicate sibling heading emits a DIAGNOSTIC when it is disambiguated.** Its id then carries an
+  occurrence, which moves if anything is inserted above it, and a reader deserves to see that where
+  it happens rather than discovering it when recorded knowledge stops resolving. Naming it at the
+  point of duplication is what keeps the accepted debt honest rather than hidden.
 
 ## Phase 3 - Core
 

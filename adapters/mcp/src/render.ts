@@ -640,6 +640,7 @@ export function renderFacts(result: {
 		import: "Imports",
 		literal: "Literals",
 		comment: "Comments",
+		doc: "Documentation",
 		answer: null,
 		doubt: null,
 	};

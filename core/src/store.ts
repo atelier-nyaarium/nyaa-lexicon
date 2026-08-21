@@ -970,6 +970,10 @@ export class IndexStore {
 			// what keeps an answer from being grounded on someone's transient distrust.
 			case "doubt":
 				return null;
+			// The wire carries doc regions before this store holds them, so the id parses and nothing
+			// answers it yet. Named rather than defaulted, so the table landing here is a compile error.
+			case "doc":
+				return null;
 			default: {
 				const unreachable: never = parsed.kind;
 				return unreachable;

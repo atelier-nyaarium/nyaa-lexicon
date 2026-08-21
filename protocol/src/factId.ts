@@ -20,7 +20,7 @@
 
 import { createHash } from "node:crypto";
 import { Cursor, err, ok, type ParseResult } from "./cursor.js";
-import type { CommentSpan, ImportedName, Literal } from "./project.js";
+import type { CommentSpan, DocRegion, ImportedName, Literal } from "./project.js";
 import {
 	decodeModuleField,
 	encodeModuleField,
@@ -34,7 +34,7 @@ import type { Declaration, Range, Reference } from "./symbols.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-export type FactKind = "declaration" | "reference" | "import" | "literal" | "comment" | "answer" | "doubt";
+export type FactKind = "declaration" | "reference" | "import" | "literal" | "comment" | "doc" | "answer" | "doubt";
 
 export interface FactId {
 	kind: FactKind;
@@ -58,7 +58,16 @@ export const FACT_SCHEME = "lexfact";
  * resolution that catches an edited file. Its digest covers the prose and the citations, so
  * re-recording an answer retires the old id and everything built on it reports stale.
  */
-export const FACT_KINDS = ["declaration", "reference", "import", "literal", "comment", "answer", "doubt"] as const;
+export const FACT_KINDS = [
+	"declaration",
+	"reference",
+	"import",
+	"literal",
+	"comment",
+	"doc",
+	"answer",
+	"doubt",
+] as const;
 
 const KIND_SET = new Set<string>(FACT_KINDS);
 
@@ -172,6 +181,11 @@ export function literalFactId(module: string, l: Literal): string {
 /** Text and place, never the anchor: a re-attached comment is not new prose. */
 export function commentFactId(module: string, c: CommentSpan): string {
 	return composeFactId("comment", module, [c.text, ...rangeFields(c.range)]);
+}
+
+/** Fenced rides along: the same words as prose and as a command are not the same fact. */
+export function docFactId(module: string, d: DocRegion): string {
+	return composeFactId("doc", module, [d.text, d.fenced, ...rangeFields(d.range)]);
 }
 
 /**

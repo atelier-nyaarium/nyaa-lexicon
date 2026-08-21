@@ -55,6 +55,7 @@ describe("method table", () => {
 				types: false,
 				literals: false,
 				comments: false,
+				docs: false,
 				metrics: false,
 			},
 			referenceRoles: ["call", "read", "write"],
@@ -80,6 +81,7 @@ describe("method table", () => {
 			types: false,
 			literals: false,
 			comments: false,
+			docs: false,
 			metrics: false,
 		};
 		const base = { providerId: "p", language: "toy", extensions: [".t"], protocolVersion: PROTOCOL_VERSION };
@@ -118,6 +120,7 @@ describe("method table", () => {
 				types: false,
 				literals: false,
 				comments: false,
+				docs: false,
 				metrics: false,
 			},
 		};

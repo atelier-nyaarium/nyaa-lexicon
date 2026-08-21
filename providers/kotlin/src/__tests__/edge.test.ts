@@ -770,11 +770,11 @@ describe("Kotlin project and protocol wiring", () => {
 		expect(info.tiers).toEqual(TIERS);
 		expect(info.referenceRoles).toEqual([...REFERENCE_ROLES]);
 		// Names what is unclaimed rather than counting: a new tier then reads as one honest gap
-		// instead of a mystery false.
+		// instead of a mystery false. Kotlin is code, so it has no document sections to report.
 		const unclaimed = Object.entries(TIERS)
 			.filter(([, claimed]) => !claimed)
 			.map(([tier]) => tier);
-		expect(unclaimed).toEqual([]);
+		expect(unclaimed).toEqual(["docs"]);
 	});
 
 	test("keeps parse response identity and includes every fact collection", () => {

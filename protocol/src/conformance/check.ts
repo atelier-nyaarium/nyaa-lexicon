@@ -5,7 +5,7 @@
 
 import type { z } from "zod";
 import { coordinatesOf } from "../coordinates.js";
-import type { CommentSpan, FileFacts, ImportResolution } from "../project.js";
+import type { CommentSpan, DocRegion, FileFacts, ImportResolution } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
@@ -147,6 +147,9 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	const documented = fixture?.documentation ?? testCase.documentation;
 	if (documented !== undefined) problems.push(...checkDocumentation(documented, facts));
 
+	// The same rule comment spans get: a range that lies attaches prose to the wrong section.
+	if (source !== undefined) problems.push(...checkDocRanges(source, facts.docs ?? []));
+
 	return problems;
 }
 
@@ -180,6 +183,24 @@ function checkDocumentation(expected: { declaration: string; comment: string }, 
 }
 
 /** A span's range must cut its own text back out of the source, or core's position math is fiction. */
+/** A doc region's range must slice its own text back, fence delimiters excluded. */
+function checkDocRanges(source: string, actual: DocRegion[]): string[] {
+	const problems: string[] = [];
+	const coordinates = coordinatesOf(source);
+
+	for (const region of actual) {
+		const cut = coordinates.sliceRange(region.range);
+		if (cut === undefined) {
+			problems.push(`doc region ${JSON.stringify(region.text)}: range is outside the file`);
+			continue;
+		}
+		if (cut !== region.text) {
+			problems.push(`doc region ${JSON.stringify(region.text)}: range covers ${JSON.stringify(cut)} instead`);
+		}
+	}
+	return problems;
+}
+
 function checkCommentRanges(source: string, actual: CommentSpan[]): string[] {
 	const problems: string[] = [];
 	const coordinates = coordinatesOf(source);

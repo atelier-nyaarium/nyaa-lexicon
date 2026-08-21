@@ -49,6 +49,7 @@ export const TIERS = {
 	types: true,
 	literals: true,
 	comments: true,
+	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;

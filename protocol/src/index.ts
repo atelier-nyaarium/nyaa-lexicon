@@ -42,6 +42,7 @@ export {
 	commentFactId,
 	composeFactId,
 	declarationFactId,
+	docFactId,
 	doubtFactId,
 	FACT_KINDS,
 	FACT_SCHEME,
@@ -98,6 +99,8 @@ export {
 export {
 	type CommentSpan,
 	CommentSpanSchema,
+	type DocRegion,
+	DocRegionSchema,
 	type FileFacts,
 	FileFactsSchema,
 	type Import,

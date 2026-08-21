@@ -138,6 +138,27 @@ export const CommentSpanSchema = z
 
 export type CommentSpan = z.infer<typeof CommentSpanSchema>;
 
+/**
+ * One contiguous stretch of a document's prose.
+ *
+ * Per REGION rather than per section, because a section is normally prose, then a fence, then more
+ * prose. One flag for the whole section would call that prose fenced or lose the fence.
+ */
+export const DocRegionSchema = z
+	.object({
+		/** Covers the text and nothing else, so a range always slices its own content back out. */
+		range: RangeSchema,
+		/** Verbatim, fence delimiter lines excluded. Empty is not a region. */
+		text: z.string().min(1),
+		/** The heading this sits under. Absent before the first heading, and in a headingless file. */
+		anchorHeading: z.string().min(1).optional(),
+		/** True when this came from a fenced code block, so a match can say where it was found. */
+		fenced: z.boolean(),
+	})
+	.meta({ id: "DocRegion" });
+
+export type DocRegion = z.infer<typeof DocRegionSchema>;
+
 export const ProjectModelSchema = z
 	.object({
 		/** Workspace-relative paths this provider claims. Order is not significant. */
@@ -165,6 +186,8 @@ export const FileFactsSchema = z
 		literals: z.array(LiteralSchema),
 		/** Absent reads as the `comments` tier being false. */
 		comments: z.array(CommentSpanSchema).optional(),
+		/** Absent reads as the `docs` tier being false. */
+		docs: z.array(DocRegionSchema).optional(),
 		diagnostics: z.array(DiagnosticSchema),
 		/** Extraction depth. Absent means full; outline means a full pass remains owed. */
 		depth: IndexDepthSchema.optional(),

@@ -3,6 +3,7 @@ import {
 	commentFactId,
 	composeFactId,
 	declarationFactId,
+	docFactId,
 	doubtFactId,
 	factKindOf,
 	factModuleOf,
@@ -111,6 +112,18 @@ describe("identity is content", () => {
 		expect(commentFactId("src/a.ts", reworded)).not.toBe(commentFactId("src/a.ts", comment));
 		expect(commentFactId("src/a.ts", moved)).not.toBe(commentFactId("src/a.ts", comment));
 		expect(parseFactId(commentFactId("src/a.ts", comment))?.kind).toBe("comment");
+	});
+
+	// The same words as prose and as a shell command are not the same fact, so fenced is in the id.
+	it("separates a doc region from the same text inside a fence", () => {
+		const prose = { range: LIT.range, text: "bun run build", fenced: false };
+		const fenced = { ...prose, fenced: true };
+		const moved = { ...prose, range: { start: { line: 9, character: 0 }, end: { line: 9, character: 13 } } };
+
+		expect(docFactId("a.md", prose)).toBe(docFactId("a.md", prose));
+		expect(docFactId("a.md", fenced)).not.toBe(docFactId("a.md", prose));
+		expect(docFactId("a.md", moved)).not.toBe(docFactId("a.md", prose));
+		expect(parseFactId(docFactId("a.md", prose))?.kind).toBe("doc");
 	});
 
 	// Absent and empty hash alike only if the encoding lets them, and a tuple slot that can vanish
