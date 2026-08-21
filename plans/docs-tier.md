@@ -1533,6 +1533,30 @@ bundled conformance run hanging at initialization for four providers. Re-run at 
 same command, all four pass. That is the third time this session a loaded machine has been reported
 as a provider failure, and it is already on the board.
 
+### Bug Classes
+
+**A residue check calibrated against the one instance that motivated it.** Twice in this lap, in two
+unrelated checks:
+
+- The UMD bundle gate was written against `jsonc-parser` and matched only its spelling of the AMD
+  branch. Three other spellings sat in this repository's own `node_modules`.
+- The language-branch gate required a comparison operator beside the quoted name, so a name held in
+  a `const`, a `startsWith`, and a quoted object key all walked through.
+
+Both were "proven failable" by planting, which is the discipline this project already writes down,
+and both were still wrong. Planting proves a check FIRES on the case you thought of. It says nothing
+about the cases you did not.
+
+The shape that would make the class inexpressible is a rule about how these checks are WRITTEN:
+forbid the narrowest unambiguous token rather than a syntactic context around it. `define.amd` cannot
+be renamed by a minifier; a quoted language name has no legitimate use in `core/`. Matching the token
+alone is both simpler and stricter than matching its neighbourhood, and it is what both checks now do.
+Where a token has instances already on disk, the check must be run against all of them before it is
+trusted, which is a step neither of these took the first time.
+
+Not built as a primitive, because a "check for checks" is machinery with one rule in it. Recorded so
+the next residue test is written token-first rather than context-first.
+
 **One finding, and it is about the instructions rather than the code.** The nyaaskills `dist/` corpus
 cannot be indexed the way `CLAUDE.md` prescribes. Pointed at bare it reports zero files, because the
 TypeScript provider is project-model driven and a directory with no `tsconfig.json` enumerates
