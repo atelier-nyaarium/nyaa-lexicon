@@ -141,8 +141,14 @@ Ordered by how much they prove:
 - **Residue tests are build gates.** When adding one, plant the violation and watch it fail before
   trusting it. The first one here passed against a real violation. Every sweep also asserts it FOUND
   files to check, so a run matching nothing fails instead of quietly reporting clean.
-- **Never branch on a language in `core/`.** A residue test fails the build; the fix is a new field
-  on the provider contract.
+- **Match the token, never the context around it.** Planting proves a check fires on the case you
+  thought of, and says nothing about the ones you did not. Two checks written against the spelling
+  that motivated them both let other spellings straight through: the UMD gate matched one of four
+  real AMD headers, and the language sweep required an adjacent `===`, so a name held in a `const`
+  or reached by `startsWith` walked past. Forbid the narrowest unambiguous token instead. Where the
+  token already has instances on disk, run the check against ALL of them before trusting it.
+- **Never branch on a language in `core/` or `formats/`.** A residue test fails the build on the
+  quoted name itself; the fix is a new field on the provider contract.
 - **Never write a control byte, em dash, smart quote or zero-width character into source.** Enforced
   over every tracked file. A raw NUL is legal to tsc, invisible in an editor, identical at runtime,
   and makes git call the file binary and grep return nothing for any pattern in it.
