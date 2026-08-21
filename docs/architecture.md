@@ -49,7 +49,8 @@ Two rules hold the design together:
 Providers report comments as raw spans and say nothing about ownership. Deciding which symbol a
 comment documents is position math over ranges this side already stores, so every provider doing it
 would be another chance to disagree about one rule. `commentAttach` is that one place, and
-`commentText` is the one place prose is normalized for search.
+`proseText` is the one place prose is normalized for search, for a document's regions as much as
+for a comment.
 
 It runs in the INDEXER rather than in the store, and that is the load-bearing choice. "Is there a
 blank line between these two" is answerable only from the source text, and the indexer is the last
@@ -61,8 +62,13 @@ covers its doc comment or begins on the line after it. A shared conformance case
 no third answer, because a range starting anywhere else loses every doc comment in that language
 while nothing else goes red.
 
-A symbol's documentation is DERIVED from its leading-attached comment rather than stored beside the
-declaration. Two copies of one sentence can disagree with the file, and this one is the file.
+A code symbol's documentation is DERIVED from its leading-attached comment rather than stored beside
+the declaration. Two copies of one sentence can disagree with the file, and this one is the file.
+
+A HEADING documents itself differently, and the split is the point. Its prose is not a comment and
+attaches by position with nothing to resolve, so it lives in the `docs` table anchored to the
+heading above it. Both are prose about a symbol, both are citable, and neither is a second copy of
+the file.
 
 ## Invalidation
 
@@ -86,7 +92,8 @@ Two id grammars, each with exactly one owner.
 package-and-version, because a monorepo has no useful package identity. One module composes,
 parses and inspects them, so no caller ever splits an id by hand.
 
-**Fact ids** name a single row: a declaration, a reference, an import, a literal, or an answer.
+**Fact ids** name a single row: a declaration, a reference, an import, a literal, a comment, a
+document region, or an answer.
 Identity IS content, so the digest covers every field including position. That makes resolving an
 id and asking whether it changed the same operation, and it makes a citation that stops resolving
 exactly a fact that moved. The cost is stated rather than hidden: a fact that merely moved gets a

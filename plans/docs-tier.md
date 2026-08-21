@@ -974,6 +974,17 @@ and this is where that turns out to be true of sections and not of keys.
 but one in tests, and every parameter a distinct type, a swap cannot compile and the refactor would
 be churn.
 
+**A heading's prose is CITABLE, which it was not when the table first landed.** `factById` resolved
+a doc id immediately, but `factsFor` never offered one, so the citation check refused the only
+evidence an answer about a section could have. Comments were already in that set and documents were
+not, which made the gap a copy-paste omission rather than a decision. This is the same ruling the
+comment train settled: an answer is never ABOUT prose, and prose is still evidence.
+
+**A heading with no prose is indistinguishable from a heading that does not exist.** Both answer an
+empty list. That is `commentsFor`'s shape too, so it is a cross-tier convention rather than
+something this table introduced, and correcting one of the two would be the inconsistency. Recorded
+rather than patched.
+
 **A heading path contains HEADINGS, enforced rather than assumed.** An `anchorId` is any non-empty
 string on the wire, and the walk reads declarations, so a provider naming a function would have put
 a function inside something called a heading path. It stops at the first non-heading, which keeps the

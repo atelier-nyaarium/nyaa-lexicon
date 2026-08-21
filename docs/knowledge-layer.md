@@ -14,6 +14,11 @@ An answer is prose PLUS the fact ids it consumed. That pairing is the whole desi
 makes "never answer cold" a property of the store rather than a slogan: an answer citing nothing
 cannot be written down at all.
 
+What counts as a fact ABOUT a subject is its declaration, the references to it, the literals and
+comments inside it, the imports that reach it, the answers already recorded on it, and, for a
+heading, the prose under it. An answer is never ABOUT prose, but prose is evidence, so a section's
+own text is what an explanation of that section cites.
+
 Four refusals, each closing a different way of recording something ungrounded:
 
 - **No citations.** The cold answer this layer exists to prevent.

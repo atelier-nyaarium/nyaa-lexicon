@@ -71,6 +71,33 @@ function plantWithComment(): string {
 	return store.commentsAnchoredTo(SYMBOL)[0]?.factId as string;
 }
 
+const HEADING = "lexicon markdown guide.md Principles/";
+
+/** A heading and the prose under it, which is the document's answer to what a comment is for code. */
+function plantWithDocRegion(): string {
+	store.replaceFile(
+		"guide.md",
+		"h1",
+		[
+			{
+				symbolId: HEADING,
+				kind: "heading",
+				name: "Principles",
+				range: at(0),
+				selectionRange: at(0),
+				visibility: "public",
+			},
+		],
+		[],
+		[],
+		[],
+		"full",
+		[],
+		[{ range: at(1), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: HEADING }],
+	);
+	return store.docsAnchoredTo(HEADING)[0]?.factId as string;
+}
+
 beforeEach(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-answers-"));
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
@@ -108,6 +135,18 @@ describe("writing an answer down", () => {
 
 		const outcome = await service.recordAnswer(SYMBOL, "why", "Retains checkout state.", [comment]);
 
+		expect(outcome.recorded).toBe(true);
+	});
+
+	// Prose under a heading is evidence about that heading, the way a comment is evidence about the
+	// symbol it documents. An answer about a section could otherwise cite nothing at all.
+	it("records an answer citing the prose under a heading", async () => {
+		const region = plantWithDocRegion();
+
+		const facts = await service.factsFor(HEADING);
+		const outcome = await service.recordAnswer(HEADING, "why", "Workarounds cost more later.", [region]);
+
+		expect(facts?.facts.map((fact) => fact.kind)).toContain("doc");
 		expect(outcome.recorded).toBe(true);
 	});
 

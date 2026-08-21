@@ -214,6 +214,15 @@ export class KnowledgeLedger {
 		}
 		if (comments.length > limit) truncated.push("comment");
 
+		// Prose under a heading is evidence about that heading, exactly as a comment is evidence
+		// about the symbol it documents. Without this an answer about a section could cite nothing.
+		const docs = this.store.docsAnchoredTo(symbolId);
+		for (const region of docs.slice(0, limit)) {
+			const text = region.normalized.length > 80 ? `${region.normalized.slice(0, 80)}...` : region.normalized;
+			add(region.factId, "doc", region.module, `${region.fenced ? "fenced " : ""}${text}`);
+		}
+		if (docs.length > limit) truncated.push("doc");
+
 		for (const site of await this.imports.importSitesFor(declaration.module, declaration.name)) {
 			add(site.factId, "import", site.module, `imported by ${site.module}`);
 		}
