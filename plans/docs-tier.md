@@ -272,7 +272,16 @@ turn honest "unclaimed" reporting into false coverage. Deferred to its own quest
 Q: The owner named md/mdc, json/jsonl/ndjson/json5, yml, xml, html, and plain text as a fallback for
 any extension no other provider claims. Is that one provider, and is it all of v1?
 
-A: pending.
+A: The whole set. Markdown gets its own phase, then one Luna per remaining format.
+
+> whole set. we can do markdown as a place, and do the usual 1 Luna per new language.
+>
+> * place = phase
+
+So the recommendation below was NOT taken, and the concerns it raised become work rather than
+reasons to defer. In particular the plain-text fallback ships, which makes the binary guard a
+REQUIRED deliverable rather than a precondition for starting. It is listed as its own slice, before
+the fallback that needs it.
 
 Evidence already gathered, so this does not need another fan-out:
 
@@ -351,4 +360,92 @@ a language in core says so explicitly. Nothing here closes that door.
 
 # Plan
 
-Not written yet. The questionaire comes first.
+Ships inside the unpushed `2.0.0`, so wire changes are free for the duration. Markdown is the
+reference implementation, built by hand; the remaining formats fan out one Luna each, the shape that
+worked for the comment tier.
+
+## Phase 1 - Protocol
+
+- `heading` joins `SymbolKindSchema`. This is the whole Question 4 answer: it is what makes a
+  document symbol filterable, countable and honest, and `search_symbols` already takes a `kind`.
+- A `docs` fact channel on `FileFacts`, carrying per-section prose: the text, its range, its
+  anchoring heading, and `fenced` marking which parts came from a code fence.
+- A `docs` tier boolean on `ProviderTiers`, REQUIRED, matching how `comments` was done. Costs 9
+  provider declaration sites plus 3 test fixtures; that is the price of a provider stating its own
+  coverage rather than defaulting.
+- A doc fact id kind, and `factById` gains its branch. The exhaustive switch added in `2.0.0` will
+  refuse to compile until it does, which is the guard working as designed.
+- Conformance cases, shared across languages: a heading tree with nesting, prose attribution, a
+  fence that must not yield a heading, and a fence whose text must be searchable and marked.
+
+## Phase 2 - The markdown provider
+
+The reference implementation. Built by hand, not fanned out, because everything after it copies it.
+
+- Heading detection that SKIPS fenced blocks. `toolsTreeMd` does not, and that is a real bug: a
+  document quoting markdown grows phantom sections.
+- Headings become declarations with the parent heading as container, giving `outline_module` a table
+  of contents for free.
+- Prose under each heading becomes a doc fact, fence contents included and marked.
+- Frontmatter, if present, emits `property` declarations rather than pretending to be prose. This is
+  the mixed-content case that killed the family field, so it has a fixture on day one.
+
+## Phase 3 - Core
+
+- A `docs` table joining `FACT_TABLES`, with the full replace and forget lifecycle.
+- Attachment is trivial by construction: prose belongs to the heading above it. No resolver, no
+  forms, no placement. That is the whole reason this is a separate tier from comments.
+- Search over normalized doc text, following the literals and comments contract: text XOR regex,
+  bounded scan declaring `scanIncomplete`, a real `COUNT` so a page cannot disagree with its total.
+- Overview counts grouped by kind, so document sections are reported apart from callable symbols
+  rather than silently inflating one number.
+
+## Phase 4 - Surface
+
+- `search_docs`: returns a heading PATH plus the prose, which is the answer shape that made this a
+  separate tool rather than a reuse of `find_comments`.
+- Results say when a match sits inside a fence.
+- `describe_symbol` on a heading shows its prose and its children.
+- Tool descriptions carry the coverage honesty line, as the comment tier's do.
+
+## Phase 5 - The remaining formats, one Luna each
+
+Fan out per format, each with its own conformance fixtures.
+
+- **JSON family** (`.json`, `.jsonl`, `.ndjson`, `.json5`): a key is a `property` declaration, its
+  value a literal. Needs no new machinery, which Question 4 established. JSONL is a sequence of
+  independent roots and needs per-record identity. JSON has no comments, so `comments: false` is
+  the honest declaration; JSON5 does have them.
+- **YAML** (`.yml`, `.yaml`): keys as declarations, values as literals, and REAL comments through
+  the existing comment tier. Aliases and multi-document files need fixtures.
+- **XML** (`.xml`): elements as declarations, attributes as properties, real comments.
+- **HTML** (`.html`): a document, not data. Headings are headings; it is error-tolerant by spec, so
+  a malformed file must degrade rather than fail.
+- **The binary guard**, which must land BEFORE the fallback: there is currently no magic-byte or
+  encoding check anywhere in the read path. Its own slice, with a residue test.
+- **The plain-text fallback**, last, claiming extensions nothing else does. Changes what "unclaimed"
+  means in every coverage report, so the overview wording moves with it.
+
+Use a library per `docs/parsing.md` rule 1 rather than hand-writing. Eight hand-written lexers have
+already cost this project real bugs, and the fenced-string class was one of them. Weigh each
+dependency against shipped artifact size, currently 9.9 MB.
+
+## Phase 6 - Verification
+
+- Gate, then conformance across every provider, not only the new ones. A corpus case is shared.
+- The blind corpus is the real test: index a documentation set nobody here has read and ask it
+  questions. `search_docs` for `band-aid` against this repo must return
+  `CLAUDE.md > Principles`, which is the founding use case and currently returns nothing.
+- Drive the built server, since a green gate is not evidence.
+
+## Phase 7 - Release
+
+Folds into the `2.0.0` train. The CHANGELOG gains the docs tier, the new `heading` kind, and the
+fallback's effect on what "unclaimed" reports.
+
+## Deferred, recorded so they are not re-litigated
+
+- **Markdown links as reference edges.** A link to `#releasing` that RESOLVES is a real edge and
+  falls out of headings being declarations. Deferred, not rejected.
+- **The resolve-only doc-to-code bridge.** Descoped with the hedged hint in Question 2b.
+- **A provider family field.** Rejected in Question 4, with the door left open.
