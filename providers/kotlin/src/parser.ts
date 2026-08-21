@@ -395,17 +395,6 @@ function decodeString(body: string): string {
 	return value;
 }
 
-function docComment(body: string): string {
-	const lines = body.split(/\r?\n/u).map((line) => {
-		const trimmed = line.trimStart();
-		if (!trimmed.startsWith("*")) return trimmed;
-		return trimmed.slice(1).replace(/^ /u, "");
-	});
-	while (lines[0] === "") lines.shift();
-	while (lines.at(-1) === "") lines.pop();
-	return lines.join("\n").trim();
-}
-
 /** CR belongs to the line terminator, so a span that swallowed it would reach past the comment. */
 function readLineComment(cursor: SourceCursor): string {
 	let raw = "";
@@ -679,9 +668,10 @@ function lex(source: string, module: string): LexResult {
 			}
 			comments.take(start, cursor);
 			if (doc) {
+				// Kind-blind scans would read prose as a modifier.
 				tokens.push({
 					kind: "doc",
-					value: docComment(body),
+					value: "",
 					raw,
 					start: { line: start.line, character: start.character },
 					end: positionOf(cursor),

@@ -62,8 +62,7 @@ no third answer, because a range starting anywhere else loses every doc comment 
 while nothing else goes red.
 
 A symbol's documentation is DERIVED from its leading-attached comment rather than stored beside the
-declaration. There was a `docComment` field once; two copies of one sentence can disagree with the
-file, and this one is the file.
+declaration. Two copies of one sentence can disagree with the file, and this one is the file.
 
 ## Invalidation
 

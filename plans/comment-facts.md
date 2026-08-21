@@ -786,6 +786,25 @@ as "does not resolve". Worth fixing with it: that fallthrough means any future f
 silently half-added, which is the same shape as the Phase 1 runner predicate that let six cases
 pass while asserting nothing.
 
+### A surviving producer, found by reading the release rather than trusting it
+
+The retirement missed one. The Kotlin lexer still ran its own KDoc normalizer and hung the prose on
+the `doc` token's `value`. I proposed removing it as dead code, on the grounds that both sites
+reading doc tokens skip them. A Codex pass refuted that, and it was right: `modifiersBetween` and
+the constructor-parameter scan read `.value` without checking `kind`, so any KDoc normalizing to a
+modifier word was compared against the modifier set as though the source had written it.
+
+**This IS an extraction change, and calling it anything softer would be the lie this project exists
+to stop telling.** `class A(/** val */ x: Int)` reported `x` as a constructor PROPERTY and now
+reports it as a parameter. A KDoc reading `private` beside a real `val` took that property's
+visibility. Both directions were run before and after. The corpus totals are unchanged (18666
+symbols, 2699 leading comments over kotlinx-coroutines), which says the fixtures in that corpus do
+not spell a modifier inside a KDoc; it does not say nothing anywhere does. The change belongs in a
+major, and it is in one.
+
+The class it closes: a second prose normalizer living in a provider after core took ownership,
+feeding a field nothing was supposed to read, in a scan that never asked what kind of token it had.
+
 ## Phase 6 - Release (as planned)
 
 bun run build major with the protocol-version assertion. Release notes: stores rebuild (knowledge

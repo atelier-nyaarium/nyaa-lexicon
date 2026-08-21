@@ -21,9 +21,21 @@ toolchain to set up.
 
 ## Languages
 
-TypeScript and JavaScript, Python, and GDScript, each in its own process behind a documented
-protocol. A provider declares which tiers it covers; anything it cannot answer comes back as
-Unknown with a reason, never as a guess or a gap.
+Eight, each in its own process behind a documented protocol.
+
+| Provider   | Files                                                 |
+| ---------- | ----------------------------------------------------- |
+| TypeScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` |
+| Python     | `.py`                                                 |
+| Rust       | `.rs`                                                 |
+| Kotlin     | `.kt`                                                 |
+| C#         | `.cs`                                                 |
+| C++        | `.cpp` `.cc` `.cxx` `.hpp` `.hh` `.hxx`               |
+| C          | `.c` `.h`                                             |
+| GDScript   | `.gd`                                                 |
+
+A provider declares which tiers it covers; anything it cannot answer comes back as Unknown with a
+reason, never as a guess or a gap.
 
 ## What it answers
 
@@ -47,21 +59,26 @@ byte audit.
 the strongest signal no reference edge carries.
 
 **Refactoring.** `symbol_source` reads one symbol's exact text by id. Everything that writes runs
-inside a transaction: `refactor_start`, then `refactor_replace`, `refactor_rename` and
-`refactor_track`, ending in `refactor_commit` or `refactor_revert`, with `refactor_undo` for the
-newest step. Text that does not parse never reaches disk, a single blocked site writes nothing at
-all, and what a change broke is reported rather than assumed away.
+inside a transaction: `refactor_start`, then `refactor_replace`, `refactor_insert`,
+`refactor_rename`, `refactor_move` and `refactor_track`, ending in `refactor_commit` or
+`refactor_revert`, with `refactor_undo` for the newest step and `refactor_status` for what is open.
+Text that does not parse never reaches disk, a single blocked site writes nothing at all, and what a
+change broke is reported rather than assumed away.
 
-**Knowledge.** `record_answer` and its siblings store prose about a symbol, but only prose that
-cites the facts it was drawn from. See [docs/knowledge-layer.md](docs/knowledge-layer.md).
+**Knowledge.** `record_answer` stores prose about a symbol, but only prose that cites the facts it
+was drawn from. `symbol_facts` hands out those ids, `recall_answer` reads what is stored along with
+its health, `knowledge_gaps` lists what is missing or stale, and `invalidate_answer` and
+`reaffirm_answer` move an answer between doubted and current. See
+[docs/knowledge-layer.md](docs/knowledge-layer.md) for why it refuses what it refuses.
 
-**Housekeeping.** `list_project_stores` and `delete_project_store` manage the indexes this machine
-holds, across every project.
+**Housekeeping.** `list_project_stores`, `stop_project_daemon` and `delete_project_store` manage the
+indexes this machine holds, across every project.
 
 ## Project selection
 
-Register codebases once, then bind the ones used by the current MCP session. `list_projects` shows
-each binding name beside its full root.
+`register_project` records a codebase once. `bind_project` and `unbind_project` control which of
+them the current MCP session queries, and `list_projects` shows each binding name beside its full
+root.
 
 Read tools accept a `queries` array. Each item uses that tool's normal fields, and one MCP call can
 run several items. The outer `projects` selector applies to every item. Omit it when one project is

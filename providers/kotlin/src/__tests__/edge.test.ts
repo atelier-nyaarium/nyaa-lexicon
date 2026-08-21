@@ -312,6 +312,20 @@ describe("Kotlin declarations", () => {
 		expect(count).toMatchObject({ languageKind: "parameter", exported: false, visibility: "local" });
 	});
 
+	test("reads KDoc prose as prose, never as a modifier", () => {
+		const facts = parseKotlin("Doc.kt", "class A(/** val */ x: Int, /** private */ val y: Int)\n");
+
+		// Prose spelling a modifier must not promote a parameter to a property.
+		expect(declaration(facts, "x", "variable")).toMatchObject({ languageKind: "parameter" });
+		expect(declaration(facts, "x", "property")).toBeUndefined();
+
+		// Nor take a real property's visibility from the comment beside it.
+		expect(declaration(facts, "y", "property")).toMatchObject({
+			languageKind: "constructorVal",
+			visibility: "public",
+		});
+	});
+
 	test("records secondary constructors and constructor parameter types", () => {
 		const facts = parseKotlin(
 			"Constructors.kt",
