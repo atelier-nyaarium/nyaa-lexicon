@@ -627,6 +627,32 @@ here rather than half-mitigated with a silent length cap that would turn a hang 
 REJECTED after checking: `anchor: null` on a module-level comment is the designed answer, not a
 gap. Q3 settled that nothing guesses a symbol, and the tool description says so.
 
+### Bug Classes
+
+**Mechanism:** the paged search result. `page` for literals and `pageComments` for comments are two
+hand-written implementations of one idea, each producing `total`, `truncated` and `scanIncomplete`
+from a capped read, plus two renderers writing the "here is what I cut" sentences separately.
+
+**Class: a bound applied, and the report about it written by hand somewhere else.** Four instances
+this phase, and the telling part is that TWO of them were inherited by copying the literals path
+rather than invented:
+
+1. `total` was the probe size (`limit + 1`) reported as a count, so 1523 matches read as 51.
+   Literals has the same bug today.
+2. The empty-result early return sat ABOVE the `scanIncomplete` check, so a search that read 20,000
+   rows and gave up reported a clean absence. Literals had the same bug; both fixed.
+3. The preview capped lines and said nothing about width, so one minified line passed the cap.
+4. The limit itself was clamped but not rounded, so a fractional one reached SQLite as a datatype
+   error where a clamp belonged.
+
+Every one is the same shape: something was bounded, and the sentence describing the bound was
+written independently of the bounding. Where the two are written apart, they drift apart.
+
+**For `architecture-fan-out`:** one paging primitive taking (items, limit, trueTotal?) and DERIVING
+the whole report, used by both tiers, plus one renderer helper owning the cut sentences. The
+renderer half is already started: `incompleteNote` was extracted while fixing instance 2 and is now
+the single owner of that one sentence. The rest of the report is still written twice.
+
 ## Phase 5 - Verification
 
 Unit gate, conformance across all eight providers, grade.js (extraction changed - mandatory),
