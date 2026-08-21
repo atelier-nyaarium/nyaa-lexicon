@@ -748,7 +748,31 @@ Unit gate, conformance across all eight providers, grade.js (extraction changed 
 live dogfood of the four caller hunts against this repo (refuses-over-clamping line, TODO/FIXME
 sweep, doctrine-sentence ownership, core/ banners), blind-corpus pass on evie-bot.
 
-## Phase 6 - Release
+## Phase 6 - Release ✅
+
+Built and committed as `Build 2.0.0`. Every manifest at 2.0.0, PROTOCOL_VERSION at 2.0.0,
+`checkProtocolRelease` satisfied because a moved protocol major IS shipping as a major. Gate clean,
+1569 tests, all eight providers 0 conformance failures on the shipped bundle. NOT pushed: that is
+the owner's call.
+
+Release notes went to a new `CHANGELOG.md`, which this project did not have. A major that rebuilds
+every user's index needs somewhere to say so, and "Build X.Y.Z" commit subjects are not that place.
+It opens by saying it only carries releases that ask something of you.
+
+**One plan claim was wrong and the notes correct it.** The plan said "citations of documented
+declarations go stale". They ALL do. A declaration's fact id is a digest over its whole field
+tuple, and retiring `docComment` removed a slot from that tuple. Verified rather than reasoned:
+`composeFactId` with an absent slot present and with it removed produce different digests, so the
+change reaches every declaration and not merely documented ones. Every stored answer citing any
+declaration reads stale until `reaffirm_answer` re-points it. The prose survives; only the evidence
+needs re-citing. Shipping the plan's wording would have understated the migration.
+
+The notes also state what the ordered-protocol rule does and does not buy: a client meeting a NEWER
+daemon connects to it, so two versions cannot retire each other and rebuild the index on every
+flip, but a session still running 1.x code cannot speak the 2.0 wire at all. Hence "reload every
+session promptly" rather than "it will sort itself out".
+
+## Phase 6 - Release (as planned)
 
 bun run build major with the protocol-version assertion. Release notes: stores rebuild (knowledge
 survives, citations of documented declarations go stale and reaffirm repairs), the clean-break
