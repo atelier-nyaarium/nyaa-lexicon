@@ -1429,7 +1429,7 @@ exists to exercise, and it had no conformance coverage at all. The markdown prov
 real failure, claiming `declarations`, delivering them, and being asked nothing, which two new
 fixtures now fix.
 
-## Phase 6 - Verification
+## Phase 6 - Verification ✅
 
 - Gate, then conformance across every provider, not only the new ones. A corpus case is shared.
 - The blind corpus is the real test: index a documentation set nobody here has read and ask it
@@ -1448,6 +1448,51 @@ fixtures now fix.
   a bolded LIST ITEM rather than a heading, so the path does stop where the draft said it stopped;
   it just starts a level higher than the draft knew.
 - Drive the built server, since a green gate is not evidence.
+
+### Phase 6 results
+
+**The gate and the suite.** Biome and tsc clean, 1739 tests. All eleven providers pass conformance
+with zero failures, run twice: from source under bun, and from their SHIPPED bundles under node. The
+second run is the one that counts, and it is the one a green `bun run test` cannot stand in for.
+
+**The acceptance test passes exactly as written.** `search_docs` for `band-aid` against this repo
+returns 12 regions, of which exactly ONE is in `CLAUDE.md`, at line 27, under
+`nyaa-lexicon > Principles`, and its prose opens with `**No band-aids.**`. The path stops at
+`Principles` because the rule is a bolded list item rather than a heading, which is what the restated
+test predicted. The other eleven are plan files discussing band-aids, which is this repository's own
+content and not a defect.
+
+The founding use case is closed, and one of those eleven hits proves it better than any assertion
+could: `plans/comment-facts.md` records, from before this work, that searching for `band-aid`
+"returns NOTHING, and the doctrine is real: it lives in CLAUDE.md". That sentence is now itself
+findable, and the claim it makes is now false.
+
+**The blind corpus, indexed and questioned without opening a file.**
+
+`evie-bot`, the prose test: 289 files in scope, 52199 symbols, 2219 comments. Asked what it forbids,
+`search_docs` returned a migration section that taught its write discipline cold, naming
+`withServerWrite(appId, ...)` as a linode-field-scoped patch inside a critical section, warning that
+every persistence path is a raw shallow merge that filters nothing by schema, and explaining why the
+persist is best-effort. That is a real invariant, its enforcement and its failure mode, from a
+codebase nobody here has read.
+
+It also confirmed this phase's own fix in the wild. A markdown file's frontmatter holds a `todos`
+SEQUENCE of mappings, and its four `dependencies` keys come back as four distinct symbols,
+`todos.[1]/dependencies` through `todos.[4]/dependencies`. Before the sequence-ordinal work those
+four were one id, and the store would have kept one. Also indexed: `.devcontainer/compose.yml` and
+`.github/workflows/*.yml`, answering `jobs.dependabot.runs-on` by its full key path.
+
+`nyaaskills`, the literals test: 71 literals with their containers, `"lapEnd"` located in
+`AdvanceResult#kind` and in `advance()`. `search_docs` over it returns the cycle definitions driving
+this very session, by heading path.
+
+**One finding, and it is about the instructions rather than the code.** The nyaaskills `dist/` corpus
+cannot be indexed the way `CLAUDE.md` prescribes. Pointed at bare it reports zero files, because the
+TypeScript provider is project-model driven and a directory with no `tsconfig.json` enumerates
+nothing. Pointed at the package root it indexes the source instead, since a project's own config does
+not include its build output. Confirmed against a controlled fixture rather than inferred: the same
+directory named `dist` DOES index once a `tsconfig.json` includes it, so the directory name is not
+the obstacle and core excludes nothing here. `CLAUDE.md` now says how to run that corpus.
 
 ## Phase 7 - Release
 

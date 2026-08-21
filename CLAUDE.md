@@ -167,6 +167,12 @@ already knows the answer is being graded on a test it has seen.
   Minification strips comments, so the comment tier has nothing to report here and finding nothing
   is the right answer rather than a gap. Use this corpus for literals; use evie-bot for prose.
 
+  **Indexing that bundle takes a step, and pointing at it bare does not work.** The TypeScript
+  provider is project-model driven, so a directory with no `tsconfig.json` enumerates no files and
+  the scan reports zero with nothing to explain it. Give the corpus a `tsconfig.json` whose `include`
+  names the bundle, then index the directory holding it. Indexing the package root instead gets its
+  source, not the bundle, since a project's own config does not include its build output.
+
 Corpora clone into `temp/`, which is ignored.
 
 ## References
