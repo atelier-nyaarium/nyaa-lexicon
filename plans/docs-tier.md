@@ -537,7 +537,7 @@ means either a hand-written parser in house style or dropping the extension. Rec
 `.json5` from this train and recording why, since a hand-written JSON5 parser buys one extension at
 the cost of the exact defect class this project just spent a release closing.
 
-## Phase 1 - Protocol
+## Phase 1 - Protocol ✅
 
 Revised by the first audit lap. What changed is recorded under "### What the audit changed" below,
 because the reasoning is worth more than the diff.
