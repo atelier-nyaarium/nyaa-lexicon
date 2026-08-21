@@ -856,6 +856,26 @@ CLI has no argument parser and I did not want to add one mid-phase. It earned it
 stay. A three-line flag parse would make the next verification affordance additive rather than
 another positional special case.
 
+Felt verifying.
+
+**Nothing an agent runs can spawn a provider, and each one concludes the tool is broken.** Four
+separate audit agents this session reported `0 files, 0 symbols, comments: none`, with
+`/usr/bin/node ENOENT` or `spawnSync git EPERM` underneath. One of them used that to report a
+verified blind-corpus result as FALSE; re-run here it gives 827 files and 51,324 symbols. The cost
+is not the wasted agent: it is that a confident "the tool returns nothing" reads exactly like a real
+finding, and only re-running it by hand separates the two. Any provider-dependent claim from an
+agent in this environment has to be re-run before it is believed, which quietly removes the whole
+empirical half of what a fan-out is for. Worth a supported way to run the index in a sandbox, or at
+minimum a message from `startProviders` that says "no provider could be started" loudly enough that
+an agent reports THAT instead of reporting an empty index as an answer.
+
+**File discovery is git-scoped, and an unversioned directory indexes nothing without saying why.**
+The live-provider test failed first with zero files, and the reason is that `indexWorkspace` scopes
+to what git can see, so a temp directory with source in it is simply empty. The existing workspace
+test already carried an `initGit()` helper for the same reason, which is the tell: everyone writing
+a test here learns this the same way, by getting an empty index and no explanation. A scope report
+saying "not a git repository" would turn ten minutes into ten seconds.
+
 **`index-workspace` throws its index away and nothing says so.** It opens `:memory:`, which is the
 right choice for a one-shot tool, but the file header describes it as "index a workspace and answer
 one question about it" with no hint the store does not persist. I wrote a probe against the on-disk
