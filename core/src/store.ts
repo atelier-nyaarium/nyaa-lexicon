@@ -1362,30 +1362,36 @@ export class IndexStore {
 
 	/** Substring over the NORMALIZED text, so a phrase the writer wrapped still matches. */
 	commentsContaining(text: string, limit: number, filter: CommentFilter = {}): StoredComment[] {
-		const where = ["normalized LIKE ? ESCAPE '\\'"];
-		const values: Array<string | number> = [`%${likePattern(text)}%`];
-		appendCommentFilter(where, values, filter);
-		const rows = this.db
-			.prepare(`SELECT * FROM comments WHERE ${where.join(" AND ")} ORDER BY module, startLine LIMIT ?`)
-			.all(...values, limit);
+		const { clause, values } = commentWhere(filter, text);
+		const rows = this.db.prepare(`SELECT * FROM comments ${clause} ${COMMENT_ORDER} LIMIT ?`).all(...values, limit);
 		return rows.map(rowToComment);
+	}
+
+	/** The true count, so a page never reports its own cap as a total. */
+	countCommentsContaining(text: string, filter: CommentFilter = {}): number {
+		const { clause, values } = commentWhere(filter, text);
+		return (this.db.prepare(`SELECT COUNT(*) AS n FROM comments ${clause}`).get(...values) as { n: number }).n;
 	}
 
 	/** Every comment a caller must match itself, for the same reason literals need one: no REGEXP. */
 	commentsToScan(scanLimit: number, filter: CommentFilter = {}): StoredComment[] {
-		const where: string[] = [];
-		const values: Array<string | number> = [];
-		appendCommentFilter(where, values, filter);
-		const clause = where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`;
+		const { clause, values } = commentWhere(filter);
 		const rows = this.db
-			.prepare(`SELECT * FROM comments ${clause} ORDER BY module, startLine LIMIT ?`)
+			.prepare(`SELECT * FROM comments ${clause} ${COMMENT_ORDER} LIMIT ?`)
 			.all(...values, scanLimit);
 		return rows.map(rowToComment);
 	}
 
+	countComments(filter: CommentFilter = {}): number {
+		const { clause, values } = commentWhere(filter);
+		return (this.db.prepare(`SELECT COUNT(*) AS n FROM comments ${clause}`).get(...values) as { n: number }).n;
+	}
+
 	/** What is written about one symbol, which is how describe gets its documentation. */
 	commentsAnchoredTo(symbolId: string): StoredComment[] {
-		const rows = this.db.prepare("SELECT * FROM comments WHERE anchorId = ? ORDER BY startLine").all(symbolId);
+		const rows = this.db
+			.prepare("SELECT * FROM comments WHERE anchorId = ? ORDER BY startLine, startChar")
+			.all(symbolId);
 		return rows.map(rowToComment);
 	}
 
@@ -1549,7 +1555,17 @@ function likePattern(text: string): string {
 	return text.replace(/[%_\\]/g, "\\$&");
 }
 
-function appendCommentFilter(where: string[], values: Array<string | number>, filter: CommentFilter): void {
+/** Source order, and by column too: two comments can share a line. */
+const COMMENT_ORDER = "ORDER BY module, startLine, startChar";
+
+/** One place builds the clause, so a count and its page can never disagree about what matched. */
+function commentWhere(filter: CommentFilter, text?: string): { clause: string; values: Array<string | number> } {
+	const where: string[] = [];
+	const values: Array<string | number> = [];
+	if (text !== undefined) {
+		where.push("normalized LIKE ? ESCAPE '\\'");
+		values.push(`%${likePattern(text)}%`);
+	}
 	if (filter.form !== undefined) {
 		where.push("form = ?");
 		values.push(filter.form);
@@ -1558,6 +1574,7 @@ function appendCommentFilter(where: string[], values: Array<string | number>, fi
 		where.push("module = ?");
 		values.push(filter.module);
 	}
+	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
 }
 
 interface CommentRow {

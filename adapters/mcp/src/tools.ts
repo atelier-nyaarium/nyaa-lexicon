@@ -589,15 +589,16 @@ Use for values rather than textual spelling. Each hit includes its declaration.
 export const FIND_COMMENTS_DESCRIPTION = `
 # \`find_comments\`
 
-Find what was WRITTEN about the code: doctrine, rationale, TODOs, warnings.
+Search comment prose: doctrine, rationale, TODOs, warnings. Each hit names the symbol it is
+attached to, or the module when it is attached to none.
 
-Matches normalized prose, so markers are stripped and a sentence wrapped across several lines is
-one string. Each hit names the symbol it documents, or the module when it documents no symbol.
+Matches NORMALIZED text, so markers are stripped and a wrapped sentence is one string. Search for
+\`TODO\`, never \`// TODO\`.
 
-Set exactly one of \`text\` or \`regex\`, or neither with \`form\` or \`module\` to list a slice.
+Set exactly one of \`text\` or \`regex\`. Set neither with \`form\` or \`module\` to list a slice.
 
-Indexed files only. A file no provider claims, or a language whose provider has no comment tier,
-is invisible here. Use ripgrep for an exhaustive byte-level audit.
+Indexed files only. An unclaimed file, or a language whose provider has no comment tier, is
+invisible here. Use ripgrep for an exhaustive byte audit.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `

@@ -4,6 +4,7 @@
 // the disk would stop being knowably cheap.
 
 import type { Range } from "@nyaa-lexicon/protocol";
+import type { CommentForm } from "./commentAttach.js";
 import { findCycles } from "./graph.js";
 import { compileSearchRegex } from "./search.js";
 import type { IndexStore, StoredComment, StoredDeclaration, StoredLiteral, StoredReference } from "./store.js";
@@ -42,6 +43,8 @@ export interface DescribeResult {
 	members: SymbolSummary[];
 	/** Absent when nothing but its own documentation was written about it. */
 	comments?: AttachedComment[];
+	/** How many notes the cap left out, so a page never reports itself as a total. */
+	moreComments?: number;
 	/** How many places use it, so a caller decides whether to ask for the list. */
 	referenceCount: number;
 	graph: GraphSummary;
@@ -80,7 +83,7 @@ export interface LiteralsResult {
 export interface CommentQuery {
 	text?: string | undefined;
 	regex?: string | undefined;
-	form?: string | undefined;
+	form?: CommentForm | undefined;
 	module?: string | undefined;
 }
 
@@ -176,6 +179,12 @@ export const DEFAULT_LITERAL_LIMIT = 50;
 /** Page for a comment search, matching literals. */
 export const DEFAULT_COMMENT_LIMIT = 50;
 
+/** Clamped here rather than only at the surfaces, so no entry point can ask for more. */
+export const MAX_COMMENT_LIMIT = 200;
+
+/** Notes shown on describe. A long body's asides would otherwise crowd out its structure. */
+const DESCRIBE_NOTE_LIMIT = 10;
+
 /** Lines of a comment carried back. A banner runs to hundreds and no caller asked for them. */
 const COMMENT_PREVIEW_LINES = 8;
 
@@ -247,16 +256,15 @@ export class IndexReadModel {
 
 		// Leading is excluded because it IS the documentation printed above. What is left is the
 		// prose a reader would only find by opening the file: a note beside the code, or one written
-		// inside the body.
-		const comments = this.store
-			.commentsAnchoredTo(symbolId)
-			.filter((comment) => comment.form !== "leading")
-			.map((comment) => ({
-				form: comment.form,
-				placement: comment.placement,
-				line: comment.range.start.line,
-				text: comment.normalized,
-			}));
+		// inside the body. Capped, because a long function's body notes would otherwise crowd out
+		// everything else describe exists to say.
+		const attached = this.store.commentsAnchoredTo(symbolId).filter((comment) => comment.form !== "leading");
+		const comments = attached.slice(0, DESCRIBE_NOTE_LIMIT).map((comment) => ({
+			form: comment.form,
+			placement: comment.placement,
+			line: comment.range.start.line,
+			text: comment.normalized,
+		}));
 
 		return {
 			symbol: this.withDocumentation(toSummary(declaration)),
@@ -265,6 +273,7 @@ export class IndexReadModel {
 			graph: this.graphSummary(symbolId),
 			hierarchy: this.typeHierarchy(symbolId),
 			...(comments.length === 0 ? {} : { comments }),
+			...(attached.length > comments.length ? { moreComments: attached.length - comments.length } : {}),
 			tier: "bound",
 		};
 	}
@@ -402,15 +411,21 @@ export class IndexReadModel {
 	 * Substring is an indexed-ish read; a regex is not, because SQLite has no REGEXP here, so it
 	 * reads a bounded page and says when it stopped early.
 	 */
-	findComments(query: CommentQuery, limit = DEFAULT_COMMENT_LIMIT): CommentsResult {
+	findComments(query: CommentQuery, requested = DEFAULT_COMMENT_LIMIT): CommentsResult {
+		// Both is not a narrower search, it is two searches, and answering one of them silently
+		// picks a winner the caller never chose.
+		if (query.text !== undefined && query.regex !== undefined) {
+			throw new Error("give a text or a regex, not both");
+		}
+		const limit = Math.min(Math.max(requested, 1), MAX_COMMENT_LIMIT);
 		const filter = {
 			...(query.form === undefined ? {} : { form: query.form }),
 			...(query.module === undefined ? {} : { module: query.module }),
 		};
 
 		if (query.text !== undefined) {
-			const found = this.store.commentsContaining(query.text, limit + 1, filter);
-			return this.pageComments(query, found, limit);
+			const found = this.store.commentsContaining(query.text, limit, filter);
+			return this.pageComments(query, found, limit, this.store.countCommentsContaining(query.text, filter));
 		}
 
 		if (query.regex !== undefined) {
@@ -426,15 +441,22 @@ export class IndexReadModel {
 			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
 		}
 
-		// Neither given: the whole tier, filtered. Useful for "every TODO in this module".
+		// Neither given: the whole tier, filtered. Useful for "every comment in this module".
 		if (query.form !== undefined || query.module !== undefined) {
-			return this.pageComments(query, this.store.commentsToScan(limit + 1, filter), limit);
+			const found = this.store.commentsToScan(limit, filter);
+			return this.pageComments(query, found, limit, this.store.countComments(filter));
 		}
 
 		throw new Error('give a text or a regex, e.g. { text: "refuses rather than" } or { regex: "/TODO|FIXME/" }');
 	}
 
-	private pageComments(query: CommentQuery, found: StoredComment[], limit: number): CommentsResult {
+	/** `total` is the true count where one is knowable, and the scanned count where it is not. */
+	private pageComments(
+		query: CommentQuery,
+		found: StoredComment[],
+		limit: number,
+		total = found.length,
+	): CommentsResult {
 		const anchors = new Map<string, CommentAnchor | null>();
 		const shown = found.slice(0, limit).map((comment) => {
 			if (comment.anchorId !== null && !anchors.has(comment.anchorId)) {
@@ -450,7 +472,7 @@ export class IndexReadModel {
 				anchor: comment.anchorId === null ? null : (anchors.get(comment.anchorId) ?? null),
 			};
 		});
-		return { query, comments: shown, total: found.length, truncated: found.length > limit };
+		return { query, comments: shown, total, truncated: total > shown.length };
 	}
 
 	private anchorOf(symbolId: string): CommentAnchor | null {

@@ -131,6 +131,9 @@ export function renderDescribe(result: DescribeResult): string {
 		for (const comment of result.comments) {
 			lines.push(`- Line ${comment.line + 1} (${comment.form}): ${summarize(comment.text)}`);
 		}
+		if (result.moreComments !== undefined) {
+			lines.push("", `> ${result.moreComments} more not shown. Call \`find_comments\` with this module.`);
+		}
 	}
 
 	lines.push("", "## Usage", "", `Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.`);
@@ -246,9 +249,21 @@ export function renderRenamePlan(plan: RenamePlan): string {
  * more matched than were shown, while an incomplete scan means the search itself stopped early and
  * matches beyond it were never looked at.
  */
+/**
+ * The sentence a stopped scan owes its caller.
+ *
+ * Needed most where it is easiest to forget: an empty result. "Nothing matched" and "nothing
+ * matched in the part I read" are different answers, and only one of them is an absence.
+ */
+function incompleteNote(scanIncomplete: boolean | undefined): string {
+	return scanIncomplete
+		? "\n\n> The scan stopped before the end of the index, so matches beyond it were never looked at."
+		: "";
+}
+
 export function renderComments(result: CommentsResult): string {
 	if (result.total === 0) {
-		return "# Comments\n\nNo comment matched.\n\n> Searches normalized prose, so markers and line wrapping are not matched.";
+		return `# Comments\n\nNo comment matched.\n\n> Searches normalized prose, so markers and line wrapping are not matched.${incompleteNote(result.scanIncomplete)}`;
 	}
 
 	const byModule = new Map<string, string[]>();
@@ -269,10 +284,7 @@ export function renderComments(result: CommentsResult): string {
 		const more = result.total - result.comments.length;
 		body += `\n\n> ${more} more comment${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
 	}
-	if (result.scanIncomplete) {
-		body += "\n\n> The scan stopped before the end of the index, so matches beyond it were not looked at.";
-	}
-	return body;
+	return body + incompleteNote(result.scanIncomplete);
 }
 
 /** Quoted so a comment's own markers cannot be read as this document's markup. */
@@ -285,7 +297,7 @@ function indent(raw: string): string {
 
 export function renderLiterals(result: LiteralsResult): string {
 	if (result.total === 0) {
-		return "# Literals\n\nNo literal matched.\n\n> Searches decoded values, not source text.";
+		return `# Literals\n\nNo literal matched.\n\n> Searches decoded values, not source text.${incompleteNote(result.scanIncomplete)}`;
 	}
 
 	const byModule = new Map<string, string[]>();
@@ -306,10 +318,7 @@ export function renderLiterals(result: LiteralsResult): string {
 		const more = result.total - result.literals.length;
 		body += `\n\n> ${more} more literal${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
 	}
-	if (result.scanIncomplete) {
-		body += "\n\n> The scan stopped before the end of the index, so matches beyond it were not looked at.";
-	}
-	return body;
+	return body + incompleteNote(result.scanIncomplete);
 }
 
 /**

@@ -112,6 +112,16 @@ describe("searching comments", () => {
 		expect(() => reads.findComments({ regex: "/(unclosed/" })).toThrow();
 	});
 
+	// Both is not a narrower search, it is two searches, and answering one picks a winner the
+	// caller never chose. Enforced in the read model so no entry point can skip it.
+	it("refuses a query giving both a text and a regex", () => {
+		expect(() => reads.findComments({ text: "a", regex: "/b/" })).toThrow(/not both/);
+	});
+
+	it("clamps a limit past the maximum rather than honouring it", () => {
+		expect(() => reads.findComments({ text: "rather than" }, 10_000)).not.toThrow();
+	});
+
 	it("says when a page was cut rather than reporting the cap as a total", () => {
 		store.replaceFile("src/c.ts", "h1", [], [], [], [], "full", [
 			comment("shared word one", null),
@@ -122,7 +132,17 @@ describe("searching comments", () => {
 		const found = reads.findComments({ text: "shared word" }, 2);
 		expect(found.comments).toHaveLength(2);
 		expect(found.truncated).toBe(true);
+		// The TRUE count, not the page plus one. A caller reads this number as "how many exist".
 		expect(found.total).toBe(3);
+	});
+
+	it("counts every match, however far past the page it goes", () => {
+		const many = Array.from({ length: 40 }, (_, index) => comment(`common phrase ${index}`, null));
+		store.replaceFile("src/e.ts", "h1", [], [], [], [], "full", many);
+
+		const found = reads.findComments({ text: "common phrase" }, 5);
+		expect(found.comments).toHaveLength(5);
+		expect(found.total).toBe(40);
 	});
 
 	// A long banner is hundreds of lines and no caller asked for them.
