@@ -31,8 +31,14 @@ const CHECKED_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".gd", 
 /** Tab, newline and carriage return are the only control characters a source file may contain. */
 const ALLOWED_CONTROL = new Set([9, 10, 13]);
 
-/** Em dash, the four smart quotes, and the three zero-width characters, by code point. */
-const BANNED_CODES = new Set([0x2014, 0x2018, 0x2019, 0x201c, 0x201d, 0x200b, 0x200c, 0x200d]);
+/**
+ * Em dash, the four smart quotes, and the zero-width characters, by code point.
+ *
+ * U+FEFF is one of them and is the one that arrives by accident: an editor writing a byte order
+ * mark, or a tool turning an escape back into the character it names. Nothing here needs the byte,
+ * and a fixture that means to test one builds it from its code point.
+ */
+const BANNED_CODES = new Set([0x2014, 0x2018, 0x2019, 0x201c, 0x201d, 0x200b, 0x200c, 0x200d, 0xfeff]);
 
 ////////////////////////////////
 //  Functions & Helpers

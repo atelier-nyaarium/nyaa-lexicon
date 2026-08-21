@@ -1180,7 +1180,49 @@ recorded in full so the next train starts from evidence rather than from scratch
 
 ## Painpoints
 
-Recorded, not fixed. Felt building Phase 0.
+Recorded, not fixed. Felt building Phase 2.
+
+**Writing a control-character ESCAPE into source is the hard part, not writing the character.** This
+repo forbids a raw NUL, BOM or zero-width byte, and rightly so. But the editing tools turn
+`"\uFEFF"` into a literal BOM and `.join("\u0000")` into a literal NUL, silently, so the natural way
+to satisfy the rule is the way that breaks it. Both happened this phase and both were caught, one by
+the source-bytes residue test and one by reading the file back. The workaround is to write a
+throwaway node script that does the substitution with `String.fromCharCode`, which is three steps for
+a one-character edit and is not obvious to anyone who has not hit it. `sed` is denied and a heredoc
+is blocked, so there is no shorter path. What is missing is anywhere that says how to write the
+escape in the first place.
+
+And the guard had a hole exactly where it hurt: `BANNED_CODES` in the source-bytes residue test held
+the three zero-width characters but NOT U+FEFF, so a byte order mark written into a tracked file
+passed. It bit twice in one phase, once in a source file and once in the paragraph above describing
+the problem. U+FEFF is in the set now, proven by planting one and watching the test name the file and
+the line.
+
+**A scratch probe cannot import a provider's dependencies.** Bun's isolated install layout means
+`/tmp/probe.ts` importing `providers/markdown/src/parser.ts` fails on `Cannot find package
+'mdast-util-from-markdown'`, because the dependency is linked into the provider's own
+`node_modules` and nothing else. The workaround is to copy the probe INTO `providers/<language>/src/`
+and delete it afterwards. That is friction on exactly the activity `CLAUDE.md` demands most, which is
+driving real code against real input rather than trusting the gate.
+
+**Nothing in a declaration says its name was invented.** A cross-provider probe asserting the obvious
+invariant, that `selectionRange` slices back to `name`, reported GDScript as broken. It is not:
+GDScript synthesizes a file-level class from the module basename with a fabricated range, which is
+correct behaviour and is invisible on the wire. One of this session's audit agents fell into the same
+trap independently. So any check over declarations carries an unstated exception, and the only way to
+learn it is to read the provider that has it.
+
+**The gate's formatting half kept failing, again.** Recorded from the comment train and from Phase 1,
+and it happened four more times here: `bun run lint` went red purely because a multi-line object was
+not biome-formatted, each costing a lint, a `lint:fix`, and another lint. The half of the gate that
+fails most is the half a script fixes automatically.
+
+**What WORKED, recorded because it is the counter-example.** Adding `declarationNames` to the case
+schema failed the Phase 1 coverage guard immediately, naming the exact field and the exact missing
+entry. That is the scavenger hunt from Phase 1 turned into one clear failure, by a guard built one
+phase earlier for that reason.
+
+Felt building Phase 0.
 
 **The test suite reports 16 confident failures when the machine is busy, and says nothing about
 load.** Every one was a 20-second timeout, spread across daemon, store, service, transaction and
