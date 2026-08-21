@@ -671,7 +671,39 @@ probeSize }` stays type-valid; it becomes structural only when one primitive der
 the read strategy, and only if it takes typed evidence rather than an optional `trueTotal` an
 absent argument would silently default.
 
-## Phase 5 - Verification
+## Phase 5 - Verification ✅
+
+- Gate: biome ok, tsc ok. 1568 tests.
+- Conformance from the shipped bundle, all eight providers, 0 failures.
+- `grade.js` against the switchboard checkout: 8 of 8 PASS. Extraction changed in this train, so
+  this was mandatory rather than optional, and it says no known answer moved.
+- The four caller hunts against this repo all answered. The banner hunt is the one worth keeping:
+  the regex `/^Functions & Helpers$/` matches only because normalization stripped the `////` rule
+  line AND the markers, leaving exactly that string. Without the normalizer it could not match.
+
+### The blind corpus, which is what the feature was for
+
+evie-bot indexed: 827 files, 51,324 symbols, 2,208 comments, 1,637 anchored. No file opened, no
+grep, only lexicon's own output.
+
+A regex sweep for retry and backoff taught the shape of its operation runner. Then one `describe`
+on `runOperation` returned seven body comments that between them state:
+
+- every fresh caller MUST claim through `tryClaimPendingOperation`, and the comment NAMES all five
+  (button dispatch, auto-shutdown timers, the bridge, createServer, the retry handler), with
+  arriving unclaimed rejected loudly rather than silently minting a claim that bypassed the funnel;
+- a race guard for two dispatches in one tick, "a timer firing the same tick as a button click";
+- why a stale pending placeholder must be released, or the slot sticks with buttons greyed and no
+  retry path until the bot restarts;
+- why a non-retryable failure skips the sixty-second retry.
+
+That is the invariant, its enforcement, its race, and its failure modes, for a codebase never
+opened. Before this tier, `describe` would have returned the JSDoc and NONE of those seven, because
+they are body comments and the old `docComment` field could not see them. The blind test asks
+whether it can teach you a codebase you have never read; on this evidence, yes, and the comments
+are what did the teaching.
+
+## Phase 5 - Verification (as planned)
 
 Unit gate, conformance across all eight providers, grade.js (extraction changed - mandatory),
 live dogfood of the four caller hunts against this repo (refuses-over-clamping line, TODO/FIXME

@@ -82,7 +82,9 @@ async function main(argv: string[]): Promise<void> {
 			console.log(`    ${symbol.signature ?? "(no signature)"}`);
 			console.log(`    members ${described?.members.length ?? 0}, used in ${described?.referenceCount ?? 0}`);
 			if (described?.symbol.docComment !== undefined) console.log(`    doc: ${described.symbol.docComment}`);
+			// Leading is the doc printed above, so listing it again would say everything twice.
 			for (const comment of service.commentsFor(symbol.symbolId)) {
+				if (comment.form === "leading") continue;
 				console.log(`    ${comment.form} ${comment.placement}: ${comment.normalized}`);
 			}
 		}
