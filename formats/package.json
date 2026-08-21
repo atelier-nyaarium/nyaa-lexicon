@@ -4,8 +4,8 @@
 	"private": true,
 	"type": "module",
 	"description": "Structured-data readers shared by the providers that read them",
+	"comment": "No root export on purpose. A barrel makes every consumer carry every format's parser, which is how the YAML provider once bundled jsonc-parser and died on node over a package it never calls. Import the reader you read.",
 	"exports": {
-		".": "./src/index.ts",
 		"./yaml": "./src/yaml.ts",
 		"./json": "./src/json.ts"
 	},

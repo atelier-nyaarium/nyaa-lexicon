@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -65,7 +65,11 @@ function isRawControl(code: number): boolean {
 function offendersIn(offends: (code: number) => boolean): string[] {
 	const found: string[] = [];
 	for (const path of trackedFiles()) {
-		const lines = readFileSync(join(REPO_ROOT, path), "utf8").split("\n");
+		// Tracked but gone is an ordinary state mid-delete or mid-rename. Reading it threw ENOENT and
+		// failed the whole sweep, which reads as a byte violation in a file nobody can open.
+		const absolute = join(REPO_ROOT, path);
+		if (!existsSync(absolute)) continue;
+		const lines = readFileSync(absolute, "utf8").split("\n");
 		for (const [index, line] of lines.entries()) {
 			for (const character of line) {
 				const code = character.codePointAt(0) ?? 0;

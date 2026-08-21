@@ -1378,8 +1378,13 @@ tier system exists to prevent, failing at the boundary rather than in any provid
 entry importing only `readJson` through the barrel bundles at 476 KB against 363 KB importing the
 reader directly, and drags in the entire `yaml` library it never calls. The argument is not the
 113 KB. It is that this coupling ALREADY caused a shipping failure this phase: the YAML provider died
-on node because of `jsonc-parser`, a package it does not use, reached through the barrel. Subpath
-exports and three import lines close it.
+on node because of `jsonc-parser`, a package it does not use, reached through the barrel.
+
+Closed by DELETING the barrel rather than discouraging it. The package exports `./yaml` and `./json`
+and has no root entry, so the bare name does not resolve and a consumer cannot reach every parser
+even by accident. A comment saying "do not import this" would have left the coupling expressible,
+which is the difference this project draws between a fix and a note. The JSON provider's bundle fell
+from 481 KB to 368 KB and no longer contains the YAML library at all.
 
 **4. A tier can be claimed and never tested, and three providers are in that state.** Measured per
 provider by counting cases that ran against cases skipped: the markdown provider claims
