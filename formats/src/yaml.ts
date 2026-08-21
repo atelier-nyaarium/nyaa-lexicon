@@ -44,10 +44,9 @@ export interface YamlFacts {
 /**
  * A scalar this index can hold, or nothing.
  *
- * `LiteralSchema` is exactly string, number and boolean, so the RESOLVED value decides, never the
- * tag: `!!str` and `!custom` land as strings, `!!binary` and `!!timestamp` resolve outside the three
- * and are omitted, as is null. An omitted value keeps its key as a declaration, which says the key
- * exists and its value is not one this index can carry, a different claim from the key being absent.
+ * The RESOLVED value decides, never the tag: `!!str` and `!custom` land as strings, `!!binary` and
+ * `!!timestamp` resolve outside the three kinds and are omitted, as is null. An omitted value keeps
+ * its key, which claims the key exists and its value is not one this index carries.
  */
 function literalKind(value: unknown): { kind: Literal["kind"]; value: string; number?: number } | null {
 	if (typeof value === "string") return { kind: "string", value };
@@ -66,10 +65,8 @@ export function readYaml(context: YamlContext): YamlFacts {
 	const documents = parseAllDocuments(text);
 
 	function walk(node: unknown, parents: Descriptor[], containerId: string | undefined): void {
-		// An element has no name, so it is no declaration. Its ordinal still has to reach the keys
-		// BELOW it, or every element of a sequence of mappings mints the same id as its siblings.
-		// A root sequence holds real keys, so the walk never depends on having a container: a literal
-		// simply carries none, which the schema allows and which beats reporting an empty file.
+		// An element has no name, so it is no declaration, but its ordinal must still reach the keys
+		// below it or every sibling mints one id. A root sequence has no container and still has keys.
 		if (isSeq(node)) {
 			node.items.forEach((item, index) => {
 				if (isScalar(item)) {

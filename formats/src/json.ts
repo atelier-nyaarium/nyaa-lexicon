@@ -121,12 +121,8 @@ export function readJson(context: JsonContext): JsonFacts {
 
 	function walk(node: Node | undefined, parents: Descriptor[], containerId: string | undefined): void {
 		if (node === undefined) return;
-		// An array element has no name, so it is no declaration. Its VALUE is still a literal and
-		// carries the key the array sits under.
-		// An element has no name, so it is no declaration. Its ordinal still has to reach the keys
-		// BELOW it, or every element of an array of objects mints the same id as its siblings.
-		// A root array holds real keys, so the walk never depends on having a container: a literal
-		// simply carries none, which the schema allows and which beats reporting an empty file.
+		// An element has no name, so it is no declaration, but its ordinal must still reach the keys
+		// below it or every sibling mints one id. A root array has no container and still has keys.
 		if (node.type === "array") {
 			(node.children ?? []).forEach((item, index) => {
 				walk(item, [...parents, { kind: "namespace", name: `[${index}]` }], containerId);
