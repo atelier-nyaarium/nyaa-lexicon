@@ -1123,6 +1123,13 @@ empty result is exactly who that line is for.
 for a heading meant a code fence around a section title, reading as code that does not exist. A
 heading now shows its prose instead, which is what a document has where code has a body.
 
+**A heading describes as a section, and `outline_module` was right all along.** Through the built
+server, `describe_symbol` on `Development` in `CLAUDE.md` answers with no signature block, nine
+prose regions with the three fenced ones marked, `Releasing` under Members, and one line saying the
+code questions do not apply. `outline_module` on the same file answers the file's table of contents,
+nested, which Question 1b predicted would fall out of headings being declarations with a container
+and needing no new code. It did.
+
 **Deliberately not built:** the LSP adapter gains nothing here. It answers an editor, which has its
 own document search and its own outline, and the heading declarations it already receives feed both.
 
