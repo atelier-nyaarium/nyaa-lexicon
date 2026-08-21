@@ -57,7 +57,12 @@ files it half-understands.
 worth saying plainly rather than leaving you to infer it. A `credentials.json` or a `config/secrets.yml`
 in your workspace is indexed like any other file, and `find_literals` will answer with its values. A
 secret hardcoded in source has always been reachable this way, so the KIND of exposure is not new, but
-the reach is. `.env` is not claimed and stays invisible.
+the reach is.
+
+If that matters to you, the answer is the one you probably already use: in a git repository the scan
+takes its file list from git, so a `.gitignore`d file is never read. `.env` is not claimed by any
+provider either way. What IS indexed is a config file you have committed, which is worth a look if
+you have ever committed one with a real value in it.
 
 **Reload every session promptly.** This major ships NO compatibility window: a 2.0 daemon does not
 answer the 1.x wire. Sessions do not fight each other over it, because a client meeting a newer

@@ -35,13 +35,24 @@ function symbolBullet(summary: SymbolSummary): string {
 	return `- ${line(summary)}`;
 }
 
-/** Describe is a summary, and documentation is normalized to one line, so the cut is by sentence. */
+/**
+ * Describe is a summary, and documentation is normalized to one line, so the cut is by sentence.
+ *
+ * Every cut is MARKED. A section of six bulleted rules summarized to its first sentence, with nothing
+ * saying so, reads as the whole section rather than as a preview of it.
+ */
 function summarize(text: string, limit = 200): string {
-	const sentence = text.indexOf(". ");
-	if (sentence > 0 && sentence < limit) return text.slice(0, sentence + 1);
-	if (text.length <= limit) return text;
-	const boundary = text.lastIndexOf(" ", limit);
-	return `${text.slice(0, boundary > 0 ? boundary : limit).trimEnd()} ...`;
+	const full = text.trimEnd();
+	const sentence = full.indexOf(". ");
+	if (sentence > 0 && sentence < limit) return marked(full.slice(0, sentence + 1), full);
+	if (full.length <= limit) return full;
+	const boundary = full.lastIndexOf(" ", limit);
+	return marked(full.slice(0, boundary > 0 ? boundary : limit).trimEnd(), full);
+}
+
+/** The ellipsis only where something was actually dropped. */
+function marked(cut: string, full: string): string {
+	return cut.length < full.length ? `${cut} ...` : cut;
 }
 
 function renderGroupedModules(title: string, groups: Iterable<readonly [string, readonly string[]]>): string {

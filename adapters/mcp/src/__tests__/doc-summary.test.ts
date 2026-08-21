@@ -42,12 +42,18 @@ describe("documentation in describe stays a summary", () => {
 		expect(documentation(renderDescribe(described("Does the thing.")))).toBe("Does the thing.");
 	});
 
-	it("cuts a multi-sentence doc after its first sentence", () => {
+	it("cuts a multi-sentence doc after its first sentence and says it continued", () => {
 		const rendered = renderDescribe(
 			described("Refuses rather than clamping. The rest is detail nobody asked for."),
 		);
 
-		expect(documentation(rendered)).toBe("Refuses rather than clamping.");
+		expect(documentation(rendered)).toBe("Refuses rather than clamping. ...");
+	});
+
+	it("adds no ellipsis to a one-sentence doc that ends in a period", () => {
+		expect(documentation(renderDescribe(described("Refuses rather than clamping.")))).toBe(
+			"Refuses rather than clamping.",
+		);
 	});
 
 	it("cuts a long unpunctuated doc at a word boundary and says it continued", () => {

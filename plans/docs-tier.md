@@ -1600,6 +1600,18 @@ comparison nonsense. Counting the provider directories at `origin/main` settled 
 README there is simply stale and the entry is right. The release note now names the version it is
 comparing against rather than leaving the baseline implied.
 
+**The audit found no false claim, and one real defect behind a true one.** Every factual statement in
+the entry checked out: the language count against `origin/main`, all nine extensions, the `.json5`
+reason, the `heading` kind's shape, and both halves of the secrets claim including `.env` staying
+invisible. But checking "describe_symbol shows its prose" turned up a rendering defect: `summarize`
+marked a LENGTH cut with an ellipsis and returned a SENTENCE cut silently, so the six-rule Principles
+section rendered as its first rule with nothing saying more followed. Every cut is marked now, and
+the test that encoded the silent form failed on the fix, which is that rule working.
+
+The release note also gained the thing a reader can actually DO about indexed config files: in a git
+repository the scan takes its file list from git, so a `.gitignore`d file is never read. Verified
+with a real repository holding an ignored `secrets.yml`, which indexes to nothing.
+
 **Not done here, and it is the one thing left:** nothing is pushed. `2.0.0` and this whole train sit
 on `main` ahead of `origin`, by explicit instruction.
 
