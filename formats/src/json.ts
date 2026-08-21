@@ -23,6 +23,7 @@ import {
 	printParseErrorCode,
 	type ScanError,
 } from "jsonc-parser/lib/esm/main.js";
+import { isTooDeep, TOO_DEEP } from "./depth.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -98,7 +99,7 @@ export function readJson(context: JsonContext): JsonFacts {
 			allowEmptyContent: true,
 		});
 	} catch (failure) {
-		if (!(failure instanceof RangeError)) throw failure;
+		if (!isTooDeep(failure)) throw failure;
 		tooDeep = true;
 	}
 
@@ -202,10 +203,10 @@ export function readJson(context: JsonContext): JsonFacts {
 	try {
 		if (!tooDeep) walk(tree, context.parents ?? [], undefined);
 	} catch (failure) {
-		if (!(failure instanceof RangeError)) throw failure;
+		if (!isTooDeep(failure)) throw failure;
 		tooDeep = true;
 	}
-	if (tooDeep) diagnostics.push({ severity: "error", message: "nested too deeply to index", path: module });
+	if (tooDeep) diagnostics.push({ severity: "error", message: TOO_DEEP, path: module });
 
 	return {
 		declarations,

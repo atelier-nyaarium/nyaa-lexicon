@@ -14,6 +14,7 @@ import {
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 import { isMap, isNode, isPair, isScalar, isSeq, Parser, parseAllDocuments, type Scalar } from "yaml";
+import { isTooDeep, TOO_DEEP } from "./depth.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -70,7 +71,7 @@ export function readYaml(context: YamlContext): YamlFacts {
 	try {
 		documents = parseAllDocuments(text);
 	} catch (failure) {
-		if (!(failure instanceof RangeError)) throw failure;
+		if (!isTooDeep(failure)) throw failure;
 		tooDeep = true;
 	}
 
@@ -202,11 +203,11 @@ export function readYaml(context: YamlContext): YamlFacts {
 				undefined,
 			);
 		} catch (failure) {
-			if (!(failure instanceof RangeError)) throw failure;
+			if (!isTooDeep(failure)) throw failure;
 			tooDeep = true;
 		}
 	});
-	if (tooDeep) diagnostics.push({ severity: "error", message: "nested too deeply to index", path: module });
+	if (tooDeep) diagnostics.push({ severity: "error", message: TOO_DEEP, path: module });
 
 	return { declarations, literals, diagnostics };
 }
@@ -239,7 +240,7 @@ export function readYamlComments(text: string, offset: number, coordinates: Text
 	try {
 		for (const token of new Parser().parse(text)) collect(token);
 	} catch (failure) {
-		if (!(failure instanceof RangeError)) throw failure;
+		if (!isTooDeep(failure)) throw failure;
 	}
 	return spans.sort((left, right) => left.range.start.line - right.range.start.line);
 }

@@ -1341,9 +1341,12 @@ core-side entry already on the board. Deferred to the architecture pass rather t
 
 **Patched in four places at once, which is the same signal arriving differently.** A `RangeError`
 escaping as a transport error was fixed in `parseTree`, in the JSON walk, in `parseAllDocuments` and
-in the YAML walk, all in one round. Four guards for one class means the class has no owner: the next
-reader adding a fifth recursion site inherits nothing. It works and it is tested, and it wants one
-boundary rather than four try blocks.
+in the YAML walk, all in one round. Four guards for one class means the class has no owner.
+
+That one WAS given an owner in the same lap, because it was cheap and because catching the type alone
+was wrong on its own terms: an out-of-range array length is a `RangeError` too, and reporting a real
+bug as a depth problem sends the reader somewhere else. `isTooDeep` now decides, in one place, and
+every site rethrows what it does not recognize. Five call sites, one predicate, one message.
 
 ## Phase 6 - Verification
 
