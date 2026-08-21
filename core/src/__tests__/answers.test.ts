@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AttachedComment } from "../commentAttach";
 import { LexiconService } from "../service";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
@@ -38,6 +39,38 @@ function plant(): string[] {
 	return store.declarationsIn("a.ref").map((d) => d.factId);
 }
 
+function plantWithComment(): string {
+	store.replaceFile(
+		"a.ref",
+		"h1",
+		[
+			{
+				symbolId: SYMBOL,
+				kind: "class",
+				name: "Cart",
+				range: at(0),
+				selectionRange: at(0),
+				visibility: "public",
+			},
+		],
+		[],
+		[],
+		[],
+		"full",
+		[
+			{
+				range: at(1),
+				raw: "// Retains checkout state.",
+				normalized: "Retains checkout state.",
+				form: "leading",
+				placement: "above",
+				anchorId: SYMBOL,
+			} satisfies AttachedComment,
+		],
+	);
+	return store.commentsAnchoredTo(SYMBOL)[0]?.factId as string;
+}
+
 beforeEach(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-answers-"));
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
@@ -68,6 +101,14 @@ describe("writing an answer down", () => {
 
 		expect(outcome.recorded).toBe(true);
 		expect(service.recallAnswer(SYMBOL, "describe")?.answer.prose).toBe("A shopping cart.");
+	});
+
+	it("records an answer citing an attached comment", async () => {
+		const comment = plantWithComment();
+
+		const outcome = await service.recordAnswer(SYMBOL, "why", "Retains checkout state.", [comment]);
+
+		expect(outcome.recorded).toBe(true);
 	});
 
 	// The cold answer this whole layer exists to prevent. Prose with no inputs is indistinguishable

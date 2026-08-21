@@ -17,7 +17,7 @@ import type {
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
-import type { TypeInfo } from "@nyaa-lexicon/protocol";
+import { FACT_KINDS, type FactKind, type TypeInfo } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -275,7 +275,7 @@ export function renderComments(result: CommentsResult): string {
 			comment.anchor === null
 				? `${comment.form} (module)`
 				: `${comment.form} \`${comment.anchor.name}\` (${comment.anchor.kind})`;
-		rows.push(`- Line ${comment.range.start.line + 1}: ${about}\n${indent(comment.raw)}`);
+		rows.push(`- Line ${comment.range.start.line + 1}: ${about}\n  \`${comment.factId}\`\n${indent(comment.raw)}`);
 		byModule.set(comment.module, rows);
 	}
 
@@ -632,16 +632,22 @@ export function renderFacts(result: {
 		for (const fact of descriptions) lines.push(fact.summary.slice("describe: ".length), "", `\`${fact.factId}\``);
 	}
 
-	const headings: Record<string, string> = {
+	// Keyed by FactKind, so a new kind fails the type check here rather than going unrendered.
+	// Null means the kind is not a grouped citation: answers render above and below, doubts never.
+	const headings: Record<FactKind, string | null> = {
 		declaration: "Declaration",
 		reference: "References",
 		import: "Imports",
 		literal: "Literals",
+		comment: "Comments",
+		answer: null,
+		doubt: null,
 	};
-	for (const kind of ["declaration", "reference", "import", "literal"]) {
+	for (const kind of FACT_KINDS) {
+		const heading = headings[kind];
 		const group = factsByKind.get(kind) ?? [];
-		if (group.length === 0) continue;
-		lines.push("", `## ${headings[kind]}`, "");
+		if (heading === null || group.length === 0) continue;
+		lines.push("", `## ${heading}`, "");
 		for (const fact of group) lines.push(`- ${fact.summary}`, `  \`${fact.factId}\``);
 	}
 

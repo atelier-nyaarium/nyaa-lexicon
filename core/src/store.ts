@@ -111,6 +111,7 @@ export type StoredFact =
 	| ({ fact: "reference" } & StoredReference)
 	| ({ fact: "import" } & StoredImport)
 	| ({ fact: "literal" } & StoredLiteral)
+	| ({ fact: "comment" } & StoredComment)
 	| ({ fact: "answer" } & Answer);
 
 ////////////////////////////////
@@ -939,28 +940,41 @@ export class IndexStore {
 		const parsed = parseFactId(factId);
 		if (parsed === null) return null;
 
-		// The id carries its kind, so this reads one table rather than searching four.
-		if (parsed.kind === "declaration") {
-			const row = this.db.prepare("SELECT * FROM symbols WHERE factId = ?").get(factId);
-			return row ? { fact: "declaration", ...rowToDeclaration(row) } : null;
+		// The id carries its kind, so this reads one table rather than searching every one.
+		switch (parsed.kind) {
+			case "declaration": {
+				const row = this.db.prepare("SELECT * FROM symbols WHERE factId = ?").get(factId);
+				return row ? { fact: "declaration", ...rowToDeclaration(row) } : null;
+			}
+			case "reference": {
+				const row = this.db.prepare("SELECT * FROM refs WHERE factId = ?").get(factId);
+				return row ? { fact: "reference", ...rowToReference(row) } : null;
+			}
+			case "import": {
+				const row = this.db.prepare("SELECT * FROM imports WHERE factId = ?").get(factId);
+				return row ? { fact: "import", ...rowToImport(row) } : null;
+			}
+			case "literal": {
+				const row = this.db.prepare("SELECT * FROM literals WHERE factId = ?").get(factId);
+				return row ? { fact: "literal", ...rowToLiteral(row) } : null;
+			}
+			case "comment": {
+				const row = this.db.prepare("SELECT * FROM comments WHERE factId = ?").get(factId);
+				return row ? { fact: "comment", ...rowToComment(row) } : null;
+			}
+			case "answer": {
+				const row = this.db.prepare("SELECT * FROM answers WHERE factId = ?").get(factId);
+				return row ? { fact: "answer", ...rowToAnswer(row as unknown as AnswerRow) } : null;
+			}
+			// A doubt id is a clear-handshake token, not a citable fact. Refusing to resolve it here is
+			// what keeps an answer from being grounded on someone's transient distrust.
+			case "doubt":
+				return null;
+			default: {
+				const unreachable: never = parsed.kind;
+				return unreachable;
+			}
 		}
-		if (parsed.kind === "reference") {
-			const row = this.db.prepare("SELECT * FROM refs WHERE factId = ?").get(factId);
-			return row ? { fact: "reference", ...rowToReference(row) } : null;
-		}
-		if (parsed.kind === "import") {
-			const row = this.db.prepare("SELECT * FROM imports WHERE factId = ?").get(factId);
-			return row ? { fact: "import", ...rowToImport(row) } : null;
-		}
-		if (parsed.kind === "answer") {
-			const row = this.db.prepare("SELECT * FROM answers WHERE factId = ?").get(factId);
-			return row ? { fact: "answer", ...rowToAnswer(row as unknown as AnswerRow) } : null;
-		}
-		// A doubt id is a clear-handshake token, not a citable fact. Refusing to resolve it here is
-		// what keeps an answer from being grounded on someone's transient distrust.
-		if (parsed.kind === "doubt") return null;
-		const row = this.db.prepare("SELECT * FROM literals WHERE factId = ?").get(factId);
-		return row ? { fact: "literal", ...rowToLiteral(row) } : null;
 	}
 
 	////////////////////////////////

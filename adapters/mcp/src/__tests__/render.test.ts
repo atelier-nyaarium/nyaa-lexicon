@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderOverview } from "../render";
+import { renderFacts, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -134,5 +134,26 @@ describe("reporting what failed to parse", () => {
 
 	it("says nothing about failures when there are none", () => {
 		expect(overview()).not.toContain("Failed to parse");
+	});
+});
+
+describe("offering every citable fact kind, not a hand-kept subset", () => {
+	const SYMBOL = "lexicon reference src/a.ts work#";
+
+	function facts(kind: string): string {
+		return renderFacts({
+			symbolId: SYMBOL,
+			facts: [{ factId: `lexfact ${kind} src/a.ts abc123`, kind, module: "src/a.ts", summary: `a ${kind}` }],
+			truncated: [],
+		});
+	}
+
+	// A citation cannot be made from an id the author was never shown.
+	it.each(["declaration", "reference", "import", "literal", "comment"])("prints a %s id", (kind) => {
+		expect(facts(kind)).toContain(`lexfact ${kind} src/a.ts abc123`);
+	});
+
+	it("leaves doubt ids out, since a doubt is a handshake rather than evidence", () => {
+		expect(facts("doubt")).not.toContain("lexfact doubt");
 	});
 });

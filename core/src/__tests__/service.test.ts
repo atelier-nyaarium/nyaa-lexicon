@@ -262,6 +262,27 @@ describe("type hierarchy and citable facts", () => {
 		expect(facts?.facts.every((f) => f.factId.startsWith("lexfact "))).toBe(true);
 	});
 
+	it("includes comments attached to the subject", async () => {
+		const base = type("Base");
+		store.replaceFile("a.ref", "h1", [base], [], [], [], "full", [
+			{
+				range: at(1),
+				raw: "// Retains checkout state.",
+				normalized: "Retains checkout state.",
+				form: "leading",
+				placement: "above",
+				anchorId: base.symbolId,
+			},
+		]);
+		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+
+		expect((await built.factsFor(base.symbolId))?.facts).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ kind: "comment", summary: "leading Retains checkout state." }),
+			]),
+		);
+	});
+
 	it("names the kinds a limit cut off, so a thin answer is not read as a complete one", async () => {
 		const base = type("Base");
 		const uses = Array.from({ length: 5 }, () => heritage("Base", base.symbolId, base.symbolId, "extends"));

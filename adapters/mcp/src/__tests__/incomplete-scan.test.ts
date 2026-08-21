@@ -38,3 +38,26 @@ describe("a scan that stopped early says so", () => {
 		expect(renderLiterals(noLiterals(false))).not.toContain("stopped before the end");
 	});
 });
+
+describe("comment citations", () => {
+	it("prints each comment fact id", () => {
+		const result: CommentsResult = {
+			query: { text: "retains" },
+			comments: [
+				{
+					factId: "lexfact comment a.ref 0123456789abcdef",
+					module: "a.ref",
+					range: { start: { line: 1, character: 0 }, end: { line: 1, character: 10 } },
+					form: "leading",
+					placement: "above",
+					raw: "// retains checkout state",
+					anchor: null,
+				},
+			],
+			total: 1,
+			truncated: false,
+		};
+
+		expect(renderComments(result)).toContain("`lexfact comment a.ref 0123456789abcdef`");
+	});
+});

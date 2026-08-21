@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composeSymbolId, type Declaration, type Reference } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AttachedComment } from "../commentAttach";
 import { IndexStore, SCHEMA_VERSION } from "../store";
 
 ////////////////////////////////
@@ -38,6 +39,17 @@ function reference(name: string, targetId: string | null): Reference {
 		binding: targetId
 			? { status: "bound", symbolId: targetId, provenance: "bound" }
 			: { status: "unbound", reason: "NotImplemented" },
+	};
+}
+
+function comment(anchorId: string): AttachedComment {
+	return {
+		range: POINT,
+		raw: "// why this exists",
+		normalized: "why this exists",
+		form: "leading",
+		placement: "above",
+		anchorId,
 	};
 }
 
@@ -330,13 +342,30 @@ describe("citable facts", () => {
 	});
 
 	it("resolves an id back to the fact it names, whichever kind that is", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], [reference("add", idOf("add"))], [], [literal]);
+		store.replaceFile(
+			"src/a.ts",
+			"h1",
+			[declaration("add")],
+			[reference("add", idOf("add"))],
+			[],
+			[literal],
+			"full",
+			[comment(idOf("add"))],
+		);
 
 		const declarationId = store.declarationsIn("src/a.ts")[0]?.factId as string;
 		const literalId = store.literalsWithValue("hello", 10)[0]?.factId as string;
+		const commentId = store.commentsAnchoredTo(idOf("add"))[0]?.factId as string;
 
 		expect(store.factById(declarationId)).toMatchObject({ fact: "declaration", name: "add" });
 		expect(store.factById(literalId)).toMatchObject({ fact: "literal", value: "hello" });
+		expect(store.factById(commentId)).toMatchObject({ fact: "comment", normalized: "why this exists" });
+	});
+
+	it("does not resolve a doubt id", () => {
+		const doubt = doubtFactId(idOf("add"), "describe", "needs review", 1);
+
+		expect(store.factById(doubt)).toBeNull();
 	});
 
 	// Null IS the staleness signal, which is why the id is a digest of the fact rather than a rowid.

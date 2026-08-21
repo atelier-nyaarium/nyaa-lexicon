@@ -207,6 +207,13 @@ export class KnowledgeLedger {
 		}
 		if (literals.length > limit) truncated.push("literal");
 
+		const comments = this.store.commentsAnchoredTo(symbolId);
+		for (const comment of comments.slice(0, limit)) {
+			const text = comment.normalized.length > 80 ? `${comment.normalized.slice(0, 80)}...` : comment.normalized;
+			add(comment.factId, "comment", comment.module, `${comment.form} ${text}`);
+		}
+		if (comments.length > limit) truncated.push("comment");
+
 		for (const site of await this.imports.importSitesFor(declaration.module, declaration.name)) {
 			add(site.factId, "import", site.module, `imported by ${site.module}`);
 		}
