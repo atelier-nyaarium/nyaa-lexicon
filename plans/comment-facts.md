@@ -762,6 +762,29 @@ imports where literals go is silent at compile time and at runtime. It is the si
 design, which is right, but the signature has outgrown positional arguments and wants an options
 object for everything after the module and hash.
 
+Felt building Phase 4.
+
+**Adding one query tool costs eleven edits across eight files.** The extensibility question is
+"what does the next thing cost", and the answer here is: a `ToolBackend` member, an input schema, a
+description constant, a handler, a renderer, an import line and a registration in `projectTools`, a
+daemon request schema and a dispatch case, a core barrel export, and the same method again in BOTH
+backends in `mcp/main.ts` (one daemon-backed, one in-process). Then three test fixtures, plus the
+explicit tool-name list in the server test. Nothing about that is wrong individually, and the
+type checker catches most omissions, but a query tool is the canonical new thing here and it is not
+one registration. A registry entry carrying its own schema, handler and renderer, with the backend
+method derived, would make the next one cheap.
+
+The one omission the compiler could NOT catch was the tool-name list in `server.test.ts`, and that
+test is the reason it was caught at all. Worth keeping in mind as the pattern for anything else
+that enumerates tools by hand.
+
+**The `--comments` flag I added to `index-workspace` is a shape I would not accept from someone
+else.** It occupies the positional symbol-name slot and is matched by string equality, because the
+CLI has no argument parser and I did not want to add one mid-phase. It earned its keep immediately
+(it is how the whole tier was verified against real repositories), which is exactly why it will now
+stay. A three-line flag parse would make the next verification affordance additive rather than
+another positional special case.
+
 **`index-workspace` throws its index away and nothing says so.** It opens `:memory:`, which is the
 right choice for a one-shot tool, but the file header describes it as "index a workspace and answer
 one question about it" with no hint the store does not persist. I wrote a probe against the on-disk
