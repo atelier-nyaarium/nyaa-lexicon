@@ -1130,6 +1130,14 @@ code questions do not apply. `outline_module` on the same file answers the file'
 nested, which Question 1b predicted would fall out of headings being declarations with a container
 and needing no new code. It did.
 
+**Attacked from outside, through the real server.** Twelve hostile calls: no arguments, a text and a
+regex together, an invalid regex, a regex with no slashes, a limit of 0 and -1 and 99999, a module
+that does not exist, a module that is a directory, a term of only whitespace, a fenced slice, and a
+percent sign. Every one answers usefully. Bad limits are refused by the schema naming the field and
+the bound; a bad query is refused with the reason rather than an empty page reading as "nothing
+matched"; a module that is not there answers cleanly. `100%` returns nothing, which is the escaping
+holding through the whole stack: unescaped it would have matched everything.
+
 **Deliberately not built:** the LSP adapter gains nothing here. It answers an editor, which has its
 own document search and its own outline, and the heading declarations it already receives feed both.
 
