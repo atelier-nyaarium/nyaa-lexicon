@@ -20,7 +20,7 @@
 // version in the server reads as correct right up until the next bump ships a server lying about
 // what it is, so replacing a derivation fails this script instead.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -84,6 +84,39 @@ function providerBundles(root: string): Array<{ source: string; out: string; ass
 			out: path.join("providers", entry.name, "main.js"),
 			assets: path.join("providers", entry.name, "src"),
 		}));
+}
+
+/** Names a smoke failure, so the catch can tell one from a bun error bun already printed. */
+const SMOKE_FAILURE = "failed to start on node";
+
+/**
+ * Every bundled provider must actually START on plain node.
+ *
+ * Bundling succeeding proves only that the imports resolved. A dependency carrying a native addon,
+ * or one reaching for something node lacks, bundles clean and then dies on launch, which
+ * `startProviders` records as an outage and skips. The index then reports files in scope and no
+ * facts, which reads exactly like a language with nothing in it.
+ *
+ * Scope is startup only. Whether a provider ANSWERS correctly is what conformance asks, so a
+ * failure deferred until the first parseFile is deliberately out of reach here.
+ */
+function smokeProviders(root: string, providers: Array<{ out: string }>): void {
+	for (const entry of providers) {
+		const bundle = path.join(root, DIST_DIR, entry.out);
+		// "node", never process.execPath: this script runs under bun, and node is what consumers run.
+		// Closed stdin is a clean shutdown, so a healthy provider loads, starts and exits zero.
+		// Import-time death exits nonzero with its reason on stderr, which is the failure hunted here.
+		const probe = spawnSync("node", [bundle], { cwd: root, input: "", encoding: "utf8", timeout: 20_000 });
+		const complaint = (probe.stderr ?? "").trim();
+		if (probe.status !== 0 || complaint !== "") {
+			// Node's own message line, not the echoed source: a minified frame is thousands of columns.
+			const lines = complaint.split("\n").map((line) => line.trim());
+			const reason = lines.find((line) => /^[A-Za-z]*Error:/.test(line)) ?? lines[0] ?? "";
+			const detail = reason.slice(0, 200) || `exit ${probe.status}`;
+			throw new Error(`${entry.out} ${SMOKE_FAILURE}: ${detail}`);
+		}
+		console.log(`smoke ok ${entry.out}`);
+	}
 }
 
 /** Non-TypeScript files a provider reads at runtime, resolved next to its own bundle. */
@@ -361,11 +394,16 @@ function main(argv: string[]): void {
 			const assets = copyProviderAssets(ROOT, entry.assets, path.join(DIST_DIR, path.dirname(entry.out)));
 			for (const asset of assets) console.log(`copied ${asset}`);
 		}
-	} catch {
-		// bun already printed the compiler error; a stack trace from this script would only bury it.
+		smokeProviders(ROOT, providers);
+	} catch (failure) {
+		// bun prints its own compiler errors; only a smoke failure needs this script to speak.
+		const said = failure instanceof Error ? failure.message : "";
+		if (said.includes(SMOKE_FAILURE)) console.error(`\n${said}`);
 		if (!buildOnly) {
-			git(["checkout", "--", ...targets], ROOT);
-			console.error(`\nbuild failed; reverted ${targets.length} version file(s) to ${current}`);
+			// dist/ is committed, so a half-written bundle left beside reverted versions is a lie
+			// on disk that a later commit could pick up.
+			git(["checkout", "--", ...targets, DIST_DIR], ROOT);
+			console.error(`\nbuild failed; reverted ${targets.length} version file(s) and ${DIST_DIR}/ to ${current}`);
 		} else {
 			console.error("\nbuild failed");
 		}

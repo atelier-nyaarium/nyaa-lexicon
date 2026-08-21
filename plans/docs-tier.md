@@ -423,6 +423,120 @@ a nonzero exit. A package with a native addon can bundle and then fail at provid
 `core/src/providers.ts` records and skips, leaving documentation indexing silently at zero coverage.
 A provider startup smoke check belongs in this phase.
 
+### Phase 0 results
+
+The owner added a bar while this ran: a library must be widely used, not something with ten stars,
+and anything that fails the popularity bar OR the feature test defers to a hand-written parser in
+house style rather than being adopted anyway.
+
+Weekly downloads, checked rather than assumed: `yaml` 162M, `jsonc-parser` 51M, `mdast-util-from-markdown`
+45M, `markdown-it` 24M. All clear the bar comfortably. Publish dates are Feb 2026, Jun 2024 and Feb
+2026, so the seven-day maturity rule is satisfied with room. `bun audit` on the resolved lockfile
+reported no vulnerabilities before anything was installed, and `bunfig.toml` now sets
+`minimumReleaseAge = 604800` so the rule is enforced by the tool rather than by memory.
+
+Weights, minified, as a provider actually bundles them: markdown **120 KB** including the frontmatter
+extensions, YAML **116 KB**, JSON **8 KB**. Against a committed `dist/` of 9.9 MB that is
+inconsequential, and the first measurement understated markdown by excluding the extensions it turns
+out to need.
+
+**Markdown: `mdast-util-from-markdown` 2.0.3, plus `micromark-extension-frontmatter` 2.0.0 and
+`mdast-util-frontmatter` 2.0.1.** Spiked against the entire trap list and it passes every case: a
+`##` inside a backtick fence is not a heading, nor inside a tilde fence, nor in an indented code
+block, nor inside an HTML comment. Setext headings ARE recognised. Every heading's range slices its
+own text back out.
+
+That is the whole Phase 2 trap list closed by a dependency, and it is the strongest argument against
+the fifty-line scanner the first draft proposed.
+
+**The frontmatter extensions are not optional, and the spike is why we know.** Without them, mdast
+does not merely ignore frontmatter: it MISPARSES it into a phantom heading, because `---` under text
+is a setext underline. A document with frontmatter would have grown a heading containing its own
+metadata. With them, frontmatter is its own node with a range, no phantom heading appears, and its
+text feeds the same `yaml` reader that Phase 5 uses, which is the single-interpretation invariant
+demonstrated rather than asserted.
+
+**One Phase 0 claim was overstated and the alignment audit caught it.** I wrote that the `fenced`
+flag "falls out of the parse". It does not, quite. An mdast `code` node does not say whether it was
+fenced or indented, since both are `type: "code"` and `lang` is null for an indented block and for a
+fence with no info string. Distinguishing them is a one-character look at the node's first byte,
+which is trivial but IS detection.
+
+**And a real Phase 2 decision hides under it:** a `code` node's `position` spans the fence INCLUDING
+its delimiter lines, while its `value` is the content WITHOUT them. The plan requires a region's
+range to slice its own text back out, and those two do not agree. Phase 2 must choose: narrow the
+range to the content, or accept delimiters inside the searchable text. Better found now than in a
+fixture.
+
+**One policy question the spike surfaced:** a heading inside a blockquote IS reported as a heading.
+Quoted material is not the document's own structure, so Phase 2 decides whether to keep or drop it.
+Cheap to decide, invisible until someone quotes a document.
+
+**YAML: `yaml` 2.9.0, zero dependencies.** Keys carry ranges that slice back, multi-document files
+parse, and the JS values come through typed.
+
+**Gap 3 is narrower than the audit feared.** The audit warned about null, timestamps, binary and
+tags overflowing `LiteralSchema`. Spiked: a timestamp arrives as a plain STRING, because YAML 1.2
+does not auto-resolve timestamps, so only `null` genuinely has nowhere to go. That is one small
+decision rather than four.
+
+**Two real gaps the spike found instead:** anchors, aliases and collections report no scalar value,
+so they need their own handling; and `commentBefore` was empty where expected, so YAML comment
+extraction needs its access path worked out in Phase 5 rather than assumed.
+
+**JSON: `jsonc-parser` 3.3.1, zero dependencies.** Keys carry offsets, nesting works, and it refuses
+a trailing comma and an unquoted key.
+
+**But it is a JSONC parser, and it accepted `// a comment` with zero errors.** For `.json` that is
+too lenient: we would silently report facts for a file no strict JSON reader would accept. Phase 5
+either configures it strictly or declares that this provider reads JSONC semantics and says so.
+Found by spiking rather than by reading the README, which is why the plan demanded spikes.
+
+**Gap 2 confirmed directly:** the spike reports "array with 2 unnamed elements". Array elements have
+no name, and a declaration requires one.
+
+**The provider startup smoke check is built, and it found a bug in itself.** `scripts/build.ts` now
+starts every bundled provider after bundling and fails the build if one cannot start. The first
+version used `process.execPath`, which under `bun run` is BUN, so it was verifying the wrong runtime
+entirely: node is what consumers run and node is what it must test. Proven failable in both
+directions by planting a top-level throw in a provider's source, watching the build fail with
+`Error: planted startup failure`, then restoring and watching all eight report clean.
+
+It also needed its error message capped. A minified bundle's stack frame echoes a source line
+thousands of columns wide, so the check reports node's own message line rather than the bundle.
+
+**Known and accepted, carried into later phases:**
+
+- The parsers are root `devDependencies` today because no provider package exists to own them yet.
+  Phase 2 and Phase 5 move each to its provider's own manifest, where a runtime dependency belongs.
+- `jsonc-parser` exposes `disallowComments`, so strict `.json` IS configurable, but the spike did
+  not exercise it. Phase 5 proves it rather than trusting the type signature.
+- The spikes live in gitignored `temp/spikes` and print observations rather than assert. They served
+  their purpose, which was to invalidate choices before code depended on them; the durable versions
+  are the conformance fixtures in Phases 2 and 5.
+- The dependency footprint grew from 5 root packages to 9, and the lockfile from 187 to 233. That is
+  a real change in this project's character and is stated here rather than buried in a lockfile.
+  Most of the markdown tree has ONE maintaining ecosystem behind it, which is concentration worth
+  knowing about even though pinning, the age gate and a committed bundle all blunt it.
+- `minimumReleaseAge` gates FUTURE resolution. It does not re-validate what the lockfile already
+  holds, so "enforced by the tool rather than by memory" is true of the next install and not of this
+  one. This one was checked by hand.
+- The smoke check's reach is startup, deliberately. A provider that imports cleanly and then fails
+  on its first `parseFile` passes it, because that is what conformance asks and conformance already
+  runs all eight. Two other limits worth naming: it spawns a bare `node` from PATH without asserting
+  the version matches the `engines` floor, and it treats any stderr output as failure, which would
+  turn a future dependency's deprecation warning into a broken build.
+- Rebuilding after the dependency change churns the three core bundles by about 146 bytes each, but
+  the diff is a minifier identifier rename (`$0` became `$U`) from a shifted module graph, not a
+  behaviour change. Reverted rather than committed, since Phase 0 changed no shipped behaviour.
+
+**JSON5: DEFERRED, and it fails on features rather than popularity.** `json5` has 192M weekly
+downloads, so the bar is not the problem: its `parse` mirrors `JSON.parse` and yields NO position
+data at all, and a declaration without a range is not a declaration. Per the owner's rule, that
+means either a hand-written parser in house style or dropping the extension. Recommend dropping
+`.json5` from this train and recording why, since a hand-written JSON5 parser buys one extension at
+the cost of the exact defect class this project just spent a release closing.
+
 ## Phase 1 - Protocol
 
 Revised by the first audit lap. What changed is recorded under "### What the audit changed" below,
@@ -508,6 +622,9 @@ over a CommonMark parser rather than a scanner.
 - Prose under each heading becomes doc facts, one per region, fence regions marked.
 - Frontmatter emits `property` declarations through the YAML reader chosen in Phase 0. This is the
   mixed-content case that killed the family field, so it gets a fixture on day one.
+- **Frontmatter is handled for EVERY markdown extension, never just `.mdc`.** Plain `.md` carries it
+  constantly, and treating it as an `.mdc` quirk would mean the phantom-heading misparse survives in
+  the common case. The extension is enabled for the provider, not per file type.
 
 ## Phase 3 - Core
 
