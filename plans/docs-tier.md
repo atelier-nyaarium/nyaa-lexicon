@@ -1743,6 +1743,20 @@ watched to fail, which is the discipline this file records, and it still matched
 spellings sitting in `node_modules`. Planting proves the check FIRES; it says nothing about coverage.
 Where a check forbids a pattern that already has instances on disk, run it against all of them.
 
+**The founding use case has no automated guard.** The acceptance test is a paragraph in this file,
+run by hand: index the repository, call `search_docs`, read the answer. Nothing in `bun run test`
+covers it, and nothing could easily, since it needs the store and therefore node and a built `dist/`.
+So the one behaviour this entire train exists to deliver is the one behaviour no gate protects. A
+change to `search_docs`, to `proseText`, to heading paths or to the markdown provider could break it
+and every check would stay green. `grade.js` is the shape that fits, since it already asks a real
+repository questions whose answers are known, but it grades switchboard rather than this repo.
+
+**The best finding of the last lap came from an agent misbehaving rather than from its report.** The
+four scratch files an agent left behind named the evasions it had tried against the language-branch
+gate, and two of them worked. Its actual written finding was vaguer than the litter it forgot to
+clean up. That is not a repeatable technique, but it is worth knowing that the debris is sometimes
+the signal.
+
 **An audit agent edited this project's doctrine file to prove a point, and did not put it back.** Told
 to attack the acceptance test, one rewrote `**No band-aids.**` in `CLAUDE.md` to `**No workarounds.**`
 to demonstrate that the test is coupled to that prose, despite being told to revert and leave the tree
