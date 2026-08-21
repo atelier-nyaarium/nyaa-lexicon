@@ -984,17 +984,38 @@ walk in `headingPath` and the render around it, patched three times in this phas
 2. The chain could CROSS MODULES, so a foreign heading appeared above a local one. Patched by
    stopping at a module change.
 3. The anchor's own module can differ from the REGION's, so a hit in `guide.md` renders as
-   `guide.md > Foreign` where `Foreign` is declared in `other.md`. Reproduced, still open.
+   `guide.md > Foreign` where `Foreign` is declared in `other.md`.
 
-Each patch guards the reader, and the third instance proves that is the wrong end. `DocRegion`
-declares `anchorId` as any non-empty string, and every consumer downstream re-decides what that
-string is allowed to be, so the next consumer inherits the same obligation and the same chance of
+Each patch guarded the reader, and the third instance proved that is the wrong end. `DocRegion`
+declares `anchorId` as any non-empty string, and every consumer downstream re-decided what that
+string was allowed to be, so the next consumer inherited the same obligation and the same chance of
 forgetting it.
 
-`replaceFile` already holds the file's declarations beside its regions, which is the one place where
-"is this anchor a heading in this file" is answerable without a second query. Refusing an anchor
-there, or nulling it and saying so, makes every downstream guard unnecessary rather than merely
-correct. Left for the architecture pass rather than patched a third time.
+**Closed at the boundary.** `replaceFile` already holds the file's declarations beside its regions,
+which is the one place where "is this anchor a heading in this file" is answerable with no second
+query. It now REFUSES a region anchored anywhere else, before the transaction opens, so the file's
+previous facts survive the refusal. All three instances become impossible to persist, and the test
+that used to plant instance one can no longer be written through the store at all, which is what
+inexpressible means.
+
+**Refused rather than nulled, and the alternatives were argued.** Null already means the region sits
+under no heading, so reusing it for "the provider named something we could not verify" would hide a
+contract violation behind a legitimate answer. Dropping the region loses prose that is perfectly
+searchable for a reason the reader never sees. A third value carrying an Unknown reason was weighed
+and rejected: this is a provider contract violation, which conformance already checks, rather than
+an inherently unknowable relationship.
+
+The reader guards stay. A `containerId` is still unvalidated on write, so the chain can leave the
+headings even when the anchor cannot, and the walk has to stop somewhere.
+
+**The class is wider than documents, and the numbers say so.** Core stores five provider-originated
+symbol ids without a validating owner: `reference.fromId`, a binding's `targetId`,
+`declaration.containerId`, `literal.containerId`, and this anchor. Only the anchor is now checked. A
+residue test over the store's ingress statements would flag exactly those 5 with 0 false positives,
+while a broader field-name sweep over `core/src` flags 9 including 4 legitimate downstream reads, so
+the narrow form is the one that could hold. On the board as a core-wide invariant rather than folded
+in here, because the other four need a policy each: what a cross-module `targetId` legitimately
+means is a different question from what a foreign anchor means.
 
 ### What the red team broke, and what it found underneath
 

@@ -718,6 +718,7 @@ export class IndexStore {
 		comments: AttachedComment[] = [],
 		docs: DocRegion[] = [],
 	): void {
+		refuseForeignAnchors(module, declarations, docs);
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
@@ -1788,6 +1789,29 @@ function rowToComment(raw: unknown): StoredComment {
 			end: { line: row.endLine, character: row.endChar },
 		},
 	};
+}
+
+/**
+ * The one place a doc anchor is checked, before anything is written.
+ *
+ * An anchor is any non-empty string on the wire, so every reader downstream would otherwise
+ * re-decide what it is allowed to be, and the third reader to forget is the one that ships a hit
+ * in one file labelled with a heading from another.
+ *
+ * REFUSED rather than nulled: null already means the region sits under no heading, and reusing it
+ * for "the provider named something we could not verify" would hide a contract violation behind a
+ * legitimate answer. Refused before the transaction opens, so the file's previous facts survive.
+ */
+function refuseForeignAnchors(module: string, declarations: Declaration[], docs: DocRegion[]): void {
+	const headings = new Set(
+		declarations.filter((declaration) => declaration.kind === "heading").map((d) => d.symbolId),
+	);
+	for (const region of docs) {
+		if (region.anchorId === undefined || headings.has(region.anchorId)) continue;
+		throw new Error(
+			`${module}: a document region is anchored to ${JSON.stringify(region.anchorId)}, which is not a heading declared in this file`,
+		);
+	}
 }
 
 function rowToDoc(raw: unknown): StoredDoc {

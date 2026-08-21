@@ -94,6 +94,26 @@ describe("storing document prose", () => {
 		expect(reads.findDocs({ module: MODULE }).total).toBe(2);
 	});
 
+	// Refused rather than nulled: null already means the region sits under no heading, so reusing it
+	// would hide a provider's contract violation behind a legitimate answer.
+	it("refuses an anchor that is not a heading declared in this file, and keeps what was there", () => {
+		write([heading("Principles")], [region("survivor", 3, headingId("Principles"))]);
+		const foreign = composeSymbolId({
+			language: "markdown",
+			module: "docs/other.md",
+			descriptors: [{ kind: "namespace", name: "Foreign" }],
+		});
+
+		expect(() => write([heading("Principles")], [region("bad anchor", 3, foreign)])).toThrow();
+		expect(() =>
+			write(
+				[{ ...heading("helper"), kind: "function", symbolId: headingId("helper") }],
+				[region("bad kind", 3, headingId("helper"))],
+			),
+		).toThrow();
+		expect(reads.findDocs({ module: MODULE }).docs.map((d) => d.raw)).toEqual(["survivor"]);
+	});
+
 	it("forgets a file's regions along with its other facts", () => {
 		write([heading("Principles")], [region("gone soon", 3, headingId("Principles"))]);
 		store.forgetFile(MODULE);
@@ -139,21 +159,22 @@ describe("the heading path", () => {
 		expect(reads.findDocs({ text: "preamble" }).docs[0]?.headingPath).toEqual([]);
 	});
 
-	// The anchor is any string on the wire, so a provider naming a function must not put a function
-	// in something called a heading path.
-	it("stops at the first non-heading, keeping the real headings above it", () => {
-		const section = headingId("Section");
-		const inner = headingId("Section", "helper");
+	// A containerId is not validated on write, so the chain can still leave the headings.
+	it("stops at the first non-heading in the chain, keeping the headings above it", () => {
+		const outer = headingId("Outer");
+		const middle = headingId("Outer", "helper");
+		const inner = headingId("Outer", "helper", "Inner");
 		write(
 			[
-				{ ...heading("Section"), symbolId: section },
-				{ ...heading("helper"), kind: "function", symbolId: inner, containerId: section },
+				{ ...heading("Outer"), symbolId: outer },
+				{ ...heading("helper"), kind: "function", symbolId: middle, containerId: outer },
+				{ ...heading("Inner"), symbolId: inner, containerId: middle },
 			],
-			[region("under a function", 3, inner)],
+			[region("under a nested heading", 3, inner)],
 		);
 
-		expect(reads.headingPath(inner)).toEqual([]);
-		expect(reads.findDocs({ text: "under a function" }).docs[0]?.headingPath).toEqual([]);
+		expect(reads.headingPath(inner)).toEqual(["Inner"]);
+		expect(reads.findDocs({ text: "under a nested" }).docs[0]?.headingPath).toEqual(["Inner"]);
 	});
 
 	it("stays inside one module, so a path never mixes two files", () => {
