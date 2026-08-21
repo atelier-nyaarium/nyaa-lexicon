@@ -577,9 +577,11 @@ because the reasoning is worth more than the diff.
 - **`SymbolSummary` gains `containerId`.** A docs search returns a heading PATH, which means walking
   ancestors, and today only `outline` re-adds the container through an intersection type. Without
   this the path cannot be built at all.
-- Conformance cases, shared across languages: a heading tree with nesting, prose attribution, a
-  fence that must not yield a heading, a fence whose text is searchable and marked, a section mixing
-  prose and fence and prose, prose before any heading, and a document with no headings.
+- Four conformance cases: a heading tree with nesting, prose attribution including prose before any
+  heading, a fence that yields no heading and is marked fenced within a section that mixes prose and
+  fence and prose, and a document with no headings. **Searchability is NOT among them,** because
+  search arrives in Phase 4 and conformance asks a provider what it extracted, never what a tool can
+  find. The first draft listed it here, which was a claim this phase cannot make.
 
 ### What the Phase 1 audit changed, and what it did not
 
