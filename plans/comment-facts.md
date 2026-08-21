@@ -561,7 +561,7 @@ hand at the moment of its fix, and a hand proof decays the moment the code moves
   All eight producers, relocated by `grep -rn docComment providers/`, plus the schema field itself.
   The declaration RANGE conventions stay untouched: Phase 3 reads them, it does not change them.
 
-## Phase 4 - Surface
+## Phase 4 - Surface (as planned)
 
 - Daemon method `findComments`: request { text?, regex? (XOR, compileSearchRegex validation and
   flags), form?, module? (exact path), limit? (default 50, max 200) }; response { query echo,
