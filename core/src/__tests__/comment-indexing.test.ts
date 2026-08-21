@@ -161,6 +161,36 @@ describe("indexing comments", () => {
 		expect(service.commentsFor(idOf("work"))[0]?.form).toBe("leading");
 	});
 
+	// The common shape in every annotated language, where the range does NOT cover the annotation.
+	// Treating that line as a wall costs the documentation of every decorated symbol.
+	it("reaches past an annotation the declaration's range does not cover", async () => {
+		const text = "// what work does\n@Suppress\nwork\n";
+		const service = await index({ text, declarations: [decl("work", 2, 2)], comments: [span(text, 0, 0)] });
+
+		const [found] = service.commentsFor(idOf("work"));
+		expect(found?.form).toBe("leading");
+	});
+
+	it("still refuses across a blank line, annotation or not", async () => {
+		const text = "// floating\n\n@Suppress\nwork\n";
+		const service = await index({ text, declarations: [decl("work", 3, 3)], comments: [span(text, 0, 0)] });
+
+		expect(service.commentsFor(idOf("work"))).toEqual([]);
+	});
+
+	// Something else already claimed the gap, so the comment cannot reach past it.
+	it("refuses when another declaration stands between", async () => {
+		const text = "// about first\nfirst\nsecond\n";
+		const service = await index({
+			text,
+			declarations: [decl("first", 1, 1), decl("second", 2, 2)],
+			comments: [span(text, 0, 0)],
+		});
+
+		expect(service.commentsFor(idOf("first"))[0]?.form).toBe("leading");
+		expect(service.commentsFor(idOf("second"))).toEqual([]);
+	});
+
 	it("keeps a CRLF file's comment attached and its text clean", async () => {
 		const text = "// what work does\r\nwork\r\n";
 		const line = "// what work does";

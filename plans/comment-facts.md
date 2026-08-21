@@ -426,11 +426,37 @@ is kept: describe cuts at the first sentence anyway, and a search for a tag shou
 `LIKE '%text%'` cannot use an index, which is true and is the same contract literals already have.
 Tab-versus-spaces indent not merging is defensible: they are different columns.
 
+### The decorator gap, found by re-auditing after the grouping fix
+
+Re-running the two lenses that had found real things paid for itself. With fragments gone, a fresh
+sample of 47 real comments found 14 genuinely wrong, and the cause was one rule: an annotation
+between a doc comment and its declaration was treated as a wall.
+
+`@Suppress("FunctionName")` sits between `MainScope`'s KDoc and `MainScope` in kotlinx-coroutines,
+and Kotlin's declaration range does not cover it, so the doc went standalone. The same shape is
+`#[derive(...)]` in Rust, `@decorator` in Python, an attribute in C#, a macro line in C. The plan
+listed "decorator gaps" as a required fixture and the implementation only handled the sub-case
+where the range starts AT the decorator.
+
+The rule is now language-neutral: a BLANK line still breaks the bond, because that is the reader's
+own paragraph break and Q3 settled that a fenced comment names neither neighbour. A line with
+something written on it does not break it, unless another declaration starts there, because then
+that declaration has already claimed the gap. An annotation, attribute, macro or modifier is none
+of those things.
+
+Recovered documentation, measured:
+
+| corpus | leading before | leading after |
+|---|---|---|
+| kotlinx-coroutines | 1803 | 2699 |
+| ripgrep | 1399 | 1925 |
+| libuv | 526 | 655 |
+
 ### Bug Classes
 
 **Mechanism:** the attachment rules in `commentAttach`, every one of which is a statement about a
 RELATIONSHIP between several things: a run of N comment lines, a comment and the scopes nested
-around it, a mix of comment kinds.
+around it, a mix of comment kinds, and a gap with something in it.
 
 **Class: a fixture built at the minimal arity cannot tell "handles the pair" from "handles the
 rule".** Patched three times in this phase, each time by someone else's input rather than by the
@@ -442,9 +468,11 @@ tests:
    exactly two lines, which is the one length that cannot distinguish the two behaviours.
 3. A single-line block comment joined a line-comment run, contradicting the rule written directly
    above the function. No fixture ever mixed comment kinds.
+4. An annotation between a doc comment and its declaration broke the bond, losing the doc of every
+   decorated symbol. Every gap fixture was empty or blank; none had anything WRITTEN in it.
 
-Three rounds, one cause: the tests demonstrated each rule at its smallest instance and stopped.
-Two is not a run, one scope is not nesting, and one kind is not a mix. The corpus runs caught none
+Four rounds, one cause: the tests demonstrated each rule at its smallest instance and stopped.
+Two is not a run, one scope is not nesting, one kind is not a mix, and an empty gap is not a gap. The corpus runs caught none
 of them either, because a fragment and a whole comment both look like a plausible fact from the
 outside; only a human reading the file, or an agent told to go break it, could see the difference.
 

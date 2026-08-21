@@ -134,10 +134,18 @@ function groupComments(comments: CommentSpan[], text: string): Group[] {
 ////////////////////////////////
 //  Leading
 
-/** True when only comment lines separate the two, so a blank line breaks the bond. */
-function onlyCommentLinesBetween(from: number, to: number, commentLines: Set<number>): boolean {
+/**
+ * True when nothing between the comment and the declaration breaks their bond.
+ *
+ * A BLANK line breaks it: that is the reader's own paragraph break, and a comment fenced by blank
+ * lines names neither neighbour. Anything written on a line does NOT break it, as long as no other
+ * declaration starts there. An annotation, attribute, macro or modifier belongs to the declaration
+ * it precedes, and languages disagree about whether the declaration's range covers it, so treating
+ * that line as a wall loses the documentation of every decorated symbol in half the languages here.
+ */
+function nothingBetween(from: number, to: number, blankLines: Set<number>, declarationLines: Set<number>): boolean {
 	for (let line = from + 1; line < to; line++) {
-		if (!commentLines.has(line)) return false;
+		if (blankLines.has(line) || declarationLines.has(line)) return false;
 	}
 	return true;
 }
@@ -150,7 +158,12 @@ function onlyCommentLinesBetween(from: number, to: number, commentLines: Set<num
  * whose range INCLUDES the doc; the second catches the ones whose range starts at the code, read
  * from the text rather than inferred from stored endpoints.
  */
-function leadingTarget(group: Group, declarations: Declaration[], commentLines: Set<number>): Declaration | undefined {
+function leadingTarget(
+	group: Group,
+	declarations: Declaration[],
+	blankLines: Set<number>,
+	declarationLines: Set<number>,
+): Declaration | undefined {
 	const included = declarations.find((declaration) => sameStart(declaration.range, group.range));
 	if (included !== undefined) return included;
 
@@ -161,7 +174,7 @@ function leadingTarget(group: Group, declarations: Declaration[], commentLines: 
 		nearest = declaration;
 	}
 	if (nearest === undefined) return undefined;
-	if (!onlyCommentLinesBetween(group.range.end.line, nearest.range.start.line, commentLines)) return undefined;
+	if (!nothingBetween(group.range.end.line, nearest.range.start.line, blankLines, declarationLines)) return undefined;
 	// A comment cannot document something outside the scope holding it. Inside a body, the next
 	// declaration below is a SIBLING of the enclosing one, and the comment belongs to the body it
 	// sits in. A member nested in that same scope is still reachable, which is the common case.
@@ -213,19 +226,19 @@ export function attachComments(declarations: Declaration[], comments: CommentSpa
 	const groups = groupComments(comments, text);
 	if (groups.length === 0) return [];
 
-	const commentLines = new Set<number>();
-	for (const group of groups) {
-		for (let line = group.range.start.line; line <= group.range.end.line; line++) {
-			if (group.ownLine) commentLines.add(line);
-		}
+	const coordinates = coordinatesOf(text);
+	const blankLines = new Set<number>();
+	for (let line = 0; line < coordinates.lineCount(); line++) {
+		if ((coordinates.lineText(line) ?? "").trim() === "") blankLines.add(line);
 	}
+	const declarationLines = new Set(declarations.map((declaration) => declaration.range.start.line));
 
 	// A declaration takes the NEAREST qualifying group; the rest of its candidates fall through to
 	// standalone rather than every one of them claiming the same symbol.
 	const leadFor = new Map<string, Group>();
 	for (const group of groups) {
 		if (!group.ownLine || group.codeAfter) continue;
-		const target = leadingTarget(group, declarations, commentLines);
+		const target = leadingTarget(group, declarations, blankLines, declarationLines);
 		if (target === undefined) continue;
 		const held = leadFor.get(target.symbolId);
 		if (held === undefined || group.range.end.line > held.range.end.line) leadFor.set(target.symbolId, group);
