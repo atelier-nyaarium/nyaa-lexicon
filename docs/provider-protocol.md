@@ -17,7 +17,7 @@ any branch on language, which a residue test enforces.
 ```
 initialize(root)             -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
 discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
-parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[] }
+parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[], docs[] }
 resolveImport(from, spec)    -> ImportResolution
 bind(reference)              -> Binding
 typeOf(target)               -> TypeInfo
@@ -98,6 +98,34 @@ before trusting a new lexer, plant a marker inside every string form the languag
   every span reported, not only expected ones.
 - At `outline` or `surface` depth, send `comments: []` like the `literals: []` beside it. Absent
   means the tier is false, which is a different and stronger claim than "did not extract here".
+
+## Documents are headings and regions
+
+Only a provider whose files are DOCUMENTS declares the `docs` tier. Every code provider declares it
+false, and that is the honest answer rather than a gap: a language has no sections.
+
+A heading is a DECLARATION of kind `heading`, with the heading above it as its container. So an
+outline of a document is its table of contents, and everything built on declarations works without
+knowing a document from a class.
+
+The prose is separate, one `DocRegion` per contiguous stretch:
+
+- **Per REGION, never per section.** A section is normally prose, then a fence, then more prose. One
+  fact per section could not say which part was fenced.
+- `fenced` marks a region from a fenced code block, so a result can say where it was found. A
+  fence's contents are TEXT: never parse them as the language the fence names.
+- `anchorId` is the heading's symbolId, never its name, because two headings share a name. Absent
+  means the region sits under no heading, which covers prose before the first one and a file with
+  none.
+- Regions PARTITION the file: disjoint, in document order. Overlapping regions index the same bytes
+  twice, so one search returns the same prose as two facts.
+- A range slices its own text back out, with fence delimiter lines excluded from both.
+
+**A repeated heading needs an occurrence.** `## Notes` twice under one parent would otherwise be one
+symbol, so the second carries a disambiguator: `Parent/Notes(2)/`. That id moves if a sibling is
+inserted above it, which is a known and accepted weakness, recorded in `plans/docs-tier.md`. Emit a
+diagnostic when you disambiguate, so a reader learns it there rather than when knowledge stops
+resolving.
 
 ## Positions
 
