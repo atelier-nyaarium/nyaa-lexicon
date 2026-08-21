@@ -647,4 +647,31 @@ call `parseFile` once has to hand-roll a vscode-jsonrpc handshake. Two of them g
 wrong and reported the harness's failure as the provider's. A tiny `parse-with.js <provider> <file>`
 alongside `index-workspace.js` would make that class of finding self-checking.
 
+Felt building Phase 3.
+
+**The corpus tests skip silently, against this project's own stated doctrine.** Every provider
+corpus test is `existsSync(root) ? it : it.skip`, so a checkout without `temp/` runs the whole suite
+green with zero corpus coverage. The residue-test rule in CLAUDE.md says the opposite in as many
+words: "every sweep also asserts it FOUND files to check, so a run matching nothing fails instead of
+quietly reporting clean". The corpus tests are the same shape and do not follow it. They are now
+the only thing verifying ~86,000 comment spans, so the silence is louder than it used to be. The
+honest fix is a single test asserting that AT LEAST ONE corpus was present, failing when none were,
+so the skips stay per-corpus but total absence cannot pass.
+
+**`replaceFile` takes eight positional parameters, five of them defaulting to an empty array.**
+Adding `comments` meant appending after `depth`, so a caller that wants comments writes
+`replaceFile(module, hash, declarations, [], [], [], "full", comments)`. Four adjacent array
+arguments of different meaning, positionally distinguished, with nothing to catch a swap: passing
+imports where literals go is silent at compile time and at runtime. It is the single write path by
+design, which is right, but the signature has outgrown positional arguments and wants an options
+object for everything after the module and hash.
+
+**`index-workspace` throws its index away and nothing says so.** It opens `:memory:`, which is the
+right choice for a one-shot tool, but the file header describes it as "index a workspace and answer
+one question about it" with no hint the store does not persist. I wrote a probe against the on-disk
+store, found no comments table, and briefly believed the feature had not landed at all. The header
+should say it, and while it is being touched, the daemon's own store should be introspectable:
+after a SCHEMA_VERSION bump the RUNNING plugin daemon still serves the old schema and there is no
+way to ask which one it is holding.
+
 
