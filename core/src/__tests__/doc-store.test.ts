@@ -111,6 +111,17 @@ describe("storing document prose", () => {
 				[region("bad kind", 3, headingId("helper"))],
 			),
 		).toThrow();
+		// A declaration carrying a FOREIGN id would otherwise vouch for an anchor in another module.
+		expect(() =>
+			write([{ ...heading("Foreign"), symbolId: foreign }], [region("foreign vouch", 3, foreign)]),
+		).toThrow();
+		// The store keeps the LAST declaration for an id, so a duplicate must not smuggle a kind past.
+		expect(() =>
+			write(
+				[heading("Principles"), { ...heading("Principles"), kind: "property" }],
+				[region("smuggled", 3, headingId("Principles"))],
+			),
+		).toThrow();
 		expect(reads.findDocs({ module: MODULE }).docs.map((d) => d.raw)).toEqual(["survivor"]);
 	});
 

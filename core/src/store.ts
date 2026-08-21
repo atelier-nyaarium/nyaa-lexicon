@@ -17,6 +17,7 @@ import {
 	type Literal,
 	literalFactId,
 	type Metrics,
+	moduleOf,
 	parseFactId,
 	type Range,
 	type Reference,
@@ -1803,11 +1804,16 @@ function rowToComment(raw: unknown): StoredComment {
  * legitimate answer. Refused before the transaction opens, so the file's previous facts survive.
  */
 function refuseForeignAnchors(module: string, declarations: Declaration[], docs: DocRegion[]): void {
-	const headings = new Set(
-		declarations.filter((declaration) => declaration.kind === "heading").map((d) => d.symbolId),
-	);
+	// Last write wins, matching the INSERT OR REPLACE below, so a duplicate id cannot smuggle a kind
+	// past the check and then store the other one.
+	const kinds = new Map<string, string>();
+	for (const declaration of declarations) kinds.set(declaration.symbolId, declaration.kind);
+
 	for (const region of docs) {
-		if (region.anchorId === undefined || headings.has(region.anchorId)) continue;
+		if (region.anchorId === undefined) continue;
+		// The id must name a heading AND belong to this file: a declaration carrying a foreign id
+		// would otherwise vouch for an anchor in another module.
+		if (kinds.get(region.anchorId) === "heading" && moduleOf(region.anchorId) === module) continue;
 		throw new Error(
 			`${module}: a document region is anchored to ${JSON.stringify(region.anchorId)}, which is not a heading declared in this file`,
 		);

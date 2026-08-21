@@ -1008,6 +1008,18 @@ an inherently unknowable relationship.
 The reader guards stay. A `containerId` is still unvalidated on write, so the chain can leave the
 headings even when the anchor cannot, and the walk has to stop somewhere.
 
+**The first version of the refusal had the class inside it, twice.** It asked only whether the id
+appeared among the declarations with kind heading, which a red team broke two ways: a declaration
+carrying a FOREIGN symbolId vouched for an anchor in another module, and a duplicate id declared
+once as a heading and once as something else passed the check while the store's own
+`INSERT OR REPLACE` kept the other one. Both are the same mistake the class describes, made while
+fixing it: validating a naive reading of the input rather than what the ids MEAN and what will
+actually be stored. It now requires the id's own module to be this file's, and resolves duplicates
+last-write-wins the way the insert does.
+
+The one remaining bypass is `journal(db)`, which hands out the raw database on purpose for the
+refactor journal. Every store invariant is reachable that way, so it is not this one's problem.
+
 **The class is wider than documents, and the numbers say so.** Core stores five provider-originated
 symbol ids without a validating owner: `reference.fromId`, a binding's `targetId`,
 `declaration.containerId`, `literal.containerId`, and this anchor. Only the anchor is now checked. A
