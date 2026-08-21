@@ -132,4 +132,10 @@ describe("failure", () => {
 	it("keeps a repeated key from silencing its siblings, at any depth", () => {
 		expect(names('{"o": {"a": 1, "a": 2, "b": 3}}')).toEqual(["o", "a", "b"]);
 	});
+
+	it("says so when a key cannot be named, rather than reporting an empty file", () => {
+		const facts = read('{"": 1}');
+		expect(facts.declarations).toEqual([]);
+		expect(facts.diagnostics.map((d) => d.severity)).toEqual(["info"]);
+	});
 });

@@ -154,9 +154,20 @@ export function readJson(context: JsonContext): JsonFacts {
 
 		for (const [index, property] of properties.entries()) {
 			const [key, value] = property.children ?? [];
-			if (key === undefined || typeof key.value !== "string" || key.value === "") continue;
+			if (key === undefined || typeof key.value !== "string") continue;
+			const at = coordinates.rangeAt(offset + key.offset, offset + key.offset + key.length);
+			// A key with no name cannot be addressed. Said out loud, so a file in scope never reports
+			// nothing without a reason.
+			if (key.value === "") {
+				diagnostics.push({
+					severity: "info",
+					message: "a key with no name cannot be addressed, so it is not indexed",
+					path: module,
+					...(at === undefined ? {} : { range: at }),
+				});
+				continue;
+			}
 			if (owner.get(key.value) !== index) {
-				const at = coordinates.rangeAt(offset + key.offset, offset + key.offset + key.length);
 				diagnostics.push({
 					severity: "warning",
 					message: `duplicate key ${JSON.stringify(key.value)}; the last one is indexed`,

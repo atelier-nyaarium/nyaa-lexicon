@@ -1327,6 +1327,24 @@ and one owner should set that policy once.
   and measured. The lesson is that a residue check written against the instance that motivated it
   should be tested against every OTHER instance already on disk before it is trusted.
 
+**Patched twice in one mechanism, so it is a design bug and not bad luck.** The mechanism is `walk`
+in both readers: it mints a symbolId from a descriptor chain and pushes a declaration, and nothing
+checks that the id is unique within the file. Round one patched it for sequence siblings by carrying
+an ordinal into the descriptors. Round three patched it again for a repeated key, by walking only the
+last occurrence. Two patches, one mechanism, one class: a provider can emit two declarations with one
+id, and the store's `INSERT OR REPLACE` silently keeps whichever arrived last.
+
+A third shape is reachable and unpatched: two DIFFERENT key spellings that normalize to one
+descriptor. The fix is not a third patch inside `walk`. It is a primitive at the point declarations
+are collected that makes a duplicate id inexpressible, which is provider-side and pairs with the
+core-side entry already on the board. Deferred to the architecture pass rather than attempted here.
+
+**Patched in four places at once, which is the same signal arriving differently.** A `RangeError`
+escaping as a transport error was fixed in `parseTree`, in the JSON walk, in `parseAllDocuments` and
+in the YAML walk, all in one round. Four guards for one class means the class has no owner: the next
+reader adding a fifth recursion site inherits nothing. It works and it is tested, and it wants one
+boundary rather than four try blocks.
+
 ## Phase 6 - Verification
 
 - Gate, then conformance across every provider, not only the new ones. A corpus case is shared.

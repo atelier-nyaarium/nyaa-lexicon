@@ -106,22 +106,30 @@ export function readYaml(context: YamlContext): YamlFacts {
 			// beats skipping in silence, which leaves a valid file in scope reporting nothing.
 			if (!isScalar(pair.key)) {
 				const span = isNode(pair.key) ? pair.key.range : undefined;
-				const at = span == null ? undefined : coordinates.rangeAt(offset + span[0], offset + span[1]);
-				diagnostics.push({
-					severity: "info",
-					message: "a key that is not a scalar cannot be named, so it is not indexed",
-					path: module,
-					...(at === undefined ? {} : { range: at }),
-				});
+				unnamed(
+					"a key that is not a scalar cannot be named, so it is not indexed",
+					span == null ? undefined : coordinates.rangeAt(offset + span[0], offset + span[1]),
+				);
 				continue;
 			}
 			const key = pair.key.range;
 			const name = String(pair.key.value);
-			if (key === null || key === undefined || name === "") continue;
+			if (key === null || key === undefined) continue;
 			// A merge key is a directive, not a key. Its target is already indexed under its own anchor,
 			// which is the same reason an alias is not expanded.
 			if (name === "<<") continue;
-			if (owner.get(name) !== index) continue;
+
+			const keySpan = coordinates.rangeAt(offset + key[0], offset + key[1]);
+			if (name === "") {
+				unnamed("a key with no name cannot be addressed, so it is not indexed", keySpan);
+				continue;
+			}
+			// An id carries a name, not a type, so `1:` and `"1":` are one id however YAML reads them.
+			// The library calls those distinct keys and says nothing, so the loss is reported here.
+			if (owner.get(name) !== index) {
+				unnamed(`a key spelled ${JSON.stringify(name)} appears more than once; the last is indexed`, keySpan);
+				continue;
+			}
 
 			const keyStart = offset + key[0];
 			const keyEnd = offset + key[1];
@@ -151,6 +159,11 @@ export function readYaml(context: YamlContext): YamlFacts {
 			if (isScalar(value)) pushScalar(value, symbolId);
 			else walk(value, descriptors, symbolId);
 		}
+	}
+
+	/** A key the index drops. Said out loud, so a file in scope never reports nothing without a reason. */
+	function unnamed(message: string, range: ReturnType<TextCoordinates["rangeAt"]>): void {
+		diagnostics.push({ severity: "info", message, path: module, ...(range === undefined ? {} : { range }) });
 	}
 
 	function pushScalar(scalar: Scalar, containerId: string | undefined): void {

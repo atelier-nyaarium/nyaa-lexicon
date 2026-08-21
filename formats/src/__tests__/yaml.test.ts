@@ -143,8 +143,16 @@ describe("failure", () => {
 	});
 
 	it("says so when a key cannot be named, rather than reporting an empty file", () => {
-		const facts = read("? [a, b]\n: value\n");
-		expect(facts.declarations).toEqual([]);
+		for (const text of ["? [a, b]\n: value\n", '"": one\n']) {
+			const facts = read(text);
+			expect(facts.declarations).toEqual([]);
+			expect(facts.diagnostics.map((d) => d.severity)).toEqual(["info"]);
+		}
+	});
+
+	it("says so when two spellings of one name collapse, which the parser calls distinct", () => {
+		const facts = read('1: one\n"1": two\n');
+		expect(facts.declarations.map((d) => d.name)).toEqual(["1"]);
 		expect(facts.diagnostics.map((d) => d.severity)).toEqual(["info"]);
 	});
 
