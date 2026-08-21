@@ -361,8 +361,63 @@ a language in core says so explicitly. Nothing here closes that door.
 # Plan
 
 Ships inside the unpushed `2.0.0`, so wire changes are free for the duration. Markdown is the
-reference implementation, built by hand; the remaining formats fan out one Luna each, the shape that
-worked for the comment tier.
+reference implementation; the remaining formats fan out one Luna each, the shape that worked for the
+comment tier.
+
+## Phase 0 - Choose every parser, once
+
+Added by the second audit lap, because the first left two decisions deferred inside later phases and
+a deferred decision is one that gets made hastily mid-implementation.
+
+Parser choice is CROSS-CUTTING, not per-phase. Markdown needs a YAML reader for frontmatter, and
+Phase 5 needs one for `.yml`. Deciding those separately is how a codebase ends up with two YAML
+readers that disagree, which is the single-owner defect this project hunts. So every format's parser
+is chosen here, before any provider is written.
+
+**The shipping constraint decides more than preference.** Providers are BUNDLED: `providerBundles`
+inlines everything so a host needs no `node_modules`. That means a dependency must be pure
+JavaScript with no native bindings, and its weight is permanent for every consumer. Precedent exists
+for paying real weight when it is right: the TypeScript provider bundle is 4 MB because it inlines
+the compiler.
+
+**Markdown gets a CommonMark-compliant library, not a hand-written scanner.** The whole Phase 2 trap
+list (setext headings, tilde fences, fence length and character matching, indented code blocks, `#`
+inside HTML comments, headings nested in blockquotes and lists) is precisely what CommonMark
+compliance already solves. Hand-writing it means re-deriving CommonMark badly, and `docs/parsing.md`
+rule 1 says check for a library first. The requirement is source POSITIONS on every node, since a
+declaration needs a range and a doc region needs its own. Evaluate the pure-JS options that expose
+them and pin one.
+
+That reverses the first draft's "about fifty lines", which was an assertion rather than a decision.
+`toolsTreeMd` is fifty lines and has a real bug for exactly this reason.
+
+- Record for each format: the library, why it was chosen, its weight, and what it does NOT cover.
+- Anything with native bindings is disqualified by the bundle, not by taste.
+- `/update-packages` governs the installs: the maturity rule applies and versions are pinned.
+- If a format ends up hand-written after all, the plan records WHY, and that parser ships an explicit
+  grammar subset whose unsupported constructs are REPORTED as diagnostics rather than misparsed.
+
+**Frontmatter is settled here too.** The markdown provider owns `.md` and `parseFile` receives whole
+modules, so the YAML provider never sees frontmatter and it cannot be deferred. With the YAML
+library already chosen in this phase, the markdown provider uses that same one.
+
+**My stated reason for sharing it was wrong, and the second lap caught it.** I argued single
+ownership as though sharing saved bytes. It does not: `providerBundles` bundles each provider
+SEPARATELY, so a library imported by two providers is inlined twice on disk. The real invariant is
+one semantic INTERPRETATION of YAML, not one copy of it, and that is still worth having, because two
+readers disagreeing about what a YAML scalar means is exactly the drift the rule exists to stop.
+
+**Paper evaluation is not enough, and this phase must produce spikes.** Confirming that a parser
+reports usable source positions for headings, fences, frontmatter delimiters and multi-document
+YAML cannot be done from a README. Each candidate gets a small spike with acceptance criteria, and
+the fixtures that would invalidate a choice live HERE, not in Phase 2 and Phase 5 where they arrive
+too late to change the decision.
+
+**The bundle will not catch a bad dependency.** `scripts/build.ts` runs `bun build --target node`
+with no external list, no dependency-graph scan and no native-file inspection, and its only gate is
+a nonzero exit. A package with a native addon can bundle and then fail at provider startup, which
+`core/src/providers.ts` records and skips, leaving documentation indexing silently at zero coverage.
+A provider startup smoke check belongs in this phase.
 
 ## Phase 1 - Protocol
 
@@ -435,27 +490,20 @@ so core drops them. That is deliberate, and it is the same additive shape the co
 that no commit ships a release with a visibly broken tier. It does mean this phase is not
 independently shippable, and the plan says so rather than leaving it to be rediscovered.
 
-**The parser decision is made here, in writing, before code.** `docs/parsing.md` rule 1 says check
-for a library first, and the audit was right that "about fifty lines" was an assertion rather than a
-decision. Markdown is not a line format. Before writing anything, evaluate a maintained parser that
-gives byte offsets for headings and content, and adopt it unless it fails the shipping constraint,
-which is node running a committed bundle with no install step and no native bindings. If a library
-is rejected, the plan records WHY, and the hand-written version ships an explicit grammar subset
-whose unsupported constructs are REPORTED as diagnostics rather than silently misparsed. Eight
-hand-written lexers have already cost this project real bugs, and four of them were this exact class.
+The parser and the frontmatter reader are both chosen in Phase 0, so this phase writes an adapter
+over a CommonMark parser rather than a scanner.
 
-- Heading detection must survive the whole trap list, not just fences: indented code blocks at four
-  spaces, tilde fences, closing fences that must match the opener's character and length, setext
+- The trap list is the CONFORMANCE list, not an implementation checklist: indented code blocks at
+  four spaces, tilde fences, closing fences matching the opener's character and length, setext
   headings underlined with `=` or `-`, a `#` inside an HTML comment, headings nested in blockquotes
-  or list items, and CRLF. Each gets a fixture. The comment train shipped a CRLF defect in C, so
-  CRLF is not optional here.
+  or list items, and CRLF. A compliant parser handles all of them; the fixtures exist to prove it
+  does, and to fail loudly if the parser is ever swapped. The comment train shipped a CRLF defect in
+  C, so CRLF is not optional here.
 - Headings become declarations with the parent heading as container, giving `outline_module` a table
   of contents for free.
 - Prose under each heading becomes doc facts, one per region, fence regions marked.
-- **Frontmatter cannot be deferred to Phase 5, and the audit caught the circularity.** The markdown
-  provider owns `.md`, and `parseFile` receives a whole module, so the YAML provider never sees it.
-  Either the markdown provider carries a minimal frontmatter reader, or v1 declares frontmatter out
-  of scope and reports it as unindexed. Decide before writing, do not discover mid-phase.
+- Frontmatter emits `property` declarations through the YAML reader chosen in Phase 0. This is the
+  mixed-content case that killed the family field, so it gets a fixture on day one.
 
 ## Phase 3 - Core
 
@@ -486,15 +534,38 @@ hand-written lexers have already cost this project real bugs, and four of them w
 
 Fan out per format, each with its own conformance fixtures.
 
+**The second audit lap found that "needs no new machinery" was wrong, and four protocol gaps sit
+under this phase.** Every one was verified against the code, not taken on assertion. None of them
+is unsolvable; all of them are unsolved, and they are protocol-level, which means they cost a major
+if discovered after this train ships.
+
+1. **Routing cannot express the fallback at all.** `ProviderClaims` in `core/src/routing.ts` carries
+   only `extensions` and an optional `filenames`. There is no catch-all, no negative list, and no
+   precedence. "Claims extensions nothing else does" is not expressible: routing can only report a
+   file as unclaimed, never hand it to a last-resort owner. This needs a NEW routing primitive with
+   explicit precedence, and it is the single largest unlisted item in the plan.
+2. **An array element cannot be a declaration.** `DeclarationSchema.name` is `z.string().min(1)`,
+   required and nonempty. JSON and YAML array elements have no name. Choose and write it down:
+   omit elements, mint synthetic `[0]` names that churn whenever anything is inserted, or extend
+   the schema. All three have costs; none is free.
+3. **YAML scalars exceed `LiteralSchema`,** which is exactly `string | number | boolean`. YAML also
+   has null, timestamps, binary and tagged values. Say which are omitted, which are normalized, and
+   which produce a diagnostic, rather than discovering it in the fixture.
+4. **XML and HTML have no identity story.** `SymbolKindSchema` has no `element` or `attribute`
+   member, and repeated sibling elements collide for the same reason duplicate headings do: only a
+   `method` descriptor may carry a disambiguator. "Elements as declarations" and "headings are
+   headings" are both placeholders, not designs. HTML additionally needs a rule for anonymous
+   elements, attributes, text nodes, script and style content, and malformed recovery.
+
 - **JSON family** (`.json`, `.jsonl`, `.ndjson`, `.json5`): a key is a `property` declaration, its
-  value a literal. Needs no new machinery, which Question 4 established. JSONL is a sequence of
-  independent roots and needs per-record identity. JSON has no comments, so `comments: false` is
-  the honest declaration; JSON5 does have them.
+  value a literal. JSONL is a sequence of independent roots and needs per-record identity. JSON has
+  no comments, so `comments: false` is the honest declaration; JSON5 does have them. Blocked on
+  gap 2 above.
 - **YAML** (`.yml`, `.yaml`): keys as declarations, values as literals, and REAL comments through
-  the existing comment tier. Aliases and multi-document files need fixtures.
-- **XML** (`.xml`): elements as declarations, attributes as properties, real comments.
-- **HTML** (`.html`): a document, not data. Headings are headings; it is error-tolerant by spec, so
-  a malformed file must degrade rather than fail.
+  the existing comment tier. Aliases, anchors and multi-document files need fixtures. Blocked on
+  gaps 2 and 3.
+- **XML** (`.xml`): blocked on gap 4 until the identity story exists.
+- **HTML** (`.html`): a document, not data. Blocked on gap 4.
 - **The binary guard**, which must land BEFORE the fallback, and which has TWO homes rather than
   one. Routing already gates the indexer: `indexOne` checks ownership before calling `readFile`, so
   an unclaimed file is not read today. But `readEvent` in the watcher hashes EVERY changed file as
@@ -504,22 +575,62 @@ Fan out per format, each with its own conformance fixtures.
 - **The plain-text fallback**, last, claiming extensions nothing else does. Changes what "unclaimed"
   means in every coverage report, so the overview wording moves with it.
 
-Use a library per `docs/parsing.md` rule 1 rather than hand-writing. Eight hand-written lexers have
-already cost this project real bugs, and the fenced-string class was one of them. Weigh each
-dependency against shipped artifact size, currently 9.9 MB.
+Every parser here was already chosen in Phase 0, so each slice is an adapter over a decided library
+rather than a fresh judgement call. The YAML reader is the same one the markdown provider uses for
+frontmatter: one owner, no second opinion.
 
 ## Phase 6 - Verification
 
 - Gate, then conformance across every provider, not only the new ones. A corpus case is shared.
 - The blind corpus is the real test: index a documentation set nobody here has read and ask it
-  questions. `search_docs` for `band-aid` against this repo must return
-  `CLAUDE.md > Principles`, which is the founding use case and currently returns nothing.
+  questions.
+- **The acceptance test, stated precisely enough to be falsifiable.** `search_docs` for the text
+  `band-aid` against this repo returns exactly one hit whose heading path is `CLAUDE.md > Principles`
+  and whose prose contains `No band-aids`. The path stops at `Principles` because `No band-aids` is
+  a BOLDED LIST ITEM, not a heading; the only headings in that file are `##` level. An audit lap
+  asserted a `> No band-aids` segment and was wrong, which is precisely why the expectation is
+  written out rather than described. Matching is substring over normalized text, the same contract
+  the comment tier uses, so the hyphen and the plural both have to behave.
 - Drive the built server, since a green gate is not evidence.
 
 ## Phase 7 - Release
 
 Folds into the `2.0.0` train. The CHANGELOG gains the docs tier, the new `heading` kind, and the
 fallback's effect on what "unclaimed" reports.
+
+## The open scope question, raised by the second audit lap
+
+**Two angles independently concluded this plan is three trains in one coat,** and recommended
+splitting after Phase 4. That is a scope decision belonging to the owner, who already chose the
+whole set once. It is raised again ONLY because the audit produced evidence that did not exist when
+that choice was made, not to relitigate it.
+
+**What is new since the whole-set decision:** four protocol-level gaps under Phase 5, all verified
+against code. Routing cannot express a fallback at all. An array element cannot be a declaration.
+YAML scalars exceed the literal kinds. XML and HTML have no identity story and no symbol kind. Each
+needs a design, and all four are protocol shaped, which means getting them wrong costs a major.
+
+**What a split would look like:**
+
+- `2.0.0` ships Phases 0 through 4 plus verification: the heading kind, regional doc facts, the
+  markdown provider, `search_docs`, heading paths. That delivers the founding use case, which is
+  that searching this repo for `band-aid` currently returns nothing.
+- A later major ships the JSON dialects, YAML, XML, HTML, the routing primitive, the binary guard
+  and the fallback, with their four design questions answered rather than rushed.
+
+**What the split costs:** users rebuild their index twice, because the second train bumps
+`SCHEMA_VERSION` again. That is the same cost the owner already weighed when choosing to fold docs
+into `2.0.0` rather than shipping a `3.0.0`, and the answer may well be the same.
+
+**What NOT splitting costs:** four unsolved protocol designs land in the same release as a new tier,
+a new symbol kind, a new fact class, a new store table and a routing primitive that does not yet
+exist. The comment tier was ONE fact class over six phases and found nine defects.
+
+**Was the original agreement yes-manning?** Partly. The concern was raised once, the owner decided,
+and proceeding was correct. What was NOT done is checking whether Phase 5 was buildable before
+writing it down as four bullet points, and it was not: three of those four bullets are blocked on
+protocol gaps. Agreeing to a scope is fine; describing unsolved work as though it were understood is
+not, and that part is on me.
 
 ## Deferred, recorded so they are not re-litigated
 
