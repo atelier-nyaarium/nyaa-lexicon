@@ -5,6 +5,7 @@
 import type {
 	CommentsResult,
 	DescribeResult,
+	DocsResult,
 	InvalidateOutcome,
 	KnowledgeGaps,
 	LiteralsResult,
@@ -104,16 +105,30 @@ export function renderDescribe(result: DescribeResult): string {
 		result.symbol.lines === undefined
 			? `\`${result.symbol.module}\``
 			: `\`${result.symbol.module}:${result.symbol.lines.start + 1}-${result.symbol.lines.end + 1}\``;
+	// A signature block for a heading would be a code fence around a section title, which reads as
+	// code that does not exist.
+	const signature =
+		result.symbol.kind === "heading"
+			? []
+			: ["```ts", result.symbol.signature ?? `${result.symbol.kind} ${result.symbol.name}`, "```", ""];
 	const lines = [
 		`# ${result.symbol.kind} ${result.symbol.name}`,
 		"",
-		"```ts",
-		result.symbol.signature ?? `${result.symbol.kind} ${result.symbol.name}`,
-		"```",
-		"",
+		...signature,
 		`**Module:** ${location}`,
 		`**ID:** \`${result.symbol.symbolId}\``,
 	];
+
+	if (result.prose !== undefined && result.prose.length > 0) {
+		lines.push("", "## Prose", "");
+		for (const region of result.prose) {
+			const where = region.fenced ? ` (in a code block)` : "";
+			lines.push(`- Line ${region.line + 1}${where}: ${summarize(region.text)}`);
+		}
+		if (result.moreProse !== undefined) {
+			lines.push("", `> ${result.moreProse} more not shown. Call \`search_docs\` with this module.`);
+		}
+	}
 
 	if (result.symbol.docComment) {
 		lines.push("", "## Documentation", "", summarize(result.symbol.docComment));
@@ -283,6 +298,30 @@ export function renderComments(result: CommentsResult): string {
 	if (result.truncated) {
 		const more = result.total - result.comments.length;
 		body += `\n\n> ${more} more comment${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
+	}
+	return body + incompleteNote(result.scanIncomplete);
+}
+
+export function renderDocs(result: DocsResult): string {
+	if (result.total === 0) {
+		return `# Documentation\n\nNo prose matched.\n\n> Searches normalized prose, so line wrapping is not matched.${incompleteNote(result.scanIncomplete)}`;
+	}
+
+	const byModule = new Map<string, string[]>();
+	for (const region of result.docs) {
+		const rows = byModule.get(region.module) ?? [];
+		// The heading path is the hop from prose back to structure, and the whole reason this answers
+		// differently from a comment search.
+		const under = region.headingPath.length === 0 ? "(no heading)" : region.headingPath.join(" > ");
+		const where = region.fenced ? `${under}  [in a code block]` : under;
+		rows.push(`- Line ${region.range.start.line + 1}: ${where}\n  \`${region.factId}\`\n${indent(region.raw)}`);
+		byModule.set(region.module, rows);
+	}
+
+	let body = renderGroupedModules(`${result.total} region${result.total === 1 ? "" : "s"}`, byModule);
+	if (result.truncated) {
+		const more = result.total - result.docs.length;
+		body += `\n\n> ${more} more region${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
 	}
 	return body + incompleteNote(result.scanIncomplete);
 }

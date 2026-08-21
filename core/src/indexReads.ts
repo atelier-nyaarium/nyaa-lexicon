@@ -54,6 +54,10 @@ export interface DescribeResult {
 	comments?: AttachedComment[];
 	/** How many notes the cap left out, so a page never reports itself as a total. */
 	moreComments?: number;
+	/** A heading's own prose, which is what a document has instead of a body. Absent for code. */
+	prose?: Array<{ line: number; fenced: boolean; text: string }>;
+	/** How many regions the cap left out. */
+	moreProse?: number;
 	/** How many places use it, so a caller decides whether to ask for the list. */
 	referenceCount: number;
 	graph: GraphSummary;
@@ -317,9 +321,19 @@ export class IndexReadModel {
 			text: comment.normalized,
 		}));
 
+		// A heading has no body, so its prose is what a code symbol's body would be.
+		const regions = declaration.kind === "heading" ? this.store.docsAnchoredTo(symbolId) : [];
+		const prose = regions.slice(0, DESCRIBE_NOTE_LIMIT).map((region) => ({
+			line: region.range.start.line,
+			fenced: region.fenced,
+			text: region.normalized,
+		}));
+
 		return {
 			symbol: this.withDocumentation(toSummary(declaration)),
 			members,
+			...(prose.length === 0 ? {} : { prose }),
+			...(regions.length > prose.length ? { moreProse: regions.length - prose.length } : {}),
 			referenceCount: this.store.referencesTo(symbolId).length,
 			graph: this.graphSummary(symbolId),
 			hierarchy: this.typeHierarchy(symbolId),

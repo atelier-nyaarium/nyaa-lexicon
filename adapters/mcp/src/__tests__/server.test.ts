@@ -26,6 +26,7 @@ const QUERY_TOOLS = [
 	"recall_answer",
 	"refactor_status",
 	"resolve_import",
+	"search_docs",
 	"search_symbols",
 	"symbol_facts",
 	"symbol_history",

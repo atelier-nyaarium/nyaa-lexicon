@@ -64,6 +64,7 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		refactorMove: (symbolId, toModule) => ask("refactorMove", { symbolId, toModule }),
 		findLiterals: (query) => ask("findLiterals", query),
 		findComments: (query) => ask("findComments", query),
+		findDocs: (query) => ask("findDocs", query),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
 		searchSymbols: (text, options) => ask("searchSymbols", { text, ...options }),
 		outlineModule: (module) => ask("outlineModule", { module }),

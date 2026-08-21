@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderFacts, renderOverview } from "../render";
+import { renderDescribe, renderDocs, renderFacts, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -149,11 +149,94 @@ describe("offering every citable fact kind, not a hand-kept subset", () => {
 	}
 
 	// A citation cannot be made from an id the author was never shown.
-	it.each(["declaration", "reference", "import", "literal", "comment"])("prints a %s id", (kind) => {
+	it.each(["declaration", "reference", "import", "literal", "comment", "doc"])("prints a %s id", (kind) => {
 		expect(facts(kind)).toContain(`lexfact ${kind} src/a.ts abc123`);
 	});
 
 	it("leaves doubt ids out, since a doubt is a handshake rather than evidence", () => {
 		expect(facts("doubt")).not.toContain("lexfact doubt");
+	});
+});
+
+////////////////////////////////
+//  Documents
+
+function region(extra: Record<string, unknown> = {}) {
+	return {
+		factId: "lexfact doc CLAUDE.md abc123",
+		module: "CLAUDE.md",
+		range: { start: { line: 41, character: 0 }, end: { line: 42, character: 0 } },
+		fenced: false,
+		raw: "No band-aids. Weigh the long-run cost.",
+		headingPath: ["nyaa-lexicon", "Principles"],
+		...extra,
+	};
+}
+
+function docs(overrides: Record<string, unknown> = {}): string {
+	return renderDocs({
+		query: { text: "band-aid" },
+		docs: [region()],
+		total: 1,
+		truncated: false,
+		...overrides,
+	} as unknown as Parameters<typeof renderDocs>[0]);
+}
+
+describe("answering a docs search with a place rather than a line", () => {
+	it("names the heading path, which is why this is not a comment search", () => {
+		expect(docs()).toContain("nyaa-lexicon > Principles");
+		expect(docs()).toContain("CLAUDE.md");
+	});
+
+	it("says when a match sits inside a code block, and stays quiet when it does not", () => {
+		expect(docs({ docs: [region({ fenced: true })] })).toContain("[in a code block]");
+		expect(docs()).not.toContain("[in a code block]");
+	});
+
+	it("says the region sits under no heading rather than printing an empty path", () => {
+		expect(docs({ docs: [region({ headingPath: [] })] })).toContain("(no heading)");
+	});
+
+	it("reports the true total and how much the page left out", () => {
+		const rendered = docs({ total: 9, truncated: true });
+		expect(rendered).toContain("9 regions");
+		expect(rendered).toContain("8 more");
+	});
+});
+
+describe("describing a heading", () => {
+	function described(kind: string, extra: Record<string, unknown> = {}): string {
+		return renderDescribe({
+			symbol: { symbolId: "id", name: "Principles", kind, module: "CLAUDE.md", visibility: "public" },
+			members: [],
+			referenceCount: 0,
+			graph: { fanOut: 0 },
+			hierarchy: { supertypes: [], subtypes: [], ancestors: [], unboundSupertypes: [] },
+			tier: "full",
+			...extra,
+		} as unknown as Parameters<typeof renderDescribe>[0]);
+	}
+
+	// A fence around a section title reads as code that does not exist.
+	it("prints no signature block, unlike a code symbol", () => {
+		expect(described("heading")).not.toContain("```ts");
+		expect(described("function")).toContain("```ts");
+	});
+
+	it("shows the section prose, which is what a document has instead of a body", () => {
+		const rendered = described("heading", {
+			prose: [{ line: 41, fenced: false, text: "No band-aids." }],
+			moreProse: 3,
+		});
+
+		expect(rendered).toContain("No band-aids.");
+		expect(rendered).toContain("3 more");
+	});
+
+	it("marks prose that came from a code block", () => {
+		expect(described("heading", { prose: [{ line: 5, fenced: true, text: "bun run build" }] })).toContain(
+			"in a code block",
+		);
 	});
 });

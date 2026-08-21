@@ -60,6 +60,8 @@ import {
 	DEFAULT_LITERAL_LIMIT,
 	DEFAULT_REFERENCE_LIMIT,
 	type DescribeResult,
+	type DocQuery,
+	type DocsResult,
 	type GraphSummary,
 	IndexReadModel,
 	type LiteralQuery,
@@ -353,6 +355,10 @@ export class LexiconService {
 
 	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT) {
 		return this.reads.sharedLiterals(minimumFiles, limit);
+	}
+
+	findDocs(query: DocQuery, limit = DEFAULT_COMMENT_LIMIT): DocsResult {
+		return this.reads.findDocs(query, limit);
 	}
 
 	findComments(query: CommentQuery, limit = DEFAULT_COMMENT_LIMIT): CommentsResult {

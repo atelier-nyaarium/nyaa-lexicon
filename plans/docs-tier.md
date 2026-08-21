@@ -1082,7 +1082,7 @@ a function inside something called a heading path. It stops at the first non-hea
 real headings above it and answers an empty path rather than a wrong one. The markdown provider
 never emits such an anchor; the guard is core refusing to launder one that arrives.
 
-## Phase 4 - Surface
+## Phase 4 - Surface ✅
 
 - `search_docs`: returns a heading PATH plus the prose, which is the answer shape that made this a
   separate tool rather than a reuse of `find_comments`.
@@ -1090,7 +1090,25 @@ never emits such an anchor; the guard is core refusing to launder one that arriv
 - `describe_symbol` on a heading shows its prose and its children.
 - Tool descriptions carry the coverage honesty line, as the comment tier's do.
 
-## Phase 5 - Structured data: the JSON family and YAML, one Luna each
+### Phase 4 results
+
+**The founding use case is now reachable by an agent.** Driven through the built server over stdio,
+`search_docs` for `band-aid` answers `CLAUDE.md > nyaa-lexicon > Principles` with the rule itself,
+and `build patch` answers `CLAUDE.md > nyaa-lexicon > Development > Releasing` marked
+`[in a code block]`. That second one is the term Question 2b measured as unfindable, so the fence
+decision is checkable rather than argued.
+
+**A layer was missing and only the live probe found it.** The tool registered, the unit tests passed
+with an in-process backend, and the real server answered `unknown method: findDocs`. An MCP tool
+reaches core through the DAEMON's own method table, which nothing in the unit path exercises. This is
+the fourth time this project's own rule has paid: a green gate is not evidence.
+
+**A heading prints no signature block.** `renderDescribe` wrapped every symbol in a `ts` fence, which
+for a heading meant a code fence around a section title, reading as code that does not exist. A
+heading now shows its prose instead, which is what a document has where code has a body.
+
+**Deliberately not built:** the LSP adapter gains nothing here. It answers an editor, which has its
+own document search and its own outline, and the heading declarations it already receives feed both.
 
 Fan out per format, each with its own conformance fixtures.
 

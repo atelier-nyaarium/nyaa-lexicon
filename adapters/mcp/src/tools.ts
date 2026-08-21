@@ -8,6 +8,8 @@ import type {
 	CommentQuery,
 	CommentsResult,
 	DescribeResult,
+	DocQuery,
+	DocsResult,
 	FactSet,
 	FileHistory,
 	IndexStatus,
@@ -36,6 +38,7 @@ import {
 	renderCoChange,
 	renderComments,
 	renderDescribe,
+	renderDocs,
 	renderFacts,
 	renderFileHistory,
 	renderImports,
@@ -114,6 +117,7 @@ export interface ToolBackend {
 	indexStatus: () => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
 	findComments: (query: CommentQuery & { limit?: number | undefined }) => Promise<CommentsResult>;
+	findDocs: (query: DocQuery & { limit?: number | undefined }) => Promise<DocsResult>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
 	searchSymbols: (
 		text: string | undefined,
@@ -201,6 +205,7 @@ export interface OverviewResult {
 	references: number;
 	imports: number;
 	literals: number;
+	symbolsByKind?: Record<string, number>;
 	modules: number;
 	scope: string;
 	index: IndexStatus;
@@ -305,6 +310,14 @@ export const FindCommentsInput = {
 		.enum(["leading", "trailing", "inline", "standalone"])
 		.optional()
 		.describe(`Where the comment sits relative to its symbol.`),
+	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
+	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
+};
+
+export const SearchDocsInput = {
+	text: z.string().min(1).optional().describe(`Substring of the prose. Use instead of \`regex\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`.`),
+	fenced: z.boolean().optional().describe(`\`true\` for code blocks only, \`false\` for prose only.`),
 	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
 };
@@ -599,6 +612,20 @@ Set exactly one of \`text\` or \`regex\`. Set neither with \`form\` or \`module\
 
 Indexed files only. An unclaimed file, or a language whose provider has no comment tier, is
 invisible here. Use ripgrep for an exhaustive byte audit.
+`.trim();
+
+export const SEARCH_DOCS_DESCRIPTION = `
+# \`search_docs\`
+
+Search documentation prose. Each hit names the HEADING PATH it sits under, so an answer is
+\`CLAUDE.md > Principles\` rather than a line number.
+
+Matches NORMALIZED text, so a sentence wrapped across lines is one string. A hit inside a fenced
+code block says so, which is how a runnable command written only in a fence is findable at all.
+
+Set exactly one of \`text\` or \`regex\`. Set neither with \`fenced\` or \`module\` to list a slice.
+
+Documents only, and only those a provider claims. Prose in a code comment is \`find_comments\`.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `
@@ -990,6 +1017,22 @@ export async function findComments(
 	try {
 		const found = await backend.findComments(args);
 		return text(await withIndexState(backend, renderComments(found)));
+	} catch (error) {
+		// A bad regex is the caller's mistake and worth saying plainly, rather than an empty result
+		// that reads as "nothing matched".
+		return text(error instanceof Error ? error.message : String(error), true);
+	}
+}
+
+export async function searchDocs(
+	backend: ToolBackend,
+	args: DocQuery & { limit?: number | undefined },
+): Promise<ToolResult> {
+	if (args.text !== undefined && args.regex !== undefined) {
+		return text("Set `text` or `regex`, not both.", true);
+	}
+	try {
+		return text(await withIndexState(backend, renderDocs(await backend.findDocs(args))));
 	} catch (error) {
 		// A bad regex is the caller's mistake and worth saying plainly, rather than an empty result
 		// that reads as "nothing matched".

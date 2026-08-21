@@ -48,6 +48,13 @@ const Comments = z.object({
 	module: z.string().min(1).optional(),
 	limit: z.number().int().positive().max(200).optional(),
 });
+const Docs = z.object({
+	text: z.string().min(1).optional(),
+	regex: z.string().min(1).optional(),
+	fenced: z.boolean().optional(),
+	module: z.string().min(1).optional(),
+	limit: z.number().int().positive().max(200).optional(),
+});
 const Shared = z.object({
 	minimumFiles: z.number().int().positive().optional(),
 	limit: z.number().int().positive().optional(),
@@ -504,6 +511,11 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				const args = Comments.parse(params);
 				const { limit, ...query } = args;
 				return service.findComments(query, limit);
+			}
+			case "findDocs": {
+				const args = Docs.parse(params);
+				const { limit, ...query } = args;
+				return service.findDocs(query, limit);
 			}
 			case "sharedLiterals": {
 				const args = Shared.parse(params);
