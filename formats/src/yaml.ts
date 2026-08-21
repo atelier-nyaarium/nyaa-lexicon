@@ -134,8 +134,8 @@ export function readYaml(context: YamlContext): YamlFacts {
 			// A zero-width key is an absent one, and `: 1` would otherwise be declared as "null".
 			if (keyEnd <= keyStart) continue;
 
-			// Any node, so a sequence or an alias value ends the declaration where it ends. Naming the
-			// node kinds instead left a sequence-valued key spanning only its own name.
+			// Any node, so a sequence or an alias value ends the declaration where its value ends.
+			// Naming node kinds here spans only the key.
 			const value = pair.value;
 			const valueRange = isNode(value) ? value.range : undefined;
 			const selectionRange = coordinates.rangeAt(keyStart, keyEnd);

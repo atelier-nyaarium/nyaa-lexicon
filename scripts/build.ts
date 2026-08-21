@@ -92,9 +92,8 @@ const SMOKE_FAILURE = "failed to start on node";
 /**
  * The AMD branch of a UMD wrapper, which survives minification because `define.amd` cannot be renamed.
  *
- * Both operand orders and either quote, because a minifier writes `"function"==typeof define` and
- * rollup writes single quotes. Matching one spelling caught jsonc-parser and missed sourcemap-codec,
- * magic-string and dequal, all of them present in this very tree.
+ * Both operand orders and either quote: a minifier writes `"function"==typeof define`, rollup writes
+ * single quotes, and `node_modules` holds all four spellings. Widening this needs all four rechecked.
  */
 const UMD_WRAPPER_RE =
 	/(?:typeof\s+define\s*={2,3}\s*["']function["']|["']function["']\s*={2,3}\s*typeof\s+define)\s*&&\s*define\.amd/;
