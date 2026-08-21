@@ -1472,6 +1472,12 @@ could: `plans/comment-facts.md` records, from before this work, that searching f
 "returns NOTHING, and the doctrine is real: it lives in CLAUDE.md". That sentence is now itself
 findable, and the claim it makes is now false.
 
+**The matching contract was measured rather than assumed.** Scoped to `CLAUDE.md`: `band-aid` finds
+it, `Band-Aid` finds it, `band-aids` finds it, and `bandaid` finds nothing. So the search is
+case-insensitive substring over the normalized text and does NOT collapse punctuation, which is
+exactly what "the hyphen and the plural both have to behave" claims and no more than that. A reader
+looking for a rule has to spell the hyphen.
+
 **The blind corpus, indexed and questioned without opening a file.**
 
 `evie-bot`, the prose test: 289 files in scope, 52199 symbols, 2219 comments. Asked what it forbids,
