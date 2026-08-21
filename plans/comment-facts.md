@@ -673,10 +673,16 @@ absent argument would silently default.
 
 ## Phase 5 - Verification ✅
 
-- Gate: biome ok, tsc ok. 1568 tests.
-- Conformance from the shipped bundle, all eight providers, 0 failures.
-- `grade.js` against the switchboard checkout: 8 of 8 PASS. Extraction changed in this train, so
-  this was mandatory rather than optional, and it says no known answer moved.
+- Gate: biome ok, tsc ok. 1569 tests.
+- Conformance from the shipped bundle, all eight providers, 0 failures. Stated precisely, because
+  "0 failures" flatters it: of thirteen comment cases, each provider RUNS six to nine and skips the
+  rest for want of a fixture its language can satisfy. The skips are honest (a shebang case has no
+  C fixture because C has no shebang) but the tier is verified to that depth and no further.
+- `grade.js` against the switchboard checkout: 8 of 8 PASS. Worth saying exactly what that proves.
+  Its checks are name lookup, members, imports, export status, references and signatures; NONE of
+  them touches a comment. So it proves the comment work broke nothing else, which is precisely why
+  the plan called it mandatory once extraction changed, and it proves nothing about the comment
+  work being right.
 - The four caller hunts against this repo all answered. The banner hunt is the one worth keeping:
   the regex `/^Functions & Helpers$/` matches only because normalization stripped the `////` rule
   line AND the markers, leaving exactly that string. Without the normalizer it could not match.
@@ -702,6 +708,39 @@ opened. Before this tier, `describe` would have returned the JSDoc and NONE of t
 they are body comments and the old `docComment` field could not see them. The blind test asks
 whether it can teach you a codebase you have never read; on this evidence, yes, and the comments
 are what did the teaching.
+
+### What this phase did NOT prove, audited and stated
+
+An audit of the verification itself found four places where the claim outran the evidence. Three
+are now closed and one is stated rather than fixed.
+
+**Closed: nothing ran a REAL provider's comments through core.** The unit tests inject synthetic
+spans and the provider tests read their own parser, so a provider whose ranges disagreed with
+core's expectations would pass both and fail neither. Everything covering that seam was a person at
+a terminal, which is the kind of proof that stops happening. `comment-live-provider.test.ts` now
+starts the actual TypeScript provider, indexes a git-scoped fixture, and asserts the wrapped run
+became one fact, the body comment became a note rather than documentation, the joined phrase is
+searchable, and the blank-fenced comment names neither neighbour. It costs 800ms because it starts
+one provider rather than eight.
+
+**Stated: the caller hunts go through core, not the agent-facing path.** `index-workspace` builds
+an in-memory store and calls the service directly. The MCP tool an agent actually calls adds daemon
+IPC, argument schemas, tool dispatch and rendering on top. Those layers have their own tests, but
+no single run crosses all of them, so "verified live" means the core pipeline rather than the whole
+stack.
+
+**Stated: nyaaskills was indexed as a REPOSITORY, not as the minified bundle.** CLAUDE.md names its
+`dist/` as the hard corpus, and that is not what was run. The honest conclusion is one the plan
+should say rather than imply: minification strips comments, so a comment tier has nothing to report
+from a minified bundle, and finding nothing there is the correct answer rather than a gap. The hard
+corpus remains the right test for LITERALS, which carry the contract there, and is close to
+meaningless for this tier.
+
+**Rejected: an auditor reported the evie-bot result was false**, having re-run it and got zero
+files and zero symbols. Re-run here it gives 827 files, 51,324 symbols and the seven comments
+quoted above. The auditor's sandbox cannot spawn provider processes: four separate agents this
+session reported `/usr/bin/node ENOENT` or `spawnSync git EPERM` and concluded the tool was broken.
+Worth knowing before trusting any agent-run verification of a provider-dependent path here.
 
 ## Phase 5 - Verification (as planned)
 
