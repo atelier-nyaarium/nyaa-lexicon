@@ -154,7 +154,7 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	if (documented !== undefined) problems.push(...checkDocumentation(documented, facts));
 
 	const wantedDocs = fixture?.docs ?? testCase.docs;
-	if (wantedDocs !== undefined) problems.push(...checkDocs(wantedDocs, facts.docs ?? []));
+	if (wantedDocs !== undefined) problems.push(...checkDocs(wantedDocs, facts.docs ?? [], byId));
 	// The same rule comment spans get: a range that lies attaches prose to the wrong section.
 	if (source !== undefined) problems.push(...checkDocRanges(source, facts.docs ?? []));
 
@@ -197,7 +197,7 @@ function checkDocumentation(expected: { declaration: string; comment: string }, 
  * Order matters here where it does not for comments: prose, then a fence, then more prose is one
  * section, and a provider that merges or reorders them has changed what the section says.
  */
-function checkDocs(expected: ExpectedDocRegion[], actual: DocRegion[]): string[] {
+function checkDocs(expected: ExpectedDocRegion[], actual: DocRegion[], byId: Map<string, Declaration>): string[] {
 	const problems: string[] = [];
 	if (expected.length !== actual.length) {
 		problems.push(`docs: expected ${expected.length} region(s), got ${actual.length}`);
@@ -215,7 +215,8 @@ function checkDocs(expected: ExpectedDocRegion[], actual: DocRegion[]): string[]
 		if (got.fenced !== (want.fenced ?? false)) {
 			problems.push(`docs[${index}] ${JSON.stringify(want.text)}: fenced is ${got.fenced}`);
 		}
-		const under = got.anchorHeading;
+		// By name, because a case must not know an id: that is what varies between providers.
+		const under = got.anchorId === undefined ? undefined : byId.get(got.anchorId)?.name;
 		if (want.under === undefined && under !== undefined) {
 			problems.push(
 				`docs[${index}] ${JSON.stringify(want.text)}: expected no heading, got ${JSON.stringify(under)}`,

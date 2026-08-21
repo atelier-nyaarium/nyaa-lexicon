@@ -187,6 +187,28 @@ describe("corpus", () => {
 		expect(corpusLanguages()).toContain("reference");
 	});
 
+	// A case with no fixture in any language runs nowhere and asserts nothing, which is the shape
+	// this repo already recorded as a painpoint for corpus tests that skip silently.
+	it("gives every tier at least one case, and every case a language that could run it", () => {
+		for (const tier of new Set(loadCorpus().map((testCase) => testCase.tier))) {
+			const cases = casesForTier(tier);
+			expect(cases, tier).not.toHaveLength(0);
+			for (const testCase of cases) {
+				expect(Object.keys(testCase.fixtures), `${tier}/${testCase.id}`).not.toHaveLength(0);
+			}
+		}
+	});
+
+	// Named rather than counted: deleting the markdown fixtures would otherwise leave four cases
+	// that pass everywhere by running nowhere.
+	it("keeps the docs cases pinned to a language, so they cannot quietly become unrunnable", () => {
+		const docsCases = casesForTier("docs");
+		expect(docsCases).not.toHaveLength(0);
+		for (const testCase of docsCases) {
+			expect(Object.keys(testCase.fixtures), testCase.id).toContain("markdown");
+		}
+	});
+
 	it("partitions by tier, which is how a team runs only what it claims", () => {
 		expect(casesForTier("declarations").every((c) => c.tier === "declarations")).toBe(true);
 		expect(casesForTier("nonexistent")).toEqual([]);
@@ -263,9 +285,11 @@ describe("checking answers", () => {
 			range: { start: { line: 0, character: 0 }, end: { line: 0, character: text.length } },
 			text,
 			fenced: extra.fenced ?? false,
-			...(extra.under === undefined ? {} : { anchorHeading: extra.under }),
+			...(extra.under === undefined ? {} : { anchorId: extra.under }),
 		});
-		const withDocs = (regions: ReturnType<typeof region>[]) => facts({ docs: regions });
+		// Headings resolve through the declarations, since an anchor is an id and a case states a name.
+		const withDocs = (regions: ReturnType<typeof region>[], headings: string[] = ["Title", "T", "Other"]) =>
+			facts({ docs: regions, declarations: headings.map((name) => decl(name, { kind: "heading" })) });
 
 		it("passes when text, order, anchor and fencing all agree", () => {
 			const testCase = {
@@ -277,20 +301,53 @@ describe("checking answers", () => {
 			expect(
 				checkFacts(
 					testCase,
-					withDocs([region("prose", { under: "Title" }), region("run me", { under: "Title", fenced: true })]),
+					withDocs([
+						region("prose", { under: idFor("Title") }),
+						region("run me", { under: idFor("Title"), fenced: true }),
+					]),
 				),
+			).toEqual([]);
+		});
+
+		// The whole reason an anchor is an id: a name cannot tell two `## Notes` apart, so prose
+		// under either would look identical and the disambiguator work would stop at the heading.
+		it("tells prose under two same-named headings apart", () => {
+			const first = composeSymbolId({
+				language: "x",
+				module: "src/a.ts",
+				descriptors: [{ kind: "namespace", name: "Notes" }],
+			});
+			const second = composeSymbolId({
+				language: "x",
+				module: "src/a.ts",
+				descriptors: [{ kind: "namespace", name: "Notes", disambiguator: "2" }],
+			});
+			expect(first).not.toBe(second);
+
+			const declarations = [
+				{ ...decl("Notes", { kind: "heading" }), symbolId: first },
+				{ ...decl("Notes", { kind: "heading" }), symbolId: second },
+			];
+			const given = facts({ docs: [region("under the second", { under: second })], declarations });
+
+			expect(
+				checkFacts({ docs: [{ text: "under the second", under: "Notes" }] } as ConformanceCase, given),
 			).toEqual([]);
 		});
 
 		// Prose and a fence holding the same words are different facts, so this must not pass.
 		it("reports a fence reported as prose", () => {
 			const testCase = { docs: [{ text: "run me", under: "T", fenced: true }] } as ConformanceCase;
-			expect(checkFacts(testCase, withDocs([region("run me", { under: "T" })]))[0]).toMatch(/fenced is false/);
+			expect(checkFacts(testCase, withDocs([region("run me", { under: idFor("T") })]))[0]).toMatch(
+				/fenced is false/,
+			);
 		});
 
 		it("reports prose attached to the wrong heading", () => {
 			const testCase = { docs: [{ text: "prose", under: "Title" }] } as ConformanceCase;
-			expect(checkFacts(testCase, withDocs([region("prose", { under: "Other" })]))[0]).toMatch(/expected under/);
+			expect(checkFacts(testCase, withDocs([region("prose", { under: idFor("Other") })]))[0]).toMatch(
+				/expected under/,
+			);
 		});
 
 		// A section is prose, then a fence, then prose. Merging them changes what the section says.
@@ -303,7 +360,7 @@ describe("checking answers", () => {
 
 		it("reports prose claimed under a heading when it belongs to none", () => {
 			const testCase = { docs: [{ text: "preamble" }] } as ConformanceCase;
-			expect(checkFacts(testCase, withDocs([region("preamble", { under: "Title" })]))[0]).toMatch(
+			expect(checkFacts(testCase, withDocs([region("preamble", { under: idFor("Title") })]))[0]).toMatch(
 				/expected no heading/,
 			);
 		});

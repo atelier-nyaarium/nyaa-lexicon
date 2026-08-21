@@ -150,8 +150,13 @@ export const DocRegionSchema = z
 		range: RangeSchema,
 		/** Verbatim, fence delimiter lines excluded. Empty is not a region. */
 		text: z.string().min(1),
-		/** The heading this sits under. Absent before the first heading, and in a headingless file. */
-		anchorHeading: z.string().min(1).optional(),
+		/**
+		 * The symbolId of the heading this sits under, never its name: two headings share a name.
+		 *
+		 * Absent before the first heading, and in a file with none, which anchors the region to the
+		 * module exactly as a module-level comment does.
+		 */
+		anchorId: z.string().min(1).optional(),
 		/** True when this came from a fenced code block, so a match can say where it was found. */
 		fenced: z.boolean(),
 	})

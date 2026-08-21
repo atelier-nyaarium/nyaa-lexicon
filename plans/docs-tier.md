@@ -578,6 +578,41 @@ because the reasoning is worth more than the diff.
   fence that must not yield a heading, a fence whose text is searchable and marked, a section mixing
   prose and fence and prose, prose before any heading, and a document with no headings.
 
+### What the Phase 1 audit changed, and what it did not
+
+**A blocker found and fixed during the run: the anchor was a NAME.** `DocRegion` carried
+`anchorHeading` as a heading's name, which two headings share, so prose under either was
+indistinguishable and the whole disambiguator argument stopped at the heading. It is now `anchorId`,
+a symbolId, matching how a stored comment carries `anchorId` rather than a name. The conformance
+checker resolves that id back to a name through the declarations, exactly as the container check
+already does, because a case must never know an id. A test now pins two same-named headings apart.
+
+**A guard added: the docs cases could have run nowhere forever.** No provider claims the tier yet,
+so all four skip. That is correct today and would be a silent lie if the fixtures were ever deleted,
+which is the painpoint this repo already recorded for corpus tests. Two tests now assert that every
+tier has cases and that the docs cases keep a language that could run them, proven failable by
+retargeting a fixture and watching it go red.
+
+**Deliberately not changed, with reasons:**
+
+- **`docFactId` excludes the anchor,** matching `commentFactId` and its stated reason that a
+  re-attached comment is not new prose. The counter-argument is real: retitle a heading and the
+  prose under it keeps its id while its section changed. Consistency with comments wins, because one
+  rule for "what makes a prose fact" beats two, and the prose itself genuinely did not change.
+- **No fence INFO STRING.** `fenced` is a boolean, so a result can say "in a code block" but not "in
+  a bash block". A real gap, deferred rather than hidden, and it costs a schema field to add later.
+- **The range contract is pinned by fixture, not by the checker.** `checkDocRanges` proves a range
+  slices its own text back; nothing independently proves the delimiters were excluded. A provider
+  including delimiters in BOTH range and text would pass. The conformance fixtures are what state
+  the intent.
+- **`anchorId` is optional rather than nullable.** The plan said nullable; the schema omits instead,
+  which is how every other absence in this contract is spelled. The plan's wording is the thing that
+  was imprecise.
+- **The runner's `factExpectations` list is still hand-enumerated,** so a new expectation kind still
+  costs an edit there. That is the comment train's recorded painpoint recurring, and it recurred
+  exactly as predicted: `docs` had to be added by hand or the four cases would have run while
+  asserting nothing.
+
 ### The known weakness in section identity, argued and accepted
 
 A Codex review roasted the disambiguator decision, its central claim checked out, and the decision
