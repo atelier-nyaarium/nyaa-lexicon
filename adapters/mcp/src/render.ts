@@ -682,6 +682,8 @@ export function renderOverview(result: {
 	references: number;
 	imports: number;
 	literals: number;
+	/** The symbol total split by kind, so one number cannot stand for two things. */
+	symbolsByKind?: Record<string, number>;
 	modules: number;
 	scope: string;
 	index: {
@@ -755,6 +757,14 @@ export function renderOverview(result: {
 		"| ---: | ---: | ---: | ---: | ---: | ---: |",
 		`| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |`,
 	);
+
+	// Named where the number is, because "symbols" reads as callable code and a section is not.
+	// Headings only: a document's frontmatter keys are `property`, which code uses too, so they are
+	// counted here as code and cannot be separated by kind.
+	const headings = result.symbolsByKind?.["heading"] ?? 0;
+	if (headings > 0) {
+		lines.push("", `> ${headings} of those symbols are document sections rather than code.`);
+	}
 
 	// Self-contained: the depth line is absent once nothing is outline, so pointing at it would
 	// reference a line that is not on the page.

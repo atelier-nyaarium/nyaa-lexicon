@@ -154,6 +154,7 @@ export class WorkspaceIndexer {
 			facts.literals,
 			storedDepth,
 			attachComments(facts.declarations, facts.comments ?? [], text),
+			facts.docs ?? [],
 		);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);

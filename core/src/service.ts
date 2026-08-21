@@ -474,8 +474,12 @@ export class LexiconService {
 		const doubted = this.store.doubtedCount();
 
 		const scan = this.store.readScanSummary();
+		// A document's headings are symbols and belong in the total, but a reader taking that total
+		// for callable code reads it wrong the moment one is indexed, so the split rides alongside.
+		const byKind = this.store.symbolsByKind();
 		return {
 			...totals,
+			symbolsByKind: byKind,
 			scope: this.scopeReport(),
 			index: this.indexStatus(),
 			...(scan === null ? {} : { scan }),

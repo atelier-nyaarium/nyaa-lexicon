@@ -8,7 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 import {
 	commentFactId,
 	type Declaration,
+	type DocRegion,
 	declarationFactId,
+	docFactId,
 	type Import,
 	type IndexDepth,
 	importFactId,
@@ -22,6 +24,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { Answer, Doubt } from "./answers.js";
 import type { AttachedComment } from "./commentAttach.js";
+import { normalizeDocText } from "./proseText.js";
 import { compileSearchRegex } from "./search.js";
 
 ////////////////////////////////
@@ -85,6 +88,24 @@ export interface CommentFilter {
 	module?: string | undefined;
 }
 
+/** One stretch of a document's prose, with the heading it sits under. */
+export interface StoredDoc {
+	factId: string;
+	module: string;
+	raw: string;
+	normalized: string;
+	fenced: boolean;
+	/** Null when the region sits under no heading, which is prose before the first one. */
+	anchorId: string | null;
+	range: Range;
+}
+
+export interface DocFilter {
+	/** Restricts to fenced regions when true, to prose when false, to neither when absent. */
+	fenced?: boolean | undefined;
+	module?: string | undefined;
+}
+
 /** One name written by one import statement, with the spans a rewrite would replace. */
 export interface StoredImport {
 	factId: string;
@@ -112,6 +133,7 @@ export type StoredFact =
 	| ({ fact: "import" } & StoredImport)
 	| ({ fact: "literal" } & StoredLiteral)
 	| ({ fact: "comment" } & StoredComment)
+	| ({ fact: "doc" } & StoredDoc)
 	| ({ fact: "answer" } & Answer);
 
 ////////////////////////////////
@@ -146,7 +168,10 @@ export type StoredFact =
 //    codebase lives in comments, and they were the one thing every fallback to grep was looking
 //    for. A doc comment is now the leading-attached comment rather than a second copy of the same
 //    prose on the declaration, so the two can no longer disagree.
-export const SCHEMA_VERSION = 16;
+// 17: document prose, anchored to the heading it sits under. A comment answers with the symbol it
+//    documents; a document region answers with the heading path it was found under, which is a
+//    different question and so a different table.
+export const SCHEMA_VERSION = 17;
 
 // Every range is stored whole. Keeping only a start meant the index could say where something was
 // and never what text it occupied, which is the difference between navigating and editing.
@@ -301,6 +326,29 @@ CREATE INDEX comments_anchor ON comments(anchorId);
 CREATE INDEX comments_fact ON comments(factId);
 CREATE INDEX comments_form ON comments(form);
 
+-- A document's prose. Separate from comments because the answer shape differs: a comment result
+-- names the symbol it documents, and a doc result names the heading PATH it was found under.
+CREATE TABLE docs (
+  factId     TEXT NOT NULL,
+  module     TEXT NOT NULL,
+  -- Verbatim, so a citation quoting a region quotes the file.
+  raw        TEXT NOT NULL,
+  -- Whitespace collapsed. Search runs over this so a sentence wrapped across lines is one phrase.
+  normalized TEXT NOT NULL,
+  -- Constrained, because rowToDoc reads any non-zero as true and would launder a bad write.
+  fenced     INTEGER NOT NULL CHECK (fenced IN (0, 1)),
+  -- Null before the first heading and in a document with none, which is the region belonging to the
+  -- module. Absence is the answer, not a missing one, so nothing guesses a heading to put here.
+  anchorId   TEXT,
+  startLine  INTEGER NOT NULL,
+  startChar  INTEGER NOT NULL,
+  endLine    INTEGER NOT NULL,
+  endChar    INTEGER NOT NULL
+);
+CREATE INDEX docs_module ON docs(module);
+CREATE INDEX docs_anchor ON docs(anchorId);
+CREATE INDEX docs_fact ON docs(factId);
+
 -- The knowledge layer's read side. One answer per symbol per question class, replaced rather than
 -- versioned, because a superseded answer is a decision to make deliberately rather than a pile to
 -- accumulate. Citations are stored as JSON: they are read whole, never queried by element.
@@ -407,7 +455,7 @@ CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
  * separately, a table added to one and not the other leaves a deleted file's rows in the index
  * forever, still answering searches.
  */
-const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments"] as const;
+const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments", "docs"] as const;
 
 /** Meta key for store compatibility. */
 const COMPATIBILITY_KEY = "storeCompatibility";
@@ -668,6 +716,7 @@ export class IndexStore {
 		literals: Literal[] = [],
 		depth: IndexDepth = "full",
 		comments: AttachedComment[] = [],
+		docs: DocRegion[] = [],
 	): void {
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
@@ -805,6 +854,25 @@ export class IndexStore {
 					comment.range.start.character,
 					comment.range.end.line,
 					comment.range.end.character,
+				);
+			}
+
+			const docRow = this.db.prepare(
+				`INSERT INTO docs (factId, module, raw, normalized, fenced, anchorId, startLine, startChar, endLine, endChar)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			);
+			for (const region of docs) {
+				docRow.run(
+					docFactId(module, region),
+					module,
+					region.text,
+					normalizeDocText(region.text),
+					region.fenced ? 1 : 0,
+					region.anchorId ?? null,
+					region.range.start.line,
+					region.range.start.character,
+					region.range.end.line,
+					region.range.end.character,
 				);
 			}
 		});
@@ -970,10 +1038,10 @@ export class IndexStore {
 			// what keeps an answer from being grounded on someone's transient distrust.
 			case "doubt":
 				return null;
-			// The wire carries doc regions before this store holds them, so the id parses and nothing
-			// answers it yet. Named rather than defaulted, so the table landing here is a compile error.
-			case "doc":
-				return null;
+			case "doc": {
+				const row = this.db.prepare("SELECT * FROM docs WHERE factId = ?").get(factId);
+				return row ? { fact: "doc", ...rowToDoc(row) } : null;
+			}
 			default: {
 				const unreachable: never = parsed.kind;
 				return unreachable;
@@ -1310,6 +1378,21 @@ export class IndexStore {
 		};
 	}
 
+	/**
+	 * The symbol count split by kind, so one total cannot mean two things.
+	 *
+	 * A document's headings and keys are symbols and belong in the count, but a reader taking that
+	 * count for callable code is reading it wrong once any document is indexed. Split rather than
+	 * filtered, because which kinds are code is the caller's question and not this table's.
+	 */
+	symbolsByKind(): Record<string, number> {
+		const rows = this.db.prepare("SELECT kind, COUNT(*) AS n FROM symbols GROUP BY kind").all() as Array<{
+			kind: string;
+			n: number;
+		}>;
+		return Object.fromEntries(rows.map((row) => [row.kind, row.n]));
+	}
+
 	/** Counts facts whose modules satisfy a live workspace predicate. */
 	totalsForModules(includeModule: (module: string) => boolean): {
 		files: number;
@@ -1424,6 +1507,39 @@ export class IndexStore {
 			.prepare("SELECT * FROM comments WHERE anchorId = ? ORDER BY startLine, startChar")
 			.all(symbolId);
 		return rows.map(rowToComment);
+	}
+
+	////////////////////////////////
+	//  Documents
+
+	docsContaining(text: string, limit: number, filter: DocFilter = {}): StoredDoc[] {
+		const { clause, values } = docWhere(filter, text);
+		const rows = this.db.prepare(`SELECT * FROM docs ${clause} ${DOC_ORDER} LIMIT ?`).all(...values, limit);
+		return rows.map(rowToDoc);
+	}
+
+	/** The true count, so a page never reports its own cap as a total. */
+	countDocsContaining(text: string, filter: DocFilter = {}): number {
+		const { clause, values } = docWhere(filter, text);
+		return (this.db.prepare(`SELECT COUNT(*) AS n FROM docs ${clause}`).get(...values) as { n: number }).n;
+	}
+
+	/** Every region a caller must match itself, for the same reason comments need one: no REGEXP. */
+	docsToScan(scanLimit: number, filter: DocFilter = {}): StoredDoc[] {
+		const { clause, values } = docWhere(filter);
+		const rows = this.db.prepare(`SELECT * FROM docs ${clause} ${DOC_ORDER} LIMIT ?`).all(...values, scanLimit);
+		return rows.map(rowToDoc);
+	}
+
+	countDocs(filter: DocFilter = {}): number {
+		const { clause, values } = docWhere(filter);
+		return (this.db.prepare(`SELECT COUNT(*) AS n FROM docs ${clause}`).get(...values) as { n: number }).n;
+	}
+
+	/** The prose of one section, which is how describe answers about a heading. */
+	docsAnchoredTo(symbolId: string): StoredDoc[] {
+		const rows = this.db.prepare(`SELECT * FROM docs WHERE anchorId = ? ${DOC_ORDER}`).all(symbolId);
+		return rows.map(rowToDoc);
 	}
 
 	/**
@@ -1608,6 +1724,41 @@ function commentWhere(filter: CommentFilter, text?: string): { clause: string; v
 	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
 }
 
+/** Document order, and by column too: a range can start where the previous one ended. */
+const DOC_ORDER = "ORDER BY module, startLine, startChar";
+
+/** One place builds the clause, so a count and its page can never disagree about what matched. */
+function docWhere(filter: DocFilter, text?: string): { clause: string; values: Array<string | number> } {
+	const where: string[] = [];
+	const values: Array<string | number> = [];
+	if (text !== undefined) {
+		where.push("normalized LIKE ? ESCAPE '\\'");
+		values.push(`%${likePattern(text)}%`);
+	}
+	if (filter.fenced !== undefined) {
+		where.push("fenced = ?");
+		values.push(filter.fenced ? 1 : 0);
+	}
+	if (filter.module !== undefined) {
+		where.push("module = ?");
+		values.push(filter.module);
+	}
+	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
+}
+
+interface DocRow {
+	factId: string;
+	module: string;
+	raw: string;
+	normalized: string;
+	fenced: number;
+	anchorId: string | null;
+	startLine: number;
+	startChar: number;
+	endLine: number;
+	endChar: number;
+}
+
 interface CommentRow {
 	factId: string;
 	module: string;
@@ -1631,6 +1782,22 @@ function rowToComment(raw: unknown): StoredComment {
 		normalized: row.normalized,
 		form: row.form,
 		placement: row.placement,
+		anchorId: row.anchorId,
+		range: {
+			start: { line: row.startLine, character: row.startChar },
+			end: { line: row.endLine, character: row.endChar },
+		},
+	};
+}
+
+function rowToDoc(raw: unknown): StoredDoc {
+	const row = raw as DocRow;
+	return {
+		factId: row.factId,
+		module: row.module,
+		raw: row.raw,
+		normalized: row.normalized,
+		fenced: row.fenced !== 0,
 		anchorId: row.anchorId,
 		range: {
 			start: { line: row.startLine, character: row.startChar },

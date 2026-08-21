@@ -7,7 +7,14 @@ import type { Range } from "@nyaa-lexicon/protocol";
 import type { CommentForm } from "./commentAttach.js";
 import { findCycles } from "./graph.js";
 import { compileSearchRegex } from "./search.js";
-import type { IndexStore, StoredComment, StoredDeclaration, StoredLiteral, StoredReference } from "./store.js";
+import type {
+	IndexStore,
+	StoredComment,
+	StoredDeclaration,
+	StoredDoc,
+	StoredLiteral,
+	StoredReference,
+} from "./store.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -113,6 +120,35 @@ export interface FoundComment {
 export interface CommentsResult {
 	query: CommentQuery;
 	comments: FoundComment[];
+	total: number;
+	truncated: boolean;
+	/** Set when a regex search stopped reading before the end of the table. */
+	scanIncomplete?: boolean;
+}
+
+/** How a docs search was expressed. Carried back so an answer says what it answered. */
+export interface DocQuery {
+	text?: string | undefined;
+	regex?: string | undefined;
+	/** True for fenced regions only, false for prose only, absent for both. */
+	fenced?: boolean | undefined;
+	module?: string | undefined;
+}
+
+export interface FoundDoc {
+	factId: string;
+	module: string;
+	range: Range;
+	fenced: boolean;
+	/** Verbatim, capped, since a long section would otherwise crowd out the rest of the page. */
+	raw: string;
+	/** The headings above this region, outermost first, empty when it sits under none. */
+	headingPath: string[];
+}
+
+export interface DocsResult {
+	query: DocQuery;
+	docs: FoundDoc[];
 	total: number;
 	truncated: boolean;
 	/** Set when a regex search stopped reading before the end of the table. */
@@ -490,6 +526,97 @@ export class IndexReadModel {
 			};
 		});
 		return { query, comments: shown, total, truncated: total > shown.length };
+	}
+
+	/**
+	 * Find what a document SAYS, by substring or regex over the normalized text.
+	 *
+	 * Separate from `findComments` because the ANSWER differs, not the data: a comment result names
+	 * the symbol it documents, and this one names the heading path it was found under.
+	 */
+	findDocs(query: DocQuery, requested = DEFAULT_COMMENT_LIMIT): DocsResult {
+		if (query.text !== undefined && query.regex !== undefined) {
+			throw new Error("give a text or a regex, not both");
+		}
+		const limit = Number.isFinite(requested)
+			? Math.min(Math.max(Math.floor(requested), 1), MAX_COMMENT_LIMIT)
+			: DEFAULT_COMMENT_LIMIT;
+		const filter = {
+			...(query.fenced === undefined ? {} : { fenced: query.fenced }),
+			...(query.module === undefined ? {} : { module: query.module }),
+		};
+
+		if (query.text !== undefined) {
+			const found = this.store.docsContaining(query.text, limit, filter);
+			return this.pageDocs(query, found, limit, this.store.countDocsContaining(query.text, filter));
+		}
+
+		if (query.regex !== undefined) {
+			const expression = compileSearchRegex(query.regex);
+			const scanned = this.store.docsToScan(REGEX_SCAN_LIMIT, filter);
+			const matched = scanned.filter((region) => {
+				expression.lastIndex = 0;
+				return expression.test(region.normalized);
+			});
+			const result = this.pageDocs(query, matched, limit);
+			// A truncated scan and a truncated page are different truncations, and a caller that
+			// cannot tell them apart reads "50 results" as "50 exist".
+			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+		}
+
+		// Neither given: the whole tier, filtered. Useful for "every region in this document".
+		if (query.fenced !== undefined || query.module !== undefined) {
+			const found = this.store.docsToScan(limit, filter);
+			return this.pageDocs(query, found, limit, this.store.countDocs(filter));
+		}
+
+		throw new Error('give a text or a regex, e.g. { text: "band-aid" } or { regex: "/TODO|FIXME/" }');
+	}
+
+	/** `total` is the true count where one is knowable, and the scanned count where it is not. */
+	private pageDocs(query: DocQuery, found: StoredDoc[], limit: number, total = found.length): DocsResult {
+		const paths = new Map<string, string[]>();
+		const shown = found.slice(0, limit).map((region) => {
+			const anchor = region.anchorId;
+			if (anchor !== null && !paths.has(anchor)) paths.set(anchor, this.headingPath(anchor));
+			return {
+				factId: region.factId,
+				module: region.module,
+				range: region.range,
+				fenced: region.fenced,
+				raw: preview(region.raw),
+				headingPath: anchor === null ? [] : (paths.get(anchor) ?? []),
+			};
+		});
+		return { query, docs: shown, total, truncated: total > shown.length };
+	}
+
+	/**
+	 * The headings above a symbol, outermost first. Owned here so no renderer rebuilds the walk.
+	 *
+	 * HEADINGS only. An anchor is any string on the wire, so a provider naming a function would
+	 * otherwise put a function in something called a heading path, which is the answer being wrong
+	 * rather than absent. Stopping at the first non-heading keeps the real headings above it.
+	 *
+	 * Bounded rather than trusting the chain to be acyclic: an id containing itself would hang.
+	 */
+	headingPath(symbolId: string): string[] {
+		const names: string[] = [];
+		const seen = new Set<string>();
+		let current: string | undefined = symbolId;
+		while (current !== undefined && !seen.has(current)) {
+			seen.add(current);
+			const declaration = this.store.declaration(current);
+			if (declaration === null || declaration.kind !== "heading") break;
+			names.push(declaration.name);
+			current = declaration.containerId;
+		}
+		return names.reverse();
+	}
+
+	/** The prose of one section, which is how describe answers about a heading. */
+	docsFor(symbolId: string): StoredDoc[] {
+		return this.store.docsAnchoredTo(symbolId);
 	}
 
 	private anchorOf(symbolId: string): CommentAnchor | null {

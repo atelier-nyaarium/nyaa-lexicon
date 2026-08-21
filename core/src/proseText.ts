@@ -1,8 +1,8 @@
-// The one owner of comment prose.
+// The one owner of how prose becomes searchable, for comments and for document regions alike.
 //
-// Search matches normalized text, so every comment fact carries both: the raw span as written, and
+// Search matches normalized text, so every prose fact carries both: the raw span as written, and
 // this. Two spellings of one comment would be two answers to the same question, which is why
-// nothing else in core is allowed to strip a marker.
+// nothing else in core is allowed to strip a marker or collapse a line break.
 //
 // Marker SHAPES are recognized, never languages. A comment already known to be a comment can have
 // its leading punctuation removed without asking which grammar produced it, and that is what keeps
@@ -107,4 +107,15 @@ export function normalizeCommentText(raw: string): string {
 			.filter((text) => !DECORATION.test(text.trim()))
 			.join(" "),
 	);
+}
+
+/**
+ * The searchable form of a document region: whitespace collapsed, nothing stripped.
+ *
+ * A region has no markers to remove, since prose in a document is already prose. Collapsing is still
+ * the point: a sentence wrapped across a paragraph's lines, or a phrase split by a list item's
+ * indent, is one phrase to a reader and must be one string to a search.
+ */
+export function normalizeDocText(raw: string): string {
+	return collapse(raw);
 }

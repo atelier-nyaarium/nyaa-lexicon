@@ -9,7 +9,7 @@
 // fact is worse than an honest "somewhere in here".
 
 import { type CommentSpan, coordinatesOf, type Declaration, type Range } from "@nyaa-lexicon/protocol";
-import { isBlockComment, normalizeCommentText } from "./commentText.js";
+import { isBlockComment, normalizeCommentText } from "./proseText.js";
 
 ////////////////////////////////
 //  Interfaces & Types

@@ -933,7 +933,7 @@ overflow. The disjointness and slice-back invariants held on every input that wa
   A shared `workspaceModule(root, absolute)` plus a residue test is its own committable unit and is
   on the board, because folding a nine-provider refactor into a markdown commit would hide both.
 
-## Phase 3 - Core
+## Phase 3 - Core ✅
 
 - A `docs` table joining `FACT_TABLES`, with the full replace and forget lifecycle.
 - Attachment is trivial by construction: prose belongs to the heading above it. No resolver, no
@@ -949,6 +949,36 @@ overflow. The disjointness and slice-back invariants held on every input that wa
   bounded scan declaring `scanIncomplete`, a real `COUNT` so a page cannot disagree with its total.
 - Overview counts grouped by kind, so document sections are reported apart from callable symbols
   rather than silently inflating one number.
+
+### Phase 3 results
+
+**The founding question answers itself now.** Against this repository the index holds 191 headings
+and 647 doc regions, 7 of them fenced. `band-aid` returns `CLAUDE.md > nyaa-lexicon > Principles`
+with the rule itself, and `build patch` returns
+`CLAUDE.md > nyaa-lexicon > Development > Releasing` marked as being in a code block. That second
+one is the exact term Question 2b measured as unfindable, so the fence decision is now checkable
+rather than argued.
+
+**A module rename, because the owner's name had stopped being true.** `commentText.ts` owned comment
+normalization and would have owned doc normalization too, under a name that says only half of it. It
+is `proseText.ts`, owning how prose becomes searchable for both fact classes, and both route through
+one `collapse` so a phrase wrapped across lines is one phrase in either.
+
+**The overview split is HEADINGS only, and the rest is honestly unseparable.** A document's
+frontmatter keys are `property`, which is what a class field is, so no kind filter can tell them
+apart. The note beside the count says headings and says nothing about keys, because that is the part
+the kind can carry. Question 4 concluded the classification "sits on each symbol" via `SymbolKind`,
+and this is where that turns out to be true of sections and not of keys.
+
+**`replaceFile` takes a ninth positional parameter rather than an object.** With 118 call sites, all
+but one in tests, and every parameter a distinct type, a swap cannot compile and the refactor would
+be churn.
+
+**A heading path contains HEADINGS, enforced rather than assumed.** An `anchorId` is any non-empty
+string on the wire, and the walk reads declarations, so a provider naming a function would have put
+a function inside something called a heading path. It stops at the first non-heading, which keeps the
+real headings above it and answers an empty path rather than a wrong one. The markdown provider
+never emits such an anchor; the guard is core refusing to launder one that arrives.
 
 ## Phase 4 - Surface
 
@@ -1034,13 +1064,19 @@ a provenance field that one of ten providers ignores is worse than none.
 - Gate, then conformance across every provider, not only the new ones. A corpus case is shared.
 - The blind corpus is the real test: index a documentation set nobody here has read and ask it
   questions.
-- **The acceptance test, stated precisely enough to be falsifiable.** `search_docs` for the text
-  `band-aid` against this repo returns exactly one hit whose heading path is `CLAUDE.md > Principles`
-  and whose prose contains `No band-aids`. The path stops at `Principles` because `No band-aids` is
-  a BOLDED LIST ITEM, not a heading; the only headings in that file are `##` level. An audit lap
-  asserted a `> No band-aids` segment and was wrong, which is precisely why the expectation is
-  written out rather than described. Matching is substring over normalized text, the same contract
-  the comment tier uses, so the hyphen and the plural both have to behave.
+- **The acceptance test, restated against a measurement rather than a guess.** `search_docs` for the
+  text `band-aid` against this repo returns exactly one hit IN `CLAUDE.md`, and its heading path is
+  `CLAUDE.md > nyaa-lexicon > Principles` with prose containing `No band-aids`. Matching is substring
+  over normalized text, the same contract the comment tier uses, so the hyphen and the plural both
+  have to behave.
+
+  The first draft of this test was wrong twice, and Phase 3 measured both. It said "exactly one hit",
+  which is false: ten come back, because the plan files in this repository discuss band-aids at
+  length, and a test that forbids that would be a test against this repo's own contents rather than
+  against the tool. And it said the path was `CLAUDE.md > Principles`, omitting `nyaa-lexicon`,
+  which is that file's `#` heading and the container of every `##` under it. `No band-aids` really is
+  a bolded LIST ITEM rather than a heading, so the path does stop where the draft said it stopped;
+  it just starts a level higher than the draft knew.
 - Drive the built server, since a green gate is not evidence.
 
 ## Phase 7 - Release

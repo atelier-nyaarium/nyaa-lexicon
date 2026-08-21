@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCommentText } from "../commentText.js";
+import { normalizeCommentText, normalizeDocText } from "../proseText.js";
 
 describe("normalizing comment prose", () => {
 	it("strips a line marker and its padding", () => {
@@ -53,5 +53,22 @@ describe("normalizing comment prose", () => {
 
 	it("collapses a carriage return like any other whitespace", () => {
 		expect(normalizeCommentText("// first\r\n// second")).toBe("first second");
+	});
+});
+
+describe("normalizing document prose", () => {
+	// A document has no markers to strip, so anything removed here is content.
+	it("collapses whitespace and strips nothing else", () => {
+		expect(normalizeDocText("weigh the long-run\ncost of a workaround")).toBe(
+			"weigh the long-run cost of a workaround",
+		);
+		expect(normalizeDocText("  padded  ")).toBe("padded");
+		expect(normalizeDocText("- **No band-aids.** Weigh it")).toBe("- **No band-aids.** Weigh it");
+		expect(normalizeDocText("// not a marker here")).toBe("// not a marker here");
+		expect(normalizeDocText("# not a heading marker")).toBe("# not a heading marker");
+	});
+
+	it("collapses a carriage return like any other whitespace", () => {
+		expect(normalizeDocText("first\r\nsecond")).toBe("first second");
 	});
 });
