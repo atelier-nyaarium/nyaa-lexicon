@@ -44,6 +44,27 @@ Two rules hold the design together:
   layer: recorded answers cannot be regenerated from source, so they are salvaged across a rebuild
   and their citations heal on their own, because unchanged code mints identical fact ids.
 
+## Where a comment gets its meaning
+
+Providers report comments as raw spans and say nothing about ownership. Deciding which symbol a
+comment documents is position math over ranges this side already stores, so eight providers doing
+it would be eight chances to disagree about one rule. `commentAttach` is that one place, and
+`commentText` is the one place prose is normalized for search.
+
+It runs in the INDEXER rather than in the store, and that is the load-bearing choice. "Is there a
+blank line between these two" is answerable only from the source text, and the indexer is the last
+layer holding it. Inferring adjacency from stored endpoints instead is how a blank line becomes
+invisible.
+
+Two provider conventions are supported rather than corrected: a declaration's range either already
+covers its doc comment or begins on the line after it. A shared conformance case pins that there is
+no third answer, because a range starting anywhere else loses every doc comment in that language
+while nothing else goes red.
+
+A symbol's documentation is DERIVED from its leading-attached comment rather than stored beside the
+declaration. There was a `docComment` field once; two copies of one sentence can disagree with the
+file, and this one is the file.
+
 ## Invalidation
 
 A file event is decided against the stored content hash, so a save that changed nothing re-indexes
