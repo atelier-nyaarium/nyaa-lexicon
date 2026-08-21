@@ -555,9 +555,10 @@ because the reasoning is worth more than the diff.
 - The range contract is stated, not assumed: a region's range covers its content and excludes the
   fence delimiter lines, so a range always slices its own text back out. The conformance checker
   already enforces exactly that for comments and gets reused here.
-- **`anchorHeading` is nullable, and the reason is named**: prose before the first heading, and a
-  document with no headings at all, both anchor to the module. That is the same shape the comment
-  tier settled on, where a module-level comment has a null anchor.
+- **`anchorId` is the heading's SYMBOL ID and is absent for module-level prose.** A name would not
+  do: two headings share one, which is the whole reason the disambiguator exists. Absent covers
+  prose before the first heading and a file with none, the same shape a module-level comment has.
+  It is optional rather than explicitly null, matching how every other absence here is spelled.
 - A `docs` tier boolean on `ProviderTiers`, REQUIRED. **This is an ATOMIC edit, not an additive
   one:** `InitializeResponseSchema` validates the tier set, so all eight providers plus the
   reference provider plus 3 test fixtures move in the SAME commit or every provider fails to start.
@@ -567,6 +568,8 @@ because the reasoning is worth more than the diff.
   across source, fixtures and the shipped artifact together.
 - A doc fact id kind, and `factById` gains its branch. Verified rather than assumed: planting a fake
   member in `FactKind` fails the type check at that switch today.
+- Conformance cases pin the contract before any provider exists, and two tests guard against them
+  quietly becoming unrunnable if their fixtures are ever dropped.
 - **Duplicate sibling headings: SETTLED, and the tradeoff is recorded rather than hidden.** The
   grammar now lets `namespace`, `type` and `meta` carry a disambiguator, so the second `## Notes`
   under one parent is `Parent/Notes(2)/`. `term` is excluded because its `.` suffix IS the method
