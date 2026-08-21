@@ -62,8 +62,8 @@ A provider reports each comment as a `CommentSpan`: its range and its verbatim t
 included. It reports nothing about which symbol the comment belongs to.
 
 That division is deliberate. Which declaration a comment documents is position math over ranges the
-core already stores, so eight providers implementing it would be eight chances to disagree about
-one rule. The core groups runs, decides the form (leading, trailing, inline, standalone), picks the
+core already stores, so each provider implementing it would be another chance to disagree about one
+rule. The core groups runs, decides the form (leading, trailing, inline, standalone), picks the
 anchor, and normalizes the text for search.
 
 Report what the language calls a comment, including interpreter lines, and let the core decide what

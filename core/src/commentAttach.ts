@@ -1,8 +1,8 @@
 // The one owner of "which symbol does this comment belong to".
 //
 // Providers report spans and nothing else, so every rule here is position math over ranges core
-// already stores plus the module's own text. Eight providers implementing this would be eight
-// chances to disagree about one idea.
+// already stores plus the module's own text. Each provider implementing this would be another
+// chance to disagree about one idea.
 //
 // Nothing guesses. A comment that could belong to either of two declarations belongs to neither:
 // it becomes standalone against whatever encloses it, because a wrong anchor baked into a stored

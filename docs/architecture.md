@@ -47,8 +47,8 @@ Two rules hold the design together:
 ## Where a comment gets its meaning
 
 Providers report comments as raw spans and say nothing about ownership. Deciding which symbol a
-comment documents is position math over ranges this side already stores, so eight providers doing
-it would be eight chances to disagree about one rule. `commentAttach` is that one place, and
+comment documents is position math over ranges this side already stores, so every provider doing it
+would be another chance to disagree about one rule. `commentAttach` is that one place, and
 `commentText` is the one place prose is normalized for search.
 
 It runs in the INDEXER rather than in the store, and that is the load-bearing choice. "Is there a

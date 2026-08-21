@@ -22,7 +22,7 @@ let root: string;
 let store: IndexStore;
 let supervisor: ProviderSupervisor;
 
-/** Only TypeScript: this proves the seam, and eight providers would pay eight startups for it. */
+/** Only TypeScript: this proves the seam, and every other provider would add a startup for it. */
 const TYPESCRIPT_ONLY = discoverProviders(lexiconRoot()).filter((command) => command.directory === "typescript");
 
 const SOURCE = [

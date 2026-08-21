@@ -114,7 +114,7 @@ Node 22.5+ required, for `node:sqlite`.
 Ordered by how much they prove:
 
 1. `bun run test` for the unit level.
-2. Conformance if the change touches a provider or the protocol, all eight providers, not just the
+2. Conformance if the change touches a provider or the protocol, every provider, not just the
    one you edited. A corpus case is shared, so an edit for one language runs against every other.
 3. `node dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
    repository questions whose right answers are already known, so it catches "produces output" that

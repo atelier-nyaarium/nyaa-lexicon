@@ -21,7 +21,7 @@ toolchain to set up.
 
 ## Languages
 
-Eight, each in its own process behind a documented protocol.
+Nine, each in its own process behind a documented protocol.
 
 | Provider   | Files                                                 |
 | ---------- | ----------------------------------------------------- |
@@ -33,9 +33,14 @@ Eight, each in its own process behind a documented protocol.
 | C++        | `.cpp` `.cc` `.cxx` `.hpp` `.hh` `.hxx`               |
 | C          | `.c` `.h`                                             |
 | GDScript   | `.gd`                                                 |
+| Markdown   | `.md` `.mdc` `.markdown`                              |
 
 A provider declares which tiers it covers; anything it cannot answer comes back as Unknown with a
 reason, never as a guess or a gap.
+
+Markdown is the one that is not a language. Its headings are declarations, so a document outlines
+like a class, and its prose is a fact class of its own. `docs/provider-protocol.md` says how under
+"Documents are headings and regions".
 
 ## What it answers
 

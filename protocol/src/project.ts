@@ -127,7 +127,7 @@ export const LiteralSchema = z
 
 export type Literal = z.infer<typeof LiteralSchema>;
 
-/** Spans only. Attachment is position math, owned by core so eight providers cannot drift. */
+/** Spans only. Attachment is position math, owned by core so no two providers can drift. */
 export const CommentSpanSchema = z
 	.object({
 		range: RangeSchema,
