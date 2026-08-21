@@ -157,8 +157,8 @@ export function readJson(context: JsonContext): JsonFacts {
 			const [key, value] = property.children ?? [];
 			if (key === undefined || typeof key.value !== "string") continue;
 			const at = coordinates.rangeAt(offset + key.offset, offset + key.offset + key.length);
-			// A key with no name cannot be addressed. Said out loud, so a file in scope never reports
-			// nothing without a reason.
+			// A key with no name cannot be addressed, reported rather than skipped. Core keeps only
+			// `error`, so nothing shows this yet.
 			if (key.value === "") {
 				diagnostics.push({
 					severity: "info",

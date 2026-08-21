@@ -162,7 +162,7 @@ export function readYaml(context: YamlContext): YamlFacts {
 		}
 	}
 
-	/** A key the index drops. Said out loud, so a file in scope never reports nothing without a reason. */
+	/** A key this reader drops, reported rather than skipped. Core keeps only `error`, so nothing shows it yet. */
 	function unnamed(message: string, range: ReturnType<TextCoordinates["rangeAt"]>): void {
 		diagnostics.push({ severity: "info", message, path: module, ...(range === undefined ? {} : { range }) });
 	}
