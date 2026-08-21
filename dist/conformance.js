@@ -164,7 +164,7 @@ class Cart
 `},subject:"src/Empty.kt"},[Sv]:{files:{"empty.json":`
 `},subject:"empty.json"},[Ev]:{files:{"empty.yml":`
 `},subject:"empty.yml"},[Nv]:{files:{"empty.md":`
-`},subject:"empty.md"}},declarations:[]},{id:"every-comment-shape-is-emitted",tier:"comments",about:"A provider reports every comment as a raw span: leading, trailing, inline, and standalone.",fixtures:{[d]:{files:{"src/comments.ts":`// leading
+`},subject:"empty.md"}},declarations:[],parseErrors:"forbidden"},{id:"every-comment-shape-is-emitted",tier:"comments",about:"A provider reports every comment as a raw span: leading, trailing, inline, and standalone.",fixtures:{[d]:{files:{"src/comments.ts":`// leading
 export function work(first: number /* inline */, second: number): number {
 	return first + second;
 }

@@ -413,10 +413,8 @@ function main(argv: string[]): void {
 	// Stale output from a previous run must not survive into the commit.
 	rmSync(path.join(ROOT, DIST_DIR), { recursive: true, force: true });
 
-	// Every workspace package's own tsc output goes to `.tsbuild`, never `dist`, so a `dist` beside a
-	// package.json is always a fossil: nothing here writes one. Four were once committed by accident
-	// and outlived every release since, because nothing ever looked in the package directories. Swept
-	// by walking `targets` rather than a hardcoded list, so a package added later is covered too.
+	// Package tsc output goes to `.tsbuild`, so a `dist` beside a package.json is always a fossil and
+	// nothing here writes one. Walks `targets` rather than a list, so a new package is swept too.
 	for (const target of targets)
 		rmSync(path.join(ROOT, path.dirname(target), DIST_DIR), { recursive: true, force: true });
 

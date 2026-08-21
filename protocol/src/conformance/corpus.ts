@@ -288,13 +288,14 @@ const CASES: ConformanceCase[] = [
 			[CSHARP]: { files: { "src/empty.cs": "\n" }, subject: "src/empty.cs" },
 			[RUST]: { files: { "src/empty.rs": "\n" }, subject: "src/empty.rs" },
 			[KOTLIN]: { files: { "src/Empty.kt": "\n" }, subject: "src/Empty.kt" },
-			// An empty document is valid in both, so this also asserts neither reports a parse error for
-			// a file a repository is full of.
 			[JSON_LANG]: { files: { "empty.json": "\n" }, subject: "empty.json" },
 			[YAML]: { files: { "empty.yml": "\n" }, subject: "empty.yml" },
 			[MARKDOWN]: { files: { "empty.md": "\n" }, subject: "empty.md" },
 		},
 		declarations: [],
+		// The "does not error" half, which the wording claimed and nothing checked. An empty file is
+		// what a repository is full of, and a parser calling one broken is the failure worth catching.
+		parseErrors: "forbidden",
 	},
 	{
 		id: "every-comment-shape-is-emitted",

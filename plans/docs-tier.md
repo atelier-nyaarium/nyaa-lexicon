@@ -1486,6 +1486,25 @@ four were one id, and the store would have kept one. Also indexed: `.devcontaine
 `AdvanceResult#kind` and in `advance()`. `search_docs` over it returns the cycle definitions driving
 this very session, by heading path.
 
+**The hygiene pass found three things worth doing, out of 34 claimed.** The other 31 were the
+codebase's own established voice read as violations, which is what happens when a style rule meets a
+file whose neighbours all break it the same way.
+
+The one worth having: `empty-file` says "reports nothing, AND DOES NOT ERROR" and asserted only the
+first half, since the case carried no `parseErrors`. A comment added this lap claimed the second half
+was asserted, which made it a misalignment rather than merely a gap. Now `parseErrors: "forbidden"`,
+and all eleven providers hold it. An empty file is what a repository is full of.
+
+It also caught the two readers wording one situation two ways: a repeated key was `info` in YAML and
+`warning` in JSON, with two different sentences. `dropped.ts` now owns the vocabulary, so the same
+reason cannot read two ways, and a test compares the two readers directly rather than trusting them.
+
+That test immediately earned itself. Asked whether both readers describe nesting-too-deep alike, it
+said no: the `yaml` library CATCHES the stack overflow itself and files it as a document error, so
+the guard never saw it and `Maximum call stack size exceeded. at line 1, column 7592` reached the
+reader as though it were a fact about their file. Recognizing that message is now `depth.ts`'s job
+too, alongside recognizing the thrown form.
+
 **One finding, and it is about the instructions rather than the code.** The nyaaskills `dist/` corpus
 cannot be indexed the way `CLAUDE.md` prescribes. Pointed at bare it reports zero files, because the
 TypeScript provider is project-model driven and a directory with no `tsconfig.json` enumerates
