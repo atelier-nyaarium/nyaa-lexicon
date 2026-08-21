@@ -430,43 +430,43 @@ export class RustParser {
 			index = prefix.index;
 			const token = tokenAt(this.tokens, index);
 			if (token === undefined) break;
-			if (token.value === "use") {
+			if (isValueToken(token, "use")) {
 				index = this.parseUse(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "fn") {
+			if (isValueToken(token, "fn")) {
 				index = this.parseFunction(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "struct") {
+			if (isValueToken(token, "struct")) {
 				index = this.parseStruct(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "enum") {
+			if (isValueToken(token, "enum")) {
 				index = this.parseEnum(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "trait") {
+			if (isValueToken(token, "trait")) {
 				index = this.parseTrait(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "impl") {
+			if (isValueToken(token, "impl")) {
 				index = this.parseImpl(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "mod") {
+			if (isValueToken(token, "mod")) {
 				index = this.parseModule(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "type") {
+			if (isValueToken(token, "type")) {
 				index = this.parseTypeAlias(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "const" || token.value === "static") {
+			if (isValueToken(token, "const") || isValueToken(token, "static")) {
 				index = this.parseConstant(index, end, prefix, context);
 				continue;
 			}
-			if (token.value === "macro_rules") {
+			if (isValueToken(token, "macro_rules")) {
 				index = this.parseMacroRules(index, end, prefix, context);
 				continue;
 			}
@@ -735,7 +735,7 @@ export class RustParser {
 			if (index <= guard) throw new Error("local parser failed to advance");
 			guard = index;
 			const token = this.tokens[index] as RustToken;
-			if (token.value === "let") {
+			if (isValueToken(token, "let")) {
 				const boundary = this.topLevelStop(index + 1, end, new Set(["=", ":", ";"]));
 				const colon = isValueToken(this.tokens[boundary], ":")
 					? boundary
@@ -791,7 +791,7 @@ export class RustParser {
 				index = Math.max(index + 1, initializerEnd >= 0 ? initializerEnd : patternEnd);
 				continue;
 			}
-			if (token.value === "for") {
+			if (isValueToken(token, "for")) {
 				const name = tokenAt(this.tokens, index + 1);
 				if (isNameToken(name) && name.value !== "_" && !this.declarationNameTokens.has(index + 1)) {
 					const ordinal = this.localOrdinal++;

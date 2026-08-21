@@ -23,6 +23,27 @@ export interface LexedC {
 	diagnostics: Diagnostic[];
 }
 
+/**
+ * Whether a token's text is syntax rather than data.
+ *
+ * Keyed by TokenKind, so a new kind must declare itself instead of defaulting into the parser.
+ */
+const CARRIES_SYNTAX: Record<TokenKind, boolean> = {
+	identifier: true,
+	number: true,
+	symbol: true,
+	newline: true,
+	string: false,
+	char: false,
+	comment: false,
+};
+
+/** A token's text as syntax, empty for the kinds whose text is content the program merely holds. */
+export function syntaxValue(token: CToken | undefined): string {
+	if (token === undefined) return "";
+	return CARRIES_SYNTAX[token.kind] ? token.value : "";
+}
+
 const MULTI_SYMBOLS = [
 	"<<=",
 	">>=",

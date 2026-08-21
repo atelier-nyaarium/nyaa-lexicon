@@ -323,6 +323,49 @@ describe("C cursor boundaries", () => {
 	});
 });
 
+describe("C reads comments and strings as content, never as syntax", () => {
+	// Each pair differs ONLY inside a comment or a string literal, so extraction must not move.
+	const pairs: Array<[string, string, string]> = [
+		["a storage word in a comment", "int /*x*/ y;", "int /*const*/ y;"],
+		["a linkage word in a comment", "int /*x*/ g(void) { }", "int /*static*/ g(void) { }"],
+		["an operator in a comment", "int /*x*/ h(void) { }", "int /*=*/ h(void) { }"],
+		["a separator in a comment", "struct S { int /*x*/ y; };", "struct S { int /*;*/ y; };"],
+		["a comma in a comment", "int f(int /*x*/ y);", "int f(int /*,*/ y);"],
+		[
+			"a brace in a string",
+			'void f(void) { const char *s = "x"; int y; }',
+			'void f(void) { const char *s = "{"; int y; }',
+		],
+		["a closing brace in a string", 'void f(void) { "x"; int y; }', 'void f(void) { "}"; int y; }'],
+		["a conditional in a comment", "int f(void) { /*x*/ return 0; }", "int f(void) { /*?*/ return 0; }"],
+		[
+			"a brace in a string, counted as nesting",
+			'void f(void) { const char *s = "x"; }',
+			'void f(void) { const char *s = "{"; }',
+		],
+	];
+
+	function shape(text: string): string {
+		return parseC("probe.c", `${text}\n`)
+			.declarations.map((declaration) =>
+				[
+					declaration.kind,
+					declaration.name,
+					declaration.exported,
+					declaration.visibility,
+					declaration.metrics?.parameters,
+					declaration.metrics?.branches,
+					declaration.metrics?.nesting,
+				].join("|"),
+			)
+			.join("\n");
+	}
+
+	test.each(pairs)("%s changes nothing", (_label, control, mutated) => {
+		expect(shape(mutated)).toBe(shape(control));
+	});
+});
+
 describe("C declarations", () => {
 	const modelText = [
 		"/** Packet docs */",

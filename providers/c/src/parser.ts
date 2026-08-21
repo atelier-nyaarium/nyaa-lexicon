@@ -12,7 +12,7 @@ import {
 	type Reference,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
-import { type CToken, lexC, previousSignificant, significant, tokenRange } from "./tokens.js";
+import { type CToken, lexC, previousSignificant, significant, syntaxValue, tokenRange } from "./tokens.js";
 
 const LANGUAGE = "c";
 
@@ -338,7 +338,7 @@ function isIdentifierToken(token: CToken | undefined): token is CToken & { kind:
 }
 
 function tokenValue(tokens: CToken[], index: number): string {
-	return tokens[index]?.value ?? "";
+	return syntaxValue(tokens[index]);
 }
 
 function nextCode(tokens: CToken[], index: number, end = tokens.length): number {
@@ -556,14 +556,14 @@ function hasTopLevelValue(tokens: CToken[], start: number, end: number, wanted: 
 	let brackets = 0;
 	let braces = 0;
 	for (let index = start; index < end; index++) {
-		const token = tokens[index] as CToken;
-		if (token.value === "(") parentheses++;
-		else if (token.value === ")") parentheses--;
-		else if (token.value === "[") brackets++;
-		else if (token.value === "]") brackets--;
-		else if (token.value === "{") braces++;
-		else if (token.value === "}") braces--;
-		else if (token.value === wanted && parentheses === 0 && brackets === 0 && braces === 0) return true;
+		const value = syntaxValue(tokens[index]);
+		if (value === "(") parentheses++;
+		else if (value === ")") parentheses--;
+		else if (value === "[") brackets++;
+		else if (value === "]") brackets--;
+		else if (value === "{") braces++;
+		else if (value === "}") braces--;
+		else if (value === wanted && parentheses === 0 && brackets === 0 && braces === 0) return true;
 	}
 	return false;
 }
@@ -807,7 +807,7 @@ class CParser {
 			kind = "quoted";
 			this.includePathTokens.add(cursor);
 			pathEnd = cursor;
-		} else if (first.value === "<") {
+		} else if (syntaxValue(first) === "<") {
 			kind = "angle";
 			cursor++;
 			pathStart = cursor;
@@ -942,11 +942,12 @@ class CParser {
 				index++;
 				continue;
 			}
-			if (token.value === "(") parentheses++;
-			else if (token.value === ")") parentheses = Math.max(0, parentheses - 1);
-			else if (token.value === "[") brackets++;
-			else if (token.value === "]") brackets = Math.max(0, brackets - 1);
-			else if (token.value === "{") {
+			const value = syntaxValue(token);
+			if (value === "(") parentheses++;
+			else if (value === ")") parentheses = Math.max(0, parentheses - 1);
+			else if (value === "[") brackets++;
+			else if (value === "]") brackets = Math.max(0, brackets - 1);
+			else if (value === "{") {
 				if (parentheses === 0 && brackets === 0 && braces === 0) {
 					const functionCandidate = this.findFunctionCandidate(start, index);
 					if (functionCandidate !== undefined) {
@@ -962,11 +963,11 @@ class CParser {
 					}
 				}
 				braces++;
-			} else if (token.value === "}") {
+			} else if (value === "}") {
 				if (braces === 0 && parentheses === 0 && brackets === 0)
 					return { start, last: index - 1, next: index, terminator: "eof" };
 				braces--;
-			} else if (token.value === ";" && parentheses === 0 && brackets === 0 && braces === 0) {
+			} else if (value === ";" && parentheses === 0 && brackets === 0 && braces === 0) {
 				return { start, last: index, next: index + 1, terminator: "semicolon" };
 			}
 			index++;
@@ -980,15 +981,16 @@ class CParser {
 		for (let index = start; index < beforeBody; index++) {
 			const token = this.tokens[index] as CToken;
 			if (token.kind === "comment" || token.kind === "newline" || this.directiveTokens.has(index)) continue;
-			if (token.value === "[") {
+			const value = syntaxValue(token);
+			if (value === "[") {
 				brackets++;
 				continue;
 			}
-			if (token.value === "]") {
+			if (value === "]") {
 				brackets = Math.max(0, brackets - 1);
 				continue;
 			}
-			if (token.value === "(") {
+			if (value === "(") {
 				if (parentheses !== 0 || brackets !== 0) {
 					parentheses++;
 					continue;
@@ -1015,7 +1017,7 @@ class CParser {
 					close,
 				};
 			}
-			if (token.value === ")") parentheses = Math.max(0, parentheses - 1);
+			if (value === ")") parentheses = Math.max(0, parentheses - 1);
 		}
 		return undefined;
 	}
@@ -1152,7 +1154,7 @@ class CParser {
 	private parseNestedBlocks(start: number, end: number, declaration: CDeclaration): void {
 		let index = start;
 		while (index < end) {
-			if (this.tokens[index]?.value !== "{") {
+			if (syntaxValue(this.tokens[index]) !== "{") {
 				index++;
 				continue;
 			}
@@ -1269,14 +1271,15 @@ class CParser {
 		let depth = 0;
 		for (let index = bodyOpen + 1; index < bodyClose; index++) {
 			const token = this.tokens[index] as CToken;
-			if (token.value === "{") {
+			const value = syntaxValue(token);
+			if (value === "{") {
 				depth++;
 				metrics.nesting = Math.max(metrics.nesting ?? 0, depth);
 			}
-			if (token.value === "}") depth = Math.max(0, depth - 1);
-			if (token.kind === "identifier" && ["if", "for", "while", "case", "default"].includes(token.value))
+			if (value === "}") depth = Math.max(0, depth - 1);
+			if (token.kind === "identifier" && ["if", "for", "while", "case", "default"].includes(value))
 				metrics.branches = (metrics.branches ?? 0) + 1;
-			if (token.value === "?") metrics.branches = (metrics.branches ?? 0) + 1;
+			if (value === "?") metrics.branches = (metrics.branches ?? 0) + 1;
 		}
 		return metrics;
 	}

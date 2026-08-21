@@ -493,6 +493,21 @@ test("withholds comments from an outline parse, as it withholds literals", () =>
 	expect(facts.declarations.map((candidate) => candidate.name)).toEqual(["A"]);
 });
 
+test("reads a string spelling a keyword as a string, not as the keyword", () => {
+	const body = (inner: string) =>
+		["macro_rules! m { ($($t:tt)*) => {}; }", "fn f() {", `    m!(${inner} x = 1);`, "    let y = 2;", "}"].join(
+			"\n",
+		);
+
+	// Only the macro's string content differs, so the locals found must not.
+	const control = parse(body('"x"'), "control.rs").facts;
+	const mutated = parse(body('"let"'), "mutated.rs").facts;
+
+	expect(mutated.declarations.map((candidate) => candidate.name)).toEqual(
+		control.declarations.map((candidate) => candidate.name),
+	);
+});
+
 test("reports mismatched and missing delimiters as syntax errors", () => {
 	const mismatched = parse("fn broken() { let value = (1; }", "mismatch.rs").facts;
 	const missing = parse("struct Broken { value: i32", "missing.rs").facts;
