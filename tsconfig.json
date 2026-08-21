@@ -14,6 +14,7 @@
 		{ "path": "./providers/csharp" },
 		{ "path": "./providers/rust" },
 		{ "path": "./providers/kotlin" },
+		{ "path": "./providers/markdown" },
 		{ "path": "./scripts" }
 	]
 }

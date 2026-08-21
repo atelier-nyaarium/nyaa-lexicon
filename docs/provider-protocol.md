@@ -106,14 +106,23 @@ false, and that is the honest answer rather than a gap: a language has no sectio
 
 A heading is a DECLARATION of kind `heading`, with the heading above it as its container. So an
 outline of a document is its table of contents, and everything built on declarations works without
-knowing a document from a class.
+knowing a document from a class. Its range covers the whole SECTION, ending at the next heading of
+the same or a shallower level, so reading a heading's source returns the section rather than the
+title line.
+
+**Only a heading at the document's top level is structure.** One inside a blockquote or a list item
+is quoted or embedded material, so it stays prose. The same argument that makes a fence's contents
+text makes a quoted outline text: a document quoting another document would otherwise grow sections
+it does not have.
 
 The prose is separate, one `DocRegion` per contiguous stretch:
 
 - **Per REGION, never per section.** A section is normally prose, then a fence, then more prose. One
   fact per section could not say which part was fenced.
 - `fenced` marks a region from a fenced code block, so a result can say where it was found. A
-  fence's contents are TEXT: never parse them as the language the fence names.
+  fence's contents are TEXT: never parse them as the language the fence names. It is literal, so an
+  indented code block is a region with `fenced` false. That block is code and it is not fenced, and
+  widening the flag to cover both would make it say something its name does not.
 - `anchorId` is the heading's symbolId, never its name, because two headings share a name. Absent
   means the region sits under no heading, which covers prose before the first one and a file with
   none.

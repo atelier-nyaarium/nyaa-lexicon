@@ -26,12 +26,20 @@ type ExpectedDocRegion = z.infer<typeof ExpectedDocRegionSchema>;
 ////////////////////////////////
 //  Functions & Helpers
 
-/** `kind:name` per descriptor, the form a case states so it never pins the wire string. */
+/**
+ * `kind:name` per descriptor, the form a case states so it never pins the wire string.
+ *
+ * A disambiguator is appended in parens when one is present, because it is the ONLY thing telling
+ * two same-named siblings apart. Dropping it would leave the grammar's whole reason for existing
+ * unassertable, with both ids reading identically to a case.
+ */
 export function describeIdParts(symbolId: string): string[] | null {
 	const parsed = parseSymbolId(symbolId);
 	if (!parsed) return null;
 	if (parsed.local !== undefined) return [`local:${parsed.local}`];
-	return parsed.descriptors.map((d) => `${d.kind}:${d.name}`);
+	return parsed.descriptors.map(
+		(d) => `${d.kind}:${d.name}${d.disambiguator === undefined ? "" : `(${d.disambiguator})`}`,
+	);
 }
 
 function checkDeclaration(
@@ -133,6 +141,17 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 		// naming only a name cannot say which overload it meant.
 		const perMatch = matches.map((m) => checkDeclaration(expected, m, byId));
 		if (perMatch.every((p) => p.length > 0)) problems.push(...(perMatch[0] as string[]));
+	}
+
+	const wantedNames = fixture?.declarationNames ?? testCase.declarationNames;
+	if (wantedNames !== undefined) {
+		const reported = facts.declarations.map((d) => d.name);
+		// Element-wise: no separator exists that a name cannot itself contain, NUL included.
+		const same =
+			reported.length === wantedNames.length && wantedNames.every((name, index) => name === reported[index]);
+		if (!same) {
+			problems.push(`declarations: expected exactly [${wantedNames.join(", ")}], got [${reported.join(", ")}]`);
+		}
 	}
 
 	for (const expected of testCase.references ?? []) {

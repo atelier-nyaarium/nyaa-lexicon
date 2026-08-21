@@ -63,6 +63,38 @@ describe("addressing a position", () => {
 		}
 	});
 
+	// The lookup is a binary search, where an off-by-one shows up only at a line boundary and only
+	// in a text with enough lines for the halving to matter.
+	it("finds the same line a plain scan would, at every offset of a many-line text", () => {
+		// Starts come from how the fixture was BUILT, never from re-reading the text, so the oracle
+		// is independent of the thing under test and of the owner it belongs to.
+		const lines: string[] = [];
+		const starts: number[] = [];
+		let cursor = 0;
+		for (let index = 0; index < 500; index++) {
+			const line = index % 7 === 0 ? "" : `line ${index}`;
+			starts.push(cursor);
+			lines.push(line);
+			cursor += line.length + 1;
+		}
+		const text = lines.join("\n");
+		const at = coordinatesOf(text);
+
+		for (let offset = 0; offset <= text.length; offset++) {
+			let expected = 0;
+			for (let line = starts.length - 1; line >= 0; line--) {
+				if ((starts[line] as number) <= offset) {
+					expected = line;
+					break;
+				}
+			}
+			expect(at.positionAt(offset), `offset ${offset}`).toEqual({
+				line: expected,
+				character: offset - (starts[expected] as number),
+			});
+		}
+	});
+
 	it("refuses a range that runs backwards", () => {
 		const at = coordinatesOf("abcd");
 		expect(

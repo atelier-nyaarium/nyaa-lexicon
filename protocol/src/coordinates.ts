@@ -69,17 +69,22 @@ export function coordinatesOf(text: string): TextCoordinates {
 		return offset > contentEnd(position.line) ? undefined : offset;
 	}
 
+	/**
+	 * Binary search over the ascending line index: the greatest start at or below the offset.
+	 *
+	 * Logarithmic because a PARSE converts one position per declaration across a whole file, so any
+	 * scan is quadratic in the document.
+	 */
 	function positionAt(offset: number): Position | undefined {
 		if (!Number.isInteger(offset) || offset < 0 || offset > text.length) return undefined;
-		let line = 0;
-		// Linear from the end, since callers convert positions near the edit they just found.
-		for (let candidate = starts.length - 1; candidate >= 0; candidate--) {
-			if ((starts[candidate] as number) <= offset) {
-				line = candidate;
-				break;
-			}
+		let low = 0;
+		let high = starts.length - 1;
+		while (low < high) {
+			const middle = Math.floor((low + high + 1) / 2);
+			if ((starts[middle] as number) <= offset) low = middle;
+			else high = middle - 1;
 		}
-		return { line, character: offset - (starts[line] as number) };
+		return { line: low, character: offset - (starts[low] as number) };
 	}
 
 	function offsetsForRange(range: Range): OffsetRange | undefined {

@@ -200,6 +200,21 @@ describe("corpus", () => {
 		}
 	});
 
+	it("states an exact declaration list, so a case can assert that something is NOT reported", () => {
+		const exact = { declarationNames: ["Title"] } as unknown as ConformanceCase;
+
+		expect(checkFacts(exact, facts({ declarations: [decl("Title"), decl("Phantom")] }))).toHaveLength(1);
+		expect(checkFacts(exact, facts({ declarations: [decl("Title")] }))).toEqual([]);
+	});
+
+	// Element-wise, because every separator a join could use is a character a name may contain.
+	it("compares those names one by one, so no separator lets a mismatch through", () => {
+		const nul = String.fromCharCode(0);
+		const split = facts({ declarations: [decl("a"), decl("b")] });
+
+		expect(checkFacts({ declarationNames: [`a${nul}b`] } as unknown as ConformanceCase, split)).toHaveLength(1);
+	});
+
 	// Named rather than counted: deleting the markdown fixtures would otherwise leave four cases
 	// that pass everywhere by running nowhere.
 	it("keeps the docs cases pinned to a language, so they cannot quietly become unrunnable", () => {
@@ -223,6 +238,7 @@ describe("corpus", () => {
 		// Each value is deliberately WRONG against empty facts, so a live checker must complain.
 		const wrong: Record<string, unknown> = {
 			declarations: [{ name: "Missing" }],
+			declarationNames: ["Missing"],
 			references: [{ name: "missing" }],
 			imports: { from: "src/a.ts", specifier: "./b", resolvesTo: "src/b.ts" },
 			typeOf: { name: "Missing", display: "number" },

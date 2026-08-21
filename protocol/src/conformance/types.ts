@@ -148,6 +148,8 @@ export const ConformanceFixtureSchema = z
 		comments: z.array(z.string()).optional(),
 		/** Doc region expectations only this language can state, replacing the case's when present. */
 		docs: z.array(ExpectedDocRegionSchema).optional(),
+		/** Exact declaration names only this language can state, replacing the case's when present. */
+		declarationNames: z.array(z.string().min(1)).optional(),
 		documentation: DocumentedSchema.optional(),
 	})
 	.meta({ id: "ConformanceFixture" });
@@ -166,6 +168,15 @@ export const ConformanceCaseSchema = z
 		 */
 		fixtures: z.record(z.string().min(1), ConformanceFixtureSchema),
 		declarations: z.array(ExpectedDeclarationSchema).optional(),
+		/**
+		 * EXACTLY these declaration names, in order.
+		 *
+		 * `declarations` above can only say a name IS reported, so a case saying "this yields no
+		 * heading" cannot assert it and a phantom declaration passes unnoticed. Stating the whole
+		 * list is how a negative claim becomes a check, which is the same exactness `comments` and
+		 * `docs` already have.
+		 */
+		declarationNames: z.array(z.string().min(1)).optional(),
 		references: z.array(ExpectedReferenceSchema).optional(),
 		imports: z.array(ExpectedImportSchema).optional(),
 		/**

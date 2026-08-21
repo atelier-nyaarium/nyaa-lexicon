@@ -735,7 +735,7 @@ that Phase 3's store cannot yet hold, so they are dropped. That is deliberate an
 comment train kept its provider phase additive, but a reader of this plan should not have to
 reconstruct that. It is now stated at each boundary.
 
-## Phase 2 - The markdown provider
+## Phase 2 - The markdown provider ✅
 
 The reference implementation. Built by hand, not fanned out, because everything after it copies it.
 
@@ -765,6 +765,171 @@ over a CommonMark parser rather than a scanner.
   occurrence, which moves if anything is inserted above it, and a reader deserves to see that where
   it happens rather than discovering it when recorded knowledge stops resolving. Naming it at the
   point of duplication is what keeps the accepted debt honest rather than hidden.
+
+### Phase 2 results
+
+The whole trap list passes, and every case in it is a conformance fixture rather than a claim: setext
+headings, tilde fences, a longer fence holding a shorter one, indented code, a hash inside an HTML
+comment, quoted and listed headings, CRLF, frontmatter, and repeated siblings. Nine new cases, all
+green from the shipped bundle, alongside all eight existing providers at zero failures.
+
+**Proved end to end rather than by gate.** The built artifact indexes this repository, claims
+`.md .mdc .markdown`, drops the unclaimed count to one file, and answers `Principles` as a `heading`
+in `CLAUDE.md`. `Development` reports one member, which is `Releasing`, so heading nesting survives
+into core exactly as the table-of-contents promise said it would.
+
+**Two decisions Phase 0 left for this phase, both settled.**
+
+- **A fence's range narrows to its CONTENT.** Phase 1 pinned the schema wording, so the delimiters
+  are excluded from both range and text. mdast could not supply this: a code node's `position` spans
+  the delimiters while its `value` omits them, and neither is what a region needs.
+- **A heading inside a blockquote or a list item stays PROSE.** Quoted material is not the document's
+  own structure, and the same argument that makes a fence content makes a quoted section content. A
+  document quoting another document's outline would otherwise grow sections it does not have.
+
+**Decisions this phase had to make on its own:**
+
+- **Line arithmetic, never mdast's line and column.** A range is built from node OFFSETS through
+  `coordinatesOf`, which is the only thing counting UTF-16 code units. The residue test proved this
+  matters: it caught a hand-written `value.split("\n").length` and the fix routes the value's line
+  count through the owner too, so one definition of a line now serves the file and the fence content
+  alike.
+- **A heading's range covers its whole SECTION,** ending at the next heading of the same or a
+  shallower level. That is what makes `symbol_source` on a heading return the section, which
+  Question 1b promised and nothing else would deliver.
+- **A heading's name is its RENDERED text and its selection range is the SOURCE span.** They differ
+  whenever a heading carries inline markup, and both answers are the right one for their job: a
+  search matches `parseFile` inside `` The `parseFile` call ``, while an editor highlights the
+  backticks with it.
+- **An indented code block is a region with `fenced: false`.** It is code and it is not fenced, and
+  the field is named for what it says. A reader wanting "this match is in a code block" is served
+  for fences only, which is a real gap recorded below rather than papered over by widening the flag.
+- **A heading with no text reports a DIAGNOSTIC and no declaration.** A declaration requires a name
+  and there is none, so prose after it anchors to nothing rather than to the section above, which
+  would be the stronger lie.
+- **Frontmatter keys are `term` descriptors, chained through nested maps.** A heading is a
+  `namespace` and a key is a `term`, so a section and a key of the same name never collide.
+  Sequence entries are omitted, which is exactly the Phase 5 question arriving early and being
+  deferred rather than guessed.
+
+**Two checker gaps this phase found and closed.**
+
+`describeIdParts` dropped the disambiguator, so two same-named headings read identically to a case
+and the grammar extension Phase 1 built was unassertable in conformance. It now appends `(n)`,
+proven failable by neutering the numbering and watching the case go red.
+
+**And a case could not state a NEGATIVE.** `checkFacts` treats extra declarations as fine, so every
+"this yields no heading" case was asserting only that the ONE real heading was present. A phantom
+heading passed. `declarationNames` states the exact list in order, matching the exactness `comments`
+and `docs` already have, and the Phase 1 coverage guard fired the moment the field was added and
+before a checker read it. Proven failable by removing the frontmatter extension: the case now names
+the phantom, reporting a heading called `title: Rules meta: owner: nyaa` rather than only that the
+keys went missing.
+
+**`syntaxDiagnostics` was declared false and the tier-honesty angle was right to refuse it.** A
+document's prose cannot fail to parse, but its frontmatter can, and the provider already reported
+that as an error diagnostic. Declaring the tier true is the accurate claim, since for any input this
+provider reports a syntax error when the input has one. The shared parse-error case now carries a
+markdown fixture, so the claim is checked rather than stated.
+
+**The boundary is wider than the plan said, and the alignment audit found the extra half.** The
+plan promised only that core would drop doc facts, which is true and verified: `indexer` passes
+declarations, references, imports, literals and comments to `replaceFile`, and there is no docs
+table for them to land in. What the plan did not say is that claiming markdown ALSO changes a number
+already on screen. Overview reports one aggregate `Symbols` count over every row in the symbols
+table, so headings and frontmatter keys now sit inside it with nothing saying so. That is the
+reporting drift Phase 7 warns about, arriving five phases early because the provider ships first.
+Phase 3's kind-grouped counts close it, and until they land the number means more than it says.
+
+### What the red team broke
+
+Seven angles, roughly 44,000 inputs actually EXECUTED rather than reasoned about. Three defects
+reproduced by hand before anything was changed, and all three are now regression tests proven
+failable by planting.
+
+**A byte order mark corrupted every range in the file.** mdast strips a leading BOM before parsing,
+so its offsets came back one code unit short and a range addressed the character before the one it
+meant: a heading's selection sliced a space instead of its name, and with CRLF a region reported
+`"\nab"` where the file said `abc`, with a range that would not slice at all. This is the worst class
+of defect this project has, since it is silently wrong rather than absent, and BOM-prefixed markdown
+is ordinary on Windows. The BOM is now stripped explicitly and every mdast offset is shifted by its
+width, so the shift is a known quantity rather than a parser detail we depend on.
+
+**A YAML key with no name was declared as `null`.** `: 1` and an explicit `?` key both produce a
+zero-width key, and `String(null)` invented the name `null` for something the document never named.
+A zero-width key is now skipped. A document that literally writes `null:` still reports it, because
+the guard is the width rather than the value.
+
+**My own checker change had a false-pass.** `declarationNames` compared two lists by joining them
+with NUL, which a declaration name can itself contain, so `["a\0b"]` and `["a", "b"]` matched. It
+compares element-wise now: there is no separator a name cannot hold.
+
+**And a measured quadratic in the shared coordinate owner, which is the one that outlives this
+phase.** `positionAt` walked the line index backward from the end, on the stated premise that a
+caller converts positions near the edit it just found. That is true of an edit and false of a PARSE,
+which converts one position per declaration across the whole file. Measured: a 32000-heading document
+spent 2.6 seconds inside `positionAt` against 1.2ms to BUILD the index it was searching, quadrupling
+on every doubling. A binary search replaces it, the document parses in half the time, and what
+remains is mdast's own cost rather than ours. Every provider was paying this, so the fix is not
+markdown's.
+
+### Bug Classes
+
+**The text a parser SAW is not the text the coordinates index.** One mechanism, the seam between a
+parser's offsets and `coordinatesOf`, and this phase touched it three times: a hand-written line
+count that the residue test caught, a fence range that could not come from mdast's own span, and the
+BOM shift that corrupted every range in a file. The third is the dangerous shape, because a
+desynchronized offset reads as CONTENT rather than as an error: the region said `"\nab"` and meant
+`abc`, and nothing anywhere could tell.
+
+Any parser that normalizes its input desynchronizes the same way, and stripping a BOM is only the
+commonest reason. Line-ending normalization and indentation stripping are the others.
+
+**Closed by fixture rather than by care.** Two conformance cases now carry a BOM: one on `comments`
+for the eight code providers, one on `docs` for markdown. The suite already checks EVERY reported
+span's range against the source, so a provider parsing stripped text while the core indexes the file
+fails there rather than in someone's search result. All nine pass today, and the markdown case was
+proven failable by removing the shift: it reports `expected "body", got "\nbod"`, which names the
+corruption in one line.
+
+That is the guard a ninth language inherits for free, and it is the reason this class is recorded
+as closed rather than as fixed.
+
+**What survived.** Fence pathology found nothing across 5,418 inputs: unclosed fences, indented
+fences, mismatched delimiter lengths, fences in lists and blockquotes, CRLF, first-byte fences.
+Scale found nothing: 50,000 headings, a 10MB file, a 5MB paragraph, 5,000 levels of nesting, no stack
+overflow. The disjointness and slice-back invariants held on every input that was not BOM-prefixed.
+
+**Known and accepted, carried forward:**
+
+- **A declaration's `name` can differ from the last descriptor of its own `symbolId`.** `quoteName`
+  normalizes to NFC, deliberately, so a heading written in NFD keeps a decomposed name beside a
+  composed id. That is true of all nine providers rather than of markdown, since the normalization
+  lives in the shared grammar, and the invariant is either enforced everywhere or nowhere. On the
+  board, not patched here.
+- **`literals` is false, so frontmatter VALUES are not searchable yet.** The keys are declarations;
+  the values wait for the YAML scalar decision that Phase 5 owns. Deciding it here would have made
+  markdown the second YAML interpretation, which is the drift Phase 0 chose the shared reader to
+  prevent. Phase 5 must apply its answer to frontmatter as well as to `.yml`, and the mapper needs a
+  home both providers can reach.
+- **No fence INFO STRING,** so a result can say "in a code block" but not "in a bash block". Deferred
+  from Phase 1 and unchanged here.
+- **An indented code block is indistinguishable from prose in a result.** The `fenced` flag is
+  literal by design. Widening it to `code` would be a protocol rename, and the owner's ruling was
+  that a fence marker is all it needs.
+- **Only YAML frontmatter is enabled.** TOML frontmatter would need a TOML reader nobody chose, and
+  a `+++` block currently reads as ordinary prose rather than as metadata.
+- **`parseFile` THROWS on a module path that escapes the workspace or is absolute.** Verified against
+  the C and Python providers: all nine behave identically, `onRequest` turns it into a protocol
+  error, and core never sends such a path. So this is a cross-provider question about whether an
+  unrepresentable module is a bad request or a diagnostic, and it belongs on the board rather than
+  being patched into one provider out of nine.
+- **Every provider carries its own `modulePath` helper,** turning an absolute path into a
+  workspace-relative one and re-deciding the escape check that `normalizeModulePath` already owns.
+  Markdown joined an existing pattern rather than starting one, so this is nine copies of half an
+  invariant. The owner has no absolute-to-relative entry point, which is the gap that produced them.
+  A shared `workspaceModule(root, absolute)` plus a residue test is its own committable unit and is
+  on the board, because folding a nine-provider refactor into a markdown commit would hide both.
 
 ## Phase 3 - Core
 
@@ -981,6 +1146,13 @@ workflows plus long-lived MCP servers; `--maxWorkers=2` turns all 1590 green. No
 hints at contention, so the honest diagnosis costs a full re-run at reduced concurrency and the
 dishonest one is "I broke something". A per-test timeout scaled to worker count, or a note printed
 when the run detects saturation, would turn ten minutes of hunting into a glance.
+
+**The conformance runner's initialize timeout is load-sensitive too, and it lies the same way.** A
+Luna audit running beside five siblings reported `initialize timed out after 10000ms` from the
+bundled markdown provider and wrote it up as a real failure. At load 0.06 the same command passes
+three times running. So the vitest painpoint below is not a vitest painpoint: it is every fixed
+timeout in this repo, and the report says nothing about contention in either place. An audit that
+runs commands while other audits run will keep producing this finding.
 
 **The intentional bad-handshake fixture can fail the whole run, at random.** `bun run test` prints
 `Cannot find module 'vscode-jsonrpc/node' from /tmp/lexicon-badshake-*/stale.ts` on every run, which

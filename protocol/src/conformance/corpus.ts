@@ -21,6 +21,15 @@ import { type ConformanceCase, ConformanceCaseSchema } from "./types.js";
  */
 const ASTRAL = String.fromCodePoint(0x1f600);
 
+/**
+ * A leading byte order mark, built from its code point for the same reason.
+ *
+ * Parsers routinely STRIP it before parsing, so every offset they report comes back one code unit
+ * short of the file. A range built from one then addresses the character before the one it means,
+ * which reads as content rather than as an error and is why a fixture carries it.
+ */
+const BOM = String.fromCodePoint(0xfeff);
+
 /** The suite's own reference provider, whose toy grammar is a subset of TypeScript's. */
 const REFERENCE = "reference";
 const TYPESCRIPT = "typescript";
@@ -31,7 +40,6 @@ const CPP = "cpp";
 const CSHARP = "csharp";
 const RUST = "rust";
 const KOTLIN = "kotlin";
-/** No provider claims it yet, so every `docs` case below SKIPS until one does. */
 const MARKDOWN = "markdown";
 
 const CASES: ConformanceCase[] = [
@@ -752,6 +760,60 @@ const CASES: ConformanceCase[] = [
 		comments: ["/* outer /* inner */"],
 	},
 	{
+		id: "a-byte-order-mark-shifts-no-span",
+		tier: "comments",
+		// The suite checks EVERY reported span's range against the source, so a provider parsing
+		// stripped text while the core indexes the file fails here rather than in a search result.
+		about: "A leading byte order mark moves no span, so a comment still cuts its own text out of the file.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/bom.ts": `${BOM}// a note\nexport const after = 1;\n` },
+				subject: "src/bom.ts",
+				comments: ["// a note"],
+			},
+			[REFERENCE]: {
+				files: { "src/bom.ref": `${BOM}// a note\nexport const after = 1;\n` },
+				subject: "src/bom.ref",
+				comments: ["// a note"],
+			},
+			[PYTHON]: {
+				files: { "src/bom.py": `${BOM}# a note\nafter = 1\n` },
+				subject: "src/bom.py",
+				comments: ["# a note"],
+			},
+			[GDSCRIPT]: {
+				files: { "src/bom.gd": `${BOM}# a note\nvar after = 1\n` },
+				subject: "src/bom.gd",
+				comments: ["# a note"],
+			},
+			[C]: {
+				files: { "src/bom.c": `${BOM}// a note\nint after = 1;\n` },
+				subject: "src/bom.c",
+				comments: ["// a note"],
+			},
+			[CPP]: {
+				files: { "src/bom.cpp": `${BOM}// a note\nint after = 1;\n` },
+				subject: "src/bom.cpp",
+				comments: ["// a note"],
+			},
+			[CSHARP]: {
+				files: { "src/Bom.cs": `${BOM}// a note\npublic class Bom { }\n` },
+				subject: "src/Bom.cs",
+				comments: ["// a note"],
+			},
+			[RUST]: {
+				files: { "src/bom.rs": `${BOM}// a note\npub const AFTER: i32 = 1;\n` },
+				subject: "src/bom.rs",
+				comments: ["// a note"],
+			},
+			[KOTLIN]: {
+				files: { "src/Bom.kt": `${BOM}// a note\nval after = 1\n` },
+				subject: "src/Bom.kt",
+				comments: ["// a note"],
+			},
+		},
+	},
+	{
 		id: "broken-syntax-is-an-error-diagnostic",
 		tier: "syntaxDiagnostics",
 		about: "A provider claiming syntax diagnostics reports an error for text that cannot parse.",
@@ -767,6 +829,9 @@ const CASES: ConformanceCase[] = [
 			[CSHARP]: { files: { "src/broken.cs": "public class {\n" }, subject: "src/broken.cs" },
 			[RUST]: { files: { "src/broken.rs": "fn add( {\n" }, subject: "src/broken.rs" },
 			[KOTLIN]: { files: { "src/Broken.kt": "fun add( {\n" }, subject: "src/Broken.kt" },
+			// Markdown prose cannot fail, so the only syntax a document can get wrong is its
+			// frontmatter. A provider claiming the tier has to report there or nowhere.
+			[MARKDOWN]: { files: { "broken.md": "---\na: [1,\n---\n\n# Body\n" }, subject: "broken.md" },
 		},
 		parseErrors: "required",
 	},
@@ -1245,6 +1310,7 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "doc.md",
 				declarations: [{ name: "Title", kind: "heading" }],
+				declarationNames: ["Title"],
 				docs: [
 					{ text: "Before the fence.", under: "Title" },
 					{ text: "## not a heading\nbun run build", under: "Title", fenced: true },
@@ -1263,6 +1329,179 @@ const CASES: ConformanceCase[] = [
 				subject: "doc.md",
 				declarations: [],
 				docs: [{ text: "Just prose, no headings at all." }],
+			},
+		},
+	},
+	{
+		id: "document-setext-headings-are-headings",
+		tier: "docs",
+		about: "A heading underlined with equals or dashes is a heading, and its level nests the same way.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "Title\n=====\n\nbody\n\nSub\n---\n\nmore\n" },
+				subject: "doc.md",
+				declarations: [
+					{ name: "Title", kind: "heading" },
+					{ name: "Sub", kind: "heading", container: "Title" },
+				],
+				docs: [
+					{ text: "body", under: "Title" },
+					{ text: "more", under: "Sub" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-tilde-fence-is-fenced-too",
+		tier: "docs",
+		about: "A tilde fence is a fence, and a hash inside it is text rather than a section.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# T\n\n~~~\n## not a heading\n~~~\n" },
+				subject: "doc.md",
+				declarations: [{ name: "T", kind: "heading" }],
+				declarationNames: ["T"],
+				docs: [{ text: "## not a heading", under: "T", fenced: true }],
+			},
+		},
+	},
+	{
+		id: "document-longer-fence-holds-a-shorter-one",
+		tier: "docs",
+		about: "A fence closes on its own character at its own length, so an inner fence stays content.",
+		// The failure this catches is a scanner ending the block at the first ``` it meets, which
+		// then reads the rest of the example as document structure.
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# T\n\n````md\n```js\nx\n```\n````\n" },
+				subject: "doc.md",
+				declarations: [{ name: "T", kind: "heading" }],
+				declarationNames: ["T"],
+				docs: [{ text: "```js\nx\n```", under: "T", fenced: true }],
+			},
+		},
+	},
+	{
+		id: "document-indented-code-is-not-a-heading",
+		tier: "docs",
+		about: "Four spaces of indent is a code block whose hash is text, and which is not fenced.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# T\n\n    ## indented code\n\nafter\n" },
+				subject: "doc.md",
+				declarations: [{ name: "T", kind: "heading" }],
+				declarationNames: ["T"],
+				docs: [
+					{ text: "    ## indented code", under: "T" },
+					{ text: "after", under: "T" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-html-comment-holds-no-heading",
+		tier: "docs",
+		about: "A hash inside an HTML comment is text, and the comment itself stays searchable prose.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# T\n\n<!-- ## not a heading -->\n\nafter\n" },
+				subject: "doc.md",
+				declarations: [{ name: "T", kind: "heading" }],
+				declarationNames: ["T"],
+				docs: [
+					{ text: "<!-- ## not a heading -->", under: "T" },
+					{ text: "after", under: "T" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-quoted-and-listed-headings-stay-prose",
+		tier: "docs",
+		about: "A heading inside a blockquote or a list item is quoted material, not the document's own structure.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# T\n\n> ## quoted\n> body\n\n- # listed\n- second\n" },
+				subject: "doc.md",
+				declarations: [{ name: "T", kind: "heading" }],
+				declarationNames: ["T"],
+				docs: [
+					{ text: "> ## quoted\n> body", under: "T" },
+					{ text: "- # listed\n- second", under: "T" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-crlf-does-not-leak-into-prose",
+		tier: "docs",
+		about: "A carriage return terminates its line, so it ends a region rather than trailing inside one.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# Title\r\n\r\nBefore.\r\n\r\n```sh\r\none\r\ntwo\r\n```\r\n\r\nAfter.\r\n" },
+				subject: "doc.md",
+				declarations: [{ name: "Title", kind: "heading" }],
+				docs: [
+					{ text: "Before.", under: "Title" },
+					{ text: "one\r\ntwo", under: "Title", fenced: true },
+					{ text: "After.", under: "Title" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-frontmatter-is-data-not-a-heading",
+		tier: "docs",
+		about: "Frontmatter yields keys, never a section, and prose after it anchors to the first heading.",
+		// Without the frontmatter extension the closing --- reads as a setext underline, so the
+		// metadata becomes a heading. Mixed content in the commonest file there is.
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "---\ntitle: Rules\nmeta:\n  owner: nyaa\n---\n\n# Body\n\nText.\n" },
+				subject: "doc.md",
+				declarations: [
+					{ name: "title", kind: "property" },
+					{ name: "owner", kind: "property", container: "meta" },
+					{ name: "Body", kind: "heading" },
+				],
+				// Exact, because the failure worth catching is the phantom heading the closing
+				// delimiter becomes without the frontmatter extension.
+				declarationNames: ["title", "meta", "owner", "Body"],
+				docs: [{ text: "Text.", under: "Body" }],
+			},
+		},
+	},
+	{
+		id: "document-byte-order-mark-shifts-nothing",
+		tier: "docs",
+		about: "A leading byte order mark moves no range, so a region still cuts its own text out of the file.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": `${BOM}# Title\n\nbody\n` },
+				subject: "doc.md",
+				declarations: [{ name: "Title", kind: "heading" }],
+				declarationNames: ["Title"],
+				docs: [{ text: "body", under: "Title" }],
+			},
+		},
+	},
+	{
+		id: "document-repeated-sibling-headings-get-distinct-ids",
+		tier: "docs",
+		about: "Two same-named headings under one parent are two symbols, told apart by an occurrence.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# Top\n\n## Notes\n\nfirst\n\n## Notes\n\nsecond\n" },
+				subject: "doc.md",
+				declarations: [
+					{ name: "Notes", descriptors: ["namespace:Top", "namespace:Notes"] },
+					{ name: "Notes", descriptors: ["namespace:Top", "namespace:Notes(2)"] },
+				],
+				declarationNames: ["Top", "Notes", "Notes"],
+				docs: [
+					{ text: "first", under: "Notes" },
+					{ text: "second", under: "Notes" },
+				],
 			},
 		},
 	},

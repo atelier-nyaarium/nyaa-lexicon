@@ -18,6 +18,7 @@ export interface PathSyntax {
 const extendsPattern = /^\s*(?:class\s+[\p{L}_][\p{L}\p{M}\p{N}_]*\s+)?extends\s+("|')([^"']+)\1/du;
 const loaderPattern = /\b(preload|load)\s*\(\s*(&?)("|')([^"']+)\3/dgu;
 
+/** Reads `text`, not the masked `code`: the path IS the string, so masking would erase it. */
 export function pathSyntax(line: SourceLine): PathSyntax[] {
 	const syntax: PathSyntax[] = [];
 	const extendsMatch = extendsPattern.exec(line.text);
