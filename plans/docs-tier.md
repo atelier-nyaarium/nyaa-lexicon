@@ -912,6 +912,40 @@ writing it down as four bullet points, and it was not: three of those four bulle
 protocol gaps. Agreeing to a scope is fine; describing unsolved work as though it were understood is
 not, and that part is on me.
 
+Felt building Phase 1.
+
+**A comment claimed the opposite of what its code did, and it was load-bearing.** The runner's parse
+predicate carried "DERIVED, never hand-listed. Every expectation a case can state about parsed facts
+is named once here, so adding a new kind cannot half-register", above a hand-listed array. A reader
+checking whether that class was closed would have read the comment, believed it, and moved on. It
+was written after the six-cases-assert-nothing incident, describing the fix that was intended rather
+than the one that shipped, which is the exact misalignment class this project hunts, in a comment
+written BY the process that hunts it.
+
+**Adding one enum member sends you on a scavenger hunt with no map.** `heading` on `SymbolKind` and
+`doc` on `FactKind` each broke a different set of files, and the only way to learn which was to run
+the gate, fix one, and run it again. The compiler is a good guide once you are typed exhaustively,
+but nothing tells you up front where a kind is consumed, and the answer differed for the two enums.
+A generated "who reads this enum" list would turn three gate rounds into one read.
+
+**The LSP adapter could not name a protocol type without a dependency it should not have.** Typing
+`SYMBOL_KIND` needed `SymbolKind`, which lives in `protocol`, which `adapters/lsp` deliberately does
+not depend on: it talks only to `core`. So the fix was a re-export through `core`, which is right,
+but the failure was a bare "cannot find module" that reads like a missing install rather than an
+architectural boundary being enforced. Two minutes of confusion for a boundary that is working.
+
+**`bun run lint` fails on formatting far more often than on anything real, and it did again.** Three
+separate times this phase the gate went red purely because a multi-line object I wrote was not
+biome-formatted, each costing a lint, a `lint:fix`, and another lint. This is already recorded from
+the comment train and it has not improved: the half of the gate that fails most is the half a script
+fixes automatically.
+
+**A stale `tsbuildinfo` can make a planted violation look unproven.** Verifying the LSP exhaustive
+map, my first two plants reported zero errors and I briefly believed the gate had an incremental
+hole. Running the real `bun run lint` caught it correctly both times after. Direct `bunx tsc --build`
+invocations interleaved with file restores were what produced the false green, and I nearly reported
+a gate defect that does not exist.
+
 ## Deferred to a later major by Question 5
 
 These left `2.0.0` because each needs a concept INVENTED rather than a decision made. They are
