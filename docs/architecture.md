@@ -57,6 +57,22 @@ blank line between these two" is answerable only from the source text, and the i
 layer holding it. Inferring adjacency from stored endpoints instead is how a blank line becomes
 invisible.
 
+## Where a document's prose gets its meaning
+
+The opposite arrangement, for the opposite reason. A comment's owner is a judgement call, so core
+makes it. A document region's owner is the heading above it, which is not a judgement at all, so the
+PROVIDER states it and `commentAttach` has no counterpart here.
+
+That trade moves the risk rather than removing it. An anchor arrives as a string core did not
+compute, so `replaceFile` refuses one that is not a heading declared in the same file before it
+writes anything. Refusal rather than repair: a null anchor already means the region sits under no
+heading, and reusing it for an anchor that failed to verify would hide a provider's contract
+violation behind a legitimate answer.
+
+The answer shape is why this is a table of its own rather than a column on comments. A comment
+result names the symbol it documents; a document result names the heading PATH it was found under,
+walked once in `headingPath` so no renderer rebuilds it.
+
 Two provider conventions are supported rather than corrected: a declaration's range either already
 covers its doc comment or begins on the line after it. A shared conformance case pins that there is
 no third answer, because a range starting anywhere else loses every doc comment in that language
