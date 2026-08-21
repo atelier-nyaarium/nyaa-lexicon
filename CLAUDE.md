@@ -8,7 +8,7 @@ Ships as the `lexicon` plugin on the `atelier-nyaarium` marketplace.
 
 ## Layout
 
-Bun workspace monorepo. Five packages, and the boundaries are real.
+Bun workspace monorepo. Six packages, and the boundaries are real.
 
 - `protocol/` - zod schemas, the symbol and fact id grammars, the conformance suite. Runs without
   the core, so a provider team is never blocked on us.
@@ -17,6 +17,9 @@ Bun workspace monorepo. Five packages, and the boundaries are real.
 - `adapters/lsp/` - the editor face, answering from the same service class but its own instance,
   which is why it reads and does not write.
 - `providers/<language>/` - one per language, separate process, own runtime, speaks the protocol.
+- `formats/` - the one reading of a data format, for the providers that meet the same one. Markdown
+  frontmatter and a `.yml` file are the same mapping, so they are the same function. It takes
+  provider context as DATA, never as a language to branch on.
 - `docs/` - architecture, provider-protocol, knowledge-layer, parsing.
 
 ## Principles
@@ -92,6 +95,16 @@ claim looks correct and is not.
 resolved, not that the thing runs, and a provider that dies on launch is recorded as an outage and
 skipped, so the index reports files in scope and no facts. A provider that cannot start fails the
 build, and a failed release build reverts `dist/` along with the version files.
+
+**It also refuses any bundle carrying a UMD wrapper.** A wrapper surviving IS the bundler having
+failed to resolve that dependency, so its inner requires are still there and resolve against `dist/`
+at runtime. Import the package's ESM entry instead, by path if it declares no `exports` map. This
+check is static because the startup smoke cannot reach the case: it runs providers only, and only at
+launch, so a lazily-evaluated UMD module dies at first parse and smokes clean.
+
+**A green `bun run test` is not evidence that the artifact runs.** Everything in the edit loop runs
+under bun, and bun resolves what node refuses. The build is the only gate that meets the shipping
+runtime.
 
 **Provider extraction changes require a MAJOR release.** Major releases retire stored facts. If a
 provider changes a kind, name, range, binding or literal for unchanged source, ship a major.

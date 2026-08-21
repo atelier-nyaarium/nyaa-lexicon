@@ -75,9 +75,10 @@ as a comment fails rather than passing unnoticed.
 
 Never add a second pass that scans for markers. A separate scanner holds its own opinion about
 where strings begin and end, and the moment it disagrees with the real lexer you report prose that
-is not there. Every provider here emits comments from the same token list that produces literals.
+is not there. Comments must come from the same lexical authority as the values: the same token list
+where a provider has one, or the same library's own parser where the values come from a tree.
 
-This is the tier's one recurring defect, and it is worth knowing why before writing a ninth
+This is the tier's one recurring defect, and it is worth knowing why before writing another
 language. A comment is defined by what is NOT a string, so every hole in your string grammar
 becomes a false comment. It has bitten four providers: a string ending at the first quote inside an
 interpolation, an empty block comment read as a doc opener and running to end of file, a string

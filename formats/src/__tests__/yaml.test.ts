@@ -85,6 +85,14 @@ describe("keys", () => {
 	it("reads a timestamp as the string the file holds", () => {
 		expect(values("when: 2020-01-01\n")).toEqual(["string:2020-01-01"]);
 	});
+
+	it("decides on the resolved value, not the tag", () => {
+		expect(values("a: !!str hello\n")).toEqual(["string:hello"]);
+		expect(values("b: !!int 7\n")).toEqual(["number:7"]);
+		expect(values("c: !custom thing\n")).toEqual(["string:thing"]);
+		expect(values("d: !!timestamp 2020-01-01\n")).toEqual([]);
+		expect(names("d: !!timestamp 2020-01-01\n")).toEqual(["d"]);
+	});
 });
 
 describe("comments", () => {

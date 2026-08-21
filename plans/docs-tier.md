@@ -1185,9 +1185,10 @@ new `formats/` workspace package that both the markdown provider and the YAML pr
 One package rather than one per format, because the alternative is a manifest, a tsconfig and two
 workspace entries per reader, and the whole JSON reader is 8 KB inlined.
 
-- **JSON family** (`.json`, `.jsonl`, `.ndjson`, `.json5`): a key is a `property` declaration, its
-  value a literal. JSONL is a sequence of independent roots and needs per-record identity. JSON has
-  no comments, so `comments: false` is the honest declaration; JSON5 does have them.
+- **JSON family** (`.json`, `.jsonc`, `.jsonl`, `.ndjson`): a key is a `property` declaration, its
+  value a literal. JSONL is a sequence of independent roots and needs per-record identity. The tier
+  is per provider, not per extension, so `comments` is TRUE and a strict `.json` file reports none.
+  `.json5` is not claimed; the reason is under Phase 5 results.
 - **YAML** (`.yml`, `.yaml`): keys as declarations, values as literals, and REAL comments through
   the existing comment tier. Aliases, anchors and multi-document files each get a fixture.
 
@@ -1241,8 +1242,8 @@ a provenance field that one of ten providers ignores is worse than none.
 
 **Shipped:** a `formats/` workspace package holding the one reading of YAML and of the JSON family,
 two providers over it, and the markdown provider's frontmatter path rewired to the same reader. The
-gate is green at 1714 tests, all eleven providers pass conformance, and `grade.js` answers 8 of 8
-against switchboard's 1032 files.
+gate is green at 1725 tests, all eleven providers pass conformance from their SHIPPED bundles under
+node, and `grade.js` answers 8 of 8 against switchboard's 1032 files.
 
 **Both open decisions landed as the plan predicted.** The ordinal for a sequence element lives in the
 DESCRIPTOR chain and never becomes a declaration, so nothing is minted and the provenance field stays
@@ -1326,11 +1327,15 @@ formats now claimed, which changes what "unclaimed" reports even without the fal
 JSON and YAML files that were previously invisible become indexed, so a coverage number moves for
 reasons a reader deserves to have explained.
 
-## Question 5 - What ships inside 2.0.0, now that Phase 5 is known to be blocked?
+## Question 5 - What ships inside 2.0.0?
 
 Q: The whole set was chosen before the audit found four protocol gaps. Does it still hold?
 A: B. Markdown, the JSON family and YAML ship in `2.0.0`. XML, HTML and the plain-text fallback are
 deferred to a later major.
+
+The answer held and the premise did not. This was asked when Phase 5 looked blocked on protocol
+gaps, and it was not: both decisions closed without a protocol change, and the phase shipped. The
+scope line is still the right one, for the reason given below rather than for the blockage.
 
 > B it is
 
@@ -1393,9 +1398,13 @@ exist. The comment tier was ONE fact class over six phases and found nine defect
 
 **Was the original agreement yes-manning?** Partly. The concern was raised once, the owner decided,
 and proceeding was correct. What was NOT done is checking whether Phase 5 was buildable before
-writing it down as four bullet points, and it was not: three of those four bullets are blocked on
-protocol gaps. Agreeing to a scope is fine; describing unsolved work as though it were understood is
-not, and that part is on me.
+writing it down as four bullet points. Agreeing to a scope is fine; describing unsolved work as
+though it were understood is not, and that part is on me.
+
+The follow-on claim, that three of those four bullets were BLOCKED on protocol gaps, turned out to
+be wrong. Both decisions closed without touching the protocol, and the phase shipped. So the lesson
+is narrower than it was written: an unexamined bullet is not knowledge, but calling it blocked
+without examining it is the same error pointed the other way.
 
 Felt building Phase 1.
 

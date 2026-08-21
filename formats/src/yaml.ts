@@ -44,9 +44,10 @@ export interface YamlFacts {
 /**
  * A scalar this index can hold, or nothing.
  *
- * `LiteralSchema` is exactly string, number and boolean. YAML's null, binary and tagged values have
- * nowhere to go, so they are OMITTED while their key stays a declaration: the key exists and its
- * value is not one this index can carry, which is a different claim from the key being absent.
+ * `LiteralSchema` is exactly string, number and boolean, so the RESOLVED value decides, never the
+ * tag: `!!str` and `!custom` land as strings, `!!binary` and `!!timestamp` resolve outside the three
+ * and are omitted, as is null. An omitted value keeps its key as a declaration, which says the key
+ * exists and its value is not one this index can carry, a different claim from the key being absent.
  */
 function literalKind(value: unknown): { kind: Literal["kind"]; value: string; number?: number } | null {
 	if (typeof value === "string") return { kind: "string", value };

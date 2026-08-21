@@ -21,7 +21,7 @@ toolchain to set up.
 
 ## Languages
 
-Nine, each in its own process behind a documented protocol.
+Eleven, each in its own process behind a documented protocol.
 
 | Provider   | Files                                                 |
 | ---------- | ----------------------------------------------------- |
@@ -34,6 +34,12 @@ Nine, each in its own process behind a documented protocol.
 | C          | `.c` `.h`                                             |
 | GDScript   | `.gd`                                                 |
 | Markdown   | `.md` `.mdc` `.markdown`                              |
+| JSON       | `.json` `.jsonc` `.jsonl` `.ndjson`                   |
+| YAML       | `.yml` `.yaml`                                        |
+
+JSON and YAML answer keys, values and comments, not types or references. `.json5` is deliberately
+unclaimed: the parser reads comments and trailing commas, not unquoted keys or single quotes, so
+claiming it would report facts for files it half-understands.
 
 A provider declares which tiers it covers; anything it cannot answer comes back as Unknown with a
 reason, never as a guess or a gap.

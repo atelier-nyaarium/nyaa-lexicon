@@ -1661,6 +1661,18 @@ const CASES: ConformanceCase[] = [
 		declarationNames: ["name", "name"],
 	},
 	{
+		id: "data-an-alias-adds-no-second-copy-of-what-it-points-at",
+		tier: "declarations",
+		about: "An anchor is indexed where it is written, and the alias naming it adds a key, not a copy.",
+		// Anchored to a MAPPING on purpose: expanding the alias would report `inner` a second time, so
+		// the exact name list can see it. A scalar anchor would duplicate a LITERAL, which no case can
+		// state, and the fixture would pass whether or not the copy happened.
+		fixtures: {
+			[YAML]: { files: { "data.yml": "base: &b\n  inner: 1\nuse: *b\n" }, subject: "data.yml" },
+		},
+		declarationNames: ["base", "inner", "use"],
+	},
+	{
 		id: "data-a-second-document-is-read-and-is-not-an-error",
 		tier: "declarations",
 		about: "Every document in a multi-document file contributes its keys, and the file still parses.",

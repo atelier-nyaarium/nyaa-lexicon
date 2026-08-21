@@ -34,7 +34,7 @@ export interface JsonContext {
 	/** Where the text starts in its file, so a record inside JSONL still addresses the file. */
 	offset: number;
 	coordinates: TextCoordinates;
-	/** Comments and trailing commas. False for strict `.json`, true for JSONC and JSON5. */
+	/** Comments and trailing commas. False for strict `.json`, true for JSONC. */
 	lenient: boolean;
 	/** Descriptors above the root, which is how JSONL gives each record its own path. */
 	parents?: Descriptor[];
