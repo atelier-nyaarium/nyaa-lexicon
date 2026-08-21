@@ -426,6 +426,35 @@ is kept: describe cuts at the first sentence anyway, and a search for a tag shou
 `LIKE '%text%'` cannot use an index, which is true and is the same contract literals already have.
 Tab-versus-spaces indent not merging is defensible: they are different columns.
 
+### Bug Classes
+
+**Mechanism:** the attachment rules in `commentAttach`, every one of which is a statement about a
+RELATIONSHIP between several things: a run of N comment lines, a comment and the scopes nested
+around it, a mix of comment kinds.
+
+**Class: a fixture built at the minimal arity cannot tell "handles the pair" from "handles the
+rule".** Patched three times in this phase, each time by someone else's input rather than by the
+tests:
+
+1. A comment inside a scope was read as documentation for the declaration AFTER that scope closed.
+   Every fixture written by hand was flat, top level, no nesting.
+2. A run of three or more line comments split into pairs. Every fixture written by hand used
+   exactly two lines, which is the one length that cannot distinguish the two behaviours.
+3. A single-line block comment joined a line-comment run, contradicting the rule written directly
+   above the function. No fixture ever mixed comment kinds.
+
+Three rounds, one cause: the tests demonstrated each rule at its smallest instance and stopped.
+Two is not a run, one scope is not nesting, and one kind is not a mix. The corpus runs caught none
+of them either, because a fragment and a whole comment both look like a plausible fact from the
+outside; only a human reading the file, or an agent told to go break it, could see the difference.
+
+**For `architecture-fan-out`:** the fix is not "write more fixtures", since the next rule will have
+its own minimal instance and someone will write that one too. It is a generator that lays out N
+comments against M declarations at varying nesting and kinds AND knows the intended anchor for
+each, so the arity is swept rather than chosen. That is the same shape as the planted-marker
+generator already backlogged for the string-grammar class, which is worth noticing: both classes
+are "the author picks the example, and the author's blind spot picks it".
+
 Zero trailing in this repo is not a defect: the house rule puts comments on their own line, and
 trailing shows up immediately in corpora that write them.
 
