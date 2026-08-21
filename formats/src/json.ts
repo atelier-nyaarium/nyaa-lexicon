@@ -1,7 +1,5 @@
-// The one reading of the JSON family, shared by every provider that meets some.
-//
-// A dialect differs only in what its parser TOLERATES, so tolerance is a parameter and the walk
-// over the tree is not repeated per extension.
+// The one reading of the JSON family. A dialect differs only in what its parser TOLERATES, so
+// tolerance is a parameter and the walk is not repeated per extension. Rules in formats/CLAUDE.md.
 
 import {
 	type CommentSpan,

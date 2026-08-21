@@ -16,6 +16,22 @@ indented code and markers inside HTML comments, and a hand-written scanner gets 
 in turn. A format is only rejected for a library when no maintained one reports source POSITIONS,
 since a declaration without a range is not a declaration.
 
+Choosing one takes three questions, and the spike that picked these answered only the first.
+
+**Does it report positions, and are they right?** The obvious one, and the one a correctness spike
+covers.
+
+**Does it survive the SHIPPING runtime?** A package's own entry decides this, not its code.
+`jsonc-parser` declares a UMD `main`, so a node-target bundler inlines the wrapper without resolving
+its inner requires, and the bundle is clean and dies on launch. Read the `exports` map before
+committing to a dependency; a package without one hands the choice to the bundler. The build refuses
+any bundle carrying a UMD wrapper for this reason.
+
+**How does it scale?** `yaml` parses a single mapping in time QUADRATIC in its key count: 4000 keys
+in 81ms, 16000 in 1.4 seconds, 100000 in about three minutes. It is still the right library, because
+nothing else reads YAML correctly, but a cost like that has to be known and written down rather than
+discovered by a repository that contains one large file.
+
 ## 2. One cursor owns character access
 
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes
@@ -78,8 +94,11 @@ quoting, unicode normalization, and the empty case.
 ## 12. One lexer decides both what is a string and what is a comment
 
 A comment is defined by what is NOT a string, so a second pass that scans for markers reports the
-contents of string literals as prose the moment the two disagree. Emit comments from the same token
-list that produces literals.
+contents of string literals as prose the moment the two disagree. Emit comments from the same
+LEXICAL AUTHORITY that produces the values: the same token list where there is one, or the same
+library's own parser where the values come from a tree. YAML reads values from the document and
+comments from the CST, which are two entry points into one grammar and so cannot disagree; a hash
+inside a quoted scalar or a block scalar stays content, which is the whole point of the rule.
 
 The corollary costs more than the rule: every hole in the string grammar surfaces as a false
 comment. This caught four parsers here in one change, each a string form the lexer did not know it

@@ -1,8 +1,5 @@
-// The one reading of YAML, shared by every provider that meets some.
-//
-// Markdown frontmatter and a `.yml` file are the same mapping in the same syntax, so two readers
-// would be two answers to one question. What varies is only where the text sits, which arrives as
-// context rather than as a second implementation.
+// The one reading of YAML. Markdown frontmatter and a `.yml` file both arrive here, differing only
+// in where their text sits. Package rules in formats/CLAUDE.md.
 
 import {
 	type CommentSpan,
