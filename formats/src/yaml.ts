@@ -11,7 +11,8 @@ import {
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 import { isMap, isNode, isPair, isScalar, isSeq, Parser, parseAllDocuments, type Scalar } from "yaml";
-import { isTooDeep, TOO_DEEP } from "./depth.js";
+import { isTooDeep, saysTooDeep, TOO_DEEP } from "./depth.js";
+import { droppedKey } from "./dropped.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -104,10 +105,8 @@ export function readYaml(context: YamlContext): YamlFacts {
 			// beats skipping in silence, which leaves a valid file in scope reporting nothing.
 			if (!isScalar(pair.key)) {
 				const span = isNode(pair.key) ? pair.key.range : undefined;
-				unnamed(
-					"a key that is not a scalar cannot be named, so it is not indexed",
-					span == null ? undefined : coordinates.rangeAt(offset + span[0], offset + span[1]),
-				);
+				const at = span == null ? undefined : coordinates.rangeAt(offset + span[0], offset + span[1]);
+				diagnostics.push(droppedKey("unnameable", module, at));
 				continue;
 			}
 			const key = pair.key.range;
@@ -119,13 +118,13 @@ export function readYaml(context: YamlContext): YamlFacts {
 
 			const keySpan = coordinates.rangeAt(offset + key[0], offset + key[1]);
 			if (name === "") {
-				unnamed("a key with no name cannot be addressed, so it is not indexed", keySpan);
+				diagnostics.push(droppedKey("nameless", module, keySpan));
 				continue;
 			}
 			// An id carries a name, not a type, so `1:` and `"1":` are one id however YAML reads them.
 			// The library calls those distinct keys and says nothing, so the loss is reported here.
 			if (owner.get(name) !== index) {
-				unnamed(`a key spelled ${JSON.stringify(name)} appears more than once; the last is indexed`, keySpan);
+				diagnostics.push(droppedKey("repeated", module, keySpan, name));
 				continue;
 			}
 
@@ -159,11 +158,6 @@ export function readYaml(context: YamlContext): YamlFacts {
 		}
 	}
 
-	/** A key this reader drops, reported rather than skipped. Core keeps only `error`, so nothing shows it yet. */
-	function unnamed(message: string, range: ReturnType<TextCoordinates["rangeAt"]>): void {
-		diagnostics.push({ severity: "info", message, path: module, ...(range === undefined ? {} : { range }) });
-	}
-
 	function pushScalar(scalar: Scalar, containerId: string | undefined): void {
 		const held = literalKind(scalar.value);
 		const span = scalar.range;
@@ -184,6 +178,12 @@ export function readYaml(context: YamlContext): YamlFacts {
 	const many = documents.length > 1;
 	documents.forEach((document, index) => {
 		for (const problem of document.errors) {
+			// The library CATCHES a stack overflow and files it as a document error, so the guard below
+			// never sees it and the raw engine message would reach a reader as if it were about the file.
+			if (saysTooDeep(problem.message)) {
+				tooDeep = true;
+				continue;
+			}
 			const range = coordinates.rangeAt(offset + problem.pos[0], offset + problem.pos[1]);
 			diagnostics.push({
 				severity: "error",

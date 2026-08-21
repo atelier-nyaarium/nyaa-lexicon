@@ -22,6 +22,7 @@ import {
 	type ScanError,
 } from "jsonc-parser/lib/esm/main.js";
 import { isTooDeep, TOO_DEEP } from "./depth.js";
+import { droppedKey } from "./dropped.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -155,24 +156,12 @@ export function readJson(context: JsonContext): JsonFacts {
 			const [key, value] = property.children ?? [];
 			if (key === undefined || typeof key.value !== "string") continue;
 			const at = coordinates.rangeAt(offset + key.offset, offset + key.offset + key.length);
-			// A key with no name cannot be addressed, reported rather than skipped. Core keeps only
-			// `error`, so nothing shows this yet.
 			if (key.value === "") {
-				diagnostics.push({
-					severity: "info",
-					message: "a key with no name cannot be addressed, so it is not indexed",
-					path: module,
-					...(at === undefined ? {} : { range: at }),
-				});
+				diagnostics.push(droppedKey("nameless", module, at));
 				continue;
 			}
 			if (owner.get(key.value) !== index) {
-				diagnostics.push({
-					severity: "warning",
-					message: `duplicate key ${JSON.stringify(key.value)}; the last one is indexed`,
-					path: module,
-					...(at === undefined ? {} : { range: at }),
-				});
+				diagnostics.push(droppedKey("repeated", module, at, key.value));
 				continue;
 			}
 

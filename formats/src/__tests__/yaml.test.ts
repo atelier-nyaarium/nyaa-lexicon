@@ -153,7 +153,8 @@ describe("failure", () => {
 	it("says so when two spellings of one name collapse, which the parser calls distinct", () => {
 		const facts = read('1: one\n"1": two\n');
 		expect(facts.declarations.map((d) => d.name)).toEqual(["1"]);
-		expect(facts.diagnostics.map((d) => d.severity)).toEqual(["info"]);
+		// A repeated name warns in both readers, since a key the file holds is not indexed either way.
+		expect(facts.diagnostics.map((d) => d.severity)).toEqual(["warning"]);
 	});
 
 	it("takes a merge key as a directive, not a key", () => {

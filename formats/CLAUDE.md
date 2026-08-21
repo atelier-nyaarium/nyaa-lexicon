@@ -30,7 +30,8 @@ coordinate map belongs to the whole file, never to the slice.
   what it does not recognize rather than reporting a real bug as a depth problem.
 - One declaration per symbol id. A repeated key, and a sequence sibling, both mint one path twice;
   the store's primary key would silently keep whichever arrived last.
-- A reason when a key is dropped. Core keeps only `error` today, so nothing surfaces `info` yet, but
+- A reason when a key is dropped, worded by `dropped.ts` rather than by each reader, so the same
+  situation cannot read two ways. Core keeps only `error` today, so nothing surfaces `info` yet, but
   the reader still reports rather than skipping in silence.
 
 Parser selection is `docs/parsing.md` rule 1. Its three questions were all earned here.
