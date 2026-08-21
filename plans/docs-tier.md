@@ -1348,6 +1348,57 @@ was wrong on its own terms: an out-of-range array length is a `RangeError` too, 
 bug as a depth problem sends the reader somewhere else. `isTooDeep` now decides, in one place, and
 every site rethrows what it does not recognize. Five call sites, one predicate, one message.
 
+### What the Phase 5 architecture pass found
+
+Five dimensions. Every item below was established by running code, not by reading it.
+
+**1. The duplicate symbol id is not a formats problem, and the evidence settles where the fix goes.**
+The class was patched twice here, so the pass asked whether the other providers are exposed. They
+are. The TypeScript provider mints ONE id for two declarations in two cases: a merged interface,
+which is an idiomatic TypeScript feature, and two same-named consts in different blocks of one
+function. `symbols.symbolId` is a PRIMARY KEY written with `INSERT OR REPLACE`, so the second
+silently overwrites the first.
+
+So the id grammar is the owner, not either reader: an id carries a name path and not a position, and
+every provider that can spell one path twice collides. The fix belongs at the core boundary, in the
+shape `refuseForeignAnchors` already established. It cannot ship as a bare refusal, because merged
+interfaces are common and would become hard failures. Decide the disambiguation convention first,
+lifting either the markdown occurrence suffix or the sequence ordinal into the id grammar, apply it
+to all eleven providers, then refuse. That is a provider extraction change, so it needs a major.
+
+**2. Two of the three diagnostic severities cannot reach anyone.** `core/src/indexer.ts` reads
+`facts.diagnostics` exactly once, filters to `severity === "error"`, and drops the rest. There is no
+diagnostics table, `replaceFile` takes no diagnostics argument, and nothing in `adapters/` reads one.
+So this phase's four new diagnostics are unreachable, as is every `info` the markdown provider has
+emitted since Phase 2. A provider doing the honest thing and saying "this key exists and I could not
+index it" is indistinguishable from one that silently found nothing, which is the failure this whole
+tier system exists to prevent, failing at the boundary rather than in any provider.
+
+**3. The `formats/` barrel makes every consumer carry every format's dependencies.** Measured: an
+entry importing only `readJson` through the barrel bundles at 476 KB against 363 KB importing the
+reader directly, and drags in the entire `yaml` library it never calls. The argument is not the
+113 KB. It is that this coupling ALREADY caused a shipping failure this phase: the YAML provider died
+on node because of `jsonc-parser`, a package it does not use, reached through the barrel. Subpath
+exports and three import lines close it.
+
+**4. A tier can be claimed and never tested, and three providers are in that state.** Measured per
+provider by counting cases that ran against cases skipped: the markdown provider claims
+`declarations: true`, delivers them, and runs ZERO declarations cases, because every case in that
+tier is code-shaped with no markdown fixture. Worse, all eleven providers claim `literals: true` and
+the corpus has no literals cases at all, so that tier is untested everywhere. The runner treats a
+missing fixture as a skip before it ever asks the provider, so silence reads as success. Failing a
+run where a CLAIMED tier had zero cases turns that silence into a signal, and it is small.
+
+**5. The never-branch-on-a-language rule is stated for `formats/` and enforced only for `core/`.**
+The residue test sweeps `core/src` alone. This plan claims the new package "takes provider context as
+DATA, never as a language to branch on... which keeps the never-branch rule intact at the only place
+it could plausibly be bent". Nothing checks that. Extending the sweep is a one-line change to a test
+that already exists, and the rule it protects is one this phase deliberately leaned on.
+
+Ranked: 1 is the largest and needs a convention decided before any code. 2 is the one this phase
+made acute and the one whose absence makes its own comments untrue. 3, 4 and 5 are each small,
+independently committable, and closer to certain.
+
 ## Phase 6 - Verification
 
 - Gate, then conformance across every provider, not only the new ones. A corpus case is shared.
