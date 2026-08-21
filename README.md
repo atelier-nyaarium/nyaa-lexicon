@@ -60,6 +60,11 @@ comments is one fact rather than several, and search runs over normalized text s
 across a line break is still one sentence. Indexed files only, so ripgrep still wins an exhaustive
 byte audit.
 
+**Documentation as a fact class.** `search_docs` searches the prose in documents. A hit names the
+heading PATH it sits under, so the answer is `CLAUDE.md > Principles` rather than a line number, and
+says when the match came from a fenced code block. That last part matters more than it sounds: a
+release command written only inside a fence is otherwise findable by nothing.
+
 **History.** `file_history`, `co_changed_with`, `symbol_history`. What changes alongside a file is
 the strongest signal no reference edge carries.
 
