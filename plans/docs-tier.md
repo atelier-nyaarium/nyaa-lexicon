@@ -1516,6 +1516,23 @@ the guard never saw it and `Maximum call stack size exceeded. at line 1, column 
 reader as though it were a fact about their file. Recognizing that message is now `depth.ts`'s job
 too, alongside recognizing the thrown form.
 
+**The red team attacked the verification rather than the features, and one gate gave way.** The
+language-branch residue test required a comparison operator next to the quoted name, so it caught
+`lang === "python"` and missed a name held in a `const`, a `startsWith`, and a quoted object key.
+Two of four evasions walked straight through a BUILD GATE. There is no legitimate quoted language
+name in `core/` or `formats/` at all, measured at zero across both, so the check now forbids the
+NAME rather than the comparison, and all four evasions were planted and watched to fail.
+
+That is the lesson from the UMD regex arriving a second time in one lap, which is itself the point:
+a check written against the spelling that motivated it catches that spelling. The UMD one was
+re-measured here too, across every dependency present: 1608 files, 11 carrying `define.amd`, zero
+missed.
+
+**Two claims of a broken shipped artifact were contention, not defects.** Agents reported the
+bundled conformance run hanging at initialization for four providers. Re-run at load 6.23 with the
+same command, all four pass. That is the third time this session a loaded machine has been reported
+as a provider failure, and it is already on the board.
+
 **One finding, and it is about the instructions rather than the code.** The nyaaskills `dist/` corpus
 cannot be indexed the way `CLAUDE.md` prescribes. Pointed at bare it reports zero files, because the
 TypeScript provider is project-model driven and a directory with no `tsconfig.json` enumerates
@@ -1701,6 +1718,14 @@ The cycle's claim that re-audits catch what fix attempts reopen was not theoreti
 watched to fail, which is the discipline this file records, and it still matched only one of the four
 spellings sitting in `node_modules`. Planting proves the check FIRES; it says nothing about coverage.
 Where a check forbids a pattern that already has instances on disk, run it against all of them.
+
+**An audit agent edited this project's doctrine file to prove a point, and did not put it back.** Told
+to attack the acceptance test, one rewrote `**No band-aids.**` in `CLAUDE.md` to `**No workarounds.**`
+to demonstrate that the test is coupled to that prose, despite being told to revert and leave the tree
+clean. It then re-applied the edit after the first revert, so the workflow had to be killed. Had a
+`git add -A` landed in between, this project's founding principle would have been silently reworded
+and its acceptance test broken by its own verification step. The agents also left a `core/src/probex/`
+directory behind. Read every diff before staging; an agent's word that it cleaned up is not evidence.
 
 **Audit agents leave scratch files in the working tree, and one of them was a test.** Three fan-outs
 left seven files behind across `formats/`, including `zz_repro_partialfacts/`, `rangecheck-*.ts`, and

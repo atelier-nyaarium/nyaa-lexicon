@@ -78,15 +78,17 @@ describe("core does not branch on language", () => {
 		for (const dir of SWEPT) expect(sourceFiles(dir).length, dir).toBeGreaterThan(0);
 	});
 
-	it("has no language-name comparison anywhere in core or formats", () => {
+	it("has no quoted language name anywhere in core or formats", () => {
 		const offenders: string[] = [];
 
 		for (const file of SWEPT.flatMap(sourceFiles)) {
 			const code = codeOnly(readFileSync(file, "utf8")).toLowerCase();
 			for (const name of LANGUAGE_NAMES) {
-				// A comparison, a switch case, or a keyed lookup against a QUOTED language name.
+				// The NAME, not the comparison. Requiring an adjacent `===` or `case` let a branch through
+				// under any other spelling: a name held in a constant, a `startsWith`, an object key. There
+				// is no legitimate quoted language name here, so the string itself is the violation.
 				const escaped = name.replace(/[#+.*]/g, "\\$&");
-				const pattern = new RegExp(`(===?|!==?|case\\s+|\\[\\s*)\\s*["'\`]${escaped}["'\`]`);
+				const pattern = new RegExp(`["'\`]${escaped}["'\`]`);
 				if (pattern.test(code)) offenders.push(`${file}: ${name}`);
 			}
 		}
