@@ -1242,8 +1242,10 @@ a provenance field that one of ten providers ignores is worse than none.
 
 **Shipped:** a `formats/` workspace package holding the one reading of YAML and of the JSON family,
 two providers over it, and the markdown provider's frontmatter path rewired to the same reader. The
-gate is green at 1725 tests, all eleven providers pass conformance from their SHIPPED bundles under
-node, and `grade.js` answers 8 of 8 against switchboard's 1032 files.
+package has no root export, only `./yaml` and `./json`, so a consumer imports the reader it reads and
+cannot reach the other one's parser. The gate is green at 1739 tests, all eleven providers pass
+conformance from their SHIPPED bundles under node, and `grade.js` answers 8 of 8 against
+switchboard's 1032 files.
 
 **Both open decisions landed as the plan predicted.** The ordinal for a sequence element lives in the
 DESCRIPTOR chain and never becomes a declaration, so nothing is minted and the provenance field stays
