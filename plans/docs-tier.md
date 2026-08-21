@@ -1367,7 +1367,22 @@ recorded in full so the next train starts from evidence rather than from scratch
 
 ## Painpoints
 
-Recorded, not fixed. Felt building Phase 3.
+Recorded, not fixed. Felt building Phase 4.
+
+**Adding one MCP tool means editing seven places, and missing the seventh is silent.** The zod input,
+the description constant, the handler, the `ToolBackend` interface, the tool registration, BOTH
+wirings in `main.ts`, and a case in `core/src/dispatch.ts`. Six of those are typed, so the compiler
+names them. The seventh, the daemon method table, is a string switch on the other side of a wire, so
+forgetting it compiles, passes every unit test, and answers `unknown method` only when someone drives
+the built binary. A residue test closes it now, but the shape is still a checklist rather than a
+registration, which is the extensibility test the architecture skill asks and this fails.
+
+**Only three of the eight audit agents could reach a daemon.** The sandbox denies `listen`, so a
+Luna told to "drive the built server and attack it" reports EPERM and no findings, which reads as
+clean. The distinction between "attacked it and it held" and "could not attack it" lives only in a
+verdict string nobody diffs. Every live-surface angle this session had to be run by hand afterwards.
+
+Felt building Phase 3.
 
 **A store probe cannot run under bun, so every store experiment is a three-step build.** Bun has no
 `node:sqlite`, which `CLAUDE.md` states plainly, but the consequence in practice is that answering
