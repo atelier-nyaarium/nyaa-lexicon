@@ -9,7 +9,7 @@ import type { Diagnostic } from "@nyaa-lexicon/protocol";
  * a key with no name and a key that is not a scalar have nothing an id could carry, so nothing is
  * lost that a different reader would have found.
  */
-export type DropReason = "repeated" | "nameless" | "unnameable";
+type DropReason = "repeated" | "nameless" | "unnameable";
 
 const REASONS: Record<DropReason, { severity: Diagnostic["severity"]; say: (name: string) => string }> = {
 	repeated: {

@@ -1235,8 +1235,13 @@ So the primitive Decision 1 wants is DECLARATION PROVENANCE: a closed field sayi
 came from the source or was synthesized, with `selectionRange` absent when there is no source name.
 With it, minting `[0]` for an array element is honest rather than a lie, and GDScript's implicit
 class stops being one. Without it, Phase 5 either omits array elements entirely or repeats the same
-silent invention in two more formats. Decide it here, apply it to GDScript in the same change, since
-a provenance field that one of ten providers ignores is worse than none.
+silent invention in two more formats.
+
+**That last sentence turned out to be a false choice, and the results below record what happened
+instead.** The ordinal lives in the DESCRIPTOR chain, which is an id rather than a name, so no
+declaration is minted and no `selectionRange` is invented. Nothing above is a live requirement for
+this phase. The GDScript misalignment it found is real and unfixed, and is on the board as
+GDScript's own question rather than this one's.
 
 ### Phase 5 results
 
