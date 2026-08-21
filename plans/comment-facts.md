@@ -367,18 +367,23 @@ it. The store stays persistence.
 Verified against real repositories rather than fixtures, which is what proved the two-disjunct
 leading rule actually covers both range conventions:
 
+Final numbers, after the grouping and annotation fixes that the audit laps below produced:
+
 | corpus | language | comments | leading | trailing | inline | anchored |
 |---|---|---|---|---|---|---|
-| nyaa-lexicon | typescript | 2588 | 1059 | 0 | 0 | 1564 |
-| libuv | c | 5009 | 526 | 93 | 19 | 4258 |
-| ripgrep | rust | 5777 | 1399 | 3 | 0 | 2562 |
-| kotlinx-coroutines | kotlin | 7353 | 1847 | 238 | 7 | 6758 |
-| newtonsoft-json | csharp | 17765 | 2679 | 22 | 7576 |
-| requests | python | 737 | 47 | 14 | 0 | 576 |
+| kotlinx-coroutines | kotlin | 7045 | 2699 | 238 | 7 | 6866 |
+| libuv | c | 4990 | 655 | 93 | 19 | 4312 |
+| newtonsoft-json | csharp | 4683 | 2104 | 22 | 0 | 3660 |
+| ripgrep | rust | 2666 | 1925 | 3 | 0 | 2292 |
+| nyaa-lexicon | typescript | 2351 | 1235 | 0 | 0 | 1617 |
+| requests | python | 635 | 54 | 14 | 0 | 528 |
 
 Both conventions produce leading attachments in volume, which is the evidence the rule needed:
 c, typescript and csharp INCLUDE the doc in the declaration's range (first disjunct fires),
 while rust, kotlin and python EXCLUDE it (second disjunct fires, read from the source text).
+
+Zero trailing in this repo and in ripgrep-scale numbers elsewhere is not a defect: the house rule
+here puts comments on their own line, and trailing appears immediately in corpora that write them.
 
 The convention table is no longer prose. A shared conformance case, `a-doc-comment-and-its-
 declaration-relate-one-of-two-ways`, asserts that a declaration's range either covers its doc
@@ -508,14 +513,21 @@ rather than behaviour.
   class: that one IS a sound oracle, because it plants the marker and therefore knows, while this
   one would have to decide intent it cannot observe.
 
+The refactor was then handed to a hostile pass, which found no behavioural differential on any
+valid input across five attack points: shape metadata taken from first and last member, the
+single-versus-merged raw paths, non-joinable comments chaining, empty and duplicate and unordered
+input, and out-of-range starts. Its one finding is a span ending past the end of its own line,
+where the whole run now degrades to singletons rather than keeping a merged valid prefix. Both
+answers are arbitrary for a provider lying about its own file, and the singleton path is the one
+that never fabricates text: raw is either the provider's own span text or an exact source slice,
+never a join of the two. Conformance now fails any provider whose span does not slice back, so the
+input cannot ship in the first place.
+
 **Ranked follow-up, backlogged rather than built:** seeded mutation checks. Four permanent mutants,
 one per shipped defect (read the growing range, drop the scope check, let blocks join runs, treat
 every written gap line as a wall), with the suite required to fail each. It is the only proposal
 that tests the TESTS, which is the actual failure here: each of the four was proven failable by
 hand at the moment of its fix, and a hand proof decays the moment the code moves.
-
-Zero trailing in this repo is not a defect: the house rule puts comments on their own line, and
-trailing shows up immediately in corpora that write them.
 
 ## Phase 3 - Core (as planned)
 
