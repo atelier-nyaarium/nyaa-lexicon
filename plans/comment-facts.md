@@ -772,6 +772,20 @@ daemon connects to it, so two versions cannot retire each other and rebuild the 
 flip, but a session still running 1.x code cannot speak the 2.0 wire at all. Hence "reload every
 session promptly" rather than "it will sort itself out".
 
+**The consumer path was exercised, not assumed.** A green gate proves the source compiles here;
+consumers run `node dist/main.js` with no install, on the runtime this project develops against
+with a different one. Spoken to over stdio, the shipped bundle answers `initialize` with
+`serverInfo.version` 2.0.0 and lists `find_comments` among its tools. That is the check a
+`bun:`-prefixed import would fail and every test would pass.
+
+The follow-up the plan names, comment fact ids citable by `record_answer`, was verified as still
+needed rather than assumed. `IndexStore.factById` has no comment branch: it handles declaration,
+reference, import and answer, refuses doubt, then FALLS THROUGH to the literals table for anything
+else. A comment id therefore queries `literals`, finds nothing, and `checkCitations` reads the null
+as "does not resolve". Worth fixing with it: that fallthrough means any future fact kind is
+silently half-added, which is the same shape as the Phase 1 runner predicate that let six cases
+pass while asserting nothing.
+
 ## Phase 6 - Release (as planned)
 
 bun run build major with the protocol-version assertion. Release notes: stores rebuild (knowledge
