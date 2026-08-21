@@ -770,8 +770,10 @@ over a CommonMark parser rather than a scanner.
 
 The whole trap list passes, and every case in it is a conformance fixture rather than a claim: setext
 headings, tilde fences, a longer fence holding a shorter one, indented code, a hash inside an HTML
-comment, quoted and listed headings, CRLF, frontmatter, and repeated siblings. Nine new cases, all
-green from the shipped bundle, alongside all eight existing providers at zero failures.
+comment, quoted and listed headings, CRLF, frontmatter, repeated siblings, and a byte order mark.
+The corpus grew from 33 cases to 44: ten on the `docs` tier and one on `comments` that every code
+provider runs. Markdown also gained a fixture on the existing parse-error case. All green from the
+shipped bundle, alongside all eight existing providers at zero failures.
 
 **Proved end to end rather than by gate.** The built artifact indexes this repository, claims
 `.md .mdc .markdown`, drops the unclaimed count to one file, and answers `Principles` as a `heading`
@@ -984,6 +986,48 @@ answered.
 Every parser here was already chosen in Phase 0, so each slice is an adapter over a decided library
 rather than a fresh judgement call. The YAML reader is the same one the markdown provider uses for
 frontmatter: one owner, no second opinion.
+
+### What the Phase 2 architecture pass decided for this phase
+
+Four angles over the shipped reference implementation, asking what copying it twice would cost.
+
+**The YAML mapper is EXTRACTED, never copied.** `frontmatterDeclarations` in the markdown provider
+already walks a YAML map into declarations: keys, names, descriptors, container chaining, ranges and
+the sequence-omission policy. Writing the YAML provider by copying it would produce the second
+interpretation Phase 0 chose the shared reader to prevent, and the plan's own requirement that the
+scalar decision reach frontmatter as well as `.yml` would then have two homes.
+
+It cannot live in `providers/markdown/`, since a provider importing another provider's internals is
+not a boundary. It cannot live in `protocol/`, which owns the wire contract and the grammars rather
+than parser machinery. So it is a new WORKSPACE PACKAGE that both providers depend on. Bundling
+inlines it twice on disk, which is fine and expected: the invariant being bought is one semantic
+truth, not one copy.
+
+The package takes provider context as DATA, never as a language to branch on: the language slug, the
+module, the source span the YAML occupies, and the coordinate map. That keeps the never-branch rule
+intact at the only place it could plausibly be bent.
+
+**JSON and YAML declare `docs: false`, and that is honest rather than a gap.** JSON has no prose at
+all, and a YAML comment is a comment, which is the comments tier. So the docs tier stays a document
+tier, and nothing has to invent a heading path for a file with no headings. The region model needs
+no change to absorb this phase.
+
+**Decision 1 has a principled answer that did not exist when it was written.** The open question is
+what an array element becomes when `DeclarationSchema.name` is required and an element has no name.
+The architecture pass found that GDScript ALREADY faces this and answers it silently: a script with
+no `class_name` gets a file-level class named from the module basename, with a `selectionRange`
+fabricated at character 0, and nothing on the wire says the name was invented. `selectionRange` is
+documented as the span of the name, so that fact claims a span that does not exist.
+
+That misalignment misled one of this session's own audit agents into reporting it as a defect, which
+is evidence that a consumer cannot tell either.
+
+So the primitive Decision 1 wants is DECLARATION PROVENANCE: a closed field saying whether a name
+came from the source or was synthesized, with `selectionRange` absent when there is no source name.
+With it, minting `[0]` for an array element is honest rather than a lie, and GDScript's implicit
+class stops being one. Without it, Phase 5 either omits array elements entirely or repeats the same
+silent invention in two more formats. Decide it here, apply it to GDScript in the same change, since
+a provenance field that one of ten providers ignores is worse than none.
 
 ## Phase 6 - Verification
 

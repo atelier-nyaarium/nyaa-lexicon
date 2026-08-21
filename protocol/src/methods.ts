@@ -32,7 +32,7 @@ export const ProviderTiersSchema = z
 		literals: z.boolean(),
 		/** Raw comment spans. False hides the language from comment search entirely. */
 		comments: z.boolean(),
-		/** Prose regions under document headings. False for every language that is code. */
+		/** Prose regions, each optionally anchored to a heading. False for every language that is code. */
 		docs: z.boolean(),
 		/** Size and shape per declaration. */
 		metrics: z.boolean(),
