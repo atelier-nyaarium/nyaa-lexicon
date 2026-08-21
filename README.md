@@ -37,6 +37,12 @@ Reverse lookup is an indexed read, not a search.
 **Text as a fact class.** `find_literals` indexes every string, number and boolean by its decoded
 value, so a name inside a quoted string is findable and numbers compare as numbers.
 
+**Prose as a fact class.** `find_comments` searches what was written ABOUT the code: doctrine,
+rationale, warnings. Each hit names the symbol the comment is attached to, a run of wrapped line
+comments is one fact rather than several, and search runs over normalized text so a sentence broken
+across a line break is still one sentence. Indexed files only, so ripgrep still wins an exhaustive
+byte audit.
+
 **History.** `file_history`, `co_changed_with`, `symbol_history`. What changes alongside a file is
 the strongest signal no reference edge carries.
 
