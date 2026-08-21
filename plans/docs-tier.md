@@ -974,6 +974,28 @@ and this is where that turns out to be true of sections and not of keys.
 but one in tests, and every parameter a distinct type, a swap cannot compile and the refactor would
 be churn.
 
+### Bug Classes
+
+**An `anchorId` is trusted to describe what the reader assumes it describes.** One mechanism, the
+walk in `headingPath` and the render around it, patched three times in this phase for one class:
+
+1. The anchor could name a NON-HEADING, so a function appeared inside a heading path. Patched by
+   checking `kind` during the walk.
+2. The chain could CROSS MODULES, so a foreign heading appeared above a local one. Patched by
+   stopping at a module change.
+3. The anchor's own module can differ from the REGION's, so a hit in `guide.md` renders as
+   `guide.md > Foreign` where `Foreign` is declared in `other.md`. Reproduced, still open.
+
+Each patch guards the reader, and the third instance proves that is the wrong end. `DocRegion`
+declares `anchorId` as any non-empty string, and every consumer downstream re-decides what that
+string is allowed to be, so the next consumer inherits the same obligation and the same chance of
+forgetting it.
+
+`replaceFile` already holds the file's declarations beside its regions, which is the one place where
+"is this anchor a heading in this file" is answerable without a second query. Refusing an anchor
+there, or nulling it and saying so, makes every downstream guard unnecessary rather than merely
+correct. Left for the architecture pass rather than patched a third time.
+
 ### What the red team broke, and what it found underneath
 
 Six angles, 464 inputs executed. Two defects were the docs tier's own, and three belonged to a
