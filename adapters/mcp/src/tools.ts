@@ -625,7 +625,8 @@ code block says so, which is how a runnable command written only in a fence is f
 
 Set exactly one of \`text\` or \`regex\`. Set neither with \`fenced\` or \`module\` to list a slice.
 
-Documents only, and only those a provider claims. Prose in a code comment is \`find_comments\`.
+Indexed documents only. An unclaimed file, or one no provider reads as a document, is invisible
+here. Use ripgrep for an exhaustive byte audit. Prose in a code comment is \`find_comments\`.
 `.trim();
 
 export const OVERVIEW_DESCRIPTION = `

@@ -151,6 +151,13 @@ export function renderDescribe(result: DescribeResult): string {
 		}
 	}
 
+	// Nothing calls, extends or depends on a section, so zero here would read as a checked fact
+	// rather than a question that does not apply.
+	if (result.symbol.kind === "heading") {
+		lines.push("", "## Usage", "", "A section is document structure, so nothing calls, extends or uses it.");
+		return lines.join("\n");
+	}
+
 	lines.push("", "## Usage", "", `Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.`);
 	if (result.referenceCount > 0) lines.push("Call `find_references` for the list.");
 	appendHierarchy(lines, result.hierarchy);
@@ -304,7 +311,7 @@ export function renderComments(result: CommentsResult): string {
 
 export function renderDocs(result: DocsResult): string {
 	if (result.total === 0) {
-		return `# Documentation\n\nNo prose matched.\n\n> Searches normalized prose, so line wrapping is not matched.${incompleteNote(result.scanIncomplete)}`;
+		return `# Documentation\n\nNo documentation matched.\n\n> Searches normalized text, so line wrapping is not matched.${incompleteNote(result.scanIncomplete)}`;
 	}
 
 	const byModule = new Map<string, string[]>();

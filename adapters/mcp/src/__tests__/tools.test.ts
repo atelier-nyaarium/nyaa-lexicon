@@ -5,6 +5,7 @@ import {
 	findReferences,
 	refactorRename,
 	resolveImport,
+	searchDocs,
 	type ToolBackend,
 	typeOfSymbol,
 } from "../tools";
@@ -316,5 +317,46 @@ describe("index-state honesty notes", () => {
 		);
 		const text = (result.content[0] as { text: string }).text;
 		expect(text).toContain("2 files failed to parse");
+	});
+});
+
+describe("the search_docs handler", () => {
+	const body = (result: Awaited<ReturnType<typeof searchDocs>>) => (result.content[0] as { text: string }).text;
+
+	it("passes every argument through, so none is silently dropped", async () => {
+		let seen: unknown;
+		await searchDocs(
+			backend({
+				findDocs: async (query) => {
+					seen = query;
+					return { query, docs: [], total: 0, truncated: false };
+				},
+			}),
+			{ text: "band-aid", fenced: true, module: "CLAUDE.md", limit: 7 },
+		);
+
+		expect(seen).toEqual({ text: "band-aid", fenced: true, module: "CLAUDE.md", limit: 7 });
+	});
+
+	it("refuses a text and a regex together rather than picking one", async () => {
+		const result = await searchDocs(backend(), { text: "a", regex: "/b/" });
+
+		expect(result.isError).toBe(true);
+		expect(body(result)).toContain("not both");
+	});
+
+	// An empty page would read as "nothing matched" when the query was actually rejected.
+	it("says why a bad query failed instead of answering it with nothing", async () => {
+		const result = await searchDocs(
+			backend({
+				findDocs: async () => {
+					throw new Error("Regex failed to compile: expected /pattern/flags.");
+				},
+			}),
+			{ regex: "[" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(body(result)).toContain("Regex failed to compile");
 	});
 });

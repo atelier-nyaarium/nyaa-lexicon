@@ -1103,6 +1103,22 @@ with an in-process backend, and the real server answered `unknown method: findDo
 reaches core through the DAEMON's own method table, which nothing in the unit path exercises. This is
 the fourth time this project's own rule has paid: a green gate is not evidence.
 
+**Closed as a class rather than as a bug.** A residue test now derives every method the daemon-backed
+backend asks for from `main.ts`, derives every case from `dispatch.ts`, and fails when the first set
+is not inside the second. Derived from both files rather than listed, because a hand-kept list of
+method names is the same defect one layer up. Measured before writing it: 34 methods asked, 0 false
+positives. Proven by deleting the `findDocs` case and watching it name that method.
+
+**A heading answered code questions with zero.** `describe_symbol` reported `Used in 0 places`, `No
+supertypes or subtypes in the index` and `Uses: 0 distinct symbols`, which reads as a check that ran
+and found nothing rather than a question that does not apply to a section. It now says so in one
+line and prints none of the three.
+
+**The description was missing the coverage line this phase promised.** It said documents only and
+stopped there, where the comment tier says INDEXED files only and points at ripgrep for an
+exhaustive audit. The same sentence is there now, because an agent deciding whether to trust an
+empty result is exactly who that line is for.
+
 **A heading prints no signature block.** `renderDescribe` wrapped every symbol in a `ts` fence, which
 for a heading meant a code fence around a section title, reading as code that does not exist. A
 heading now shows its prose instead, which is what a document has where code has a body.

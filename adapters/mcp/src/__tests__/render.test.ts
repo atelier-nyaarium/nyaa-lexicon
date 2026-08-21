@@ -239,4 +239,15 @@ describe("describing a heading", () => {
 			"in a code block",
 		);
 	});
+
+	// Zero would read as a checked fact rather than a question that does not apply to a section.
+	it("says the code questions do not apply, rather than answering each of them zero", () => {
+		const heading = described("heading");
+
+		expect(heading).not.toContain("Used in 0 places");
+		expect(heading).not.toContain("Type hierarchy");
+		expect(heading).not.toContain("Dependencies");
+		expect(heading).toContain("document structure");
+		expect(described("function")).toContain("Used in 0 places");
+	});
 });
