@@ -31,6 +31,8 @@ const CPP = "cpp";
 const CSHARP = "csharp";
 const RUST = "rust";
 const KOTLIN = "kotlin";
+/** No provider claims it yet, so every `docs` case below SKIPS until one does. */
+const MARKDOWN = "markdown";
 
 const CASES: ConformanceCase[] = [
 	{
@@ -1192,6 +1194,77 @@ const CASES: ConformanceCase[] = [
 		// Status only. `inferred` is the whole claim: the source never said this, we concluded it,
 		// and a consumer weighs that differently from an annotation it can go and read.
 		typeOf: { name: "LIMIT", status: "inferred" },
+	},
+	{
+		id: "document-headings-nest-by-level",
+		tier: "docs",
+		about: "Headings are declarations, and a deeper level is contained by the one above it.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "# Title\n\n## Development\n\n### Releasing\n\n## Verifying\n" },
+				subject: "doc.md",
+				declarations: [
+					{ name: "Title", kind: "heading" },
+					{ name: "Development", kind: "heading", container: "Title" },
+					{ name: "Releasing", kind: "heading", container: "Development" },
+					{ name: "Verifying", kind: "heading", container: "Title" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-prose-belongs-to-the-heading-above-it",
+		tier: "docs",
+		about: "Prose anchors to the nearest heading above, and prose before any heading anchors to none.",
+		// The whole reason this is a separate tier from comments: position decides, nothing resolves.
+		fixtures: {
+			[MARKDOWN]: {
+				files: {
+					"doc.md": "Preamble prose.\n\n# Title\n\nUnder the title.\n\n## Section\n\nUnder the section.\n",
+				},
+				subject: "doc.md",
+				docs: [
+					{ text: "Preamble prose." },
+					{ text: "Under the title.", under: "Title" },
+					{ text: "Under the section.", under: "Section" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-fence-is-content-not-structure",
+		tier: "docs",
+		about: "A fenced block yields no heading, is marked fenced, and does not swallow the prose around it.",
+		// A hash inside a fence is text. A scanner that misses this grows sections that do not exist,
+		// and the tool that prompted this design has exactly that bug.
+		fixtures: {
+			[MARKDOWN]: {
+				files: {
+					"doc.md":
+						"# Title\n\nBefore the fence.\n\n```bash\n## not a heading\nbun run build\n```\n\nAfter the fence.\n",
+				},
+				subject: "doc.md",
+				declarations: [{ name: "Title", kind: "heading" }],
+				docs: [
+					{ text: "Before the fence.", under: "Title" },
+					{ text: "## not a heading\nbun run build", under: "Title", fenced: true },
+					{ text: "After the fence.", under: "Title" },
+				],
+			},
+		},
+	},
+	{
+		id: "document-without-headings-still-reports-its-prose",
+		tier: "docs",
+		about: "A file with no headings reports its prose anchored to no heading, rather than reporting nothing.",
+		fixtures: {
+			[MARKDOWN]: {
+				files: { "doc.md": "Just prose, no headings at all.\n" },
+				subject: "doc.md",
+				declarations: [],
+				docs: [{ text: "Just prose, no headings at all." }],
+			},
+		},
 	},
 ];
 

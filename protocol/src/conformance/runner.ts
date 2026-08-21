@@ -130,6 +130,7 @@ async function runCase(
 		fixture.declarations ?? testCase.declarations,
 		testCase.references,
 		fixture.comments ?? testCase.comments,
+		fixture.docs ?? testCase.docs,
 		fixture.documentation ?? testCase.documentation,
 	];
 	const checksFacts = factExpectations.some((expectation) => expectation !== undefined);

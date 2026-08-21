@@ -9,13 +9,19 @@ import type { CommentSpan, DocRegion, FileFacts, ImportResolution } from "../pro
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
-import type { ConformanceCase, ExpectedDeclarationSchema, ExpectedReferenceSchema } from "./types.js";
+import type {
+	ConformanceCase,
+	ExpectedDeclarationSchema,
+	ExpectedDocRegionSchema,
+	ExpectedReferenceSchema,
+} from "./types.js";
 
 ////////////////////////////////
 //  Interfaces & Types
 
 type ExpectedDeclaration = z.infer<typeof ExpectedDeclarationSchema>;
 type ExpectedReference = z.infer<typeof ExpectedReferenceSchema>;
+type ExpectedDocRegion = z.infer<typeof ExpectedDocRegionSchema>;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -147,6 +153,8 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	const documented = fixture?.documentation ?? testCase.documentation;
 	if (documented !== undefined) problems.push(...checkDocumentation(documented, facts));
 
+	const wantedDocs = fixture?.docs ?? testCase.docs;
+	if (wantedDocs !== undefined) problems.push(...checkDocs(wantedDocs, facts.docs ?? []));
 	// The same rule comment spans get: a range that lies attaches prose to the wrong section.
 	if (source !== undefined) problems.push(...checkDocRanges(source, facts.docs ?? []));
 
@@ -183,6 +191,45 @@ function checkDocumentation(expected: { declaration: string; comment: string }, 
 }
 
 /** A span's range must cut its own text back out of the source, or core's position math is fiction. */
+/**
+ * Exactly these regions, in document order.
+ *
+ * Order matters here where it does not for comments: prose, then a fence, then more prose is one
+ * section, and a provider that merges or reorders them has changed what the section says.
+ */
+function checkDocs(expected: ExpectedDocRegion[], actual: DocRegion[]): string[] {
+	const problems: string[] = [];
+	if (expected.length !== actual.length) {
+		problems.push(`docs: expected ${expected.length} region(s), got ${actual.length}`);
+	}
+
+	for (const [index, want] of expected.entries()) {
+		const got = actual[index];
+		if (got === undefined) {
+			problems.push(`docs[${index}]: expected ${JSON.stringify(want.text)}, got nothing`);
+			continue;
+		}
+		if (got.text !== want.text) {
+			problems.push(`docs[${index}]: expected ${JSON.stringify(want.text)}, got ${JSON.stringify(got.text)}`);
+		}
+		if (got.fenced !== (want.fenced ?? false)) {
+			problems.push(`docs[${index}] ${JSON.stringify(want.text)}: fenced is ${got.fenced}`);
+		}
+		const under = got.anchorHeading;
+		if (want.under === undefined && under !== undefined) {
+			problems.push(
+				`docs[${index}] ${JSON.stringify(want.text)}: expected no heading, got ${JSON.stringify(under)}`,
+			);
+		}
+		if (want.under !== undefined && under !== want.under) {
+			problems.push(
+				`docs[${index}] ${JSON.stringify(want.text)}: expected under ${JSON.stringify(want.under)}, got ${JSON.stringify(under)}`,
+			);
+		}
+	}
+	return problems;
+}
+
 /** A doc region's range must slice its own text back, fence delimiters excluded. */
 function checkDocRanges(source: string, actual: DocRegion[]): string[] {
 	const problems: string[] = [];

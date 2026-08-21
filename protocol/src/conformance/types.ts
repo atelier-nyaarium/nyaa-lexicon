@@ -96,6 +96,18 @@ export const DocumentedSchema = z
 	})
 	.meta({ id: "Documented" });
 
+/** One stretch of document prose, and which heading owns it. */
+export const ExpectedDocRegionSchema = z
+	.object({
+		/** Verbatim, matching a reported region exactly. */
+		text: z.string().min(1),
+		/** The heading's name. Absent asserts a region anchored to the module, not merely unchecked. */
+		under: z.string().min(1).optional(),
+		/** Whether this came from a fenced block. Absent asserts prose. */
+		fenced: z.boolean().optional(),
+	})
+	.meta({ id: "ExpectedDocRegion" });
+
 /** One language's source for a case: the repo to write, and which file the case asks about. */
 export const ConformanceFixtureSchema = z
 	.object({
@@ -134,6 +146,8 @@ export const ConformanceFixtureSchema = z
 		 * every other language overrides it.
 		 */
 		comments: z.array(z.string()).optional(),
+		/** Doc region expectations only this language can state, replacing the case's when present. */
+		docs: z.array(ExpectedDocRegionSchema).optional(),
 		documentation: DocumentedSchema.optional(),
 	})
 	.meta({ id: "ConformanceFixture" });
@@ -174,6 +188,13 @@ export const ConformanceCaseSchema = z
 		 * positive: a marker inside a string passes an at-least check and poisons search.
 		 */
 		comments: z.array(z.string()).optional(),
+		/**
+		 * EXACTLY these doc regions, in document order.
+		 *
+		 * Exact for the same reason comments are: the failure worth catching is prose that is not
+		 * there, or a fence swallowed into the paragraph beside it.
+		 */
+		docs: z.array(ExpectedDocRegionSchema).optional(),
 		/**
 		 * A declaration and the comment documenting it, whose RANGES must relate in one of two ways.
 		 *

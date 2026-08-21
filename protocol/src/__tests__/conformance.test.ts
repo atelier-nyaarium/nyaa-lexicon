@@ -256,6 +256,59 @@ describe("checking answers", () => {
 		);
 	});
 
+	// No provider claims the docs tier yet, so the corpus cases all skip. These are the only proof
+	// the checker would catch anything when one does.
+	describe("doc regions, where order and fencing are part of the claim", () => {
+		const region = (text: string, extra: { under?: string; fenced?: boolean } = {}) => ({
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: text.length } },
+			text,
+			fenced: extra.fenced ?? false,
+			...(extra.under === undefined ? {} : { anchorHeading: extra.under }),
+		});
+		const withDocs = (regions: ReturnType<typeof region>[]) => facts({ docs: regions });
+
+		it("passes when text, order, anchor and fencing all agree", () => {
+			const testCase = {
+				docs: [
+					{ text: "prose", under: "Title" },
+					{ text: "run me", under: "Title", fenced: true },
+				],
+			} as ConformanceCase;
+			expect(
+				checkFacts(
+					testCase,
+					withDocs([region("prose", { under: "Title" }), region("run me", { under: "Title", fenced: true })]),
+				),
+			).toEqual([]);
+		});
+
+		// Prose and a fence holding the same words are different facts, so this must not pass.
+		it("reports a fence reported as prose", () => {
+			const testCase = { docs: [{ text: "run me", under: "T", fenced: true }] } as ConformanceCase;
+			expect(checkFacts(testCase, withDocs([region("run me", { under: "T" })]))[0]).toMatch(/fenced is false/);
+		});
+
+		it("reports prose attached to the wrong heading", () => {
+			const testCase = { docs: [{ text: "prose", under: "Title" }] } as ConformanceCase;
+			expect(checkFacts(testCase, withDocs([region("prose", { under: "Other" })]))[0]).toMatch(/expected under/);
+		});
+
+		// A section is prose, then a fence, then prose. Merging them changes what the section says.
+		it("reports regions merged into one", () => {
+			const testCase = {
+				docs: [{ text: "before" }, { text: "after" }],
+			} as ConformanceCase;
+			expect(checkFacts(testCase, withDocs([region("before after")]))[0]).toMatch(/expected 2 region/);
+		});
+
+		it("reports prose claimed under a heading when it belongs to none", () => {
+			const testCase = { docs: [{ text: "preamble" }] } as ConformanceCase;
+			expect(checkFacts(testCase, withDocs([region("preamble", { under: "Title" })]))[0]).toMatch(
+				/expected no heading/,
+			);
+		});
+	});
+
 	// Comments are the one expectation checked EXACTLY, because the failure worth catching is a
 	// lexer reporting a marker inside a string as prose.
 	describe("comments, where an extra is a failure", () => {
