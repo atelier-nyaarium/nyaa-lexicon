@@ -637,6 +637,31 @@ Both proven failable by neutering each guard and watching its tests go red.
   decoded value but does not require the encoded field to match what the composer would emit, so two
   spellings reach one symbol. Pre-existing, unrelated to this train, worth its own look.
 
+### Bug Classes
+
+**A hand-maintained map keyed by a growing enum, with a default. Three instances, three mechanisms,
+one release.**
+
+1. `IndexStore.factById` fell through to the literals table for any unhandled fact kind, so a comment
+   id queried the wrong table and its refusal named the wrong cause. Patched by an exhaustive switch.
+2. `renderFacts` in the MCP renderer iterated a hand-written list of fact kinds, so comment facts had
+   ids that no surface ever printed. Patched by keying the headings record on `FactKind`.
+3. `SYMBOL_KIND` in the LSP adapter read `SYMBOL_KIND[kind] ?? 13`, so a new symbol kind rendered
+   silently as a Variable. Patched by keying the record on `SymbolKind`.
+
+Each patch is the same shape: replace the default with exhaustiveness so the compiler refuses. That
+worked, and adding the `doc` fact kind proved it by breaking the build in two of the three at once.
+
+**What is NOT yet fixed is the class itself.** Nothing stops a fourth such map being written, and
+the only reason these three were found is that someone went looking after the first. A residue test
+asserting that every map keyed on a protocol enum is exhaustive would close it, and this project
+already fails builds on residue rules elsewhere. Raised for the architecture pass rather than patched
+again here.
+
+The runner's `factExpectations` array is arguably a fourth instance wearing different clothes: a
+hand-written list that must grow with a schema, whose omission fails SILENTLY rather than loudly.
+That one has no compiler to lean on, which makes it the worst of the four.
+
 ### The known weakness in section identity, argued and accepted
 
 A Codex review roasted the disambiguator decision, its central claim checked out, and the decision
