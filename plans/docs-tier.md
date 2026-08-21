@@ -1410,6 +1410,15 @@ or schema work with an open design question, and neither is answerable inside a 
 refusal is safe; 2 needs the surface decided before the storage half is worth writing. Each is on the
 board with the measurements above, and each is cheapest while `2.0.0` is unpushed.
 
+**The compliance angle is small but not empty, and it is about reach rather than paperwork.** Nothing
+here handles anyone's personal data: the index is local, the store is a file on the user's own disk,
+and there are no accounts, no network and no retention question. What DID change is which files get
+read. Claiming `.json` and `.yml` means a `credentials.json` and a `config/secrets.yml` are now
+indexed and their values answerable through `find_literals`, verified against the built server.
+`.env` is not claimed and stays invisible. Excluding secret-shaped files is a read-path policy, not a
+per-provider blocklist, so it goes to the entry that already owns routing, the binary guard and the
+size bound. A blocklist in two providers would be the band-aid AND would give false assurance.
+
 What landing 4 exposed is worth keeping. The check distinguishes a tier the CORPUS has no cases for
 from one this language has no fixture for, and only the second fails. The first turned out to name
 three tiers, `references`, `literals` and `metrics`, that eight providers claim and the suite has
@@ -1444,6 +1453,15 @@ Folds into the `2.0.0` train. The CHANGELOG gains the docs tier, the new `headin
 formats now claimed, which changes what "unclaimed" reports even without the fallback: markdown,
 JSON and YAML files that were previously invisible become indexed, so a coverage number moves for
 reasons a reader deserves to have explained.
+
+**It must also say what claiming those formats means for the CONTENT of a workspace, because that is
+the part a coverage number hides.** Measured against the built server: a `credentials.json` and a
+`config/secrets.yml` are now indexed, and `find_literals` returns their values verbatim to an agent.
+`.env` is not, because no provider claims that extension. This is not a new KIND of exposure, since a
+literal hardcoded in TypeScript source has always been reachable the same way, but the REACH is new
+and this release is what changes it. A release note framing the change as a coverage number, while a
+config file's values quietly become searchable, would be the misalignment class in the notes rather
+than in the code. Say it plainly and say which extensions are claimed.
 
 ## Question 5 - What ships inside 2.0.0?
 
