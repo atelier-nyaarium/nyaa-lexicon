@@ -15,7 +15,12 @@ export type DescriptorKind = "namespace" | "type" | "term" | "method" | "paramet
 export interface Descriptor {
 	kind: DescriptorKind;
 	name: string;
-	/** Arity or overload index, distinguishing two same-named methods. */
+	/**
+	 * Tells two same-named siblings apart: an overload's arity, or a repeated heading's occurrence.
+	 *
+	 * Carried by `method`, `namespace`, `type` and `meta`. A parameter and a type parameter spend
+	 * their brackets on the name, and a term's dot is the suffix the method form already claims.
+	 */
 	disambiguator?: string;
 }
 
@@ -121,22 +126,27 @@ export function quoteName(name: string): string {
 
 function encodeDescriptor(d: Descriptor): string {
 	const name = quoteName(d.name);
-	if (d.kind === "method") {
-		if (d.disambiguator !== undefined && !DISAMBIGUATOR_RE.test(d.disambiguator)) {
-			throw new Error(`disambiguator must match ${DISAMBIGUATOR_RE}, got: ${JSON.stringify(d.disambiguator)}`);
+	if (d.disambiguator !== undefined && !DISAMBIGUATOR_RE.test(d.disambiguator)) {
+		throw new Error(`disambiguator must match ${DISAMBIGUATOR_RE}, got: ${JSON.stringify(d.disambiguator)}`);
+	}
+
+	// Parens plus a dot ARE the method form, which is what separates it from a term of one name.
+	if (d.kind === "method") return `${name}(${d.disambiguator ?? ""}).`;
+
+	// Refused rather than ignored, because dropping one collapses two symbols onto a single id.
+	// A parameter and a type parameter spend their brackets on the name; a term's suffix is the
+	// dot the method form already claims, so `x(2).` could only ever read back as a method.
+	if (d.kind === "parameter" || d.kind === "typeParameter" || d.kind === "term") {
+		if (d.disambiguator !== undefined) {
+			throw new Error(`a ${d.kind} descriptor has no slot for a disambiguator`);
 		}
-		return `${name}(${d.disambiguator ?? ""}).`;
+		if (d.kind === "parameter") return `(${name})`;
+		if (d.kind === "typeParameter") return `[${name}]`;
+		return `${name}${KIND_SUFFIX.term}`;
 	}
 
-	// Refused rather than ignored: only a method has a slot to render one, so dropping it would
-	// silently collapse two symbols the caller meant to keep apart onto one id.
-	if (d.disambiguator !== undefined) {
-		throw new Error(`only a method descriptor can carry a disambiguator, got kind: ${d.kind}`);
-	}
-
-	if (d.kind === "parameter") return `(${name})`;
-	if (d.kind === "typeParameter") return `[${name}]`;
-	return `${name}${KIND_SUFFIX[d.kind]}`;
+	const suffix = KIND_SUFFIX[d.kind];
+	return d.disambiguator === undefined ? `${name}${suffix}` : `${name}(${d.disambiguator})${suffix}`;
 }
 
 /** Normalizes the module here, so a provider cannot mint a host-dependent id by forgetting to. */
@@ -219,11 +229,22 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 			c.next();
 			// Charset-restricted rather than balanced, per parsing law rule 4.
 			const disambiguator = c.takeWhile((x) => DISAMBIGUATOR_RE.test(x));
-			if (c.peek() !== ")") return err(c.fail("expected ) to close the method disambiguator"));
+			if (c.peek() !== ")") return err(c.fail("expected ) to close the disambiguator"));
 			c.next();
-			if (c.peek() !== ".") return err(c.fail("expected . after a method descriptor"));
+
+			// A dot after the parens is the method form, so it cannot be read as a term suffix.
+			if (c.peek() === ".") {
+				c.next();
+				out.push(disambiguator === "" ? { kind: "method", name } : { kind: "method", name, disambiguator });
+				continue;
+			}
+
+			const kind = SUFFIX_KIND.get(c.peek());
+			if (kind === undefined) return err(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+			// Empty parens stay method-only, or one symbol would have two spellings.
+			if (disambiguator === "") return err(c.fail("only a method descriptor may carry an empty disambiguator"));
 			c.next();
-			out.push(disambiguator === "" ? { kind: "method", name } : { kind: "method", name, disambiguator });
+			out.push({ kind, name, disambiguator });
 			continue;
 		}
 

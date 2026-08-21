@@ -25,6 +25,8 @@ export interface SymbolSummary {
 	visibility: string;
 	signature?: string;
 	docComment?: string;
+	/** Absent at the top level. What a heading path walks upward through. */
+	containerId?: string;
 	/** Where the body lives, 0-based source lines. The pointer that makes reading it a range read. */
 	lines?: { start: number; end: number };
 }
@@ -225,6 +227,7 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 		kind: declaration.kind,
 		module: declaration.module,
 		visibility: declaration.visibility,
+		...(declaration.containerId === undefined ? {} : { containerId: declaration.containerId }),
 		...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
 		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
 		...(declaration.range === undefined
@@ -323,12 +326,9 @@ export class IndexReadModel {
 		return this.store.declarationsIn(module);
 	}
 
-	/** The same, as summaries plus the container, which is what renders an outline. */
-	outline(module: string): Array<SymbolSummary & { containerId?: string }> {
-		return this.store.declarationsIn(module).map((declaration) => ({
-			...toSummary(declaration),
-			...(declaration.containerId === undefined ? {} : { containerId: declaration.containerId }),
-		}));
+	/** The same, as summaries, which now carry the container an outline nests by. */
+	outline(module: string): SymbolSummary[] {
+		return this.store.declarationsIn(module).map(toSummary);
 	}
 
 	/** Search declared symbols by a name substring or regular expression. */

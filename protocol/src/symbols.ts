@@ -49,6 +49,8 @@ export const SymbolKindSchema = z
 		"event",
 		"operator",
 		"typeParameter",
+		/** A section of a document. Its payload is prose, so types and calls mean nothing to it. */
+		"heading",
 	])
 	.meta({ id: "SymbolKind" });
 

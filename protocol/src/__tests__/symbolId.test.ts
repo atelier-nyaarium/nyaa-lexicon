@@ -131,6 +131,35 @@ describe("round trip", () => {
 		expect(roundTrip(one)).toEqual(one);
 	});
 
+	it("tells two same-named siblings apart for any kind that has room for it", () => {
+		// Repeated heading text is ordinary in a document, so a namespace needs the slot a method has.
+		for (const kind of ["namespace", "type", "meta"] as const) {
+			const first: SymbolId = { ...CART, descriptors: [{ kind, name: "Notes" }] };
+			const second: SymbolId = { ...CART, descriptors: [{ kind, name: "Notes", disambiguator: "2" }] };
+			expect(composeSymbolId(first)).not.toBe(composeSymbolId(second));
+			expect(roundTrip(second)).toEqual(second);
+		}
+	});
+
+	it("keeps one spelling per symbol, so an empty slot stays method-only", () => {
+		// `Notes()/` would name the same symbol as `Notes/`, and two spellings is two ids.
+		expect(parseSymbolId("lexicon markdown a.md Notes()/")).toBeNull();
+		expect(parseSymbolId("lexicon markdown a.md Notes()#")).toBeNull();
+		// The method form is exactly where empty parens carry meaning.
+		expect(parseSymbolId("lexicon typescript a.ts add().")?.descriptors[0]).toEqual({
+			kind: "method",
+			name: "add",
+		});
+	});
+
+	it("refuses a disambiguator on a kind with nowhere to render it", () => {
+		// A term's dot is the suffix the method form claims, so `x(2).` could only read back wrong.
+		for (const kind of ["parameter", "typeParameter", "term"] as const) {
+			const bad = { ...CART, descriptors: [{ kind, name: "value", disambiguator: "2" }] };
+			expect(() => composeSymbolId(bad)).toThrow(/no slot/);
+		}
+	});
+
 	it("preserves a local ordinal, so two same-named locals stay distinct symbols", () => {
 		const a = composeSymbolId({ ...CART, descriptors: [], local: 0 });
 		const b = composeSymbolId({ ...CART, descriptors: [], local: 1 });
@@ -250,13 +279,13 @@ describe("audit findings", () => {
 		).toThrow();
 	});
 
-	// Only a method has a slot to render one. Dropping it instead collapsed two symbols the caller
-	// meant to keep apart onto one id, which looks exactly like a correct answer.
+	// Dropping one collapsed two symbols the caller meant to keep apart onto a single id, which
+	// looks exactly like a correct answer.
 	it("refuses a disambiguator on a kind that cannot render one", () => {
-		for (const kind of ["type", "term", "namespace", "meta", "parameter", "typeParameter"] as const) {
+		for (const kind of ["term", "parameter", "typeParameter"] as const) {
 			expect(() =>
 				composeSymbolId({ ...CART, descriptors: [{ kind, name: "Thing", disambiguator: "1" }] }),
-			).toThrow(/only a method descriptor can carry a disambiguator/);
+			).toThrow(/no slot for a disambiguator/);
 		}
 	});
 
@@ -358,9 +387,9 @@ describe("failure diagnoses", () => {
 		expect(failure("lexicon").message).toMatch(/expected a space after the scheme/);
 	});
 
-	it("says which delimiter it wanted inside a method descriptor", () => {
+	it("says which delimiter it wanted after a disambiguator", () => {
 		expect(failure("lexicon typescript src/cart.ts add(1").message).toMatch(/\) to close/);
-		expect(failure("lexicon typescript src/cart.ts add(1)x").message).toMatch(/\. after a method/);
+		expect(failure("lexicon typescript src/cart.ts add(1)x").message).toMatch(/descriptor suffix/);
 	});
 
 	it("reports an unsafe local ordinal as such rather than as a bad descriptor", () => {

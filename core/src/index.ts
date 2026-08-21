@@ -2,7 +2,7 @@
 
 // Re-exported because it names the answer of a core method. An adapter must not have to depend on
 // the protocol package to spell the return type of something core hands it.
-export type { TypeInfo } from "@nyaa-lexicon/protocol";
+export type { SymbolKind, TypeInfo } from "@nyaa-lexicon/protocol";
 export {
 	type Answer,
 	type Doubt,

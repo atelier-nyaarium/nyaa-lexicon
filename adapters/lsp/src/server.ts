@@ -11,7 +11,7 @@
 // identity for every character below U+FFFF and wrong above it. That is a real limitation, stated
 // here rather than discovered later in a file full of emoji.
 
-import type { StoredDeclaration } from "@nyaa-lexicon/core";
+import type { StoredDeclaration, SymbolKind } from "@nyaa-lexicon/core";
 import type { LexiconReads } from "./reads.js";
 
 ////////////////////////////////
@@ -74,7 +74,13 @@ export interface TypeHierarchyItem {
  * Anything absent falls to Variable rather than to a guess: an editor renders an unknown number as
  * nothing at all, so a wrong-but-plausible kind is worse than the dullest correct one.
  */
-const SYMBOL_KIND: Record<string, number> = {
+/**
+ * Keyed by SymbolKind, so a new kind fails the build here instead of rendering as something else.
+ *
+ * LSP has no heading, and editors' markdown servers settle on String, so an outline of a document
+ * looks like every other markdown outline rather than inventing a mapping nobody renders.
+ */
+const SYMBOL_KIND: Record<SymbolKind, number> = {
 	file: 1,
 	module: 2,
 	namespace: 3,
@@ -89,14 +95,7 @@ const SYMBOL_KIND: Record<string, number> = {
 	function: 12,
 	variable: 13,
 	constant: 14,
-	string: 15,
-	number: 16,
-	boolean: 17,
-	array: 18,
-	object: 19,
-	key: 20,
-	null: 21,
-	enumMember: 22,
+	heading: 15,
 	struct: 23,
 	event: 24,
 	operator: 25,
