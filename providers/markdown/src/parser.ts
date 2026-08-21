@@ -3,6 +3,7 @@
 // Positions come from node OFFSETS through the shared coordinate map, never from mdast's own line
 // and column: only the map counts UTF-16 code units, which is the unit the protocol pins.
 
+import { readYaml, type YamlFacts } from "@nyaa-lexicon/formats";
 import {
 	composeSymbolId,
 	coordinatesOf,
@@ -10,6 +11,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	type DocRegion,
+	type Literal,
 	type Range,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
@@ -18,7 +20,6 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { frontmatterFromMarkdown } from "mdast-util-frontmatter";
 import { toString as inlineText } from "mdast-util-to-string";
 import { frontmatter } from "micromark-extension-frontmatter";
-import { isMap, isPair, isScalar, parseDocument } from "yaml";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -26,6 +27,7 @@ import { isMap, isPair, isScalar, parseDocument } from "yaml";
 export interface ParsedMarkdownFile {
 	module: string;
 	declarations: Declaration[];
+	literals: Literal[];
 	docs: DocRegion[];
 	diagnostics: Diagnostic[];
 }
@@ -146,57 +148,13 @@ function declarationFor(
 	};
 }
 
-/**
- * Frontmatter keys as `property` declarations, nested maps chained through `containerId`.
- *
- * Sequence entries are omitted: an element has no name and a declaration requires one.
- */
-function frontmatterDeclarations(
-	module: string,
-	coordinates: TextCoordinates,
-	content: OffsetSpan,
-	text: string,
-): { declarations: Declaration[]; diagnostics: Diagnostic[] } {
-	const declarations: Declaration[] = [];
-	const diagnostics: Diagnostic[] = [];
-	const document = parseDocument(text);
-
-	for (const problem of document.errors) {
-		const range = coordinates.rangeAt(content.start + problem.pos[0], content.start + problem.pos[1]);
-		diagnostics.push({
-			severity: "error",
-			message: `frontmatter: ${problem.message}`,
-			path: module,
-			...(range === undefined ? {} : { range }),
-		});
-	}
-
-	function walk(node: unknown, parents: Descriptor[], containerId: string | undefined): void {
-		if (!isMap(node)) return;
-		for (const pair of node.items) {
-			if (!isPair(pair) || !isScalar(pair.key)) continue;
-			const key = pair.key.range;
-			const name = String(pair.key.value);
-			if (key === null || key === undefined || name === "") continue;
-
-			const keyStart = content.start + key[0];
-			const keyEnd = content.start + key[1];
-			// A zero-width key is an absent one, and `: 1` would otherwise be declared as "null".
-			if (keyEnd <= keyStart) continue;
-			const valueEnd = isScalar(pair.value) || isMap(pair.value) ? pair.value.range?.[1] : undefined;
-			const selectionRange = coordinates.rangeAt(keyStart, keyEnd);
-			const range = coordinates.rangeAt(keyStart, valueEnd === undefined ? keyEnd : content.start + valueEnd);
-			if (selectionRange === undefined || range === undefined) continue;
-
-			const descriptors: Descriptor[] = [...parents, { kind: "term", name }];
-			const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
-			declarations.push(declarationFor(symbolId, name, range, selectionRange, containerId, "property"));
-			walk(pair.value, descriptors, symbolId);
-		}
-	}
-
-	walk(document.contents, [], undefined);
-	return { declarations, diagnostics };
+/** The shared reader, so frontmatter and a `.yml` file cannot disagree about what YAML means. */
+function frontmatterFacts(module: string, coordinates: TextCoordinates, content: OffsetSpan, text: string): YamlFacts {
+	const facts = readYaml({ language: LANGUAGE, module, text, offset: content.start, coordinates });
+	return {
+		...facts,
+		diagnostics: facts.diagnostics.map((problem) => ({ ...problem, message: `frontmatter: ${problem.message}` })),
+	};
 }
 
 /**
@@ -208,6 +166,7 @@ function frontmatterDeclarations(
 export function parseMarkdown(module: string, text: string): ParsedMarkdownFile {
 	const coordinates = coordinatesOf(text);
 	const declarations: Declaration[] = [];
+	const literals: Literal[] = [];
 	const docs: DocRegion[] = [];
 	const diagnostics: Diagnostic[] = [];
 
@@ -229,14 +188,10 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 		if (node.type === "yaml") {
 			const content = delimitedContent(coordinates, span.start, node.value);
 			if (content === null) continue;
-			const parsed = frontmatterDeclarations(
-				module,
-				coordinates,
-				content,
-				text.slice(content.start, content.end),
-			);
-			declarations.push(...parsed.declarations);
-			diagnostics.push(...parsed.diagnostics);
+			const facts = frontmatterFacts(module, coordinates, content, text.slice(content.start, content.end));
+			declarations.push(...facts.declarations);
+			literals.push(...facts.literals);
+			diagnostics.push(...facts.diagnostics);
 			continue;
 		}
 
@@ -306,5 +261,5 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 		});
 	}
 
-	return { module, declarations, docs, diagnostics };
+	return { module, declarations, literals, docs, diagnostics };
 }

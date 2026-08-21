@@ -318,7 +318,7 @@ describe("the provider surface", () => {
 			imports: false,
 			binding: false,
 			types: false,
-			literals: false,
+			literals: true,
 			comments: false,
 			docs: true,
 			metrics: false,

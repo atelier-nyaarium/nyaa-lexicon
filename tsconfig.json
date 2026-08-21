@@ -4,6 +4,7 @@
 	"references": [
 		{ "path": "./protocol" },
 		{ "path": "./core" },
+		{ "path": "./formats" },
 		{ "path": "./adapters/mcp" },
 		{ "path": "./adapters/lsp" },
 		{ "path": "./providers/typescript" },
@@ -15,6 +16,8 @@
 		{ "path": "./providers/rust" },
 		{ "path": "./providers/kotlin" },
 		{ "path": "./providers/markdown" },
+		{ "path": "./providers/json" },
+		{ "path": "./providers/yaml" },
 		{ "path": "./scripts" }
 	]
 }

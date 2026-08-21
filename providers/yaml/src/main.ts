@@ -1,7 +1,9 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { readYaml, readYamlComments } from "@nyaa-lexicon/formats";
 import {
 	type Binding,
+	coordinatesOf,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -20,7 +22,9 @@ import {
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { EXTENSIONS, LANGUAGE, parseMarkdown } from "./parser.js";
+
+const LANGUAGE = "yaml";
+const EXTENSIONS = [".yml", ".yaml"];
 
 const EXCLUDED_DIRECTORIES = new Set([
 	".git",
@@ -37,11 +41,11 @@ const EXCLUDED_DIRECTORIES = new Set([
 ]);
 
 /**
- * Sections, frontmatter keys and prose, which is all a document has.
+ * A mapping of keys to values, and the comments beside them.
  *
- * `references` awaits resolving markdown links. `literals` is frontmatter's values, read by the
- * shared YAML reader so a `.yml` file cannot disagree with a frontmatter block about what a scalar
- * means. `syntaxDiagnostics` covers frontmatter, the only syntax a document can get wrong.
+ * `docs` is false and that is the honest answer rather than a gap: a comment in YAML is a comment,
+ * which the comment tier already carries, and nothing here is prose under a heading. `references`
+ * and `imports` are false because a key names nothing outside its own file.
  */
 export const TIERS = {
 	projectModel: true,
@@ -51,8 +55,8 @@ export const TIERS = {
 	binding: false,
 	types: false,
 	literals: true,
-	comments: false,
-	docs: true,
+	comments: true,
+	docs: false,
 	metrics: false,
 	syntaxDiagnostics: true,
 } as const;
@@ -67,7 +71,7 @@ function projectDiagnostic(root: string, message: string): ProjectModel {
 	return { files: [], externalRoots: [], configFiles: [], diagnostics: [{ severity: "error", message, path: root }] };
 }
 
-function walkDocuments(root: string): string[] {
+function walkFiles(root: string): string[] {
 	const files: string[] = [];
 	function visit(directory: string): void {
 		try {
@@ -90,13 +94,13 @@ function walkDocuments(root: string): string[] {
 	return files.sort();
 }
 
-export class MarkdownProvider {
+export class YamlProvider {
 	private workspaceRoot = process.cwd();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		return {
-			providerId: "markdown-provider",
+			providerId: "yaml-provider",
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
@@ -114,7 +118,7 @@ export class MarkdownProvider {
 					this.workspaceRoot,
 					`workspace root is not a directory: ${this.workspaceRoot}`,
 				);
-			return { files: walkDocuments(this.workspaceRoot), externalRoots: [], configFiles: [], diagnostics: [] };
+			return { files: walkFiles(this.workspaceRoot), externalRoots: [], configFiles: [], diagnostics: [] };
 		} catch (error) {
 			return projectDiagnostic(
 				this.workspaceRoot,
@@ -124,45 +128,50 @@ export class MarkdownProvider {
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
-		const parsed = parseMarkdown(params.module, params.text);
-		// Prose is the full-depth payload, so a shallower request gets the table of contents alone.
+		const coordinates = coordinatesOf(params.text);
+		const facts = readYaml({
+			language: LANGUAGE,
+			module: params.module,
+			text: params.text,
+			offset: 0,
+			coordinates,
+		});
 		const shallow = params.depth === "outline" || params.depth === "surface";
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
-			declarations: parsed.declarations,
+			declarations: facts.declarations,
 			references: [],
 			imports: [],
-			literals: shallow ? [] : parsed.literals,
-			comments: [],
-			docs: shallow ? [] : parsed.docs,
-			diagnostics: parsed.diagnostics,
+			literals: shallow ? [] : facts.literals,
+			comments: shallow ? [] : readYamlComments(params.text, 0, coordinates),
+			diagnostics: facts.diagnostics,
 			...(shallow ? { depth: params.depth as IndexDepth } : {}),
 		};
 	}
 
 	resolveImport(_params: { fromModule: string; specifier: string }): ImportResolution {
-		return notImplementedImport("a document has no import specifiers");
+		return notImplementedImport("a YAML file has no import specifiers");
 	}
 
 	bind(_params: { module: string; name: string }): Binding {
-		return notImplementedBinding("a document has no bound references");
+		return notImplementedBinding("a YAML key names nothing outside its own file");
 	}
 
 	typeOf(_params: { symbolId: string } | { module: string }): TypeInfo {
-		return notImplementedType("a document section has no type");
+		return notImplementedType("a YAML key carries a value, not a type");
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "markdown rename edits are not implemented" };
+		return { status: "refused", reason: "NotImplemented", detail: "YAML rename edits are not implemented" };
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
-		return notImplementedMove("markdown move edits are not implemented");
+		return notImplementedMove("YAML move edits are not implemented");
 	}
 }
 
-export function handlersFor(provider: MarkdownProvider): ProviderHandlers {
+export function handlersFor(provider: YamlProvider): ProviderHandlers {
 	return {
 		initialize: (params) => provider.initialize(params.workspaceRoot),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
@@ -178,8 +187,8 @@ export function handlersFor(provider: MarkdownProvider): ProviderHandlers {
 
 export { serveProvider };
 
-export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new MarkdownProvider()): void {
+export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new YamlProvider()): void {
 	serveProvider(connection, handlersFor(provider));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new MarkdownProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new YamlProvider()));

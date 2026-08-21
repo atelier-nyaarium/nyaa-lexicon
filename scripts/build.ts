@@ -89,6 +89,42 @@ function providerBundles(root: string): Array<{ source: string; out: string; ass
 /** Names a smoke failure, so the catch can tell one from a bun error bun already printed. */
 const SMOKE_FAILURE = "failed to start on node";
 
+/** The AMD branch of a UMD wrapper, which survives minification because it is a string array. */
+const UMD_WRAPPER_RE = /typeof\s+define\s*===?\s*"function"\s*&&\s*define\.amd/;
+
+/**
+ * No bundle may carry a UMD wrapper.
+ *
+ * A wrapper surviving means bun inlined a UMD file rather than resolving the module, so the inner
+ * requires are still there: bun cannot see them, node runs them, and they resolve against `dist/`
+ * where nothing lives. The bundle is clean and dies on launch. Import the package's ESM entry.
+ *
+ * Static, for two reasons. Minification renames the factory's `require` parameter, so the calls
+ * themselves are no longer greppable. And it holds for an entrypoint whose healthy exit is a usage
+ * message and a nonzero status, which is every CLI here and none of what `smokeProviders` covers.
+ */
+function checkBundlesAreSelfContained(root: string): number {
+	const bundles: string[] = [];
+	function visit(directory: string): void {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const absolute = path.join(directory, entry.name);
+			if (entry.isDirectory()) visit(absolute);
+			else if (entry.name.endsWith(".js")) bundles.push(absolute);
+		}
+	}
+	visit(path.join(root, DIST_DIR));
+
+	for (const bundle of bundles)
+		if (UMD_WRAPPER_RE.test(readFileSync(bundle, "utf8")))
+			throw new Error(
+				`${path.relative(root, bundle)} ${SMOKE_FAILURE}: it carries a UMD wrapper, whose inner requires resolve against dist/`,
+			);
+
+	// A sweep matching nothing reports clean, so the count is asserted rather than the silence.
+	if (bundles.length === 0) throw new Error("no bundles found to check; the sweep would report clean over nothing");
+	return bundles.length;
+}
+
 /**
  * Every bundled provider must actually START on plain node.
  *
@@ -394,6 +430,7 @@ function main(argv: string[]): void {
 			const assets = copyProviderAssets(ROOT, entry.assets, path.join(DIST_DIR, path.dirname(entry.out)));
 			for (const asset of assets) console.log(`copied ${asset}`);
 		}
+		console.log(`self-contained: ${checkBundlesAreSelfContained(ROOT)} bundles`);
 		smokeProviders(ROOT, providers);
 	} catch (failure) {
 		// bun prints its own compiler errors; only a smoke failure needs this script to speak.

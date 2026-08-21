@@ -1,0 +1,15 @@
+{
+	"name": "@nyaa-lexicon/formats",
+	"version": "2.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Structured-data readers shared by the providers that read them",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"jsonc-parser": "3.3.1",
+		"yaml": "2.9.0"
+	}
+}

@@ -1141,22 +1141,49 @@ holding through the whole stack: unescaped it would have matched everything.
 **Deliberately not built:** the LSP adapter gains nothing here. It answers an editor, which has its
 own document search and its own outline, and the heading declarations it already receives feed both.
 
+## Phase 5 - The structured-data providers ✅
+
 Fan out per format, each with its own conformance fixtures.
 
 Scoped to the JSON family and YAML by Question 5. Both are adapters over machinery that already
 exists: a key is a declaration, its value is a literal.
 
-**Two decisions come first, both closed, both settled before any provider is written.** The second
-audit lap verified them against the code, and "needs no new machinery" was wrong until they are
-answered.
+**Two decisions came first, and both are now answered.**
 
-1. **An array element cannot be a declaration as things stand.** `DeclarationSchema.name` is
-   `z.string().min(1)`, required and nonempty, and JSON and YAML array elements have no name. Pick
-   one and write down why: omit elements entirely, mint synthetic `[0]` names that churn whenever
-   anything is inserted above them, or relax the schema. None is free.
-2. **YAML scalars exceed `LiteralSchema`,** which is exactly `string | number | boolean`. YAML also
-   has null, timestamps, binary and tagged values. Say which are omitted, which are normalized and
-   which produce a diagnostic, rather than meeting it in a fixture.
+**1. An array element is NOT a declaration. Its value is still a literal.** `DeclarationSchema.name`
+is required and nonempty, and an element has no name.
+
+The three options were omit, mint a synthetic `[0]`, or relax the schema. Omit wins, and the reason
+is that the question turned out to be smaller than it looked: a LITERAL has no name. So the value of
+every array element is indexed either way, and `Literal.containerId` carries the key it sits under,
+so `tags: [alpha, beta]` still answers a search for `alpha` and still says it belongs to `tags`.
+
+What omitting costs is the ability to address `tags[0]` as a symbol, and nothing asks that. What
+minting would have cost is an id that moves whenever anything is inserted above it, which is the
+weakness already accepted for duplicate headings and not worth taking twice.
+
+This also dissolves the provenance field the architecture pass proposed for this decision. That field
+existed to make a MINTED name honest; nothing is minted. GDScript's synthesized script class still
+wants it, so it stays on the board as GDScript's question rather than this phase's.
+
+**2. YAML values beyond string, number and boolean are OMITTED as literals, and their keys are still
+declarations.** `LiteralSchema` is exactly those three kinds, and Phase 0's spike already narrowed
+the field: YAML 1.2 does not auto-resolve timestamps, so one arrives as a plain string and needs no
+decision at all.
+
+That leaves `null`, binary, and a collection or alias where a scalar was expected. Each omits the
+LITERAL and keeps the KEY, which says the honest thing: this key exists, and its value is not one
+this index can hold. No diagnostic, because a null in YAML is legal and common, and a warning per
+null would drown the ones that matter.
+
+An alias's value is omitted for a second reason on top: the anchor it points at is already indexed,
+so emitting it again would report one literal twice under two keys.
+
+**3. The YAML mapper is EXTRACTED, not copied.** Added by the Phase 2 architecture pass, and the
+reasoning is under "What the Phase 2 architecture pass decided for this phase" above. It lives in a
+new `formats/` workspace package that both the markdown provider and the YAML provider depend on.
+One package rather than one per format, because the alternative is a manifest, a tsconfig and two
+workspace entries per reader, and the whole JSON reader is 8 KB inlined.
 
 - **JSON family** (`.json`, `.jsonl`, `.ndjson`, `.json5`): a key is a `property` declaration, its
   value a literal. JSONL is a sequence of independent roots and needs per-record identity. JSON has
@@ -1209,6 +1236,68 @@ With it, minting `[0]` for an array element is honest rather than a lie, and GDS
 class stops being one. Without it, Phase 5 either omits array elements entirely or repeats the same
 silent invention in two more formats. Decide it here, apply it to GDScript in the same change, since
 a provenance field that one of ten providers ignores is worse than none.
+
+### Phase 5 results
+
+**Shipped:** a `formats/` workspace package holding the one reading of YAML and of the JSON family,
+two providers over it, and the markdown provider's frontmatter path rewired to the same reader. The
+gate is green at 1714 tests, all eleven providers pass conformance, and `grade.js` answers 8 of 8
+against switchboard's 1032 files.
+
+**Both open decisions landed as the plan predicted.** The ordinal for a sequence element lives in the
+DESCRIPTOR chain and never becomes a declaration, so nothing is minted and the provenance field stays
+GDScript's question rather than this phase's.
+
+**Two deviations from the written plan, both deliberate.**
+
+`comments` is TRUE for the JSON provider rather than false. The plan said JSON has no comments, which
+is right for `.json` and wrong for `.jsonc`, and the tier is per provider rather than per extension.
+A strict `.json` file reports none, which is the tier working rather than an over-claim, and a
+comment in one is now a syntax error proven by a conformance case rather than a promise.
+
+`.json5` is NOT claimed. `jsonc-parser` reads comments and trailing commas, not unquoted keys, single
+quotes or hex numbers, so claiming the extension would report facts for files it half-understands.
+Not claiming it leaves those files unclaimed, which is the honest answer and is visible.
+
+**The build's smoke gate caught a shipping failure the whole test suite could not.** `jsonc-parser`
+declares a UMD `main` and an ESM `module`, and `bun build --target node` takes `main`. Bun inlines
+the UMD file without resolving its inner requires, so the bundle is clean and dies on node with
+`Cannot find module './impl/format'`. Everything under `bun run` was green throughout.
+
+**That closed as a class, and the class was wider than the bug.** The smoke gate runs providers only,
+and it is startup-only by design, so a lazily-evaluated UMD module dies at first parse rather than at
+launch. The markdown provider was in exactly that state and passed the smoke. `dist/` now gets a
+static check: no bundle may carry a UMD wrapper, because a wrapper surviving IS the bundler having
+failed to resolve that dependency. It covers all 17 bundles including the six entrypoints a consumer
+runs directly, which had no startup check of any kind. Proven failable by planting the bare import.
+
+**Two audit passes, and the second one earned its keep.** The first found four real defects in code
+that had already passed the gate and conformance: YAML never descended into a sequence, a
+sequence-valued key spanned only its own name, a multi-document file lost every document after the
+first AND reported itself broken, and an unterminated block comment overran its record. Tracing the
+first of those exposed a fifth the audit had not named: a sequence of mappings minted ONE symbol id
+for every sibling's key, and the store's `INSERT OR REPLACE` silently kept the last.
+
+The second pass then found what the fixes broke: a root-level array or sequence produced nothing at
+all, because the guard that skipped literals with no container had been placed around the whole
+traversal. A `.json` file whose root is an array is common, and the failure mode is the one this
+project exists to stop: in scope, parses clean, reports no facts.
+
+**Every one of those is now a conformance case**, in both languages where both can say it, so the
+next reader of this corpus inherits the traps rather than rediscovering them.
+
+### Bug Classes
+
+- **A bundle that cannot run on the shipping runtime.** Closed by a static check over every bundle
+  in `dist/`, not just the providers, and not depending on the failure happening at startup.
+- **A sibling in a sequence overwriting its siblings.** Closed by carrying the element's ordinal into
+  the descriptors of the keys below it, in both readers, pinned by a conformance case asserting
+  distinct descriptor chains rather than distinct names.
+- **A file in scope that reports nothing.** Closed for the root-collection case by a conformance case
+  in both languages. The general form is not closed: nothing yet fails a build when a provider claims
+  a file and returns zero facts for it.
+- **Two readings of one format.** Closed structurally: frontmatter and `.yml` are the same function,
+  so a decision about scalars cannot land in one and miss the other.
 
 ## Phase 6 - Verification
 
@@ -1367,7 +1456,26 @@ recorded in full so the next train starts from evidence rather than from scratch
 
 ## Painpoints
 
-Recorded, not fixed. Felt building Phase 4.
+Recorded, not fixed. Felt building Phase 5.
+
+**A green gate says nothing about whether the artifact runs.** Lint, 1714 tests and eleven
+conformance runs were all green while the shipped YAML and JSON providers could not start on node.
+Everything in the loop runs under bun, and bun resolves what node refuses. The build's smoke gate is
+the only thing in the project that meets the shipping runtime, which makes it the most valuable check
+here and the one furthest from the edit loop: it runs at build, not at `bun run test`.
+
+**A guard placed one line too high turned a fix into a worse bug.** Literals with no container were
+skipped by a condition that also wrapped the traversal, so fixing sequence traversal simultaneously
+made every root-level array report nothing. The gate stayed green, conformance stayed green, and the
+existing corpus cases could not see it because every data fixture written so far was rooted in a
+mapping. A corpus that only ever asks about the shape you thought of is a corpus that agrees with
+you.
+
+**The second audit pass found the regression the first pass caused.** The first pass found four real
+defects; fixing them introduced a fifth that the second pass caught. One pass would have shipped it.
+The cycle's claim that re-audits catch what fix attempts reopen was not theoretical here.
+
+Felt building Phase 4.
 
 **Adding one MCP tool means editing seven places, and missing the seventh is silent.** The zod input,
 the description constant, the handler, the `ToolBackend` interface, the tool registration, BOTH

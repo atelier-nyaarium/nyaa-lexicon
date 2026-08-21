@@ -41,6 +41,8 @@ const CSHARP = "csharp";
 const RUST = "rust";
 const KOTLIN = "kotlin";
 const MARKDOWN = "markdown";
+const JSON_LANG = "json";
+const YAML = "yaml";
 
 const CASES: ConformanceCase[] = [
 	{
@@ -199,6 +201,18 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Cart.kt",
 				declarations: [{ name: "Cart", nameStart: { line: 0, character: 15 } }],
 			},
+			// JSON has no comment in its strict dialect, so a preceding VALUE is what puts the character
+			// to the left of a name. The span starts at the opening quote, which is the key as written.
+			[JSON_LANG]: {
+				files: { "data.json": `{"a": "${ASTRAL}", "b": 1}\n` },
+				subject: "data.json",
+				declarations: [{ name: "b", nameStart: { line: 0, character: 12 } }],
+			},
+			[YAML]: {
+				files: { "data.yml": `{a: "${ASTRAL}", b: 1}\n` },
+				subject: "data.yml",
+				declarations: [{ name: "b", nameStart: { line: 0, character: 10 } }],
+			},
 		},
 	},
 	{
@@ -267,6 +281,10 @@ const CASES: ConformanceCase[] = [
 			[CSHARP]: { files: { "src/empty.cs": "\n" }, subject: "src/empty.cs" },
 			[RUST]: { files: { "src/empty.rs": "\n" }, subject: "src/empty.rs" },
 			[KOTLIN]: { files: { "src/Empty.kt": "\n" }, subject: "src/Empty.kt" },
+			// An empty document is valid in both, so this also asserts neither reports a parse error for
+			// a file a repository is full of.
+			[JSON_LANG]: { files: { "empty.json": "\n" }, subject: "empty.json" },
+			[YAML]: { files: { "empty.yml": "\n" }, subject: "empty.yml" },
 		},
 		declarations: [],
 	},
@@ -342,6 +360,23 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/Comments.kt",
 			},
+			// A `.jsonc` file, because strict `.json` has no comment to report and the shapes only exist
+			// in the lenient dialect.
+			[JSON_LANG]: {
+				files: {
+					"comments.jsonc":
+						'// leading\n{\n\t"work": 1, /* inline */\n\t"total": 42, // trailing\n\n\t/* standalone */\n\t"last": 3\n}\n',
+				},
+				subject: "comments.jsonc",
+			},
+			// YAML has one comment shape, so the four positions are what it can still say.
+			[YAML]: {
+				files: {
+					"comments.yml": "# leading\nwork:\n  # inline\n  first: 1\ntotal: 42 # trailing\n\n# standalone\n",
+				},
+				subject: "comments.yml",
+				comments: ["# leading", "# inline", "# trailing", "# standalone"],
+			},
 		},
 		comments: ["// leading", "/* inline */", "// trailing", "/* standalone */"],
 	},
@@ -392,6 +427,15 @@ const CASES: ConformanceCase[] = [
 			[KOTLIN]: {
 				files: { "src/Crlf.kt": "// leading\r\nval total = 42 // trailing\r\n" },
 				subject: "src/Crlf.kt",
+			},
+			[JSON_LANG]: {
+				files: { "crlf.jsonc": '// leading\r\n{ "total": 42 } // trailing\r\n' },
+				subject: "crlf.jsonc",
+			},
+			[YAML]: {
+				files: { "crlf.yml": "# leading\r\ntotal: 42 # trailing\r\n" },
+				subject: "crlf.yml",
+				comments: ["# leading", "# trailing"],
 			},
 		},
 		comments: ["// leading", "// trailing"],
@@ -657,6 +701,23 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/Markers.kt",
 			},
+			[JSON_LANG]: {
+				files: {
+					"markers.jsonc":
+						'// real\n{\n\t"url": "https://example.com/path",\n\t"block": "/* not a comment */"\n}\n',
+				},
+				subject: "markers.jsonc",
+			},
+			// The hash in a plain scalar and the one inside a block scalar are both content, and a scanner
+			// looking for the marker rather than following the grammar reports them.
+			[YAML]: {
+				files: {
+					"markers.yml":
+						'url: "https://example.com/path"\nhashed: "# not a comment"\nblock: |\n  # not a comment either\n# real\n',
+				},
+				subject: "markers.yml",
+				comments: ["# real"],
+			},
 		},
 		comments: ["// real"],
 	},
@@ -811,6 +872,16 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Bom.kt",
 				comments: ["// a note"],
 			},
+			[JSON_LANG]: {
+				files: { "bom.jsonc": `${BOM}// a note\n{ "after": 1 }\n` },
+				subject: "bom.jsonc",
+				comments: ["// a note"],
+			},
+			[YAML]: {
+				files: { "bom.yml": `${BOM}# a note\nafter: 1\n` },
+				subject: "bom.yml",
+				comments: ["# a note"],
+			},
 		},
 	},
 	{
@@ -832,6 +903,10 @@ const CASES: ConformanceCase[] = [
 			// Markdown prose cannot fail, so the only syntax a document can get wrong is its
 			// frontmatter. A provider claiming the tier has to report there or nowhere.
 			[MARKDOWN]: { files: { "broken.md": "---\na: [1,\n---\n\n# Body\n" }, subject: "broken.md" },
+			// A trailing comma, which is the difference between the strict dialect and the lenient one.
+			// The same text under `.jsonc` is legal, so this also pins that the extension decides.
+			[JSON_LANG]: { files: { "broken.json": '{\n\t"a": 1,\n}\n' }, subject: "broken.json" },
+			[YAML]: { files: { "broken.yml": "a: [1,\n" }, subject: "broken.yml" },
 		},
 		parseErrors: "required",
 	},
@@ -1504,6 +1579,124 @@ const CASES: ConformanceCase[] = [
 				],
 			},
 		},
+	},
+	{
+		id: "data-keys-nest-by-container",
+		tier: "declarations",
+		about: "A key under a key is a declaration contained by it, at any depth.",
+		fixtures: {
+			[JSON_LANG]: {
+				files: { "data.json": '{\n\t"meta": {\n\t\t"owner": "nyaa"\n\t}\n}\n' },
+				subject: "data.json",
+			},
+			[YAML]: { files: { "data.yml": "meta:\n  owner: nyaa\n" }, subject: "data.yml" },
+		},
+		declarations: [
+			{ name: "meta", kind: "property" },
+			{ name: "owner", kind: "property", container: "meta" },
+		],
+	},
+	{
+		id: "data-array-elements-are-not-declarations",
+		tier: "declarations",
+		about: "An element has no name, so a sequence adds no declarations and its keys are the exact set.",
+		// A walk treating every node as nameable mints an id from an index, and the id moves the moment
+		// anything is inserted above it.
+		fixtures: {
+			[JSON_LANG]: {
+				files: { "data.json": '{\n\t"tags": ["alpha", "beta"],\n\t"count": 2\n}\n' },
+				subject: "data.json",
+			},
+			[YAML]: { files: { "data.yml": "tags:\n  - alpha\n  - beta\ncount: 2\n" }, subject: "data.yml" },
+		},
+		declarationNames: ["tags", "count"],
+	},
+	{
+		id: "data-repeated-keys-under-a-sequence-get-distinct-ids",
+		tier: "declarations",
+		about: "A key repeated across sequence elements is one symbol per element, told apart by an ordinal.",
+		// A walk that carries the element's ordinal no further than the element mints ONE id for every
+		// sibling's `name`, and the store's last write wins, so a list of five services indexes as one.
+		// A sequence of scalars cannot catch it: nothing under a scalar needs an id.
+		fixtures: {
+			[JSON_LANG]: {
+				files: { "data.json": '{\n\t"items": [\n\t\t{ "name": "a" },\n\t\t{ "name": "b" }\n\t]\n}\n' },
+				subject: "data.json",
+			},
+			[YAML]: { files: { "data.yml": "items:\n  - name: a\n  - name: b\n" }, subject: "data.yml" },
+		},
+		declarations: [
+			{ name: "name", descriptors: ["term:items", "namespace:[0]", "term:name"] },
+			{ name: "name", descriptors: ["term:items", "namespace:[1]", "term:name"] },
+		],
+	},
+	{
+		id: "data-a-sequence-of-mappings-still-has-keys",
+		tier: "declarations",
+		about: "Keys inside a sequence element are declarations, so a list of records is not one opaque key.",
+		// The shape of a CI workflow, a compose file and an OpenAPI parameter list. A traversal that
+		// stops at a sequence reports the outer key and nothing under it.
+		fixtures: {
+			[JSON_LANG]: {
+				files: { "data.json": '{\n\t"steps": [\n\t\t{ "run": "build", "shell": "sh" }\n\t]\n}\n' },
+				subject: "data.json",
+			},
+			[YAML]: { files: { "data.yml": "steps:\n  - run: build\n    shell: sh\n" }, subject: "data.yml" },
+		},
+		declarationNames: ["steps", "run", "shell"],
+	},
+	{
+		id: "data-a-root-sequence-is-not-an-empty-file",
+		tier: "declarations",
+		about: "A file whose root is a sequence reports the keys under it, not nothing.",
+		// A walk that needs a container before it will descend treats a root list as empty, so the file
+		// is in scope, parses clean and carries no facts, which reads as a language with nothing in it.
+		fixtures: {
+			[JSON_LANG]: {
+				files: { "data.json": '[\n\t{ "name": "a" },\n\t{ "name": "b" }\n]\n' },
+				subject: "data.json",
+			},
+			[YAML]: { files: { "data.yml": "- name: a\n- name: b\n" }, subject: "data.yml" },
+		},
+		declarationNames: ["name", "name"],
+	},
+	{
+		id: "data-a-second-document-is-read-and-is-not-an-error",
+		tier: "declarations",
+		about: "Every document in a multi-document file contributes its keys, and the file still parses.",
+		// Reading only the first document loses the rest AND reports the file as broken, so a manifest
+		// holding four resources indexes as one resource and a syntax error.
+		fixtures: {
+			[YAML]: { files: { "data.yml": "first: 1\n---\nsecond: 2\n" }, subject: "data.yml" },
+		},
+		declarationNames: ["first", "second"],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "data-value-with-nowhere-to-go-keeps-its-key",
+		tier: "declarations",
+		about: "A key whose value this index cannot hold is still a declaration.",
+		// Dropping the key with the value is the tempting shortcut, and it makes a configuration file
+		// report fewer settings than it has.
+		fixtures: {
+			[JSON_LANG]: {
+				files: { "data.json": '{\n\t"empty": null,\n\t"kept": 1\n}\n' },
+				subject: "data.json",
+			},
+			[YAML]: { files: { "data.yml": "empty:\nblob: !!binary aGk=\nkept: 1\n" }, subject: "data.yml" },
+		},
+		declarations: [{ name: "empty", kind: "property" }],
+	},
+	{
+		id: "data-strict-json-refuses-a-comment",
+		tier: "syntaxDiagnostics",
+		about: "A comment in a `.json` file is an error, because the strict dialect has none.",
+		// The parser accepts comments by default and the dialect is a flag, so a provider that never
+		// sets it reports a clean parse for a file no strict reader would accept.
+		fixtures: {
+			[JSON_LANG]: { files: { "strict.json": '{\n\t// nope\n\t"a": 1\n}\n' }, subject: "strict.json" },
+		},
+		parseErrors: "required",
 	},
 ];
 

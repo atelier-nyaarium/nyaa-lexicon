@@ -8,13 +8,13 @@
 		".": "./src/main.ts"
 	},
 	"dependencies": {
+		"@nyaa-lexicon/formats": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
 		"@types/mdast": "4.0.4",
 		"mdast-util-from-markdown": "2.0.3",
 		"mdast-util-frontmatter": "2.0.1",
 		"mdast-util-to-string": "4.0.0",
 		"micromark-extension-frontmatter": "2.0.0",
-		"vscode-jsonrpc": "9.0.1",
-		"yaml": "2.9.0"
+		"vscode-jsonrpc": "9.0.1"
 	}
 }
