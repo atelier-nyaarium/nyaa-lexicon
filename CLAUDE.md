@@ -88,6 +88,11 @@ and `.claude-plugin/plugin.json` is SET from it, and the MCP server DERIVES its 
 time. Bumping and building are one command because a `dist/` built at a version the manifests do not
 claim looks correct and is not.
 
+**The build starts every bundled provider on node before it finishes.** Bundling proves the imports
+resolved, not that the thing runs, and a provider that dies on launch is recorded as an outage and
+skipped, so the index reports files in scope and no facts. A provider that cannot start fails the
+build, and a failed release build reverts `dist/` along with the version files.
+
 **Provider extraction changes require a MAJOR release.** Major releases retire stored facts. If a
 provider changes a kind, name, range, binding or literal for unchanged source, ship a major.
 Correcting `typeParameter` to `interface` is this case.

@@ -10,6 +10,12 @@ Ask what the grammar is first. A transport, a config format or a language has a 
 implementation, and yours will not match its decade of edge cases. This law is for the grammars
 that are genuinely ours.
 
+The document formats obey this rule rather than the rest of this law: markdown, YAML and JSON are
+read through pinned libraries, because CommonMark alone answers setext headings, tilde fences,
+indented code and markers inside HTML comments, and a hand-written scanner gets each of those wrong
+in turn. A format is only rejected for a library when no maintained one reports source POSITIONS,
+since a declaration without a range is not a declaration.
+
 ## 2. One cursor owns character access
 
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes

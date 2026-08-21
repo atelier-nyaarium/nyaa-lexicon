@@ -364,7 +364,7 @@ Ships inside the unpushed `2.0.0`, so wire changes are free for the duration. Ma
 reference implementation; the remaining formats fan out one Luna each, the shape that worked for the
 comment tier.
 
-## Phase 0 - Choose every parser, once
+## Phase 0 - Choose every parser, once ✅
 
 Added by the second audit lap, because the first left two decisions deferred inside later phases and
 a deferred decision is one that gets made hastily mid-implementation.
@@ -794,6 +794,43 @@ recorded in full so the next train starts from evidence rather than from scratch
   `readEvent` in `core/src/watcher.ts` hashes EVERY changed file as UTF-8 with no routing check at
   all. That is a live condition TODAY, not one the fallback would create, so it belongs on the board
   independently of this plan rather than waiting for a train that may be months away.
+
+## Painpoints
+
+Recorded, not fixed. Felt building Phase 0.
+
+**The test suite reports 16 confident failures when the machine is busy, and says nothing about
+load.** Every one was a 20-second timeout, spread across daemon, store, service, transaction and
+TypeScript-provider tests, and the same 16 failed twice running, which reads exactly like a real
+regression. One of them passes in 27ms when run alone. The cause was load average 25 from my own
+workflows plus long-lived MCP servers; `--maxWorkers=2` turns all 1590 green. Nothing in the output
+hints at contention, so the honest diagnosis costs a full re-run at reduced concurrency and the
+dishonest one is "I broke something". A per-test timeout scaled to worker count, or a note printed
+when the run detects saturation, would turn ten minutes of hunting into a glance.
+
+**The intentional bad-handshake fixture can fail the whole run, at random.** `bun run test` prints
+`Cannot find module 'vscode-jsonrpc/node' from /tmp/lexicon-badshake-*/stale.ts` on every run, which
+is by design, and it is already recorded as noise. What is new is that once, with everything green
+at 1590 passed, the script still exited 1. Two immediate re-runs exited 0. So the fixture's child
+can occasionally leak its status into the suite's, which in CI is a red build with a green report.
+
+**`process.execPath` is a trap in a repo where bun builds and node ships.** The smoke check I wrote
+used it and was silently verifying bun, the one runtime that does not matter here. This project
+already knows the bun-versus-node distinction is load-bearing enough to warrant a CLAUDE.md rule,
+and the same trap is presumably waiting in any other script that spawns "the current runtime".
+
+**A build script whose only failure path assumes bun printed the error.** The catch in
+`scripts/build.ts` swallowed my thrown error entirely, so a genuine smoke failure printed nothing
+but "build failed" and cost several minutes of blind debugging. That was correct while the try block
+only ran `bun build`; it stopped being correct the moment anything else lived in there, and nothing
+made that visible.
+
+**Rebuilding after a dependency change churns three bundles for no semantic reason.** Adding root
+devDependencies shifted the module graph enough to change minifier name allocation, so
+`dist/main.js`, `dist/daemon.js` and `dist/lsp.js` each moved about 146 bytes with the only
+difference being `$0` renamed to `$U`. Git treats them as binary, so the diff is unreadable and the
+churn cannot be judged without decompressing both sides by hand. Committed bundles plus a
+non-deterministic-under-graph-change minifier means release commits carry noise nobody can review.
 
 ## Deferred, recorded so they are not re-litigated
 
