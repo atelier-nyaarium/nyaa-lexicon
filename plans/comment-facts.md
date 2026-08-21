@@ -941,4 +941,39 @@ should say it, and while it is being touched, the daemon's own store should be i
 after a SCHEMA_VERSION bump the RUNNING plugin daemon still serves the old schema and there is no
 way to ask which one it is holding.
 
+Felt releasing.
+
+**A token carries a `kind` and most readers never ask for it.** `KotlinToken` in the Kotlin parser
+declares seven kinds, and `modifiersBetween`, `parseImports` and the constructor-parameter scan all
+read `.value` straight off whatever token they land on. That is how comment prose came to be
+compared against the modifier set. Emptying the doc token's value closes the instance, and it is a
+data-level workaround for a structural hole: the fix that makes the class inexpressible is an
+accessor that will not hand out a value unless the caller names the kinds it accepts, so a scan
+looking for modifiers cannot be handed prose in the first place. The same shape is presumably
+waiting in every other hand-written parser here, since they all lex to a tagged token stream and
+then read values positionally.
+
+**An aggregate count is the easiest oracle here and the most tempting to over-read.**
+`index-workspace` prints totals for a whole corpus in seven seconds, so it is the natural check
+after touching a provider. I ran it, saw 18666 symbols and 2699 leading comments unchanged, and
+wrote that nothing real was hitting the bug. That does not follow: an unchanged total says the
+corpus contains no instance, not that no instance exists, and a per-site change can cancel out in a
+sum. A reviewer caught it. The affordance that would help is a per-file or per-symbol diff between
+two index runs, so "did this provider change what it extracts" has an answer that is not a total.
+
+**A malformed frame to the MCP server produces silence, not an error.** Probing the shipped bundle
+by hand, I sent LSP-style `Content-Length` framing to `dist/main.js` and got zero bytes back, twice,
+with the process exiting 0. Nothing said "this transport is newline-delimited"; nothing said the
+frame was unreadable. The adapter is the one surface a consumer talks to directly and the one where
+a wrong guess looks identical to a hung server. One line on stderr when a line arrives that does not
+parse as JSON would end this instantly.
+
+**The banned-character rule claims a scope it does not have.** CLAUDE.md says control bytes, em
+dashes, smart quotes and zero-width characters are "enforced over every tracked file". Every bundle
+under `dist/` is tracked and every one of them contains smart quotes and em dashes, inherited from
+bundled dependencies. The residue test evidently scopes to source, which is correct, but the
+doctrine as written is false about itself. That is precisely the misalignment class this project
+hunts, sitting in the document that defines it. Either the sentence says "every tracked source
+file", or the sweep says out loud what it skipped.
+
 
