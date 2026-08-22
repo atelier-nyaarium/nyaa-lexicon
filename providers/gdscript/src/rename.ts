@@ -115,11 +115,13 @@ function lineText(text: string, line: number): string {
 }
 
 function declarationAt(declarations: Declaration[], range: Range): Declaration | undefined {
-	return declarations.find((declaration) => sameRange(declaration.selectionRange, range));
+	return declarations.find(
+		(declaration) => declaration.selectionRange !== undefined && sameRange(declaration.selectionRange, range),
+	);
 }
 
 function isExportedProperty(text: string, declaration: Declaration): boolean {
-	const line = lineText(text, declaration.selectionRange.start.line);
+	const line = lineText(text, (declaration.selectionRange ?? declaration.range).start.line);
 	return /^\s*@export(?:\b|_)/.test(line);
 }
 

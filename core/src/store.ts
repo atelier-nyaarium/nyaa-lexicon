@@ -256,6 +256,8 @@ CREATE TABLE symbols (
   nameChar    INTEGER NOT NULL,
   nameEndLine INTEGER NOT NULL,
   nameEndChar INTEGER NOT NULL,
+  -- 1 when the name is nowhere in the source and the name columns hold the range start instead.
+  synthesizedName INTEGER,
   -- All nullable. A metric a provider does not compute is absent, never zero, because zero
   -- branches and "not measured" are different facts.
   mLines      INTEGER,
@@ -777,6 +779,9 @@ export class IndexStore {
 		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
 		// Nullable, so the add is one atomic statement and an old row reads as not yet recorded.
 		if (!columnExists(db, "files", "content")) db.exec("ALTER TABLE files ADD COLUMN content TEXT");
+		if (!columnExists(db, "symbols", "synthesizedName")) {
+			db.exec("ALTER TABLE symbols ADD COLUMN synthesizedName INTEGER");
+		}
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
@@ -838,10 +843,12 @@ export class IndexStore {
 				`INSERT OR REPLACE INTO symbols
 				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
-				  mLines, mParameters, mNesting, mBranches)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  synthesizedName, mLines, mParameters, mNesting, mBranches)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
+				// The name columns are NOT NULL from before names could be absent; the flag says which.
+				const named = d.selectionRange ?? { start: d.range.start, end: d.range.start };
 				symbol.run(
 					d.symbolId,
 					declarationFactId(module, d),
@@ -857,10 +864,11 @@ export class IndexStore {
 					d.range.start.character,
 					d.range.end.line,
 					d.range.end.character,
-					d.selectionRange.start.line,
-					d.selectionRange.start.character,
-					d.selectionRange.end.line,
-					d.selectionRange.end.character,
+					named.start.line,
+					named.start.character,
+					named.end.line,
+					named.end.character,
+					d.selectionRange === undefined ? 1 : 0,
 					d.metrics?.lines ?? null,
 					d.metrics?.parameters ?? null,
 					d.metrics?.nesting ?? null,
@@ -1818,6 +1826,7 @@ interface SymbolRow {
 	nameChar: number;
 	nameEndLine: number;
 	nameEndChar: number;
+	synthesizedName: number | null;
 	mLines: number | null;
 	mParameters: number | null;
 	mNesting: number | null;
@@ -1862,10 +1871,15 @@ function rowToDeclaration(raw: unknown): StoredDeclaration {
 			start: { line: row.startLine, character: row.startChar },
 			end: { line: row.endLine, character: row.endChar },
 		},
-		selectionRange: {
-			start: { line: row.nameLine, character: row.nameChar },
-			end: { line: row.nameEndLine, character: row.nameEndChar },
-		},
+		// A row from before the flag reads as named, which every row then was.
+		...(row.synthesizedName === 1
+			? {}
+			: {
+					selectionRange: {
+						start: { line: row.nameLine, character: row.nameChar },
+						end: { line: row.nameEndLine, character: row.nameEndChar },
+					},
+				}),
 		...metricsOf(row),
 		// Omitted rather than stored as null, so an absent field stays absent through a round trip.
 		...(row.exported === null ? {} : { exported: row.exported === 1 }),

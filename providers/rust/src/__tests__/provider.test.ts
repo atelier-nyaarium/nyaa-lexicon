@@ -520,7 +520,7 @@ test("wires handlers to the same provider instance", () => {
 		handlers.bind({
 			module: "src/lib.rs",
 			name: "add",
-			range: add.selectionRange,
+			range: add.selectionRange as NonNullable<typeof add.selectionRange>,
 		}),
 	).toEqual({ status: "bound", symbolId: add.symbolId, provenance: "bound" });
 	expect(handlers.typeOf({ symbolId: add.symbolId })).toMatchObject({ status: "known" });

@@ -89,8 +89,8 @@ describe("C# declarations", () => {
 		const text = "/* 😀 */ public class Cart {}\n";
 		const facts = new CsharpProvider().parseFile({ module: "cart.cs", contentHash: "hash", text });
 		const cart = declaration(facts, "Cart", "class");
-		expect(cart.selectionRange.start).toEqual({ line: 0, character: 22 });
-		expect(text.slice(cart.selectionRange.start.character, cart.selectionRange.end.character)).toBe("Cart");
+		expect(cart.selectionRange?.start).toEqual({ line: 0, character: 22 });
+		expect(text.slice(cart.selectionRange?.start.character, cart.selectionRange?.end.character)).toBe("Cart");
 	});
 
 	it("keeps declaration ids module-relative and distinguishes method overloads", () => {

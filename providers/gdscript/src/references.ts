@@ -207,9 +207,12 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 	const lines = readLines(text);
 	const declarations = extractGdscript(module, text, compose);
 	const tokens = referenceTokens(lines);
+	// Every declaration this provider extracts has its name in the source.
 	const declarationPositions = new Set(
-		declarations.map(
-			(declaration) => `${declaration.selectionRange.start.line}:${declaration.selectionRange.start.character}`,
+		declarations.map((declaration) =>
+			declaration.selectionRange === undefined
+				? undefined
+				: `${declaration.selectionRange.start.line}:${declaration.selectionRange.start.character}`,
 		),
 	);
 	const parameterPositions = new Set<string>();

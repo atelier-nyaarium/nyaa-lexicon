@@ -222,25 +222,24 @@ function sameLineAnchor(
 	declarations: Declaration[],
 ): { anchor: Declaration; side: "after" | "before" } | undefined {
 	const line = group.range.start.line;
-	const onLine = declarations.filter((declaration) => declaration.selectionRange.start.line === line);
+	// A declaration with no name in the source is on no line.
+	const onLine = declarations.flatMap((declaration) =>
+		declaration.selectionRange?.start.line === line ? [{ declaration, at: declaration.selectionRange.start }] : [],
+	);
 	if (onLine.length === 0) return undefined;
 
-	let left: Declaration | undefined;
-	for (const declaration of onLine) {
-		if (declaration.selectionRange.start.character >= group.range.start.character) continue;
-		if (left === undefined || declaration.selectionRange.start.character > left.selectionRange.start.character) {
-			left = declaration;
-		}
+	let left: (typeof onLine)[number] | undefined;
+	for (const named of onLine) {
+		if (named.at.character >= group.range.start.character) continue;
+		if (left === undefined || named.at.character > left.at.character) left = named;
 	}
-	if (left !== undefined) return { anchor: left, side: "after" };
+	if (left !== undefined) return { anchor: left.declaration, side: "after" };
 
-	let right: Declaration | undefined;
-	for (const declaration of onLine) {
-		if (right === undefined || declaration.selectionRange.start.character < right.selectionRange.start.character) {
-			right = declaration;
-		}
+	let right: (typeof onLine)[number] | undefined;
+	for (const named of onLine) {
+		if (right === undefined || named.at.character < right.at.character) right = named;
 	}
-	return right === undefined ? undefined : { anchor: right, side: "before" };
+	return right === undefined ? undefined : { anchor: right.declaration, side: "before" };
 }
 
 ////////////////////////////////

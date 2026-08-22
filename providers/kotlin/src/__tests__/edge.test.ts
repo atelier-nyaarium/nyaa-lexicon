@@ -130,8 +130,8 @@ describe("Kotlin lexical coverage", () => {
 		const cafe = declaration(facts, "café");
 		const name = declaration(facts, "name");
 
-		expect(cafe?.selectionRange.start.character).toBe(4);
-		expect(name?.selectionRange.start.character).toBe(23);
+		expect(cafe?.selectionRange?.start.character).toBe(4);
+		expect(name?.selectionRange?.start.character).toBe(23);
 	});
 
 	test("cursor lookahead is non-consuming for multi-character delimiters", () => {

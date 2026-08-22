@@ -1,6 +1,7 @@
 // The GDScript provider. It reports project structure, declarations, and reference candidates.
 
 import {
+	type Declaration,
 	handlersFor,
 	type ImportResolution,
 	type MoveEditsRequest,
@@ -80,7 +81,12 @@ export class GDScriptProvider {
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
-			declarations: extracted.declarations,
+			// A script with no class_name is named after its file; that name is nowhere to select.
+			declarations: extracted.declarations.map((declaration): Declaration => {
+				if (declaration.languageKind !== "script") return declaration;
+				const { selectionRange: _synthesized, ...named } = declaration;
+				return named;
+			}),
 			references,
 			imports: extracted.imports,
 			literals: extracted.literals,

@@ -26,7 +26,7 @@ func run() -> void:
 		.map((reference) => ({ range: reference.range, role: reference.role }));
 	const declaration = parsed.declarations.find((candidate) => candidate.name === "old_value");
 	if (declaration === undefined) throw new Error("test declaration missing");
-	sites.push({ range: declaration.selectionRange });
+	sites.push({ range: declaration.selectionRange as NonNullable<typeof declaration.selectionRange> });
 
 	const result = provider.renameEdits({
 		module: "rename.gd",
@@ -118,7 +118,7 @@ test("blocks class_name and exported property contracts", () => {
 		text: classText,
 		oldName: "OldClass",
 		newName: "NewClass",
-		sites: [{ range: classDeclaration.selectionRange }],
+		sites: [{ range: classDeclaration.selectionRange as NonNullable<typeof classDeclaration.selectionRange> }],
 	});
 	expect(classResult).toMatchObject({ status: "ready", blocked: [{ reason: "ExternalContract" }] });
 
@@ -131,7 +131,7 @@ test("blocks class_name and exported property contracts", () => {
 		text: exportText,
 		oldName: "old_value",
 		newName: "new_value",
-		sites: [{ range: exportDeclaration.selectionRange }],
+		sites: [{ range: exportDeclaration.selectionRange as NonNullable<typeof exportDeclaration.selectionRange> }],
 	});
 	expect(exportResult).toMatchObject({ status: "ready", blocked: [{ reason: "ExternalContract" }] });
 });
@@ -155,7 +155,7 @@ func run(path: String) -> void:
 		text,
 		oldName: "old_signal",
 		newName: "new_signal",
-		sites: [{ range: signal.selectionRange }],
+		sites: [{ range: signal.selectionRange as NonNullable<typeof signal.selectionRange> }],
 	});
 	expect(signalResult).toMatchObject({ status: "ready", blocked: [{ reason: "StringLiteral" }] });
 

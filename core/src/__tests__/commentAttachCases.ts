@@ -239,6 +239,18 @@ export const CASES: AttachCase[] = [
 		},
 	},
 	{
+		// A declaration with no name in the source is on no line, so it never takes a same-line comment.
+		name: "anchors a same-line comment to nothing when the only symbol there has no name span",
+		run: (attach) => {
+			const text = "extends Node // the whole script\n";
+			const { selectionRange: _span, ...unnamed } = decl("player", 0, 0);
+			const script = { ...unnamed, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 32 } } };
+			const [found] = attach([script], commentsIn(text), text);
+			expect(found?.form).toBe("standalone");
+			expect(anchorName(found?.anchorId ?? null)).toBe("player");
+		},
+	},
+	{
 		name: "keeps the raw text verbatim while normalizing separately",
 		run: (attach) => {
 			const text = "//   spaced   out\nfunction work() {\n}\n";

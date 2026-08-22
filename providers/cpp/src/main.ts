@@ -159,8 +159,11 @@ export class CppProvider {
 			(candidate) => candidate.name === params.name && contains(candidate.range, params.range.start),
 		);
 		if (reference !== undefined) return this.bindingForReference(params.module, facts, reference);
+		// Every declaration this provider extracts has its name in the source.
 		const declaration = facts.declarations.find(
-			(candidate) => candidate.name === params.name && contains(candidate.selectionRange, params.range.start),
+			(candidate) =>
+				candidate.name === params.name &&
+				contains(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
 		if (declaration !== undefined) return { status: "bound", symbolId: declaration.symbolId, provenance: "bound" };
 		return { status: "unbound", reason: "NotIndexed", detail: "no declaration or reference matched the range" };
@@ -181,7 +184,7 @@ export class CppProvider {
 		const facts = this.factsForModule(params.module);
 		if (facts === null) return unknown("NotIndexed", "module is not indexed");
 		const selected = facts.declarations.filter((declaration) =>
-			contains(declaration.selectionRange, params.range.start),
+			contains(declaration.selectionRange ?? declaration.range, params.range.start),
 		);
 		if (selected.length > 1) return unknown("Ambiguous", "the range matches several declaration names");
 		const candidates = (

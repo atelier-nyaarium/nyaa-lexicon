@@ -66,8 +66,12 @@ function checkDeclaration(
 		}
 	}
 	if (expected.nameStart !== undefined) {
-		const start = actual.selectionRange.start;
-		if (start.line !== expected.nameStart.line || start.character !== expected.nameStart.character) {
+		const start = actual.selectionRange?.start;
+		if (start === undefined) {
+			problems.push(
+				`${at}: has no name span, but the case expects the name at ${expected.nameStart.line}:${expected.nameStart.character}`,
+			);
+		} else if (start.line !== expected.nameStart.line || start.character !== expected.nameStart.character) {
 			problems.push(
 				`${at}: name starts at ${start.line}:${start.character}, expected ${expected.nameStart.line}:${expected.nameStart.character}. ` +
 					"A character column off by the width of one astral character means this provider is not counting UTF-16 code units.",

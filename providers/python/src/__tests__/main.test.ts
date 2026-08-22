@@ -109,7 +109,13 @@ describe("Python provider project behavior", () => {
 			status: "unbound",
 			reason: "Ambiguous",
 		});
-		expect(provider.bind({ module: "main.py", name: "f", range: second.selectionRange })).toEqual({
+		expect(
+			provider.bind({
+				module: "main.py",
+				name: "f",
+				range: second.selectionRange as NonNullable<typeof second.selectionRange>,
+			}),
+		).toEqual({
 			status: "bound",
 			symbolId: second.symbolId,
 			provenance: "bound",
@@ -326,7 +332,9 @@ describe("Python provider project behavior", () => {
 		const value = parameters.find((parameter) => parameter.name === "value");
 		if (value === undefined) throw new Error("value parameter missing");
 		expect(value.selectionRange).toEqual(spanAt(text, text.indexOf("value"), "value"));
-		expect(value.range.end.character).toBeGreaterThan(value.selectionRange.end.character);
+		expect(value.range.end.character).toBeGreaterThan(
+			(value.selectionRange as NonNullable<typeof value.selectionRange>).end.character,
+		);
 	});
 
 	it("emits decoded searchable literals without duplicating docstrings", () => {
@@ -665,7 +673,7 @@ describe("Python provider project behavior", () => {
 			text,
 			oldName: "old",
 			newName: "new",
-			sites: [{ range: declaration.selectionRange }],
+			sites: [{ range: declaration.selectionRange as NonNullable<typeof declaration.selectionRange> }],
 		});
 
 		expect(response).toEqual({

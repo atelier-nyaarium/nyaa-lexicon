@@ -91,6 +91,12 @@ canonical and the name is what the file says; anything matching by name normaliz
 Providers do not normalize names: a name that changed for unchanged source would move every fact
 digest, which is a major.
 
+A declaration's `selectionRange` is the span of its name, and nothing else: an editor highlights
+it on reveal and a rename rewrites it. A name that is not in the source has no span, so the field
+is absent rather than invented. GDScript names a script with no `class_name` after its file, and
+that declaration carries no `selectionRange`; the core then anchors nothing to it by line, offers
+no rename of it, and an editor falls back to the declaration's range.
+
 One id names one declaration. A name path that a file declares twice, a merged interface or a
 block-scoped sibling, is two declarations, and the wire settles that for every provider: the
 second and later ones carry an occurrence, `Cart[2]#`, `y[3].`, `add(2)[2].`, counted in source

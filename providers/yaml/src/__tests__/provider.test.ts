@@ -48,7 +48,9 @@ describe("parsing", () => {
 		const coordinates = coordinatesOf(text);
 		for (const comment of facts.comments) expect(coordinates.sliceRange(comment.range)).toBe(comment.text);
 		for (const declaration of facts.declarations)
-			expect(coordinates.sliceRange(declaration.selectionRange)).toBe(declaration.name);
+			expect(
+				coordinates.sliceRange(declaration.selectionRange as NonNullable<typeof declaration.selectionRange>),
+			).toBe(declaration.name);
 	});
 
 	it("reports a diagnostic rather than throwing on text that cannot parse", () => {

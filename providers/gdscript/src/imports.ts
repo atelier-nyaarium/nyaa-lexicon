@@ -17,16 +17,19 @@ export interface ImportFact {
 }
 
 function importedLoaderName(declarations: DeclarationFact[], line: number, loaderStart: number): ImportedName[] {
+	// Every declaration this provider extracts has its name in the source.
 	const declaration = declarations
 		.filter(
 			(candidate) =>
+				candidate.selectionRange !== undefined &&
 				candidate.selectionRange.start.line === line &&
 				candidate.selectionRange.start.character < loaderStart &&
 				candidate.selectionRange.end.character <= loaderStart,
 		)
 		.sort((left, right) => right.selectionRange.start.character - left.selectionRange.start.character)[0];
 	if (declaration === undefined) return [];
-	return [{ local: declaration.name, localRange: declaration.selectionRange }];
+	// Every declaration this provider extracts has its name in the source.
+	return [{ local: declaration.name, localRange: declaration.selectionRange ?? declaration.range }];
 }
 
 export function extractImportsCore(module: string, text: string, compose: ComposeSymbolId): ImportFact[] {

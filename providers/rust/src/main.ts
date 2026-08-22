@@ -158,10 +158,11 @@ export class RustProvider {
 				candidate.reference.name === params.name && contains(candidate.reference.range, params.range.start),
 		);
 		if (raw !== undefined) return this.bindingFor(facts, raw);
+		// Every declaration this provider extracts has its name in the source.
 		const declaration = facts.rawDeclarations.find(
 			(candidate) =>
 				candidate.declaration.name === params.name &&
-				contains(candidate.declaration.selectionRange, params.range.start),
+				contains(candidate.declaration.selectionRange ?? candidate.declaration.range, params.range.start),
 		);
 		return declaration === undefined
 			? unbound("NotIndexed", "no indexed symbol matched the requested range")
@@ -174,7 +175,7 @@ export class RustProvider {
 		if (facts === null) return unknown("NotIndexed", "module is not indexed");
 		const rawDeclaration = facts.rawDeclarations.find(
 			(candidate) =>
-				contains(candidate.declaration.selectionRange, params.range.start) ||
+				contains(candidate.declaration.selectionRange ?? candidate.declaration.range, params.range.start) ||
 				contains(candidate.declaration.range, params.range.start),
 		);
 		if (rawDeclaration !== undefined) return this.typeAnswer(facts, rawDeclaration.declaration.symbolId);

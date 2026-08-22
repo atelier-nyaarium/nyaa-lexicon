@@ -490,13 +490,14 @@ function hasDefaultModifier(node: ts.Node): boolean {
 		: false;
 }
 
+/** The `default` keyword is the written name; without one there is no name span to claim. */
 function defaultSelectionRange(node: ts.Node, source: ts.SourceFile) {
 	const modifier = ts.canHaveModifiers(node)
 		? (ts.getModifiers(node) ?? []).find((child) => child.kind === ts.SyntaxKind.DefaultKeyword)
 		: undefined;
 	const defaultKeyword =
 		modifier ?? node.getChildren(source).find((child) => child.kind === ts.SyntaxKind.DefaultKeyword);
-	return rangeOf(defaultKeyword ?? node, source);
+	return defaultKeyword === undefined ? undefined : rangeOf(defaultKeyword, source);
 }
 
 function nameOf(node: ts.Node): string | null {
@@ -665,13 +666,14 @@ export function extractFileWithNodes(
 			declarationNodes.set(node, symbolId);
 			const range = declarationRangeOf(node, source);
 			const signature = signatureOf(node, source);
+			const defaultSpan = defaultSelectionRange(node, source);
 
 			declarations.push({
 				symbolId,
 				kind: anonymousDefault.kind,
 				name: "default",
 				range,
-				selectionRange: defaultSelectionRange(node, source),
+				...(defaultSpan === undefined ? {} : { selectionRange: defaultSpan }),
 				visibility: "public",
 				exported: true,
 				metrics: metricsOf(node, range),

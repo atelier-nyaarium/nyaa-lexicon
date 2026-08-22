@@ -622,12 +622,22 @@ func run(path: String) -> void:
 	});
 	expect(scriptImport).toEqual({
 		specifier: "res://base.gd",
-		imported: [{ local: "BaseScript", localRange: baseScript?.selectionRange }],
+		imported: [
+			{
+				local: "BaseScript",
+				localRange: baseScript?.selectionRange as NonNullable<typeof baseScript>["selectionRange"],
+			},
+		],
 		reExport: false,
 	});
 	expect(dynamicImport).toEqual({
 		specifier: "load(path)",
-		imported: [{ local: "loaded", localRange: loaded?.selectionRange }],
+		imported: [
+			{
+				local: "loaded",
+				localRange: loaded?.selectionRange as NonNullable<typeof loaded>["selectionRange"],
+			},
+		],
 		reExport: false,
 	});
 	expect(dynamicLoad?.binding).toEqual({

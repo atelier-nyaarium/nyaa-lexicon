@@ -72,10 +72,11 @@ describe("document structure", () => {
 		const parsed = parseMarkdown("doc.md", text);
 		const coordinates = coordinatesOf(text);
 
-		expect(parsed.declarations.map((d) => coordinates.sliceRange(d.selectionRange))).toEqual([
-			"The `parseFile` call",
-			"Plain",
-		]);
+		expect(
+			parsed.declarations.map((d) =>
+				coordinates.sliceRange(d.selectionRange as NonNullable<typeof d.selectionRange>),
+			),
+		).toEqual(["The `parseFile` call", "Plain"]);
 	});
 
 	test("a heading name is its rendered text, so inline markup does not become part of it", () => {
@@ -237,7 +238,13 @@ describe("a byte order mark", () => {
 			const parsed = parseMarkdown("doc.md", text);
 			const coordinates = coordinatesOf(text);
 
-			expect(coordinates.sliceRange(parsed.declarations[0]?.selectionRange as Range)).toBe("Title");
+			expect(
+				coordinates.sliceRange(
+					parsed.declarations[0]?.selectionRange as NonNullable<
+						(typeof parsed.declarations)[0]["selectionRange"]
+					>,
+				),
+			).toBe("Title");
 			expect(parsed.docs.map((region) => region.text)).toEqual(["body"]);
 			for (const region of parsed.docs) expect(coordinates.sliceRange(region.range)).toBe(region.text);
 		}
@@ -293,11 +300,11 @@ describe("frontmatter", () => {
 		const parsed = parseMarkdown("doc.md", text);
 		const coordinates = coordinatesOf(text);
 
-		expect(parsed.declarations.map((d) => coordinates.sliceRange(d.selectionRange))).toEqual([
-			"title",
-			"meta",
-			"owner",
-		]);
+		expect(
+			parsed.declarations.map((d) =>
+				coordinates.sliceRange(d.selectionRange as NonNullable<typeof d.selectionRange>),
+			),
+		).toEqual(["title", "meta", "owner"]);
 		expect(parsed.declarations.map((d) => coordinates.sliceRange(d.range))).toEqual([
 			"title: Rules",
 			"meta:\n  owner: nyaa",

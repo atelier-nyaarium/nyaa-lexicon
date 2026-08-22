@@ -40,8 +40,10 @@ describe("line-delimited records", () => {
 		const facts = parse("log.jsonl", text);
 		const coordinates = coordinatesOf(text);
 		for (const declaration of facts.declarations)
-			expect(coordinates.sliceRange(declaration.selectionRange)).toBe('"a"');
-		expect(facts.declarations[1]?.selectionRange.start.line).toBe(1);
+			expect(
+				coordinates.sliceRange(declaration.selectionRange as NonNullable<typeof declaration.selectionRange>),
+			).toBe('"a"');
+		expect(facts.declarations[1]?.selectionRange?.start.line).toBe(1);
 	});
 
 	it("skips a blank line without spending an ordinal on it", () => {

@@ -218,8 +218,11 @@ export class CsharpProvider {
 			(candidate) => candidate.name === params.name && contains(candidate.range, params.range.start),
 		);
 		if (reference !== undefined) return this.bindingForReference(params.module, facts, reference);
+		// Every declaration this provider extracts has its name in the source.
 		const declaration = facts.declarations.find(
-			(candidate) => candidate.name === params.name && contains(candidate.selectionRange, params.range.start),
+			(candidate) =>
+				candidate.name === params.name &&
+				contains(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
 		if (declaration !== undefined) return { status: "bound", symbolId: declaration.symbolId, provenance: "bound" };
 		return unbound("NotIndexed", "no indexed reference or declaration matched the requested range");
@@ -239,7 +242,7 @@ export class CsharpProvider {
 				? [...facts.metadata.values()].filter(
 						(item) =>
 							"range" in params &&
-							(contains(item.declaration.selectionRange, params.range.start) ||
+							(contains(item.declaration.selectionRange ?? item.declaration.range, params.range.start) ||
 								contains(item.declaration.range, params.range.start)),
 					)
 				: [facts.metadata.get(symbolId)].filter((item): item is DeclarationMeta => item !== undefined);

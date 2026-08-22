@@ -416,9 +416,11 @@ export class CProvider {
 		);
 		if (reference !== undefined)
 			return this.bindingForReference(params.module, stored.parsed, reference, new Map());
+		// Every declaration this provider extracts has its name in the source.
 		const declaration = stored.parsed.declarations.find(
 			(candidate) =>
-				candidate.name === params.name && containsStart(candidate.selectionRange, params.range.start),
+				candidate.name === params.name &&
+				containsStart(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
 		if (declaration !== undefined) return { status: "bound", symbolId: declaration.symbolId, provenance: "bound" };
 		return unknownBinding("NotIndexed", "no indexed reference or declaration matched the requested range");
@@ -442,7 +444,9 @@ export class CProvider {
 				(candidate) =>
 					candidate.typeRange !== undefined && containsStart(candidate.typeRange, params.range.start),
 			) ??
-			stored.parsed.declarations.find((candidate) => containsStart(candidate.selectionRange, params.range.start));
+			stored.parsed.declarations.find((candidate) =>
+				containsStart(candidate.selectionRange ?? candidate.range, params.range.start),
+			);
 		if (declaration === undefined)
 			return {
 				status: "unknown",

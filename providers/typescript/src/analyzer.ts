@@ -533,7 +533,8 @@ export class TypeScriptAnalyzer {
 			if (ids === undefined) {
 				ids = new Map<string, string[]>();
 				for (const declaration of this.extract(module, source).declarations) {
-					const key = positionKey(declaration.selectionRange);
+					// Every declaration this provider extracts has its name in the source.
+					const key = positionKey(declaration.selectionRange ?? declaration.range);
 					ids.set(key, [...(ids.get(key) ?? []), declaration.symbolId]);
 				}
 				idsByFile.set(source.fileName, ids);

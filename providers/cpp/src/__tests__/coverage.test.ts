@@ -282,7 +282,12 @@ describe("C++ structural coverage", () => {
 		const value = facts.declarations.find((declaration) => declaration.name === "value");
 		if (value === undefined) throw new Error("local declaration missing");
 
-		expect(provider.typeOf({ module: "ranges.cpp", range: value.selectionRange })).toMatchObject({
+		expect(
+			provider.typeOf({
+				module: "ranges.cpp",
+				range: value.selectionRange as NonNullable<typeof value.selectionRange>,
+			}),
+		).toMatchObject({
 			status: "known",
 			display: "int",
 		});

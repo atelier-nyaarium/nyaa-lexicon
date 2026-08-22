@@ -366,7 +366,10 @@ export class RefactorPlanner {
 
 		// The name line is the declaration line; the range starts at leading comments, which may
 		// legally indent differently.
-		if (anchor.selectionRange.start.line !== anchor.selectionRange.end.line) {
+		if (
+			anchor.selectionRange === undefined ||
+			anchor.selectionRange.start.line !== anchor.selectionRange.end.line
+		) {
 			return { refused: `the provider gives ${anchor.name} no single-line name, so indentation cannot be read` };
 		}
 		const coords = coordinatesOf(before);
@@ -948,6 +951,20 @@ export class RefactorPlanner {
 		}
 
 		const oldName = declaration.name;
+		// A name that is nowhere in the source has no site to rewrite.
+		if (declaration.selectionRange === undefined) {
+			return {
+				symbolId,
+				oldName,
+				newName,
+				files: [],
+				occurrences: 0,
+				blockers: [
+					{ kind: "NameNotInSource", detail: `${oldName} is named after its file, not written in it` },
+				],
+				warnings: [],
+			};
+		}
 		const byModule = new Map<string, RenameSite[]>();
 		// The declaration's own name is a site like any other, and forgetting it renames every use
 		// to point at a definition that still has the old name.
@@ -1088,7 +1105,10 @@ export class RefactorPlanner {
 			concerns.push({
 				kind: "NameTaken",
 				detail: `${newName} is already declared in ${declared.length === 1 ? "a file" : `${declared.length} files`} this rename rewrites. Rename that declaration first, or pick another name.`,
-				sites: declared.map((other) => ({ module: other.module, line: other.selectionRange.start.line })),
+				sites: declared.map((other) => ({
+					module: other.module,
+					line: (other.selectionRange ?? other.range).start.line,
+				})),
 			});
 		}
 		if (bound.length > 0) {

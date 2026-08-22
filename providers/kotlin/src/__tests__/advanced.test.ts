@@ -90,7 +90,7 @@ describe("Kotlin cursor and structure", () => {
 
 		expect(entries.map((item) => item.name)).toEqual(["RED", "GREEN", "BLUE"]);
 		expect(entries[0]?.range.start.character).toBe(19);
-		expect(entries[0]?.range.end.character).toBeGreaterThan(entries[0]?.selectionRange.end.character ?? 0);
+		expect(entries[0]?.range.end.character).toBeGreaterThan(entries[0]?.selectionRange?.end.character ?? 0);
 		expect(entries.every((item) => item.kind === "constant" && item.exported === true)).toBe(true);
 	});
 
@@ -313,8 +313,8 @@ describe("Kotlin diagnostics and protocol", () => {
 		const item = facts.declarations.find((declaration) => declaration.name === "name");
 
 		expect(item).toBeDefined();
-		expect(item?.selectionRange.start).toEqual({ line: 0, character: 13 });
-		expect(item?.selectionRange.end).toEqual({ line: 0, character: 17 });
+		expect(item?.selectionRange?.start).toEqual({ line: 0, character: 13 });
+		expect(item?.selectionRange?.end).toEqual({ line: 0, character: 17 });
 	});
 
 	test("initializes all tiers and answers every handler", () => {

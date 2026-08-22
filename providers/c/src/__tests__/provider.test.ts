@@ -899,12 +899,16 @@ describe("C binding and imports", () => {
 			status: "bound",
 			symbolId: declaration.symbolId,
 		});
-		expect(provider.bind({ module: "bind-range.c", name: "add", range: declaration.selectionRange })).toMatchObject(
-			{
-				status: "bound",
-				symbolId: declaration.symbolId,
-			},
-		);
+		expect(
+			provider.bind({
+				module: "bind-range.c",
+				name: "add",
+				range: declaration.selectionRange as NonNullable<typeof declaration.selectionRange>,
+			}),
+		).toMatchObject({
+			status: "bound",
+			symbolId: declaration.symbolId,
+		});
 	});
 });
 
@@ -1140,7 +1144,12 @@ describe("C edge coverage", () => {
 		const value = declarationOf(parsed, "value");
 
 		if (value === undefined) throw new Error("selection declaration is missing");
-		expect(provider.typeOf({ module: "selection-type.c", range: value.selectionRange })).toMatchObject({
+		expect(
+			provider.typeOf({
+				module: "selection-type.c",
+				range: value.selectionRange as NonNullable<typeof value.selectionRange>,
+			}),
+		).toMatchObject({
 			status: "known",
 			display: "int",
 			provenance: "declared",
@@ -1178,7 +1187,7 @@ describe("C edge coverage", () => {
 		const value = parsed.declarations.find((declaration) => declaration.name === "value");
 
 		expect(value?.range.start).toEqual({ line: 0, character: 0 });
-		expect(value?.selectionRange.start).toEqual({ line: 1, character: 4 });
+		expect(value?.selectionRange?.start).toEqual({ line: 1, character: 4 });
 	});
 
 	test("keeps prototype metrics distinct from body metrics", () => {
@@ -1234,7 +1243,11 @@ describe("C edit refusals and protocol values", () => {
 		const value = declarationOf(parsed, "value");
 
 		if (value === undefined) throw new Error("schema declaration is missing");
-		const binding = provider.bind({ module: "schema.c", name: "value", range: value.selectionRange });
+		const binding = provider.bind({
+			module: "schema.c",
+			name: "value",
+			range: value.selectionRange as NonNullable<typeof value.selectionRange>,
+		});
 		const type = provider.typeOf({ symbolId: value.symbolId });
 
 		expect(BindingSchema.parse(binding).status).toBe("bound");

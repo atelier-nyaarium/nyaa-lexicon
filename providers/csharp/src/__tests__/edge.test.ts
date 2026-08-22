@@ -335,11 +335,21 @@ describe("C# type answers", () => {
 			"local missing",
 		);
 		expect(provider.typeOf({ symbolId: value.symbolId })).toMatchObject({ status: "known", display: "int" });
-		expect(provider.typeOf({ module: "main.cs", range: input.selectionRange })).toMatchObject({
+		expect(
+			provider.typeOf({
+				module: "main.cs",
+				range: input.selectionRange as NonNullable<typeof input.selectionRange>,
+			}),
+		).toMatchObject({
 			status: "known",
 			display: "string",
 		});
-		expect(provider.typeOf({ module: "main.cs", range: local.selectionRange })).toMatchObject({
+		expect(
+			provider.typeOf({
+				module: "main.cs",
+				range: local.selectionRange as NonNullable<typeof local.selectionRange>,
+			}),
+		).toMatchObject({
 			status: "inferred",
 			display: "int",
 		});

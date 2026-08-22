@@ -673,9 +673,11 @@ function functionFacts(lines: InferenceLine[], declarations: Declaration[]): Map
 }
 
 function declarationInitializer(declaration: Declaration, lines: InferenceLine[]): string | null {
-	const line = lines[declaration.selectionRange.start.line] as InferenceLine | undefined;
+	// Every declaration this provider extracts has its name in the source.
+	const selectionRange = declaration.selectionRange ?? declaration.range;
+	const line = lines[selectionRange.start.line] as InferenceLine | undefined;
 	if (line === undefined) return null;
-	const start = declaration.selectionRange.end.character;
+	const start = selectionRange.end.character;
 	for (let index = start; index < line.code.length; index++) {
 		if (line.code[index] !== "=") continue;
 		if (line.code[index - 1] === "=" || line.code[index + 1] === "=") continue;
@@ -1015,7 +1017,10 @@ export class GDScriptTypeIndex {
 		);
 		if (annotation !== undefined) return declaredType(facts.module, annotation, this.resolver);
 
-		const declaration = facts.declarations.find((candidate) => positionInRange(candidate.selectionRange, position));
+		const declaration = facts.declarations.find(
+			(candidate) =>
+				candidate.selectionRange !== undefined && positionInRange(candidate.selectionRange, position),
+		);
 		if (declaration !== undefined) return this.typeOfDeclaration(facts, declaration);
 		return unknownType("NotIndexed", "no indexed declaration or annotation matched the requested range");
 	}

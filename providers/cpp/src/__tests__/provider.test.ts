@@ -122,15 +122,15 @@ describe("C++ provider contract", () => {
 		expect(operatorDeclaration?.kind).toBe("operator");
 		expect(operatorDeclaration?.languageKind).toBe("operator");
 		expect(operatorDeclaration?.containerId).toContain("Number#");
-		expect(operatorDeclaration?.selectionRange.start.line).toBe(2);
+		expect(operatorDeclaration?.selectionRange?.start.line).toBe(2);
 	});
 
 	test("counts astral characters as two UTF-16 code units", () => {
 		const facts = parseCppFile("utf16.cpp", "/* 😀 */ class Cart {};\n");
 		const declaration = facts.declarations.find((candidate) => candidate.name === "Cart");
 
-		expect(declaration?.selectionRange.start).toEqual({ line: 0, character: 15 });
-		expect(declaration?.selectionRange.end).toEqual({ line: 0, character: 19 });
+		expect(declaration?.selectionRange?.start).toEqual({ line: 0, character: 15 });
+		expect(declaration?.selectionRange?.end).toEqual({ line: 0, character: 19 });
 	});
 
 	test("extracts literals with the nearest declaration container", () => {

@@ -204,8 +204,11 @@ export class KotlinProvider {
 				candidate.reference.name === params.name && contains(candidate.reference.range, params.range.start),
 		);
 		if (reference !== undefined) return this.bindingForReference(facts, reference);
+		// Every declaration this provider extracts has its name in the source.
 		const declaration = facts.declarations.find(
-			(candidate) => candidate.name === params.name && contains(candidate.selectionRange, params.range.start),
+			(candidate) =>
+				candidate.name === params.name &&
+				contains(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
 		if (declaration !== undefined) return bound(declaration.symbolId);
 		return unknown("NotIndexed", "no indexed reference or declaration matched the requested range");
@@ -222,7 +225,7 @@ export class KotlinProvider {
 		);
 		if (annotation !== undefined) return this.withTypeSymbol(facts.module, annotation.answer);
 		const declaration = facts.declarations.find((candidate) =>
-			contains(candidate.selectionRange, params.range.start),
+			contains(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
 		if (declaration !== undefined) return this.typeForDeclaration(facts, declaration);
 		const reference = facts.references.find((candidate) => contains(candidate.reference.range, params.range.start));

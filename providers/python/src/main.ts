@@ -704,7 +704,9 @@ export class PythonProvider {
 		if (reference !== undefined) return this.bindingForReference(params.module, facts, reference);
 		const declaration = facts.declarations.find(
 			(candidate) =>
-				candidate.name === params.name && containsPosition(candidate.selectionRange, params.range.start),
+				candidate.name === params.name &&
+				// Every declaration this provider extracts has its name in the source.
+				containsPosition(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
 		if (declaration !== undefined) {
 			return { status: "bound" as const, symbolId: declaration.symbolId, provenance: "bound" as const };

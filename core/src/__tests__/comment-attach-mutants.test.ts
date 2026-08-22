@@ -33,6 +33,12 @@ const MUTANTS: Mutant[] = [
 		replace: "\t\t\ttrue,",
 	},
 	{
+		name: "a declaration with no name span is read as if it had one",
+		find: "declaration.selectionRange?.start.line === line ? [{ declaration, at: declaration.selectionRange.start }] : [],",
+		replace:
+			"(declaration.selectionRange as { start: { line: number } }).start.line === line ? [{ declaration, at: (declaration.selectionRange as { start: { line: number; character: number } }).start }] : [],",
+	},
+	{
 		name: "every written line between a comment and a declaration is a wall",
 		find: "\t\tif (blankLines.has(line) || declarationLines.has(line)) return false;",
 		replace: "\t\tif (blankLines.has(line) || declarationLines.has(line) || line >= 0) return false;",

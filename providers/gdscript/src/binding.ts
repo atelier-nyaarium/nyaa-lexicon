@@ -169,7 +169,11 @@ export class GDScriptBindingIndex {
 		if (reference !== undefined) return this.bindReference(module, reference);
 
 		const declaration = facts.declarations.find(
-			(candidate) => candidate.name === name && positionInRange(candidate.selectionRange, range.start),
+			// A name nowhere in the source is nowhere to match.
+			(candidate) =>
+				candidate.name === name &&
+				candidate.selectionRange !== undefined &&
+				positionInRange(candidate.selectionRange, range.start),
 		);
 		if (declaration !== undefined) return bound(declaration.symbolId);
 

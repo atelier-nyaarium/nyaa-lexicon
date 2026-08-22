@@ -97,6 +97,15 @@ it, and the core refuses a parse that still carries one id twice. Declarations t
 are indexed now; a binding inside a re-minted block still names what the provider bound, which is
 the first occurrence until that provider learns to count.
 
+A GDScript script with no `class_name` is a class named after its file, and it used to claim a
+`selectionRange`, the span of its name, at a position where no name is written. The field is
+absent now, for any declaration whose name is not in the source; a rename of one is refused as
+`NameNotInSource`, a same-line comment is never anchored to it, and an editor reveals its range
+instead. The store gained a flag column in place, so earlier stores keep working; a script indexed
+before this release keeps its invented span until the file is next read, and its fact digest moves
+then. The same rule reached TypeScript: an anonymous default export's name span is the `default`
+keyword, and a declaration with no name token carries no span rather than its whole statement.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

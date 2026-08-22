@@ -63,8 +63,8 @@ describe("C++ parser edges", () => {
 		const facts = parseCppFile("positions.cpp", "// 😀\nnamespace api { struct Thing {}; }\n");
 		const thing = facts.declarations.find((declaration) => declaration.name === "Thing");
 
-		expect(thing?.selectionRange.start).toEqual({ line: 1, character: 23 });
-		expect(thing?.selectionRange.end).toEqual({ line: 1, character: 28 });
+		expect(thing?.selectionRange?.start).toEqual({ line: 1, character: 23 });
+		expect(thing?.selectionRange?.end).toEqual({ line: 1, character: 28 });
 	});
 
 	test("decodes escaped and raw strings without losing literal ranges", () => {
@@ -366,7 +366,12 @@ describe("C++ parser edges", () => {
 			status: "known",
 			display: "unsigned int",
 		});
-		expect(provider.typeOf({ module: "annotation.cpp", range: declaration.selectionRange })).toMatchObject({
+		expect(
+			provider.typeOf({
+				module: "annotation.cpp",
+				range: declaration.selectionRange as NonNullable<typeof declaration.selectionRange>,
+			}),
+		).toMatchObject({
 			status: "known",
 		});
 	});
@@ -436,7 +441,11 @@ describe("C++ parser edges", () => {
 		const parsedFacts = FileFactsSchema.parse(facts);
 		const declaration = parsedFacts.declarations.find((candidate) => candidate.name === "value");
 		if (declaration === undefined) throw new Error("handler declaration missing");
-		const binding = handlers.bind({ module: "source.cpp", name: "value", range: declaration.selectionRange });
+		const binding = handlers.bind({
+			module: "source.cpp",
+			name: "value",
+			range: declaration.selectionRange as NonNullable<typeof declaration.selectionRange>,
+		});
 		const type = handlers.typeOf({ symbolId: declaration.symbolId });
 		const importResolution = handlers.resolveImport({ fromModule: "source.cpp", specifier: "vector" });
 		const rename = handlers.renameEdits({

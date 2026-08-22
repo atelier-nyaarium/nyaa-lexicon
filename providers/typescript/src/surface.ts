@@ -238,12 +238,14 @@ function recordFunction(
 	];
 	const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
 	const range = rangeOf(callable, source);
+	// No name token means no name span; the whole node is not a name.
+	const named = selection ?? nameNode(callable);
 	declarations.push({
 		symbolId,
 		kind,
 		name,
 		range,
-		selectionRange: rangeOf(selection ?? nameNode(callable) ?? callable, source),
+		...(named === undefined ? {} : { selectionRange: rangeOf(named, source) }),
 		visibility: "public",
 		exported: container === undefined,
 		metrics: { lines: range.end.line - range.start.line + 1, parameters: callable.parameters.length },
@@ -265,12 +267,13 @@ function recordDeclaration(
 	const descriptors = [descriptor(occurrences, [], classified.descriptor, item.name)];
 	const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
 	const range = rangeOf(item.node, source);
+	const named = item.selection ?? nameNode(item.node);
 	declarations.push({
 		symbolId,
 		kind: classified.kind,
 		name: item.name,
 		range,
-		selectionRange: rangeOf(item.selection ?? nameNode(item.node) ?? item.node, source),
+		...(named === undefined ? {} : { selectionRange: rangeOf(named, source) }),
 		visibility: "public",
 		exported: true,
 		metrics: { lines: range.end.line - range.start.line + 1 },

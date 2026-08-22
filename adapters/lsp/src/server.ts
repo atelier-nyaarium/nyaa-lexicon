@@ -126,7 +126,7 @@ export function toModule(workspaceRoot: string, uri: string): string | null {
 }
 
 function locationOf(workspaceRoot: string, declaration: StoredDeclaration): Location {
-	return { uri: toUri(workspaceRoot, declaration.module), range: declaration.selectionRange };
+	return { uri: toUri(workspaceRoot, declaration.module), range: declaration.selectionRange ?? declaration.range };
 }
 
 function contains(range: Range, position: Position): boolean {
@@ -222,7 +222,10 @@ export class LspServer {
 		}
 
 		if (described && described.referenceCount > 0) lines.push(`Used in ${described.referenceCount} places.`);
-		return { contents: { kind: "markdown", value: lines.join("\n\n") }, range: found.selectionRange };
+		return {
+			contents: { kind: "markdown", value: lines.join("\n\n") },
+			range: found.selectionRange ?? found.range,
+		};
 	}
 
 	/**
@@ -325,7 +328,7 @@ export class LspServer {
 			kind: SYMBOL_KIND[declaration.kind] ?? 13,
 			uri: toUri(this.workspaceRoot, declaration.module),
 			range: declaration.range,
-			selectionRange: declaration.selectionRange,
+			selectionRange: declaration.selectionRange ?? declaration.range,
 			data: declaration.symbolId,
 			...(declaration.signature === undefined ? {} : { detail: declaration.signature }),
 		};
@@ -348,7 +351,7 @@ export class LspServer {
 				name: declaration.name,
 				kind: SYMBOL_KIND[declaration.kind] ?? 13,
 				range: declaration.range,
-				selectionRange: declaration.selectionRange,
+				selectionRange: declaration.selectionRange ?? declaration.range,
 				...(declaration.signature === undefined ? {} : { detail: declaration.signature }),
 			});
 		}
@@ -379,6 +382,7 @@ export class LspServer {
 		const found = await this.symbolAt(uri, position);
 		if (found === null) return null;
 
+		if (found.selectionRange === undefined) return null;
 		const plan = await this.service.prepareRename(found.symbolId, `${found.name}_`);
 		return plan.blockers.length > 0 ? null : { range: found.selectionRange, placeholder: found.name };
 	}

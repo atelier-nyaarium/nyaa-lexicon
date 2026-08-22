@@ -89,7 +89,7 @@ test("keeps UTF-16 columns after an astral literal", () => {
 	const facts = provider.parseFile({ module: "positions.kt", contentHash: "positions", text });
 	const after = facts.declarations.find((declaration) => declaration.name === "after");
 
-	expect(after?.selectionRange.start).toEqual({ line: 0, character: 23 });
+	expect(after?.selectionRange?.start).toEqual({ line: 0, character: 23 });
 });
 
 test("extracts aliased and star imports with source ranges", () => {

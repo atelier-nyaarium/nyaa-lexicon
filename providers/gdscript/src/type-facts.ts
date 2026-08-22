@@ -103,8 +103,10 @@ function addParameterTypeFacts(
 		if (colon < 0) return;
 		const typeEnd = typeExpressionEnd(tokens, colon + 1, new Set(["=", ",", ")", ";"]), true);
 		const name = tokens[nameIndex] as ReferenceToken;
+		// Every declaration this provider extracts has its name in the source.
 		const parameter = parameterDeclarations.find(
-			(candidate) => comparePositions(candidate.selectionRange.start, name) === 0,
+			(candidate) =>
+				candidate.selectionRange !== undefined && comparePositions(candidate.selectionRange.start, name) === 0,
 		);
 		const fact = typeFact(
 			coordinates,
@@ -144,7 +146,8 @@ export function extractTypeAnnotationsCore(
 	const tokens = referenceTokens(lines);
 	const facts: TypeAnnotationFact[] = [];
 	for (const declaration of declarations) {
-		const nameIndex = tokenIndexAt(tokens, declaration.selectionRange.start);
+		// Every declaration this provider extracts has its name in the source.
+		const nameIndex = tokenIndexAt(tokens, (declaration.selectionRange ?? declaration.range).start);
 		if (nameIndex < 0) continue;
 		const name = tokens[nameIndex] as ReferenceToken;
 		if (

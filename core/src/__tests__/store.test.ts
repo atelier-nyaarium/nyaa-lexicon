@@ -533,6 +533,29 @@ describe("admitting a provider's ids before writing", () => {
 	});
 });
 
+describe("a declaration whose name is not in the source", () => {
+	it("reads back without a name span, while a named one keeps its span", () => {
+		const { selectionRange: _span, ...unnamed } = declaration("script");
+		store.replaceFile("src/a.ts", "h1", [unnamed, declaration("add")], []);
+
+		expect(store.declaration(idOf("script"))).not.toHaveProperty("selectionRange");
+		expect(store.declaration(idOf("add"))?.selectionRange).toEqual(POINT);
+	});
+
+	// Added in place; a row from before the flag is a named one, as every row then was.
+	it("reads a row from a store that predates the flag as named", () => {
+		const file = path.join(dir, "index.sqlite");
+		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.close();
+		const raw = new DatabaseSync(file);
+		raw.exec("ALTER TABLE symbols DROP COLUMN synthesizedName");
+		raw.close();
+
+		store = IndexStore.open(file).store;
+		expect(store.declaration(idOf("add"))?.selectionRange).toEqual(POINT);
+	});
+});
+
 describe("recording what a file is", () => {
 	it("keeps the owning provider's content class per file and counts by it", () => {
 		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);

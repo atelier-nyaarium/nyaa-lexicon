@@ -94,8 +94,8 @@ export const DeclarationSchema = z
 		name: z.string().min(1),
 		/** The whole declaration, comments and body included. */
 		range: RangeSchema,
-		/** Just the name, which is what an editor highlights on reveal. */
-		selectionRange: RangeSchema,
+		/** Just the name, which is what an editor highlights on reveal. Absent when the name is not in the source. */
+		selectionRange: RangeSchema.optional(),
 		visibility: VisibilitySchema,
 		/**
 		 * Whether the symbol leaves its module. Separate from visibility because a TypeScript

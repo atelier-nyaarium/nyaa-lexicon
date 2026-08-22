@@ -102,7 +102,9 @@ export enum Color { Red }
 			expect(
 				textAt(
 					source,
-					defaultDeclaration?.selectionRange as (typeof found.declarations)[number]["selectionRange"],
+					defaultDeclaration?.selectionRange as NonNullable<
+						(typeof found.declarations)[number]["selectionRange"]
+					>,
 				),
 			).toBe("default");
 			expect(memberDeclaration?.containerId).toBe(defaultDeclaration?.symbolId);
@@ -351,7 +353,10 @@ export enum Color { Red }
 			const declaration = candidates[0];
 			if (declaration === undefined) throw new Error(`missing declaration: ${item.kind} ${item.name}`);
 			expect(declaration?.range).toEqual(rangeForText(source, item.full));
-			expect(textAt(source, declaration.selectionRange)).toBe(item.name);
+			expect(declaration.selectionRange).toBeDefined();
+			expect(textAt(source, declaration.selectionRange as NonNullable<typeof declaration.selectionRange>)).toBe(
+				item.name,
+			);
 			expect(declaration.selectionRange).toEqual(
 				rangeForText(source, item.name, offsetAt(source, declaration.range.start)),
 			);

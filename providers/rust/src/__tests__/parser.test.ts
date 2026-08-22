@@ -127,7 +127,7 @@ const HEX = 0xff_u32;
 	const enabledDeclaration = declaration(facts, "ENABLED");
 	const hexDeclaration = declaration(facts, "HEX");
 
-	expect(cart.selectionRange.start).toEqual({ line: 0, character: 20 });
+	expect(cart.selectionRange?.start).toEqual({ line: 0, character: 20 });
 	expect(facts.literals.map((literal) => [literal.kind, literal.value])).toEqual([
 		["string", "line\n"],
 		["string", "raw"],
