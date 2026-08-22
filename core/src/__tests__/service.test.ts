@@ -523,6 +523,14 @@ describe("planning a move", () => {
 		expect(service.planMove(cart, "cart.ref")).toMatchObject({ ok: false });
 	});
 
+	it("refuses a target outside the workspace, and spells an inside one canonically", async () => {
+		const cart = await plant();
+		expect(service.planMove(cart, "../escape.ref")).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "/abs/escape.ref")).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "./sub/../cart.ref")).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "./basket.ref")).toMatchObject({ ok: true, toModule: "basket.ref" });
+	});
+
 	// The inventory never lists what the index cannot claim to place. Builtins and externals bind
 	// unbound for benign reasons, and listing them made every provider block a class move on `int`.
 	it("excludes benign unbound references and keeps genuinely unplaceable ones", () => {

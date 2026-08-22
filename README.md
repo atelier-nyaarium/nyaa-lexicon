@@ -76,7 +76,8 @@ release command written only inside a fence is otherwise findable by nothing.
 **History.** `file_history`, `co_changed_with`, `symbol_history`. What changes alongside a file is
 the strongest signal no reference edge carries.
 
-**Refactoring.** `symbol_source` reads one symbol's exact text by id. Everything that writes runs
+**Refactoring.** `symbol_source` reads one symbol's exact text by id, and `refactor_preview` says
+what a rename or a move would touch before anything is opened. Everything that writes runs
 inside a transaction: `refactor_start`, then `refactor_replace`, `refactor_insert`,
 `refactor_rename`, `refactor_move` and `refactor_track`, ending in `refactor_commit` or
 `refactor_revert`, with `refactor_undo` for the newest step and `refactor_status` for what is open.

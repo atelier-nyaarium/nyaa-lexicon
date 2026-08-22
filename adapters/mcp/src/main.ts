@@ -83,6 +83,8 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
 		refactorStatus: () => ask("refactorStatus", {}),
+		prepareRename: (symbolId, newName) => ask("prepareRename", { symbolId, newName }),
+		planMove: (symbolId, toModule) => ask("planMove", { symbolId, toModule }),
 		refactorTrack: (module) => ask("refactorTrack", { module }),
 		refactorUndo: () => ask("refactorUndo", {}),
 		refactorRevert: () => ask("refactorRevert", {}),
@@ -155,6 +157,8 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 		// it could not honour and leave written files with no record of what they replaced.
 		refactorStart: async () => ({ started: false, id: "", reason: NO_JOURNAL }),
 		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		prepareRename: async (symbolId, newName) => (await service()).prepareRename(symbolId, newName),
+		planMove: async (symbolId, toModule) => (await service()).planMove(symbolId, toModule),
 		refactorTrack: async () => ({ tracked: false, reason: NO_JOURNAL }),
 		refactorUndo: async () => ({ undone: false, reason: NO_JOURNAL }),
 		refactorRevert: async () => ({ reverted: false, modules: [], reason: NO_JOURNAL }),

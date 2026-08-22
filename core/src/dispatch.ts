@@ -150,6 +150,8 @@ export interface ReplaceOutcome {
 
 export interface MoveOutcome {
 	moved: boolean;
+	/** Canonical target spelling, on success. */
+	toModule?: string;
 	modules?: string[];
 	migrated?: { answers: number; gaps: number };
 	issues: RefactorIssue[];
@@ -170,6 +172,7 @@ function refactorMove(
 	args: { symbolId: string; toModule: string },
 ): Promise<MoveOutcome> {
 	let touched: string[] = [];
+	let target = args.toModule;
 	let migrated: { answers: number; gaps: number } | undefined;
 	const idMap = new Map<string, string>();
 
@@ -180,6 +183,7 @@ function refactorMove(
 			refuse: (reason, issues) => ({ moved: false, issues, reason }),
 			succeed: (issues) => ({
 				moved: true,
+				toModule: target,
 				modules: touched,
 				...(migrated === undefined ? {} : { migrated }),
 				issues,
@@ -187,6 +191,7 @@ function refactorMove(
 			plan: async () => {
 				const plan = service.planMove(args.symbolId, args.toModule);
 				if (!plan.ok) return { refused: plan.reason };
+				target = plan.toModule;
 				const edits = await service.moveEdits(plan);
 				if (!edits.ok) return { refused: edits.reason, issues: edits.issues };
 				touched = edits.files.map((file) => file.module);
@@ -611,6 +616,12 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				const args = Rename.parse(params);
 				await service.upgradeRemaining();
 				return read(() => service.renameEdits(args.symbolId, args.newName));
+			}
+			// Read-only, like prepareRename.
+			case "planMove": {
+				const args = Move.parse(params);
+				await service.upgradeRemaining();
+				return read(() => service.planMove(args.symbolId, args.toModule));
 			}
 			case "indexFile": {
 				const args = IndexFile.parse(params);

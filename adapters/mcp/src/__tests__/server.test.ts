@@ -24,6 +24,7 @@ const QUERY_TOOLS = [
 	"outline_module",
 	"overview",
 	"recall_answer",
+	"refactor_preview",
 	"refactor_status",
 	"resolve_import",
 	"search_docs",

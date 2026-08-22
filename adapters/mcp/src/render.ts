@@ -11,6 +11,7 @@ import type {
 	InvalidateOutcome,
 	KnowledgeGaps,
 	LiteralsResult,
+	MovePlan,
 	RecalledAnswer,
 	RecordOutcome,
 	RefactorIssue,
@@ -219,13 +220,7 @@ export function renderType(name: string, type: TypeInfo): string {
 	return lines.join("\n");
 }
 
-/**
- * What a rename would touch, and what the index cannot promise about it.
- *
- * Kept for the editor's prepareRename, which asks whether a rename is offerable before the user
- * types a new name. No MCP tool renders it: there, a rename is a transaction step and its answer
- * is the step's outcome.
- */
+/** What a rename would touch, and what the index cannot promise about it. */
 export function renderRenamePlan(plan: RenamePlan): string {
 	if (plan.blockers.length > 0) {
 		const lines = [
@@ -273,6 +268,53 @@ export function renderRenamePlan(plan: RenamePlan): string {
 	for (const warning of plan.warnings) {
 		lines.push(`- **${warning.kind}:** ${warning.detail}`);
 		for (const site of warning.sites ?? []) lines.push(`  - \`${site.module}:${site.line}\``);
+	}
+	return lines.join("\n");
+}
+
+/** What a move would touch. */
+export function renderMovePlan(plan: MovePlan): string {
+	if (!plan.ok) return `# Move refused\n\n${plan.reason}`;
+
+	// What the closure uses from inside itself moves with it and needs no import.
+	const needed = plan.dependencies.filter((dependency) => dependency.origin.kind !== "insideClosure");
+	const moved = plan.removal.end.line - plan.removal.start.line + 1;
+	const lines = [
+		`# Move ${plan.name} from \`${plan.fromModule}\` to \`${plan.toModule}\``,
+		"",
+		"## Files",
+		"",
+		`- \`${plan.fromModule}\`: lines ${plan.removal.start.line + 1} to ${plan.removal.end.line + 1} removed${plan.usedAtSource ? ", and an import back added, since something here still uses it" : ""}`,
+		`- \`${plan.toModule}\`: ${moved} line${moved === 1 ? "" : "s"} inserted${needed.length === 0 ? "" : ", plus the imports below"}`,
+	];
+	for (const module of plan.referencing) lines.push(`- \`${module}\`: import specifier re-pointed`);
+	if (plan.closure.length > 1) {
+		lines.push("", `Moves ${plan.closure.length} symbols: the declaration and what it contains.`);
+	}
+
+	if (needed.length === 0) {
+		lines.push("", "The moved text depends on nothing outside itself.");
+		return lines.join("\n");
+	}
+	lines.push("", "## Dependencies", "", "Names the moved text uses, and where each would be imported from.");
+	for (const dependency of needed) {
+		const origin = dependency.origin;
+		switch (origin.kind) {
+			case "sourceModule":
+				lines.push(
+					`- \`${dependency.name}\`: stays in \`${plan.fromModule}\`${origin.exported === false ? ", and is not exported, which blocks the move" : ""}`,
+				);
+				break;
+			case "workspaceModule":
+				lines.push(`- \`${dependency.name}\`: from \`${origin.module}\``);
+				break;
+			case "external":
+				lines.push(`- \`${dependency.name}\`: from \`${origin.via.specifier}\`, outside the workspace`);
+				break;
+			case "unresolved":
+				lines.push(`- \`${dependency.name}\`: unresolved (${origin.reason}), so the provider decides`);
+				break;
+		}
 	}
 	return lines.join("\n");
 }
@@ -1181,6 +1223,7 @@ export function renderMoveOutcome(
 	toModule: string,
 	outcome: {
 		moved: boolean;
+		toModule?: string;
 		modules?: string[];
 		migrated?: { answers: number; gaps: number };
 		issues: RefactorIssue[];

@@ -20,6 +20,7 @@ import type {
 	LiteralQuery,
 	LiteralsResult,
 	Mention,
+	MovePlan,
 	QuestionClass,
 	RecalledAnswer,
 	RecordOutcome,
@@ -53,6 +54,7 @@ import {
 	renderMentions,
 	renderMostReferenced,
 	renderMoveOutcome,
+	renderMovePlan,
 	renderOutline,
 	renderOverview,
 	renderRecordOutcome,
@@ -60,6 +62,7 @@ import {
 	renderRefactorStart,
 	renderRefactorStatus,
 	renderReferences,
+	renderRenamePlan,
 	renderRenameStep,
 	renderReplaceOutcome,
 	renderSymbolSearch,
@@ -80,6 +83,8 @@ export interface ToolBackend {
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
 	refactorStart: () => Promise<{ started: boolean; id: string; reason?: string }>;
 	refactorStatus: () => Promise<TransactionStatus>;
+	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
+	planMove: (symbolId: string, toModule: string) => Promise<MovePlan>;
 	refactorTrack: (module: string) => Promise<{ tracked: boolean; reason?: string }>;
 	refactorUndo: () => Promise<{ undone: boolean; stepNo?: number; modules?: string[]; reason?: string }>;
 	refactorRevert: () => Promise<{ reverted: boolean; modules: string[]; reason?: string }>;
@@ -102,6 +107,8 @@ export interface ToolBackend {
 		toModule: string,
 	) => Promise<{
 		moved: boolean;
+		/** The target as the daemon spelled it, which a raw `./a/../b` is not. */
+		toModule?: string;
 		modules?: string[];
 		migrated?: { answers: number; gaps: number };
 		issues: RefactorIssue[];
@@ -291,6 +298,14 @@ export const RefactorInsertInput = {
 };
 
 const RE2_NOTE = "RE2 syntax: linear time, no lookaround or backreferences.";
+
+export const RefactorPreviewInput = {
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path, to say which \`name\`.`),
+	newName: z.string().min(1).optional().describe(`Preview a rename to this name.`),
+	toModule: z.string().min(1).optional().describe(`Preview a move to this module path.`),
+};
 
 export const FindLiteralsInput = {
 	value: z.string().optional().describe(`Exact decoded value.`),
@@ -529,6 +544,15 @@ export const REFACTOR_START_DESCRIPTION = `
 Open the workspace's refactor transaction, and return the rules for operating it.
 
 Every other \`refactor_\` tool needs one open. One per workspace, shared by every session.
+`.trim();
+
+export const REFACTOR_PREVIEW_DESCRIPTION = `
+# \`refactor_preview\`
+
+What a rename or a move would touch. Read-only, no transaction.
+
+\`newName\` previews a rename: files, sites per file, every blocker and warning.
+\`toModule\` previews a move: the removal, the insertion, the imports re-pointed, and what the moved text depends on.
 `.trim();
 
 export const REFACTOR_STATUS_DESCRIPTION = `
@@ -920,12 +944,14 @@ export async function refactorMove(backend: ToolBackend, args: SymbolArgs & { to
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(resolved.problem, true);
 
-	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule).catch((error: unknown) => ({
-		moved: false,
-		issues: [] as RefactorIssue[],
-		reason: error instanceof Error ? error.message : String(error),
-	}));
-	return text(renderMoveOutcome(args.toModule, outcome), !outcome.moved);
+	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule).catch(
+		(error: unknown): Awaited<ReturnType<ToolBackend["refactorMove"]>> => ({
+			moved: false,
+			issues: [],
+			reason: error instanceof Error ? error.message : String(error),
+		}),
+	);
+	return text(renderMoveOutcome(outcome.toModule ?? args.toModule, outcome), !outcome.moved);
 }
 
 export async function refactorRename(
@@ -976,6 +1002,30 @@ export async function refactorStart(backend: ToolBackend): Promise<ToolResult> {
 
 export async function refactorStatus(backend: ToolBackend): Promise<ToolResult> {
 	return rendered(async () => renderRefactorStatus(await backend.refactorStatus()));
+}
+
+export async function refactorPreview(
+	backend: ToolBackend,
+	args: SymbolArgs & { newName?: string | undefined; toModule?: string | undefined },
+): Promise<ToolResult> {
+	if ((args.newName === undefined) === (args.toModule === undefined)) {
+		return text("Give `newName` for a rename preview or `toModule` for a move preview, not both.", true);
+	}
+	try {
+		const resolved = await resolveOne(backend, args);
+		if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
+
+		const body =
+			args.newName !== undefined
+				? renderRenamePlan(await backend.prepareRename(resolved.symbolId, args.newName))
+				: renderMovePlan(await backend.planMove(resolved.symbolId, args.toModule ?? ""));
+		return text(await withIndexState(backend, body, moduleOf(resolved.symbolId)));
+	} catch (error) {
+		return text(
+			`the preview could not be worked out: ${error instanceof Error ? error.message : String(error)}`,
+			true,
+		);
+	}
 }
 
 export async function refactorTrack(backend: ToolBackend, args: { module: string }): Promise<ToolResult> {

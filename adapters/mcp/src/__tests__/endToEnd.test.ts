@@ -55,6 +55,8 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
 		refactorStatus: () => ask("refactorStatus", {}),
+		prepareRename: (symbolId, newName) => ask("prepareRename", { symbolId, newName }),
+		planMove: (symbolId, toModule) => ask("planMove", { symbolId, toModule }),
 		refactorTrack: (module) => ask("refactorTrack", { module }),
 		refactorUndo: () => ask("refactorUndo", {}),
 		refactorRevert: () => ask("refactorRevert", {}),

@@ -48,6 +48,16 @@ knew the providers that had finished registering, so a stop during startup left 
 until their handshake timed out; it now holds what it has spawned and not yet registered, and
 stops that too.
 
+`refactor_preview` answers what a rename or a move would touch before any transaction exists. A
+rename preview has the files, the sites per file, and every blocker and warning, from the plan the
+daemon already computed for the editor; a move preview has the removal, the insertion, the imports
+re-pointed, and what the moved text depends on, by origin. Give `newName` or `toModule`. Until now
+the only way to learn the blast radius was to open a transaction and do it.
+
+A move target is checked as a workspace path before anything is planned. `refactor_move` took
+`toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
+the same rule `refactor_insert` already applied to a module it would create now owns both.
+
 A search count says how sure it is. `search_symbols` printed the size of its probe as the total,
 so a name matching 500 symbols read as "51 symbols"; the literal search had the same bug and was
 fixed earlier, and comments, docs and imports each derived their own truncation sentences. One

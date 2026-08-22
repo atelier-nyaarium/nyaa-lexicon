@@ -5,6 +5,8 @@ import {
 	findReferences,
 	knowledgeGaps,
 	outlineModule,
+	refactorMove,
+	refactorPreview,
 	refactorRename,
 	resolveImport,
 	searchDocs,
@@ -138,6 +140,16 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		symbolSource: async () => ({ found: false, reason: "not stubbed" }),
 		refactorStart: async () => ({ started: true, id: "rt-test" }),
 		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		prepareRename: async (symbolId, newName) => ({
+			symbolId,
+			oldName: "Cart",
+			newName,
+			files: [],
+			occurrences: 0,
+			blockers: [],
+			warnings: [],
+		}),
+		planMove: async (symbolId) => ({ ok: false, reason: `${symbolId} is not in the index` }),
 		refactorTrack: async () => ({ tracked: true }),
 		refactorUndo: async () => ({ undone: false, reason: "nothing to undo" }),
 		refactorRevert: async () => ({ reverted: true, modules: [] }),
@@ -581,6 +593,128 @@ describe("refusing a search term the store cannot match as written", () => {
 		expect(result.isError).toBe(true);
 		expect((result.content[0] as { text: string }).text).toContain("NUL");
 		expect(asked).toBe(0);
+	});
+});
+
+describe("previewing a refactor without a transaction", () => {
+	it("previews a rename by name, reading the plan and opening nothing", async () => {
+		const asked: Array<[string, string]> = [];
+		const result = await refactorPreview(
+			backend({
+				findByName: async () => [summary("Cart")],
+				prepareRename: async (symbolId, newName) => {
+					asked.push([symbolId, newName]);
+					return {
+						symbolId,
+						oldName: "Cart",
+						newName,
+						files: [{ module: "src/a.ts", sites: [] }],
+						occurrences: 3,
+						blockers: [],
+						warnings: [{ kind: "ExportedBeyondIndex", detail: "exported past the index" }],
+					};
+				},
+			}),
+			{ name: "Cart", newName: "Basket" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(asked).toEqual([["lexicon ts src/a.ts Cart.", "Basket"]]);
+		expect(result.isError).toBeUndefined();
+		expect(text).toContain("Rename Cart to Basket");
+		expect(text).toContain("ExportedBeyondIndex");
+	});
+
+	it("previews a move, naming the files it would touch", async () => {
+		const result = await refactorPreview(
+			backend({
+				planMove: async (symbolId, toModule) => ({
+					ok: true,
+					symbolId,
+					name: "Cart",
+					fromModule: "src/a.ts",
+					toModule,
+					text: "export class Cart {\n\ttotal = sum;\n}\n",
+					removal: { start: { line: 3, character: 0 }, end: { line: 5, character: 1 } },
+					closure: [symbolId, `${symbolId}total.`],
+					dependencies: [
+						{ name: "total", origin: { kind: "insideClosure", symbolId: `${symbolId}total.` } },
+						{
+							name: "sum",
+							origin: {
+								kind: "sourceModule",
+								symbolId: "lexicon ts src/a.ts sum.",
+								name: "sum",
+								exported: false,
+							},
+						},
+						{
+							name: "Money",
+							origin: {
+								kind: "workspaceModule",
+								symbolId: "lexicon ts src/money.ts Money#",
+								module: "src/money.ts",
+							},
+						},
+						{
+							name: "z",
+							origin: {
+								kind: "external",
+								via: { specifier: "zod", importKind: "named", importedName: "z" },
+							},
+						},
+						{ name: "ghost", origin: { kind: "unresolved", reason: "NotImplemented" } },
+					],
+					referencing: ["src/use.ts"],
+					usedAtSource: true,
+					baseHash: "h",
+				}),
+			}),
+			{ symbolId: "lexicon ts src/a.ts Cart#", toModule: "src/b.ts" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("Move Cart from `src/a.ts` to `src/b.ts`");
+		expect(text).toContain("lines 4 to 6 removed, and an import back added");
+		expect(text).toContain("`src/b.ts`: 3 lines inserted");
+		expect(text).toContain("`src/use.ts`: import specifier re-pointed");
+		expect(text).toContain("Moves 2 symbols");
+		expect(text).toContain("`sum`: stays in `src/a.ts`, and is not exported, which blocks the move");
+		expect(text).toContain("`Money`: from `src/money.ts`");
+		expect(text).toContain("`z`: from `zod`, outside the workspace");
+		expect(text).toContain("`ghost`: unresolved (NotImplemented)");
+		expect(text).not.toContain("`total`");
+	});
+
+	it("names the target as the daemon spelled it, not as the caller did", async () => {
+		const result = await refactorMove(
+			backend({
+				refactorMove: async () => ({
+					moved: true,
+					toModule: "src/b.ts",
+					modules: ["src/a.ts", "src/b.ts"],
+					issues: [],
+				}),
+			}),
+			{ symbolId: "lexicon ts src/a.ts Cart#", toModule: "./src/b.ts" },
+		);
+		expect((result.content[0] as { text: string }).text).toContain("Moved to `src/b.ts`");
+	});
+
+	it("renders a thrown plan as a tool error rather than a transport error", async () => {
+		const result = await refactorPreview(
+			backend({
+				planMove: async () => {
+					throw new Error("daemon went away");
+				},
+			}),
+			{ symbolId: "lexicon ts src/a.ts Cart#", toModule: "src/b.ts" },
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[0] as { text: string }).text).toContain("daemon went away");
+	});
+
+	it("refuses neither or both of a new name and a target module", async () => {
+		expect((await refactorPreview(backend(), { symbolId: "x" })).isError).toBe(true);
+		expect((await refactorPreview(backend(), { symbolId: "x", newName: "y", toModule: "z" })).isError).toBe(true);
 	});
 });
 

@@ -3,7 +3,6 @@
 // Nothing here writes or reindexes, so a plan is always safe to ask for. Providers only through
 // ProviderProbe, which restores its own state in a finally.
 
-import path from "node:path";
 import type {
 	Binding,
 	FileFacts,
@@ -20,6 +19,7 @@ import {
 	coordinatesOf,
 	isParameterSymbol,
 	isWithin,
+	normalizeModulePath,
 	ownerOf,
 	parseSymbolId,
 	rebaseSymbolId,
@@ -37,6 +37,15 @@ import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** A module a plan may create or write, in its canonical spelling, or why not. */
+function workspaceModule(raw: string): { module: string } | { refused: string } {
+	try {
+		return { module: normalizeModulePath(raw) };
+	} catch (error) {
+		return { refused: error instanceof Error ? error.message : String(error) };
+	}
+}
 
 function detailOf(detail: string | undefined): string {
 	return detail === undefined ? "" : `: ${detail}`;
@@ -409,11 +418,11 @@ export class RefactorPlanner {
 		return { module, before, created: false, line: endPos.line, indent, trailingBlank: false };
 	}
 
-	private endPoint(module: string): SplicePoint | { refused: string } {
+	private endPoint(rawModule: string): SplicePoint | { refused: string } {
 		// "Created if absent" must never mean created OUTSIDE the workspace.
-		if (module.split("/").includes("..") || path.isAbsolute(module)) {
-			return { refused: `${module} is not a workspace-relative path` };
-		}
+		const target = workspaceModule(rawModule);
+		if ("refused" in target) return target;
+		const module = target.module;
 		const before = this.readFile(module);
 		return {
 			module,
@@ -501,7 +510,11 @@ export class RefactorPlanner {
 	 * which come out of the index. Rendering the text is the provider's, so this stops at handing
 	 * each module a request.
 	 */
-	planMove(symbolId: string, toModule: string): MovePlan {
+	planMove(symbolId: string, rawTarget: string): MovePlan {
+		const target = workspaceModule(rawTarget);
+		if ("refused" in target) return { ok: false, reason: target.refused };
+		const toModule = target.module;
+
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) return { ok: false, reason: `${symbolId} is not in the index` };
 		if (declaration.module === toModule) return { ok: false, reason: `${symbolId} is already in ${toModule}` };
