@@ -8,6 +8,7 @@ import {
 	refactorRename,
 	resolveImport,
 	searchDocs,
+	searchSymbols,
 	type ToolBackend,
 	typeOfSymbol,
 } from "../tools";
@@ -532,6 +533,24 @@ describe("index-state honesty notes", () => {
 			{ name: "Cart", module: "src/a.ts" },
 		);
 		expect(asked).toEqual(["src/a.ts"]);
+	});
+});
+
+describe("refusing a search term the store cannot match as written", () => {
+	it("says why before any round trip", async () => {
+		let asked = 0;
+		const result = await searchSymbols(
+			backend({
+				searchSymbols: async (text) => {
+					asked += 1;
+					return { text, symbols: [], total: 0, truncated: false };
+				},
+			}),
+			{ text: "a\0b" },
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[0] as { text: string }).text).toContain("NUL");
+		expect(asked).toBe(0);
 	});
 });
 

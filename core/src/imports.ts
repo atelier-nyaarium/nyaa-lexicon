@@ -101,10 +101,7 @@ export class ImportResolver {
 		if (query.specifierRegex !== undefined) {
 			const expression = compileSearchRegex(query.specifierRegex);
 			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
-			const matched = scanned.filter((statement) => {
-				expression.lastIndex = 0;
-				return expression.test(statement.specifier);
-			});
+			const matched = scanned.filter((statement) => expression.test(statement.specifier));
 			const result = {
 				query,
 				imports: matched.slice(0, limit),
@@ -137,10 +134,7 @@ export class ImportResolver {
 			const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
 			if (landed !== null) {
 				const module = importTarget(landed)?.module;
-				if (module !== undefined) {
-					expression.lastIndex = 0;
-					if (expression.test(module)) matched.push(statement);
-				}
+				if (module !== undefined && expression.test(module)) matched.push(statement);
 			}
 			if (matched.length > limit) break;
 		}

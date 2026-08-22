@@ -453,10 +453,7 @@ export class IndexReadModel {
 		if (query.regex !== undefined) {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.literalsOfKind(query.kind ?? "string", REGEX_SCAN_LIMIT);
-			const matched = scanned.filter((literal) => {
-				expression.lastIndex = 0;
-				return expression.test(literal.value);
-			});
+			const matched = scanned.filter((literal) => expression.test(literal.value));
 			const result = page(query, matched, limit);
 			// A truncated scan and a truncated page are different truncations, and a caller that
 			// cannot tell them apart reads "50 results" as "50 exist".
@@ -504,7 +501,6 @@ export class IndexReadModel {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
 			const matched = scanned.filter((comment) => {
-				expression.lastIndex = 0;
 				return expression.test(comment.normalized);
 			});
 			const result = this.pageComments(query, matched, limit);
@@ -574,7 +570,6 @@ export class IndexReadModel {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.docsToScan(REGEX_SCAN_LIMIT, filter);
 			const matched = scanned.filter((region) => {
-				expression.lastIndex = 0;
 				return expression.test(region.normalized);
 			});
 			const result = this.pageDocs(query, matched, limit);

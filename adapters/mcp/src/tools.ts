@@ -31,7 +31,7 @@ import type {
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
-import { compileSearchRegex } from "@nyaa-lexicon/core";
+import { compileSearchRegex, searchTerm } from "@nyaa-lexicon/core";
 import type { ImportResolution, TypeInfo } from "@nyaa-lexicon/protocol";
 import { parseSymbolId } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
@@ -294,9 +294,11 @@ export const RefactorInsertInput = {
 	text: z.string().min(1).describe(`The declaration(s), flush-left. Indentation is applied from the anchor.`),
 };
 
+const RE2_NOTE = "RE2 syntax: linear time, no lookaround or backreferences.";
+
 export const FindLiteralsInput = {
 	value: z.string().optional().describe(`Exact decoded value.`),
-	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/^cycle/i\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/^cycle/i\`. ${RE2_NOTE}`),
 	kind: z
 		.enum(["string", "number", "boolean"])
 		.optional()
@@ -308,7 +310,7 @@ export const FindLiteralsInput = {
 
 export const FindCommentsInput = {
 	text: z.string().min(1).optional().describe(`Substring of the prose. Use instead of \`regex\`.`),
-	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`. ${RE2_NOTE}`),
 	form: z
 		.enum(["leading", "trailing", "inline", "standalone"])
 		.optional()
@@ -319,7 +321,7 @@ export const FindCommentsInput = {
 
 export const SearchDocsInput = {
 	text: z.string().min(1).optional().describe(`Substring of the prose. Use instead of \`regex\`.`),
-	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`. ${RE2_NOTE}`),
 	fenced: z.boolean().optional().describe(`\`true\` for code blocks only, \`false\` for prose only.`),
 	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
@@ -327,7 +329,7 @@ export const SearchDocsInput = {
 
 export const SearchSymbolsInput = {
 	text: z.string().min(1).optional().describe(`Case-sensitive name substring. Use instead of \`regex\`.`),
-	regex: z.string().min(1).optional().describe(`Regex literal. Use instead of \`text\`.`),
+	regex: z.string().min(1).optional().describe(`Regex literal. Use instead of \`text\`. ${RE2_NOTE}`),
 	kind: z.string().min(1).optional().describe(`Declaration kind filter.`),
 	module: z.string().min(1).optional().describe(`Module path substring.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
@@ -835,6 +837,19 @@ function oneLine(reason: string): string {
 	return reason.replace(/\s+/g, " ").trim();
 }
 
+/** Refused before the round trip. */
+function refusedTerm(...terms: Array<string | undefined>): ToolResult | undefined {
+	for (const term of terms) {
+		if (term === undefined) continue;
+		try {
+			searchTerm(term);
+		} catch (error) {
+			return text(error instanceof Error ? error.message : String(error), true);
+		}
+	}
+	return undefined;
+}
+
 /** Symbol id to its file. */
 function moduleOf(symbolId: string): string | undefined {
 	return parseSymbolId(symbolId)?.module;
@@ -1050,6 +1065,8 @@ export async function findComments(
 	if (args.text !== undefined && args.regex !== undefined) {
 		return text("Set `text` or `regex`, not both.", true);
 	}
+	const refused = refusedTerm(args.text);
+	if (refused !== undefined) return refused;
 	try {
 		const found = await backend.findComments(args);
 		return text(await withIndexState(backend, renderComments(found), args.module));
@@ -1067,6 +1084,8 @@ export async function searchDocs(
 	if (args.text !== undefined && args.regex !== undefined) {
 		return text("Set `text` or `regex`, not both.", true);
 	}
+	const refused = refusedTerm(args.text);
+	if (refused !== undefined) return refused;
 	try {
 		return text(await withIndexState(backend, renderDocs(await backend.findDocs(args)), args.module));
 	} catch (error) {
@@ -1100,6 +1119,8 @@ export async function searchSymbols(
 			return text(error instanceof Error ? error.message : String(error), true);
 		}
 	}
+	const refused = refusedTerm(args.text, args.module);
+	if (refused !== undefined) return refused;
 	const found = await backend.searchSymbols(args.text, args);
 	return text(await withIndexState(backend, renderSymbolSearch(found)));
 }
@@ -1136,6 +1157,8 @@ export async function findImports(
 			return text(error instanceof Error ? error.message : String(error), true);
 		}
 	}
+	const refused = refusedTerm(args.specifier);
+	if (refused !== undefined) return refused;
 	try {
 		return text(await withIndexState(backend, renderImports(await backend.findImports(args)), args.module));
 	} catch (error) {

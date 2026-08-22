@@ -110,6 +110,7 @@ describe("searching comments", () => {
 
 	it("reports a bad regex rather than an empty result", () => {
 		expect(() => reads.findComments({ regex: "/(unclosed/" })).toThrow();
+		expect(() => reads.findComments({ text: "a\0" })).toThrow(/NUL/);
 	});
 
 	// Both is not a narrower search, it is two searches, and answering one picks a winner the

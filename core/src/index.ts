@@ -163,7 +163,7 @@ export {
 export { type QueueStats, RequestQueue } from "./requestQueue.js";
 export { type CacheStats, ResultCache } from "./resultCache.js";
 export { modulesFor, type ProviderClaims, type Route, routeModule } from "./routing.js";
-export { compileSearchRegex } from "./search.js";
+export { compileSearchRegex, type SearchPattern, searchTerm } from "./search.js";
 export {
 	LexiconService,
 	type RenameOutcome,

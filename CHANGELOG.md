@@ -30,7 +30,20 @@ Every JSON dialect is now read leniently, the keys and values are answered, the 
 facts, and the file gets one `info` note per kind saying what was read that the strict dialect lacks.
 `.jsonc` gets no note: it is its own dialect. Files that parsed before produce the same facts.
 
+A search cannot take the daemon down. A regex such as `/(a+)+b/` in `find_comments` used to hang the
+process on a sixty-letter comment, with every other request queued behind it, because patterns ran
+on the JavaScript engine, which backtracks. They run on RE2 now, which is linear in the text, so no
+pattern stalls. A search term holding a NUL used to match everything, since SQLite reads a pattern
+up to the first one; it is refused with the reason. A term past two thousand characters is refused
+with the limit, instead of surfacing SQLite's own error.
+
 ### What it asks of you
+
+**Regex search is RE2 syntax.** Lookahead, lookbehind and backreferences are refused at compile,
+with a message that says so. The flags that change a match, `i`, `m` and `s`, apply; `g`, `u` and
+`y` are accepted and change nothing. Where RE2 reads a spelling differently from JavaScript: `\d`,
+`\w` and `\b` are ASCII, `$` does not match before a final newline, `\u{...}` is refused, and
+`\p{L}` works without a `u` flag. Alternation, classes, quantifiers, anchors and groups are the same.
 
 **This adds no rebuild, and files read before this release show their notes after their next read.**
 The notes table is added to your store in place. A file indexed before it existed has no notes

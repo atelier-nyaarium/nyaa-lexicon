@@ -26,7 +26,7 @@ import {
 import type { Answer, Doubt } from "./answers.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { normalizeDocText } from "./proseText.js";
-import { compileSearchRegex } from "./search.js";
+import { compileSearchRegex, searchTerm } from "./search.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -1477,19 +1477,14 @@ export class IndexStore {
 			.map(rowToDeclaration);
 		if (regex === undefined) return rows;
 
-		return rows
-			.filter((row) => {
-				regex.lastIndex = 0;
-				return regex.test(row.name);
-			})
-			.slice(0, options.limit);
+		return rows.filter((row) => regex.test(row.name)).slice(0, options.limit);
 	}
 
 	/** Imports whose specifier contains this text. "Which files import X", by the name as written. */
 	importsMatching(specifier: string, limit: number): StoredImport[] {
 		const rows = this.db
 			.prepare("SELECT * FROM imports WHERE specifier LIKE ? ESCAPE '\\' ORDER BY module, startLine LIMIT ?")
-			.all(`%${specifier.replace(/[%_\\]/g, "\\$&")}%`, limit);
+			.all(`%${likePattern(specifier)}%`, limit);
 		return rows.map(rowToImport);
 	}
 
@@ -1839,7 +1834,7 @@ interface LiteralRow {
 
 /** Escapes what LIKE treats as wildcards, so a search for `100%` is a search for `100%`. */
 function likePattern(text: string): string {
-	return text.replace(/[%_\\]/g, "\\$&");
+	return searchTerm(text).replace(/[%_\\]/g, "\\$&");
 }
 
 /** Source order, and by column too: two comments can share a line. */
