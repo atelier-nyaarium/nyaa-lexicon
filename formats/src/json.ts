@@ -8,6 +8,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	type Literal,
+	type Range,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 // The ESM entry by path, because the package has no `exports` map and its `main` is a UMD file whose
@@ -34,8 +35,8 @@ export interface JsonContext {
 	/** Where the text starts in its file, so a record inside JSONL still addresses the file. */
 	offset: number;
 	coordinates: TextCoordinates;
-	/** Comments and trailing commas. False for strict `.json`, true for JSONC. */
-	lenient: boolean;
+	/** The extension names the strict dialect, so comments and trailing commas are read and noted. */
+	strict: boolean;
 	/** Descriptors above the root, which is how JSONL gives each record its own path. */
 	parents?: Descriptor[];
 }
@@ -58,31 +59,65 @@ function literalOf(value: unknown): { kind: Literal["kind"]; value: string; numb
 	return null;
 }
 
-/** Comments from the scanner that reads the values, so a marker inside a string stays a string. */
-function scanComments(text: string, offset: number, coordinates: TextCoordinates): CommentSpan[] {
+/** What strict JSON lacks, from the value scanner. */
+interface Lenience {
+	comments: CommentSpan[];
+	trailingCommas: Range[];
+}
+
+/** Closers and scalars: what a trailing comma follows. */
+const VALUE_END = new Set([2, 4, 7, 8, 9, 10, 11]);
+
+/** One pass, so a string's marker stays a string. */
+function scanLenience(text: string, offset: number, coordinates: TextCoordinates): Lenience {
 	const scanner = createScanner(text, false);
-	const spans: CommentSpan[] = [];
+	const comments: CommentSpan[] = [];
+	const trailingCommas: Range[] = [];
+	// Last significant token; a comma after a value.
+	let previous = 0;
+	let commaAt: [number, number] | null = null;
 	for (;;) {
 		const token = scanner.scan();
 		// 17 ends the stream. 12 and 13 are the line and block comment tokens.
 		if (token === 17) break;
-		if (token !== 12 && token !== 13) continue;
 		const at = scanner.getTokenOffset();
 		// Clamped: an unterminated `/*` at the end reports a length one past the text, which for a
 		// JSONL record is inside the file and spans into the next line rather than being refused.
 		const end = Math.min(at + scanner.getTokenLength(), text.length);
-		const range = coordinates.rangeAt(offset + at, offset + end);
-		// Sliced from the source rather than taken from the scanner, so a span's range and its text
-		// cannot disagree: getTokenValue carries leading trivia that the offset does not.
-		const source = text.slice(at, end);
-		if (range !== undefined && source !== "") spans.push({ range, text: source });
+		if (token === 12 || token === 13) {
+			const range = coordinates.rangeAt(offset + at, offset + end);
+			// Sliced from the source rather than taken from the scanner, so a span's range and its text
+			// cannot disagree: getTokenValue carries leading trivia that the offset does not.
+			const source = text.slice(at, end);
+			if (range !== undefined && source !== "") comments.push({ range, text: source });
+			continue;
+		}
+		if (token === 14 || token === 15) continue;
+		// Value, comma, closer.
+		if ((token === 2 || token === 4) && previous === 5 && commaAt !== null) {
+			const range = coordinates.rangeAt(offset + commaAt[0], offset + commaAt[1]);
+			if (range !== undefined) trailingCommas.push(range);
+		}
+		if (token === 5) commaAt = VALUE_END.has(previous) ? [at, end] : null;
+		previous = token;
 	}
-	return spans;
+	return { comments, trailingCommas };
+}
+
+/** Once per kind, never a fault. */
+function noted(what: string, count: number, module: string, range: Range | undefined): Diagnostic {
+	const plural = count === 1 ? what : `${what}s`;
+	return {
+		severity: "info",
+		message: `read ${count} ${plural}; the strict dialect this extension names has none`,
+		path: module,
+		...(range === undefined ? {} : { range }),
+	};
 }
 
 /** Every property in an object, at any depth, with the values this index can hold. */
 export function readJson(context: JsonContext): JsonFacts {
-	const { language, module, text, offset, coordinates, lenient } = context;
+	const { language, module, text, offset, coordinates, strict } = context;
 	const declarations: Declaration[] = [];
 	const literals: Literal[] = [];
 	const diagnostics: Diagnostic[] = [];
@@ -92,9 +127,10 @@ export function readJson(context: JsonContext): JsonFacts {
 	let tree: Node | undefined;
 	let tooDeep = false;
 	try {
+		// Every dialect reads leniently; strictness only notes.
 		tree = parseTree(text, problems, {
-			disallowComments: !lenient,
-			allowTrailingComma: lenient,
+			disallowComments: false,
+			allowTrailingComma: true,
 			allowEmptyContent: true,
 		});
 	} catch (failure) {
@@ -195,10 +231,13 @@ export function readJson(context: JsonContext): JsonFacts {
 	}
 	if (tooDeep) diagnostics.push({ severity: "error", message: TOO_DEEP, path: module });
 
-	return {
-		declarations,
-		literals,
-		comments: lenient ? scanComments(text, offset, coordinates) : [],
-		diagnostics,
-	};
+	const lenience = scanLenience(text, offset, coordinates);
+	if (strict) {
+		const { comments, trailingCommas } = lenience;
+		if (comments.length > 0) diagnostics.push(noted("comment", comments.length, module, comments[0]?.range));
+		if (trailingCommas.length > 0)
+			diagnostics.push(noted("trailing comma", trailingCommas.length, module, trailingCommas[0]));
+	}
+
+	return { declarations, literals, comments: lenience.comments, diagnostics };
 }

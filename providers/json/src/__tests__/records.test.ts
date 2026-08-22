@@ -73,10 +73,18 @@ describe("dialect by extension", () => {
 		expect(facts.comments).toEqual([]);
 	});
 
-	it("reads a comment in .jsonc and refuses one in .json", () => {
+	it("reads a comment under any extension, noting it only where the dialect lacks one", () => {
 		const commented = '{\n\t// note\n\t"a": 1\n}\n';
-		expect(parse("a.jsonc", commented).comments.map((c) => c.text)).toEqual(["// note"]);
-		expect(parse("a.json", commented).diagnostics.length).toBeGreaterThan(0);
+		const jsonc = parse("a.jsonc", commented);
+		expect(jsonc.comments.map((c) => c.text)).toEqual(["// note"]);
+		expect(jsonc.diagnostics).toEqual([]);
+
+		const json = parse("a.json", commented);
+		expect(json.declarations.map((d) => d.name)).toEqual(["a"]);
+		expect(json.comments.map((c) => c.text)).toEqual(["// note"]);
+		expect(json.diagnostics.map((d) => [d.severity, d.message])).toEqual([
+			["info", expect.stringContaining("1 comment")],
+		]);
 	});
 });
 

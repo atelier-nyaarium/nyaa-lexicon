@@ -369,8 +369,7 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/Comments.kt",
 			},
-			// A `.jsonc` file, because strict `.json` has no comment to report and the shapes only exist
-			// in the lenient dialect.
+			// Under `.jsonc`, where the shapes carry no note; every dialect reads them.
 			[JSON_LANG]: {
 				files: {
 					"comments.jsonc":
@@ -912,9 +911,9 @@ const CASES: ConformanceCase[] = [
 			// Markdown prose cannot fail, so the only syntax a document can get wrong is its
 			// frontmatter. A provider claiming the tier has to report there or nowhere.
 			[MARKDOWN]: { files: { "broken.md": "---\na: [1,\n---\n\n# Body\n" }, subject: "broken.md" },
-			// A trailing comma, which is the difference between the strict dialect and the lenient one.
-			// The same text under `.jsonc` is legal, so this also pins that the extension decides.
-			[JSON_LANG]: { files: { "broken.json": '{\n\t"a": 1,\n}\n' }, subject: "broken.json" },
+			// A key with no value, which no dialect reads. A trailing comma or a comment is read and
+			// noted instead, so neither belongs here.
+			[JSON_LANG]: { files: { "broken.json": '{\n\t"a": \n}\n' }, subject: "broken.json" },
 			[YAML]: { files: { "broken.yml": "a: [1,\n" }, subject: "broken.yml" },
 		},
 		parseErrors: "required",
@@ -1709,15 +1708,28 @@ const CASES: ConformanceCase[] = [
 		declarations: [{ name: "empty", kind: "property" }],
 	},
 	{
-		id: "data-strict-json-refuses-a-comment",
-		tier: "syntaxDiagnostics",
-		about: "A comment in a `.json` file is an error, because the strict dialect has none.",
-		// The parser accepts comments by default and the dialect is a flag, so a provider that never
-		// sets it reports a clean parse for a file no strict reader would accept.
+		id: "data-json-reads-a-comment-and-notes-it",
+		tier: "declarations",
+		about: "A comment in a `.json` file is read, its keys are answered, and a note says the dialect lacks it.",
+		// Refusing the file loses tsconfig.json and everything else commented under `.json`; reading
+		// it silently hides that a strict reader would not. Both halves are required.
 		fixtures: {
-			[JSON_LANG]: { files: { "strict.json": '{\n\t// nope\n\t"a": 1\n}\n' }, subject: "strict.json" },
+			[JSON_LANG]: { files: { "strict.json": '{\n\t// nope\n\t"a": 1,\n}\n' }, subject: "strict.json" },
 		},
-		parseErrors: "required",
+		declarations: [{ name: "a", kind: "property" }],
+		parseErrors: "forbidden",
+		notes: "required",
+	},
+	{
+		id: "data-jsonc-has-nothing-to-note",
+		tier: "declarations",
+		about: "The same text under `.jsonc` is its own dialect, so it is read with no note.",
+		fixtures: {
+			[JSON_LANG]: { files: { "own.jsonc": '{\n\t// fine\n\t"a": 1,\n}\n' }, subject: "own.jsonc" },
+		},
+		declarations: [{ name: "a", kind: "property" }],
+		parseErrors: "forbidden",
+		notes: "forbidden",
 	},
 ];
 

@@ -23,7 +23,7 @@ const REASONS: Record<DropReason, { severity: Diagnostic["severity"]; say: (name
 	},
 };
 
-/** Core keeps only `error` today, so nothing surfaces these yet. Reported rather than skipped anyway. */
+/** Reported, never skipped. */
 export function droppedKey(reason: DropReason, module: string, range: Diagnostic["range"], name = ""): Diagnostic {
 	const { severity, say } = REASONS[reason];
 	return { severity, message: say(JSON.stringify(name)), path: module, ...(range === undefined ? {} : { range }) };

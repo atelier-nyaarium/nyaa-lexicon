@@ -2,16 +2,16 @@ import { coordinatesOf } from "@nyaa-lexicon/protocol";
 import { describe, expect, it } from "vitest";
 import { readJson } from "../json.js";
 
-function read(text: string, lenient = false) {
+function read(text: string, strict = true) {
 	const coordinates = coordinatesOf(text);
 	return {
-		...readJson({ language: "json", module: "a.json", text, offset: 0, coordinates, lenient }),
+		...readJson({ language: "json", module: "a.json", text, offset: 0, coordinates, strict }),
 		coordinates,
 	};
 }
 
-function names(text: string, lenient = false): string[] {
-	return read(text, lenient).declarations.map((declaration) => declaration.name);
+function names(text: string, strict = true): string[] {
+	return read(text, strict).declarations.map((declaration) => declaration.name);
 }
 
 describe("keys", () => {
@@ -64,7 +64,7 @@ describe("keys", () => {
 			text,
 			offset: 0,
 			coordinates: coordinatesOf(text),
-			lenient: false,
+			strict: true,
 			parents: [{ kind: "namespace", name: "[0]" }],
 		});
 		expect(facts.declarations[0]?.symbolId).toContain("[0]");
@@ -74,37 +74,78 @@ describe("keys", () => {
 describe("dialect", () => {
 	const commented = '{\n\t// nope\n\t"a": 1\n}\n';
 
-	it("refuses a comment in the strict dialect", () => {
-		expect(read(commented).diagnostics.length).toBeGreaterThan(0);
-		expect(read(commented).comments).toEqual([]);
+	// Refusing loses the file; silence hides the dialect.
+	it("reads a comment in the strict dialect, keeps the keys, and notes it once at info", () => {
+		const facts = read(commented);
+		expect(facts.declarations.map((d) => d.name)).toEqual(["a"]);
+		expect(facts.comments.map((c) => c.text)).toEqual(["// nope"]);
+		expect(facts.diagnostics).toEqual([
+			{
+				severity: "info",
+				message: expect.stringContaining("1 comment"),
+				path: "a.json",
+				range: facts.comments[0]?.range,
+			},
+		]);
 	});
 
-	it("accepts and reports a comment in the lenient one", () => {
-		const facts = read(commented, true);
+	it("reads a comment in the lenient dialect with nothing to note", () => {
+		const facts = read(commented, false);
 		expect(facts.diagnostics).toEqual([]);
 		expect(facts.comments.map((c) => c.text)).toEqual(["// nope"]);
 	});
 
-	it("refuses a trailing comma only in the strict dialect", () => {
-		expect(read('{"a": 1,}').diagnostics.length).toBeGreaterThan(0);
-		expect(read('{"a": 1,}', true).diagnostics).toEqual([]);
+	it("reads trailing commas, noting them once and only in the strict dialect", () => {
+		const strict = read('{"a": [1,], "b": 2,}');
+		expect(strict.declarations.map((d) => d.name)).toEqual(["a", "b"]);
+		expect(strict.diagnostics.map((d) => [d.severity, d.message])).toEqual([
+			["info", expect.stringContaining("2 trailing commas")],
+		]);
+		expect(strict.coordinates.sliceRange(strict.diagnostics[0]?.range as never)).toBe(",");
+		expect(read('{"a": 1,}', false).diagnostics).toEqual([]);
+	});
+
+	it("does not take a comma before a string's closing quote for a trailing one", () => {
+		expect(read('{"a": "x,", "b": [1, 2]}').diagnostics).toEqual([]);
+	});
+
+	it("tells a leading comma from a trailing one, and sees through a comment before the closer", () => {
+		expect(read("[,]").diagnostics.map((d) => d.severity)).toEqual(["error"]);
+		expect(read("[1, /* c */ ]").diagnostics.map((d) => d.message)).toEqual([
+			expect.stringContaining("1 comment"),
+			expect.stringContaining("1 trailing comma"),
+		]);
+	});
+
+	it("addresses the file, not the record, when read at an offset", () => {
+		const file = 'ignored\n{"a": 1,}';
+		const coordinates = coordinatesOf(file);
+		const facts = readJson({
+			language: "json",
+			module: "a.jsonl",
+			text: '{"a": 1,}',
+			offset: 8,
+			coordinates,
+			strict: true,
+		});
+		expect(coordinates.sliceRange(facts.diagnostics[0]?.range as never)).toBe(",");
 	});
 
 	it("gives every comment a range that cuts its own text", () => {
-		const facts = read('// leading\n{\n\t"a": 1 /* inline */\n}\n', true);
+		const facts = read('// leading\n{\n\t"a": 1 /* inline */\n}\n', false);
 		for (const comment of facts.comments) expect(facts.coordinates.sliceRange(comment.range)).toBe(comment.text);
 		expect(facts.comments).toHaveLength(2);
 	});
 
 	it("takes a marker inside a string as content", () => {
-		expect(read('{"url": "https://example.com/p"}', true).comments).toEqual([]);
+		expect(read('{"url": "https://example.com/p"}').comments).toEqual([]);
 	});
 });
 
 describe("failure", () => {
 	it("keeps an unterminated block comment inside its own text", () => {
 		const text = "{} /*";
-		const facts = read(text, true);
+		const facts = read(text, false);
 		for (const comment of facts.comments) expect(facts.coordinates.sliceRange(comment.range)).toBe(comment.text);
 		for (const diagnostic of facts.diagnostics)
 			expect(diagnostic.range?.end.character).toBeLessThanOrEqual(text.length);

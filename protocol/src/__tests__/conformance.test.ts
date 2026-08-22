@@ -246,6 +246,7 @@ describe("corpus", () => {
 			docs: [{ text: "never emitted" }],
 			documentation: { declaration: "Missing", comment: "// missing" },
 			parseErrors: "required",
+			notes: "required",
 		};
 
 		const keys = Object.keys(ConformanceCaseSchema.shape).filter((key) => !metadata.has(key));
@@ -255,7 +256,7 @@ describe("corpus", () => {
 		// These three are answered by their own provider calls, so the runner checks them rather
 		// than checkFacts. The table above still has to cover them, which is what forces a decision
 		// about a new field instead of letting it default into nobody's job.
-		const runnerChecked = new Set(["parseErrors", "imports", "typeOf"]);
+		const runnerChecked = new Set(["parseErrors", "notes", "imports", "typeOf"]);
 		for (const key of keys.filter((k) => !runnerChecked.has(k))) {
 			const testCase = { [key]: wrong[key] } as unknown as ConformanceCase;
 			expect(checkFacts(testCase, facts({})), key).not.toHaveLength(0);

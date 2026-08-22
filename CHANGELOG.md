@@ -23,6 +23,13 @@ exists and I could not index it" was indistinguishable from one that found nothi
 beside the file's facts as notes: `outline_module` lists them for that file with the line, and
 `overview` counts the files that carry any. A note is what was read and why, never a verdict.
 
+A commented `.json` is read. `tsconfig.json`, `jsconfig.json`, `.vscode/*.json` and
+`devcontainer.json` carry comments under an extension that names the strict dialect, and refusing
+them put every one of those files outside the index with `InvalidCommentToken` as the only trace.
+Every JSON dialect is now read leniently, the keys and values are answered, the comments are comment
+facts, and the file gets one `info` note per kind saying what was read that the strict dialect lacks.
+`.jsonc` gets no note: it is its own dialect. Files that parsed before produce the same facts.
+
 ### What it asks of you
 
 **This adds no rebuild, and files read before this release show their notes after their next read.**

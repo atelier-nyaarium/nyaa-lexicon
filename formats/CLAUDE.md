@@ -31,7 +31,10 @@ coordinate map belongs to the whole file, never to the slice.
 - One declaration per symbol id. A repeated key, and a sequence sibling, both mint one path twice;
   the store's primary key would silently keep whichever arrived last.
 - A reason when a key is dropped, worded by `dropped.ts` rather than by each reader, so the same
-  situation cannot read two ways. Core keeps only `error` today, so nothing surfaces `info` yet, but
-  the reader still reports rather than skipping in silence.
+  situation cannot read two ways. Core keeps `warning` and `info` as notes on the file, shown by
+  `outline_module`, so a reader's reason reaches the reader.
+- Everything the text holds, whatever dialect the extension names. A comment in a `.json` is read
+  and noted at `info`, never refused: the tool exists to learn a codebase, not to judge one, and a
+  refused file is a file nobody can ask about.
 
 Parser selection is `docs/parsing.md` rule 1. Its three questions were all earned here.

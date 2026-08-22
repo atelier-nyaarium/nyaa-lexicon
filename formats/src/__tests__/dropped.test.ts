@@ -19,7 +19,7 @@ function bothOn(yamlText: string, jsonText: string) {
 			text: jsonText,
 			offset: 0,
 			coordinates: coordinatesOf(jsonText),
-			lenient: false,
+			strict: true,
 		}).diagnostics,
 	};
 }

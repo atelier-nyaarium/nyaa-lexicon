@@ -1263,6 +1263,9 @@ is right for `.json` and wrong for `.jsonc`, and the tier is per provider rather
 A strict `.json` file reports none, which is the tier working rather than an over-claim, and a
 comment in one is now a syntax error proven by a conformance case rather than a promise.
 
+Superseded in 2.0.2: every JSON dialect is read leniently. A comment under `.json` is a comment fact
+plus an `info` note saying the strict dialect lacks it, and the conformance case requires both.
+
 `.json5` is NOT claimed. `jsonc-parser` reads comments and trailing commas, not unquoted keys, single
 quotes or hex numbers, so claiming the extension would report facts for files it half-understands.
 Not claiming it leaves those files unclaimed, which is the honest answer and is visible.

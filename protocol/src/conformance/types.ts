@@ -224,6 +224,8 @@ export const ConformanceCaseSchema = z
 		 * then staying quiet is the over-claim this case exists to catch.
 		 */
 		parseErrors: z.enum(["required", "forbidden"]).optional(),
+		/** Whether reading this fixture must leave a `warning` or `info` diagnostic behind. */
+		notes: z.enum(["required", "forbidden"]).optional(),
 	})
 	.meta({ id: "ConformanceCase" });
 

@@ -32,7 +32,7 @@ const OBJECT_EXTENSIONS = [".json", ".jsonc"];
 const LINE_EXTENSIONS = [".jsonl", ".ndjson"];
 const EXTENSIONS = [...OBJECT_EXTENSIONS, ...LINE_EXTENSIONS];
 
-/** `.json` is strict. A comment there is an error, not a feature, and jsonc-parser must be told. */
+/** Every dialect is read leniently; the others get a note for what strict JSON lacks. */
 const LENIENT_EXTENSIONS = [".jsonc"];
 
 const EXCLUDED_DIRECTORIES = new Set([
@@ -49,12 +49,7 @@ const EXCLUDED_DIRECTORIES = new Set([
 	"vendor-cache",
 ]);
 
-/**
- * Keys and their values, and comments only where the dialect has them.
- *
- * `comments` is TRUE because JSONC has them, and a `.json` file simply reports none, which is the
- * tier working as intended rather than an over-claim. `docs` is false: nothing here is prose.
- */
+/** Keys, their values, and comments wherever they are written. `docs` is false: nothing here is prose. */
 export const TIERS = {
 	projectModel: true,
 	declarations: true,
@@ -113,7 +108,7 @@ function empty(): JsonFacts {
  * line is inserted above it, which is the weakness already accepted for a repeated heading and taken
  * here for the same reason: a record with no id is a record nothing can address.
  */
-function readRecords(module: string, text: string, coordinates: TextCoordinates, lenient: boolean): JsonFacts {
+function readRecords(module: string, text: string, coordinates: TextCoordinates, strict: boolean): JsonFacts {
 	const facts = empty();
 	let offset = 0;
 	let record = 0;
@@ -121,7 +116,7 @@ function readRecords(module: string, text: string, coordinates: TextCoordinates,
 	for (const line of text.split("\n")) {
 		if (line.trim() !== "") {
 			const parents: Descriptor[] = [{ kind: "namespace", name: `[${record}]` }];
-			const read = readJson({ language: LANGUAGE, module, text: line, offset, coordinates, lenient, parents });
+			const read = readJson({ language: LANGUAGE, module, text: line, offset, coordinates, strict, parents });
 			facts.declarations.push(...read.declarations);
 			facts.literals.push(...read.literals);
 			facts.comments.push(...read.comments);
@@ -168,17 +163,17 @@ export class JsonProvider {
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const coordinates = coordinatesOf(params.text);
-		const lenient = LENIENT_EXTENSIONS.some((extension) => params.module.endsWith(extension));
+		const strict = !LENIENT_EXTENSIONS.some((extension) => params.module.endsWith(extension));
 		const lines = LINE_EXTENSIONS.some((extension) => params.module.endsWith(extension));
 		const facts = lines
-			? readRecords(params.module, params.text, coordinates, lenient)
+			? readRecords(params.module, params.text, coordinates, strict)
 			: readJson({
 					language: LANGUAGE,
 					module: params.module,
 					text: params.text,
 					offset: 0,
 					coordinates,
-					lenient,
+					strict,
 				});
 
 		const shallow = params.depth === "outline" || params.depth === "surface";

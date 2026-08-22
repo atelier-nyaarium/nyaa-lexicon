@@ -164,6 +164,16 @@ async function runCase(
 		}
 	}
 
+	if (facts && testCase.notes) {
+		const notes = facts.diagnostics.filter((diagnostic) => diagnostic.severity !== "error");
+		if (testCase.notes === "required" && notes.length === 0) {
+			problems.push("text worth a note produced no warning or info diagnostic");
+		}
+		if (testCase.notes === "forbidden" && notes.length > 0) {
+			problems.push(`text produced ${notes.length} note(s) where none was expected: ${notes[0]?.message}`);
+		}
+	}
+
 	// The fixture's own list wins when it has one, since a specifier is this language's syntax.
 	for (const expected of fixture.imports ?? testCase.imports ?? []) {
 		const resolution = await session.call("resolveImport", {
