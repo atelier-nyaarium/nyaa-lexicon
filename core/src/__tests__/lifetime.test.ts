@@ -1,36 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { lingerWhileEmpty } from "../lifetime";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
-
-/** A clock the test advances by hand, so no case here is decided by waiting. */
-function fakeClock() {
-	const timers = new Map<number, { fn: () => void; at: number }>();
-	let now = 0;
-	let nextId = 1;
-
-	return {
-		setTimer: (fn: () => void, ms: number) => {
-			const id = nextId++;
-			timers.set(id, { fn, at: now + ms });
-			return id;
-		},
-		clearTimer: (handle: unknown) => {
-			timers.delete(handle as number);
-		},
-		advance: (ms: number) => {
-			now += ms;
-			for (const [id, timer] of [...timers]) {
-				if (timer.at <= now) {
-					timers.delete(id);
-					timer.fn();
-				}
-			}
-		},
-		pending: () => timers.size,
-	};
-}
 
 function linger(afterMs = 1000) {
 	const clock = fakeClock();
@@ -38,8 +11,7 @@ function linger(afterMs = 1000) {
 	const subject = lingerWhileEmpty({
 		afterMs,
 		stop: () => stops.push(1),
-		setTimer: clock.setTimer,
-		clearTimer: clock.clearTimer,
+		clock,
 	});
 	return { clock, stops, subject };
 }
@@ -142,8 +114,7 @@ describe("holding the linger while work is in flight", () => {
 			stop: () => stops.push(1),
 			holdWhile: () => busy.reason,
 			onHeld: (reason) => held.push(reason),
-			setTimer: clock.setTimer,
-			clearTimer: clock.clearTimer,
+			clock,
 		});
 		return { clock, stops, held, subject };
 	}
@@ -210,8 +181,7 @@ describe("holding the linger while work is in flight", () => {
 			stop: () => stops.push(1),
 			holdWhile: () => "busy",
 			onHeld: () => subject.cancel(),
-			setTimer: clock.setTimer,
-			clearTimer: clock.clearTimer,
+			clock,
 		});
 
 		subject.observe(0);

@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { type FSWatcher, watch } from "node:fs";
 import path from "node:path";
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import { coalesce, type FileEvent } from "./invalidation.js";
 import { readSource } from "./sourceRead.js";
 
@@ -20,6 +21,8 @@ export interface WatchOptions {
 	debounceMs?: number;
 	/** Path segments never watched, matched exactly against any segment. */
 	ignore?: string[];
+	/** Injected so a test decides when a burst has settled. */
+	clock?: Clock;
 }
 
 export interface RunningWatcher {
@@ -80,9 +83,10 @@ export function readEvent(workspaceRoot: string, module: string): FileEvent {
 export function watchWorkspace(options: WatchOptions): RunningWatcher {
 	const ignore = options.ignore ?? DEFAULT_IGNORE;
 	const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+	const clock = options.clock ?? systemClock;
 
 	let pending: FileEvent[] = [];
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: TimerHandle | null = null;
 	let stopped = false;
 
 	function flush(): void {
@@ -94,9 +98,8 @@ export function watchWorkspace(options: WatchOptions): RunningWatcher {
 	function record(module: string): void {
 		if (stopped || isIgnored(module, ignore)) return;
 		pending.push(readEvent(options.workspaceRoot, module));
-		clearTimeout(timer);
-		timer = setTimeout(flush, debounceMs);
-		timer.unref?.();
+		if (timer !== null) clock.clearTimer(timer);
+		timer = clock.setTimer(flush, debounceMs);
 	}
 
 	const watcher: FSWatcher = watch(options.workspaceRoot, { recursive: true }, (_event, filename) => {
@@ -108,7 +111,7 @@ export function watchWorkspace(options: WatchOptions): RunningWatcher {
 		inject: record,
 		stop: () => {
 			stopped = true;
-			clearTimeout(timer);
+			if (timer !== null) clock.clearTimer(timer);
 			watcher.close();
 		},
 	};

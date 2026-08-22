@@ -4,6 +4,7 @@
 // one at a time, because two overlapping re-indexes of the same file race on the same store rows,
 // and a burst landing mid-apply is ordinary rather than rare.
 
+import type { Clock } from "./clock.js";
 import type { IndexOutcome } from "./indexer.js";
 import type { FileEvent } from "./invalidation.js";
 import type { LexiconService } from "./service.js";
@@ -23,6 +24,7 @@ export interface LiveIndexOptions {
 	 */
 	gate?: { exclusive: <T>(work: () => Promise<T>) => Promise<T> };
 	debounceMs?: number;
+	clock?: Clock;
 	onApplied?: (outcomes: IndexOutcome[]) => void;
 	/** Called instead of throwing, since the watcher callback has no caller to catch anything. */
 	onError?: (error: unknown) => void;
@@ -57,6 +59,7 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 		workspaceRoot: options.workspaceRoot,
 		onBatch: queue.push,
 		...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
+		...(options.clock === undefined ? {} : { clock: options.clock }),
 	});
 
 	return { stop: watcher.stop, inject: watcher.inject, settled: queue.settled };

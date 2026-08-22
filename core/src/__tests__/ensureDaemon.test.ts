@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ensureDaemon } from "../ensureDaemon";
 import type { LockDecision } from "../lockFile";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -22,7 +23,7 @@ function looking(sequence: LockDecision[]) {
 
 const options = {
 	workspaceRoot: "/w",
-	wait: async () => {},
+	clock: fakeClock(),
 	timeoutMs: 500,
 	alive: () => true,
 };

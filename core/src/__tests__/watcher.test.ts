@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FileEvent } from "../invalidation";
 import { hashContent, isIgnored, type RunningWatcher, readEvent, toModule, watchWorkspace } from "../watcher";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -93,6 +94,24 @@ describe("batching", () => {
 
 		expect(batches).toHaveLength(1);
 		expect(batches[0]).toHaveLength(1);
+	});
+
+	// Decided on the injected clock, so the rule is tested rather than the wall.
+	it("settles a burst when the debounce elapses on the clock, restarting it per event", () => {
+		const batches: FileEvent[][] = [];
+		const clock = fakeClock();
+		write("a.ts", "1");
+		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20, clock });
+
+		watcher.inject("a.ts");
+		clock.advance(15);
+		watcher.inject("a.ts");
+		clock.advance(15);
+		expect(batches).toEqual([]);
+
+		clock.advance(5);
+		expect(batches).toHaveLength(1);
+		expect(clock.pending()).toBe(0);
 	});
 
 	it("carries the last state of each file in the burst", async () => {

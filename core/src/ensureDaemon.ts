@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { callDaemon, findDaemon, lockHolderAlive } from "./client.js";
+import { type Clock, systemClock } from "./clock.js";
 import type { DaemonLock } from "./lockFile.js";
 import { currentHost, workspacePaths } from "./paths.js";
 import { lexiconRoot } from "./providers.js";
@@ -32,7 +33,8 @@ export interface EnsureDaemonOptions {
 	/** Injected so a test never starts a real process. */
 	start?: (command: string[]) => SpawnWatch | undefined | void;
 	look?: () => ReturnType<typeof findDaemon>;
-	wait?: (ms: number) => Promise<void>;
+	/** Injected so a test never waits on the wall. */
+	clock?: Clock;
 	/** Injected so a test never signals a real process. */
 	stop?: (pid: number) => void;
 	/** Whether the lock's holder still lives as itself. Injected for the same reason. */
@@ -184,7 +186,7 @@ function errorText(error: unknown): string {
  */
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<EnsureResult> {
 	const look = options.look ?? (() => findDaemon(options.workspaceRoot));
-	const wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+	const wait = (ms: number) => (options.clock ?? systemClock).sleep(ms);
 	const stop = options.stop ?? ((pid) => process.kill(pid, "SIGTERM"));
 	const alive = options.alive ?? lockHolderAlive;
 	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}));

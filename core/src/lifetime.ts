@@ -4,6 +4,8 @@
 // test passed just as happily against a 30 minute timer. The clock is injected, so every case
 // here is decided rather than awaited.
 
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -18,8 +20,7 @@ export interface LingerOptions {
 	/** Told each time a hold re-arms. */
 	onHeld?: (reason: string) => void;
 	/** Injected so tests decide rather than wait. */
-	setTimer?: (fn: () => void, ms: number) => unknown;
-	clearTimer?: (handle: unknown) => void;
+	clock?: Clock;
 }
 
 export interface Linger {
@@ -42,20 +43,19 @@ export const DEFAULT_LINGER_MS = 30 * 60 * 1000;
 
 /** Runs only while nobody is connected. Re-arming restarts the FULL wait and clears any prior timer. */
 export function lingerWhileEmpty(options: LingerOptions): Linger {
-	const setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
-	const clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+	const clock = options.clock ?? systemClock;
 
-	let handle: unknown = null;
+	let handle: TimerHandle | null = null;
 	let cancelled = false;
 
 	function disarm(): void {
 		if (handle === null) return;
-		clearTimer(handle);
+		clock.clearTimer(handle);
 		handle = null;
 	}
 
 	function arm(): void {
-		handle = setTimer(() => {
+		handle = clock.setTimer(() => {
 			handle = null;
 			if (cancelled) return;
 			const held = options.holdWhile?.() ?? null;

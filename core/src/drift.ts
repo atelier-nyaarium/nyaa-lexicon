@@ -6,6 +6,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { type Clock, systemClock } from "./clock.js";
 import { bundleStamp, daemonCommand } from "./ensureDaemon.js";
 import { newerBuild } from "./lockFile.js";
 
@@ -27,6 +28,7 @@ export interface DriftOptions {
 	stampAtStart: string | null;
 	/** How long a bundle must sit unmodified before it counts. Injected so tests decide. */
 	settleMs?: number;
+	clock?: Clock;
 }
 
 ////////////////////////////////
@@ -38,9 +40,10 @@ const DEFAULT_SETTLE_MS = 3_000;
 ////////////////////////////////
 //  Functions & Helpers
 
-function settled(bundle: string, settleMs: number): boolean {
+function settled(bundle: string, options: DriftOptions): boolean {
+	const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS;
 	try {
-		return Date.now() - statSync(bundle).mtimeMs >= settleMs;
+		return (options.clock ?? systemClock).now() - statSync(bundle).mtimeMs >= settleMs;
 	} catch {
 		return false;
 	}
@@ -62,7 +65,6 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
 	// The layout's tell: the root directory is named exactly the running version.
 	if (path.basename(options.root) !== options.version) return null;
 	const parent = path.dirname(options.root);
-	const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS;
 
 	let entries: string[];
 	try {
@@ -77,7 +79,7 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
 		const sibling = path.join(parent, entry);
 		// Only a root with a runnable, settled bundle is a target.
 		if (daemonCommand(options.workspaceRoot, sibling) === null) continue;
-		if (!settled(path.join(sibling, "dist", "daemon.js"), settleMs)) continue;
+		if (!settled(path.join(sibling, "dist", "daemon.js"), options)) continue;
 		// The manifest must agree with the directory name. A bundle compiled as some OTHER version
 		// writes that version into its lock, which clients then replace, which respawns the daemon
 		// that hands over here again: a loop, cut by refusing the mismatched install.
@@ -102,7 +104,7 @@ export function driftedTo(options: DriftOptions): DriftSight | null {
 		options.stampAtStart !== null &&
 		now !== null &&
 		now !== options.stampAtStart &&
-		settled(path.join(options.root, "dist", "daemon.js"), options.settleMs ?? DEFAULT_SETTLE_MS)
+		settled(path.join(options.root, "dist", "daemon.js"), options)
 	) {
 		return { root: options.root, why: "the bundle changed on disk since this daemon started" };
 	}

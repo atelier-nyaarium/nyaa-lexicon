@@ -31,6 +31,7 @@ import {
 import { type PlatformEnv, storePaths } from "../paths";
 import { processMemory } from "../procfs";
 import { ProviderSupervisor } from "../supervisor";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -67,39 +68,6 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** A clock the test advances by hand. Fires every timer due, including ones armed while firing. */
-function fakeClock(start = 1_000_000) {
-	const timers = new Map<number, { fn: () => void; at: number }>();
-	let now = start;
-	let nextId = 1;
-
-	return {
-		now: () => now,
-		setTimer: (fn: () => void, ms: number) => {
-			const id = nextId++;
-			timers.set(id, { fn, at: now + ms });
-			return id;
-		},
-		clearTimer: (handle: unknown) => {
-			timers.delete(handle as number);
-		},
-		advance: (ms: number) => {
-			const until = now + ms;
-			for (;;) {
-				const due = [...timers.entries()]
-					.filter(([, timer]) => timer.at <= until)
-					.sort((a, b) => a[1].at - b[1].at)[0];
-				if (due === undefined) break;
-				timers.delete(due[0]);
-				now = due[1].at;
-				due[1].fn();
-			}
-			now = until;
-		},
-		pending: () => timers.size,
-	};
-}
-
 function harness(overrides: Partial<CollectorOptions> = {}) {
 	const root = scratch();
 	const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
@@ -122,9 +90,7 @@ function harness(overrides: Partial<CollectorOptions> = {}) {
 		processes: () => state.children,
 		context: () => state.context,
 		onError: (message) => errors.push(message),
-		now: clock.now,
-		setTimer: clock.setTimer,
-		clearTimer: clock.clearTimer,
+		clock,
 		selfMemory: () => state.self,
 		readMemory: (pid) => memory.get(pid) ?? null,
 		readHost: () => ({ memTotal: 32e9, memAvailable: 16e9 }),
@@ -242,7 +208,7 @@ describe("the collection on disk", () => {
 	});
 
 	it("keeps writing when the clock steps backwards", () => {
-		const { clock, read, collector } = harness({ now: () => clockValue });
+		const { read, collector } = harness({ clock: { ...fakeClock(), now: () => clockValue } });
 		const first = read().writtenAt;
 		clockValue = first - 3_600_000;
 		collector.sample();

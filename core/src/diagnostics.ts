@@ -15,6 +15,7 @@ import {
 import path from "node:path";
 import v8 from "node:v8";
 import { z } from "zod";
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import { currentHost, type PlatformEnv, storePaths } from "./paths.js";
 import { hostMemory, processMemory } from "./procfs.js";
 import type { ProviderExit } from "./supervisor.js";
@@ -146,9 +147,7 @@ export interface CollectorOptions {
 	/** Told about a failure. Never thrown: diagnostics must not take the daemon down. */
 	onError?: (message: string) => void;
 	/** Injected so tests decide rather than wait. */
-	now?: () => number;
-	setTimer?: (fn: () => void, ms: number) => unknown;
-	clearTimer?: (handle: unknown) => void;
+	clock?: Clock;
 	selfMemory?: () => SelfMemory;
 	readMemory?: (pid: number) => { rss: number; hwm: number } | null;
 	readHost?: () => { memTotal: number; memAvailable: number } | null;
@@ -421,15 +420,10 @@ function push<T>(ring: T[], item: T, size: number): void {
 //  Collector
 
 export function startDiagnostics(options: CollectorOptions): Collector {
-	const now = options.now ?? (() => Date.now());
-	const setTimer =
-		options.setTimer ??
-		((fn, ms) => {
-			const handle = setTimeout(fn, ms);
-			handle.unref?.();
-			return handle;
-		});
-	const clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+	const clock = options.clock ?? systemClock;
+	const now = () => clock.now();
+	const setTimer = (fn: () => void, ms: number) => clock.setTimer(fn, ms);
+	const clearTimer = (handle: TimerHandle) => clock.clearTimer(handle);
 	const selfMemory = options.selfMemory ?? defaultSelfMemory;
 	const readMemory = options.readMemory ?? processMemory;
 	const readHost = options.readHost ?? hostMemory;
@@ -450,7 +444,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 	/** Pids already asked, until they come back down. */
 	const asked = new Set<number>();
 	let lastWrite: number | null = null;
-	let timer: unknown = null;
+	let timer: TimerHandle | null = null;
 	let stopped = false;
 
 	function takeSample(): Sample {

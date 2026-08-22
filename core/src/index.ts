@@ -15,6 +15,7 @@ export {
 } from "./answers.js";
 export { type ApplyOutcome, type FileEdits, writeAll } from "./applyEdits.js";
 export { callDaemon, findDaemon, lockHolderAlive, processIsAlive } from "./client.js";
+export { type Clock, systemClock, type TimerHandle } from "./clock.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
 export { type DaemonChannel, daemonChannel } from "./daemonChannel.js";
 export {
