@@ -64,7 +64,7 @@ describe("a real provider's comments, attached by core", () => {
 			execFileSync("git", ["init", "-q"], { cwd: root });
 			execFileSync("git", ["add", "-A"], { cwd: root });
 
-			await startProviders(supervisor, root, TYPESCRIPT_ONLY);
+			await startProviders(supervisor, root, { commands: TYPESCRIPT_ONLY });
 			const service = new LexiconService(
 				store,
 				supervisor,

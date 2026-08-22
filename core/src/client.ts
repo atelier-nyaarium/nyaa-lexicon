@@ -9,6 +9,7 @@ import { bundleStamp } from "./ensureDaemon.js";
 import type { DaemonLock, LockDecision } from "./lockFile.js";
 import { decideFromLock } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
+import { processIdentity } from "./procfs.js";
 import { requestOnce } from "./socketTransport.js";
 import { BUILD_VERSION } from "./version.js";
 
@@ -23,26 +24,6 @@ export function processIsAlive(pid: number): boolean {
 	} catch (error) {
 		// EPERM means it exists and belongs to someone else, which still counts as alive.
 		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-/** Fields from /proc/<pid>/stat. comm may hold spaces and parens, so parsing is only stable after
- * the LAST ')'. Exported pure so hostile comm shapes are testable. */
-export function parseProcStat(stat: string): { startTicks: string; zombie: boolean } | null {
-	const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-	const state = fields[0];
-	const startTicks = fields[19];
-	if (state === undefined || startTicks === undefined || !/^\d+$/.test(startTicks)) return null;
-	return { startTicks, zombie: state === "Z" };
-}
-
-/** A pid's birth, where the platform can say. Reuse mints new ticks, so equal ticks IS identity;
- * kill(0) alone reads a reused pid and a zombie both as our daemon. */
-export function processIdentity(pid: number): { startTicks: string; zombie: boolean } | null {
-	try {
-		return parseProcStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
-	} catch {
-		return null;
 	}
 }
 

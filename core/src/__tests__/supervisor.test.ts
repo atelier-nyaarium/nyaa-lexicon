@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ProviderSupervisor } from "../supervisor";
+import { type ProviderExit, ProviderSupervisor } from "../supervisor";
 
 ////////////////////////////////
 //  Helpers
@@ -169,5 +169,47 @@ describe("when a provider dies", () => {
 		// The pid moving is the proof a NEW process answered, not a survivor.
 		expect(supervisor.pidOf("reference-provider")).not.toBe(firstPid);
 		expect(supervisor.running()).toHaveLength(1);
+	}, 30_000);
+
+	// An OOM leaves a signal and no code; a listener told only "code null" cannot tell it from a
+	// kill. A deliberate stop is the supervisor's own doing and is not a death to report.
+	it("tells an observer about an unexpected death with its signal, and about a deliberate stop not at all", async () => {
+		await start();
+		const exits: ProviderExit[] = [];
+		supervisor.observeExits((exit) => exits.push(exit));
+		const pid = supervisor.pidOf("reference-provider") as number;
+		process.kill(pid, "SIGKILL");
+
+		const deadline = Date.now() + 10_000;
+		while (exits.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(exits).toEqual([{ providerId: "reference-provider", pid, code: null, signal: "SIGKILL" }]);
+
+		supervisor.stop("reference-provider");
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(exits).toHaveLength(1);
+	}, 30_000);
+});
+
+describe("signalling a provider", () => {
+	// A signal with no handler behind it kills the process, so a declaration is the only licence.
+	it("sends only a signal the provider declared it handles, and only to a child it still owns", async () => {
+		supervisor = new ProviderSupervisor();
+		await supervisor.start(
+			{ command: ["bun", "run", REFERENCE], timeoutMs: 15_000, handles: ["SIGCONT"] },
+			tmpdir(),
+		);
+		const pid = supervisor.pidOf("reference-provider") as number;
+
+		expect(supervisor.signal(pid, "SIGUSR2")).toBe(false);
+		expect(supervisor.signal(pid + 100_000, "SIGCONT")).toBe(false);
+		expect(supervisor.signal(pid, "SIGCONT")).toBe(true);
+		expect(supervisor.pidOf("reference-provider")).toBe(pid);
+	}, 30_000);
+
+	it("refuses every signal for a provider that declared none", async () => {
+		await start();
+		const pid = supervisor.pidOf("reference-provider") as number;
+
+		expect(supervisor.signal(pid, "SIGCONT")).toBe(false);
 	}, 30_000);
 });

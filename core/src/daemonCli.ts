@@ -11,6 +11,13 @@
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
+import {
+	type Collector,
+	enableSelfReports,
+	type NodeReportSetup,
+	nodeReportSetup,
+	startDiagnostics,
+} from "./diagnostics.js";
 import { createDispatch } from "./dispatch.js";
 import { driftedTo } from "./drift.js";
 import { daemonCommand, spawnDaemonProcess } from "./ensureDaemon.js";
@@ -60,6 +67,7 @@ function describeError(error: unknown): string {
 //  Main
 
 async function main(argv: string[]): Promise<void> {
+	const startedAt = Date.now();
 	// A successor is told to warm because its predecessor was warm; nobody should notice the swap.
 	const warmRequested = argv.includes("--warm");
 	const [workspace] = argv.filter((arg) => !arg.startsWith("--"));
@@ -93,6 +101,15 @@ async function main(argv: string[]): Promise<void> {
 
 	const paths = workspacePaths(host, root);
 	mkdirSync(paths.dir, { recursive: true });
+	// Before anything allocates: a fatal error from here on leaves a report, not only a log line.
+	// Never fatal itself, so a broken reports directory costs the reports and nothing else.
+	let reports: NodeReportSetup | null = null;
+	try {
+		enableSelfReports(paths.reportsDir);
+		reports = nodeReportSetup(paths.reportsDir);
+	} catch (error) {
+		log(`crash reports off: ${describeError(error)}`);
+	}
 
 	// The state dir is the one directory this process owns. A cwd inside the project pins it: on
 	// Windows the folder cannot be renamed or deleted while a live process sits in it.
@@ -111,6 +128,7 @@ async function main(argv: string[]): Promise<void> {
 	let transactions: TransactionManager | null = null;
 	let live: { stop: () => void } | null = null;
 	let linger: ReturnType<typeof lingerWhileEmpty> | null = null;
+	let collector: Collector | null = null;
 
 	// Requests being answered right now. What shutdown waits out and the linger refuses to orphan.
 	let inFlight = 0;
@@ -154,6 +172,8 @@ async function main(argv: string[]): Promise<void> {
 	async function releaseEverything(): Promise<void> {
 		const steps: Array<[string, () => unknown]> = [
 			["lock", () => daemon?.stop()],
+			// While the providers are still alive to be measured.
+			["diagnostics", () => collector?.stop()],
 			["watcher", () => live?.stop()],
 			["providers", () => supervisor?.stopAll()],
 			["store", () => store?.close()],
@@ -214,10 +234,14 @@ async function main(argv: string[]): Promise<void> {
 		store = opened.store;
 		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
 
-		supervisor = new ProviderSupervisor();
+		const spawned = new ProviderSupervisor();
+		supervisor = spawned;
+		// Held until the collector exists, so a death during startup is still an incident.
+		const earlyExits: Parameters<Collector["recordExit"]>[0][] = [];
+		spawned.observeExits((exit) => (collector === null ? earlyExits.push(exit) : collector.recordExit(exit)));
 		startingSince = Date.now();
 		waitingFor = "the language providers to start";
-		const providers = await startProviders(supervisor, root);
+		const providers = await startProviders(spawned, root, reports === null ? {} : { node: reports });
 		log(`providers:\n${describeStart(providers)}`);
 
 		const openStore = store;
@@ -256,6 +280,30 @@ async function main(argv: string[]): Promise<void> {
 		}
 
 		const dispatch = createDispatch(service, { gate, transactions: journal });
+
+		collector = startDiagnostics({
+			file: paths.diagnosticsFile,
+			reportsDir: paths.reportsDir,
+			workspaceRoot: root,
+			daemon: { pid: process.pid, version: BUILD_VERSION, startedAt },
+			processes: () =>
+				spawned.running().flatMap((claims) => {
+					const pid = spawned.pidOf(claims.providerId);
+					return pid === null ? [] : [{ role: `provider:${claims.providerId}`, pid }];
+				}),
+			context: () => {
+				const status = service.indexStatus();
+				return {
+					index: { state: status.state, done: status.done, total: status.total },
+					inFlight,
+					connections: outcome.daemon.connections(),
+				};
+			},
+			signal: (pid, signal) => spawned.signal(pid, signal),
+			onError: (message) => log(message),
+		});
+		for (const exit of earlyExits.splice(0)) collector.recordExit(exit);
+		log(`diagnostics ${paths.diagnosticsFile}`);
 
 		// Warming is opt-in, and the opt-in is having indexed here before. A directory nobody meant to
 		// index costs nothing until something asks about it.

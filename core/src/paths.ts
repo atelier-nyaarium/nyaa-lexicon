@@ -54,7 +54,12 @@ export function workspaceKey(workspaceRoot: string): string {
 
 /** Everything one workspace's daemon owns, derived in one place from one root. */
 export function workspacePaths(host: PlatformEnv, workspaceRoot: string) {
-	const dir = path.join(stateRoot(host), workspaceKey(workspaceRoot));
+	return storePaths(host, workspaceKey(workspaceRoot));
+}
+
+/** The same paths from a store key, for a reader holding the directory name and not the root. */
+export function storePaths(host: PlatformEnv, key: string) {
+	const dir = path.join(stateRoot(host), key);
 	return {
 		dir,
 		/** Where a client finds a running daemon, or learns there is none. */
@@ -62,6 +67,10 @@ export function workspacePaths(host: PlatformEnv, workspaceRoot: string) {
 		index: path.join(dir, "index.sqlite"),
 		/** The daemon's own words. It runs detached, so this is the only place they land. */
 		logFile: path.join(dir, "daemon.log"),
+		/** The bounded memory collection. Rewritten whole, never appended. */
+		diagnosticsFile: path.join(dir, "diagnostics.json"),
+		/** Node's own crash and signal reports, pruned to a few. */
+		reportsDir: path.join(dir, "reports"),
 	};
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type PlatformEnv, stateRoot, workspaceKey, workspacePaths } from "../paths";
+import { type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "../paths";
 
 ////////////////////////////////
 //  Helpers
@@ -59,5 +59,17 @@ describe("workspacePaths", () => {
 
 	it("gives two workspaces separate directories", () => {
 		expect(workspacePaths(POSIX, "/a/proj").dir).not.toBe(workspacePaths(POSIX, "/b/proj").dir);
+	});
+
+	// The names are the contract the docs quote.
+	it("keeps the diagnostics file and the reports directory inside the workspace directory", () => {
+		const paths = workspacePaths(POSIX, "/home/me/proj");
+		expect(paths.diagnosticsFile).toBe(`${paths.dir}/diagnostics.json`);
+		expect(paths.reportsDir).toBe(`${paths.dir}/reports`);
+	});
+
+	// Readers of the state root hold keys.
+	it("answers the same paths from a store key as from the workspace that minted it", () => {
+		expect(storePaths(POSIX, workspaceKey("/home/me/proj"))).toEqual(workspacePaths(POSIX, "/home/me/proj"));
 	});
 });

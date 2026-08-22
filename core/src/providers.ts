@@ -8,7 +8,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { ProviderClaims } from "./routing.js";
-import type { ProviderSupervisor } from "./supervisor.js";
+import type { ProviderSpec, ProviderSupervisor } from "./supervisor.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -17,6 +17,13 @@ export interface ProviderCommand {
 	/** The directory name under providers/. A label for reports, never a routing key. */
 	directory: string;
 	command: string[];
+	runtime: "node" | "bun";
+}
+
+export interface StartOptions {
+	commands?: ProviderCommand[];
+	/** Node-only. Argv goes after the executable; bun takes none and handles nothing. */
+	node?: { argv: string[]; handles: NodeJS.Signals[] };
 }
 
 export interface StartedProvider {
@@ -71,14 +78,22 @@ export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 
 		const bundled = path.join(root, "dist", "providers", entry.name, "main.js");
 		if (existsSync(bundled)) {
-			found.push({ directory: entry.name, command: [process.execPath, bundled] });
+			found.push({ directory: entry.name, command: [process.execPath, bundled], runtime: "node" });
 			continue;
 		}
 
 		const source = path.join(directory, entry.name, "src", "main.ts");
-		if (existsSync(source)) found.push({ directory: entry.name, command: ["bun", "run", source] });
+		if (existsSync(source)) found.push({ directory: entry.name, command: ["bun", "run", source], runtime: "bun" });
 	}
 	return found.sort((a, b) => a.directory.localeCompare(b.directory));
+}
+
+function specFor(entry: ProviderCommand, node: StartOptions["node"]): ProviderSpec {
+	const [executable, ...rest] = entry.command;
+	if (entry.runtime !== "node" || node === undefined || executable === undefined) {
+		return { command: entry.command, timeoutMs: START_TIMEOUT_MS };
+	}
+	return { command: [executable, ...node.argv, ...rest], timeoutMs: START_TIMEOUT_MS, handles: node.handles };
 }
 
 /**
@@ -91,18 +106,16 @@ export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 export async function startProviders(
 	supervisor: ProviderSupervisor,
 	workspaceRoot: string,
-	commands = discoverProviders(),
+	options: StartOptions = {},
 ): Promise<StartReport> {
+	const commands = options.commands ?? discoverProviders();
 	const report: StartReport = { started: [], failed: [] };
 
 	// Concurrent: sequential made the worst case the SUM of every provider's timeout.
 	const settled = await Promise.all(
 		commands.map(async (entry) => {
 			try {
-				const claims = await supervisor.start(
-					{ command: entry.command, timeoutMs: START_TIMEOUT_MS },
-					workspaceRoot,
-				);
+				const claims = await supervisor.start(specFor(entry, options.node), workspaceRoot);
 				return { entry, claims };
 			} catch (error) {
 				return { entry, error: error instanceof Error ? error.message : String(error) };

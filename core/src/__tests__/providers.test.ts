@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { describeStart, discoverProviders, lexiconRoot, startProviders } from "../providers";
-import type { ProviderSupervisor } from "../supervisor";
+import type { ProviderSpec, ProviderSupervisor } from "../supervisor";
 
 ////////////////////////////////
 //  Helpers
@@ -11,23 +11,30 @@ import type { ProviderSupervisor } from "../supervisor";
 const roots: string[] = [];
 
 /** A tree shaped like the repository, so discovery is exercised on layout rather than on names. */
-function tree(entrypoints: string[]): string {
+function tree(sources: string[], bundled: string[] = []): string {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-providers-"));
 	roots.push(root);
 	writeFileSync(path.join(root, "package.json"), "{}\n");
-	for (const name of entrypoints) {
+	for (const name of sources) {
 		const dir = path.join(root, "providers", name, "src");
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(path.join(dir, "main.ts"), "\n");
+	}
+	for (const name of bundled) {
+		mkdirSync(path.join(root, "providers", name), { recursive: true });
+		const dir = path.join(root, "dist", "providers", name);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(path.join(dir, "main.js"), "\n");
 	}
 	mkdirSync(path.join(root, "providers", "no-entrypoint"), { recursive: true });
 	return root;
 }
 
 /** Starts fine, or throws, depending on what the test is about. Never spawns a process. */
-function supervisor(failing: string[] = []): ProviderSupervisor {
+function supervisor(failing: string[] = [], started: ProviderSpec[] = []): ProviderSupervisor {
 	return {
-		start: async (spec: { command: string[] }) => {
+		start: async (spec: ProviderSpec) => {
+			started.push(spec);
 			const name = spec.command[spec.command.length - 1] ?? "";
 			if (failing.some((f) => name.includes(`/${f}/`))) throw new Error("boom");
 			return {
@@ -62,6 +69,16 @@ describe("finding providers", () => {
 		expect(discoverProviders(root)).toEqual([]);
 	});
 
+	it("prefers a bundle over the source and says which runtime each needs", () => {
+		const found = discoverProviders(tree(["alpha"], ["beta"]));
+
+		expect(found.map((p) => [p.directory, p.runtime])).toEqual([
+			["alpha", "bun"],
+			["beta", "node"],
+		]);
+		expect(found[1]?.command[0]).toBe(process.execPath);
+	});
+
 	// The walk-up is the part that differs between running from source and running from dist/, so
 	// a wrong marker fails everywhere at once and is worth pinning.
 	it("locates this repository from wherever the caller was bundled", () => {
@@ -71,7 +88,8 @@ describe("finding providers", () => {
 
 describe("starting providers", () => {
 	it("starts each one and reports what it claimed", async () => {
-		const report = await startProviders(supervisor(), "/w", discoverProviders(tree(["alpha", "beta"])));
+		const commands = discoverProviders(tree(["alpha", "beta"]));
+		const report = await startProviders(supervisor(), "/w", { commands });
 
 		expect(report.started.map((s) => s.directory)).toEqual(["alpha", "beta"]);
 		expect(report.failed).toEqual([]);
@@ -80,18 +98,34 @@ describe("starting providers", () => {
 	// One broken tree used to be able to take down answering for every other language, which is the
 	// opposite of what running providers as separate processes is for.
 	it("keeps the others working when one refuses to start", async () => {
-		const report = await startProviders(
-			supervisor(["beta"]),
-			"/w",
-			discoverProviders(tree(["alpha", "beta", "gamma"])),
-		);
+		const commands = discoverProviders(tree(["alpha", "beta", "gamma"]));
+		const report = await startProviders(supervisor(["beta"]), "/w", { commands });
 
 		expect(report.started.map((s) => s.directory)).toEqual(["alpha", "gamma"]);
 		expect(report.failed).toEqual([{ directory: "beta", error: "boom" }]);
 	});
 
 	it("says which provider failed rather than reporting a silent short list", async () => {
-		const report = await startProviders(supervisor(["beta"]), "/w", discoverProviders(tree(["alpha", "beta"])));
+		const commands = discoverProviders(tree(["alpha", "beta"]));
+		const report = await startProviders(supervisor(["beta"]), "/w", { commands });
 		expect(describeStart(report)).toContain("beta: did not start");
+	});
+
+	// Bun gets no flags.
+	it("puts node argv after the executable of node providers, with the signals they then handle", async () => {
+		const started: ProviderSpec[] = [];
+		const commands = discoverProviders(tree(["alpha"], ["beta"]));
+		await startProviders(supervisor([], started), "/w", {
+			commands,
+			node: { argv: ["--report-on-fatalerror"], handles: ["SIGUSR2"] },
+		});
+
+		const [alpha, beta] = started;
+		expect(alpha?.command[0]).toBe("bun");
+		expect(alpha?.command).not.toContain("--report-on-fatalerror");
+		expect(alpha?.handles).toBeUndefined();
+		expect(beta?.command.slice(0, 2)).toEqual([process.execPath, "--report-on-fatalerror"]);
+		expect(beta?.command[2]).toMatch(/dist\/providers\/beta\/main\.js$/);
+		expect(beta?.handles).toEqual(["SIGUSR2"]);
 	});
 });

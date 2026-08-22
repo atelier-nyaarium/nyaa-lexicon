@@ -17,6 +17,23 @@ export { type ApplyOutcome, type FileEdits, writeAll } from "./applyEdits.js";
 export { callDaemon, findDaemon, lockHolderAlive, processIsAlive } from "./client.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
 export { type DaemonChannel, daemonChannel } from "./daemonChannel.js";
+export {
+	type Collector,
+	type CollectorOptions,
+	type Diagnostics,
+	DiagnosticsSchema,
+	enableSelfReports,
+	HEAP_SNAPSHOT_ENV,
+	HIGH_WATER_SIGNAL,
+	type Incident,
+	type NodeReportSetup,
+	nodeReportSetup,
+	pruneReports,
+	type ReadDiagnostics,
+	readDiagnostics,
+	type SampleContext,
+	startDiagnostics,
+} from "./diagnostics.js";
 export { createDispatch } from "./dispatch.js";
 export { daemonCommand, type EnsureResult, ensureDaemon } from "./ensureDaemon.js";
 export {
@@ -95,7 +112,18 @@ export {
 } from "./knowledge.js";
 export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } from "./lifetime.js";
 export { type DaemonLock, DaemonLockSchema, decideFromLock, type LockDecision } from "./lockFile.js";
-export { currentHost, type PlatformEnv, stateRoot, workspaceKey, workspacePaths } from "./paths.js";
+export { currentHost, type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "./paths.js";
+export {
+	type HostMemory,
+	hostMemory,
+	type ProcessIdentity,
+	type ProcessMemory,
+	parseMeminfo,
+	parseProcStat,
+	parseProcStatus,
+	processIdentity,
+	processMemory,
+} from "./procfs.js";
 export {
 	findProject,
 	forgetProject,
@@ -116,6 +144,7 @@ export {
 	discoverProviders,
 	lexiconRoot,
 	type ProviderCommand,
+	type StartOptions,
 	type StartReport,
 	startProviders,
 } from "./providers.js";
@@ -164,7 +193,7 @@ export {
 	type StoredLiteral,
 	type StoredReference,
 } from "./store.js";
-export { type ProviderSpec, ProviderSupervisor } from "./supervisor.js";
+export { type ProviderExit, type ProviderSpec, ProviderSupervisor } from "./supervisor.js";
 export {
 	type FileImage,
 	type ImageScope,

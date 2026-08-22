@@ -8,13 +8,16 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+	currentHost,
 	type DaemonChannel,
 	daemonChannel,
 	ensureDaemon,
 	IndexStore,
 	LexiconService,
+	nodeReportSetup,
 	ProviderSupervisor,
 	startProviders,
+	workspacePaths,
 } from "@nyaa-lexicon/core";
 import { daemonReads, deferredReads, type LexiconReads, localReads } from "./reads.js";
 import { LspServer, pathFromUri } from "./server.js";
@@ -92,7 +95,9 @@ async function buildLocal(workspaceRoot: string, hold: (index: LocalIndex) => vo
 		workspaceRoot,
 	);
 
-	await startProviders(supervisor, workspaceRoot);
+	// Crash reports only. The daemon owns the sampled collection; a second writer would corrupt it.
+	const reports = workspacePaths(currentHost(), workspaceRoot).reportsDir;
+	await startProviders(supervisor, workspaceRoot, { node: nodeReportSetup(reports) });
 	const outcomes = await service.indexWorkspace();
 	const indexed = outcomes.filter((outcome) => outcome.action === "indexed").length;
 	process.stderr.write(`indexed ${indexed} files in this process\n`);

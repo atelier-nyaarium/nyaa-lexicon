@@ -30,6 +30,16 @@ export interface ProviderSpec {
 	command: string[];
 	/** Cap on one request, so a wedged provider fails its caller rather than the daemon. */
 	timeoutMs?: number;
+	/** Signals it has a handler for. Any other is refused, since the default action is death. */
+	handles?: NodeJS.Signals[];
+}
+
+/** A death nobody ordered. A deliberate stop is never reported. */
+export interface ProviderExit {
+	providerId: string;
+	pid: number | null;
+	code: number | null;
+	signal: string | null;
 }
 
 type MethodResponse<K extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[K]["response"]>;
@@ -74,11 +84,33 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 	return Promise.race([work, bounded]).finally(() => clearTimeout(timer));
 }
 
+/** A signal death has no code, and "code null" hides which signal it was. */
+function describeExit(code: number | null, signal: string | null): string {
+	return signal !== null ? `died on ${signal}` : `exited with code ${code}`;
+}
+
 ////////////////////////////////
 //  Class
 
 export class ProviderSupervisor {
 	private readonly providers = new Map<string, RunningProvider>();
+	private readonly exitListeners: Array<(exit: ProviderExit) => void> = [];
+
+	/** Told about every unexpected death. The supervisor learns nothing about the listener. */
+	observeExits(listener: (exit: ProviderExit) => void): void {
+		this.exitListeners.push(listener);
+	}
+
+	private announceExit(exit: ProviderExit): void {
+		for (const listener of this.exitListeners) {
+			try {
+				listener(exit);
+			} catch (error) {
+				// A listener's failure is not the provider's.
+				console.log(`exit listener failed: ${error instanceof Error ? error.message : error}`);
+			}
+		}
+	}
 
 	/**
 	 * Starts a provider and records what it claims.
@@ -170,25 +202,40 @@ export class ProviderSupervisor {
 		return this.providers.get(providerId)?.child.pid ?? null;
 	}
 
+	/**
+	 * Through the child handle, which cannot reach a reused pid, and only for a signal the process
+	 * declared it survives. False means not sent.
+	 */
+	signal(pid: number, signal: NodeJS.Signals): boolean {
+		for (const provider of this.providers.values()) {
+			if (provider.child.pid !== pid) continue;
+			if (!(provider.spec.handles ?? []).includes(signal)) return false;
+			return provider.child.kill(signal);
+		}
+		return false;
+	}
+
 	/** Respawn on an unexpected death, up to the cap. The claims keep routing so failures classify. */
 	private watchForExit(entry: RunningProvider): void {
-		const onExit = (code: number | null) => {
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
 			const current = this.providers.get(entry.claims.providerId);
 			if (current === undefined || current.child !== entry.child || current.stopping) return;
+			this.announceExit({ providerId: entry.claims.providerId, pid: entry.child.pid ?? null, code, signal });
 			current.deaths += 1;
 			if (current.deaths > MAX_RESPAWNS) {
 				console.log(`provider ${entry.claims.providerId} died ${current.deaths} times; staying dead`);
 				return;
 			}
 			console.log(
-				`provider ${entry.claims.providerId} exited with code ${code}; respawning (${current.deaths} of ${MAX_RESPAWNS})`,
+				`provider ${entry.claims.providerId} ${describeExit(code, signal)}; respawning (${current.deaths} of ${MAX_RESPAWNS})`,
 			);
 			setTimeout(() => void this.respawn(current), RESPAWN_DELAY_MS).unref?.();
 		};
 		// A death inside the handshake await has already fired 'exit'; catching up here means the
-		// watcher can never miss it.
-		if (entry.child.exitCode !== null) onExit(entry.child.exitCode);
-		else entry.child.once("exit", onExit);
+		// watcher can never miss it. A signal death leaves exitCode null and signalCode set.
+		if (entry.child.exitCode !== null || entry.child.signalCode !== null) {
+			onExit(entry.child.exitCode, entry.child.signalCode);
+		} else entry.child.once("exit", onExit);
 	}
 
 	/** A respawn abandoned by teardown must never publish a child a stopped daemon cannot reap. */
@@ -214,7 +261,19 @@ export class ProviderSupervisor {
 		} catch (error) {
 			// The half-started child is reaped, and the failed attempt costs a death so retries
 			// stay bounded by the same cap as crashes.
-			if (running !== undefined) this.stopProcess(running);
+			if (running !== undefined) {
+				const { child } = running;
+				// Died, as opposed to stalled and reaped by us.
+				if (child.exitCode !== null || child.signalCode !== null) {
+					this.announceExit({
+						providerId: previous.claims.providerId,
+						pid: child.pid ?? null,
+						code: child.exitCode,
+						signal: child.signalCode,
+					});
+				}
+				this.stopProcess(running);
+			}
 			console.log(
 				`provider ${previous.claims.providerId} respawn failed: ${error instanceof Error ? error.message : error}`,
 			);
@@ -262,7 +321,7 @@ export class ProviderSupervisor {
 			queue.close(error);
 			closeNow(error);
 		};
-		child.on("exit", (code) => die(new ProviderUnavailableError(`provider exited with code ${code}`)));
+		child.on("exit", (code, signal) => die(new ProviderUnavailableError(`provider ${describeExit(code, signal)}`)));
 		// The spawn gate in start() consumes the pre-spawn 'error'; this one covers anything the
 		// process emits after it, so it can never again be an uncaught crash of the daemon.
 		child.on("error", (error) => die(new ProviderUnavailableError(`provider errored: ${error.message}`)));

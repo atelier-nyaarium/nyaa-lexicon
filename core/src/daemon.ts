@@ -10,10 +10,11 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { lockHolderAlive, processIdentity } from "./client.js";
+import { lockHolderAlive } from "./client.js";
 import { bundleStamp } from "./ensureDaemon.js";
 import { type DaemonLock, DaemonLockSchema } from "./lockFile.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
+import { processIdentity } from "./procfs.js";
 import { DaemonStartingError, type FrameServer, serveFrames } from "./socketTransport.js";
 import { BUILD_VERSION } from "./version.js";
 
