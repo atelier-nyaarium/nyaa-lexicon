@@ -562,6 +562,20 @@ describe("listing node's reports", () => {
 		expect(readDiagnostics(KEY, host)).toMatchObject({ state: "unreadable", reason: "not a regular file" });
 	});
 
+	it("refuses a link wearing the reports directory's name too", () => {
+		const root = scratch();
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
+		const paths = storePaths(host, KEY);
+		const elsewhere = path.join(root, "elsewhere");
+		mkdirSync(elsewhere);
+		mkdirSync(paths.dir, { recursive: true });
+		symlinkSync(elsewhere, paths.reportsDir);
+
+		expect(listReports(KEY, host)).toEqual([
+			{ kind: "unreadable", file: paths.reportsDir, reason: "not a directory" },
+		]);
+	});
+
 	it("answers nothing for a store with no reports directory, and says so for one it may not read", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };

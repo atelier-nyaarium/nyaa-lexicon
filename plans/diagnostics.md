@@ -160,7 +160,7 @@ and parses each report for its header and heap numbers only.
 
 Read rules, from the red team: every file read must be a REGULAR file, so a link or a directory
 wearing a report's name, a snapshot's, or the collection's is reported unreadable rather than
-followed. A key outside the alphabet `workspaceKey` mints is refused before any lookup, since it
+followed, and `reports/` itself must be a real directory, not a link to one. A key outside the alphabet `workspaceKey` mints is refused before any lookup, since it
 is interpolated into Markdown. Rendering never rounds a lie: zero is `0B`, an impossible size is
 `?`, a zero limit is `unknown` with no percentage beside it, a negative span is `in the future`.
 Reports list the newest twenty and count the rest.

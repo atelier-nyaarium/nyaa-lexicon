@@ -382,11 +382,12 @@ function summarizeReport(file: string): ReportSummary {
 	};
 }
 
-/** Newest first. No directory is empty; one that cannot be read says so. */
+/** Newest first. No directory is empty; one that cannot be read, or is a link, says so. */
 export function listReports(key: string, host: PlatformEnv = currentHost()): ReportSummary[] {
 	const dir = storePaths(host, key).reportsDir;
 	let names: string[];
 	try {
+		if (!lstatSync(dir).isDirectory()) return [{ kind: "unreadable", file: dir, reason: "not a directory" }];
 		names = readdirSync(dir);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
