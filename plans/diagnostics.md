@@ -144,7 +144,9 @@ file intact, a failing sample source contained, high-water latch, prune on every
 parsers from literal text, schema round trip, the signal refused for an undeclared handler, node
 argv on node commands only, the exact file names.
 
-## Phase 2 - The surface and the record
+## Phase 2 - The surface and the record ✅
+
+Shipped across `359bbf9`, `6a8d455` and `fb9b01e`, each audited and pushed green.
 
 **`project_diagnostics`** MCP tool in `manage.ts`, beside the other machine-wide tools: takes a
 store key from `list_project_stores`, reads the collection from disk without a daemon, because the
@@ -204,3 +206,16 @@ unreadable directory; the description cap, for every tool the server lists.
 - **`exactOptionalPropertyTypes` and test overrides.** A `Partial<Options>` spread cannot
   un-override a field with `undefined`, so the env-exclusion test had to assert propagation of
   `false` rather than the real default. Small, but it shaped a test.
+- **`lint:fix` reflows what was just written, and the next edit misses.** Twice an `Edit` anchored
+  on text the formatter had since re-wrapped, and the failure surfaced only as a later test still
+  asserting the old behaviour. Anchoring on a line the formatter leaves alone is the workaround;
+  running the formatter BEFORE composing the next edit is the habit.
+- **Audits contradict each other on test strictness.** One Luna pass flagged a rendering test for
+  asserting exact prose; the next flagged the loosened version for being able to pass with wrong
+  bounds. Both were right about something: the FACT (90%, newest first, a bound's value) is the
+  contract, the formatting around it is not. Worth writing down once rather than relearning per
+  audit.
+- **`describeSize` floored everything under a kilobyte to `1KB`** and nobody noticed for as long as
+  it only described index files. The first time it described memory it was a lie. A formatter
+  shared between "how big is this file" and "how much did this process hold" needs the zero and
+  the impossible value spelled out, not rounded.
