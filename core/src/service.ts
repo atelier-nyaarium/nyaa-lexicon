@@ -86,6 +86,7 @@ import {
 } from "./refactorPlanner.js";
 import { ResultCache } from "./resultCache.js";
 import { compileSearchRegex } from "./search.js";
+import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type {
 	IndexStore,
@@ -125,9 +126,12 @@ export class LexiconService {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly supervisor: ProviderSupervisor,
-		private readonly readFile: (module: string) => string | null,
+		private readonly readSource: SourceReader,
 		private readonly workspaceRoot = ".",
 	) {
+		// The indexer wants the reason a file is unreadable; everything else wants text or nothing.
+		this.readFile = (module) => textOf(readSource(module));
+		const readFile = this.readFile;
 		this.reads = new IndexReadModel(store);
 		// Caching and surface globs are workspace decisions, so they are answered here.
 		this.imports = new ImportResolver(store, (fromModule, specifier) => {
@@ -143,8 +147,13 @@ export class LexiconService {
 		});
 		this.knowledge = new KnowledgeLedger(store, this.imports);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
-		this.indexer = new WorkspaceIndexer(store, supervisor, readFile, workspaceRoot, this.cache, (from, specifier) =>
-			this.imports.resolveImport(from, specifier),
+		this.indexer = new WorkspaceIndexer(
+			store,
+			supervisor,
+			readSource,
+			workspaceRoot,
+			this.cache,
+			(from, specifier) => this.imports.resolveImport(from, specifier),
 		);
 		this.source = new SourceWorkspace(store, readFile, workspaceRoot);
 		this.probe = liveProbe(supervisor, readFile);
@@ -152,6 +161,8 @@ export class LexiconService {
 	}
 
 	private readonly cache = new ResultCache();
+
+	private readonly readFile: (module: string) => string | null;
 
 	/** The only writer of the index. */
 	readonly indexer: WorkspaceIndexer;

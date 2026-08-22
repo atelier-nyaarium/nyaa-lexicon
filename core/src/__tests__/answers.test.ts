@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AttachedComment } from "../commentAttach";
 import { LexiconService } from "../service";
+import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 
@@ -101,7 +102,12 @@ function plantWithDocRegion(): string {
 beforeEach(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-answers-"));
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
-	service = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+	service = new LexiconService(
+		store,
+		new ProviderSupervisor(),
+		fromText(() => null),
+		dir,
+	);
 });
 
 afterEach(() => {
@@ -312,7 +318,12 @@ describe("the knowledge base surviving a rebuild", () => {
 	it("keeps answers and their demand ledger when the indexer fingerprint changes", async () => {
 		const file = path.join(dir, "survive.sqlite");
 		const first = IndexStore.open(file, "fingerprint-a");
-		const built = new LexiconService(first.store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			first.store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		first.store.replaceFile(
 			"a.ref",
 			"h1",
@@ -336,7 +347,12 @@ describe("the knowledge base surviving a rebuild", () => {
 		const second = IndexStore.open(file, "fingerprint-b");
 		expect(second.rebuilt).toBe(true);
 
-		const survivor = new LexiconService(second.store, new ProviderSupervisor(), () => null, dir);
+		const survivor = new LexiconService(
+			second.store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		const recalled = survivor.recallAnswer(SYMBOL, "describe");
 		expect(recalled?.answer.prose).toBe("A shopping cart.");
 		// The FACTS are gone until a re-index, so the answer honestly reports stale right now.
@@ -909,7 +925,12 @@ describe("declared doubt", () => {
 	it("survives a rebuild alongside the answer it rides on", async () => {
 		const file = path.join(dir, "doubt-survive.sqlite");
 		const first = IndexStore.open(file, "fingerprint-a");
-		const built = new LexiconService(first.store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			first.store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		first.store.replaceFile(
 			"a.ref",
 			"h1",
@@ -932,7 +953,12 @@ describe("declared doubt", () => {
 
 		const second = IndexStore.open(file, "fingerprint-b");
 		expect(second.rebuilt).toBe(true);
-		const survivor = new LexiconService(second.store, new ProviderSupervisor(), () => null, dir);
+		const survivor = new LexiconService(
+			second.store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		expect(survivor.recallAnswer(SYMBOL, "describe")?.answer.doubt?.reason).toBe("checkout rewrite");
 		second.store.close();
 	});

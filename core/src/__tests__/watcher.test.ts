@@ -64,6 +64,12 @@ describe("reading an event", () => {
 		expect(event).toEqual({ kind: "changed", module: "a.ts", contentHash: hashContent("hello") });
 	});
 
+	// The indexer reads it and says why; the watcher only says it changed.
+	it("leaves a binary unhashed rather than hashing a mangled decode", () => {
+		writeFileSync(path.join(root, "b.bin"), Buffer.from([0x41, 0x00, 0x42]));
+		expect(readEvent(root, "b.bin")).toEqual({ kind: "changed", module: "b.bin", contentHash: null });
+	});
+
 	it("gives the same hash for the same content, and a different one otherwise", () => {
 		expect(hashContent("a")).toBe(hashContent("a"));
 		expect(hashContent("a")).not.toBe(hashContent("b"));

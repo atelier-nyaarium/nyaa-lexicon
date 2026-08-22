@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
+import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { type ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
 
@@ -102,18 +103,7 @@ function depthSupervisor(discovered: string[], honorOutline: boolean, seen: Pars
 }
 
 function serviceOver(supervisor: ProviderSupervisor): LexiconService {
-	return new LexiconService(
-		store,
-		supervisor,
-		(module) => {
-			try {
-				return readFileSync(path.join(root, module), "utf8");
-			} catch {
-				return null;
-			}
-		},
-		root,
-	);
+	return new LexiconService(store, supervisor, sourceReader(root), root);
 }
 
 beforeEach(() => {

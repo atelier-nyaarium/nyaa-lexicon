@@ -10,6 +10,7 @@ import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
 import type { ResultCache } from "./resultCache.js";
+import { type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
 import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
 import { hashContent } from "./watcher.js";
@@ -72,7 +73,7 @@ export class WorkspaceIndexer {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly supervisor: ProviderSupervisor,
-		private readonly readFile: (module: string) => string | null,
+		private readonly readSource: SourceReader,
 		private readonly workspaceRoot: string,
 		private readonly cache: ResultCache,
 		/** Resolution belongs to the import resolver; the indexer only follows where it points. */
@@ -117,11 +118,20 @@ export class WorkspaceIndexer {
 			return { module, action: "skipped", reason };
 		}
 
-		const text = this.readFile(module);
-		if (text === null) {
+		const read = this.readSource(module);
+		if (read.kind === "missing") {
 			this.forgetFile(module);
 			return { module, action: "forgotten", reason: "file is gone" };
 		}
+		if (read.kind !== "text") {
+			// Whatever it held before is not this file; the failure says why it holds nothing now.
+			this.forgetFile(module);
+			const failure = unreadableReason(read);
+			this.store.recordFailure(module, failure);
+			this.upgradeFailed.add(module);
+			return { module, action: "skipped", reason: "parse failed", failure };
+		}
+		const text = read.text;
 
 		// Of the text actually read, never the caller's. A watcher hashes at event time and this
 		// reads later, so trusting the argument would store facts from one version of a file under
@@ -330,10 +340,7 @@ export class WorkspaceIndexer {
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
-		const text = this.readFile(module);
-		if (text !== null) return this.indexFile(module, depth, skipIfCurrent);
-		this.forgetFile(module);
-		return { module, action: "forgotten", reason: "file is gone" };
+		return this.indexFile(module, depth, skipIfCurrent);
 	}
 
 	/** Exclude failures from the retryable background backlog. */

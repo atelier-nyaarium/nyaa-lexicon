@@ -6,12 +6,13 @@
 // exactly the kind of proof that stops happening once the person who wrote it moves on.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverProviders, lexiconRoot, startProviders } from "../providers";
 import { LexiconService } from "../service";
+import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 
@@ -65,18 +66,7 @@ describe("a real provider's comments, attached by core", () => {
 			execFileSync("git", ["add", "-A"], { cwd: root });
 
 			await startProviders(supervisor, root, { commands: TYPESCRIPT_ONLY });
-			const service = new LexiconService(
-				store,
-				supervisor,
-				(module) => {
-					try {
-						return readFileSync(path.join(root, module), "utf8");
-					} catch {
-						return null;
-					}
-				},
-				root,
-			);
+			const service = new LexiconService(store, supervisor, sourceReader(root), root);
 			await service.indexWorkspace();
 
 			const work = service.findByName("work")[0];

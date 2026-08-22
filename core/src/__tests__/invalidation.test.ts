@@ -37,6 +37,16 @@ describe("deciding what a change costs", () => {
 		expect(decideInvalidation(CHANGED, context({ indexedHash: () => null }))).toMatchObject({ action: "reindex" });
 	});
 
+	// A null hash is a file the watcher could not hash as text; only a read can say what it is.
+	it("reindexes a claimed file with no hash, even one the index has never seen, and still ignores an unclaimed one", () => {
+		const unhashed: FileEvent = { kind: "changed", module: "src/a.ts", contentHash: null };
+		expect(decideInvalidation(unhashed, context({ indexedHash: () => null }))).toMatchObject({ action: "reindex" });
+		expect(decideInvalidation(unhashed, context({ indexedHash: () => "h1" }))).toMatchObject({ action: "reindex" });
+		expect(
+			decideInvalidation(unhashed, context({ route: () => ({ owned: false, reason: "unclaimed" }) })),
+		).toMatchObject({ action: "ignore", reason: "unclaimed" });
+	});
+
 	it("ignores a change to a file no provider claims", () => {
 		const decision = decideInvalidation(
 			{ kind: "changed", module: "README.md", contentHash: "h1" },

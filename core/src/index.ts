@@ -185,6 +185,15 @@ export {
 	requestOnce,
 	serveFrames,
 } from "./socketTransport.js";
+export {
+	fromText,
+	MAX_SOURCE_BYTES,
+	readSource,
+	type SourceRead,
+	type SourceReader,
+	sourceReader,
+	textOf,
+} from "./sourceRead.js";
 export { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 export {
 	type FileNote,

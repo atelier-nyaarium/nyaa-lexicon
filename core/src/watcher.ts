@@ -4,9 +4,10 @@
 // an absolute path into a workspace-relative module.
 
 import { createHash } from "node:crypto";
-import { type FSWatcher, readFileSync, watch } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
 import path from "node:path";
 import { coalesce, type FileEvent } from "./invalidation.js";
+import { readSource } from "./sourceRead.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -60,15 +61,10 @@ export function hashContent(text: string): string {
  * is the ordinary case during a branch switch, and treating it as failure would stop the batch.
  */
 export function readEvent(workspaceRoot: string, module: string): FileEvent {
-	try {
-		return {
-			kind: "changed",
-			module,
-			contentHash: hashContent(readFileSync(path.join(workspaceRoot, module), "utf8")),
-		};
-	} catch {
-		return { kind: "deleted", module };
-	}
+	const read = readSource(workspaceRoot, module);
+	if (read.kind === "missing") return { kind: "deleted", module };
+	// Unhashable as text; the indexer reads it and says why.
+	return { kind: "changed", module, contentHash: read.kind === "text" ? hashContent(read.text) : null };
 }
 
 ////////////////////////////////

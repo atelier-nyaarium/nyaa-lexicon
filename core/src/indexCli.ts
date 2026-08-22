@@ -5,10 +5,10 @@
 // The shortest path from a repository to a real answer, which is what makes a claim about this
 // tool checkable rather than described.
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describeStart, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
+import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
 
@@ -28,18 +28,7 @@ async function main(argv: string[]): Promise<void> {
 	const providers = await startProviders(supervisor, root);
 	console.log(`providers:\n${describeStart(providers)}`);
 
-	const service = new LexiconService(
-		store,
-		supervisor,
-		(module) => {
-			try {
-				return readFileSync(path.join(root, module), "utf8");
-			} catch {
-				return null;
-			}
-		},
-		root,
-	);
+	const service = new LexiconService(store, supervisor, sourceReader(root), root);
 
 	const started = Date.now();
 	const outcomes = await service.indexWorkspace();

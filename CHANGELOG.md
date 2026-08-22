@@ -48,6 +48,14 @@ knew the providers that had finished registering, so a stop during startup left 
 until their handshake timed out; it now holds what it has spawned and not yet registered, and
 stops that too.
 
+One module reads a workspace file for indexing, with a binary guard and a size bound. The watcher
+used to decode every changed file as UTF-8 to hash it, lockfiles and images included, while the
+indexer read the same file again its own way; neither refused a binary or a giant, and one large
+YAML file could stall every other request for minutes behind a parse that is quadratic in its keys.
+Both now read through one owner: a file with a NUL in its first 8 KiB is recorded as failed with
+`not text`, a file past 4 MiB with its size and the limit, and each is named in every answer's note
+like any other parse failure. A residue test fails the build on a second reader.
+
 A data file nested past a thousand brackets is refused before any parser recurses. The JSON and
 YAML readers relied on catching the stack exhaustion a deep structure produces; most of the time
 that is a catchable error, and the rest of the time it kills the process, which a test runner on a
@@ -71,6 +79,13 @@ counted apart from failures, and the CLI exits 3 rather than 1. The runner retri
 before calling it stalled. `FAIL` means the provider was reached and what came back was wrong.
 
 ### What it asks of you
+
+**Secret-shaped files are not filtered, on purpose.** A committed `credentials.json` or
+`config/secrets.yml` is indexed like any other file and its values are answerable, as 2.0.0 said.
+A blocklist of filenames was considered and refused: it never matches what a given repository
+calls its secrets and would read as assurance it cannot give. The control is the one you already
+use: a `.gitignore`d file is not scanned (an import that names one is still followed), and `.env`
+is claimed by no provider.
 
 **Regex search is RE2 syntax.** Lookahead, lookbehind and backreferences are refused at compile,
 with a message that says so. The flags that change a match, `i`, `m` and `s`, apply; `g`, `u` and

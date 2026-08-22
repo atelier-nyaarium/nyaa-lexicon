@@ -8,11 +8,14 @@ import type { Route } from "./routing.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-export type FileEvent = { kind: "changed"; module: string; contentHash: string } | { kind: "deleted"; module: string };
+/** A null hash is a file the watcher could not hash as text; the indexer decides by reading it. */
+export type FileEvent =
+	| { kind: "changed"; module: string; contentHash: string | null }
+	| { kind: "deleted"; module: string };
 
 /** What the store is told. Nothing else is a valid outcome, so a caller cannot invent one. */
 export type Invalidation =
-	| { action: "reindex"; module: string; contentHash: string; providerId: string }
+	| { action: "reindex"; module: string; contentHash: string | null; providerId: string }
 	| { action: "forget"; module: string }
 	| { action: "ignore"; module: string; reason: string };
 
@@ -38,7 +41,7 @@ export interface InvalidationContext {
 export function decideInvalidation(event: FileEvent, context: InvalidationContext): Invalidation {
 	if (event.kind === "deleted") return { action: "forget", module: event.module };
 
-	if (context.indexedHash(event.module) === event.contentHash) {
+	if (event.contentHash !== null && context.indexedHash(event.module) === event.contentHash) {
 		return { action: "ignore", module: event.module, reason: "content is unchanged" };
 	}
 

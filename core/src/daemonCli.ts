@@ -8,7 +8,7 @@
 // It runs detached with stdio pointed at the workspace's daemon.log, so every line here is the
 // only record of what happened.
 
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { type Collector, enableSelfReports, nodeReportSetup, startDiagnostics } from "./diagnostics.js";
@@ -22,6 +22,7 @@ import { currentHost, workspacePaths } from "./paths.js";
 import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { DaemonStartingError } from "./socketTransport.js";
+import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
 import { TransactionManager } from "./transactions.js";
@@ -237,18 +238,7 @@ async function main(argv: string[]): Promise<void> {
 		log(`providers:\n${describeStart(providers)}`);
 
 		const openStore = store;
-		const service = new LexiconService(
-			openStore,
-			supervisor,
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		const service = new LexiconService(openStore, supervisor, sourceReader(root), root);
 
 		const gate = new WorkspaceGate();
 		transactions = new TransactionManager(openStore, root);

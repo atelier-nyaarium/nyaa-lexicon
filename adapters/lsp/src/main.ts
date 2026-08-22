@@ -5,8 +5,6 @@
 // except a framed message: a stray console.log corrupts the stream and the editor sees a protocol
 // error rather than the print. Every diagnostic here goes to stderr.
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import {
 	currentHost,
 	type DaemonChannel,
@@ -16,6 +14,7 @@ import {
 	LexiconService,
 	nodeReportSetup,
 	ProviderSupervisor,
+	sourceReader,
 	startProviders,
 	workspacePaths,
 } from "@nyaa-lexicon/core";
@@ -82,18 +81,7 @@ async function buildLocal(workspaceRoot: string, hold: (index: LocalIndex) => vo
 	const supervisor = new ProviderSupervisor();
 	hold({ store, supervisor });
 
-	const service = new LexiconService(
-		store,
-		supervisor,
-		(module) => {
-			try {
-				return readFileSync(path.join(workspaceRoot, module), "utf8");
-			} catch {
-				return null;
-			}
-		},
-		workspaceRoot,
-	);
+	const service = new LexiconService(store, supervisor, sourceReader(workspaceRoot), workspaceRoot);
 
 	// Crash reports only. The daemon owns the sampled collection; a second writer would corrupt it.
 	const nodeReport = nodeReportSetup(workspacePaths(currentHost(), workspaceRoot).reportsDir);

@@ -5,6 +5,7 @@ import {
 	callDaemon,
 	createDispatch,
 	findDaemon,
+	fromText,
 	IndexStore,
 	LexiconService,
 	type PlatformEnv,
@@ -95,7 +96,11 @@ beforeEach(async () => {
 	supervisor = new ProviderSupervisor();
 	await supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 15_000 }, dir);
 
-	const service = new LexiconService(store, supervisor, (module) => files.get(module) ?? null);
+	const service = new LexiconService(
+		store,
+		supervisor,
+		fromText((module) => files.get(module) ?? null),
+	);
 	const outcome = await startDaemon({
 		workspaceRoot: dir,
 		handle: createDispatch(service),

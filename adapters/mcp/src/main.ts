@@ -1,8 +1,6 @@
 // The MCP entrypoint. Bundled into dist/ and run as `node dist/main.js`, so nothing here may
 // import a bun-only module.
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -13,6 +11,7 @@ import {
 	ProviderSupervisor,
 	readRegistry,
 	type SessionProject,
+	sourceReader,
 	startProviders,
 } from "@nyaa-lexicon/core";
 import packageJson from "../../../package.json";
@@ -135,18 +134,7 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 		const supervisor = new ProviderSupervisor();
 		await startProviders(supervisor, workspaceRoot);
 
-		const service = new LexiconService(
-			store,
-			supervisor,
-			(module) => {
-				try {
-					return readFileSync(path.join(workspaceRoot, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			workspaceRoot,
-		);
+		const service = new LexiconService(store, supervisor, sourceReader(workspaceRoot), workspaceRoot);
 		await service.indexWorkspace();
 		return service;
 	}

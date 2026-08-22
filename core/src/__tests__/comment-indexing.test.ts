@@ -4,7 +4,7 @@
 // which is where the source text has to reach the resolver, and where a wrong argument order would
 // still typecheck.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CommentSpan, Declaration } from "@nyaa-lexicon/protocol";
@@ -12,6 +12,7 @@ import { composeSymbolId } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
+import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import type { ProviderSupervisor } from "../supervisor";
 
@@ -88,18 +89,7 @@ async function index(fixture: Fixture): Promise<LexiconService> {
 	const full = path.join(root, "a.fake");
 	mkdirSync(path.dirname(full), { recursive: true });
 	writeFileSync(full, fixture.text);
-	const service = new LexiconService(
-		store,
-		supervisorFor(fixture),
-		(module) => {
-			try {
-				return readFileSync(path.join(root, module), "utf8");
-			} catch {
-				return null;
-			}
-		},
-		root,
-	);
+	const service = new LexiconService(store, supervisorFor(fixture), sourceReader(root), root);
 	await service.indexWorkspace();
 	return service;
 }

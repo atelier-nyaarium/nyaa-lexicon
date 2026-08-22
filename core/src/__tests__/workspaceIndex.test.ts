@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Declaration, Import } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
+import { MAX_SOURCE_BYTES, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import type { ProviderSupervisor } from "../supervisor";
 
@@ -133,18 +134,7 @@ describe("workspace roots", () => {
 		initGit();
 		put("root.fake", "export class Root {}\n");
 		put("extra.fake", "export class Extra {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(["root.fake"]),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(["root.fake"]), sourceReader(root), root);
 
 		const outcomes = await service.indexWorkspace();
 
@@ -159,18 +149,7 @@ describe("workspace roots", () => {
 		initGit();
 		put("root.fake", "export class Root {}\n");
 		execFileSync("git", ["add", "root.fake"], { cwd: root });
-		service = new LexiconService(
-			store,
-			fakeSupervisor(["root.fake"]),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(["root.fake"]), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		rmSync(path.join(root, "root.fake"));
@@ -183,18 +162,7 @@ describe("workspace roots", () => {
 	it("moves indexed facts with a live rename batch", async () => {
 		initGit();
 		put("before.fake", "export class Before {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		rmSync(path.join(root, "before.fake"));
@@ -215,18 +183,7 @@ describe("root exclusions and includes", () => {
 		put("lexicon.json", JSON.stringify({ deny: ["reference.fake"] }));
 		put("reference.fake", "export class Reference {}\n");
 		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
-		service = new LexiconService(
-			store,
-			fakeSupervisor([], requests),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor([], requests), sourceReader(root), root);
 
 		await expect(service.indexFile("reference.fake")).resolves.toEqual({
 			module: "reference.fake",
@@ -242,18 +199,7 @@ describe("root exclusions and includes", () => {
 		put("generated.fake", "export class Generated {}\n");
 		put("ordinary.fake", "export class Ordinary {}\n");
 		put("lexicon.json", JSON.stringify({ exclude: ["generated.fake"] }));
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		expect(service.findByName("Generated")).toEqual([]);
@@ -280,18 +226,7 @@ describe("root exclusions and includes", () => {
 		put("opaque/runtime.fake", "export class Runtime {}\n");
 		put("lexicon.json", JSON.stringify({ bundles: ["opaque/**"] }));
 		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
-		service = new LexiconService(
-			store,
-			fakeSupervisor([], requests),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor([], requests), sourceReader(root), root);
 
 		await service.indexWorkspace();
 
@@ -310,18 +245,7 @@ describe("reachability and failures", () => {
 		put("root.fake", 'export class Root {}\nimport "external:external.fake";\n');
 		put("external.fake", "export class External {}\n");
 		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
-		service = new LexiconService(
-			store,
-			fakeSupervisor([], requests),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor([], requests), sourceReader(root), root);
 
 		await service.indexWorkspace();
 
@@ -337,18 +261,7 @@ describe("reachability and failures", () => {
 		put(".gitignore", "node_modules/\n");
 		put("root.fake", 'export class Root {}\nimport "external:node_modules/fixture/index.fake";\n');
 		put("node_modules/fixture/index.fake", "export class External {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 
@@ -369,18 +282,7 @@ describe("reachability and failures", () => {
 		put("root.fake", "export class Root {}\n");
 		put("reachable.fake", 'export class Reachable {}\nimport "./leaf.fake";\n');
 		put("leaf.fake", "export class Leaf {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		expect(service.findByName("Reachable")).toEqual([]);
@@ -413,18 +315,7 @@ describe("reachability and failures", () => {
 		put("root.fake", 'export class Root {}\nimport "./reference/entry.fake";\n');
 		put("reference/entry.fake", "export class Reference {}\n");
 		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
-		service = new LexiconService(
-			store,
-			fakeSupervisor([], requests),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor([], requests), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		expect(service.findByName("Reference")).toHaveLength(1);
@@ -450,18 +341,7 @@ describe("reachability and failures", () => {
 		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
 		put("reachable.fake", 'export class Reachable {}\nimport "./leaf.fake";\n');
 		put("leaf.fake", "export class Leaf {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		rmSync(path.join(root, "root.fake"));
@@ -480,18 +360,7 @@ describe("reachability and failures", () => {
 			const next = depth === 11 ? "" : `\nimport "./${depth + 1}.fake";`;
 			put(`hidden/${depth}.fake`, `export class Depth${depth} {}${next}\n`);
 		}
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 
@@ -502,18 +371,7 @@ describe("reachability and failures", () => {
 		initGit();
 		put("bad.fake", "export class Bad {}\n");
 		put("good.fake", "export class Good {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		put("bad.fake", "POISON\n");
@@ -536,18 +394,7 @@ describe("reachability and failures", () => {
 		initGit();
 		put("noted.fake", "export class Noted {} // WARN\n");
 		put("clean.fake", "export class Clean {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 
@@ -562,23 +409,42 @@ describe("reachability and failures", () => {
 		expect(service.overview().notes).toEqual({ noted: 1, unknown: 0 });
 	});
 
+	it("records a binary and an oversized file as failures with the reason, holding no facts", async () => {
+		initGit();
+		put("ok.fake", "export class Ok {}\n");
+		writeFileSync(path.join(root, "blob.fake"), Buffer.from([0x65, 0x00, 0x66]));
+		writeFileSync(path.join(root, "big.fake"), Buffer.alloc(MAX_SOURCE_BYTES + 1, 0x61));
+		const parseRequests: Array<{ module: string }> = [];
+		service = new LexiconService(store, fakeSupervisor([], parseRequests), sourceReader(root), root);
+
+		const outcomes = await service.indexWorkspace();
+
+		expect(service.findByName("Ok")).toHaveLength(1);
+		expect(outcomes).toContainEqual({
+			module: "blob.fake",
+			action: "skipped",
+			reason: "parse failed",
+			failure: expect.stringContaining("NUL"),
+		});
+		expect(store.parseFailures()).toEqual([
+			{
+				module: "big.fake",
+				reason: `${MAX_SOURCE_BYTES + 1} bytes, past the ${MAX_SOURCE_BYTES} byte limit for indexing`,
+			},
+			{ module: "blob.fake", reason: "not text: a NUL byte within the first 8 KiB" },
+		]);
+		expect(store.declarationsIn("blob.fake")).toEqual([]);
+		expect(store.declarationsIn("big.fake")).toEqual([]);
+		// Neither reached the provider.
+		expect(parseRequests.map((request) => request.module)).toEqual(["ok.fake"]);
+	});
+
 	it("keeps prior facts while a live file has syntax errors", async () => {
 		initGit();
 		put(".gitignore", "reachable.fake\n");
 		put("root.fake", 'export class Before {}\nimport "./reachable.fake";\n');
 		put("reachable.fake", "export class Reachable {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		put("root.fake", "SYNTAX\nexport class After {}\n");
@@ -606,18 +472,7 @@ describe("reachability and failures", () => {
 		put(".gitignore", "reachable.fake\n");
 		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
 		put("reachable.fake", "export class Reachable {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		put("reachable.fake", "POISON\n");
@@ -636,18 +491,7 @@ describe("reachability and failures", () => {
 		initGit();
 		put("bad.fake", "export class Bad {}\n");
 		put("good.fake", "export class Good {}\n");
-		service = new LexiconService(
-			store,
-			fakeSupervisor(),
-			(module) => {
-				try {
-					return readFileSync(path.join(root, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 		put("bad.fake", "POISON\n");

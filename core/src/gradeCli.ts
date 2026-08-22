@@ -9,10 +9,11 @@
 // The checks below are written against switchboard specifically, naming symbols and the files
 // they live in, so pointing this at anything else fails every check rather than grading it.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
+import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
 
@@ -128,18 +129,7 @@ async function main(argv: string[]): Promise<void> {
 	const supervisor = new ProviderSupervisor();
 	await startProviders(supervisor, TARGET);
 
-	const service = new LexiconService(
-		store,
-		supervisor,
-		(module) => {
-			try {
-				return readFileSync(path.join(TARGET, module), "utf8");
-			} catch {
-				return null;
-			}
-		},
-		TARGET,
-	);
+	const service = new LexiconService(store, supervisor, sourceReader(TARGET), TARGET);
 
 	const outcomes = await service.indexWorkspace();
 	const indexed = outcomes.filter((o) => o.action === "indexed").length;

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LexiconService } from "../service";
+import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 
@@ -29,7 +30,12 @@ let service: LexiconService;
 async function boot() {
 	supervisor = new ProviderSupervisor();
 	await supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 15_000 }, dir);
-	service = new LexiconService(store, supervisor, (module) => files.get(module) ?? null, dir);
+	service = new LexiconService(
+		store,
+		supervisor,
+		fromText((module) => files.get(module) ?? null),
+		dir,
+	);
 }
 
 beforeEach(() => {
@@ -178,7 +184,12 @@ describe("type hierarchy and citable facts", () => {
 				heritage("Engine", null, leaf.symbolId, "extends"),
 			],
 		);
-		return new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		return new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 	}
 
 	it("reads both directions out of the same reference rows", () => {
@@ -224,7 +235,12 @@ describe("type hierarchy and citable facts", () => {
 
 		store.replaceFile("a.ref", "h1", [callee], []);
 		store.replaceFile("b.ref", "h2", [caller], twice);
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 
 		const incoming = built.callHierarchy(callee.symbolId).incoming;
 
@@ -239,7 +255,12 @@ describe("type hierarchy and citable facts", () => {
 		const caller = type("caller", "b.ref");
 		store.replaceFile("a.ref", "h1", [callee], []);
 		store.replaceFile("b.ref", "h2", [caller], [heritage("target", callee.symbolId, caller.symbolId, "extends")]);
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 
 		expect(built.callHierarchy(callee.symbolId).incoming).toEqual([]);
 	});
@@ -254,7 +275,12 @@ describe("type hierarchy and citable facts", () => {
 			[],
 			[{ kind: "string", value: "hello", range: at(1), containerId: base.symbolId }],
 		);
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 
 		const facts = await built.factsFor(base.symbolId);
 
@@ -274,7 +300,12 @@ describe("type hierarchy and citable facts", () => {
 				anchorId: base.symbolId,
 			},
 		]);
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 
 		expect((await built.factsFor(base.symbolId))?.facts).toEqual(
 			expect.arrayContaining([
@@ -287,13 +318,23 @@ describe("type hierarchy and citable facts", () => {
 		const base = type("Base");
 		const uses = Array.from({ length: 5 }, () => heritage("Base", base.symbolId, base.symbolId, "extends"));
 		store.replaceFile("a.ref", "h1", [base], uses);
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 
 		expect((await built.factsFor(base.symbolId, 2))?.truncated).toEqual(["reference"]);
 	});
 
 	it("answers null for a symbol the index does not hold", async () => {
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		expect(await built.factsFor("lexicon reference a.ref Ghost#")).toBeNull();
 	});
 
@@ -301,7 +342,12 @@ describe("type hierarchy and citable facts", () => {
 	it("stops resolving a cited fact once the code behind it changed", async () => {
 		const base = type("Base");
 		store.replaceFile("a.ref", "h1", [base], []);
-		const built = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		const cited = (await built.factsFor(base.symbolId))?.facts.map((f) => f.factId) as string[];
 
 		expect(built.resolveFacts(cited).missing).toEqual([]);
@@ -497,7 +543,12 @@ describe("planning a move", () => {
 			binding: { status: "unbound" as const, reason },
 		});
 		files.set("a.ref", "export class Move {}\n");
-		const built = new LexiconService(store, new ProviderSupervisor(), (m) => files.get(m) ?? null, dir);
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText((m) => files.get(m) ?? null),
+			dir,
+		);
 		store.replaceFile(
 			"a.ref",
 			built.currentHashOf("a.ref") as string,
@@ -671,7 +722,11 @@ describe("planning a rename", () => {
 	// reads fine and is not, since `service.prepareRename(plant(), ...)` resolves the method on the
 	// old service before the argument runs.
 	beforeEach(() => {
-		service = new LexiconService(store, supervisor, () => null);
+		service = new LexiconService(
+			store,
+			supervisor,
+			fromText(() => null),
+		);
 	});
 
 	// Written straight to the store rather than through a provider: this reads the index and never
@@ -825,7 +880,12 @@ describe("planning a rename", () => {
 					},
 				],
 			);
-			return new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+			return new LexiconService(
+				store,
+				new ProviderSupervisor(),
+				fromText(() => null),
+				dir,
+			);
 		}
 
 		it("hands the provider every bound call to the owning function", async () => {
@@ -1061,7 +1121,11 @@ describe("renaming a symbol that other files import", () => {
 				},
 			],
 		);
-		service = new LexiconService(store, resolvingTo("src/cart.ts"), () => null);
+		service = new LexiconService(
+			store,
+			resolvingTo("src/cart.ts"),
+			fromText(() => null),
+		);
 
 		const plan = await service.prepareRename(target, "append");
 		const importing = plan.files.find((f) => f.module === "src/uses.ts");
@@ -1095,7 +1159,11 @@ describe("renaming a symbol that other files import", () => {
 				},
 			],
 		);
-		service = new LexiconService(store, resolvingTo("src/cart.ts"), () => null);
+		service = new LexiconService(
+			store,
+			resolvingTo("src/cart.ts"),
+			fromText(() => null),
+		);
 
 		const sites = (await service.prepareRename(target, "append")).files.find(
 			(f) => f.module === "src/aliased.ts",
@@ -1137,7 +1205,7 @@ describe("renaming a symbol that other files import", () => {
 						? { status: "resolved", module: params.specifier === "./cart" ? "src/cart.ts" : "src/index.ts" }
 						: {},
 			} as unknown as ProviderSupervisor,
-			() => null,
+			fromText(() => null),
 		);
 
 		const touched = (await service.prepareRename(target, "append")).files.map((f) => f.module);
@@ -1163,7 +1231,11 @@ describe("renaming a symbol that other files import", () => {
 				},
 			],
 		);
-		service = new LexiconService(store, resolvingTo("src/other.ts"), () => null);
+		service = new LexiconService(
+			store,
+			resolvingTo("src/other.ts"),
+			fromText(() => null),
+		);
 
 		const plan = await service.prepareRename(target, "append");
 		expect(plan.files.map((f) => f.module)).not.toContain("src/elsewhere.ts");
@@ -1181,7 +1253,12 @@ describe("searching literals", () => {
 	}
 
 	beforeEach(() => {
-		service = new LexiconService(store, supervisor, () => null, dir);
+		service = new LexiconService(
+			store,
+			supervisor,
+			fromText(() => null),
+			dir,
+		);
 		store.replaceFile("a.ts", "h1", [], [], [], [literal("thing_happened", 0), literal("30", 1, "number", 30)]);
 		store.replaceFile(
 			"b.ts",
@@ -1225,7 +1302,12 @@ describe("searching literals", () => {
 
 describe("searching imports", () => {
 	beforeEach(() => {
-		service = new LexiconService(store, new ProviderSupervisor(), () => null, dir);
+		service = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
 		store.replaceFile(
 			"a.ts",
 			"h1",
@@ -1251,7 +1333,12 @@ describe("searching imports", () => {
 					? { status: "resolved", module: params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts" }
 					: {},
 		} as unknown as ProviderSupervisor;
-		service = new LexiconService(store, resolving, () => null, dir);
+		service = new LexiconService(
+			store,
+			resolving,
+			fromText(() => null),
+			dir,
+		);
 
 		const found = await service.findImports({ moduleRegex: "/src\\/two\\.ts$/" });
 
@@ -1292,18 +1379,7 @@ describe("performing a rename", () => {
 	}
 
 	function serviceThat(reply: (module: string) => unknown) {
-		return new LexiconService(
-			store,
-			answering(reply),
-			(module) => {
-				try {
-					return readFileSync(path.join(dir, module), "utf8");
-				} catch {
-					return null;
-				}
-			},
-			dir,
-		);
+		return new LexiconService(store, answering(reply), sourceReader(dir), dir);
 	}
 
 	const rewriteTheName = {
