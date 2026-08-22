@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	composeSymbolId,
+	type Descriptor,
 	isLocalSymbol,
 	isParameterSymbol,
 	isSymbolId,
@@ -438,6 +439,84 @@ describe("moduleOf", () => {
  * FUNCTION's name rather than the parameter's. Finding the function is a question the grammar
  * already answers, so the core needs no store lookup and no knowledge of any language to ask it.
  */
+describe("occurrences", () => {
+	it("round-trips an occurrence on every kind that has a slot, after the disambiguator", () => {
+		const shapes: Descriptor[][] = [
+			[{ kind: "type", name: "Cart", occurrence: 2 }],
+			[{ kind: "term", name: "y", occurrence: 3 }],
+			[{ kind: "namespace", name: "shop", disambiguator: "v2", occurrence: 2 }],
+			[{ kind: "method", name: "add", occurrence: 2 }],
+			[{ kind: "method", name: "add", disambiguator: "2", occurrence: 4 }],
+			[{ kind: "meta", name: "doc", occurrence: 2 }],
+			[
+				{ kind: "type", name: "Cart", occurrence: 2 },
+				{ kind: "parameter", name: "x" },
+			],
+		];
+		for (const descriptors of shapes) {
+			const text = composeSymbolId({ language: "ts", module: "src/a.ts", descriptors });
+			expect(parseSymbolId(text)?.descriptors, text).toEqual(descriptors);
+		}
+		expect(
+			composeSymbolId({
+				language: "ts",
+				module: "src/a.ts",
+				descriptors: [{ kind: "type", name: "Cart", occurrence: 2 }],
+			}),
+		).toBe("lexicon ts src/a.ts Cart[2]#");
+		expect(
+			composeSymbolId({
+				language: "ts",
+				module: "src/a.ts",
+				descriptors: [{ kind: "method", name: "add", disambiguator: "2", occurrence: 3 }],
+			}),
+		).toBe("lexicon ts src/a.ts add(2)[3].");
+	});
+
+	it("keeps a type parameter after a name apart from an occurrence", () => {
+		expect(parseSymbolId("lexicon ts src/a.ts Cart#[T]")?.descriptors).toEqual([
+			{ kind: "type", name: "Cart" },
+			{ kind: "typeParameter", name: "T" },
+		]);
+		expect(parseSymbolId("lexicon ts src/a.ts Cart[2]#[T]")?.descriptors).toEqual([
+			{ kind: "type", name: "Cart", occurrence: 2 },
+			{ kind: "typeParameter", name: "T" },
+		]);
+	});
+
+	it("refuses an occurrence below two, a non-numeric one, and one on a parameter", () => {
+		expect(parseSymbolId("lexicon ts src/a.ts Cart[1]#")).toBeNull();
+		expect(parseSymbolId("lexicon ts src/a.ts Cart[x]#")).toBeNull();
+		expect(parseSymbolId("lexicon ts src/a.ts Cart[2#")).toBeNull();
+		expect(() =>
+			composeSymbolId({
+				language: "ts",
+				module: "src/a.ts",
+				descriptors: [{ kind: "type", name: "Cart", occurrence: 1 }],
+			}),
+		).toThrow();
+		expect(() =>
+			composeSymbolId({
+				language: "ts",
+				module: "src/a.ts",
+				descriptors: [
+					{ kind: "method", name: "work" },
+					{ kind: "parameter", name: "x", occurrence: 2 },
+				],
+			}),
+		).toThrow();
+	});
+
+	it("tells an occurrence apart in containment and carries it through a rebase", () => {
+		const first = "lexicon ts src/a.ts Cart#";
+		const second = "lexicon ts src/a.ts Cart[2]#";
+		expect(isWithin(`${second}b.`, second)).toBe(true);
+		expect(isWithin(`${second}b.`, first)).toBe(false);
+		expect(rebaseSymbolId(`${first}b.`, first, second)).toBe(`${second}b.`);
+		expect(ownerOf(`${second}b.`)).toBe(second);
+	});
+});
+
 describe("who a symbol belongs to", () => {
 	const parameter = {
 		language: "python",

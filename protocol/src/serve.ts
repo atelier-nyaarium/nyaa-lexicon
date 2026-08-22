@@ -8,7 +8,8 @@ import type { z } from "zod";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { PROVIDER_METHODS } from "./methods.js";
 import type { MoveEditsResponse } from "./move.js";
-import type { ImportResolution } from "./project.js";
+import { withOccurrences } from "./occurrences.js";
+import type { FileFacts, ImportResolution } from "./project.js";
 import { normalizeModulePath } from "./symbolId.js";
 import type { Binding, TypeInfo } from "./values.js";
 
@@ -32,6 +33,11 @@ export type ProviderHandlers = {
 ////////////////////////////////
 //  Functions & Helpers
 
+/** A parse answer shaped enough to settle; anything else is left for the schema to refuse. */
+function hasDeclarations(answer: unknown): answer is FileFacts {
+	return typeof answer === "object" && answer !== null && Array.isArray((answer as FileFacts).declarations);
+}
+
 /** Bad request, before any handler. */
 function refuseUnrepresentable(params: unknown): void {
 	if (typeof params !== "object" || params === null) return;
@@ -48,7 +54,9 @@ export function serveProvider(connection: Connection, handlers: ProviderHandlers
 		const handler = handlers[method] as (params: unknown) => unknown;
 		connection.onRequest(method, (params: unknown) => {
 			refuseUnrepresentable(params);
-			return handler(params);
+			const answer = handler(params);
+			// One id per declaration, settled at the wire for every provider.
+			return method === "parseFile" && hasDeclarations(answer) ? withOccurrences(answer) : answer;
 		});
 	}
 }

@@ -88,6 +88,15 @@ missed. Every provider passes it; writing it found one hole, a C# raw string ope
 more quotes closed at the first three, so the rest of the file read as a comment. It closes on a
 run as long as its opener now.
 
+One id names one declaration. A name path declared twice in one file, a merged TypeScript
+interface or a function redefined in Python, minted one id, and the store kept whichever came last
+in silence. The id grammar gains an occurrence, `Cart[2]#`, for the second and later declarations of
+a name path, counted in source order; the first keeps its bare id, so no id that never repeated
+changes. The wire settles it for every provider, what sits inside a re-minted declaration follows
+it, and the core refuses a parse that still carries one id twice. Declarations that used to vanish
+are indexed now; a binding inside a re-minted block still names what the provider bound, which is
+the first occurrence until that provider learns to count.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

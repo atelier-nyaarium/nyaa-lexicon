@@ -35,7 +35,6 @@ export function notCanonical(id: string): string | null {
 
 /** Throws on the first id that does not mean what its field says. */
 export function admitFacts(module: string, facts: ProviderFacts): void {
-	// Last declaration wins, as the store keeps it.
 	const kinds = new Map<string, string>();
 	for (const declaration of facts.declarations) {
 		const why = notCanonical(declaration.symbolId);
@@ -43,6 +42,8 @@ export function admitFacts(module: string, facts: ProviderFacts): void {
 		if (moduleOf(declaration.symbolId) !== module) {
 			refuse(module, `declaration ${declaration.symbolId} names another module`);
 		}
+		// The store holds one row per id; a second would silently replace the first.
+		if (kinds.has(declaration.symbolId)) refuse(module, `declaration ${declaration.symbolId} is declared twice`);
 		kinds.set(declaration.symbolId, declaration.kind);
 	}
 

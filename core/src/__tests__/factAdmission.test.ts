@@ -187,11 +187,9 @@ describe("what each id must mean", () => {
 		);
 	});
 
-	// The store keeps the LAST declaration for an id, so the check reads the same one.
-	it("judges a duplicated id by its last declaration, as the store keeps it", () => {
+	// The store holds one row per id, so a second declaration would replace the first in silence.
+	it("refuses a name path declared twice", () => {
 		const heading = declaration("Guide", { symbolId: idOf("Guide", MODULE, "heading"), kind: "heading" });
-		expect(
-			admit({ declarations: [heading, { ...heading, kind: "property" }], docs: [region(heading.symbolId)] }),
-		).toThrow(/not a heading/);
+		expect(admit({ declarations: [heading, { ...heading, kind: "property" }] })).toThrow(/declared twice/);
 	});
 });

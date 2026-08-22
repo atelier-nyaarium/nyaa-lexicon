@@ -598,8 +598,14 @@ describe("checking answers", () => {
 
 	it("accepts any one of several same-named declarations, since a name cannot pick an overload", () => {
 		const testCase = { declarations: [{ name: "a", kind: "class" as const }] } as ConformanceCase;
-		const both = facts({ declarations: [decl("a"), decl("a", { kind: "class" })] });
+		const both = facts({ declarations: [decl("a"), decl("a", { kind: "class", symbolId: idFor("a(2)") })] });
 		expect(checkFacts(testCase, both)).toEqual([]);
+	});
+
+	// The store holds one row per id, so the second would replace the first in silence.
+	it("fails a declaration whose id is minted twice in one file", () => {
+		const twice = facts({ declarations: [decl("a"), decl("a", { kind: "class" })] });
+		expect(checkFacts({} as ConformanceCase, twice)).toEqual([expect.stringMatching(/minted twice/)]);
 	});
 
 	it("resolves a binding to the declaration's NAME, so a case never states an id", () => {

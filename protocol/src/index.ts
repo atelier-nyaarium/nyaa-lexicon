@@ -98,6 +98,7 @@ export {
 	type MoveRefusal,
 	MoveRefusalSchema,
 } from "./move.js";
+export { withOccurrences } from "./occurrences.js";
 export {
 	type CommentSpan,
 	CommentSpanSchema,

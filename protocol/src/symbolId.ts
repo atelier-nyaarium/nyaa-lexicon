@@ -28,6 +28,8 @@ export interface Descriptor {
 	 * their brackets on the name, and a term's dot is the suffix the method form already claims.
 	 */
 	disambiguator?: string;
+	/** Which declaration of one name path in a file this is, from 2 in source order; the first carries none. */
+	occurrence?: number;
 }
 
 export interface SymbolId {
@@ -130,14 +132,27 @@ export function quoteName(name: string): string {
 	return nfc;
 }
 
+/** `[n]` between the name and its suffix; the one place a bracket follows a name. */
+function encodeOccurrence(d: Descriptor): string {
+	if (d.occurrence === undefined) return "";
+	if (d.kind === "parameter" || d.kind === "typeParameter") {
+		throw new Error(`a ${d.kind} descriptor has no slot for an occurrence`);
+	}
+	if (!Number.isSafeInteger(d.occurrence) || d.occurrence < 2) {
+		throw new Error(`occurrence must be an integer of 2 or more, got: ${d.occurrence}`);
+	}
+	return `[${d.occurrence}]`;
+}
+
 function encodeDescriptor(d: Descriptor): string {
 	const name = quoteName(d.name);
 	if (d.disambiguator !== undefined && !DISAMBIGUATOR_RE.test(d.disambiguator)) {
 		throw new Error(`disambiguator must match ${DISAMBIGUATOR_RE}, got: ${JSON.stringify(d.disambiguator)}`);
 	}
+	const occurrence = encodeOccurrence(d);
 
 	// Parens plus a dot ARE the method form, which is what separates it from a term of one name.
-	if (d.kind === "method") return `${name}(${d.disambiguator ?? ""}).`;
+	if (d.kind === "method") return `${name}(${d.disambiguator ?? ""})${occurrence}.`;
 
 	// Refused rather than ignored, because dropping one collapses two symbols onto a single id.
 	// A parameter and a type parameter spend their brackets on the name; a term's suffix is the
@@ -148,11 +163,12 @@ function encodeDescriptor(d: Descriptor): string {
 		}
 		if (d.kind === "parameter") return `(${name})`;
 		if (d.kind === "typeParameter") return `[${name}]`;
-		return `${name}${KIND_SUFFIX.term}`;
+		return `${name}${occurrence}${KIND_SUFFIX.term}`;
 	}
 
 	const suffix = KIND_SUFFIX[d.kind];
-	return d.disambiguator === undefined ? `${name}${suffix}` : `${name}(${d.disambiguator})${suffix}`;
+	const disambiguated = d.disambiguator === undefined ? name : `${name}(${d.disambiguator})`;
+	return `${disambiguated}${occurrence}${suffix}`;
 }
 
 /** Normalizes the module here, so a provider cannot mint a host-dependent id by forgetting to. */
@@ -200,6 +216,20 @@ function readName(c: Cursor): string | null {
 	return out === "" ? null : out;
 }
 
+/** `[n]` after a name or its parens, or nothing; the bracket opening a type parameter never sits there. */
+function readOccurrence(c: Cursor): ParseResult<number | undefined> {
+	if (c.peek() !== "[") return ok(undefined);
+	c.mark();
+	c.next();
+	const digits = c.takeWhile((ch) => ch >= "0" && ch <= "9");
+	if (digits === "") return err(c.fail("expected an occurrence ordinal"));
+	const occurrence = safeDigits(digits);
+	if (occurrence === null || occurrence < 2) return err(c.fail(`occurrence must be 2 or more, got ${digits}`));
+	if (c.peek() !== "]") return err(c.fail("expected ] to close the occurrence"));
+	c.next();
+	return ok(occurrence);
+}
+
 /**
  * Token stage collapsed on purpose, per docs/parsing.md rule 2: the grammar is non-recursive and
  * the input is machine-generated, so a token type would carry no information the caller can use.
@@ -237,11 +267,14 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 			const disambiguator = c.takeWhile((x) => DISAMBIGUATOR_RE.test(x));
 			if (c.peek() !== ")") return err(c.fail("expected ) to close the disambiguator"));
 			c.next();
+			const occurrence = readOccurrence(c);
+			if (!occurrence.ok) return occurrence;
+			const carried = occurrence.value === undefined ? {} : { occurrence: occurrence.value };
 
 			// A dot after the parens is the method form, so it cannot be read as a term suffix.
 			if (c.peek() === ".") {
 				c.next();
-				out.push(disambiguator === "" ? { kind: "method", name } : { kind: "method", name, disambiguator });
+				out.push({ kind: "method", name, ...(disambiguator === "" ? {} : { disambiguator }), ...carried });
 				continue;
 			}
 
@@ -250,14 +283,16 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 			// Empty parens stay method-only, or one symbol would have two spellings.
 			if (disambiguator === "") return err(c.fail("only a method descriptor may carry an empty disambiguator"));
 			c.next();
-			out.push({ kind, name, disambiguator });
+			out.push({ kind, name, disambiguator, ...carried });
 			continue;
 		}
 
+		const occurrence = readOccurrence(c);
+		if (!occurrence.ok) return occurrence;
 		const kind = SUFFIX_KIND.get(c.peek());
 		if (kind === undefined) return err(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
 		c.next();
-		out.push({ kind, name });
+		out.push({ kind, name, ...(occurrence.value === undefined ? {} : { occurrence: occurrence.value }) });
 	}
 
 	if (out.length === 0) return err(c.fail("a symbol needs at least one descriptor"));
@@ -360,7 +395,9 @@ export function isParameterSymbol(text: string): boolean {
 }
 
 function sameDescriptor(a: Descriptor, b: Descriptor): boolean {
-	return a.kind === b.kind && a.name === b.name && a.disambiguator === b.disambiguator;
+	return (
+		a.kind === b.kind && a.name === b.name && a.disambiguator === b.disambiguator && a.occurrence === b.occurrence
+	);
 }
 
 /**

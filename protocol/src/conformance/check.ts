@@ -128,6 +128,15 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	const problems: string[] = [];
 	const byId = new Map(facts.declarations.map((d) => [d.symbolId, d]));
 
+	// Universal: an id minted twice is a declaration the store would silently drop.
+	const minted = new Set<string>();
+	for (const declaration of facts.declarations) {
+		if (minted.has(declaration.symbolId)) {
+			problems.push(`declaration ${declaration.name}: id ${declaration.symbolId} is minted twice in one file`);
+		}
+		minted.add(declaration.symbolId);
+	}
+
 	// A fixture's own declarations REPLACE the case's, matching how imports and typeOf already work.
 	const fixture = language === undefined ? undefined : testCase.fixtures[language];
 	for (const expected of fixture?.declarations ?? testCase.declarations ?? []) {

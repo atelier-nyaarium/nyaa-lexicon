@@ -91,6 +91,15 @@ canonical and the name is what the file says; anything matching by name normaliz
 Providers do not normalize names: a name that changed for unchanged source would move every fact
 digest, which is a major.
 
+One id names one declaration. A name path that a file declares twice, a merged interface or a
+block-scoped sibling, is two declarations, and the wire settles that for every provider: the
+second and later ones carry an occurrence, `Cart[2]#`, `y[3].`, `add(2)[2].`, counted in source
+order, while the first keeps its bare id so nothing that never repeated changes. What sits inside a
+re-minted declaration follows it by position: its members, a reference's owner, a literal's
+container, a doc anchor. A binding target is semantic and is left as the provider bound it. A
+provider that knows its scopes may mint occurrences itself; one that does not still cannot hand the
+store two rows under one id, which the core refuses as a parse failure.
+
 Every id a parse hands over is read once, at the boundary, for what its field says it means. A
 declaration's id names the file being parsed. A `containerId`, a reference's `fromId` and a
 literal's `containerId` name a declaration in the same parse, since enclosure is lexical. A
