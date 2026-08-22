@@ -476,10 +476,18 @@ export class LexiconService {
 	//  Answering
 
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */
-	overview(topModules = 15) {
+	overview(topModules = 15, topData = 5) {
 		const includeModule = (module: string) => !isExternalModule(this.workspaceRoot, module);
 		const modules = this.store.moduleSummary().filter(({ module }) => includeModule(module));
 		const totals = this.store.totalsForModules(includeModule);
+		const content = this.store.contentTotals(includeModule);
+
+		// Ranked apart; an unclassed row ranks as code until the next scan.
+		const code = modules.filter((row) => row.content === "code" || row.content === null);
+		const data = modules.filter(
+			(row): row is typeof row & { content: "data" | "document" } =>
+				row.content === "data" || row.content === "document",
+		);
 
 		// Knowledge coverage belongs in the first answer a fresh agent reads. The layer was
 		// discoverable only through describe's inline line, so an agent arriving with an ordinary
@@ -500,6 +508,7 @@ export class LexiconService {
 		const byKind = this.store.symbolsByKind();
 		return {
 			...totals,
+			content,
 			symbolsByKind: byKind,
 			scope: this.scopeReport(),
 			index: this.indexStatus(),
@@ -507,7 +516,10 @@ export class LexiconService {
 			parseFailures: this.store.parseFailures(),
 			notes: this.store.noteTotals(),
 			modules: modules.length,
-			largest: modules.slice(0, topModules),
+			largest: code.slice(0, topModules).map(({ module, symbols }) => ({ module, symbols })),
+			largestData: data
+				.slice(0, topData)
+				.map(({ module, symbols, content: kind }) => ({ module, symbols, content: kind })),
 			knowledge: {
 				answers: counts.total,
 				...(stale === undefined ? {} : { stale }),

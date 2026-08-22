@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderClaims, Route } from "../routing";
@@ -18,6 +19,12 @@ let store: IndexStore;
 let service: LexiconService;
 
 const claims: ProviderClaims = { providerId: "fake", language: "fake", extensions: [".fake"] };
+const dataClaims: ProviderClaims = {
+	providerId: "fakedata",
+	language: "fakedata",
+	extensions: [".fdata"],
+	content: "data",
+};
 const point = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
 
 function put(module: string, text: string): void {
@@ -55,11 +62,13 @@ function fakeSupervisor(
 	parseRequests: Array<{ module: string; depth?: "full" | "surface" }> = [],
 ): ProviderSupervisor {
 	const supervisor = {
-		running: () => [claims],
+		running: () => [claims, dataClaims],
 		route: (module: string): Route =>
 			module.endsWith(".fake")
-				? { owned: true, providerId: claims.providerId }
-				: { owned: false, reason: "unclaimed" },
+				? { owned: true, providerId: claims.providerId, content: "code" }
+				: module.endsWith(".fdata")
+					? { owned: true, providerId: dataClaims.providerId, content: "data" }
+					: { owned: false, reason: "unclaimed" },
 		askProvider: async () => ({ files: discovered, externalRoots: [], configFiles: [], diagnostics: [] }),
 		ask: async (_module: string, method: string, params: unknown) => {
 			if (method === "parseFile") {
@@ -274,6 +283,49 @@ describe("reachability and failures", () => {
 			modules: 1,
 			largest: [{ module: "root.fake", symbols: 1 }],
 		});
+	});
+
+	it("counts and ranks data files apart from code", async () => {
+		initGit();
+		put("root.fake", "export class Root {}\n");
+		put("fixtures/specs.fdata", "export class A {}\nexport class B {}\n");
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+
+		await service.indexWorkspace();
+
+		expect(service.overview()).toMatchObject({
+			content: {
+				files: { code: 1, data: 1, document: 0, unknown: 0 },
+				symbols: { code: 1, data: 2, document: 0, unknown: 0 },
+			},
+			largest: [{ module: "root.fake", symbols: 1 }],
+			largestData: [{ module: "fixtures/specs.fdata", symbols: 2, content: "data" }],
+		});
+	});
+
+	it("classes a file kept by an earlier release on the next scan, without re-reading it", async () => {
+		initGit();
+		put("root.fake", "export class Root {}\n");
+		put("specs.fdata", "export class A {}\n");
+		const parsed: Array<{ module: string }> = [];
+		service = new LexiconService(store, fakeSupervisor([], parsed), sourceReader(root), root);
+		await service.indexWorkspace();
+		store.close();
+
+		const file = path.join(root, "index.sqlite");
+		const raw = new DatabaseSync(file);
+		raw.exec("ALTER TABLE files DROP COLUMN content");
+		raw.close();
+		store = IndexStore.open(file).store;
+		service = new LexiconService(store, fakeSupervisor([], parsed), sourceReader(root), root);
+		expect(service.overview().content.files).toEqual({ code: 0, data: 0, document: 0, unknown: 2 });
+
+		// The daemon's start-up scan.
+		parsed.length = 0;
+		await service.warmupWorkspace();
+
+		expect(parsed).toEqual([]);
+		expect(service.overview().content.files).toEqual({ code: 1, data: 1, document: 0, unknown: 0 });
 	});
 
 	it("keeps an out-of-scope import tree while referenced and prunes it after a live refactor", async () => {

@@ -54,6 +54,15 @@ daemon already computed for the editor; a move preview has the removal, the inse
 re-pointed, and what the moved text depends on, by origin. Give `newName` or `toModule`. Until now
 the only way to learn the blast radius was to open a transaction and do it.
 
+`overview` tells code from data. A JSON or YAML key has been a `property` declaration since 2.0.0,
+so a directory of fixtures led the largest-modules list and its keys dominated the symbol count,
+with nothing on the page saying so. A provider now declares what its files are, `code`, `data` or
+`document`, the store keeps that per file, and overview counts files and symbols per class, ranks
+the largest code modules on their own, lists the largest data and document files under their own
+heading, and says when data outweighs code and how a `deny` list in `lexicon.json` keeps fixtures
+out. A store from an earlier release reports its files as unrecorded until the next scan, which a
+daemon runs at start and which classes them without re-reading.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

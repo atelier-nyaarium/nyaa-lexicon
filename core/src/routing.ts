@@ -3,6 +3,8 @@
 // Pure, because this is where a language check would otherwise creep into the core. Providers
 // state what they claim at initialize; nothing here knows what any of those claims mean.
 
+import type { FileContent } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -13,11 +15,13 @@ export interface ProviderClaims {
 	extensions: string[];
 	/** Exact filenames claimed regardless of extension, e.g. "project.godot". */
 	filenames?: string[];
+	/** As declared at initialize; absent means code, resolved here once. */
+	content?: FileContent;
 }
 
 /** Why routing answered as it did, so a caller can report an unowned file honestly. */
 export type Route =
-	| { owned: true; providerId: string }
+	| { owned: true; providerId: string; content: FileContent }
 	| { owned: false; reason: "unclaimed" }
 	| { owned: false; reason: "contested"; providerIds: string[] };
 
@@ -53,7 +57,8 @@ export function routeModule(module: string, providers: ProviderClaims[]): Route 
 	if (candidates.length > 1) {
 		return { owned: false, reason: "contested", providerIds: candidates.map((p) => p.providerId).sort() };
 	}
-	return { owned: true, providerId: (candidates[0] as ProviderClaims).providerId };
+	const owner = candidates[0] as ProviderClaims;
+	return { owned: true, providerId: owner.providerId, content: owner.content ?? "code" };
 }
 
 function matchByExtension(module: string, providers: ProviderClaims[]): ProviderClaims[] {

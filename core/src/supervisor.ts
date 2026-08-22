@@ -202,6 +202,7 @@ export class ProviderSupervisor {
 			language: parsed.language,
 			extensions: parsed.extensions,
 			...(parsed.filenames === undefined ? {} : { filenames: parsed.filenames }),
+			...(parsed.content === undefined ? {} : { content: parsed.content }),
 		};
 
 		// A second start under the same id must reap the incumbent, not orphan it behind the map.

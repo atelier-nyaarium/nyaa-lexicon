@@ -63,6 +63,32 @@ describe("method table", () => {
 		expect(METHOD_SCHEMAS.initialize.response.parse(response)).toMatchObject({ language: "typescript" });
 	});
 
+	it("takes a content class from the closed set only, and none means code by omission", () => {
+		const base = {
+			providerId: "json-provider",
+			language: "json",
+			extensions: [".json"],
+			protocolVersion: PROTOCOL_VERSION,
+			tiers: {
+				projectModel: false,
+				declarations: true,
+				references: false,
+				imports: false,
+				binding: false,
+				types: false,
+				literals: true,
+				comments: true,
+				docs: false,
+				metrics: false,
+			},
+		};
+		expect(METHOD_SCHEMAS.initialize.response.parse({ ...base, content: "data" })).toMatchObject({
+			content: "data",
+		});
+		expect(METHOD_SCHEMAS.initialize.response.parse(base)).not.toHaveProperty("content");
+		expect(METHOD_SCHEMAS.initialize.response.safeParse({ ...base, content: "prose" }).success).toBe(false);
+	});
+
 	/**
 	 * A tier boolean over a nine-role vocabulary cannot be an unqualified claim.
 	 *

@@ -7,6 +7,7 @@
 import type {
 	CommentQuery,
 	CommentsResult,
+	ContentTotals,
 	Counted,
 	DescribeResult,
 	DocQuery,
@@ -212,10 +213,15 @@ export interface OverviewResult {
 	imports: number;
 	literals: number;
 	symbolsByKind?: Record<string, number>;
+	/** Files and symbols per content class. Absent from a daemon that predates the split. */
+	content?: ContentTotals;
 	modules: number;
 	scope: string;
 	index: IndexStatus;
+	/** Code modules, largest first. */
 	largest: Array<{ module: string; symbols: number }>;
+	/** Data and document files, largest first, each saying which. */
+	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
 	knowledge?: { answers: number; stale?: number; doubted?: number };
 }
 

@@ -139,6 +139,7 @@ export class JsonProvider {
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
+			content: "data" as const,
 		};
 	}
 

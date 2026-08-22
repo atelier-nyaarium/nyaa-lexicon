@@ -11,6 +11,7 @@ import {
 	type DocRegion,
 	declarationFactId,
 	docFactId,
+	type FileContent,
 	type Import,
 	type IndexDepth,
 	importFactId,
@@ -174,6 +175,19 @@ export type StoredFact =
 //    different question and so a different table.
 export const SCHEMA_VERSION = 17;
 
+/** Per content class. Unknown is a row written before the class was recorded. */
+export interface ContentCounts {
+	code: number;
+	data: number;
+	document: number;
+	unknown: number;
+}
+
+export interface ContentTotals {
+	files: ContentCounts;
+	symbols: ContentCounts;
+}
+
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
 -- A provider's warnings and info for a file, replaced with its facts.
@@ -207,7 +221,9 @@ CREATE TABLE files (
   contentHash TEXT NOT NULL,
   indexedAt   INTEGER NOT NULL,
   -- Outline rows require a full parse.
-  depth       TEXT NOT NULL DEFAULT 'full'
+  depth       TEXT NOT NULL DEFAULT 'full',
+  -- What the owning provider declared its files are; NULL on a row written before that was kept.
+  content     TEXT
 );
 CREATE INDEX files_indexed_at ON files(indexedAt);
 CREATE INDEX files_depth ON files(depth);
@@ -672,6 +688,11 @@ function tableExists(db: DatabaseSync, name: string): boolean {
 	return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 }
 
+function columnExists(db: DatabaseSync, table: string, column: string): boolean {
+	const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+	return columns.some((row) => row.name === column);
+}
+
 ////////////////////////////////
 //  Class
 
@@ -754,6 +775,8 @@ export class IndexStore {
 
 		// Index additions are safe to apply in place, so existing stores get this lookup without a rebuild.
 		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
+		// Nullable, so the add is one atomic statement and an old row reads as not yet recorded.
+		if (!columnExists(db, "files", "content")) db.exec("ALTER TABLE files ADD COLUMN content TEXT");
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
@@ -798,13 +821,16 @@ export class IndexStore {
 		comments: AttachedComment[] = [],
 		docs: DocRegion[] = [],
 		notes: FileNote[] = [],
+		content: FileContent = "code",
 	): void {
 		refuseForeignAnchors(module, declarations, docs);
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
-				.prepare("INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth) VALUES (?, ?, ?, ?)")
-				.run(module, contentHash, Date.now(), depth);
+				.prepare(
+					"INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content) VALUES (?, ?, ?, ?, ?)",
+				)
+				.run(module, contentHash, Date.now(), depth, content);
 			// A successful parse clears its failure record.
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 
@@ -1012,6 +1038,11 @@ export class IndexStore {
 			noted: one("SELECT COUNT(DISTINCT module) AS n FROM notes"),
 			unknown: one("SELECT COUNT(*) AS n FROM files WHERE indexedAt < ?", this.notesSince()),
 		};
+	}
+
+	/** Fills a row written before content was recorded. A recorded class is never overwritten here. */
+	recordContent(module: string, content: FileContent): void {
+		this.db.prepare("UPDATE files SET content = ? WHERE module = ? AND content IS NULL").run(content, module);
 	}
 
 	/** The depth a module's stored facts were extracted at, or null when it is not indexed. */
@@ -1494,11 +1525,35 @@ export class IndexStore {
 		return rows.map((row) => row.module);
 	}
 
-	/** Every module with facts, ordered by symbol count. */
-	moduleSummary(): Array<{ module: string; symbols: number }> {
+	/** Every module with facts, ordered by symbol count. Content is null on a row written before it was kept. */
+	moduleSummary(): Array<{ module: string; symbols: number; content: FileContent | null }> {
 		return this.db
-			.prepare("SELECT module, COUNT(*) AS symbols FROM symbols GROUP BY module ORDER BY symbols DESC")
-			.all() as Array<{ module: string; symbols: number }>;
+			.prepare(
+				`SELECT s.module AS module, COUNT(*) AS symbols, f.content AS content
+				 FROM symbols s LEFT JOIN files f ON f.module = s.module
+				 GROUP BY s.module ORDER BY symbols DESC`,
+			)
+			.all() as Array<{ module: string; symbols: number; content: FileContent | null }>;
+	}
+
+	/** Files and symbols per content class, over the modules a live workspace predicate admits. */
+	contentTotals(includeModule: (module: string) => boolean): ContentTotals {
+		const rows = this.db
+			.prepare(
+				`SELECT f.module AS module, f.content AS content, COUNT(s.symbolId) AS symbols
+				 FROM files f LEFT JOIN symbols s ON s.module = f.module
+				 GROUP BY f.module`,
+			)
+			.all() as Array<{ module: string; content: FileContent | null; symbols: number }>;
+		const files: ContentCounts = { code: 0, data: 0, document: 0, unknown: 0 };
+		const symbols: ContentCounts = { code: 0, data: 0, document: 0, unknown: 0 };
+		for (const row of rows) {
+			if (!includeModule(row.module)) continue;
+			const key = row.content ?? "unknown";
+			files[key] += 1;
+			symbols[key] += row.symbols;
+		}
+		return { files, symbols };
 	}
 
 	/** Counts for an overview, in one round trip rather than five. */

@@ -48,6 +48,11 @@ export const ProviderTiersSchema = z
 	})
 	.meta({ id: "ProviderTiers" });
 
+/** What a provider's files are. Counted apart, because a fixture's keys are not functions. */
+export const FileContentSchema = z.enum(["code", "data", "document"]).meta({ id: "FileContent" });
+
+export type FileContent = z.infer<typeof FileContentSchema>;
+
 export const InitializeRequestSchema = z
 	.object({ workspaceRoot: z.string().min(1), protocolVersion: z.string().min(1) })
 	.meta({ id: "InitializeRequest" });
@@ -71,6 +76,8 @@ export const InitializeResponseSchema = z
 		 * claiming all of them.
 		 */
 		referenceRoles: z.array(ReferenceRoleSchema).optional(),
+		/** What every claimed file is. Absent means code. */
+		content: FileContentSchema.optional(),
 	})
 	// Required the moment the tier is claimed, so the boolean can no longer be an unqualified claim
 	// over a nine-role vocabulary. A provider that emits calls only must say `["call"]` and is then

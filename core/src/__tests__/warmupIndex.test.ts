@@ -61,7 +61,7 @@ function depthSupervisor(discovered: string[], honorOutline: boolean, seen: Pars
 		running: () => [claims],
 		route: (module: string): Route =>
 			module.endsWith(".fake")
-				? { owned: true, providerId: claims.providerId }
+				? { owned: true, providerId: claims.providerId, content: "code" }
 				: { owned: false, reason: "unclaimed" },
 		askProvider: async () => ({ files: discovered, externalRoots: [], configFiles: [], diagnostics: [] }),
 		ask: async (_module: string, method: string, params: unknown) => {

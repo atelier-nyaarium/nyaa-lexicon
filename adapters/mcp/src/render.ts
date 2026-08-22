@@ -4,6 +4,8 @@
 
 import type {
 	CommentsResult,
+	ContentCounts,
+	ContentTotals,
 	Count,
 	DescribeResult,
 	DocsResult,
@@ -786,8 +788,7 @@ export function renderOverview(result: {
 	references: number;
 	imports: number;
 	literals: number;
-	/** The symbol total split by kind, so one number cannot stand for two things. */
-	symbolsByKind?: Record<string, number>;
+	content?: ContentTotals;
 	modules: number;
 	scope: string;
 	index: {
@@ -803,6 +804,7 @@ export function renderOverview(result: {
 	parseFailures?: Array<{ module: string; reason: string }>;
 	notes?: { noted: number; unknown: number };
 	largest: Array<{ module: string; symbols: number }>;
+	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
 	knowledge?: { answers: number; stale?: number; doubted?: number };
 }): string {
 	const lines = ["# Workspace overview", "", "## Workspace", "", `\`${result.scope}\``, "", "## Index", ""];
@@ -869,12 +871,24 @@ export function renderOverview(result: {
 		`| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |`,
 	);
 
-	// Named where the number is, because "symbols" reads as callable code and a section is not.
-	// Headings only: a document's frontmatter keys are `property`, which code uses too, so they are
-	// counted here as code and cannot be separated by kind.
-	const headings = result.symbolsByKind?.["heading"] ?? 0;
-	if (headings > 0) {
-		lines.push("", `> ${headings} of those symbols are document sections rather than code.`);
+	// Named where the number is, because "symbols" reads as callable code and a fixture's keys are not.
+	if (result.content !== undefined) {
+		const { files, symbols } = result.content;
+		if (files.data + files.document > 0) {
+			lines.push("", `> Files: ${contentClasses(files, "")}. Symbols: ${contentClasses(symbols, "in ")}.`);
+		}
+		if (files.unknown > 0) {
+			lines.push(
+				"",
+				`> ${files.unknown} file${files.unknown === 1 ? " was" : "s were"} read before their content class was recorded; the next scan records it without re-reading them.`,
+			);
+		}
+		if (symbols.data > symbols.code) {
+			lines.push(
+				"",
+				"> Data files carry more symbols than code. A `deny` list in `lexicon.json` at the workspace root keeps fixture directories out of the index.",
+			);
+		}
 	}
 
 	// Self-contained: the depth line is absent once nothing is outline, so pointing at it would
@@ -913,7 +927,21 @@ export function renderOverview(result: {
 
 	lines.push("", "## Largest modules", "");
 	for (const module of result.largest) lines.push(`- \`${module.module}\`: ${module.symbols} symbols`);
+
+	const data = result.largestData ?? [];
+	if (data.length > 0) {
+		lines.push("", "## Largest data and document files", "");
+		for (const row of data) lines.push(`- \`${row.module}\`: ${row.symbols} symbols (${row.content})`);
+	}
 	return lines.join("\n");
+}
+
+/** "100 code, 40 data, 3 documents", leaving out a class with nothing in it. */
+function contentClasses(counts: ContentCounts, prefix: string): string {
+	const parts = [`${counts.code} ${prefix}code`];
+	if (counts.data > 0) parts.push(`${counts.data} ${prefix}data`);
+	if (counts.document > 0) parts.push(`${counts.document} ${prefix}document${counts.document === 1 ? "" : "s"}`);
+	return parts.join(", ");
 }
 
 /** Import sites, grouped by the file doing the importing. */

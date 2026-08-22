@@ -101,6 +101,7 @@ export class MarkdownProvider {
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
+			content: "document" as const,
 		};
 	}
 

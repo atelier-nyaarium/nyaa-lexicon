@@ -7,7 +7,7 @@ import type { Route } from "../routing";
 
 function context(overrides: Partial<InvalidationContext> = {}): InvalidationContext {
 	return {
-		route: (): Route => ({ owned: true, providerId: "ts" }),
+		route: (): Route => ({ owned: true, providerId: "ts", content: "code" }),
 		indexedHash: () => null,
 		...overrides,
 	};

@@ -60,6 +60,8 @@ export {
 export {
 	BindRequestSchema,
 	DiscoverProjectRequestSchema,
+	type FileContent,
+	FileContentSchema,
 	InitializeRequestSchema,
 	InitializeResponseSchema,
 	isProviderMethod,

@@ -56,6 +56,14 @@ it. A lenient extractor recovers from anything and returns nothing, so silence f
 never declared the tier means unchecked rather than clean. Absent is therefore different from
 false, and conformance fails a provider that declares it and then stays quiet on invalid text.
 
+`content` says what the claimed files ARE: `code` declares behavior, `data` declares structure (a
+JSON or YAML key is a `property` declaration, and a fixture has thousands), `document` is prose under
+headings. Absent means code. The core records it per file from the provider that owned the read,
+and `overview` counts files and symbols per class and ranks the largest code modules apart from the
+largest data files, so a fixture directory never pushes the code off the page. It is one declaration
+for everything the provider claims: a code provider that also claims a data file, as GDScript does
+`project.godot`, reports it as code, which is honest about who answers for it.
+
 ## What a diagnostic's severity does
 
 `error` means the file could not be read: core stores nothing from that parse, keeps whatever an

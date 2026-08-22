@@ -206,6 +206,8 @@ export {
 } from "./sourceRead.js";
 export { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 export {
+	type ContentCounts,
+	type ContentTotals,
 	type FileNote,
 	type FileNotes,
 	IndexStore,

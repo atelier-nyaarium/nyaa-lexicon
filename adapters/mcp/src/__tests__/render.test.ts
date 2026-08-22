@@ -59,6 +59,51 @@ describe("keeping the page's several file counts apart", () => {
 	});
 });
 
+describe("telling code from data", () => {
+	it("counts files and symbols per class and ranks data files under their own heading", () => {
+		const rendered = overview({
+			content: {
+				files: { code: 100, data: 40, document: 3, unknown: 0 },
+				symbols: { code: 900, data: 4500, document: 30, unknown: 0 },
+			},
+			largest: [{ module: "src/a.ts", symbols: 120 }],
+			largestData: [
+				{ module: "fixtures/specs.json", symbols: 2694, content: "data" },
+				{ module: "README.md", symbols: 30, content: "document" },
+			],
+		});
+
+		expect(rendered).toContain(
+			"Files: 100 code, 40 data, 3 documents. Symbols: 900 in code, 4500 in data, 30 in documents.",
+		);
+		expect(rendered).toContain("`fixtures/specs.json`: 2694 symbols (data)");
+		expect(rendered).toContain("`README.md`: 30 symbols (document)");
+		expect(rendered).toContain("Data files carry more symbols than code");
+		expect(rendered.indexOf("## Largest modules")).toBeLessThan(
+			rendered.indexOf("## Largest data and document files"),
+		);
+	});
+
+	it("says nothing about classes when every file is code, and names the rows still unrecorded", () => {
+		const allCode = overview({
+			content: {
+				files: { code: 5, data: 0, document: 0, unknown: 0 },
+				symbols: { code: 50, data: 0, document: 0, unknown: 0 },
+			},
+		});
+		expect(allCode).not.toContain("Files: ");
+		expect(allCode).not.toContain("Largest data");
+
+		const stale = overview({
+			content: {
+				files: { code: 5, data: 0, document: 0, unknown: 2 },
+				symbols: { code: 50, data: 0, document: 0, unknown: 9 },
+			},
+		});
+		expect(stale).toContain("2 files were read before their content class was recorded");
+	});
+});
+
 describe("explaining where a workspace's files went", () => {
 	// Scan parts must reconcile.
 	it("states parts that add up to the total seen", () => {

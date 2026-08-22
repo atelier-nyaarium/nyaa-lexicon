@@ -145,6 +145,8 @@ export class WorkspaceIndexer {
 			if (satisfied) {
 				// Final facts outrank a failure row.
 				if (held !== "outline") this.store.clearFailure(module);
+				// A row from before content was recorded learns it without a parse.
+				this.store.recordContent(module, route.content);
 				return { module, action: "skipped", reason: "already indexed at this depth" };
 			}
 		}
@@ -190,6 +192,7 @@ export class WorkspaceIndexer {
 			attachComments(facts.declarations, facts.comments ?? [], text),
 			facts.docs ?? [],
 			notes,
+			route.content,
 		);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);

@@ -21,22 +21,28 @@ function route(module: string, providers: ProviderClaims[] = [TS, GD]) {
 
 describe("routing a module", () => {
 	it("routes by extension", () => {
-		expect(route("src/cart.ts")).toEqual({ owned: true, providerId: "ts" });
-		expect(route("game/player.gd")).toEqual({ owned: true, providerId: "gd" });
+		expect(route("src/cart.ts")).toEqual({ owned: true, providerId: "ts", content: "code" });
+		expect(route("game/player.gd")).toEqual({ owned: true, providerId: "gd", content: "code" });
 	});
 
 	it("matches an extension regardless of case, since two filesystems disagree about it", () => {
-		expect(route("src/Cart.TS")).toEqual({ owned: true, providerId: "ts" });
+		expect(route("src/Cart.TS")).toEqual({ owned: true, providerId: "ts", content: "code" });
 	});
 
 	it("routes an exact filename that has no useful extension", () => {
-		expect(route("project.godot")).toEqual({ owned: true, providerId: "gd" });
-		expect(route("game/project.godot")).toEqual({ owned: true, providerId: "gd" });
+		expect(route("project.godot")).toEqual({ owned: true, providerId: "gd", content: "code" });
+		expect(route("game/project.godot")).toEqual({ owned: true, providerId: "gd", content: "code" });
 	});
 
 	it("prefers an exact filename over an extension claim", () => {
 		const greedy: ProviderClaims = { providerId: "other", language: "x", extensions: [".godot"] };
-		expect(route("project.godot", [greedy, GD])).toEqual({ owned: true, providerId: "gd" });
+		expect(route("project.godot", [greedy, GD])).toEqual({ owned: true, providerId: "gd", content: "code" });
+	});
+
+	it("carries the owner's content class with the route, code when it declared none", () => {
+		const json: ProviderClaims = { providerId: "json", language: "json", extensions: [".json"], content: "data" };
+		expect(route("fixtures/a.json", [TS, json])).toEqual({ owned: true, providerId: "json", content: "data" });
+		expect(route("src/a.ts", [TS, json])).toMatchObject({ content: "code" });
 	});
 
 	it("reports an unclaimed file rather than guessing an owner", () => {

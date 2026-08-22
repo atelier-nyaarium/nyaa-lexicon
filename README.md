@@ -41,7 +41,9 @@ JSON and YAML answer keys, values and comments, not types or references. A comme
 comma in a `.json` is read, not refused, and `outline_module` notes that the strict dialect lacks
 it; `tsconfig.json` is the usual case. `.json5` is deliberately unclaimed: the parser reads comments
 and trailing commas, not unquoted keys or single quotes, so claiming it would report facts for files
-it half-understands.
+it half-understands. Both declare their files as data, and Markdown declares its as documents, so
+`overview` counts their keys and headings apart from code and ranks the largest code modules on
+their own.
 
 A provider declares which tiers it covers; anything it cannot answer comes back as Unknown with a
 reason, never as a guess or a gap.

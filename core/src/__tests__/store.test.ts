@@ -519,6 +519,54 @@ describe("noticing that the indexer itself changed", () => {
 	});
 });
 
+describe("recording what a file is", () => {
+	it("keeps the owning provider's content class per file and counts by it", () => {
+		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile(
+			"fixtures/a.json",
+			"h2",
+			[declaration("one", "fixtures/a.json"), declaration("two", "fixtures/a.json")],
+			[],
+			[],
+			[],
+			"full",
+			[],
+			[],
+			[],
+			"data",
+		);
+		store.replaceFile("README.md", "h3", [], [], [], [], "full", [], [], [], "document");
+
+		expect(store.moduleSummary()).toEqual([
+			{ module: "fixtures/a.json", symbols: 2, content: "data" },
+			{ module: "src/a.ts", symbols: 1, content: "code" },
+		]);
+		expect(store.contentTotals(() => true)).toEqual({
+			files: { code: 1, data: 1, document: 1, unknown: 0 },
+			symbols: { code: 1, data: 2, document: 0, unknown: 0 },
+		});
+		expect(store.contentTotals((module) => module !== "fixtures/a.json").files.data).toBe(0);
+	});
+
+	// Added in place; a row from before reads as unrecorded, never as code.
+	it("adds the column to a store from before it existed, and fills a row only while it is unrecorded", () => {
+		const file = path.join(dir, "index.sqlite");
+		store.replaceFile("src/old.json", "h1", [declaration("old", "src/old.json")], []);
+		store.close();
+		const raw = new DatabaseSync(file);
+		raw.exec("ALTER TABLE files DROP COLUMN content");
+		raw.close();
+
+		store = IndexStore.open(file).store;
+		expect(store.moduleSummary()).toEqual([{ module: "src/old.json", symbols: 1, content: null }]);
+		expect(store.contentTotals(() => true).files).toEqual({ code: 0, data: 0, document: 0, unknown: 1 });
+
+		store.recordContent("src/old.json", "data");
+		store.recordContent("src/old.json", "code");
+		expect(store.moduleSummary()[0]?.content).toBe("data");
+	});
+});
+
 describe("forgetting a file", () => {
 	it("removes every kind of fact the file contributed", () => {
 		store.replaceFile(

@@ -105,6 +105,7 @@ export class YamlProvider {
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
+			content: "data" as const,
 		};
 	}
 
