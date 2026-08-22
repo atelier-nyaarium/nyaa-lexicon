@@ -1791,6 +1791,13 @@ watched to fail, which is the discipline this file records, and it still matched
 spellings sitting in `node_modules`. Planting proves the check FIRES; it says nothing about coverage.
 Where a check forbids a pattern that already has instances on disk, run it against all of them.
 
+**A fixed timeout meeting a loaded machine cost five investigations, and then caught me too.** Agents
+reported bundled providers hanging and `grade.js` timing out, twice at the last gate before a release
+where believing it would have been most expensive. Each re-ran clean. Then, minutes after writing
+that up, `bun run test` reported five failures on my own run at load average 66, and passed all 1743
+once the machine settled to 4. No code changed in between. Every fixed timeout in this repo has this
+shape, and a single retry before classifying would have suppressed all six.
+
 **The founding use case has no automated guard.** The acceptance test is a paragraph in this file,
 run by hand: index the repository, call `search_docs`, read the answer. Nothing in `bun run test`
 covers it, and nothing could easily, since it needs the store and therefore node and a built `dist/`.
