@@ -5,7 +5,7 @@ import { isIdentifierPart, isIdentifierStart } from "./cursor.js";
 import { bodyEndLine, contentEndCharacter } from "./declarations.js";
 import type { DeclarationFact, SourceLine } from "./parse-model.js";
 import { pathSyntax } from "./path-syntax.js";
-import { readLines } from "./source-scan.js";
+import { scanSource } from "./source-scan.js";
 
 //////// Literals
 
@@ -51,30 +51,6 @@ function decodeStringContent(content: string): string {
 		index++;
 	}
 	return decoded;
-}
-
-function stringEnd(text: string, quoteStart: number): { end: number; value: string } | null {
-	const quote = text[quoteStart] as "'" | '"';
-	const triple = text.startsWith(quote.repeat(3), quoteStart);
-	const size = triple ? 3 : 1;
-	let index = quoteStart + size;
-	while (index < text.length) {
-		if (triple && text.startsWith(quote.repeat(3), index)) {
-			return {
-				end: index + 3,
-				value: decodeStringContent(text.slice(quoteStart + 3, index)),
-			};
-		}
-		if (!triple && text[index] === quote) {
-			return {
-				end: index + 1,
-				value: decodeStringContent(text.slice(quoteStart + 1, index)),
-			};
-		}
-		if (text[index] === "\\") index += 2;
-		else index++;
-	}
-	return null;
 }
 
 function numericEnd(text: string, start: number): number {
@@ -139,78 +115,79 @@ function literalContainerMatcher(
 	};
 }
 
+/** One lexer: spans for strings, masked code for the rest. */
 export function extractLiteralsCore(module: string, text: string, declarations: DeclarationFact[]): Literal[] {
 	if (!module.endsWith(".gd") || text.length === 0) return [];
-	const literals: Literal[] = [];
 	const coordinates = coordinatesOf(text);
-	const containerFor = literalContainerMatcher(coordinates, readLines(text), declarations);
-	const importedLiteralRanges = new Set(
-		literalImportSyntax(module, text).map((literal) => `${literal.start}:${literal.end}`),
-	);
-	const addLiteral = (literal: Literal, start: number): void => {
-		const containerId = containerFor(start);
-		literals.push(containerId === undefined ? literal : { ...literal, containerId });
+	const scanned = scanSource(text);
+	const imported = new Set(literalImportSyntax(module, coordinates, scanned.lines).map((l) => `${l.start}:${l.end}`));
+	const found: Array<{ start: number; end: number; literal: Omit<Literal, "range"> }> = [];
+	const add = (start: number, end: number, literal: Omit<Literal, "range">): void => {
+		if (!imported.has(`${start}:${end}`)) found.push({ start, end, literal });
 	};
-	let index = 0;
-	while (index < text.length) {
-		const character = text[index] as string;
-		if (character === "#") {
-			const newline = text.indexOf("\n", index);
-			index = newline < 0 ? text.length : newline + 1;
-			continue;
-		}
-		const typedString =
-			(character === "&" || character === "^") && (text[index + 1] === "'" || text[index + 1] === '"');
-		const quoteStart = typedString ? index + 1 : index;
-		if (text[quoteStart] === "'" || text[quoteStart] === '"') {
-			const string = stringEnd(text, quoteStart);
-			if (string === null) break;
-			const start = typedString ? index : quoteStart;
-			if (importedLiteralRanges.has(`${start}:${string.end}`)) {
-				index = string.end;
+
+	for (const span of scanned.strings) {
+		const quoteStart = coordinates.offsetAt(span.start);
+		const end = coordinates.offsetAt(span.end);
+		if (quoteStart === undefined || end === undefined) continue;
+		const size = span.triple ? 3 : 1;
+		const value = decodeStringContent(text.slice(quoteStart + size, end - size));
+		// Typed prefix belongs to the literal.
+		const prefix = text[quoteStart - 1];
+		const start = prefix === "&" || prefix === "^" ? quoteStart - 1 : quoteStart;
+		add(start, end, { kind: "string", value });
+	}
+
+	for (const line of scanned.lines) {
+		const code = line.code;
+		const at = (character: number) => coordinates.offsetAt({ line: line.line, character });
+		let index = 0;
+		while (index < code.length) {
+			const character = code[index] as string;
+			const codePoint = code.codePointAt(index);
+			const codeCharacter = codePoint === undefined ? character : String.fromCodePoint(codePoint);
+			if (isIdentifierStart(codeCharacter)) {
+				let end = index + codeCharacter.length;
+				while (end < code.length) {
+					const nextPoint = code.codePointAt(end);
+					if (nextPoint === undefined) break;
+					const nextCharacter = String.fromCodePoint(nextPoint);
+					if (!isIdentifierPart(nextCharacter)) break;
+					end += nextCharacter.length;
+				}
+				const word = code.slice(index, end);
+				const start = at(index);
+				const stop = at(end);
+				if ((word === "true" || word === "false") && start !== undefined && stop !== undefined) {
+					add(start, stop, { kind: "boolean", value: word });
+				}
+				index = end;
 				continue;
 			}
-			const range = coordinates.rangeAt(start, string.end);
-			if (range === undefined) {
-				index = string.end;
+			if (/[0-9]/.test(character) || (character === "." && /[0-9]/.test(code[index + 1] ?? ""))) {
+				const end = numericEnd(code, index);
+				const value = code.slice(index, end);
+				const number = Number(value.replaceAll("_", ""));
+				const start = at(index);
+				const stop = at(end);
+				if (end > index && Number.isFinite(number) && start !== undefined && stop !== undefined) {
+					add(start, stop, { kind: "number", value, number });
+				}
+				index = end;
 				continue;
 			}
-			addLiteral({ kind: "string", value: string.value, range }, start);
-			index = string.end;
-			continue;
+			index += codeCharacter.length;
 		}
-		const codePoint = text.codePointAt(index);
-		const codeCharacter = codePoint === undefined ? character : String.fromCodePoint(codePoint);
-		const codeWidth = codeCharacter.length;
-		if (isIdentifierStart(codeCharacter)) {
-			let end = index + codeWidth;
-			while (end < text.length) {
-				const nextPoint = text.codePointAt(end);
-				if (nextPoint === undefined) break;
-				const nextCharacter = String.fromCodePoint(nextPoint);
-				if (!isIdentifierPart(nextCharacter)) break;
-				end += nextCharacter.length;
-			}
-			const word = text.slice(index, end);
-			if (word === "true" || word === "false") {
-				const range = coordinates.rangeAt(index, end);
-				if (range !== undefined) addLiteral({ kind: "boolean", value: word, range }, index);
-			}
-			index = end;
-			continue;
-		}
-		if (/[0-9]/.test(character) || (character === "." && /[0-9]/.test(text[index + 1] ?? ""))) {
-			const end = numericEnd(text, index);
-			const value = text.slice(index, end);
-			const number = Number(value.replaceAll("_", ""));
-			if (end > index && Number.isFinite(number)) {
-				const range = coordinates.rangeAt(index, end);
-				if (range !== undefined) addLiteral({ kind: "number", value, number, range }, index);
-			}
-			index = end;
-			continue;
-		}
-		index += codeWidth;
+	}
+
+	// Containers are matched by a sweep, so offsets must arrive in order.
+	const containerFor = literalContainerMatcher(coordinates, scanned.lines, declarations);
+	const literals: Literal[] = [];
+	for (const { start, end, literal } of found.sort((left, right) => left.start - right.start)) {
+		const range = coordinates.rangeAt(start, end);
+		if (range === undefined) continue;
+		const containerId = containerFor(start);
+		literals.push({ ...literal, range, ...(containerId === undefined ? {} : { containerId }) });
 	}
 	return literals;
 }
@@ -225,10 +202,8 @@ interface LiteralImportSyntax {
 	loaderStart: number;
 }
 
-function literalImportSyntax(module: string, text: string): LiteralImportSyntax[] {
+function literalImportSyntax(module: string, coordinates: TextCoordinates, lines: SourceLine[]): LiteralImportSyntax[] {
 	if (!module.endsWith(".gd")) return [];
-	const coordinates = coordinatesOf(text);
-	const lines = readLines(text);
 	const syntax: LiteralImportSyntax[] = [];
 	for (const line of lines) {
 		for (const path of pathSyntax(line)) {

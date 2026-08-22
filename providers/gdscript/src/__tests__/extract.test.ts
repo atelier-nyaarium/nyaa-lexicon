@@ -984,6 +984,53 @@ func use():
 	expect(facts.literals.find((literal) => literal.value === "inside")?.containerId).toBe(use?.symbolId);
 });
 
+// One lexer, so no second reading.
+test("reads literals through the same scan that masks strings and comments", () => {
+	const provider = new GDScriptProvider();
+	provider.initialize("/workspace");
+	const text = `var hash_inside = "a # b"
+# a comment with a "quote" and 42
+var after = 'x'
+var escaped = "q\\"#" # 7
+var block = """has 'one' and 99
+more"""
+var typed = &"name"
+var count = 3
+`;
+	const facts = provider.parseFile({ module: "scan.gd", contentHash: "scan", text });
+
+	expect(facts.literals.map((literal) => literal.value)).toEqual([
+		"a # b",
+		"x",
+		'q"#',
+		"has 'one' and 99\nmore",
+		"name",
+		"3",
+	]);
+	expect(facts.literals.find((literal) => literal.value === "name")?.range).toEqual({
+		start: { line: 6, character: 12 },
+		end: { line: 6, character: 19 },
+	});
+	expect(facts.comments.map((comment) => comment.text)).toEqual(['# a comment with a "quote" and 42', "# 7"]);
+});
+
+// Strings and numbers are gathered separately; containers must still follow source order.
+test("attaches a number in an earlier function to that function, not to a later string's", () => {
+	const provider = new GDScriptProvider();
+	provider.initialize("/workspace");
+	const text = `func first():
+	return 1
+func second():
+	return "s"
+`;
+	const facts = provider.parseFile({ module: "order.gd", contentHash: "order", text });
+	const container = (value: string) => facts.literals.find((literal) => literal.value === value)?.containerId;
+	const id = (name: string) => facts.declarations.find((declaration) => declaration.name === name)?.symbolId;
+
+	expect(container("1")).toBe(id("first"));
+	expect(container("s")).toBe(id("second"));
+});
+
 test("keeps signal strings as literals while excluding import specifiers", () => {
 	const provider = new GDScriptProvider();
 	provider.initialize("/workspace");

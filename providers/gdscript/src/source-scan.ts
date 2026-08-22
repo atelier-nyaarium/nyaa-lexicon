@@ -19,6 +19,7 @@ interface ActiveString {
 
 interface StringState {
 	active: ActiveString | null;
+	strings: StringSpan[];
 	unterminated: Position[];
 }
 
@@ -29,8 +30,17 @@ interface MaskedLine {
 	endsInString: boolean;
 }
 
+/** A terminated string, quotes included. */
+export interface StringSpan {
+	start: Position;
+	end: Position;
+	quote: TripleQuote;
+	triple: boolean;
+}
+
 export interface ScannedSource {
 	lines: SourceLine[];
+	strings: StringSpan[];
 	unterminatedStrings: Position[];
 	comments: CommentSpan[];
 }
@@ -58,13 +68,17 @@ function consumeMasked(cursor: Cursor, count: number): string {
 	return result;
 }
 
-function maskStringContent(cursor: Cursor, state: StringState): string {
+function maskStringContent(cursor: Cursor, line: number, state: StringState): string {
 	const active = state.active as ActiveString;
+	const close = () => {
+		state.strings.push({ ...active, end: { line, character: cursor.column } });
+		state.active = null;
+	};
 	let code = "";
 	while (cursor.good()) {
 		if (active.triple && tripleQuoteAt(cursor, active.quote)) {
 			code += consumeMasked(cursor, 3);
-			state.active = null;
+			close();
 			return code;
 		}
 		const character = cursor.next();
@@ -79,7 +93,7 @@ function maskStringContent(cursor: Cursor, state: StringState): string {
 			continue;
 		}
 		if (!active.triple && character === active.quote) {
-			state.active = null;
+			close();
 			return code;
 		}
 	}
@@ -98,7 +112,7 @@ function maskLine(text: string, line: number, state: StringState, comments: Comm
 	while (cursor.good()) {
 		const before = cursor.offset;
 		if (state.active !== null) {
-			code += maskStringContent(cursor, state);
+			code += maskStringContent(cursor, line, state);
 		} else if (cursor.peek() === "#") {
 			const character = cursor.column;
 			let raw = "";
@@ -115,7 +129,7 @@ function maskLine(text: string, line: number, state: StringState, comments: Comm
 			stringStarts.push(cursor.column);
 			state.active = { quote, triple, start: { line, character: cursor.column } };
 			code += consumeMasked(cursor, triple ? 3 : 1);
-			code += maskStringContent(cursor, state);
+			code += maskStringContent(cursor, line, state);
 		} else {
 			code += cursor.next();
 		}
@@ -127,7 +141,7 @@ function maskLine(text: string, line: number, state: StringState, comments: Comm
 export function scanSource(text: string): ScannedSource {
 	const cursor = new Cursor(text);
 	const lines: SourceLine[] = [];
-	const state: StringState = { active: null, unterminated: [] };
+	const state: StringState = { active: null, strings: [], unterminated: [] };
 	const comments: CommentSpan[] = [];
 	let line = cursor.readLine();
 	while (line !== null) {
@@ -135,7 +149,7 @@ export function scanSource(text: string): ScannedSource {
 		line = cursor.readLine();
 	}
 	if (state.active !== null) state.unterminated.push(state.active.start);
-	return { lines, unterminatedStrings: state.unterminated, comments };
+	return { lines, strings: state.strings, unterminatedStrings: state.unterminated, comments };
 }
 
 export function readLines(text: string): SourceLine[] {
