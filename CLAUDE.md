@@ -126,10 +126,11 @@ releases do not invalidate facts.
 
 `dist` means exactly one thing here: the shipped bundle. Package `tsc` output goes to `.tsbuild/`.
 
-**After a crash, read `diagnostics.json` and `reports/` in the workspace's state directory** before
-guessing. The collection says which process held the memory and what the daemon was doing; a report
-says where its heap went. `LEXICON_HEAP_SNAPSHOT=1` on the daemon adds a heap snapshot near the
-limit for a targeted repro, gigabytes each, so not by default.
+**After a crash, call `project_diagnostics` with the store key** before guessing. It renders
+`diagnostics.json` and `reports/` from the workspace's state directory, no daemon needed: which
+process held the memory, what the daemon was doing, and where each dead heap went.
+`LEXICON_HEAP_SNAPSHOT=1` on the daemon adds a heap snapshot near the limit for a targeted repro,
+gigabytes each, so not by default.
 
 Node 22.5+ required, for `node:sqlite`. Reports carry the environment below 22.13.
 

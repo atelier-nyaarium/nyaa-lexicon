@@ -17,6 +17,11 @@ with the stack and the heap spaces at the moment, pruned to the newest eight. A 
 the limit is asked for the same report while still alive. `LEXICON_HEAP_SNAPSHOT=1` adds a full
 heap snapshot near the limit, gigabytes each, kept to the newest two.
 
+`project_diagnostics` reads all of it back for a store key: peaks against the heap limit,
+incidents newest first with what the daemon was doing, the sampled range, each node report's
+trigger and heap, and each snapshot's size. From disk, with no daemon needed, because the daemon
+is the thing that died.
+
 ### What it asks of you
 
 **A report holds your process's command line, working directory and JS stack.** It holds every

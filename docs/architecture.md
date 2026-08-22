@@ -64,7 +64,8 @@ the heap spaces. A provider approaching the limit is asked for the same report w
 by a signal the supervisor sends only to a process that declared it survives it. `reports/` is
 created owner-only and pruned to the newest eight reports and two heap snapshots. A report omits
 the environment wherever node can, and `host.reportsExcludeEnv` in the collection says whether it
-did. A heap snapshot is opt-in, `LEXICON_HEAP_SNAPSHOT=1`, at gigabytes each.
+did. A heap snapshot is opt-in, `LEXICON_HEAP_SNAPSHOT=1`, at gigabytes each. The MCP tool
+`project_diagnostics` reads the collection and the reports from disk by store key, no daemon needed.
 
 The supervisor absorbs writes to a dead child. `vscode-jsonrpc` rethrows a failed pipe write into
 a promise nobody holds, an unhandled rejection the daemon would die of. The death reaches the

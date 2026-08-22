@@ -1,6 +1,6 @@
-import type { DaemonLock, ProjectStore } from "@nyaa-lexicon/core";
+import type { DaemonLock, Diagnostics, ProjectStore, ReportSummary } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
-import { deleteProjectStoreTool, type ManageDeps, stopProjectDaemonTool } from "../manage";
+import { deleteProjectStoreTool, type ManageDeps, projectDiagnosticsTool, stopProjectDaemonTool } from "../manage";
 
 ////////////////////////////////
 //  Helpers
@@ -29,6 +29,8 @@ function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 	};
 }
 
+const FILE = "/state/proj-abc123/diagnostics.json";
+
 function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: Partial<ManageDeps> = {}): ManageDeps {
 	return {
 		list: () => stores,
@@ -38,9 +40,58 @@ function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: 
 		gone: () => true,
 		wait: async () => {},
 		now: () => NOW,
+		diagnostics: () => ({ state: "absent", file: FILE }),
+		reports: () => [],
 		...overrides,
 	};
 }
+
+const LIMIT = 4_000_000_000;
+
+const CONTEXT = { index: { state: "warming", done: 5, total: 100 }, inFlight: 2, connections: 3 };
+
+/** One death, one near-limit peak. */
+function collection(overrides: Partial<Diagnostics> = {}): Diagnostics {
+	const context = CONTEXT;
+	const row = (role: string, pid: number, rss: number) => ({ role, pid, rss, hwm: rss });
+	return {
+		version: 1,
+		writtenAt: NOW - 20_000,
+		workspaceRoot: "/home/dev/proj",
+		daemon: { pid: 4242, version: "2.1.0", startedAt: NOW - 3_600_000 },
+		host: {
+			nodeHeapLimit: LIMIT,
+			memTotal: 32e9,
+			memAvailable: 16e9,
+			sampler: "procfs",
+			signal: "SIGUSR2",
+			reportsExcludeEnv: true,
+		},
+		peaks: [
+			{ role: "daemon", pid: 4242, rss: 90e6, at: NOW - 60_000 },
+			{ role: "provider:alpha", pid: 77, rss: 3.6e9, at: NOW - 30_000 },
+		],
+		incidents: [
+			{ at: NOW - 25_000, role: "provider:alpha", pid: 77, code: null, signal: "SIGABRT", rss: 3.6e9, context },
+		],
+		samples: [
+			{ at: NOW - 40_000, context, processes: [row("daemon", 4242, 80e6), row("provider:alpha", 77, 3.0e9)] },
+			{ at: NOW - 30_000, context, processes: [row("daemon", 4242, 90e6), row("provider:alpha", 77, 3.6e9)] },
+		],
+		...overrides,
+	};
+}
+
+const REPORT: ReportSummary = {
+	kind: "report",
+	file: "/state/proj-abc123/reports/report.20260821.180700.77.0.001.json",
+	at: NOW - 25_000,
+	event: "Allocation failed - JavaScript heap out of memory",
+	trigger: "OOMError",
+	pid: 77,
+	heapUsed: 3.9e9,
+	heapLimit: LIMIT,
+};
 
 ////////////////////////////////
 //  Tests
@@ -54,6 +105,209 @@ describe("deleting a project store", () => {
 		);
 
 		expect(result.isError).toBe(true);
+	});
+});
+
+describe("reading a store's diagnostics", () => {
+	it("rejects an unknown key", () => {
+		expect(projectDiagnosticsTool(deps([store()]), { key: "missing" }).isError).toBe(true);
+	});
+
+	// Absent is the normal state of a store no new daemon has served, not a failure.
+	it("says there is nothing yet, without erroring, when no daemon has written one", () => {
+		const result = projectDiagnosticsTool(deps([store()]), { key: "proj-abc123" });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain(FILE);
+	});
+
+	it("errors on a file it cannot read, naming it", () => {
+		const result = projectDiagnosticsTool(
+			deps([store()], undefined, { diagnostics: () => ({ state: "unreadable", file: FILE, reason: "EACCES" }) }),
+			{ key: "proj-abc123" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("EACCES");
+	});
+
+	it("names the process that peaked, how close to the limit, and what it died of while the daemon did what", () => {
+		const result = projectDiagnosticsTool(
+			deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data: collection() }) }),
+			{ key: "proj-abc123" },
+			NOW,
+		);
+		const body = result.content[0]?.text ?? "";
+
+		expect(result.isError).toBeUndefined();
+		expect(body).toMatch(/provider:alpha: \S+ \(90% of the limit\) 30s ago/);
+		expect(body.indexOf("- provider:alpha:")).toBeLessThan(body.indexOf("- daemon:"));
+		expect(body).toMatch(
+			/provider:alpha pid 77 died on SIGABRT at \S+; index warming 5\/100, 2 in flight, 3 connected/,
+		);
+		expect(body).toMatch(/provider:alpha: 2\.79GB to 3\.35GB/);
+		expect(body).toContain(`Raw: ${FILE}`);
+	});
+
+	it("refuses a key that no store could have, before looking anything up", () => {
+		let listed = false;
+		const result = projectDiagnosticsTool(
+			deps([store()], undefined, {
+				list: () => {
+					listed = true;
+					return [store()];
+				},
+			}),
+			{ key: "proj\n# injected `key`" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(listed).toBe(false);
+	});
+
+	it("lists the newest reports and counts the rest, rather than dumping a directory someone filled", () => {
+		const many = Array.from({ length: 25 }, (_, n) => ({ ...REPORT, file: `/r/report.${100 - n}.json` }));
+		const body =
+			projectDiagnosticsTool(
+				deps([store()], undefined, {
+					diagnostics: () => ({ state: "present", file: FILE, data: collection() }),
+					reports: () => many,
+				}),
+				{ key: "proj-abc123" },
+				NOW,
+			).content[0]?.text ?? "";
+
+		expect(body.match(/^- report\./gm)).toHaveLength(20);
+		expect(body).toContain("and 5 older, not listed");
+	});
+
+	it("lists incidents newest first", () => {
+		const older = {
+			at: NOW - 90_000,
+			role: "provider:beta",
+			pid: 8,
+			code: 1,
+			signal: null,
+			rss: null,
+			context: null,
+		};
+		const newer = {
+			at: NOW - 10_000,
+			role: "provider:alpha",
+			pid: 9,
+			code: null,
+			signal: "SIGKILL",
+			rss: null,
+			context: null,
+		};
+		const body =
+			projectDiagnosticsTool(
+				deps([store()], undefined, {
+					diagnostics: () => ({
+						state: "present",
+						file: FILE,
+						data: collection({ incidents: [older, newer] }),
+					}),
+				}),
+				{ key: "proj-abc123" },
+				NOW,
+			).content[0]?.text ?? "";
+
+		expect(body.indexOf("provider:alpha pid 9")).toBeLessThan(body.indexOf("provider:beta pid 8"));
+	});
+
+	// The owner's first question was what was retained; a report cannot say, and the tool must not imply it can.
+	it("says that what a process retained needs the opt-in snapshot, until one is present", () => {
+		const present = { state: "present" as const, file: FILE, data: collection() };
+		const without = projectDiagnosticsTool(deps([store()], undefined, { diagnostics: () => present }), {
+			key: "proj-abc123",
+		}).content[0]?.text;
+		const withSnapshot = projectDiagnosticsTool(
+			deps([store()], undefined, {
+				diagnostics: () => present,
+				reports: () => [{ kind: "snapshot", file: "/r/Heap.z.heapsnapshot", bytes: 1024 }],
+			}),
+			{ key: "proj-abc123" },
+		).content[0]?.text;
+
+		expect(without).toContain("LEXICON_HEAP_SNAPSHOT=1");
+		expect(withSnapshot).not.toContain("LEXICON_HEAP_SNAPSHOT=1");
+	});
+
+	it("renders what it does not know as unknown, rather than throwing or inventing", () => {
+		const data = collection({
+			host: { ...collection().host, nodeHeapLimit: 0, memTotal: null, memAvailable: null },
+			daemon: { pid: 1, version: "2.1.0", startedAt: NOW + 60_000 },
+			peaks: [{ role: "provider:alpha", pid: 77, rss: 0, at: NOW }],
+			incidents: [
+				{ at: NOW, role: "provider:alpha", pid: null, code: 1, signal: null, rss: null, context: null },
+			],
+			samples: [
+				{ at: NOW, context: CONTEXT, processes: [{ role: "provider:alpha", pid: 77, rss: null, hwm: null }] },
+			],
+		});
+		const reports: ReportSummary[] = [
+			{
+				kind: "report",
+				file: "/r/report.x.json",
+				at: null,
+				event: "unknown",
+				trigger: "unknown",
+				pid: null,
+				heapUsed: null,
+				heapLimit: null,
+			},
+			{ kind: "unreadable", file: "/r/report.y.json", reason: "EACCES" },
+			{ kind: "snapshot", file: "/r/Heap.z.heapsnapshot", bytes: 3 * 1024 * 1024 * 1024 },
+		];
+		const body =
+			projectDiagnosticsTool(
+				deps([store()], undefined, {
+					diagnostics: () => ({ state: "present", file: FILE, data }),
+					reports: () => reports,
+				}),
+				{ key: "proj-abc123" },
+				NOW,
+			).content[0]?.text ?? "";
+
+		expect(body).toContain("host memory unknown");
+		expect(body).toContain("Heap limit: unknown");
+		expect(body).toContain("started in the future");
+		expect(body).toMatch(/provider:alpha: 0B \(limit unknown\)/);
+		expect(body).not.toContain("%");
+		expect(body).toMatch(/pid \? exited with code 1; before any sample/);
+		expect(body).toContain("heap unknown");
+		expect(body).toContain("unreadable (EACCES)");
+		expect(body).toMatch(/heap snapshot, 3\.00GB/);
+	});
+
+	it("lists each report with its trigger and heap, and says plainly when there are none", () => {
+		const present = { state: "present" as const, file: FILE, data: collection() };
+		const withReport = projectDiagnosticsTool(
+			deps([store()], undefined, { diagnostics: () => present, reports: () => [REPORT] }),
+			{ key: "proj-abc123" },
+			NOW,
+		).content[0]?.text;
+		const without = projectDiagnosticsTool(deps([store()], undefined, { diagnostics: () => present }), {
+			key: "proj-abc123",
+		}).content[0]?.text;
+
+		expect(withReport).toMatch(
+			/report\.20260821\.180700\.77\.0\.001\.json: .*\(OOMError\), pid 77, heap \S+ of \S+/,
+		);
+		expect(without).toMatch(/## Reports\n\nNone\./);
+	});
+
+	it("renders an empty collection without inventing rows", () => {
+		const empty = collection({ peaks: [], incidents: [], samples: [] });
+		const body = projectDiagnosticsTool(
+			deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data: empty }) }),
+			{ key: "proj-abc123" },
+			NOW,
+		).content[0]?.text;
+
+		expect(body).toContain("None yet.");
+		expect(body).toContain("None recorded.");
 	});
 });
 

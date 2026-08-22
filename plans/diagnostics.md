@@ -50,7 +50,11 @@ reproduction once the samples have named the process.
 
 # Plan
 
-## Phase 1 - The collector
+## Phase 1 - The collector ✅
+
+Shipped across `f426776`, `36c388f`, `acec0be`, `012194c` and `9576f2d`, each audited and pushed
+green. The docs Phase 2 had claimed (architecture section, changelog, README, CLAUDE.md) landed
+here too, so Phase 2 is the tool alone.
 
 One owner for procfs, one owner for the diagnostics file, and the daemon wired to both.
 
@@ -145,14 +149,58 @@ argv on node commands only, the exact file names.
 **`project_diagnostics`** MCP tool in `manage.ts`, beside the other machine-wide tools: takes a
 store key from `list_project_stores`, reads the collection from disk without a daemon, because the
 daemon is the thing that died. Renders peaks per process against the heap limit, the incidents
-newest first with what the daemon was doing, the recent trend, the crash reports present with their
-trigger and heap numbers, and the path of the raw file. A store with no collection yet says so
-rather than rendering empty tables. `LIST_STORES_DESCRIPTION` points at it.
+newest first with what the daemon was doing, each role's smallest and largest resident size over
+the sampled span (a respawn shares its predecessor's role), the reports present with their trigger
+and heap numbers (and snapshots by size), and the path of the raw file. Where no snapshot is
+present it says that what a process RETAINED needs the opt-in snapshot, so "no reports" is never
+read as "nothing to learn". A store with no collection yet says so without erroring; an unreadable
+one errors with the reason; an unknown key errors like its siblings. `LIST_STORES_DESCRIPTION`
+points at it. `listReports` lives in `diagnostics.ts`, the owner of the reports directory's shape,
+and parses each report for its header and heap numbers only.
 
-Docs: `docs/architecture.md` gains a Diagnostics section stating the two owners and the bounds.
-`CHANGELOG.md` 2.0.0 says where to look after a crash and what the opt-in snapshot costs.
-`README.md` How it runs names the file. `CLAUDE.md` Development gets the two lines an agent needs:
-where the collection is, and the env var.
+Read rules, from the red team: every file read must be a REGULAR file, so a link or a directory
+wearing a report's name, a snapshot's, or the collection's is reported unreadable rather than
+followed. A key outside the alphabet `workspaceKey` mints is refused before any lookup, since it
+is interpolated into Markdown. Rendering never rounds a lie: zero is `0B`, an impossible size is
+`?`, a zero limit is `unknown` with no percentage beside it, a negative span is `in the future`.
+Reports list the newest twenty and count the rest.
 
-Tests: rendering with incidents, without, and with no file; the report listing; the description
-length cap.
+Docs: the file-level docs landed in Phase 1 (`docs/architecture.md` Diagnostics section,
+`CHANGELOG.md` under a `2.1.0` heading since it is additive and stores are preserved, `README.md`
+How it runs, `CLAUDE.md` Development). This phase names the tool in each: the README housekeeping
+line, the changelog, the architecture section, and `CLAUDE.md`, which now tells an agent to call
+`project_diagnostics` rather than read the files by hand.
+
+Tests: rendering with incidents, without, with no file, and with every field the schema allows to
+be null or zero; the report listing across a valid report, the daemon's own, junk, a `null`
+document, a directory wearing a report's name, a directory wearing a snapshot's name, and an
+unreadable directory; the description cap, for every tool the server lists.
+
+## Painpoints
+
+- **`vscode-jsonrpc` rethrows a failed write into a promise nobody holds.** Its `sendRequest`
+  uses `new Promise(async (resolve, reject) => { ... throw error })`, so every failed pipe write
+  is one typed rejection for the caller and one unhandled rejection for the process. It took a
+  CI runner slow enough to widen the kill-to-exit window to surface it, and the daemon had been
+  one such race away from shutting itself down since the supervisor was written. Absorbed now in
+  `core/src/supervisor.ts:absorbingWrites`; the library is still the library.
+- **A fixed timeout meeting a slow machine read as a defect, again.** Three release pushes failed
+  CI on two checker-backed tests at vitest's 5 s default, and two Luna audit agents reported the
+  new integration test as failing because six of them were running bun at once. The board entry
+  "Conformance reports a loaded machine as a provider defect" is the same class; the vitest half
+  is now 30 s, the conformance half is still open.
+- **Audit agents misreport the async boundary.** Two separate agents claimed a signal could land
+  between `claimLock` and the `daemon` assignment in `core/src/daemonCli.ts`; there is no await
+  there, so it cannot. Another claimed `process.report.writeReport("daemon-high.json")` ignores
+  `process.report.directory`; it does not. A confident stack trace is not evidence, and both cost
+  a verification each.
+- **Every build dirties all seventeen bundles.** `dist/providers/*/main.js` show as changed after
+  a rebuild that touched nothing they contain, byte-identical in size, and git calls them binary
+  because the bundled dependencies carry characters the source rules forbid. Every commit drags
+  them along and the diff says nothing about what moved.
+- **The supervisor's handshake fixture depends on where vitest runs.** The "unusable shape" test
+  writes a script into `tmpdir()` that imports `vscode-jsonrpc/node`; it resolves from the repo's
+  cwd and not from elsewhere, which is how an audit agent got a spurious module-not-found.
+- **`exactOptionalPropertyTypes` and test overrides.** A `Partial<Options>` spread cannot
+  un-override a field with `undefined`, so the env-exclusion test had to assert propagation of
+  `false` rather than the real default. Small, but it shaped a test.

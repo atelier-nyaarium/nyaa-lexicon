@@ -1,10 +1,10 @@
 // Tools about this MACHINE's indexes rather than about one workspace's code.
 //
-// Kept out of tools.ts because these are the only tools here that WRITE, and a delete sitting
-// among two dozen read-only lookups is one autocomplete away from being called like one.
+// Kept out of tools.ts because two of these WRITE, and a delete sitting among two dozen read-only
+// lookups is one autocomplete away from being called like one.
 //
-// They bypass the daemon: the daemon they could ask serves THIS workspace, and the question is
-// about the others.
+// They bypass the daemon: the daemon they could ask serves THIS workspace, the question is about
+// the others, and for diagnostics the daemon may be the thing that died.
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -13,11 +13,17 @@ import {
 	currentHost,
 	type DaemonLock,
 	DaemonLockSchema,
+	type Diagnostics,
 	deleteProjectStore,
 	findDaemon,
 	listProjectStores,
+	listReports,
 	lockHolderAlive,
 	type ProjectStore,
+	type ReadDiagnostics,
+	type ReportSummary,
+	readDiagnostics,
+	type SampleContext,
 	stateRoot,
 	workspacePaths,
 } from "@nyaa-lexicon/core";
@@ -40,6 +46,8 @@ export interface ManageDeps {
 	gone: (store: ProjectStore, holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	wait: (ms: number) => Promise<void>;
 	now: () => number;
+	diagnostics: (key: string) => ReadDiagnostics;
+	reports: (key: string) => ReportSummary[];
 }
 
 ////////////////////////////////
@@ -50,7 +58,15 @@ export const LIST_STORES_DESCRIPTION = `
 
 List local indexes with size, write time, daemon state, and workspace state.
 
-Use each row's key with \`delete_project_store\` or \`stop_project_daemon\`.
+Use each row's key with \`project_diagnostics\`, \`delete_project_store\` or \`stop_project_daemon\`.
+`.trim();
+
+export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
+# \`project_diagnostics\`
+
+Memory record of a store's daemon and providers, and node's crash reports beside it. Read from disk, so it answers for a daemon that has died.
+
+Pass a key from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, and each report's trigger and heap.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -79,7 +95,14 @@ export const DeleteStoreInput = {
 
 export const StopDaemonInput = DeleteStoreInput;
 
+export const ProjectDiagnosticsInput = DeleteStoreInput;
+
 const BYTES_PER_MB = 1024 * 1024;
+const BYTES_PER_GB = 1024 * BYTES_PER_MB;
+/** Pruning keeps eight reports and two snapshots; a directory filled by hand is listed, not dumped. */
+const REPORTS_SHOWN = 20;
+/** What `workspaceKey` mints. Anything else is a directory name, not a key. */
+const STORE_KEY_RE = /^[A-Za-z0-9._-]+$/;
 const STOP_TIMEOUT_MS = 5_000;
 const STOP_POLL_MS = 100;
 
@@ -138,13 +161,49 @@ export function liveDeps(): ManageDeps {
 		},
 		wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		now: () => Date.now(),
+		diagnostics: (key) => readDiagnostics(key),
+		reports: (key) => listReports(key),
 	};
 }
 
+/** A size that cannot be is a question mark, and nothing is rounded up to a kilobyte. */
 function describeSize(bytes: number): string {
-	return bytes < BYTES_PER_MB
-		? `${Math.max(1, Math.round(bytes / 1024))}KB`
-		: `${(bytes / BYTES_PER_MB).toFixed(1)}MB`;
+	if (!Number.isFinite(bytes) || bytes < 0) return "?";
+	if (bytes < 1024) return `${Math.round(bytes)}B`;
+	if (bytes >= BYTES_PER_GB) return `${(bytes / BYTES_PER_GB).toFixed(2)}GB`;
+	return bytes < BYTES_PER_MB ? `${Math.round(bytes / 1024)}KB` : `${(bytes / BYTES_PER_MB).toFixed(1)}MB`;
+}
+
+function describeElapsed(ms: number): string {
+	if (ms < 0) return "in the future";
+	const seconds = Math.floor(ms / 1000);
+	if (seconds < 5) return "just now";
+	if (seconds < 60) return `${seconds}s ago`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m ${seconds % 60}s ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 48) return `${hours}h ${minutes % 60}m ago`;
+	return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Against the heap limit, or honest about there being nothing to compare. */
+function againstLimit(bytes: number, limit: number): string {
+	if (!Number.isFinite(bytes) || bytes < 0) return "size unknown";
+	return limit > 0 ? `${Math.round((100 * bytes) / limit)}% of the limit` : "limit unknown";
+}
+
+function describeContext(context: SampleContext | null): string {
+	if (context === null) return "before any sample";
+	const { index, inFlight, connections } = context;
+	const scan =
+		index.state === "ready" || index.state === "unstarted"
+			? index.state
+			: `${index.state} ${index.done}/${index.total}`;
+	return `index ${scan}, ${inFlight} in flight, ${connections} connected`;
+}
+
+function describeDeath(code: number | null, signal: string | null): string {
+	return signal !== null ? `died on ${signal}` : `exited with code ${code}`;
 }
 
 function describeAge(modifiedAt: number | null, now: number): string {
@@ -210,11 +269,143 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 	].join("\n");
 }
 
+export function renderDiagnostics(
+	key: string,
+	file: string,
+	data: Diagnostics,
+	reports: ReportSummary[],
+	now: number,
+): string {
+	const limit = data.host.nodeHeapLimit;
+	const { memTotal, memAvailable } = data.host;
+	const host =
+		memTotal === null || memAvailable === null
+			? "host memory unknown"
+			: `host ${describeSize(memAvailable)} of ${describeSize(memTotal)} available`;
+
+	const peaks = [...data.peaks]
+		.sort((a, b) => b.rss - a.rss)
+		.map(
+			(peak) =>
+				`- ${peak.role}: ${describeSize(peak.rss)} (${againstLimit(peak.rss, limit)}) ${describeElapsed(now - peak.at)}`,
+		);
+
+	const incidents = [...data.incidents].reverse().map((incident) => {
+		const size = incident.rss === null ? "" : ` at ${describeSize(incident.rss)}`;
+		return `- ${describeElapsed(now - incident.at)}: ${incident.role} pid ${incident.pid ?? "?"} ${describeDeath(incident.code, incident.signal)}${size}; ${describeContext(incident.context)}`;
+	});
+
+	const ranges = new Map<string, { min: number; max: number }>();
+	for (const sample of data.samples) {
+		for (const row of sample.processes) {
+			if (row.rss === null) continue;
+			const range = ranges.get(row.role);
+			if (range === undefined) ranges.set(row.role, { min: row.rss, max: row.rss });
+			else {
+				range.min = Math.min(range.min, row.rss);
+				range.max = Math.max(range.max, row.rss);
+			}
+		}
+	}
+	const first = data.samples[0];
+	const last = data.samples.at(-1);
+	const span =
+		first === undefined || last === undefined || last.at - first.at < 1000
+			? ""
+			: ` over ${describeElapsed(last.at - first.at).replace(" ago", "")}`;
+	const sampled =
+		data.samples.length === 0
+			? ["None yet."]
+			: [
+					`${data.samples.length} samples${span}, the last ${describeElapsed(now - (last?.at ?? now))}, ${describeContext(last?.context ?? null)}.`,
+					...[...ranges.entries()].map(
+						([role, range]) => `- ${role}: ${describeSize(range.min)} to ${describeSize(range.max)}`,
+					),
+				];
+
+	const shown = reports.slice(0, REPORTS_SHOWN);
+	const reportLines = shown.map((report) => {
+		const name = path.basename(report.file);
+		if (report.kind === "snapshot") return `- ${name}: heap snapshot, ${describeSize(report.bytes)}`;
+		if (report.kind === "unreadable") return `- ${name}: unreadable (${report.reason})`;
+		const heap =
+			report.heapUsed === null || report.heapLimit === null
+				? "heap unknown"
+				: `heap ${describeSize(report.heapUsed)} of ${describeSize(report.heapLimit)}`;
+		const when = report.at === null ? "" : `, ${describeElapsed(now - report.at)}`;
+		return `- ${name}: ${report.event} (${report.trigger}), pid ${report.pid ?? "?"}, ${heap}${when}`;
+	});
+	if (reports.length > shown.length) reportLines.push(`- and ${reports.length - shown.length} older, not listed`);
+
+	return [
+		`# Diagnostics for \`${key}\``,
+		"",
+		`- Written: ${describeElapsed(now - data.writtenAt)}`,
+		`- Daemon: pid ${data.daemon.pid}, ${data.daemon.version}, started ${describeElapsed(now - data.daemon.startedAt)}`,
+		`- Workspace: ${data.workspaceRoot}`,
+		`- Heap limit: ${limit > 0 ? `${describeSize(limit)} per process` : "unknown"}; ${host}`,
+		`- Sampler: ${data.host.sampler}; signal: ${data.host.signal}; reports exclude the environment: ${data.host.reportsExcludeEnv ? "yes" : "no"}`,
+		"",
+		"## Peaks",
+		"",
+		...(peaks.length === 0 ? ["None yet."] : peaks),
+		"",
+		"## Incidents",
+		"",
+		...(incidents.length === 0 ? ["None recorded."] : incidents),
+		"",
+		"## Samples",
+		"",
+		...sampled,
+		"",
+		"## Reports",
+		"",
+		...(reportLines.length === 0
+			? ["None. Nothing has died of its heap or been asked for a report."]
+			: reportLines),
+		...(reports.some((report) => report.kind === "snapshot")
+			? []
+			: [
+					"",
+					"A report says where a heap went, not what held it. That needs a heap snapshot, which is opt-in: `LEXICON_HEAP_SNAPSHOT=1` on the daemon, gigabytes each.",
+				]),
+		"",
+		`Raw: ${file}`,
+	].join("\n");
+}
+
 ////////////////////////////////
 //  Tools
 
 export function listProjectStoresTool(deps: ManageDeps, now = Date.now()): ToolResult {
 	return text(renderStores(deps.list(), now));
+}
+
+export function projectDiagnosticsTool(deps: ManageDeps, args: { key: string }, now = Date.now()): ToolResult {
+	if (!STORE_KEY_RE.test(args.key)) {
+		return text(
+			`# Store not found\n\nThat is not a store key; call \`list_project_stores\` to get a real one.`,
+			true,
+		);
+	}
+	const store = deps.list().find((candidate) => candidate.key === args.key);
+	if (store === undefined) {
+		return text(
+			`# Store not found\n\nNo store named \`${args.key}\`; call \`list_project_stores\` to get a real store key.`,
+			true,
+		);
+	}
+
+	const read = deps.diagnostics(args.key);
+	if (read.state === "absent") {
+		return text(
+			`# No diagnostics yet\n\nNothing at \`${read.file}\`. A daemon writes it on its first sample, and none has written one for \`${args.key}\` yet.`,
+		);
+	}
+	if (read.state === "unreadable") {
+		return text(`# Diagnostics unreadable\n\n\`${read.file}\`: ${read.reason}`, true);
+	}
+	return text(renderDiagnostics(args.key, read.file, read.data, deps.reports(args.key), now));
 }
 
 export function deleteProjectStoreTool(deps: ManageDeps, args: { key: string }): ToolResult {

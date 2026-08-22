@@ -40,6 +40,9 @@ import {
 	listProjectStoresTool,
 	liveDeps,
 	type ManageDeps,
+	PROJECT_DIAGNOSTICS_DESCRIPTION,
+	ProjectDiagnosticsInput,
+	projectDiagnosticsTool,
 	STOP_DAEMON_DESCRIPTION,
 	StopDaemonInput,
 	stopProjectDaemonTool,
@@ -208,6 +211,7 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 	const listStoresShape = ListStoresInput as any;
 	const deleteStoreShape = DeleteStoreInput as any;
 	const stopDaemonShape = StopDaemonInput as any;
+	const diagnosticsShape = ProjectDiagnosticsInput as any;
 	const listProjectsShape = ListProjectsInput as any;
 	const registerProjectShape = RegisterProjectInput as any;
 	const bindProjectShape = BindProjectInput as any;
@@ -250,6 +254,12 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 		"list_project_stores",
 		{ title: "List Project Stores", description: LIST_STORES_DESCRIPTION, inputSchema: listStoresShape },
 		adapt(async () => listProjectStoresTool(manage)),
+	);
+
+	server.registerTool(
+		"project_diagnostics",
+		{ title: "Project Diagnostics", description: PROJECT_DIAGNOSTICS_DESCRIPTION, inputSchema: diagnosticsShape },
+		adapt(async (args) => projectDiagnosticsTool(manage, args)),
 	);
 
 	server.registerTool(

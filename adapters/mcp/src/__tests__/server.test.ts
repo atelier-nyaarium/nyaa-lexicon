@@ -58,6 +58,7 @@ const MANAGEMENT_PROPERTIES = {
 	delete_project_store: ["key"],
 	list_project_stores: [],
 	list_projects: [],
+	project_diagnostics: ["key"],
 	register_project: ["root"],
 	stop_project_daemon: ["key"],
 	unbind_project: ["project"],
@@ -192,6 +193,14 @@ describe("the published MCP project selectors", () => {
 			const tool = listed.tools.find((candidate) => candidate.name === name);
 			expect(Object.keys(tool?.inputSchema.properties ?? {}).sort()).toEqual([...expectedProperties].sort());
 		}
+	});
+
+	// Past the cap a client truncates or refuses the description, with no error to read.
+	it("keeps every description under the MCP string cap", async () => {
+		const client = await connectClient(backend({}), binding([]));
+		const listed = await client.listTools();
+
+		for (const tool of listed.tools) expect(tool.description?.length ?? 0, tool.name).toBeLessThan(2048);
 	});
 });
 

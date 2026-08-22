@@ -2,7 +2,16 @@
 //
 // A collection, never a stream: rings bound it and the file is rewritten whole.
 
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import v8 from "node:v8";
 import { z } from "zod";
@@ -167,6 +176,21 @@ export type ReadDiagnostics =
 	| { state: "unreadable"; file: string; reason: string }
 	| { state: "present"; file: string; data: Diagnostics };
 
+/** One file in `reports/`. */
+export type ReportSummary =
+	| {
+			kind: "report";
+			file: string;
+			at: number | null;
+			event: string;
+			trigger: string;
+			pid: number | null;
+			heapUsed: number | null;
+			heapLimit: number | null;
+	  }
+	| { kind: "snapshot"; file: string; bytes: number }
+	| { kind: "unreadable"; file: string; reason: string };
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -286,13 +310,26 @@ export function pruneReports(dir: string, keep = REPORTS_KEPT, keepSnapshots = S
 }
 
 /** Three answers, because a missing file and a corrupt one call for different next steps. */
+/** A regular file, or why not. A link or a directory wearing the name is not the file. */
+function regularFile(file: string): string | null {
+	try {
+		return lstatSync(file).isFile() ? null : "not a regular file";
+	} catch (error) {
+		return describe(error);
+	}
+}
+
 export function readDiagnostics(key: string, host: PlatformEnv = currentHost()): ReadDiagnostics {
 	const file = storePaths(host, key).diagnosticsFile;
 	let raw: string;
 	try {
+		const refused = regularFile(file);
+		if (refused !== null) throw new Error(refused);
 		raw = readFileSync(file, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent", file };
+		if ((error as NodeJS.ErrnoException).code === "ENOENT" || describe(error).startsWith("ENOENT")) {
+			return { state: "absent", file };
+		}
 		return { state: "unreadable", file, reason: describe(error) };
 	}
 	let parsed: unknown;
@@ -304,6 +341,62 @@ export function readDiagnostics(key: string, host: PlatformEnv = currentHost()):
 	const checked = DiagnosticsSchema.safeParse(parsed);
 	if (!checked.success) return { state: "unreadable", file, reason: checked.error.message };
 	return { state: "present", file, data: checked.data };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function summarizeReport(file: string): ReportSummary {
+	if (NODE_SNAPSHOT_RE.test(path.basename(file))) {
+		const refused = regularFile(file);
+		if (refused !== null) return { kind: "unreadable", file, reason: refused };
+		return { kind: "snapshot", file, bytes: lstatSync(file).size };
+	}
+	const refused = regularFile(file);
+	if (refused !== null) return { kind: "unreadable", file, reason: refused };
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(file, "utf8"));
+	} catch (error) {
+		return { kind: "unreadable", file, reason: describe(error) };
+	}
+	const header = asRecord(asRecord(parsed)?.["header"]);
+	if (header === null) return { kind: "unreadable", file, reason: "no report header" };
+	const heap = asRecord(asRecord(parsed)?.["javascriptHeap"]) ?? {};
+	const text = (value: unknown, fallback: string) => (typeof value === "string" ? value : fallback);
+	const count = (value: unknown) => (typeof value === "number" ? value : null);
+	// Millis, as a string.
+	const stamp = Number(header["dumpEventTimeStamp"]);
+	return {
+		kind: "report",
+		file,
+		at: Number.isFinite(stamp) && stamp > 0 ? stamp : null,
+		event: text(header["event"], "unknown"),
+		trigger: text(header["trigger"], "unknown"),
+		pid: count(header["processId"]),
+		heapUsed: count(heap["usedMemory"]),
+		heapLimit: count(heap["memoryLimit"]),
+	};
+}
+
+/** Newest first. No directory is empty; one that cannot be read says so. */
+export function listReports(key: string, host: PlatformEnv = currentHost()): ReportSummary[] {
+	const dir = storePaths(host, key).reportsDir;
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		return [{ kind: "unreadable", file: dir, reason: describe(error) }];
+	}
+	return names
+		.filter((name) => NODE_REPORT_RE.test(name) || NODE_SNAPSHOT_RE.test(name) || name === SELF_REPORT)
+		.sort()
+		.reverse()
+		.map((name) => summarizeReport(path.join(dir, name)));
 }
 
 function defaultSelfMemory(): SelfMemory {

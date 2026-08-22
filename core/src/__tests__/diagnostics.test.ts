@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -6,6 +7,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +19,7 @@ import {
 	HEAP_SNAPSHOT_ENV,
 	heapSnapshotWanted,
 	INCIDENT_RING,
+	listReports,
 	nodeReportSetup,
 	pruneReports,
 	readDiagnostics,
@@ -470,6 +473,111 @@ describe("reading the collection back", () => {
 		mkdirSync(paths.diagnosticsFile, { recursive: true });
 
 		expect(readDiagnostics(KEY, host).state).toBe("unreadable");
+	});
+});
+
+describe("listing node's reports", () => {
+	it("reads each report's header, sizes a snapshot, and names a file it cannot parse", () => {
+		const root = scratch();
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
+		const dir = storePaths(host, KEY).reportsDir;
+		mkdirSync(dir, { recursive: true });
+		const report = {
+			header: { event: "SIGUSR2", trigger: "Signal", processId: 77, dumpEventTimeStamp: "1787360823480" },
+			javascriptHeap: { usedMemory: 4_057_720, memoryLimit: LIMIT },
+		};
+		writeFileSync(path.join(dir, "report.20260821.180703.77.0.001.json"), JSON.stringify(report));
+		writeFileSync(path.join(dir, "report.20260821.180800.78.0.001.json"), "{ not json");
+		writeFileSync(path.join(dir, "report.20260821.180900.79.0.001.json"), "null");
+		mkdirSync(path.join(dir, "report.20260821.181000.80.0.001.json"));
+		const self = { header: { event: "JavaScript API", trigger: "JavaScript API", processId: 7 } };
+		writeFileSync(path.join(dir, SELF_REPORT), JSON.stringify(self));
+		writeFileSync(path.join(dir, "Heap.20260821.180900.77.0.001.heapsnapshot"), "x".repeat(2048));
+		mkdirSync(path.join(dir, "Heap.20260821.181000.77.0.001.heapsnapshot"));
+		writeFileSync(path.join(dir, "notes.txt"), "ignored");
+
+		expect(listReports(KEY, host)).toEqual([
+			{
+				kind: "unreadable",
+				file: path.join(dir, "report.20260821.181000.80.0.001.json"),
+				reason: expect.any(String),
+			},
+			{
+				kind: "unreadable",
+				file: path.join(dir, "report.20260821.180900.79.0.001.json"),
+				reason: "no report header",
+			},
+			{
+				kind: "unreadable",
+				file: path.join(dir, "report.20260821.180800.78.0.001.json"),
+				reason: expect.any(String),
+			},
+			{
+				kind: "report",
+				file: path.join(dir, "report.20260821.180703.77.0.001.json"),
+				at: 1787360823480,
+				event: "SIGUSR2",
+				trigger: "Signal",
+				pid: 77,
+				heapUsed: 4_057_720,
+				heapLimit: LIMIT,
+			},
+			{
+				kind: "report",
+				file: path.join(dir, SELF_REPORT),
+				at: null,
+				event: "JavaScript API",
+				trigger: "JavaScript API",
+				pid: 7,
+				heapUsed: null,
+				heapLimit: null,
+			},
+			{
+				kind: "unreadable",
+				file: path.join(dir, "Heap.20260821.181000.77.0.001.heapsnapshot"),
+				reason: "not a regular file",
+			},
+			{ kind: "snapshot", file: path.join(dir, "Heap.20260821.180900.77.0.001.heapsnapshot"), bytes: 2048 },
+		]);
+	});
+
+	// A link wearing a report's name reaches whatever it points at; a report is a regular file or nothing.
+	it("refuses a link wearing a report's name, or the collection's, rather than following it", () => {
+		const root = scratch();
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
+		const paths = storePaths(host, KEY);
+		mkdirSync(paths.reportsDir, { recursive: true });
+		const outside = path.join(root, "outside.json");
+		writeFileSync(outside, JSON.stringify({ header: { event: "OUTSIDE", trigger: "x", processId: 99 } }));
+		symlinkSync(outside, path.join(paths.reportsDir, "report.20260821.180703.77.0.001.json"));
+		symlinkSync(outside, paths.diagnosticsFile);
+
+		expect(listReports(KEY, host)).toEqual([
+			{
+				kind: "unreadable",
+				file: path.join(paths.reportsDir, "report.20260821.180703.77.0.001.json"),
+				reason: "not a regular file",
+			},
+		]);
+		expect(readDiagnostics(KEY, host)).toMatchObject({ state: "unreadable", reason: "not a regular file" });
+	});
+
+	it("answers nothing for a store with no reports directory, and says so for one it may not read", () => {
+		const root = scratch();
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
+		expect(listReports(KEY, host)).toEqual([]);
+
+		if (process.platform === "win32" || process.getuid?.() === 0) return;
+		const dir = storePaths(host, KEY).reportsDir;
+		mkdirSync(path.dirname(dir), { recursive: true });
+		mkdirSync(dir, { mode: 0o000 });
+		try {
+			expect(listReports(KEY, host)).toEqual([
+				{ kind: "unreadable", file: dir, reason: expect.stringMatching(/EACCES/) },
+			]);
+		} finally {
+			chmodSync(dir, 0o700);
+		}
 	});
 });
 
