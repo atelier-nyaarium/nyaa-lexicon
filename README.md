@@ -111,6 +111,11 @@ One daemon per workspace, shared by every session that finds it. Clients hold a 
 they work, so the daemon knows how many it has; the last one leaving starts a countdown, and the
 index is a file on disk, so a restart re-uses everything unchanged.
 
+Beside the index sits `diagnostics.json`, a bounded record of every process's memory and what the
+daemon was doing, and `reports/`, where a process that died of its heap leaves node's own report.
+Both live under the state directory `list_project_stores` names, and go with the index when it is
+deleted.
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - how the pieces fit

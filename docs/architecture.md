@@ -45,6 +45,31 @@ Two rules hold the design together:
   layer: recorded answers cannot be regenerated from source, so they are salvaged across a rebuild
   and their citations heal on their own, because unchanged code mints identical fact ids.
 
+## Diagnostics
+
+A daemon that dies of its heap leaves nothing to read on its own. Two owners in `core/` change that.
+
+- **`procfs.ts`** is the only reader of `/proc`: a process's identity, its resident size and
+  high-water mark, the host's memory. Null where there is no procfs, never a guess, and a residue
+  test keeps the mount out of every other module.
+- **`diagnostics.ts`** owns the collection in `diagnostics.json` beside the index: a ring of
+  samples (the daemon's heap, every provider's RSS and high-water, what the daemon was doing), a
+  ring of incidents (a provider death with its signal and last size), and a peak per process. It
+  is rewritten whole, temp file then rename, on a rate limit and immediately on an incident or at
+  shutdown, so it never grows with uptime and a reader never meets half a file.
+
+Node's own diagnostic report is turned on for every node process the daemon starts, through the
+argv `nodeReportSetup` answers. A heap death leaves a compact JSON in `reports/` with the stack and
+the heap spaces. A provider approaching the limit is asked for the same report while still alive,
+by a signal the supervisor sends only to a process that declared it survives it. `reports/` is
+created owner-only and pruned to the newest eight reports and two heap snapshots. A report omits
+the environment wherever node can, and `host.reportsExcludeEnv` in the collection says whether it
+did. A heap snapshot is opt-in, `LEXICON_HEAP_SNAPSHOT=1`, at gigabytes each.
+
+The supervisor absorbs writes to a dead child. `vscode-jsonrpc` rethrows a failed pipe write into
+a promise nobody holds, an unhandled rejection the daemon would die of. The death reaches the
+caller through the typed `closed` rejection instead.
+
 ## Where a comment gets its meaning
 
 Providers report comments as raw spans and say nothing about ownership. Deciding which symbol a

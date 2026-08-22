@@ -2,6 +2,33 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
+## 2.1.0
+
+The daemon records its own memory, and a process that dies of it leaves a report.
+
+### What you get
+
+`diagnostics.json` beside each workspace's index, under the state directory: a bounded ring of
+samples (the daemon's heap, every provider's resident size and peak, what the daemon was doing), a
+ring of incidents (a provider death with its signal and last size), and a peak per process. It is
+rewritten whole, through a temporary file and a rename, and never grows. Every node process the
+daemon starts has node's diagnostic report turned on, so a heap death leaves a JSON in `reports/`
+with the stack and the heap spaces at the moment, pruned to the newest eight. A provider nearing
+the limit is asked for the same report while still alive. `LEXICON_HEAP_SNAPSHOT=1` adds a full
+heap snapshot near the limit, gigabytes each, kept to the newest two.
+
+### What it asks of you
+
+**A report holds your process's command line, working directory and JS stack.** It holds every
+environment variable too on node older than 22.13, which cannot leave them out; on 22.13 and newer
+they are excluded, and `host.reportsExcludeEnv` in the collection says which you got. `reports/`
+is created readable by you alone. Deleting a project store deletes its diagnostics and reports
+with it.
+
+**A request racing a provider's death no longer takes the daemon down.** It used to, through an
+unhandled rejection inside `vscode-jsonrpc`; it now rejects typed. If you have seen a daemon stop
+with `unhandled rejection: ... EPIPE` in `daemon.log`, that was this.
+
 ## 2.0.0
 
 The first major. Comments become facts, documents become searchable, and `docComment` is retired.
