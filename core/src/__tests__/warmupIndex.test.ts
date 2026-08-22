@@ -225,12 +225,29 @@ describe("warmup pass", () => {
 
 		await service.upgradeRemaining();
 		expect(store.depthOf("a.fake")).toBe("full");
-		// The drain resolves, and the failed module honestly remains incomplete.
-		expect(service.indexStatus().failures).toBe(1);
+		// Named, not only counted.
+		const status = service.indexStatus("bad.fake");
+		expect(status).toMatchObject({ failures: 1, failed: [{ module: "bad.fake", reason: expect.any(String) }] });
+		expect(status.concerning).toEqual(status.failed[0]);
+		expect(service.indexStatus("a.fake").concerning).toBeUndefined();
 
 		put("bad.fake", "export class Fixed {}\n");
 		await service.indexFile("bad.fake");
 		expect(store.parseFailures()).toEqual([]);
+	});
+
+	it("drops a failure row once the stored facts are found current", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+		await service.upgradeRemaining();
+		// What a timed-out re-read leaves.
+		store.recordFailure("a.fake", "timed out");
+		expect(service.indexStatus().failures).toBe(1);
+
+		await service.indexFile("a.fake", "full", true);
+		expect(service.indexStatus().failures).toBe(0);
 	});
 
 	it("classifies a dead provider as unavailable, blaming no file", async () => {

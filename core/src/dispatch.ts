@@ -103,6 +103,9 @@ const Gaps = z.object({
 	limit: z.number().int().positive().optional(),
 	module: z.string().min(1).optional(),
 });
+const Status = z.object({
+	concerning: z.string().min(1).optional(),
+});
 const FindImports = z.object({
 	specifier: z.string().min(1).optional(),
 	specifierRegex: z.string().min(1).optional(),
@@ -501,8 +504,10 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 				const args = Resolve.parse(params);
 				return service.resolveImport(args.fromModule, args.specifier);
 			}
-			case "indexStatus":
-				return service.indexStatus();
+			case "indexStatus": {
+				const args = Status.parse(params);
+				return service.indexStatus(args.concerning);
+			}
 			case "findLiterals": {
 				const args = Literals.parse(params);
 				const { limit, ...query } = args;

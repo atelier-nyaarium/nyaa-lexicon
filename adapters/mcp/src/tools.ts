@@ -32,6 +32,7 @@ import type {
 } from "@nyaa-lexicon/core";
 import { compileSearchRegex } from "@nyaa-lexicon/core";
 import type { ImportResolution, TypeInfo } from "@nyaa-lexicon/protocol";
+import { parseSymbolId } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import {
 	renderCandidates,
@@ -114,7 +115,7 @@ export interface ToolBackend {
 		issues: RefactorIssue[];
 		reason?: string;
 	}>;
-	indexStatus: () => Promise<IndexStatus>;
+	indexStatus: (concerning?: string) => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
 	findComments: (query: CommentQuery & { limit?: number | undefined }) => Promise<CommentsResult>;
 	findDocs: (query: DocQuery & { limit?: number | undefined }) => Promise<DocsResult>;
@@ -780,13 +781,28 @@ function text(body: string, isError = false): ToolResult {
  * Every ABSENCE goes through here, including "no symbol named X is indexed". That one is the most
  * common answer of all during a cold scan, and the first version of this missed it.
  */
-async function withIndexState(backend: ToolBackend, body: string): Promise<string> {
-	const status = await backend.indexStatus();
+async function withIndexState(backend: ToolBackend, body: string, concerning?: string): Promise<string> {
+	const status = await backend.indexStatus(concerning);
 	const notes: string[] = [];
 
-	if (status.failures > 0) {
+	// Concerning file first.
+	const retry =
+		"Fix what the reason names and save; a changed file is re-read at once, an unchanged one on the next scan.";
+	if (status.concerning !== undefined) {
 		notes.push(
-			`${status.failures} file${status.failures === 1 ? "" : "s"} failed to parse; any facts indexed before the failure were kept.`,
+			`\`${status.concerning.module}\`, the file this answer concerns, failed to parse: ${oneLine(status.concerning.reason)}. Its facts are missing or predate the failure. ${retry}`,
+		);
+	}
+	const others = status.failures - (status.concerning === undefined ? 0 : 1);
+	if (others > 0) {
+		const named = status.failed.filter((failure) => failure.module !== status.concerning?.module);
+		const more = others - named.length;
+		const list =
+			named.length === 0
+				? ""
+				: `: ${named.map((failure) => `\`${failure.module}\` (${oneLine(failure.reason)})`).join(", ")}${more > 0 ? `, and ${more} more` : ""}`;
+		notes.push(
+			`${others} ${status.concerning === undefined ? "" : "other "}file${others === 1 ? "" : "s"} failed to parse; facts indexed before each failure were kept${list}. \`overview\` lists every one.${status.concerning === undefined ? ` ${retry}` : ""}`,
 		);
 	}
 
@@ -813,6 +829,15 @@ async function withIndexState(backend: ToolBackend, body: string): Promise<strin
 	return notes.length === 0 ? body : `${body}\n\n${notes.map((note) => `> ${note}`).join("\n")}`;
 }
 
+function oneLine(reason: string): string {
+	return reason.replace(/\s+/g, " ").trim();
+}
+
+/** Symbol id to its file. */
+function moduleOf(symbolId: string): string | undefined {
+	return parseSymbolId(symbolId)?.module;
+}
+
 /**
  * Resolve what the caller gave into one symbol id.
  *
@@ -834,7 +859,7 @@ async function resolveOne(backend: ToolBackend, args: SymbolArgs): Promise<{ sym
 
 export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const described = await backend.describe(resolved.symbolId);
 	// An absence claim is the one that has to know how much was read, so it carries the state and
@@ -845,6 +870,7 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 			await withIndexState(
 				backend,
 				`No symbol with ID \`${resolved.symbolId}\` is indexed. Copy IDs verbatim from a result row.`,
+				moduleOf(resolved.symbolId),
 			),
 			true,
 		);
@@ -861,15 +887,15 @@ export async function findReferences(
 	args: SymbolArgs & { limit?: number | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const found = await backend.findReferences(resolved.symbolId, args.limit);
-	return text(await withIndexState(backend, renderReferences(found)));
+	return text(await withIndexState(backend, renderReferences(found), moduleOf(resolved.symbolId)));
 }
 
 export async function typeOfSymbol(backend: ToolBackend, args: SymbolArgs): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const type = await backend.typeOf(resolved.symbolId);
 	// The name is only for the rendered line, so falling back to the id keeps the answer readable
@@ -927,7 +953,8 @@ export async function symbolSource(
 	args: { symbolId?: string | undefined; factId?: string | undefined },
 ): Promise<ToolResult> {
 	const source = await backend.symbolSource(args);
-	return text(await withIndexState(backend, renderSymbolSource(source)), !source.found);
+	const concerning = args.symbolId === undefined ? undefined : moduleOf(args.symbolId);
+	return text(await withIndexState(backend, renderSymbolSource(source), concerning), !source.found);
 }
 
 export async function refactorStart(backend: ToolBackend): Promise<ToolResult> {
@@ -1023,7 +1050,7 @@ export async function findComments(
 	}
 	try {
 		const found = await backend.findComments(args);
-		return text(await withIndexState(backend, renderComments(found)));
+		return text(await withIndexState(backend, renderComments(found), args.module));
 	} catch (error) {
 		// A bad regex is the caller's mistake and worth saying plainly, rather than an empty result
 		// that reads as "nothing matched".
@@ -1039,7 +1066,7 @@ export async function searchDocs(
 		return text("Set `text` or `regex`, not both.", true);
 	}
 	try {
-		return text(await withIndexState(backend, renderDocs(await backend.findDocs(args))));
+		return text(await withIndexState(backend, renderDocs(await backend.findDocs(args)), args.module));
 	} catch (error) {
 		// A bad regex is the caller's mistake and worth saying plainly, rather than an empty result
 		// that reads as "nothing matched".
@@ -1076,7 +1103,8 @@ export async function searchSymbols(
 }
 
 export async function outlineModule(backend: ToolBackend, args: { module: string }): Promise<ToolResult> {
-	return text(await withIndexState(backend, renderOutline(args.module, await backend.outlineModule(args.module))));
+	const outline = renderOutline(args.module, await backend.outlineModule(args.module));
+	return text(await withIndexState(backend, outline, args.module));
 }
 
 export async function findImports(
@@ -1104,7 +1132,7 @@ export async function findImports(
 		}
 	}
 	try {
-		return text(await withIndexState(backend, renderImports(await backend.findImports(args))));
+		return text(await withIndexState(backend, renderImports(await backend.findImports(args)), args.module));
 	} catch (error) {
 		return text(error instanceof Error ? error.message : String(error), true);
 	}
@@ -1150,7 +1178,7 @@ export async function recallAnswer(
 	args: SymbolArgs & { question?: QuestionClass | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const recalled =
 		args.question === undefined
@@ -1164,6 +1192,7 @@ export async function recallAnswer(
 			await withIndexState(
 				backend,
 				`${which} recorded about ${resolved.symbolId}. \`record_answer\` writes one, citing ids from \`symbol_facts\`.`,
+				moduleOf(resolved.symbolId),
 			),
 			true,
 		);
@@ -1180,7 +1209,7 @@ export async function invalidateAnswer(
 	},
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const outcome = await backend.invalidateAnswer(resolved.symbolId, args.reason, args.question, args.by);
 	return text(renderInvalidateOutcome(outcome), outcome.refused !== undefined);
@@ -1196,7 +1225,7 @@ export async function reaffirmAnswer(
 	},
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const outcome = await backend.reaffirmAnswer(resolved.symbolId, args.question, {
 		...(args.citations === undefined ? {} : { citations: args.citations }),
@@ -1217,14 +1246,15 @@ export async function knowledgeGaps(
 	let root: string | undefined;
 	if (args.symbolId !== undefined || args.name !== undefined) {
 		const resolved = await resolveOne(backend, args);
-		if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+		if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 		root = resolved.symbolId;
 	}
 
 	// Alone, module is the scope.
 	const module = root === undefined ? args.module : undefined;
 	const gaps = await backend.knowledgeGaps(root, args.question, args.limit, module);
-	return text(await withIndexState(backend, renderKnowledgeGaps(gaps, root)));
+	const concerning = root === undefined ? module : moduleOf(root);
+	return text(await withIndexState(backend, renderKnowledgeGaps(gaps, root), concerning));
 }
 
 export async function symbolHistory(
@@ -1239,12 +1269,16 @@ export async function symbolFacts(
 	args: SymbolArgs & { limit?: number | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem), true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const facts = await backend.factsFor(resolved.symbolId, args.limit);
+	const concerning = moduleOf(resolved.symbolId);
 	if (facts === null)
-		return text(await withIndexState(backend, `No symbol with ID \`${resolved.symbolId}\` is indexed.`), true);
-	return text(await withIndexState(backend, renderFacts(facts)));
+		return text(
+			await withIndexState(backend, `No symbol with ID \`${resolved.symbolId}\` is indexed.`, concerning),
+			true,
+		);
+	return text(await withIndexState(backend, renderFacts(facts), concerning));
 }
 
 export async function resolveImport(

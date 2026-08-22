@@ -50,7 +50,7 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		findReferences: (symbolId, limit) => ask("findReferences", { symbolId, limit }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
-		indexStatus: () => ask("indexStatus", {}),
+		indexStatus: (concerning) => ask("indexStatus", concerning === undefined ? {} : { concerning }),
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
 		refactorStatus: () => ask("refactorStatus", {}),

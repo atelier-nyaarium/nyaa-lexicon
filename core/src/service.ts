@@ -194,8 +194,8 @@ export class LexiconService {
 		return this.indexer.applyBatch(...args);
 	}
 
-	indexStatus(): ReturnType<WorkspaceIndexer["indexStatus"]> {
-		return this.indexer.indexStatus();
+	indexStatus(concerning?: string): ReturnType<WorkspaceIndexer["indexStatus"]> {
+		return this.indexer.indexStatus(concerning);
 	}
 
 	warmupWorkspace(

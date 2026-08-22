@@ -930,11 +930,24 @@ export class IndexStore {
 		this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 	}
 
-	parseFailures(): Array<{ module: string; reason: string }> {
-		return this.db.prepare("SELECT module, reason FROM parse_failures ORDER BY module").all() as Array<{
-			module: string;
-			reason: string;
-		}>;
+	parseFailureCount(): number {
+		return (this.db.prepare("SELECT COUNT(*) AS n FROM parse_failures").get() as { n: number }).n;
+	}
+
+	/** By path, so a sample and the full list agree on order. */
+	parseFailures(limit?: number): Array<{ module: string; reason: string }> {
+		const rows =
+			limit === undefined
+				? this.db.prepare("SELECT module, reason FROM parse_failures ORDER BY module").all()
+				: this.db.prepare("SELECT module, reason FROM parse_failures ORDER BY module LIMIT ?").all(limit);
+		return rows as Array<{ module: string; reason: string }>;
+	}
+
+	parseFailureOf(module: string): { module: string; reason: string } | null {
+		const row = this.db.prepare("SELECT module, reason FROM parse_failures WHERE module = ?").get(module) as
+			| { module: string; reason: string }
+			| undefined;
+		return row ?? null;
 	}
 
 	/** Persists scan counts used to explain coverage gaps. */

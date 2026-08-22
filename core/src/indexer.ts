@@ -44,11 +44,18 @@ export interface ScanBreakdown {
  *
  * `warming` stores outlines; `upgrading` fills full facts. Failures come from persisted records.
  */
+/** How many failed files an answer names; `overview` lists every one. */
+export const NAMED_FAILURES = 3;
+
 export interface IndexStatus {
 	state: "unstarted" | "discovering" | "warming" | "indexing" | "upgrading" | "ready";
 	done: number;
 	total: number;
 	failures: number;
+	/** The first `NAMED_FAILURES` failed files by path, each with the provider's reason. */
+	failed: Array<{ module: string; reason: string }>;
+	/** The file asked about, when it is one of the failures. */
+	concerning?: { module: string; reason: string };
 	/** Files the index already holds, from this scan or any earlier one. */
 	stored: number;
 	/** Stored files not still owing a full pass. */
@@ -125,7 +132,11 @@ export class WorkspaceIndexer {
 		if (skipIfCurrent && this.store.contentHashOf(module) === readHash) {
 			const held = this.store.depthOf(module);
 			const satisfied = held === "full" || held === "surface" || held === depth;
-			if (satisfied) return { module, action: "skipped", reason: "already indexed at this depth" };
+			if (satisfied) {
+				// Final facts outrank a failure row.
+				if (held !== "outline") this.store.clearFailure(module);
+				return { module, action: "skipped", reason: "already indexed at this depth" };
+			}
 		}
 
 		const facts = await this.supervisor.ask(module, "parseFile", {
@@ -441,13 +452,16 @@ export class WorkspaceIndexer {
 	 * index, so the state is reported rather than assumed, and a caller can tell a real "no
 	 * references" from "not read yet".
 	 */
-	indexStatus(): IndexStatus {
+	indexStatus(concerning?: string): IndexStatus {
 		// Store-derived counts survive restarts.
 		const depths = this.store.depthTotals();
+		const concerned = concerning === undefined ? null : this.store.parseFailureOf(concerning);
 		return {
 			...this.status,
 			stored: this.store.totals().files,
-			failures: this.store.parseFailures().length,
+			failures: this.store.parseFailureCount(),
+			failed: this.store.parseFailures(NAMED_FAILURES),
+			...(concerned === null ? {} : { concerning: concerned }),
 			fullFiles: depths.full + depths.surface,
 			outlineFiles: depths.outline,
 		};

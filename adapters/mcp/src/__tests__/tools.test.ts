@@ -38,6 +38,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			done: 1,
 			total: 1,
 			failures: 0,
+			failed: [],
 			stored: 1,
 			fullFiles: 1,
 			outlineFiles: 0,
@@ -81,7 +82,16 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			literals: 0,
 			modules: 0,
 			scope: "test",
-			index: { state: "ready", done: 0, total: 0, failures: 0, stored: 0, fullFiles: 0, outlineFiles: 0 },
+			index: {
+				state: "ready",
+				done: 0,
+				total: 0,
+				failures: 0,
+				failed: [],
+				stored: 0,
+				fullFiles: 0,
+				outlineFiles: 0,
+			},
 			largest: [],
 		}),
 		coChangedWith: async (module) => ({
@@ -346,6 +356,7 @@ describe("index-state honesty notes", () => {
 					done: 3,
 					total: 10,
 					failures: 0,
+					failed: [],
 					stored: 10,
 					fullFiles: 3,
 					outlineFiles: 7,
@@ -365,14 +376,19 @@ describe("index-state honesty notes", () => {
 		expect(text).not.toContain("Still indexing");
 	});
 
-	it("counts persisted failures even when the state is ready", async () => {
+	it("names each failed file with its reason, and says where the full list is", async () => {
 		const result = await findReferences(
 			backend({
 				indexStatus: async () => ({
 					state: "ready",
 					done: 1,
 					total: 1,
-					failures: 2,
+					failures: 5,
+					failed: [
+						{ module: "src/a.ts", reason: "Unexpected token" },
+						{ module: "src/b.ts", reason: "Unexpected\n   end of file" },
+						{ module: "src/c.ts", reason: "timed out" },
+					],
 					stored: 1,
 					fullFiles: 1,
 					outlineFiles: 0,
@@ -381,7 +397,139 @@ describe("index-state honesty notes", () => {
 			{ symbolId: "x" },
 		);
 		const text = (result.content[0] as { text: string }).text;
-		expect(text).toContain("2 files failed to parse");
+		expect(text).toContain("5 files failed to parse");
+		expect(text).toContain("`src/a.ts` (Unexpected token)");
+		expect(text).toContain("`src/b.ts` (Unexpected end of file)");
+		expect(text).toContain("and 2 more");
+		expect(text).toContain("`overview`");
+	});
+
+	it("asks about the file a symbol lives in, and leads with that file's own failure", async () => {
+		const asked: Array<string | undefined> = [];
+		const result = await findReferences(
+			backend({
+				indexStatus: async (concerning) => {
+					asked.push(concerning);
+					return {
+						state: "ready",
+						done: 1,
+						total: 1,
+						failures: 2,
+						failed: [
+							{ module: "src/a.ts", reason: "Unexpected token" },
+							{ module: "src/z.ts", reason: "timed out" },
+						],
+						...(concerning === "src/a.ts"
+							? { concerning: { module: "src/a.ts", reason: "Unexpected token" } }
+							: {}),
+						stored: 1,
+						fullFiles: 1,
+						outlineFiles: 0,
+					};
+				},
+			}),
+			{ symbolId: "lexicon ts src/a.ts Cart#" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(asked).toEqual(["src/a.ts"]);
+		expect(text).toContain("`src/a.ts`, the file this answer concerns, failed to parse: Unexpected token");
+		expect(text).toContain("1 other file failed to parse");
+		expect(text).toContain("`src/z.ts` (timed out)");
+		expect(text).not.toContain("`src/a.ts` (Unexpected token)");
+	});
+
+	it("keeps the named sample whole when the concerning file is outside it", async () => {
+		const result = await findReferences(
+			backend({
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 4,
+					failed: [
+						{ module: "src/a.ts", reason: "bad" },
+						{ module: "src/b.ts", reason: "bad" },
+						{ module: "src/c.ts", reason: "bad" },
+					],
+					concerning: { module: "src/z.ts", reason: "timed out" },
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
+			}),
+			{ symbolId: "lexicon ts src/z.ts Cart#" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("`src/z.ts`, the file this answer concerns, failed to parse: timed out");
+		expect(text).toContain("3 other files failed to parse");
+		expect(text).toContain("`src/c.ts` (bad)");
+		expect(text).not.toContain("more");
+	});
+
+	it("says nothing of others when the concerning file is the only failure", async () => {
+		const result = await findReferences(
+			backend({
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 1,
+					failed: [{ module: "src/z.ts", reason: "timed out" }],
+					concerning: { module: "src/z.ts", reason: "timed out" },
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
+			}),
+			{ symbolId: "lexicon ts src/z.ts Cart#" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("the file this answer concerns");
+		expect(text).not.toContain("other file");
+		expect(text).not.toContain("1 file failed");
+	});
+
+	it("counts without naming when no failure is in the sample", async () => {
+		const result = await findReferences(
+			backend({
+				indexStatus: async () => ({
+					state: "ready",
+					done: 1,
+					total: 1,
+					failures: 2,
+					failed: [],
+					stored: 1,
+					fullFiles: 1,
+					outlineFiles: 0,
+				}),
+			}),
+			{ symbolId: "x" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("2 files failed to parse; facts indexed before each failure were kept. `overview`");
+	});
+
+	it("asks about the module given when a name did not resolve", async () => {
+		const asked: Array<string | undefined> = [];
+		await describeSymbol(
+			backend({
+				indexStatus: async (concerning) => {
+					asked.push(concerning);
+					return {
+						state: "ready",
+						done: 1,
+						total: 1,
+						failures: 0,
+						failed: [],
+						stored: 1,
+						fullFiles: 1,
+						outlineFiles: 0,
+					};
+				},
+			}),
+			{ name: "Cart", module: "src/a.ts" },
+		);
+		expect(asked).toEqual(["src/a.ts"]);
 	});
 });
 

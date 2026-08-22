@@ -4,9 +4,18 @@ Only releases that ask something of you. A patch that changes nothing you can ob
 
 ## 2.0.2
 
-`knowledge_gaps` answers for one file.
+`knowledge_gaps` answers for one file, and a parse failure is named where it matters.
 
 ### What you get
+
+Every answer's note used to say `1 file failed to parse` and nothing more: not which file, not why,
+not what to do. It now names the failed files with the provider's reason, up to three, points at
+`overview` for the rest, and says what to do: fix what the reason names and save. A changed file is
+re-read at once; an unchanged one is retried by the next scan, which a daemon runs when it starts
+over a stored index and otherwise on its first request. An answer about a symbol or file that IS
+one of the failures leads with that, so a declaration missing from a file that did not parse is not
+mistaken for one that does not exist. A failure recorded against content the index already holds
+at final depth is dropped once that content is found current, where before the count kept it.
 
 Pass `module` alone and the answer is that file's own declarations without a healthy answer,
 stale and doubted ones first and then the missing by how used they are, whether or not anyone has
