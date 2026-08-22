@@ -1612,6 +1612,20 @@ The release note also gained the thing a reader can actually DO about indexed co
 repository the scan takes its file list from git, so a `.gitignore`d file is never read. Verified
 with a real repository holding an ignored `secrets.yml`, which indexes to nothing.
 
+**The release red team found no blocker, and one wording fix.** Four claims, none of them real. Two
+were the contention timeout again. One was a `1.14.0` client connecting to a `2.0.0` daemon, which is
+`decideFromLock` behaving exactly as `protocol/CLAUDE.md` specifies: newer is ridden, never retired,
+because two sides replacing each other rebuild the index on every flip. The release note already says
+the consequence, which is that a stale session cannot speak the wire and should be reloaded.
+
+The fourth was worth something anyway. Copying `dist/` somewhere on its own and running it throws
+`could not locate the lexicon repository from this build`, because `lexiconRoot()` needs `providers/`
+and `package.json` beside it to find the provider bundles. That is NOT how the plugin ships, which
+was confirmed by looking at an installed copy: the marketplace ships the whole checkout. But
+`CLAUDE.md` said consumers run `node dist/main.js` with no install step, which reads as though the
+directory were standalone, and it is what sent the attack down that path. It now says what `dist/`
+needs around it.
+
 **Not done here, and it is the one thing left:** nothing is pushed. `2.0.0` and this whole train sit
 on `main` ahead of `origin`, by explicit instruction.
 
