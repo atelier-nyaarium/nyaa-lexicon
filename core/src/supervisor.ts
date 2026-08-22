@@ -5,6 +5,7 @@
 // concurrently.
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { Writable } from "node:stream";
 import {
 	isCompatibleProtocol,
 	METHOD_SCHEMAS,
@@ -87,6 +88,24 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 /** A signal death has no code, and "code null" hides which signal it was. */
 function describeExit(code: number | null, signal: string | null): string {
 	return signal !== null ? `died on ${signal}` : `exited with code ${code}`;
+}
+
+/** Writes to a dead child succeed silently: vscode-jsonrpc rethrows a failed write into a promise
+ * nobody holds, an unhandled rejection the daemon dies of. The pipe's `error` event says so instead. */
+export function absorbingWrites(stdin: Writable): Writable {
+	stdin.on("error", () => {});
+	return new Writable({
+		write(chunk, encoding, callback) {
+			try {
+				stdin.write(chunk, encoding, () => callback());
+			} catch {
+				callback();
+			}
+		},
+		final(callback) {
+			stdin.end(() => callback());
+		},
+	});
 }
 
 ////////////////////////////////
@@ -305,7 +324,7 @@ export class ProviderSupervisor {
 
 		const connection = createMessageConnection(
 			new StreamMessageReader(child.stdout),
-			new StreamMessageWriter(child.stdin),
+			new StreamMessageWriter(absorbingWrites(child.stdin)),
 		);
 		connection.listen();
 
@@ -322,6 +341,8 @@ export class ProviderSupervisor {
 			closeNow(error);
 		};
 		child.on("exit", (code, signal) => die(new ProviderUnavailableError(`provider ${describeExit(code, signal)}`)));
+		// A broken pipe fails the request now, typed, rather than at its timeout.
+		child.stdin.on("error", (error) => die(new ProviderUnavailableError(`provider pipe: ${error.message}`)));
 		// The spawn gate in start() consumes the pre-spawn 'error'; this one covers anything the
 		// process emits after it, so it can never again be an uncaught crash of the daemon.
 		child.on("error", (error) => die(new ProviderUnavailableError(`provider errored: ${error.message}`)));

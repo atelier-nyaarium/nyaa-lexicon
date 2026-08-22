@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { type ProviderExit, ProviderSupervisor } from "../supervisor";
+import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
+import { absorbingWrites, type ProviderExit, ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
 
 ////////////////////////////////
 //  Helpers
@@ -187,6 +189,45 @@ describe("when a provider dies", () => {
 		supervisor.stop("reference-provider");
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		expect(exits).toHaveLength(1);
+	}, 30_000);
+});
+
+describe("a request racing a death", () => {
+	// Deterministic half: a pipe that refuses the write. The library would rethrow that into a
+	// promise nobody holds, which is an unhandled rejection, which vitest fails the file on.
+	it("absorbs a write the pipe refuses, so nothing is left to rethrow", async () => {
+		const dead = new Writable({
+			write(_chunk, _encoding, callback) {
+				callback(new Error("EPIPE"));
+			},
+		});
+		const writer = new StreamMessageWriter(absorbingWrites(dead));
+		const ping: NotificationMessage = { jsonrpc: "2.0", method: "ping" };
+
+		await expect(writer.write(ping)).resolves.toBeUndefined();
+	});
+
+	it("absorbs a pipe that throws on write outright", async () => {
+		const thrower = new Writable({ write: () => {} });
+		thrower.write = () => {
+			throw new Error("write after destroy");
+		};
+		const writer = new StreamMessageWriter(absorbingWrites(thrower));
+		const ping: NotificationMessage = { jsonrpc: "2.0", method: "ping" };
+
+		await expect(writer.write(ping)).resolves.toBeUndefined();
+	});
+
+	// Live half. On a slow runner the window between the kill and its exit event is wide enough
+	// for the write to land in the dead pipe; here it usually is not, so the unit above carries it.
+	it("rejects typed rather than erroring the whole process", async () => {
+		await start();
+		const pid = supervisor.pidOf("reference-provider") as number;
+		process.kill(pid, "SIGKILL");
+
+		await expect(
+			supervisor.ask("a.ref", "parseFile", { module: "a.ref", contentHash: "h", text: "" }),
+		).rejects.toThrow(ProviderUnavailableError);
 	}, 30_000);
 });
 
