@@ -309,7 +309,6 @@ export function pruneReports(dir: string, keep = REPORTS_KEPT, keepSnapshots = S
 	return removed;
 }
 
-/** Three answers, because a missing file and a corrupt one call for different next steps. */
 /** A regular file, or why not. A link or a directory wearing the name is not the file. */
 function regularFile(file: string): string | null {
 	try {
@@ -319,6 +318,7 @@ function regularFile(file: string): string | null {
 	}
 }
 
+/** Three answers, because a missing file and a corrupt one call for different next steps. */
 export function readDiagnostics(key: string, host: PlatformEnv = currentHost()): ReadDiagnostics {
 	const file = storePaths(host, key).diagnosticsFile;
 	let raw: string;

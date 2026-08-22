@@ -439,7 +439,7 @@ Unbound \`${J.project.name}\`.`)}import{existsSync as Pi,readFileSync as Ii}from
 
 Memory record of a store's daemon and providers, and node's crash reports beside it. Read from disk, so it answers for a daemon that has died.
 
-Pass a key from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, and each report's trigger and heap.
+Pass a key from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
 `.trim(),wI=`
 # \`delete_project_store\`
 

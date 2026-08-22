@@ -66,7 +66,7 @@ export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 
 Memory record of a store's daemon and providers, and node's crash reports beside it. Read from disk, so it answers for a daemon that has died.
 
-Pass a key from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, and each report's trigger and heap.
+Pass a key from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -99,7 +99,7 @@ export const ProjectDiagnosticsInput = DeleteStoreInput;
 
 const BYTES_PER_MB = 1024 * 1024;
 const BYTES_PER_GB = 1024 * BYTES_PER_MB;
-/** Pruning keeps eight reports and two snapshots; a directory filled by hand is listed, not dumped. */
+/** Pruning keeps eight reports and two snapshots; anything beyond this is counted, not listed. */
 const REPORTS_SHOWN = 20;
 /** What `workspaceKey` mints. Anything else is a directory name, not a key. */
 const STORE_KEY_RE = /^[A-Za-z0-9._-]+$/;
