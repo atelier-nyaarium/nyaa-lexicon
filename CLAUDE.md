@@ -54,6 +54,12 @@ failure, which has already produced a confident "gate clean" that was not. When 
 with no install step, which is the whole reason `dist/` is committed. A `bun:`-prefixed import works
 here and fails in the artifact, on the platform the build exists to serve.
 
+`dist/` is not standalone, though. The plugin ships the whole checkout, and `lexiconRoot()` walks up
+from the running file looking for a directory holding both `providers/` and `package.json`, which is
+how the daemon finds the provider bundles to spawn. Copying `dist/` somewhere on its own throws
+`could not locate the lexicon repository from this build`, which is the right answer to an unsupported
+layout rather than a bug to route around.
+
 **Bun has no `node:sqlite`**, so anything touching the store cannot run under `bun run` at all. Run
 it from `dist/` under node:
 
