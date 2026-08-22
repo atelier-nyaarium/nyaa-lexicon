@@ -82,6 +82,12 @@ Every provider discovers its files through one walk in the protocol package, whi
 module the way its ids are spelled. A file whose name a symbol id cannot carry, one holding a
 control character, is no longer listed; it could never have been parsed.
 
+The conformance corpus plants comment-shaped text inside every string form its table names for a
+language, beside three real comments, and fails a provider on any marker reported or real comment
+missed. Every provider passes it; writing it found one hole, a C# raw string opened with four or
+more quotes closed at the first three, so the rest of the file read as a comment. It closes on a
+run as long as its opener now.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

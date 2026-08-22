@@ -200,13 +200,28 @@ function readString(
 	let invalidNewline = false;
 	const holeComments: Token[] = [];
 	if (rawString) {
-		consumeAscii(cursor, quote.repeat(3));
+		// Closes only on a run as long as the opener; a shorter run is content.
+		let opener = 0;
+		while (cursor.peek() === quote) {
+			cursor.next();
+			opener++;
+		}
 		while (cursor.good()) {
-			if (sameAscii(cursor, quote.repeat(3))) {
-				consumeAscii(cursor, quote.repeat(3));
-				return { value, closed: true, invalidNewline, holeComments };
+			if (cursor.peek() !== quote) {
+				value += cursor.next();
+				continue;
 			}
-			value += cursor.next();
+			let run = 0;
+			while (cursor.peek() === quote) {
+				cursor.next();
+				run++;
+			}
+			if (run < opener) {
+				value += quote.repeat(run);
+				continue;
+			}
+			value += quote.repeat(run - opener);
+			return { value, closed: true, invalidNewline, holeComments };
 		}
 		return { value, closed: false, invalidNewline, holeComments };
 	}

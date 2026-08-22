@@ -154,6 +154,8 @@ export const ConformanceFixtureSchema = z
 	})
 	.meta({ id: "ConformanceFixture" });
 
+export type ConformanceFixture = z.infer<typeof ConformanceFixtureSchema>;
+
 export const ConformanceCaseSchema = z
 	.object({
 		id: z.string().min(1),

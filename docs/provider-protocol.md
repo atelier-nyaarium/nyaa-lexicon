@@ -129,8 +129,11 @@ language. A comment is defined by what is NOT a string, so every hole in your st
 becomes a false comment. It has bitten four providers: a string ending at the first quote inside an
 interpolation, an empty block comment read as a doc opener and running to end of file, a string
 ending at a backslash-newline that the language splices, and interpolation holes never tracked at
-all. Nothing the provider reports about itself can catch this, so the corpus is the only guard:
-before trusting a new lexer, plant a marker inside every string form the language has.
+all. Nothing the provider reports about itself can catch this, so the corpus is the only guard. Its
+string-forms case, built from `protocol/src/conformance/stringForms.ts`, plants comment-shaped text
+inside each string form its table names for a language, beside three real comments, and the exact-set check
+fails on a marker reported or a real comment missed. A new lexer adds its language's forms there
+before it is trusted, and every form a lexer once got wrong stays in the table.
 
 ### Rules the cases enforce
 

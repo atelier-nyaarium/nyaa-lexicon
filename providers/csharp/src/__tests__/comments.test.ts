@@ -51,6 +51,7 @@ describe("C# comment spans", () => {
 			'\tpublic string Verbatim = @"C:\\temp//path /* nor this */";',
 			'\tpublic string Interpolated = $"value // {Url}";',
 			'\tpublic string Raw = """// not a comment""";',
+			'\tpublic string Longer = """"holds """ inside // not a comment"""";',
 			"\tpublic char Slash = '/';",
 			"}",
 			"// real",

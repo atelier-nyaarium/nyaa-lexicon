@@ -7,6 +7,7 @@
 // Adding a language means adding fixtures here, and the provider team is the right author: they
 // know their language's edge cases better than this file does.
 
+import { stringFormCase } from "./stringForms.js";
 import { type ConformanceCase, ConformanceCaseSchema } from "./types.js";
 
 ////////////////////////////////
@@ -1743,7 +1744,7 @@ const CASES: ConformanceCase[] = [
  * instead of somewhere inside a provider run where it looks like the provider's fault.
  */
 export function loadCorpus(): ConformanceCase[] {
-	return CASES.map((testCase) => ConformanceCaseSchema.parse(testCase));
+	return [...CASES, stringFormCase()].map((testCase) => ConformanceCaseSchema.parse(testCase));
 }
 
 /** Cases for one tier, which is how a provider team runs only what it claims. */
