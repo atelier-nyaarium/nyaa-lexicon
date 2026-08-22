@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkFacts, checkImport, checkType, describeIdParts } from "../conformance/check";
@@ -17,6 +21,38 @@ import type { Range } from "../symbols";
 //  Helpers
 
 const PROVIDER = path.join(import.meta.dirname, "..", "conformance", "referenceProvider.ts");
+// Absolute: tmpdir cannot resolve the bare name.
+const RPC = createRequire(import.meta.url).resolve("vscode-jsonrpc/node");
+
+/** Live pids whose command line names this script. */
+function processesMatching(script: string): string[] {
+	try {
+		return execFileSync("pgrep", ["-f", script], { encoding: "utf8" })
+			.split("\n")
+			.filter((line) => line.trim() !== "");
+	} catch {
+		// pgrep exits 1 on no match.
+		return [];
+	}
+}
+
+/** A provider script written under tmpdir, with `initialize` handled by the body given. */
+function scriptedProvider(name: string, onInitialize: string, more = ""): { root: string; script: string } {
+	const root = mkdtempSync(path.join(tmpdir(), `lexicon-${name}-`));
+	const script = path.join(root, `${name}.ts`);
+	writeFileSync(
+		script,
+		[
+			`import { appendFileSync } from "node:fs";`,
+			`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from ${JSON.stringify(RPC)};`,
+			`const connection = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));`,
+			`connection.onRequest("initialize", () => { appendFileSync(${JSON.stringify(path.join(root, "asked"))}, process.pid + "\\n"); ${onInitialize} });`,
+			more,
+			`connection.listen();`,
+		].join("\n"),
+	);
+	return { root, script };
+}
 
 function idFor(name: string, kind: "type" | "term" = "term"): string {
 	return composeSymbolId({ language: "x", module: "src/a.ts", descriptors: [{ kind, name }] });
@@ -703,6 +739,47 @@ describe("running the suite against a real process", () => {
 				problems: ["no reference fixture"],
 			},
 		);
+	}, 30_000);
+
+	// Five false defects on loaded machines.
+	it("calls a provider that never answers initialize stalled, after one retry, with the load", async () => {
+		const { root, script } = scriptedProvider("stall", "return new Promise(() => {});");
+		const report = await runSuite({ command: ["bun", "run", script], cases: loadCorpus(), timeoutMs: 1500 });
+
+		expect(report).toMatchObject({ failed: 0, stalled: 1, passed: 0 });
+		const [result] = report.results;
+		expect(result).toMatchObject({ caseId: "initialize", outcome: "stalled" });
+		expect(result?.problems[0]).toMatch(/stalled twice/);
+		expect(result?.problems[0]).toMatch(/load \d+\.\d+ on \d+ cpus/);
+		// Two processes asked once each, and neither outlived the run.
+		const pids = readFileSync(path.join(root, "asked"), "utf8")
+			.split("\n")
+			.filter((line) => line !== "");
+		expect(new Set(pids).size).toBe(2);
+		expect(processesMatching(script)).toEqual([]);
+		expect(formatReport(report)).toContain("STALL  protocol/initialize");
+		rmSync(root, { recursive: true, force: true });
+	}, 30_000);
+
+	it("calls a provider that dies mid-suite stalled on what it never answered, not failed", async () => {
+		const tiers = JSON.stringify({ ...REFERENCE_TIERS, declarations: true });
+		const { root, script } = scriptedProvider(
+			"dies",
+			`return { providerId: "dies", language: "reference", extensions: [".ref"], protocolVersion: ${JSON.stringify("2.0.0")}, tiers: ${tiers} };`,
+			[
+				`connection.onRequest("discoverProject", () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }));`,
+				`connection.onRequest("parseFile", () => process.exit(3));`,
+			].join("\n"),
+		);
+		const cases = casesForTier("declarations").slice(0, 2);
+		const report = await runSuite({ command: ["bun", "run", script], cases, timeoutMs: 5_000 });
+
+		expect(report.failed, formatReport(report)).toBe(0);
+		expect(report.stalled).toBeGreaterThanOrEqual(2);
+		for (const result of report.results.filter((r) => r.outcome === "stalled")) {
+			expect(result.problems[0]).toMatch(/exited|closed/);
+		}
+		rmSync(root, { recursive: true, force: true });
 	}, 30_000);
 
 	it("fails a case the provider genuinely gets wrong, rather than passing vacuously", async () => {

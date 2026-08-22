@@ -21,8 +21,8 @@ async function main(argv: string[]): Promise<void> {
 		moveCases: [...loadMoveCases(), ...loadGdscriptMoveCases()],
 	});
 	console.log(formatReport(report));
-	// Skipped is not failure: a provider is allowed to reach only the tiers it declares.
-	process.exit(report.failed === 0 ? 0 : 1);
+	// Skipped is not failure. Stalled is neither pass nor failure: 3.
+	process.exit(report.failed > 0 ? 1 : report.stalled > 0 ? 3 : 0);
 }
 
 if (import.meta.main) await main(process.argv.slice(2));

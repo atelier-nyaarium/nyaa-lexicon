@@ -42,6 +42,13 @@ knew the providers that had finished registering, so a stop during startup left 
 until their handshake timed out; it now holds what it has spawned and not yet registered, and
 stops that too.
 
+### For provider authors
+
+**Conformance tells a stalled run from a failed case.** A request that times out, or a provider
+process that dies, is reported as `STALL` with the machine's load and how far into the run it was,
+counted apart from failures, and the CLI exits 3 rather than 1. The runner retries `initialize` once
+before calling it stalled. `FAIL` means the provider was reached and what came back was wrong.
+
 ### What it asks of you
 
 **Regex search is RE2 syntax.** Lookahead, lookbehind and backreferences are refused at compile,

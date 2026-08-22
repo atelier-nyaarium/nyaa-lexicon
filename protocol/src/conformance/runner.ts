@@ -3,23 +3,25 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, loadavg, tmpdir } from "node:os";
 import path from "node:path";
-import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
+import { createMessageConnection, ErrorCodes, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
 import { applyEdits } from "../edits.js";
-import { METHOD_SCHEMAS, type ProviderMethod } from "../methods.js";
+import { METHOD_SCHEMAS, type ProviderMethod, type ProviderTiers } from "../methods.js";
 import { composeSymbolId } from "../symbolId.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import { checkFacts, checkImport, checkType } from "./check.js";
-import type {
-	CaseResult,
-	ConformanceCase,
-	ConformanceFixtureSchema,
-	MoveCase,
-	MoveFixture,
-	SuiteReport,
-	Tier,
+import {
+	type CaseOutcome,
+	type CaseResult,
+	type ConformanceCase,
+	type ConformanceFixtureSchema,
+	type MoveCase,
+	type MoveFixture,
+	type SuiteReport,
+	type Tier,
+	TierSchema,
 } from "./types.js";
 
 ////////////////////////////////
@@ -64,11 +66,33 @@ function hashOf(text: string): string {
 	return `h${(h >>> 0).toString(16)}`;
 }
 
+/** Machine or process, never answer. */
+class Stall extends Error {
+	constructor(
+		readonly why: "timeout" | "exit",
+		message: string,
+	) {
+		super(message);
+	}
+}
+
 function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
 	return Promise.race([
 		work,
-		new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)),
+		new Promise<T>((_, reject) =>
+			setTimeout(() => reject(new Stall("timeout", `${what} timed out after ${ms}ms`)), ms),
+		),
 	]);
+}
+
+/** Busy machine or broken provider. */
+function environment(startedAt: number): string {
+	const [load] = loadavg();
+	return `load ${(load ?? 0).toFixed(2)} on ${cpus().length} cpus, ${Math.round((Date.now() - startedAt) / 1000)}s into the run`;
+}
+
+function stalled(caseId: string, tier: Tier | "protocol", stall: Stall, startedAt: number): CaseResult {
+	return { caseId, tier, outcome: "stalled", problems: [`${stall.message} (${environment(startedAt)})`] };
 }
 
 ////////////////////////////////
@@ -76,11 +100,28 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 
 /** Owns the child process and the connection, so a caller sees requests and not a transport. */
 class ProviderSession {
+	/** Set at death. */
+	private gone: string | null = null;
+	/** Rejects at death. */
+	private readonly dead: Promise<never>;
+
 	private constructor(
 		private readonly child: ChildProcess,
 		private readonly connection: ReturnType<typeof createMessageConnection>,
 		private readonly timeoutMs: number,
-	) {}
+	) {
+		this.dead = new Promise<never>((_, reject) => {
+			const die = (how: string) => {
+				this.gone ??= how;
+				reject(new Stall("exit", `provider process ${how}`));
+			};
+			child.once("exit", (code, signal) => die(`exited (${signal === null ? `code ${code}` : signal})`));
+			child.once("error", (error) => die(`failed to start (${error.message})`));
+			connection.onClose(() => die("closed its connection"));
+		});
+		// Awaited only inside a race.
+		this.dead.catch(() => {});
+	}
 
 	static open(command: string[], timeoutMs: number): ProviderSession {
 		const [bin, ...args] = command as [string, ...string[]];
@@ -102,13 +143,33 @@ class ProviderSession {
 	 * generic key: `parse` really did produce this method's response shape, or it threw.
 	 */
 	async call<K extends ProviderMethod>(method: K, params: unknown): Promise<MethodResponse<K>> {
-		const raw = await withTimeout(this.connection.sendRequest(method, params), this.timeoutMs, method);
+		if (this.gone !== null) throw new Stall("exit", `provider process ${this.gone} before ${method}`);
+		let raw: unknown;
+		try {
+			const answer = Promise.race([this.connection.sendRequest(method, params), this.dead]);
+			raw = await withTimeout(answer, this.timeoutMs, method);
+		} catch (error) {
+			if (error instanceof Stall) {
+				throw error.why === "exit" ? new Stall("exit", `${error.message} during ${method}`) : error;
+			}
+			if ((error as { code?: number }).code === ErrorCodes.PendingResponseRejected) {
+				throw new Stall("exit", `provider process ${this.gone ?? "dropped the connection"} during ${method}`);
+			}
+			throw error;
+		}
 		return METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
 	}
 
-	close(): void {
+	/** Resolves once the process is gone, so a retry never overlaps it. */
+	async close(): Promise<void> {
 		this.connection.dispose();
+		if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+		const exited = new Promise<void>((resolve) => this.child.once("exit", () => resolve()));
 		this.child.kill();
+		// SIGTERM ignored; SIGKILL is not.
+		const grace = setTimeout(() => this.child.kill("SIGKILL"), 2000);
+		await exited;
+		clearTimeout(grace);
 	}
 }
 
@@ -228,6 +289,7 @@ async function checkMoveIsAnswered(session: ProviderSession): Promise<CaseResult
 			problems.push("moveEdits answered ready with nothing to do, which reads as a move that succeeded");
 		}
 	} catch (error) {
+		if (error instanceof Stall) throw error;
 		problems.push(error instanceof Error ? error.message : String(error));
 	}
 
@@ -315,6 +377,7 @@ async function runMoveCase(session: ProviderSession, testCase: MoveCase, fixture
 			problems,
 		};
 	} catch (error) {
+		if (error instanceof Stall) throw error;
 		return {
 			caseId: testCase.id,
 			tier: "protocol",
@@ -370,13 +433,30 @@ function untestedClaims(
  */
 export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const startedAt = Date.now();
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-conformance-"));
-	const session = ProviderSession.open(options.command, timeoutMs);
+	let session = ProviderSession.open(options.command, timeoutMs);
 
 	try {
 		// The live constant rather than a spelled version: a literal here silently stops matching
 		// what the suite actually ships on the first bump.
-		const info = await session.call("initialize", { workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		const hello = () => session.call("initialize", { workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		let info: Awaited<ReturnType<typeof hello>>;
+		try {
+			info = await hello();
+		} catch (first) {
+			if (!(first instanceof Stall)) throw first;
+			// One retry; none of five reproduced.
+			await session.close();
+			session = ProviderSession.open(options.command, timeoutMs);
+			try {
+				info = await hello();
+			} catch (again) {
+				if (!(again instanceof Stall)) throw again;
+				const stall = new Stall(again.why, `initialize stalled twice: ${first.message}; then ${again.message}`);
+				return unreached(stalled("initialize", "protocol", stall, startedAt));
+			}
+		}
 		const results: CaseResult[] = [];
 
 		for (const testCase of options.cases) {
@@ -422,6 +502,10 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			} catch (error) {
 				// A thrown request is this case's failure, never the suite's: the remaining cases
 				// still carry information about what the provider does get right.
+				if (error instanceof Stall) {
+					results.push(stalled(testCase.id, tier, error, startedAt));
+					continue;
+				}
 				const message = error instanceof Error ? error.message : String(error);
 				results.push({ caseId: testCase.id, tier, outcome: "failed", problems: [message] });
 			}
@@ -447,6 +531,10 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				await session.call("discoverProject", { workspaceRoot: moveRoot });
 				results.push(await runMoveCase(session, testCase, fixture));
 			} catch (error) {
+				if (error instanceof Stall) {
+					results.push(stalled(testCase.id, "protocol", error, startedAt));
+					continue;
+				}
 				results.push({
 					caseId: testCase.id,
 					tier: "protocol",
@@ -458,7 +546,12 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 
 		// Last, so the provider has been through discovery. A provider that really moves needs its
 		// project model, and probing it cold would test a state nothing else puts it in.
-		results.push(await checkMoveIsAnswered(session));
+		try {
+			results.push(await checkMoveIsAnswered(session));
+		} catch (error) {
+			if (!(error instanceof Stall)) throw error;
+			results.push(stalled("move-is-answered", "protocol", error, startedAt));
+		}
 
 		results.push(...untestedClaims(info.tiers, options.cases, results));
 
@@ -467,24 +560,39 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			language: info.language,
 			tiers: info.tiers,
 			results,
-			passed: results.filter((r) => r.outcome === "passed").length,
-			failed: results.filter((r) => r.outcome === "failed").length,
-			skipped: results.filter((r) => r.outcome === "skipped").length,
+			...counts(results),
 		};
 	} finally {
-		session.close();
+		await session.close();
 		rmSync(root, { recursive: true, force: true });
 	}
 }
+
+function counts(results: CaseResult[]): Pick<SuiteReport, "passed" | "failed" | "skipped" | "stalled"> {
+	const of = (outcome: CaseOutcome) => results.filter((r) => r.outcome === outcome).length;
+	return { passed: of("passed"), failed: of("failed"), skipped: of("skipped"), stalled: of("stalled") };
+}
+
+/** Never answered; nothing known. */
+function unreached(result: CaseResult): SuiteReport {
+	const tiers = Object.fromEntries(TierSchema.options.map((tier) => [tier, false])) as ProviderTiers;
+	return { providerId: "unknown", language: "unknown", tiers, results: [result], ...counts([result]) };
+}
+
+const MARKS: Record<CaseOutcome, string> = { passed: "PASS", failed: "FAIL", skipped: "SKIP", stalled: "STALL" };
 
 /** One line per case, plus a tail naming what was skipped and why. */
 export function formatReport(report: SuiteReport): string {
 	const lines = [`${report.providerId} (${report.language})`];
 	for (const result of report.results) {
-		const mark = result.outcome === "passed" ? "PASS" : result.outcome === "failed" ? "FAIL" : "SKIP";
-		lines.push(`  ${mark}  ${result.tier}/${result.caseId}`);
+		lines.push(`  ${MARKS[result.outcome]}  ${result.tier}/${result.caseId}`);
 		for (const problem of result.problems) lines.push(`          ${problem}`);
 	}
 	lines.push(`${report.passed} passed, ${report.failed} failed, ${report.skipped} skipped`);
+	if (report.stalled > 0) {
+		lines.push(
+			`${report.stalled} stalled: a timeout or a dead process, which is the machine or the run, not an answer`,
+		);
+	}
 	return lines.join("\n");
 }

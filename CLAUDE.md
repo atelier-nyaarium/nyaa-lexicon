@@ -171,6 +171,11 @@ Ordered by how much they prove:
   and makes git call the file binary and grep return nothing for any pattern in it.
 - **A test asserting current behavior is not a test.** After a fix, tests that encoded the bug will
   fail; that is the fix working.
+- **A conformance `STALL` is the machine or the run, never the provider.** A timeout or a dead
+  process is reported as stalled, with the load and the elapsed time, and the CLI exits 3 rather
+  than 1. Five times a loaded machine read as a provider defect, once as a release blocker, and none
+  reproduced. Re-run at lower load before believing one; never file it as a provider bug from the
+  first run.
 - **Parsers follow `docs/parsing.md`.** Check for a library before writing one.
 - **Comments state constraints, not narration.** One line, two at most for a critical one.
 

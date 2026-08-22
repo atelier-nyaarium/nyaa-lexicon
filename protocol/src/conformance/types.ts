@@ -276,14 +276,15 @@ export type MoveCase = z.infer<typeof MoveCaseSchema>;
  * Move is ungated. A provider refusing it as NotImplemented skips, while any implemented answer
  * is checked against the case.
  */
-export type CaseOutcome = "passed" | "failed" | "skipped";
+/** `stalled`: machine or process, never answer. */
+export type CaseOutcome = "passed" | "failed" | "skipped" | "stalled";
 
 export interface CaseResult {
 	caseId: string;
 	/** `protocol` for checks about the wire contract itself, which no tier can gate. */
 	tier: Tier | "protocol";
 	outcome: CaseOutcome;
-	/** Why it failed or was skipped. Empty on a pass. */
+	/** Why it failed, stalled or was skipped. Empty on a pass. */
 	problems: string[];
 }
 
@@ -296,4 +297,5 @@ export interface SuiteReport {
 	passed: number;
 	failed: number;
 	skipped: number;
+	stalled: number;
 }
