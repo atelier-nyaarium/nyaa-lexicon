@@ -25,7 +25,7 @@ export const SNAPSHOTS_KEPT = 2;
 const HIGH_WATER = 0.85;
 const LOW_WATER = 0.6;
 export const HIGH_WATER_SIGNAL = "SIGUSR2";
-/** Overwrites itself, so pruning never counts it. */
+/** Relative, so `process.report.directory` places it. Overwrites itself; pruning never counts it. */
 export const SELF_REPORT = "daemon-high.json";
 export const HEAP_SNAPSHOT_ENV = "LEXICON_HEAP_SNAPSHOT";
 /** Node's own naming; the stamp inside sorts oldest first. */

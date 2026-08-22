@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
 import { describe, expect, it } from "vitest";
 
 ////////////////////////////////
@@ -28,38 +29,18 @@ const JOURNAL_TABLES = [
 /** transactions.ts decides what the rows mean; store.ts holds the schema and the row plumbing. */
 const OWNERS = new Set(["transactions.ts", "store.ts"]);
 
-////////////////////////////////
-//  Functions & Helpers
-
-function sourceFiles(dir: string): string[] {
-	const found: string[] = [];
-	for (const entry of readdirSync(dir)) {
-		const full = join(dir, entry);
-		if (statSync(full).isDirectory()) {
-			if (entry === "__tests__" || entry === "dist" || entry === "node_modules") continue;
-			found.push(...sourceFiles(full));
-			continue;
-		}
-		if (entry.endsWith(".ts")) found.push(full);
-	}
-	return found;
-}
-
-/** Comments only. A table name inside a string is exactly what this looks for. */
-function codeOnly(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-}
+const SKIP = ["__tests__", "dist", "node_modules"];
 
 ////////////////////////////////
 //  Tests
 
 describe("only the transaction manager touches the refactor journal", () => {
 	it("finds source files to check, so a passing run is never vacuous", () => {
-		expect(sourceFiles(CORE_SRC).length).toBeGreaterThan(0);
+		expect(sourceFiles(CORE_SRC, SKIP).length).toBeGreaterThan(0);
 	});
 
 	it("sees the owners themselves, so the rule is checking real names", () => {
-		const owned = sourceFiles(CORE_SRC).filter((file) => OWNERS.has(basename(file)));
+		const owned = sourceFiles(CORE_SRC, SKIP).filter((file) => OWNERS.has(basename(file)));
 		const mentions = owned.filter((file) =>
 			JOURNAL_TABLES.some((table) => codeOnly(readFileSync(file, "utf8")).includes(table)),
 		);
@@ -70,7 +51,7 @@ describe("only the transaction manager touches the refactor journal", () => {
 	it("has no journal table named anywhere else in core", () => {
 		const offenders: string[] = [];
 
-		for (const file of sourceFiles(CORE_SRC)) {
+		for (const file of sourceFiles(CORE_SRC, SKIP)) {
 			if (OWNERS.has(basename(file))) continue;
 			const code = codeOnly(readFileSync(file, "utf8"));
 			for (const table of JOURNAL_TABLES) {

@@ -103,10 +103,10 @@ async function main(argv: string[]): Promise<void> {
 	mkdirSync(paths.dir, { recursive: true });
 	// Before anything allocates: a fatal error from here on leaves a report, not only a log line.
 	// Never fatal itself, so a broken reports directory costs the reports and nothing else.
-	let reports: NodeReportSetup | null = null;
+	let nodeReport: NodeReportSetup | null = null;
 	try {
 		enableSelfReports(paths.reportsDir);
-		reports = nodeReportSetup(paths.reportsDir);
+		nodeReport = nodeReportSetup(paths.reportsDir);
 	} catch (error) {
 		log(`crash reports off: ${describeError(error)}`);
 	}
@@ -241,7 +241,7 @@ async function main(argv: string[]): Promise<void> {
 		spawned.observeExits((exit) => (collector === null ? earlyExits.push(exit) : collector.recordExit(exit)));
 		startingSince = Date.now();
 		waitingFor = "the language providers to start";
-		const providers = await startProviders(spawned, root, reports === null ? {} : { node: reports });
+		const providers = await startProviders(spawned, root, nodeReport === null ? {} : { node: nodeReport });
 		log(`providers:\n${describeStart(providers)}`);
 
 		const openStore = store;

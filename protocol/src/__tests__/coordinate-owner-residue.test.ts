@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { codeOnly, sourceFiles } from "../residue";
 
 /**
  * Holds coordinates.ts as the only module that maps an offset to a position.
@@ -28,41 +29,14 @@ const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "tmp", "fixtures"
  */
 const ARITHMETIC = [/\.lastIndexOf\("\\n"\)/, /\.split\("\\n"\)\.length/, /=== "\\n"\)\s*\w*\.?push\(/];
 
-////////////////////////////////
-//  Functions & Helpers
-
-function sourceFiles(dir: string): string[] {
-	const found: string[] = [];
-	let entries: string[];
-	try {
-		entries = readdirSync(dir);
-	} catch {
-		return found;
-	}
-
-	for (const entry of entries) {
-		const full = join(dir, entry);
-		if (statSync(full).isDirectory()) {
-			if (SKIP_DIRS.has(entry)) continue;
-			found.push(...sourceFiles(full));
-			continue;
-		}
-		if (entry.endsWith(".ts")) found.push(full);
-	}
-	return found;
-}
-
-/** Comments only. Prose describing the rule is not breaking it. */
-function codeOnly(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-}
+const swept = (dir: string) => sourceFiles(dir, SKIP_DIRS);
 
 ////////////////////////////////
 //  Tests
 
 describe("one module owns text coordinates", () => {
 	it("finds source files to check, so a passing run is never vacuous", () => {
-		const all = PACKAGES.flatMap(sourceFiles);
+		const all = PACKAGES.flatMap(swept);
 		expect(all.length).toBeGreaterThan(50);
 		expect(all.map((file) => basename(file))).toContain(OWNER);
 	});
@@ -72,7 +46,7 @@ describe("one module owns text coordinates", () => {
 	it("has nobody but the owner deriving a line or character from raw text", () => {
 		const offenders: string[] = [];
 
-		for (const file of PACKAGES.flatMap(sourceFiles)) {
+		for (const file of PACKAGES.flatMap(swept)) {
 			if (basename(file) === OWNER) continue;
 			const code = codeOnly(readFileSync(file, "utf8"));
 			for (const pattern of ARITHMETIC) {

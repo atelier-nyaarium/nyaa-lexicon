@@ -69,6 +69,16 @@ supervisor knowing what diagnostics are. A death is a SERVING provider's: one th
 first handshake completes is a start failure, which `startProviders` reports and the daemon logs,
 since there is no provider id to name yet. A respawn that dies in its handshake is announced.
 
+The supervisor also ABSORBS writes to a dead child. `vscode-jsonrpc` rethrows a failed pipe write
+into a promise nobody holds, an unhandled rejection the daemon's handler shuts it down for, and on
+a slow machine a request lands in the dead pipe between the kill and its exit event (the hosted CI
+runner hit it on the first push). The child's stdin is wrapped so writes succeed silently and a
+pipe error marks the provider unavailable, so an in-flight request rejects typed through `closed`.
+
+**`protocol/src/residue.ts`** owns the source sweep every residue test used to carry a private copy
+of, eight copies with one already drifted. A test keeps its roots, skips, owners and the rule; the
+sweep and the comment stripping are shared. Test tooling, exported beside the conformance suite.
+
 **`core/src/diagnostics.ts`, the sole owner of the collection.** Zod schema for the file, so the
 reader and the writer cannot drift. A `DiagnosticsCollector` taking injected clock, timers, process
 reader, signaller and file root, in the shape of `lifetime.ts`, so every test decides rather than

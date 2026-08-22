@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -21,44 +22,24 @@ const TEMPORARY_SUFFIX = "lexicon-tmp";
  * diagnostics.ts (the memory collection) write lexicon's OWN state, never source. */
 const OWNERS = new Set(["sourceWriter.ts", "daemon.ts", "projectRegistry.ts", "ensureDaemon.ts", "diagnostics.ts"]);
 
-////////////////////////////////
-//  Functions & Helpers
-
-function sourceFiles(dir: string): string[] {
-	const found: string[] = [];
-	for (const entry of readdirSync(dir)) {
-		const full = join(dir, entry);
-		if (statSync(full).isDirectory()) {
-			if (entry === "__tests__" || entry === "dist" || entry === "node_modules") continue;
-			found.push(...sourceFiles(full));
-			continue;
-		}
-		if (entry.endsWith(".ts")) found.push(full);
-	}
-	return found;
-}
-
-/** Comments only. Prose naming a call is describing the rule, not breaking it. */
-function codeOnly(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-}
+const SKIP = ["__tests__", "dist", "node_modules"];
 
 ////////////////////////////////
 //  Tests
 
 describe("one module writes source files", () => {
 	it("finds source files to check, so a passing run is never vacuous", () => {
-		expect(sourceFiles(CORE_SRC).length).toBeGreaterThan(10);
+		expect(sourceFiles(CORE_SRC, SKIP).length).toBeGreaterThan(10);
 	});
 
 	it("has the owner it names", () => {
-		expect(sourceFiles(CORE_SRC).map((file) => basename(file))).toContain("sourceWriter.ts");
+		expect(sourceFiles(CORE_SRC, SKIP).map((file) => basename(file))).toContain("sourceWriter.ts");
 	});
 
 	it("has no second file writer outside the owner", () => {
 		const offenders: string[] = [];
 
-		for (const file of sourceFiles(CORE_SRC)) {
+		for (const file of sourceFiles(CORE_SRC, SKIP)) {
 			if (OWNERS.has(basename(file))) continue;
 			const code = codeOnly(readFileSync(file, "utf8"));
 			for (const call of WRITING_CALLS) {
@@ -75,7 +56,7 @@ describe("one module writes source files", () => {
 	// The suffix is a shared secret between the writer and the sweeper. Two spellings means a
 	// half-written file that recovery walks straight past.
 	it("spells the temporary suffix in one place", () => {
-		const offenders = sourceFiles(CORE_SRC)
+		const offenders = sourceFiles(CORE_SRC, SKIP)
 			.filter((file) => basename(file) !== "sourceWriter.ts")
 			.filter((file) => codeOnly(readFileSync(file, "utf8")).includes(TEMPORARY_SUFFIX))
 			.map((file) => basename(file));

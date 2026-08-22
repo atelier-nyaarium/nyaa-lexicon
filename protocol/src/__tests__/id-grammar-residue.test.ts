@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { codeOnly, sourceFiles } from "../residue";
 
 /**
  * Enforces the single-owner rule for both id grammars.
@@ -22,41 +23,15 @@ const OWNERS = ["symbolId.ts", "factId.ts"];
 
 const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "tmp"]);
 
-////////////////////////////////
-//  Functions & Helpers
-
-function sourceFiles(dir: string): string[] {
-	const found: string[] = [];
-	let entries: string[];
-	try {
-		entries = readdirSync(dir);
-	} catch {
-		return found;
-	}
-
-	for (const entry of entries) {
-		const full = join(dir, entry);
-		if (statSync(full).isDirectory()) {
-			if (SKIP_DIRS.has(entry)) continue;
-			found.push(...sourceFiles(full));
-			continue;
-		}
-		if (entry.endsWith(".ts") && !OWNERS.includes(entry)) found.push(full);
-	}
-	return found;
-}
-
-/** Comments only. A quoted scheme inside a comment is prose about the grammar, not a use of it. */
-function codeOnly(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-}
+/** Everyone but the owners. */
+const swept = (root: string) => sourceFiles(root, SKIP_DIRS).filter((file) => !OWNERS.includes(basename(file)));
 
 ////////////////////////////////
 //  Tests
 
 describe("nothing but the owner spells an id scheme", () => {
 	it("finds source files to check, so a passing run is never vacuous", () => {
-		expect(sourceFiles(ROOTS[0] as string).length).toBeGreaterThan(0);
+		expect(swept(ROOTS[0] as string).length).toBeGreaterThan(0);
 	});
 
 	// A scheme word followed by a space inside a quote is an id being built or matched by hand.
@@ -66,7 +41,7 @@ describe("nothing but the owner spells an id scheme", () => {
 		const pattern = /["'`](lexicon|lexfact) /;
 
 		for (const root of ROOTS) {
-			for (const file of sourceFiles(root)) {
+			for (const file of swept(root)) {
 				const match = pattern.exec(codeOnly(readFileSync(file, "utf8")));
 				if (match) offenders.push(`${file}: ${match[0]}`);
 			}
