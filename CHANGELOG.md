@@ -78,6 +78,10 @@ symbol ids are unchanged. Their fact digests are not, since a declaration's dige
 container, so an answer citing one of them reads as stale after the next read. By the release rule
 that is a provider extraction change, which ships in a major.
 
+Every provider discovers its files through one walk in the protocol package, which spells each
+module the way its ids are spelled. A file whose name a symbol id cannot carry, one holding a
+control character, is no longer listed; it could never have been parsed.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

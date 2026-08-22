@@ -1,11 +1,11 @@
 // The GDScript provider. It reports project structure, declarations, and reference candidates.
 
 import {
+	handlersFor,
 	type ImportResolution,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
-	type ProviderHandlers,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	runProviderOnStdio,
@@ -119,20 +119,6 @@ export class GDScriptProvider {
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
 		return makeMoveEdits(params, this.bindingIndex);
 	}
-}
-
-export function handlersFor(provider: GDScriptProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
 }
 
 //////// Main

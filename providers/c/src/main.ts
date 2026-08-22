@@ -1,17 +1,20 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
+	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	type Diagnostic,
+	discoverByWalk,
+	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
 	type ProjectModel,
-	type ProviderHandlers,
 	parseSymbolId,
+	projectDiagnostic,
 	type Range,
 	type Reference,
 	type RenameEditsRequest,
@@ -20,6 +23,8 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	workspaceFile,
+	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import {
@@ -35,21 +40,7 @@ import {
 const LANGUAGE = "c";
 const EXTENSIONS = [".c", ".h"];
 
-const EXCLUDED_DIRECTORIES = new Set([
-	".git",
-	".hg",
-	".svn",
-	".cache",
-	".clangd",
-	".venv",
-	"CMakeFiles",
-	"build",
-	"dist",
-	"node_modules",
-	"out",
-	"target",
-	"vendor-cache",
-]);
+const EXCLUDED_DIRECTORIES = new Set([...DEFAULT_EXCLUDED_DIRECTORIES, ".clangd", "CMakeFiles"]);
 
 const PROJECT_CONFIGS = ["CMakeLists.txt", "Makefile", "compile_commands.json", ".clang-format", ".clangd"];
 
@@ -99,51 +90,6 @@ export const REFERENCE_ROLES = ["call", "read", "write", "import", "typeUse"] as
 interface StoredFacts {
 	contentHash: string;
 	parsed: ParsedCFile;
-}
-
-function modulePath(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).replace(/\\/gu, "/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	return relative;
-}
-
-function projectDiagnostic(root: string, message: string): ProjectModel {
-	return {
-		files: [],
-		externalRoots: [],
-		configFiles: [],
-		diagnostics: [{ severity: "error", message, path: root }],
-	};
-}
-
-function walkCFiles(root: string): string[] {
-	const files: string[] = [];
-	function visit(directory: string): void {
-		try {
-			for (const entry of readdirSync(directory, { withFileTypes: true, encoding: "utf8" })) {
-				if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-				const absolute = path.join(directory, entry.name);
-				if (entry.isDirectory()) {
-					visit(absolute);
-					continue;
-				}
-				if (!entry.isFile() || (!entry.name.endsWith(".c") && !entry.name.endsWith(".h"))) continue;
-				const module = modulePath(root, absolute);
-				if (module !== null) files.push(module);
-			}
-		} catch {
-			return;
-		}
-	}
-	visit(root);
-	return files.sort();
-}
-
-function safeWorkspacePath(root: string, module: string): string | null {
-	const absolute = path.resolve(root, ...module.replace(/\\/gu, "/").split("/"));
-	const relative = path.relative(root, absolute);
-	if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-	return absolute;
 }
 
 function containsStart(range: Range, position: Range["start"]): boolean {
@@ -213,12 +159,12 @@ function headerName(specifier: string): string {
 
 function importCandidates(root: string, fromModule: string, specifier: string): string[] {
 	const clean = headerName(specifier).replace(/\\/gu, "/");
-	const fromAbsolute = safeWorkspacePath(root, fromModule);
+	const fromAbsolute = workspaceFile(root, fromModule);
 	const directories = fromAbsolute === null ? [] : [path.dirname(fromAbsolute), root];
 	const candidates: string[] = [];
 	for (const directory of directories) {
 		const absolute = path.resolve(directory, clean);
-		const module = modulePath(root, absolute);
+		const module = workspaceModule(root, absolute);
 		if (module === null) continue;
 		candidates.push(module);
 		if (path.extname(clean) === "") {
@@ -229,7 +175,7 @@ function importCandidates(root: string, fromModule: string, specifier: string): 
 }
 
 function hasFile(root: string, module: string): boolean {
-	const absolute = safeWorkspacePath(root, module);
+	const absolute = workspaceFile(root, module);
 	return absolute !== null && existsSync(absolute) && statSync(absolute).isFile();
 }
 
@@ -273,8 +219,12 @@ export class CProvider {
 					this.workspaceRoot,
 					`workspace root is not a directory: ${this.workspaceRoot}`,
 				);
+			const model = discoverByWalk(this.workspaceRoot, {
+				extensions: EXTENSIONS,
+				excludedDirectories: EXCLUDED_DIRECTORIES,
+			});
 			const configFiles = PROJECT_CONFIGS.filter((name) => existsSync(path.join(this.workspaceRoot, name)));
-			return { files: walkCFiles(this.workspaceRoot), externalRoots: [], configFiles, diagnostics: [] };
+			return model.diagnostics.length === 0 ? { ...model, configFiles } : model;
 		} catch (error) {
 			return projectDiagnostic(
 				this.workspaceRoot,
@@ -319,7 +269,7 @@ export class CProvider {
 	private factsForModule(module: string): StoredFacts | null {
 		const cached = this.facts.get(module);
 		if (cached !== undefined) return cached;
-		const absolute = safeWorkspacePath(this.workspaceRoot, module);
+		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
 		try {
 			return this.parseAndStore(module, "disk", readFileSync(absolute, "utf8"));
@@ -510,22 +460,6 @@ export class CProvider {
 		return { status: "refused", reason: "NotImplemented", detail: "C move edits are not implemented" };
 	}
 }
-
-export function handlersFor(provider: CProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
-}
-
-export { serveProvider };
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CProvider()): void {
 	serveProvider(connection, handlersFor(provider));

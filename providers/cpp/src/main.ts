@@ -1,8 +1,10 @@
-import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
 	comparePositions,
+	discoverByWalk,
+	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -10,14 +12,15 @@ import {
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
-	type ProviderHandlers,
 	parseSymbolId,
+	projectDiagnostic,
 	type Range,
 	type RenameEditsRequest,
 	runProviderOnStdio,
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { type CppFacts, type CppReferenceRecord, LANGUAGE, parseCppFile } from "./parser.js";
@@ -53,57 +56,6 @@ export const TIERS = {
 	metrics: true,
 	syntaxDiagnostics: true,
 } as const;
-
-function modulePath(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).replace(/\\/g, "/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	return relative;
-}
-
-function safeWorkspacePath(root: string, module: string): string | null {
-	const absolute = path.resolve(root, ...module.replace(/\\/g, "/").split("/"));
-	const relative = path.relative(root, absolute);
-	if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-	return absolute;
-}
-
-function isProviderFile(file: string): boolean {
-	return EXTENSIONS.some((extension) => file.endsWith(extension));
-}
-
-function walkFiles(root: string): string[] {
-	const files: string[] = [];
-	function visit(directory: string): void {
-		let entries: Dirent<string>[];
-		try {
-			entries = readdirSync(directory, { withFileTypes: true, encoding: "utf8" });
-		} catch {
-			return;
-		}
-		for (const entry of entries) {
-			if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-			const absolute = path.join(directory, entry.name);
-			if (entry.isDirectory()) {
-				visit(absolute);
-				continue;
-			}
-			if (!entry.isFile() || !isProviderFile(entry.name)) continue;
-			const module = modulePath(root, absolute);
-			if (module !== null) files.push(module);
-		}
-	}
-	visit(root);
-	return files.sort();
-}
-
-function projectDiagnostic(root: string, message: string): ProjectModel {
-	return {
-		files: [],
-		externalRoots: [],
-		configFiles: [],
-		diagnostics: [{ severity: "error", message, path: root }],
-	};
-}
 
 // Inclusive at both ends.
 function contains(range: Range, position: Range["start"]): boolean {
@@ -151,7 +103,11 @@ export class CppProvider {
 					this.workspaceRoot,
 					`workspace root is not a directory: ${this.workspaceRoot}`,
 				);
-			return { files: walkFiles(this.workspaceRoot), externalRoots: [], configFiles: [], diagnostics: [] };
+			const walked = discoverByWalk(this.workspaceRoot, {
+				extensions: EXTENSIONS,
+				excludedDirectories: EXCLUDED_DIRECTORIES,
+			});
+			return { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] };
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			return projectDiagnostic(this.workspaceRoot, `unable to inspect workspace root: ${detail}`);
@@ -260,7 +216,7 @@ export class CppProvider {
 	private factsForModule(module: string): CppFacts | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		const absolute = safeWorkspacePath(this.workspaceRoot, module);
+		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {
 			if (!statSync(absolute).isFile()) return null;
@@ -277,7 +233,7 @@ export class CppProvider {
 		const raw = specifier.startsWith("/") ? specifier.slice(1) : path.posix.join(fromDirectory, specifier);
 		const candidates = [raw, ...EXTENSIONS.map((extension) => `${raw}${extension}`)];
 		for (const candidate of candidates) {
-			const absolute = safeWorkspacePath(this.workspaceRoot, candidate);
+			const absolute = workspaceFile(this.workspaceRoot, candidate);
 			if (absolute === null || !existsSync(absolute)) continue;
 			try {
 				if (statSync(absolute).isFile()) return path.posix.normalize(candidate);
@@ -385,20 +341,6 @@ export class CppProvider {
 			? { status: "unresolved", reason: "NotIndexed", detail: "no workspace header matched the include" }
 			: { status: "resolved", module };
 	}
-}
-
-export function handlersFor(provider: CppProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CppProvider()): void {

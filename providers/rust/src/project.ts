@@ -1,6 +1,6 @@
-import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { type ImportResolution, normalizeModulePath, type ProjectModel } from "@nyaa-lexicon/protocol";
+import { type ImportResolution, type ProjectModel, walkWorkspace } from "@nyaa-lexicon/protocol";
 import { parseRustFile } from "./parser.js";
 import { tokenize } from "./tokens.js";
 
@@ -9,41 +9,6 @@ export const RUST_EXTENSIONS = [".rs"] as const;
 const EXCLUDED_DIRECTORIES = new Set([".git", ".hg", ".svn", ".idea", "node_modules", "target", "vendor"]);
 
 const STANDARD_CRATES = new Set(["alloc", "core", "proc_macro", "std", "test"]);
-
-function modulePath(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).split(path.sep).join("/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	try {
-		return normalizeModulePath(relative);
-	} catch {
-		return null;
-	}
-}
-
-function walkRustFiles(root: string): string[] {
-	const files: string[] = [];
-	function visit(directory: string): void {
-		let entries: Dirent[];
-		try {
-			entries = readdirSync(directory, { withFileTypes: true });
-		} catch {
-			return;
-		}
-		for (const entry of entries) {
-			if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-			const absolute = path.join(directory, entry.name);
-			if (entry.isDirectory()) {
-				visit(absolute);
-				continue;
-			}
-			if (!entry.isFile() || !entry.name.endsWith(".rs")) continue;
-			const module = modulePath(root, absolute);
-			if (module !== null) files.push(module);
-		}
-	}
-	visit(root);
-	return files.sort();
-}
 
 function firstPathSegments(specifier: string): string[] {
 	return tokenize(specifier)
@@ -126,7 +91,7 @@ export function discoverRustProject(workspaceRoot: string): { state: RustProject
 			},
 		};
 	}
-	const files = walkRustFiles(root);
+	const files = walkWorkspace(root, { extensions: RUST_EXTENSIONS, excludedDirectories: EXCLUDED_DIRECTORIES }).files;
 	const configFiles = ["Cargo.toml", "Cargo.lock"].filter((file) => existsSync(path.join(root, file)));
 	const rootModules = files.filter(
 		(file) => /(?:^|\/)src\/(?:lib|main)\.rs$/u.test(file) || /^(?:lib|main)\.rs$/u.test(file),

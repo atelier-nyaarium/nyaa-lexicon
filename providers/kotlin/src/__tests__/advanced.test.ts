@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { coordinatesOf, type Declaration, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, type Declaration, handlersFor, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, test } from "vitest";
-import { handlersFor, KotlinProvider, REFERENCE_ROLES, TIERS } from "../main.js";
+import { KotlinProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { parseKotlin, SourceCursor } from "../parser.js";
 
 const roots: string[] = [];

@@ -6,11 +6,12 @@ import {
 	composeSymbolId,
 	type Declaration,
 	FileFactsSchema,
+	handlersFor,
 	PROVIDER_METHODS,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { CsharpProvider, handlersFor, REFERENCE_ROLES, TIERS } from "../main.js";
+import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 
 const roots: string[] = [];
 

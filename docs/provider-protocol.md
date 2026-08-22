@@ -235,6 +235,17 @@ spellings, so neither contract needs the other's agreement to gain a member.
 correlation, which framing alone does not. A hand-written NDJSON reader was written, audited and
 deleted after shipping two bugs in exactly the area this library has had a decade of use in.
 
+The wiring around a provider is library code from `@nyaa-lexicon/protocol`, linked into each
+process rather than written again per language. `handlersFor(provider)` builds the method table
+from a plain object with one method per protocol method, so a method added to the table fails to
+compile in every provider until it is answered. `discoverByWalk(root, { extensions, filenames,
+configExtensions, excludedDirectories })` is the project model of a workspace with no build system
+to ask, and `walkWorkspace` the walk under it. `workspaceModule(root, absolute)` and
+`workspaceFile(root, module)` are the two directions between a path on disk and a module, both
+through `normalizeModulePath`, so a provider cannot spell a module one way in discovery and another
+in an id. An entry point that walks, converts a path or wires handlers itself fails a residue test.
+A provider with its own project model, as TypeScript has, uses the handler table and nothing else.
+
 ## Conformance
 
 `protocol/` carries a fixture corpus and a runner:

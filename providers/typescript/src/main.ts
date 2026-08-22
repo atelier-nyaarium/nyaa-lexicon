@@ -1,11 +1,11 @@
 // The TypeScript provider and its wire handlers.
 
 import {
+	handlersFor,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
-	type ProviderHandlers,
 	parseSymbolId,
 	runProviderOnStdio,
 	serveProvider,
@@ -254,20 +254,6 @@ export class TypeScriptProvider {
 
 ////////////////////////////////
 //  Main
-
-export function handlersFor(provider: TypeScriptProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: () => provider.discoverProject(),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => provider.shutdown(),
-	};
-}
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new TypeScriptProvider()) {
 	serveProvider(connection, handlersFor(provider));

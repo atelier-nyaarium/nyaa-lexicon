@@ -6,6 +6,7 @@ import {
 	composeSymbolId,
 	coordinatesOf,
 	FileFactsSchema,
+	handlersFor,
 	InitializeResponseSchema,
 	type MoveEditsRequest,
 	ProjectModelSchema,
@@ -15,7 +16,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, test } from "vitest";
 import { Cursor } from "../cursor.js";
-import { CProvider, handlersFor, REFERENCE_ROLES, TIERS } from "../main.js";
+import { CProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { bindingCandidates, parseC } from "../parser.js";
 import { lexC } from "../tokens.js";
 

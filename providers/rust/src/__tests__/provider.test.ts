@@ -1,8 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { handlersFor } from "@nyaa-lexicon/protocol";
 import { afterEach, expect, test } from "vitest";
-import { handlersFor, REFERENCE_ROLES, RustProvider, TIERS } from "../main.js";
+import { REFERENCE_ROLES, RustProvider, TIERS } from "../main.js";
 
 const roots: string[] = [];
 

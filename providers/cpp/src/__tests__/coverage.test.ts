@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composeSymbolId } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, handlersFor } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, test } from "vitest";
-import { CppProvider, handlersFor } from "../main.js";
+import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 
 const roots: string[] = [];

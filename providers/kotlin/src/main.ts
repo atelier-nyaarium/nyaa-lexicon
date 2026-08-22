@@ -1,9 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
 	comparePositions,
 	type Declaration,
+	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -11,8 +12,8 @@ import {
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
-	type ProviderHandlers,
 	parseSymbolId,
+	projectDiagnostic,
 	type Range,
 	type Reference,
 	type RenameEditsRequest,
@@ -20,7 +21,9 @@ import {
 	runProviderOnStdio,
 	type TypeInfo,
 	type UnknownReason,
+	walkWorkspace,
 	serveProvider as wireProvider,
+	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { type KotlinFile, LANGUAGE, parseKotlin, REFERENCE_ROLES } from "./parser.js";
@@ -60,47 +63,6 @@ type RangeLike = Declaration["range"];
 
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
-}
-
-function modulePath(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).replace(/\\/g, "/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	return relative;
-}
-
-function safeWorkspacePath(root: string, module: string): string | null {
-	const absolute = path.resolve(root, ...module.split("/"));
-	const relative = path.relative(root, absolute);
-	if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-	return absolute;
-}
-
-function walkKotlinFiles(root: string): string[] {
-	const files: string[] = [];
-	const visit = (directory: string): void => {
-		for (const entry of readdirSync(directory, { withFileTypes: true })) {
-			if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-			const absolute = path.join(directory, entry.name);
-			if (entry.isDirectory()) {
-				visit(absolute);
-				continue;
-			}
-			if (!entry.isFile() || !entry.name.endsWith(".kt")) continue;
-			const module = modulePath(root, absolute);
-			if (module !== null) files.push(module);
-		}
-	};
-	visit(root);
-	return files.sort();
-}
-
-function projectDiagnostic(root: string, message: string): ProjectModel {
-	return {
-		files: [],
-		externalRoots: [],
-		configFiles: [],
-		diagnostics: [{ severity: "error", message, path: root }],
-	};
 }
 
 function unknown(reason: UnknownReason, detail: string): { status: "unbound"; reason: UnknownReason; detail: string } {
@@ -282,14 +244,17 @@ export class KotlinProvider {
 	private filesInWorkspace(): string[] {
 		if (this.workspaceFiles !== null) return this.workspaceFiles;
 		if (!existsSync(this.workspaceRoot) || !statSync(this.workspaceRoot).isDirectory()) return [];
-		this.workspaceFiles = walkKotlinFiles(this.workspaceRoot);
+		this.workspaceFiles = walkWorkspace(this.workspaceRoot, {
+			extensions: EXTENSIONS,
+			excludedDirectories: EXCLUDED_DIRECTORIES,
+		}).files;
 		return this.workspaceFiles;
 	}
 
 	private factsForModule(module: string): KotlinFile | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		const absolute = safeWorkspacePath(this.workspaceRoot, module);
+		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {
 			if (!statSync(absolute).isFile()) return null;
@@ -467,27 +432,8 @@ export class KotlinProvider {
 	}
 }
 
-export function handlersFor(provider: KotlinProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
-}
-
-export function serveProvider(
-	connection: ReturnType<typeof createMessageConnection>,
-	provider = new KotlinProvider(),
-): void {
+export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new KotlinProvider()): void {
 	wireProvider(connection, handlersFor(provider));
 }
-
-export const serve = serveProvider;
 
 if (import.meta.main) runProviderOnStdio(handlersFor(new KotlinProvider()));

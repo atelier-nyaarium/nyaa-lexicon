@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,6 +9,8 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	discoverByWalk,
+	handlersFor,
 	type ImportedName,
 	type ImportResolution,
 	type Literal,
@@ -17,8 +19,8 @@ import {
 	notImplementedImport,
 	PROTOCOL_VERSION,
 	type ProjectModel,
-	type ProviderHandlers,
 	parseSymbolId,
+	projectDiagnostic,
 	type Reference,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
@@ -27,6 +29,8 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	workspaceFile,
+	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { isValidTargetModule, makeMoveEdits } from "./move";
@@ -229,12 +233,6 @@ interface MappedFacts {
 
 //////// Helpers
 
-function modulePath(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).replace(/\\/g, "/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	return relative;
-}
-
 function idFor(module: string, descriptors: RawDescriptor[]): string {
 	return composeSymbolId({ language: LANGUAGE, module, descriptors });
 }
@@ -366,30 +364,6 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 	};
 }
 
-function walkPythonFiles(root: string): string[] {
-	const files: string[] = [];
-	function visit(directory: string): void {
-		for (const entry of readdirSync(directory, { withFileTypes: true })) {
-			if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-			const absolute = path.join(directory, entry.name);
-			if (entry.isDirectory()) visit(absolute);
-			if (entry.isFile() && entry.name.endsWith(".py")) {
-				const module = modulePath(root, absolute);
-				if (module !== null) files.push(module);
-			}
-		}
-	}
-	visit(root);
-	return files.sort();
-}
-
-function safeWorkspacePath(root: string, parts: string[]): string | null {
-	const absolute = path.resolve(root, ...parts);
-	const relative = path.relative(root, absolute);
-	if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-	return absolute;
-}
-
 function importParts(fromModule: string, specifier: string): string[] {
 	const fromParts = fromModule.replace(/\\/g, "/").split("/");
 	fromParts.pop();
@@ -405,7 +379,7 @@ function fileCandidates(root: string, parts: string[]): string[] {
 	const relative = parts.join("/");
 	const candidates = [`${relative}.py`, `${relative}.pyi`, `${relative}/__init__.py`];
 	return candidates
-		.map((candidate) => safeWorkspacePath(root, candidate.split("/")))
+		.map((candidate) => workspaceFile(root, candidate))
 		.filter(
 			(candidate): candidate is string =>
 				candidate !== null && existsSync(candidate) && statSync(candidate).isFile(),
@@ -469,18 +443,9 @@ function externalPackageExists(root: string, specifier: string): boolean {
 		["venv", "lib", "python3.12", "site-packages"],
 	];
 	return roots.some((rootParts) => {
-		const packageRoot = safeWorkspacePath(root, [...rootParts, ...packageParts]);
+		const packageRoot = workspaceFile(root, [...rootParts, ...packageParts].join("/"));
 		return packageRoot !== null && existsSync(packageRoot);
 	});
-}
-
-function projectDiagnostic(root: string, message: string): ProjectModel {
-	return {
-		files: [],
-		externalRoots: [],
-		configFiles: [],
-		diagnostics: [{ severity: "error", message, path: root }],
-	};
 }
 
 // Inclusive at both ends.
@@ -540,7 +505,10 @@ export class PythonProvider {
 				);
 			}
 			return {
-				files: walkPythonFiles(this.workspaceRoot),
+				files: discoverByWalk(this.workspaceRoot, {
+					extensions: EXTENSIONS,
+					excludedDirectories: EXCLUDED_DIRECTORIES,
+				}).files,
 				externalRoots: [],
 				configFiles: [],
 				diagnostics: [],
@@ -569,7 +537,7 @@ export class PythonProvider {
 	private factsForModule(module: string): ReturnType<typeof mapFacts> | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		const absolute = safeWorkspacePath(this.workspaceRoot, module.split("/"));
+		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
 		const facts = mapFacts(module, extractFacts(this.python3, module, readFileSync(absolute, "utf8")));
 		this.parsedFacts.set(module, facts);
@@ -699,7 +667,7 @@ export class PythonProvider {
 		const candidates = fileCandidates(this.workspaceRoot, parts);
 		const firstCandidate = candidates[0];
 		if (firstCandidate !== undefined) {
-			const module = modulePath(this.workspaceRoot, firstCandidate);
+			const module = workspaceModule(this.workspaceRoot, firstCandidate);
 			if (module !== null) return { status: "resolved" as const, module };
 		}
 		if (!params.specifier.startsWith(".")) {
@@ -854,20 +822,6 @@ function unknownType(reason: UnknownReason, detail: string): TypeInfo {
 }
 
 //////// Main
-
-export function handlersFor(provider: PythonProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
-}
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new PythonProvider()): void {
 	serveProvider(connection, handlersFor(provider));

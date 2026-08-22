@@ -1,9 +1,11 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
 	comparePositions,
 	type Declaration,
+	discoverByWalk,
+	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -11,8 +13,8 @@ import {
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
-	type ProviderHandlers,
 	parseSymbolId,
+	projectDiagnostic,
 	type Reference,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
@@ -20,6 +22,7 @@ import {
 	type TypeInfo,
 	type UnknownReason,
 	serveProvider as wireServeProvider,
+	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { type CsharpFacts, CsharpParser, type DeclarationMeta, LANGUAGE } from "./parser.js";
@@ -79,44 +82,6 @@ const EXTERNAL_ROOTS = new Set([
 const TYPE_DECLARATION_KINDS = new Set(["class", "interface", "struct", "enum"]);
 const MEMBER_KINDS = new Set(["method", "constructor", "property", "field", "event", "constant", "variable"]);
 type Range = Declaration["range"];
-
-function modulePath(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).replaceAll(path.sep, "/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	return relative;
-}
-
-function safePath(root: string, module: string): string | null {
-	const absolute = path.resolve(root, ...module.split("/"));
-	const relative = path.relative(root, absolute);
-	return relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ? null : absolute;
-}
-
-function walkFiles(root: string): { files: string[]; configFiles: string[] } {
-	const files: string[] = [];
-	const configFiles: string[] = [];
-	function visit(directory: string): void {
-		for (const entry of readdirSync(directory, { withFileTypes: true })) {
-			if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-			const absolute = path.join(directory, entry.name);
-			if (entry.isDirectory()) {
-				visit(absolute);
-				continue;
-			}
-			if (!entry.isFile()) continue;
-			const module = modulePath(root, absolute);
-			if (module === null) continue;
-			if (entry.name.endsWith(".cs")) files.push(module);
-			if (entry.name.endsWith(".csproj") || entry.name.endsWith(".sln")) configFiles.push(module);
-		}
-	}
-	visit(root);
-	return { files: files.sort(), configFiles: configFiles.sort() };
-}
-
-function projectDiagnostic(root: string, message: string): ProjectModel {
-	return { files: [], externalRoots: [], configFiles: [], diagnostics: [{ severity: "error", message, path: root }] };
-}
 
 function contains(range: Range, position: Range["start"]): boolean {
 	// Inclusive both ends
@@ -183,7 +148,11 @@ export class CsharpProvider {
 					this.workspaceRoot,
 					`workspace root is not a directory: ${this.workspaceRoot}`,
 				);
-			const walked = walkFiles(this.workspaceRoot);
+			const walked = discoverByWalk(this.workspaceRoot, {
+				extensions: EXTENSIONS,
+				configExtensions: [".csproj", ".sln"],
+				excludedDirectories: EXCLUDED_DIRECTORIES,
+			});
 			this.discoveredFiles = walked.files;
 			return { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] };
 		} catch (error) {
@@ -297,7 +266,11 @@ export class CsharpProvider {
 	private filesForLookup(): string[] {
 		if (this.discoveredFiles !== null) return this.discoveredFiles;
 		try {
-			this.discoveredFiles = walkFiles(this.workspaceRoot).files;
+			this.discoveredFiles = discoverByWalk(this.workspaceRoot, {
+				extensions: EXTENSIONS,
+				configExtensions: [".csproj", ".sln"],
+				excludedDirectories: EXCLUDED_DIRECTORIES,
+			}).files;
 			return this.discoveredFiles;
 		} catch {
 			return [];
@@ -307,7 +280,7 @@ export class CsharpProvider {
 	private factsForModule(module: string): CsharpFacts | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		const absolute = safePath(this.workspaceRoot, module);
+		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {
 			if (!statSync(absolute).isFile()) return null;
@@ -568,27 +541,8 @@ export class CsharpProvider {
 	}
 }
 
-export function handlersFor(provider: CsharpProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
-}
-
-export function serveProvider(
-	connection: ReturnType<typeof createMessageConnection>,
-	provider = new CsharpProvider(),
-): void {
+export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CsharpProvider()): void {
 	wireServeProvider(connection, handlersFor(provider));
 }
-
-export const serve = serveProvider;
 
 if (import.meta.main) runProviderOnStdio(handlersFor(new CsharpProvider()));

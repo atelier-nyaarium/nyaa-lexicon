@@ -5,6 +5,7 @@ import {
 	composeSymbolId,
 	coordinatesOf,
 	FileFactsSchema,
+	handlersFor,
 	InitializeResponseSchema,
 	METHOD_SCHEMAS,
 	MoveEditsResponseSchema,
@@ -14,7 +15,7 @@ import {
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { afterEach, describe, expect, test } from "vitest";
-import { CppProvider, handlersFor } from "../main.js";
+import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 import { tokenize } from "../tokens.js";
 

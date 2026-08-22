@@ -5,13 +5,13 @@ import {
 	comparePositions,
 	type Declaration,
 	type Diagnostic,
+	handlersFor,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
-	type ProviderHandlers,
 	parseSymbolId,
 	type Range,
 	type Reference,
@@ -21,6 +21,7 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import type { ImportBinding, ParsedFile, RawDeclaration, RawReference } from "./model.js";
@@ -196,7 +197,7 @@ export class RustProvider {
 	private factsForModule(module: string): ParsedFile | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		const absolute = this.safeWorkspaceModule(module);
+		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
 		try {
 			const facts = parseRustFile(module, readFileSync(absolute, "utf8"));
@@ -205,12 +206,6 @@ export class RustProvider {
 		} catch {
 			return null;
 		}
-	}
-
-	private safeWorkspaceModule(module: string): string | null {
-		const absolute = path.resolve(this.workspaceRoot, ...module.split("/"));
-		const relative = path.relative(this.workspaceRoot, absolute);
-		return relative.startsWith("..") || path.isAbsolute(relative) ? null : absolute;
 	}
 
 	private wireReferences(facts: ParsedFile): Reference[] {
@@ -471,20 +466,6 @@ export class RustProvider {
 			(candidate) => candidate.declaration.name === imported.sourceName,
 		)?.declaration.symbolId;
 	}
-}
-
-export function handlersFor(provider: RustProvider): ProviderHandlers {
-	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
-		resolveImport: (params) => provider.resolveImport(params),
-		bind: (params) => provider.bind(params),
-		typeOf: (params) => provider.typeOf(params),
-		renameEdits: (params) => provider.renameEdits(params),
-		moveEdits: (params) => provider.moveEdits(params),
-		shutdown: () => ({}),
-	};
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new RustProvider()): void {

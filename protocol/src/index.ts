@@ -119,6 +119,17 @@ export {
 	ProjectModelSchema,
 } from "./project.js";
 export {
+	DEFAULT_EXCLUDED_DIRECTORIES,
+	discoverByWalk,
+	handlersFor,
+	type ProviderMethods,
+	projectDiagnostic,
+	type WalkOptions,
+	walkWorkspace,
+	workspaceFile,
+	workspaceModule,
+} from "./providerKit.js";
+export {
 	type BlockedSite,
 	type BlockedSiteReason,
 	BlockedSiteReasonSchema,
