@@ -61,6 +61,9 @@ interface RunningProvider {
 	stopping: boolean;
 }
 
+/** Spawned, not yet registered. */
+type StartingProcess = Pick<RunningProvider, "child" | "connection" | "queue">;
+
 /** A provider outage is not a file parse failure. */
 export class ProviderUnavailableError extends Error {}
 
@@ -113,6 +116,8 @@ export function absorbingWrites(stdin: Writable): Writable {
 
 export class ProviderSupervisor {
 	private readonly providers = new Map<string, RunningProvider>();
+	/** What stopAll would otherwise miss. */
+	private readonly starting = new Set<StartingProcess>();
 	private readonly exitListeners: Array<(exit: ProviderExit) => void> = [];
 
 	/** Told about every unexpected death. The supervisor learns nothing about the listener. */
@@ -139,6 +144,7 @@ export class ProviderSupervisor {
 	 */
 	async start(spec: ProviderSpec, workspaceRoot: string): Promise<ProviderClaims> {
 		const running = this.spawnProcess(spec, workspaceRoot);
+		this.starting.add(running);
 		const timeout = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
 		// Nothing is written until the process exists: a request sent to a child whose spawn failed
@@ -156,7 +162,7 @@ export class ProviderSupervisor {
 				"spawn",
 			);
 		} catch (error) {
-			this.stopProcess(running);
+			this.abandon(running);
 			throw error;
 		}
 
@@ -169,7 +175,7 @@ export class ProviderSupervisor {
 			);
 		} catch (error) {
 			// A child that answered nothing must not outlive its failed handshake as a zombie.
-			this.stopProcess(running);
+			this.abandon(running);
 			throw error;
 		}
 
@@ -184,9 +190,12 @@ export class ProviderSupervisor {
 				);
 			}
 		} catch (error) {
-			this.stopProcess(running);
+			this.abandon(running);
 			throw error;
 		}
+
+		// A stopAll meanwhile owns the teardown.
+		if (!this.starting.delete(running)) throw new Error("supervisor stopped during start");
 
 		const claims: ProviderClaims = {
 			providerId: parsed.providerId,
@@ -267,6 +276,7 @@ export class ProviderSupervisor {
 		let running: Pick<RunningProvider, "child" | "connection" | "queue" | "closed"> | undefined;
 		try {
 			running = this.spawnProcess(previous.spec, previous.workspaceRoot);
+			this.starting.add(running);
 			const timeout = previous.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 			const info = await withTimeout(
 				running.connection.sendRequest("initialize", {
@@ -291,7 +301,7 @@ export class ProviderSupervisor {
 						signal: child.signalCode,
 					});
 				}
-				this.stopProcess(running);
+				this.abandon(running);
 			}
 			console.log(
 				`provider ${previous.claims.providerId} respawn failed: ${error instanceof Error ? error.message : error}`,
@@ -303,6 +313,7 @@ export class ProviderSupervisor {
 			return;
 		}
 		// Re-checked across the handshake await: a stop that landed meanwhile owns the teardown.
+		if (!this.starting.delete(running)) return;
 		if (!this.stillWanted(previous)) {
 			this.stopProcess(running);
 			return;
@@ -428,6 +439,11 @@ export class ProviderSupervisor {
 		running.child.kill();
 	}
 
+	private abandon(running: StartingProcess): void {
+		this.starting.delete(running);
+		this.stopProcess(running);
+	}
+
 	stop(providerId: string): void {
 		const provider = this.providers.get(providerId);
 		if (!provider) return;
@@ -437,6 +453,7 @@ export class ProviderSupervisor {
 	}
 
 	stopAll(): void {
+		for (const running of [...this.starting]) this.abandon(running);
 		for (const providerId of [...this.providers.keys()]) this.stop(providerId);
 	}
 

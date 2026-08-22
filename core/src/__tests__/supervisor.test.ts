@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -20,6 +21,9 @@ const REFERENCE = path.join(
 	"conformance",
 	"referenceProvider.ts",
 );
+
+// Absolute: tmpdir cannot resolve the bare name.
+const RPC = createRequire(import.meta.url).resolve("vscode-jsonrpc/node");
 
 let supervisor: ProviderSupervisor;
 
@@ -78,7 +82,7 @@ describe("starting a provider", () => {
 		writeFileSync(
 			script,
 			[
-				`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";`,
+				`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from ${JSON.stringify(RPC)};`,
 				`void ${JSON.stringify(serve)};`,
 				`const connection = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));`,
 				// Tiers from an older protocol: every field this daemon needs except the newest one.
@@ -93,6 +97,41 @@ describe("starting a provider", () => {
 
 		// The process itself, not the registry: a child of a FAILED start was never registered, so
 		// the registry cannot tell an orphan from a clean exit.
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(processesMatching(script)).toEqual([]);
+
+		rmSync(root, { recursive: true, force: true });
+	}, 30_000);
+
+	// Only the process table can say.
+	it("reaps a provider still in its handshake when everything is stopped", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-midshake-"));
+		const script = path.join(root, "slow.ts");
+		const asked = path.join(root, "asked");
+		writeFileSync(
+			script,
+			[
+				`import { writeFileSync } from "node:fs";`,
+				`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from ${JSON.stringify(RPC)};`,
+				`const connection = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));`,
+				`connection.onRequest("initialize", () => { writeFileSync(${JSON.stringify(asked)}, ""); return new Promise(() => {}); });`,
+				`connection.listen();`,
+			].join("\n"),
+		);
+
+		supervisor = new ProviderSupervisor();
+		// Past the test limit; only stopAll ends it.
+		const pending = supervisor.start({ command: ["bun", "run", script], timeoutMs: 120_000 }, root);
+		pending.catch(() => {});
+		for (let waited = 0; !existsSync(asked) && waited < 20_000; waited += 100) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		expect(existsSync(asked)).toBe(true);
+		expect(processesMatching(script)).not.toEqual([]);
+
+		supervisor.stopAll();
+		await expect(pending).rejects.toThrow();
+		expect(supervisor.running()).toHaveLength(0);
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		expect(processesMatching(script)).toEqual([]);
 
