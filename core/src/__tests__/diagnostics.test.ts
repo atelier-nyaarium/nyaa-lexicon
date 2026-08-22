@@ -524,11 +524,33 @@ describe("node's own reports", () => {
 		expect(harness({ reportsExcludeEnv: false }).collector.current().host.reportsExcludeEnv).toBe(false);
 	});
 
-	it("makes the reports directory readable by its owner alone", () => {
+	it("makes the reports directory readable by its owner alone, even one that already existed wider", () => {
 		const dir = path.join(scratch(), "reports");
+		mkdirSync(dir, { mode: 0o755 });
 		nodeReportSetup(dir, { env: {}, platform: "linux" });
 
 		if (process.platform !== "win32") expect(statSync(dir).mode & 0o777).toBe(0o700);
+	});
+
+	// The LSP runs this outside any guard; a throw here would cost it the whole local index.
+	it("answers empty argv and the reason, rather than throwing, when the directory cannot be made", () => {
+		const root = scratch();
+		writeFileSync(path.join(root, "blocker"), "");
+		const setup = nodeReportSetup(path.join(root, "blocker", "reports"), { env: {}, platform: "linux" });
+
+		expect(setup.argv).toEqual([]);
+		expect(setup.handles).toEqual([]);
+		expect(setup.failure).toBeDefined();
+	});
+
+	// A daemon dying before its collector's first write leaves a report per death.
+	it("prunes at setup, before any collector has written", () => {
+		const dir = path.join(scratch(), "reports");
+		mkdirSync(dir);
+		for (let n = 0; n < 12; n++) writeFileSync(path.join(dir, `report.202608${10 + n}.1.1.0.001.json`), "{}");
+		nodeReportSetup(dir, { env: {}, platform: "linux" });
+
+		expect(readdirSync(dir)).toHaveLength(8);
 	});
 
 	// Without the handler the default action is death, so the child must not be declared to survive it.

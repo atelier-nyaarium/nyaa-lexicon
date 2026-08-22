@@ -103,8 +103,10 @@ waits.
   reach a reused pid, and a process that never installed the handler would die of the signal, so
   the supervisor refuses any signal a spec did not declare in `handles`. The bun dev path declares
   none and is never signalled.
-- `reports/` is pruned after every write: the newest 8 node reports, and the newest 2 heap snapshots
-  when the opt-in is on, so the directory is bounded either way.
+- `reports/` is pruned after every write and again at setup: the newest 8 node reports, and the
+  newest 2 heap snapshots when the opt-in is on, so the directory is bounded either way, including
+  for a daemon that dies before its collector's first write. Setup also tightens an existing
+  directory to 0700.
 - `nodeReportSetup(reportsDir)` answers the argv that turns on `--report-on-fatalerror`,
   `--report-on-signal`, `--report-signal=SIGUSR2`, `--report-compact` and the directory, plus the
   heap snapshot flags when `LEXICON_HEAP_SNAPSHOT` is set, and the signals that argv makes the
@@ -114,8 +116,9 @@ waits.
   along with the network interfaces, and the collection records `host.reportsExcludeEnv` so a
   reader on an older node knows the reports beside it carry the environment. `reports/` is
   created owner-only, 0700, either way. Asked of the daemon's own node, which is the children's.
-- Nothing in the report path is fatal to the daemon: a reports directory that cannot be made costs
-  the reports, logged, and the providers start without the flags. A signal the supervisor would not
+- Nothing in the report path is fatal to any caller: `nodeReportSetup` and `enableSelfReports`
+  never throw. A reports directory that cannot be made answers empty argv and a stated `failure`,
+  which the daemon and the LSP log, and the providers start without the flags. A signal the supervisor would not
   deliver is logged once per crossing and stays latched, so it is not retried every sample.
 - A clock stepped backwards counts as a write being due, or writes would stall until it caught up.
 - `readDiagnostics(key, host)` reads the file back through the schema, for the surface in Phase 2.

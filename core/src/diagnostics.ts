@@ -2,7 +2,7 @@
 //
 // A collection, never a stream: rings bound it and the file is rewritten whole.
 
-import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import v8 from "node:v8";
 import { z } from "zod";
@@ -117,6 +117,8 @@ export interface NodeReportSetup {
 	handles: NodeJS.Signals[];
 	/** False on a node too old to exclude it, so the report carries the environment. */
 	excludesEnv: boolean;
+	/** Why there are no reports, when the directory could not be made. Argv is empty then. */
+	failure?: string;
 }
 
 export interface CollectorOptions {
@@ -191,21 +193,32 @@ export function reportsExcludeEnv(): boolean {
 	return reportSupports("excludeEnv");
 }
 
-/** Reports hold stacks, the command line and, on old node, the environment. Owner only. */
+/**
+ * Reports hold stacks, the command line and, on old node, the environment. Owner only, tightened
+ * even where the directory already existed wider, and pruned here too: a daemon dying before its
+ * collector's first write would otherwise leave one report per death, unbounded.
+ */
 function makeReportsDir(reportsDir: string): void {
 	mkdirSync(reportsDir, { recursive: true, mode: 0o700 });
+	chmodSync(reportsDir, 0o700);
+	pruneReports(reportsDir);
 }
 
 /**
  * Argv for a node child: a report on a fatal error, and one on demand while alive.
  *
- * Creates the directory, since a report aimed at a missing one is lost without a word.
+ * Creates the directory, since a report aimed at a missing one is lost without a word. Never
+ * throws: a directory that cannot be made costs the reports, never the caller.
  */
 export function nodeReportSetup(
 	reportsDir: string,
 	host: { env: Record<string, string | undefined>; platform: NodeJS.Platform } = currentHost(),
 ): NodeReportSetup {
-	makeReportsDir(reportsDir);
+	try {
+		makeReportsDir(reportsDir);
+	} catch (error) {
+		return { argv: [], handles: [], excludesEnv: false, failure: describe(error) };
+	}
 	const argv = ["--report-on-fatalerror", "--report-compact", `--report-directory=${reportsDir}`];
 	const excludesEnv = reportsExcludeEnv();
 	if (excludesEnv) argv.push("--report-exclude-env");
@@ -220,12 +233,19 @@ export function nodeReportSetup(
 	return { argv, handles, excludesEnv };
 }
 
-/** The daemon's own settings, the same its children get on argv. A snapshot lands in the cwd. */
+/**
+ * The daemon's own settings, the same its children get on argv. A snapshot lands in the cwd.
+ * Answers why the reports are off, or null.
+ */
 export function enableSelfReports(
 	reportsDir: string,
 	host: { env: Record<string, string | undefined>; platform: NodeJS.Platform } = currentHost(),
-): void {
-	makeReportsDir(reportsDir);
+): string | null {
+	try {
+		makeReportsDir(reportsDir);
+	} catch (error) {
+		return describe(error);
+	}
 	process.report.directory = reportsDir;
 	process.report.compact = true;
 	process.report.reportOnFatalError = true;
@@ -234,6 +254,7 @@ export function enableSelfReports(
 	if (reportSupports("excludeNetwork")) (process.report as { excludeNetwork?: boolean }).excludeNetwork = true;
 	if (host.platform !== "win32") process.report.reportOnSignal = true;
 	if (heapSnapshotWanted(host.env)) v8.setHeapSnapshotNearHeapLimit(1);
+	return null;
 }
 
 function stale(names: string[], pattern: RegExp, keep: number): string[] {

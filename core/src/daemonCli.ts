@@ -11,13 +11,7 @@
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
-import {
-	type Collector,
-	enableSelfReports,
-	type NodeReportSetup,
-	nodeReportSetup,
-	startDiagnostics,
-} from "./diagnostics.js";
+import { type Collector, enableSelfReports, nodeReportSetup, startDiagnostics } from "./diagnostics.js";
 import { createDispatch } from "./dispatch.js";
 import { driftedTo } from "./drift.js";
 import { daemonCommand, spawnDaemonProcess } from "./ensureDaemon.js";
@@ -102,14 +96,10 @@ async function main(argv: string[]): Promise<void> {
 	const paths = workspacePaths(host, root);
 	mkdirSync(paths.dir, { recursive: true });
 	// Before anything allocates: a fatal error from here on leaves a report, not only a log line.
-	// Never fatal itself, so a broken reports directory costs the reports and nothing else.
-	let nodeReport: NodeReportSetup | null = null;
-	try {
-		enableSelfReports(paths.reportsDir);
-		nodeReport = nodeReportSetup(paths.reportsDir);
-	} catch (error) {
-		log(`crash reports off: ${describeError(error)}`);
-	}
+	const reportsOff = enableSelfReports(paths.reportsDir);
+	if (reportsOff !== null) log(`crash reports off: ${reportsOff}`);
+	const nodeReport = nodeReportSetup(paths.reportsDir);
+	if (nodeReport.failure !== undefined) log(`provider crash reports off: ${nodeReport.failure}`);
 
 	// The state dir is the one directory this process owns. A cwd inside the project pins it: on
 	// Windows the folder cannot be renamed or deleted while a live process sits in it.
@@ -241,7 +231,7 @@ async function main(argv: string[]): Promise<void> {
 		spawned.observeExits((exit) => (collector === null ? earlyExits.push(exit) : collector.recordExit(exit)));
 		startingSince = Date.now();
 		waitingFor = "the language providers to start";
-		const providers = await startProviders(spawned, root, nodeReport === null ? {} : { node: nodeReport });
+		const providers = await startProviders(spawned, root, { node: nodeReport });
 		log(`providers:\n${describeStart(providers)}`);
 
 		const openStore = store;

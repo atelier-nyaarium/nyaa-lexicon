@@ -96,8 +96,9 @@ async function buildLocal(workspaceRoot: string, hold: (index: LocalIndex) => vo
 	);
 
 	// Crash reports only. The daemon owns the sampled collection; a second writer would corrupt it.
-	const reportsDir = workspacePaths(currentHost(), workspaceRoot).reportsDir;
-	await startProviders(supervisor, workspaceRoot, { node: nodeReportSetup(reportsDir) });
+	const nodeReport = nodeReportSetup(workspacePaths(currentHost(), workspaceRoot).reportsDir);
+	if (nodeReport.failure !== undefined) process.stderr.write(`crash reports off: ${nodeReport.failure}\n`);
+	await startProviders(supervisor, workspaceRoot, { node: nodeReport });
 	const outcomes = await service.indexWorkspace();
 	const indexed = outcomes.filter((outcome) => outcome.action === "indexed").length;
 	process.stderr.write(`indexed ${indexed} files in this process\n`);
