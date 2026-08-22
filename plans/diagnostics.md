@@ -168,7 +168,8 @@ is interpolated into Markdown. Rendering never rounds a lie: zero is `0B`, an im
 Reports list the newest twenty and count the rest.
 
 Docs: the file-level docs landed in Phase 1 (`docs/architecture.md` Diagnostics section,
-`CHANGELOG.md` under a `2.1.0` heading since it is additive and stores are preserved, `README.md`
+`CHANGELOG.md` under the release heading (`2.0.1`, the owner's call; stores are preserved either
+way), `README.md`
 How it runs, `CLAUDE.md` Development). This phase names the tool in each: the README housekeeping
 line, the changelog, the architecture section, and `CLAUDE.md`, which now tells an agent to call
 `project_diagnostics` rather than read the files by hand.

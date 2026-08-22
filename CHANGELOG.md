@@ -2,7 +2,7 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
-## 2.1.0
+## 2.0.1
 
 The daemon records its own memory, and a process that dies of it leaves a report.
 
