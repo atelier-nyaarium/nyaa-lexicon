@@ -5,6 +5,7 @@
 
 import type { ImportOrigin, ImportResolution, IndexDepth, MoveImportSite, Range } from "@nyaa-lexicon/protocol";
 import { DEFAULT_REFERENCE_LIMIT } from "./indexReads.js";
+import { type Paged, pageProbed, pageScanned, wire } from "./paging.js";
 import { compileSearchRegex } from "./search.js";
 import type { IndexStore, StoredImport } from "./store.js";
 
@@ -94,43 +95,38 @@ export class ImportResolver {
 		).length;
 		if (targets !== 1) throw new Error("Set exactly one import search target.");
 
+		const answer = (paged: Paged<StoredImport>) => ({ query, imports: paged.items, ...wire(paged) });
+
 		if (query.specifier !== undefined) {
-			const found = this.store.importsMatching(query.specifier, limit + 1);
-			return { query, imports: found.slice(0, limit), total: found.length, truncated: found.length > limit };
+			return answer(pageProbed(this.store.importsMatching(query.specifier, limit + 1), limit));
 		}
 		if (query.specifierRegex !== undefined) {
 			const expression = compileSearchRegex(query.specifierRegex);
 			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
 			const matched = scanned.filter((statement) => expression.test(statement.specifier));
-			const result = {
-				query,
-				imports: matched.slice(0, limit),
-				total: matched.length,
-				truncated: matched.length > limit,
-			};
-			return scanned.length >= IMPORT_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+			return answer(pageScanned(matched, limit, { read: scanned.length, cap: IMPORT_SCAN_LIMIT }));
 		}
 		if (query.module !== undefined) {
 			const target = query.module;
+			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
 			const matched: StoredImport[] = [];
-			for (const statement of this.store.importsForScan(IMPORT_SCAN_LIMIT)) {
+			let read = 0;
+			for (const statement of scanned) {
+				read++;
 				const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
 				if (landed !== null && importTarget(landed)?.module === target) matched.push(statement);
 				if (matched.length > limit) break;
 			}
-			return {
-				query,
-				imports: matched.slice(0, limit),
-				total: matched.length,
-				truncated: matched.length > limit,
-			};
+			return answer(pageProbed(matched, limit, { read, cap: IMPORT_SCAN_LIMIT }));
 		}
 
 		if (query.moduleRegex === undefined) throw new Error("Set exactly one import search target.");
 		const expression = compileSearchRegex(query.moduleRegex);
 		const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
 		const matched: StoredImport[] = [];
+		let read = 0;
 		for (const statement of scanned) {
+			read++;
 			const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
 			if (landed !== null) {
 				const module = importTarget(landed)?.module;
@@ -138,13 +134,7 @@ export class ImportResolver {
 			}
 			if (matched.length > limit) break;
 		}
-		const result = {
-			query,
-			imports: matched.slice(0, limit),
-			total: matched.length,
-			truncated: matched.length > limit,
-		};
-		return scanned.length >= IMPORT_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+		return answer(pageProbed(matched, limit, { read, cap: IMPORT_SCAN_LIMIT }));
 	}
 
 	/**

@@ -4,6 +4,7 @@
 
 import type {
 	CommentsResult,
+	Count,
 	DescribeResult,
 	DocsResult,
 	FileNotes,
@@ -276,28 +277,30 @@ export function renderRenamePlan(plan: RenamePlan): string {
 	return lines.join("\n");
 }
 
-/**
- * Literal hits, grouped by file.
- *
- * Two truncations are reported separately because they mean different things: a full page means
- * more matched than were shown, while an incomplete scan means the search itself stopped early and
- * matches beyond it were never looked at.
- */
-/**
- * The sentence a stopped scan owes its caller.
- *
- * Needed most where it is easiest to forget: an empty result. "Nothing matched" and "nothing
- * matched in the part I read" are different answers, and only one of them is an absence.
- */
-function incompleteNote(scanIncomplete: boolean | undefined): string {
-	return scanIncomplete
-		? "\n\n> The scan stopped before the end of the index, so matches beyond it were never looked at."
-		: "";
+/** Count for a heading. */
+function countLabel(count: Count, noun: string, plural = `${noun}s`): string {
+	return `${count.kind === "atLeast" ? "at least " : ""}${count.count} ${count.count === 1 ? noun : plural}`;
+}
+
+/** What was cut, from the count. */
+function pagingNotes(count: Count, shown: number, noun: string, plural = `${noun}s`, raise = "Raise `limit`."): string {
+	const notes: string[] = [];
+	if (count.kind === "exact") {
+		const more = count.count - shown;
+		if (more > 0) notes.push(`${more} more ${more === 1 ? noun : plural} not shown. ${raise}`);
+	} else {
+		if (count.reason !== "scanCapped")
+			notes.push(`More ${plural} exist than the ${shown} shown, uncounted. ${raise}`);
+		if (count.reason !== "pageCapped") {
+			notes.push("The scan stopped before the end of the index, so matches beyond it were never looked at.");
+		}
+	}
+	return notes.map((note) => `\n\n> ${note}`).join("");
 }
 
 export function renderComments(result: CommentsResult): string {
-	if (result.total === 0) {
-		return `# Comments\n\nNo comment matched.\n\n> Searches normalized prose, so markers and line wrapping are not matched.${incompleteNote(result.scanIncomplete)}`;
+	if (result.count.count === 0) {
+		return `# Comments\n\nNo comment matched.\n\n> Searches normalized prose, so markers and line wrapping are not matched.${pagingNotes(result.count, 0, "comment")}`;
 	}
 
 	const byModule = new Map<string, string[]>();
@@ -313,17 +316,13 @@ export function renderComments(result: CommentsResult): string {
 		byModule.set(comment.module, rows);
 	}
 
-	let body = renderGroupedModules(`${result.total} comment${result.total === 1 ? "" : "s"}`, byModule);
-	if (result.truncated) {
-		const more = result.total - result.comments.length;
-		body += `\n\n> ${more} more comment${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
-	}
-	return body + incompleteNote(result.scanIncomplete);
+	const body = renderGroupedModules(countLabel(result.count, "comment"), byModule);
+	return body + pagingNotes(result.count, result.comments.length, "comment");
 }
 
 export function renderDocs(result: DocsResult): string {
-	if (result.total === 0) {
-		return `# Documentation\n\nNo documentation matched.\n\n> Searches normalized text, so line wrapping is not matched.${incompleteNote(result.scanIncomplete)}`;
+	if (result.count.count === 0) {
+		return `# Documentation\n\nNo documentation matched.\n\n> Searches normalized text, so line wrapping is not matched.${pagingNotes(result.count, 0, "region")}`;
 	}
 
 	const byModule = new Map<string, string[]>();
@@ -337,12 +336,8 @@ export function renderDocs(result: DocsResult): string {
 		byModule.set(region.module, rows);
 	}
 
-	let body = renderGroupedModules(`${result.total} region${result.total === 1 ? "" : "s"}`, byModule);
-	if (result.truncated) {
-		const more = result.total - result.docs.length;
-		body += `\n\n> ${more} more region${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
-	}
-	return body + incompleteNote(result.scanIncomplete);
+	const body = renderGroupedModules(countLabel(result.count, "region"), byModule);
+	return body + pagingNotes(result.count, result.docs.length, "region");
 }
 
 /** Quoted so a comment's own markers cannot be read as this document's markup. */
@@ -353,9 +348,10 @@ function indent(raw: string): string {
 		.join("\n");
 }
 
+/** Literal hits, grouped by file. */
 export function renderLiterals(result: LiteralsResult): string {
-	if (result.total === 0) {
-		return `# Literals\n\nNo literal matched.\n\n> Searches decoded values, not source text.${incompleteNote(result.scanIncomplete)}`;
+	if (result.count.count === 0) {
+		return `# Literals\n\nNo literal matched.\n\n> Searches decoded values, not source text.${pagingNotes(result.count, 0, "literal")}`;
 	}
 
 	const byModule = new Map<string, string[]>();
@@ -371,12 +367,8 @@ export function renderLiterals(result: LiteralsResult): string {
 		byModule.set(literal.module, rows);
 	}
 
-	let body = renderGroupedModules(`${result.total} literal${result.total === 1 ? "" : "s"}`, byModule);
-	if (result.truncated) {
-		const more = result.total - result.literals.length;
-		body += `\n\n> ${more} more literal${more === 1 ? "" : "s"} not shown. Raise \`limit\`.`;
-	}
-	return body + incompleteNote(result.scanIncomplete);
+	const body = renderGroupedModules(countLabel(result.count, "literal"), byModule);
+	return body + pagingNotes(result.count, result.literals.length, "literal");
 }
 
 /**
@@ -890,15 +882,9 @@ export function renderImports(result: {
 		name?: string;
 		reExport: boolean;
 	}>;
-	total: number;
-	truncated: boolean;
-	scanIncomplete?: boolean;
+	count: Count;
 }): string {
-	if (result.total === 0) {
-		return result.scanIncomplete
-			? "# Imports\n\nNo imports matched in the scanned portion.\n\n> The import scan stopped before the end of the index."
-			: "# Imports\n\nNo imports matched.";
-	}
+	if (result.count.count === 0) return `# Imports\n\nNo imports matched.${pagingNotes(result.count, 0, "import")}`;
 
 	const byModule = new Map<string, Set<string>>();
 	for (const statement of result.imports) {
@@ -918,12 +904,10 @@ export function renderImports(result: {
 		);
 	}
 	const body = renderGroupedModules(
-		`${byModule.size} file${byModule.size === 1 ? "" : "s"}, ${result.total} import entries`,
+		`${byModule.size} file${byModule.size === 1 ? "" : "s"}, ${countLabel(result.count, "import entry", "import entries")}`,
 		rows,
 	);
-	let rendered = result.truncated ? `${body}\n\n> More imports not shown. Raise \`limit\`.` : body;
-	if (result.scanIncomplete) rendered += "\n\n> The import scan stopped before the end of the index.";
-	return rendered;
+	return body + pagingNotes(result.count, result.imports.length, "import entry", "import entries");
 }
 
 /** The most-referenced symbols, which is where reading pays off most. */
@@ -952,11 +936,10 @@ export function renderSymbolSearch(result: {
 	text: string | undefined;
 	regex?: string;
 	symbols: SymbolSummary[];
-	total: number;
-	truncated: boolean;
+	count: Count;
 }): string {
 	const query = result.regex === undefined ? JSON.stringify(result.text) : `regex ${JSON.stringify(result.regex)}`;
-	if (result.total === 0) return `# Symbol search\n\nNo symbol name matches ${query}.`;
+	if (result.count.count === 0) return `# Symbol search\n\nNo symbol name matches ${query}.`;
 
 	const byModule = new Map<string, string[]>();
 	for (const symbol of result.symbols) {
@@ -967,13 +950,9 @@ export function renderSymbolSearch(result: {
 		byModule.set(symbol.module, rows);
 	}
 
-	const body = renderGroupedModules(
-		`${result.total} symbol${result.total === 1 ? "" : "s"} matching ${query}`,
-		byModule,
-	);
-	return result.truncated
-		? `${body}\n\n> More symbols not shown. Raise \`limit\` or narrow by kind or module.`
-		: body;
+	const body = renderGroupedModules(`${countLabel(result.count, "symbol")} matching ${query}`, byModule);
+	const raise = "Raise `limit` or narrow by kind or module.";
+	return body + pagingNotes(result.count, result.symbols.length, "symbol", "symbols", raise);
 }
 
 /** A file's notes, or why unknown. */

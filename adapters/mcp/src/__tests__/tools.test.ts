@@ -45,13 +45,43 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			fullFiles: 1,
 			outlineFiles: 0,
 		}),
-		findLiterals: async (query) => ({ query, literals: [], total: 0, truncated: false }),
-		findComments: async (query) => ({ query, comments: [], total: 0, truncated: false }),
-		findDocs: async (query) => ({ query, docs: [], total: 0, truncated: false }),
-		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
+		findLiterals: async (query) => ({
+			query,
+			literals: [],
+			total: 0,
+			truncated: false,
+			count: { kind: "exact", count: 0 },
+		}),
+		findComments: async (query) => ({
+			query,
+			comments: [],
+			total: 0,
+			truncated: false,
+			count: { kind: "exact", count: 0 },
+		}),
+		findDocs: async (query) => ({
+			query,
+			docs: [],
+			total: 0,
+			truncated: false,
+			count: { kind: "exact", count: 0 },
+		}),
+		searchSymbols: async (text) => ({
+			text,
+			symbols: [],
+			total: 0,
+			truncated: false,
+			count: { kind: "exact", count: 0 },
+		}),
 		outlineModule: async () => [],
 		fileNotes: async (module) => ({ module, known: true, notes: [] }),
-		findImports: async (query) => ({ query, imports: [], total: 0, truncated: false }),
+		findImports: async (query) => ({
+			query,
+			imports: [],
+			total: 0,
+			truncated: false,
+			count: { kind: "exact", count: 0 },
+		}),
 		hubs: async () => [],
 		fileHistory: async (module) => ({
 			module,
@@ -543,7 +573,7 @@ describe("refusing a search term the store cannot match as written", () => {
 			backend({
 				searchSymbols: async (text) => {
 					asked += 1;
-					return { text, symbols: [], total: 0, truncated: false };
+					return { text, symbols: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},
 			}),
 			{ text: "a\0b" },
@@ -583,7 +613,7 @@ describe("the search_docs handler", () => {
 			backend({
 				findDocs: async (query) => {
 					seen = query;
-					return { query, docs: [], total: 0, truncated: false };
+					return { query, docs: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},
 			}),
 			{ text: "band-aid", fenced: true, module: "CLAUDE.md", limit: 7 },

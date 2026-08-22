@@ -114,6 +114,16 @@ export {
 } from "./knowledge.js";
 export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } from "./lifetime.js";
 export { type DaemonLock, DaemonLockSchema, decideFromLock, type LockDecision } from "./lockFile.js";
+export {
+	type Count,
+	type Counted,
+	type CountReason,
+	type Paged,
+	pageCounted,
+	pageProbed,
+	pageScanned,
+	wire,
+} from "./paging.js";
 export { currentHost, type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "./paths.js";
 export {
 	type HostMemory,

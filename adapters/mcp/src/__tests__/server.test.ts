@@ -135,6 +135,7 @@ function searchSource(routes: string[], optionsSeen: Array<Record<string, unknow
 					symbols: [],
 					total: 0,
 					truncated: false,
+					count: { kind: "exact", count: 0 },
 				};
 			},
 		});
@@ -214,7 +215,15 @@ describe("query project routing", () => {
 		const routes: string[] = [];
 		const source: BackendSource = (selected) => {
 			routes.push(selected.name);
-			return backend({ findImports: async () => ({ query: {}, imports: [], total: 0, truncated: false }) });
+			return backend({
+				findImports: async () => ({
+					query: {},
+					imports: [],
+					total: 0,
+					truncated: false,
+					count: { kind: "exact", count: 0 },
+				}),
+			});
 		};
 		const client = await connectClient(source, binding([project("alpha", true)]));
 
@@ -248,7 +257,7 @@ describe("query project routing", () => {
 				}),
 				findImports: async (query) => {
 					seen.push(query);
-					return { query, imports: [], total: 0, truncated: false };
+					return { query, imports: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},
 			});
 		const client = await connectClient(source, binding([project("alpha", true)]));
@@ -310,7 +319,7 @@ describe("query project routing", () => {
 				}),
 				findLiterals: async (query) => {
 					seen.push(query);
-					return { query, literals: [], total: 0, truncated: false };
+					return { query, literals: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},
 			});
 		const client = await connectClient(source, binding([project("alpha", true)]));
@@ -408,7 +417,7 @@ describe("query project routing", () => {
 				}),
 				searchSymbols: async (text) => {
 					if (text !== undefined) seen.push(text);
-					return { text, symbols: [], total: 0, truncated: false };
+					return { text, symbols: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},
 			}),
 			binding([project("alpha", true)]),
@@ -484,7 +493,7 @@ describe("query project routing", () => {
 			return backend({
 				findImports: async (query) => {
 					if (selected.name === "alpha") throw new Error("alpha failed");
-					return { query, imports: [], total: 0, truncated: false };
+					return { query, imports: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},
 			});
 		};

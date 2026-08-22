@@ -6,6 +6,7 @@
 import type { Range } from "@nyaa-lexicon/protocol";
 import type { CommentForm } from "./commentAttach.js";
 import { findCycles } from "./graph.js";
+import { type Counted, type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
 import { compileSearchRegex } from "./search.js";
 import type {
 	FileNotes,
@@ -84,13 +85,9 @@ export interface LiteralQuery {
 	max?: number | undefined;
 }
 
-export interface LiteralsResult {
+export interface LiteralsResult extends Counted {
 	query: LiteralQuery;
 	literals: StoredLiteral[];
-	total: number;
-	truncated: boolean;
-	/** Set when a regex search stopped reading before the end of the table. */
-	scanIncomplete?: boolean;
 }
 
 /** How a comment search was expressed. Carried back so an answer says what it answered. */
@@ -122,13 +119,9 @@ export interface FoundComment {
 	anchor: CommentAnchor | null;
 }
 
-export interface CommentsResult {
+export interface CommentsResult extends Counted {
 	query: CommentQuery;
 	comments: FoundComment[];
-	total: number;
-	truncated: boolean;
-	/** Set when a regex search stopped reading before the end of the table. */
-	scanIncomplete?: boolean;
 }
 
 /** How a docs search was expressed. Carried back so an answer says what it answered. */
@@ -151,13 +144,9 @@ export interface FoundDoc {
 	headingPath: string[];
 }
 
-export interface DocsResult {
+export interface DocsResult extends Counted {
 	query: DocQuery;
 	docs: FoundDoc[];
-	total: number;
-	truncated: boolean;
-	/** Set when a regex search stopped reading before the end of the table. */
-	scanIncomplete?: boolean;
 }
 
 /**
@@ -256,9 +245,8 @@ function preview(raw: string): string {
  * `total` is the true count where a count query can give one, and the scanned-match count where it
  * cannot. Passing the page itself would report the cap, which is what it used to do.
  */
-function page(query: LiteralQuery, found: StoredLiteral[], limit: number, total = found.length): LiteralsResult {
-	const shown = found.slice(0, limit);
-	return { query, literals: shown, total, truncated: total > shown.length };
+function page(query: LiteralQuery, paged: Paged<StoredLiteral>): LiteralsResult {
+	return { query, literals: paged.items, ...wire(paged) };
 }
 
 export function toSummary(declaration: StoredDeclaration): SymbolSummary {
@@ -405,13 +393,12 @@ export class IndexReadModel {
 			...(options.module === undefined ? {} : { module: options.module }),
 			limit: (options.limit ?? DEFAULT_REFERENCE_LIMIT) + 1,
 		});
-		const limit = options.limit ?? DEFAULT_REFERENCE_LIMIT;
+		const paged = pageProbed(found, options.limit ?? DEFAULT_REFERENCE_LIMIT);
 		return {
 			text,
 			...(options.regex === undefined ? {} : { regex: options.regex }),
-			symbols: found.slice(0, limit).map(toSummary),
-			total: found.length,
-			truncated: found.length > limit,
+			symbols: paged.items.map(toSummary),
+			...wire(paged),
 		};
 	}
 
@@ -440,24 +427,21 @@ export class IndexReadModel {
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
 		if (query.value !== undefined) {
 			const found = this.store.literalsWithValue(query.value, limit);
-			return page(query, found, limit, this.store.countLiteralsWithValue(query.value));
+			return page(query, pageCounted(found, limit, this.store.countLiteralsWithValue(query.value)));
 		}
 
 		if (query.min !== undefined || query.max !== undefined) {
 			const low = query.min ?? Number.NEGATIVE_INFINITY;
 			const high = query.max ?? Number.POSITIVE_INFINITY;
 			const found = this.store.literalsInRange(low, high, limit);
-			return page(query, found, limit, this.store.countLiteralsInRange(low, high));
+			return page(query, pageCounted(found, limit, this.store.countLiteralsInRange(low, high)));
 		}
 
 		if (query.regex !== undefined) {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.literalsOfKind(query.kind ?? "string", REGEX_SCAN_LIMIT);
 			const matched = scanned.filter((literal) => expression.test(literal.value));
-			const result = page(query, matched, limit);
-			// A truncated scan and a truncated page are different truncations, and a caller that
-			// cannot tell them apart reads "50 results" as "50 exist".
-			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+			return page(query, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
 		}
 
 		// The refusal shows the shapes, because naming the parameters alone was measured to fail: a
@@ -494,39 +478,32 @@ export class IndexReadModel {
 
 		if (query.text !== undefined) {
 			const found = this.store.commentsContaining(query.text, limit, filter);
-			return this.pageComments(query, found, limit, this.store.countCommentsContaining(query.text, filter));
+			const total = this.store.countCommentsContaining(query.text, filter);
+			return this.pageComments(query, pageCounted(found, limit, total));
 		}
 
 		if (query.regex !== undefined) {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
-			const matched = scanned.filter((comment) => {
-				return expression.test(comment.normalized);
-			});
-			const result = this.pageComments(query, matched, limit);
-			// A truncated scan and a truncated page are different truncations, and a caller that
-			// cannot tell them apart reads "50 results" as "50 exist".
-			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+			const matched = scanned.filter((comment) => expression.test(comment.normalized));
+			return this.pageComments(
+				query,
+				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
+			);
 		}
 
 		// Neither given: the whole tier, filtered. Useful for "every comment in this module".
 		if (query.form !== undefined || query.module !== undefined) {
 			const found = this.store.commentsToScan(limit, filter);
-			return this.pageComments(query, found, limit, this.store.countComments(filter));
+			return this.pageComments(query, pageCounted(found, limit, this.store.countComments(filter)));
 		}
 
 		throw new Error('give a text or a regex, e.g. { text: "refuses rather than" } or { regex: "/TODO|FIXME/" }');
 	}
 
-	/** `total` is the true count where one is knowable, and the scanned count where it is not. */
-	private pageComments(
-		query: CommentQuery,
-		found: StoredComment[],
-		limit: number,
-		total = found.length,
-	): CommentsResult {
+	private pageComments(query: CommentQuery, paged: Paged<StoredComment>): CommentsResult {
 		const anchors = new Map<string, CommentAnchor | null>();
-		const shown = found.slice(0, limit).map((comment) => {
+		const shown = paged.items.map((comment) => {
 			if (comment.anchorId !== null && !anchors.has(comment.anchorId)) {
 				anchors.set(comment.anchorId, this.anchorOf(comment.anchorId));
 			}
@@ -540,7 +517,7 @@ export class IndexReadModel {
 				anchor: comment.anchorId === null ? null : (anchors.get(comment.anchorId) ?? null),
 			};
 		});
-		return { query, comments: shown, total, truncated: total > shown.length };
+		return { query, comments: shown, ...wire(paged) };
 	}
 
 	/**
@@ -563,34 +540,29 @@ export class IndexReadModel {
 
 		if (query.text !== undefined) {
 			const found = this.store.docsContaining(query.text, limit, filter);
-			return this.pageDocs(query, found, limit, this.store.countDocsContaining(query.text, filter));
+			const total = this.store.countDocsContaining(query.text, filter);
+			return this.pageDocs(query, pageCounted(found, limit, total));
 		}
 
 		if (query.regex !== undefined) {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.docsToScan(REGEX_SCAN_LIMIT, filter);
-			const matched = scanned.filter((region) => {
-				return expression.test(region.normalized);
-			});
-			const result = this.pageDocs(query, matched, limit);
-			// A truncated scan and a truncated page are different truncations, and a caller that
-			// cannot tell them apart reads "50 results" as "50 exist".
-			return scanned.length >= REGEX_SCAN_LIMIT ? { ...result, scanIncomplete: true } : result;
+			const matched = scanned.filter((region) => expression.test(region.normalized));
+			return this.pageDocs(query, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
 		}
 
 		// Neither given: the whole tier, filtered. Useful for "every region in this document".
 		if (query.fenced !== undefined || query.module !== undefined) {
 			const found = this.store.docsToScan(limit, filter);
-			return this.pageDocs(query, found, limit, this.store.countDocs(filter));
+			return this.pageDocs(query, pageCounted(found, limit, this.store.countDocs(filter)));
 		}
 
 		throw new Error('give a text or a regex, e.g. { text: "band-aid" } or { regex: "/TODO|FIXME/" }');
 	}
 
-	/** `total` is the true count where one is knowable, and the scanned count where it is not. */
-	private pageDocs(query: DocQuery, found: StoredDoc[], limit: number, total = found.length): DocsResult {
+	private pageDocs(query: DocQuery, paged: Paged<StoredDoc>): DocsResult {
 		const paths = new Map<string, string[]>();
-		const shown = found.slice(0, limit).map((region) => {
+		const shown = paged.items.map((region) => {
 			const anchor = region.anchorId;
 			if (anchor !== null && !paths.has(anchor)) paths.set(anchor, this.headingPath(anchor));
 			return {
@@ -602,7 +574,7 @@ export class IndexReadModel {
 				headingPath: anchor === null ? [] : (paths.get(anchor) ?? []),
 			};
 		});
-		return { query, docs: shown, total, truncated: total > shown.length };
+		return { query, docs: shown, ...wire(paged) };
 	}
 
 	/**

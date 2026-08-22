@@ -7,6 +7,7 @@
 import type {
 	CommentQuery,
 	CommentsResult,
+	Counted,
 	DescribeResult,
 	DocQuery,
 	DocsResult,
@@ -180,15 +181,13 @@ export interface MentionsResult {
 	commits: number;
 }
 
-export interface SearchResult {
+export interface SearchResult extends Counted {
 	text: string | undefined;
 	regex?: string;
 	symbols: SymbolSummary[];
-	total: number;
-	truncated: boolean;
 }
 
-export interface ImportsResult {
+export interface ImportsResult extends Counted {
 	query: {
 		specifier?: string | undefined;
 		specifierRegex?: string | undefined;
@@ -197,9 +196,6 @@ export interface ImportsResult {
 		limit?: number | undefined;
 	};
 	imports: StoredImport[];
-	total: number;
-	truncated: boolean;
-	scanIncomplete?: boolean;
 }
 
 export interface OverviewResult {

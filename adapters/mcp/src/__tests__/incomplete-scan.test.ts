@@ -11,6 +11,7 @@ describe("a scan that stopped early says so", () => {
 		comments: [],
 		total: 0,
 		truncated: false,
+		count: scanIncomplete ? { kind: "atLeast", count: 0, reason: "scanCapped" } : { kind: "exact", count: 0 },
 		...(scanIncomplete ? { scanIncomplete: true } : {}),
 	});
 
@@ -19,6 +20,7 @@ describe("a scan that stopped early says so", () => {
 		literals: [],
 		total: 0,
 		truncated: false,
+		count: scanIncomplete ? { kind: "atLeast", count: 0, reason: "scanCapped" } : { kind: "exact", count: 0 },
 		...(scanIncomplete ? { scanIncomplete: true } : {}),
 	});
 
@@ -56,6 +58,7 @@ describe("comment citations", () => {
 			],
 			total: 1,
 			truncated: false,
+			count: { kind: "exact", count: 1 },
 		};
 
 		expect(renderComments(result)).toContain("`lexfact comment a.ref 0123456789abcdef`");

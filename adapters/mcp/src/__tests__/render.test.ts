@@ -208,6 +208,7 @@ function docs(overrides: Record<string, unknown> = {}): string {
 	return renderDocs({
 		query: { text: "band-aid" },
 		docs: [region()],
+		count: { kind: "exact", count: 1 },
 		total: 1,
 		truncated: false,
 		...overrides,
@@ -230,9 +231,38 @@ describe("answering a docs search with a place rather than a line", () => {
 	});
 
 	it("reports the true total and how much the page left out", () => {
-		const rendered = docs({ total: 9, truncated: true });
+		const rendered = docs({ count: { kind: "exact", count: 9 }, total: 9, truncated: true });
 		expect(rendered).toContain("9 regions");
 		expect(rendered).toContain("8 more");
+	});
+
+	// A probe is a floor; the sentence comes from the count.
+	it("calls a floor a floor, and says which bound stopped the counting", () => {
+		const probed = docs({
+			count: { kind: "atLeast", count: 51, reason: "pageCapped" },
+			total: 51,
+			truncated: true,
+		});
+		expect(probed).toContain("at least 51 regions");
+		expect(probed).toContain("uncounted. Raise `limit`");
+		expect(probed).not.toContain("stopped before the end");
+
+		const scanned = docs({
+			count: { kind: "atLeast", count: 1, reason: "scanCapped" },
+			total: 1,
+			truncated: false,
+		});
+		expect(scanned).toContain("at least 1 region");
+		expect(scanned).toContain("stopped before the end of the index");
+		expect(scanned).not.toContain("Raise `limit`");
+
+		const both = docs({
+			count: { kind: "atLeast", count: 80, reason: "pageAndScanCapped" },
+			total: 80,
+			truncated: true,
+		});
+		expect(both).toContain("uncounted. Raise `limit`");
+		expect(both).toContain("stopped before the end of the index");
 	});
 });
 

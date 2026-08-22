@@ -48,6 +48,13 @@ knew the providers that had finished registering, so a stop during startup left 
 until their handshake timed out; it now holds what it has spawned and not yet registered, and
 stops that too.
 
+A search count says how sure it is. `search_symbols` printed the size of its probe as the total,
+so a name matching 500 symbols read as "51 symbols"; the literal search had the same bug and was
+fixed earlier, and comments, docs and imports each derived their own truncation sentences. One
+owner now derives the count from how the rows were read: `exact` when the store counted, `at least
+N` when the page or the scan stopped the counting, and the answer's heading and notes come from
+that value. A heading reads `at least 51 symbols` where it used to read `51 symbols`.
+
 One module reads a workspace file for indexing, with a binary guard and a size bound. The watcher
 used to decode every changed file as UTF-8 to hash it, lockfiles and images included, while the
 indexer read the same file again its own way; neither refused a binary or a giant, and one large
