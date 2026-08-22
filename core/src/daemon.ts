@@ -32,6 +32,8 @@ export interface DaemonOptions {
 	onConnections?: (count: number) => void;
 	/** Asked on every request that beats the handler; the client waits on this countdown. */
 	startingNote?: () => { retryInMs: number; waitingFor: string };
+	/** Once, when a request finds the lock gone or taken; the daemon has already refused it. */
+	onLockLost?: (reason: string) => void;
 	/** Test seams for the heartbeat; production uses the transport's defaults. */
 	heartbeatMs?: number;
 	missedLimit?: number;
@@ -43,6 +45,8 @@ export interface RunningDaemon {
 	setHandle: (handle: Handle) => void;
 	/** Authenticated clients connected right now. */
 	connections: () => number;
+	/** Still this process's lock on disk: false once removed or taken by a successor. */
+	holdsLock: () => boolean;
 	/** Removes the lock file and stops listening. Safe to call twice. */
 	stop: () => Promise<void>;
 }
@@ -127,6 +131,16 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 	const startedAt = Date.now();
 	let handle = options.handle ?? null;
 	let stopped = false;
+	let lockLost: string | null = null;
+	let announceLoss = options.onLockLost;
+
+	// Null while held; read per request.
+	function lostLock(): string | null {
+		const current = readLock(paths.lockFile);
+		if (current === null) return "the workspace lock is gone, as when its state directory is removed";
+		if (current.token !== token) return `the workspace lock now names pid ${current.pid}`;
+		return null;
+	}
 
 	const server: FrameServer = await serveFrames({
 		token,
@@ -141,6 +155,14 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 					note.retryInMs,
 					note.waitingFor,
 				);
+			}
+			// Never answer from a lost store. Closing drops every client onto its reconnect path.
+			lockLost ??= lostLock();
+			if (lockLost !== null) {
+				announceLoss?.(lockLost);
+				announceLoss = undefined;
+				void server.close();
+				throw new Error(`${lockLost}; this daemon is stopping`);
 			}
 			return handle(method, params);
 		},
@@ -189,6 +211,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 				handle = next;
 			},
 			connections: () => server.connections(),
+			holdsLock: () => lostLock() === null,
 			stop,
 		},
 	};

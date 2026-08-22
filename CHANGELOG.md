@@ -37,6 +37,12 @@ pattern stalls. A search term holding a NUL used to match everything, since SQLi
 up to the first one; it is refused with the reason. A term past two thousand characters is refused
 with the limit, instead of surfacing SQLite's own error.
 
+A daemon whose lock disappears under it stops. Removing a workspace's state directory by hand while
+its daemon ran let the next client start a second daemon over a fresh index, while the first kept
+answering from the unlinked one. A request that finds the lock gone, or naming another process, is
+never answered: the daemon logs the reason, drops every connection and stops, and each client's
+reconnect finds whoever serves now.
+
 A shutdown that lands while providers are still in their handshake reaps them. The supervisor only
 knew the providers that had finished registering, so a stop during startup left the rest in flight
 until their handshake timed out; it now holds what it has spawned and not yet registered, and

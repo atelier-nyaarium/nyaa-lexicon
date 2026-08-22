@@ -7,7 +7,7 @@ import { callDaemon, findDaemon } from "../client";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import type { PlatformEnv } from "../paths";
 import { workspacePaths } from "../paths";
-import { connectFrames } from "../socketTransport";
+import { ConnectionLostError, connectFrames } from "../socketTransport";
 
 ////////////////////////////////
 //  Helpers
@@ -87,6 +87,39 @@ describe("starting and publishing", () => {
 
 		expect(existsSync(lockFile)).toBe(false);
 		expect(findDaemon(WORKSPACE, host)).toMatchObject({ action: "spawn" });
+	});
+
+	// A manual rm of the state directory.
+	it("drops every client once its lock is gone, so each reconnects to whoever serves", async () => {
+		const lost: string[] = [];
+		daemon = await launch({ onLockLost: (reason) => lost.push(reason) });
+		const lockFile = workspacePaths(host, WORKSPACE).lockFile;
+		const client = await connectFrames(daemon.lock.port, daemon.lock.token);
+		await expect(client.request("describe", {})).resolves.toBeDefined();
+		expect(daemon.holdsLock()).toBe(true);
+
+		rmSync(lockFile, { force: true });
+
+		expect(daemon.holdsLock()).toBe(false);
+		// The reconnect path is a lost connection, never a stale answer or a bare error.
+		await expect(client.request("describe", {})).rejects.toThrow(ConnectionLostError);
+		expect(client.closed).toBe(true);
+		expect(lost).toEqual([expect.stringMatching(/lock is gone/)]);
+		expect(daemon.connections()).toBe(0);
+	});
+
+	it("treats a successor's lock as its own loss, and leaves that lock alone", async () => {
+		const lost: string[] = [];
+		daemon = await launch({ onLockLost: (reason) => lost.push(reason) });
+		const lockFile = workspacePaths(host, WORKSPACE).lockFile;
+		writeFileSync(lockFile, JSON.stringify({ ...daemon.lock, pid: 4242, token: "s".repeat(48) }));
+
+		expect(daemon.holdsLock()).toBe(false);
+		await expect(callDaemon(daemon.lock, "describe", {})).rejects.toThrow(ConnectionLostError);
+		expect(lost).toEqual([expect.stringMatching(/names pid 4242/)]);
+		await daemon.stop();
+		daemon = undefined;
+		expect(existsSync(lockFile)).toBe(true);
 	});
 
 	it("tolerates being stopped twice", async () => {

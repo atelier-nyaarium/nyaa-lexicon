@@ -208,6 +208,8 @@ async function main(argv: string[]): Promise<void> {
 			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - Date.now()),
 			waitingFor,
 		}),
+		// A lost lock means a successor.
+		onLockLost: (reason) => void shutdown(reason),
 	});
 	if (!outcome.claimed) {
 		log(`not starting: ${outcome.reason}`);
