@@ -689,6 +689,119 @@ describe("the gap tree under a root", () => {
  * the recorded prose instead. The flag must survive a writer who never saw it, or a parallel lane
  * erases a warning by accident, which is the race that shaped this design.
  */
+describe("the gaps in one file", () => {
+	const IDS = {
+		cart: "lexicon reference m.ref Cart#",
+		line: "lexicon reference m.ref Line#",
+		other: "lexicon reference n.ref Other#",
+	};
+
+	/** Two declarations in one file, one in another, and the other file's symbol using Cart. */
+	function plantFiles() {
+		const declare = (symbolId: string, name: string) => ({
+			symbolId,
+			kind: "class" as const,
+			name,
+			range: at(0),
+			selectionRange: at(0),
+			visibility: "public" as const,
+		});
+		// Line first on purpose: only fan-in puts Cart ahead of it.
+		store.replaceFile("m.ref", "h1", [declare(IDS.line, "Line"), declare(IDS.cart, "Cart")], []);
+		store.replaceFile(
+			"n.ref",
+			"h2",
+			[declare(IDS.other, "Other")],
+			[
+				{
+					name: "Cart",
+					range: at(1),
+					role: "call" as const,
+					fromId: IDS.other,
+					binding: { status: "bound", symbolId: IDS.cart, provenance: "bound" } as const,
+				},
+			],
+		);
+	}
+
+	// The question is "what is unanswered HERE", so nobody needs to have asked first.
+	it("lists the file's own declarations without answers, most used first, and nothing from elsewhere", () => {
+		plantFiles();
+		const gaps = service.knowledgeGaps(undefined, "describe", 60, "m.ref");
+
+		expect(gaps.rows.map((row) => row.name)).toEqual(["Cart", "Line"]);
+		expect(gaps.rows.map((row) => row.askCount)).toEqual([0, 0]);
+		expect(gaps.scope).toEqual({ module: "m.ref", declarations: 2 });
+	});
+
+	it("counts the demand per row and the total past the limit", () => {
+		plantFiles();
+		service.recallAnswer(IDS.line, "describe");
+		service.recallAnswer(IDS.line, "describe");
+		const gaps = service.knowledgeGaps(undefined, "describe", 1, "m.ref");
+
+		expect(gaps.rows.map((row) => [row.name, row.askCount])).toEqual([["Cart", 0]]);
+		expect(gaps.total).toBe(2);
+		expect(service.knowledgeGaps(undefined, "describe", 60, "m.ref").rows[1]?.askCount).toBe(2);
+	});
+
+	it("drops an answered declaration and leads with one whose answer went stale", async () => {
+		plantFiles();
+		const facts = store.declarationsIn("m.ref");
+		const cartFact = facts.find((d) => d.name === "Cart")?.factId as string;
+		const lineFact = facts.find((d) => d.name === "Line")?.factId as string;
+		await service.recordAnswer(IDS.cart, "describe", "Holds lines.", [cartFact]);
+		await service.recordAnswer(IDS.line, "describe", "One row.", [lineFact]);
+		expect(service.knowledgeGaps(undefined, "describe", 60, "m.ref").rows).toEqual([]);
+
+		// Line's fact id changes with its declaration, so its citation no longer resolves.
+		store.replaceFile(
+			"m.ref",
+			"h3",
+			[
+				{
+					symbolId: IDS.cart,
+					kind: "class",
+					name: "Cart",
+					range: at(0),
+					selectionRange: at(0),
+					visibility: "public",
+				},
+				{
+					symbolId: IDS.line,
+					kind: "class",
+					name: "Line",
+					range: at(5),
+					selectionRange: at(5),
+					visibility: "private",
+				},
+			],
+			[],
+		);
+
+		expect(
+			service.knowledgeGaps(undefined, "describe", 60, "m.ref").rows.map((row) => [row.name, row.why]),
+		).toEqual([["Line", "stale"]]);
+	});
+
+	// A file the index does not hold must not read as clean.
+	it("says a file with no indexed declarations is unindexed rather than clean", () => {
+		plantFiles();
+		const gaps = service.knowledgeGaps(undefined, "describe", 60, "nowhere.ref");
+
+		expect(gaps.rows).toEqual([]);
+		expect(gaps.scope).toEqual({ module: "nowhere.ref", declarations: 0 });
+	});
+
+	it("ignores the file when a root is given, since the tree is the scope then", () => {
+		plantFiles();
+		const gaps = service.knowledgeGaps(IDS.other, "describe", 60, "m.ref");
+
+		expect(gaps.scope).toBeUndefined();
+		expect(gaps.rows.map((row) => row.name)).toEqual(["Cart", "Other"]);
+	});
+});
+
 describe("declared doubt", () => {
 	it("shows on recall with the reason and the id that clears it, without retiring the answer", async () => {
 		const [declaration] = plant();

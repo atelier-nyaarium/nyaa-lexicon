@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	describeSymbol,
 	findReferences,
+	knowledgeGaps,
 	refactorRename,
 	resolveImport,
 	searchDocs,
@@ -165,6 +166,70 @@ describe("resolving what the caller gave", () => {
 	it("refuses a call giving neither name nor id", async () => {
 		const result = await describeSymbol(backend(), {});
 		expect(result.isError).toBe(true);
+	});
+});
+
+describe("knowledge_gaps scopes", () => {
+	type Asked = { root: string | undefined; module: string | undefined };
+
+	function gapBackend(asked: Asked[]): ToolBackend {
+		return backend({
+			findByName: async () => [summary("Cart")],
+			knowledgeGaps: async (root, question, _limit, module) => {
+				asked.push({ root, module });
+				return {
+					question: question ?? "describe",
+					rows: [],
+					total: 0,
+					external: 0,
+					truncated: false,
+					...(module === undefined ? {} : { scope: { module, declarations: 3 } }),
+				};
+			},
+		});
+	}
+
+	it("scopes to the file when only a module is given, and says so first", async () => {
+		const asked: Asked[] = [];
+		const result = await knowledgeGaps(gapBackend(asked), { module: "src/a.ts" });
+
+		expect(asked).toEqual([{ root: undefined, module: "src/a.ts" }]);
+		expect(result.content[0]?.text).toContain("In `src/a.ts`: no describe gaps");
+	});
+
+	it("treats a module beside a name as the name's qualifier, not the scope", async () => {
+		const asked: Asked[] = [];
+		const result = await knowledgeGaps(gapBackend(asked), { name: "Cart", module: "src/a.ts" });
+
+		expect(asked).toEqual([{ root: "lexicon ts src/a.ts Cart.", module: undefined }]);
+		expect(result.content[0]?.text).toContain("Under `lexicon ts src/a.ts Cart.`, leaves first: no describe gaps");
+	});
+
+	it("asks for the workspace when given nothing, and says so first", async () => {
+		const asked: Asked[] = [];
+		const result = await knowledgeGaps(gapBackend(asked), {});
+
+		expect(asked).toEqual([{ root: undefined, module: undefined }]);
+		expect(result.content[0]?.text).toContain("Workspace-wide: no describe gaps");
+	});
+
+	it("calls an unindexed file unindexed, never clean", async () => {
+		const result = await knowledgeGaps(
+			backend({
+				knowledgeGaps: async (_root, question, _limit, module) => ({
+					question: question ?? "describe",
+					rows: [],
+					total: 0,
+					external: 0,
+					truncated: false,
+					scope: { module: module ?? "", declarations: 0 },
+				}),
+			}),
+			{ module: "src/gone.ts" },
+		);
+
+		expect(result.content[0]?.text).toContain("holds no indexed declarations");
+		expect(result.content[0]?.text).not.toContain("no describe gaps");
 	});
 });
 

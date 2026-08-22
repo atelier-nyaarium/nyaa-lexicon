@@ -2,6 +2,21 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
+## 2.0.2
+
+`knowledge_gaps` answers for one file.
+
+### What you get
+
+Pass `module` alone and the answer is that file's own declarations without a healthy answer,
+stale and doubted ones first and then the missing by how used they are, whether or not anyone has
+asked about them yet. Before this, `module` only said which
+`name` you meant, and alone it was dropped: the call answered the whole workspace's question
+instead, with nothing but a header word to show it. The three scopes are now stated in the tool's
+description, and every answer names its scope in its first words: `Workspace-wide`, `In <file>`,
+or `Under <symbol>, leaves first`. A file the index does not hold says so rather than reading as
+clean.
+
 ## 2.0.1
 
 The daemon records its own memory, and a process that dies of it leaves a report.

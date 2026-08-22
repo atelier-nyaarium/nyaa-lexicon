@@ -167,7 +167,7 @@ export interface ToolBackend {
 		question: QuestionClass,
 		options?: { citations?: string[]; model?: string; resolvesDoubt?: string },
 	) => Promise<RecordOutcome>;
-	knowledgeGaps: (root?: string, question?: QuestionClass, limit?: number) => Promise<KnowledgeGaps>;
+	knowledgeGaps: (root?: string, question?: QuestionClass, limit?: number, module?: string) => Promise<KnowledgeGaps>;
 }
 
 export interface MentionsResult {
@@ -430,9 +430,13 @@ export const ReaffirmAnswerInput = {
 };
 
 export const KnowledgeGapsInput = {
-	name: z.string().min(1).optional().describe(`Root symbol name. Omit for workspace gaps.`),
+	name: z.string().min(1).optional().describe(`Root symbol name: the tree under it, leaves first.`),
 	symbolId: z.string().min(1).optional().describe(`Exact root \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
+	module: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(`Workspace-relative module path. Alone: that file's declarations. With \`name\`: which \`name\`.`),
 	question: z.enum(QUESTIONS).optional().describe(`Answer category. Defaults to \`describe\`.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum gaps. Default: \`60\`.`),
 };
@@ -730,9 +734,11 @@ Use \`resolvesDoubt\` to clear a doubt.
 export const KNOWLEDGE_GAPS_DESCRIPTION = `
 # Knowledge Gaps
 
-List missing, stale, or doubted answers.
+List missing, stale, or doubted answers. Three scopes, by what you pass:
 
-With a root, list dependency gaps leaves first.
+- nothing: the workspace, ranked by demand
+- \`module\`: that file's declarations
+- \`name\` or \`symbolId\`: the tree under that symbol, leaves first
 
 Use \`symbol_facts\` for each gap.
 `.trim();
@@ -1215,7 +1221,9 @@ export async function knowledgeGaps(
 		root = resolved.symbolId;
 	}
 
-	const gaps = await backend.knowledgeGaps(root, args.question, args.limit);
+	// Alone, module is the scope.
+	const module = root === undefined ? args.module : undefined;
+	const gaps = await backend.knowledgeGaps(root, args.question, args.limit, module);
 	return text(await withIndexState(backend, renderKnowledgeGaps(gaps, root)));
 }
 

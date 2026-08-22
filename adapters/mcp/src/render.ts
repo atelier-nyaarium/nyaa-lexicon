@@ -584,26 +584,38 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 	return lines.join("\n");
 }
 
+/** Every answer leads with its scope. */
+function gapScope(gaps: KnowledgeGaps, root: string | undefined): string {
+	if (gaps.scope !== undefined) return `In \`${gaps.scope.module}\``;
+	if (root === undefined) return "Workspace-wide";
+	return `Under \`${root}\`, leaves first`;
+}
+
 export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefined): string {
-	const where = root === undefined ? "this workspace" : root;
+	const lead = gapScope(gaps, root);
+	if (gaps.scope !== undefined && gaps.scope.declarations === 0) {
+		return [
+			"# Knowledge gaps",
+			"",
+			`\`${gaps.scope.module}\` holds no indexed declarations: not indexed yet, or no provider claims it. Call \`overview\` for coverage.`,
+		].join("\n");
+	}
 	if (gaps.total === 0) {
-		const lines = [`# Knowledge gaps`, "", `No ${gaps.question} gaps under \`${where}\`.`];
+		const lines = [`# Knowledge gaps`, "", `${lead}: no ${gaps.question} gaps.`];
 		if (gaps.external > 0)
 			lines.push("", `> ${gaps.external} dependencies are outside the index and cannot be answered.`);
 		return lines.join("\n");
 	}
 
 	const lines: string[] = ["# Knowledge gaps", ""];
-	const scope =
+	const plural = gaps.total === 1 ? "" : "s";
+	const what =
 		gaps.seeded === true
-			? `the most-referenced unanswered ${gaps.question} answers`
-			: root === undefined
-				? `${gaps.question} gaps in this workspace, ranked by demand`
-				: `${gaps.question} gaps under ${where}, leaves first`;
-	lines.push(`${gaps.total} ${scope}.`);
-	if (gaps.seeded === true) {
-		lines.push("", "> No demand is recorded yet, so these are candidates rather than measured gaps.");
-	}
+			? `the ${gaps.total} most-referenced unanswered ${gaps.question} candidate${plural}, since no demand is recorded yet`
+			: gaps.scope === undefined && root === undefined
+				? `${gaps.total} ${gaps.question} gap${plural}, ranked by demand`
+				: `${gaps.total} ${gaps.question} gap${plural}`;
+	lines.push(`${lead}: ${what}.`);
 
 	lines.push("", "| Symbol | Module | State | Asked | Fan-in |", "| --- | --- | --- | ---: | ---: |");
 	for (const row of gaps.rows) {

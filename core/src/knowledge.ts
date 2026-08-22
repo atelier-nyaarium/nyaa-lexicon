@@ -111,6 +111,8 @@ export interface KnowledgeGaps {
 	 * answers are still swept, since that is one indexed read; stale ones surface on recall.
 	 */
 	staleScanSkipped?: boolean;
+	/** Set when scoped to one file. Zero declarations means unindexed, which is not the same as clean. */
+	scope?: { module: string; declarations: number };
 }
 
 /** Per kind, not overall, so a symbol with a thousand references does not crowd out its literals. */
@@ -550,7 +552,13 @@ export class KnowledgeLedger {
 	 * topological order with cycles flattened where they occur. External dependencies are counted
 	 * rather than listed: a symbol outside the index has no facts to cite, so it cannot be answered.
 	 */
-	knowledgeGaps(root?: string, question: QuestionClass = "describe", limit = DEFAULT_GAP_LIMIT): KnowledgeGaps {
+	knowledgeGaps(
+		root?: string,
+		question: QuestionClass = "describe",
+		limit = DEFAULT_GAP_LIMIT,
+		module?: string,
+	): KnowledgeGaps {
+		if (root === undefined && module !== undefined) return this.moduleGaps(module, question, limit);
 		if (root === undefined) {
 			// A gap row with a recorded answer means the answer went stale or doubted after being
 			// asked for again. Those lead the list: the prose exists and most are re-affirmations.
@@ -666,11 +674,7 @@ export class KnowledgeLedger {
 		const rows: GapRow[] = [];
 		let total = 0;
 		for (const symbolId of ordered) {
-			const answer = this.store.answer(symbolId, question);
-			let why: GapRow["why"] | null = null;
-			if (answer === null) why = "missing";
-			else if (answer.doubt !== undefined) why = "doubted";
-			else if (answer.citations.some((factId) => this.store.factById(factId) === null)) why = "stale";
+			const why = this.gapWhy(symbolId, question);
 			if (why === null) continue;
 			total++;
 			if (rows.length < limit) {
@@ -678,6 +682,44 @@ export class KnowledgeLedger {
 			}
 		}
 		return { question, rows, total, external, truncated };
+	}
+
+	/**
+	 * One file: every declaration in it without a healthy answer, asked about or not.
+	 *
+	 * Defined by the file's declarations rather than the ledger's demand rows, because "what is
+	 * unanswered here" means exactly that, and a file nobody has asked about would otherwise read
+	 * as clean. Rechecks lead, then the missing by fan-in.
+	 */
+	private moduleGaps(module: string, question: QuestionClass, limit: number): KnowledgeGaps {
+		const declarations = this.store.declarationsIn(module);
+		const recheck: GapRow[] = [];
+		const missing: GapRow[] = [];
+		for (const declaration of declarations) {
+			const why = this.gapWhy(declaration.symbolId, question);
+			if (why === null) continue;
+			const askCount = this.store.askCount(declaration.symbolId, question);
+			(why === "missing" ? missing : recheck).push(this.gapRow(declaration.symbolId, question, askCount, why));
+		}
+		missing.sort((a, b) => b.fanIn - a.fanIn);
+		const rows = [...recheck, ...missing];
+		return {
+			question,
+			rows: rows.slice(0, limit),
+			total: rows.length,
+			external: 0,
+			truncated: false,
+			scope: { module, declarations: declarations.length },
+		};
+	}
+
+	/** Missing, doubted, stale on its own citations, or null for healthy. */
+	private gapWhy(symbolId: string, question: QuestionClass): GapRow["why"] | null {
+		const answer = this.store.answer(symbolId, question);
+		if (answer === null) return "missing";
+		if (answer.doubt !== undefined) return "doubted";
+		if (answer.citations.some((factId) => this.store.factById(factId) === null)) return "stale";
+		return null;
 	}
 
 	private gapRow(symbolId: string, question: string, askCount: number, why: GapRow["why"]): GapRow {

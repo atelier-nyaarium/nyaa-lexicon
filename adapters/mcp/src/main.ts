@@ -112,7 +112,7 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		invalidateAnswer: (symbolId, reason, question, by) =>
 			ask("invalidateAnswer", { symbolId, reason, question, by }),
 		reaffirmAnswer: (symbolId, question, options) => ask("reaffirmAnswer", { symbolId, question, ...options }),
-		knowledgeGaps: (root, question, limit) => ask("knowledgeGaps", { root, question, limit }),
+		knowledgeGaps: (root, question, limit, module) => ask("knowledgeGaps", { root, question, limit, module }),
 	};
 }
 
@@ -195,7 +195,8 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 			(await service()).invalidateAnswer(symbolId, reason, question, by),
 		reaffirmAnswer: async (symbolId, question, options) =>
 			(await service()).reaffirmAnswer(symbolId, question, options),
-		knowledgeGaps: async (root, question, limit) => (await service()).knowledgeGaps(root, question, limit),
+		knowledgeGaps: async (root, question, limit, module) =>
+			(await service()).knowledgeGaps(root, question, limit, module),
 	};
 }
 

@@ -101,6 +101,7 @@ const Gaps = z.object({
 	root: z.string().min(1).optional(),
 	question: Question.optional(),
 	limit: z.number().int().positive().optional(),
+	module: z.string().min(1).optional(),
 });
 const FindImports = z.object({
 	specifier: z.string().min(1).optional(),
@@ -584,7 +585,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "knowledgeGaps": {
 				const args = Gaps.parse(params);
-				return service.knowledgeGaps(args.root, args.question, args.limit);
+				return service.knowledgeGaps(args.root, args.question, args.limit, args.module);
 			}
 			case "typeOf": {
 				const args = BySymbol.parse(params);
