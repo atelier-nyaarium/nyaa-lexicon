@@ -5,6 +5,7 @@
 // reports that nothing persists.
 
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 ////////////////////////////////
@@ -38,6 +39,19 @@ export function stateRoot(host: PlatformEnv): string {
 	return path.join(base, APP_DIR);
 }
 
+/** The one path a workspace has on disk: symlinks followed, case as the filesystem reports it, never folded. */
+export function canonicalRoot(workspaceRoot: string): string {
+	const resolved = path.resolve(workspaceRoot);
+	try {
+		return realpathSync.native(resolved);
+	} catch (error) {
+		// A root that does not exist yet resolves textually; any other failure is the caller's to see.
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return resolved;
+		throw error;
+	}
+}
+
 /**
  * A stable directory name for one workspace.
  *
@@ -46,7 +60,7 @@ export function stateRoot(host: PlatformEnv): string {
  * name. The basename is kept as a prefix only so the directory is recognizable by eye.
  */
 export function workspaceKey(workspaceRoot: string): string {
-	const normalized = path.resolve(workspaceRoot).replace(/\\/g, "/");
+	const normalized = canonicalRoot(workspaceRoot).replace(/\\/g, "/");
 	const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 	const name = path.basename(normalized).replace(/[^A-Za-z0-9._-]/g, "-") || "workspace";
 	return `${name}-${digest}`;

@@ -18,7 +18,7 @@ import { daemonCommand, spawnDaemonProcess } from "./ensureDaemon.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
-import { currentHost, workspacePaths } from "./paths.js";
+import { canonicalRoot, currentHost, workspacePaths } from "./paths.js";
 import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { DaemonStartingError } from "./socketTransport.js";
@@ -71,7 +71,7 @@ async function main(argv: string[]): Promise<void> {
 		process.exit(2);
 	}
 
-	const root = path.resolve(workspace);
+	const root = canonicalRoot(workspace);
 	let isDirectory = false;
 	try {
 		isDirectory = statSync(root).isDirectory();

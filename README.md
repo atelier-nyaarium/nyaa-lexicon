@@ -113,7 +113,9 @@ compacts the names, so call `list_projects` again and match the full root.
 
 ## How it runs
 
-One daemon per workspace, shared by every session that finds it. Clients hold a connection while
+One daemon per workspace, shared by every session that finds it. A workspace is its real path, so
+a checkout reached through a symlink and through its target is one workspace, one daemon and one
+index. Clients hold a connection while
 they work, so the daemon knows how many it has; the last one leaving starts a countdown, and the
 index is a file on disk, so a restart re-uses everything unchanged.
 

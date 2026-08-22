@@ -8,7 +8,7 @@ import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { bundleStamp } from "./ensureDaemon.js";
 import type { DaemonLock, LockDecision } from "./lockFile.js";
 import { decideFromLock } from "./lockFile.js";
-import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
+import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { processIdentity } from "./procfs.js";
 import { requestOnce } from "./socketTransport.js";
 import { BUILD_VERSION } from "./version.js";
@@ -61,7 +61,8 @@ export function findDaemon(workspaceRoot: string, host: PlatformEnv = currentHos
 		ourProtocolVersion: PROTOCOL_VERSION,
 		ourBuildVersion: BUILD_VERSION,
 		ourBundleStamp: bundleStamp(),
-		workspaceRoot,
+		// The lock holds the real path, so a root reached through a link compares as itself.
+		workspaceRoot: canonicalRoot(workspaceRoot),
 	});
 }
 

@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type PlatformEnv, stateRoot } from "../paths";
+import { canonicalRoot, type PlatformEnv, stateRoot } from "../paths";
 import { findProject, forgetProject, readRegistry, registerProject } from "../projectRegistry";
 
 ////////////////////////////////
@@ -20,7 +20,8 @@ function dir(...segments: string[]): string {
 }
 
 beforeEach(() => {
-	home = mkdtempSync(path.join(tmpdir(), "lexicon-registry-"));
+	// Canonical, so a temp directory reached through a link (macOS /var) compares as itself.
+	home = canonicalRoot(mkdtempSync(path.join(tmpdir(), "lexicon-registry-")));
 	host = { platform: "linux", env: { XDG_STATE_HOME: path.join(home, "state") }, home };
 });
 
@@ -39,6 +40,21 @@ describe("registering", () => {
 
 		expect(outcome).toMatchObject({ registered: true, already: false });
 		expect(readRegistry(host)).toEqual([{ key: expect.stringMatching(/^alpha-/), root: path.join(home, "alpha") }]);
+	});
+
+	it("registers a path reached through a symlink as the project already there, under its real root", () => {
+		const real = dir("real", "alpha");
+		const link = path.join(home, "link");
+		symlinkSync(path.join(home, "real"), link);
+
+		expect(registerProject(real, admitAll, host)).toMatchObject({ registered: true, already: false });
+		const again = registerProject(path.join(link, "alpha"), admitAll, host);
+
+		expect(again).toMatchObject({ registered: true, already: true });
+		expect(readRegistry(host)).toHaveLength(1);
+		expect(readRegistry(host)[0]?.root).not.toContain("link");
+		expect(forgetProject(path.join(link, "alpha"), host)).toBe(true);
+		expect(readRegistry(host)).toEqual([]);
 	});
 
 	it("registering twice is the same project, reported as already there", () => {

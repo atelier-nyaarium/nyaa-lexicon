@@ -106,6 +106,13 @@ before this release keeps its invented span until the file is next read, and its
 then. The same rule reached TypeScript: an anonymous default export's name span is the `default`
 keyword, and a declaration with no name token carries no span rather than its whole statement.
 
+A workspace is its real path. A checkout opened through a symlink and through its target minted
+two store keys, so two daemons indexed one repository and an answer recorded in one was invisible
+from the other. The key, the daemon's lock and the project registry all resolve symlinks first
+now; case is whatever the filesystem reports and is never folded. Only a workspace whose path
+differs from its real path gets a new key, and for that workspace this release is a rebuild: the
+old store directory stays behind until `delete_project_store` removes it.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

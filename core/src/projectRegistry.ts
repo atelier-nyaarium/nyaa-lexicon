@@ -7,7 +7,7 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.js";
+import { canonicalRoot, currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -64,7 +64,11 @@ function writeRegistry(host: PlatformEnv, projects: RegisteredProject[]): void {
 
 /** Durable registry lookup. Session-facing names belong to sessionBinds. */
 export function findProject(reference: string, projects: RegisteredProject[]): RegisteredProject | null {
-	return projects.find((project) => project.key === reference || project.root === reference) ?? null;
+	const byKey = projects.find((project) => project.key === reference);
+	if (byKey !== undefined) return byKey;
+	// A root is stored canonical, so a spelling through a link finds it too.
+	const root = canonicalRoot(reference);
+	return projects.find((project) => project.root === root) ?? null;
 }
 
 ////////////////////////////////
@@ -75,7 +79,7 @@ export function registerProject(
 	admit: (root: string) => { admitted: boolean; reason?: string },
 	host: PlatformEnv = currentHost(),
 ): RegisterOutcome {
-	const resolved = path.resolve(root);
+	const resolved = canonicalRoot(root);
 	const admission = admit(resolved);
 	if (!admission.admitted) return { registered: false, reason: admission.reason ?? `${resolved} cannot be indexed` };
 

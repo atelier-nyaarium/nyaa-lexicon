@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "../paths";
+import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "../paths";
 
 ////////////////////////////////
 //  Helpers
@@ -29,6 +32,28 @@ describe("stateRoot", () => {
 	it("does not use the POSIX convention on Windows, nor the reverse", () => {
 		expect(stateRoot({ ...WINDOWS, env: { XDG_STATE_HOME: "/should/be/ignored" } })).not.toContain("should");
 		expect(stateRoot({ ...POSIX, env: { LOCALAPPDATA: "/should/be/ignored" } })).not.toContain("should");
+	});
+});
+
+describe("canonicalRoot", () => {
+	it("follows a symlink to the one path a workspace has, and keys both spellings alike", () => {
+		const scratch = mkdtempSync(path.join(tmpdir(), "lexicon-real-"));
+		try {
+			const real = path.join(scratch, "real", "proj");
+			const link = path.join(scratch, "link");
+			mkdirSync(real, { recursive: true });
+			symlinkSync(path.join(scratch, "real"), link);
+
+			expect(canonicalRoot(path.join(link, "proj"))).toBe(canonicalRoot(real));
+			expect(workspaceKey(path.join(link, "proj"))).toBe(workspaceKey(real));
+			expect(canonicalRoot(path.join(link, "proj"))).not.toContain("link");
+		} finally {
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves a path that does not exist textually, which is all that can be known of it", () => {
+		expect(canonicalRoot("/nowhere/at/all/../proj")).toBe(path.resolve("/nowhere/at/proj"));
 	});
 });
 

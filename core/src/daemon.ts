@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { lockHolderAlive } from "./client.js";
 import { bundleStamp } from "./ensureDaemon.js";
 import { type DaemonLock, DaemonLockSchema } from "./lockFile.js";
-import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
+import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { processIdentity } from "./procfs.js";
 import { DaemonStartingError, type FrameServer, serveFrames } from "./socketTransport.js";
 import { BUILD_VERSION } from "./version.js";
@@ -180,7 +180,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		protocolVersion: PROTOCOL_VERSION,
 		buildVersion: BUILD_VERSION,
 		...(bundleStamp() === null ? {} : { bundleStamp: bundleStamp() }),
-		workspaceRoot: options.workspaceRoot,
+		workspaceRoot: canonicalRoot(options.workspaceRoot),
 		startedAt: Date.now(),
 	});
 

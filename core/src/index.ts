@@ -125,7 +125,15 @@ export {
 	pageScanned,
 	wire,
 } from "./paging.js";
-export { currentHost, type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "./paths.js";
+export {
+	canonicalRoot,
+	currentHost,
+	type PlatformEnv,
+	stateRoot,
+	storePaths,
+	workspaceKey,
+	workspacePaths,
+} from "./paths.js";
 export {
 	type HostMemory,
 	hostMemory,
