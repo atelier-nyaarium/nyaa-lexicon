@@ -256,6 +256,25 @@ async function runCase(
 	return problems;
 }
 
+/** Bad request, never a diagnostic. */
+async function checkBadModuleIsRefused(session: ProviderSession): Promise<CaseResult> {
+	const problems: string[] = [];
+	for (const module of ["../escaped.probe", "/absolute.probe"]) {
+		try {
+			await session.call("parseFile", { module, contentHash: "h0", text: "" });
+			problems.push(`parseFile answered for ${JSON.stringify(module)}, which no symbol id can name`);
+		} catch (error) {
+			if (error instanceof Stall) throw error;
+		}
+	}
+	return {
+		caseId: "unrepresentable-module-is-refused",
+		tier: "protocol",
+		outcome: problems.length === 0 ? "passed" : "failed",
+		problems,
+	};
+}
+
 /**
  * Every provider answers moveEdits, and one that cannot move refuses rather than agreeing.
  *
@@ -548,9 +567,10 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 		// project model, and probing it cold would test a state nothing else puts it in.
 		try {
 			results.push(await checkMoveIsAnswered(session));
+			results.push(await checkBadModuleIsRefused(session));
 		} catch (error) {
 			if (!(error instanceof Stall)) throw error;
-			results.push(stalled("move-is-answered", "protocol", error, startedAt));
+			results.push(stalled("protocol-probes", "protocol", error, startedAt));
 		}
 
 		results.push(...untestedClaims(info.tiers, options.cases, results));

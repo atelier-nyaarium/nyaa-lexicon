@@ -80,8 +80,8 @@ export function normalizeModulePath(raw: string): string {
 	if (forward.startsWith("/") || /^[A-Za-z]:\//.test(forward)) {
 		throw new Error(`module path must be workspace-relative, got absolute: ${raw}`);
 	}
-	// Encodable whitespace is only the space; a tab or newline in a path is pathological.
-	if (/[\t\n\r\v\f\0]/.test(forward)) {
+	// Encodable whitespace is only the space; any control character in a path is pathological.
+	if (/\p{Cc}/u.test(forward)) {
 		throw new Error(`module path must not contain control characters: ${JSON.stringify(raw)}`);
 	}
 
@@ -120,7 +120,7 @@ export function isCanonicalModule(module: string): boolean {
 	}
 }
 
-/** Quote only when bare parsing would break. Embedded backticks double, as in SCIP. */
+/** Quote only when bare parsing would break; backticks double, as in SCIP. NFC: canonical id, source-form name. */
 export function quoteName(name: string): string {
 	if (name === "") throw new Error("a descriptor name cannot be empty");
 	const nfc = name.normalize("NFC");

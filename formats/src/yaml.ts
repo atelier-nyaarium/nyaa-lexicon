@@ -11,8 +11,10 @@ import {
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 import { isMap, isNode, isPair, isScalar, isSeq, Parser, parseAllDocuments, type Scalar } from "yaml";
-import { isTooDeep, saysTooDeep, TOO_DEEP } from "./depth.js";
+import { type CommentSyntax, isTooDeep, nestedTooDeep, saysTooDeep, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
+
+const YAML_COMMENTS: CommentSyntax = { line: ["#"] };
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -63,14 +65,17 @@ export function readYaml(context: YamlContext): YamlFacts {
 	const diagnostics: Diagnostic[] = [];
 
 	// Parsing recurses, and so does the walk below, so nesting deep enough exhausts the stack. That is
-	// a property of the FILE and belongs in a diagnostic; thrown, it stops the scan.
+	// a property of the FILE and belongs in a diagnostic; thrown, it stops the scan. The guard runs
+	// first, since an exhausted stack is not always catchable.
 	let documents: ReturnType<typeof parseAllDocuments> = [];
-	let tooDeep = false;
-	try {
-		documents = parseAllDocuments(text);
-	} catch (failure) {
-		if (!isTooDeep(failure)) throw failure;
-		tooDeep = true;
+	let tooDeep = nestedTooDeep(text, YAML_COMMENTS);
+	if (!tooDeep) {
+		try {
+			documents = parseAllDocuments(text);
+		} catch (failure) {
+			if (!isTooDeep(failure)) throw failure;
+			tooDeep = true;
+		}
 	}
 
 	function walk(node: unknown, parents: Descriptor[], containerId: string | undefined): void {
@@ -234,6 +239,7 @@ export function readYamlComments(text: string, offset: number, coordinates: Text
 
 	// Deep enough nesting exhausts the stack here too. There is no diagnostic channel on this call, and
 	// `readYaml` already reports the depth for the same file, so the spans found so far are the answer.
+	if (nestedTooDeep(text, YAML_COMMENTS)) return [];
 	try {
 		for (const token of new Parser().parse(text)) collect(token);
 	} catch (failure) {

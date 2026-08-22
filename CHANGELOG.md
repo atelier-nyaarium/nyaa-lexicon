@@ -48,7 +48,22 @@ knew the providers that had finished registering, so a stop during startup left 
 until their handshake timed out; it now holds what it has spawned and not yet registered, and
 stops that too.
 
+A data file nested past a thousand brackets is refused before any parser recurses. The JSON and
+YAML readers relied on catching the stack exhaustion a deep structure produces; most of the time
+that is a catchable error, and the rest of the time it kills the process, which a test runner on a
+busy machine met as a dead worker. The readers now count nesting first, outside strings and
+comments, and report `nested too deeply to index` without recursing.
+
 ### For provider authors
+
+**A module no symbol id can name is a request error, not a diagnostic.** The shared server refuses
+an absolute path, one that escapes the workspace, or one carrying a control character before your
+handler runs, and conformance asks every provider for `../escaped` to prove it. Diagnostics are for
+the file's content.
+
+**A declaration's `name` is source-form; its id is NFC.** They agree for composed source and differ
+for decomposed, and this is written down rather than repaired: anything matching by name normalizes
+first, and providers do not normalize names, since a changed name for unchanged source is a major.
 
 **Conformance tells a stalled run from a failed case.** A request that times out, or a provider
 process that dies, is reported as `STALL` with the machine's load and how far into the run it was,

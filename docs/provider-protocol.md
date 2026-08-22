@@ -69,6 +69,20 @@ about how the file was read: a key you saw and could not index, a dialect the fi
 Lexicon exists to learn a codebase, not to judge one, so a note states what was read and why,
 never that the file is wrong.
 
+A `module` that is absolute, escapes the workspace, or carries a control character is not a file
+with a problem: it is a request no symbol id can name. `parseFile` answers it with a request error,
+not a diagnostic, and the shared server refuses it before your code sees it. Core never sends one;
+the conformance suite asks every provider for `../escaped` to prove the refusal.
+
+## Names and ids
+
+A declaration's `name` is the source's spelling. The id normalizes that spelling to NFC, because
+macOS stores filenames decomposed and Linux composed, and one symbol must mint one id. So `name`
+and the id's last descriptor agree for composed source and differ for decomposed source. The id is
+canonical and the name is what the file says; anything matching by name normalizes to NFC first.
+Providers do not normalize names: a name that changed for unchanged source would move every fact
+digest, which is a major.
+
 ## Comments are spans, never attachments
 
 A provider reports each comment as a `CommentSpan`: its range and its verbatim text, markers

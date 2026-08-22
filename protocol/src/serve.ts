@@ -9,6 +9,7 @@ import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { PROVIDER_METHODS } from "./methods.js";
 import type { MoveEditsResponse } from "./move.js";
 import type { ImportResolution } from "./project.js";
+import { normalizeModulePath } from "./symbolId.js";
 import type { Binding, TypeInfo } from "./values.js";
 
 ////////////////////////////////
@@ -31,12 +32,24 @@ export type ProviderHandlers = {
 ////////////////////////////////
 //  Functions & Helpers
 
+/** Bad request, before any handler. */
+function refuseUnrepresentable(params: unknown): void {
+	if (typeof params !== "object" || params === null) return;
+	for (const field of ["module", "fromModule", "toModule"]) {
+		const value = (params as Record<string, unknown>)[field];
+		if (typeof value === "string") normalizeModulePath(value);
+	}
+}
+
 export function serveProvider(connection: Connection, handlers: ProviderHandlers): void {
 	for (const method of PROVIDER_METHODS) {
 		// The handler map is keyed per method, so the loop erases the pairing the caller already
 		// satisfied. Each response is still validated against its schema by whoever reads it.
 		const handler = handlers[method] as (params: unknown) => unknown;
-		connection.onRequest(method, (params: unknown) => handler(params));
+		connection.onRequest(method, (params: unknown) => {
+			refuseUnrepresentable(params);
+			return handler(params);
+		});
 	}
 }
 

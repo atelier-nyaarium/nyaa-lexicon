@@ -22,8 +22,10 @@ import {
 	printParseErrorCode,
 	type ScanError,
 } from "jsonc-parser/lib/esm/main.js";
-import { isTooDeep, TOO_DEEP } from "./depth.js";
+import { type CommentSyntax, isTooDeep, nestedTooDeep, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
+
+const JSON_COMMENTS: CommentSyntax = { line: ["//"], block: ["/*", "*/"] };
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -122,6 +124,12 @@ export function readJson(context: JsonContext): JsonFacts {
 	const literals: Literal[] = [];
 	const diagnostics: Diagnostic[] = [];
 	const problems: ParseError[] = [];
+
+	// Before the parser recurses.
+	if (nestedTooDeep(text, JSON_COMMENTS)) {
+		diagnostics.push({ severity: "error", message: TOO_DEEP, path: module });
+		return { declarations, literals, comments: [], diagnostics };
+	}
 
 	// Building the tree recurses too, so it exhausts the stack before the walk ever gets a chance.
 	let tree: Node | undefined;

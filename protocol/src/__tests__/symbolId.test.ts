@@ -45,6 +45,13 @@ describe("normalizeModulePath", () => {
 		expect(normalizeModulePath("src/./cart.ts")).toBe("src/cart.ts");
 	});
 
+	it("refuses every control character, not only the whitespace ones", () => {
+		for (const ch of ["\t", "\n", "\0", "\u0001", "\u001b", "\u007f", ""]) {
+			expect(() => normalizeModulePath(`src/a${ch}b.ts`)).toThrow(/control characters/);
+		}
+		expect(normalizeModulePath("src/a b.ts")).toBe("src/a b.ts");
+	});
+
 	it("refuses an absolute POSIX path, which embeds a machine's layout", () => {
 		expect(() => normalizeModulePath("/home/me/src/cart.ts")).toThrow(/workspace-relative/);
 	});
@@ -122,6 +129,16 @@ describe("round trip", () => {
 			],
 		};
 		expect(roundTrip(id)).toEqual(id);
+	});
+
+	// Canonical id, source-form name.
+	it("mints one id for a composed and a decomposed spelling, parsing back the composed one", () => {
+		const composed = "á";
+		const decomposed = "á";
+		const one: SymbolId = { ...CART, descriptors: [{ kind: "term", name: composed }] };
+		const two: SymbolId = { ...CART, descriptors: [{ kind: "term", name: decomposed }] };
+		expect(composeSymbolId(two)).toBe(composeSymbolId(one));
+		expect(roundTrip(two)?.descriptors[0]?.name).toBe(composed);
 	});
 
 	it("preserves a method disambiguator, which is what separates two overloads", () => {
