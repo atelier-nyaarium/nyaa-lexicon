@@ -12,6 +12,7 @@ import type {
 	DocsResult,
 	FactSet,
 	FileHistory,
+	FileNotes,
 	IndexStatus,
 	InvalidateOutcome,
 	KnowledgeGaps,
@@ -130,6 +131,7 @@ export interface ToolBackend {
 		},
 	) => Promise<SearchResult>;
 	outlineModule: (module: string) => Promise<Array<SymbolSummary & { containerId?: string }>>;
+	fileNotes: (module: string) => Promise<FileNotes>;
 	findImports: (query: {
 		specifier?: string | undefined;
 		specifierRegex?: string | undefined;
@@ -1103,8 +1105,11 @@ export async function searchSymbols(
 }
 
 export async function outlineModule(backend: ToolBackend, args: { module: string }): Promise<ToolResult> {
-	const outline = renderOutline(args.module, await backend.outlineModule(args.module));
-	return text(await withIndexState(backend, outline, args.module));
+	const [declarations, notes] = await Promise.all([
+		backend.outlineModule(args.module),
+		backend.fileNotes(args.module),
+	]);
+	return text(await withIndexState(backend, renderOutline(args.module, declarations, notes), args.module));
 }
 
 export async function findImports(

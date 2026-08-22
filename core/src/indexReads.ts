@@ -8,6 +8,7 @@ import type { CommentForm } from "./commentAttach.js";
 import { findCycles } from "./graph.js";
 import { compileSearchRegex } from "./search.js";
 import type {
+	FileNotes,
 	IndexStore,
 	StoredComment,
 	StoredDeclaration,
@@ -379,6 +380,10 @@ export class IndexReadModel {
 	/** The same, as summaries, which now carry the container an outline nests by. */
 	outline(module: string): SymbolSummary[] {
 		return this.store.declarationsIn(module).map(toSummary);
+	}
+
+	fileNotes(module: string): FileNotes {
+		return this.store.fileNotes(module);
 	}
 
 	/** Search declared symbols by a name substring or regular expression. */

@@ -4,6 +4,7 @@ import {
 	describeSymbol,
 	findReferences,
 	knowledgeGaps,
+	outlineModule,
 	refactorRename,
 	resolveImport,
 	searchDocs,
@@ -48,6 +49,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		findDocs: async (query) => ({ query, docs: [], total: 0, truncated: false }),
 		searchSymbols: async (text) => ({ text, symbols: [], total: 0, truncated: false }),
 		outlineModule: async () => [],
+		fileNotes: async (module) => ({ module, known: true, notes: [] }),
 		findImports: async (query) => ({ query, imports: [], total: 0, truncated: false }),
 		hubs: async () => [],
 		fileHistory: async (module) => ({
@@ -530,6 +532,26 @@ describe("index-state honesty notes", () => {
 			{ name: "Cart", module: "src/a.ts" },
 		);
 		expect(asked).toEqual(["src/a.ts"]);
+	});
+});
+
+describe("the outline_module handler", () => {
+	it("asks for the file's notes and prints them under the outline", async () => {
+		const asked: string[] = [];
+		const result = await outlineModule(
+			backend({
+				outlineModule: async () => [summary("Cart")],
+				fileNotes: async (module) => {
+					asked.push(module);
+					return { module, known: true, notes: [{ severity: "warning", message: "duplicate key" }] };
+				},
+			}),
+			{ module: "src/a.ts" },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(asked).toEqual(["src/a.ts"]);
+		expect(text).toContain("Cart");
+		expect(text).toContain("warning: duplicate key");
 	});
 });
 

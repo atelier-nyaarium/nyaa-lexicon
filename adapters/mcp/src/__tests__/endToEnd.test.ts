@@ -68,6 +68,7 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
 		searchSymbols: (text, options) => ask("searchSymbols", { text, ...options }),
 		outlineModule: (module) => ask("outlineModule", { module }),
+		fileNotes: (module) => ask("fileNotes", { module }),
 		findImports: (query) => ask("findImports", query),
 		hubs: (limit) => ask("hubs", { limit }),
 		overview: () => ask("overview", {}),

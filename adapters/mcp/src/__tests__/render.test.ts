@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderDescribe, renderDocs, renderFacts, renderOverview } from "../render";
+import { renderDescribe, renderDocs, renderFacts, renderOutline, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -79,6 +79,37 @@ describe("explaining where a workspace's files went", () => {
 		const withNeither = overview({ scan: { tracked: 7, claimed: 5, unclaimed: 2, generated: 0, denied: 0 } });
 		expect(withNeither).not.toContain("generated");
 		expect(withNeither).not.toContain("outside scope");
+	});
+});
+
+describe("showing what a provider said while reading", () => {
+	const note = {
+		severity: "info" as const,
+		message: "comment in strict JSON",
+		range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+	};
+
+	it("lists a file's notes under its outline, with the line", () => {
+		const rendered = renderOutline("tsconfig.json", [], { module: "tsconfig.json", known: true, notes: [note] });
+
+		expect(rendered).toContain("## Provider notes");
+		expect(rendered).toContain("Line 2: info: comment in strict JSON");
+	});
+
+	it("says the notes are unknown for a file read before they were kept, and stays silent otherwise", () => {
+		const before = renderOutline("a.ts", [], { module: "a.ts", known: false, reason: "indexedBeforeNotes" });
+		expect(before).toContain("Provider notes unknown");
+
+		const unindexed = renderOutline("a.ts", [], { module: "a.ts", known: false, reason: "notIndexed" });
+		expect(unindexed).not.toContain("Provider notes");
+		const clean = renderOutline("a.ts", [], { module: "a.ts", known: true, notes: [] });
+		expect(clean).not.toContain("Provider notes");
+	});
+
+	it("counts noted and unread files on the overview", () => {
+		expect(overview({ notes: { noted: 3, unknown: 2 } })).toContain("Files with provider notes: 3");
+		expect(overview({ notes: { noted: 3, unknown: 2 } })).toContain("Files read before notes were kept: 2");
+		expect(overview({ notes: { noted: 0, unknown: 0 } })).not.toContain("provider notes");
 	});
 });
 

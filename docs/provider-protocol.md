@@ -56,6 +56,19 @@ it. A lenient extractor recovers from anything and returns nothing, so silence f
 never declared the tier means unchecked rather than clean. Absent is therefore different from
 false, and conformance fails a provider that declares it and then stays quiet on invalid text.
 
+## What a diagnostic's severity does
+
+`error` means the file could not be read: core stores nothing from that parse, keeps whatever an
+earlier parse stored, records the file as failed with your message, and names it in every answer
+until a later read succeeds. Reserve it for text you could not extract from.
+
+`warning` and `info` are notes. Core keeps them beside the file's facts, replaces them on every
+read, shows them under `outline_module` for that file, and counts the files that carry any in
+`overview`. They never fail a file or count as a failure. Use them for what a reader should know
+about how the file was read: a key you saw and could not index, a dialect the file deviates from.
+Lexicon exists to learn a codebase, not to judge one, so a note states what was read and why,
+never that the file is wrong.
+
 ## Comments are spans, never attachments
 
 A provider reports each comment as a `CommentSpan`: its range and its verbatim text, markers

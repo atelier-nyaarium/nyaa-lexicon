@@ -17,6 +17,19 @@ one of the failures leads with that, so a declaration missing from a file that d
 mistaken for one that does not exist. A failure recorded against content the index already holds
 at final depth is dropped once that content is found current, where before the count kept it.
 
+A provider's warnings and info reach you. They are reported so one odd file cannot stop a scan, and
+until now core kept only `error` and dropped the rest at the door, so a provider saying "this key
+exists and I could not index it" was indistinguishable from one that found nothing. They are kept
+beside the file's facts as notes: `outline_module` lists them for that file with the line, and
+`overview` counts the files that carry any. A note is what was read and why, never a verdict.
+
+### What it asks of you
+
+**This adds no rebuild, and files read before this release show their notes after their next read.**
+The notes table is added to your store in place. A file indexed before it existed has no notes
+row, and rather than reading as clean, `outline_module` says its notes are unknown and `overview`
+counts such files. Editing the file, or any scan that re-reads it, clears that.
+
 Pass `module` alone and the answer is that file's own declarations without a healthy answer,
 stale and doubted ones first and then the missing by how used they are, whether or not anyone has
 asked about them yet. Before this, `module` only said which

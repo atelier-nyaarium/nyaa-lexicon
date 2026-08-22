@@ -187,6 +187,8 @@ export {
 } from "./socketTransport.js";
 export { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 export {
+	type FileNote,
+	type FileNotes,
 	IndexStore,
 	SCHEMA_VERSION,
 	type StoredDeclaration,

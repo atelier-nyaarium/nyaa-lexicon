@@ -75,7 +75,9 @@ function fakeSupervisor(
 				if (request.text.includes("POISON")) throw new Error("poisoned file");
 				const diagnostics = request.text.includes("SYNTAX")
 					? [{ severity: "error" as const, message: "syntax error" }]
-					: [];
+					: request.text.includes("WARN")
+						? [{ severity: "warning" as const, message: "duplicate key" }]
+						: [];
 				const declarations = [...request.text.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)].map((match) =>
 					declaration(request.module, match[1] as string),
 				);
@@ -528,6 +530,36 @@ describe("reachability and failures", () => {
 		expect(service.findByName("GoodUpdated")).toHaveLength(1);
 		expect(service.indexStatus()).toMatchObject({ state: "ready", failures: 1 });
 		expect(service.overview().index).toMatchObject({ failures: 1 });
+	});
+
+	it("keeps a warning beside the file's facts rather than failing the file", async () => {
+		initGit();
+		put("noted.fake", "export class Noted {} // WARN\n");
+		put("clean.fake", "export class Clean {}\n");
+		service = new LexiconService(
+			store,
+			fakeSupervisor(),
+			(module) => {
+				try {
+					return readFileSync(path.join(root, module), "utf8");
+				} catch {
+					return null;
+				}
+			},
+			root,
+		);
+
+		await service.indexWorkspace();
+
+		expect(service.findByName("Noted")).toHaveLength(1);
+		expect(service.indexStatus().failures).toBe(0);
+		expect(service.fileNotes("noted.fake")).toEqual({
+			module: "noted.fake",
+			known: true,
+			notes: [{ severity: "warning", message: "duplicate key" }],
+		});
+		expect(service.fileNotes("clean.fake")).toEqual({ module: "clean.fake", known: true, notes: [] });
+		expect(service.overview().notes).toEqual({ noted: 1, unknown: 0 });
 	});
 
 	it("keeps prior facts while a live file has syntax errors", async () => {

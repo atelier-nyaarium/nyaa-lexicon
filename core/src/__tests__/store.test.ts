@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttachedComment } from "../commentAttach";
@@ -65,6 +66,65 @@ afterEach(() => {
 
 ////////////////////////////////
 //  Tests
+
+describe("keeping what a provider said below error", () => {
+	const warning = { severity: "warning" as const, message: "duplicate key", range: POINT };
+	const info = { severity: "info" as const, message: "comment in strict JSON" };
+
+	it("keeps a file's notes with its facts, replaces them with the file, and forgets them with it", () => {
+		store.replaceFile(
+			"src/a.json",
+			"h1",
+			[declaration("a", "src/a.json")],
+			[],
+			[],
+			[],
+			"full",
+			[],
+			[],
+			[warning, info],
+		);
+		expect(store.fileNotes("src/a.json")).toEqual({ module: "src/a.json", known: true, notes: [warning, info] });
+		expect(store.noteTotals()).toEqual({ noted: 1, unknown: 0 });
+
+		store.replaceFile("src/a.json", "h2", [declaration("a", "src/a.json")], []);
+		expect(store.fileNotes("src/a.json")).toEqual({ module: "src/a.json", known: true, notes: [] });
+
+		store.replaceFile("src/a.json", "h3", [], [], [], [], "full", [], [], [info]);
+		store.forgetFile("src/a.json");
+		expect(store.fileNotes("src/a.json")).toEqual({ module: "src/a.json", known: false, reason: "notIndexed" });
+		expect(store.noteTotals()).toEqual({ noted: 0, unknown: 0 });
+	});
+
+	// Added in place; silence would read as clean.
+	it("calls notes unknown for a file read before the table existed, until its next read", () => {
+		const file = path.join(dir, "index.sqlite");
+		store.replaceFile("src/old.ts", "h1", [declaration("old")], []);
+		store.close();
+		const raw = new DatabaseSync(file);
+		raw.exec("DROP TABLE notes; DELETE FROM meta WHERE key = 'notesSince'");
+		raw.close();
+
+		const now = Date.now();
+		vi.useFakeTimers({ now: now + 1000 });
+		try {
+			store = IndexStore.open(file).store;
+			expect(store.fileNotes("src/old.ts")).toEqual({
+				module: "src/old.ts",
+				known: false,
+				reason: "indexedBeforeNotes",
+			});
+			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 1 });
+
+			vi.setSystemTime(now + 2000);
+			store.replaceFile("src/old.ts", "h2", [declaration("old")], []);
+			expect(store.fileNotes("src/old.ts")).toEqual({ module: "src/old.ts", known: true, notes: [] });
+			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 0 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
 
 describe("writing a file's facts", () => {
 	it("reads back what it stored", () => {

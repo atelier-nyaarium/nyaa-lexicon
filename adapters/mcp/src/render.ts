@@ -6,6 +6,7 @@ import type {
 	CommentsResult,
 	DescribeResult,
 	DocsResult,
+	FileNotes,
 	InvalidateOutcome,
 	KnowledgeGaps,
 	LiteralsResult,
@@ -766,6 +767,7 @@ export function renderOverview(result: {
 	};
 	scan?: { tracked: number; claimed: number; unclaimed: number; generated: number; denied: number };
 	parseFailures?: Array<{ module: string; reason: string }>;
+	notes?: { noted: number; unknown: number };
 	largest: Array<{ module: string; symbols: number }>;
 	knowledge?: { answers: number; stale?: number; doubted?: number };
 }): string {
@@ -789,6 +791,12 @@ export function renderOverview(result: {
 	if (failures > 0) {
 		lines.push(`- Files failed to parse: ${failures}; any facts indexed before the failure were kept`);
 	}
+
+	// Notes, never verdicts.
+	const noted = result.notes?.noted ?? 0;
+	const unknown = result.notes?.unknown ?? 0;
+	if (noted > 0) lines.push(`- Files with provider notes: ${noted}; \`outline_module\` shows them`);
+	if (unknown > 0) lines.push(`- Files read before notes were kept: ${unknown}; known after their next read`);
 
 	// Scan parts sum to total.
 	if (result.scan !== undefined) {
@@ -968,9 +976,31 @@ export function renderSymbolSearch(result: {
 		: body;
 }
 
+/** A file's notes, or why unknown. */
+function renderFileNotes(notes: FileNotes | undefined): string[] {
+	if (notes === undefined || (notes.known && notes.notes.length === 0)) return [];
+	if (!notes.known) {
+		return notes.reason === "indexedBeforeNotes"
+			? ["", "> Provider notes unknown: indexed before notes were kept. Known after its next read."]
+			: [];
+	}
+	const lines = ["", "## Provider notes", ""];
+	for (const note of notes.notes) {
+		const where = note.range === undefined ? "" : `Line ${note.range.start.line + 1}: `;
+		lines.push(`- ${where}${note.severity}: ${note.message}`);
+	}
+	return lines;
+}
+
 /** Everything one file declares, nested by container. The "open the file" answer. */
-export function renderOutline(module: string, declarations: Array<SymbolSummary & { containerId?: string }>): string {
-	if (declarations.length === 0) return `# \`${module}\`\n\nNo indexed declarations.`;
+export function renderOutline(
+	module: string,
+	declarations: Array<SymbolSummary & { containerId?: string }>,
+	notes?: FileNotes,
+): string {
+	if (declarations.length === 0) {
+		return [`# \`${module}\``, "", "No indexed declarations.", ...renderFileNotes(notes)].join("\n");
+	}
 
 	const children = new Map<string, typeof declarations>();
 	const roots: typeof declarations = [];
@@ -993,6 +1023,7 @@ export function renderOutline(module: string, declarations: Array<SymbolSummary 
 		}
 	};
 	walk(roots, 0);
+	lines.push(...renderFileNotes(notes));
 	return lines.join("\n");
 }
 

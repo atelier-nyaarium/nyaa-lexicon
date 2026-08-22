@@ -174,6 +174,24 @@ export type StoredFact =
 //    different question and so a different table.
 export const SCHEMA_VERSION = 17;
 
+/** Added in place, so IF NOT EXISTS. */
+const NOTES_TABLE = `
+-- A provider's warnings and info for a file, replaced with its facts.
+CREATE TABLE IF NOT EXISTS notes (
+  module    TEXT NOT NULL,
+  ordinal   INTEGER NOT NULL,
+  severity  TEXT NOT NULL CHECK (severity IN ('warning', 'info')),
+  message   TEXT NOT NULL,
+  path      TEXT,
+  startLine INTEGER,
+  startChar INTEGER,
+  endLine   INTEGER,
+  endChar   INTEGER,
+  PRIMARY KEY (module, ordinal)
+);
+CREATE INDEX IF NOT EXISTS notes_module ON notes(module);
+`;
+
 // Every range is stored whole. Keeping only a start meant the index could say where something was
 // and never what text it occupied, which is the difference between navigating and editing.
 const SCHEMA = `
@@ -200,7 +218,7 @@ CREATE TABLE parse_failures (
   reason   TEXT NOT NULL,
   failedAt INTEGER NOT NULL
 );
-
+${NOTES_TABLE}
 CREATE TABLE symbols (
   symbolId    TEXT PRIMARY KEY,
   -- Not the same thing as symbolId, deliberately. A symbol id names the SYMBOL and survives edits;
@@ -456,10 +474,52 @@ CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
  * separately, a table added to one and not the other leaves a deleted file's rows in the index
  * forever, still answering searches.
  */
-const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments", "docs"] as const;
+const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments", "docs", "notes"] as const;
 
 /** Meta key for store compatibility. */
 const COMPATIBILITY_KEY = "storeCompatibility";
+
+/** Meta key: when notes began. */
+const NOTES_SINCE_KEY = "notesSince";
+
+export interface FileNote {
+	severity: "warning" | "info";
+	message: string;
+	range?: Range;
+	path?: string;
+}
+
+/** Unknown until a read with notes. */
+export type FileNotes =
+	| { module: string; known: true; notes: FileNote[] }
+	| { module: string; known: false; reason: "notIndexed" | "indexedBeforeNotes" };
+
+interface NoteRow {
+	severity: "warning" | "info";
+	message: string;
+	path: string | null;
+	startLine: number | null;
+	startChar: number | null;
+	endLine: number | null;
+	endChar: number | null;
+}
+
+function rowToNote(row: NoteRow): FileNote {
+	const ranged = row.startLine !== null && row.startChar !== null && row.endLine !== null && row.endChar !== null;
+	return {
+		severity: row.severity,
+		message: row.message,
+		...(row.path === null ? {} : { path: row.path }),
+		...(ranged
+			? {
+					range: {
+						start: { line: row.startLine as number, character: row.startChar as number },
+						end: { line: row.endLine as number, character: row.endChar as number },
+					},
+				}
+			: {}),
+	};
+}
 
 /** Where the last scan's coverage arithmetic lives in the meta table. */
 const SCAN_SUMMARY_KEY = "scanSummary";
@@ -608,6 +668,10 @@ function writeMeta(db: DatabaseSync, key: string, value: string): void {
 	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
 }
 
+function tableExists(db: DatabaseSync, name: string): boolean {
+	return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+}
+
 ////////////////////////////////
 //  Class
 
@@ -691,6 +755,21 @@ export class IndexStore {
 		// Index additions are safe to apply in place, so existing stores get this lookup without a rebuild.
 		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
 
+		// Marker and table together, or a crash between them reads as a fresh table.
+		if (!tableExists(db, "notes")) {
+			db.exec("BEGIN");
+			try {
+				if (readMeta(db, NOTES_SINCE_KEY) === null) writeMeta(db, NOTES_SINCE_KEY, String(Date.now()));
+				db.exec(NOTES_TABLE);
+				db.exec("COMMIT");
+			} catch (error) {
+				db.exec("ROLLBACK");
+				throw error;
+			}
+		} else if (readMeta(db, NOTES_SINCE_KEY) === null) {
+			writeMeta(db, NOTES_SINCE_KEY, "0");
+		}
+
 		// Persist the key on every open.
 		if (compatibility != null) writeMeta(db, COMPATIBILITY_KEY, compatibility);
 		if (workspaceRoot !== undefined) writeMeta(db, WORKSPACE_KEY, workspaceRoot);
@@ -718,6 +797,7 @@ export class IndexStore {
 		depth: IndexDepth = "full",
 		comments: AttachedComment[] = [],
 		docs: DocRegion[] = [],
+		notes: FileNote[] = [],
 	): void {
 		refuseForeignAnchors(module, declarations, docs);
 		this.inTransaction(() => {
@@ -877,6 +957,24 @@ export class IndexStore {
 					region.range.end.character,
 				);
 			}
+
+			const noteRow = this.db.prepare(
+				`INSERT INTO notes (module, ordinal, severity, message, path, startLine, startChar, endLine, endChar)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			);
+			notes.forEach((note, ordinal) => {
+				noteRow.run(
+					module,
+					ordinal,
+					note.severity,
+					note.message,
+					note.path ?? null,
+					note.range?.start.line ?? null,
+					note.range?.start.character ?? null,
+					note.range?.end.line ?? null,
+					note.range?.end.character ?? null,
+				);
+			});
 		});
 	}
 
@@ -887,6 +985,33 @@ export class IndexStore {
 			this.db.prepare("DELETE FROM files WHERE module = ?").run(module);
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 		});
+	}
+
+	fileNotes(module: string): FileNotes {
+		const file = this.db.prepare("SELECT indexedAt FROM files WHERE module = ?").get(module) as
+			| { indexedAt: number }
+			| undefined;
+		if (file === undefined) return { module, known: false, reason: "notIndexed" };
+		if (file.indexedAt < this.notesSince()) return { module, known: false, reason: "indexedBeforeNotes" };
+		const rows = this.db
+			.prepare(
+				"SELECT severity, message, path, startLine, startChar, endLine, endChar FROM notes WHERE module = ? ORDER BY ordinal",
+			)
+			.all(module) as unknown as NoteRow[];
+		return { module, known: true, notes: rows.map(rowToNote) };
+	}
+
+	private notesSince(): number {
+		return Number(readMeta(this.db, NOTES_SINCE_KEY) ?? 0);
+	}
+
+	/** Files carrying notes, and files read before notes were kept. */
+	noteTotals(): { noted: number; unknown: number } {
+		const one = (sql: string, ...args: number[]) => (this.db.prepare(sql).get(...args) as { n: number }).n;
+		return {
+			noted: one("SELECT COUNT(DISTINCT module) AS n FROM notes"),
+			unknown: one("SELECT COUNT(*) AS n FROM files WHERE indexedAt < ?", this.notesSince()),
+		};
 	}
 
 	/** The depth a module's stored facts were extracted at, or null when it is not indexed. */

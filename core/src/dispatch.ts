@@ -540,6 +540,8 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "outlineModule":
 				return service.outline(ByModule.parse(params).module);
+			case "fileNotes":
+				return service.fileNotes(ByModule.parse(params).module);
 			case "findImports":
 				return service.findImports(FindImports.parse(params));
 			case "overview":

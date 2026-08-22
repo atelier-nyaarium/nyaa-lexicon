@@ -341,6 +341,10 @@ export class LexiconService {
 		return this.reads.outline(module);
 	}
 
+	fileNotes(module: string): ReturnType<IndexReadModel["fileNotes"]> {
+		return this.reads.fileNotes(module);
+	}
+
 	searchSymbols(...args: Parameters<IndexReadModel["searchSymbols"]>): ReturnType<IndexReadModel["searchSymbols"]> {
 		return this.reads.searchSymbols(...args);
 	}
@@ -490,6 +494,7 @@ export class LexiconService {
 			index: this.indexStatus(),
 			...(scan === null ? {} : { scan }),
 			parseFailures: this.store.parseFailures(),
+			notes: this.store.noteTotals(),
 			modules: modules.length,
 			largest: modules.slice(0, topModules),
 			knowledge: {

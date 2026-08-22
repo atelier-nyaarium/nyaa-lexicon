@@ -10,7 +10,7 @@ import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
 import type { ResultCache } from "./resultCache.js";
-import type { IndexStore } from "./store.js";
+import type { FileNote, IndexStore } from "./store.js";
 import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
 import { hashContent } from "./watcher.js";
 
@@ -152,6 +152,19 @@ export class WorkspaceIndexer {
 			this.store.recordFailure(module, failure);
 			throw new Error(failure);
 		}
+		// Below error, kept with the facts.
+		const notes: FileNote[] = facts.diagnostics.flatMap((diagnostic) =>
+			diagnostic.severity === "error"
+				? []
+				: [
+						{
+							severity: diagnostic.severity,
+							message: diagnostic.message,
+							...(diagnostic.range === undefined ? {} : { range: diagnostic.range }),
+							...(diagnostic.path === undefined ? {} : { path: diagnostic.path }),
+						},
+					],
+		);
 		// An absent depth means full facts, except surface remains a permission ceiling.
 		const storedDepth = facts.depth ?? (depth === "surface" ? "surface" : "full");
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
@@ -166,6 +179,7 @@ export class WorkspaceIndexer {
 			storedDepth,
 			attachComments(facts.declarations, facts.comments ?? [], text),
 			facts.docs ?? [],
+			notes,
 		);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);
