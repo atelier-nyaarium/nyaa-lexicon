@@ -138,6 +138,11 @@ Ordered by how much they prove:
 3. `node dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
    repository questions whose right answers are already known, so it catches "produces output" that
    is not "produces the right output".
+
+   **Budget minutes, and do not wrap it in a short timeout.** It indexes about a thousand files
+   into an in-memory store on every run, which has taken five minutes, and a run killed early looks
+   exactly like a hang. That reading has already arrived as a release blocker. Nothing lexicon owns
+   persists between runs, so a repeat that finishes in seconds is not a store being reused.
 4. Drive the built server against a real workspace. **A green gate is not evidence.** A multi-file
    cold-bind defect and a test that could never fail both survived a clean gate, and both died to a
    five-line probe.
