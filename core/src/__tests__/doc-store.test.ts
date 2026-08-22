@@ -188,7 +188,9 @@ describe("the heading path", () => {
 		expect(reads.findDocs({ text: "under a nested" }).docs[0]?.headingPath).toEqual(["Inner"]);
 	});
 
-	it("stays inside one module, so a path never mixes two files", () => {
+	// Refused at the boundary, so the walk can never meet a container from another file.
+	it("cannot be handed a container in another module, so a path never mixes two files", () => {
+		const parent = headingId("Parent");
 		const local = headingId("Local");
 		const foreign = composeSymbolId({
 			language: "markdown",
@@ -196,9 +198,12 @@ describe("the heading path", () => {
 			descriptors: [{ kind: "namespace", name: "Foreign" }],
 		});
 		write([{ ...heading("Foreign"), symbolId: foreign }], [], "docs/other.md");
-		write([{ ...heading("Local"), symbolId: local, containerId: foreign }], []);
+		write([heading("Parent"), { ...heading("Local"), symbolId: local, containerId: parent }], []);
 
-		expect(reads.headingPath(local)).toEqual(["Local"]);
+		expect(() =>
+			write([heading("Parent"), { ...heading("Local"), symbolId: local, containerId: foreign }], []),
+		).toThrow(/not declared in this file/);
+		expect(reads.headingPath(local)).toEqual(["Parent", "Local"]);
 	});
 
 	it("terminates on a container cycle rather than hanging", () => {

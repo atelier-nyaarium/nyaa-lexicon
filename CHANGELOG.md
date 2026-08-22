@@ -63,6 +63,21 @@ heading, and says when data outweighs code and how a `deny` list in `lexicon.jso
 out. A store from an earlier release reports its files as unrecorded until the next scan, which a
 daemon runs at start and which classes them without re-reading.
 
+Every symbol id a provider hands the index is read once, at the boundary. A declaration's id must
+name the file being parsed; a container, a reference's owner and a literal's container must be
+declared in that same parse; a document anchor must be a heading there; a binding target may live
+anywhere but must be an id, and every one of them must be spelled the one way `composeSymbolId`
+spells it, so an attempted `%2F` slash escape or a needlessly quoted name can no longer mint a
+second id for one symbol. Until now only the document anchor was checked, and each reader of the
+other four re-decided what the string was allowed to be. A file whose parse breaks the rule is
+refused as a parse failure naming the id, and its previous facts stand.
+
+The Rust provider named a container for the methods of an `impl` whose type is declared in another
+file, an id that named nothing in that parse; those methods now carry no container, and their
+symbol ids are unchanged. Their fact digests are not, since a declaration's digest covers its
+container, so an answer citing one of them reads as stale after the next read. By the release rule
+that is a provider extraction change, which ships in a major.
+
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;
 the same rule `refactor_insert` already applied to a module it would create now owns both.

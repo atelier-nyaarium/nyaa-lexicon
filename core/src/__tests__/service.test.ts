@@ -1355,7 +1355,7 @@ describe("searching imports", () => {
 });
 
 describe("performing a rename", () => {
-	const target = "lexicon ts src/cart.ts add().";
+	const target = "lexicon ts cart.ts add().";
 
 	/** Answers renameEdits however the test needs, and resolves nothing, so only bound sites appear. */
 	function answering(reply: (module: string) => unknown) {

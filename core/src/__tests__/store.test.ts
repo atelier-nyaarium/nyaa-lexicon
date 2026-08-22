@@ -99,7 +99,7 @@ describe("keeping what a provider said below error", () => {
 	// Added in place; silence would read as clean.
 	it("calls notes unknown for a file read before the table existed, until its next read", () => {
 		const file = path.join(dir, "index.sqlite");
-		store.replaceFile("src/old.ts", "h1", [declaration("old")], []);
+		store.replaceFile("src/old.ts", "h1", [declaration("old", "src/old.ts")], []);
 		store.close();
 		const raw = new DatabaseSync(file);
 		raw.exec("DROP TABLE notes; DELETE FROM meta WHERE key = 'notesSince'");
@@ -117,7 +117,7 @@ describe("keeping what a provider said below error", () => {
 			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 1 });
 
 			vi.setSystemTime(now + 2000);
-			store.replaceFile("src/old.ts", "h2", [declaration("old")], []);
+			store.replaceFile("src/old.ts", "h2", [declaration("old", "src/old.ts")], []);
 			expect(store.fileNotes("src/old.ts")).toEqual({ module: "src/old.ts", known: true, notes: [] });
 			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 0 });
 		} finally {
@@ -516,6 +516,20 @@ describe("noticing that the indexer itself changed", () => {
 		const third = IndexStore.open(file, "1");
 		expect(third.rebuilt).toBe(false);
 		third.store.close();
+	});
+});
+
+describe("admitting a provider's ids before writing", () => {
+	it("refuses a dangling container before the transaction, so the file's previous facts stand", () => {
+		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+
+		expect(() =>
+			store.replaceFile("src/a.ts", "h2", [declaration("next", "src/a.ts", { containerId: idOf("Ghost") })], []),
+		).toThrow(/container .* is not declared in this file/);
+
+		expect(store.declarationsNamed("add")).toHaveLength(1);
+		expect(store.declarationsNamed("next")).toEqual([]);
+		expect(store.contentHashOf("src/a.ts")).toBe("h1");
 	});
 });
 

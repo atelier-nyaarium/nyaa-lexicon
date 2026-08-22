@@ -18,7 +18,6 @@ import {
 	type Literal,
 	literalFactId,
 	type Metrics,
-	moduleOf,
 	parseFactId,
 	type Range,
 	type Reference,
@@ -26,6 +25,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { Answer, Doubt } from "./answers.js";
 import type { AttachedComment } from "./commentAttach.js";
+import { admitFacts } from "./factAdmission.js";
 import { normalizeDocText } from "./proseText.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 
@@ -823,7 +823,7 @@ export class IndexStore {
 		notes: FileNote[] = [],
 		content: FileContent = "code",
 	): void {
-		refuseForeignAnchors(module, declarations, docs);
+		admitFacts(module, { declarations, references, literals, docs });
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
@@ -1991,23 +1991,6 @@ function rowToComment(raw: unknown): StoredComment {
  * for "the provider named something we could not verify" would hide a contract violation behind a
  * legitimate answer. Refused before the transaction opens, so the file's previous facts survive.
  */
-function refuseForeignAnchors(module: string, declarations: Declaration[], docs: DocRegion[]): void {
-	// Last write wins, matching the INSERT OR REPLACE below, so a duplicate id cannot smuggle a kind
-	// past the check and then store the other one.
-	const kinds = new Map<string, string>();
-	for (const declaration of declarations) kinds.set(declaration.symbolId, declaration.kind);
-
-	for (const region of docs) {
-		if (region.anchorId === undefined) continue;
-		// The id must name a heading AND belong to this file: a declaration carrying a foreign id
-		// would otherwise vouch for an anchor in another module.
-		if (kinds.get(region.anchorId) === "heading" && moduleOf(region.anchorId) === module) continue;
-		throw new Error(
-			`${module}: a document region is anchored to ${JSON.stringify(region.anchorId)}, which is not a heading declared in this file`,
-		);
-	}
-}
-
 function rowToDoc(raw: unknown): StoredDoc {
 	const row = raw as DocRow;
 	return {

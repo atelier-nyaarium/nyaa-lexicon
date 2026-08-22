@@ -91,6 +91,17 @@ canonical and the name is what the file says; anything matching by name normaliz
 Providers do not normalize names: a name that changed for unchanged source would move every fact
 digest, which is a major.
 
+Every id a parse hands over is read once, at the boundary, for what its field says it means. A
+declaration's id names the file being parsed. A `containerId`, a reference's `fromId` and a
+literal's `containerId` name a declaration in the same parse, since enclosure is lexical. A
+document's `anchorId` names a heading in the same parse. A bound reference's target may live in
+any module, so it is checked for form alone. Every one of them must be spelled the one way
+`composeSymbolId` spells it: an attempted `%2F` slash escape, or a name quoted that needed no
+quoting, would read back as a second id for one symbol, which the citation model cannot survive.
+One failure refuses the whole
+file as a parse failure naming the id, and the file's previous facts stand. Compose ids with
+`composeSymbolId` and these hold by construction.
+
 ## Comments are spans, never attachments
 
 A provider reports each comment as a `CommentSpan`: its range and its verbatim text, markers

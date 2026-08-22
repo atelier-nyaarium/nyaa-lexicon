@@ -1005,8 +1005,9 @@ searchable for a reason the reader never sees. A third value carrying an Unknown
 and rejected: this is a provider contract violation, which conformance already checks, rather than
 an inherently unknowable relationship.
 
-The reader guards stay. A `containerId` is still unvalidated on write, so the chain can leave the
-headings even when the anchor cannot, and the walk has to stop somewhere.
+The reader guards stay. A `containerId` was still unvalidated on write when this was written; it,
+a reference's `fromId`, a literal's container and a binding target are now admitted by the same
+boundary, `core/src/factAdmission.ts`, which is the one reading of a provider's ids.
 
 **The first version of the refusal had the class inside it, twice.** It asked only whether the id
 appeared among the declarations with kind heading, which a red team broke two ways: a declaration

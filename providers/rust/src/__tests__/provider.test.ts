@@ -411,6 +411,30 @@ impl External { pub fn make() -> Self { External } }
 	expect(calls[1]?.binding).not.toEqual(calls[0]?.binding);
 });
 
+// The container id would name nothing in this parse, which the core refuses to store.
+test("names no container for an impl of a type declared in another file", () => {
+	const root = workspace({
+		"src/lib.rs": `pub mod util;
+use crate::util::External;
+struct Local;
+impl Local { fn make() -> Self { Local } }
+impl External { fn extra(&self) {} }
+`,
+		"src/util.rs": "pub struct External;\n",
+	});
+	const provider = new RustProvider();
+	provider.initialize(root);
+	const lib = readFileSync(path.join(root, "src/lib.rs"), "utf8");
+	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "foreign-impl", text: lib });
+	const local = facts.declarations.find((declaration) => declaration.name === "Local");
+	const make = facts.declarations.find((declaration) => declaration.name === "make");
+	const extra = facts.declarations.find((declaration) => declaration.name === "extra");
+
+	expect(make?.containerId).toBe(local?.symbolId);
+	expect(extra?.containerId).toBeUndefined();
+	expect(extra?.symbolId).toContain("External#extra");
+});
+
 test("returns explicit reasons for external, missing, and runtime constructed bindings", () => {
 	const root = workspace({
 		"src/lib.rs": `use std::fmt::Display;

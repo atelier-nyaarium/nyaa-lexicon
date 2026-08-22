@@ -1020,12 +1020,10 @@ export class RustParser {
 				["struct", "enum", "interface", "class"].includes(raw.declaration.kind),
 		);
 		const targetPath = existing?.descriptorPath ?? [...context.descriptors, { kind: "type", name: targetName }];
-		const targetId =
-			existing?.declaration.symbolId ??
-			composeSymbolId({ language: LANGUAGE, module: this.module, descriptors: targetPath });
+		// A type declared elsewhere is no container here: the id would name nothing in this parse.
 		this.parseItems(bodyOpen + 1, bodyEnd, {
 			descriptors: targetPath,
-			containerId: targetId,
+			...(existing === undefined ? {} : { containerId: existing.declaration.symbolId }),
 			kind: "impl",
 			...(traitName === undefined ? {} : { implTrait: traitName }),
 			typeName: targetName,
