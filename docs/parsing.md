@@ -107,9 +107,10 @@ language splices inside strings as well as comments. Nothing the parser reports 
 contradicts a false comment, because the bad span is internally consistent, so the only guard is a
 case that plants a marker inside each string form the language has.
 
-C and C++ conditional groups nest. Alternatives are kept when each branch is whole, meaning its
+C, C++ and C# conditional groups nest. Alternatives are kept when each branch is whole, meaning its
 delimiters balance after nested groups resolve. When a branch is a fragment, the first branch is
-kept, or the branch after an exact `#if 0`; the other branches are removed before parsing. A group
+kept, or the branch after exact `#if 0` in C and C++ or `#if false` in C#; C# spells the comment
+idiom `#if false`. The other branches are removed before parsing. A group
 inside a dropped branch is dropped with it. Only the conditional directive lines stay in a dropped
 branch, so every other line, including `#define` and `#include`, is not indexed. An `#if` with no
 `#endif` is reported and nothing in it is dropped. A stray `#elif`, `#else` or `#endif` is reported

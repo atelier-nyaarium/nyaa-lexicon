@@ -309,6 +309,156 @@ function addLiteral(literals: Token[], item: Token): void {
 	if (item.kind === "string" || item.kind === "number" || item.kind === "boolean") literals.push(item);
 }
 
+interface ConditionalBranch {
+	start: number;
+	end: number;
+}
+
+interface ConditionalGroup {
+	ifIndex: number;
+	branches: ConditionalBranch[];
+	parent: ConditionalGroup | undefined;
+	closed: boolean;
+}
+
+function conditionIsFalse(text: string, token: Token): boolean {
+	let condition = text.slice(token.startOffset, token.endOffset);
+	condition = condition.replace(/^\s*#\s*if\b/u, "");
+	condition = condition.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gu, "").trim();
+	return condition === "false";
+}
+
+function branchIsWhole(
+	tokens: Token[],
+	branch: ConditionalBranch,
+	directiveTokens: Set<number>,
+	removed: Set<number>,
+): boolean {
+	const expected: string[] = [];
+	const closing = new Map([
+		[")", "("],
+		["]", "["],
+		["}", "{"],
+	]);
+	for (let index = branch.start; index < branch.end; index++) {
+		if (directiveTokens.has(index) || removed.has(index)) continue;
+		const token = tokens[index];
+		if (token?.kind !== "punctuation") continue;
+		if (token.value === "(" || token.value === "[" || token.value === "{") {
+			expected.push(token.value);
+			continue;
+		}
+		const opener = closing.get(token.value);
+		if (opener === undefined) continue;
+		if (expected.pop() !== opener) return false;
+	}
+	return expected.length === 0;
+}
+
+function closedThroughout(group: ConditionalGroup): boolean {
+	for (let current: ConditionalGroup | undefined = group; current !== undefined; current = current.parent) {
+		if (!current.closed) return false;
+	}
+	return true;
+}
+
+function resolveConditionals(
+	text: string,
+	tokens: Token[],
+	literals: Token[],
+	comments: Token[],
+	diagnostics: Diagnostic[],
+): LexedSource {
+	const directiveIndexes = tokens.flatMap((token, index) => (token.kind === "directive" ? [index] : []));
+	const directiveTokens = new Set(directiveIndexes);
+	const protectedTokens = new Set<number>();
+	const groups: ConditionalGroup[] = [];
+	const stack: ConditionalGroup[] = [];
+	for (const index of directiveIndexes) {
+		const token = tokens[index];
+		if (token === undefined) continue;
+		if (token.value === "if") {
+			const group: ConditionalGroup = {
+				ifIndex: index,
+				branches: [{ start: index + 1, end: tokens.length }],
+				parent: stack.at(-1),
+				closed: false,
+			};
+			groups.push(group);
+			stack.push(group);
+			continue;
+		}
+		if (token.value === "elif" || token.value === "else") {
+			const group = stack.at(-1);
+			if (group === undefined) {
+				diagnostics.push({
+					severity: "error",
+					message: `Unexpected #${token.value} outside a conditional.`,
+					range: positionRange(token),
+				});
+				continue;
+			}
+			group.branches.at(-1)!.end = index;
+			group.branches.push({ start: index + 1, end: tokens.length });
+			continue;
+		}
+		if (token.value === "endif") {
+			const group = stack.pop();
+			if (group === undefined) {
+				diagnostics.push({
+					severity: "error",
+					message: "Unexpected #endif outside a conditional.",
+					range: positionRange(token),
+				});
+				continue;
+			}
+			group.branches.at(-1)!.end = index;
+			group.closed = true;
+		}
+	}
+	for (const group of stack) {
+		const token = tokens[group.ifIndex];
+		if (token === undefined) continue;
+		diagnostics.push({
+			severity: "error",
+			message: "Conditional directive is not closed.",
+			range: positionRange(token),
+		});
+	}
+	for (const index of directiveIndexes) {
+		const token = tokens[index];
+		if (token !== undefined && ["if", "elif", "else", "endif"].includes(token.value)) protectedTokens.add(index);
+	}
+	const removed = new Set<number>();
+	for (const group of groups.toReversed()) {
+		if (!closedThroughout(group)) continue;
+		const first = tokens[group.ifIndex];
+		if (first === undefined) continue;
+		const activeBranch = conditionIsFalse(text, first) ? 1 : 0;
+		const allWhole = group.branches.every((branch) => branchIsWhole(tokens, branch, directiveTokens, removed));
+		for (let branchIndex = 0; branchIndex < group.branches.length; branchIndex++) {
+			if ((allWhole && !(activeBranch === 1 && branchIndex === 0)) || (!allWhole && branchIndex === activeBranch))
+				continue;
+			const branch = group.branches[branchIndex];
+			if (branch === undefined) continue;
+			for (let index = branch.start; index < branch.end; index++) {
+				if (!protectedTokens.has(index)) removed.add(index);
+			}
+		}
+	}
+	const removedOffsets = new Set<number>();
+	for (const index of removed) {
+		const token = tokens[index];
+		if (token !== undefined) removedOffsets.add(token.startOffset);
+	}
+	return {
+		tokens: tokens.filter((_token, index) => !removed.has(index)),
+		literals: literals.filter((item) => !removedOffsets.has(item.startOffset)),
+		comments: comments.filter((item) => !removedOffsets.has(item.startOffset)),
+		diagnostics,
+	};
+}
+
 export function tokenize(
 	text: string,
 	options: { collectLiterals?: boolean; collectComments?: boolean } = {},
@@ -442,7 +592,7 @@ export function tokenize(
 		if (cursor.offset <= before) throw new Error("tokenizer failed to advance");
 	}
 	tokens.push(token(cursor, "eof", "", cursor.mark()));
-	return { tokens, literals, comments, diagnostics };
+	return resolveConditionals(text, tokens, literals, comments, diagnostics);
 }
 
 export function positionRange(token: Token): Range {

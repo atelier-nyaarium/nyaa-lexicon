@@ -133,6 +133,11 @@ brace used to end the parse of the whole file, so a C header wrapped in one lost
 and after it. Extraction changes for unchanged source, so such a file reads as stale until its
 next read.
 
+A C# file now resolves conditional groups by the same whole-branch rule as C and C++. Whole
+alternatives stay indexed, while fragment alternatives keep the first branch or the branch after
+`#if false`, and removed branches contribute no declarations, directives, comments or literals.
+Newtonsoft-style feature gates have whole alternatives, so both alternatives remain in the stream.
+
 A GDScript script with no `class_name` is a class named after its file, and it used to claim a
 `selectionRange`, the span of its name, at a position where no name is written. The field is
 absent now, for any declaration whose name is not in the source; a rename of one is refused as
