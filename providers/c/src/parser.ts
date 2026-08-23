@@ -565,6 +565,7 @@ function hasTopLevelValue(tokens: CToken[], start: number, end: number, wanted: 
 
 function stripTypeText(value: string): string {
 	return value
+		.replace(/\bextern\s+"(?:\\.|[^"])*"/gu, "extern")
 		.replace(/\b(?:static|extern|typedef|inline|register|auto|_Thread_local|__extension__)\b/gu, "")
 		.replace(
 			/\b(?:const|restrict|volatile|__const|__const__|__restrict|__restrict__|__volatile|__volatile__)\b/gu,
@@ -687,8 +688,22 @@ class CParser {
 			this.pairs.set(index, top.index);
 			for (const alias of top.aliases) this.pairs.set(alias, index);
 		}
-		for (const open of stack)
+		for (const open of stack) {
+			if (open.value === "{" && this.isLinkageBlockOpen(open.index)) continue;
 			this.addDiagnostic(`Opening ${open.value} is not closed before end of file.`, open.index);
+		}
+	}
+
+	/** Only the two linkages the language defines; any other string is not a block opener. */
+	private isLinkageString(index: number): boolean {
+		const token = this.tokens[index];
+		return token?.kind === "string" && (token.value === "C" || token.value === "C++");
+	}
+
+	private isLinkageBlockOpen(openIndex: number): boolean {
+		const stringIndex = previousCode(this.tokens, openIndex);
+		const externIndex = previousCode(this.tokens, stringIndex);
+		return this.isLinkageString(stringIndex) && tokenValue(this.tokens, externIndex) === "extern";
 	}
 
 	private directiveEnd(start: number): number {
@@ -871,6 +886,19 @@ class CParser {
 				index = this.directiveEndByToken.get(index) ?? index + 1;
 				continue;
 			}
+			// Transparent in every scope, so the pairing pass and this one agree on what the brace is.
+			const linkageOpen = this.linkageBlockOpen(index, end);
+			if (linkageOpen >= 0) {
+				const linkageClose = this.pairs.get(linkageOpen);
+				if (linkageClose === undefined) {
+					this.addDiagnostic("Linkage block is not closed.", linkageOpen);
+					this.parseScope(linkageOpen + 1, end, context);
+					return;
+				}
+				this.parseScope(linkageOpen + 1, linkageClose, context);
+				index = linkageClose + 1;
+				continue;
+			}
 			if (tokenValue(this.tokens, index) === "}") return;
 			const statement = this.findStatement(index, end);
 			if (statement === undefined || statement.next <= index) {
@@ -880,6 +908,14 @@ class CParser {
 			this.parseStatement(statement, context);
 			index = statement.next;
 		}
+	}
+
+	private linkageBlockOpen(start: number, end: number): number {
+		if (tokenValue(this.tokens, start) !== "extern") return -1;
+		const linkage = nextCode(this.tokens, start + 1, end);
+		if (!this.isLinkageString(linkage)) return -1;
+		const open = nextCode(this.tokens, linkage + 1, end);
+		return tokenValue(this.tokens, open) === "{" ? open : -1;
 	}
 
 	private findStatement(start: number, end: number): Statement | undefined {
@@ -1564,6 +1600,10 @@ class CParser {
 
 	private declaratorNames(start: number, end: number): DeclaratorName[] {
 		let cursor = nextCode(this.tokens, start, end);
+		if (tokenValue(this.tokens, cursor) === "extern") {
+			const linkage = nextCode(this.tokens, cursor + 1, end);
+			if (this.tokens[linkage]?.kind === "string") cursor = nextCode(this.tokens, linkage + 1, end);
+		}
 		let sawType = false;
 		while (cursor < end) {
 			const token = this.tokens[cursor] as CToken;

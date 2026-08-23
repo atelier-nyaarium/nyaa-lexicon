@@ -138,6 +138,12 @@ alternatives stay indexed, while fragment alternatives keep the first branch or 
 `#if false`, and removed branches contribute no declarations, directives, comments or literals.
 Newtonsoft-style feature gates have whole alternatives, so both alternatives remain in the stream.
 
+The C provider read `extern "C" {` as the next declaration's prefix, so the body and the rest of
+the header disappeared. A linkage block is transparent now, including when a C header wraps its
+body in the `__cplusplus` guard. The libuv header went from 42 declarations to 1447, its 319
+prototypes among them. Extraction changes for unchanged source, so the file reads as stale until
+its next read.
+
 A GDScript script with no `class_name` is a class named after its file, and it used to claim a
 `selectionRange`, the span of its name, at a position where no name is written. The field is
 absent now, for any declaration whose name is not in the source; a rename of one is refused as
