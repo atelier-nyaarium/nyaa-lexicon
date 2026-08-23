@@ -2,7 +2,7 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
-## 2.0.2
+## 2.1.0
 
 `knowledge_gaps` answers for one file, and a parse failure is named where it matters.
 
