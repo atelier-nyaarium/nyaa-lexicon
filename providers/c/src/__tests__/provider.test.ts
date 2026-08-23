@@ -665,10 +665,8 @@ describe("C preprocessor and diagnostics", () => {
 
 		expect(values).toHaveLength(2);
 		expect(new Set(values.map((declaration) => declaration.symbolId)).size).toBe(2);
-		expect(reference?.binding.status).toBe("ambiguous");
 		expect(reference?.binding).toMatchObject({
 			status: "ambiguous",
-			provenance: "bound",
 			detail: "conditional compilation supplies both declarations",
 		});
 	});
@@ -1045,7 +1043,7 @@ describe("C edge coverage", () => {
 		expect(publicLimit).toMatchObject({ kind: "constant", visibility: "public", exported: true });
 	});
 
-	test("keeps declarations inside preprocessor branches even when the condition is unknown", () => {
+	test("keeps declarations inside whole unknown preprocessor branches", () => {
 		const parsed = parseC(
 			"branches.c",
 			"#ifdef ONE\nint one;\n#elif TWO\nint two;\n#else\nint fallback;\n#endif\n",

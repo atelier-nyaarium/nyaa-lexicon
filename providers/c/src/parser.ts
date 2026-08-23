@@ -78,11 +78,6 @@ interface DelimiterEntry {
 	aliases: number[];
 }
 
-interface ConditionalDelimiterFrame {
-	baseDepth: number;
-	branches: DelimiterEntry[][];
-}
-
 interface AggregateInfo {
 	keyword: "struct" | "union" | "enum";
 	keywordIndex: number;
@@ -667,34 +662,10 @@ class CParser {
 
 	private buildPairs(): void {
 		const stack: DelimiterEntry[] = [];
-		const conditionals: ConditionalDelimiterFrame[] = [];
 		for (let index = 0; index < this.tokens.length; index++) {
 			const token = this.tokens[index] as CToken;
 			const directive = this.directives.get(index);
 			if (directive !== undefined) {
-				if (["if", "ifdef", "ifndef"].includes(directive.keyword)) {
-					conditionals.push({ baseDepth: stack.length, branches: [] });
-				} else if (["elif", "else"].includes(directive.keyword)) {
-					const frame = conditionals.at(-1);
-					if (frame !== undefined) {
-						frame.branches.push(stack.splice(frame.baseDepth));
-					}
-				} else if (directive.keyword === "endif") {
-					const frame = conditionals.pop();
-					if (frame !== undefined) {
-						frame.branches.push(stack.splice(frame.baseDepth));
-						const representative = frame.branches.find((branch) => branch.length > 0) ?? [];
-						const aliases = frame.branches.filter((branch) => branch !== representative);
-						for (let branchIndex = 0; branchIndex < representative.length; branchIndex++) {
-							const entry = representative[branchIndex] as DelimiterEntry;
-							for (const branch of aliases) {
-								const alias = branch[branchIndex];
-								if (alias?.value === entry.value) entry.aliases.push(alias.index);
-							}
-						}
-						stack.push(...representative);
-					}
-				}
 				index = Math.max(index, directive.end - 1);
 				continue;
 			}

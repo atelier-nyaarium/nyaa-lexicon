@@ -98,7 +98,23 @@ are indexed now; a binding inside a re-minted block still names what the provide
 the first occurrence until that provider learns to count. A parameter and a type parameter carry an
 occurrence too, `(x)[2]` and `[T][2]`, since a macro invocation read as a function repeats a
 parameter name and the whole file was refused for it; a type parameter named by digits alone is
-refused so that bracket stays unambiguous.
+refused so that bracket stays unambiguous. A member defined outside its class but inside a
+re-minted namespace, the C++ out-of-line form, follows the namespace too; it used to keep an owner
+id the parse no longer declared, and the file was refused for that.
+
+A C or C++ file whose preprocessor branches open a construct two different ways, `#if` one `if(`
+and `#else` another, closed once after the `#endif`, used to fail whole: every branch was in the
+token stream, so the delimiters never balanced. Both providers now resolve conditional groups
+before parsing. Alternatives whose every branch is whole, its own brackets balanced, are all kept,
+as they were, so a `#ifdef _WIN32` implementation and its `#else` are both indexed and a name
+declared in both still binds as ambiguous. When a branch is a fragment, only the first is kept, or
+the one after `#if 0`, since that is the comment idiom; what is in a dropped branch is not indexed,
+which is stated in `docs/parsing.md`. An `#if` with no `#endif` is reported and drops nothing. The
+C++ provider also splices a backslash-newline before tokenizing, as the language does, so a macro
+body continued over several lines is one directive: the `struct` and functions written inside such
+a body used to be declared as if they were code, and are not any more. That is an extraction change
+for unchanged source, so a C++ file holding one reads as stale until its next read. A real
+single-header test framework that failed on all of this indexes now.
 
 A GDScript script with no `class_name` is a class named after its file, and it used to claim a
 `selectionRange`, the span of its name, at a position where no name is written. The field is

@@ -23,6 +23,25 @@ export interface LexedC {
 	diagnostics: Diagnostic[];
 }
 
+interface ConditionalDirective {
+	start: number;
+	end: number;
+	keyword: string;
+	keywordIndex: number;
+}
+
+interface ConditionalBranch {
+	start: number;
+	end: number;
+}
+
+interface ConditionalGroup {
+	ifIndex: number;
+	branches: ConditionalBranch[];
+	parent: ConditionalGroup | undefined;
+	closed: boolean;
+}
+
 /**
  * Whether a token's text is syntax rather than data.
  *
@@ -474,7 +493,179 @@ export function lexC(module: string, text: string): LexedC {
 		}
 	}
 
-	return { tokens, comments, diagnostics };
+	const resolved = resolveConditionals(module, tokens, diagnostics);
+	const kept = new Set<string>();
+	for (const token of resolved) {
+		if (token.kind === "comment") kept.add(`${token.start.line}:${token.start.character}`);
+	}
+	return {
+		tokens: resolved,
+		comments: comments.filter((comment) =>
+			kept.has(`${comment.range.start.line}:${comment.range.start.character}`),
+		),
+		diagnostics,
+	};
+}
+
+function conditionalEnd(tokens: CToken[], start: number): number {
+	let index = start + 1;
+	while (index < tokens.length) {
+		if (tokens[index]?.kind !== "newline") {
+			index++;
+			continue;
+		}
+		let previous = index - 1;
+		while (previous >= start && tokens[previous]?.kind === "comment") previous--;
+		if (previous >= start && tokens[previous]?.value === "\\") {
+			index++;
+			continue;
+		}
+		return index;
+	}
+	return tokens.length;
+}
+
+function directiveTokens(tokens: CToken[]): ConditionalDirective[] {
+	const directives: ConditionalDirective[] = [];
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index] as CToken;
+		if (token.kind !== "symbol" || token.value !== "#" || !token.lineStart) continue;
+		const end = conditionalEnd(tokens, index);
+		let keywordIndex = index + 1;
+		while (
+			keywordIndex < end &&
+			(tokens[keywordIndex]?.kind === "comment" || tokens[keywordIndex]?.kind === "newline")
+		)
+			keywordIndex++;
+		const keyword = tokens[keywordIndex]?.value;
+		if (keyword !== undefined) directives.push({ start: index, end, keyword, keywordIndex });
+		index = Math.max(index, end - 1);
+	}
+	return directives;
+}
+
+function firstConditionIsZero(tokens: CToken[], directive: ConditionalDirective): boolean {
+	let next = directive.keywordIndex + 1;
+	while (next < directive.end && (tokens[next]?.kind === "comment" || tokens[next]?.kind === "newline")) next++;
+	if (next >= directive.end || tokens[next]?.kind !== "number" || tokens[next]?.value !== "0") return false;
+	next++;
+	while (next < directive.end && (tokens[next]?.kind === "comment" || tokens[next]?.kind === "newline")) next++;
+	return next >= directive.end;
+}
+
+/** An unclosed group anywhere above leaves a group's branches as they are. */
+function closedThroughout(group: ConditionalGroup): boolean {
+	for (let current: ConditionalGroup | undefined = group; current !== undefined; current = current.parent) {
+		if (!current.closed) return false;
+	}
+	return true;
+}
+
+function branchIsWhole(
+	tokens: CToken[],
+	branch: ConditionalBranch,
+	directiveTokens: Set<number>,
+	removed: Set<number>,
+): boolean {
+	const expected: string[] = [];
+	const closing = new Map([
+		[")", "("],
+		["]", "["],
+		["}", "{"],
+	]);
+	for (let index = branch.start; index < branch.end; index++) {
+		if (directiveTokens.has(index) || removed.has(index)) continue;
+		// A string or comment spelling a bracket is content, not a delimiter.
+		const value = syntaxValue(tokens[index]);
+		if (value === "(" || value === "[" || value === "{") {
+			expected.push(value);
+			continue;
+		}
+		const opener = closing.get(value ?? "");
+		if (opener === undefined) continue;
+		if (expected.pop() !== opener) return false;
+	}
+	return expected.length === 0;
+}
+
+function resolveConditionals(module: string, tokens: CToken[], diagnostics: Diagnostic[]): CToken[] {
+	const directives = directiveTokens(tokens);
+	const groups: ConditionalGroup[] = [];
+	const stack: ConditionalGroup[] = [];
+	const allDirectiveTokens = new Set<number>();
+	const protectedTokens = new Set<number>();
+	for (const directive of directives) {
+		for (let index = directive.start; index < directive.end; index++) allDirectiveTokens.add(index);
+		if (!["if", "ifdef", "ifndef", "elif", "else", "endif"].includes(directive.keyword)) continue;
+		for (let index = directive.start; index < directive.end; index++) protectedTokens.add(index);
+	}
+	for (const directive of directives) {
+		if (["if", "ifdef", "ifndef"].includes(directive.keyword)) {
+			const group: ConditionalGroup = {
+				ifIndex: directive.start,
+				branches: [{ start: directive.end, end: tokens.length }],
+				parent: stack.at(-1),
+				closed: false,
+			};
+			groups.push(group);
+			stack.push(group);
+			continue;
+		}
+		if (["elif", "else"].includes(directive.keyword)) {
+			const group = stack.at(-1);
+			if (group === undefined) {
+				diagnostics.push({
+					severity: "error",
+					message: `Unexpected #${directive.keyword} outside a conditional.`,
+					path: module,
+					range: tokenRange(tokens[directive.start] as CToken),
+				});
+				continue;
+			}
+			(group.branches.at(-1) as ConditionalBranch).end = directive.start;
+			group.branches.push({ start: directive.end, end: tokens.length });
+			continue;
+		}
+		if (directive.keyword === "endif") {
+			const group = stack.pop();
+			if (group === undefined) {
+				diagnostics.push({
+					severity: "error",
+					message: "Unexpected #endif outside a conditional.",
+					path: module,
+					range: tokenRange(tokens[directive.start] as CToken),
+				});
+				continue;
+			}
+			(group.branches.at(-1) as ConditionalBranch).end = directive.start;
+			group.closed = true;
+		}
+	}
+	for (const group of stack) {
+		const token = tokens[group.ifIndex] as CToken;
+		diagnostics.push({
+			severity: "error",
+			message: "Conditional directive is not closed.",
+			path: module,
+			range: tokenRange(token),
+		});
+	}
+	const directiveByIndex = new Map(directives.map((directive) => [directive.start, directive]));
+	const removed = new Set<number>();
+	for (const group of groups.toReversed()) {
+		if (!closedThroughout(group)) continue;
+		const directive = directiveByIndex.get(group.ifIndex) as ConditionalDirective;
+		const activeBranch = firstConditionIsZero(tokens, directive) ? 1 : 0;
+		const allWhole = group.branches.every((branch) => branchIsWhole(tokens, branch, allDirectiveTokens, removed));
+		for (let branch = 0; branch < group.branches.length; branch++) {
+			if ((allWhole && !(activeBranch === 1 && branch === 0)) || (!allWhole && branch === activeBranch)) continue;
+			const segment = group.branches[branch] as ConditionalBranch;
+			for (let index = segment.start; index < segment.end; index++) {
+				if (!protectedTokens.has(index)) removed.add(index);
+			}
+		}
+	}
+	return tokens.filter((_token, index) => !removed.has(index));
 }
 
 export function tokenRange(token: CToken): Range {

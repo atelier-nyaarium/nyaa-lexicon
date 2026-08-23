@@ -116,7 +116,16 @@ export function withOccurrences(facts: FileFacts): FileFacts {
 	}
 	if (moved.length === 0) return facts;
 
-	const repoint = (id: string, range: Range): string => movedOwner(moved, id, range)?.to ?? id;
+	const declared = new Set(finalIds.values());
+	// An owner named from outside its own range, an out-of-line member, follows the deepest moved
+	// ancestor holding it, when that names a declaration; the class may live in an earlier reopening.
+	const repoint = (id: string, range: Range): string => {
+		const own = movedOwner(moved, id, range);
+		if (own !== undefined) return own.to;
+		const ancestor = movedAncestor(moved, id, range);
+		const rebased = ancestor === undefined ? null : rebaseSymbolId(id, ancestor.from, ancestor.to);
+		return rebased !== null && declared.has(rebased) ? rebased : id;
+	};
 	return {
 		...facts,
 		declarations: facts.declarations.map((declaration, index) => ({

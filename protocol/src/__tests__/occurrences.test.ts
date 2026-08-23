@@ -151,6 +151,72 @@ describe("settling a name path declared twice", () => {
 		]);
 	});
 
+	// A C++ member defined after its class sits outside the class range but inside the re-minted namespace.
+	it("re-parents an out-of-line member through the moved namespace that holds it", () => {
+		const ns = id({ kind: "namespace", name: "(anonymous)" });
+		const ns2 = id({ kind: "namespace", name: "(anonymous)", occurrence: 2 });
+		const klass = id({ kind: "namespace", name: "(anonymous)" }, { kind: "type", name: "Enc" });
+		const method = id(
+			{ kind: "namespace", name: "(anonymous)" },
+			{ kind: "type", name: "Enc" },
+			{ kind: "method", name: "run" },
+		);
+		const klass2 = id({ kind: "namespace", name: "(anonymous)", occurrence: 2 }, { kind: "type", name: "Enc" });
+		const input = facts({
+			declarations: [
+				decl(ns, span(0, 5)),
+				decl(ns, span(10, 30)),
+				decl(klass, span(12, 14), ns),
+				decl(method, span(20, 22), klass),
+			],
+			literals: [{ kind: "string", value: "x", range: span(21, 21), containerId: klass }],
+		});
+
+		const settled = withOccurrences(input);
+		expect(settled.declarations.map((declaration) => declaration.symbolId)).toEqual([
+			ns,
+			ns2,
+			klass2,
+			id(
+				{ kind: "namespace", name: "(anonymous)", occurrence: 2 },
+				{ kind: "type", name: "Enc" },
+				{ kind: "method", name: "run" },
+			),
+		]);
+		expect(settled.declarations[3]?.containerId).toBe(klass2);
+		expect(settled.literals[0]?.containerId).toBe(klass2);
+	});
+
+	// `namespace A { struct Enc; } namespace A { Enc::run() {} }`: the class is in the first reopening only.
+	it("keeps an owner the later reopening does not declare, rather than naming a class that is not there", () => {
+		const ns = id({ kind: "namespace", name: "A" });
+		const klass = id({ kind: "namespace", name: "A" }, { kind: "type", name: "Enc" });
+		const method = id(
+			{ kind: "namespace", name: "A" },
+			{ kind: "type", name: "Enc" },
+			{ kind: "method", name: "run" },
+		);
+		const input = facts({
+			declarations: [
+				decl(ns, span(0, 5)),
+				decl(klass, span(1, 3), ns),
+				decl(ns, span(10, 30)),
+				decl(method, span(20, 22), klass),
+			],
+		});
+
+		const settled = withOccurrences(input);
+		// Its own id is positional, as every id is; its owner is the class that exists.
+		expect(settled.declarations[3]?.symbolId).toBe(
+			id(
+				{ kind: "namespace", name: "A", occurrence: 2 },
+				{ kind: "type", name: "Enc" },
+				{ kind: "method", name: "run" },
+			),
+		);
+		expect(settled.declarations[3]?.containerId).toBe(klass);
+	});
+
 	// A macro invocation read as a function can repeat a parameter name; the file must still index.
 	it("numbers a repeated parameter and a repeated type parameter like any other descriptor", () => {
 		const parameter = id({ kind: "method", name: "work" }, { kind: "parameter", name: "x" });
