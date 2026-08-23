@@ -98,6 +98,9 @@ function depthSupervisor(discovered: string[], honorOutline: boolean, seen: Pars
 			}
 			throw new Error(`unexpected method ${method}`);
 		},
+		observeWorkspace: () => {},
+		observeModule: () => {},
+		evidenceFrom: () => {},
 		stopAll: () => {},
 	} as unknown as ProviderSupervisor;
 }

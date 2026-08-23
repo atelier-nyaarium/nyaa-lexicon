@@ -21,7 +21,7 @@ import {
 } from "vscode-jsonrpc/node";
 import type { z } from "zod";
 import { RequestQueue } from "./requestQueue.js";
-import { type ProviderClaims, type Route, routeModule } from "./routing.js";
+import { type ProviderClaims, type Route, type RoutingContext, routeModule, routingContextOf } from "./routing.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -119,6 +119,8 @@ export class ProviderSupervisor {
 	/** What stopAll would otherwise miss. */
 	private readonly starting = new Set<StartingProcess>();
 	private readonly exitListeners: Array<(exit: ProviderExit) => void> = [];
+	private routing: RoutingContext | undefined;
+	private evidence: (() => Iterable<string>) | undefined;
 
 	/** Told about every unexpected death. The supervisor learns nothing about the listener. */
 	observeExits(listener: (exit: ProviderExit) => void): void {
@@ -202,6 +204,7 @@ export class ProviderSupervisor {
 			language: parsed.language,
 			extensions: parsed.extensions,
 			...(parsed.filenames === undefined ? {} : { filenames: parsed.filenames }),
+			...(parsed.sharedExtensions === undefined ? {} : { sharedExtensions: parsed.sharedExtensions }),
 			...(parsed.content === undefined ? {} : { content: parsed.content }),
 		};
 
@@ -365,12 +368,33 @@ export class ProviderSupervisor {
 	////////////////////////////////
 	//  Asking
 
+	/** Where evidence comes from when a route is asked before any scan observed it. */
+	evidenceFrom(modules: () => Iterable<string>): void {
+		this.evidence = modules;
+	}
+
+	/** Records the workspace extensions used by shared claims. */
+	observeWorkspace(modules: Iterable<string>): void {
+		this.routing = routingContextOf(modules);
+	}
+
+	/** Adds one module to that evidence, for a file indexed outside a scan. */
+	observeModule(module: string): void {
+		this.routingContext().observe(module);
+	}
+
 	/** What a module's owner is, or why it has none. */
 	route(module: string): Route {
 		return routeModule(
 			module,
 			[...this.providers.values()].map((p) => p.claims),
+			this.routingContext(),
 		);
+	}
+
+	private routingContext(): RoutingContext {
+		this.routing ??= routingContextOf(this.evidence?.() ?? []);
+		return this.routing;
 	}
 
 	/** Whether a provider declared a tier, so a bulk pass can skip what it would refuse. */

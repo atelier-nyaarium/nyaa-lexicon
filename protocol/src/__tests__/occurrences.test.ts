@@ -151,12 +151,23 @@ describe("settling a name path declared twice", () => {
 		]);
 	});
 
-	it("leaves a repeated parameter alone, since its descriptor has no slot", () => {
+	// A macro invocation read as a function can repeat a parameter name; the file must still index.
+	it("numbers a repeated parameter and a repeated type parameter like any other descriptor", () => {
 		const parameter = id({ kind: "method", name: "work" }, { kind: "parameter", name: "x" });
-		const input = facts({ declarations: [decl(parameter, span(0, 0)), decl(parameter, span(1, 1))] });
+		const typeParameter = id({ kind: "type", name: "Map" }, { kind: "typeParameter", name: "Key" });
+		const input = facts({
+			declarations: [
+				decl(parameter, span(0, 0)),
+				decl(parameter, span(1, 1)),
+				decl(typeParameter, span(2, 2)),
+				decl(typeParameter, span(3, 3)),
+			],
+		});
 		expect(withOccurrences(input).declarations.map((declaration) => declaration.symbolId)).toEqual([
 			parameter,
-			parameter,
+			id({ kind: "method", name: "work" }, { kind: "parameter", name: "x", occurrence: 2 }),
+			typeParameter,
+			id({ kind: "type", name: "Map" }, { kind: "typeParameter", name: "Key", occurrence: 2 }),
 		]);
 	});
 });

@@ -39,10 +39,12 @@ function processesMatching(script: string): string[] {
 	}
 }
 
-function start() {
+const HEADER = path.join(import.meta.dirname, "fixtures", "headerProvider.ts");
+
+function start(script = REFERENCE) {
 	supervisor = new ProviderSupervisor();
 	// A real directory: the workspace root is the provider's cwd, and spawn refuses a missing one.
-	return supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 15_000 }, tmpdir());
+	return supervisor.start({ command: ["bun", "run", script], timeoutMs: 15_000 }, tmpdir());
 }
 
 afterEach(() => {
@@ -136,6 +138,25 @@ describe("starting a provider", () => {
 		expect(processesMatching(script)).toEqual([]);
 
 		rmSync(root, { recursive: true, force: true });
+	}, 30_000);
+});
+
+describe("a shared claim's evidence", () => {
+	it("is read from the registered source the first time a route is asked", async () => {
+		await start(HEADER);
+		supervisor.evidenceFrom(() => ["src/a.cpp"]);
+		expect(supervisor.route("src/a.h")).toMatchObject({ owned: true, providerId: "header-provider" });
+	}, 30_000);
+
+	it("is absent without a source, and a scan's observation replaces what a source gave", async () => {
+		await start(HEADER);
+		expect(supervisor.route("src/a.h")).toEqual({ owned: false, reason: "unclaimed" });
+		supervisor.observeWorkspace(["src/a.cpp"]);
+		expect(supervisor.route("src/a.h")).toMatchObject({ owned: true });
+		supervisor.observeWorkspace([]);
+		expect(supervisor.route("src/a.h")).toEqual({ owned: false, reason: "unclaimed" });
+		supervisor.observeModule("src/b.cpp");
+		expect(supervisor.route("src/a.h")).toMatchObject({ owned: true });
 	}, 30_000);
 });
 

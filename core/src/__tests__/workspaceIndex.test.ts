@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import } from "@nyaa-lexicon/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ProviderClaims, Route } from "../routing";
+import { type ProviderClaims, routeModule, routingContextOf } from "../routing";
 import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -24,6 +24,13 @@ const dataClaims: ProviderClaims = {
 	language: "fakedata",
 	extensions: [".fdata"],
 	content: "data",
+};
+/** Claims `.fakeh` only beside a `.fake`, the way a C++ provider claims `.h`. */
+const headerClaims: ProviderClaims = {
+	providerId: "fakeheader",
+	language: "fake",
+	extensions: [],
+	sharedExtensions: [{ extension: ".fakeh", beside: [".fake"] }],
 };
 const point = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
 
@@ -57,18 +64,28 @@ function importsFrom(text: string): Import[] {
 	}));
 }
 
+/** `lazyEvidence: false` ignores the indexer's registered source, so only a scan's own observation routes a header. */
 function fakeSupervisor(
 	discovered: string[] = [],
 	parseRequests: Array<{ module: string; depth?: "full" | "surface" }> = [],
+	{ lazyEvidence = true }: { lazyEvidence?: boolean } = {},
 ): ProviderSupervisor {
+	let evidence: () => Iterable<string> = () => [];
+	let routing: ReturnType<typeof routingContextOf> | undefined;
+	const context = () => {
+		routing ??= routingContextOf(evidence());
+		return routing;
+	};
 	const supervisor = {
 		running: () => [claims, dataClaims],
-		route: (module: string): Route =>
-			module.endsWith(".fake")
-				? { owned: true, providerId: claims.providerId, content: "code" }
-				: module.endsWith(".fdata")
-					? { owned: true, providerId: dataClaims.providerId, content: "data" }
-					: { owned: false, reason: "unclaimed" },
+		route: (module: string) => routeModule(module, [claims, dataClaims, headerClaims], context()),
+		evidenceFrom: (modules: () => Iterable<string>) => {
+			if (lazyEvidence) evidence = modules;
+		},
+		observeWorkspace: (modules: Iterable<string>) => {
+			routing = routingContextOf(modules);
+		},
+		observeModule: (module: string) => context().observe(module),
 		askProvider: async () => ({ files: discovered, externalRoots: [], configFiles: [], diagnostics: [] }),
 		ask: async (_module: string, method: string, params: unknown) => {
 			if (method === "parseFile") {
@@ -183,6 +200,61 @@ describe("workspace roots", () => {
 
 		expect(service.findByName("Before")).toEqual([]);
 		expect(service.findByName("After")).toHaveLength(1);
+	});
+});
+
+describe("a shared extension claim", () => {
+	it("routes a header beside a source on the first scan, since evidence is read before ownership", async () => {
+		initGit();
+		put("a.fake", "export class Source {}\n");
+		put("a.fakeh", "export class Header {}\n");
+		service = new LexiconService(store, fakeSupervisor([], [], { lazyEvidence: false }), sourceReader(root), root);
+
+		const outcomes = await service.indexWorkspace();
+
+		expect(outcomes.filter((outcome) => outcome.action === "indexed").map((outcome) => outcome.module)).toEqual([
+			"a.fake",
+			"a.fakeh",
+		]);
+		expect(service.findByName("Header")).toHaveLength(1);
+	});
+
+	it("routes a header on a fresh service, before any scan has run", async () => {
+		initGit();
+		put("b.fake", "export class Source {}\n");
+		put("b.fakeh", "export class Header {}\n");
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+
+		await expect(service.indexFile("b.fakeh")).resolves.toMatchObject({ action: "indexed" });
+	});
+
+	it("takes a source indexed outside a scan as evidence", async () => {
+		initGit();
+		put("b.fakeh", "export class Header {}\n");
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+
+		await service.indexWorkspace();
+		await expect(service.indexFile("b.fakeh")).resolves.toMatchObject({ action: "skipped", reason: "unclaimed" });
+		put("b.fake", "export class Source {}\n");
+		await service.indexFile("b.fake");
+		await expect(service.indexFile("b.fakeh")).resolves.toMatchObject({ action: "indexed" });
+	});
+
+	it("drops the claim with the last source a batch deletes", async () => {
+		initGit();
+		put("c.fake", "export class Source {}\n");
+		put("c.fakeh", "export class Header {}\n");
+		service = new LexiconService(store, fakeSupervisor(["c.fake", "c.fakeh"]), sourceReader(root), root);
+
+		await service.indexWorkspace();
+		rmSync(path.join(root, "c.fake"));
+		const outcomes = await service.applyBatch([
+			{ kind: "deleted", module: "c.fake" },
+			{ kind: "changed", module: "c.fakeh", contentHash: "c-2" },
+		]);
+
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "c.fakeh", reason: "unclaimed" }));
+		await expect(service.indexFile("c.fakeh")).resolves.toMatchObject({ action: "skipped", reason: "unclaimed" });
 	});
 });
 

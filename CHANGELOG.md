@@ -95,7 +95,10 @@ a name path, counted in source order; the first keeps its bare id, so no id that
 changes. The wire settles it for every provider, what sits inside a re-minted declaration follows
 it, and the core refuses a parse that still carries one id twice. Declarations that used to vanish
 are indexed now; a binding inside a re-minted block still names what the provider bound, which is
-the first occurrence until that provider learns to count.
+the first occurrence until that provider learns to count. A parameter and a type parameter carry an
+occurrence too, `(x)[2]` and `[T][2]`, since a macro invocation read as a function repeats a
+parameter name and the whole file was refused for it; a type parameter named by digits alone is
+refused so that bracket stays unambiguous.
 
 A GDScript script with no `class_name` is a class named after its file, and it used to claim a
 `selectionRange`, the span of its name, at a position where no name is written. The field is
@@ -112,6 +115,10 @@ from the other. The key, the daemon's lock and the project registry all resolve 
 now; case is whatever the filesystem reports and is never folded. Only a workspace whose path
 differs from its real path gets a new key, and for that workspace this release is a rebuild: the
 old store directory stays behind until `delete_project_store` removes it.
+
+A C++ header with a `.h` extension beside C++ sources is now read by the C++ provider. It previously
+went to the C provider, which refused C++ in it. This is the shared-extension claim any provider
+can declare.
 
 A move target is checked as a workspace path before anything is planned. `refactor_move` took
 `toModule` as given, so `../outside.ts` or an absolute path planned a write past the workspace;

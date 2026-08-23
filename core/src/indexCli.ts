@@ -42,8 +42,13 @@ async function main(argv: string[]): Promise<void> {
 	if (failures.length > 0)
 		console.log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
 
-	const skipped = outcomes.filter((o) => o.action === "skipped");
-	if (skipped.length > 0) console.log(`${skipped.length} skipped (${skipped[0]?.reason})`);
+	const skippedByReason = new Map<string, number>();
+	for (const outcome of outcomes) {
+		if (outcome.action !== "skipped") continue;
+		const reason = outcome.reason ?? "no reason given";
+		skippedByReason.set(reason, (skippedByReason.get(reason) ?? 0) + 1);
+	}
+	for (const [reason, count] of skippedByReason) console.log(`${count} skipped (${reason})`);
 
 	console.log(`comments: ${service.commentCounts()}`);
 

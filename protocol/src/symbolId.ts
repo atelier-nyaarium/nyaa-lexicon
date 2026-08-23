@@ -66,6 +66,8 @@ const STRUCTURAL = new Set([" ", "/", "#", ".", ":", "(", ")", "[", "]", "`"]);
 /** A disambiguator sits raw between parens, so anything that could close them early is refused. */
 const DISAMBIGUATOR_RE = /^[A-Za-z0-9._-]+$/;
 
+const DIGITS_RE = /^[0-9]+$/;
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -132,12 +134,9 @@ export function quoteName(name: string): string {
 	return nfc;
 }
 
-/** `[n]` between the name and its suffix; the one place a bracket follows a name. */
+/** `[n]` after the name, or after a parameter's brackets, and before any suffix. */
 function encodeOccurrence(d: Descriptor): string {
 	if (d.occurrence === undefined) return "";
-	if (d.kind === "parameter" || d.kind === "typeParameter") {
-		throw new Error(`a ${d.kind} descriptor has no slot for an occurrence`);
-	}
 	if (!Number.isSafeInteger(d.occurrence) || d.occurrence < 2) {
 		throw new Error(`occurrence must be an integer of 2 or more, got: ${d.occurrence}`);
 	}
@@ -161,8 +160,12 @@ function encodeDescriptor(d: Descriptor): string {
 		if (d.disambiguator !== undefined) {
 			throw new Error(`a ${d.kind} descriptor has no slot for a disambiguator`);
 		}
-		if (d.kind === "parameter") return `(${name})`;
-		if (d.kind === "typeParameter") return `[${name}]`;
+		if (d.kind === "parameter") return `(${name})${occurrence}`;
+		// Digits alone would read back as an occurrence of whatever precedes the brackets.
+		if (d.kind === "typeParameter" && DIGITS_RE.test(d.name)) {
+			throw new Error(`a type parameter cannot be named by digits alone, got: ${d.name}`);
+		}
+		if (d.kind === "typeParameter") return `[${name}]${occurrence}`;
 		return `${name}${occurrence}${KIND_SUFFIX.term}`;
 	}
 
@@ -251,9 +254,17 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 			c.next();
 			const name = readName(c);
 			if (name === null) return err(c.fail("expected a parameter name"));
+			if (ch === "[" && DIGITS_RE.test(name))
+				return err(c.fail("a type parameter cannot be named by digits alone"));
 			if (c.peek() !== close) return err(c.fail(`expected ${close} to close the parameter`));
 			c.next();
-			out.push({ kind: ch === "(" ? "parameter" : "typeParameter", name });
+			const occurrence = readOccurrence(c);
+			if (!occurrence.ok) return occurrence;
+			out.push({
+				kind: ch === "(" ? "parameter" : "typeParameter",
+				name,
+				...(occurrence.value === undefined ? {} : { occurrence: occurrence.value }),
+			});
 			continue;
 		}
 

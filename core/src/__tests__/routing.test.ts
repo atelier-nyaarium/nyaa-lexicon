@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modulesFor, type ProviderClaims, routeModule } from "../routing";
+import { modulesFor, type ProviderClaims, routeModule, routingContextOf } from "../routing";
 
 ////////////////////////////////
 //  Helpers
@@ -83,5 +83,73 @@ describe("modulesFor", () => {
 		const rival: ProviderClaims = { providerId: "other", language: "y", extensions: [".ts"] };
 		expect(modulesFor("ts", ["src/a.ts"], [TS, rival])).toEqual([]);
 		expect(modulesFor("other", ["src/a.ts"], [TS, rival])).toEqual([]);
+	});
+});
+
+describe("a claim on a shared extension", () => {
+	const plain: ProviderClaims = { providerId: "plain", language: "plain", extensions: [".h"] };
+	const shared: ProviderClaims = {
+		providerId: "shared",
+		language: "shared",
+		extensions: [],
+		sharedExtensions: [{ extension: ".h", beside: [".cpp"] }],
+	};
+
+	it("wins when the workspace contains evidence", () => {
+		expect(routeModule("src/a.h", [plain, shared], routingContextOf(["src/a.cpp"]))).toEqual({
+			owned: true,
+			providerId: "shared",
+			content: "code",
+		});
+	});
+
+	it("leaves the plain claim when evidence is absent", () => {
+		expect(routeModule("src/a.h", [plain, shared], routingContextOf(["src/a.txt"]))).toEqual({
+			owned: true,
+			providerId: "plain",
+			content: "code",
+		});
+	});
+
+	it("leaves the plain claim without a context", () => {
+		expect(routeModule("src/a.h", [plain, shared])).toEqual({
+			owned: true,
+			providerId: "plain",
+			content: "code",
+		});
+	});
+
+	it("contests when two shared claims hold", () => {
+		const other: ProviderClaims = {
+			providerId: "other",
+			language: "other",
+			extensions: [],
+			sharedExtensions: [{ extension: ".h", beside: [".cpp"] }],
+		};
+		expect(routeModule("src/a.h", [shared, other], routingContextOf(["src/a.cpp"]))).toEqual({
+			owned: false,
+			reason: "contested",
+			providerIds: ["other", "shared"],
+		});
+	});
+
+	it("lets a filename claim beat a shared claim", () => {
+		const named: ProviderClaims = { ...plain, providerId: "named", filenames: ["a.h"] };
+		expect(routeModule("src/a.h", [shared, named], routingContextOf(["src/a.cpp"]))).toEqual({
+			owned: true,
+			providerId: "named",
+			content: "code",
+		});
+	});
+
+	it("checks evidence case-insensitively", () => {
+		expect(routingContextOf(["src/a.CPP"]).hasExtension(".cpp")).toBe(true);
+	});
+
+	it("takes a module observed after the scan as evidence", () => {
+		const context = routingContextOf(["src/a.h"]);
+		expect(routeModule("src/a.h", [plain, shared], context)).toMatchObject({ providerId: "plain" });
+		context.observe("src/b.cpp");
+		expect(routeModule("src/a.h", [plain, shared], context)).toMatchObject({ providerId: "shared" });
 	});
 });

@@ -87,6 +87,7 @@ export class CppProvider {
 			providerId: "cpp-provider",
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
+			sharedExtensions: [{ extension: ".h", beside: EXTENSIONS }],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

@@ -64,6 +64,11 @@ largest data files, so a fixture directory never pushes the code off the page. I
 for everything the provider claims: a code provider that also claims a data file, as GDScript does
 `project.godot`, reports it as code, which is honest about who answers for it.
 
+`sharedExtensions` claims an extension only when the workspace contains a file with one of its
+`beside` extensions. The evidence is every file the scope admits, owned by a provider or not, read
+before any ownership is decided; a file indexed outside a scan adds itself to it. It outranks a plain claim on that extension, while two holding shared claims
+contest the file. A filename claim outranks both.
+
 ## What a diagnostic's severity does
 
 `error` means the file could not be read: core stores nothing from that parse, keeps whatever an
@@ -99,8 +104,11 @@ no rename of it, and an editor falls back to the declaration's range.
 
 One id names one declaration. A name path that a file declares twice, a merged interface or a
 block-scoped sibling, is two declarations, and the wire settles that for every provider: the
-second and later ones carry an occurrence, `Cart[2]#`, `y[3].`, `add(2)[2].`, counted in source
-order, while the first keeps its bare id so nothing that never repeated changes. What sits inside a
+second and later ones carry an occurrence, `Cart[2]#`, `y[3].`, `add(2)[2].`, `(x)[2]`, `[T][2]`,
+counted in source order, while the first keeps its bare id so nothing that never repeated changes.
+A macro invocation read as a function, or a template read twice, repeats a parameter name the same
+way, which is why a parameter carries one too; a type parameter may not be named by digits alone,
+since `[2]` after a descriptor is an occurrence. What sits inside a
 re-minted declaration follows it by position: its members, a reference's owner, a literal's
 container, a doc anchor. A binding target is semantic and is left as the provider bound it. A
 provider that knows its scopes may mint occurrences itself; one that does not still cannot hand the

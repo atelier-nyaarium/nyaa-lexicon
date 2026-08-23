@@ -33,12 +33,11 @@ function depthOf(id: string): number {
 	return parseSymbolId(id)?.descriptors.length ?? 0;
 }
 
-/** The id without its last occurrence, and which occurrence it was; null when it can carry none. */
+/** The id without its last occurrence, and which occurrence it was; null for a local, which has none. */
 function split(id: string): { base: string; occurrence: number } | null {
 	const parsed = parseSymbolId(id);
 	const last = parsed?.descriptors.at(-1);
 	if (parsed === null || parsed === undefined || parsed.local !== undefined || last === undefined) return null;
-	if (last.kind === "parameter" || last.kind === "typeParameter") return null;
 	const bare: Descriptor = {
 		kind: last.kind,
 		name: last.name,

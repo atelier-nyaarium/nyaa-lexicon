@@ -440,7 +440,7 @@ describe("moduleOf", () => {
  * already answers, so the core needs no store lookup and no knowledge of any language to ask it.
  */
 describe("occurrences", () => {
-	it("round-trips an occurrence on every kind that has a slot, after the disambiguator", () => {
+	it("round-trips an occurrence on every kind, after the disambiguator or a parameter's brackets", () => {
 		const shapes: Descriptor[][] = [
 			[{ kind: "type", name: "Cart", occurrence: 2 }],
 			[{ kind: "term", name: "y", occurrence: 3 }],
@@ -451,6 +451,14 @@ describe("occurrences", () => {
 			[
 				{ kind: "type", name: "Cart", occurrence: 2 },
 				{ kind: "parameter", name: "x" },
+			],
+			[
+				{ kind: "method", name: "work" },
+				{ kind: "parameter", name: "x", occurrence: 2 },
+			],
+			[
+				{ kind: "type", name: "Map" },
+				{ kind: "typeParameter", name: "Key", occurrence: 3 },
 			],
 		];
 		for (const descriptors of shapes) {
@@ -471,6 +479,16 @@ describe("occurrences", () => {
 				descriptors: [{ kind: "method", name: "add", disambiguator: "2", occurrence: 3 }],
 			}),
 		).toBe("lexicon ts src/a.ts add(2)[3].");
+		expect(
+			composeSymbolId({
+				language: "ts",
+				module: "src/a.ts",
+				descriptors: [
+					{ kind: "type", name: "Map" },
+					{ kind: "typeParameter", name: "Key", occurrence: 2 },
+				],
+			}),
+		).toBe("lexicon ts src/a.ts Map#[Key][2]");
 	});
 
 	it("keeps a type parameter after a name apart from an occurrence", () => {
@@ -484,10 +502,13 @@ describe("occurrences", () => {
 		]);
 	});
 
-	it("refuses an occurrence below two, a non-numeric one, and one on a parameter", () => {
+	// `[2]` after a descriptor is an occurrence, so no type parameter may spell its name that way.
+	it("refuses an occurrence below two, a non-numeric one, and a type parameter named by digits", () => {
 		expect(parseSymbolId("lexicon ts src/a.ts Cart[1]#")).toBeNull();
 		expect(parseSymbolId("lexicon ts src/a.ts Cart[x]#")).toBeNull();
 		expect(parseSymbolId("lexicon ts src/a.ts Cart[2#")).toBeNull();
+		expect(parseSymbolId("lexicon ts src/a.ts Cart#[2]")).toBeNull();
+		expect(parseSymbolId("lexicon ts src/a.ts Cart#[T][1]")).toBeNull();
 		expect(() =>
 			composeSymbolId({
 				language: "ts",
@@ -500,11 +521,11 @@ describe("occurrences", () => {
 				language: "ts",
 				module: "src/a.ts",
 				descriptors: [
-					{ kind: "method", name: "work" },
-					{ kind: "parameter", name: "x", occurrence: 2 },
+					{ kind: "type", name: "Cart" },
+					{ kind: "typeParameter", name: "2" },
 				],
 			}),
-		).toThrow();
+		).toThrow(/digits alone/);
 	});
 
 	it("tells an occurrence apart in containment and carries it through a rebase", () => {

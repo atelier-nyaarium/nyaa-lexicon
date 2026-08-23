@@ -1090,6 +1090,7 @@ describe("renaming a symbol that other files import", () => {
 		return {
 			ask: async (_module: string, method: string) =>
 				method === "resolveImport" ? { status: "resolved", module } : {},
+			evidenceFrom: () => {},
 		} as unknown as ProviderSupervisor;
 	}
 
@@ -1212,6 +1213,7 @@ describe("renaming a symbol that other files import", () => {
 					method === "resolveImport"
 						? { status: "resolved", module: params.specifier === "./cart" ? "src/cart.ts" : "src/index.ts" }
 						: {},
+				evidenceFrom: () => {},
 			} as unknown as ProviderSupervisor,
 			fromText(() => null),
 		);
@@ -1340,6 +1342,7 @@ describe("searching imports", () => {
 				method === "resolveImport"
 					? { status: "resolved", module: params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts" }
 					: {},
+			evidenceFrom: () => {},
 		} as unknown as ProviderSupervisor;
 		service = new LexiconService(
 			store,
@@ -1363,6 +1366,8 @@ describe("performing a rename", () => {
 			ask: async (module: string, method: string) =>
 				method === "renameEdits" ? reply(module) : { status: "unresolved", reason: "NotImplemented" },
 			route: () => ({ owned: false, reason: "unclaimed" }),
+			observeModule: () => {},
+			evidenceFrom: () => {},
 		} as unknown as ProviderSupervisor;
 	}
 

@@ -81,6 +81,9 @@ function supervisorFor(fixture: Fixture): ProviderSupervisor {
 				diagnostics: [],
 			};
 		},
+		observeWorkspace: () => {},
+		observeModule: () => {},
+		evidenceFrom: () => {},
 		stopAll: () => {},
 	} as unknown as ProviderSupervisor;
 }

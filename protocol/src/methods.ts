@@ -65,6 +65,10 @@ export const InitializeResponseSchema = z
 		extensions: z.array(z.string().min(1)),
 		/** Exact filenames claimed regardless of extension, e.g. "project.godot". */
 		filenames: z.array(z.string().min(1)).optional(),
+		/** Claimed only where a file with a `beside` extension exists; outranks a plain claim, ties contest. */
+		sharedExtensions: z
+			.array(z.object({ extension: z.string().min(1), beside: z.array(z.string().min(1)).min(1) }))
+			.optional(),
 		protocolVersion: z.string().min(1),
 		tiers: ProviderTiersSchema,
 		/**

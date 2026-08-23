@@ -48,6 +48,13 @@ export interface ScanBreakdown {
 /** How many failed files an answer names; `overview` lists every one. */
 export const NAMED_FAILURES = 3;
 
+/** The scope's verdict on the tracked set, each a subset of the one before. */
+interface Admitted {
+	everything: string[];
+	candidates: string[];
+	reachable: string[];
+}
+
 export interface IndexStatus {
 	state: "unstarted" | "discovering" | "warming" | "indexing" | "upgrading" | "ready";
 	done: number;
@@ -78,7 +85,10 @@ export class WorkspaceIndexer {
 		private readonly cache: ResultCache,
 		/** Resolution belongs to the import resolver; the indexer only follows where it points. */
 		private readonly resolve: (fromModule: string, specifier: string) => Promise<ImportResolution>,
-	) {}
+	) {
+		// A route asked before the first scan still sees the workspace.
+		supervisor.evidenceFrom(() => this.admitted().reachable);
+	}
 
 	/** Scan progress is process-local; stored counts come from the database. */
 	private status: Pick<IndexStatus, "state" | "done" | "total"> = { state: "unstarted", done: 0, total: 0 };
@@ -132,6 +142,8 @@ export class WorkspaceIndexer {
 			return { module, action: "skipped", reason: "parse failed", failure };
 		}
 		const text = read.text;
+		// Read, so it exists: evidence for a shared claim that no scan has seen.
+		this.supervisor.observeModule(module);
 
 		// Of the text actually read, never the caller's. A watcher hashes at event time and this
 		// reads later, so trusting the argument would store facts from one version of a file under
@@ -432,14 +444,25 @@ export class WorkspaceIndexer {
 		return outcomes;
 	}
 
-	private rootModules(extra: Iterable<string> = []): Set<string> {
+	/** Every module the scope admits, owned by a provider or not. */
+	private admitted(extra: Iterable<string> = [], gone: Iterable<string> = []): Admitted {
 		this.scope = fileScopeFor(this.workspaceRoot);
 		const named = includedFiles(this.workspaceRoot, this.scope.include);
 		const namedSet = new Set(named);
-		const everything = [...new Set([...(this.scope.known ?? []), ...this.discovered, ...named, ...extra])];
+		const goneSet = new Set(gone);
+		const everything = [...new Set([...(this.scope.known ?? []), ...this.discovered, ...named, ...extra])].filter(
+			(module) => !goneSet.has(module),
+		);
 		const candidates = everything.filter((module) => this.scope?.allows(module) ?? true);
 		const generated = generatedFiles(this.workspaceRoot, candidates);
 		const reachable = candidates.filter((module) => namedSet.has(module) || !generated.has(module));
+		return { everything, candidates, reachable };
+	}
+
+	private rootModules(extra: Iterable<string> = [], gone: Iterable<string> = []): Set<string> {
+		const { everything, candidates, reachable } = this.admitted(extra, gone);
+		// Evidence before ownership: a shared claim is decided by what the scope admits.
+		this.supervisor.observeWorkspace(reachable);
 		const roots = new Set(reachable.filter((module) => this.supervisor.route(module).owned));
 
 		// Hold all sets here.
@@ -497,10 +520,9 @@ export class WorkspaceIndexer {
 		const previousRoots = this.roots;
 		const previousDepths = this.depths;
 		const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
-		const roots = this.rootModules(changed);
-		for (const event of events) {
-			if (event.kind === "deleted") roots.delete(event.module);
-		}
+		const deleted = events.filter((event) => event.kind === "deleted").map((event) => event.module);
+		for (const module of deleted) this.discovered.delete(module);
+		const roots = this.rootModules(changed, deleted);
 		this.roots = roots;
 		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
 		// Persisted here too, or a watcher batch leaves overview describing the previous scan.

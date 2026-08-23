@@ -15,8 +15,18 @@ export interface ProviderClaims {
 	extensions: string[];
 	/** Exact filenames claimed regardless of extension, e.g. "project.godot". */
 	filenames?: string[];
+	/** Claimed only where a file with one of the `beside` extensions exists; outranks a plain claim. */
+	sharedExtensions?: Array<{ extension: string; beside: string[] }>;
 	/** As declared at initialize; absent means code, resolved here once. */
 	content?: FileContent;
+}
+
+/** What the workspace holds, which is what a shared claim is conditioned on. */
+export interface RoutingContext {
+	/** Whether any file with this extension (with its dot, any case) is in the workspace. */
+	hasExtension: (extension: string) => boolean;
+	/** Adds one module as evidence, for a file indexed outside a scan. */
+	observe: (module: string) => void;
 }
 
 /** Why routing answered as it did, so a caller can report an unowned file honestly. */
@@ -48,10 +58,11 @@ function extensionOf(module: string): string {
  * first-wins: picking one silently would make indexing depend on registration order, which is not
  * something anyone can debug from the output.
  */
-export function routeModule(module: string, providers: ProviderClaims[]): Route {
+export function routeModule(module: string, providers: ProviderClaims[], context?: RoutingContext): Route {
 	const name = basenameOf(module);
 	const byName = providers.filter((p) => p.filenames?.includes(name));
-	const candidates = byName.length > 0 ? byName : matchByExtension(module, providers);
+	const shared = byName.length > 0 || context === undefined ? [] : matchBySharedExtension(module, providers, context);
+	const candidates = byName.length > 0 ? byName : shared.length > 0 ? shared : matchByExtension(module, providers);
 
 	if (candidates.length === 0) return { owned: false, reason: "unclaimed" };
 	if (candidates.length > 1) {
@@ -67,10 +78,41 @@ function matchByExtension(module: string, providers: ProviderClaims[]): Provider
 	return providers.filter((p) => p.extensions.some((e) => e.toLowerCase() === extension));
 }
 
+/** Providers whose shared claim on this extension holds, given what the workspace contains. */
+function matchBySharedExtension(
+	module: string,
+	providers: ProviderClaims[],
+	context: RoutingContext,
+): ProviderClaims[] {
+	const extension = extensionOf(module);
+	if (extension === "") return [];
+	return providers.filter((p) =>
+		(p.sharedExtensions ?? []).some(
+			(claim) => claim.extension.toLowerCase() === extension && claim.beside.some((e) => context.hasExtension(e)),
+		),
+	);
+}
+
 /** Every module a provider claims, for a bulk pass that asks one provider for its whole set. */
-export function modulesFor(providerId: string, modules: string[], providers: ProviderClaims[]): string[] {
+export function modulesFor(
+	providerId: string,
+	modules: string[],
+	providers: ProviderClaims[],
+	context?: RoutingContext,
+): string[] {
 	return modules.filter((module) => {
-		const route = routeModule(module, providers);
+		const route = routeModule(module, providers, context);
 		return route.owned && route.providerId === providerId;
 	});
+}
+
+/** The context for one set of workspace modules: which extensions are present at all. */
+export function routingContextOf(modules: Iterable<string>): RoutingContext {
+	const present = new Set<string>();
+	const observe = (module: string): void => {
+		const extension = extensionOf(module);
+		if (extension !== "") present.add(extension);
+	};
+	for (const module of modules) observe(module);
+	return { hasExtension: (extension) => present.has(extension.toLowerCase()), observe };
 }
