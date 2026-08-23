@@ -116,6 +116,14 @@ a body used to be declared as if they were code, and are not any more. That is a
 for unchanged source, so a C++ file holding one reads as stale until its next read. A real
 single-header test framework that failed on all of this indexes now.
 
+A C++ macro invoked at file, namespace or class scope with no semicolon, `SUPPRESS_WARNING("x")`
+on a line of its own, used to be declared as a function whose body was whatever brace came next,
+so every declaration up to the matching close was swallowed into it. A SHOUT_CASE call not followed
+by a body or a declarator is a statement now and declares nothing; one followed by `{` is still the
+function-like declaration it was. The same test framework went from 629 declarations to 1670 once
+those bodies let go. Extraction changes for unchanged source, so such a file reads as stale until
+its next read.
+
 A GDScript script with no `class_name` is a class named after its file, and it used to claim a
 `selectionRange`, the span of its name, at a position where no name is written. The field is
 absent now, for any declaration whose name is not in the source; a rename of one is refused as

@@ -260,6 +260,10 @@ const MODIFIERS = new Set([
 const CONTROL_NAMES = new Set(["if", "for", "while", "switch", "catch", "sizeof", "decltype"]);
 const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
 
+function isShoutCase(value: string): boolean {
+	return /^[A-Z0-9_]*[A-Z][A-Z0-9_]*$/u.test(value);
+}
+
 function significantBefore(tokens: Token[], index: number): number {
 	let current = index - 1;
 	while (current >= 0 && !isSignificant(tokens[current] as Token)) current--;
@@ -880,6 +884,24 @@ class StructuralParser {
 				index = accessColon + 1;
 				continue;
 			}
+			if (scope.kind !== "function") {
+				const macroEnd = this.macroInvocationEnd(index, limit);
+				if (macroEnd >= 0) {
+					for (let excluded = index; excluded < macroEnd; excluded++) {
+						if (tokenAt(this.tokens, excluded)?.kind === "identifier")
+							this.excludedTokenIndexes.add(excluded);
+					}
+					index = macroEnd;
+					continue;
+				}
+				const next = significantAfter(this.tokens, index, limit);
+				const nextToken = tokenAt(this.tokens, next);
+				if (isShoutCase(token.value) && this.isStandaloneMacroPrefix(index, next, nextToken, limit)) {
+					this.excludedTokenIndexes.add(index);
+					index++;
+					continue;
+				}
+			}
 			const prefix = this.readPrefix(index, limit);
 			if (prefix === null) {
 				index++;
@@ -923,6 +945,56 @@ class StructuralParser {
 			index = end >= index ? end + 1 : index + 1;
 		}
 		return index;
+	}
+
+	// Prefixes must occupy their own source line.
+	private isStandaloneMacroPrefix(index: number, next: number, nextToken: Token | undefined, limit: number): boolean {
+		const token = tokenAt(this.tokens, index);
+		const previous = significantBefore(this.tokens, index);
+		if (token === undefined || (previous >= 0 && tokenAt(this.tokens, previous)?.end.line === token.start.line))
+			return false;
+		if (next < 0 || nextToken === undefined || nextToken.start.line <= token.start.line) return false;
+		let candidate = next;
+		while (candidate >= 0) {
+			const candidateToken = tokenAt(this.tokens, candidate);
+			if (candidateToken?.text === "#") return true;
+			if (candidateToken?.kind !== "identifier" || !isShoutCase(candidateToken.value)) return false;
+			if (this.macroInvocationEnd(candidate, limit) >= 0) return true;
+			// Every bare prefix in the chain is alone on its line too.
+			const following = significantAfter(this.tokens, candidate, limit);
+			if (following < 0 || (tokenAt(this.tokens, following)?.start.line ?? -1) <= candidateToken.start.line)
+				return false;
+			candidate = following;
+		}
+		return false;
+	}
+
+	private macroInvocationEnd(startIndex: number, limit: number): number {
+		const name = tokenAt(this.tokens, startIndex);
+		if (name?.kind !== "identifier" || !isShoutCase(name.value)) return -1;
+		const open = significantAfter(this.tokens, startIndex, limit);
+		if (tokenAt(this.tokens, open)?.text !== "(") return -1;
+		const close = matching(this.tokens, open, "(", ")", limit);
+		if (close < 0) return -1;
+		const next = significantAfter(this.tokens, close, limit);
+		const nextValue = tokenAt(this.tokens, next)?.text;
+		if (
+			nextValue === "{" ||
+			nextValue === ":" ||
+			nextValue === "=" ||
+			nextValue === "->" ||
+			nextValue === "const" ||
+			nextValue === "noexcept" ||
+			nextValue === "override" ||
+			nextValue === "final" ||
+			nextValue === "try" ||
+			nextValue === "&" ||
+			nextValue === "&&" ||
+			nextValue === "("
+		)
+			return -1;
+		if (nextValue === ".") return statementEnd(this.tokens, close + 1, limit) + 1;
+		return nextValue === ";" ? next + 1 : close + 1;
 	}
 
 	private readPrefix(startIndex: number, limit: number): Prefix | null {
@@ -1760,7 +1832,12 @@ class StructuralParser {
 		if (values.length === 0) return false;
 		const first = values[0];
 		if (first === undefined || tokenAt(this.tokens, typeIndexes[0] as number)?.kind !== "identifier") return false;
-		if (TYPE_WORDS.has(first) || ["class", "enum", "struct", "typename", "union"].includes(first)) return true;
+		if (
+			TYPE_WORDS.has(first) ||
+			isShoutCase(first) ||
+			["class", "enum", "struct", "typename", "union"].includes(first)
+		)
+			return true;
 		if (
 			this.drafts.some(
 				(draft) =>
