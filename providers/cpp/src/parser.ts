@@ -256,6 +256,7 @@ const MODIFIERS = new Set([
 	"volatile",
 	"export",
 ]);
+const DECLARATION_SPECIFIERS = new Set(["__declspec", "__attribute__", "alignas"]);
 
 const CONTROL_NAMES = new Set(["if", "for", "while", "switch", "catch", "sizeof", "decltype"]);
 const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
@@ -480,6 +481,7 @@ class StructuralParser {
 	private readonly drafts: DraftRecord[] = [];
 	private readonly roleByToken = new Map<number, Reference["role"]>();
 	private readonly excludedTokenIndexes = new Set<number>();
+	private readonly declarationSpecifierTokenIndexes = new Set<number>();
 	private readonly typeTokenIndexes = new Set<number>();
 	private readonly templateTokenIndexes = new Set<number>();
 	private readonly diagnostics: Diagnostic[];
@@ -912,6 +914,14 @@ class StructuralParser {
 				continue;
 			}
 			const keyword = tokenAt(this.tokens, prefix.keywordIndex)?.text;
+			// A linkage block, `extern "C" { ... }`, is transparent: its body belongs to this scope.
+			if (keyword === "{" && prefix.modifiers.has("extern")) {
+				const close = matching(this.tokens, prefix.keywordIndex, "{", "}", limit);
+				if (close < 0) this.addDiagnostic("Linkage block is not closed.", prefix.keywordIndex);
+				this.parseScope(prefix.keywordIndex + 1, close < 0 ? limit : close, scope);
+				index = close < 0 ? limit : close + 1;
+				continue;
+			}
 			if (keyword === "namespace") {
 				index = this.parseNamespace(prefix, limit, scope);
 				continue;
@@ -1027,10 +1037,18 @@ class StructuralParser {
 			if (index <= guard) throw new Error("declaration prefix failed to advance");
 			guard = index;
 			const token = tokenAt(this.tokens, index);
-			if (token?.text === "[[") {
-				const close = this.findAttributeEnd(index, limit);
-				if (close < 0) return null;
-				index = significantAfter(this.tokens, close, limit);
+			const specifierEnd = this.declarationSpecifierEnd(index, limit);
+			if (specifierEnd !== undefined) {
+				if (specifierEnd < 0) return null;
+				for (let consumed = index; consumed < specifierEnd; consumed++) {
+					this.declarationSpecifierTokenIndexes.add(consumed);
+					if (tokenAt(this.tokens, consumed)?.kind === "identifier") this.excludedTokenIndexes.add(consumed);
+				}
+				index = significantAfter(this.tokens, specifierEnd - 1, limit);
+				continue;
+			}
+			if (token?.kind === "string" && modifiers.has("extern")) {
+				index = significantAfter(this.tokens, index, limit);
 				continue;
 			}
 			if (token?.text === "export") exported = true;
@@ -1049,12 +1067,26 @@ class StructuralParser {
 		return Math.max(prefix.startIndex + 1, end + 1);
 	}
 
-	private findAttributeEnd(startIndex: number, limit: number): number {
-		for (let index = startIndex + 1; index < limit; index++) {
-			if (tokenAt(this.tokens, index)?.text === "]]" || tokenAt(this.tokens, index)?.text === "]") return index;
+	private declarationSpecifierEnd(index: number, limit: number): number | undefined {
+		const token = tokenAt(this.tokens, index);
+		const next = significantAfter(this.tokens, index, limit);
+		const isBracketSpecifier = token?.text === "[" && tokenAt(this.tokens, next)?.text === "[";
+		if (isBracketSpecifier) {
+			const close = matching(this.tokens, index, "[", "]", limit);
+			if (close < 0) {
+				this.addDiagnostic("Attribute specifier is not closed.", index);
+				return -1;
+			}
+			return close + 1;
 		}
-		this.addDiagnostic("Attribute specifier is not closed.", startIndex);
-		return -1;
+		if (token?.kind !== "identifier" || !DECLARATION_SPECIFIERS.has(token.value)) return undefined;
+		if (tokenAt(this.tokens, next)?.text !== "(") return undefined;
+		const close = matching(this.tokens, next, "(", ")", limit);
+		if (close < 0) {
+			this.addDiagnostic("Attribute specifier is not closed.", index);
+			return -1;
+		}
+		return close + 1;
 	}
 
 	private templateInfo(openIndex: number, closeIndex: number, startIndex: number): TemplateInfo {
@@ -1770,13 +1802,15 @@ class StructuralParser {
 	): { typeText: string } | null {
 		const meaningful = this.significantIndexes(startIndex, endIndex);
 		if (meaningful.length === 0) return null;
-		const equals = this.findNextText(startIndex, "=", endIndex);
+		const contentStart =
+			prefix !== undefined && startIndex === prefix.startIndex ? prefix.keywordIndex : startIndex;
+		const equals = this.findNextText(contentStart, "=", endIndex);
 		const initializerStart = equals >= 0 ? equals + 1 : endIndex;
-		const firstParen = this.findTopLevelAny(startIndex, ["(", "["], endIndex);
+		const firstParen = this.findTopLevelAny(contentStart, ["(", "["], endIndex);
 		const nameEnd = equals >= 0 ? equals : firstParen >= 0 ? firstParen : endIndex;
-		const nameIndex = this.lastName(startIndex, nameEnd);
+		const nameIndex = this.lastName(contentStart, nameEnd);
 		if (nameIndex < 0) return null;
-		const typeStart = prefix !== undefined && startIndex === prefix.startIndex ? prefix.keywordIndex : startIndex;
+		const typeStart = contentStart;
 		const beforeName = this.significantIndexes(typeStart, nameIndex);
 		let typeText = formatType(this.tokens, beforeName);
 		if (typeText === "") typeText = inheritedType;
@@ -1972,7 +2006,8 @@ class StructuralParser {
 		const indexes: number[] = [];
 		for (let index = Math.max(0, startIndex); index < endIndex; index++) {
 			const token = tokenAt(this.tokens, index);
-			if (token !== undefined && isSignificant(token)) indexes.push(index);
+			if (token !== undefined && isSignificant(token) && !this.declarationSpecifierTokenIndexes.has(index))
+				indexes.push(index);
 		}
 		return indexes;
 	}

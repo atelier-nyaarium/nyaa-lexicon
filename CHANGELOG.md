@@ -124,6 +124,15 @@ function-like declaration it was. The same test framework went from 629 declarat
 those bodies let go. Extraction changes for unchanged source, so such a file reads as stale until
 its next read.
 
+A C++ declaration with `__declspec`, `__attribute__`, `alignas` or `[[...]]` used to treat the
+specifier as a function-like declaration, so the actual variable or function could disappear. The
+specifier is consumed now, its arguments do not become references, the declaration keeps its
+source range from the first specifier, and an `extern "C"` linkage string before one is read as the
+linkage it is. An `extern "C" { ... }` block is read as part of the scope around it; its closing
+brace used to end the parse of the whole file, so a C header wrapped in one lost everything inside
+and after it. Extraction changes for unchanged source, so such a file reads as stale until its
+next read.
+
 A GDScript script with no `class_name` is a class named after its file, and it used to claim a
 `selectionRange`, the span of its name, at a position where no name is written. The field is
 absent now, for any declaration whose name is not in the source; a rename of one is refused as
