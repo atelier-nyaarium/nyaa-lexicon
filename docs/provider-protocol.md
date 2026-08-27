@@ -199,6 +199,9 @@ The prose is separate, one `DocRegion` per contiguous stretch:
 - `anchorId` is the heading's symbolId, never its name, because two headings share a name. Absent
   means the region sits under no heading, which covers prose before the first one and a file with
   none.
+- `plain`, when present, is the region's visible text with the source's markup stripped, and it is
+  what search normalizes; `text` stays verbatim so the range still slices it out. An HTML block
+  carries its inner tags in `text` and its words in `plain`.
 - Regions PARTITION the file: disjoint, in document order. Overlapping regions index the same bytes
   twice, so one search returns the same prose as two facts.
 - A range slices its own text back out, with fence delimiter lines excluded from both.

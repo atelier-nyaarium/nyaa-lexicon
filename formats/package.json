@@ -7,11 +7,15 @@
 	"comment": "No root export on purpose. A barrel makes every consumer carry every format's parser, which is how the YAML provider once bundled jsonc-parser and died on node over a package it never calls. Import the reader you read.",
 	"exports": {
 		"./yaml": "./src/yaml.ts",
-		"./json": "./src/json.ts"
+		"./json": "./src/json.ts",
+		"./xml": "./src/xml.ts",
+		"./html": "./src/html.ts"
 	},
 	"dependencies": {
 		"@nyaa-lexicon/protocol": "workspace:*",
+		"@rgrove/parse-xml": "4.2.3",
 		"jsonc-parser": "3.3.1",
+		"parse5": "8.0.1",
 		"yaml": "2.9.0"
 	}
 }

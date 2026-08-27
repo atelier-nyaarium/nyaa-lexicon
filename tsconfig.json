@@ -18,6 +18,8 @@
 		{ "path": "./providers/markdown" },
 		{ "path": "./providers/json" },
 		{ "path": "./providers/yaml" },
+		{ "path": "./providers/xml" },
+		{ "path": "./providers/html" },
 		{ "path": "./scripts" }
 	]
 }

@@ -32,6 +32,13 @@ in 81ms, 16000 in 1.4 seconds, 100000 in about three minutes. It is still the ri
 nothing else reads YAML correctly, but a cost like that has to be known and written down rather than
 discovered by a repository that contains one large file.
 
+XML is read through `@rgrove/parse-xml` and HTML through `parse5`, and their spike answered all
+three. Both put offsets on every node, parse5 on every attribute too; both bundle for node with no
+UMD wrapper; and 6 MB of either parses in under half a second. Their nesting cost is the one to
+know: parse-xml recurses and overflows the stack at ten thousand nested elements under node, and
+parse5 survives a hundred thousand but spends thirty-five seconds on them, so `markupTooDeep` in
+`formats/src/depth.ts` counts tag depth before either runs and refuses past the shared limit.
+
 ## 2. One cursor owns character access
 
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes

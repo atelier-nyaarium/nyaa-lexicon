@@ -6,9 +6,10 @@ would be a second opinion, and the two would drift on the first edge case only o
 
 ## Import the reader you read
 
-There is no root export, only `./yaml` and `./json`. The bare package name does not resolve, and that
-is deliberate: a barrel makes every consumer carry every format's parser. The YAML provider once
-bundled `jsonc-parser` through one and died on node over a package it never calls.
+There is no root export, only `./yaml`, `./json`, `./xml` and `./html`. The bare package name does
+not resolve, and that is deliberate: a barrel makes every consumer carry every format's parser. The
+YAML provider once bundled `jsonc-parser` through one and died on node over a package it never
+calls.
 
 ## Context is DATA, never a language to branch on
 

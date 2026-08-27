@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTooDeep, MAX_NESTING, nestedTooDeep } from "../depth.js";
+import { isTooDeep, MAX_NESTING, markupTooDeep, nestedTooDeep } from "../depth.js";
 
 describe("bounding nesting before a parser recurses", () => {
 	const json = { line: ["//"], block: ["/*", "*/"] as [string, string] };
@@ -34,6 +34,12 @@ describe("bounding nesting before a parser recurses", () => {
 });
 
 describe("recognizing a recursion limit", () => {
+	it("counts markup tags and skips raw text", () => {
+		expect(markupTooDeep("<a>".repeat(MAX_NESTING), MAX_NESTING)).toBe(false);
+		expect(markupTooDeep("<a>".repeat(MAX_NESTING + 1), MAX_NESTING)).toBe(true);
+		expect(markupTooDeep(`<script>${"<a>".repeat(MAX_NESTING + 1)}</script>`, MAX_NESTING, ["script"])).toBe(false);
+	});
+
 	it("accepts the stack exhaustion a deep structure produces", () => {
 		function forever(n: number): number {
 			return forever(n + 1);

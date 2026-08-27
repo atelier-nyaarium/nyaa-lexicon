@@ -21,6 +21,7 @@ interface Forms {
 
 const SLASH_REAL: [string, string, string] = ["// real one", "/* real two */", "// real three"];
 const HASH_REAL: [string, string, string] = ["# real one", "# real two", "# real three"];
+const MARKUP_REAL: [string, string, string] = ["<!-- real one -->", "<!-- real two -->", "<!-- real three -->"];
 
 const C_LINES = [
 	'const char *a = "// MARK a";',
@@ -192,6 +193,31 @@ const FORMS: Record<string, Forms> = {
 			'i: "multi\n  # MARK j"',
 			'"# k": 1',
 			'l: {m: "# MARK l"}',
+		],
+	},
+	// Markup has no `<` inside a value, so the comment shape arrives escaped, or whole inside CDATA.
+	xml: {
+		subject: "forms.xml",
+		real: MARKUP_REAL,
+		wrap: (body) => `<root>\n${body}\n</root>\n`,
+		lines: [
+			'<a x="&lt;!-- MARK a --&gt;"/>',
+			"<b>&lt;!-- MARK b --&gt;</b>",
+			"<c><![CDATA[<!-- MARK c -->]]></c>",
+			"<d x='-- MARK d --'/>",
+			'<e x="quote &quot; &lt;!-- MARK e --&gt;"/>',
+		],
+	},
+	html: {
+		subject: "forms.html",
+		real: MARKUP_REAL,
+		lines: [
+			'<a title="<!-- MARK a -->"></a>',
+			"<p>&lt;!-- MARK b --&gt;</p>",
+			'<script>var s = "<!-- MARK c -->";</script>',
+			"<pre>&lt;!-- MARK d --&gt;</pre>",
+			"<b title='<!-- MARK e -->'></b>",
+			"<style>/* MARK f */</style>",
 		],
 	},
 };

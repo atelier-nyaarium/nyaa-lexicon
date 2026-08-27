@@ -986,7 +986,7 @@ export class IndexStore {
 					docFactId(module, region),
 					module,
 					region.text,
-					normalizeDocText(region.text),
+					normalizeDocText(region.plain ?? region.text),
 					region.fenced ? 1 : 0,
 					region.anchorId ?? null,
 					region.range.start.line,

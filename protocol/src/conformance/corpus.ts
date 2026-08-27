@@ -8,6 +8,7 @@
 // know their language's edge cases better than this file does.
 
 import { repeatedNamePathCase } from "./identityCases.js";
+import { markupCases } from "./markupCases.js";
 import { stringFormCase } from "./stringForms.js";
 import { type ConformanceCase, ConformanceCaseSchema } from "./types.js";
 
@@ -44,6 +45,8 @@ const RUST = "rust";
 const KOTLIN = "kotlin";
 const MARKDOWN = "markdown";
 const JSON_LANG = "json";
+const XML = "xml";
+const HTML = "html";
 const YAML = "yaml";
 
 const CASES: ConformanceCase[] = [
@@ -222,6 +225,17 @@ const CASES: ConformanceCase[] = [
 				subject: "doc.md",
 				declarations: [{ name: "b", nameStart: { line: 1, character: 10 } }],
 			},
+			// An attribute holding the character puts the next attribute's name to its right.
+			[XML]: {
+				files: { "data.xml": `<r a="${ASTRAL}" b="1"/>\n` },
+				subject: "data.xml",
+				declarations: [{ name: "b", nameStart: { line: 0, character: 10 } }],
+			},
+			[HTML]: {
+				files: { "data.html": `<r a="${ASTRAL}" b="1"></r>\n` },
+				subject: "data.html",
+				declarations: [{ name: "b", nameStart: { line: 0, character: 10 } }],
+			},
 		},
 	},
 	{
@@ -274,6 +288,16 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Cart.kt",
 				declarations: [{ name: "Cart", nameStart: { line: 1, character: 6 } }],
 			},
+			[XML]: {
+				files: { "cart.xml": "\n<cart/>\n" },
+				subject: "cart.xml",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 1 } }],
+			},
+			[HTML]: {
+				files: { "cart.html": "\n<cart></cart>\n" },
+				subject: "cart.html",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 1 } }],
+			},
 		},
 	},
 	{
@@ -293,6 +317,8 @@ const CASES: ConformanceCase[] = [
 			[JSON_LANG]: { files: { "empty.json": "\n" }, subject: "empty.json" },
 			[YAML]: { files: { "empty.yml": "\n" }, subject: "empty.yml" },
 			[MARKDOWN]: { files: { "empty.md": "\n" }, subject: "empty.md" },
+			[XML]: { files: { "empty.xml": "\n" }, subject: "empty.xml" },
+			[HTML]: { files: { "empty.html": "\n" }, subject: "empty.html" },
 		},
 		declarations: [],
 		// The "does not error" half, which the wording claimed and nothing checked. An empty file is
@@ -446,6 +472,16 @@ const CASES: ConformanceCase[] = [
 				files: { "crlf.yml": "# leading\r\ntotal: 42 # trailing\r\n" },
 				subject: "crlf.yml",
 				comments: ["# leading", "# trailing"],
+			},
+			[XML]: {
+				files: { "crlf.xml": '<!-- leading -->\r\n<root total="42"/>\r\n<!-- trailing -->\r\n' },
+				subject: "crlf.xml",
+				comments: ["<!-- leading -->", "<!-- trailing -->"],
+			},
+			[HTML]: {
+				files: { "crlf.html": '<!-- leading -->\r\n<p total="42"></p>\r\n<!-- trailing -->\r\n' },
+				subject: "crlf.html",
+				comments: ["<!-- leading -->", "<!-- trailing -->"],
 			},
 		},
 		comments: ["// leading", "// trailing"],
@@ -891,6 +927,16 @@ const CASES: ConformanceCase[] = [
 				files: { "bom.yml": `${BOM}# a note\nafter: 1\n` },
 				subject: "bom.yml",
 				comments: ["# a note"],
+			},
+			[XML]: {
+				files: { "bom.xml": `${BOM}<!-- a note -->\n<root after="1"/>\n` },
+				subject: "bom.xml",
+				comments: ["<!-- a note -->"],
+			},
+			[HTML]: {
+				files: { "bom.html": `${BOM}<!-- a note -->\n<p after="1"></p>\n` },
+				subject: "bom.html",
+				comments: ["<!-- a note -->"],
 			},
 		},
 	},
@@ -1745,7 +1791,7 @@ const CASES: ConformanceCase[] = [
  * instead of somewhere inside a provider run where it looks like the provider's fault.
  */
 export function loadCorpus(): ConformanceCase[] {
-	return [...CASES, stringFormCase(), repeatedNamePathCase()].map((testCase) =>
+	return [...CASES, stringFormCase(), repeatedNamePathCase(), ...markupCases()].map((testCase) =>
 		ConformanceCaseSchema.parse(testCase),
 	);
 }

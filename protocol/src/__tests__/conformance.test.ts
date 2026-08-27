@@ -251,13 +251,17 @@ describe("corpus", () => {
 		expect(checkFacts({ declarationNames: [`a${nul}b`] } as unknown as ConformanceCase, split)).toHaveLength(1);
 	});
 
-	// Named rather than counted: deleting the markdown fixtures would otherwise leave four cases
-	// that pass everywhere by running nowhere.
+	// Named rather than counted: deleting the document fixtures would otherwise leave cases that
+	// pass everywhere by running nowhere.
 	it("keeps the docs cases pinned to a language, so they cannot quietly become unrunnable", () => {
 		const docsCases = casesForTier("docs");
 		expect(docsCases).not.toHaveLength(0);
 		for (const testCase of docsCases) {
-			expect(Object.keys(testCase.fixtures), testCase.id).toContain("markdown");
+			const languages = Object.keys(testCase.fixtures);
+			expect(
+				languages.some((language) => language === "markdown" || language === "html"),
+				testCase.id,
+			).toBe(true);
 		}
 	});
 

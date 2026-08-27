@@ -150,6 +150,8 @@ export const DocRegionSchema = z
 		range: RangeSchema,
 		/** Verbatim, fence delimiter lines excluded. Empty is not a region. */
 		text: z.string().min(1),
+		/** Optional visible text used for document search. */
+		plain: z.string().optional(),
 		/**
 		 * The symbolId of the heading this sits under, never its name: two headings share a name.
 		 *

@@ -1,0 +1,15 @@
+{
+	"name": "@nyaa-lexicon/provider-html",
+	"version": "2.1.0",
+	"private": true,
+	"type": "module",
+	"description": "HTML provider for nyaa-lexicon",
+	"exports": {
+		".": "./src/main.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/formats": "workspace:*",
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"vscode-jsonrpc": "9.0.1"
+	}
+}

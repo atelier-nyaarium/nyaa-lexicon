@@ -4,10 +4,24 @@ Only releases that ask something of you. A patch that changes nothing you can ob
 
 ## 2.1.1
 
-A daemon over a partially indexed store no longer answers from the part it has, and a search can
-be scoped to a declaration.
+XML and HTML are read, a search can be scoped to a declaration, and a daemon over a partially
+indexed store no longer answers from the part it has.
 
 ### What you get
+
+XML and HTML files are indexed. Every element is a declaration, named by its `id`, `name` or `key`
+attribute when it has one and by its tag otherwise, so `search_symbols("app_name")` lands on the
+Android string resource and `outline_module` on a manifest reads as the manifest does. Every
+attribute is a declaration beneath its element holding its value as a literal, so
+`find_literals({ value: "42", key: "data-report-id" })` answers, and so does `within` on any of
+them. XML text is a literal on its element; a malformed XML file reports the parser's position and
+nothing else. An HTML heading is a `heading`, its prose the doc regions beneath it, searchable
+through `search_docs` with the heading it sits under; `script` and `style` bodies are not read. A
+value past sixteen thousand characters, an SVG path for instance, is left out with a note naming
+its holder. The extensions claimed are `.xml .xsd .xsl .xslt .xhtml .svg .plist .xaml .resx
+.csproj .fsproj .vbproj .props .targets .nuspec .wsdl` and `.html .htm`, which widens what a
+workspace exposes: a `.plist` or a config XML holding a secret is now answerable, as a `.json` has
+been since 2.0.0, and `deny` in `lexicon.json` is the way to keep one out.
 
 `search_symbols`, `find_references`, `find_literals` and `find_comments` take `within`: a symbol id
 from an earlier answer, or a declaration name. It scopes declarations to those inside it, uses to

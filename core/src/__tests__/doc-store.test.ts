@@ -38,8 +38,14 @@ function heading(name: string): Declaration {
 	};
 }
 
-function region(text: string, line: number, anchorId?: string, fenced = false): DocRegion {
-	return { range: at(line), text, fenced, ...(anchorId === undefined ? {} : { anchorId }) };
+function region(text: string, line: number, anchorId?: string, fenced = false, plain?: string): DocRegion {
+	return {
+		range: at(line),
+		text,
+		fenced,
+		...(anchorId === undefined ? {} : { anchorId }),
+		...(plain === undefined ? {} : { plain }),
+	};
 }
 
 function write(declarations: Declaration[], docs: DocRegion[], module = MODULE): void {
@@ -78,6 +84,12 @@ describe("storing document prose", () => {
 
 		expect(reads.findDocs({ text: "long-run cost" }).total).toBe(1);
 		expect(reads.findDocs({ text: "long-run\ncost" }).total).toBe(0);
+	});
+
+	it("searches optional visible text and returns raw text", () => {
+		write([], [region("<em>raw</em>", 3, undefined, false, "visible text")]);
+		const found = reads.findDocs({ text: "visible text" }).docs[0];
+		expect(found?.raw).toBe("<em>raw</em>");
 	});
 
 	it("keeps a fenced region apart from prose, both ways", () => {

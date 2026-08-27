@@ -55,6 +55,100 @@ export function nestedTooDeep(text: string, comments: CommentSyntax, limit = MAX
 	return false;
 }
 
+export function markupTooDeep(text: string, limit = MAX_NESTING, rawText: string[] = []): boolean {
+	let depth = 0;
+	let i = 0;
+	const raw = new Set(rawText.map((name) => name.toLowerCase()));
+	while (i < text.length) {
+		if (text[i] !== "<") {
+			i++;
+			continue;
+		}
+		if (text.startsWith("<!--", i)) {
+			const end = text.indexOf("-->", i + 4);
+			if (end < 0) return false;
+			i = end + 3;
+			continue;
+		}
+		if (text.startsWith("<![CDATA[", i)) {
+			const end = text.indexOf("]]>", i + 9);
+			if (end < 0) return false;
+			i = end + 3;
+			continue;
+		}
+		if (text.startsWith("<?", i)) {
+			const end = text.indexOf("?>", i + 2);
+			if (end < 0) return false;
+			i = end + 2;
+			continue;
+		}
+		if (text.startsWith("<!", i)) {
+			const end = text.indexOf(">", i + 2);
+			if (end < 0) return false;
+			i = end + 1;
+			continue;
+		}
+		let cursor = i + 1;
+		const closing = text[cursor] === "/";
+		if (closing) cursor++;
+		while (cursor < text.length && /\s/u.test(text[cursor] as string)) cursor++;
+		const nameStart = cursor;
+		while (cursor < text.length && !/[\s/>]/u.test(text[cursor] as string)) cursor++;
+		const name = text.slice(nameStart, cursor).toLowerCase();
+		let quote: string | null = null;
+		while (cursor < text.length) {
+			const ch = text[cursor] as string;
+			if (quote !== null) {
+				if (ch === quote) quote = null;
+				cursor++;
+				continue;
+			}
+			if (ch === "'" || ch === '"') {
+				quote = ch;
+				cursor++;
+				continue;
+			}
+			if (ch === ">") break;
+			cursor++;
+		}
+		if (cursor >= text.length) return false;
+		const selfClosing = !closing && /\/\s*$/u.test(text.slice(i, cursor));
+		if (closing) depth = Math.max(0, depth - 1);
+		else if (!selfClosing) {
+			if (depth++ >= limit) return true;
+			if (raw.has(name)) {
+				let at = cursor + 1;
+				while (at < text.length) {
+					const mark = text.indexOf("<", at);
+					if (mark < 0) break;
+					let close = mark + 1;
+					if (text[close] !== "/") {
+						at = mark + 1;
+						continue;
+					}
+					close++;
+					while (close < text.length && /\s/u.test(text[close] as string)) close++;
+					if (text.slice(close, close + name.length).toLowerCase() !== name) {
+						at = mark + 1;
+						continue;
+					}
+					close += name.length;
+					while (close < text.length && /\s/u.test(text[close] as string)) close++;
+					if (text[close] === ">") {
+						i = close + 1;
+						depth--;
+						break;
+					}
+					at = mark + 1;
+				}
+				if (i !== cursor + 1) continue;
+			}
+		}
+		i = cursor + 1;
+	}
+	return false;
+}
+
 /**
  * A stack exhaustion, and never another `RangeError`.
  *

@@ -78,10 +78,73 @@ stored changes.
 
 ## Phase 2 - XML and HTML
 
-Readers in `formats/`, one per syntax, over a library chosen by `docs/parsing.md` rule 1 after a
-spike for source positions and the ESM bundle rule: `saxes` for XML and `parse5` for HTML are the
-candidates. Elements and attributes as declarations per Question 1; conformance cases shared with
-every provider. A new dependency is put before the owner before it is added.
+### Parsers, by the three questions of `docs/parsing.md` rule 1
+
+Spiked in a scratch project, nothing added to the repository yet.
+
+- **XML: `@rgrove/parse-xml` 4.2.3** (published 2026-07-26, zero dependencies, ESM and CJS
+  entries). `includeOffsets` puts `start` and `end` on every node: element, text, CDATA, comment,
+  processing instruction. Attributes come as a map with no spans, so the reader slices the start
+  tag by the element's offset and scans it with a small cursor. Entities are decoded. Malformed
+  input throws an `XmlError` carrying line, column and offset. 6.1 MB in 174 ms. Bundled for node:
+  37 KB, no UMD wrapper, runs.
+- **HTML: `parse5` 8.0.1** (published 2026-04-19, one dependency, `entities` 8.0.0, both ESM with
+  `exports` maps). `sourceCodeLocationInfo` puts start tag, end tag and per-attribute offsets on
+  every element, marks an implied end tag by its absence, and locates text and comments. Script
+  bodies arrive raw. Never throws: recovery is the HTML standard's. 5.8 MB in 446 ms. Bundled for
+  node: 263 KB, no UMD wrapper, runs.
+- `saxes` was rejected: last published 2021, CommonJS only, and positions only at event ends.
+
+### Model
+
+`formats/` gains `./xml` and `./html`, one reader each, taking context as data (language, module,
+offset, coordinates, the identity list). `providers/xml` (language `xml`, content `data`) and
+`providers/html` (language `html`, content `document`) wrap them the way `providers/json` wraps
+`readJson`.
+
+- **Element**: declaration kind `property`, descriptor `term`. Name: the value of the first
+  identity attribute present, by local name in the order `id`, `name`, `key`, prefix ignored,
+  empty values skipped; otherwise the tag as written, prefix kept. Selection range: the identity
+  value inside its quotes when promoted, else the tag name in the start tag. Range: start tag to
+  end tag, or to the element's end when the end tag is implied. Signature: the start tag text,
+  capped at 160 characters. Container: the parent element. Same-named siblings are minted plain and
+  the wire's `withOccurrences` numbers them; a reader never does. A promoted element is found by
+  its identity, not its tag, which stays in the signature and the outline.
+- **Attribute**: declaration kind `field`, descriptor `term`, name as written with its prefix,
+  selection range the name, range name to value, container the element. Its value is a `string`
+  literal held by the attribute, ranged over the quotes as the JSON reader ranges a string; an
+  HTML value written bare is ranged as written. A value past 16 KB is not a literal, and an `info`
+  note names the holder and the length.
+- **Comment**: a comment span, markers included; core attaches it.
+- **XML text and CDATA**, non-blank: a `string` literal held by the element, value decoded, ranged
+  over the node. Mixed content yields one literal per text node. Processing instructions and the
+  doctype yield nothing. A parse error yields one `error` diagnostic at its position and no facts.
+- **HTML headings** `h1` to `h6`: an element row of kind `heading`, in the one element tree, named
+  by its text with tags stripped, entities decoded and whitespace collapsed, the tag when empty.
+  Its attributes hang beneath it. Prose anchors to the nearest preceding heading in document
+  order, so `search_docs` on HTML names the heading a region sits under and no level path.
+- **HTML prose**: one doc region per element that is not phrasing content and has visible text
+  reachable without crossing another block: `text` is the raw inner slice, tags included, as
+  markdown regions carry their markers; `plain` is that visible text, whitespace collapsed, which
+  core normalizes for search. `fenced` inside `pre` or `code`. `script`, `style` and `template`
+  yield nothing, and a bogus comment parse5 makes of `<![CDATA[` is not a comment.
+- **Depth**: `markupTooDeep` in `depth.ts` counts tag nesting before either parser runs, skipping
+  comments, CDATA, processing instructions and the raw text of `script` and `style`; past
+  `MAX_NESTING` the file reports `TOO_DEEP`. The spike measured why: parse-xml overflows the stack
+  at ten thousand levels under node, and parse5 survives a hundred thousand in thirty-five seconds.
+- **Extensions**: XML `.xml .xsd .xsl .xslt .xhtml .svg .plist .xaml .resx .csproj .fsproj
+  .vbproj .props .targets .nuspec .wsdl`; HTML `.html .htm`.
+- **Tiers**: XML declarations, literals, comments, syntax diagnostics; HTML declarations, literals,
+  comments, docs.
+
+### Verification
+
+Conformance fixtures for both languages on every shared case that fits a data or document format
+(the astral, trailing newline, empty file, CRLF, BOM and marker cases), plus cases of their own:
+identity promotion by each attribute and by precedence, a namespaced identity, an implied end tag,
+a void element, duplicate ids as occurrences, a heading path across levels, a prose region inside
+`pre`, and a parse error's position. Then an index of real corpora: the Android resources and
+manifests in switchboard, the console HTML there, and an MSBuild project.
 
 ## Phase 3 - Plain-text fallback
 
