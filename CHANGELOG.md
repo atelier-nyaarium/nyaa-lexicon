@@ -2,7 +2,7 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
-## 2.1.1
+## 2.2.0
 
 XML, HTML and plain text are read, a search can be scoped to a declaration, and a daemon over a
 partially indexed store no longer answers from the part it has.
