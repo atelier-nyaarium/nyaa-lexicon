@@ -105,7 +105,7 @@ import { hashContent } from "./watcher.js";
 //  Constants
 
 /** How long a tree-first answer waits on its priority parse before serving outline facts. */
-const ENSURE_TREE_BUDGET_MS = 10_000;
+const ENSURE_TREE_BUDGET_MS = 60_000;
 
 /** A reporting cap, not a correctness one. Says so in the output when it bites. */
 const COMMENT_COUNT_SCAN = 200_000;
@@ -209,6 +209,14 @@ export class LexiconService {
 		return this.indexer.indexStatus(concerning);
 	}
 
+	warmHold(): string | null {
+		return this.indexer.warmHold();
+	}
+
+	warmFailure(): string | null {
+		return this.indexer.warmFailure();
+	}
+
 	warmupWorkspace(
 		...args: Parameters<WorkspaceIndexer["warmupWorkspace"]>
 	): ReturnType<WorkspaceIndexer["warmupWorkspace"]> {
@@ -228,16 +236,17 @@ export class LexiconService {
 
 	async ensureTreeForModule(module: string): Promise<void> {
 		if (this.store.depthTotals().outline === 0) return;
-		const closure = new Set([module]);
-		for (const statement of this.store.importsIn(module)) {
-			if (closure.size > 32) break;
-			const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
-			if (landed !== null && landed.status === "resolved") closure.add(landed.module);
-		}
-		// Best effort under a budget: a hung provider must cost the answer seconds, not a request
-		// timeout. The order keeps running behind whatever answers meanwhile.
 		const budget = new Promise<void>((resolve) => setTimeout(resolve, ENSURE_TREE_BUDGET_MS).unref?.());
-		await Promise.race([this.indexer.requestFull([...closure]).catch(() => {}), budget]);
+		const work = (async () => {
+			const closure = new Set([module]);
+			for (const statement of this.store.importsIn(module)) {
+				if (closure.size > 32) break;
+				const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
+				if (landed !== null && landed.status === "resolved") closure.add(landed.module);
+			}
+			await this.indexer.requestFull([...closure]).catch(() => {});
+		})();
+		await Promise.race([work, budget]);
 	}
 
 	////////////////////////////////

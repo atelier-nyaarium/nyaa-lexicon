@@ -2,6 +2,23 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
+## 2.1.1
+
+A daemon over a partially indexed store no longer answers from the part it has.
+
+### What you get
+
+The first pass of an index outlines every file, and requests were meant to wait for it. They
+waited only on an empty store: any row at all was read as a completed pass, so a daemon whose
+predecessor was stopped mid-scan, as a plugin update does, answered at once from the files that
+had been read, and a search over a large codebase came back empty with nothing to say why. Requests
+now wait, as retryable, until every discovered file has been attempted at least once. A store whose
+last pass completed answers while discovery runs; a partial one waits for the files it lacks, and
+the retry message counts them. A pass that fails answers a plain error naming the reason.
+
+A symbol query that parses its own tree ahead of the background pass now waits up to a minute for
+it, where it was ten seconds, and that minute bounds import resolution as well.
+
 ## 2.1.0
 
 `knowledge_gaps` answers for one file, and a parse failure is named where it matters.

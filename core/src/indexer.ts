@@ -35,6 +35,13 @@ export interface ScanBreakdown {
 	denied: number;
 }
 
+type WarmCoverage =
+	| { state: "idle" }
+	| { state: "discovering" }
+	| { state: "outlining"; pending: Set<string>; attempting: Set<string> }
+	| { state: "covered" }
+	| { state: "failed"; reason: string };
+
 /**
  * How complete the index is. `unstarted` and `ready` both answer instantly and mean opposite things.
  *
@@ -99,6 +106,7 @@ export class WorkspaceIndexer {
 
 	/** Counts sum to `tracked`. */
 	private breakdown: ScanBreakdown | null = null;
+	private coverage: WarmCoverage = { state: "idle" };
 
 	/** Full-parse orders run between background files. */
 	private orders: Array<{ modules: string[]; resolve: () => void; reject: (error: unknown) => void }> = [];
@@ -232,42 +240,64 @@ export class WorkspaceIndexer {
 		floor: "full" | "outline",
 		onProgress?: (done: number, total: number) => void,
 	): Promise<IndexOutcome[]> {
+		if (floor === "outline") this.coverage = { state: "discovering" };
 		this.status = { state: "discovering", done: 0, total: 0 };
-		this.discovered = new Set<string>();
-		for (const provider of this.supervisor.running()) {
-			const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
-				workspaceRoot: this.workspaceRoot,
-			});
-			for (const module of project.files) this.discovered.add(module);
-		}
-
-		this.roots = this.rootModules();
-		this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
-		this.writeScanSummary();
-		const modules = [...this.roots];
-
-		const outcomes: IndexOutcome[] = [];
-		const seen = new Set<string>();
-		const scanning = floor === "outline" ? "warming" : "indexing";
-		this.status = { state: scanning, done: 0, total: modules.length };
-		for (const [done, module] of modules.entries()) {
-			let outcome: IndexOutcome;
-			try {
-				outcome = await this.indexOne(module, undefined, floor === "outline");
-			} catch (error) {
-				outcome = this.failedOutcome(module, error);
+		try {
+			this.discovered = new Set<string>();
+			for (const provider of this.supervisor.running()) {
+				const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
+					workspaceRoot: this.workspaceRoot,
+				});
+				for (const module of project.files) this.discovered.add(module);
 			}
-			outcomes.push(outcome);
-			if (outcome.action === "forgotten") this.roots.delete(module);
-			else seen.add(module);
-			this.status = { state: scanning, done: done + 1, total: modules.length };
-			onProgress?.(done + 1, modules.length);
-		}
 
-		outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
-		outcomes.push(...this.prune(seen));
-		this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
-		return outcomes;
+			this.roots = this.rootModules();
+			this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
+			// Roots with no row at any depth; a failed root has none and is attempted again here.
+			const pending = new Set([...this.roots].filter((module) => this.store.depthOf(module) === null));
+			if (floor === "outline") {
+				this.coverage =
+					pending.size === 0 ? { state: "covered" } : { state: "outlining", pending, attempting: new Set() };
+			}
+			// A completed mark survives a rescan only while nothing is missing.
+			this.writeScanSummary(pending.size === 0 && this.store.readScanSummary()?.outlined === true);
+			const modules = [...this.roots];
+
+			const outcomes: IndexOutcome[] = [];
+			const seen = new Set<string>();
+			const scanning = floor === "outline" ? "warming" : "indexing";
+			this.status = { state: scanning, done: 0, total: modules.length };
+			for (const [done, module] of modules.entries()) {
+				if (floor === "outline" && this.coverage.state === "outlining") {
+					this.coverage.pending.delete(module);
+					this.coverage.attempting.add(module);
+				}
+				let outcome: IndexOutcome;
+				try {
+					outcome = await this.indexOne(module, undefined, floor === "outline");
+				} catch (error) {
+					outcome = this.failedOutcome(module, error);
+				}
+				if (floor === "outline" && this.coverage.state === "outlining") this.coverage.attempting.delete(module);
+				outcomes.push(outcome);
+				if (outcome.action === "forgotten") this.roots.delete(module);
+				else seen.add(module);
+				this.status = { state: scanning, done: done + 1, total: modules.length };
+				onProgress?.(done + 1, modules.length);
+			}
+
+			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
+			outcomes.push(...this.prune(seen));
+			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
+			// A full pass covers at least what an outline pass would.
+			this.writeScanSummary(true);
+			this.coverage = { state: "covered" };
+			return outcomes;
+		} catch (error) {
+			if (floor === "outline")
+				this.coverage = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
+			throw error;
+		}
 	}
 
 	/** Queues full parses ahead of the background upgrade. */
@@ -345,8 +375,9 @@ export class WorkspaceIndexer {
 		}
 	}
 
-	private writeScanSummary(): void {
-		if (this.breakdown !== null) this.store.writeScanSummary(this.breakdown);
+	/** The mark is carried forward unless a caller says otherwise. */
+	private writeScanSummary(outlined = this.store.readScanSummary()?.outlined === true): void {
+		if (this.breakdown !== null) this.store.writeScanSummary({ ...this.breakdown, outlined });
 	}
 
 	private async indexOne(
@@ -494,10 +525,8 @@ export class WorkspaceIndexer {
 	/**
 	 * How much of the workspace the index actually holds.
 	 *
-	 * Serving before the first scan finishes is deliberate: waiting means every session pays the
-	 * whole scan before its first answer. The cost is that an early answer is drawn from a partial
-	 * index, so the state is reported rather than assumed, and a caller can tell a real "no
-	 * references" from "not read yet".
+	 * Store-derived coverage is separate from process scan progress, so a restart can distinguish a
+	 * complete store from a partial one.
 	 */
 	indexStatus(concerning?: string): IndexStatus {
 		// Store-derived counts survive restarts.
@@ -514,8 +543,29 @@ export class WorkspaceIndexer {
 		};
 	}
 
+	/** Why a request must wait, or null. The one readiness decision; `indexStatus` is diagnostics. */
+	warmHold(): string | null {
+		if (this.coverage.state === "discovering") {
+			if (this.store.readScanSummary()?.outlined === true) return null;
+			return "discovering the workspace";
+		}
+		if (this.coverage.state !== "outlining") return null;
+		const unread = this.coverage.pending.size + this.coverage.attempting.size;
+		if (unread === 0) return null;
+		return `warming the index (${this.status.done} of ${this.status.total} files outlined, ${unread} not yet read)`;
+	}
+
+	/** The reason an outline pass threw, which no retry clears. */
+	warmFailure(): string | null {
+		return this.coverage.state === "failed" ? this.coverage.reason : null;
+	}
+
 	/** Applies a watcher batch, one decision per file. */
 	async applyBatch(events: FileEvent[]): Promise<IndexOutcome[]> {
+		// A batch under a running outline pass would race its loop over the same roots.
+		if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
+			throw new Error("live indexing cannot run under the warmup pass");
+		}
 		const outcomes: IndexOutcome[] = [];
 		const previousRoots = this.roots;
 		const previousDepths = this.depths;
@@ -528,6 +578,10 @@ export class WorkspaceIndexer {
 		// Persisted here too, or a watcher batch leaves overview describing the previous scan.
 		this.writeScanSummary();
 		const attempted = new Set<string>();
+		// Only roots new to this batch owe an attempt; an earlier root with no row already failed one.
+		const pending = new Set(
+			[...roots].filter((module) => !previousRoots.has(module) && this.store.depthOf(module) === null),
+		);
 
 		for (const event of events) {
 			const decision = decideInvalidation(event, {
@@ -536,19 +590,23 @@ export class WorkspaceIndexer {
 			});
 
 			if (decision.action === "forget") {
+				pending.delete(decision.module);
 				this.forgetFile(decision.module);
 				outcomes.push({ module: decision.module, action: "forgotten" });
 				continue;
 			}
 			if (decision.action === "ignore") {
+				pending.delete(decision.module);
 				outcomes.push({ module: decision.module, action: "skipped", reason: decision.reason });
 				continue;
 			}
 			if (!roots.has(decision.module) && this.store.contentHashOf(decision.module) === null) {
+				pending.delete(decision.module);
 				outcomes.push({ module: decision.module, action: "skipped", reason: "outside roots and reachability" });
 				continue;
 			}
 			attempted.add(decision.module);
+			pending.delete(decision.module);
 			try {
 				const outcome = await this.indexFile(
 					decision.module,
@@ -570,6 +628,7 @@ export class WorkspaceIndexer {
 			)
 				continue;
 			try {
+				pending.delete(module);
 				const outcome = await this.indexOne(module);
 				outcomes.push(outcome);
 				if (outcome.action === "forgotten") roots.delete(module);
@@ -581,6 +640,8 @@ export class WorkspaceIndexer {
 		const seen = new Set(roots);
 		outcomes.push(...(await this.followImports(seen, false, previousDepths)));
 		outcomes.push(...this.prune(seen));
+		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
+		this.coverage = { state: "covered" };
 		return outcomes;
 	}
 }

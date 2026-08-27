@@ -48,6 +48,16 @@ const DRIFT_CHECK_EVERY_MS = 30_000;
 ////////////////////////////////
 //  Functions & Helpers
 
+/** Whether a request may be answered: a retryable hold while roots are unread, a plain error after a failed pass. */
+export function warmRefusal(
+	service: Pick<LexiconService, "warmHold" | "warmFailure">,
+): DaemonStartingError | Error | null {
+	const failure = service.warmFailure();
+	if (failure !== null) return new Error(`warmup failed: ${failure}; restart the daemon`);
+	const hold = service.warmHold();
+	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
+}
+
 /** Timestamped per line, because stdout is a log file read long after the fact. */
 function log(lines: string): void {
 	const stamp = new Date().toISOString();
@@ -290,10 +300,9 @@ async function main(argv: string[]): Promise<void> {
 		// Warming is opt-in, and the opt-in is having indexed here before. A directory nobody meant to
 		// index costs nothing until something asks about it.
 		let scan: Promise<void> | null = null;
-		// Content means an earlier run scanned it, so only an empty store makes a caller wait.
-		let everScanned = openStore.totals().files > 0;
 		function warm(): void {
-			scan ??= (async () => {
+			if (scan !== null) return;
+			scan = (async () => {
 				const started = Date.now();
 				// The first pass stores declarations and imports for immediate answers.
 				const outcomes = await service.warmupWorkspace();
@@ -304,8 +313,6 @@ async function main(argv: string[]): Promise<void> {
 				log(`warmed ${indexed.length} files, ${symbols} declarations, ${Date.now() - started}ms`);
 				if (failures.length > 0)
 					log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
-				everScanned = true;
-
 				void service.upgradeRemaining().then(
 					() => {
 						const status = service.indexStatus();
@@ -329,7 +336,9 @@ async function main(argv: string[]): Promise<void> {
 					},
 					onError: (error) => log(`reindex failed: ${error instanceof Error ? error.message : error}`),
 				});
-			})();
+			})().catch((error) => {
+				log(`warmup failed: ${error instanceof Error ? error.message : error}`);
+			});
 		}
 
 		// The owner's rule for staying current: notice a newer build only between answered requests,
@@ -383,15 +392,8 @@ async function main(argv: string[]): Promise<void> {
 			// Asking about the workspace IS the request to index it.
 			warm();
 
-			// The first answer requires declarations and imports; full facts may remain pending.
-			if (!everScanned) {
-				const status = service.indexStatus();
-				throw new DaemonStartingError(
-					`warming the index (${status.done} of ${status.total} files outlined)`,
-					FIRST_SCAN_PATIENCE_MS,
-					"the warmup pass",
-				);
-			}
+			const refusal = warmRefusal(service);
+			if (refusal !== null) throw refusal;
 			// Counted so shutdown waits for the answer and the linger cannot fire under it.
 			inFlight += 1;
 			try {

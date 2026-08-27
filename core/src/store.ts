@@ -60,6 +60,7 @@ export interface ScanCounts {
 	unclaimed: number;
 	generated: number;
 	denied: number;
+	outlined: boolean;
 }
 
 /** One literal value written in one place. */
@@ -1133,6 +1134,7 @@ export class IndexStore {
 				unclaimed: parsed.unclaimed as number,
 				generated: parsed.generated as number,
 				denied: parsed.denied as number,
+				outlined: parsed.outlined === true,
 				at: parsed.at ?? 0,
 			};
 		} catch {

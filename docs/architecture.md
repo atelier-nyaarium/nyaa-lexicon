@@ -22,6 +22,12 @@ index cannot live in the stdio process. That process is a thin client to a daemo
   file, so the lock appears complete rather than half-written, and it claims BEFORE opening the
   store. A loser exits without ever touching SQLite, which is what holds the single-writer rule
   during the window where two of them exist.
+- **Warmup** is two passes. The first stores declarations and imports for every discovered root;
+  the second fills full facts in the background, and a symbol query parses its own tree ahead of
+  that queue. Requests are held, as retryable, until every root has been attempted at least once:
+  a store whose last outline pass completed answers while discovery runs, a partial one waits for
+  the roots it lacks. Imported modules outside the roots do not extend the wait. A pass that fails
+  answers a plain error naming the reason. The LSP's local fallback indexes fully before serving.
 - **Presence** is the connection itself. An open authenticated socket is a client; its close is
   that client leaving. A heartbeat covers the case TCP cannot see, where a peer is alive but hung.
 - **Lifetime** is a countdown armed when the last client disconnects and disarmed by any connect.

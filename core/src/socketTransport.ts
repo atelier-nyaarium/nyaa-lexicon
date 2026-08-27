@@ -341,7 +341,7 @@ export function connectFrames(port: number, token: string, timeoutMs = CONNECT_T
 					}
 					if (frame.starting) {
 						throw new Error(
-							`${frame.error} (gave up waiting on ${frame.waitingFor ?? "startup"}; it never became ready)`,
+							`${frame.error} (gave up waiting on ${frame.waitingFor ?? "startup"}; ask again later)`,
 						);
 					}
 					throw new Error(frame.error);

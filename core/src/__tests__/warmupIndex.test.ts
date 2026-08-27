@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmRefusal } from "../daemonCli";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
@@ -56,17 +58,31 @@ interface ParseSeen {
 }
 
 /** Controls whether outline requests are echoed or served as full facts. */
-function depthSupervisor(discovered: string[], honorOutline: boolean, seen: ParseSeen[]): ProviderSupervisor {
+function depthSupervisor(
+	discovered: string[],
+	honorOutline: boolean,
+	seen: ParseSeen[],
+	options: {
+		discovery?: Promise<void>;
+		parse?: Promise<void>;
+		fullParse?: Promise<void>;
+		hangResolve?: boolean;
+	} = {},
+): ProviderSupervisor {
 	return {
 		running: () => [claims],
 		route: (module: string): Route =>
 			module.endsWith(".fake")
 				? { owned: true, providerId: claims.providerId, content: "code" }
 				: { owned: false, reason: "unclaimed" },
-		askProvider: async () => ({ files: discovered, externalRoots: [], configFiles: [], diagnostics: [] }),
+		askProvider: async () => {
+			await options.discovery;
+			return { files: discovered, externalRoots: [], configFiles: [], diagnostics: [] };
+		},
 		ask: async (_module: string, method: string, params: unknown) => {
 			if (method === "parseFile") {
 				const request = params as { module: string; contentHash: string; text: string; depth?: IndexDepth };
+				await (request.depth === "outline" ? options.parse : options.fullParse);
 				seen.push({ module: request.module, ...(request.depth === undefined ? {} : { depth: request.depth }) });
 				if (request.text.includes("DEAD")) throw new ProviderUnavailableError("provider exited with code null");
 				if (request.text.includes("POISON")) throw new Error("poisoned file");
@@ -87,6 +103,7 @@ function depthSupervisor(discovered: string[], honorOutline: boolean, seen: Pars
 				};
 			}
 			if (method === "resolveImport") {
+				if (options.hangResolve) await new Promise<void>(() => {});
 				const request = params as { fromModule: string; specifier: string };
 				if (!request.specifier.startsWith(".")) return { status: "unresolved", reason: "NotImplemented" };
 				return {
@@ -103,6 +120,27 @@ function depthSupervisor(discovered: string[], honorOutline: boolean, seen: Pars
 		evidenceFrom: () => {},
 		stopAll: () => {},
 	} as unknown as ProviderSupervisor;
+}
+
+function deferred(): { promise: Promise<void>; release: () => void } {
+	let release = () => {};
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
+/** Bounded, so a state that never arrives fails the test instead of hanging it. */
+async function settle(until: () => boolean): Promise<void> {
+	for (let turn = 0; turn < 1_000; turn++) {
+		if (until()) return;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	throw new Error("the awaited state never arrived");
+}
+
+function unread(): boolean {
+	return service.warmHold()?.includes("not yet read") === true;
 }
 
 function serviceOver(supervisor: ProviderSupervisor): LexiconService {
@@ -123,6 +161,185 @@ afterEach(() => {
 //  Tests
 
 describe("warmup pass", () => {
+	it("holds a partial store until each missing root is attempted", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.indexFile("a.fake");
+
+		const parse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { parse: parse.promise }));
+		const warming = service.warmupWorkspace();
+		// No pass ever completed here, so discovery holds too.
+		expect(service.warmHold()).toBe("discovering the workspace");
+		await settle(unread);
+		expect(service.warmHold()).toContain("1 not yet read");
+		parse.release();
+		await warming;
+		expect(service.warmHold()).toBeNull();
+
+		const fullParse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { fullParse: fullParse.promise }));
+		const upgrading = service.upgradeRemaining();
+		await Promise.resolve();
+		expect(service.findByName("B")).toHaveLength(1);
+		fullParse.release();
+		await upgrading;
+	});
+
+	it("allows a completed store to answer while discovery runs", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+
+		const discovery = deferred();
+		service = serviceOver(depthSupervisor(["a.fake"], true, [], { discovery: discovery.promise }));
+		const warming = service.warmupWorkspace();
+		await Promise.resolve();
+		expect(service.warmHold()).toBeNull();
+		discovery.release();
+		await warming;
+	});
+
+	it("holds an older completed store through discovery", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+		store.close();
+		const raw = new DatabaseSync(path.join(root, "index.sqlite"));
+		raw.prepare("UPDATE meta SET value = ? WHERE key = 'scanSummary'").run(
+			JSON.stringify({ tracked: 1, claimed: 1, unclaimed: 0, generated: 0, denied: 0, at: Date.now() }),
+		);
+		raw.close();
+		store = IndexStore.open(path.join(root, "index.sqlite")).store;
+		const discovery = deferred();
+		service = serviceOver(depthSupervisor(["a.fake"], true, [], { discovery: discovery.promise }));
+		const warming = service.warmupWorkspace();
+		await Promise.resolve();
+		expect(service.warmHold()).toBe("discovering the workspace");
+		discovery.release();
+		await warming;
+		expect(service.warmHold()).toBeNull();
+	});
+
+	it("holds a cold store through outline parsing", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		const parse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake"], true, [], { parse: parse.promise }));
+		const warming = service.warmupWorkspace();
+		expect(service.warmHold()).toBe("discovering the workspace");
+		await settle(unread);
+		expect(service.warmHold()).toContain("0 of 1 files outlined, 1 not yet read");
+		parse.release();
+		await warming;
+		expect(service.warmHold()).toBeNull();
+	});
+
+	it("holds a grown root until the restarted scan attempts it", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+		put("b.fake", "export class B {}\n");
+
+		const parse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { parse: parse.promise }));
+		const warming = service.warmupWorkspace();
+		// The last pass completed, so discovery answers; the new root holds once it is known.
+		expect(service.warmHold()).toBeNull();
+		await settle(unread);
+		expect(service.warmHold()).toContain("1 not yet read");
+		parse.release();
+		await warming;
+		expect(service.warmHold()).toBeNull();
+	});
+
+	it("removes a root that vanishes before its attempt from coverage", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		const parse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { parse: parse.promise }));
+		const warming = service.warmupWorkspace();
+		await settle(unread);
+		rmSync(path.join(root, "b.fake"));
+		parse.release();
+		const outcomes = await warming;
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "b.fake", action: "forgotten" }));
+		expect(service.warmHold()).toBeNull();
+	});
+
+	it("removes a failed root from coverage", async () => {
+		initGit();
+		put("bad.fake", "POISON\n");
+		service = serviceOver(depthSupervisor(["bad.fake"], true, []));
+		const outcomes = await service.warmupWorkspace();
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "bad.fake", action: "skipped" }));
+		expect(service.warmHold()).toBeNull();
+	});
+
+	it("does not hold while upgrades run", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		const fullParse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake"], true, [], { fullParse: fullParse.promise }));
+		const warming = service.warmupWorkspace();
+		await warming;
+		const upgrading = service.upgradeRemaining();
+		await Promise.resolve();
+		expect(service.warmHold()).toBeNull();
+		fullParse.release();
+		await upgrading;
+	});
+
+	it("reports a failed scan as a plain admission error", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(
+			depthSupervisor(["a.fake"], true, [], { discovery: Promise.reject(new Error("discovery broke")) }),
+		);
+		await service.warmupWorkspace().catch(() => {});
+		const refusal = warmRefusal(service);
+		expect(refusal).toBeInstanceOf(Error);
+		expect(refusal).not.toHaveProperty("retryInMs");
+		expect(refusal?.message).toContain("discovery broke");
+	});
+
+	it("bounds tree-first preparation across import resolution", async () => {
+		initGit();
+		put("a.fake", 'import "./b.fake"\nexport class A {}\n');
+		put("b.fake", "export class B {}\n");
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, []));
+		await service.warmupWorkspace();
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { hangResolve: true }));
+		vi.useFakeTimers();
+		try {
+			const preparing = service.ensureTreeForModule("a.fake");
+			await vi.advanceTimersByTimeAsync(60_000);
+			await preparing;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("covers each admission branch", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		const parse = deferred();
+		service = serviceOver(depthSupervisor(["a.fake"], true, [], { parse: parse.promise }));
+		const warming = service.warmupWorkspace();
+		await Promise.resolve();
+		const starting = warmRefusal(service);
+		expect(starting).toBeInstanceOf(Error);
+		expect(starting).toHaveProperty("retryInMs");
+		parse.release();
+		await warming;
+		expect(warmRefusal(service)).toBeNull();
+	});
 	it("stores honored outline facts as outline, then upgrades them to full", async () => {
 		initGit();
 		put("a.fake", "export class A {}\n");
@@ -295,9 +512,44 @@ describe("accounting for every file the scan saw", () => {
 		expect(store.readScanSummary()?.claimed).toBe(2);
 	});
 
+	it("settles coverage when a watcher adds or removes a root", async () => {
+		initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+
+		put("b.fake", "export class B {}\n");
+		await service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b1" }]);
+		expect(service.warmHold()).toBeNull();
+
+		rmSync(path.join(root, "a.fake"));
+		await service.applyBatch([{ kind: "deleted", module: "a.fake" }]);
+		expect(service.warmHold()).toBeNull();
+
+		put("denied.fake", "export class Denied {}\n");
+		put("lexicon.json", JSON.stringify({ deny: ["denied.fake"] }));
+		await service.applyBatch([{ kind: "changed", module: "lexicon.json", contentHash: "deny" }]);
+		expect(service.warmHold()).toBeNull();
+	});
+
+	// A failed root holds no row, and it is not the watcher's to attempt again.
+	it("keeps the watcher running after a root that failed to parse", async () => {
+		initGit();
+		put("bad.fake", "POISON\n");
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["bad.fake", "a.fake"], true, []));
+		await service.warmupWorkspace();
+		expect(store.parseFailureOf("bad.fake")).not.toBeNull();
+
+		put("b.fake", "export class B {}\n");
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b1" }]);
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "b.fake", action: "indexed" }));
+		expect(service.warmHold()).toBeNull();
+	});
+
 	// Defaulting a missing part would print arithmetic that does not sum.
 	it("refuses a summary missing any part", () => {
-		store.writeScanSummary({ tracked: 5, claimed: 5, unclaimed: 0, generated: 0, denied: 0 });
+		store.writeScanSummary({ tracked: 5, claimed: 5, unclaimed: 0, generated: 0, denied: 0, outlined: true });
 		expect(store.readScanSummary()?.tracked).toBe(5);
 
 		// biome-ignore lint/suspicious/noExplicitAny: writing a legacy shape is the point.
