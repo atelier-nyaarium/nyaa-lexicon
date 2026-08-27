@@ -406,7 +406,11 @@ export function renderLiterals(result: LiteralsResult): string {
 		// names are mangled: the literal is then the only readable thing pointing at its symbol. The
 		// module prefix is dropped because the row already sits under its module header.
 		const container =
-			literal.containerId === null ? "" : `  in \`${literal.containerId.split(" ").slice(3).join(" ")}\``;
+			literal.containerName === undefined
+				? literal.containerId === null
+					? ""
+					: `  in \`${literal.containerId.split(" ").slice(3).join(" ")}\``
+				: `  in ${literal.containerKind ?? "declaration"} \`${literal.containerName}\``;
 		rows.push(`- Line ${literal.range.start.line + 1}: **${literal.kind}** ${JSON.stringify(shown)}${container}`);
 		byModule.set(literal.module, rows);
 	}

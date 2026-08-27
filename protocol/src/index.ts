@@ -156,6 +156,7 @@ export {
 	serveProvider,
 } from "./serve.js";
 export {
+	ANONYMOUS_NAMESPACE,
 	composeSymbolId,
 	type Descriptor,
 	type DescriptorKind,

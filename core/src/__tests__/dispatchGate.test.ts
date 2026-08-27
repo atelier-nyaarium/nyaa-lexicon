@@ -118,4 +118,30 @@ describe("the tree-first tier", () => {
 
 		expect(log).toEqual(["symbolSource"]);
 	});
+
+	it("accepts scope fields on the four search methods", async () => {
+		const service = {
+			ensureTreeFor: async () => {},
+			findReferences: (_symbolId: string, _limit: number | undefined, within: string | undefined) => ({ within }),
+			findLiterals: (query: unknown) => query,
+			findComments: (query: unknown) => query,
+			searchSymbols: (_text: string, options: unknown) => options,
+		} as unknown as LexiconService;
+		const dispatch = createDispatch(service);
+
+		expect(await dispatch("findReferences", { symbolId: "lexicon ts a.ts X.", within: "X" })).toEqual({
+			within: "X",
+		});
+		expect(await dispatch("findLiterals", { value: "warning", key: "severity", within: "Config" })).toMatchObject({
+			key: "severity",
+			within: "Config",
+		});
+		expect(await dispatch("findComments", { text: "warning", within: "Config" })).toEqual({
+			text: "warning",
+			within: "Config",
+		});
+		expect(await dispatch("searchSymbols", { text: "Config", within: "Config" })).toMatchObject({
+			within: "Config",
+		});
+	});
 });

@@ -29,7 +29,11 @@ export interface RefactorDeps {
 
 const FindByName = z.object({ name: z.string().min(1), module: z.string().min(1).optional() });
 const BySymbol = z.object({ symbolId: z.string().min(1) });
-const References = z.object({ symbolId: z.string().min(1), limit: z.number().int().positive().optional() });
+const References = z.object({
+	symbolId: z.string().min(1),
+	limit: z.number().int().positive().optional(),
+	within: z.string().min(1).optional(),
+});
 const Resolve = z.object({ fromModule: z.string().min(1), specifier: z.string().min(1) });
 const IndexFile = z.object({ module: z.string().min(1) });
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) });
@@ -40,6 +44,8 @@ const Literals = z.object({
 	min: z.number().optional(),
 	max: z.number().optional(),
 	limit: z.number().int().positive().optional(),
+	within: z.string().min(1).optional(),
+	key: z.string().min(1).optional(),
 });
 const Comments = z.object({
 	text: z.string().min(1).optional(),
@@ -47,6 +53,7 @@ const Comments = z.object({
 	form: z.enum(["leading", "trailing", "inline", "standalone"]).optional(),
 	module: z.string().min(1).optional(),
 	limit: z.number().int().positive().max(200).optional(),
+	within: z.string().min(1).optional(),
 });
 const Docs = z.object({
 	text: z.string().min(1).optional(),
@@ -68,6 +75,7 @@ const Search = z
 		kind: z.string().min(1).optional(),
 		module: z.string().min(1).optional(),
 		limit: z.number().int().positive().optional(),
+		within: z.string().min(1).optional(),
 	})
 	.refine((args) => (args.text === undefined) !== (args.regex === undefined), `Set exactly one of text or regex.`);
 const ByModule = z.object({ module: z.string().min(1) });
@@ -503,7 +511,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			}
 			case "findReferences": {
 				const args = References.parse(params);
-				return treeFirst(args.symbolId, () => service.findReferences(args.symbolId, args.limit));
+				return treeFirst(args.symbolId, () => service.findReferences(args.symbolId, args.limit, args.within));
 			}
 			case "resolveImport": {
 				const args = Resolve.parse(params);

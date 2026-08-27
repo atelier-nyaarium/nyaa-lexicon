@@ -78,7 +78,7 @@ import {
 export interface ToolBackend {
 	findByName: (name: string, module?: string) => Promise<SymbolSummary[]>;
 	describe: (symbolId: string) => Promise<DescribeResult | null>;
-	findReferences: (symbolId: string, limit?: number) => Promise<ReferencesResult>;
+	findReferences: (symbolId: string, limit?: number, within?: string) => Promise<ReferencesResult>;
 	resolveImport: (fromModule: string, specifier: string) => Promise<ImportResolution>;
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
@@ -137,6 +137,7 @@ export interface ToolBackend {
 			kind?: string | undefined;
 			module?: string | undefined;
 			limit?: number | undefined;
+			within?: string | undefined;
 		},
 	) => Promise<SearchResult>;
 	outlineModule: (module: string) => Promise<Array<SymbolSummary & { containerId?: string }>>;
@@ -256,11 +257,14 @@ export const DescribeSymbolInput = {
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 };
 
+const WITHIN_NOTE = `Scope: a symbol id from an earlier result, or a declaration name. An ambiguous name is refused with its candidates.`;
+
 export const FindReferencesInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
+	within: z.string().min(1).optional().describe(WITHIN_NOTE),
 };
 
 export const ResolveImportInput = {
@@ -323,6 +327,8 @@ export const FindLiteralsInput = {
 	min: z.number().optional().describe(`Inclusive numeric minimum.`),
 	max: z.number().optional().describe(`Inclusive numeric maximum.`),
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
+	key: z.string().min(1).optional().describe(`Exact immediate container name.`),
+	within: z.string().min(1).optional().describe(WITHIN_NOTE),
 };
 
 export const FindCommentsInput = {
@@ -334,6 +340,7 @@ export const FindCommentsInput = {
 		.describe(`Where the comment sits relative to its symbol.`),
 	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
+	within: z.string().min(1).optional().describe(WITHIN_NOTE),
 };
 
 export const SearchDocsInput = {
@@ -350,6 +357,7 @@ export const SearchSymbolsInput = {
 	kind: z.string().min(1).optional().describe(`Declaration kind filter.`),
 	module: z.string().min(1).optional().describe(`Module path substring.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
+	within: z.string().min(1).optional().describe(WITHIN_NOTE),
 };
 
 export const OutlineModuleInput = {
@@ -505,6 +513,8 @@ export const REFERENCES_DESCRIPTION = `
 List every bound use, grouped by file. Follows aliases and re-exports.
 
 Excludes import and export statements. Call \`prepare_rename\` before a rewrite.
+
+Use \`within\` to restrict references to declarations inside a scope.
 `.trim();
 
 export const RESOLVE_IMPORT_DESCRIPTION = `
@@ -632,6 +642,8 @@ export const FIND_LITERALS_DESCRIPTION = `
 Find exact values, regex matches, or numeric ranges in decoded literal values.
 
 Use for values rather than textual spelling. Each hit includes its declaration.
+
+Use \`key\` for an exact immediate container name and \`within\` for a scope.
 `.trim();
 
 export const FIND_COMMENTS_DESCRIPTION = `
@@ -644,6 +656,8 @@ Matches NORMALIZED text, so markers are stripped and a wrapped sentence is one s
 \`TODO\`, never \`// TODO\`.
 
 Set exactly one of \`text\` or \`regex\`. Set neither with \`form\` or \`module\` to list a slice.
+
+Use \`within\` to restrict comments to anchored declarations inside a scope.
 
 Indexed files only. An unclaimed file, or a language whose provider has no comment tier, is
 invisible here. Use ripgrep for an exhaustive byte audit.
@@ -678,6 +692,8 @@ export const SEARCH_SYMBOLS_DESCRIPTION = `
 Find declared names by substring or regular expression. Set exactly one of \`text\` or \`regex\`.
 
 Does not search comments, strings, or aliases.
+
+Use \`within\` to restrict declarations to a scope.
 `.trim();
 
 export const OUTLINE_MODULE_DESCRIPTION = `
@@ -927,12 +943,12 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 
 export async function findReferences(
 	backend: ToolBackend,
-	args: SymbolArgs & { limit?: number | undefined },
+	args: SymbolArgs & { limit?: number | undefined; within?: string | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
-	const found = await backend.findReferences(resolved.symbolId, args.limit);
+	const found = await backend.findReferences(resolved.symbolId, args.limit, args.within);
 	return text(await withIndexState(backend, renderReferences(found), moduleOf(resolved.symbolId)));
 }
 

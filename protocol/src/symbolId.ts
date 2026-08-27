@@ -44,6 +44,7 @@ export interface SymbolId {
 //  Constants
 
 export const SYMBOL_SCHEME = "lexicon";
+export const ANONYMOUS_NAMESPACE = "(anonymous)";
 
 const KIND_SUFFIX: Record<Exclude<DescriptorKind, "parameter" | "typeParameter">, string> = {
 	namespace: "/",

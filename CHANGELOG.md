@@ -4,9 +4,21 @@ Only releases that ask something of you. A patch that changes nothing you can ob
 
 ## 2.1.1
 
-A daemon over a partially indexed store no longer answers from the part it has.
+A daemon over a partially indexed store no longer answers from the part it has, and a search can
+be scoped to a declaration.
 
 ### What you get
+
+`search_symbols`, `find_references`, `find_literals` and `find_comments` take `within`: a symbol id
+from an earlier answer, or a declaration name. It scopes declarations to those inside it, uses to
+those made from inside it, literals to those it holds, and comments to those attached under it, so
+"every method in this namespace", "calls to X from inside Y" and "route strings under the routes
+layer" are one question each. A named namespace scopes across every file that reopens it. A name
+that could mean several declarations is refused with the candidates rather than answered for one
+of them, and a scoped answer says when it stopped reading early. `find_literals` also takes `key`,
+the exact name of the declaration holding the value, so "a field named `severity` whose value is
+`warning`" is answerable in any language, and every literal it returns now names its holder and
+the holder's kind instead of an opaque id.
 
 The first pass of an index outlines every file, and requests were meant to wait for it. They
 waited only on an empty store: any row at all was read as a completed pass, so a daemon whose

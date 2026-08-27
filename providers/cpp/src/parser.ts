@@ -1,4 +1,5 @@
 import {
+	ANONYMOUS_NAMESPACE,
 	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
@@ -1171,7 +1172,7 @@ class StructuralParser {
 		const close = matching(this.tokens, open, "{", "}", limit);
 		const end = close < 0 ? limit : close + 1;
 		let parent = scope.parent;
-		for (const item of names.length === 0 ? [{ name: "(anonymous)", start: open, end: open + 1 }] : names) {
+		for (const item of names.length === 0 ? [{ name: ANONYMOUS_NAMESPACE, start: open, end: open + 1 }] : names) {
 			parent = this.addDraft({
 				parent,
 				own: { kind: "namespace", name: item.name },
@@ -1207,7 +1208,7 @@ class StructuralParser {
 		const nameIndex = significantAfter(this.tokens, prefix.keywordIndex, limit);
 		const named = isNameToken(tokenAt(this.tokens, nameIndex));
 		const actualNameIndex = named ? nameIndex : prefix.keywordIndex;
-		const name = named ? (tokenAt(this.tokens, nameIndex)?.value ?? "") : "(anonymous)";
+		const name = named ? (tokenAt(this.tokens, nameIndex)?.value ?? "") : ANONYMOUS_NAMESPACE;
 		const body = this.findNextText(nameIndex >= 0 ? nameIndex : prefix.keywordIndex, "{", limit);
 		const semicolon = this.findNextText(nameIndex >= 0 ? nameIndex : prefix.keywordIndex, ";", limit);
 		const descriptorName = this.typeDescriptorName(prefix, nameIndex, body >= 0 ? body : limit, name);
@@ -1278,8 +1279,8 @@ class StructuralParser {
 		const nameIndex = isNameToken(tokenAt(this.tokens, index)) ? index : prefix.keywordIndex;
 		const name =
 			nameIndex === prefix.keywordIndex
-				? "(anonymous)"
-				: (tokenAt(this.tokens, nameIndex)?.value ?? "(anonymous)");
+				? ANONYMOUS_NAMESPACE
+				: (tokenAt(this.tokens, nameIndex)?.value ?? ANONYMOUS_NAMESPACE);
 		const body = this.findNextText(nameIndex, "{", limit);
 		const semicolon = this.findNextText(nameIndex, ";", limit);
 		if (body < 0 || (semicolon >= 0 && semicolon < body)) {

@@ -77,7 +77,7 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),
 		describe: (symbolId) => ask("describe", { symbolId }),
-		findReferences: (symbolId, limit) => ask("findReferences", { symbolId, limit }),
+		findReferences: (symbolId, limit, within) => ask("findReferences", { symbolId, limit, within }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
 		symbolSource: (address) => ask("symbolSource", address),
@@ -149,7 +149,7 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 	return {
 		findByName: async (name, module) => (await service()).findByName(name, module),
 		describe: async (symbolId) => (await service()).describe(symbolId),
-		findReferences: async (symbolId, limit) => (await service()).findReferences(symbolId, limit),
+		findReferences: async (symbolId, limit, within) => (await service()).findReferences(symbolId, limit, within),
 		resolveImport: async (fromModule, specifier) => (await service()).resolveImport(fromModule, specifier),
 		typeOf: async (symbolId) => (await service()).typeOf(symbolId),
 		symbolSource: async (address) => (await service()).symbolSource(address),

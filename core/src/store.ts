@@ -27,6 +27,7 @@ import type { Answer, Doubt } from "./answers.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
 import { normalizeDocText } from "./proseText.js";
+import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 
 ////////////////////////////////
@@ -71,6 +72,8 @@ export interface StoredLiteral {
 	value: string;
 	number: number | null;
 	containerId: string | null;
+	containerName?: string;
+	containerKind?: string;
 	range: Range;
 }
 
@@ -1491,7 +1494,7 @@ export class IndexStore {
 	/** Search declarations by name substring or regular expression. */
 	searchSymbols(
 		text: string | undefined,
-		options: { regex?: string | undefined; kind?: string; module?: string; limit: number },
+		options: { regex?: string | undefined; kind?: string; module?: string; limit: number; scope?: ScopeFilter },
 	): StoredDeclaration[] {
 		const regex = options.regex === undefined ? undefined : compileSearchRegex(options.regex);
 		const clauses: string[] = [];
@@ -1508,9 +1511,19 @@ export class IndexStore {
 			clauses.push("module LIKE ? ESCAPE '\\'");
 			values.push(`%${likePattern(options.module)}%`);
 		}
+		if (options.scope?.module !== undefined) {
+			clauses.push("symbolId >= ? AND symbolId < ?");
+			values.push(options.scope.low as string, options.scope.high as string);
+		}
+		if (options.scope?.like !== undefined) {
+			clauses.push("symbolId LIKE ? ESCAPE '\\'");
+			values.push(`${options.scope.head}%${likePattern(options.scope.like)}%`);
+		}
 		if (clauses.length === 0) clauses.push("1 = 1");
-		const limit = regex === undefined ? " LIMIT ?" : "";
-		if (regex === undefined) values.push(options.limit);
+		// A scoped read is bounded even under a regex: the exact check runs after it and says so.
+		const bounded = regex === undefined || options.scope !== undefined;
+		const limit = bounded ? " LIMIT ?" : "";
+		if (bounded) values.push(options.limit);
 
 		const rows = this.db
 			.prepare(`SELECT * FROM symbols WHERE ${clauses.join(" AND ")} ORDER BY module, startLine${limit}`)
@@ -1655,6 +1668,40 @@ export class IndexStore {
 			.prepare("SELECT COUNT(*) AS n FROM literals WHERE number IS NOT NULL AND number BETWEEN ? AND ?")
 			.get(low, high);
 		return (row as { n: number }).n;
+	}
+
+	literalsWhere(
+		filter: {
+			value?: string | undefined;
+			kind?: string | undefined;
+			low?: number | undefined;
+			high?: number | undefined;
+			key?: string | undefined;
+			scope?: ScopeFilter | undefined;
+		},
+		limit: number,
+	): StoredLiteral[] {
+		const { clause, values, join } = literalWhere(filter);
+		const rows = this.db
+			.prepare(
+				`SELECT l.*, s.name AS containerName, s.kind AS containerKind FROM literals l ${join} ${clause} ORDER BY l.module, l.startLine LIMIT ?`,
+			)
+			.all(...values, limit);
+		return rows.map(rowToLiteral);
+	}
+
+	countLiteralsWhere(filter: {
+		value?: string;
+		kind?: string | undefined;
+		low?: number | undefined;
+		high?: number | undefined;
+		key?: string | undefined;
+		scope?: ScopeFilter | undefined;
+	}): number {
+		const { clause, values, join } = literalWhere(filter);
+		return (
+			this.db.prepare(`SELECT COUNT(*) AS n FROM literals l ${join} ${clause}`).get(...values) as { n: number }
+		).n;
 	}
 
 	/**
@@ -1897,10 +1944,54 @@ interface LiteralRow {
 	value: string;
 	number: number | null;
 	containerId: string | null;
+	containerName?: string | null;
+	containerKind?: string | null;
 	startLine: number;
 	startChar: number;
 	endLine: number;
 	endChar: number;
+}
+
+function literalWhere(filter: {
+	value?: string | undefined;
+	kind?: string | undefined;
+	low?: number | undefined;
+	high?: number | undefined;
+	key?: string | undefined;
+	scope?: ScopeFilter | undefined;
+}) {
+	const where: string[] = [];
+	const values: Array<string | number> = [];
+	// A key is an inner match: a literal with no container has no name to match.
+	const join =
+		filter.key === undefined
+			? "LEFT JOIN symbols s ON s.symbolId = l.containerId"
+			: "JOIN symbols s ON s.symbolId = l.containerId";
+	if (filter.value !== undefined) {
+		where.push("l.value = ?");
+		values.push(filter.value);
+	}
+	if (filter.kind !== undefined) {
+		where.push("l.kind = ?");
+		values.push(filter.kind);
+	}
+	if (filter.low !== undefined || filter.high !== undefined) {
+		where.push("l.number IS NOT NULL AND l.number BETWEEN ? AND ?");
+		values.push(filter.low ?? Number.NEGATIVE_INFINITY, filter.high ?? Number.POSITIVE_INFINITY);
+	}
+	if (filter.key !== undefined) {
+		where.push("s.name = ?");
+		values.push(filter.key);
+	}
+	if (filter.scope?.module !== undefined) {
+		where.push("l.containerId >= ? AND l.containerId < ?");
+		values.push(filter.scope.low as string, filter.scope.high as string);
+	}
+	if (filter.scope?.like !== undefined) {
+		where.push("l.containerId LIKE ? ESCAPE '\\'");
+		values.push(`${filter.scope.head}%${likePattern(filter.scope.like)}%`);
+	}
+	return { join, clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
 }
 
 /** Escapes what LIKE treats as wildcards, so a search for `100%` is a search for `100%`. */
@@ -2032,6 +2123,8 @@ function rowToLiteral(raw: unknown): StoredLiteral {
 		value: row.value,
 		number: row.number,
 		containerId: row.containerId,
+		...(row.containerName === null || row.containerName === undefined ? {} : { containerName: row.containerName }),
+		...(row.containerKind === null || row.containerKind === undefined ? {} : { containerKind: row.containerKind }),
 		range: {
 			start: { line: row.startLine, character: row.startChar },
 			end: { line: row.endLine, character: row.endChar },

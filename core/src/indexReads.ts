@@ -7,6 +7,7 @@ import type { Range } from "@nyaa-lexicon/protocol";
 import type { CommentForm } from "./commentAttach.js";
 import { findCycles } from "./graph.js";
 import { type Counted, type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
+import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
 import type {
 	FileNotes,
@@ -83,6 +84,8 @@ export interface LiteralQuery {
 	kind?: string | undefined;
 	min?: number | undefined;
 	max?: number | undefined;
+	key?: string | undefined;
+	within?: string | undefined;
 }
 
 export interface LiteralsResult extends Counted {
@@ -96,6 +99,7 @@ export interface CommentQuery {
 	regex?: string | undefined;
 	form?: CommentForm | undefined;
 	module?: string | undefined;
+	within?: string | undefined;
 }
 
 /** The symbol a comment was written about, with enough to recognize it without a second call. */
@@ -381,19 +385,33 @@ export class IndexReadModel {
 			regex?: string | undefined;
 			kind?: string | undefined;
 			module?: string | undefined;
+			within?: string | undefined;
 			limit?: number | undefined;
 		} = {},
 	) {
 		if ((text === undefined) === (options.regex === undefined)) {
 			throw new Error(`Set exactly one of text or regex.`);
 		}
+		const scope = options.within === undefined ? undefined : resolveScope(this.store, options.within);
+		const scoped = scope === undefined ? undefined : filterFor(scope);
 		const found = this.store.searchSymbols(text, {
 			...(options.regex === undefined ? {} : { regex: options.regex }),
 			...(options.kind === undefined ? {} : { kind: options.kind }),
 			...(options.module === undefined ? {} : { module: options.module }),
-			limit: (options.limit ?? DEFAULT_REFERENCE_LIMIT) + 1,
+			...(scoped === undefined ? {} : { scope: scoped }),
+			limit: options.within === undefined ? (options.limit ?? DEFAULT_REFERENCE_LIMIT) + 1 : REGEX_SCAN_LIMIT,
 		});
-		const paged = pageProbed(found, options.limit ?? DEFAULT_REFERENCE_LIMIT);
+		const paged =
+			scope === undefined
+				? pageProbed(found, options.limit ?? DEFAULT_REFERENCE_LIMIT)
+				: pageScanned(
+						found.filter((row) => strictlyContains(scope, row.symbolId)),
+						options.limit ?? DEFAULT_REFERENCE_LIMIT,
+						{
+							read: found.length,
+							cap: REGEX_SCAN_LIMIT,
+						},
+					);
 		return {
 			text,
 			...(options.regex === undefined ? {} : { regex: options.regex }),
@@ -403,13 +421,19 @@ export class IndexReadModel {
 	}
 
 	/** Who uses a symbol. Capped, and the caller is told when it was. */
-	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT): ReferencesResult {
+	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
+		const scope = within === undefined ? undefined : resolveScope(this.store, within);
+		// A use at module level sits inside no symbol, so no scope holds it.
 		const all = this.store.referencesTo(symbolId);
+		const filtered =
+			scope === undefined
+				? all
+				: all.filter((reference) => reference.fromId !== null && contains(scope, reference.fromId));
 		return {
 			symbolId,
-			references: all.slice(0, limit),
-			total: all.length,
-			truncated: all.length > limit,
+			references: filtered.slice(0, limit),
+			total: filtered.length,
+			truncated: filtered.length > limit,
 			tier: "bound",
 		};
 	}
@@ -425,22 +449,53 @@ export class IndexReadModel {
 	 * REGEXP here, so it reads a bounded page and says when it stopped early.
 	 */
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
+		const scope = query.within === undefined ? undefined : resolveScope(this.store, query.within);
+		const scoped = scope === undefined ? undefined : filterFor(scope);
+		const base = { kind: query.kind, key: query.key, scope: scoped };
 		if (query.value !== undefined) {
-			const found = this.store.literalsWithValue(query.value, limit);
-			return page(query, pageCounted(found, limit, this.store.countLiteralsWithValue(query.value)));
+			const found = this.store.literalsWhere(
+				{ ...base, value: query.value },
+				scope === undefined ? limit : REGEX_SCAN_LIMIT,
+			);
+			const matched =
+				scope === undefined
+					? found
+					: found.filter((literal) => literal.containerId !== null && contains(scope, literal.containerId));
+			return page(
+				query,
+				scope === undefined
+					? pageCounted(matched, limit, this.store.countLiteralsWhere({ ...base, value: query.value }))
+					: pageScanned(matched, limit, { read: found.length, cap: REGEX_SCAN_LIMIT }),
+			);
 		}
 
 		if (query.min !== undefined || query.max !== undefined) {
 			const low = query.min ?? Number.NEGATIVE_INFINITY;
 			const high = query.max ?? Number.POSITIVE_INFINITY;
-			const found = this.store.literalsInRange(low, high, limit);
-			return page(query, pageCounted(found, limit, this.store.countLiteralsInRange(low, high)));
+			const found = this.store.literalsWhere(
+				{ ...base, low, high },
+				scope === undefined ? limit : REGEX_SCAN_LIMIT,
+			);
+			const matched =
+				scope === undefined
+					? found
+					: found.filter((literal) => literal.containerId !== null && contains(scope, literal.containerId));
+			return page(
+				query,
+				scope === undefined
+					? pageCounted(matched, limit, this.store.countLiteralsWhere({ ...base, low, high }))
+					: pageScanned(matched, limit, { read: found.length, cap: REGEX_SCAN_LIMIT }),
+			);
 		}
 
 		if (query.regex !== undefined) {
 			const expression = compileSearchRegex(query.regex);
-			const scanned = this.store.literalsOfKind(query.kind ?? "string", REGEX_SCAN_LIMIT);
-			const matched = scanned.filter((literal) => expression.test(literal.value));
+			const scanned = this.store.literalsWhere({ ...base, kind: query.kind ?? "string" }, REGEX_SCAN_LIMIT);
+			const matched = scanned.filter(
+				(literal) =>
+					expression.test(literal.value) &&
+					(scope === undefined || (literal.containerId !== null && contains(scope, literal.containerId))),
+			);
 			return page(query, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
 		}
 
@@ -475,8 +530,20 @@ export class IndexReadModel {
 			...(query.form === undefined ? {} : { form: query.form }),
 			...(query.module === undefined ? {} : { module: query.module }),
 		};
+		const scope = query.within === undefined ? undefined : resolveScope(this.store, query.within);
 
 		if (query.text !== undefined) {
+			// The same substring match as the unscoped read, so a scope never changes what text means.
+			if (scope !== undefined) {
+				const scanned = this.store.commentsContaining(query.text, REGEX_SCAN_LIMIT, filter);
+				const matched = scanned.filter(
+					(comment) => comment.anchorId !== null && contains(scope, comment.anchorId),
+				);
+				return this.pageComments(
+					query,
+					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
+				);
+			}
 			const found = this.store.commentsContaining(query.text, limit, filter);
 			const total = this.store.countCommentsContaining(query.text, filter);
 			return this.pageComments(query, pageCounted(found, limit, total));
@@ -485,7 +552,11 @@ export class IndexReadModel {
 		if (query.regex !== undefined) {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
-			const matched = scanned.filter((comment) => expression.test(comment.normalized));
+			const matched = scanned.filter(
+				(comment) =>
+					expression.test(comment.normalized) &&
+					(scope === undefined || (comment.anchorId !== null && contains(scope, comment.anchorId))),
+			);
 			return this.pageComments(
 				query,
 				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
@@ -493,7 +564,17 @@ export class IndexReadModel {
 		}
 
 		// Neither given: the whole tier, filtered. Useful for "every comment in this module".
-		if (query.form !== undefined || query.module !== undefined) {
+		if (query.form !== undefined || query.module !== undefined || query.within !== undefined) {
+			if (scope !== undefined) {
+				const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
+				const matched = scanned.filter(
+					(comment) => comment.anchorId !== null && contains(scope, comment.anchorId),
+				);
+				return this.pageComments(
+					query,
+					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
+				);
+			}
 			const found = this.store.commentsToScan(limit, filter);
 			return this.pageComments(query, pageCounted(found, limit, this.store.countComments(filter)));
 		}

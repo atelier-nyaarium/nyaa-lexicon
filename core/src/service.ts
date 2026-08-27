@@ -369,8 +369,8 @@ export class LexiconService {
 		return this.reads.searchSymbols(...args);
 	}
 
-	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT): ReferencesResult {
-		return this.reads.findReferences(symbolId, limit);
+	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
+		return this.reads.findReferences(symbolId, limit, within);
 	}
 
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
