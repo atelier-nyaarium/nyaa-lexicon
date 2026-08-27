@@ -36,7 +36,9 @@ index cannot live in the stdio process. That process is a thin client to a daemo
   Nothing else stops it on its own.
 - **Transport** is one JSON object per line over a local socket, with a request id so a slow query
   does not block the connection behind it. `core/src/socketTransport.ts` is the only module that
-  touches a socket, which is what makes a different runtime a rewrite of one file.
+  touches a socket, which is what makes a different runtime a rewrite of one file. The protocol
+  package owns the daemon methods' shapes; core remains the sole socket implementation and
+  validates both sides. `docs/daemon-protocol.md` is the wire as a client sees it.
 
 ## Storage
 

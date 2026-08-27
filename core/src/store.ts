@@ -6,12 +6,18 @@
 
 import { DatabaseSync } from "node:sqlite";
 import {
+	type Answer,
+	type ContentCounts,
+	type ContentTotals,
 	commentFactId,
 	type Declaration,
 	type DocRegion,
+	type Doubt,
 	declarationFactId,
 	docFactId,
 	type FileContent,
+	type FileNote,
+	type FileNotes,
 	type Import,
 	type IndexDepth,
 	importFactId,
@@ -19,91 +25,44 @@ import {
 	literalFactId,
 	type Metrics,
 	parseFactId,
-	type Range,
 	type Reference,
 	referenceFactId,
+	type ScanCounts,
+	type StoredComment,
+	type StoredDeclaration,
+	type StoredDoc,
+	type StoredFact,
+	type StoredImport,
+	type StoredLiteral,
+	type StoredReference,
 } from "@nyaa-lexicon/protocol";
-import type { Answer, Doubt } from "./answers.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 
+export type {
+	ContentCounts,
+	ContentTotals,
+	FileNote,
+	FileNotes,
+	ScanCounts,
+	StoredComment,
+	StoredDeclaration,
+	StoredDoc,
+	StoredFact,
+	StoredImport,
+	StoredLiteral,
+	StoredReference,
+} from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
-
-export interface StoredReference {
-	/** Citable id for this row. Every fact carries one, which is what a knowledge answer cites. */
-	factId: string;
-	module: string;
-	name: string;
-	role: string;
-	/** Absent when the reference did not bind, which is a fact worth keeping. */
-	targetId: string | null;
-	fromId: string | null;
-	provenance: string;
-	startLine: number;
-	startCharacter: number;
-	endLine: number;
-	endCharacter: number;
-}
-
-export interface StoredDeclaration extends Declaration {
-	factId: string;
-	module: string;
-}
-
-/** Scan counts. */
-export interface ScanCounts {
-	tracked: number;
-	claimed: number;
-	unclaimed: number;
-	generated: number;
-	denied: number;
-	outlined: boolean;
-}
-
-/** One literal value written in one place. */
-export interface StoredLiteral {
-	factId: string;
-	module: string;
-	kind: string;
-	value: string;
-	number: number | null;
-	containerId: string | null;
-	containerName?: string;
-	containerKind?: string;
-	range: Range;
-}
-
-/** One comment as stored: what it says, where it says it, and what it says it about. */
-export interface StoredComment {
-	factId: string;
-	module: string;
-	raw: string;
-	normalized: string;
-	form: string;
-	placement: string;
-	anchorId: string | null;
-	range: Range;
-}
 
 export interface CommentFilter {
 	form?: string | undefined;
 	module?: string | undefined;
-}
-
-/** One stretch of a document's prose, with the heading it sits under. */
-export interface StoredDoc {
-	factId: string;
-	module: string;
-	raw: string;
-	normalized: string;
-	fenced: boolean;
-	/** Null when the region sits under no heading, which is prose before the first one. */
-	anchorId: string | null;
-	range: Range;
 }
 
 export interface DocFilter {
@@ -111,36 +70,6 @@ export interface DocFilter {
 	fenced?: boolean | undefined;
 	module?: string | undefined;
 }
-
-/** One name written by one import statement, with the spans a rewrite would replace. */
-export interface StoredImport {
-	factId: string;
-	module: string;
-	specifier: string;
-	reExport: boolean;
-	/** Absent when the statement names no export. The edge is still real; only rename skips it. */
-	name?: string;
-	range?: Range;
-	/** Present only when the import writes an alias, which renames must NOT follow. */
-	local?: string;
-	localRange?: Range;
-}
-
-/**
- * Any one row, tagged with what it is.
- *
- * What `factById` returns, so a stored citation can be turned back into the thing it cited. The id
- * carries its own kind and module, which is what makes that lookup one indexed read of one table
- * rather than a search of four.
- */
-export type StoredFact =
-	| ({ fact: "declaration" } & StoredDeclaration)
-	| ({ fact: "reference" } & StoredReference)
-	| ({ fact: "import" } & StoredImport)
-	| ({ fact: "literal" } & StoredLiteral)
-	| ({ fact: "comment" } & StoredComment)
-	| ({ fact: "doc" } & StoredDoc)
-	| ({ fact: "answer" } & Answer);
 
 ////////////////////////////////
 //  Constants
@@ -178,20 +107,6 @@ export type StoredFact =
 //    documents; a document region answers with the heading path it was found under, which is a
 //    different question and so a different table.
 export const SCHEMA_VERSION = 17;
-
-/** Per content class. Unknown is a row written before the class was recorded. */
-export interface ContentCounts {
-	code: number;
-	data: number;
-	document: number;
-	text: number;
-	unknown: number;
-}
-
-export interface ContentTotals {
-	files: ContentCounts;
-	symbols: ContentCounts;
-}
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -504,18 +419,6 @@ const COMPATIBILITY_KEY = "storeCompatibility";
 
 /** Meta key: when notes began. */
 const NOTES_SINCE_KEY = "notesSince";
-
-export interface FileNote {
-	severity: "warning" | "info";
-	message: string;
-	range?: Range;
-	path?: string;
-}
-
-/** Unknown until a read with notes. */
-export type FileNotes =
-	| { module: string; known: true; notes: FileNote[] }
-	| { module: string; known: false; reason: "notIndexed" | "indexedBeforeNotes" };
 
 interface NoteRow {
 	severity: "warning" | "info";
@@ -2078,7 +1981,7 @@ function rowToComment(raw: unknown): StoredComment {
 		module: row.module,
 		raw: row.raw,
 		normalized: row.normalized,
-		form: row.form,
+		form: row.form as StoredComment["form"],
 		placement: row.placement,
 		anchorId: row.anchorId,
 		range: {
@@ -2120,7 +2023,7 @@ function rowToLiteral(raw: unknown): StoredLiteral {
 	return {
 		factId: row.factId,
 		module: row.module,
-		kind: row.kind,
+		kind: row.kind as StoredLiteral["kind"],
 		value: row.value,
 		number: row.number,
 		containerId: row.containerId,
@@ -2231,7 +2134,7 @@ function rowToReference(raw: unknown): StoredReference {
 		factId: row.factId,
 		module: row.module,
 		name: row.name,
-		role: row.role,
+		role: row.role as StoredReference["role"],
 		targetId: row.targetId,
 		fromId: row.fromId,
 		provenance: row.provenance,

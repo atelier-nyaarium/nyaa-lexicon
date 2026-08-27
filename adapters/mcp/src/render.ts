@@ -23,7 +23,17 @@ import type {
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
-import { FACT_KINDS, type FactKind, type TypeInfo } from "@nyaa-lexicon/protocol";
+import {
+	FACT_KINDS,
+	type FactKind,
+	type InsertOutcome,
+	type MoveOutcome,
+	type RefactorCommitResult,
+	type RefactorStartResult,
+	type RenameStepOutcome,
+	type ReplaceOutcome,
+	type TypeInfo,
+} from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -813,7 +823,7 @@ export function renderOverview(result: {
 	notes?: { noted: number; unknown: number };
 	largest: Array<{ module: string; symbols: number }>;
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
-	knowledge?: { answers: number; stale?: number; doubted?: number };
+	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
 }): string {
 	const lines = ["# Workspace overview", "", "## Workspace", "", `\`${result.scope}\``, "", "## Index", ""];
 
@@ -959,7 +969,7 @@ export function renderImports(result: {
 	imports: Array<{
 		module: string;
 		specifier: string;
-		name?: string;
+		name?: string | undefined;
 		reExport: boolean;
 	}>;
 	count: Count;
@@ -1013,8 +1023,8 @@ export function renderMostReferenced(
 
 /** Symbols found by a name search, grouped by file. Where browsing starts. */
 export function renderSymbolSearch(result: {
-	text: string | undefined;
-	regex?: string;
+	text?: string | undefined;
+	regex?: string | undefined;
 	symbols: SymbolSummary[];
 	count: Count;
 }): string {
@@ -1052,11 +1062,7 @@ function renderFileNotes(notes: FileNotes | undefined): string[] {
 }
 
 /** Everything one file declares, nested by container. The "open the file" answer. */
-export function renderOutline(
-	module: string,
-	declarations: Array<SymbolSummary & { containerId?: string }>,
-	notes?: FileNotes,
-): string {
+export function renderOutline(module: string, declarations: SymbolSummary[], notes?: FileNotes): string {
 	if (declarations.length === 0) {
 		return [`# \`${module}\``, "", "No indexed declarations.", ...renderFileNotes(notes)].join("\n");
 	}
@@ -1128,7 +1134,7 @@ export function renderIssues(issues: RefactorIssue[]): string[] {
  * Tracking is honour-based: nothing can stop an agent editing a file behind the transaction's
  * back, so the one moment it is certain to read this is the moment it opens one.
  */
-export function renderRefactorStart(outcome: { started: boolean; id: string; reason?: string }): string {
+export function renderRefactorStart(outcome: RefactorStartResult): string {
 	if (!outcome.started) {
 		return [
 			"# Refactor already open",
@@ -1199,12 +1205,7 @@ export function renderRefactorStatus(status: TransactionStatus): string {
  * A step with issues is still applied and still says so. Refusing would leave the caller with no
  * way to make a change whose fallout it intends to fix in the next step.
  */
-export function renderReplaceOutcome(outcome: {
-	replaced: boolean;
-	module?: string;
-	issues: RefactorIssue[];
-	reason?: string;
-}): string {
+export function renderReplaceOutcome(outcome: ReplaceOutcome): string {
 	if (!outcome.replaced) {
 		return `# Not replaced\n\n${outcome.reason ?? "the replacement could not be applied"}`;
 	}
@@ -1225,14 +1226,7 @@ export function renderReplaceOutcome(outcome: {
 }
 
 /** An insert, with what it warned about. `alreadyInserted` is the retry answer, not a failure. */
-export function renderInsertOutcome(outcome: {
-	inserted: boolean;
-	alreadyInserted?: boolean;
-	module?: string;
-	symbolIds?: string[];
-	issues: RefactorIssue[];
-	reason?: string;
-}): string {
+export function renderInsertOutcome(outcome: InsertOutcome): string {
 	if (outcome.alreadyInserted === true) {
 		return `# Already inserted\n\nThe exact text already sits at that spot in \`${outcome.module}\`; nothing was written.`;
 	}
@@ -1257,17 +1251,7 @@ export function renderInsertOutcome(outcome: {
 }
 
 /** A move step. A blocked site stops the whole move, so a refusal names what could not be written. */
-export function renderMoveOutcome(
-	toModule: string,
-	outcome: {
-		moved: boolean;
-		toModule?: string;
-		modules?: string[];
-		migrated?: { answers: number; gaps: number };
-		issues: RefactorIssue[];
-		reason?: string;
-	},
-): string {
+export function renderMoveOutcome(toModule: string, outcome: MoveOutcome): string {
 	if (!outcome.moved) {
 		const lines = ["# Not moved", "", outcome.reason ?? "the move could not be carried out"];
 		if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
@@ -1288,16 +1272,7 @@ export function renderMoveOutcome(
 }
 
 /** A rename step, including what it carried across and what the index could not promise. */
-export function renderRenameStep(
-	newName: string,
-	outcome: {
-		renamed: boolean;
-		modules?: string[];
-		migrated?: { answers: number; gaps: number };
-		issues: RefactorIssue[];
-		reason?: string;
-	},
-): string {
+export function renderRenameStep(newName: string, outcome: RenameStepOutcome): string {
 	if (!outcome.renamed) {
 		const lines = ["# Not renamed", "", outcome.reason ?? "the rename could not be carried out"];
 		if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
@@ -1320,11 +1295,7 @@ export function renderRenameStep(
 	return lines.join("\n");
 }
 
-export function renderRefactorCommit(outcome: {
-	committed: boolean;
-	issues: RefactorIssue[];
-	reason?: string;
-}): string {
+export function renderRefactorCommit(outcome: RefactorCommitResult): string {
 	if (outcome.committed) {
 		const note = outcome.issues.length > 0 ? ` ${outcome.issues.length} issue(s) were accepted by force.` : "";
 		return `# Committed\n\nThe transaction is closed and nothing is undoable now.${note}`;

@@ -1,24 +1,15 @@
 // One owner of "how many, and how sure".
 
+import type { Count, Counted } from "@nyaa-lexicon/protocol";
+
+export type { Count, Counted, CountReason } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
-
-export type CountReason = "pageCapped" | "scanCapped" | "pageAndScanCapped";
-
-/** Exact, or a floor with what stopped the count. */
-export type Count = { kind: "exact"; count: number } | { kind: "atLeast"; count: number; reason: CountReason };
 
 export interface Paged<T> {
 	items: T[];
 	count: Count;
-}
-
-/** Wire fields, derived from the count. */
-export interface Counted {
-	count: Count;
-	total: number;
-	truncated: boolean;
-	scanIncomplete?: boolean;
 }
 
 ////////////////////////////////

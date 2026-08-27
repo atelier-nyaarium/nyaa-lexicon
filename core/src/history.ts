@@ -11,6 +11,9 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { CoChange, FileHistory, FileHistoryCommit, Mention } from "@nyaa-lexicon/protocol";
+
+export type { CoChange, FileHistory, FileHistoryCommit, Mention } from "@nyaa-lexicon/protocol";
 
 const run = promisify(execFile);
 
@@ -31,59 +34,6 @@ export interface Commit {
 	/** Full message, subject and body. What a search for a symbol name reads. */
 	message: string;
 	changes: FileChange[];
-}
-
-/** A commit whose message names a symbol, which is where a rationale usually is if it is anywhere. */
-export interface Mention {
-	hash: string;
-	at: number;
-	/** First line only. A body can be pages, and the subject is what a list wants. */
-	subject: string;
-	/** Files it touched, so a mention of a common word is judgeable rather than merely present. */
-	files: number;
-}
-
-/**
- * What history says about one file on its own, as opposed to what it says about a pair.
- *
- * Two of the four things `docs/knowledge-layer.md` asks of this fact class. Churn is lines rather
- * than commits, because a file appearing in forty commits that each moved one line is a different
- * file from one rewritten twice, and a commit count cannot tell them apart.
- */
-export interface FileHistory {
-	module: string;
-	/** Commits touching it, within the window read. */
-	commits: number;
-	linesAdded: number;
-	linesDeleted: number;
-	recent: FileHistoryCommit[];
-	/** Author time of the oldest and newest commit touching it, unix seconds. */
-	firstSeen: number | null;
-	lastTouched: number | null;
-	/**
-	 * Whether the oldest commit read also touched this file.
-	 *
-	 * When true, `firstSeen` is a floor rather than a date: the file was already there, and the
-	 * window simply ran out. Reporting an age from a truncated window as if it were the real one is
-	 * how a young-looking number gets attached to the oldest file in the repository.
-	 */
-	truncated: boolean;
-}
-
-export interface FileHistoryCommit {
-	hash: string;
-	at: number;
-	added: number;
-	deleted: number;
-	subject: string;
-}
-
-export interface CoChange {
-	module: string;
-	/** Commits touching both files. */
-	together: number;
-	/** Commits touching the queried file at all, so `together` can be read as a proportion. */
-	outOf: number;
 }
 
 export interface HistoryReport {

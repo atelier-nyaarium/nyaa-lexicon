@@ -3,7 +3,7 @@
 // Two writers race and the loser leaves a plausible-looking index, so a residue test holds this as
 // the only one. Reaches wide on purpose: indexing IS reading files and asking providers.
 
-import type { ImportResolution, IndexDepth } from "@nyaa-lexicon/protocol";
+import type { ImportResolution, IndexDepth, IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
 import { attachComments } from "./commentAttach.js";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
@@ -15,16 +15,10 @@ import type { FileNote, IndexStore } from "./store.js";
 import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
 import { hashContent } from "./watcher.js";
 
+export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
-
-export interface IndexOutcome {
-	module: string;
-	action: "indexed" | "forgotten" | "skipped";
-	reason?: string;
-	failure?: string;
-	declarations?: number;
-}
 
 /** Parts sum to `tracked`. */
 export interface ScanBreakdown {
@@ -42,16 +36,6 @@ type WarmCoverage =
 	| { state: "covered" }
 	| { state: "failed"; reason: string };
 
-/**
- * How complete the index is. `unstarted` and `ready` both answer instantly and mean opposite things.
- *
- * `state`, `done` and `total` describe THIS PROCESS's scan. `stored` describes the index on disk,
- * which outlives any one process. The two are separate because they answer different questions, and
- * a consumer that has only the first will call a fully populated index empty every time a daemon
- * restarts.
- *
- * `warming` stores outlines; `upgrading` fills full facts. Failures come from persisted records.
- */
 /** How many failed files an answer names; `overview` lists every one. */
 export const NAMED_FAILURES = 3;
 
@@ -60,23 +44,6 @@ interface Admitted {
 	everything: string[];
 	candidates: string[];
 	reachable: string[];
-}
-
-export interface IndexStatus {
-	state: "unstarted" | "discovering" | "warming" | "indexing" | "upgrading" | "ready";
-	done: number;
-	total: number;
-	failures: number;
-	/** The first `NAMED_FAILURES` failed files by path, each with the provider's reason. */
-	failed: Array<{ module: string; reason: string }>;
-	/** The file asked about, when it is one of the failures. */
-	concerning?: { module: string; reason: string };
-	/** Files the index already holds, from this scan or any earlier one. */
-	stored: number;
-	/** Stored files not still owing a full pass. */
-	fullFiles: number;
-	/** Stored files still owing a full pass; reference counts are lower bounds while nonzero. */
-	outlineFiles: number;
 }
 
 ////////////////////////////////

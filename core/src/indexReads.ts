@@ -3,10 +3,27 @@
 // A store and nothing else, held by a residue test. A query that could start a provider or touch
 // the disk would stop being knowably cheap.
 
-import type { Range } from "@nyaa-lexicon/protocol";
-import type { CommentForm } from "./commentAttach.js";
+import type {
+	CallHierarchy,
+	CallHierarchyEdge,
+	CommentAnchor,
+	CommentQuery,
+	CommentsResult,
+	DescribeResult,
+	DocQuery,
+	DocsResult,
+	GraphSummary,
+	LiteralQuery,
+	LiteralsResult,
+	MostReferencedResult,
+	Range,
+	ReferencesResult,
+	SearchSymbolsResult,
+	SymbolSummary,
+	TypeHierarchy,
+} from "@nyaa-lexicon/protocol";
 import { findCycles } from "./graph.js";
-import { type Counted, type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
+import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
 import { proseHit } from "./proseText.js";
 import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
@@ -20,182 +37,26 @@ import type {
 	StoredReference,
 } from "./store.js";
 
-////////////////////////////////
-//  Interfaces & Types
-
-/** How a fact was obtained, carried on every answer so a consumer can weigh it. */
-export type AnswerTier = "bound" | "nameMatched" | "unknown";
-
-export interface SymbolSummary {
-	symbolId: string;
-	name: string;
-	kind: string;
-	module: string;
-	/** Absent when the provider's language has no answer, which is not the same as false. */
-	exported?: boolean;
-	visibility: string;
-	signature?: string;
-	docComment?: string;
-	/** Absent at the top level. What a heading path walks upward through. */
-	containerId?: string;
-	/** Where the body lives, 0-based source lines. The pointer that makes reading it a range read. */
-	lines?: { start: number; end: number };
-}
-
-/** A note written about a symbol that is not its documentation: beside it, or inside its body. */
-export interface AttachedComment {
-	form: string;
-	placement: string;
-	line: number;
-	text: string;
-}
-
-export interface DescribeResult {
-	symbol: SymbolSummary;
-	/** Direct members, the compression tier: a class as its surface rather than its body. */
-	members: SymbolSummary[];
-	/** Absent when nothing but its own documentation was written about it. */
-	comments?: AttachedComment[];
-	/** How many notes the cap left out, so a page never reports itself as a total. */
-	moreComments?: number;
-	/** A heading's own prose, which is what a document has instead of a body. Absent for code. */
-	prose?: Array<{ line: number; fenced: boolean; text: string }>;
-	/** How many regions the cap left out. */
-	moreProse?: number;
-	/** How many places use it, so a caller decides whether to ask for the list. */
-	referenceCount: number;
-	graph: GraphSummary;
-	hierarchy: TypeHierarchy;
-	tier: AnswerTier;
-}
-
-export interface ReferencesResult {
-	symbolId: string;
-	/** Capped, because an agent pays for every row and a hub symbol has thousands. */
-	references: StoredReference[];
-	total: number;
-	truncated: boolean;
-	tier: AnswerTier;
-}
-
-/** How a literal search was expressed. Carried back so an answer says what it answered. */
-export interface LiteralQuery {
-	value?: string | undefined;
-	regex?: string | undefined;
-	kind?: string | undefined;
-	min?: number | undefined;
-	max?: number | undefined;
-	key?: string | undefined;
-	within?: string | undefined;
-}
-
-export interface LiteralsResult extends Counted {
-	query: LiteralQuery;
-	literals: StoredLiteral[];
-}
-
-/** How a comment search was expressed. Carried back so an answer says what it answered. */
-export interface CommentQuery {
-	text?: string | undefined;
-	regex?: string | undefined;
-	form?: CommentForm | undefined;
-	module?: string | undefined;
-	within?: string | undefined;
-}
-
-/** The symbol a comment was written about, with enough to recognize it without a second call. */
-export interface CommentAnchor {
-	symbolId: string;
-	name: string;
-	kind: string;
-	signature?: string;
-	line: number;
-}
-
-export interface FoundComment {
-	factId: string;
-	module: string;
-	range: Range;
-	form: string;
-	placement: string;
-	/** Verbatim, capped. A banner comment is hundreds of lines and no caller asked for them. */
-	raw: string;
-	/** Null when the module itself is the container: a header, a licence, a banner. */
-	anchor: CommentAnchor | null;
-}
-
-export interface CommentsResult extends Counted {
-	query: CommentQuery;
-	comments: FoundComment[];
-}
-
-/** How a docs search was expressed. Carried back so an answer says what it answered. */
-export interface DocQuery {
-	text?: string | undefined;
-	regex?: string | undefined;
-	/** True for fenced regions only, false for prose only, absent for both. */
-	fenced?: boolean | undefined;
-	module?: string | undefined;
-}
-
-export interface FoundDoc {
-	factId: string;
-	module: string;
-	range: Range;
-	fenced: boolean;
-	/** Verbatim, capped, since a long section would otherwise crowd out the rest of the page. */
-	raw: string;
-	/** The headings above this region, outermost first, empty when it sits under none. */
-	headingPath: string[];
-	/** Where the match sits in the file; absent when the raw text cannot place it, as markup inside it. */
-	hit?: { line: number; character: number };
-}
-
-export interface DocsResult extends Counted {
-	query: DocQuery;
-	docs: FoundDoc[];
-}
-
-/**
- * Immediate supertypes and subtypes, which is the shape LSP's typeHierarchy asks for.
- *
- * Read entirely out of `extends` and `implements` reference rows the providers already emit, so
- * this needed no new provider method: the dual inverted index means one direction is
- * `referencesFrom` and the other is `referencesTo` on the same table.
- */
-export interface TypeHierarchy {
-	symbolId: string;
-	supertypes: SymbolSummary[];
-	subtypes: SymbolSummary[];
-	/** Supertypes reached transitively, nearest first, bounded and cycle-guarded. */
-	ancestors: SymbolSummary[];
-	/** Unresolved heritage names, so an engine base class is visibly absent rather than missing. */
-	unboundSupertypes: string[];
-}
-
-/** One end of a call relationship, with every span where that call is written. */
-export interface CallHierarchyEdge {
-	symbol: SymbolSummary;
-	ranges: Range[];
-}
-
-export interface CallHierarchy {
-	symbolId: string;
-	incoming: CallHierarchyEdge[];
-	outgoing: CallHierarchyEdge[];
-}
-
-export interface GraphSummary {
-	symbolId: string;
-	/** Distinct symbols this one uses, its members included. */
-	fanOut: number;
-	/** Places that use it. */
-	fanIn: number;
-	/** How many members contributed, so a container's number is readable as one. */
-	viaMembers?: number;
-	/** Present only when this symbol sits in a cycle. */
-	cycle?: string[];
-}
+export type {
+	AnswerTier,
+	AttachedComment,
+	CallHierarchy,
+	CallHierarchyEdge,
+	CommentAnchor,
+	CommentQuery,
+	CommentsResult,
+	DescribeResult,
+	DocQuery,
+	DocsResult,
+	FoundComment,
+	FoundDoc,
+	GraphSummary,
+	LiteralQuery,
+	LiteralsResult,
+	ReferencesResult,
+	SymbolSummary,
+	TypeHierarchy,
+} from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Constants & Helpers
@@ -391,7 +252,7 @@ export class IndexReadModel {
 			within?: string | undefined;
 			limit?: number | undefined;
 		} = {},
-	) {
+	): SearchSymbolsResult {
 		if ((text === undefined) === (options.regex === undefined)) {
 			throw new Error(`Set exactly one of text or regex.`);
 		}
@@ -891,7 +752,7 @@ export class IndexReadModel {
 	}
 
 	/** The most-referenced symbols, which is hub rank. */
-	mostReferenced(limit = 20): Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }> {
+	mostReferenced(limit = 20): MostReferencedResult {
 		return this.store.mostReferenced(limit).map((row) => {
 			const declaration = this.store.declaration(row.symbolId);
 			return { ...row, declaration: declaration === null ? null : toSummary(declaration) };

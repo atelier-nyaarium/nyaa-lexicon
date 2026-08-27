@@ -3,13 +3,24 @@
 // One place mapping a wire method to a service call, so the daemon stays transport-only and the
 // service stays unaware that anything is remote.
 
-import { z } from "zod";
-import { QUESTION_CLASSES, type QuestionClass } from "./answers.js";
+import {
+	DAEMON_METHODS,
+	type DaemonMethod,
+	type InsertOutcome,
+	isDaemonMethod,
+	type MoveOutcome,
+	type RenameStepOutcome,
+	type ReplaceOutcome,
+	type RequestOf,
+	type ResponseOf,
+} from "@nyaa-lexicon/protocol";
 import { journaledStep, StepRefusal } from "./refactorStep.js";
 import type { LexiconService } from "./service.js";
-import type { RefactorIssue, TransactionManager } from "./transactions.js";
+import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
 import type { WorkspaceGate } from "./workspaceGate.js";
+
+export type { InsertOutcome, MoveOutcome, RenameStepOutcome, ReplaceOutcome } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -25,146 +36,7 @@ export interface RefactorDeps {
 }
 
 ////////////////////////////////
-//  Schemas
-
-const FindByName = z.object({ name: z.string().min(1), module: z.string().min(1).optional() });
-const BySymbol = z.object({ symbolId: z.string().min(1) });
-const References = z.object({
-	symbolId: z.string().min(1),
-	limit: z.number().int().positive().optional(),
-	within: z.string().min(1).optional(),
-});
-const Resolve = z.object({ fromModule: z.string().min(1), specifier: z.string().min(1) });
-const IndexFile = z.object({ module: z.string().min(1) });
-const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) });
-const Literals = z.object({
-	value: z.string().optional(),
-	regex: z.string().min(1).optional(),
-	kind: z.string().optional(),
-	min: z.number().optional(),
-	max: z.number().optional(),
-	limit: z.number().int().positive().optional(),
-	within: z.string().min(1).optional(),
-	key: z.string().min(1).optional(),
-});
-const Comments = z.object({
-	text: z.string().min(1).optional(),
-	regex: z.string().min(1).optional(),
-	form: z.enum(["leading", "trailing", "inline", "standalone"]).optional(),
-	module: z.string().min(1).optional(),
-	limit: z.number().int().positive().max(200).optional(),
-	within: z.string().min(1).optional(),
-});
-const Docs = z.object({
-	text: z.string().min(1).optional(),
-	regex: z.string().min(1).optional(),
-	fenced: z.boolean().optional(),
-	module: z.string().min(1).optional(),
-	limit: z.number().int().positive().max(200).optional(),
-});
-const Shared = z.object({
-	minimumFiles: z.number().int().positive().optional(),
-	limit: z.number().int().positive().optional(),
-});
-const Paged = z.object({ limit: z.number().int().positive().optional() });
-const CoChange = z.object({ module: z.string().min(1), limit: z.number().int().positive().optional() });
-const Search = z
-	.object({
-		text: z.string().min(1).optional(),
-		regex: z.string().min(1).optional(),
-		kind: z.string().min(1).optional(),
-		module: z.string().min(1).optional(),
-		limit: z.number().int().positive().optional(),
-		within: z.string().min(1).optional(),
-	})
-	.refine((args) => (args.text === undefined) !== (args.regex === undefined), `Set exactly one of text or regex.`);
-const ByModule = z.object({ module: z.string().min(1) });
-const ResolveFacts = z.object({ factIds: z.array(z.string().min(1)).min(1) });
-const Mentions = z.object({ name: z.string().min(1), limit: z.number().int().positive().optional() });
-const Question = z.enum(QUESTION_CLASSES as unknown as [string, ...string[]]).transform((v) => v as QuestionClass);
-const RecordAnswer = z.object({
-	symbolId: z.string().min(1),
-	question: Question,
-	prose: z.string().min(1),
-	citations: z.array(z.string().min(1)),
-	model: z.string().min(1).optional(),
-	resolvesDoubt: z.string().min(1).optional(),
-	omitting: z.string().min(1).optional(),
-});
-const RecallAnswer = z.object({ symbolId: z.string().min(1), question: Question.optional() });
-const InvalidateAnswer = z.object({
-	symbolId: z.string().min(1),
-	reason: z.string().min(1),
-	question: Question.optional(),
-	by: z.string().min(1).optional(),
-});
-const ReaffirmAnswer = z.object({
-	symbolId: z.string().min(1),
-	question: Question,
-	citations: z.array(z.string().min(1)).optional(),
-	model: z.string().min(1).optional(),
-	resolvesDoubt: z.string().min(1).optional(),
-});
-const Gaps = z.object({
-	root: z.string().min(1).optional(),
-	question: Question.optional(),
-	limit: z.number().int().positive().optional(),
-	module: z.string().min(1).optional(),
-});
-const Status = z.object({
-	concerning: z.string().min(1).optional(),
-});
-const FindImports = z.object({
-	specifier: z.string().min(1).optional(),
-	specifierRegex: z.string().min(1).optional(),
-	module: z.string().min(1).optional(),
-	moduleRegex: z.string().min(1).optional(),
-	limit: z.number().int().positive().optional(),
-});
-
-const SymbolSourceArgs = z.object({
-	symbolId: z.string().min(1).optional(),
-	factId: z.string().min(1).optional(),
-});
-
-const Commit = z.object({ force: z.boolean().optional() });
-
-const Move = z.object({ symbolId: z.string().min(1), toModule: z.string().min(1) });
-
-const Replace = z.object({
-	symbolId: z.string().min(1).optional(),
-	factId: z.string().min(1).optional(),
-	newText: z.string(),
-});
-
-const Insert = z
-	.object({
-		after: z.string().min(1).optional(),
-		module: z.string().min(1).optional(),
-		text: z.string().min(1),
-	})
-	.refine(
-		(args) => (args.after === undefined) !== (args.module === undefined),
-		`Set exactly one of after or module.`,
-	);
-
-/** What a replacement did, or why it did nothing. Issues ride along either way. */
-export interface ReplaceOutcome {
-	replaced: boolean;
-	module?: string;
-	issues: RefactorIssue[];
-	reason?: string;
-}
-
-export interface MoveOutcome {
-	moved: boolean;
-	/** Canonical target spelling, on success. */
-	toModule?: string;
-	modules?: string[];
-	migrated?: { answers: number; gaps: number };
-	issues: RefactorIssue[];
-	reason?: string;
-}
+//  Steps
 
 /**
  * A move as one transaction step.
@@ -243,15 +115,6 @@ function refactorMove(
 			},
 		},
 	);
-}
-
-/** What a rename did, with what it carried across and what it could not promise. */
-export interface RenameStepOutcome {
-	renamed: boolean;
-	modules?: string[];
-	migrated?: { answers: number; gaps: number };
-	issues: RefactorIssue[];
-	reason?: string;
 }
 
 /**
@@ -377,16 +240,6 @@ function refactorReplace(
 	);
 }
 
-export interface InsertOutcome {
-	inserted: boolean;
-	alreadyInserted?: boolean;
-	module?: string;
-	/** From the post-reindex store, never candidate facts: provider id assignment can differ. */
-	symbolIds?: string[];
-	issues: RefactorIssue[];
-	reason?: string;
-}
-
 /** Insert as one transaction step: the replace pipeline with a computed splice point. */
 function refactorInsert(
 	service: LexiconService,
@@ -457,12 +310,12 @@ function refactorInsert(
 //  Functions & Helpers
 
 /**
- * Dispatch one call.
+ * One handler per wire method, each taking params the table has already parsed.
  *
- * An unknown method throws rather than answering null, so a client built against a newer daemon
- * learns the method is missing instead of reading an empty answer as a real one.
+ * Building the map calls nothing on the service, so its key set can be checked against the table
+ * over a stub.
  */
-export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
+export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps) {
 	/** Mutations take the gate; a caller with no gate is a test driving the service directly. */
 	const write = <T>(work: () => Promise<T> | T): Promise<T> =>
 		refactor ? refactor.gate.exclusive(async () => work()) : Promise.resolve(work());
@@ -477,207 +330,129 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 	/**
 	 * Tier 1: a symbol answer full-parses its tree ahead of the background upgrade, then answers.
 	 *
-	 * The one spelling of the shortcut. A case that wires the tree by hand instead of through here
-	 * is the drift the tier test fails on.
+	 * The one spelling of the shortcut. A handler that wires the tree by hand instead of through
+	 * here is the drift the tier test fails on.
 	 */
 	const treeFirst = async <T>(symbolId: string, answer: () => Promise<T> | T): Promise<T> => {
 		await service.ensureTreeFor(symbolId);
 		return answer();
 	};
 
+	return {
+		findByName: (params) => service.findByName(params.name, params.module),
+		describe: (params) => treeFirst(params.symbolId, () => service.describe(params.symbolId)),
+		// The four below exist for the editor, which asks by position rather than by name and so
+		// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.
+		declarationOf: (params) => service.declarationOf(params.symbolId),
+		declarationsIn: (params) => service.declarationsIn(params.module),
+		typeHierarchy: (params) => treeFirst(params.symbolId, () => service.typeHierarchy(params.symbolId)),
+		callHierarchy: (params) => treeFirst(params.symbolId, () => service.callHierarchy(params.symbolId)),
+		findReferences: (params) =>
+			treeFirst(params.symbolId, () => service.findReferences(params.symbolId, params.limit, params.within)),
+		resolveImport: (params) => service.resolveImport(params.fromModule, params.specifier),
+		indexStatus: (params) => service.indexStatus(params.concerning),
+		findLiterals: ({ limit, ...query }) => service.findLiterals(query, limit),
+		findComments: ({ limit, ...query }) => service.findComments(query, limit),
+		findDocs: ({ limit, ...query }) => service.findDocs(query, limit),
+		sharedLiterals: (params) => service.sharedLiterals(params.minimumFiles, params.limit),
+		cycles: (params) => service.cycles(params.limit),
+		mostReferenced: (params) => service.mostReferenced(params.limit),
+		hubs: (params) => service.mostReferenced(params.limit),
+		cacheStats: () => service.cacheStats(),
+		searchSymbols: (params) => service.searchSymbols(params.text, params),
+		outlineModule: (params) => service.outline(params.module),
+		fileNotes: (params) => service.fileNotes(params.module),
+		findImports: (params) => service.findImports(params),
+		overview: () => service.overview(),
+		coChangedWith: (params) => service.coChangedWith(params.module, params.limit),
+		fileHistory: (params) => service.fileHistory(params.module),
+		commitsMentioning: (params) => service.commitsMentioning(params.name, params.limit),
+		// Tier 1 too: its answer carries the declaring module's references and literals, which
+		// outline facts genuinely lack.
+		factsFor: (params) => treeFirst(params.symbolId, () => service.factsFor(params.symbolId, params.limit)),
+		resolveFacts: (params) => service.resolveFacts(params.factIds),
+		recordAnswer: (params) =>
+			service.recordAnswer(params.symbolId, params.question, params.prose, params.citations, {
+				...(params.model === undefined ? {} : { model: params.model }),
+				...(params.resolvesDoubt === undefined ? {} : { resolvesDoubt: params.resolvesDoubt }),
+				...(params.omitting === undefined ? {} : { omitting: params.omitting }),
+			}),
+		invalidateAnswer: (params) =>
+			service.invalidateAnswer(params.symbolId, params.reason, params.question, params.by),
+		reaffirmAnswer: (params) =>
+			service.reaffirmAnswer(params.symbolId, params.question, {
+				...(params.citations === undefined ? {} : { citations: params.citations }),
+				...(params.model === undefined ? {} : { model: params.model }),
+				...(params.resolvesDoubt === undefined ? {} : { resolvesDoubt: params.resolvesDoubt }),
+			}),
+		recallAnswer: (params) =>
+			params.question === undefined
+				? service.recallAnswers(params.symbolId)
+				: service.recallAnswer(params.symbolId, params.question),
+		knowledgeGaps: (params) => service.knowledgeGaps(params.root, params.question, params.limit, params.module),
+		typeOf: (params) => treeFirst(params.symbolId, () => service.typeOf(params.symbolId)),
+		// Rename planning requires complete reference facts.
+		// Read-only, and kept because the editor asks it to decide whether to offer a rename.
+		prepareRename: async (params) => {
+			await service.upgradeRemaining();
+			return read(() => service.prepareRename(params.symbolId, params.newName));
+		},
+		// The edits a rename would make, for a caller that applies them itself. Nothing is written
+		// here, so it takes the shared lock like any other read.
+		renameEdits: async (params) => {
+			await service.upgradeRemaining();
+			return read(() => service.renameEdits(params.symbolId, params.newName));
+		},
+		// Read-only, like prepareRename.
+		planMove: async (params) => {
+			await service.upgradeRemaining();
+			return read(() => service.planMove(params.symbolId, params.toModule));
+		},
+		indexFile: (params) => write(() => service.indexFile(params.module)),
+		symbolSource: (params) => read(() => service.symbolSource(params)),
+		refactorStart: () => write(() => transactions().start()),
+		refactorStatus: () => read(() => transactions().status()),
+		refactorTrack: (params) => write(() => transactions().track(params.module)),
+		// Restoring puts back text the index does not describe, so the facts for those files are
+		// of a version that no longer exists on disk.
+		refactorUndo: () =>
+			write(async () => {
+				const outcome = transactions().undo();
+				for (const module of outcome.modules ?? []) await service.indexFile(module);
+				return outcome;
+			}),
+		refactorRevert: () =>
+			write(async () => {
+				const outcome = transactions().revert();
+				for (const module of outcome.modules) await service.indexFile(module);
+				return outcome;
+			}),
+		refactorCommit: (params) => write(() => transactions().commit(params)),
+		refactorReplace: (params) => refactorReplace(service, transactions(), write, params),
+		refactorInsert: (params) => refactorInsert(service, transactions(), write, params),
+		refactorRename: (params) => refactorRename(service, transactions(), write, params),
+		refactorMove: (params) => refactorMove(service, transactions(), write, params),
+	} satisfies {
+		[M in DaemonMethod]: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>;
+	};
+}
+
+/**
+ * Dispatch one call: parse the request through the table, run its handler, parse the answer.
+ *
+ * An unknown method throws rather than answering null, so a client built against a newer daemon
+ * learns the method is missing instead of reading an empty answer as a real one.
+ */
+export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
+	const handlers = daemonHandlers(service, refactor);
 	return async (method: string, params: unknown): Promise<unknown> => {
-		switch (method) {
-			case "findByName": {
-				const args = FindByName.parse(params);
-				return service.findByName(args.name, args.module);
-			}
-			case "describe": {
-				const args = BySymbol.parse(params);
-				return treeFirst(args.symbolId, () => service.describe(args.symbolId));
-			}
-			// The four below exist for the editor, which asks by position rather than by name and so
-			// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.
-			case "declarationOf":
-				return service.declarationOf(BySymbol.parse(params).symbolId);
-			case "declarationsIn":
-				return service.declarationsIn(ByModule.parse(params).module);
-			case "typeHierarchy": {
-				const args = BySymbol.parse(params);
-				return treeFirst(args.symbolId, () => service.typeHierarchy(args.symbolId));
-			}
-			case "callHierarchy": {
-				const args = BySymbol.parse(params);
-				return treeFirst(args.symbolId, () => service.callHierarchy(args.symbolId));
-			}
-			case "findReferences": {
-				const args = References.parse(params);
-				return treeFirst(args.symbolId, () => service.findReferences(args.symbolId, args.limit, args.within));
-			}
-			case "resolveImport": {
-				const args = Resolve.parse(params);
-				return service.resolveImport(args.fromModule, args.specifier);
-			}
-			case "indexStatus": {
-				const args = Status.parse(params);
-				return service.indexStatus(args.concerning);
-			}
-			case "findLiterals": {
-				const args = Literals.parse(params);
-				const { limit, ...query } = args;
-				return service.findLiterals(query, limit);
-			}
-			case "findComments": {
-				const args = Comments.parse(params);
-				const { limit, ...query } = args;
-				return service.findComments(query, limit);
-			}
-			case "findDocs": {
-				const args = Docs.parse(params);
-				const { limit, ...query } = args;
-				return service.findDocs(query, limit);
-			}
-			case "sharedLiterals": {
-				const args = Shared.parse(params);
-				return service.sharedLiterals(args.minimumFiles, args.limit);
-			}
-			case "cycles":
-				return service.cycles(Paged.parse(params).limit);
-			case "mostReferenced":
-			case "hubs":
-				return service.mostReferenced(Paged.parse(params).limit);
-			case "cacheStats":
-				return service.cacheStats();
-			case "searchSymbols": {
-				const args = Search.parse(params);
-				return service.searchSymbols(args.text, args);
-			}
-			case "outlineModule":
-				return service.outline(ByModule.parse(params).module);
-			case "fileNotes":
-				return service.fileNotes(ByModule.parse(params).module);
-			case "findImports":
-				return service.findImports(FindImports.parse(params));
-			case "overview":
-				return service.overview();
-			case "coChangedWith": {
-				const args = CoChange.parse(params);
-				return service.coChangedWith(args.module, args.limit);
-			}
-			case "fileHistory":
-				return service.fileHistory(ByModule.parse(params).module);
-			case "commitsMentioning": {
-				const args = Mentions.parse(params);
-				return service.commitsMentioning(args.name, args.limit);
-			}
-			case "factsFor": {
-				// Tier 1 too: its answer carries the declaring module's references and literals,
-				// which outline facts genuinely lack.
-				const args = References.parse(params);
-				return treeFirst(args.symbolId, () => service.factsFor(args.symbolId, args.limit));
-			}
-			case "resolveFacts":
-				return service.resolveFacts(ResolveFacts.parse(params).factIds);
-			case "recordAnswer": {
-				const args = RecordAnswer.parse(params);
-				return service.recordAnswer(args.symbolId, args.question, args.prose, args.citations, {
-					...(args.model === undefined ? {} : { model: args.model }),
-					...(args.resolvesDoubt === undefined ? {} : { resolvesDoubt: args.resolvesDoubt }),
-					...(args.omitting === undefined ? {} : { omitting: args.omitting }),
-				});
-			}
-			case "invalidateAnswer": {
-				const args = InvalidateAnswer.parse(params);
-				return service.invalidateAnswer(args.symbolId, args.reason, args.question, args.by);
-			}
-			case "reaffirmAnswer": {
-				const args = ReaffirmAnswer.parse(params);
-				return service.reaffirmAnswer(args.symbolId, args.question, {
-					...(args.citations === undefined ? {} : { citations: args.citations }),
-					...(args.model === undefined ? {} : { model: args.model }),
-					...(args.resolvesDoubt === undefined ? {} : { resolvesDoubt: args.resolvesDoubt }),
-				});
-			}
-			case "recallAnswer": {
-				const args = RecallAnswer.parse(params);
-				return args.question === undefined
-					? service.recallAnswers(args.symbolId)
-					: service.recallAnswer(args.symbolId, args.question);
-			}
-			case "knowledgeGaps": {
-				const args = Gaps.parse(params);
-				return service.knowledgeGaps(args.root, args.question, args.limit, args.module);
-			}
-			case "typeOf": {
-				const args = BySymbol.parse(params);
-				return treeFirst(args.symbolId, () => service.typeOf(args.symbolId));
-			}
-			// Rename planning requires complete reference facts.
-			// Read-only, and kept because the editor asks it to decide whether to offer a rename.
-			case "prepareRename": {
-				const args = Rename.parse(params);
-				await service.upgradeRemaining();
-				return read(() => service.prepareRename(args.symbolId, args.newName));
-			}
-			// The edits a rename would make, for a caller that applies them itself. Nothing is written
-			// here, so it takes the shared lock like any other read.
-			case "renameEdits": {
-				const args = Rename.parse(params);
-				await service.upgradeRemaining();
-				return read(() => service.renameEdits(args.symbolId, args.newName));
-			}
-			// Read-only, like prepareRename.
-			case "planMove": {
-				const args = Move.parse(params);
-				await service.upgradeRemaining();
-				return read(() => service.planMove(args.symbolId, args.toModule));
-			}
-			case "indexFile": {
-				const args = IndexFile.parse(params);
-				return write(() => service.indexFile(args.module));
-			}
-			case "symbolSource":
-				return read(() => service.symbolSource(SymbolSourceArgs.parse(params)));
-			case "refactorStart":
-				return write(() => transactions().start());
-			case "refactorStatus":
-				return read(() => transactions().status());
-			case "refactorTrack":
-				return write(() => transactions().track(ByModule.parse(params).module));
-			// Restoring puts back text the index does not describe, so the facts for those files are
-			// of a version that no longer exists on disk.
-			case "refactorUndo":
-				return write(async () => {
-					const outcome = transactions().undo();
-					for (const module of outcome.modules ?? []) await service.indexFile(module);
-					return outcome;
-				});
-			case "refactorRevert":
-				return write(async () => {
-					const outcome = transactions().revert();
-					for (const module of outcome.modules) await service.indexFile(module);
-					return outcome;
-				});
-			case "refactorCommit":
-				return write(() => transactions().commit(Commit.parse(params)));
-			case "refactorReplace": {
-				const args = Replace.parse(params);
-				return refactorReplace(service, transactions(), write, args);
-			}
-			case "refactorInsert": {
-				const args = Insert.parse(params);
-				return refactorInsert(service, transactions(), write, args);
-			}
-			case "refactorRename": {
-				const args = Rename.parse(params);
-				return refactorRename(service, transactions(), write, args);
-			}
-			case "refactorMove": {
-				const args = Move.parse(params);
-				return refactorMove(service, transactions(), write, args);
-			}
-			default:
-				// Names the build, since the likeliest cause is a client and daemon on different ones.
-				throw new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
+		if (!isDaemonMethod(method)) {
+			// Names the build, since the likeliest cause is a client and daemon on different ones.
+			throw new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
 		}
+		const args = DAEMON_METHODS[method].request.parse(params ?? {});
+		// Looked up by a runtime key, the handler's parameter is the intersection of every request.
+		const answer = await handlers[method](args as never);
+		return DAEMON_METHODS[method].response.parse(answer);
 	};
 }

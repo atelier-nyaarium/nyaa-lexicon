@@ -109,8 +109,15 @@ export function daemonBackend(workspaceRoot: string): ToolBackend {
 		commitsMentioning: (name, limit) => ask("commitsMentioning", { name, limit }),
 		recordAnswer: (symbolId, question, prose, citations, options) =>
 			ask("recordAnswer", { symbolId, question, prose, citations, ...options }),
-		recallAnswer: (symbolId, question) => ask("recallAnswer", { symbolId, question }),
-		recallAnswers: (symbolId) => ask("recallAnswer", { symbolId }),
+		// One wire method answers both arities; the question decides which shape comes back.
+		recallAnswer: async (symbolId, question) => {
+			const answer = await ask("recallAnswer", { symbolId, question });
+			return Array.isArray(answer) ? (answer[0] ?? null) : answer;
+		},
+		recallAnswers: async (symbolId) => {
+			const answer = await ask("recallAnswer", { symbolId });
+			return Array.isArray(answer) ? answer : answer === null ? [] : [answer];
+		},
 		invalidateAnswer: (symbolId, reason, question, by) =>
 			ask("invalidateAnswer", { symbolId, reason, question, by }),
 		reaffirmAnswer: (symbolId, question, options) => ask("reaffirmAnswer", { symbolId, question, ...options }),

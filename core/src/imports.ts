@@ -3,7 +3,14 @@
 // The knowledge layer and the rename planner both need this, and two answers would be one fact
 // under two names. Providers through a port, never a supervisor.
 
-import type { ImportOrigin, ImportResolution, IndexDepth, MoveImportSite, Range } from "@nyaa-lexicon/protocol";
+import type {
+	FindImportsResult,
+	ImportOrigin,
+	ImportResolution,
+	IndexDepth,
+	MoveImportSite,
+	Range,
+} from "@nyaa-lexicon/protocol";
 import { DEFAULT_REFERENCE_LIMIT } from "./indexReads.js";
 import { type Paged, pageProbed, pageScanned, wire } from "./paging.js";
 import { compileSearchRegex } from "./search.js";
@@ -88,7 +95,7 @@ export class ImportResolver {
 		module?: string | undefined;
 		moduleRegex?: string | undefined;
 		limit?: number | undefined;
-	}) {
+	}): Promise<FindImportsResult> {
 		const limit = query.limit ?? DEFAULT_REFERENCE_LIMIT;
 		const targets = [query.specifier, query.specifierRegex, query.module, query.moduleRegex].filter(
 			(value) => value !== undefined,

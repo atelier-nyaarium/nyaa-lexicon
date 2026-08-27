@@ -57,10 +57,13 @@ export function daemonReads(channel: DaemonChannel): LexiconReads {
 		typeHierarchy: (symbolId) => channel.ask("typeHierarchy", { symbolId }),
 		callHierarchy: (symbolId) => channel.ask("callHierarchy", { symbolId }),
 		// One method, both arities. No question means all.
-		recallAnswers: (symbolId) => channel.ask("recallAnswer", { symbolId }),
+		recallAnswers: async (symbolId) => {
+			const answer = await channel.ask("recallAnswer", { symbolId });
+			return Array.isArray(answer) ? answer : answer === null ? [] : [answer];
+		},
 		prepareRename: (symbolId, newName) => channel.ask("prepareRename", { symbolId, newName }),
 		renameEdits: (symbolId, newName) => channel.ask("renameEdits", { symbolId, newName }),
-		transactionOpen: async () => (await channel.ask<{ open: boolean }>("refactorStatus", {})).open,
+		transactionOpen: async () => (await channel.ask("refactorStatus", {})).open,
 	};
 }
 

@@ -10,115 +10,16 @@
 // what it cannot verify, and remembers. That split is also what keeps narration from ever editing
 // facts: this module can only read them.
 
-import { isFactId } from "@nyaa-lexicon/protocol";
-import type { StoredFact } from "./store.js";
+import { isFactId, QUESTION_CLASSES, type QuestionClass, type StoredFact } from "@nyaa-lexicon/protocol";
 
-////////////////////////////////
-//  Interfaces & Types
-
-/**
- * The closed question vocabulary from `docs/knowledge-layer.md`.
- *
- * Closed rather than free-form for the same reason every other vocabulary here is: a class the core
- * cannot render is worse than one it refuses, and an open string turns a cache into a junk drawer.
- */
-export type QuestionClass = "describe" | "why" | "relate" | "contract" | "effects" | "usage";
-
-export const QUESTION_CLASSES: readonly QuestionClass[] = ["describe", "why", "relate", "contract", "effects", "usage"];
-
-/**
- * A declared invalidation: someone read the code and no longer trusts this answer.
- *
- * The middle state between fresh and rewritten. Mechanical staleness cannot see semantic drift, so
- * an agent that just changed a function's purpose declares doubt instead of waiting for a citation
- * to die. Doubt does NOT retire the answer's fact id: parents' citations still resolve, and the
- * recall walk is what carries the doubt downstream as SHAKY.
- */
-export interface Doubt {
-	/** The handshake token. Clearing this doubt requires citing it, which proves the writer saw it. */
-	factId: string;
-	reason: string;
-	at: number;
-	/** Who declared it. Absent when the caller did not say. */
-	by?: string;
-}
-
-export interface Answer {
-	symbolId: string;
-	question: QuestionClass;
-	/**
-	 * The answer's own citable id, in the fact grammar with kind `answer`.
-	 *
-	 * This is what lets a parent's description cite a child's: answers are facts one layer up.
-	 * Re-recording retires the id, so everything citing the old one reports stale by the same
-	 * lookup that catches an edited file.
-	 */
-	factId: string;
-	prose: string;
-	/** Fact ids consumed, in the order the author gave them. May include other answers' ids. */
-	citations: string[];
-	/**
-	 * True when nothing cited reaches beyond the subject's own declaration.
-	 *
-	 * Structurally a paraphrase: grounded, legitimate, and adding little, since the declaration is
-	 * what a reader already sees. Stored rather than refused, because refusing would teach citation
-	 * padding; a visible grade invites a better answer instead.
-	 */
-	thin: boolean;
-	/** Who wrote it. Absent when the caller did not say, which is different from claiming nobody. */
-	model?: string;
-	createdAt: number;
-	/**
-	 * Present while someone's declared distrust stands. A re-record that does not cite the doubt's
-	 * id carries this forward onto the new answer rather than clearing it, so a writer who never
-	 * looked cannot erase a warning.
-	 */
-	doubt?: Doubt;
-}
-
-/** What a recall gives back: the answer, and whether its ground has moved since. */
-export interface RecalledAnswer {
-	answer: Answer;
-	/** Cited facts that no longer resolve. Empty means every input still holds. */
-	stale: string[];
-	/**
-	 * Cited answers that still resolve but are themselves stale underneath.
-	 *
-	 * The cascade, walked rather than bookkept: a description leaning on a child's description
-	 * inherits its doubt. Separate from `stale` because the remedies differ, re-affirm the child
-	 * first versus rewrite this one.
-	 */
-	inheritedStale: string[];
-	/**
-	 * Cited answers that are doubted, directly or anywhere beneath them.
-	 *
-	 * Separate from `inheritedStale` for the same reason it is separate from `stale`: a doubted
-	 * child needs its doubt addressed by someone who read the reason, while a stale one needs
-	 * re-grounding on current facts.
-	 */
-	doubtedUpstream: string[];
-}
-
-export type RecordOutcome =
-	| {
-			recorded: true;
-			answer: Answer;
-			/**
-			 * A doubt the previous answer carried that this write did NOT cite, so it rode forward.
-			 * Stated on the outcome because the writer is the one person who can still address it.
-			 */
-			doubtCarried?: Doubt;
-	  }
-	| {
-			recorded: false;
-			reason: string;
-			unresolved?: string[];
-			/**
-			 * Set when the supersede gate refused: the incumbent's still-live citations this write
-			 * failed to cover. Re-cite them, or explain the omission in `omitting`.
-			 */
-			uncovered?: string[];
-	  };
+export {
+	type Answer,
+	type Doubt,
+	QUESTION_CLASSES,
+	type QuestionClass,
+	type RecalledAnswer,
+	type RecordOutcome,
+} from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Constants

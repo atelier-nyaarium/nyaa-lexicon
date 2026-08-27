@@ -10,47 +10,27 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import type {
+	RefactorCommitResult,
+	RefactorIssue,
+	RefactorRevertResult,
+	RefactorStartResult,
+	RefactorTrackResult,
+	RefactorUndoResult,
+	StepKind,
+	StepPhase,
+	TransactionStatus,
+} from "@nyaa-lexicon/protocol";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
+
+export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-/**
- * How far a step got. Each is committed BEFORE the work it names, so a crash is always readable as
- * "this may have happened" rather than leaving a gap between two phases that both look complete.
- */
-export type StepPhase = "journaled" | "written" | "reindexed" | "finalized";
-
-export type StepKind = "replace" | "rename" | "move" | "insert" | "track";
-
 /** Where a snapshot belongs. The baseline is what revert restores; a step image is what undo does. */
 export type ImageScope = "baseline" | "step";
-
-export interface RefactorIssue {
-	kind: string;
-	detail: string;
-	module?: string;
-	line?: number;
-	/** Which step introduced it, so status can point at one rather than at the workspace. */
-	stepNo?: number;
-}
-
-export interface TransactionStep {
-	stepNo: number;
-	kind: StepKind;
-	phase: StepPhase;
-	modules: string[];
-}
-
-export interface TransactionStatus {
-	open: boolean;
-	id?: string;
-	startedAt?: number;
-	steps: TransactionStep[];
-	tracked: string[];
-	issues: RefactorIssue[];
-}
 
 /** What a file looked like, and whether it was there at all. Absent and empty are different. */
 export interface FileImage {
@@ -90,7 +70,7 @@ export class TransactionManager {
 	//  Lifecycle
 
 	/** Refuses a second transaction rather than nesting: one workspace, one stack of undo. */
-	start(): { started: boolean; id: string; reason?: string } {
+	start(): RefactorStartResult {
 		const open = this.openTransaction();
 		if (open) return { started: false, id: open.id, reason: "a refactor transaction is already open" };
 
@@ -119,7 +99,7 @@ export class TransactionManager {
 	 * mark revert restores to, so revert would stop at a mid-transaction state and call it the
 	 * beginning.
 	 */
-	track(module: string): { tracked: boolean; reason?: string } {
+	track(module: string): RefactorTrackResult {
 		const open = this.openTransaction();
 		if (!open) return { tracked: false, reason: "no refactor transaction is open" };
 
@@ -279,7 +259,7 @@ export class TransactionManager {
 	 * step is not the step's output any more, and putting the old bytes back would silently discard
 	 * whatever replaced them.
 	 */
-	undo(): { undone: boolean; stepNo?: number; modules?: string[]; reason?: string } {
+	undo(): RefactorUndoResult {
 		const open = this.openTransaction();
 		if (!open) return { undone: false, reason: "no refactor transaction is open" };
 
@@ -320,7 +300,7 @@ export class TransactionManager {
 	}
 
 	/** Puts every tracked file back to its opening image, whatever happened in between. */
-	revert(): { reverted: boolean; modules: string[]; reason?: string } {
+	revert(): RefactorRevertResult {
 		const open = this.openTransaction();
 		if (!open) return { reverted: false, modules: [], reason: "no refactor transaction is open" };
 
@@ -332,11 +312,7 @@ export class TransactionManager {
 	}
 
 	/** Keeps what is on disk and drops the journal, so nothing can be undone afterwards. */
-	commit(options: { force?: boolean | undefined } = {}): {
-		committed: boolean;
-		issues: RefactorIssue[];
-		reason?: string;
-	} {
+	commit(options: { force?: boolean | undefined } = {}): RefactorCommitResult {
 		const open = this.openTransaction();
 		if (!open) return { committed: false, issues: [], reason: "no refactor transaction is open" };
 

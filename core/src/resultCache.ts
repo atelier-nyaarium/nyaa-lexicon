@@ -9,15 +9,9 @@
 // consulted, and a reverse lookup consults all of them, so the precise version is both harder and
 // barely narrower.
 
-////////////////////////////////
-//  Interfaces & Types
+import type { CacheStats } from "@nyaa-lexicon/protocol";
 
-export interface CacheStats {
-	hits: number;
-	misses: number;
-	entries: number;
-	generation: number;
-}
+export type { CacheStats } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Constants

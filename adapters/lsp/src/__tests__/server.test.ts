@@ -45,7 +45,7 @@ function declaration(name: string, overrides: Partial<StoredDeclaration> = {}): 
 	};
 }
 
-function summary(symbolId: string, name: string, kind = "class"): SymbolSummary {
+function summary(symbolId: string, name: string, kind: SymbolSummary["kind"] = "class"): SymbolSummary {
 	return {
 		symbolId,
 		name,

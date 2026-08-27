@@ -4,10 +4,12 @@
 // sourceWriter.ts decides how.
 
 import path from "node:path";
-import { coordinatesOf, type Range } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, type Range, type SymbolSource } from "@nyaa-lexicon/protocol";
 import { writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 import { hashContent } from "./watcher.js";
+
+export type { SymbolSource } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -16,29 +18,6 @@ import { hashContent } from "./watcher.js";
 function sliceRange(text: string, range: Range): string | null {
 	return coordinatesOf(text).sliceRange(range) ?? null;
 }
-
-////////////////////////////////
-//  Interfaces & Types
-
-/**
- * One symbol's text as it stands on disk, with the range that text occupies.
- *
- * The range rides along because it is what a replacement overwrites: a caller that read the text
- * here and edited it needs to say WHERE it goes back, and re-deriving that would let the two
- * disagree.
- */
-export type SymbolSource =
-	| {
-			found: true;
-			module: string;
-			name: string;
-			kind: string;
-			range: Range;
-			text: string;
-			/** Of the same read the text came from, so a later write can prove nothing moved. */
-			contentHash: string;
-	  }
-	| { found: false; reason: string; stale?: boolean };
 
 ////////////////////////////////
 //  Class

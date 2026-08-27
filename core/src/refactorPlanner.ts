@@ -4,11 +4,14 @@
 // ProviderProbe, which restores its own state in a finally.
 
 import type {
-	Binding,
 	FileFacts,
 	MoveDependency,
 	MoveEditsRequest,
+	MovePlan,
 	Range,
+	RenameConcern,
+	RenameEditPlan,
+	RenamePlan,
 	RenameSite,
 	UnknownReason,
 } from "@nyaa-lexicon/protocol";
@@ -26,14 +29,14 @@ import {
 	sameRange,
 } from "@nyaa-lexicon/protocol";
 import type { FileEdits } from "./applyEdits.js";
-import { isExternalModule } from "./fileScope.js";
 import type { ImportResolver } from "./imports.js";
-import { toSummary } from "./indexReads.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
-import type { IndexStore, StoredDeclaration, StoredReference } from "./store.js";
+import type { IndexStore, StoredDeclaration } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
 import { hashContent } from "./watcher.js";
+
+export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -106,46 +109,6 @@ function countUnbound(rows: Array<{ name: string; role: string; reason: string }
 ////////////////////////////////
 //  Interfaces & Types
 
-/** Occurrences of one symbol in one file, which is the unit a provider is asked to rewrite. */
-export interface RenameFile {
-	module: string;
-	sites: RenameSite[];
-	/** Calls in this file to the declaration owning the renamed symbol. Absent for an unowned one. */
-	ownerCalls?: Range[];
-}
-
-/**
- * Two kinds of bad news, kept apart because they call for different decisions.
- *
- * A blocker is something we KNOW would break: the symbol is not indexed, or a provider refuses.
- * A warning is somewhere we cannot see far enough to promise: an occurrence spelled the same that
- * never bound, or a symbol exported past the edge of the index. Folding the second into the first
- * would refuse most real renames; folding the first into the second would ship broken code.
- */
-export interface RenameConcern {
-	kind: string;
-	detail: string;
-	/** Where it was found, when the concern is about specific occurrences. */
-	sites?: Array<{ module: string; line: number }>;
-}
-
-export interface RenamePlan {
-	symbolId: string;
-	oldName: string;
-	newName: string;
-	files: RenameFile[];
-	/** Total occurrences to rewrite, the declaration's own name included. */
-	occurrences: number;
-	blockers: RenameConcern[];
-	warnings: RenameConcern[];
-}
-
-/**
- * A replacement worked out but not yet written.
- *
- * Carries the whole new file rather than an edit, because the splice was already checked against
- * the text it was cut from and re-deriving it at write time is how the two come to disagree.
- */
 /** How many times one name in one role failed to bind, kept with the parts so nothing re-splits. */
 interface UnboundTally {
 	name: string;
@@ -155,6 +118,12 @@ interface UnboundTally {
 	count: number;
 }
 
+/**
+ * A replacement worked out but not yet written.
+ *
+ * Carries the whole new file rather than an edit, because the splice was already checked against
+ * the text it was cut from and re-deriving it at write time is how the two come to disagree.
+ */
 export type ReplacementPlan =
 	| {
 			ok: true;
@@ -167,41 +136,10 @@ export type ReplacementPlan =
 	  }
 	| { ok: false; reason: string };
 
-/**
- * A move worked out but not yet written.
- *
- * The closure is the moved declaration plus everything declared inside it, which is what the id
- * migration and the dependency walk are both scoped to.
- */
-export type MovePlan =
-	| {
-			ok: true;
-			symbolId: string;
-			name: string;
-			fromModule: string;
-			toModule: string;
-			/** The declaration's own text, which is what gets inserted at the target. */
-			text: string;
-			removal: Range;
-			closure: string[];
-			dependencies: MoveDependency[];
-			/** Modules importing the moved symbol, which need their specifier re-pointed. */
-			referencing: string[];
-			/** Whether anything left behind in the source module still uses it. */
-			usedAtSource: boolean;
-			baseHash: string;
-	  }
-	| { ok: false; reason: string };
-
 /** Whole new contents per module, so the writer never re-derives an edit it did not check. */
 export type MoveEditsOutcome =
 	| { ok: true; files: Array<{ module: string; text: string }>; issues: RefactorIssue[] }
 	| { ok: false; issues: RefactorIssue[]; reason: string };
-
-/** A rename worked out but not applied, for a caller that will apply it itself. */
-export type RenameEditPlan =
-	| { ok: true; plan: RenamePlan; files: FileEdits[] }
-	| { ok: false; plan: RenamePlan; reason: string };
 
 export interface InsertArgs {
 	/** Sibling anchor: the new declaration goes directly after this one. */

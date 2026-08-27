@@ -4,16 +4,13 @@
 // provider edits with the same code that applies them here.
 
 import path from "node:path";
-import { applyEdits, type TextEdit } from "@nyaa-lexicon/protocol";
+import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
 import { writeSourceFile } from "./sourceWriter.js";
+
+export type { FileEdits } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-export interface FileEdits {
-	module: string;
-	edits: TextEdit[];
-}
 
 export type ApplyOutcome = { applied: true; modules: string[] } | { applied: false; reason: string; module?: string };
 

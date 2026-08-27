@@ -37,7 +37,7 @@ export {
 	type SampleContext,
 	startDiagnostics,
 } from "./diagnostics.js";
-export { createDispatch } from "./dispatch.js";
+export { createDispatch, daemonHandlers } from "./dispatch.js";
 export { daemonCommand, type EnsureResult, ensureDaemon } from "./ensureDaemon.js";
 export {
 	CONFIG_FILE,

@@ -2,6 +2,7 @@
 //
 // The open connection is how the daemon counts who is still here.
 
+import type { DaemonMethod, RequestOf, ResponseOf } from "@nyaa-lexicon/protocol";
 import { ensureDaemon } from "./ensureDaemon.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./socketTransport.js";
 
@@ -10,7 +11,7 @@ import { ConnectionLostError, connectFrames, type FrameClient } from "./socketTr
 
 export interface DaemonChannel {
 	/** Reconnects once if the connection died. */
-	ask<T>(method: string, params?: unknown): Promise<T>;
+	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>;
 	close(): void;
 }
 
@@ -26,7 +27,7 @@ export function daemonChannel(workspaceRoot: string): DaemonChannel {
 	let client: FrameClient | null = null;
 
 	return {
-		async ask<T>(method: string, params?: unknown): Promise<T> {
+		async ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>> {
 			for (let attempt = 0; attempt < 2; attempt++) {
 				if (client === null || client.closed) {
 					const daemon = await ensureDaemon({ workspaceRoot });
@@ -34,7 +35,7 @@ export function daemonChannel(workspaceRoot: string): DaemonChannel {
 					client = await connectFrames(daemon.lock.port, daemon.lock.token);
 				}
 				try {
-					return (await client.request(method, params)) as T;
+					return (await client.request(method, params)) as ResponseOf<M>;
 				} catch (error) {
 					if (!(error instanceof ConnectionLostError)) throw error;
 					client = null;

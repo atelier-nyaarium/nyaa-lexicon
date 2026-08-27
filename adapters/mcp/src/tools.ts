@@ -8,7 +8,6 @@ import type {
 	CommentQuery,
 	CommentsResult,
 	ContentTotals,
-	Counted,
 	DescribeResult,
 	DocQuery,
 	DocsResult,
@@ -20,22 +19,36 @@ import type {
 	KnowledgeGaps,
 	LiteralQuery,
 	LiteralsResult,
-	Mention,
 	MovePlan,
 	QuestionClass,
 	RecalledAnswer,
 	RecordOutcome,
 	RefactorIssue,
 	ReferencesResult,
-	RenameOutcome,
 	RenamePlan,
-	StoredImport,
 	SymbolSource,
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
 import { compileSearchRegex, searchTerm } from "@nyaa-lexicon/core";
-import type { ImportResolution, TypeInfo } from "@nyaa-lexicon/protocol";
+import type {
+	CoChangedWithResult,
+	CommitsMentioningResult,
+	FindImportsResult,
+	ImportResolution,
+	InsertOutcome,
+	MostReferencedResult,
+	MoveOutcome,
+	RefactorCommitResult,
+	RefactorRevertResult,
+	RefactorStartResult,
+	RefactorTrackResult,
+	RefactorUndoResult,
+	RenameStepOutcome,
+	ReplaceOutcome,
+	SearchSymbolsResult,
+	TypeInfo,
+} from "@nyaa-lexicon/protocol";
 import { parseSymbolId } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import {
@@ -82,54 +95,31 @@ export interface ToolBackend {
 	resolveImport: (fromModule: string, specifier: string) => Promise<ImportResolution>;
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
-	refactorStart: () => Promise<{ started: boolean; id: string; reason?: string }>;
+	refactorStart: () => Promise<RefactorStartResult>;
 	refactorStatus: () => Promise<TransactionStatus>;
 	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
 	planMove: (symbolId: string, toModule: string) => Promise<MovePlan>;
-	refactorTrack: (module: string) => Promise<{ tracked: boolean; reason?: string }>;
-	refactorUndo: () => Promise<{ undone: boolean; stepNo?: number; modules?: string[]; reason?: string }>;
-	refactorRevert: () => Promise<{ reverted: boolean; modules: string[]; reason?: string }>;
-	refactorCommit: (force?: boolean) => Promise<{ committed: boolean; issues: RefactorIssue[]; reason?: string }>;
+	refactorTrack: (module: string) => Promise<RefactorTrackResult>;
+	refactorUndo: () => Promise<RefactorUndoResult>;
+	refactorRevert: () => Promise<RefactorRevertResult>;
+	refactorCommit: (force?: boolean) => Promise<RefactorCommitResult>;
 	refactorReplace: (args: {
 		symbolId?: string | undefined;
 		factId?: string | undefined;
 		newText: string;
-	}) => Promise<{ replaced: boolean; module?: string; issues: RefactorIssue[]; reason?: string }>;
-	refactorInsert: (args: { after?: string | undefined; module?: string | undefined; text: string }) => Promise<{
-		inserted: boolean;
-		alreadyInserted?: boolean;
-		module?: string;
-		symbolIds?: string[];
-		issues: RefactorIssue[];
-		reason?: string;
-	}>;
-	refactorMove: (
-		symbolId: string,
-		toModule: string,
-	) => Promise<{
-		moved: boolean;
-		/** The target as the daemon spelled it, which a raw `./a/../b` is not. */
-		toModule?: string;
-		modules?: string[];
-		migrated?: { answers: number; gaps: number };
-		issues: RefactorIssue[];
-		reason?: string;
-	}>;
-	refactorRename: (
-		symbolId: string,
-		newName: string,
-	) => Promise<{
-		renamed: boolean;
-		modules?: string[];
-		migrated?: { answers: number; gaps: number };
-		issues: RefactorIssue[];
-		reason?: string;
-	}>;
+	}) => Promise<ReplaceOutcome>;
+	refactorInsert: (args: {
+		after?: string | undefined;
+		module?: string | undefined;
+		text: string;
+	}) => Promise<InsertOutcome>;
+	refactorMove: (symbolId: string, toModule: string) => Promise<MoveOutcome>;
+	refactorRename: (symbolId: string, newName: string) => Promise<RenameStepOutcome>;
 	indexStatus: (concerning?: string) => Promise<IndexStatus>;
 	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
 	findComments: (query: CommentQuery & { limit?: number | undefined }) => Promise<CommentsResult>;
 	findDocs: (query: DocQuery & { limit?: number | undefined }) => Promise<DocsResult>;
-	coChangedWith: (module: string, limit?: number) => Promise<CoChangeResult>;
+	coChangedWith: (module: string, limit?: number) => Promise<CoChangedWithResult>;
 	searchSymbols: (
 		text: string | undefined,
 		options: {
@@ -139,8 +129,8 @@ export interface ToolBackend {
 			limit?: number | undefined;
 			within?: string | undefined;
 		},
-	) => Promise<SearchResult>;
-	outlineModule: (module: string) => Promise<Array<SymbolSummary & { containerId?: string }>>;
+	) => Promise<SearchSymbolsResult>;
+	outlineModule: (module: string) => Promise<SymbolSummary[]>;
 	fileNotes: (module: string) => Promise<FileNotes>;
 	findImports: (query: {
 		specifier?: string | undefined;
@@ -148,18 +138,12 @@ export interface ToolBackend {
 		module?: string | undefined;
 		moduleRegex?: string | undefined;
 		limit?: number | undefined;
-	}) => Promise<ImportsResult>;
-	hubs: (limit?: number) => Promise<
-		Array<{
-			symbolId: string;
-			count: number;
-			declaration: SymbolSummary | null;
-		}>
-	>;
+	}) => Promise<FindImportsResult>;
+	hubs: (limit?: number) => Promise<MostReferencedResult>;
 	overview: () => Promise<OverviewResult>;
 	fileHistory: (module: string) => Promise<FileHistory>;
 	factsFor: (symbolId: string, limit?: number) => Promise<FactSet | null>;
-	commitsMentioning: (name: string, limit?: number) => Promise<MentionsResult>;
+	commitsMentioning: (name: string, limit?: number) => Promise<CommitsMentioningResult>;
 	recordAnswer: (
 		symbolId: string,
 		question: QuestionClass,
@@ -183,30 +167,7 @@ export interface ToolBackend {
 	knowledgeGaps: (root?: string, question?: QuestionClass, limit?: number, module?: string) => Promise<KnowledgeGaps>;
 }
 
-export interface MentionsResult {
-	name: string;
-	mentions: Mention[];
-	/** Commits read, so an empty answer is readable as "not in this window" rather than "never". */
-	commits: number;
-}
-
-export interface SearchResult extends Counted {
-	text: string | undefined;
-	regex?: string;
-	symbols: SymbolSummary[];
-}
-
-export interface ImportsResult extends Counted {
-	query: {
-		specifier?: string | undefined;
-		specifierRegex?: string | undefined;
-		module?: string | undefined;
-		moduleRegex?: string | undefined;
-		limit?: number | undefined;
-	};
-	imports: StoredImport[];
-}
-
+/** The backend's overview, with every section past the counts optional so a stub can omit it. */
 export interface OverviewResult {
 	files: number;
 	symbols: number;
@@ -223,17 +184,7 @@ export interface OverviewResult {
 	largest: Array<{ module: string; symbols: number }>;
 	/** Data and document files, largest first, each saying which. */
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
-	knowledge?: { answers: number; stale?: number; doubted?: number };
-}
-
-/** What co-change answered, with the sampling that produced it. */
-export interface CoChangeResult {
-	module: string;
-	partners: Array<{ module: string; together: number; outOf: number }>;
-	total: number;
-	commits: number;
-	skippedWideCommits: number;
-	widthLimit: number;
+	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
 }
 
 export interface ToolResult {

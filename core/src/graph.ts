@@ -4,17 +4,16 @@
 // here. Every answer is bounded by what BINDING reached, which is why each one carries that caveat
 // rather than reading as a fact about the code.
 
+import type { Cycle } from "@nyaa-lexicon/protocol";
+
+export type { Cycle } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
 
 export interface Edge {
 	from: string;
 	to: string;
-}
-
-export interface Cycle {
-	/** Members, in no meaningful order. A cycle has no first element. */
-	members: string[];
 }
 
 ////////////////////////////////

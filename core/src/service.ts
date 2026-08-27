@@ -3,56 +3,26 @@
 // Each owner is handed a narrow port rather than the supervisor, and a residue test holds it there.
 // The methods below are pass-throughs on purpose.
 
-import { createHash } from "node:crypto";
-import path from "node:path";
 import {
-	answerFactId,
-	applyEdits,
 	type Binding,
-	composeSymbolId,
-	coordinatesOf,
-	doubtFactId,
-	type FactKind,
-	type FileFacts,
-	type ImportOrigin,
+	type CacheStats,
+	type CoChangedWithResult,
+	type CommitsMentioningResult,
+	type Cycle,
+	type FileHistory,
 	type ImportResolution,
-	type IndexDepth,
-	isParameterSymbol,
-	isWithin,
-	type MoveDependency,
-	type MoveEditsRequest,
-	type MoveImportSite,
-	ownerOf,
+	type MostReferencedResult,
+	type OverviewResult,
 	parseSymbolId,
-	type Range,
-	type RenameSite,
-	rebaseSymbolId,
+	type SharedLiteralsResult,
 	type TypeInfo,
-	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
-import {
-	type Answer,
-	checkCitations,
-	type Doubt,
-	MAX_PROSE,
-	type QuestionClass,
-	type RecalledAnswer,
-	type RecordOutcome,
-} from "./answers.js";
-import { type FileEdits, writeAll } from "./applyEdits.js";
-import {
-	describeScope,
-	type FileScope,
-	fileScopeFor,
-	generatedFiles,
-	includedFiles,
-	isExternalModule,
-} from "./fileScope.js";
+import { writeAll } from "./applyEdits.js";
+import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
-import { ImportResolver, importTarget } from "./imports.js";
+import { ImportResolver } from "./imports.js";
 import { WorkspaceIndexer } from "./indexer.js";
 import {
-	type AnswerTier,
 	type CallHierarchy,
 	type CommentQuery,
 	type CommentsResult,
@@ -62,44 +32,21 @@ import {
 	type DescribeResult,
 	type DocQuery,
 	type DocsResult,
-	type GraphSummary,
 	IndexReadModel,
 	type LiteralQuery,
 	type LiteralsResult,
 	type ReferencesResult,
 	type SymbolSummary,
 	type TypeHierarchy,
-	toSummary,
 } from "./indexReads.js";
-import { decideInvalidation, type FileEvent } from "./invalidation.js";
 import { KnowledgeLedger } from "./knowledge.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
-import {
-	type MoveEditsOutcome,
-	type MovePlan,
-	RefactorPlanner,
-	type RenameConcern,
-	type RenameEditPlan,
-	type RenameFile,
-	type RenamePlan,
-	type ReplacementPlan,
-} from "./refactorPlanner.js";
+import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
 import { ResultCache } from "./resultCache.js";
-import { compileSearchRegex } from "./search.js";
 import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
-import type {
-	IndexStore,
-	StoredComment,
-	StoredDeclaration,
-	StoredFact,
-	StoredImport,
-	StoredLiteral,
-	StoredReference,
-} from "./store.js";
+import type { IndexStore, StoredComment, StoredDeclaration } from "./store.js";
 import type { ProviderSupervisor } from "./supervisor.js";
-import type { RefactorIssue } from "./transactions.js";
-import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
 //  Constants
@@ -126,7 +73,7 @@ export class LexiconService {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly supervisor: ProviderSupervisor,
-		private readonly readSource: SourceReader,
+		readSource: SourceReader,
 		private readonly workspaceRoot = ".",
 	) {
 		// The indexer wants the reason a file is unreadable; everything else wants text or nothing.
@@ -184,7 +131,7 @@ export class LexiconService {
 	readonly knowledge: KnowledgeLedger;
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
-	cacheStats() {
+	cacheStats(): CacheStats {
 		return this.cache.stats();
 	}
 
@@ -357,7 +304,7 @@ export class LexiconService {
 		return this.reads.commentsFor(symbolId);
 	}
 
-	outline(module: string): Array<SymbolSummary & { containerId?: string }> {
+	outline(module: string): SymbolSummary[] {
 		return this.reads.outline(module);
 	}
 
@@ -377,7 +324,7 @@ export class LexiconService {
 		return this.reads.findLiterals(query, limit);
 	}
 
-	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT) {
+	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT): SharedLiteralsResult {
 		return this.reads.sharedLiterals(minimumFiles, limit);
 	}
 
@@ -389,7 +336,7 @@ export class LexiconService {
 		return this.reads.findComments(query, limit);
 	}
 
-	cycles(limit = 20) {
+	cycles(limit = 20): Cycle[] {
 		return this.reads.cycles(limit);
 	}
 
@@ -401,7 +348,7 @@ export class LexiconService {
 		return this.reads.callHierarchy(symbolId);
 	}
 
-	mostReferenced(limit = 20): Array<{ symbolId: string; count: number; declaration: SymbolSummary | null }> {
+	mostReferenced(limit = 20): MostReferencedResult {
 		return this.reads.mostReferenced(limit);
 	}
 
@@ -485,7 +432,7 @@ export class LexiconService {
 	//  Answering
 
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */
-	overview(topModules = 15, topData = 5) {
+	overview(topModules = 15, topData = 5): OverviewResult {
 		const includeModule = (module: string) => !isExternalModule(this.workspaceRoot, module);
 		const modules = this.store.moduleSummary().filter(({ module }) => includeModule(module));
 		const totals = this.store.totalsForModules(includeModule);
@@ -558,7 +505,7 @@ export class LexiconService {
 	 * Cached, since reading a thousand commits costs a subprocess and the answer only moves when
 	 * the repository does.
 	 */
-	async coChangedWith(module: string, limit = 20) {
+	async coChangedWith(module: string, limit = 20): Promise<CoChangedWithResult> {
 		return this.cache.through(`coChange ${module} ${limit}`, async () => {
 			const commits = await readHistory(this.workspaceRoot);
 			const { partners, report } = coChangesFor(module, commits);
@@ -571,7 +518,7 @@ export class LexiconService {
 	 *
 	 * Cached alongside co-change and keyed separately, since a caller usually wants one or the other.
 	 */
-	async fileHistory(module: string) {
+	async fileHistory(module: string): Promise<FileHistory> {
 		return this.cache.through(`fileHistory ${module}`, async () =>
 			fileHistoryFor(module, await readHistory(this.workspaceRoot)),
 		);
@@ -583,7 +530,7 @@ export class LexiconService {
 	 * The one tier-1 fact that carries RATIONALE rather than structure. Every other class says what
 	 * the code is or who touches it; a commit message is the only place someone wrote down why.
 	 */
-	async commitsMentioning(name: string, limit = DEFAULT_MENTION_LIMIT) {
+	async commitsMentioning(name: string, limit = DEFAULT_MENTION_LIMIT): Promise<CommitsMentioningResult> {
 		return this.cache.through(`mentions ${name} ${limit}`, async () => {
 			const commits = await readHistory(this.workspaceRoot);
 			const mentions = commitsMentioning(name, commits, limit);

@@ -1,0 +1,189 @@
+# Daemon protocol
+
+One daemon per workspace holds the index, and everything that asks it a question is a thin client
+speaking this wire: the MCP adapter today, and any project that depends on
+`@nyaa-lexicon/protocol`. This document is the client's half: how a daemon is found, what crosses
+the socket, and what a client may assume about a daemon it did not start. The other wire, between
+the daemon and its language providers, is `docs/provider-protocol.md`.
+
+## The lock file
+
+A workspace's daemon publishes itself in one file, `daemon.json`, in the workspace's state
+directory. `stateRoot` is `$XDG_STATE_HOME/nyaa-lexicon`, falling back to
+`~/.local/state/nyaa-lexicon`, and `%LOCALAPPDATA%\nyaa-lexicon` on Windows. `workspaceKey` names
+the directory under it as the root's basename plus sixteen hex digits of a SHA-256 over the
+canonical root path, so two checkouts sharing a name cannot collide and the directory is still
+recognizable by eye. `canonicalRoot` follows symlinks first, so a workspace reached through a link
+is the same workspace. `storePaths` derives every sibling from the same key, `index.sqlite`,
+`daemon.log`, `diagnostics.json` and `reports/`, and nothing else builds a state path.
+
+The lock is `DaemonLockSchema`:
+
+```
+port             localhost port, chosen by the OS at bind
+token            48 hex characters, presented on every connection
+pid, pidStart    the holder, and its birth ticks where the platform offers them
+protocolVersion  what the daemon speaks
+buildVersion     which release it runs, which decides its method table
+bundleStamp      size and mtime of its dist/daemon.js, so a rebuild inside one version is noticed
+workspaceRoot    the canonical root it serves
+startedAt        epoch milliseconds
+```
+
+`pidStart` is what stops a reused pid from reading as a live daemon: `lockHolderAlive` requires
+the process to answer AND to still be the process that wrote the file.
+
+The claim is a race the daemons run, not the clients. A starting daemon binds port zero on
+`127.0.0.1` first, because the lock carries the port, writes the lock to a staging file beside it,
+and hard-links the staging file into place. A link lands whole or fails with `EEXIST`, so no reader
+ever meets half a JSON. On `EEXIST` it reads the holder: alive means this daemon lost, and it closes
+its socket and exits before ever opening the store; dead means the stale file is renamed away and
+the link retried, four rounds at most. The claim happens BEFORE the store opens, which is what holds
+the single-writer rule while two daemons exist. On stop, the daemon removes the lock only if it
+still carries its own token, and removes it before closing the socket, so a client cannot read a
+lock naming a dead port.
+
+## The socket
+
+One JSON object per line, UTF-8, newline-terminated, both directions, over that localhost port.
+Framing is the only thing the transport does: `JSON.parse` does the parsing, and every frame is
+checked against `ClientFrameSchema` or `ServerFrameSchema` on arrival. A line that is not JSON, or
+not a frame, destroys the socket; there is no id to answer, and a peer sending one is broken either
+way. A line past the cap, 8 MiB read by the daemon and 512 MiB read by a client since responses
+carry real result sets, ends the connection the same way.
+
+**Hello and welcome:** the client's first frame is `{ kind: "hello", token }`, within ten seconds
+of connecting or the daemon closes the socket. A wrong token is answered
+`{ kind: "reject", reason: "bad token" }` and then closed, so a bad token is distinguishable from a
+crash, and nothing else is said to an unauthenticated peer. The right token is answered
+`{ kind: "welcome", protocolVersion }`, after which requests may flow. `connectFrames` resolves on
+welcome and gives up after five seconds without one.
+
+**Request and response:** `{ kind: "request", id, method, params }`, with `id` a client-chosen
+non-negative integer echoed on the answer, so a slow query never blocks the one behind it. The
+daemon answers frames concurrently and the id is the only correlation. `params` may be absent,
+which the daemon reads as `{}`. The answer is `{ kind: "response", id, ok: true, result }` or
+`{ kind: "response", id, ok: false, error }`, where `error` is the message of whatever the handler
+threw. An error frame may also carry `starting`, `retryInMs` and `waitingFor`, covered below.
+
+**Ping and pong:** every thirty seconds the daemon sends `{ kind: "ping", n }` and the client
+answers `{ kind: "pong", n }`. Any frame from the client resets its silence counter, and a client
+silent through two ticks is destroyed. That is the case TCP cannot see: a peer alive but hung.
+
+Presence is the connection itself. An open, authenticated socket is a present client, and the count
+of them is what the daemon's lifetime runs on: a thirty-minute countdown armed when the last one
+disconnects, disarmed by any connect, and held while a request is in flight or a refactor
+transaction is open. A session that asks many questions holds one connection, `daemonChannel`; a
+caller that asks once and exits uses `requestOnce`.
+
+## Starting
+
+A daemon publishes its lock before it can answer, on purpose. Publishing after the first scan meant
+no client could find the daemon for the length of a scan, so every session paid that scan in its
+own process. Until the handler is installed (`waitingFor` is `opening the index`, then
+`the language providers to start`), and again while the warmup pass has files it has not attempted
+(`the warmup pass`), a request is answered with an error frame carrying `starting: true`,
+`retryInMs` and `waitingFor`. The countdown is the DAEMON's own budget, published rather than
+mirrored on the client, since two independently chosen numbers cannot stay in agreement.
+
+`connectFrames` handles this inside `request`: while `starting` is set and `retryInMs` is positive
+it re-sends every 250 ms, under a five-minute ceiling that exists only as a backstop against a
+countdown that never reaches zero. When the daemon's countdown runs out, the caller sees
+`<message> (gave up waiting on <waitingFor>; ask again later)`. A warmup that failed is not a hold:
+it answers a plain error naming the reason and asking for a restart.
+
+A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
+with `...; this daemon is stopping`, closes its server, and every client lands on its reconnect
+path. `daemonChannel` reconnects once on a lost connection, through `ensureDaemon` again, and gives
+up if the connection is lost twice.
+
+## The method table
+
+`DAEMON_METHODS`, in the protocol package, is the one owner of what the daemon answers:
+forty-eight entries, each a method name with a `request` schema and a `response` schema, in
+dispatch order, with a doc line on every entry. `hubs` is its own entry aliasing `mostReferenced`,
+so the accepted method set is exactly what older clients ask by. Three types derive from it, and
+nothing else is hand-written:
+
+```ts
+type DaemonMethod = keyof typeof DAEMON_METHODS;
+type RequestOf<M extends DaemonMethod> = z.infer<(typeof DAEMON_METHODS)[M]["request"]>;
+type ResponseOf<M extends DaemonMethod> = z.infer<(typeof DAEMON_METHODS)[M]["response"]>;
+```
+
+`DaemonChannel.ask<M>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>` is typed by them,
+and a facade built by one loop over the table's keys is what a client library looks like. The doc
+line survives the homomorphic mapped type, so it is what an editor shows on hover. A method costs
+one schema entry: core's handler map `satisfies` the mapped type over `DaemonMethod`, so an entry
+without a handler, or a handler without an entry, fails to compile.
+
+The shapes the schemas name, `StoredDeclaration`, `SymbolSummary`, `Answer`, `RenamePlan`,
+`TransactionStatus` and every `...Result`, live in `daemonShapes` beside the table, and core's
+modules take their types from there, so a store row that crosses the wire cannot drift from what
+the wire says it is. `ImportResolution` and `TypeInfo` are the provider protocol's types and are
+reused as they are.
+
+Every object in the shapes is a plain `z.object`, which strips unknown keys. On the daemon that IS the contract:
+nothing leaves that the table does not name. On a client it means an older build drops the fields
+a newer daemon added, which it could not have typed anyway. No `strict`, no `passthrough`, one rule.
+
+One method is not in the table. `shutdown` is answered by the daemon process itself, before
+dispatch, with `{ stopping: true }` sent before it stops so the caller reads success rather than a
+dropped connection.
+
+## Validation, both directions
+
+`createDispatch` is the one place a request meets the table, and it does three things in order. A
+method not in the table is refused with `unknown method: <name> (this daemon runs <build>)`, naming
+the build because that is what decides the table. The params are parsed through the entry's
+`request` schema, so a bad request is refused before any handler runs. The handler's answer is
+parsed through the entry's `response` schema before it reaches the frame writer, and a failure
+there throws like any other error, which the transport turns into an error frame. Both parses are
+always on.
+
+To the caller, either failure is the same thing: the promise from `request` or `ask` rejects with an
+`Error` whose message is the daemon's `error` string. For a parse failure that string is zod's issue
+list, one entry per problem with the `path` into the object, the `code` and what was expected. An
+agent driving the MCP adapter sees it as the tool's error text. A malformed answer therefore reaches
+nobody: the daemon reports it against the method that produced it, instead of shipping an object
+that the client's types say cannot exist.
+
+## Compatibility
+
+A client reads the lock and asks `decideFromLock` what to do. The answer is one of three values, so
+there is no fourth outcome to invent: `connect`, `spawn` with a reason, or `replace` with the lock,
+a reason and a cause. The rules, in the order they are applied:
+
+- No lock, unreadable JSON, or a file that does not match `DaemonLockSchema`: spawn.
+- The holder is dead: spawn. A dead pid is never a replace, since there is nothing to stop, and a
+  crashed daemon would otherwise look alive for as long as its file survived.
+- The lock names another workspace: replace, cause `otherWorkspace`. This one is reported and never
+  acted on, because that daemon is answering correctly for somebody else.
+- A different protocol major: connect if the daemon's is newer, otherwise replace, cause `protocol`.
+- A different build: connect if the daemon's is newer, otherwise replace, cause `build`. Ordered
+  rather than exact, because method tables only grow within a protocol major, so a newer daemon
+  serves this client's whole table, and two builds retiring each other would rebuild the index on
+  every flip.
+- The same build but a different bundle stamp, when this side has a bundle to compare: replace,
+  cause `build`. A rebuild inside one version leaves a daemon serving older code.
+- Otherwise connect.
+
+**Clients ride forward and retire backward.** Riding forward is why removing or renaming a method
+costs a protocol major: a client connects to a newer daemon on the premise that everything in its
+table is still answered, and the day that premise fails it fails as `unknown method` from a daemon
+the client chose to keep. A new method or a new optional field is a minor. `PROTOCOL_VERSION` is
+the one number both rules read, and the welcome frame carries it so a client that reached the
+socket some other way still learns what it is talking to.
+
+`ensureDaemon` carries the decision out. A replace first asks the outgoing daemon `refactorStatus`
+and retires it only on a clear `open: false`, since an open transaction holds the only copy of the
+images its undo would restore, and anything unclear leaves it running. It re-checks that the pid is
+still the holder at the last moment, sends `SIGTERM`, and waits up to ten seconds for the lock to
+vanish, refusing to spawn over one that has not, because the newcomer would lose a claim it must
+lose and report the confusion as its own. A spawn runs `node dist/daemon.js <root>` detached, with
+its stdio in `daemon.log`, and waits up to ten seconds for a lock to appear, reporting the child's
+exit code if it dies first.
+
+The daemon keeps itself current from the other side. Between answered requests it notices a newer
+bundle in the checkout it was started from, and with nothing in flight and no transaction open it
+releases its lock and socket and spawns its successor with `--warm`, so nobody notices the swap.

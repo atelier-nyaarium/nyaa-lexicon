@@ -2,6 +2,17 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
+## Unreleased
+
+Nothing you see changes unless an answer was malformed. Every daemon method's request and response
+shape now lives in one table in the protocol package, `DAEMON_METHODS`, and the daemon checks both
+directions against it: a request that does not fit is refused before any handler runs, as before,
+and an answer that does not fit is reported as an error naming the field, where before it was
+shipped to you as a result. A project that depends on `@nyaa-lexicon/protocol` gets typed request
+and response shapes for every daemon method, `RequestOf` and `ResponseOf` derived from the same
+table, so a call against the daemon is checked where it is written. `docs/daemon-protocol.md`
+describes the wire.
+
 ## 2.2.0
 
 XML, HTML and plain text are read, a search can be scoped to a declaration, and a daemon over a

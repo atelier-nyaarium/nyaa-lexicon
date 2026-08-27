@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { daemonHandlers, type LexiconService } from "@nyaa-lexicon/core";
+import { DAEMON_METHODS } from "@nyaa-lexicon/protocol";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -19,19 +21,15 @@ function methodsAsked(): string[] {
 	return [...new Set([...source.matchAll(/ask\("([A-Za-z]+)"/g)].map((match) => match[1] as string))].sort();
 }
 
-function methodsDispatched(): Set<string> {
-	const source = readFileSync(path.join(ROOT, "core", "src", "dispatch.ts"), "utf8");
-	return new Set([...source.matchAll(/case "([A-Za-z]+)":/g)].map((match) => match[1] as string));
-}
-
 describe("what the MCP server asks a daemon for", () => {
 	it("finds methods to check, so a passing run is never vacuous", () => {
 		expect(methodsAsked().length).toBeGreaterThan(20);
-		expect(methodsDispatched().size).toBeGreaterThan(20);
+		expect(Object.keys(DAEMON_METHODS).length).toBeGreaterThan(20);
+		expect(Object.keys(daemonHandlers({} as LexiconService)).sort()).toEqual(Object.keys(DAEMON_METHODS).sort());
 	});
 
 	it("asks for nothing the daemon cannot answer", () => {
-		const dispatched = methodsDispatched();
+		const dispatched = new Set(Object.keys(DAEMON_METHODS));
 		const missing = methodsAsked().filter((method) => !dispatched.has(method));
 
 		expect(

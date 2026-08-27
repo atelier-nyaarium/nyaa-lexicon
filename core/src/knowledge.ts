@@ -3,7 +3,17 @@
 // One owner: every fact exists to be cited, and staleness is cited facts moving. Reads only, so
 // recording an answer stays cheap enough to be a habit.
 
-import { answerFactId, doubtFactId, type FactKind } from "@nyaa-lexicon/protocol";
+import {
+	answerFactId,
+	type CitedFact,
+	doubtFactId,
+	type FactKind,
+	type FactSet,
+	type GapRow,
+	type InvalidateOutcome,
+	type KnowledgeGaps,
+	type ResolveFactsResult,
+} from "@nyaa-lexicon/protocol";
 import {
 	type Answer,
 	checkCitations,
@@ -15,6 +25,8 @@ import {
 } from "./answers.js";
 import type { ImportResolver } from "./imports.js";
 import type { IndexStore, StoredFact } from "./store.js";
+
+export type { CitedFact, FactSet, GapRow, InvalidateOutcome, KnowledgeGaps } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Constants
@@ -41,79 +53,6 @@ export const DEFAULT_GAP_LIMIT = 60;
  * tree that large is a seeding pass, not a tree; the cap is reported so it never reads as the total.
  */
 const GAP_TREE_CAP = 500;
-
-////////////////////////////////
-//  Interfaces & Types
-
-/**
- * One fact, named so an answer can cite it and a later reader can resolve it.
- *
- * `summary` rides along because a citation nobody can read without a second lookup does not get
- * read. The id is the machine-checkable part and the summary is for whoever is looking at it.
- */
-export interface CitedFact {
-	factId: string;
-	kind: FactKind;
-	module: string;
-	summary: string;
-}
-
-/**
- * Everything tier 1 knows about one symbol, as citable facts.
- *
- * The candidate generator `docs/knowledge-layer.md` puts in front of every question class. A
- * question class picks from this, writes a sentence, and lists the ids it used, so the cache key is
- * a hash of those ids and going stale is a lookup rather than a judgement.
- */
-export interface FactSet {
-	symbolId: string;
-	facts: CitedFact[];
-	/** Kinds that were cut off by a limit, so a thin answer is never mistaken for a complete one. */
-	truncated: FactKind[];
-}
-
-/** One place knowledge is missing or doubtful, with enough context to decide whether to write it. */
-export interface GapRow {
-	symbolId: string;
-	question: string;
-	/** `stale` and `doubted` answers lead a global listing: the prose exists and needs rechecking. */
-	why: "missing" | "stale" | "doubted";
-	/** Asks that found nothing, the measured demand. Zero inside a tree nobody asked about yet. */
-	askCount: number;
-	fanIn: number;
-	name?: string;
-	kind?: string;
-	module?: string;
-}
-
-/** What declaring a doubt did, per question, including the questions that had nothing to doubt. */
-export interface InvalidateOutcome {
-	symbolId: string;
-	doubted: Array<{ question: QuestionClass; doubt: Doubt }>;
-	/** Questions with no recorded answer: counted as gap demand rather than doubted. */
-	noAnswer: QuestionClass[];
-	/** Set when nothing was done at all, with the reason. */
-	refused?: string;
-}
-
-export interface KnowledgeGaps {
-	question: string;
-	/** Leaves first in root mode, so answering in order lets each parent lean on its children. */
-	rows: GapRow[];
-	total: number;
-	/** Dependencies outside the index, counted not listed: nothing citable exists for them. */
-	external: number;
-	truncated: boolean;
-	/** Set when the ledger was empty and the rows are hub-ranked candidates, not measured demand. */
-	seeded?: boolean;
-	/**
-	 * Set when the knowledge base is too large to resolve every answer's citations here. Doubted
-	 * answers are still swept, since that is one indexed read; stale ones surface on recall.
-	 */
-	staleScanSkipped?: boolean;
-	/** Set when scoped to one file. Zero declarations means unindexed, which is not the same as clean. */
-	scope?: { module: string; declarations: number };
-}
 
 /** Per kind, not overall, so a symbol with a thousand references does not crowd out its literals. */
 export const DEFAULT_FACT_LIMIT = 40;
@@ -743,7 +682,7 @@ export class KnowledgeLedger {
 	 * an id that fails to resolve is exactly a fact that changed or vanished, and the caller needs no
 	 * second hash to compare against.
 	 */
-	resolveFacts(factIds: string[]): { resolved: StoredFact[]; missing: string[] } {
+	resolveFacts(factIds: string[]): ResolveFactsResult {
 		const resolved: StoredFact[] = [];
 		const missing: string[] = [];
 		for (const factId of factIds) {

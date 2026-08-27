@@ -8,14 +8,19 @@
 // it becomes standalone against whatever encloses it, because a wrong anchor baked into a stored
 // fact is worse than an honest "somewhere in here".
 
-import { type CommentSpan, coordinatesOf, type Declaration, type Range } from "@nyaa-lexicon/protocol";
+import {
+	type CommentForm,
+	type CommentSpan,
+	coordinatesOf,
+	type Declaration,
+	type Range,
+} from "@nyaa-lexicon/protocol";
 import { isBlockComment, normalizeCommentText } from "./proseText.js";
+
+export type { CommentForm } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-/** Where a comment sits relative to the symbol it documents. */
-export type CommentForm = "leading" | "trailing" | "inline" | "standalone";
 
 /** The comment's side of its anchor. `inside` is the standalone case, enclosed but not attached. */
 export type CommentPlacement = "above" | "after" | "before" | "inside";
