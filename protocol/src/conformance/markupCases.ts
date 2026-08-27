@@ -2,6 +2,7 @@ import type { ConformanceCase } from "./types.js";
 
 const XML = "xml";
 const HTML = "html";
+const TEXT = "text";
 
 export function markupCases(): ConformanceCase[] {
 	return [
@@ -98,10 +99,80 @@ export function markupCases(): ConformanceCase[] {
 			fixtures: {
 				[XML]: { files: { "empty.xml": "" }, subject: "empty.xml" },
 				[HTML]: { files: { "empty.html": "" }, subject: "empty.html" },
+				[TEXT]: { files: { empty: "" }, subject: "empty" },
 			},
 			declarationNames: [],
 			parseErrors: "forbidden",
 			notes: "forbidden",
+		},
+		{
+			id: "text-paragraphs",
+			tier: "docs",
+			about: "Plain text is split into maximal nonblank paragraph regions.",
+			fixtures: {
+				[TEXT]: {
+					files: { "paragraphs.txt": "first line\nsecond line\n\nthird\n" },
+					subject: "paragraphs.txt",
+					docs: [
+						{ text: "first line\nsecond line", fenced: false },
+						{ text: "third", fenced: false },
+					],
+				},
+			},
+		},
+		{
+			id: "text-crlf-and-trailing-newline",
+			tier: "docs",
+			about: "Plain text retains CRLF source text and excludes the trailing line break from its region.",
+			fixtures: {
+				[TEXT]: {
+					files: { "lines.txt": "one\r\ntwo\r\n" },
+					subject: "lines.txt",
+					docs: [{ text: "one\r\ntwo", fenced: false }],
+				},
+			},
+		},
+		{
+			id: "text-long-paragraph-split",
+			tier: "docs",
+			about: "A long paragraph is split at a line boundary without dropping source text.",
+			fixtures: {
+				[TEXT]: {
+					files: { "split.txt": `${"a".repeat(16 * 1024)}\nnext` },
+					subject: "split.txt",
+					docs: [
+						{ text: "a".repeat(16 * 1024), fenced: false },
+						{ text: "next", fenced: false },
+					],
+				},
+			},
+		},
+		{
+			id: "text-region-cap",
+			tier: "docs",
+			about: "Plain text reports an informational note when the per-file region cap omits paragraphs.",
+			fixtures: {
+				[TEXT]: {
+					files: { "cap.txt": `${"x\n\n".repeat(10_001)}tail` },
+					subject: "cap.txt",
+				},
+			},
+			notes: "required",
+		},
+		{
+			id: "text-no-extension-and-dockerfile",
+			tier: "docs",
+			about: "Plain text claims files without extensions, including a Dockerfile.",
+			fixtures: {
+				[TEXT]: {
+					files: { Dockerfile: 'FROM scratch\n\nENTRYPOINT ["app"]' },
+					subject: "Dockerfile",
+					docs: [
+						{ text: "FROM scratch", fenced: false },
+						{ text: 'ENTRYPOINT ["app"]', fenced: false },
+					],
+				},
+			},
 		},
 	];
 }

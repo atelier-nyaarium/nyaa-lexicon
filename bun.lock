@@ -145,6 +145,15 @@
         "vscode-jsonrpc": "9.0.1",
       },
     },
+    "providers/text": {
+      "name": "@nyaa-lexicon/provider-text",
+      "version": "2.1.0",
+      "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "vscode-jsonrpc": "9.0.1",
+      },
+    },
     "providers/typescript": {
       "name": "@nyaa-lexicon/provider-typescript",
       "version": "2.1.0",
@@ -227,6 +236,8 @@
     "@nyaa-lexicon/provider-python": ["@nyaa-lexicon/provider-python@workspace:providers/python"],
 
     "@nyaa-lexicon/provider-rust": ["@nyaa-lexicon/provider-rust@workspace:providers/rust"],
+
+    "@nyaa-lexicon/provider-text": ["@nyaa-lexicon/provider-text@workspace:providers/text"],
 
     "@nyaa-lexicon/provider-typescript": ["@nyaa-lexicon/provider-typescript@workspace:providers/typescript"],
 

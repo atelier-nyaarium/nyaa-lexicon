@@ -32,6 +32,13 @@ const headerClaims: ProviderClaims = {
 	extensions: [],
 	sharedExtensions: [{ extension: ".fakeh", beside: [".fake"] }],
 };
+const fallbackClaims: ProviderClaims = {
+	providerId: "text",
+	language: "text",
+	extensions: [],
+	fallback: true,
+	content: "text",
+};
 const point = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
 
 function put(module: string, text: string): void {
@@ -68,7 +75,7 @@ function importsFrom(text: string): Import[] {
 function fakeSupervisor(
 	discovered: string[] = [],
 	parseRequests: Array<{ module: string; depth?: "full" | "surface" }> = [],
-	{ lazyEvidence = true }: { lazyEvidence?: boolean } = {},
+	{ lazyEvidence = true, fallback = false }: { lazyEvidence?: boolean; fallback?: boolean } = {},
 ): ProviderSupervisor {
 	let evidence: () => Iterable<string> = () => [];
 	let routing: ReturnType<typeof routingContextOf> | undefined;
@@ -77,8 +84,9 @@ function fakeSupervisor(
 		return routing;
 	};
 	const supervisor = {
-		running: () => [claims, dataClaims],
-		route: (module: string) => routeModule(module, [claims, dataClaims, headerClaims], context()),
+		running: () => (fallback ? [claims, dataClaims, fallbackClaims] : [claims, dataClaims]),
+		route: (module: string) =>
+			routeModule(module, [claims, dataClaims, headerClaims, ...(fallback ? [fallbackClaims] : [])], context()),
 		evidenceFrom: (modules: () => Iterable<string>) => {
 			if (lazyEvidence) evidence = modules;
 		},
@@ -156,6 +164,27 @@ afterEach(() => {
 //  Tests
 
 describe("workspace roots", () => {
+	it("routes admitted unowned files to fallback and records guarded failures", async () => {
+		initGit();
+		put("root.fake", "export class Root {}\n");
+		put("Dockerfile", "FROM base\n\nRUN app\n");
+		writeFileSync(path.join(root, "binary"), Buffer.from([0, 1, 2]));
+		service = new LexiconService(store, fakeSupervisor([], [], { fallback: true }), sourceReader(root), root);
+
+		const outcomes = await service.indexWorkspace();
+
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "Dockerfile", action: "indexed" }));
+		expect(outcomes).toContainEqual(
+			expect.objectContaining({
+				module: "binary",
+				action: "skipped",
+				reason: "parse failed",
+				failure: expect.stringContaining("NUL"),
+			}),
+		);
+		expect(service.overview().content?.files.text).toBe(1);
+	});
+
 	it("adds git-visible claimed files to provider discovery", async () => {
 		initGit();
 		put("root.fake", "export class Root {}\n");
@@ -367,8 +396,8 @@ describe("reachability and failures", () => {
 
 		expect(service.overview()).toMatchObject({
 			content: {
-				files: { code: 1, data: 1, document: 0, unknown: 0 },
-				symbols: { code: 1, data: 2, document: 0, unknown: 0 },
+				files: { code: 1, data: 1, document: 0, text: 0, unknown: 0 },
+				symbols: { code: 1, data: 2, document: 0, text: 0, unknown: 0 },
 			},
 			largest: [{ module: "root.fake", symbols: 1 }],
 			largestData: [{ module: "fixtures/specs.fdata", symbols: 2, content: "data" }],
@@ -390,14 +419,14 @@ describe("reachability and failures", () => {
 		raw.close();
 		store = IndexStore.open(file).store;
 		service = new LexiconService(store, fakeSupervisor([], parsed), sourceReader(root), root);
-		expect(service.overview().content.files).toEqual({ code: 0, data: 0, document: 0, unknown: 2 });
+		expect(service.overview().content.files).toEqual({ code: 0, data: 0, document: 0, text: 0, unknown: 2 });
 
 		// The daemon's start-up scan.
 		parsed.length = 0;
 		await service.warmupWorkspace();
 
 		expect(parsed).toEqual([]);
-		expect(service.overview().content.files).toEqual({ code: 1, data: 1, document: 0, unknown: 0 });
+		expect(service.overview().content.files).toEqual({ code: 1, data: 1, document: 0, text: 0, unknown: 0 });
 	});
 
 	it("keeps an out-of-scope import tree while referenced and prunes it after a live refactor", async () => {

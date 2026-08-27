@@ -57,6 +57,27 @@ A: Add it third, precedence `id`, `name`, `key`. React keys are JSX props owned 
 provider and never reach this tier; the real case is `.NET` config XML (`<add key= value=>`) and
 Java-style `<entry key=>`. It changes nothing about visibility, only which elements get stable ids.
 
+## Question 4 - Which files does the plain-text fallback claim?
+
+Q: Every unclaimed text file in scope, a curated extension list, or only what `lexicon.json`
+includes?
+A: Every text file in scope that no provider claims, extension or not.
+
+Recommendation reason: one rule with nothing to maintain; the guards that matter already exist and
+apply uniformly. `sourceRead` refuses a NUL in the first 8 KiB as not text and a file past 4 MB
+as too large before any provider sees it; the scope is `git ls-files` plus untracked files that
+are not ignored, so an ignored `.env` never enters; `deny` in `lexicon.json` excludes the rest.
+Source of a language with no provider lands as prose, read as text with no symbols.
+
+## Question 5 - What does a plain-text file become?
+
+Q: One doc region per paragraph, or one per file?
+A: One region per paragraph, and a `search_docs` hit answers with the file and the `line:col` of
+the match, not the paragraph as a blob. The match position inside a region is new to the docs
+tier, so markdown and HTML gain it too.
+
+> "Yeah just a pointer to the file and the line:col of hits"
+
 # Plan
 
 ## Phase 1 - Scope and key filters
@@ -148,6 +169,18 @@ manifests in switchboard, the console HTML there, and an MSBuild project.
 
 ## Phase 3 - Plain-text fallback
 
-Blocked on a routing primitive: `ProviderClaims` cannot express a lowest-precedence catch-all, and
-the read path has no binary guard. Its own questionaire, since claiming every unclaimed extension
-changes what a workspace exposes.
+Question 4 selects every admitted file not claimed by another provider. Question 5 selects one region per paragraph.
+
+- Routing adds `fallback?: boolean` and applies it after filename, active shared-extension and ordinary
+  extension claims. Equal fallback claims contest. No-extension files reach fallback.
+- Discovery adds `everything?: boolean` to `walkWorkspace`; it still skips default-excluded directories.
+  Git-tracked files under those directories remain in scope.
+- `providers/text` declares docs only, returns no declarations, literals or comments, and reports
+  `content: "text"`. At outline depth it returns no docs; the row upgrades later.
+- A paragraph is a maximal run of lines with a non-whitespace character. Paragraphs are verbatim and
+  unfenced. Paragraphs longer than 16 KiB split at line boundaries into consecutive regions. A file keeps
+  at most 10,000 regions; later paragraphs are omitted and one info note reports their count.
+- `search_docs` reports the file and the 1-based `line:col` of a match when the raw region contains it.
+  Matching is case-insensitive and whitespace-insensitive. A match present only in `plain` has no position.
+- Binary and oversized files are named parse failures. Deny tracked secrets with patterns such as
+  `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.

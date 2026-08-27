@@ -5,6 +5,7 @@ import { RE2JS } from "re2js";
 /** Linear time; never stalls. */
 export interface SearchPattern {
 	test(text: string): boolean;
+	find(text: string): string | null;
 }
 
 // g, u and y change nothing here.
@@ -33,7 +34,13 @@ export function compileSearchRegex(source: string): SearchPattern {
 
 	try {
 		const compiled = RE2JS.compile(match[1], flags);
-		return { test: (text) => compiled.matcher(text).find() };
+		return {
+			test: (text) => compiled.matcher(text).find(),
+			find: (text) => {
+				const matcher = compiled.matcher(text);
+				return matcher.find() ? matcher.group() : null;
+			},
+		};
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		throw new Error(`Regex failed to compile: ${detail}. RE2 syntax: no lookaround or backreferences.`);

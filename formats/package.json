@@ -9,7 +9,8 @@
 		"./yaml": "./src/yaml.ts",
 		"./json": "./src/json.ts",
 		"./xml": "./src/xml.ts",
-		"./html": "./src/html.ts"
+		"./html": "./src/html.ts",
+		"./text": "./src/text.ts"
 	},
 	"dependencies": {
 		"@nyaa-lexicon/protocol": "workspace:*",

@@ -491,7 +491,7 @@ export class LexiconService {
 		const totals = this.store.totalsForModules(includeModule);
 		const content = this.store.contentTotals(includeModule);
 
-		// Ranked apart; an unclassed row ranks as code until the next scan.
+		// Only code and unclassed modules rank; prose classes are counted separately.
 		const code = modules.filter((row) => row.content === "code" || row.content === null);
 		const data = modules.filter(
 			(row): row is typeof row & { content: "data" | "document" } =>

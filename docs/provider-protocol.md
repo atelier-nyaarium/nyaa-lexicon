@@ -58,16 +58,24 @@ false, and conformance fails a provider that declares it and then stays quiet on
 
 `content` says what the claimed files ARE: `code` declares behavior, `data` declares structure (a
 JSON or YAML key is a `property` declaration, and a fixture has thousands), `document` is prose under
-headings. Absent means code. The core records it per file from the provider that owned the read,
-and `overview` counts files and symbols per class and ranks the largest code modules apart from the
-largest data files, so a fixture directory never pushes the code off the page. It is one declaration
-for everything the provider claims: a code provider that also claims a data file, as GDScript does
-`project.godot`, reports it as code, which is honest about who answers for it.
+headings, `text` is prose with no structure at all. Absent means code. The core records it per file
+from the provider that owned the read, and `overview` counts files and symbols per class, ranks the
+largest code modules apart from the largest data files, and counts text files on a row of their own
+without ranking them, since they hold no symbols. It is one declaration for everything the provider
+claims: a code provider that also claims a data file, as GDScript does `project.godot`, reports it
+as code, which is honest about who answers for it.
 
 `sharedExtensions` claims an extension only when the workspace contains a file with one of its
 `beside` extensions. The evidence is every file the scope admits, owned by a provider or not, read
 before any ownership is decided; a file indexed outside a scan adds itself to it. It outranks a plain claim on that extension, while two holding shared claims
-contest the file. A filename claim outranks both.
+contest the file. A filename claim outranks both. Routing then considers a fallback claim.
+
+In Git mode, tracked files remain in scope even under a default-excluded directory; directory exclusions
+only limit files added by provider discovery. An ignored file never enters scope unless explicitly included.
+Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
+
+Indexing, the watcher and the provider probe read through the guarded source reader. Transaction snapshots
+read bytes for byte-exact rollback and never send those bytes to a provider.
 
 ## What a diagnostic's severity does
 
@@ -174,8 +182,8 @@ before it is trusted, and every form a lexer once got wrong stays in the table.
 
 ## Documents are headings and regions
 
-Only a provider whose files are DOCUMENTS declares the `docs` tier. Every code provider declares it
-false, and that is the honest answer rather than a gap: a language has no sections.
+The `docs` tier reports prose regions. A provider whose files are documents or plain text may declare it.
+Document files add heading structure; plain-text files have no headings.
 
 A heading is a DECLARATION of kind `heading`, with the heading above it as its container. So an
 outline of a document is its table of contents, and everything built on declarations works without

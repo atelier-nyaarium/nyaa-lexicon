@@ -214,7 +214,7 @@ export interface OverviewResult {
 	imports: number;
 	literals: number;
 	symbolsByKind?: Record<string, number>;
-	/** Files and symbols per content class. Absent from a daemon that predates the split. */
+	/** Files and symbols per content class, including the separate plain-text row. */
 	content?: ContentTotals;
 	modules: number;
 	scope: string;
@@ -667,7 +667,7 @@ export const SEARCH_DOCS_DESCRIPTION = `
 # \`search_docs\`
 
 Search documentation prose. Each hit names the HEADING PATH it sits under, so an answer is
-\`CLAUDE.md > Principles\` rather than a line number.
+\`CLAUDE.md > Principles\` rather than a line number, and the line and column of the match.
 
 Matches NORMALIZED text, so a sentence wrapped across lines is one string. A hit inside a fenced
 code block says so, which is how a runnable command written only in a fence is findable at all.

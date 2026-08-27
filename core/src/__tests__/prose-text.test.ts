@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCommentText, normalizeDocText } from "../proseText.js";
+import { normalizeCommentText, normalizeDocText, proseHit } from "../proseText.js";
 
 describe("normalizing comment prose", () => {
 	it("strips a line marker and its padding", () => {
@@ -57,6 +57,15 @@ describe("normalizing comment prose", () => {
 });
 
 describe("normalizing document prose", () => {
+	it("locates case-insensitive matches across wrapped lines", () => {
+		expect(proseHit("First line\r\nsecond Match", "SECOND   match")).toEqual({ line: 1, character: 0 });
+		expect(proseHit("first\nwrapped phrase", "FIRST WRAPPED")).toEqual({ line: 0, character: 0 });
+	});
+
+	it("returns no position when raw text lacks the match", () => {
+		expect(proseHit("raw tags", "visible text")).toBeUndefined();
+	});
+
 	// A document has no markers to strip, so anything removed here is content.
 	it("collapses whitespace and strips nothing else", () => {
 		expect(normalizeDocText("weigh the long-run\ncost of a workaround")).toBe(

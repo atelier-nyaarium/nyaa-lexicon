@@ -49,7 +49,7 @@ export const ProviderTiersSchema = z
 	.meta({ id: "ProviderTiers" });
 
 /** What a provider's files are. Counted apart, because a fixture's keys are not functions. */
-export const FileContentSchema = z.enum(["code", "data", "document"]).meta({ id: "FileContent" });
+export const FileContentSchema = z.enum(["code", "data", "document", "text"]).meta({ id: "FileContent" });
 
 export type FileContent = z.infer<typeof FileContentSchema>;
 
@@ -69,6 +69,7 @@ export const InitializeResponseSchema = z
 		sharedExtensions: z
 			.array(z.object({ extension: z.string().min(1), beside: z.array(z.string().min(1)).min(1) }))
 			.optional(),
+		fallback: z.boolean().optional(),
 		protocolVersion: z.string().min(1),
 		tiers: ProviderTiersSchema,
 		/**

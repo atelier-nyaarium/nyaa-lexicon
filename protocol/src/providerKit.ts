@@ -36,6 +36,8 @@ export interface WalkOptions {
 	configExtensions?: readonly string[];
 	/** Directory names never entered. */
 	excludedDirectories?: ReadonlySet<string>;
+	/** Claim every regular file below the root. */
+	everything?: boolean;
 }
 
 ////////////////////////////////
@@ -109,6 +111,7 @@ export function projectDiagnostic(root: string, message: string): ProjectModel {
 export function walkWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
 	const excluded = options.excludedDirectories ?? DEFAULT_EXCLUDED_DIRECTORIES;
 	const claimed = (name: string) =>
+		options.everything === true ||
 		options.extensions.some((extension) => name.endsWith(extension)) ||
 		(options.filenames?.includes(name) ?? false);
 	const config = (name: string) => options.configExtensions?.some((extension) => name.endsWith(extension)) ?? false;

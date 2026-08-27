@@ -579,8 +579,8 @@ describe("recording what a file is", () => {
 			{ module: "src/a.ts", symbols: 1, content: "code" },
 		]);
 		expect(store.contentTotals(() => true)).toEqual({
-			files: { code: 1, data: 1, document: 1, unknown: 0 },
-			symbols: { code: 1, data: 2, document: 0, unknown: 0 },
+			files: { code: 1, data: 1, document: 1, text: 0, unknown: 0 },
+			symbols: { code: 1, data: 2, document: 0, text: 0, unknown: 0 },
 		});
 		expect(store.contentTotals((module) => module !== "fixtures/a.json").files.data).toBe(0);
 	});
@@ -596,7 +596,7 @@ describe("recording what a file is", () => {
 
 		store = IndexStore.open(file).store;
 		expect(store.moduleSummary()).toEqual([{ module: "src/old.json", symbols: 1, content: null }]);
-		expect(store.contentTotals(() => true).files).toEqual({ code: 0, data: 0, document: 0, unknown: 1 });
+		expect(store.contentTotals(() => true).files).toEqual({ code: 0, data: 0, document: 0, text: 0, unknown: 1 });
 
 		store.recordContent("src/old.json", "data");
 		store.recordContent("src/old.json", "code");

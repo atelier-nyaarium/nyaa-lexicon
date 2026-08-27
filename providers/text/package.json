@@ -1,0 +1,15 @@
+{
+	"name": "@nyaa-lexicon/provider-text",
+	"version": "2.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Plain-text fallback provider for nyaa-lexicon",
+	"exports": {
+		".": "./src/main.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/formats": "workspace:*",
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"vscode-jsonrpc": "9.0.1"
+	}
+}

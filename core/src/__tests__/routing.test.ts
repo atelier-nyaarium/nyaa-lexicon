@@ -153,3 +153,41 @@ describe("a claim on a shared extension", () => {
 		expect(routeModule("src/a.h", [plain, shared], context)).toMatchObject({ providerId: "shared" });
 	});
 });
+
+describe("fallback claims", () => {
+	const fallback: ProviderClaims = { providerId: "text", language: "text", extensions: [], fallback: true };
+
+	it("claims a no-extension file", () => {
+		expect(routeModule("Dockerfile", [TS, fallback])).toEqual({
+			owned: true,
+			providerId: "text",
+			content: "code",
+		});
+	});
+
+	it("loses to filename, shared, and ordinary extension claims", () => {
+		const named = { ...TS, filenames: ["Dockerfile"] };
+		const shared: ProviderClaims = {
+			providerId: "shared",
+			language: "shared",
+			extensions: [],
+			sharedExtensions: [{ extension: ".h", beside: [".cpp"] }],
+		};
+		expect(routeModule("Dockerfile", [named, fallback])).toMatchObject({ providerId: "ts" });
+		expect(routeModule("a.h", [shared, fallback], routingContextOf(["a.cpp"]))).toMatchObject({
+			providerId: "shared",
+		});
+		expect(routeModule("a.h", [shared, fallback], routingContextOf(["a.txt"]))).toMatchObject({
+			providerId: "text",
+		});
+	});
+
+	it("contests two fallback claims", () => {
+		const other = { ...fallback, providerId: "other", language: "other" };
+		expect(routeModule("LICENSE", [fallback, other])).toEqual({
+			owned: false,
+			reason: "contested",
+			providerIds: ["other", "text"],
+		});
+	});
+});

@@ -8,6 +8,8 @@
 // its leading punctuation removed without asking which grammar produced it, and that is what keeps
 // this file free of the language branch core forbids.
 
+import { coordinatesOf } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Constants
 
@@ -118,4 +120,44 @@ export function normalizeCommentText(raw: string): string {
  */
 export function normalizeDocText(raw: string): string {
 	return collapse(raw);
+}
+
+/** Where a match sits inside a region, relative to the region's own text. */
+export interface ProseHit {
+	line: number;
+	character: number;
+}
+
+/** The text as search sees it, with each kept character's offset in the raw, so a hit maps back. */
+function searchable(text: string): { text: string; rawOffsets: number[] } {
+	let value = "";
+	const rawOffsets: number[] = [];
+	let whitespace = false;
+	for (let index = 0; index < text.length; index++) {
+		const char = text[index] as string;
+		if (/\s/u.test(char)) {
+			if (whitespace) continue;
+			value += " ";
+			rawOffsets.push(index);
+			whitespace = true;
+			continue;
+		}
+		// ASCII only, as SQLite's LIKE folds, and so one raw character stays one searched character.
+		value += char >= "A" && char <= "Z" ? char.toLowerCase() : char;
+		rawOffsets.push(index);
+		whitespace = false;
+	}
+	return { text: value, rawOffsets };
+}
+
+/** Case-insensitive, whitespace-insensitive; absent when the raw text does not hold the needle. */
+export function proseHit(raw: string, needle: string): ProseHit | undefined {
+	const source = searchable(raw);
+	const query = searchable(needle).text.trim();
+	if (query === "") return undefined;
+	const at = source.text.indexOf(query);
+	if (at < 0) return undefined;
+	const rawAt = source.rawOffsets[at];
+	if (rawAt === undefined) return undefined;
+	return coordinatesOf(raw).rangeAt(rawAt, rawAt + 1)?.start;
 }

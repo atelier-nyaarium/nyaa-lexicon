@@ -7,6 +7,7 @@ import type { Range } from "@nyaa-lexicon/protocol";
 import type { CommentForm } from "./commentAttach.js";
 import { findCycles } from "./graph.js";
 import { type Counted, type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
+import { proseHit } from "./proseText.js";
 import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
 import type {
@@ -146,6 +147,8 @@ export interface FoundDoc {
 	raw: string;
 	/** The headings above this region, outermost first, empty when it sits under none. */
 	headingPath: string[];
+	/** Where the match sits in the file; absent when the raw text cannot place it, as markup inside it. */
+	hit?: { line: number; character: number };
 }
 
 export interface DocsResult extends Counted {
@@ -629,7 +632,11 @@ export class IndexReadModel {
 			const expression = compileSearchRegex(query.regex);
 			const scanned = this.store.docsToScan(REGEX_SCAN_LIMIT, filter);
 			const matched = scanned.filter((region) => expression.test(region.normalized));
-			return this.pageDocs(query, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
+			return this.pageDocs(
+				query,
+				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
+				expression,
+			);
 		}
 
 		// Neither given: the whole tier, filtered. Useful for "every region in this document".
@@ -641,11 +648,27 @@ export class IndexReadModel {
 		throw new Error('give a text or a regex, e.g. { text: "band-aid" } or { regex: "/TODO|FIXME/" }');
 	}
 
-	private pageDocs(query: DocQuery, paged: Paged<StoredDoc>): DocsResult {
+	private pageDocs(
+		query: DocQuery,
+		paged: Paged<StoredDoc>,
+		pattern?: { find(text: string): string | null },
+	): DocsResult {
 		const paths = new Map<string, string[]>();
 		const shown = paged.items.map((region) => {
 			const anchor = region.anchorId;
 			if (anchor !== null && !paths.has(anchor)) paths.set(anchor, this.headingPath(anchor));
+			const match = query.text ?? pattern?.find(region.normalized) ?? undefined;
+			const relative = match === undefined ? undefined : proseHit(region.raw, match);
+			const hit =
+				relative === undefined
+					? undefined
+					: {
+							line: region.range.start.line + relative.line,
+							character:
+								relative.line === 0
+									? region.range.start.character + relative.character
+									: relative.character,
+						};
 			return {
 				factId: region.factId,
 				module: region.module,
@@ -653,6 +676,7 @@ export class IndexReadModel {
 				fenced: region.fenced,
 				raw: preview(region.raw),
 				headingPath: anchor === null ? [] : (paths.get(anchor) ?? []),
+				...(hit === undefined ? {} : { hit }),
 			};
 		});
 		return { query, docs: shown, ...wire(paged) };

@@ -4,10 +4,19 @@ Only releases that ask something of you. A patch that changes nothing you can ob
 
 ## 2.1.1
 
-XML and HTML are read, a search can be scoped to a declaration, and a daemon over a partially
-indexed store no longer answers from the part it has.
+XML, HTML and plain text are read, a search can be scoped to a declaration, and a daemon over a
+partially indexed store no longer answers from the part it has.
 
 ### What you get
+
+Every text file in scope that no provider claims is read as plain text: `LICENSE`, `Dockerfile`, a
+`.sh`, a `.toml`, a `.csv`, and the source of a language with no provider yet. Each becomes doc
+regions, one per paragraph, so `search_docs` reaches it, and no declarations, since plain text has
+none. `overview` counts them on their own row and never ranks them among code. A `search_docs` hit
+now names the line and column of the match inside its region, for markdown and HTML as much as for
+text. The guards are the ones every file meets: a file with a NUL in its first 8 KiB is not text
+and a file past 4 MB is too large, both named as failures; an ignored file never enters the scope;
+a tracked secret needs a `deny` entry such as `**/*.pem` or `**/.env*` in `lexicon.json`.
 
 XML and HTML files are indexed. Every element is a declaration, named by its `id`, `name` or `key`
 attribute when it has one and by its tag otherwise, so `search_symbols("app_name")` lands on the

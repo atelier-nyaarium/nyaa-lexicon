@@ -184,6 +184,7 @@ export interface ContentCounts {
 	code: number;
 	data: number;
 	document: number;
+	text: number;
 	unknown: number;
 }
 
@@ -1568,8 +1569,8 @@ export class IndexStore {
 				 GROUP BY f.module`,
 			)
 			.all() as Array<{ module: string; content: FileContent | null; symbols: number }>;
-		const files: ContentCounts = { code: 0, data: 0, document: 0, unknown: 0 };
-		const symbols: ContentCounts = { code: 0, data: 0, document: 0, unknown: 0 };
+		const files: ContentCounts = { code: 0, data: 0, document: 0, text: 0, unknown: 0 };
+		const symbols: ContentCounts = { code: 0, data: 0, document: 0, text: 0, unknown: 0 };
 		for (const row of rows) {
 			if (!includeModule(row.module)) continue;
 			const key = row.content ?? "unknown";

@@ -258,8 +258,9 @@ describe("corpus", () => {
 		expect(docsCases).not.toHaveLength(0);
 		for (const testCase of docsCases) {
 			const languages = Object.keys(testCase.fixtures);
+			const prose = ["markdown", "html", "text"];
 			expect(
-				languages.some((language) => language === "markdown" || language === "html"),
+				languages.some((language) => prose.includes(language)),
 				testCase.id,
 			).toBe(true);
 		}

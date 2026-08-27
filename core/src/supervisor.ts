@@ -205,6 +205,7 @@ export class ProviderSupervisor {
 			extensions: parsed.extensions,
 			...(parsed.filenames === undefined ? {} : { filenames: parsed.filenames }),
 			...(parsed.sharedExtensions === undefined ? {} : { sharedExtensions: parsed.sharedExtensions }),
+			...(parsed.fallback === undefined ? {} : { fallback: parsed.fallback }),
 			...(parsed.content === undefined ? {} : { content: parsed.content }),
 		};
 

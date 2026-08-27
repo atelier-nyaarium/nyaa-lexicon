@@ -17,6 +17,7 @@ export interface ProviderClaims {
 	filenames?: string[];
 	/** Claimed only where a file with one of the `beside` extensions exists; outranks a plain claim. */
 	sharedExtensions?: Array<{ extension: string; beside: string[] }>;
+	fallback?: boolean;
 	/** As declared at initialize; absent means code, resolved here once. */
 	content?: FileContent;
 }
@@ -62,7 +63,10 @@ export function routeModule(module: string, providers: ProviderClaims[], context
 	const name = basenameOf(module);
 	const byName = providers.filter((p) => p.filenames?.includes(name));
 	const shared = byName.length > 0 || context === undefined ? [] : matchBySharedExtension(module, providers, context);
-	const candidates = byName.length > 0 ? byName : shared.length > 0 ? shared : matchByExtension(module, providers);
+	const extensions = matchByExtension(module, providers);
+	const fallback = providers.filter((p) => p.fallback === true);
+	const candidates =
+		byName.length > 0 ? byName : shared.length > 0 ? shared : extensions.length > 0 ? extensions : fallback;
 
 	if (candidates.length === 0) return { owned: false, reason: "unclaimed" };
 	if (candidates.length > 1) {

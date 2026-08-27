@@ -376,7 +376,11 @@ export function renderDocs(result: DocsResult): string {
 		// differently from a comment search.
 		const under = region.headingPath.length === 0 ? "(no heading)" : region.headingPath.join(" > ");
 		const where = region.fenced ? `${under}  [in a code block]` : under;
-		rows.push(`- Line ${region.range.start.line + 1}: ${where}\n  \`${region.factId}\`\n${indent(region.raw)}`);
+		const location =
+			region.hit === undefined
+				? `Line ${region.range.start.line + 1}`
+				: `Line ${region.hit.line + 1}:${region.hit.character + 1}`;
+		rows.push(`- ${location}: ${where}\n  \`${region.factId}\`\n${indent(region.raw)}`);
 		byModule.set(region.module, rows);
 	}
 
@@ -843,7 +847,7 @@ export function renderOverview(result: {
 		const { tracked, claimed, unclaimed, generated, denied } = result.scan;
 		lines.push(`- Last scan: ${tracked} files seen`);
 		lines.push(`  - ${claimed} claimed by providers`);
-		lines.push(`  - ${unclaimed} of no provider's language`);
+		lines.push(`  - ${unclaimed} claimed by no provider`);
 		if (generated > 0) lines.push(`  - ${generated} generated`);
 		if (denied > 0) lines.push(`  - ${denied} outside scope`);
 	}
@@ -881,6 +885,7 @@ export function renderOverview(result: {
 		if (files.data + files.document > 0) {
 			lines.push("", `> Files: ${contentClasses(files, "")}. Symbols: ${contentClasses(symbols, "in ")}.`);
 		}
+		if (files.text > 0) lines.push("", `> ${files.text} files read as plain text.`);
 		if (files.unknown > 0) {
 			lines.push(
 				"",
@@ -945,6 +950,7 @@ function contentClasses(counts: ContentCounts, prefix: string): string {
 	const parts = [`${counts.code} ${prefix}code`];
 	if (counts.data > 0) parts.push(`${counts.data} ${prefix}data`);
 	if (counts.document > 0) parts.push(`${counts.document} ${prefix}document${counts.document === 1 ? "" : "s"}`);
+	if (counts.text > 0) parts.push(`${counts.text} ${prefix}plain text`);
 	return parts.join(", ");
 }
 

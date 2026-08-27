@@ -63,8 +63,8 @@ describe("telling code from data", () => {
 	it("counts files and symbols per class and ranks data files under their own heading", () => {
 		const rendered = overview({
 			content: {
-				files: { code: 100, data: 40, document: 3, unknown: 0 },
-				symbols: { code: 900, data: 4500, document: 30, unknown: 0 },
+				files: { code: 100, data: 40, document: 3, text: 0, unknown: 0 },
+				symbols: { code: 900, data: 4500, document: 30, text: 0, unknown: 0 },
 			},
 			largest: [{ module: "src/a.ts", symbols: 120 }],
 			largestData: [
@@ -87,8 +87,8 @@ describe("telling code from data", () => {
 	it("says nothing about classes when every file is code, and names the rows still unrecorded", () => {
 		const allCode = overview({
 			content: {
-				files: { code: 5, data: 0, document: 0, unknown: 0 },
-				symbols: { code: 50, data: 0, document: 0, unknown: 0 },
+				files: { code: 5, data: 0, document: 0, text: 0, unknown: 0 },
+				symbols: { code: 50, data: 0, document: 0, text: 0, unknown: 0 },
 			},
 		});
 		expect(allCode).not.toContain("Files: ");
@@ -96,8 +96,8 @@ describe("telling code from data", () => {
 
 		const stale = overview({
 			content: {
-				files: { code: 5, data: 0, document: 0, unknown: 2 },
-				symbols: { code: 50, data: 0, document: 0, unknown: 9 },
+				files: { code: 5, data: 0, document: 0, text: 0, unknown: 2 },
+				symbols: { code: 50, data: 0, document: 0, text: 0, unknown: 9 },
 			},
 		});
 		expect(stale).toContain("2 files were read before their content class was recorded");
@@ -113,7 +113,7 @@ describe("explaining where a workspace's files went", () => {
 
 		expect(rendered).toContain("12 files seen");
 		expect(rendered).toContain("- 9 claimed by providers");
-		expect(rendered).toContain("- 3 of no provider's language");
+		expect(rendered).toContain("- 3 claimed by no provider");
 	});
 
 	it("names generated and out-of-scope files only when there are some", () => {
@@ -273,6 +273,11 @@ describe("answering a docs search with a place rather than a line", () => {
 
 	it("says the region sits under no heading rather than printing an empty path", () => {
 		expect(docs({ docs: [region({ headingPath: [] })] })).toContain("(no heading)");
+	});
+
+	it("prints the match column when core provides a hit", () => {
+		expect(docs({ docs: [region({ hit: { line: 1, character: 4 } })] })).toContain("Line 2:5");
+		expect(docs()).toContain("- Line 42: nyaa-lexicon > Principles");
 	});
 
 	it("reports the true total and how much the page left out", () => {

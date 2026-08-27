@@ -28,6 +28,8 @@ index cannot live in the stdio process. That process is a thin client to a daemo
   a store whose last outline pass completed answers while discovery runs, a partial one waits for
   the roots it lacks. Imported modules outside the roots do not extend the wait. A pass that fails
   answers a plain error naming the reason. The LSP's local fallback indexes fully before serving.
+- **Routing** gives a filename claim precedence, then a shared-extension claim whose evidence
+  holds, then a plain extension claim, and last a fallback claim; equal claims contest.
 - **Presence** is the connection itself. An open authenticated socket is a client; its close is
   that client leaving. A heartbeat covers the case TCP cannot see, where a peer is alive but hung.
 - **Lifetime** is a countdown armed when the last client disconnects and disarmed by any connect.
