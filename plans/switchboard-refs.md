@@ -828,6 +828,31 @@ above, this is what the code does.
   and a degraded ref adds a `refs:` notice). No bound Copilot session can be started from this
   session, so the Copilot half of the live reply is the resolution without the upload.
 
+## Phase 3 - The workspace root from the host
+
+Asked for by the owner after the 8.4.0 report, from the Copilot finding under Painpoints: Copilot
+starts a plugin's MCP server in the plugin's directory, so the cwd rule made every bare ref path
+resolve against the plugin's checkout. Lexicon never cared where the server ran; the resolver did.
+
+- `refWorkspace.ts` stays the one owner. The directory the root is judged from is, in order:
+  `REFERENCE_ROOT` as written (an explicit override, no git walk); the host's first `file:` root
+  from the MCP `roots/list` answer; the server's cwd. The host root and the cwd are each taken to
+  their git toplevel, as the cwd was before, so a host that opened a package inside a repository
+  still resolves against the repository. Non-`file:` URIs and unparseable entries are ignored; a
+  host that declares the `roots` capability and answers an empty list is the cwd case.
+- The host is asked once the session is up (`oninitialized`), and again on
+  `notifications/roots/list_changed`. `expectHostRoots()` runs before `connect`, so a reply that
+  arrives before the answer waits on `hostRootsSettled()` in `appendRefArtifacts` instead of
+  reading cwd; a host without the capability settles at once, and one that does not answer within
+  `HOST_ROOTS_TIMEOUT_MS` (5 s) settles to cwd with a line on stderr. A changed root reopens the
+  lexicon session on the next ref, since the daemon is keyed by root.
+- Tests: the host's root over the cwd up to its git toplevel; a non-git host root kept as is with a
+  percent-encoded space decoded; non-`file:` roots ignored; `REFERENCE_ROOT` winning; a pending
+  answer holding `hostRootsSettled()` and a reset releasing it; `appendRefArtifacts` holding a
+  reply until `setHostRoots`.
+- Verification: a patch release, then each host started in tmux on the switchboard checkout with
+  no lexicon daemon alive for it, a ref sent, and the root read off the daemon each host spawns.
+
 ## Painpoints
 
 Collected after Phase 0. Not fixed here; candidates for a later phase or a plan of their own.
