@@ -3,10 +3,10 @@
 // A fixture proves the code runs. Real source proves it is right, because the expectations here
 // are things a reader can check by opening the file.
 
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDispatch } from "../dispatch";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
@@ -35,7 +35,7 @@ beforeEach(async () => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-dogfood-"));
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
 	supervisor = new ProviderSupervisor();
-	await supervisor.start({ command: ["bun", "run", PROVIDER], timeoutMs: 20_000 }, REPO);
+	await supervisor.start({ command: [process.execPath, "run", PROVIDER], timeoutMs: 20_000 }, REPO);
 	service = new LexiconService(store, supervisor, sourceReader(REPO));
 });
 

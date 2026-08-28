@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -11,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { canonicalRoot, type PlatformEnv, stateRoot, workspacePaths } from "@nyaa-lexicon/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findProject, forgetProject, readRegistry, registerProject } from "../projectRegistry";
 
 ////////////////////////////////
@@ -152,6 +152,7 @@ describe("a store directory of the project's choosing", () => {
 		expect(statSync(custom).isDirectory()).toBe(true);
 		if (process.platform !== "win32") expect(statSync(custom).mode & 0o777).toBe(0o700);
 		const [first, second] = readRegistry(host);
+		if (first === undefined || second === undefined) throw new Error("registered projects missing");
 		expect(first).toEqual({ key: expect.any(String), root });
 		expect(second).toEqual({ key: first?.key, root, stateDir: custom });
 		const stored = JSON.parse(readFileSync(path.join(stateRoot(host), "projects.json"), "utf8"));

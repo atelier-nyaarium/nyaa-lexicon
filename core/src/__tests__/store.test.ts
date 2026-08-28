@@ -1,9 +1,9 @@
+import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttachedComment } from "../commentAttach";
 import { IndexStore, SCHEMA_VERSION } from "../store";
 
@@ -106,7 +106,8 @@ describe("keeping what a provider said below error", () => {
 		raw.close();
 
 		const now = Date.now();
-		vi.useFakeTimers({ now: now + 1000 });
+		vi.useFakeTimers();
+		setSystemTime(now + 1000);
 		try {
 			store = IndexStore.open(file).store;
 			expect(store.fileNotes("src/old.ts")).toEqual({
@@ -116,7 +117,7 @@ describe("keeping what a provider said below error", () => {
 			});
 			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 1 });
 
-			vi.setSystemTime(now + 2000);
+			setSystemTime(now + 2000);
 			store.replaceFile("src/old.ts", "h2", [declaration("old", "src/old.ts")], []);
 			expect(store.fileNotes("src/old.ts")).toEqual({ module: "src/old.ts", known: true, notes: [] });
 			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 0 });
@@ -140,9 +141,9 @@ describe("writing a file's facts", () => {
 		try {
 			const first = new Date("2026-01-01T00:00:00Z").getTime();
 			const second = new Date("2026-01-02T00:00:00Z").getTime();
-			vi.setSystemTime(first);
+			setSystemTime(first);
 			store.replaceFile("src/a.ts", "h1", [declaration("a")], []);
-			vi.setSystemTime(second);
+			setSystemTime(second);
 			store.replaceFile("src/b.ts", "h1", [declaration("b", "src/b.ts")], []);
 
 			expect(store.newestIndexedAt()).toBe(second);

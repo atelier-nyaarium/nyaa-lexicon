@@ -17,13 +17,10 @@ export interface ProviderCommand {
 	/** The directory name under providers/. A label for reports, never a routing key. */
 	directory: string;
 	command: string[];
-	runtime: "node" | "bun";
 }
 
 export interface StartOptions {
 	commands?: ProviderCommand[];
-	/** Node-only. Argv goes after the executable; bun takes none and handles nothing. */
-	node?: { argv: string[]; handles: NodeJS.Signals[] };
 }
 
 export interface StartedProvider {
@@ -64,9 +61,10 @@ export function lexiconRoot(): string {
 /**
  * Every provider present on disk, discovered rather than listed, so adding one needs no edit here.
  *
- * The bundle is preferred over the source: it runs on plain node with no install, which the source
- * cannot, since it imports workspace packages that only resolve when a `node_modules` exists. A
- * host that installs dependencies and one that does not otherwise behave completely differently.
+ * The bundle is preferred over the source: it runs with no install, which the source cannot, since
+ * it imports workspace packages that only resolve when a `node_modules` exists. A host that
+ * installs dependencies and one that does not otherwise behave completely differently. Both run on
+ * the executable this process runs on.
  */
 export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 	const directory = path.join(root, "providers");
@@ -78,22 +76,18 @@ export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 
 		const bundled = path.join(root, "dist", "providers", entry.name, "main.js");
 		if (existsSync(bundled)) {
-			found.push({ directory: entry.name, command: [process.execPath, bundled], runtime: "node" });
+			found.push({ directory: entry.name, command: [process.execPath, bundled] });
 			continue;
 		}
 
 		const source = path.join(directory, entry.name, "src", "main.ts");
-		if (existsSync(source)) found.push({ directory: entry.name, command: ["bun", "run", source], runtime: "bun" });
+		if (existsSync(source)) found.push({ directory: entry.name, command: [process.execPath, "run", source] });
 	}
 	return found.sort((a, b) => a.directory.localeCompare(b.directory));
 }
 
-function specFor(entry: ProviderCommand, node: StartOptions["node"]): ProviderSpec {
-	const [executable, ...rest] = entry.command;
-	if (entry.runtime !== "node" || node === undefined || executable === undefined) {
-		return { command: entry.command, timeoutMs: START_TIMEOUT_MS };
-	}
-	return { command: [executable, ...node.argv, ...rest], timeoutMs: START_TIMEOUT_MS, handles: node.handles };
+function specFor(entry: ProviderCommand): ProviderSpec {
+	return { command: entry.command, timeoutMs: START_TIMEOUT_MS };
 }
 
 /**
@@ -115,7 +109,7 @@ export async function startProviders(
 	const settled = await Promise.all(
 		commands.map(async (entry) => {
 			try {
-				const claims = await supervisor.start(specFor(entry, options.node), workspaceRoot);
+				const claims = await supervisor.start(specFor(entry), workspaceRoot);
 				return { entry, claims };
 			} catch (error) {
 				return { entry, error: error instanceof Error ? error.message : String(error) };

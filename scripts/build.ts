@@ -3,9 +3,9 @@
 //   bun run build patch|minor|major       # bump, build, commit
 //   bun run build --build-only            # bundle at the current version; no bump, no commit
 //
-// dist/ is COMMITTED because the MCP server runs as `node dist/main.js`. Windows is the reason
-// this exists at all: bun is not reliable enough there to require it of a consumer, so the
-// shipped artifact must run on plain node with no install step and no toolchain.
+// dist/ is COMMITTED because the MCP server runs as `bun dist/main.js` from a plugin copy that
+// no host installs dependencies into: Claude Code runs `bun install` in an installed plugin,
+// Copilot copies the repository and runs nothing, and the bundle needs neither.
 //
 // That only holds while the committed bundle matches the committed version, which is why bumping
 // and building are one command rather than two. A dist/ built at a version the manifests do not
@@ -45,18 +45,16 @@ const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 const VERSION_FIELD_RE = /"version"\s*:\s*"[^"]*"/g;
 
 /**
- * Both are bundled for the same reason: a consumer runs them on plain node with no bun and no
- * install. The conformance CLI counts because a provider team may be a .NET or Python team, and
- * requiring our toolchain to prove their provider would defeat the suite's independence.
+ * Both are bundled for the same reason: a consumer runs them with no install. The conformance CLI
+ * counts because a provider team may be a .NET or Python team, and requiring our toolchain to
+ * prove their provider would defeat the suite's independence.
  *
  * Built one at a time with an explicit outfile. Passing both to one `bun build` mirrors the source
- * tree into dist/, so `node dist/main.js` would become `node dist/adapters/mcp/src/main.js`.
+ * tree into dist/, so `bun dist/main.js` would become `bun dist/adapters/mcp/src/main.js`.
  */
 const ENTRYPOINTS = [
 	{ source: path.join("adapters", "mcp", "src", "main.ts"), out: "main.js" },
 	{ source: path.join("protocol", "src", "conformance", "cli.ts"), out: "conformance.js" },
-	// Also the only way to run the indexer at all: bun has no `node:sqlite`, so anything touching
-	// the store runs on node, bundled.
 	{ source: path.join("core", "src", "indexCli.ts"), out: "index-workspace.js" },
 	{ source: path.join("core", "src", "gradeCli.ts"), out: "grade.js" },
 	{ source: path.join("core", "src", "daemonCli.ts"), out: "daemon.js" },
@@ -91,7 +89,7 @@ function providerBundles(root: string): Array<{ source: string; out: string; ass
 }
 
 /** Names a smoke failure, so the catch can tell one from a bun error bun already printed. */
-const SMOKE_FAILURE = "failed to start on node";
+const SMOKE_FAILURE = "failed to start";
 
 /**
  * The AMD branch of a UMD wrapper, which survives minification because `define.amd` cannot be renamed.
@@ -106,7 +104,7 @@ const UMD_WRAPPER_RE =
  * No bundle may carry a UMD wrapper.
  *
  * A wrapper surviving means bun inlined a UMD file rather than resolving the module, so the inner
- * requires are still there: bun cannot see them, node runs them, and they resolve against `dist/`
+ * requires are still there: the bundler cannot see them, the runtime runs them, and they resolve against `dist/`
  * where nothing lives. The bundle is clean and dies on launch. Import the package's ESM entry.
  *
  * Static, for two reasons. Minification renames the factory's `require` parameter, so the calls
@@ -136,7 +134,7 @@ function checkBundlesAreSelfContained(root: string): number {
 }
 
 /**
- * Every bundled provider must actually START on plain node.
+ * Every bundled provider must actually START on the shipping runtime.
  *
  * Bundling succeeding proves only that the imports resolved. A dependency carrying a native addon,
  * or one reaching for something node lacks, bundles clean and then dies on launch, which
@@ -149,13 +147,18 @@ function checkBundlesAreSelfContained(root: string): number {
 function smokeProviders(root: string, providers: Array<{ out: string }>): void {
 	for (const entry of providers) {
 		const bundle = path.join(root, DIST_DIR, entry.out);
-		// "node", never process.execPath: this script runs under bun, and node is what consumers run.
+		// The bun this script runs on is what consumers run.
 		// Closed stdin is a clean shutdown, so a healthy provider loads, starts and exits zero.
 		// Import-time death exits nonzero with its reason on stderr, which is the failure hunted here.
-		const probe = spawnSync("node", [bundle], { cwd: root, input: "", encoding: "utf8", timeout: 20_000 });
+		const probe = spawnSync(process.execPath, [bundle], {
+			cwd: root,
+			input: "",
+			encoding: "utf8",
+			timeout: 20_000,
+		});
 		const complaint = (probe.stderr ?? "").trim();
 		if (probe.status !== 0 || complaint !== "") {
-			// Node's own message line, not the echoed source: a minified frame is thousands of columns.
+			// The runtime's own message line, not the echoed source: a minified frame is thousands of columns.
 			const lines = complaint.split("\n").map((line) => line.trim());
 			const reason = lines.find((line) => /^[A-Za-z]*Error:/.test(line)) ?? lines[0] ?? "";
 			const detail = reason.slice(0, 200) || `exit ${probe.status}`;
@@ -185,7 +188,7 @@ const PLUGIN_MANIFEST = path.join(".claude-plugin", "plugin.json");
 
 const DERIVED_SITES: DerivedSite[] = [
 	{
-		file: path.join("adapters", "mcp", "src", "main.ts"),
+		file: path.join("adapters", "mcp", "src", "serve.ts"),
 		needle: "version: packageJson.version",
 		what: "the MCP server's declared version",
 	},

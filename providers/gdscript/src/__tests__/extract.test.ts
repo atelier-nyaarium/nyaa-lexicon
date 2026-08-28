@@ -1,6 +1,6 @@
+import { expect, test } from "bun:test";
 import path from "node:path";
 import { composeSymbolId, coordinatesOf } from "@nyaa-lexicon/protocol";
-import { expect, test } from "vitest";
 import { extractDeclarationsCore, extractReferencesCore } from "../extractCore.js";
 import { GDScriptProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 
@@ -501,11 +501,14 @@ func run(target: Node, value: int) -> void:
 	);
 	const memberWrite = user.references.find((reference) => reference.name === "state" && reference.role === "write");
 	const valueRead = user.references.find((reference) => reference.name === "value" && reference.role === "read");
+	if (baseDeclaration === undefined) throw new Error("base declaration missing");
+	const helperBinding = helperCall?.binding;
+	if (helperBinding === undefined) throw new Error("helper binding missing");
 
 	expect(TIERS.binding).toBe(true);
 	expect(extendsReference?.binding).toEqual({
 		status: "bound",
-		symbolId: baseDeclaration?.symbolId,
+		symbolId: baseDeclaration.symbolId,
 		provenance: "bound",
 	});
 	expect(baseRead?.binding).toEqual(extendsReference?.binding);
@@ -520,7 +523,7 @@ func run(target: Node, value: int) -> void:
 			name: "helper",
 			range: helperCall?.range ?? { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
 		}),
-	).toEqual(helperCall?.binding);
+	).toEqual(helperBinding);
 	expect(valueRead?.binding).toMatchObject({ status: "unbound", reason: "NotIndexed" });
 	expect(
 		user.references.some(
@@ -542,10 +545,11 @@ test("binds an inner class extending its outer class", () => {
 	});
 	const outer = facts.declarations.find((declaration) => declaration.name === "Outer");
 	const extendsReference = facts.references.find((reference) => reference.role === "extends");
+	if (outer === undefined) throw new Error("outer declaration missing");
 
 	expect(extendsReference?.binding).toEqual({
 		status: "bound",
-		symbolId: outer?.symbolId,
+		symbolId: outer.symbolId,
 		provenance: "bound",
 	});
 });
@@ -567,10 +571,11 @@ test("binds a literal path on an inner class extends clause", () => {
 	});
 	const baseDeclaration = base.declarations.find((declaration) => declaration.name === "Base");
 	const extendsReference = child.references.find((reference) => reference.role === "extends");
+	if (baseDeclaration === undefined) throw new Error("base declaration missing");
 
 	expect(extendsReference?.binding).toEqual({
 		status: "bound",
-		symbolId: baseDeclaration?.symbolId,
+		symbolId: baseDeclaration.symbolId,
 		provenance: "bound",
 	});
 	expect(child.imports).toContainEqual({ specifier: "res://base.gd", imported: [], reExport: false });
@@ -606,11 +611,12 @@ func run(path: String) -> void:
 		(entry) => entry.specifier === "res://base.gd" && entry.imported.length === 0,
 	);
 	const dynamicImport = user.imports.find((entry) => entry.specifier === "load(path)");
+	if (baseDeclaration === undefined) throw new Error("base declaration missing");
 
 	expect(pathExtends?.name).toBe("res://base.gd");
 	expect(pathExtends?.binding).toEqual({
 		status: "bound",
-		symbolId: baseDeclaration?.symbolId,
+		symbolId: baseDeclaration.symbolId,
 		provenance: "bound",
 	});
 	expect(pathImport?.binding).toEqual(pathExtends?.binding);
@@ -696,11 +702,12 @@ test("binds autoload reads to the registered script root", () => {
 	});
 	const stateDeclaration = state.declarations.find((declaration) => declaration.name === "State");
 	const autoloadRead = user.references.find((reference) => reference.name === "GameState");
+	if (stateDeclaration === undefined) throw new Error("autoload declaration missing");
 
 	expect(autoloadRead?.role).toBe("read");
 	expect(autoloadRead?.binding).toEqual({
 		status: "bound",
-		symbolId: stateDeclaration?.symbolId,
+		symbolId: stateDeclaration.symbolId,
 		provenance: "bound",
 	});
 });

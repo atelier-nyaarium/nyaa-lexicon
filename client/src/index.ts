@@ -44,6 +44,7 @@ export {
 	processIdentity,
 	processMemory,
 } from "./procfs.js";
+export { BUN_FLOOR, type RuntimeVerdict, refuseRuntime, runtimeVerdict } from "./runtime.js";
 export { type ShutdownWait, shutdownDaemon } from "./stop.js";
 export {
 	type ConnectFramesOptions,

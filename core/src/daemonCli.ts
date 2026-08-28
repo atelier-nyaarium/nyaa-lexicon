@@ -1,6 +1,6 @@
 // The daemon as a runnable program.
 //
-//   node dist/daemon.js <workspace> [--warm] [--state-dir <dir>]
+//   bun dist/daemon.js <workspace> [--warm] [--state-dir <dir>]
 //
 // Indexes once at start, then serves until stopped. The index is a real file rather than memory,
 // so a restart re-uses what it already knows.
@@ -15,13 +15,14 @@ import {
 	currentHost,
 	DaemonStartingError,
 	daemonCommand,
+	refuseRuntime,
 	spawnDaemonProcess,
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
-import { type Collector, enableSelfReports, nodeReportSetup, startDiagnostics } from "./diagnostics.js";
+import { type Collector, makeReportsDir, startDiagnostics } from "./diagnostics.js";
 import { createDispatch } from "./dispatch.js";
 import { driftedTo } from "./drift.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
@@ -80,6 +81,12 @@ function describeError(error: unknown): string {
 //  Main
 
 async function main(argv: string[]): Promise<void> {
+	const refused = refuseRuntime("the lexicon daemon");
+	if (refused !== null) {
+		process.stderr.write(`${refused}\n`);
+		process.exit(1);
+	}
+
 	const startedAt = Date.now();
 	const parsed = parseDaemonArgs(argv);
 	if (!parsed.ok) {
@@ -129,12 +136,11 @@ async function main(argv: string[]): Promise<void> {
 	const paths = workspacePaths(host, root, stateDir);
 	// The store holds an index of private code, so a default directory is as closed as a custom one.
 	mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
-	// Before anything allocates: a fatal error from here on leaves a report, not only a log line.
-	const reportsOff = enableSelfReports(paths.reportsDir);
-	if (reportsOff !== null) log(`crash reports off: ${reportsOff}`);
-	const nodeReport = nodeReportSetup(paths.reportsDir);
-	if (nodeReport.failure !== undefined) log(`provider crash reports off: ${nodeReport.failure}`);
-
+	try {
+		makeReportsDir(paths.reportsDir);
+	} catch (error) {
+		log(`reports directory not made: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	// The state dir is the one directory this process owns. A cwd inside the project pins it: on
 	// Windows the folder cannot be renamed or deleted while a live process sits in it.
 	process.chdir(paths.dir);
@@ -269,7 +275,7 @@ async function main(argv: string[]): Promise<void> {
 		spawned.observeExits((exit) => (collector === null ? earlyExits.push(exit) : collector.recordExit(exit)));
 		startingSince = Date.now();
 		waitingFor = "the language providers to start";
-		const providers = await startProviders(spawned, root, { node: nodeReport });
+		const providers = await startProviders(spawned, root);
 		log(`providers:\n${describeStart(providers)}`);
 
 		const openStore = store;
@@ -316,7 +322,6 @@ async function main(argv: string[]): Promise<void> {
 					connections: outcome.daemon.connections(),
 				};
 			},
-			signal: (pid, signal) => spawned.signal(pid, signal),
 			onError: (message) => log(message),
 		});
 		for (const exit of earlyExits.splice(0)) collector.recordExit(exit);

@@ -5,11 +5,11 @@
 // and fail only here. Everything else about this tier was verified by hand at a terminal, which is
 // exactly the kind of proof that stops happening once the person who wrote it moves on.
 
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverProviders, lexiconRoot, startProviders } from "../providers";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";

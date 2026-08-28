@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { ANONYMOUS_NAMESPACE, composeSymbolId } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { resolveScope, successor } from "../scope.js";
 import type { IndexStore, StoredDeclaration } from "../store.js";
 
@@ -44,7 +44,9 @@ describe("scope resolution", () => {
 
 	it("merges public named namespaces across modules", () => {
 		const rows = [declaration("a.cpp", "api", "namespace"), declaration("b.cpp", "api", "namespace")];
-		expect(resolveScope(store(rows), "api").id).toBe(rows[0]?.symbolId);
+		const first = rows[0];
+		if (first === undefined) throw new Error("namespace declaration missing");
+		expect(resolveScope(store(rows), "api").id).toBe(first.symbolId);
 	});
 
 	it("merges a namespace-qualified type reopened across modules", () => {
@@ -64,7 +66,9 @@ describe("scope resolution", () => {
 				visibility: "public",
 			}) as StoredDeclaration;
 		const rows = [part("Writer.cs"), part("Writer.Async.cs")];
-		expect(resolveScope(store(rows), "Writer").id).toBe(rows[0]?.symbolId);
+		const first = rows[0];
+		if (first === undefined) throw new Error("type declaration missing");
+		expect(resolveScope(store(rows), "Writer").id).toBe(first.symbolId);
 	});
 
 	it("does not merge a bare type name across modules", () => {

@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
 import { codeOnly } from "../residue";
 
 /** Holds providerKit.ts as the one walk, path conversion and handler table a provider entry point uses. */

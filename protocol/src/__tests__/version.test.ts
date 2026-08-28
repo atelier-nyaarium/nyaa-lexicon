@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { isCompatibleProtocol, PROTOCOL_VERSION } from "../index.js";
 
 describe("protocol version", () => {

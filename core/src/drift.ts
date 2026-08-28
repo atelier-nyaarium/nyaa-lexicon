@@ -39,10 +39,22 @@ const DEFAULT_SETTLE_MS = 3_000;
 ////////////////////////////////
 //  Functions & Helpers
 
-function settled(bundle: string, options: DriftOptions): boolean {
+/** Every bundle under a root must sit still: a provider rebuilt last is the one still being written. */
+function settled(root: string, options: DriftOptions): boolean {
 	const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS;
+	const dist = path.join(root, "dist");
 	try {
-		return (options.clock ?? systemClock).now() - statSync(bundle).mtimeMs >= settleMs;
+		let newest = statSync(path.join(dist, "daemon.js")).mtimeMs;
+		const visit = (dir: string): void => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const file = path.join(dir, entry.name);
+				if (entry.isDirectory()) visit(file);
+				else if (entry.isFile() && entry.name.endsWith(".js"))
+					newest = Math.max(newest, statSync(file).mtimeMs);
+			}
+		};
+		visit(dist);
+		return (options.clock ?? systemClock).now() - newest >= settleMs;
 	} catch {
 		return false;
 	}
@@ -78,7 +90,7 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
 		const sibling = path.join(parent, entry);
 		// Only a root with a runnable, settled bundle is a target.
 		if (daemonCommand(sibling, options.workspaceRoot) === null) continue;
-		if (!settled(path.join(sibling, "dist", "daemon.js"), options)) continue;
+		if (!settled(sibling, options)) continue;
 		// The manifest must agree with the directory name. A bundle compiled as some OTHER version
 		// writes that version into its lock, which clients then replace, which respawns the daemon
 		// that hands over here again: a loop, cut by refusing the mismatched install.
@@ -103,7 +115,7 @@ export function driftedTo(options: DriftOptions): DriftSight | null {
 		options.stampAtStart !== null &&
 		now !== null &&
 		now !== options.stampAtStart &&
-		settled(path.join(options.root, "dist", "daemon.js"), options)
+		settled(options.root, options)
 	) {
 		return { root: options.root, why: "the bundle changed on disk since this daemon started" };
 	}

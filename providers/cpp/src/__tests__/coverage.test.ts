@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { composeSymbolId, handlersFor } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, test } from "vitest";
 import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 

@@ -1,6 +1,6 @@
+import { describe, expect, it, mock } from "bun:test";
 import type { DaemonChannel } from "@nyaa-lexicon/client";
 import type { LexiconService, StoredDeclaration } from "@nyaa-lexicon/core";
-import { describe, expect, it, vi } from "vitest";
 import { daemonReads, deferredReads, type LexiconReads, localReads } from "../reads";
 
 ////////////////////////////////
@@ -54,16 +54,16 @@ function reads(overrides: Partial<LexiconReads> = {}): LexiconReads {
 
 describe("deferred reads", () => {
 	it("resolves lazily once and forwards concurrent questions unchanged", async () => {
-		const declarationsIn = vi.fn(async (_module: string) => [] as StoredDeclaration[]);
-		const declarationOf = vi.fn(async (_symbolId: string) => null);
-		const findReferences = vi.fn(async (symbolId: string, limit?: number) => ({
+		const declarationsIn = mock(async (_module: string) => [] as StoredDeclaration[]);
+		const declarationOf = mock(async (_symbolId: string) => null);
+		const findReferences = mock(async (symbolId: string, limit?: number) => ({
 			symbolId,
 			references: [],
 			total: limit ?? 0,
 			truncated: false,
 			tier: "bound" as const,
 		}));
-		const renameEdits = vi.fn(async (symbolId: string, newName: string) => ({
+		const renameEdits = mock(async (symbolId: string, newName: string) => ({
 			ok: false as const,
 			plan: {
 				symbolId,
@@ -76,14 +76,14 @@ describe("deferred reads", () => {
 			},
 			reason: "blocked",
 		}));
-		const transactionOpen = vi.fn(async () => true);
+		const transactionOpen = mock(async () => true);
 		const resolved = reads({ declarationsIn, declarationOf, findReferences, renameEdits, transactionOpen });
 
 		let release!: (value: LexiconReads) => void;
 		const pending = new Promise<LexiconReads>((resolve) => {
 			release = resolve;
 		});
-		const resolve = vi.fn(() => pending);
+		const resolve = mock(() => pending);
 		const deferred = deferredReads(resolve);
 
 		expect(resolve).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe("deferred reads", () => {
 		expect(declarationOf).toHaveBeenCalledWith("symbol:item");
 		expect(findReferences).toHaveBeenCalledWith("symbol:item", 17);
 		expect(renameEdits).toHaveBeenCalledWith("symbol:item", "renamed");
-		expect(transactionOpen).toHaveBeenCalledOnce();
+		expect(transactionOpen).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -125,8 +125,8 @@ describe("daemon reads", () => {
 		const askImplementation: DaemonChannel["ask"] = async <T>(method: string, _params?: unknown) => {
 			return (method === "refactorStatus" ? { open: true } : undefined) as T;
 		};
-		const ask = vi.fn(askImplementation);
-		const channel = { ask, close: vi.fn() } as unknown as DaemonChannel;
+		const ask = mock(askImplementation);
+		const channel = { ask, close: mock() } as unknown as DaemonChannel;
 		const daemon = daemonReads(channel);
 
 		await Promise.all([
@@ -165,7 +165,7 @@ describe("local reads", () => {
 		const pending = new Promise<StoredDeclaration[]>((resolve) => {
 			release = resolve;
 		});
-		const declarationsIn = vi.fn(() => pending);
+		const declarationsIn = mock(() => pending);
 		const service = { declarationsIn } as unknown as LexiconService;
 		const local = localReads(service);
 

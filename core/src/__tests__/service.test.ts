@@ -1,7 +1,7 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LexiconService } from "../service";
 import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -29,7 +29,7 @@ let service: LexiconService;
 
 async function boot() {
 	supervisor = new ProviderSupervisor();
-	await supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 15_000 }, dir);
+	await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000 }, dir);
 	service = new LexiconService(
 		store,
 		supervisor,
@@ -486,7 +486,9 @@ describe("planning a replacement", () => {
 		const plan = await service.planReplacement({ symbolId: target }, "export class Cart { x = 1; }");
 		if (!plan.ok) throw new Error("expected a plan");
 
-		expect(plan.baseHash).toBe(service.currentHashOf("a.ref"));
+		const currentHash = service.currentHashOf("a.ref");
+		if (currentHash === null) throw new Error("current hash missing");
+		expect(plan.baseHash).toBe(currentHash);
 
 		files.set("a.ref", `// someone else got here first\n${CART}`);
 		expect(service.currentHashOf("a.ref")).not.toBe(plan.baseHash);

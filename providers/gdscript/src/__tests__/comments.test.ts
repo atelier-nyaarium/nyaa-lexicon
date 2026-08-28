@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { GDScriptProvider, TIERS } from "../main.js";
 
 function commentsOf(text: string, module = "comments.gd") {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { HtmlProvider, TIERS } from "../main.js";
 
 describe("HTML provider", () => {

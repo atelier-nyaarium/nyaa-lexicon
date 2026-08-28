@@ -1,7 +1,7 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AttachedComment } from "../commentAttach";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
@@ -295,6 +295,7 @@ describe("noticing that an answer's ground moved", () => {
 		);
 
 		const recalled = service.recallAnswer(SYMBOL, "describe");
+		if (declaration === undefined) throw new Error("declaration citation missing");
 		expect(recalled?.stale).toEqual([declaration]);
 		// The prose is still returned. A stale answer is worth reading next to the reason it is
 		// stale, and withholding it would leave a caller with nothing at all.
@@ -991,6 +992,7 @@ describe("re-affirming an answer", () => {
 			],
 			[],
 		);
+		if (declaration === undefined) throw new Error("declaration citation missing");
 		expect(service.recallAnswer(SYMBOL, "describe")?.stale).toEqual([declaration]);
 
 		const current = store.declarationsIn("a.ref")[0]?.factId as string;
@@ -1024,6 +1026,7 @@ describe("re-affirming an answer", () => {
 
 		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
 		expect(outcome.recorded).toBe(false);
+		if (declaration === undefined) throw new Error("declaration citation missing");
 		expect(outcome.recorded === false && outcome.unresolved).toEqual([declaration]);
 	});
 

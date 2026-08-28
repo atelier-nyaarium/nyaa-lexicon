@@ -1,7 +1,7 @@
+import { afterEach, beforeEach, describe, expect, it, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PROVIDER_METHODS } from "../methods";
 import {
 	discoverByWalk,
@@ -69,21 +69,20 @@ describe("walking a workspace", () => {
 		).toEqual({ files: ["deep/nested/d.kt", "project.godot", "src/a.kt"], configFiles: ["app.csproj"] });
 	});
 
-	it("skips a directory it cannot read rather than failing the walk", ({ skip }) => {
-		// Root reads a mode-000 directory anyway.
-		if (process.platform === "win32" || process.getuid?.() === 0) {
-			skip();
-			return;
-		}
-		put("open/a.kt");
-		put("closed/b.kt");
-		chmodSync(path.join(root, "closed"), 0o000);
-		try {
-			expect(walkWorkspace(root, { extensions: [".kt"] }).files).toEqual(["open/a.kt"]);
-		} finally {
-			chmodSync(path.join(root, "closed"), 0o755);
-		}
-	});
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"skips a directory it cannot read rather than failing the walk",
+		() => {
+			// Root reads a mode-000 directory anyway.
+			put("open/a.kt");
+			put("closed/b.kt");
+			chmodSync(path.join(root, "closed"), 0o000);
+			try {
+				expect(walkWorkspace(root, { extensions: [".kt"] }).files).toEqual(["open/a.kt"]);
+			} finally {
+				chmodSync(path.join(root, "closed"), 0o755);
+			}
+		},
+	);
 
 	it("answers a missing or non-directory root as a diagnostic, never a throw", () => {
 		put("file.txt");

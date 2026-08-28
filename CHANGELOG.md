@@ -24,6 +24,21 @@ see: `list_project_stores`, `project_diagnostics`, `stop_project_daemon` and
 `key`. The daemon takes `--state-dir`, and a default store directory is now created `0700`.
 `docs/client.md` is the consumer's document.
 
+Lexicon runs on bun, and only on bun: 1.4.0 or newer on PATH is the one prerequisite, node is no
+longer one. The plugin's server starts as `bun dist/main.js`, a client spawns the daemon with the
+bun it runs on, and each entry point but the conformance CLI refuses any other runtime by name
+rather than failing on its first import. An editor launches the language server as `bun <install>/dist/lsp.js`; a
+configuration that says `node` stops working. Bun 1.4 carries `node:sqlite`, so the store is
+unchanged and the whole suite now runs against it under `bun test`. The daemon's crash reports
+change shape: node's report machinery is gone (bun treats its signal as a death, so a provider was
+never asked for one), the daemon writes a high-water sample itself when its resident size nears
+the host's memory (bun states no heap limit, so there is none to watch), `LEXICON_HEAP_SNAPSHOT=1`
+writes a heap snapshot from the runtime, and `project_diagnostics` reads the collections older
+daemons wrote as before (the reverse does not hold: an older `project_diagnostics` calls a
+collection this daemon wrote unreadable until it updates). The bundle stamp in a daemon's lock is
+a digest of the bundles' bytes,
+so two hosts installing one release no longer retire each other's daemon on every connect.
+
 ## 2.2.0
 
 XML, HTML and plain text are read, a search can be scoped to a declaration, and a daemon over a

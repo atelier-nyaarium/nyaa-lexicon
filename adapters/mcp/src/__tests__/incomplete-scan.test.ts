@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import type { CommentsResult, LiteralsResult } from "@nyaa-lexicon/core";
-import { describe, expect, it } from "vitest";
 import { renderComments, renderLiterals } from "../render.js";
 
 // A stopped scan owes its caller a sentence, and the place it was easiest to drop is the place it

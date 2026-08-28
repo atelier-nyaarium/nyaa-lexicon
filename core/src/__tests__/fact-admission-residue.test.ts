@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeOnly } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 
 /**
  * Holds factAdmission.ts as the one reading of a provider's symbol ids, taken before the store

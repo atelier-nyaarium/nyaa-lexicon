@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { pageCounted, pageProbed, pageScanned, wire } from "../paging";
 
 const rows = (n: number) => Array.from({ length: n }, (_, index) => index);

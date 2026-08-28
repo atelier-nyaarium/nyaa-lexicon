@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 
 /**
  * Holds sourceWriter.ts as the only module that writes a source file in the workspace.

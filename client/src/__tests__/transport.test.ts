@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { DaemonError, Incompatible } from "../errors";
 import { connectFrames } from "../transport";
 import { type FakeAnswer, type FakeDaemon, fakeDaemon } from "./fakeDaemon";

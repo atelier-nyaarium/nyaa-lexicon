@@ -13,8 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import v8 from "node:v8";
-import { currentHost, hostMemory, processMemory, storePaths } from "@nyaa-lexicon/client";
+import { hostMemory, processMemory, runtimeVerdict, storePaths } from "@nyaa-lexicon/client";
 import { z } from "zod";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import type { ProviderExit } from "./supervisor.js";
@@ -30,16 +29,15 @@ export const INCIDENT_RING = 20;
 export const REPORTS_KEPT = 8;
 /** Opt-in and gigabytes each, so fewer. */
 export const SNAPSHOTS_KEPT = 2;
-/** Fractions of the heap limit: ask above the first, re-arm below the second. */
+/** Fractions of the host's memory the daemon's resident size may hold: write above the first, re-arm below the second. */
 const HIGH_WATER = 0.85;
 const LOW_WATER = 0.6;
-export const HIGH_WATER_SIGNAL = "SIGUSR2";
-/** Relative, so `process.report.directory` places it. Overwrites itself; pruning never counts it. */
+/** Overwrites itself; pruning never counts it. */
 export const SELF_REPORT = "daemon-high.json";
 export const HEAP_SNAPSHOT_ENV = "LEXICON_HEAP_SNAPSHOT";
-/** Node's own naming; the stamp inside sorts oldest first. */
+/** Crash reports keep node's naming; the stamp inside sorts oldest first. */
 const NODE_REPORT_RE = /^report\..*\.json$/;
-const NODE_SNAPSHOT_RE = /^Heap\..*\.heapsnapshot$/;
+const SNAPSHOT_RE = /^Heap\..*\.heapsnapshot$/;
 
 ////////////////////////////////
 //  Schemas
@@ -81,24 +79,36 @@ const IncidentSchema = z.object({
 
 const PeakSchema = z.object({ role: z.string(), pid: z.number(), rss: z.number(), at: z.number() });
 
-export const DiagnosticsSchema = z.object({
-	version: z.literal(1),
+/** No heap limit: the runtime states none, and the OS kills at exhaustion, so memory is judged against the host. */
+const HostSchema = z.object({
+	runtime: z.enum(["bun", "node"]),
+	memTotal: z.number().nullable(),
+	memAvailable: z.number().nullable(),
+	sampler: z.enum(["procfs", "none"]),
+});
+
+const CollectionSchema = z.object({
 	writtenAt: z.number(),
 	workspaceRoot: z.string(),
 	daemon: z.object({ pid: z.number(), version: z.string(), startedAt: z.number() }),
+	peaks: z.array(PeakSchema),
+	incidents: z.array(IncidentSchema),
+	samples: z.array(SampleSchema),
+});
+
+export const DiagnosticsSchema = CollectionSchema.extend({ version: z.literal(2), host: HostSchema });
+
+/** Version 1, read as the current shape and never written. */
+const LegacyDiagnosticsSchema = CollectionSchema.extend({
+	version: z.literal(1),
 	host: z.object({
-		/** Shared by every process here: one executable, no heap flag. */
 		nodeHeapLimit: z.number(),
 		memTotal: z.number().nullable(),
 		memAvailable: z.number().nullable(),
 		sampler: z.enum(["procfs", "none"]),
-		signal: z.enum(["SIGUSR2", "unavailable"]),
-		/** Whether node's reports here omit the environment. */
+		signal: z.string(),
 		reportsExcludeEnv: z.boolean(),
 	}),
-	peaks: z.array(PeakSchema),
-	incidents: z.array(IncidentSchema),
-	samples: z.array(SampleSchema),
 });
 
 export type Diagnostics = z.infer<typeof DiagnosticsSchema>;
@@ -117,17 +127,6 @@ export interface SelfMemory {
 	heapTotal: number;
 	external: number;
 	arrayBuffers: number;
-	heapLimit: number;
-}
-
-/** What a node child is launched with, and which signals it then survives. */
-export interface NodeReportSetup {
-	argv: string[];
-	handles: NodeJS.Signals[];
-	/** False on a node too old to exclude it, so the report carries the environment. */
-	excludesEnv: boolean;
-	/** Why there are no reports, when the directory could not be made. Argv is empty then. */
-	failure?: string;
 }
 
 export interface CollectorOptions {
@@ -138,11 +137,6 @@ export interface CollectorOptions {
 	/** The children alive right now. */
 	processes: () => Array<{ role: string; pid: number }>;
 	context: () => SampleContext;
-	/**
-	 * Asks a child for a report. Must go through the owner of the child handle, never a bare
-	 * `process.kill`: a reused pid is a stranger, and a process without the handler dies.
-	 */
-	signal: (pid: number, signal: NodeJS.Signals) => boolean;
 	/** Told about a failure. Never thrown: diagnostics must not take the daemon down. */
 	onError?: (message: string) => void;
 	/** Injected so tests decide rather than wait. */
@@ -150,9 +144,11 @@ export interface CollectorOptions {
 	selfMemory?: () => SelfMemory;
 	readMemory?: (pid: number) => { rss: number; hwm: number } | null;
 	readHost?: () => { memTotal: number; memAvailable: number } | null;
-	writeSelfReport?: (name: string) => void;
-	platform?: NodeJS.Platform;
-	reportsExcludeEnv?: boolean;
+	/** Writes the high-water report; the default writes a sample under `SELF_REPORT`. */
+	writeSelfReport?: (file: string, sample: Sample, hostTotal: number) => void;
+	/** Writes a heap snapshot into the reports directory; the default asks the runtime. */
+	writeSnapshot?: (reportsDir: string, stamp: number) => void;
+	env?: Record<string, string | undefined>;
 	sampleMs?: number;
 	writeMs?: number;
 }
@@ -185,6 +181,8 @@ export type ReportSummary =
 			pid: number | null;
 			heapUsed: number | null;
 			heapLimit: number | null;
+			rss: number | null;
+			hostTotal: number | null;
 	  }
 	| { kind: "snapshot"; file: string; bytes: number }
 	| { kind: "unreadable"; file: string; reason: string };
@@ -201,82 +199,19 @@ export function heapSnapshotWanted(env: Record<string, string | undefined> = pro
 	return value !== undefined && value !== "" && value !== "0";
 }
 
-/**
- * Whether this node's report API has a setting. Asked of THIS process, which is right for its
- * children too: they run the same executable. Bun has no report API at all.
- */
-function reportSupports(setting: "excludeEnv" | "excludeNetwork"): boolean {
-	const report = (process as { report?: object }).report;
-	return report !== undefined && setting in report;
-}
-
-/** A report carries every environment variable unless node is new enough to leave them out. */
-export function reportsExcludeEnv(): boolean {
-	return reportSupports("excludeEnv");
+function runtimeName(): "bun" | "node" {
+	return runtimeVerdict().kind === "notBun" ? "node" : "bun";
 }
 
 /**
- * Reports hold stacks, the command line and, on old node, the environment. Owner only, tightened
- * even where the directory already existed wider, and pruned here too: a daemon dying before its
- * collector's first write would otherwise leave one report per death, unbounded.
+ * Reports hold stacks and the command line. Owner only, tightened even where the directory already
+ * existed wider, and pruned here too: a daemon dying before its collector's first write would
+ * otherwise leave one report per death, unbounded.
  */
-function makeReportsDir(reportsDir: string): void {
+export function makeReportsDir(reportsDir: string): void {
 	mkdirSync(reportsDir, { recursive: true, mode: 0o700 });
 	chmodSync(reportsDir, 0o700);
 	pruneReports(reportsDir);
-}
-
-/**
- * Argv for a node child: a report on a fatal error, and one on demand while alive.
- *
- * Creates the directory, since a report aimed at a missing one is lost without a word. Never
- * throws: a directory that cannot be made costs the reports, never the caller.
- */
-export function nodeReportSetup(
-	reportsDir: string,
-	host: { env: Record<string, string | undefined>; platform: NodeJS.Platform } = currentHost(),
-): NodeReportSetup {
-	try {
-		makeReportsDir(reportsDir);
-	} catch (error) {
-		return { argv: [], handles: [], excludesEnv: false, failure: describe(error) };
-	}
-	const argv = ["--report-on-fatalerror", "--report-compact", `--report-directory=${reportsDir}`];
-	const excludesEnv = reportsExcludeEnv();
-	if (excludesEnv) argv.push("--report-exclude-env");
-	if (reportSupports("excludeNetwork")) argv.push("--report-exclude-network");
-	const handles: NodeJS.Signals[] = [];
-	// No signal handler on Windows.
-	if (host.platform !== "win32") {
-		argv.push("--report-on-signal", `--report-signal=${HIGH_WATER_SIGNAL}`);
-		handles.push(HIGH_WATER_SIGNAL);
-	}
-	if (heapSnapshotWanted(host.env)) argv.push("--heapsnapshot-near-heap-limit=1", `--diagnostic-dir=${reportsDir}`);
-	return { argv, handles, excludesEnv };
-}
-
-/**
- * The daemon's own settings, the same its children get on argv. A snapshot lands in the cwd.
- * Answers why the reports are off, or null.
- */
-export function enableSelfReports(
-	reportsDir: string,
-	host: { env: Record<string, string | undefined>; platform: NodeJS.Platform } = currentHost(),
-): string | null {
-	try {
-		makeReportsDir(reportsDir);
-	} catch (error) {
-		return describe(error);
-	}
-	process.report.directory = reportsDir;
-	process.report.compact = true;
-	process.report.reportOnFatalError = true;
-	if (reportSupports("excludeEnv")) process.report.excludeEnv = true;
-	// Typed nowhere yet; the runtime check above is the only guard it needs.
-	if (reportSupports("excludeNetwork")) (process.report as { excludeNetwork?: boolean }).excludeNetwork = true;
-	if (host.platform !== "win32") process.report.reportOnSignal = true;
-	if (heapSnapshotWanted(host.env)) v8.setHeapSnapshotNearHeapLimit(1);
-	return null;
 }
 
 function stale(names: string[], pattern: RegExp, keep: number): string[] {
@@ -287,7 +222,14 @@ function stale(names: string[], pattern: RegExp, keep: number): string[] {
 		.slice(keep);
 }
 
-/** The newest of node's own reports and snapshots survive. Answers what it removed. */
+/** A write killed between temp and rename leaves this; it is nobody's once the writer is gone. */
+function abandonedTemp(name: string): boolean {
+	if (!name.endsWith(".tmp")) return false;
+	const target = name.slice(0, -".tmp".length);
+	return target === SELF_REPORT || SNAPSHOT_RE.test(target) || NODE_REPORT_RE.test(target);
+}
+
+/** The newest reports and snapshots survive. Answers what it removed. */
 export function pruneReports(dir: string, keep = REPORTS_KEPT, keepSnapshots = SNAPSHOTS_KEPT): string[] {
 	let names: string[];
 	try {
@@ -296,7 +238,11 @@ export function pruneReports(dir: string, keep = REPORTS_KEPT, keepSnapshots = S
 		return [];
 	}
 	const removed: string[] = [];
-	for (const name of [...stale(names, NODE_REPORT_RE, keep), ...stale(names, NODE_SNAPSHOT_RE, keepSnapshots)]) {
+	for (const name of [
+		...stale(names, NODE_REPORT_RE, keep),
+		...stale(names, SNAPSHOT_RE, keepSnapshots),
+		...names.filter(abandonedTemp),
+	]) {
 		try {
 			unlinkSync(path.join(dir, name));
 			removed.push(name);
@@ -307,6 +253,54 @@ export function pruneReports(dir: string, keep = REPORTS_KEPT, keepSnapshots = S
 	return removed;
 }
 
+/** Temp then rename, so a reader never meets half a file. A failed temp is removed. */
+function writeAtomically(file: string, content: string): void {
+	const temp = `${file}.tmp`;
+	try {
+		writeFileSync(temp, content);
+		renameSync(temp, file);
+	} catch (error) {
+		try {
+			unlinkSync(temp);
+		} catch {
+			// Not ours, or gone.
+		}
+		throw error;
+	}
+}
+
+/**
+ * The high-water report shares a crash report's header and heap block, so one reader renders
+ * both.
+ */
+function writeSelfReportFile(file: string, sample: Sample, hostTotal: number): void {
+	const own = sample.processes.find((row) => row.role === "daemon");
+	const report = {
+		header: {
+			event: "high-water",
+			trigger: "rss",
+			dumpEventTimeStamp: String(sample.at),
+			processId: own?.pid ?? null,
+		},
+		javascriptHeap: { usedMemory: own?.heapUsed ?? null, memoryLimit: null },
+		resident: { rss: own?.rss ?? null, hostTotal },
+		sample,
+	};
+	writeAtomically(file, JSON.stringify(report));
+}
+
+/**
+ * A heap snapshot in the format the browser devtools read, named like a crash-time snapshot so
+ * pruning and listing treat both alike. Reached through the global rather than a `bun:` import,
+ * which core never carries.
+ */
+export function writeHeapSnapshot(reportsDir: string, stamp: number): void {
+	const file = path.join(reportsDir, `Heap.${stamp}.${process.pid}.heapsnapshot`);
+	const bun = (globalThis as { Bun?: { generateHeapSnapshot(format: "v8"): string } }).Bun;
+	if (bun === undefined) throw new Error("heap snapshots come from bun, and this is not bun");
+	writeAtomically(file, bun.generateHeapSnapshot("v8"));
+}
+
 /** A regular file, or why not. A link or a directory wearing the name is not the file. */
 function regularFile(file: string): string | null {
 	try {
@@ -314,6 +308,21 @@ function regularFile(file: string): string | null {
 	} catch (error) {
 		return describe(error);
 	}
+}
+
+/** Version 1, read as the current shape. */
+function fromLegacy(legacy: z.infer<typeof LegacyDiagnosticsSchema>): Diagnostics {
+	const { version: _version, host, ...rest } = legacy;
+	return {
+		...rest,
+		version: 2,
+		host: {
+			runtime: "node",
+			memTotal: host.memTotal,
+			memAvailable: host.memAvailable,
+			sampler: host.sampler,
+		},
+	};
 }
 
 /** Three answers, because a missing file and a corrupt one call for different next steps. Takes
@@ -338,8 +347,10 @@ export function readDiagnostics(directory: string): ReadDiagnostics {
 		return { state: "unreadable", file, reason: describe(error) };
 	}
 	const checked = DiagnosticsSchema.safeParse(parsed);
-	if (!checked.success) return { state: "unreadable", file, reason: checked.error.message };
-	return { state: "present", file, data: checked.data };
+	if (checked.success) return { state: "present", file, data: checked.data };
+	const legacy = LegacyDiagnosticsSchema.safeParse(parsed);
+	if (legacy.success) return { state: "present", file, data: fromLegacy(legacy.data) };
+	return { state: "unreadable", file, reason: checked.error.message };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -349,13 +360,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function summarizeReport(file: string): ReportSummary {
-	if (NODE_SNAPSHOT_RE.test(path.basename(file))) {
-		const refused = regularFile(file);
-		if (refused !== null) return { kind: "unreadable", file, reason: refused };
-		return { kind: "snapshot", file, bytes: lstatSync(file).size };
+	// One stat: the daemon prunes while this lists, so a file present a moment ago may be gone.
+	let size: number;
+	try {
+		const found = lstatSync(file);
+		if (!found.isFile()) return { kind: "unreadable", file, reason: "not a regular file" };
+		size = found.size;
+	} catch (error) {
+		return { kind: "unreadable", file, reason: describe(error) };
 	}
-	const refused = regularFile(file);
-	if (refused !== null) return { kind: "unreadable", file, reason: refused };
+	if (SNAPSHOT_RE.test(path.basename(file))) return { kind: "snapshot", file, bytes: size };
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(file, "utf8"));
@@ -365,6 +379,7 @@ function summarizeReport(file: string): ReportSummary {
 	const header = asRecord(asRecord(parsed)?.["header"]);
 	if (header === null) return { kind: "unreadable", file, reason: "no report header" };
 	const heap = asRecord(asRecord(parsed)?.["javascriptHeap"]) ?? {};
+	const resident = asRecord(asRecord(parsed)?.["resident"]) ?? {};
 	const text = (value: unknown, fallback: string) => (typeof value === "string" ? value : fallback);
 	const count = (value: unknown) => (typeof value === "number" ? value : null);
 	// Millis, as a string.
@@ -378,6 +393,8 @@ function summarizeReport(file: string): ReportSummary {
 		pid: count(header["processId"]),
 		heapUsed: count(heap["usedMemory"]),
 		heapLimit: count(heap["memoryLimit"]),
+		rss: count(resident["rss"]),
+		hostTotal: count(resident["hostTotal"]),
 	};
 }
 
@@ -393,7 +410,7 @@ export function listReports(directory: string): ReportSummary[] {
 		return [{ kind: "unreadable", file: dir, reason: describe(error) }];
 	}
 	return names
-		.filter((name) => NODE_REPORT_RE.test(name) || NODE_SNAPSHOT_RE.test(name) || name === SELF_REPORT)
+		.filter((name) => NODE_REPORT_RE.test(name) || SNAPSHOT_RE.test(name) || name === SELF_REPORT)
 		.sort()
 		.reverse()
 		.map((name) => summarizeReport(path.join(dir, name)));
@@ -407,7 +424,6 @@ function defaultSelfMemory(): SelfMemory {
 		heapTotal: usage.heapTotal,
 		external: usage.external,
 		arrayBuffers: usage.arrayBuffers,
-		heapLimit: v8.getHeapStatistics().heap_size_limit,
 	};
 }
 
@@ -427,22 +443,21 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 	const selfMemory = options.selfMemory ?? defaultSelfMemory;
 	const readMemory = options.readMemory ?? processMemory;
 	const readHost = options.readHost ?? hostMemory;
-	const writeSelfReport = options.writeSelfReport ?? ((name) => void process.report.writeReport(name));
-	const platform = options.platform ?? process.platform;
+	const writeSelfReport = options.writeSelfReport ?? writeSelfReportFile;
+	const writeSnapshot = options.writeSnapshot ?? writeHeapSnapshot;
+	const snapshotWanted = heapSnapshotWanted(options.env ?? process.env);
 	const sampleMs = options.sampleMs ?? SAMPLE_MS;
 	const writeMs = options.writeMs ?? WRITE_MS;
 
-	const heapLimit = selfMemory().heapLimit;
 	// Decided once: a host has procfs or it does not.
 	const sampler = readHost() === null ? "none" : "procfs";
-	const signalState = platform === "win32" ? "unavailable" : HIGH_WATER_SIGNAL;
-	const excludesEnv = options.reportsExcludeEnv ?? reportsExcludeEnv();
+	const runtime = runtimeName();
 
 	const samples: Sample[] = [];
 	const incidents: Incident[] = [];
 	const peaks = new Map<string, Peak>();
-	/** Pids already asked, until they come back down. */
-	const asked = new Set<number>();
+	/** Latched above the high mark until the heap comes back down. */
+	let highWaterWritten = false;
 	let lastWrite: number | null = null;
 	let timer: TimerHandle | null = null;
 	let stopped = false;
@@ -479,26 +494,25 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 		}
 	}
 
-	/** The daemon is judged on its heap, a child on its RSS: the proxy available for each. */
-	function watchHighWater(sample: Sample): void {
-		for (const row of sample.processes) {
-			const own = row.role === "daemon";
-			const measure = own ? (row.heapUsed ?? null) : row.rss;
-			if (measure === null) continue;
-			if (measure >= heapLimit * HIGH_WATER) {
-				// Latched either way: a refused signal is refused until the process comes down too.
-				if (asked.has(row.pid)) continue;
-				asked.add(row.pid);
-				try {
-					if (own) writeSelfReport(SELF_REPORT);
-					else if (!options.signal(row.pid, HIGH_WATER_SIGNAL)) {
-						options.onError?.(`high-water report for ${row.role} not delivered: no handler, or gone`);
-					}
-				} catch (error) {
-					options.onError?.(`high-water report for ${row.role} failed: ${describe(error)}`);
-				}
-			} else if (measure < heapLimit * LOW_WATER) asked.delete(row.pid);
-		}
+	/**
+	 * The daemon judges its own resident size against the host's memory, the one limit the runtime
+	 * has; a child is another process, and asking it costs its life on bun.
+	 */
+	function watchHighWater(sample: Sample, hostTotal: number | null): void {
+		if (hostTotal === null || hostTotal <= 0) return;
+		const measure = sample.processes.find((row) => row.role === "daemon")?.rss ?? null;
+		if (measure === null) return;
+		if (measure >= hostTotal * HIGH_WATER) {
+			if (highWaterWritten) return;
+			highWaterWritten = true;
+			try {
+				makeReportsDir(options.reportsDir);
+				writeSelfReport(path.join(options.reportsDir, SELF_REPORT), sample, hostTotal);
+				if (snapshotWanted) writeSnapshot(options.reportsDir, sample.at);
+			} catch (error) {
+				options.onError?.(`high-water report failed: ${describe(error)}`);
+			}
+		} else if (measure < hostTotal * LOW_WATER) highWaterWritten = false;
 	}
 
 	/** Contained, because a thrown sample would surface in the daemon's timer. */
@@ -507,7 +521,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 			const taken = takeSample();
 			push(samples, taken, SAMPLE_RING);
 			notePeaks(taken);
-			watchHighWater(taken);
+			watchHighWater(taken, readHost()?.memTotal ?? null);
 		} catch (error) {
 			options.onError?.(`diagnostics sample failed: ${describe(error)}`);
 		}
@@ -516,17 +530,15 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 	function current(): Diagnostics {
 		const host = readHost();
 		return {
-			version: 1,
+			version: 2,
 			writtenAt: now(),
 			workspaceRoot: options.workspaceRoot,
 			daemon: options.daemon,
 			host: {
-				nodeHeapLimit: heapLimit,
+				runtime,
 				memTotal: host?.memTotal ?? null,
 				memAvailable: host?.memAvailable ?? null,
 				sampler,
-				signal: signalState,
-				reportsExcludeEnv: excludesEnv,
 			},
 			peaks: [...peaks.values()],
 			incidents: [...incidents],
@@ -534,22 +546,10 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 		};
 	}
 
-	/** Temp then rename: atomic. A failed temp is removed, or every later write meets it. */
 	function write(): void {
 		const snapshot = current();
 		mkdirSync(path.dirname(options.file), { recursive: true });
-		const temp = `${options.file}.tmp`;
-		try {
-			writeFileSync(temp, JSON.stringify(snapshot));
-			renameSync(temp, options.file);
-		} catch (error) {
-			try {
-				unlinkSync(temp);
-			} catch {
-				// Not ours, or gone.
-			}
-			throw error;
-		}
+		writeAtomically(options.file, JSON.stringify(snapshot));
 		lastWrite = snapshot.writtenAt;
 		pruneReports(options.reportsDir);
 	}
@@ -590,7 +590,6 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 			},
 			INCIDENT_RING,
 		);
-		if (exit.pid !== null) asked.delete(exit.pid);
 		flush();
 	}
 

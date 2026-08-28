@@ -1,8 +1,8 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspacePaths } from "@nyaa-lexicon/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerProject } from "../projectRegistry";
 import {
 	deleteProjectStore,

@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, it } from "bun:test";
 import { attachComments } from "../commentAttach.js";
 import { CASES } from "./commentAttachCases";
 

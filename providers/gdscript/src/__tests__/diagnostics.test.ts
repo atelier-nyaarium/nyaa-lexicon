@@ -1,6 +1,6 @@
+import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { expect, test } from "vitest";
 import { GDScriptProvider, TIERS } from "../main.js";
 
 const PROVIDER_ROOT = path.join(process.cwd(), "providers/gdscript");

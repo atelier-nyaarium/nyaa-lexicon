@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { afterEach, describe, expect, it } from "vitest";
 import { extractComments } from "../comments";
 import { TypeScriptProvider } from "../main";
 

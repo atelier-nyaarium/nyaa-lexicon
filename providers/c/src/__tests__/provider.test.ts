@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,7 +15,6 @@ import {
 	type RenameEditsRequest,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, test } from "vitest";
 import { Cursor } from "../cursor.js";
 import { CProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { bindingCandidates, parseC } from "../parser.js";

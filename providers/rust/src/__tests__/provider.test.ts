@@ -1,8 +1,8 @@
+import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { handlersFor } from "@nyaa-lexicon/protocol";
-import { afterEach, expect, test } from "vitest";
 import { REFERENCE_ROLES, RustProvider, TIERS } from "../main.js";
 
 const roots: string[] = [];
@@ -53,25 +53,24 @@ test("discovers Rust files and excludes generated directories", () => {
 	expect(model.diagnostics).toEqual([]);
 });
 
-test("skips unreadable directories during project discovery", ({ skip }) => {
-	if (process.platform === "win32" || process.getuid?.() === 0) {
-		skip();
-		return;
-	}
-	const root = workspace({ "src/lib.rs": "pub struct Visible;\n" });
-	const unreadable = path.join(root, "locked");
-	mkdirSync(unreadable);
-	try {
-		chmodSync(unreadable, 0o000);
-		const provider = new RustProvider();
-		const info = provider.initialize(root);
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+	"skips unreadable directories during project discovery",
+	() => {
+		const root = workspace({ "src/lib.rs": "pub struct Visible;\n" });
+		const unreadable = path.join(root, "locked");
+		mkdirSync(unreadable);
+		try {
+			chmodSync(unreadable, 0o000);
+			const provider = new RustProvider();
+			const info = provider.initialize(root);
 
-		expect(info.language).toBe("rust");
-		expect(provider.discoverProject(root).files).toEqual(["src/lib.rs"]);
-	} finally {
-		chmodSync(unreadable, 0o700);
-	}
-});
+			expect(info.language).toBe("rust");
+			expect(provider.discoverProject(root).files).toEqual(["src/lib.rs"]);
+		} finally {
+			chmodSync(unreadable, 0o700);
+		}
+	},
+);
 
 test("resolves Rust module paths and distinguishes external crates", () => {
 	const root = workspace({

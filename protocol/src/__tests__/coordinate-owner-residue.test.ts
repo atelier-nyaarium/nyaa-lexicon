@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { describe, expect, it } from "vitest";
 import { codeOnly, sourceFiles } from "../residue";
 
 /**

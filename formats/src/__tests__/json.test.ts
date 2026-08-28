@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { readJson } from "../json.js";
 
 function read(text: string, strict = true) {

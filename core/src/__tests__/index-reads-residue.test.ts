@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
 
 /** Holds IndexReadModel to a store. A query that could start a provider is not knowably cheap. */
 const MODULE = join(import.meta.dirname, "..", "indexReads.ts");

@@ -1,7 +1,7 @@
+import { afterAll, describe, expect, it } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
 import type { attachComments } from "../commentAttach";
 import { CASES } from "./commentAttachCases";
 

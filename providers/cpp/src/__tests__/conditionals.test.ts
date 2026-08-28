@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import { parseCppFile } from "../parser.js";
 import { tokenize } from "../tokens.js";
 
@@ -78,7 +78,7 @@ describe("C++ conditional groups", () => {
 		["stray endif", "#endif\nint value;\n", ["value"], 1, "Unexpected #endif outside a conditional."],
 	] as const)("lexical case %s", (_name, text, names, diagnosticCount, message) => {
 		const facts = parseCppFile("matrix.cpp", text);
-		expect(facts.declarations.map((item) => item.name)).toEqual(names);
+		expect(facts.declarations.map((item) => item.name)).toEqual([...names]);
 		expect(facts.diagnostics).toHaveLength(diagnosticCount);
 		if (message !== undefined) expect(facts.diagnostics[0]?.message).toBe(message);
 	});

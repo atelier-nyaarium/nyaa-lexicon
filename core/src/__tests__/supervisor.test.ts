@@ -1,10 +1,10 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
 import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
 import { absorbingWrites, type ProviderExit, ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
 
@@ -44,7 +44,7 @@ const HEADER = path.join(import.meta.dirname, "fixtures", "headerProvider.ts");
 function start(script = REFERENCE) {
 	supervisor = new ProviderSupervisor();
 	// A real directory: the workspace root is the provider's cwd, and spawn refuses a missing one.
-	return supervisor.start({ command: ["bun", "run", script], timeoutMs: 15_000 }, tmpdir());
+	return supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 15_000 }, tmpdir());
 }
 
 afterEach(() => {
@@ -94,7 +94,9 @@ describe("starting a provider", () => {
 		);
 
 		supervisor = new ProviderSupervisor();
-		await expect(supervisor.start({ command: ["bun", "run", script], timeoutMs: 15_000 }, root)).rejects.toThrow();
+		await expect(
+			supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 15_000 }, root),
+		).rejects.toThrow();
 		expect(supervisor.running()).toHaveLength(0);
 
 		// The process itself, not the registry: a child of a FAILED start was never registered, so
@@ -123,7 +125,7 @@ describe("starting a provider", () => {
 
 		supervisor = new ProviderSupervisor();
 		// Past the test limit; only stopAll ends it.
-		const pending = supervisor.start({ command: ["bun", "run", script], timeoutMs: 120_000 }, root);
+		const pending = supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 120_000 }, root);
 		pending.catch(() => {});
 		for (let waited = 0; !existsSync(asked) && waited < 20_000; waited += 100) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
@@ -254,7 +256,7 @@ describe("when a provider dies", () => {
 
 describe("a request racing a death", () => {
 	// Deterministic half: a pipe that refuses the write. The library would rethrow that into a
-	// promise nobody holds, which is an unhandled rejection, which vitest fails the file on.
+	// promise nobody holds, which is an unhandled rejection, which the runner fails the file on.
 	it("absorbs a write the pipe refuses, so nothing is left to rethrow", async () => {
 		const dead = new Writable({
 			write(_chunk, _encoding, callback) {
@@ -296,7 +298,7 @@ describe("signalling a provider", () => {
 	it("sends only a signal the provider declared it handles, and only to a child it still owns", async () => {
 		supervisor = new ProviderSupervisor();
 		await supervisor.start(
-			{ command: ["bun", "run", REFERENCE], timeoutMs: 15_000, handles: ["SIGCONT"] },
+			{ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000, handles: ["SIGCONT"] },
 			tmpdir(),
 		);
 		const pid = supervisor.pidOf("reference-provider") as number;

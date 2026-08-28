@@ -1,8 +1,8 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PlatformEnv } from "@nyaa-lexicon/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { admitStateDir, admitWorkspace, type DirectoryOwner } from "../workspaceAdmission";
 
 ////////////////////////////////

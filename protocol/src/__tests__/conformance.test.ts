@@ -1,9 +1,9 @@
+import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
 import { checkFacts, checkImport, checkType, describeIdParts } from "../conformance/check";
 import { casesForTier, corpusLanguages, loadCorpus } from "../conformance/corpus";
 import { loadMoveCases } from "../conformance/moveCorpus";
@@ -335,7 +335,9 @@ describe("corpus", () => {
 		for (const testCase of loadMoveCases()) {
 			for (const fixture of Object.values(testCase.fixtures)) {
 				if (fixture.request.exists) {
-					expect(fixture.request.text, testCase.id).toBe(fixture.files[fixture.request.module]);
+					const expected = fixture.files[fixture.request.module];
+					if (expected === undefined) throw new Error(`missing fixture file: ${fixture.request.module}`);
+					expect(fixture.request.text, testCase.id).toBe(expected);
 				} else {
 					expect(fixture.request.text, testCase.id).toBe("");
 					expect(fixture.files[fixture.request.module], testCase.id).toBeUndefined();
@@ -348,7 +350,7 @@ describe("corpus", () => {
 		for (const testCase of loadMoveCases()) {
 			for (const fixture of Object.values(testCase.fixtures)) {
 				if (fixture.expect.kind === "ready") {
-					expect(fixture.expect.files, testCase.id).toHaveProperty(fixture.request.module);
+					expect(Object.keys(fixture.expect.files), testCase.id).toContain(fixture.request.module);
 				}
 			}
 		}
@@ -733,7 +735,7 @@ describe("the reference provider", () => {
 describe("running the suite against a real process", () => {
 	it("passes a legitimately partial provider, reporting its undeclared tiers as skipped", async () => {
 		const report = await runSuite({
-			command: ["bun", "run", PROVIDER],
+			command: [process.execPath, "run", PROVIDER],
 			cases: loadCorpus(),
 			moveCases: loadMoveCases(),
 			timeoutMs: 15_000,
@@ -755,7 +757,11 @@ describe("running the suite against a real process", () => {
 	// Five false defects on loaded machines.
 	it("calls a provider that never answers initialize stalled, after one retry, with the load", async () => {
 		const { root, script } = scriptedProvider("stall", "return new Promise(() => {});");
-		const report = await runSuite({ command: ["bun", "run", script], cases: loadCorpus(), timeoutMs: 1500 });
+		const report = await runSuite({
+			command: [process.execPath, "run", script],
+			cases: loadCorpus(),
+			timeoutMs: 1500,
+		});
 
 		expect(report).toMatchObject({ failed: 0, stalled: 1, passed: 0 });
 		const [result] = report.results;
@@ -783,7 +789,7 @@ describe("running the suite against a real process", () => {
 			].join("\n"),
 		);
 		const cases = casesForTier("declarations").slice(0, 2);
-		const report = await runSuite({ command: ["bun", "run", script], cases, timeoutMs: 5_000 });
+		const report = await runSuite({ command: [process.execPath, "run", script], cases, timeoutMs: 5_000 });
 
 		expect(report.failed, formatReport(report)).toBe(0);
 		expect(report.stalled).toBeGreaterThanOrEqual(2);
@@ -801,7 +807,11 @@ describe("running the suite against a real process", () => {
 			fixtures: { reference: { files: { "src/a.ref": "export class Cart {}\n" }, subject: "src/a.ref" } },
 			declarations: [{ name: "NotThere" }],
 		};
-		const report = await runSuite({ command: ["bun", "run", PROVIDER], cases: [wrong], timeoutMs: 15_000 });
+		const report = await runSuite({
+			command: [process.execPath, "run", PROVIDER],
+			cases: [wrong],
+			timeoutMs: 15_000,
+		});
 
 		expect(report.failed).toBe(1);
 		expect(report.results.find((result) => result.outcome === "failed")?.problems[0]).toMatch(/not reported/);
@@ -815,7 +825,7 @@ describe("running the suite against a real process", () => {
 			referenceCollisionMove(),
 		];
 		const report = await runSuite({
-			command: ["bun", "run", PROVIDER],
+			command: [process.execPath, "run", PROVIDER],
 			cases: [],
 			moveCases,
 			timeoutMs: 15_000,

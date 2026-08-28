@@ -1,16 +1,18 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Clock } from "../clock";
 import { warmRefusal } from "../daemonCli";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { type ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -143,8 +145,8 @@ function unread(): boolean {
 	return service.warmHold()?.includes("not yet read") === true;
 }
 
-function serviceOver(supervisor: ProviderSupervisor): LexiconService {
-	return new LexiconService(store, supervisor, sourceReader(root), root);
+function serviceOver(supervisor: ProviderSupervisor, clock?: Clock): LexiconService {
+	return new LexiconService(store, supervisor, sourceReader(root), root, clock);
 }
 
 beforeEach(() => {
@@ -315,15 +317,11 @@ describe("warmup pass", () => {
 		put("b.fake", "export class B {}\n");
 		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, []));
 		await service.warmupWorkspace();
-		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { hangResolve: true }));
-		vi.useFakeTimers();
-		try {
-			const preparing = service.ensureTreeForModule("a.fake");
-			await vi.advanceTimersByTimeAsync(60_000);
-			await preparing;
-		} finally {
-			vi.useRealTimers();
-		}
+		const clock = fakeClock();
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { hangResolve: true }), clock);
+		const preparing = service.ensureTreeForModule("a.fake");
+		clock.advance(60_000);
+		await preparing;
 	});
 
 	it("covers each admission branch", async () => {

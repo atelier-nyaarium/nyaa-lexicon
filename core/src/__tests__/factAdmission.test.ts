@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import {
 	composeSymbolId,
 	type Declaration,
@@ -5,7 +6,6 @@ import {
 	type Literal,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { admitFacts, FactAdmissionError, notCanonical, type ProviderFacts } from "../factAdmission";
 
 ////////////////////////////////

@@ -45,7 +45,7 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
 ```bash
 bun install
 bun run lint      # biome ci AND tsc --build, both run, both reported
-bun run test      # vitest, including the residue tests
+bun run test      # bun test, including the residue tests
 bun run lint:fix
 ```
 
@@ -53,9 +53,14 @@ bun run lint:fix
 failure, which has already produced a confident "gate clean" that was not. When in doubt, run
 `bunx biome ci . --reporter=summary` on its own.
 
-**Bun is the development runtime; node is the SHIPPING runtime.** Consumers run `node dist/main.js`
-with no install step, which is the whole reason `dist/` is committed. A `bun:`-prefixed import works
-here and fails in the artifact, on the platform the build exists to serve.
+**Bun is the one runtime**, for development, tests and shipping; the floor is `BUN_FLOOR` in
+`client/src/runtime.ts`, measured before it was written (1.3.9 and below resolve no `node:sqlite`
+and lack the `bun test` flags the gate uses), and every entry point but the conformance CLI, which
+a provider team may run anywhere, refuses anything else by name. Consumers run `bun dist/main.js` with no install step, which is the whole reason
+`dist/` is committed: Claude Code runs `bun install` in an installed plugin, Copilot copies the
+repository and runs nothing, and the bundle needs neither. The bundle is built for node's module
+surface and carries no `bun:` import, so `client/` and `protocol/` stay importable from a consumer's
+node process (Switchboard's vitest is one).
 
 `dist/` is not standalone, though. The plugin ships the whole checkout, and `lexiconRoot()` walks up
 from the running file looking for a directory holding both `providers/` and `package.json`, which is
@@ -63,15 +68,15 @@ how the daemon finds the provider bundles to spawn. Copying `dist/` somewhere on
 `could not locate the lexicon repository from this build`, which is the right answer to an unsupported
 layout rather than a bug to route around.
 
-**Bun has no `node:sqlite`**, so anything touching the store cannot run under `bun run` at all. Run
-it from `dist/` under node:
+Bun ships `node:sqlite`, so the store, the indexer and the daemon run from source and from the
+bundle alike:
 
 ```bash
 bun run build --build-only                       # bundle without bumping or committing
 
-node dist/index-workspace.js <repo> [symbol]     # index a repo, optionally query a name
-node dist/grade.js <switchboard checkout>        # graded checks against a repo whose answers are known
-node dist/daemon.js <repo>                        # the daemon itself
+bun core/src/indexCli.ts <repo> [symbol]         # index a repo, optionally query a name
+bun dist/grade.js <switchboard checkout>         # graded checks against a repo whose answers are known
+bun dist/daemon.js <repo>                        # the daemon itself
 ```
 
 **Conformance never touches the store, so it does not need the build at all.** Run it from source
@@ -79,7 +84,7 @@ and skip the rebuild while iterating on a provider or the corpus:
 
 ```bash
 bun run protocol/src/conformance/cli.ts -- bun run providers/<language>/src/main.ts
-node dist/conformance.js bun run providers/<language>/src/main.ts   # same thing, from the artifact
+bun dist/conformance.js bun run providers/<language>/src/main.ts   # same thing, from the artifact
 ```
 
 Use the `dist/` form to check what actually ships, and before a release.
@@ -100,7 +105,7 @@ and `.claude-plugin/plugin.json` is SET from it, and the MCP server DERIVES its 
 time. Bumping and building are one command because a `dist/` built at a version the manifests do not
 claim looks correct and is not.
 
-**The build starts every bundled provider on node before it finishes.** Bundling proves the imports
+**The build starts every bundled provider before it finishes.** Bundling proves the imports
 resolved, not that the thing runs, and a provider that dies on launch is recorded as an outage and
 skipped, so the index reports files in scope and no facts. A provider that cannot start fails the
 build, and a failed release build reverts `dist/` along with the version files.
@@ -111,9 +116,9 @@ at runtime. Import the package's ESM entry instead, by path if it declares no `e
 check is static because the startup smoke cannot reach the case: it runs providers only, and only at
 launch, so a lazily-evaluated UMD module dies at first parse and smokes clean.
 
-**A green `bun run test` is not evidence that the artifact runs.** Everything in the edit loop runs
-under bun, and bun resolves what node refuses. The build is the only gate that meets the shipping
-runtime.
+**A green `bun run test` is not evidence that the artifact runs.** The suite imports sources, and
+the bundle is a different resolution of them. The build's provider smoke and the UMD gate are what
+meet the artifact.
 
 **Provider extraction changes require a MAJOR release.** Major releases retire stored facts. If a
 provider changes a kind, name, range, binding or literal for unchanged source, ship a major.
@@ -135,7 +140,9 @@ process held the memory, what the daemon was doing, and where each dead heap wen
 `LEXICON_HEAP_SNAPSHOT=1` on the daemon adds a heap snapshot near the limit for a targeted repro,
 gigabytes each, so not by default.
 
-Node 22.5+ required, for `node:sqlite`. Reports carry the environment below 22.13.
+Crash reports are the daemon's own: a high-water sample and, with `LEXICON_HEAP_SNAPSHOT=1`, a heap
+snapshot from the runtime, both under the store's `reports/`. Providers are never signalled for
+one; bun treats the signal as a death.
 
 ## Verifying a change
 
@@ -144,7 +151,7 @@ Ordered by how much they prove:
 1. `bun run test` for the unit level.
 2. Conformance if the change touches a provider or the protocol, every provider, not just the
    one you edited. A corpus case is shared, so an edit for one language runs against every other.
-3. `node dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
+3. `bun dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
    repository questions whose right answers are already known, so it catches "produces output" that
    is not "produces the right output".
 

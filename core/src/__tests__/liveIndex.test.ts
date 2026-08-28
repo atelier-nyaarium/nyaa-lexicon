@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import type { IndexOutcome } from "../indexer";
 import type { FileEvent } from "../invalidation";
 import { serializeBatches } from "../liveIndex";

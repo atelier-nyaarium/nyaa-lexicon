@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import {
 	composeSymbolId,
 	type DaemonMethod,
@@ -9,7 +10,6 @@ import {
 	type StoredDeclaration,
 	type SymbolKind,
 } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { awaitIndexed } from "../awaitIndexed";
 import { resolveChain } from "../chain";
 import type { Session } from "../connect";

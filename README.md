@@ -16,8 +16,8 @@ claude plugin marketplace add atelier-nyaarium/claude-marketplace
 claude plugin install lexicon@atelier-nyaarium
 ```
 
-Requires Node 22.5 or newer. The plugin ships a prebuilt bundle, so there is no install step and no
-toolchain to set up.
+Requires bun 1.4.0 or newer on PATH (https://bun.sh/docs/installation). The plugin ships a
+prebuilt bundle, so there is no install step and nothing else to set up.
 
 ## Languages
 

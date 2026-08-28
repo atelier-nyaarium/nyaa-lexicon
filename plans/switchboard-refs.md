@@ -129,21 +129,30 @@ Phase 1.
 - **Entry points.** `.mcp.json` runs `bun ${CLAUDE_PLUGIN_ROOT}/dist/main.js`. The host looks
   `bun` up on PATH before any lexicon code runs, so `adapters/mcp/src/main.ts` and
   `adapters/lsp/src/main.ts` assert their own runtime and floor on their first line and exit with
-  a named message; bun on PATH is the documented prerequisite. The editor command becomes
+  a named message (each is a bootstrap that judges the runtime, then imports `serve.ts`; the
+  bundle hoists builtin imports above it, so the sentence is guaranteed on any node that has
+  `node:sqlite`, the oldest node lexicon 2 ran on); bun on PATH is the documented prerequisite.
+  The editor command becomes
   `bun <install>/dist/lsp.js`, a breaking change the CHANGELOG lists, since no manifest owns it
   today. The client spawns `bun <root>/dist/daemon.js`; the daemon spawns bundled providers
   through the same executable (today `core/src/providers.ts` spawns `process.execPath`, labels
   bundled providers `runtime: "node"`, and injects node-only report arguments; the label and the
   arguments go). `dist/version.json`, the install record and `lexiconRoot()` are unchanged.
   `bundleStamp` widens from `dist/daemon.js` alone to every bundle under `dist/`, since a
-  provider-only dogfood rebuild is invisible today; Copilot updates a plugin IN PLACE (same path,
-  new bytes), the case the stamp exists to detect, and `decideFromLock` retires an equal-version
-  daemon on a stamp change (verified). One install record per state root, shared by every host on
+  provider-only dogfood rebuild is invisible today, and becomes a digest of the bundles' BYTES
+  rather than their mtimes: two hosts install one release as two copies with two sets of mtimes,
+  and equal-version daemons with different stamps retire each other on every connect (verified by
+  probe). Copilot updates a plugin IN PLACE (same path, new bytes), the case the stamp exists to
+  detect, and `decideFromLock` retires an equal-version daemon on a stamp change (verified); the
+  daemon's own drift check settles on the newest of every bundle, not the daemon's alone. One install record per state root, shared by every host on
   a machine, last writer wins between the MCP and the daemon: pre-existing, recorded by the smoke,
   not redesigned here.
 - **One runtime owner.** The client owns one bun executable, shared by the client spawn, the
   daemon's handover and the provider spawn; the spec (`bunExecutable(host)`, `PlatformEnv` gaining
-  `execPath` and `bunVersion`, the closed `noBunRuntime` outcome) lives in Phase 1. The floor is
+  `execPath` and `bunVersion`, the closed `noBunRuntime` outcome) lives in Phase 1. Phase 0 lands
+  the owner module, `client/src/runtime.ts`, with the verdict and the refusal sentence the entry
+  points print; Phase 1 adds the executable to that same module, so the spawn sites that say
+  `process.execPath` until then are the sites it takes over. The floor is
   MEASURED before it is written: the full gate plus the store, the watcher, the localhost TCP
   transport, a detached daemon, a handover and the provider smoke run on the candidate floor and
   on the latest bun, pinned as a CI matrix; `node:sqlite` availability in bun bounds it from
@@ -152,8 +161,11 @@ Phase 1.
   `node:sqlite` answers `undefined`, which silently inverts `transactions.ts : imageFor`
   (`refactorRevert` would restore nothing), `store.ts : fileNotes` and `tableExists`, and it
   throws on the `readOnly` option `projectStores.ts` passes, which that function's own `catch`
-  would swallow. No `bun:` import anywhere: `client/` and `protocol/` must stay node-neutral
-  (Switchboard's vitest imports them under node) and the residue that forbids `bun:` stays.
+  would swallow. No `bun:` import in production source (tests import `bun:test`): `client/` and
+  `protocol/` must stay node-neutral (Switchboard's vitest imports them under node), and a
+  residue in `protocol/` forbids a quoted `bun:` specifier across protocol, client, core, formats
+  and the adapters (none existed before; planted and seen to fire). Bun's own APIs are reached
+  through `globalThis.Bun`.
 - **Tests.** vitest goes; the script becomes `bun test --parallel --timeout 30000
   --path-ignore-patterns '**/temp/**' --path-ignore-patterns '**/dist/**'` (verified: without
   the patterns `bun test` collects `temp/` and `dist/`, so the blind corpora would run as our
@@ -171,17 +183,21 @@ Phase 1.
   `process.report` exists but reports a zero heap; `bun:jsc` exports `heapStats` and the
   snapshot is `Bun.generateHeapSnapshot`. So: the flag and signal path is deleted and provider
   high-water collection is dropped and said to be dropped; memory comes from
-  `process.memoryUsage()` and `heapStats()`; `LEXICON_HEAP_SNAPSHOT=1` writes
-  `Bun.generateHeapSnapshot("v8", "arraybuffer")` atomically under the existing `Heap.*` name;
-  the schema gains `runtime` and a nullable `heapLimit`, with `signal` and `nodeHeapLimit`
-  legacy-only behind one normalizer so existing report directories still render. A subprocess
-  test proves a provider survives whatever the collector sends; a planted residue forbids the
+  `process.memoryUsage()`, and the high-water mark is the daemon's resident size against the
+  host's memory from procfs, because bun states no heap limit (`v8.getHeapStatistics()` answers a
+  figure the heap grows straight past, measured) and the OS is what kills; `LEXICON_HEAP_SNAPSHOT=1`
+  writes `Bun.generateHeapSnapshot("v8")`, which answers a string, atomically under the existing
+  `Heap.*` name; the schema gains `runtime` and loses the heap limit, with `signal` and
+  `nodeHeapLimit` legacy-only behind one normalizer so existing report directories still render. Nothing is sent to a provider any more, and a test asserts
+  that a provider past the mark gets no signal and no report; a planted residue forbids the
   report flags outside the legacy reader.
 - **Build and release.** `scripts/build.ts` keeps the ritual (bump, set every workspace and the
   plugin manifest, bundle, start every bundled provider on bun, commit `Build x.y.z`, which Phase
-  2's pin check reads); `--target node` and the UMD gate stay. Root `engines.node` becomes the
-  measured bun floor; `_test.yml` drops its `Setup Node` step and the comment that bun has no
-  `node:sqlite`; `_lint.yml` and `_audit.yml` are already bun-only. One release for Phases 0
+  2's pin check reads); `--target node` and the UMD gate stay. Root `engines` names bun at the
+  measured floor (`engines.bun`, `engines.node` gone); `_test.yml` drops its `Setup Node` step
+  and the comment that bun has no `node:sqlite`, and runs `bun run build --build-only` after the
+  suite so the provider smoke meets both matrix versions; `_lint.yml` and `_audit.yml` are
+  already bun-only. One release for Phases 0
   and 1: one CHANGELOG, `bun run build major` once, push, smoke; the smoke transcripts go in a
   GitHub Release, not in a commit after the `Build 3.0.0` HEAD that Phase 2 pins.
 - **Docs.** CLAUDE.md's Development and Releasing sections rewritten (bun is the one runtime; the

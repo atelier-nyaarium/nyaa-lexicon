@@ -75,7 +75,7 @@ export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 
 Memory record of a store's daemon and providers, and node's crash reports beside it. Read from disk, so it answers for a daemon that has died.
 
-Pass a key or directory from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
+Pass a key or directory from \`list_project_stores\`. Answers peaks against the host's memory, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -236,9 +236,9 @@ function describeElapsed(ms: number): string {
 }
 
 /** Against the heap limit, or honest about there being nothing to compare. */
-function againstLimit(bytes: number, limit: number): string {
+function againstHost(bytes: number, total: number): string {
 	if (!Number.isFinite(bytes) || bytes < 0) return "size unknown";
-	return limit > 0 ? `${Math.round((100 * bytes) / limit)}% of the limit` : "limit unknown";
+	return total > 0 ? `${Math.round((100 * bytes) / total)}% of host memory` : "host memory unknown";
 }
 
 function describeContext(context: SampleContext | null): string {
@@ -326,8 +326,8 @@ export function renderDiagnostics(
 	reports: ReportSummary[],
 	now: number,
 ): string {
-	const limit = data.host.nodeHeapLimit;
 	const { memTotal, memAvailable } = data.host;
+	const total = memTotal ?? 0;
 	const host =
 		memTotal === null || memAvailable === null
 			? "host memory unknown"
@@ -337,7 +337,7 @@ export function renderDiagnostics(
 		.sort((a, b) => b.rss - a.rss)
 		.map(
 			(peak) =>
-				`- ${peak.role}: ${describeSize(peak.rss)} (${againstLimit(peak.rss, limit)}) ${describeElapsed(now - peak.at)}`,
+				`- ${peak.role}: ${describeSize(peak.rss)} (${againstHost(peak.rss, total)}) ${describeElapsed(now - peak.at)}`,
 		);
 
 	const incidents = [...data.incidents].reverse().map((incident) => {
@@ -378,12 +378,14 @@ export function renderDiagnostics(
 		const name = path.basename(report.file);
 		if (report.kind === "snapshot") return `- ${name}: heap snapshot, ${describeSize(report.bytes)}`;
 		if (report.kind === "unreadable") return `- ${name}: unreadable (${report.reason})`;
-		const heap =
-			report.heapUsed === null || report.heapLimit === null
-				? "heap unknown"
-				: `heap ${describeSize(report.heapUsed)} of ${describeSize(report.heapLimit)}`;
+		const memory =
+			report.rss !== null && report.hostTotal !== null
+				? `resident ${describeSize(report.rss)} of host ${describeSize(report.hostTotal)}`
+				: report.heapUsed !== null && report.heapLimit !== null
+					? `heap ${describeSize(report.heapUsed)} of ${describeSize(report.heapLimit)}`
+					: "memory unknown";
 		const when = report.at === null ? "" : `, ${describeElapsed(now - report.at)}`;
-		return `- ${name}: ${report.event} (${report.trigger}), pid ${report.pid ?? "?"}, ${heap}${when}`;
+		return `- ${name}: ${report.event} (${report.trigger}), pid ${report.pid ?? "?"}, ${memory}${when}`;
 	});
 	if (reports.length > shown.length) reportLines.push(`- and ${reports.length - shown.length} older, not listed`);
 
@@ -393,8 +395,8 @@ export function renderDiagnostics(
 		`- Written: ${describeElapsed(now - data.writtenAt)}`,
 		`- Daemon: pid ${data.daemon.pid}, ${data.daemon.version}, started ${describeElapsed(now - data.daemon.startedAt)}`,
 		`- Workspace: ${data.workspaceRoot}`,
-		`- Heap limit: ${limit > 0 ? `${describeSize(limit)} per process` : "unknown"}; ${host}`,
-		`- Sampler: ${data.host.sampler}; signal: ${data.host.signal}; reports exclude the environment: ${data.host.reportsExcludeEnv ? "yes" : "no"}`,
+		`- Memory: ${host}`,
+		`- Sampler: ${data.host.sampler}; runtime: ${data.host.runtime}`,
 		"",
 		"## Peaks",
 		"",
@@ -411,7 +413,7 @@ export function renderDiagnostics(
 		"## Reports",
 		"",
 		...(reportLines.length === 0
-			? ["None. Nothing has died of its heap or been asked for a report."]
+			? ["None. Nothing has died of its memory or crossed the high-water mark."]
 			: reportLines),
 		...(reports.some((report) => report.kind === "snapshot")
 			? []

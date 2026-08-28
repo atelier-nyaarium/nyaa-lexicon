@@ -1,7 +1,7 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import { describeStart, discoverProviders, lexiconRoot, startProviders } from "../providers";
 import type { ProviderSpec, ProviderSupervisor } from "../supervisor";
 
@@ -69,14 +69,14 @@ describe("finding providers", () => {
 		expect(discoverProviders(root)).toEqual([]);
 	});
 
-	it("prefers a bundle over the source and says which runtime each needs", () => {
+	it("prefers a bundle over the source, and starts both on the executable this process runs on", () => {
 		const found = discoverProviders(tree(["alpha"], ["beta"]));
 
-		expect(found.map((p) => [p.directory, p.runtime])).toEqual([
-			["alpha", "bun"],
-			["beta", "node"],
-		]);
+		expect(found.map((p) => p.directory)).toEqual(["alpha", "beta"]);
+		expect(found[0]?.command.slice(0, 2)).toEqual([process.execPath, "run"]);
+		expect(found[0]?.command[2]).toMatch(/providers\/alpha\/src\/main\.ts$/);
 		expect(found[1]?.command[0]).toBe(process.execPath);
+		expect(found[1]?.command[1]).toMatch(/dist\/providers\/beta\/main\.js$/);
 	});
 
 	// The walk-up is the part that differs between running from source and running from dist/, so
@@ -111,21 +111,13 @@ describe("starting providers", () => {
 		expect(describeStart(report)).toContain("beta: did not start");
 	});
 
-	// Bun gets no flags.
-	it("puts node argv after the executable of node providers, with the signals they then handle", async () => {
+	// No flags and no signal handlers: a provider is never asked for a report.
+	it("starts every provider with its discovered command and nothing added", async () => {
 		const started: ProviderSpec[] = [];
 		const commands = discoverProviders(tree(["alpha"], ["beta"]));
-		await startProviders(supervisor([], started), "/w", {
-			commands,
-			node: { argv: ["--report-on-fatalerror"], handles: ["SIGUSR2"] },
-		});
+		await startProviders(supervisor([], started), "/w", { commands });
 
-		const [alpha, beta] = started;
-		expect(alpha?.command[0]).toBe("bun");
-		expect(alpha?.command).not.toContain("--report-on-fatalerror");
-		expect(alpha?.handles).toBeUndefined();
-		expect(beta?.command.slice(0, 2)).toEqual([process.execPath, "--report-on-fatalerror"]);
-		expect(beta?.command[2]).toMatch(/dist\/providers\/beta\/main\.js$/);
-		expect(beta?.handles).toEqual(["SIGUSR2"]);
+		expect(started.map((spec) => spec.command)).toEqual(commands.map((entry) => entry.command));
+		expect(started.every((spec) => spec.handles === undefined)).toBe(true);
 	});
 });

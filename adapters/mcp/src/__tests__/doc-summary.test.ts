@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import type { DescribeResult } from "@nyaa-lexicon/core";
-import { describe, expect, it } from "vitest";
 import { renderDescribe } from "../render.js";
 
 ////////////////////////////////

@@ -1,10 +1,10 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ProviderClaims, routeModule, routingContextOf } from "../routing";
 import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, sourceReader } from "../sourceRead";

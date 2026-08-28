@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, it } from "vitest";
 import { storeCompatibilityKey } from "../fingerprint";
 import { IndexStore } from "../store";
 

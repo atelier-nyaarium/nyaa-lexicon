@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { isProviderMethod, METHOD_SCHEMAS, PROVIDER_METHODS } from "../methods";
 import { BindingSchema, TypeInfoSchema } from "../values";
 import { checkCompatibility, isCompatibleProtocol, PROTOCOL_VERSION, parseVersion } from "../version";
@@ -167,7 +167,7 @@ describe("method table", () => {
 
 describe("uncertainty is representable, certainty-without-evidence is not", () => {
 	it("accepts a provider that answers unknown with a reason", () => {
-		const unknown = { status: "unknown", reason: "NotImplemented" };
+		const unknown = { status: "unknown", reason: "NotImplemented" } as const;
 		expect(TypeInfoSchema.parse(unknown)).toEqual(unknown);
 	});
 

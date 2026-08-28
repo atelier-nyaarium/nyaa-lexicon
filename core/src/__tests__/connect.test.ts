@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +10,6 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { lexiconRoot } from "../providers";
 

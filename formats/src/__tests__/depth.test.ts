@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { isTooDeep, MAX_NESTING, markupTooDeep, nestedTooDeep } from "../depth.js";
 
 describe("bounding nesting before a parser recurses", () => {
@@ -41,8 +41,9 @@ describe("recognizing a recursion limit", () => {
 	});
 
 	it("accepts the stack exhaustion a deep structure produces", () => {
+		// Not a tail call: an engine with proper tail calls would loop forever instead of overflowing.
 		function forever(n: number): number {
-			return forever(n + 1);
+			return 1 + forever(n + 1);
 		}
 		let caught: unknown;
 		try {

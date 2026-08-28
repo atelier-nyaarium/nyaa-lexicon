@@ -1,8 +1,8 @@
 // The daemon's end of the wire. The client's end, and the framing both share, is the client
 // package's transport; everything above either speaks frames.
 //
-// This is the Bun seam: a Bun-native transport swaps in by reimplementing this file, the way
-// store.ts isolates node:sqlite.
+// The server socket lives in this one file, the way store.ts holds the one sqlite driver, so a
+// transport change touches nothing above it.
 //
 // An open authenticated socket IS a present client, which is what the daemon's lifetime counts.
 // Close events cover every way a local process can die; the heartbeat covers alive-but-hung.

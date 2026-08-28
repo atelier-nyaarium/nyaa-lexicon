@@ -1,8 +1,8 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { daemonHandlers, type LexiconService } from "@nyaa-lexicon/core";
 import { DAEMON_METHODS } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 
 /**
  * Holds the daemon-backed backend to methods the daemon actually has.
@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = path.join(import.meta.dirname, "..", "..", "..", "..");
 
 function methodsAsked(): string[] {
-	const source = readFileSync(path.join(ROOT, "adapters", "mcp", "src", "main.ts"), "utf8");
+	const source = readFileSync(path.join(ROOT, "adapters", "mcp", "src", "serve.ts"), "utf8");
 	return [...new Set([...source.matchAll(/ask\("([A-Za-z]+)"/g)].map((match) => match[1] as string))].sort();
 }
 

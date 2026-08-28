@@ -1,8 +1,8 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect, type Session } from "../connect";
 import { bundleStamp } from "../discover";
 import { DaemonError, Incompatible, NotInstalled } from "../errors";

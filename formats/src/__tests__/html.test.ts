@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf, type Range } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { readHtml } from "../html.js";
 
 function read(text: string) {

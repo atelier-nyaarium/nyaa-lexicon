@@ -1,8 +1,8 @@
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connect, DaemonError, type PlatformEnv, type Session, writeInstallRecord } from "@nyaa-lexicon/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type RunningDaemon, startDaemon } from "../daemon";
 import { createDispatch } from "../dispatch";
 import { lexiconRoot } from "../providers";
@@ -108,7 +108,7 @@ whenBuilt("resolveChain and awaitIndexed over a real daemon", () => {
 		supervisor = new ProviderSupervisor();
 		await Promise.all(
 			[TYPESCRIPT, CSHARP].map((main) =>
-				supervisor.start({ command: ["bun", "run", main], timeoutMs: 60_000 }, workspace),
+				supervisor.start({ command: [process.execPath, "run", main], timeoutMs: 60_000 }, workspace),
 			),
 		);
 		const service = new LexiconService(store, supervisor, sourceReader(workspace), workspace);

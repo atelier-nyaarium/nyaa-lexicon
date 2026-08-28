@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyEdits, composeSymbolId, coordinatesOf } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, it } from "vitest";
 import { PythonProvider } from "../main";
 import { Python3Dispatch } from "../python3";
 
@@ -602,6 +602,9 @@ describe("Python provider project behavior", () => {
 			contentHash: "other",
 			text: "class Other:\n    pass\n",
 		});
+		const item = itemFacts.declarations.find((declaration) => declaration.name === "Item");
+		const other = otherFacts.declarations.find((declaration) => declaration.name === "Other");
+		if (item === undefined || other === undefined) throw new Error("import declaration missing");
 		const cart = provider.parseFile({
 			module: "src/cart.py",
 			contentHash: "cart",
@@ -617,14 +620,14 @@ describe("Python provider project behavior", () => {
 			cart.references.find((reference) => reference.name === "Item" && reference.role === "call")?.binding,
 		).toEqual({
 			status: "bound",
-			symbolId: itemFacts.declarations.find((declaration) => declaration.name === "Item")?.symbolId,
+			symbolId: item.symbolId,
 			provenance: "bound",
 		});
 		expect(
 			cart.references.find((reference) => reference.name === "Alias" && reference.role === "call")?.binding,
 		).toEqual({
 			status: "bound",
-			symbolId: otherFacts.declarations.find((declaration) => declaration.name === "Other")?.symbolId,
+			symbolId: other.symbolId,
 			provenance: "bound",
 		});
 	});
@@ -643,7 +646,6 @@ describe("Python provider project behavior", () => {
 			newName: "new",
 			sites: [{ range: declaration }, { range: reference }],
 		});
-
 		expect(response).toEqual({
 			status: "ready",
 			edits: [
@@ -667,6 +669,7 @@ describe("Python provider project behavior", () => {
 		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
 		const declaration = facts.declarations.find((candidate) => candidate.name === "old");
 		if (declaration === undefined) throw new Error("old declaration missing");
+		if (declaration.selectionRange === undefined) throw new Error("declaration selection range missing");
 
 		const response = provider.renameEdits({
 			module: "main.py",

@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,7 +13,6 @@ import {
 	type RunningDaemon,
 	startDaemon,
 } from "@nyaa-lexicon/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { describeSymbol, findReferences, resolveImport, type ToolBackend } from "../tools";
 
 ////////////////////////////////
@@ -95,7 +95,7 @@ beforeEach(async () => {
 
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
 	supervisor = new ProviderSupervisor();
-	await supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 15_000 }, dir);
+	await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000 }, dir);
 
 	const service = new LexiconService(
 		store,

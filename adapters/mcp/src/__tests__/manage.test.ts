@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { DaemonError, type DaemonLock } from "@nyaa-lexicon/client";
 import type { Diagnostics, ProjectStore, ReportSummary } from "@nyaa-lexicon/core";
-import { describe, expect, it } from "vitest";
 import {
 	deleteProjectStoreTool,
 	listProjectStoresTool,
@@ -70,18 +70,11 @@ function collection(overrides: Partial<Diagnostics> = {}): Diagnostics {
 	const context = CONTEXT;
 	const row = (role: string, pid: number, rss: number) => ({ role, pid, rss, hwm: rss });
 	return {
-		version: 1,
+		version: 2,
 		writtenAt: NOW - 20_000,
 		workspaceRoot: "/home/dev/proj",
 		daemon: { pid: 4242, version: "2.1.0", startedAt: NOW - 3_600_000 },
-		host: {
-			nodeHeapLimit: LIMIT,
-			memTotal: 32e9,
-			memAvailable: 16e9,
-			sampler: "procfs",
-			signal: "SIGUSR2",
-			reportsExcludeEnv: true,
-		},
+		host: { runtime: "bun", memTotal: 32e9, memAvailable: 16e9, sampler: "procfs" },
 		peaks: [
 			{ role: "daemon", pid: 4242, rss: 90e6, at: NOW - 60_000 },
 			{ role: "provider:alpha", pid: 77, rss: 3.6e9, at: NOW - 30_000 },
@@ -106,6 +99,8 @@ const REPORT: ReportSummary = {
 	pid: 77,
 	heapUsed: 3.9e9,
 	heapLimit: LIMIT,
+	rss: null,
+	hostTotal: null,
 };
 
 ////////////////////////////////
@@ -225,7 +220,7 @@ describe("reading a store's diagnostics", () => {
 		const body = result.content[0]?.text ?? "";
 
 		expect(result.isError).toBeUndefined();
-		expect(body).toMatch(/provider:alpha: \S+ \(90% of the limit\) 30s ago/);
+		expect(body).toMatch(/provider:alpha: \S+ \(11% of host memory\) 30s ago/);
 		expect(body.indexOf("- provider:alpha:")).toBeLessThan(body.indexOf("- daemon:"));
 		expect(body).toMatch(
 			/provider:alpha pid 77 died on SIGABRT at \S+; index warming 5\/100, 2 in flight, 3 connected/,
@@ -305,7 +300,7 @@ describe("reading a store's diagnostics", () => {
 
 	it("renders what it does not know as unknown, rather than throwing or inventing", () => {
 		const data = collection({
-			host: { ...collection().host, nodeHeapLimit: 0, memTotal: null, memAvailable: null },
+			host: { ...collection().host, memTotal: null, memAvailable: null },
 			daemon: { pid: 1, version: "2.1.0", startedAt: NOW + 60_000 },
 			peaks: [{ role: "provider:alpha", pid: 77, rss: 0, at: NOW }],
 			incidents: [
@@ -325,6 +320,8 @@ describe("reading a store's diagnostics", () => {
 				pid: null,
 				heapUsed: null,
 				heapLimit: null,
+				rss: null,
+				hostTotal: null,
 			},
 			{ kind: "unreadable", file: "/r/report.y.json", reason: "EACCES" },
 			{ kind: "snapshot", file: "/r/Heap.z.heapsnapshot", bytes: 3 * 1024 * 1024 * 1024 },
@@ -340,12 +337,11 @@ describe("reading a store's diagnostics", () => {
 			).content[0]?.text ?? "";
 
 		expect(body).toContain("host memory unknown");
-		expect(body).toContain("Heap limit: unknown");
 		expect(body).toContain("started in the future");
-		expect(body).toMatch(/provider:alpha: 0B \(limit unknown\)/);
+		expect(body).toMatch(/provider:alpha: 0B \(host memory unknown\)/);
 		expect(body).not.toContain("%");
 		expect(body).toMatch(/pid \? exited with code 1; before any sample/);
-		expect(body).toContain("heap unknown");
+		expect(body).toContain("memory unknown");
 		expect(body).toContain("unreadable (EACCES)");
 		expect(body).toMatch(/heap snapshot, 3\.00GB/);
 	});

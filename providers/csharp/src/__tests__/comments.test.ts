@@ -1,5 +1,5 @@
+import { describe, expect, test } from "bun:test";
 import { coordinatesOf, FileFactsSchema } from "@nyaa-lexicon/protocol";
-import { describe, expect, test } from "vitest";
 import { CsharpProvider, TIERS } from "../main.js";
 import { CsharpParser } from "../parser.js";
 

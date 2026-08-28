@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import { parseCppFile } from "../parser.js";
 
 describe("C++ declaration-scope macro invocations", () => {
@@ -56,8 +56,8 @@ describe("C++ declaration-scope macro invocations", () => {
 		] as const;
 		for (const [text, names, kinds] of cases) {
 			const facts = parseCppFile("prefix.cpp", text);
-			expect(facts.declarations.map((item) => item.name)).toEqual(names);
-			expect(facts.declarations.map((item) => item.kind)).toEqual(kinds);
+			expect(facts.declarations.map((item) => item.name)).toEqual([...names]);
+			expect(facts.declarations.map((item) => item.kind)).toEqual([...kinds]);
 		}
 		expect(parseCppFile("prefix.cpp", cases[0][0]).typeAnswers.values().next().value).toMatchObject({
 			display: "HRESULT WINAPI",
@@ -84,8 +84,8 @@ describe("C++ declaration-scope macro invocations", () => {
 		["parenthesis", "FOO(1) (x)\n", ["FOO"], ["function"]],
 	] as const)("preserves a call followed by %s", (_name, text, names, kinds) => {
 		const facts = parseCppFile("suffix.cpp", text);
-		expect(facts.declarations.map((item) => item.name)).toEqual(names);
-		expect(facts.declarations.map((item) => item.kind)).toEqual(kinds);
+		expect(facts.declarations.map((item) => item.name)).toEqual([...names]);
+		expect(facts.declarations.map((item) => item.kind)).toEqual([...kinds]);
 	});
 
 	// The doctest idiom: pragma macros stacked one per line, then a call or a directive.
@@ -96,7 +96,7 @@ describe("C++ declaration-scope macro invocations", () => {
 		["a chain in a CRLF file", "PUSH\r\nWARN(1)\r\nint real;\r\n", ["real"]],
 	] as const)("drops %s", (_name, text, names) => {
 		const facts = parseCppFile("chain.cpp", text);
-		expect(facts.declarations.map((item) => item.name)).toEqual(names);
+		expect(facts.declarations.map((item) => item.name)).toEqual([...names]);
 		expect(facts.diagnostics).toEqual([]);
 	});
 

@@ -1,8 +1,8 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { IndexReadModel } from "../indexReads";
 import { IndexStore } from "../store";
 

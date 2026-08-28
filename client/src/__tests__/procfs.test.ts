@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
 import { hostMemory, parseMeminfo, parseProcStat, parseProcStatus, processIdentity, processMemory } from "../procfs";
 
 ////////////////////////////////

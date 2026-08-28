@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import { parseCppFile } from "../parser.js";
 
 describe("C++ declaration attributes", () => {

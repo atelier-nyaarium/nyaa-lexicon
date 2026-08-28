@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import type { DaemonLock } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { decideFromLock, newerBuild } from "../lock";
 
 ////////////////////////////////

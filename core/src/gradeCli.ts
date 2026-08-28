@@ -1,7 +1,7 @@
 // The graded dogfood: ask a real repository questions whose right answers are already known, and
 // print pass or fail per check.
 //
-//   node dist/grade.js <path to a switchboard checkout>
+//   bun dist/grade.js <path to a switchboard checkout>
 //
 // Producing output is not the same as producing right output, so every check here names an
 // expected answer a reader can verify by opening the file.
@@ -11,6 +11,7 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { refuseRuntime } from "@nyaa-lexicon/client";
 import { startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
@@ -117,6 +118,12 @@ const CHECKS: Check[] = [
 //  Main
 
 async function main(argv: string[]): Promise<void> {
+	const refused = refuseRuntime("the lexicon grader");
+	if (refused !== null) {
+		console.error(refused);
+		process.exit(1);
+	}
+
 	const [target] = argv;
 	if (target === undefined || !existsSync(target)) {
 		console.error("usage: grade <path to a switchboard checkout>");

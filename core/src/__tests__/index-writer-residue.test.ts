@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 
 /**
  * Holds WorkspaceIndexer as the only writer of the index.

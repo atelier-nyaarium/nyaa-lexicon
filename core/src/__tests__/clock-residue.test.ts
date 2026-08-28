@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeOnly } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 
 /** Holds clock.ts as the only source of time for the routed modules, so one fake controls them all. */
 const SRC = join(import.meta.dirname, "..");
@@ -10,7 +10,7 @@ const SRC = join(import.meta.dirname, "..");
 const OWNER = "clock.ts";
 
 /** Modules that take time only from the clock. Add a module here when routing it. */
-const ROUTED = ["diagnostics.ts", "drift.ts", "lifetime.ts", "liveIndex.ts", "watcher.ts"];
+const ROUTED = ["diagnostics.ts", "drift.ts", "lifetime.ts", "liveIndex.ts", "service.ts", "watcher.ts"];
 
 /** Reaching for the wall or the host timers directly. */
 const RAW = [

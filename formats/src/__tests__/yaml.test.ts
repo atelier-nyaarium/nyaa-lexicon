@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { readYaml, readYamlComments } from "../yaml.js";
 
 function read(text: string) {

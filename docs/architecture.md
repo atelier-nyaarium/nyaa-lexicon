@@ -75,13 +75,14 @@ A daemon that dies of its heap leaves nothing to read on its own. Two owners cha
   is rewritten whole, temp file then rename, on a rate limit and immediately on an incident or at
   shutdown, so it never grows with uptime and a reader never meets half a file.
 
-Node's own diagnostic report is turned on for every node process the daemon starts, through the
-argv `nodeReportSetup` answers. A heap death leaves a compact JSON in `reports/` with the stack and
-the heap spaces. A provider approaching the limit is asked for the same report while still alive,
-by a signal the supervisor sends only to a process that declared it survives it. `reports/` is
-created owner-only and pruned to the newest eight reports and two heap snapshots. A report omits
-the environment wherever node can, and `host.reportsExcludeEnv` in the collection says whether it
-did. A heap snapshot is opt-in, `LEXICON_HEAP_SNAPSHOT=1`, at gigabytes each. The MCP tool
+The daemon watches its own resident size against the host's memory as procfs states it: the
+runtime states no heap limit, and the OS kills at exhaustion. Crossing the high-water mark writes
+one compact JSON to `reports/`, the sample with the resident size and the host's total, latched
+until it falls back below the low-water mark; a limit set below the host's, a cgroup's, is not
+seen. A heap snapshot beside it is opt-in,
+`LEXICON_HEAP_SNAPSHOT=1`, at gigabytes each. A provider's death leaves an incident in the
+collection with its signal and last size; nothing is asked of a provider while it lives. `reports/`
+is created owner-only and pruned to the newest eight reports and two heap snapshots. The MCP tool
 `project_diagnostics` reads the collection and the reports from disk by store key, no daemon needed.
 
 The supervisor absorbs writes to a dead child. `vscode-jsonrpc` rethrows a failed pipe write into

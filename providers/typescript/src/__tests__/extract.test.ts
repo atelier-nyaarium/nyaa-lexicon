@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
 import { extractFile } from "../extract";
 
 ////////////////////////////////

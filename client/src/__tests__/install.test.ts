@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, it } from "vitest";
 import { installRecordFile, readInstallRecord, readInstallVersion, writeInstallRecord } from "../install";
 import { canonicalRoot, type PlatformEnv } from "../paths";
 

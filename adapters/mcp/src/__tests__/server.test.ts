@@ -1,11 +1,11 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { LiteralQuery, SessionProject } from "@nyaa-lexicon/core";
-import { afterEach, describe, expect, it } from "vitest";
 import type { BindingDeps } from "../binding";
-import { buildServer } from "../main";
 import type { BackendSource } from "../projectTools";
+import { buildServer } from "../serve";
 import type { ToolBackend } from "../tools";
 
 ////////////////////////////////

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { compileSearchRegex, SEARCH_TERM_LIMIT, searchTerm } from "../search";
 
 describe("compiling a caller's regex", () => {

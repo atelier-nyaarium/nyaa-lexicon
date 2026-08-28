@@ -18,6 +18,7 @@ import {
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { writeAll } from "./applyEdits.js";
+import { type Clock, systemClock } from "./clock.js";
 import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
 import { ImportResolver } from "./imports.js";
@@ -75,6 +76,7 @@ export class LexiconService {
 		private readonly supervisor: ProviderSupervisor,
 		readSource: SourceReader,
 		private readonly workspaceRoot = ".",
+		private readonly clock: Clock = systemClock,
 	) {
 		// The indexer wants the reason a file is unreadable; everything else wants text or nothing.
 		this.readFile = (module) => textOf(readSource(module));
@@ -187,7 +189,10 @@ export class LexiconService {
 
 	async ensureTreeForModule(module: string): Promise<void> {
 		if (this.store.depthTotals().outline === 0) return;
-		const budget = new Promise<void>((resolve) => setTimeout(resolve, ENSURE_TREE_BUDGET_MS).unref?.());
+		let handle: ReturnType<Clock["setTimer"]> | null = null;
+		const budget = new Promise<void>((resolve) => {
+			handle = this.clock.setTimer(resolve, ENSURE_TREE_BUDGET_MS);
+		});
 		const work = (async () => {
 			const closure = new Set([module]);
 			for (const statement of this.store.importsIn(module)) {
@@ -197,7 +202,11 @@ export class LexiconService {
 			}
 			await this.indexer.requestFull([...closure]).catch(() => {});
 		})();
-		await Promise.race([work, budget]);
+		try {
+			await Promise.race([work, budget]);
+		} finally {
+			if (handle !== null) this.clock.clearTimer(handle);
+		}
 	}
 
 	////////////////////////////////

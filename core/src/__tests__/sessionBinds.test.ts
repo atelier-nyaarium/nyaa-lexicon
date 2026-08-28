@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import type { RegisteredProject } from "../projectRegistry";
 import { createSessionBinds } from "../sessionBinds";
 
@@ -120,6 +120,7 @@ describe("session project names", () => {
 		const first = known[0];
 
 		known = [...known, project("app", "/work/two")];
+		if (first === undefined) throw new Error("initial project missing");
 
 		expect(binds.sync()).toEqual({
 			renames: [{ key: first?.key, root: first?.root, from: "app", to: "app-1" }],

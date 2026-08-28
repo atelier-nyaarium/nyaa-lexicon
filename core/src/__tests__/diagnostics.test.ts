@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
@@ -13,7 +14,6 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type PlatformEnv, processMemory, stateRoot, storePaths } from "@nyaa-lexicon/client";
-import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CollectorOptions,
 	DiagnosticsSchema,
@@ -21,13 +21,14 @@ import {
 	heapSnapshotWanted,
 	INCIDENT_RING,
 	listReports,
-	nodeReportSetup,
+	makeReportsDir,
 	pruneReports,
 	readDiagnostics,
 	SAMPLE_RING,
 	type SampleContext,
 	SELF_REPORT,
 	startDiagnostics,
+	writeHeapSnapshot,
 } from "../diagnostics";
 import { ProviderSupervisor } from "../supervisor";
 import { fakeClock } from "./fakeClock";
@@ -48,7 +49,10 @@ const REFERENCE = path.join(
 	"referenceProvider.ts",
 );
 const CHILD = 42;
+/** What a node crash report states; nothing written today carries one. */
 const LIMIT = 4_000_000_000;
+/** The host's memory as the harness's procfs states it. */
+const HOST = 32e9;
 const SAMPLE = 10;
 const WRITE = 30;
 
@@ -67,17 +71,17 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function harness(overrides: Partial<CollectorOptions> = {}) {
+function harness(overrides: Partial<CollectorOptions> = {}, { realReports = false } = {}) {
 	const root = scratch();
 	const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
 	const paths = storePaths(path.join(stateRoot(host), KEY));
 	const clock = fakeClock();
 	const memory = new Map<number, { rss: number; hwm: number }>([[CHILD, { rss: 1000, hwm: 1000 }]]);
-	const signals: number[] = [];
 	const selfReports: string[] = [];
+	const snapshots: string[] = [];
 	const errors: string[] = [];
 	const state = {
-		self: { rss: 100, heapUsed: 50, heapTotal: 80, external: 5, arrayBuffers: 1, heapLimit: LIMIT },
+		self: { rss: 100, heapUsed: 50, heapTotal: 80, external: 5, arrayBuffers: 1 },
 		context: { index: { state: "ready", done: 3, total: 3 }, inFlight: 0, connections: 1 } as SampleContext,
 		children: [{ role: "provider:alpha", pid: CHILD }],
 	};
@@ -92,23 +96,25 @@ function harness(overrides: Partial<CollectorOptions> = {}) {
 		clock,
 		selfMemory: () => state.self,
 		readMemory: (pid) => memory.get(pid) ?? null,
-		readHost: () => ({ memTotal: 32e9, memAvailable: 16e9 }),
-		signal: (pid, signal) => {
-			signals.push(pid);
-			return signal === "SIGUSR2";
+		readHost: () => ({ memTotal: HOST, memAvailable: HOST / 2 }),
+		...(realReports
+			? {}
+			: {
+					writeSelfReport: (file: string) => {
+						selfReports.push(path.basename(file));
+					},
+				}),
+		writeSnapshot: (dir, stamp) => {
+			snapshots.push(`${dir}:${stamp}`);
 		},
-		writeSelfReport: (name) => {
-			selfReports.push(name);
-		},
-		platform: "linux",
-		reportsExcludeEnv: true,
+		env: {},
 		sampleMs: SAMPLE,
 		writeMs: WRITE,
 		...overrides,
 	};
 	const collector = startDiagnostics(options);
 	const read = () => DiagnosticsSchema.parse(JSON.parse(readFileSync(paths.diagnosticsFile, "utf8")));
-	return { root, host, paths, clock, memory, signals, selfReports, errors, state, collector, read };
+	return { root, host, paths, clock, memory, selfReports, snapshots, errors, state, collector, read };
 }
 
 ////////////////////////////////
@@ -122,12 +128,7 @@ describe("the collection on disk", () => {
 		const written = read();
 		expect(written.samples).toHaveLength(1);
 		expect(written.samples[0]?.at).toBe(clock.now());
-		expect(written.host).toMatchObject({
-			nodeHeapLimit: LIMIT,
-			sampler: "procfs",
-			signal: "SIGUSR2",
-			reportsExcludeEnv: true,
-		});
+		expect(written.host).toMatchObject({ memTotal: HOST, sampler: "procfs", runtime: "bun" });
 		expect(written.samples[0]?.processes.map((p) => p.role)).toEqual(["daemon", "provider:alpha"]);
 	});
 
@@ -301,72 +302,107 @@ describe("what the collection keeps", () => {
 		expect(written.peaks.map((p) => p.role)).toEqual(["daemon"]);
 	});
 
-	it("records that the signal is unavailable off POSIX", () => {
-		expect(harness({ platform: "win32" }).collector.current().host.signal).toBe("unavailable");
+	it("never writes a report where procfs cannot say what the host has", () => {
+		const { clock, state, selfReports, collector } = harness({ readHost: () => null });
+		state.self = { ...state.self, rss: HOST };
+		clock.advance(SAMPLE);
+
+		expect(collector.current().host).toMatchObject({ memTotal: null, sampler: "none" });
+		expect(selfReports).toEqual([]);
 	});
 });
 
-describe("asking for a report near the limit", () => {
-	it("asks a provider once above the high mark, and again only after it has come down", () => {
-		const { clock, memory, signals } = harness();
-		memory.set(CHILD, { rss: LIMIT * 0.9, hwm: LIMIT * 0.9 });
+// The runtime states no heap limit; the host's memory is the one the OS enforces.
+describe("writing a report near the host's memory", () => {
+	it("writes its own report once above the high mark, and again only after its size has come down", () => {
+		const { clock, state, selfReports } = harness();
+		state.self = { ...state.self, rss: HOST * 0.9 };
 		clock.advance(SAMPLE);
 		clock.advance(SAMPLE);
-		expect(signals).toEqual([CHILD]);
+		expect(selfReports).toEqual([SELF_REPORT]);
 
-		memory.set(CHILD, { rss: LIMIT * 0.7, hwm: LIMIT * 0.9 });
+		state.self = { ...state.self, rss: HOST * 0.7 };
 		clock.advance(SAMPLE);
-		memory.set(CHILD, { rss: LIMIT * 0.9, hwm: LIMIT * 0.9 });
+		state.self = { ...state.self, rss: HOST * 0.9 };
 		clock.advance(SAMPLE);
-		expect(signals).toEqual([CHILD]);
+		expect(selfReports).toEqual([SELF_REPORT]);
 
-		memory.set(CHILD, { rss: LIMIT * 0.5, hwm: LIMIT * 0.9 });
+		state.self = { ...state.self, rss: HOST * 0.5 };
 		clock.advance(SAMPLE);
-		memory.set(CHILD, { rss: LIMIT * 0.9, hwm: LIMIT * 0.9 });
+		state.self = { ...state.self, rss: HOST * 0.9 };
 		clock.advance(SAMPLE);
-		expect(signals).toEqual([CHILD, CHILD]);
+		expect(selfReports).toEqual([SELF_REPORT, SELF_REPORT]);
 	});
 
-	it("asks at exactly the high mark, not only above it", () => {
-		const { clock, memory, signals } = harness();
-		memory.set(CHILD, { rss: LIMIT * 0.85, hwm: LIMIT * 0.85 });
-		clock.advance(SAMPLE);
-
-		expect(signals).toEqual([CHILD]);
-	});
-
-	it("reports a signal that was not delivered, once, and stays latched rather than retrying", () => {
-		const { clock, memory, errors, signals } = harness({
-			signal: (pid) => {
-				signals.push(pid);
-				return false;
-			},
-		});
-		memory.set(CHILD, { rss: LIMIT * 0.9, hwm: LIMIT * 0.9 });
-		clock.advance(SAMPLE * 3);
-
-		expect(signals).toEqual([CHILD]);
-		expect(errors).toHaveLength(1);
-	});
-
-	it("writes its own report when the daemon's heap nears the limit, and signals nobody for it", () => {
-		const { clock, state, signals, selfReports } = harness();
-		state.self = { ...state.self, heapUsed: LIMIT * 0.9 };
-		clock.advance(SAMPLE);
+	it("writes at exactly the high mark, not only above it", () => {
+		const { clock, state, selfReports } = harness();
+		state.self = { ...state.self, rss: HOST * 0.85 };
 		clock.advance(SAMPLE);
 
 		expect(selfReports).toEqual([SELF_REPORT]);
-		expect(signals).toEqual([]);
 	});
 
-	it("re-arms a provider that died, so its replacement is judged afresh", () => {
-		const { clock, memory, signals, collector } = harness();
-		memory.set(CHILD, { rss: LIMIT * 0.9, hwm: LIMIT * 0.9 });
-		clock.advance(SAMPLE);
-		collector.recordExit({ providerId: "alpha", pid: CHILD, code: null, signal: "SIGABRT" });
+	it("judges by resident size, not by the heap, which the runtime lets grow past any figure it states", () => {
+		const { clock, state, selfReports } = harness();
+		state.self = { ...state.self, heapUsed: HOST * 0.9, heapTotal: HOST * 0.9 };
+		clock.advance(SAMPLE * 3);
+
+		expect(selfReports).toEqual([]);
+	});
+
+	it("judges a child by nothing: its size never triggers a report, and it is never signalled", () => {
+		const { clock, memory, selfReports, snapshots, errors } = harness();
+		memory.set(CHILD, { rss: HOST * 0.9, hwm: HOST * 0.9 });
+		clock.advance(SAMPLE * 3);
+
+		expect(selfReports).toEqual([]);
+		expect(snapshots).toEqual([]);
+		expect(errors).toEqual([]);
+	});
+
+	it("adds a heap snapshot only when the environment asks", () => {
+		const asked = harness({ env: { [HEAP_SNAPSHOT_ENV]: "1" } });
+		asked.state.self = { ...asked.state.self, rss: HOST * 0.9 };
+		asked.clock.advance(SAMPLE);
+		expect(asked.snapshots).toEqual([`${asked.paths.reportsDir}:${asked.clock.now()}`]);
+
+		const quiet = harness();
+		quiet.state.self = { ...quiet.state.self, rss: HOST * 0.9 };
+		quiet.clock.advance(SAMPLE);
+		expect(quiet.snapshots).toEqual([]);
+	});
+
+	it("writes a report the listing renders, in a crash report's shape", () => {
+		const { clock, state, paths } = harness({}, { realReports: true });
+		state.self = { ...state.self, rss: HOST * 0.9 };
 		clock.advance(SAMPLE);
 
-		expect(signals).toEqual([CHILD, CHILD]);
+		expect(listReports(paths.dir)).toEqual([
+			{
+				kind: "report",
+				file: path.join(paths.reportsDir, SELF_REPORT),
+				at: clock.now(),
+				event: "high-water",
+				trigger: "rss",
+				pid: DAEMON,
+				heapUsed: 50,
+				heapLimit: null,
+				rss: HOST * 0.9,
+				hostTotal: HOST,
+			},
+		]);
+	});
+
+	it("reports a writer that fails, once, and stays latched rather than retrying", () => {
+		const { clock, state, errors } = harness({
+			writeSelfReport: () => {
+				throw new Error("disk full");
+			},
+		});
+		state.self = { ...state.self, rss: HOST * 0.9 };
+		clock.advance(SAMPLE * 3);
+
+		expect(errors).toHaveLength(1);
 	});
 });
 
@@ -375,12 +411,11 @@ describe("fed by a real supervisor", () => {
 	it("turns a provider's death into an incident carrying its signal and last size", async () => {
 		const supervisor = new ProviderSupervisor();
 		try {
-			await supervisor.start({ command: ["bun", "run", REFERENCE], timeoutMs: 25_000 }, tmpdir());
+			await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 25_000 }, tmpdir());
 			const pid = supervisor.pidOf("reference-provider") as number;
 			const { collector } = harness({
 				processes: () => [{ role: "provider:reference-provider", pid }],
 				readMemory: processMemory,
-				signal: (target, signal) => supervisor.signal(target, signal),
 			});
 			supervisor.observeExits((exit) => collector.recordExit(exit));
 
@@ -481,6 +516,8 @@ describe("listing node's reports", () => {
 				pid: 77,
 				heapUsed: 4_057_720,
 				heapLimit: LIMIT,
+				rss: null,
+				hostTotal: null,
 			},
 			{
 				kind: "report",
@@ -491,6 +528,8 @@ describe("listing node's reports", () => {
 				pid: 7,
 				heapUsed: null,
 				heapLimit: null,
+				rss: null,
+				hostTotal: null,
 			},
 			{
 				kind: "unreadable",
@@ -556,7 +595,7 @@ describe("listing node's reports", () => {
 	});
 });
 
-describe("node's own reports", () => {
+describe("the reports directory", () => {
 	it("prunes to the newest few, leaving the self report alone", () => {
 		const dir = path.join(scratch(), "reports");
 		mkdirSync(dir);
@@ -583,74 +622,85 @@ describe("node's own reports", () => {
 		expect(pruneReports(path.join(scratch(), "missing"))).toEqual([]);
 	});
 
-	it("turns on the fatal and signal reports for a node child, and says which signal it then survives", () => {
-		const dir = path.join(scratch(), "reports");
-		const setup = nodeReportSetup(dir, { env: {}, platform: "linux" });
-
-		expect(existsSync(dir)).toBe(true);
-		expect(setup.argv).toContain("--report-on-fatalerror");
-		expect(setup.argv).toContain(`--report-directory=${dir}`);
-		expect(setup.argv).toContain("--report-on-signal");
-		expect(setup.argv).toContain("--report-signal=SIGUSR2");
-		expect(setup.handles).toEqual(["SIGUSR2"]);
-		expect(setup.argv.some((flag) => flag.startsWith("--heapsnapshot"))).toBe(false);
-	});
-
-	// A report carries every environment variable, API keys included, unless told not to.
-	it("keeps the environment out of reports where node can, and says so either way", () => {
-		const dir = path.join(scratch(), "reports");
-		const setup = nodeReportSetup(dir, { env: {}, platform: "linux" });
-		const supported = "excludeEnv" in process.report;
-
-		expect(setup.excludesEnv).toBe(supported);
-		expect(setup.argv.includes("--report-exclude-env")).toBe(supported);
-		expect(harness({ reportsExcludeEnv: false }).collector.current().host.reportsExcludeEnv).toBe(false);
-	});
-
 	it("makes the reports directory readable by its owner alone, even one that already existed wider", () => {
 		const dir = path.join(scratch(), "reports");
 		mkdirSync(dir, { mode: 0o755 });
-		nodeReportSetup(dir, { env: {}, platform: "linux" });
+		makeReportsDir(dir);
 
+		expect(existsSync(dir)).toBe(true);
 		if (process.platform !== "win32") expect(statSync(dir).mode & 0o777).toBe(0o700);
 	});
 
-	// The LSP runs this outside any guard; a throw here would cost it the whole local index.
-	it("answers empty argv and the reason, rather than throwing, when the directory cannot be made", () => {
-		const root = scratch();
-		writeFileSync(path.join(root, "blocker"), "");
-		const setup = nodeReportSetup(path.join(root, "blocker", "reports"), { env: {}, platform: "linux" });
-
-		expect(setup.argv).toEqual([]);
-		expect(setup.handles).toEqual([]);
-		expect(setup.failure).toBeDefined();
-	});
-
 	// A daemon dying before its collector's first write leaves a report per death.
-	it("prunes at setup, before any collector has written", () => {
+	it("prunes when the directory is made, before any collector has written", () => {
 		const dir = path.join(scratch(), "reports");
 		mkdirSync(dir);
 		for (let n = 0; n < 12; n++) writeFileSync(path.join(dir, `report.202608${10 + n}.1.1.0.001.json`), "{}");
-		nodeReportSetup(dir, { env: {}, platform: "linux" });
+		makeReportsDir(dir);
 
 		expect(readdirSync(dir)).toHaveLength(8);
 	});
 
-	// Without the handler the default action is death, so the child must not be declared to survive it.
-	it("leaves the signal off on Windows, and declares no handler there", () => {
-		const setup = nodeReportSetup(path.join(scratch(), "reports"), { env: {}, platform: "win32" });
-		expect(setup.argv).toContain("--report-on-fatalerror");
-		expect(setup.argv.some((flag) => flag.includes("signal"))).toBe(false);
-		expect(setup.handles).toEqual([]);
-	});
-
-	it("adds the heap snapshot only when asked by the environment", () => {
-		const dir = path.join(scratch(), "reports");
-		expect(nodeReportSetup(dir, { env: { [HEAP_SNAPSHOT_ENV]: "1" }, platform: "linux" }).argv).toContain(
-			"--heapsnapshot-near-heap-limit=1",
-		);
+	it("reads the heap snapshot opt-in from the environment", () => {
+		expect(heapSnapshotWanted({ [HEAP_SNAPSHOT_ENV]: "1" })).toBe(true);
 		expect(heapSnapshotWanted({ [HEAP_SNAPSHOT_ENV]: "0" })).toBe(false);
 		expect(heapSnapshotWanted({ [HEAP_SNAPSHOT_ENV]: "" })).toBe(false);
 		expect(heapSnapshotWanted({})).toBe(false);
+	});
+
+	it("writes a heap snapshot from the runtime under the name pruning and listing know", () => {
+		const dir = path.join(scratch(), "reports");
+		mkdirSync(dir);
+		writeHeapSnapshot(dir, 1787360823480);
+
+		const [name] = readdirSync(dir);
+		expect(name).toMatch(/^Heap\.1787360823480\.\d+\.heapsnapshot$/);
+		expect(statSync(path.join(dir, name as string)).size).toBeGreaterThan(0);
+		expect(listReports(path.dirname(dir)).map((report) => report.kind)).toEqual(["snapshot"]);
+	});
+});
+
+describe("collections older daemons wrote", () => {
+	it("reads a version 1 file as the current shape", () => {
+		const root = scratch();
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
+		const paths = storePaths(path.join(stateRoot(host), KEY));
+		mkdirSync(paths.dir, { recursive: true });
+		const legacy = {
+			version: 1,
+			writtenAt: 5,
+			workspaceRoot: "/w",
+			daemon: { pid: DAEMON, version: "2.2.0", startedAt: 1 },
+			host: {
+				nodeHeapLimit: LIMIT,
+				memTotal: 32e9,
+				memAvailable: 16e9,
+				sampler: "procfs",
+				signal: "SIGUSR2",
+				reportsExcludeEnv: true,
+			},
+			peaks: [],
+			incidents: [],
+			samples: [],
+		};
+		writeFileSync(paths.diagnosticsFile, JSON.stringify(legacy));
+
+		expect(readDiagnostics(paths.dir)).toMatchObject({
+			state: "present",
+			data: { version: 2, host: { runtime: "node", sampler: "procfs", memTotal: 32e9 } },
+		});
+	});
+});
+
+describe("a write killed between temp and rename", () => {
+	it("leaves a temp file the next prune removes, and nothing else is touched", () => {
+		const dir = path.join(scratch(), "reports");
+		mkdirSync(dir);
+		writeFileSync(path.join(dir, `${SELF_REPORT}.tmp`), "");
+		writeFileSync(path.join(dir, "Heap.1.7.heapsnapshot.tmp"), "");
+		writeFileSync(path.join(dir, "notes.tmp"), "");
+
+		expect(pruneReports(dir).sort()).toEqual(["Heap.1.7.heapsnapshot.tmp", `${SELF_REPORT}.tmp`]);
+		expect(readdirSync(dir)).toEqual(["notes.tmp"]);
 	});
 });

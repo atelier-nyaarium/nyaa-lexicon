@@ -1,6 +1,6 @@
+import { expect, test } from "bun:test";
 import path from "node:path";
 import { applyEdits, coordinatesOf, type RenameSite } from "@nyaa-lexicon/protocol";
-import { expect, test } from "vitest";
 import { extractFile } from "../extract.js";
 import { GDScriptProvider } from "../main.js";
 

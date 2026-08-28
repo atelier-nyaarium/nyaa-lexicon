@@ -1,3 +1,4 @@
+import { describe, expect, it, mock } from "bun:test";
 import type {
 	Answer,
 	CallHierarchy,
@@ -13,7 +14,6 @@ import type {
 	TypeHierarchy,
 	TypeInfo,
 } from "@nyaa-lexicon/core";
-import { describe, expect, it, vi } from "vitest";
 import type { LexiconReads } from "../reads";
 import { LspServer, pathFromUri, type Range, type TypeHierarchyItem, toModule, toUri } from "../server";
 
@@ -198,6 +198,7 @@ describe("navigation", () => {
 			range: span(2, 0, 8, 0),
 			selectionRange: span(3, 6, 3, 10),
 		});
+		if (found.selectionRange === undefined) throw new Error("declaration selection range missing");
 		const server = new LspServer(reads({ declarationsIn: async () => [found] }), ROOT);
 
 		expect(await server.definition(URI, { line: 4, character: 1 })).toEqual({
@@ -210,7 +211,8 @@ describe("navigation", () => {
 		const found = declaration("item", { selectionRange: span(1, 0, 1, 4) });
 		const first = reference(MODULE, "item", span(4, 2, 4, 6));
 		const second = reference("src/other.ts", "item", span(7, 0, 7, 4));
-		const findReferences = vi.fn(async () => referencesResult(found.symbolId, [first, second]));
+		if (found.selectionRange === undefined) throw new Error("declaration selection range missing");
+		const findReferences = mock(async () => referencesResult(found.symbolId, [first, second]));
 		const server = new LspServer(reads({ declarationsIn: async () => [found], findReferences }), ROOT);
 
 		const withDeclaration = await server.references(URI, { line: 1, character: 1 }, true);
@@ -247,7 +249,6 @@ describe("hover", () => {
 			}),
 			ROOT,
 		);
-
 		const result = await server.hover(URI, { line: 3, character: 5 });
 
 		expect(result?.contents.value).toContain(found.signature);
@@ -308,7 +309,7 @@ describe("type navigation", () => {
 			{ status: "known", display: "A | B", provenance: "declared" },
 			{ status: "unknown", reason: "ExternalDependency" },
 		];
-		const declarationOf = vi.fn(async () => declaration("adjacent"));
+		const declarationOf = mock(async () => declaration("adjacent"));
 
 		for (const type of types) {
 			const server = new LspServer(
@@ -329,7 +330,7 @@ describe("type navigation", () => {
 			kind: "class",
 			selectionRange: span(2, 0, 2, 5),
 		});
-		const typeHierarchy = vi.fn(
+		const typeHierarchy = mock(
 			async (symbolId: string): Promise<TypeHierarchy> => ({
 				symbolId,
 				supertypes: [],
@@ -338,11 +339,12 @@ describe("type navigation", () => {
 				unboundSupertypes: [],
 			}),
 		);
-		const declarationOf = vi.fn(async (symbolId: string) => (symbolId === child.symbolId ? child : null));
+		const declarationOf = mock(async (symbolId: string) => (symbolId === child.symbolId ? child : null));
 		const server = new LspServer(
 			reads({ declarationsIn: async () => [found], typeHierarchy, declarationOf }),
 			ROOT,
 		);
+		if (child.selectionRange === undefined) throw new Error("child selection range missing");
 
 		expect(await server.implementation(URI, { line: 1, character: 1 })).toEqual([
 			{ uri: toUri(ROOT, child.module), range: child.selectionRange },
@@ -355,7 +357,7 @@ describe("type navigation", () => {
 
 describe("hierarchy expansion", () => {
 	it("rejects malformed params without querying either hierarchy", async () => {
-		const typeHierarchy = vi.fn(
+		const typeHierarchy = mock(
 			async (symbolId: string): Promise<TypeHierarchy> => ({
 				symbolId,
 				supertypes: [],
@@ -364,7 +366,7 @@ describe("hierarchy expansion", () => {
 				unboundSupertypes: [],
 			}),
 		);
-		const callHierarchy = vi.fn(
+		const callHierarchy = mock(
 			async (symbolId: string): Promise<CallHierarchy> => ({
 				symbolId,
 				incoming: [],
@@ -388,7 +390,7 @@ describe("hierarchy expansion", () => {
 		const caller = declaration("caller", { symbolId: "symbol:caller" });
 		const callee = declaration("callee", { symbolId: "symbol:callee" });
 		const declarations = new Map([parent, child, caller, callee].map((item) => [item.symbolId, item] as const));
-		const typeHierarchy = vi.fn(
+		const typeHierarchy = mock(
 			async (symbolId: string): Promise<TypeHierarchy> => ({
 				symbolId,
 				supertypes: [summary(parent.symbolId, parent.name)],
@@ -399,14 +401,14 @@ describe("hierarchy expansion", () => {
 		);
 		const incomingRanges = [span(5, 2, 5, 7)];
 		const outgoingRanges = [span(8, 4, 8, 10)];
-		const callHierarchy = vi.fn(
+		const callHierarchy = mock(
 			async (symbolId: string): Promise<CallHierarchy> => ({
 				symbolId,
 				incoming: [{ symbol: summary(caller.symbolId, caller.name, "function"), ranges: incomingRanges }],
 				outgoing: [{ symbol: summary(callee.symbolId, callee.name, "function"), ranges: outgoingRanges }],
 			}),
 		);
-		const declarationOf = vi.fn(async (symbolId: string) => declarations.get(symbolId) ?? null);
+		const declarationOf = mock(async (symbolId: string) => declarations.get(symbolId) ?? null);
 		const server = new LspServer(
 			reads({ declarationsIn: async () => [root], typeHierarchy, callHierarchy, declarationOf }),
 			ROOT,
@@ -469,8 +471,8 @@ describe("rename preparation", () => {
 	it("refuses any blocker and returns the selection range with a placeholder otherwise", async () => {
 		const found = declaration("item", { selectionRange: span(2, 3, 2, 7) });
 		const blockers = [{ kind: "UnboundOccurrence", detail: "not safe" }];
-		const prepareRename = vi
-			.fn<(symbolId: string, newName: string) => Promise<RenamePlan>>()
+		if (found.selectionRange === undefined) throw new Error("declaration selection range missing");
+		const prepareRename = mock<(symbolId: string, newName: string) => Promise<RenamePlan>>()
 			.mockResolvedValueOnce(plan(found.symbolId, "item_", blockers))
 			.mockResolvedValueOnce(plan(found.symbolId, "item_"));
 		const server = new LspServer(reads({ declarationsIn: async () => [found], prepareRename }), ROOT);
@@ -487,7 +489,7 @@ describe("rename preparation", () => {
 
 describe("rename", () => {
 	it("returns null when no symbol is at the position", async () => {
-		const renameEdits = vi.fn<(symbolId: string, newName: string) => Promise<RenameEditPlan>>();
+		const renameEdits = mock<(symbolId: string, newName: string) => Promise<RenameEditPlan>>();
 		const server = new LspServer(reads({ declarationsIn: async () => [], renameEdits }), ROOT);
 
 		expect(await server.rename(URI, { line: 1, character: 1 }, "renamed")).toBeNull();
@@ -496,21 +498,21 @@ describe("rename", () => {
 
 	it("refuses an open transaction before asking for rename edits", async () => {
 		const found = declaration("item");
-		const renameEdits = vi.fn<(symbolId: string, newName: string) => Promise<RenameEditPlan>>();
-		const transactionOpen = vi.fn(async () => true);
+		const renameEdits = mock<(symbolId: string, newName: string) => Promise<RenameEditPlan>>();
+		const transactionOpen = mock(async () => true);
 		const server = new LspServer(
 			reads({ declarationsIn: async () => [found], renameEdits, transactionOpen }),
 			ROOT,
 		);
 
 		expect(await server.rename(URI, { line: 1, character: 1 }, "renamed")).toBeNull();
-		expect(transactionOpen).toHaveBeenCalledOnce();
+		expect(transactionOpen).toHaveBeenCalledTimes(1);
 		expect(renameEdits).not.toHaveBeenCalled();
 	});
 
 	it("returns null when the edit plan is refused", async () => {
 		const found = declaration("item");
-		const renameEdits = vi.fn<(symbolId: string, newName: string) => Promise<RenameEditPlan>>().mockResolvedValue({
+		const renameEdits = mock<(symbolId: string, newName: string) => Promise<RenameEditPlan>>().mockResolvedValue({
 			ok: false,
 			plan: plan(found.symbolId, "renamed"),
 			reason: "blocked",
@@ -534,9 +536,9 @@ describe("rename", () => {
 			module: "src/other.ts",
 			edits: [{ range: span(3, 1, 3, 5), newText: "renamed" }],
 		};
-		const renameEdits = vi
-			.fn<(symbolId: string, newName: string) => Promise<RenameEditPlan>>()
-			.mockResolvedValue(renameResult(found.symbolId, "renamed", [firstFile, secondFile]));
+		const renameEdits = mock<(symbolId: string, newName: string) => Promise<RenameEditPlan>>().mockResolvedValue(
+			renameResult(found.symbolId, "renamed", [firstFile, secondFile]),
+		);
 		const server = new LspServer(reads({ declarationsIn: async () => [found], renameEdits }), ROOT);
 
 		const result = await server.rename(URI, { line: 1, character: 1 }, "renamed");

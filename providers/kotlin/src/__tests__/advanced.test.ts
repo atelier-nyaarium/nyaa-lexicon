@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { coordinatesOf, type Declaration, handlersFor, parseSymbolId } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, test } from "vitest";
 import { KotlinProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { parseKotlin, SourceCursor } from "../parser.js";
 
@@ -126,10 +126,11 @@ describe("Kotlin references and binding", () => {
 		const read = facts.references.find((item) => item.name === "value" && item.role === "read");
 		const write = facts.references.find((item) => item.name === "value" && item.role === "write");
 		const construction = facts.references.find((item) => item.name === "Box" && item.role === "instantiate");
+		if (value === undefined || box === undefined) throw new Error("binding declaration missing");
 
-		expect(read?.binding).toEqual({ status: "bound", symbolId: value?.symbolId, provenance: "bound" });
-		expect(write?.binding).toEqual({ status: "bound", symbolId: value?.symbolId, provenance: "bound" });
-		expect(construction?.binding).toEqual({ status: "bound", symbolId: box?.symbolId, provenance: "bound" });
+		expect(read?.binding).toEqual({ status: "bound", symbolId: value.symbolId, provenance: "bound" });
+		expect(write?.binding).toEqual({ status: "bound", symbolId: value.symbolId, provenance: "bound" });
+		expect(construction?.binding).toEqual({ status: "bound", symbolId: box.symbolId, provenance: "bound" });
 	});
 
 	test("keeps local parameters ahead of same-named top-level declarations", () => {
@@ -139,9 +140,10 @@ describe("Kotlin references and binding", () => {
 		const facts = provider.parseFile({ module: "Shadow.kt", contentHash: "shadow", text });
 		const parameter = declaration(facts, "value", "variable");
 		const reference = facts.references.find((item) => item.name === "value" && item.role === "read");
+		if (parameter === undefined) throw new Error("parameter declaration missing");
 
 		expect(parameter?.languageKind).toBe("parameter");
-		expect(reference?.binding).toEqual({ status: "bound", symbolId: parameter?.symbolId, provenance: "bound" });
+		expect(reference?.binding).toEqual({ status: "bound", symbolId: parameter.symbolId, provenance: "bound" });
 	});
 
 	test("reports call, read, write, instantiate, extends, typeUse, and import roles", () => {

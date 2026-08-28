@@ -288,7 +288,7 @@ A provider with its own project model, as TypeScript has, uses the handler table
 `protocol/` carries a fixture corpus and a runner:
 
 ```
-node dist/conformance.js <command to start your provider>
+bun dist/conformance.js <command to start your provider>
 ```
 
 It runs without the core and without a daemon, so a provider team is never blocked on us. A

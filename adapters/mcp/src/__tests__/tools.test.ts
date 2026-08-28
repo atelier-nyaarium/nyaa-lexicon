@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import type { DescribeResult, SymbolSummary } from "@nyaa-lexicon/core";
-import { describe, expect, it } from "vitest";
 import {
 	describeSymbol,
 	findReferences,

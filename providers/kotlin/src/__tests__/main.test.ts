@@ -1,8 +1,8 @@
+import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FileFactsSchema, parseSymbolId } from "@nyaa-lexicon/protocol";
-import { afterEach, expect, test } from "vitest";
 import { KotlinProvider } from "../main.js";
 
 const roots: string[] = [];

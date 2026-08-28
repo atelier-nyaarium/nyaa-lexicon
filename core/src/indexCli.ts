@@ -6,6 +6,7 @@
 // tool checkable rather than described.
 
 import path from "node:path";
+import { refuseRuntime } from "@nyaa-lexicon/client";
 import { describeStart, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
@@ -16,6 +17,11 @@ import { ProviderSupervisor } from "./supervisor.js";
 //  Main
 
 async function main(argv: string[]): Promise<void> {
+	const refused = refuseRuntime("the lexicon indexer");
+	if (refused !== null) {
+		console.error(refused);
+		process.exit(1);
+	}
 	const [workspace, query, commentQuery] = argv;
 	if (workspace === undefined) {
 		console.error("usage: index-workspace <workspace> [symbolName] [--comments <text>]");

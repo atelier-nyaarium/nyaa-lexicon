@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,7 +11,6 @@ import {
 	type PlatformEnv,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { ownSource } from "../ownSource";
 
@@ -306,7 +306,13 @@ describe("answering", () => {
 				throw new Error("index is rebuilding");
 			},
 		});
-		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/index is rebuilding/);
+		// Caught by hand: bun's `rejects` fails the test on the handler's own throw before the reply lands.
+		const failed = await callDaemon(daemon.lock, "describe").then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(failed).toBeInstanceOf(Error);
+		expect((failed as Error).message).toMatch(/index is rebuilding/);
 	});
 
 	it("drops a client speaking garbage without taking the daemon down", async () => {

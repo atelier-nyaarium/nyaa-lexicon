@@ -1,5 +1,5 @@
+import { expect, test } from "bun:test";
 import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
-import { expect, test } from "vitest";
 import { RustProvider } from "../main.js";
 
 function parse(text: string, module = "src/lib.rs") {
@@ -432,10 +432,10 @@ test("ranges a comment over exactly the text it reports", () => {
 	expect(facts.comments.map((comment) => coordinates.sliceRange(comment.range))).toEqual(
 		facts.comments.map((comment) => comment.text),
 	);
-	expect(facts.comments.map((comment) => comment.range)).toEqual([
-		rangeOfText(text, "// leading"),
-		rangeOfText(text, "/* inline */"),
-	]);
+	const leadingRange = rangeOfText(text, "// leading");
+	const inlineRange = rangeOfText(text, "/* inline */");
+	if (leadingRange === undefined || inlineRange === undefined) throw new Error("comment range missing");
+	expect(facts.comments.map((comment) => comment.range)).toEqual([leadingRange, inlineRange]);
 });
 
 test("leaves a comment marker inside a literal out of the comment list", () => {

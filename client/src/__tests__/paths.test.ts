@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
 import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "../paths";
 
 ////////////////////////////////

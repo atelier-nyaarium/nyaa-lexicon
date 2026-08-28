@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +11,6 @@ import {
 	type Range,
 	reasonOf,
 } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, test } from "vitest";
 import { MarkdownProvider, TIERS } from "../main.js";
 import { parseMarkdown } from "../parser.js";
 

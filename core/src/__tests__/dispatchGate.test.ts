@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { createDispatch } from "../dispatch";
 import type { CommentQuery, LiteralQuery } from "../indexReads";
 import type { LexiconService } from "../service";
@@ -124,7 +124,8 @@ describe("the tree-first tier", () => {
 		} as unknown as LexiconService;
 	}
 
-	it.each(TIER_ONE)("full-parses the symbol's tree before answering %s", async (method) => {
+	it.each([...TIER_ONE])("full-parses the symbol's tree before answering %s", async (method) => {
+		if (typeof method !== "string") throw new Error("method name missing");
 		const log: string[] = [];
 		const dispatch = createDispatch(treeTracingService(log));
 

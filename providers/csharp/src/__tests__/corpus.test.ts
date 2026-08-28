@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { CsharpProvider } from "../main.js";
 
 const corpusRoot = path.join(process.cwd(), "temp/newtonsoft-json");

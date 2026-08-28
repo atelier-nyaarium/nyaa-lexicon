@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, it } from "vitest";
 import { bundleStamp, daemonCommand, findDaemon, lockHolderAlive, processIsAlive } from "../discover";
 import { canonicalRoot, type PlatformEnv, workspacePaths } from "../paths";
 import { processIdentity } from "../procfs";
@@ -126,8 +126,40 @@ describe("the bundle under a root", () => {
 		mkdirSync(path.dirname(bundle), { recursive: true });
 		writeFileSync(bundle, "// bundle\n");
 
-		expect(bundleStamp(root)).toMatch(/^\d+:\d+$/);
+		expect(bundleStamp(root)).toMatch(/^1:[0-9a-f]{16}$/);
 		expect(daemonCommand(root, "/w")).toEqual([process.execPath, bundle, "/w"]);
+	});
+
+	// A provider rebuilt alone must retire a daemon still serving its old copy.
+	it("changes its stamp when any bundle under dist changes, not only the daemon's", () => {
+		const root = scratch("lexicon-root-");
+		const provider = path.join(root, "dist", "providers", "alpha", "main.js");
+		mkdirSync(path.dirname(provider), { recursive: true });
+		writeFileSync(path.join(root, "dist", "daemon.js"), "// daemon\n");
+		writeFileSync(provider, "// provider\n");
+		const before = bundleStamp(root);
+
+		writeFileSync(provider, "// provider, rebuilt\n");
+
+		expect(before).toMatch(/^2:[0-9a-f]{16}$/);
+		expect(bundleStamp(root)).not.toBe(before);
+	});
+
+	// Two plugin hosts install the same release into two directories, each copy with its own mtimes;
+	// equal bytes must agree or their daemons retire each other on every connect.
+	it("stamps two copies of the same bundles alike, whatever their mtimes", () => {
+		const first = scratch("lexicon-root-");
+		const second = scratch("lexicon-root-");
+		for (const root of [first, second]) {
+			mkdirSync(path.join(root, "dist", "providers", "alpha"), { recursive: true });
+			writeFileSync(path.join(root, "dist", "daemon.js"), "// daemon\n");
+			writeFileSync(path.join(root, "dist", "providers", "alpha", "main.js"), "// provider\n");
+		}
+		const past = new Date(Date.now() - 86_400_000);
+		utimesSync(path.join(second, "dist", "daemon.js"), past, past);
+		utimesSync(path.join(second, "dist", "providers", "alpha", "main.js"), past, past);
+
+		expect(bundleStamp(second)).toBe(bundleStamp(first));
 	});
 
 	// A directory or dangling symlink wearing the name is not a program.

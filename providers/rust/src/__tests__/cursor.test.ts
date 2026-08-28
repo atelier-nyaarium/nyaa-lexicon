@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { Cursor, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "../cursor.js";
 
 test("tracks UTF-16 columns while iterating Unicode text", () => {

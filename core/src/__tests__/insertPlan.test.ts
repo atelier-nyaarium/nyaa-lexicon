@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { composeSymbolId, type FileFacts, type Range } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import type { ImportResolver } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { type InsertArgs, RefactorPlanner } from "../refactorPlanner";

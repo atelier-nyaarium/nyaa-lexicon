@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "../coordinates";
 
 const ASTRAL = "\u{1F600}";

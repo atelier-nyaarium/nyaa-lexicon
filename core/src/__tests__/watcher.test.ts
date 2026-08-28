@@ -1,7 +1,7 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FileEvent } from "../invalidation";
 import { hashContent, isIgnored, type RunningWatcher, readEvent, toModule, watchWorkspace } from "../watcher";
 import { fakeClock } from "./fakeClock";

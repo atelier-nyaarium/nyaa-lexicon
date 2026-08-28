@@ -26,7 +26,7 @@ token            48 hex characters, presented on every connection
 pid, pidStart    the holder, and its birth ticks where the platform offers them
 protocolVersion  what the daemon speaks
 buildVersion     which release it runs, which decides its method table
-bundleStamp      size and mtime of its dist/daemon.js, so a rebuild inside one version is noticed
+bundleStamp      a digest of every bundle's bytes under dist/, so a rebuild inside one version is noticed and two copies of one release agree
 workspaceRoot    the canonical root it serves
 startedAt        epoch milliseconds
 ```
@@ -181,7 +181,7 @@ and retires it only on a clear `open: false`, since an open transaction holds th
 images its undo would restore, and anything unclear leaves it running. It re-checks that the pid is
 still the holder at the last moment, sends `SIGTERM`, and waits up to ten seconds for the lock to
 vanish, refusing to spawn over one that has not, because the newcomer would lose a claim it must
-lose and report the confusion as its own. A spawn runs `node dist/daemon.js <root>` detached, with
+lose and report the confusion as its own. A spawn runs `bun dist/daemon.js <root>` detached, with
 its stdio in `daemon.log`, and waits up to ten seconds for a lock to appear, reporting the child's
 exit code if it dies first.
 

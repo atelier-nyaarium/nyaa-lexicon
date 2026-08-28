@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { afterEach, describe, expect, it } from "vitest";
 import { TypeScriptAnalyzer } from "../analyzer";
 import { TypeScriptProvider } from "../main";
 import { loadProject } from "../project";
@@ -86,9 +86,11 @@ describe("checker-backed analysis", () => {
 			["objectDefault", objectFacts],
 			["expressionDefault", expressionFacts],
 		] as const) {
+			const symbolId = defaultId(facts);
+			if (symbolId === undefined) throw new Error("default declaration missing");
 			expect(useFacts.references.find((reference) => reference.name === name)?.binding).toEqual({
 				status: "bound",
-				symbolId: defaultId(facts),
+				symbolId,
 				provenance: "bound",
 			});
 		}
@@ -110,11 +112,12 @@ describe("checker-backed analysis", () => {
 		const fooFacts = provider.parseFile({ module: "foo.ts", contentHash: "foo", text: fooText });
 		const target = fooFacts.declarations.find((declaration) => declaration.name === "add");
 		const reference = useFacts.references.find((candidate) => candidate.name === "add");
+		if (target === undefined) throw new Error("target declaration missing");
 
 		expect(target).toBeDefined();
 		expect(reference?.binding).toEqual({
 			status: "bound",
-			symbolId: target?.symbolId,
+			symbolId: target.symbolId,
 			provenance: "bound",
 		});
 		provider.shutdown();
@@ -362,8 +365,9 @@ describe("checker-backed analysis", () => {
 		const facts = provider.parseFile({ module: "parameter.ts", contentHash: "parameter", text });
 		const parameter = facts.declarations.find((declaration) => declaration.name === "value");
 		const reference = facts.references.find((candidate) => candidate.name === "value");
+		if (parameter === undefined) throw new Error("parameter declaration missing");
 
-		expect(binding).toEqual({ status: "bound", symbolId: parameter?.symbolId, provenance: "bound" });
+		expect(binding).toEqual({ status: "bound", symbolId: parameter.symbolId, provenance: "bound" });
 		expect(reference?.binding).toEqual(binding);
 		expect(parseSymbolId(parameter?.symbolId ?? "")?.descriptors.at(-1)).toEqual({
 			kind: "parameter",
@@ -392,12 +396,13 @@ describe("checker-backed analysis", () => {
 		const q4 = facts.declarations.find((declaration) => declaration.name === "Q4");
 		const extendsReference = facts.references.find((reference) => reference.name === "Q4");
 		const callReference = facts.references.find((reference) => reference.name === "fN");
+		if (q4 === undefined) throw new Error("base declaration missing");
 
 		expect(q4).toBeDefined();
 		expect(extendsReference?.role).toBe("extends");
 		expect(extendsReference?.binding).toEqual({
 			status: "bound",
-			symbolId: q4?.symbolId,
+			symbolId: q4.symbolId,
 			provenance: "bound",
 		});
 		expect(callReference?.binding).toMatchObject({ status: "bound", provenance: "bound" });
@@ -473,10 +478,11 @@ describe("checker-backed analysis", () => {
 		const hFromA = referenceFrom("H", a?.symbolId ?? "");
 		const kFromB = referenceFrom("K", b?.symbolId ?? "");
 		const hFromC = referenceFrom("H", c?.symbolId ?? "");
+		if (h === undefined || k === undefined) throw new Error("fan-out declaration missing");
 
-		expect(hFromA?.binding).toEqual({ status: "bound", symbolId: h?.symbolId, provenance: "bound" });
-		expect(kFromB?.binding).toEqual({ status: "bound", symbolId: k?.symbolId, provenance: "bound" });
-		expect(hFromC?.binding).toEqual({ status: "bound", symbolId: h?.symbolId, provenance: "bound" });
+		expect(hFromA?.binding).toEqual({ status: "bound", symbolId: h.symbolId, provenance: "bound" });
+		expect(kFromB?.binding).toEqual({ status: "bound", symbolId: k.symbolId, provenance: "bound" });
+		expect(hFromC?.binding).toEqual({ status: "bound", symbolId: h.symbolId, provenance: "bound" });
 		const fanOut = new Set(
 			facts.references
 				.filter((reference) => reference.fromId === a?.symbolId && reference.binding.status === "bound")
@@ -514,7 +520,6 @@ describe("checker-backed analysis", () => {
 		const references = facts.references.filter(
 			(reference) => reference.role === "read" && ["retries", "enabled"].includes(reference.name),
 		);
-
 		expect(references.map((reference) => reference.name)).toEqual([
 			"retries",
 			"enabled",
@@ -525,9 +530,11 @@ describe("checker-backed analysis", () => {
 		]);
 		for (const reference of references) {
 			expect(textAt(text, reference.range)).toBe(reference.name);
+			const symbolId = propertyIds.get(reference.name);
+			if (symbolId === undefined) throw new Error("property declaration missing");
 			expect(reference.binding).toEqual({
 				status: "bound",
-				symbolId: propertyIds.get(reference.name),
+				symbolId,
 				provenance: "bound",
 			});
 		}
@@ -551,11 +558,12 @@ describe("checker-backed analysis", () => {
 		const references = facts.references.filter(
 			(reference) => reference.name === "retries" && reference.role === "read",
 		);
+		if (local === undefined) throw new Error("local declaration missing");
 
 		expect(references).toHaveLength(1);
 		expect(references[0]?.binding).toEqual({
 			status: "bound",
-			symbolId: local?.symbolId,
+			symbolId: local.symbolId,
 			provenance: "bound",
 		});
 		provider.shutdown();

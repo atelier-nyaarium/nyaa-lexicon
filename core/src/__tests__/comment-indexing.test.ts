@@ -4,12 +4,12 @@
 // which is where the source text has to reach the resolver, and where a wrong argument order would
 // still typecheck.
 
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CommentSpan, Declaration } from "@nyaa-lexicon/protocol";
 import { composeSymbolId } from "@nyaa-lexicon/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderClaims, Route } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";

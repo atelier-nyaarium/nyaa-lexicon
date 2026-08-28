@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { handlersFor, withOccurrences } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { TIERS, XmlProvider } from "../main.js";
 
 describe("XML provider", () => {

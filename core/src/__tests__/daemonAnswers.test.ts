@@ -6,12 +6,12 @@
 // parsed value must deep-equal it: an unnamed field, a missing nullable or a value outside an enum
 // fails this file rather than vanishing on the wire.
 
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DAEMON_METHODS, type DaemonMethod, type RequestOf, type ResponseOf } from "@nyaa-lexicon/protocol";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDispatch, daemonHandlers } from "../dispatch";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
@@ -62,7 +62,9 @@ async function openWorkspace(files: Record<string, string>, providers: string[],
 	const store = IndexStore.open(path.join(root, "index.sqlite")).store;
 	const supervisor = new ProviderSupervisor();
 	await Promise.all(
-		providers.map((main) => supervisor.start({ command: ["bun", "run", main], timeoutMs: 60_000 }, workspace)),
+		providers.map((main) =>
+			supervisor.start({ command: [process.execPath, "run", main], timeoutMs: 60_000 }, workspace),
+		),
 	);
 	const service = new LexiconService(store, supervisor, sourceReader(workspace), workspace);
 	const refactor = { gate: new WorkspaceGate(), transactions: new TransactionManager(store, workspace) };
@@ -110,7 +112,8 @@ async function ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Pro
 	expect(args, `${method} request`).toEqual(params);
 
 	const raw: unknown = await harness.handlers[method](args as never);
-	expect(entry.response.parse(raw), `${method} answer`).toEqual(raw);
+	const parsed = entry.response.parse(raw);
+	expect(raw, `${method} answer`).toEqual(parsed);
 
 	(answers as Record<string, unknown>)[method] = raw;
 	asked.add(method);

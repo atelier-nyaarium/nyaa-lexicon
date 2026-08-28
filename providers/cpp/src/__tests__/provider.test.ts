@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -18,7 +19,6 @@ import {
 	InitializeResponseSchema,
 	type Range,
 } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, test } from "vitest";
 import { CppProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { parseCppFile } from "../parser.js";
 

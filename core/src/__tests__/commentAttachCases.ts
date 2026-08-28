@@ -1,5 +1,5 @@
+import { expect } from "bun:test";
 import { coordinatesOf, type Declaration } from "@nyaa-lexicon/protocol";
-import { expect } from "vitest";
 import type { attachComments } from "../commentAttach";
 
 ////////////////////////////////

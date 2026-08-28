@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyEdits, coordinatesOf, type Range, type RenameEditsRequest } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { afterEach, describe, expect, it } from "vitest";
 import { TypeScriptProvider } from "../main";
 
 const roots: string[] = [];

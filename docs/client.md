@@ -33,8 +33,9 @@ Four things are read, in this order, and each can refuse before the next is touc
    of the client is ridden. No lock has been read yet.
 4. **The lock.** `ensureDaemon` reads the workspace's lock and applies `decideFromLock` (the rules
    are under Compatibility in `docs/daemon-protocol.md`) with "ours" being the INSTALL's build
-   version and the stamp of the install's `dist/daemon.js`, never the consumer's own package. A
-   spawn runs `node dist/daemon.js <workspaceRoot>`, with `--state-dir <dir>` when one was given,
+   version and the stamp over every bundle under the install's `dist/`, never the consumer's own
+   package. A
+   spawn runs `bun dist/daemon.js <workspaceRoot>`, with `--state-dir <dir>` when one was given,
    detached, and waits up to ten seconds for a lock. Whatever leaves this step without a daemon
    is a `DaemonError` carrying the reason: the child's exit code and where its log is, an
    outgoing daemon that would not release its lock, a daemon serving another workspace.

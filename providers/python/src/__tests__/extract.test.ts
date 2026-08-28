@@ -1,6 +1,6 @@
+import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import type { ImportedName } from "@nyaa-lexicon/protocol";
-import { expect, test } from "vitest";
 import { Python3Dispatch } from "../python3";
 
 const EXTRACTOR = fileURLToPath(new URL("../extract.py", import.meta.url));

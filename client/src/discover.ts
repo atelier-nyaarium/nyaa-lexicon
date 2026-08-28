@@ -7,7 +7,8 @@
 // Nothing here walks up from its own file: every root is an argument.
 
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { type DaemonLock, PROTOCOL_VERSION, TransactionStatusSchema } from "@nyaa-lexicon/protocol";
 import { decideFromLock, type LockDecision } from "./lock.js";
@@ -25,8 +26,7 @@ export interface DaemonSource {
 	bundleStamp: string | null;
 }
 
-/** How the spawned daemon died, if it has. The lock-wait reads this so "did not publish a lock"
- * can say "exited with code 3" instead (issue #7 was undiagnosable without it). */
+/** How the spawned daemon died, if it has, so a lock that never appears can name the exit instead. */
 export interface SpawnWatch {
 	death: () => string | null;
 }
@@ -144,13 +144,32 @@ export function daemonCommand(root: string, workspaceRoot: string, stateDir?: st
 /**
  * Which bundle a daemon is running, closely enough to notice a rebuild.
  *
- * The version moves once a release; a rebuild inside one leaves a daemon serving older code. Size
- * and mtime cost one stat, where hashing the bundle on every lookup would not. Null when unbuilt.
+ * A digest of every bundle's BYTES under dist/, so two copies of one release agree whatever their
+ * mtimes (two plugin hosts install the same release side by side, and equal-version daemons with
+ * different stamps would retire each other forever) and any rebuild, a provider's alone included,
+ * differs. Null when unbuilt or unreadable: nothing to compare, never a guess.
  */
 export function bundleStamp(root: string): string | null {
+	const dist = path.join(root, "dist");
 	try {
-		const found = statSync(path.join(root, "dist", "daemon.js"));
-		return `${found.size}:${Math.trunc(found.mtimeMs)}`;
+		if (!statSync(path.join(dist, "daemon.js")).isFile()) return null;
+		const files: string[] = [];
+		const visit = (dir: string): void => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const file = path.join(dir, entry.name);
+				if (entry.isDirectory()) visit(file);
+				else if (entry.isFile() && entry.name.endsWith(".js")) files.push(file);
+			}
+		};
+		visit(dist);
+		const digest = createHash("sha256");
+		for (const file of files.sort()) {
+			digest.update(path.relative(dist, file));
+			digest.update("\0");
+			digest.update(readFileSync(file));
+			digest.update("\0");
+		}
+		return `${files.length}:${digest.digest("hex").slice(0, 16)}`;
 	} catch {
 		return null;
 	}

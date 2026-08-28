@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +11,6 @@ import {
 	type Reference,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
-import { afterEach, describe, expect, it } from "vitest";
 import { CsharpProvider } from "../main.js";
 
 const roots: string[] = [];

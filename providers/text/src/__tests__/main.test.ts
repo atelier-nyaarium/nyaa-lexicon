@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { FileFactsSchema } from "@nyaa-lexicon/protocol";
-import { describe, expect, it } from "vitest";
 import { TextProvider } from "../main";
 
 describe("text provider", () => {

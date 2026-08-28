@@ -1,16 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 import { liveProbe } from "../providerProbe";
 import type { ProviderSupervisor } from "../supervisor";
 
 ////////////////////////////////
 //  Helpers
 
-const NO_DIAGNOSTICS = { declarations: [], references: [], imports: [], literals: [], diagnostics: [] };
+const NO_DIAGNOSTICS = {
+	module: "a.ts",
+	contentHash: "empty",
+	declarations: [],
+	references: [],
+	imports: [],
+	literals: [],
+	diagnostics: [],
+};
 
 /** Records every parseFile in order, so a restore is visible as a second call with the disk text. */
 function supervisorSpy(answer: (text: string) => unknown) {
 	const asked: string[] = [];
-	const ask = vi.fn(async (_module: string, _method: string, params: { text: string }) => {
+	const ask = mock(async (_module: string, _method: string, params: { text: string }) => {
 		asked.push(params.text);
 		const result = answer(params.text);
 		if (result instanceof Error) throw result;
@@ -31,7 +39,7 @@ describe("parsing a candidate always leaves the provider on the disk text", () =
 
 		const outcome = await probe.parseCandidate("a.ts", "candidate");
 
-		expect(outcome).toEqual({ parsed: true, facts: NO_DIAGNOSTICS });
+		expect(outcome).toEqual({ parsed: true as const, facts: NO_DIAGNOSTICS });
 		expect(asked).toEqual(["candidate", "on disk"]);
 	});
 
@@ -84,7 +92,7 @@ describe("parsing a candidate always leaves the provider on the disk text", () =
 		const probe = liveProbe(supervisor, () => "on disk");
 
 		await expect(probe.parseCandidate("a.ts", "candidate")).resolves.toEqual({
-			parsed: true,
+			parsed: true as const,
 			facts: NO_DIAGNOSTICS,
 		});
 	});
