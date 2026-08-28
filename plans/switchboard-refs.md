@@ -932,3 +932,19 @@ Collected after Phase 2.
   file ending in a newline reports one line more than an editor shows, and the e2e assertion for
   the whole-file case had to learn that. Consistent with the snapshot the console renders (the
   content is the same string), so it stays; recorded because it will surprise the next reader.
+- **A hand-launched session cannot attach a snapshot, and the refusal does not say why.** Found by
+  the 8.4.0 smoke: a `claude` or `copilot` started by hand in tmux, and a Copilot Agent started
+  through the gateway, all register without a session token, and while any bound session exists
+  the gateway's byte plane refuses tokenless callers (`sessionAuthority.mayUseLocalPlane`). The
+  refs resolved and the snapshots were built; the upload was refused; the agent read `blob
+  transfer is not open to this caller`, one line from the gateway with no mention of tokens or of
+  the notice-free path that would have worked. Older than this plan and by design, but a reply
+  with refs is now the common case, so either the MCP refuses before resolving with a sentence
+  that names the cause, or a registered-unbound session is admitted to the local byte plane.
+- **Copilot runs a plugin's MCP server in the plugin's own directory.** The Copilot host's
+  switchboard server spawned its lexicon daemon on
+  `~/.copilot/installed-plugins/atelier-nyaarium/switchboard`, the plugin checkout, because that
+  was the server's cwd, so `workspaceRoot()` (git toplevel of cwd) is the plugin and every ref
+  from a Copilot session resolves against the plugin's copy of switchboard rather than the
+  user's project. Claude Code starts the server in the project. The cwd rule predates this plan;
+  the host-independent root is the MCP client's `roots/list`, which both hosts answer.
