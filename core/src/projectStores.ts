@@ -6,11 +6,19 @@
 // Reads never open a store, because opening one REBUILDS an index whose schema has moved on, so
 // inspecting would rewrite the thing being inspected.
 
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { DaemonLockSchema } from "./lockFile.js";
-import { currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.js";
+import {
+	canonicalRoot,
+	currentHost,
+	type PlatformEnv,
+	stateRoot,
+	storePaths,
+	workspaceKey,
+} from "@nyaa-lexicon/client";
+import { DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { readRegistry } from "./projectRegistry.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -20,8 +28,12 @@ import { currentHost, type PlatformEnv, stateRoot, workspaceKey } from "./paths.
 export type WorkspaceState = "present" | "missing" | "unknown";
 
 export interface ProjectStore {
-	/** Directory name under the state root, and the confirmation token a delete requires. */
+	/** The directory name under the state root, or the registry key a custom store was registered under. */
 	key: string;
+	/** Absolute. The store's identity, and what a delete takes. */
+	directory: string;
+	/** A directory the project chose, as opposed to the default under the state root. */
+	custom: boolean;
 	/** The workspace this index was built from, or null when no daemon has recorded one. */
 	workspaceRoot: string | null;
 	/** Whether that path is still on disk, or that the index never said where it came from. */
@@ -36,7 +48,9 @@ export interface ProjectStore {
 	livePid: number | null;
 }
 
-export type DeleteOutcome = { deleted: true; key: string; bytes: number } | { deleted: false; reason: string };
+export type DeleteOutcome =
+	| { deleted: true; key: string; directory: string; bytes: number }
+	| { deleted: false; reason: string };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -48,7 +62,7 @@ export type HolderAlive = (holder: { pid: number; pidStart?: string | undefined 
 function pidOf(dir: string, isAlive: HolderAlive): number | null {
 	let raw: string;
 	try {
-		raw = readFileSync(path.join(dir, "daemon.json"), "utf8");
+		raw = readFileSync(storePaths(dir).lockFile, "utf8");
 	} catch {
 		return null;
 	}
@@ -104,62 +118,134 @@ function sizeOf(indexFile: string): { bytes: number; modifiedAt: number | null }
 	}
 }
 
-/** Every workspace index on this machine, newest first. */
+function describeStore(key: string, directory: string, custom: boolean, isAlive: HolderAlive): ProjectStore {
+	const indexFile = storePaths(directory).index;
+	const { workspaceRoot, lastIndexedAt } = indexMetadata(indexFile);
+	const { bytes, modifiedAt } = sizeOf(indexFile);
+	return {
+		key,
+		directory,
+		custom,
+		workspaceRoot,
+		workspace: workspaceRoot === null ? "unknown" : existsSync(workspaceRoot) ? "present" : "missing",
+		bytes,
+		modifiedAt,
+		lastIndexedAt,
+		livePid: pidOf(directory, isAlive),
+	};
+}
+
+function isDirectory(dir: string): boolean {
+	try {
+		return statSync(dir).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/** Every workspace index on this machine, newest first: the state root's children, then every
+ * directory the registry names that is not already one of them. */
 export function listProjectStores(isAlive: HolderAlive, host: PlatformEnv = currentHost()): ProjectStore[] {
 	const root = stateRoot(host);
-	let entries: string[];
+	let entries: string[] = [];
 	try {
 		entries = readdirSync(root, { withFileTypes: true })
 			.filter((entry) => entry.isDirectory())
 			.map((entry) => entry.name);
 	} catch {
-		return [];
+		// No state root yet; the registry may still name directories elsewhere.
 	}
 
-	const stores = entries.map((key): ProjectStore => {
-		const dir = path.join(root, key);
-		const indexFile = path.join(dir, "index.sqlite");
-		const { workspaceRoot, lastIndexedAt } = indexMetadata(indexFile);
-		const { bytes, modifiedAt } = sizeOf(indexFile);
-		return {
-			key,
-			workspaceRoot,
-			workspace: workspaceRoot === null ? "unknown" : existsSync(workspaceRoot) ? "present" : "missing",
-			bytes,
-			modifiedAt,
-			lastIndexedAt,
-			livePid: pidOf(dir, isAlive),
-		};
-	});
+	const stores: ProjectStore[] = [];
+	// Deduplicated on the real path, since the state root may be reached through a link.
+	const seen = new Set<string>();
+	for (const key of entries) {
+		const directory = path.join(root, key);
+		seen.add(canonicalRoot(directory));
+		stores.push(describeStore(key, directory, false, isAlive));
+	}
+	for (const project of readRegistry(host)) {
+		if (project.stateDir === undefined || !isDirectory(project.stateDir)) continue;
+		const real = canonicalRoot(project.stateDir);
+		if (seen.has(real)) continue;
+		seen.add(real);
+		stores.push(describeStore(project.key, project.stateDir, true, isAlive));
+	}
 
 	return stores.sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
 }
 
-/** Irreversible, so a live daemon is refused (deleting under its own writer corrupts it mid-write)
- * and the key must match exactly. */
+/** The store a reference names: a default store by its key, any store by its directory, both as
+ * the listing spelled them. Never a path built from the reference. */
+export function findProjectStore(reference: string, stores: ProjectStore[]): ProjectStore | null {
+	return (
+		stores.find((store) => !store.custom && store.key === reference) ??
+		stores.find((store) => store.directory === reference) ??
+		null
+	);
+}
+
+/** What the daemon writes into a store directory, and nothing else: a custom directory may hold
+ * the owner's own files beside these. */
+function storeFiles(directory: string): string[] {
+	const paths = storePaths(directory);
+	return [
+		paths.lockFile,
+		paths.index,
+		`${paths.index}-wal`,
+		`${paths.index}-shm`,
+		`${paths.index}-journal`,
+		paths.logFile,
+		`${paths.logFile}.old`,
+		paths.diagnosticsFile,
+		`${paths.diagnosticsFile}.tmp`,
+		paths.reportsDir,
+	];
+}
+
+/**
+ * Irreversible, so the store is re-read at the moment of deletion and a live daemon is refused
+ * (deleting under its own writer corrupts it mid-write). Takes a store as the listing showed it,
+ * so the directory removed is one the listing named, never one built from input.
+ */
 export function deleteProjectStore(
-	key: string,
+	store: Pick<ProjectStore, "directory">,
 	isAlive: HolderAlive,
 	host: PlatformEnv = currentHost(),
 ): DeleteOutcome {
-	// The key names a directory, so a separator or a traversal segment in it would leave the state
-	// root entirely. Refused rather than sanitized: a caller passing one is confused about what a
-	// key is, and quietly deleting some repaired path is worse than saying no.
-	if (key.length === 0 || key.includes("/") || key.includes("\\") || key.includes("..")) {
-		return { deleted: false, reason: `${JSON.stringify(key)} is not a store key` };
-	}
-
-	const store = listProjectStores(isAlive, host).find((candidate) => candidate.key === key);
-	if (store === undefined) return { deleted: false, reason: `no store named ${key}` };
-	if (store.livePid !== null) {
+	const current = listProjectStores(isAlive, host).find((candidate) => candidate.directory === store.directory);
+	if (current === undefined) return { deleted: false, reason: `no store at ${store.directory}` };
+	const label = current.custom ? current.directory : current.key;
+	if (current.livePid !== null) {
 		return {
 			deleted: false,
-			reason: `pid ${store.livePid} is serving ${key} right now; shut it down first, then delete`,
+			reason: `pid ${current.livePid} is serving ${label} right now; shut it down first, then delete`,
 		};
 	}
 
-	rmSync(path.join(stateRoot(host), key), { recursive: true, force: true });
-	return { deleted: true, key, bytes: store.bytes };
+	// A directory swapped for a link since it was admitted would have every removal land where the
+	// link points; the listing followed it to read, deletion does not.
+	try {
+		if (lstatSync(current.directory).isSymbolicLink()) {
+			return { deleted: false, reason: `${current.directory} is a symbolic link now; nothing removed` };
+		}
+	} catch {
+		return { deleted: false, reason: `${current.directory} vanished before it could be removed` };
+	}
+
+	for (const file of storeFiles(current.directory)) rmSync(file, { recursive: true, force: true });
+	if (current.custom) {
+		// The owner chose this directory; whatever else it holds stays, and so then does it.
+		try {
+			rmdirSync(current.directory);
+		} catch {
+			// Not empty.
+		}
+	} else {
+		// A default directory is lexicon's alone, rotated logs and claim leftovers included.
+		rmSync(current.directory, { recursive: true, force: true });
+	}
+	return { deleted: true, key: current.key, directory: current.directory, bytes: current.bytes };
 }
 
 /** The key a workspace path maps to, so a caller can name a store from a path. */

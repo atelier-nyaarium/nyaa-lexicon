@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
  *
  * Two writers race and either order looks plausible. The rule is the WRITE, not the module.
  */
-const PACKAGES = ["core", "adapters", "protocol", "providers"].map((dir) =>
+const PACKAGES = ["client", "core", "adapters", "protocol", "providers"].map((dir) =>
 	join(import.meta.dirname, "..", "..", "..", dir),
 );
 

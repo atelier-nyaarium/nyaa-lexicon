@@ -13,8 +13,11 @@ import { describe, expect, it } from "vitest";
  * answers null off Linux; a second that throws, or answers zero, turns every macOS host into a
  * machine where nothing is alive or nothing uses memory.
  */
-const CORE_SRC = join(import.meta.dirname, "..");
-const ADAPTERS_SRC = join(CORE_SRC, "..", "..", "adapters");
+const CLIENT_SRC = join(import.meta.dirname, "..");
+const CORE_SRC = join(CLIENT_SRC, "..", "..", "core", "src");
+const ADAPTERS_SRC = join(CLIENT_SRC, "..", "..", "adapters");
+
+const SWEPT = [CLIENT_SRC, CORE_SRC, ADAPTERS_SRC];
 
 const OWNER = "procfs.ts";
 
@@ -27,19 +30,18 @@ const SKIP = ["__tests__", "dist", "node_modules"];
 //  Tests
 
 describe("only procfs.ts reads /proc", () => {
-	it("finds source files to check, so a passing run is never vacuous", () => {
-		expect(sourceFiles(CORE_SRC, SKIP).length).toBeGreaterThan(0);
-		expect(sourceFiles(ADAPTERS_SRC, SKIP).length).toBeGreaterThan(0);
+	it("finds source files in every swept tree, so a passing run is never vacuous", () => {
+		for (const dir of SWEPT) expect(sourceFiles(dir, SKIP).length, dir).toBeGreaterThan(0);
 	});
 
 	it("sees the owner itself, so the rule is checking a real token", () => {
-		const owner = sourceFiles(CORE_SRC, SKIP).find((file) => basename(file) === OWNER);
+		const owner = sourceFiles(CLIENT_SRC, SKIP).find((file) => basename(file) === OWNER);
 		expect(owner, "procfs.ts should exist").toBeDefined();
 		expect(codeOnly(readFileSync(owner as string, "utf8"))).toContain(TOKEN);
 	});
 
-	it("has no /proc path anywhere else in core or the adapters", () => {
-		const offenders = [...sourceFiles(CORE_SRC, SKIP), ...sourceFiles(ADAPTERS_SRC, SKIP)]
+	it("has no /proc path anywhere else in the client, core or the adapters", () => {
+		const offenders = SWEPT.flatMap((dir) => sourceFiles(dir, SKIP))
 			.filter((file) => basename(file) !== OWNER)
 			.filter((file) => codeOnly(readFileSync(file, "utf8")).includes(TOKEN));
 

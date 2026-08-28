@@ -1,14 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { callDaemon, findDaemon, type PlatformEnv } from "@nyaa-lexicon/client";
 import {
-	callDaemon,
 	createDispatch,
-	findDaemon,
 	fromText,
 	IndexStore,
 	LexiconService,
-	type PlatformEnv,
+	ownSource,
 	ProviderSupervisor,
 	type RunningDaemon,
 	startDaemon,
@@ -41,7 +40,7 @@ let files: Map<string, string>;
 /** Exactly what main.ts builds, but pointed at a test state dir. */
 function backendOverDaemon(workspaceRoot: string): ToolBackend {
 	async function ask<T>(method: string, params: unknown): Promise<T> {
-		const decision = findDaemon(workspaceRoot, host);
+		const decision = findDaemon(workspaceRoot, ownSource(), host);
 		if (decision.action !== "connect") throw new Error(`no indexer running (${decision.action})`);
 		return (await callDaemon(decision.lock, method, params)) as T;
 	}

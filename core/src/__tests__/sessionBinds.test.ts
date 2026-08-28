@@ -9,6 +9,11 @@ function project(name: string, parent = "/home/dev"): RegisteredProject {
 	return { key: `${parent}/${name}-key`, root: `${parent}/${name}` };
 }
 
+/** The same workspace, in a directory of its own choosing. */
+function custom(name: string, stateDir: string, parent = "/home/dev"): RegisteredProject {
+	return { ...project(name, parent), stateDir };
+}
+
 const registry = [project("alpha"), project("beta")];
 
 ////////////////////////////////
@@ -200,5 +205,59 @@ describe("session project names", () => {
 		expect(older.sync().renames).toHaveLength(1);
 		expect(newer.sync().renames).toEqual([]);
 		expect(older.all().map((entry) => entry.name)).toEqual(newer.all().map((entry) => entry.name));
+	});
+});
+
+describe("stores in directories of a project's choosing", () => {
+	it("names a custom store after its workspace and directory, bound apart from the default", () => {
+		const binds = createSessionBinds(() => [project("switchboard"), custom("switchboard", "/x/refs-store")]);
+
+		expect(binds.all().map((entry) => entry.name)).toEqual(["switchboard", "switchboard:refs-store"]);
+		expect(binds.bind("switchboard:refs-store")).toMatchObject({
+			bound: true,
+			project: { name: "switchboard:refs-store", stateDir: "/x/refs-store" },
+		});
+		expect(binds.all().map((entry) => `${entry.name}:${entry.bound}`)).toEqual([
+			"switchboard:false",
+			"switchboard:refs-store:true",
+		]);
+
+		binds.unbind("switchboard:refs-store");
+		expect(binds.bound()).toEqual([]);
+	});
+
+	it("keeps the workspace's numbering under a collision, whether or not a default store exists", () => {
+		const projects = [custom("app", "/x/refs", "/work/one"), project("app", "/work/two")];
+
+		expect(
+			createSessionBinds(() => projects)
+				.all()
+				.map((entry) => entry.name),
+		).toEqual(["app-1:refs", "app-2"]);
+	});
+
+	it("keeps two custom stores sharing a basename apart", () => {
+		const projects = [project("app"), custom("app", "/x/refs"), custom("app", "/y/refs")];
+
+		expect(
+			createSessionBinds(() => projects)
+				.all()
+				.map((entry) => entry.name),
+		).toEqual(["app", "app:refs", "app:refs-2"]);
+	});
+
+	it("renames a custom store with its workspace, clearing a binding on it", () => {
+		const first = custom("app", "/x/refs", "/work/one");
+		let known = [first];
+		const binds = createSessionBinds(() => known);
+		binds.bind("app:refs");
+
+		known = [...known, project("app", "/work/two")];
+
+		expect(binds.sync()).toEqual({
+			renames: [{ key: first.key, root: first.root, stateDir: "/x/refs", from: "app:refs", to: "app-1:refs" }],
+			bindingsCleared: true,
+		});
+		expect(binds.all().map((entry) => entry.name)).toEqual(["app-1:refs", "app-2"]);
 	});
 });

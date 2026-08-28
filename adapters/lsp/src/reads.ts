@@ -2,9 +2,9 @@
 //
 // Every method is a Promise, so a caller cannot tell which side of a socket answered.
 
+import type { DaemonChannel } from "@nyaa-lexicon/client";
 import type {
 	CallHierarchy,
-	DaemonChannel,
 	DescribeResult,
 	LexiconService,
 	RecalledAnswer,

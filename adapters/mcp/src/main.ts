@@ -3,16 +3,19 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { daemonChannel, writeInstallRecord } from "@nyaa-lexicon/client";
 import {
 	createSessionBinds,
-	daemonChannel,
 	IndexStore,
 	LexiconService,
+	lexiconRoot,
+	ownSource,
 	ProviderSupervisor,
 	readRegistry,
 	type SessionProject,
 	sourceReader,
 	startProviders,
+	storeIdentity,
 } from "@nyaa-lexicon/core";
 import packageJson from "../../../package.json";
 import {
@@ -71,8 +74,12 @@ export const SERVER_INFO = { name: "nyaa-lexicon", version: packageJson.version 
  * `daemonChannel`'s job rather than this file's, since the editor adapter needs the same rule and
  * two copies of a retry rule is how two surfaces come to disagree about when a daemon is gone.
  */
-export function daemonBackend(workspaceRoot: string): ToolBackend {
-	const { ask } = daemonChannel(workspaceRoot);
+export function daemonBackend(workspaceRoot: string, stateDir?: string): ToolBackend {
+	const { ask } = daemonChannel({
+		workspaceRoot,
+		source: ownSource(),
+		...(stateDir === undefined ? {} : { stateDir }),
+	});
 
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),
@@ -290,14 +297,24 @@ async function main(argv: string[]): Promise<void> {
 		return;
 	}
 
+	// Where lexicon is, for a consumer's client to find. Before anything is registered, and never
+	// fatal: this server does not need the record itself.
+	try {
+		writeInstallRecord(lexiconRoot());
+	} catch (error) {
+		console.error(`install record not written: ${error instanceof Error ? error.message : String(error)}`);
+	}
+
 	// No workspace is guessed from the environment or the working directory. Which codebase to
 	// answer about is the agent's to state, and it states it by binding.
+	// One channel per store, since a workspace may have a default store and custom ones.
 	const backends = new Map<string, ToolBackend>();
 	const backendFor = (project: SessionProject): ToolBackend => {
-		const existing = backends.get(project.key);
+		const identity = storeIdentity(project);
+		const existing = backends.get(identity);
 		if (existing !== undefined) return existing;
-		const created = daemonBackend(project.root);
-		backends.set(project.key, created);
+		const created = daemonBackend(project.root, project.stateDir);
+		backends.set(identity, created);
 		return created;
 	};
 

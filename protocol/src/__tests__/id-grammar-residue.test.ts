@@ -14,7 +14,7 @@ import { codeOnly, sourceFiles } from "../residue";
  * The workspace roots are checked rather than protocol alone, because a provider minting an id by
  * template literal is the likeliest place for this to happen.
  */
-const ROOTS = ["protocol", "core", "adapters", "providers"].map((dir) =>
+const ROOTS = ["protocol", "client", "core", "adapters", "providers"].map((dir) =>
 	join(import.meta.dirname, "..", "..", "..", dir),
 );
 

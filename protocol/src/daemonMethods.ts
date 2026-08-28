@@ -24,6 +24,7 @@ import {
 	InvalidateOutcomeSchema,
 	KnowledgeGapsSchema,
 	LiteralsResultSchema,
+	ModuleStatusSchema,
 	MostReferencedResultSchema,
 	MoveOutcomeSchema,
 	MovePlanSchema,
@@ -233,6 +234,8 @@ export const DAEMON_METHODS = {
 	outlineModule: { request: ByModule, response: z.array(SymbolSummarySchema) },
 	/** A provider's warnings and info for one file. */
 	fileNotes: { request: ByModule, response: FileNotesSchema },
+	/** Whether one file exists, is claimed, and is indexed, without indexing it. */
+	moduleStatus: { request: ByModule, response: ModuleStatusSchema },
 	/** Importers by written specifier or resolved module. */
 	findImports: { request: FindImports, response: FindImportsResultSchema },
 	/** Files, symbols, coverage and the biggest modules. */

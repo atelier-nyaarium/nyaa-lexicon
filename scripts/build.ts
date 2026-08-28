@@ -23,6 +23,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { PROTOCOL_VERSION } from "../protocol/src/version.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -62,6 +63,9 @@ const ENTRYPOINTS = [
 	{ source: path.join("adapters", "lsp", "src", "main.ts"), out: "lsp.js" },
 ];
 const DIST_DIR = "dist";
+
+/** What the install says about itself, so a client learns what a checkout is without running it. */
+const VERSION_FILE = "version.json";
 
 /**
  * Providers are bundled too, and for the same reason the server is.
@@ -434,6 +438,11 @@ function main(argv: string[]): void {
 			const assets = copyProviderAssets(ROOT, entry.assets, path.join(DIST_DIR, path.dirname(entry.out)));
 			for (const asset of assets) console.log(`copied ${asset}`);
 		}
+		writeFileSync(
+			path.join(ROOT, DIST_DIR, VERSION_FILE),
+			`${JSON.stringify({ buildVersion: version, protocolVersion: PROTOCOL_VERSION }, null, "\t")}\n`,
+		);
+		console.log(`wrote ${DIST_DIR}/${VERSION_FILE}: ${version}, protocol ${PROTOCOL_VERSION}`);
 		console.log(`self-contained: ${checkBundlesAreSelfContained(ROOT)} bundles`);
 		smokeProviders(ROOT, providers);
 	} catch (failure) {

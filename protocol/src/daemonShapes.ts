@@ -8,7 +8,7 @@ import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS } from "./factId.js";
 import { MoveDependencySchema } from "./move.js";
-import { LiteralSchema } from "./project.js";
+import { IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import { DeclarationSchema, RangeSchema, ReferenceRoleSchema, SymbolKindSchema, VisibilitySchema } from "./symbols.js";
 
@@ -645,6 +645,27 @@ export const IndexOutcomeSchema = z
 	.meta({ id: "IndexOutcome" });
 
 export type IndexOutcome = z.infer<typeof IndexOutcomeSchema>;
+
+/** What `indexFile` would find for one module, read without indexing anything. */
+export const ModuleStatusSchema = z
+	.object({
+		module: z.string(),
+		/** On disk under the workspace, as the indexer's own reader sees it. */
+		exists: z.boolean(),
+		/** A provider owns it and the scope admits it. */
+		claimed: z.boolean(),
+		provider: z.string().optional(),
+		/** Why nothing will index it, when `claimed` is false. */
+		unclaimedReason: z.string().optional(),
+		/** The store holds facts for it, at `depth`. */
+		indexed: z.boolean(),
+		depth: IndexDepthSchema.optional(),
+		/** The recorded parse failure, if any. */
+		failure: z.string().optional(),
+	})
+	.meta({ id: "ModuleStatus" });
+
+export type ModuleStatus = z.infer<typeof ModuleStatusSchema>;
 
 const failedFile = z.object({ module: z.string(), reason: z.string() });
 

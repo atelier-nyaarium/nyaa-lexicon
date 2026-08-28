@@ -1,9 +1,10 @@
 # Daemon protocol
 
 One daemon per workspace holds the index, and everything that asks it a question is a thin client
-speaking this wire: the MCP adapter today, and any project that depends on
-`@nyaa-lexicon/protocol`. This document is the client's half: how a daemon is found, what crosses
-the socket, and what a client may assume about a daemon it did not start. The other wire, between
+speaking this wire: the MCP adapter, the editor adapter, and any project that depends on
+`@nyaa-lexicon/client`, which speaks it on their behalf (`docs/client.md`). This document is the
+wire itself: how a daemon is found, what crosses the socket, and what a client may assume about a
+daemon it did not start. The other wire, between
 the daemon and its language providers, is `docs/provider-protocol.md`.
 
 ## The lock file
@@ -100,7 +101,7 @@ up if the connection is lost twice.
 ## The method table
 
 `DAEMON_METHODS`, in the protocol package, is the one owner of what the daemon answers:
-forty-eight entries, each a method name with a `request` schema and a `response` schema, in
+forty-nine entries, each a method name with a `request` schema and a `response` schema, in
 dispatch order, with a doc line on every entry. `hubs` is its own entry aliasing `mostReferenced`,
 so the accepted method set is exactly what older clients ask by. Three types derive from it, and
 nothing else is hand-written:

@@ -4,33 +4,7 @@
 // value so a caller cannot invent a fourth outcome, and so the rules are testable without a
 // process or a socket.
 
-import { z } from "zod";
-
-////////////////////////////////
-//  Schemas
-
-export const DaemonLockSchema = z
-	.object({
-		/** Localhost port. Chosen by the OS at bind, never fixed, so two workspaces cannot collide. */
-		port: z.number().int().positive(),
-		/** Presented on every call. Closes the hole that binding a TCP port opens on a shared box. */
-		token: z.string().min(32),
-		pid: z.number().int().positive(),
-		/** The pid's birth ticks where the platform offers them. A reused pid fails this, so a dead
-		 * daemon can never read as live on pid alone (issue #7). */
-		pidStart: z.string().min(1).optional(),
-		/** Protocol version the daemon speaks, so a client on a different major replaces it. */
-		protocolVersion: z.string().min(1),
-		/** The BUILD the daemon runs, which decides its method table. Absent reads as a mismatch. */
-		buildVersion: z.string().min(1).optional(),
-		/** Which BUNDLE, so a rebuild inside one version is noticed too. */
-		bundleStamp: z.string().min(1).optional(),
-		workspaceRoot: z.string().min(1),
-		startedAt: z.number().int().nonnegative(),
-	})
-	.meta({ id: "DaemonLock" });
-
-export type DaemonLock = z.infer<typeof DaemonLockSchema>;
+import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types

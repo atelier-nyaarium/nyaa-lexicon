@@ -9,14 +9,18 @@
 import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { lockHolderAlive } from "./client.js";
-import { bundleStamp } from "./ensureDaemon.js";
-import { type DaemonLock, DaemonLockSchema } from "./lockFile.js";
-import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
-import { processIdentity } from "./procfs.js";
-import { DaemonStartingError, type FrameServer, serveFrames } from "./socketTransport.js";
-import { BUILD_VERSION } from "./version.js";
+import {
+	canonicalRoot,
+	currentHost,
+	DaemonStartingError,
+	lockHolderAlive,
+	type PlatformEnv,
+	processIdentity,
+	workspacePaths,
+} from "@nyaa-lexicon/client";
+import { type DaemonLock, DaemonLockSchema, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { ownSource } from "./ownSource.js";
+import { type FrameServer, serveFrames } from "./socketTransport.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -25,6 +29,8 @@ export type Handle = (method: string, params: unknown) => Promise<unknown>;
 
 export interface DaemonOptions {
 	workspaceRoot: string;
+	/** A store directory of the caller's choosing; the default is derived from the workspace. */
+	stateDir?: string;
 	/** Optional so the lock is claimed BEFORE the store opens; until it lands, requests get "starting". */
 	handle?: Handle;
 	host?: PlatformEnv;
@@ -126,7 +132,8 @@ function claimLock(lockFile: string, lock: DaemonLock): { claimed: true } | { cl
  * Binding precedes claiming because the lock carries the port. */
 export async function startDaemon(options: DaemonOptions): Promise<StartOutcome> {
 	const host = options.host ?? currentHost();
-	const paths = workspacePaths(host, options.workspaceRoot);
+	// The one derivation: the claim, the loss check and the release all read this lock file.
+	const paths = workspacePaths(host, options.workspaceRoot, options.stateDir);
 	const token = randomBytes(TOKEN_BYTES).toString("hex");
 	const startedAt = Date.now();
 	let handle = options.handle ?? null;
@@ -172,14 +179,15 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 	});
 
 	const identity = processIdentity(process.pid);
+	const source = ownSource();
 	const lock = DaemonLockSchema.parse({
 		port: server.port,
 		token,
 		pid: process.pid,
 		...(identity === null ? {} : { pidStart: identity.startTicks }),
 		protocolVersion: PROTOCOL_VERSION,
-		buildVersion: BUILD_VERSION,
-		...(bundleStamp() === null ? {} : { bundleStamp: bundleStamp() }),
+		buildVersion: source.buildVersion,
+		...(source.bundleStamp === null ? {} : { bundleStamp: source.bundleStamp }),
 		workspaceRoot: canonicalRoot(options.workspaceRoot),
 		startedAt: Date.now(),
 	});

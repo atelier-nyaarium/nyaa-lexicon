@@ -56,12 +56,12 @@ const MUTATION_TOOLS = [
 
 const MANAGEMENT_PROPERTIES = {
 	bind_project: ["project"],
-	delete_project_store: ["key"],
+	delete_project_store: ["store"],
 	list_project_stores: [],
 	list_projects: [],
-	project_diagnostics: ["key"],
-	register_project: ["root"],
-	stop_project_daemon: ["key"],
+	project_diagnostics: ["store"],
+	register_project: ["root", "stateDir"],
+	stop_project_daemon: ["store"],
 	unbind_project: ["project"],
 } as const;
 

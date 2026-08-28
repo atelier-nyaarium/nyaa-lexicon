@@ -3,7 +3,7 @@
 // Two writers race and the loser leaves a plausible-looking index, so a residue test holds this as
 // the only one. Reaches wide on purpose: indexing IS reading files and asking providers.
 
-import type { ImportResolution, IndexDepth, IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
+import type { ImportResolution, IndexDepth, IndexOutcome, IndexStatus, ModuleStatus } from "@nyaa-lexicon/protocol";
 import { attachComments } from "./commentAttach.js";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
@@ -507,6 +507,30 @@ export class WorkspaceIndexer {
 			...(concerned === null ? {} : { concerning: concerned }),
 			fullFiles: depths.full + depths.surface,
 			outlineFiles: depths.outline,
+		};
+	}
+
+	/** What `indexFile` would find, decided in its order, without asking a provider or writing. */
+	moduleStatus(module: string): ModuleStatus {
+		const route = this.supervisor.route(module);
+		const unclaimedReason = this.currentScope().denies(module)
+			? "denied by scope"
+			: route.owned
+				? null
+				: route.reason === "contested"
+					? `claimed by ${route.providerIds.join(", ")}`
+					: "unclaimed";
+		const depth = this.store.depthOf(module);
+		const failure = this.store.parseFailureOf(module);
+		return {
+			module,
+			exists: this.readSource(module).kind !== "missing",
+			claimed: unclaimedReason === null,
+			...(route.owned && unclaimedReason === null ? { provider: route.providerId } : {}),
+			...(unclaimedReason === null ? {} : { unclaimedReason }),
+			indexed: depth !== null,
+			...(depth === null ? {} : { depth }),
+			...(failure === null ? {} : { failure: failure.reason }),
 		};
 	}
 

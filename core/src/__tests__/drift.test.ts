@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { bundleStamp } from "@nyaa-lexicon/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { driftedTo } from "../drift";
-import { bundleStamp } from "../ensureDaemon";
 
 ////////////////////////////////
 //  Helpers

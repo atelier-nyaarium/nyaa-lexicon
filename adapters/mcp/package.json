@@ -9,6 +9,7 @@
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "1.30.0",
+		"@nyaa-lexicon/client": "workspace:*",
 		"@nyaa-lexicon/core": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
 		"zod": "4.4.3"

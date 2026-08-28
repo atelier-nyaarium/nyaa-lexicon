@@ -13,6 +13,17 @@ and response shapes for every daemon method, `RequestOf` and `ResponseOf` derive
 table, so a call against the daemon is checked where it is written. `docs/daemon-protocol.md`
 describes the wire.
 
+Another project can now depend on `@nyaa-lexicon/client` and reach a workspace's daemon with
+`connect`, sharing the daemon the sessions there already use, or naming a store directory of its
+own with `stateDir`; every daemon method is a typed call on the session it gets back. The daemon
+it starts is the installed lexicon's, found through a record the MCP and the daemon write at start,
+and a client a protocol major ahead of that install refuses with both versions rather than
+spawning. `register_project` takes `stateDir` and `list_projects` shows it. The one change you
+see: `list_project_stores`, `project_diagnostics`, `stop_project_daemon` and
+`delete_project_store` take `store`, a key or a directory as the listing shows it, where they took
+`key`. The daemon takes `--state-dir`, and a default store directory is now created `0700`.
+`docs/client.md` is the consumer's document.
+
 ## 2.2.0
 
 XML, HTML and plain text are read, a search can be scoped to a declaration, and a daemon over a

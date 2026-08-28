@@ -130,6 +130,8 @@ const MIXED_FILES: Record<string, string> = {
 		"---\nseverity: warning\n---\n\n# Cart\n\nThe cart holds items until checkout.\n\n## Checkout\n\n```sh\nbun run cart\n```\n",
 	// Data: keys as symbols, values as literals, one value shared with the frontmatter.
 	"config.json": '{\n\t"severity": "warning",\n\t"limit": 3\n}\n',
+	// On disk and in history, owned by no provider.
+	"notes.txt": "plain text nobody claims\n",
 };
 
 /** The class in cart.ref and the heading in README.md, which share a name on purpose. */
@@ -212,6 +214,21 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect((await ask("fileNotes", { module: "config.json" })).known).toBe(true);
 		expect((await ask("fileNotes", { module: "ghost.ref" })).known).toBe(false);
 	},
+	moduleStatus: async () => {
+		expect(await ask("moduleStatus", { module: "cart.ref" })).toMatchObject({
+			exists: true,
+			claimed: true,
+			indexed: true,
+			depth: "full",
+		});
+		expect(await ask("moduleStatus", { module: "ghost.ref" })).toMatchObject({ exists: false, indexed: false });
+		expect(await ask("moduleStatus", { module: "notes.txt" })).toMatchObject({
+			exists: true,
+			claimed: false,
+			unclaimedReason: "unclaimed",
+			indexed: false,
+		});
+	},
 	findImports: () => ask("findImports", { specifier: "./item", limit: 5 }),
 	overview: async () => {
 		const overview = await ask("overview", {});
@@ -221,7 +238,7 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	coChangedWith: async () => {
 		const together = await ask("coChangedWith", { module: "cart.ref", limit: 5 });
 		expect(together.commits).toBe(1);
-		expect(together.partners).toHaveLength(3);
+		expect(together.partners).toHaveLength(4);
 	},
 	fileHistory: async () => {
 		expect((await ask("fileHistory", { module: "cart.ref" })).commits).toBe(1);

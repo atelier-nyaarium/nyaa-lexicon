@@ -6,9 +6,8 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { bundleStamp, daemonCommand, newerBuild } from "@nyaa-lexicon/client";
 import { type Clock, systemClock } from "./clock.js";
-import { bundleStamp, daemonCommand } from "./ensureDaemon.js";
-import { newerBuild } from "./lockFile.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -78,7 +77,7 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
 		if (!newerBuild(entry, best?.version ?? options.version)) continue;
 		const sibling = path.join(parent, entry);
 		// Only a root with a runnable, settled bundle is a target.
-		if (daemonCommand(options.workspaceRoot, sibling) === null) continue;
+		if (daemonCommand(sibling, options.workspaceRoot) === null) continue;
 		if (!settled(path.join(sibling, "dist", "daemon.js"), options)) continue;
 		// The manifest must agree with the directory name. A bundle compiled as some OTHER version
 		// writes that version into its lock, which clients then replace, which respawns the daemon

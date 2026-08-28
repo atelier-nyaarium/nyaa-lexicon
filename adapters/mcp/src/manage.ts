@@ -9,24 +9,28 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
-	callDaemon,
 	currentHost,
-	type DaemonLock,
-	DaemonLockSchema,
+	DaemonError,
+	findDaemon,
+	lockHolderAlive,
+	shutdownDaemon,
+	storePaths,
+} from "@nyaa-lexicon/client";
+import {
+	type DeleteOutcome,
 	type Diagnostics,
 	deleteProjectStore,
-	findDaemon,
+	findProjectStore,
 	listProjectStores,
 	listReports,
-	lockHolderAlive,
+	ownSource,
 	type ProjectStore,
 	type ReadDiagnostics,
 	type ReportSummary,
 	readDiagnostics,
 	type SampleContext,
-	stateRoot,
-	workspacePaths,
 } from "@nyaa-lexicon/core";
+import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 
 ////////////////////////////////
@@ -40,14 +44,19 @@ interface ToolResult {
 /** Injected so a test drives real directories without real daemons. */
 export interface ManageDeps {
 	list: () => ProjectStore[];
-	remove: (key: string) => ReturnType<typeof deleteProjectStore>;
+	remove: (store: ProjectStore) => DeleteOutcome;
 	lock: (store: ProjectStore) => DaemonLock | null;
-	shutdown: (lock: DaemonLock) => Promise<unknown>;
+	/** Asks the daemon behind `lock` to stop and returns once the store's lock no longer names it. */
+	stop: (store: ProjectStore, lock: DaemonLock) => Promise<void>;
 	gone: (store: ProjectStore, holder: { pid: number; pidStart?: string | undefined }) => boolean;
-	wait: (ms: number) => Promise<void>;
-	now: () => number;
-	diagnostics: (key: string) => ReadDiagnostics;
-	reports: (key: string) => ReportSummary[];
+	diagnostics: (directory: string) => ReadDiagnostics;
+	reports: (directory: string) => ReportSummary[];
+}
+
+/** A bound project, as much of it as a store can be matched against. */
+export interface BoundStore {
+	key: string;
+	stateDir?: string;
 }
 
 ////////////////////////////////
@@ -56,9 +65,9 @@ export interface ManageDeps {
 export const LIST_STORES_DESCRIPTION = `
 # \`list_project_stores\`
 
-List local indexes with size, write time, daemon state, and workspace state.
+List local indexes with directory, size, write time, daemon state, and workspace state.
 
-Use each row's key with \`project_diagnostics\`, \`delete_project_store\` or \`stop_project_daemon\`.
+Use a row's key or directory with \`project_diagnostics\`, \`delete_project_store\` or \`stop_project_daemon\`.
 `.trim();
 
 export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
@@ -66,7 +75,7 @@ export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 
 Memory record of a store's daemon and providers, and node's crash reports beside it. Read from disk, so it answers for a daemon that has died.
 
-Pass a key from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
+Pass a key or directory from \`list_project_stores\`. Answers peaks against the heap limit, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -90,7 +99,7 @@ Refused while the project is bound. Call \`unbind_project\` first. Use before \`
 export const ListStoresInput = {};
 
 export const DeleteStoreInput = {
-	key: z.string().min(1).describe(`Store key shown by \`list_project_stores\`.`),
+	store: z.string().min(1).describe(`Store key or directory shown by \`list_project_stores\`.`),
 };
 
 export const StopDaemonInput = DeleteStoreInput;
@@ -104,7 +113,6 @@ const REPORTS_SHOWN = 20;
 /** What `workspaceKey` mints. Anything else is a directory name, not a key. */
 const STORE_KEY_RE = /^[A-Za-z0-9._-]+$/;
 const STOP_TIMEOUT_MS = 5_000;
-const STOP_POLL_MS = 100;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -117,10 +125,7 @@ function text(body: string, isError = false): ToolResult {
 }
 
 function daemonLockFile(store: ProjectStore): string {
-	const host = currentHost();
-	return store.workspaceRoot === null
-		? path.join(stateRoot(host), store.key, "daemon.json")
-		: workspacePaths(host, store.workspaceRoot).lockFile;
+	return storePaths(store.directory).lockFile;
 }
 
 function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
@@ -143,27 +148,71 @@ function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
 export function liveDeps(): ManageDeps {
 	return {
 		list: () => listProjectStores(lockHolderAlive),
-		remove: (key) => deleteProjectStore(key, lockHolderAlive),
+		remove: (store) => deleteProjectStore(store, lockHolderAlive),
 		lock: (store) => {
 			if (store.workspaceRoot === null) return legacyDaemonLock(store);
-			const decision = findDaemon(store.workspaceRoot);
+			// The listing's directory, never one re-derived from the workspace: a store renamed by
+			// hand or chosen by its project is found where it is.
+			const decision = findDaemon(store.workspaceRoot, ownSource(), currentHost(), store.directory);
 			if (decision.action === "connect") return decision.lock;
 			if (decision.action === "replace" && decision.lock.workspaceRoot === store.workspaceRoot) {
 				return decision.lock;
 			}
 			return null;
 		},
-		shutdown: (lock) => callDaemon(lock, "shutdown", {}),
+		stop: (store, lock) => shutdownDaemon(lock, daemonLockFile(store), { timeoutMs: STOP_TIMEOUT_MS }),
 		gone: (store, holder) => {
 			// Identity, not bare liveness: a reused pid must read as gone, not as a refusal to stop.
 			if (!lockHolderAlive(holder)) return true;
 			return !existsSync(daemonLockFile(store));
 		},
-		wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-		now: () => Date.now(),
-		diagnostics: (key) => readDiagnostics(key),
-		reports: (key) => listReports(key),
+		diagnostics: (directory) => readDiagnostics(directory),
+		reports: (directory) => listReports(directory),
 	};
+}
+
+/** How a store is named back to the user: a default one by key, a custom one by directory. */
+function storeLabel(store: ProjectStore): string {
+	return store.custom ? store.directory : store.key;
+}
+
+/** JSON-quoted, so a reference holding a newline or a backtick cannot shape the markdown around it. */
+function quoted(reference: string): string {
+	return JSON.stringify(reference);
+}
+
+/**
+ * The store a reference names, resolved against the live listing and nothing else. A key-shaped
+ * reference is matched on default stores' keys, an absolute path on every store's directory;
+ * anything else is refused before the listing is read at all.
+ */
+function resolveStore(deps: ManageDeps, reference: string): ProjectStore | ToolResult {
+	const isKey = STORE_KEY_RE.test(reference);
+	if (!isKey && !path.isAbsolute(reference)) {
+		return text(
+			`# Store not found\n\n${quoted(reference)} is neither a store key nor a directory; call \`list_project_stores\` for the real ones.`,
+			true,
+		);
+	}
+	const store = findProjectStore(reference, deps.list());
+	if (store === null) {
+		const named = isKey ? `named \`${reference}\`` : `at ${quoted(reference)}`;
+		return text(`# Store not found\n\nNo store ${named}; call \`list_project_stores\` for the real ones.`, true);
+	}
+	return store;
+}
+
+function isToolResult(value: ProjectStore | ToolResult): value is ToolResult {
+	return "content" in value;
+}
+
+/** Whether a bound project answers from this store: the same key in the same directory. */
+function servesBound(store: ProjectStore, bound: BoundStore[]): boolean {
+	return bound.some((project) =>
+		store.custom
+			? project.stateDir === store.directory
+			: project.key === store.key && project.stateDir === undefined,
+	);
 }
 
 /** A size that cannot be is a question mark, and nothing is rounded up to a kilobyte. */
@@ -230,8 +279,9 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 						? "ORPHANED, its workspace is gone"
 						: "UNVERIFIED, it does not say what it indexed";
 		return [
-			`## \`${store.key}\``,
+			store.custom ? `## \`${store.key}\` (custom directory)` : `## \`${store.key}\``,
 			"",
+			`- Directory: ${store.directory}`,
 			`- Workspace: ${where}`,
 			`- Size: ${describeSize(store.bytes)}`,
 			`- Written: ${describeAge(store.modifiedAt, now)}`,
@@ -270,7 +320,7 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 }
 
 export function renderDiagnostics(
-	key: string,
+	label: string,
 	file: string,
 	data: Diagnostics,
 	reports: ReportSummary[],
@@ -338,7 +388,7 @@ export function renderDiagnostics(
 	if (reports.length > shown.length) reportLines.push(`- and ${reports.length - shown.length} older, not listed`);
 
 	return [
-		`# Diagnostics for \`${key}\``,
+		`# Diagnostics for \`${label}\``,
 		"",
 		`- Written: ${describeElapsed(now - data.writtenAt)}`,
 		`- Daemon: pid ${data.daemon.pid}, ${data.daemon.version}, started ${describeElapsed(now - data.daemon.startedAt)}`,
@@ -381,108 +431,73 @@ export function listProjectStoresTool(deps: ManageDeps, now = Date.now()): ToolR
 	return text(renderStores(deps.list(), now));
 }
 
-export function projectDiagnosticsTool(deps: ManageDeps, args: { key: string }, now = Date.now()): ToolResult {
-	if (!STORE_KEY_RE.test(args.key)) {
-		return text(
-			`# Store not found\n\nThat is not a store key; call \`list_project_stores\` to get a real one.`,
-			true,
-		);
-	}
-	const store = deps.list().find((candidate) => candidate.key === args.key);
-	if (store === undefined) {
-		return text(
-			`# Store not found\n\nNo store named \`${args.key}\`; call \`list_project_stores\` to get a real store key.`,
-			true,
-		);
-	}
+export function projectDiagnosticsTool(deps: ManageDeps, args: { store: string }, now = Date.now()): ToolResult {
+	const store = resolveStore(deps, args.store);
+	if (isToolResult(store)) return store;
+	const label = storeLabel(store);
 
-	const read = deps.diagnostics(args.key);
+	const read = deps.diagnostics(store.directory);
 	if (read.state === "absent") {
 		return text(
-			`# No diagnostics yet\n\nNothing at \`${read.file}\`. A daemon writes it on its first sample, and none has written one for \`${args.key}\` yet.`,
+			`# No diagnostics yet\n\nNothing at \`${read.file}\`. A daemon writes it on its first sample, and none has written one for \`${label}\` yet.`,
 		);
 	}
 	if (read.state === "unreadable") {
 		return text(`# Diagnostics unreadable\n\n\`${read.file}\`: ${read.reason}`, true);
 	}
-	return text(renderDiagnostics(args.key, read.file, read.data, deps.reports(args.key), now));
+	return text(renderDiagnostics(label, read.file, read.data, deps.reports(store.directory), now));
 }
 
-export function deleteProjectStoreTool(deps: ManageDeps, args: { key: string }): ToolResult {
-	const outcome = deps.remove(args.key);
+export function deleteProjectStoreTool(deps: ManageDeps, args: { store: string }): ToolResult {
+	const store = resolveStore(deps, args.store);
+	if (isToolResult(store)) return store;
+
+	const outcome = deps.remove(store);
 	if (!outcome.deleted) return text(outcome.reason, true);
+	const label = store.custom ? outcome.directory : outcome.key;
 	return text(
-		`# Project index deleted\n\nDeleted \`${outcome.key}\`, freeing ${describeSize(outcome.bytes)}. It rebuilds on next use if its workspace still exists.`,
+		`# Project index deleted\n\nDeleted \`${label}\`, freeing ${describeSize(outcome.bytes)}. It rebuilds on next use if its workspace still exists.`,
 	);
-}
-
-function shutdownWasAccepted(reply: unknown): boolean {
-	return typeof reply === "object" && reply !== null && "stopping" in reply && reply.stopping === true;
 }
 
 export async function stopProjectDaemonTool(
 	deps: ManageDeps,
-	bound: () => Array<{ key: string }>,
-	args: { key: string },
+	bound: () => BoundStore[],
+	args: { store: string },
 ): Promise<ToolResult> {
-	const store = deps.list().find((candidate) => candidate.key === args.key);
-	if (store === undefined) {
-		return text(
-			`# Store not found\n\nNo store named \`${args.key}\`; call \`list_project_stores\` to get a real store key.`,
-			true,
-		);
-	}
+	const store = resolveStore(deps, args.store);
+	if (isToolResult(store)) return store;
+	const label = storeLabel(store);
 
-	if (bound().some((project) => project.key === args.key)) {
+	if (servesBound(store, bound())) {
 		return text(
-			`# Daemon not stopped\n\nRefusing to stop \`${args.key}\`: it is bound in this session. Call \`unbind_project\` first.`,
+			`# Daemon not stopped\n\nRefusing to stop \`${label}\`: it is bound in this session. Call \`unbind_project\` first.`,
 			true,
 		);
 	}
 
 	if (store.livePid === null) {
-		return text(`# Daemon already stopped\n\nNo daemon is serving \`${args.key}\`.`);
+		return text(`# Daemon already stopped\n\nNo daemon is serving \`${label}\`.`);
 	}
 
 	const pid = store.livePid;
 	const lock = deps.lock(store);
 	if (lock === null) {
 		if (deps.gone(store, { pid })) {
-			return text(`# Daemon already stopped\n\nNo daemon is serving \`${args.key}\`.`);
+			return text(`# Daemon already stopped\n\nNo daemon is serving \`${label}\`.`);
 		}
 		return text(
-			`# Daemon not stopped\n\nCould not find a usable daemon lock for \`${args.key}\`; it is still serving pid ${pid}.`,
+			`# Daemon not stopped\n\nCould not find a usable daemon lock for \`${label}\`; it is still serving pid ${pid}.`,
 			true,
 		);
 	}
 
-	let reply: unknown;
 	try {
-		reply = await deps.shutdown(lock);
+		await deps.stop(store, lock);
 	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		return text(
-			`# Daemon not stopped\n\nCould not ask pid ${pid} to stop serving \`${args.key}\`: ${reason}`,
-			true,
-		);
-	}
-	if (!shutdownWasAccepted(reply)) {
-		return text(
-			`# Daemon not stopped\n\nDaemon pid ${pid} did not acknowledge the shutdown request for \`${args.key}\`.`,
-			true,
-		);
+		if (!(error instanceof DaemonError)) throw error;
+		return text(`# Daemon not stopped\n\n${error.message}`, true);
 	}
 
-	const started = deps.now();
-	while (!deps.gone(store, lock)) {
-		if (deps.now() - started >= STOP_TIMEOUT_MS) {
-			return text(
-				`# Daemon not stopped\n\nDaemon pid ${pid} did not stop serving \`${args.key}\` within ${STOP_TIMEOUT_MS}ms.`,
-				true,
-			);
-		}
-		await deps.wait(STOP_POLL_MS);
-	}
-
-	return text(`# Daemon stopped\n\nStopped daemon pid ${pid} serving \`${args.key}\`.`);
+	return text(`# Daemon stopped\n\nStopped daemon pid ${pid} serving \`${label}\`.`);
 }

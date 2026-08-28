@@ -36,11 +36,30 @@ export interface SessionBinds {
 	sync: () => SessionSyncOutcome;
 }
 
+/** One workspace, however many stores it has. Names are minted per workspace. */
+interface Workspace {
+	key: string;
+	root: string;
+}
+
+interface NamedWorkspace extends Workspace {
+	name: string;
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
+/** One string per store, for maps and sets: the default directory is spelled by its absence. */
+export function storeIdentity(project: RegisteredProject): string {
+	return project.stateDir === undefined ? project.key : `${project.key}@${project.stateDir}`;
+}
+
 function baseName(root: string): string {
 	return path.basename(path.resolve(root)).replace(/[^A-Za-z0-9._-]/g, "-") || "project";
+}
+
+function storeName(dir: string): string {
+	return path.basename(dir).replace(/[^A-Za-z0-9._-]/g, "-") || "store";
 }
 
 function allocateName(desired: string, used: Set<string>, firstSuffix: number): string {
@@ -56,89 +75,115 @@ function allocateName(desired: string, used: Set<string>, firstSuffix: number): 
 	}
 }
 
-function compact(projects: RegisteredProject[]): SessionProject[] {
+function compact(workspaces: Workspace[]): NamedWorkspace[] {
 	const counts = new Map<string, number>();
-	for (const project of projects) {
-		const base = baseName(project.root);
+	for (const workspace of workspaces) {
+		const base = baseName(workspace.root);
 		counts.set(base, (counts.get(base) ?? 0) + 1);
 	}
 
 	const ordinals = new Map<string, number>();
 	const used = new Set<string>();
-	return projects.map((project) => {
-		const base = baseName(project.root);
+	return workspaces.map((workspace) => {
+		const base = baseName(workspace.root);
 		if ((counts.get(base) ?? 0) === 1) {
-			return { ...project, name: allocateName(base, used, 2), bound: false };
+			return { ...workspace, name: allocateName(base, used, 2) };
 		}
 		const ordinal = (ordinals.get(base) ?? 0) + 1;
 		ordinals.set(base, ordinal);
-		return { ...project, name: allocateName(`${base}-${ordinal}`, used, 2), bound: false };
+		return { ...workspace, name: allocateName(`${base}-${ordinal}`, used, 2) };
 	});
 }
 
 function uniqueProjects(projects: RegisteredProject[]): RegisteredProject[] {
-	const keys = new Set<string>();
+	const seen = new Set<string>();
 	return projects.filter((project) => {
-		if (keys.has(project.key)) return false;
-		keys.add(project.key);
+		const identity = storeIdentity(project);
+		if (seen.has(identity)) return false;
+		seen.add(identity);
 		return true;
 	});
 }
 
+/** One per key, in first-seen order, so a workspace is named once however many stores it has. */
+function workspacesOf(projects: RegisteredProject[]): Workspace[] {
+	const seen = new Set<string>();
+	const workspaces: Workspace[] = [];
+	for (const project of projects) {
+		if (seen.has(project.key)) continue;
+		seen.add(project.key);
+		workspaces.push({ key: project.key, root: project.root });
+	}
+	return workspaces;
+}
+
+/** A default store wears its workspace's name; a custom one appends its directory's basename
+ * after a colon, which no workspace name contains, so the two kinds never collide. */
+function nameStores(projects: RegisteredProject[], named: NamedWorkspace[], bound: Set<string>): SessionProject[] {
+	const workspaceNames = new Map(named.map((workspace) => [workspace.key, workspace.name]));
+	const used = new Set(workspaceNames.values());
+	return projects.map((project) => {
+		const prefix = workspaceNames.get(project.key) ?? baseName(project.root);
+		const name =
+			project.stateDir === undefined ? prefix : allocateName(`${prefix}:${storeName(project.stateDir)}`, used, 2);
+		return { ...project, name, bound: bound.has(storeIdentity(project)) };
+	});
+}
+
 export function createSessionBinds(readAll: () => RegisteredProject[]): SessionBinds {
-	const keys = new Set<string>();
-	let catalog = compact(uniqueProjects(readAll()));
-	const assignedNames = new Map(catalog.map((project) => [project.key, project.name]));
-	const reservedNames = new Set(catalog.map((project) => project.name));
+	const bound = new Set<string>();
+	const initial = uniqueProjects(readAll());
+	let named = compact(workspacesOf(initial));
+	let catalog = nameStores(initial, named, bound);
+	const assignedNames = new Map(named.map((workspace) => [workspace.key, workspace.name]));
+	const reservedNames = new Set(named.map((workspace) => workspace.name));
 
 	const reconcile = (): SessionSyncOutcome => {
 		const projects = uniqueProjects(readAll());
-		const currentKeys = new Set(projects.map((project) => project.key));
-		for (const key of keys) {
-			if (!currentKeys.has(key)) keys.delete(key);
+		const present = new Set(projects.map(storeIdentity));
+		for (const identity of bound) {
+			if (!present.has(identity)) bound.delete(identity);
 		}
 
-		const previous = new Map(catalog.map((project) => [project.key, project]));
+		const workspaces = workspacesOf(projects);
+		const previous = new Map(named.map((workspace) => [workspace.key, workspace]));
 		const addedKeys = new Set(
-			projects.filter((project) => !previous.has(project.key)).map((project) => project.key),
+			workspaces.filter((workspace) => !previous.has(workspace.key)).map((workspace) => workspace.key),
 		);
 		const counts = new Map<string, number>();
 		const addedBases = new Set<string>();
-		for (const project of projects) {
-			const base = baseName(project.root);
+		for (const workspace of workspaces) {
+			const base = baseName(workspace.root);
 			counts.set(base, (counts.get(base) ?? 0) + 1);
-			if (addedKeys.has(project.key)) addedBases.add(base);
+			if (addedKeys.has(workspace.key)) addedBases.add(base);
 		}
 
 		const renameKeys = new Set<string>();
-		for (const project of projects) {
-			const prior = previous.get(project.key);
-			const base = baseName(project.root);
+		for (const workspace of workspaces) {
+			const prior = previous.get(workspace.key);
+			const base = baseName(workspace.root);
 			if (prior?.name === base && addedBases.has(base) && (counts.get(base) ?? 0) > 1) {
-				renameKeys.add(project.key);
+				renameKeys.add(workspace.key);
 			}
 		}
 
 		// A name that disappeared during this session stays reserved. Otherwise a stale selector could
 		// silently start naming a different root before the next MCP restart compacts the namespace.
 		const used = new Set(reservedNames);
-		for (const project of projects) {
-			const prior = previous.get(project.key);
-			if (prior !== undefined && !renameKeys.has(project.key)) used.add(prior.name);
+		for (const workspace of workspaces) {
+			const prior = previous.get(workspace.key);
+			if (prior !== undefined && !renameKeys.has(workspace.key)) used.add(prior.name);
 		}
 
-		const renames: ProjectRename[] = [];
-		catalog = projects.map((project) => {
-			const prior = previous.get(project.key);
-			if (prior !== undefined && !renameKeys.has(project.key)) {
-				return { ...project, name: prior.name, bound: keys.has(project.key) };
-			}
+		named = workspaces.map((workspace) => {
+			const prior = previous.get(workspace.key);
+			if (prior !== undefined && !renameKeys.has(workspace.key)) return { ...workspace, name: prior.name };
 
-			const base = baseName(project.root);
+			const base = baseName(workspace.root);
 			const collides = (counts.get(base) ?? 0) > 1;
-			const assigned = assignedNames.get(project.key);
+			const assigned = assignedNames.get(workspace.key);
 			if (prior === undefined && assigned !== undefined && (!collides || assigned !== base)) {
-				return { ...project, name: assigned, bound: keys.has(project.key) };
+				return { ...workspace, name: assigned };
 			}
 			let name: string;
 			if (collides) {
@@ -149,21 +194,31 @@ export function createSessionBinds(readAll: () => RegisteredProject[]): SessionB
 			} else {
 				name = allocateName(base, used, 2);
 			}
-
-			if (prior !== undefined) renames.push({ key: project.key, root: project.root, from: prior.name, to: name });
-			assignedNames.set(project.key, name);
+			assignedNames.set(workspace.key, name);
 			reservedNames.add(name);
-			return { ...project, name, bound: keys.has(project.key) };
+			return { ...workspace, name };
 		});
 
-		const bindingsCleared = renames.some((rename) => keys.has(rename.key));
-		if (bindingsCleared) keys.clear();
+		// A rename is any store whose name moved, whether its workspace was renamed or a sibling
+		// store with the same basename came or went.
+		const priorNames = new Map(catalog.map((project) => [storeIdentity(project), project.name]));
+		catalog = nameStores(projects, named, bound);
+		const renames: ProjectRename[] = [];
+		for (const project of catalog) {
+			const prior = priorNames.get(storeIdentity(project));
+			if (prior === undefined || prior === project.name) continue;
+			const { name, bound: _bound, ...registered } = project;
+			renames.push({ ...registered, from: prior, to: name });
+		}
+
+		const bindingsCleared = renames.some((rename) => bound.has(storeIdentity(rename)));
+		if (bindingsCleared) bound.clear();
 		return { renames, bindingsCleared };
 	};
 
 	const flagged = (): SessionProject[] => {
 		reconcile();
-		return catalog.map((project) => ({ ...project, bound: keys.has(project.key) }));
+		return catalog.map((project) => ({ ...project, bound: bound.has(storeIdentity(project)) }));
 	};
 
 	return {
@@ -180,7 +235,7 @@ export function createSessionBinds(readAll: () => RegisteredProject[]): SessionB
 					reason: `no project called ${reference}; call list_projects, or register_project first`,
 				};
 			}
-			keys.add(target.key);
+			bound.add(storeIdentity(target));
 			return { bound: true, project: { ...target, bound: true } };
 		},
 
@@ -188,7 +243,7 @@ export function createSessionBinds(readAll: () => RegisteredProject[]): SessionB
 			reconcile();
 			const target = catalog.find((project) => project.name === reference);
 			if (target === undefined) return { bound: false, reason: `no project called ${reference}` };
-			keys.delete(target.key);
+			bound.delete(storeIdentity(target));
 			return { bound: true, project: { ...target, bound: false } };
 		},
 	};

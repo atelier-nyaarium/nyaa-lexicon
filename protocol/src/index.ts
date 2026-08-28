@@ -17,6 +17,14 @@ export {
 	type ResponseOf,
 } from "./daemonMethods.js";
 export {
+	type DaemonLock,
+	DaemonLockSchema,
+	type InstallRecord,
+	InstallRecordSchema,
+	type InstallVersion,
+	InstallVersionSchema,
+} from "./daemonRecords.js";
+export {
 	type Answer,
 	AnswerSchema,
 	type AnswerTier,
@@ -106,6 +114,8 @@ export {
 	LiteralsResultSchema,
 	type Mention,
 	MentionSchema,
+	type ModuleStatus,
+	ModuleStatusSchema,
 	type MostReferencedEntry,
 	MostReferencedEntrySchema,
 	type MostReferencedResult,
@@ -191,8 +201,13 @@ export {
 	TypeHierarchySchema,
 } from "./daemonShapes.js";
 export {
+	CLIENT_LINE_CAP,
 	type ClientFrame,
 	ClientFrameSchema,
+	CONNECT_TIMEOUT_MS,
+	HEARTBEAT_MISSED_LIMIT,
+	HEARTBEAT_MS,
+	HELLO_DEADLINE_MS,
 	type HelloFrame,
 	HelloFrameSchema,
 	type PingFrame,
@@ -205,6 +220,7 @@ export {
 	RequestFrameSchema,
 	type ResponseFrame,
 	ResponseFrameSchema,
+	SERVER_LINE_CAP,
 	type ServerFrame,
 	ServerFrameSchema,
 	type WelcomeFrame,

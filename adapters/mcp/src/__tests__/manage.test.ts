@@ -1,6 +1,13 @@
-import type { DaemonLock, Diagnostics, ProjectStore, ReportSummary } from "@nyaa-lexicon/core";
+import { DaemonError, type DaemonLock } from "@nyaa-lexicon/client";
+import type { Diagnostics, ProjectStore, ReportSummary } from "@nyaa-lexicon/core";
 import { describe, expect, it } from "vitest";
-import { deleteProjectStoreTool, type ManageDeps, projectDiagnosticsTool, stopProjectDaemonTool } from "../manage";
+import {
+	deleteProjectStoreTool,
+	listProjectStoresTool,
+	type ManageDeps,
+	projectDiagnosticsTool,
+	stopProjectDaemonTool,
+} from "../manage";
 
 ////////////////////////////////
 //  Helpers
@@ -16,9 +23,14 @@ const LOCK: DaemonLock = {
 	startedAt: NOW,
 };
 
+const DIRECTORY = "/state/proj-abc123";
+const CUSTOM = "/home/dev/proj/.refs-store";
+
 function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 	return {
 		key: "proj-abc123",
+		directory: DIRECTORY,
+		custom: false,
 		workspaceRoot: "/home/dev/proj",
 		workspace: "present",
 		bytes: 5 * 1024 * 1024,
@@ -29,6 +41,11 @@ function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 	};
 }
 
+/** The same workspace's store in a directory it chose. */
+function customStore(overrides: Partial<ProjectStore> = {}): ProjectStore {
+	return store({ directory: CUSTOM, custom: true, ...overrides });
+}
+
 const FILE = "/state/proj-abc123/diagnostics.json";
 
 function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: Partial<ManageDeps> = {}): ManageDeps {
@@ -36,10 +53,8 @@ function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: 
 		list: () => stores,
 		remove: remove ?? (() => ({ deleted: false, reason: "not wired" })),
 		lock: () => LOCK,
-		shutdown: async () => ({ stopping: true }),
+		stop: async () => {},
 		gone: () => true,
-		wait: async () => {},
-		now: () => NOW,
 		diagnostics: () => ({ state: "absent", file: FILE }),
 		reports: () => [],
 		...overrides,
@@ -96,12 +111,70 @@ const REPORT: ReportSummary = {
 ////////////////////////////////
 //  Tests
 
+describe("naming a store", () => {
+	// The listing is the only source of paths: a reference either matches a row exactly or names
+	// nothing, and a directory is never joined from what was typed.
+	it("resolves a default store by key or directory, a custom one by directory alone", () => {
+		let removed: ProjectStore[] = [];
+		const remove = (target: ProjectStore) => {
+			removed.push(target);
+			return { deleted: true as const, key: target.key, directory: target.directory, bytes: 0 };
+		};
+		const both = deps([store(), customStore()], remove);
+
+		expect(deleteProjectStoreTool(both, { store: "proj-abc123" }).isError).toBeUndefined();
+		expect(deleteProjectStoreTool(both, { store: DIRECTORY }).isError).toBeUndefined();
+		expect(deleteProjectStoreTool(both, { store: CUSTOM }).isError).toBeUndefined();
+		expect(removed.map((target) => target.directory)).toEqual([DIRECTORY, DIRECTORY, CUSTOM]);
+
+		removed = [];
+		const onlyCustom = deps([customStore()], remove);
+		expect(deleteProjectStoreTool(onlyCustom, { store: "proj-abc123" }).isError).toBe(true);
+		expect(removed).toEqual([]);
+	});
+
+	it("refuses a reference matching no row, naming what was typed", () => {
+		const result = projectDiagnosticsTool(deps([store()]), { store: "/state/elsewhere" });
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("/state/elsewhere");
+		expect(projectDiagnosticsTool(deps([store()]), { store: "ghost" }).content[0]?.text).toContain("ghost");
+	});
+
+	it("refuses a reference that is neither a key nor a directory before looking anything up", () => {
+		let listed = false;
+		const result = projectDiagnosticsTool(
+			deps([store()], undefined, {
+				list: () => {
+					listed = true;
+					return [store()];
+				},
+			}),
+			{ store: "proj\n# injected `key`" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(listed).toBe(false);
+		expect(result.content[0]?.text).not.toContain("\n# injected");
+	});
+});
+
+describe("listing stores", () => {
+	it("shows every row's directory, and says which directories were the project's choice", () => {
+		const body = listProjectStoresTool(deps([store(), customStore()]), NOW).content[0]?.text ?? "";
+
+		expect(body).toContain(`- Directory: ${DIRECTORY}`);
+		expect(body).toContain(`- Directory: ${CUSTOM}`);
+		expect(body.match(/custom/g)).toHaveLength(1);
+	});
+});
+
 describe("deleting a project store", () => {
 	// A refusal that reads as success is how a user believes they reclaimed space they still owe.
 	it("surfaces a refusal as an error rather than as a done deal", () => {
 		const result = deleteProjectStoreTool(
-			deps([], () => ({ deleted: false, reason: "pid 7 is serving it right now" })),
-			{ key: "proj-abc123" },
+			deps([store()], () => ({ deleted: false, reason: "pid 7 is serving it right now" })),
+			{ store: "proj-abc123" },
 		);
 
 		expect(result.isError).toBe(true);
@@ -109,13 +182,25 @@ describe("deleting a project store", () => {
 });
 
 describe("reading a store's diagnostics", () => {
-	it("rejects an unknown key", () => {
-		expect(projectDiagnosticsTool(deps([store()]), { key: "missing" }).isError).toBe(true);
+	it("reads from the directory the listing showed", () => {
+		const asked: string[] = [];
+		const result = projectDiagnosticsTool(
+			deps([customStore()], undefined, {
+				diagnostics: (directory) => {
+					asked.push(directory);
+					return { state: "absent", file: `${directory}/diagnostics.json` };
+				},
+			}),
+			{ store: CUSTOM },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(asked).toEqual([CUSTOM]);
 	});
 
 	// Absent is the normal state of a store no new daemon has served, not a failure.
 	it("says there is nothing yet, without erroring, when no daemon has written one", () => {
-		const result = projectDiagnosticsTool(deps([store()]), { key: "proj-abc123" });
+		const result = projectDiagnosticsTool(deps([store()]), { store: "proj-abc123" });
 
 		expect(result.isError).toBeUndefined();
 		expect(result.content[0]?.text).toContain(FILE);
@@ -124,7 +209,7 @@ describe("reading a store's diagnostics", () => {
 	it("errors on a file it cannot read, naming it", () => {
 		const result = projectDiagnosticsTool(
 			deps([store()], undefined, { diagnostics: () => ({ state: "unreadable", file: FILE, reason: "EACCES" }) }),
-			{ key: "proj-abc123" },
+			{ store: "proj-abc123" },
 		);
 
 		expect(result.isError).toBe(true);
@@ -134,7 +219,7 @@ describe("reading a store's diagnostics", () => {
 	it("names the process that peaked, how close to the limit, and what it died of while the daemon did what", () => {
 		const result = projectDiagnosticsTool(
 			deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data: collection() }) }),
-			{ key: "proj-abc123" },
+			{ store: "proj-abc123" },
 			NOW,
 		);
 		const body = result.content[0]?.text ?? "";
@@ -149,22 +234,6 @@ describe("reading a store's diagnostics", () => {
 		expect(body).toContain(`Raw: ${FILE}`);
 	});
 
-	it("refuses a key that no store could have, before looking anything up", () => {
-		let listed = false;
-		const result = projectDiagnosticsTool(
-			deps([store()], undefined, {
-				list: () => {
-					listed = true;
-					return [store()];
-				},
-			}),
-			{ key: "proj\n# injected `key`" },
-		);
-
-		expect(result.isError).toBe(true);
-		expect(listed).toBe(false);
-	});
-
 	it("lists the newest reports and counts the rest, rather than dumping a directory someone filled", () => {
 		const many = Array.from({ length: 25 }, (_, n) => ({ ...REPORT, file: `/r/report.${100 - n}.json` }));
 		const body =
@@ -173,7 +242,7 @@ describe("reading a store's diagnostics", () => {
 					diagnostics: () => ({ state: "present", file: FILE, data: collection() }),
 					reports: () => many,
 				}),
-				{ key: "proj-abc123" },
+				{ store: "proj-abc123" },
 				NOW,
 			).content[0]?.text ?? "";
 
@@ -209,7 +278,7 @@ describe("reading a store's diagnostics", () => {
 						data: collection({ incidents: [older, newer] }),
 					}),
 				}),
-				{ key: "proj-abc123" },
+				{ store: "proj-abc123" },
 				NOW,
 			).content[0]?.text ?? "";
 
@@ -220,14 +289,14 @@ describe("reading a store's diagnostics", () => {
 	it("says that what a process retained needs the opt-in snapshot, until one is present", () => {
 		const present = { state: "present" as const, file: FILE, data: collection() };
 		const without = projectDiagnosticsTool(deps([store()], undefined, { diagnostics: () => present }), {
-			key: "proj-abc123",
+			store: "proj-abc123",
 		}).content[0]?.text;
 		const withSnapshot = projectDiagnosticsTool(
 			deps([store()], undefined, {
 				diagnostics: () => present,
 				reports: () => [{ kind: "snapshot", file: "/r/Heap.z.heapsnapshot", bytes: 1024 }],
 			}),
-			{ key: "proj-abc123" },
+			{ store: "proj-abc123" },
 		).content[0]?.text;
 
 		expect(without).toContain("LEXICON_HEAP_SNAPSHOT=1");
@@ -266,7 +335,7 @@ describe("reading a store's diagnostics", () => {
 					diagnostics: () => ({ state: "present", file: FILE, data }),
 					reports: () => reports,
 				}),
-				{ key: "proj-abc123" },
+				{ store: "proj-abc123" },
 				NOW,
 			).content[0]?.text ?? "";
 
@@ -285,11 +354,11 @@ describe("reading a store's diagnostics", () => {
 		const present = { state: "present" as const, file: FILE, data: collection() };
 		const withReport = projectDiagnosticsTool(
 			deps([store()], undefined, { diagnostics: () => present, reports: () => [REPORT] }),
-			{ key: "proj-abc123" },
+			{ store: "proj-abc123" },
 			NOW,
 		).content[0]?.text;
 		const without = projectDiagnosticsTool(deps([store()], undefined, { diagnostics: () => present }), {
-			key: "proj-abc123",
+			store: "proj-abc123",
 		}).content[0]?.text;
 
 		expect(withReport).toMatch(
@@ -302,7 +371,7 @@ describe("reading a store's diagnostics", () => {
 		const empty = collection({ peaks: [], incidents: [], samples: [] });
 		const body = projectDiagnosticsTool(
 			deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data: empty }) }),
-			{ key: "proj-abc123" },
+			{ store: "proj-abc123" },
 			NOW,
 		).content[0]?.text;
 
@@ -313,69 +382,72 @@ describe("reading a store's diagnostics", () => {
 
 describe("stopping a project daemon", () => {
 	it("succeeds when no daemon is running", async () => {
-		const result = await stopProjectDaemonTool(deps([store()]), () => [], { key: "proj-abc123" });
+		const result = await stopProjectDaemonTool(deps([store()]), () => [], { store: "proj-abc123" });
 
 		expect(result.isError).toBeUndefined();
 	});
 
 	it("rejects an unknown key", async () => {
-		const result = await stopProjectDaemonTool(deps([store()]), () => [], { key: "missing" });
+		const result = await stopProjectDaemonTool(deps([store()]), () => [], { store: "missing" });
 
 		expect(result.isError).toBe(true);
 	});
 
-	it("refuses a daemon bound in this session", async () => {
+	// A binding names a store, not a workspace: the same key bound in another directory is no
+	// reason to keep this daemon up.
+	it("refuses a daemon bound in this session, and only that one", async () => {
 		let called = false;
-		const result = await stopProjectDaemonTool(
-			deps([store({ livePid: 4242 })], undefined, {
-				shutdown: async () => {
-					called = true;
-					return { stopping: true };
-				},
-			}),
-			() => [{ key: "proj-abc123" }],
-			{ key: "proj-abc123" },
-		);
+		const live = deps([store({ livePid: 4242 }), customStore({ livePid: 4343 })], undefined, {
+			stop: async () => {
+				called = true;
+			},
+		});
 
-		expect(result.isError).toBe(true);
+		const refused = await stopProjectDaemonTool(live, () => [{ key: "proj-abc123" }], { store: "proj-abc123" });
+		expect(refused.isError).toBe(true);
+		const refusedCustom = await stopProjectDaemonTool(live, () => [{ key: "proj-abc123", stateDir: CUSTOM }], {
+			store: CUSTOM,
+		});
+		expect(refusedCustom.isError).toBe(true);
 		expect(called).toBe(false);
+
+		const stopped = await stopProjectDaemonTool(live, () => [{ key: "proj-abc123", stateDir: CUSTOM }], {
+			store: "proj-abc123",
+		});
+		expect(stopped.isError).toBeUndefined();
+		expect(called).toBe(true);
 	});
 
-	it("waits until the daemon is gone before succeeding", async () => {
-		let stopped = false;
-		let calls = 0;
+	it("stops through the store the listing named and the lock found for it", async () => {
+		const asked: Array<[ProjectStore, DaemonLock]> = [];
+		const live = customStore({ livePid: 4242 });
 		const result = await stopProjectDaemonTool(
-			deps([store({ livePid: 4242 })], undefined, {
-				shutdown: async (lock) => {
-					calls += 1;
-					expect(lock).toEqual(LOCK);
-					stopped = true;
-					return { stopping: true };
+			deps([live], undefined, {
+				stop: async (target, lock) => {
+					asked.push([target, lock]);
 				},
-				gone: () => stopped,
 			}),
 			() => [],
-			{ key: "proj-abc123" },
+			{ store: CUSTOM },
 		);
 
 		expect(result.isError).toBeUndefined();
-		expect(calls).toBe(1);
+		expect(asked).toEqual([[live, LOCK]]);
 	});
 
-	it("reports a daemon that does not stop before the deadline", async () => {
-		let now = 0;
+	// A lock still naming the daemon after the wait is the one failure the ask cannot hide.
+	it("reports a daemon that would not stop, in the client's words", async () => {
 		const result = await stopProjectDaemonTool(
 			deps([store({ livePid: 4242 })], undefined, {
-				gone: () => false,
-				wait: async (ms) => {
-					now += ms;
+				stop: async () => {
+					throw new DaemonError("pid 4242 was asked to stop but still holds /state/proj-abc123/daemon.json");
 				},
-				now: () => now,
 			}),
 			() => [],
-			{ key: "proj-abc123" },
+			{ store: "proj-abc123" },
 		);
 
 		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("still holds");
 	});
 });

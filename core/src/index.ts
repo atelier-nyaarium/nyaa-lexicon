@@ -14,10 +14,9 @@ export {
 	type RecordOutcome,
 } from "./answers.js";
 export { type ApplyOutcome, type FileEdits, writeAll } from "./applyEdits.js";
-export { callDaemon, findDaemon, lockHolderAlive, processIsAlive } from "./client.js";
 export { type Clock, systemClock, type TimerHandle } from "./clock.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
-export { type DaemonChannel, daemonChannel } from "./daemonChannel.js";
+export { DAEMON_USAGE, type DaemonArgs, type ParsedDaemonArgs, parseDaemonArgs } from "./daemonArgs.js";
 export {
 	type Collector,
 	type CollectorOptions,
@@ -38,7 +37,6 @@ export {
 	startDiagnostics,
 } from "./diagnostics.js";
 export { createDispatch, daemonHandlers } from "./dispatch.js";
-export { daemonCommand, type EnsureResult, ensureDaemon } from "./ensureDaemon.js";
 export {
 	CONFIG_FILE,
 	describeScope,
@@ -114,7 +112,7 @@ export {
 	KnowledgeLedger,
 } from "./knowledge.js";
 export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } from "./lifetime.js";
-export { type DaemonLock, DaemonLockSchema, decideFromLock, type LockDecision } from "./lockFile.js";
+export { ownSource } from "./ownSource.js";
 export {
 	type Count,
 	type Counted,
@@ -126,36 +124,19 @@ export {
 	wire,
 } from "./paging.js";
 export {
-	canonicalRoot,
-	currentHost,
-	type PlatformEnv,
-	stateRoot,
-	storePaths,
-	workspaceKey,
-	workspacePaths,
-} from "./paths.js";
-export {
-	type HostMemory,
-	hostMemory,
-	type ProcessIdentity,
-	type ProcessMemory,
-	parseMeminfo,
-	parseProcStat,
-	parseProcStatus,
-	processIdentity,
-	processMemory,
-} from "./procfs.js";
-export {
+	type AdmitVerdict,
 	findProject,
 	forgetProject,
 	type RegisteredProject,
 	type RegisterOutcome,
 	readRegistry,
 	registerProject,
+	sameStore,
 } from "./projectRegistry.js";
 export {
 	type DeleteOutcome,
 	deleteProjectStore,
+	findProjectStore,
 	listProjectStores,
 	type ProjectStore,
 	storeKeyFor,
@@ -201,16 +182,9 @@ export {
 	type SessionBinds,
 	type SessionProject,
 	type SessionSyncOutcome,
+	storeIdentity,
 } from "./sessionBinds.js";
-export {
-	ConnectionLostError,
-	connectFrames,
-	DaemonStartingError,
-	type FrameClient,
-	type FrameServer,
-	requestOnce,
-	serveFrames,
-} from "./socketTransport.js";
+export { type FrameServer, serveFrames } from "./socketTransport.js";
 export {
 	fromText,
 	MAX_SOURCE_BYTES,
@@ -254,5 +228,11 @@ export {
 	type WatchOptions,
 	watchWorkspace,
 } from "./watcher.js";
-export { type Admission, admitWorkspace } from "./workspaceAdmission.js";
+export {
+	type Admission,
+	admitStateDir,
+	admitWorkspace,
+	currentOwner,
+	type DirectoryOwner,
+} from "./workspaceAdmission.js";
 export { type GateStats, WorkspaceGate } from "./workspaceGate.js";

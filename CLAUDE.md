@@ -8,10 +8,13 @@ Ships as the `lexicon` plugin on the `atelier-nyaarium` marketplace.
 
 ## Layout
 
-Bun workspace monorepo. Six packages, and the boundaries are real.
+Bun workspace monorepo. Seven packages, and the boundaries are real.
 
-- `protocol/` - zod schemas, the symbol and fact id grammars, the conformance suite. Runs without
-  the core, so a provider team is never blocked on us.
+- `protocol/` - zod schemas, the symbol and fact id grammars, the daemon method table, the
+  conformance suite. Runs without the core, so a provider team is never blocked on us.
+- `client/` - the client half of the daemon socket: find or spawn a daemon, connect, ask. Depends
+  on protocol only and never writes index state; the daemon and both adapters consume it, and so
+  can any other node project.
 - `core/` - daemon, SQLite store, provider supervisor, every query, the knowledge layer.
 - `adapters/mcp/` - agent-facing tools over stdio.
 - `adapters/lsp/` - the editor face, answering from the same service class but its own instance,
@@ -20,7 +23,7 @@ Bun workspace monorepo. Six packages, and the boundaries are real.
 - `formats/` - the one reading of a data format, for the providers that meet the same one. Markdown
   frontmatter and a `.yml` file are the same mapping, so they are the same function. It takes
   provider context as DATA, never as a language to branch on.
-- `docs/` - architecture, provider-protocol, knowledge-layer, parsing.
+- `docs/` - architecture, provider-protocol, daemon-protocol, client, knowledge-layer, parsing.
 
 ## Principles
 

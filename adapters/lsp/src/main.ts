@@ -5,18 +5,15 @@
 // except a framed message: a stray console.log corrupts the stream and the editor sees a protocol
 // error rather than the print. Every diagnostic here goes to stderr.
 
+import { currentHost, type DaemonChannel, daemonChannel, ensureDaemon, workspacePaths } from "@nyaa-lexicon/client";
 import {
-	currentHost,
-	type DaemonChannel,
-	daemonChannel,
-	ensureDaemon,
 	IndexStore,
 	LexiconService,
 	nodeReportSetup,
+	ownSource,
 	ProviderSupervisor,
 	sourceReader,
 	startProviders,
-	workspacePaths,
 } from "@nyaa-lexicon/core";
 import { daemonReads, deferredReads, type LexiconReads, localReads } from "./reads.js";
 import { LspServer, pathFromUri } from "./server.js";
@@ -104,10 +101,11 @@ function serve(workspaceRoot: string): Served {
 	let local: LocalIndex | null = null;
 
 	const reads = deferredReads(async () => {
-		const daemon = await ensureDaemon({ workspaceRoot });
+		const source = ownSource();
+		const daemon = await ensureDaemon({ workspaceRoot, source });
 		if (daemon.connected) {
 			process.stderr.write(`answering from the daemon on port ${daemon.lock.port}\n`);
-			channel = daemonChannel(workspaceRoot);
+			channel = daemonChannel({ workspaceRoot, source });
 			return daemonReads(channel);
 		}
 

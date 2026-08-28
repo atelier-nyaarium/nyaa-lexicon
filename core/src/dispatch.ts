@@ -362,6 +362,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		searchSymbols: (params) => service.searchSymbols(params.text, params),
 		outlineModule: (params) => service.outline(params.module),
 		fileNotes: (params) => service.fileNotes(params.module),
+		moduleStatus: (params) => service.moduleStatus(params.module),
 		findImports: (params) => service.findImports(params),
 		overview: () => service.overview(),
 		coChangedWith: (params) => service.coChangedWith(params.module, params.limit),

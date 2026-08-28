@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { PlatformEnv } from "@nyaa-lexicon/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PlatformEnv } from "../paths";
-import { admitWorkspace } from "../workspaceAdmission";
+import { admitStateDir, admitWorkspace, type DirectoryOwner } from "../workspaceAdmission";
 
 ////////////////////////////////
 //  Helpers
@@ -83,5 +83,92 @@ describe("refusing a workspace", () => {
 describe("the install directory", () => {
 	it("is an ordinary project, admitted like any other", () => {
 		expect(admitWorkspace(make("plugins", "lexicon"), host)).toEqual({ admitted: true });
+	});
+});
+
+////////////////////////////////
+//  State directories
+
+const posix = process.platform !== "win32";
+
+function owner(uid: number | null = process.getuid?.() ?? null): DirectoryOwner {
+	return { platform: process.platform, uid };
+}
+
+function mode(dir: string): number {
+	return statSync(dir).mode & 0o777;
+}
+
+describe("admitting a state directory", () => {
+	it("creates an absent directory for the owner alone, parents included", () => {
+		const dir = path.join(home, "stores", "deep", "refs");
+
+		expect(admitStateDir(dir, owner())).toEqual({ admitted: true });
+
+		expect(statSync(dir).isDirectory()).toBe(true);
+		if (posix) {
+			expect(mode(dir)).toBe(0o700);
+			expect(mode(path.join(home, "stores", "deep"))).toBe(0o700);
+			expect(mode(path.join(home, "stores"))).toBe(0o700);
+		}
+	});
+
+	it("admits a directory already the owner's alone, and never touches its mode", () => {
+		const dir = make("refs");
+		chmodSync(dir, 0o700);
+		expect(admitStateDir(dir, owner())).toEqual({ admitted: true });
+
+		if (!posix) return;
+		chmodSync(dir, 0o500);
+		expect(admitStateDir(dir, owner())).toEqual({ admitted: true });
+		expect(mode(dir)).toBe(0o500);
+	});
+
+	it("refuses a relative path", () => {
+		expect(admitStateDir("refs", owner()).admitted).toBe(false);
+	});
+
+	it("refuses a link whatever it points at, and a file wearing the name", () => {
+		const real = make("real");
+		chmodSync(real, 0o700);
+		const link = path.join(home, "link");
+		symlinkSync(real, link);
+		const file = path.join(home, "file");
+		writeFileSync(file, "");
+
+		expect(admitStateDir(link, owner())).toMatchObject({ admitted: false, reason: expect.stringMatching(/link/) });
+		expect(admitStateDir(file, owner()).admitted).toBe(false);
+	});
+
+	// Windows reports every directory as writable by all, so the rule has no meaning there.
+	it.skipIf(!posix)("refuses a directory its group or the world may write, and never narrows it", () => {
+		const shared = make("shared");
+		for (const wide of [0o770, 0o707, 0o777]) {
+			chmodSync(shared, wide);
+			expect(admitStateDir(shared, owner()).admitted).toBe(false);
+			expect(mode(shared)).toBe(wide);
+		}
+		chmodSync(shared, 0o755);
+		expect(admitStateDir(shared, owner())).toEqual({ admitted: true });
+	});
+
+	// A directory owned by someone else cannot be made without root, so the asker is faked instead.
+	it.skipIf(!posix)("refuses a directory owned by someone else", () => {
+		const dir = make("theirs");
+		chmodSync(dir, 0o700);
+		const stranger = (process.getuid?.() ?? 0) + 1;
+
+		expect(admitStateDir(dir, owner(stranger))).toMatchObject({
+			admitted: false,
+			reason: expect.stringMatching(/owned by uid/),
+		});
+		expect(admitStateDir(dir, owner(null))).toEqual({ admitted: true });
+	});
+
+	it("judges neither mode nor owner where the platform has neither", () => {
+		const dir = make("anything");
+		chmodSync(dir, 0o777);
+
+		expect(admitStateDir(dir, { platform: "win32", uid: null })).toEqual({ admitted: true });
 	});
 });

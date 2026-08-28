@@ -1,6 +1,6 @@
 // The daemon as a runnable program.
 //
-//   node dist/daemon.js <workspace>
+//   node dist/daemon.js <workspace> [--warm] [--state-dir <dir>]
 //
 // Indexes once at start, then serves until stopped. The index is a real file rather than memory,
 // so a restart re-uses what it already knows.
@@ -10,24 +10,32 @@
 
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
+import {
+	canonicalRoot,
+	currentHost,
+	DaemonStartingError,
+	daemonCommand,
+	spawnDaemonProcess,
+	workspacePaths,
+	writeInstallRecord,
+} from "@nyaa-lexicon/client";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
+import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
 import { type Collector, enableSelfReports, nodeReportSetup, startDiagnostics } from "./diagnostics.js";
 import { createDispatch } from "./dispatch.js";
 import { driftedTo } from "./drift.js";
-import { daemonCommand, spawnDaemonProcess } from "./ensureDaemon.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
-import { canonicalRoot, currentHost, workspacePaths } from "./paths.js";
+import { ownSource } from "./ownSource.js";
 import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
-import { DaemonStartingError } from "./socketTransport.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
 import { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
-import { admitWorkspace } from "./workspaceAdmission.js";
+import { admitStateDir, admitWorkspace } from "./workspaceAdmission.js";
 import { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
@@ -73,13 +81,13 @@ function describeError(error: unknown): string {
 
 async function main(argv: string[]): Promise<void> {
 	const startedAt = Date.now();
-	// A successor is told to warm because its predecessor was warm; nobody should notice the swap.
-	const warmRequested = argv.includes("--warm");
-	const [workspace] = argv.filter((arg) => !arg.startsWith("--"));
-	if (workspace === undefined) {
-		console.error("usage: daemon <workspace> [--warm]");
+	const parsed = parseDaemonArgs(argv);
+	if (!parsed.ok) {
+		console.error(`${parsed.problem}\n${DAEMON_USAGE}`);
 		process.exit(2);
 	}
+	// A successor is told to warm because its predecessor was warm; nobody should notice the swap.
+	const { workspace, warm: warmRequested, stateDir } = parsed.args;
 
 	const root = canonicalRoot(workspace);
 	let isDirectory = false;
@@ -103,9 +111,24 @@ async function main(argv: string[]): Promise<void> {
 		console.error(admission.reason);
 		process.exit(3);
 	}
+	// A directory of the caller's choosing is judged before anything is written into it.
+	const dirAdmission = stateDir === undefined ? admission : admitStateDir(stateDir);
+	if (!dirAdmission.admitted) {
+		console.error(dirAdmission.reason);
+		process.exit(3);
+	}
 
-	const paths = workspacePaths(host, root);
-	mkdirSync(paths.dir, { recursive: true });
+	// Where lexicon is, for a consumer's client to find. A daemon runs without an MCP, so it records
+	// too; a failure costs nothing this process needs.
+	try {
+		writeInstallRecord(lexiconRoot());
+	} catch (error) {
+		log(`install record not written: ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	const paths = workspacePaths(host, root, stateDir);
+	// The store holds an index of private code, so a default directory is as closed as a custom one.
+	mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
 	// Before anything allocates: a fatal error from here on leaves a report, not only a log line.
 	const reportsOff = enableSelfReports(paths.reportsDir);
 	if (reportsOff !== null) log(`crash reports off: ${reportsOff}`);
@@ -214,6 +237,7 @@ async function main(argv: string[]): Promise<void> {
 	let waitingFor = "opening the index";
 	const outcome = await startDaemon({
 		workspaceRoot: root,
+		...(stateDir === undefined ? {} : { stateDir }),
 		onConnections: (n) => observe(n),
 		startingNote: () => ({
 			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - Date.now()),
@@ -233,7 +257,8 @@ async function main(argv: string[]): Promise<void> {
 	// Everything below runs with the lock held, so failing without releasing it would leave every
 	// future client reading a live pid that serves nothing.
 	try {
-		const opened = IndexStore.open(paths.index, storeCompatibilityKey(lexiconRoot()), root);
+		const source = ownSource();
+		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root);
 		store = opened.store;
 		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
 
@@ -348,8 +373,8 @@ async function main(argv: string[]): Promise<void> {
 		async function handOverIfDrifted(): Promise<void> {
 			const target = driftedTo({
 				workspaceRoot: root,
-				root: lexiconRoot(),
-				version: BUILD_VERSION,
+				root: source.root,
+				version: source.buildVersion,
 				stampAtStart,
 			});
 			if (target === null) return;
@@ -363,8 +388,9 @@ async function main(argv: string[]): Promise<void> {
 				try {
 					linger?.cancel();
 					await releaseEverything();
-					// Lock released above, so the successor's claim cannot lose to a corpse.
-					const command = daemonCommand(root, target.root);
+					// Lock released above, so the successor's claim cannot lose to a corpse. It inherits the
+					// store directory, or it would claim a different store and leave this one orphaned.
+					const command = daemonCommand(target.root, root, stateDir);
 					if (command === null) log(`no runnable bundle under ${target.root}; the next client starts one`);
 					else spawnDaemonProcess([...command, "--warm"], paths.logFile);
 					log("stopped (exit 0) after handover");

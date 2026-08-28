@@ -66,25 +66,25 @@ export function workspaceKey(workspaceRoot: string): string {
 	return `${name}-${digest}`;
 }
 
-/** Everything one workspace's daemon owns, derived in one place from one root. */
-export function workspacePaths(host: PlatformEnv, workspaceRoot: string) {
-	return storePaths(host, workspaceKey(workspaceRoot));
+/** Everything one workspace's daemon owns, derived in one place from one root. A custom directory
+ * IS the store's identity: two workspaces given one directory share one store. */
+export function workspacePaths(host: PlatformEnv, workspaceRoot: string, stateDir?: string) {
+	return storePaths(stateDir ?? path.join(stateRoot(host), workspaceKey(workspaceRoot)));
 }
 
-/** The same paths from a store key, for a reader holding the directory name and not the root. */
-export function storePaths(host: PlatformEnv, key: string) {
-	const dir = path.join(stateRoot(host), key);
+/** The same paths from a store's directory, for a reader holding the directory and not the root. */
+export function storePaths(directory: string) {
 	return {
-		dir,
+		dir: directory,
 		/** Where a client finds a running daemon, or learns there is none. */
-		lockFile: path.join(dir, "daemon.json"),
-		index: path.join(dir, "index.sqlite"),
+		lockFile: path.join(directory, "daemon.json"),
+		index: path.join(directory, "index.sqlite"),
 		/** The daemon's own words. It runs detached, so this is the only place they land. */
-		logFile: path.join(dir, "daemon.log"),
+		logFile: path.join(directory, "daemon.log"),
 		/** The bounded memory collection. Rewritten whole, never appended. */
-		diagnosticsFile: path.join(dir, "diagnostics.json"),
+		diagnosticsFile: path.join(directory, "diagnostics.json"),
 		/** Node's own crash and signal reports, pruned to a few. */
-		reportsDir: path.join(dir, "reports"),
+		reportsDir: path.join(directory, "reports"),
 	};
 }
 

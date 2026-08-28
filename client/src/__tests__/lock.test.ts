@@ -1,5 +1,6 @@
+import type { DaemonLock } from "@nyaa-lexicon/protocol";
 import { describe, expect, it } from "vitest";
-import { type DaemonLock, decideFromLock, newerBuild } from "../lockFile";
+import { decideFromLock, newerBuild } from "../lock";
 
 ////////////////////////////////
 //  Helpers

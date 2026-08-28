@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { ensureDaemon } from "../ensureDaemon";
-import type { LockDecision } from "../lockFile";
-import { fakeClock } from "./fakeClock";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { DaemonSource } from "../discover";
+import { ensureDaemon } from "../ensure";
+import type { LockDecision } from "../lock";
 
 ////////////////////////////////
 //  Helpers
@@ -21,9 +24,24 @@ function looking(sequence: LockDecision[]) {
 	return () => sequence[Math.min(index++, sequence.length - 1)] as LockDecision;
 }
 
+/** A root holding a bundle, so spawning has a command to hand the injected `start`. */
+let source: DaemonSource;
+
+beforeAll(() => {
+	const root = mkdtempSync(path.join(tmpdir(), "lexicon-ensure-"));
+	mkdirSync(path.join(root, "dist"), { recursive: true });
+	writeFileSync(path.join(root, "dist", "daemon.js"), "// bundle\n");
+	source = { root, buildVersion: "1.10.2", bundleStamp: null };
+});
+
+afterAll(() => rmSync(source.root, { recursive: true, force: true }));
+
 const options = {
 	workspaceRoot: "/w",
-	clock: fakeClock(),
+	get source() {
+		return source;
+	},
+	clock: { sleep: async () => {} },
 	timeoutMs: 500,
 	alive: () => true,
 };
@@ -64,6 +82,37 @@ describe("getting a daemon", () => {
 
 		expect(started).toBe(1);
 		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	it("starts the bundle under the source it is given, against this workspace", async () => {
+		const commands: string[][] = [];
+		await ensureDaemon({
+			...options,
+			look: looking([
+				{ action: "spawn", reason: "no daemon is registered" },
+				{ action: "connect", lock: LOCK },
+			]),
+			start: (command) => {
+				commands.push(command);
+			},
+		});
+
+		expect(commands).toEqual([[process.execPath, path.join(source.root, "dist", "daemon.js"), "/w"]]);
+	});
+
+	it("refuses to start from a source that was never built, and says so", async () => {
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			source: { root: path.join(source.root, "nowhere"), buildVersion: "1.10.2", bundleStamp: null },
+			look: looking([{ action: "spawn", reason: "no daemon is registered" }]),
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(started).toBe(0);
+		expect(result.connected === false && result.reason).toMatch(/no built daemon/);
 	});
 
 	it("gives up with a reason rather than waiting forever", async () => {
@@ -158,23 +207,103 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		cause: "build",
 	};
 
-	it("stops it and starts ours when nothing is in flight", async () => {
-		const stopped: number[] = [];
+	// Asked, never signalled, when asking is enough: the daemon settles its answers and drops its
+	// own lock, which a signal would cut short.
+	it("asks it to stop, then starts ours once its lock is gone, with no signal sent", async () => {
+		const events: string[] = [];
 		let started = 0;
 		const result = await ensureDaemon({
 			...options,
-			look: looking([stale, { action: "spawn", reason: "gone" }, { action: "connect", lock: LOCK }]),
-			ask: async () => ({ open: false }),
+			// Gone by the time the ask's wait looks, and still gone when the spawn's wait looks again.
+			look: looking([
+				stale,
+				{ action: "spawn", reason: "gone" },
+				{ action: "spawn", reason: "gone" },
+				{ action: "connect", lock: LOCK },
+			]),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				return { open: false };
+			},
 			stop: (pid) => {
-				stopped.push(pid);
+				events.push(`stop:${pid}`);
 			},
 			start: () => {
 				started++;
 			},
 		});
 
-		expect(stopped).toEqual([LOCK.pid]);
+		expect(events).toEqual(["ask:refactorStatus", "ask:shutdown"]);
 		expect(started).toBe(1);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	it("falls back to the signal only once the lock has outlived the ask, and only after asking", async () => {
+		const events: string[] = [];
+		const afterSignal = looking([
+			{ action: "spawn", reason: "gone" },
+			{ action: "connect", lock: LOCK },
+		]);
+		const result = await ensureDaemon({
+			...options,
+			// Held until the signal lands, however long the graceful wait looks.
+			look: () => (events.includes(`stop:${LOCK.pid}`) ? afterSignal() : stale),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				return { open: false };
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {},
+		});
+
+		expect(events).toEqual(["ask:refactorStatus", "ask:shutdown", `stop:${LOCK.pid}`]);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	it("signals a daemon too old to know shutdown once the wait finds it still holding the lock", async () => {
+		const events: string[] = [];
+		const afterSignal = looking([
+			{ action: "spawn", reason: "gone" },
+			{ action: "connect", lock: LOCK },
+		]);
+		const result = await ensureDaemon({
+			...options,
+			// The refused ask proves nothing about the lock; only the wait does, so it is held here.
+			look: () => (events.includes(`stop:${LOCK.pid}`) ? afterSignal() : stale),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				if (method === "shutdown") throw new Error("unknown method: shutdown");
+				return { open: false };
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {},
+		});
+
+		expect(events).toEqual(["ask:refactorStatus", "ask:shutdown", `stop:${LOCK.pid}`]);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	it("sends no signal when the lock goes on its own after a refused ask", async () => {
+		const events: string[] = [];
+		const result = await ensureDaemon({
+			...options,
+			look: looking([stale, { action: "spawn", reason: "gone" }, { action: "connect", lock: LOCK }]),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				if (method === "shutdown") throw new Error("unknown method: shutdown");
+				return { open: false };
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {},
+		});
+
+		expect(events).toEqual(["ask:refactorStatus", "ask:shutdown"]);
 		expect(result).toEqual({ connected: true, lock: LOCK });
 	});
 
@@ -231,12 +360,12 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 	});
 
 	// A signal sent on the old number lands on whoever wears it now, so a holder that stopped being
-	// itself between the lock read and the kill must not be signalled.
+	// itself between the lock read and the kill must not be signalled, even when the ask changed nothing.
 	it("never signals a pid that is no longer the daemon that wrote the lock", async () => {
 		const stopped: number[] = [];
 		await ensureDaemon({
 			...options,
-			look: looking([stale, { action: "spawn", reason: "gone" }, { action: "connect", lock: LOCK }]),
+			look: looking([stale]),
 			ask: async () => ({ open: false }),
 			alive: () => false,
 			stop: (pid) => {
@@ -285,7 +414,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 	});
 
 	it("retires a protocol mismatch on our workspace too, not just a build one", async () => {
-		const stopped: number[] = [];
+		const asked: string[] = [];
 		await ensureDaemon({
 			...options,
 			look: looking([
@@ -293,13 +422,14 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 				{ action: "spawn", reason: "gone" },
 				{ action: "connect", lock: LOCK },
 			]),
-			ask: async () => ({ open: false }),
-			stop: (pid) => {
-				stopped.push(pid);
+			ask: async (_lock, method) => {
+				asked.push(method);
+				return { open: false };
 			},
+			stop: () => {},
 			start: () => {},
 		});
 
-		expect(stopped).toEqual([LOCK.pid]);
+		expect(asked).toEqual(["refactorStatus", "shutdown"]);
 	});
 });

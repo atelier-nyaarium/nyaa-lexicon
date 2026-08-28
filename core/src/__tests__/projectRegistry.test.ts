@@ -1,8 +1,17 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { canonicalRoot, type PlatformEnv, stateRoot, workspacePaths } from "@nyaa-lexicon/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { canonicalRoot, type PlatformEnv, stateRoot } from "../paths";
 import { findProject, forgetProject, readRegistry, registerProject } from "../projectRegistry";
 
 ////////////////////////////////
@@ -12,6 +21,7 @@ let home: string;
 let host: PlatformEnv;
 
 const admitAll = () => ({ admitted: true });
+const admitAllDirs = () => ({ admitted: true });
 
 function dir(...segments: string[]): string {
 	const full = path.join(home, ...segments);
@@ -127,5 +137,83 @@ describe("looking up durable identity", () => {
 		expect(findProject(root, projects)?.root).toBe(root);
 		expect(findProject(projects[0]?.key ?? "", projects)?.root).toBe(root);
 		expect(findProject("ghost", projects)).toBeNull();
+	});
+});
+
+describe("a store directory of the project's choosing", () => {
+	it("is a second entry for the same workspace, created private and stored canonical", () => {
+		const root = dir("alpha");
+		const custom = path.join(home, "stores", "refs");
+		registerProject(root, admitAll, host);
+
+		const outcome = registerProject(root, admitAll, host, custom);
+
+		expect(outcome).toMatchObject({ registered: true, already: false, project: { root, stateDir: custom } });
+		expect(statSync(custom).isDirectory()).toBe(true);
+		if (process.platform !== "win32") expect(statSync(custom).mode & 0o777).toBe(0o700);
+		const [first, second] = readRegistry(host);
+		expect(first).toEqual({ key: expect.any(String), root });
+		expect(second).toEqual({ key: first?.key, root, stateDir: custom });
+		const stored = JSON.parse(readFileSync(path.join(stateRoot(host), "projects.json"), "utf8"));
+		expect(stored.projects[1]).toEqual({ key: first?.key, root, stateDir: custom });
+	});
+
+	it("is the same store again through a link, since the directory is stored canonical", () => {
+		const root = dir("alpha");
+		const real = dir("stores", "refs");
+		symlinkSync(path.join(home, "stores"), path.join(home, "link"));
+		registerProject(root, admitAll, host, real, admitAllDirs);
+
+		const again = registerProject(root, admitAll, host, path.join(home, "link", "refs"), admitAllDirs);
+
+		expect(again).toMatchObject({ registered: true, already: true });
+		expect(readRegistry(host)).toEqual([{ key: expect.any(String), root, stateDir: real }]);
+	});
+
+	it("is named by its directory alone; the key and the root name the default store", () => {
+		const root = dir("alpha");
+		const custom = dir("stores", "refs");
+		registerProject(root, admitAll, host, custom, admitAllDirs);
+		const [entry] = readRegistry(host);
+		const key = entry?.key ?? "";
+
+		expect(findProject(custom, readRegistry(host))).toEqual({ key, root, stateDir: custom });
+		expect(findProject(key, readRegistry(host))).toBeNull();
+		expect(findProject(root, readRegistry(host))).toBeNull();
+
+		registerProject(root, admitAll, host);
+		expect(findProject(key, readRegistry(host))).toEqual({ key, root });
+		expect(findProject(root, readRegistry(host))).toEqual({ key, root });
+	});
+
+	it("is forgotten on its own, leaving the default store", () => {
+		const root = dir("alpha");
+		const custom = dir("stores", "refs");
+		registerProject(root, admitAll, host);
+		registerProject(root, admitAll, host, custom, admitAllDirs);
+
+		expect(forgetProject(custom, host)).toBe(true);
+		expect(readRegistry(host)).toEqual([{ key: expect.any(String), root }]);
+		expect(existsSync(custom)).toBe(true);
+	});
+
+	it("refuses a directory the admission rules reject, and passes the reason through", () => {
+		const outcome = registerProject(dir("alpha"), admitAll, host, path.join(home, "nope"), () => ({
+			admitted: false,
+			reason: "that is a link",
+		}));
+
+		expect(outcome).toEqual({ registered: false, reason: "that is a link" });
+		expect(readRegistry(host)).toEqual([]);
+	});
+
+	// Two entries for one directory would be two identities for one store.
+	it("treats the default directory spelled out as the default store", () => {
+		const root = dir("alpha");
+
+		const outcome = registerProject(root, admitAll, host, workspacePaths(host, root).dir, admitAllDirs);
+
+		expect(outcome).toMatchObject({ registered: true, project: { root } });
+		expect(readRegistry(host)).toEqual([{ key: expect.any(String), root }]);
 	});
 });

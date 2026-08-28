@@ -1,4 +1,5 @@
-import type { DaemonChannel, LexiconService, StoredDeclaration } from "@nyaa-lexicon/core";
+import type { DaemonChannel } from "@nyaa-lexicon/client";
+import type { LexiconService, StoredDeclaration } from "@nyaa-lexicon/core";
 import { describe, expect, it, vi } from "vitest";
 import { daemonReads, deferredReads, type LexiconReads, localReads } from "../reads";
 

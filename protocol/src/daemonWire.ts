@@ -2,8 +2,8 @@
 //
 // A closed frame vocabulary rather than bare request-response, because the connection itself now
 // carries meaning: being connected IS being present, which is what the daemon's lifetime counts.
-// The schemas live here so the wire has one truth; the socket code that speaks them lives in one
-// core module and knows nothing about what the frames mean.
+// The schemas and the wire's numbers live here so both ends read one truth; the socket code that
+// speaks them lives in the client and the daemon and knows nothing about what the frames mean.
 
 import { z } from "zod";
 
@@ -89,3 +89,19 @@ export type PingFrame = z.infer<typeof PingFrameSchema>;
 export type PongFrame = z.infer<typeof PongFrameSchema>;
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
 export type ServerFrame = z.infer<typeof ServerFrameSchema>;
+
+////////////////////////////////
+//  Constants
+
+/** Server-to-client ping interval; any frame from the client resets the silence count. */
+export const HEARTBEAT_MS = 30_000;
+/** Quiet heartbeat ticks before the server drops the socket: gone on the second, not the third. */
+export const HEARTBEAT_MISSED_LIMIT = 2;
+/** An unauthenticated socket may not linger; a real client hellos immediately. */
+export const HELLO_DEADLINE_MS = 10_000;
+/** How long a client waits for the welcome before the handshake counts as failed. */
+export const CONNECT_TIMEOUT_MS = 5_000;
+/** Requests are small (prose caps at 4KB); a line beyond this is a flood, not a query. */
+export const SERVER_LINE_CAP = 8 * 1024 * 1024;
+/** Responses carry real result sets, so the client's cap is generous rather than symmetric. */
+export const CLIENT_LINE_CAP = 512 * 1024 * 1024;

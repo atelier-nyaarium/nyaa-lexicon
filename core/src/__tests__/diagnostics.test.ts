@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { type PlatformEnv, processMemory, stateRoot, storePaths } from "@nyaa-lexicon/client";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CollectorOptions,
@@ -28,8 +29,6 @@ import {
 	SELF_REPORT,
 	startDiagnostics,
 } from "../diagnostics";
-import { type PlatformEnv, storePaths } from "../paths";
-import { processMemory } from "../procfs";
 import { ProviderSupervisor } from "../supervisor";
 import { fakeClock } from "./fakeClock";
 
@@ -71,7 +70,7 @@ afterEach(() => {
 function harness(overrides: Partial<CollectorOptions> = {}) {
 	const root = scratch();
 	const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-	const paths = storePaths(host, KEY);
+	const paths = storePaths(path.join(stateRoot(host), KEY));
 	const clock = fakeClock();
 	const memory = new Map<number, { rss: number; hwm: number }>([[CHILD, { rss: 1000, hwm: 1000 }]]);
 	const signals: number[] = [];
@@ -152,13 +151,7 @@ describe("the collection on disk", () => {
 		collector.recordExit({ providerId: "alpha", pid: CHILD, code: 1, signal: null });
 
 		expect(readdirSync(paths.dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
-		expect(
-			readDiagnostics(KEY, {
-				platform: "linux",
-				env: { XDG_STATE_HOME: paths.dir.split("/nyaa-lexicon/")[0] },
-				home: "/",
-			}).state,
-		).toBe("present");
+		expect(readDiagnostics(paths.dir).state).toBe("present");
 	});
 
 	it("reports a write failure rather than throwing it into the daemon, and keeps sampling", () => {
@@ -410,23 +403,23 @@ describe("reading the collection back", () => {
 	it("answers absent, unreadable and present, each honestly", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-		const paths = storePaths(host, KEY);
+		const paths = storePaths(path.join(stateRoot(host), KEY));
 
-		expect(readDiagnostics(KEY, host)).toEqual({ state: "absent", file: paths.diagnosticsFile });
+		expect(readDiagnostics(paths.dir)).toEqual({ state: "absent", file: paths.diagnosticsFile });
 
 		mkdirSync(paths.dir, { recursive: true });
 		writeFileSync(paths.diagnosticsFile, "{ not json");
-		expect(readDiagnostics(KEY, host)).toMatchObject({ state: "unreadable", file: paths.diagnosticsFile });
+		expect(readDiagnostics(paths.dir)).toMatchObject({ state: "unreadable", file: paths.diagnosticsFile });
 
 		writeFileSync(paths.diagnosticsFile, JSON.stringify({ version: 2 }));
-		expect(readDiagnostics(KEY, host)).toMatchObject({ state: "unreadable" });
+		expect(readDiagnostics(paths.dir)).toMatchObject({ state: "unreadable" });
 	});
 
 	it("round-trips what the collector wrote", () => {
-		const { host, collector } = harness();
+		const { paths, collector } = harness();
 		collector.recordExit({ providerId: "alpha", pid: CHILD, code: 134, signal: null });
 
-		const back = readDiagnostics(KEY, host);
+		const back = readDiagnostics(paths.dir);
 		expect(back.state).toBe("present");
 		if (back.state !== "present") return;
 		expect({ ...back.data, writtenAt: 0 }).toEqual({ ...collector.current(), writtenAt: 0 });
@@ -435,10 +428,10 @@ describe("reading the collection back", () => {
 	it("tells a file it may not read apart from one that is not there", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-		const paths = storePaths(host, KEY);
+		const paths = storePaths(path.join(stateRoot(host), KEY));
 		mkdirSync(paths.diagnosticsFile, { recursive: true });
 
-		expect(readDiagnostics(KEY, host).state).toBe("unreadable");
+		expect(readDiagnostics(paths.dir).state).toBe("unreadable");
 	});
 });
 
@@ -446,7 +439,8 @@ describe("listing node's reports", () => {
 	it("reads each report's header, sizes a snapshot, and names a file it cannot parse", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-		const dir = storePaths(host, KEY).reportsDir;
+		const store = path.join(stateRoot(host), KEY);
+		const dir = storePaths(store).reportsDir;
 		mkdirSync(dir, { recursive: true });
 		const report = {
 			header: { event: "SIGUSR2", trigger: "Signal", processId: 77, dumpEventTimeStamp: "1787360823480" },
@@ -462,7 +456,7 @@ describe("listing node's reports", () => {
 		mkdirSync(path.join(dir, "Heap.20260821.181000.77.0.001.heapsnapshot"));
 		writeFileSync(path.join(dir, "notes.txt"), "ignored");
 
-		expect(listReports(KEY, host)).toEqual([
+		expect(listReports(store)).toEqual([
 			{
 				kind: "unreadable",
 				file: path.join(dir, "report.20260821.181000.80.0.001.json"),
@@ -511,33 +505,33 @@ describe("listing node's reports", () => {
 	it("refuses a link wearing a report's name, or the collection's, rather than following it", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-		const paths = storePaths(host, KEY);
+		const paths = storePaths(path.join(stateRoot(host), KEY));
 		mkdirSync(paths.reportsDir, { recursive: true });
 		const outside = path.join(root, "outside.json");
 		writeFileSync(outside, JSON.stringify({ header: { event: "OUTSIDE", trigger: "x", processId: 99 } }));
 		symlinkSync(outside, path.join(paths.reportsDir, "report.20260821.180703.77.0.001.json"));
 		symlinkSync(outside, paths.diagnosticsFile);
 
-		expect(listReports(KEY, host)).toEqual([
+		expect(listReports(paths.dir)).toEqual([
 			{
 				kind: "unreadable",
 				file: path.join(paths.reportsDir, "report.20260821.180703.77.0.001.json"),
 				reason: "not a regular file",
 			},
 		]);
-		expect(readDiagnostics(KEY, host)).toMatchObject({ state: "unreadable", reason: "not a regular file" });
+		expect(readDiagnostics(paths.dir)).toMatchObject({ state: "unreadable", reason: "not a regular file" });
 	});
 
 	it("refuses a link wearing the reports directory's name too", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-		const paths = storePaths(host, KEY);
+		const paths = storePaths(path.join(stateRoot(host), KEY));
 		const elsewhere = path.join(root, "elsewhere");
 		mkdirSync(elsewhere);
 		mkdirSync(paths.dir, { recursive: true });
 		symlinkSync(elsewhere, paths.reportsDir);
 
-		expect(listReports(KEY, host)).toEqual([
+		expect(listReports(paths.dir)).toEqual([
 			{ kind: "unreadable", file: paths.reportsDir, reason: "not a directory" },
 		]);
 	});
@@ -545,14 +539,15 @@ describe("listing node's reports", () => {
 	it("answers nothing for a store with no reports directory, and says so for one it may not read", () => {
 		const root = scratch();
 		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: root }, home: root };
-		expect(listReports(KEY, host)).toEqual([]);
+		const store = path.join(stateRoot(host), KEY);
+		expect(listReports(store)).toEqual([]);
 
 		if (process.platform === "win32" || process.getuid?.() === 0) return;
-		const dir = storePaths(host, KEY).reportsDir;
+		const dir = storePaths(store).reportsDir;
 		mkdirSync(path.dirname(dir), { recursive: true });
 		mkdirSync(dir, { mode: 0o000 });
 		try {
-			expect(listReports(KEY, host)).toEqual([
+			expect(listReports(store)).toEqual([
 				{ kind: "unreadable", file: dir, reason: expect.stringMatching(/EACCES/) },
 			]);
 		} finally {

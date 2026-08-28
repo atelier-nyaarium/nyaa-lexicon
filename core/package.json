@@ -8,6 +8,7 @@
 		".": "./src/index.ts"
 	},
 	"dependencies": {
+		"@nyaa-lexicon/client": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
 		"re2js": "2.8.6",
 		"vscode-jsonrpc": "9.0.1",

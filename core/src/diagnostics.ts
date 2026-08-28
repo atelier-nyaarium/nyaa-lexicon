@@ -14,10 +14,9 @@ import {
 } from "node:fs";
 import path from "node:path";
 import v8 from "node:v8";
+import { currentHost, hostMemory, processMemory, storePaths } from "@nyaa-lexicon/client";
 import { z } from "zod";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
-import { currentHost, type PlatformEnv, storePaths } from "./paths.js";
-import { hostMemory, processMemory } from "./procfs.js";
 import type { ProviderExit } from "./supervisor.js";
 
 ////////////////////////////////
@@ -317,9 +316,10 @@ function regularFile(file: string): string | null {
 	}
 }
 
-/** Three answers, because a missing file and a corrupt one call for different next steps. */
-export function readDiagnostics(key: string, host: PlatformEnv = currentHost()): ReadDiagnostics {
-	const file = storePaths(host, key).diagnosticsFile;
+/** Three answers, because a missing file and a corrupt one call for different next steps. Takes
+ * the store directory as the listing showed it. */
+export function readDiagnostics(directory: string): ReadDiagnostics {
+	const file = storePaths(directory).diagnosticsFile;
 	let raw: string;
 	try {
 		const refused = regularFile(file);
@@ -382,8 +382,8 @@ function summarizeReport(file: string): ReportSummary {
 }
 
 /** Newest first. No directory is empty; one that cannot be read, or is a link, says so. */
-export function listReports(key: string, host: PlatformEnv = currentHost()): ReportSummary[] {
-	const dir = storePaths(host, key).reportsDir;
+export function listReports(directory: string): ReportSummary[] {
+	const dir = storePaths(directory).reportsDir;
 	let names: string[];
 	try {
 		if (!lstatSync(dir).isDirectory()) return [{ kind: "unreadable", file: dir, reason: "not a directory" }];

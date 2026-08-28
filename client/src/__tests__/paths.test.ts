@@ -94,7 +94,16 @@ describe("workspacePaths", () => {
 	});
 
 	// Readers of the state root hold keys.
-	it("answers the same paths from a store key as from the workspace that minted it", () => {
-		expect(storePaths(POSIX, workspaceKey("/home/me/proj"))).toEqual(workspacePaths(POSIX, "/home/me/proj"));
+	it("answers the same paths from a store directory as from the workspace that minted it", () => {
+		const directory = path.join(stateRoot(POSIX), workspaceKey("/home/me/proj"));
+		expect(storePaths(directory)).toEqual(workspacePaths(POSIX, "/home/me/proj"));
+	});
+
+	// A custom directory is the store's identity, so the workspace key plays no part in it.
+	it("puts every path under a caller's own directory when one is given", () => {
+		const paths = workspacePaths(POSIX, "/home/me/proj", "/elsewhere/store");
+		expect(paths.dir).toBe("/elsewhere/store");
+		expect(paths.lockFile).toBe("/elsewhere/store/daemon.json");
+		expect(paths).toEqual(storePaths("/elsewhere/store"));
 	});
 });

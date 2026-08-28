@@ -1,9 +1,10 @@
 # Architecture
 
-Six packages. `protocol/` owns the wire types and the two id grammars, `core/` owns the daemon,
-the store and every query, `adapters/mcp` and `adapters/lsp` are two faces on the same service
-CLASS, `providers/<language>/` are separate processes that only ever emit facts, and `formats/`
-holds one reading of a data format for the providers that meet the same one.
+Seven packages. `protocol/` owns the wire types and the two id grammars, `client/` is the client
+half of the daemon socket and the one spawner, `core/` owns the daemon, the store and every query,
+`adapters/mcp` and `adapters/lsp` are two faces on the same service CLASS,
+`providers/<language>/` are separate processes that only ever emit facts, and `formats/` holds one
+reading of a data format for the providers that meet the same one.
 
 The two faces are not the same INSTANCE. The MCP adapter answers from the daemon; the LSP adapter
 still builds its own index in its own process. That is why it cannot write: a rename from there
@@ -16,12 +17,14 @@ An MCP client starts and stops its server per session, and several sessions run 
 index cannot live in the stdio process. That process is a thin client to a daemon that outlives it.
 
 - **Discovery** is a lock file in the per-user state directory, keyed on a hash of the workspace
-  path. It carries the port, a token, the pid, and the protocol version.
+  path, or in a directory the caller names with `--state-dir`, which makes a store's directory its
+  identity. It carries the port, a token, the pid, and the protocol version.
 - **Starting** is a race the daemons run, not the clients. Any client that finds no live daemon
-  spawns one, detached. The daemon claims the lock with a hard link from a fully-written staging
+  spawns one, detached, through the client package's `ensureDaemon`, the one spawner every
+  consumer shares. The daemon claims the lock with a hard link from a fully-written staging
   file, so the lock appears complete rather than half-written, and it claims BEFORE opening the
   store. A loser exits without ever touching SQLite, which is what holds the single-writer rule
-  during the window where two of them exist.
+  during the window where two of them exist. A foreign consumer's client changes none of this.
 - **Warmup** is two passes. The first stores declarations and imports for every discovered root;
   the second fills full facts in the background, and a symbol query parses its own tree ahead of
   that queue. Requests are held, as retryable, until every root has been attempted at least once:
@@ -35,10 +38,13 @@ index cannot live in the stdio process. That process is a thin client to a daemo
 - **Lifetime** is a countdown armed when the last client disconnects and disarmed by any connect.
   Nothing else stops it on its own.
 - **Transport** is one JSON object per line over a local socket, with a request id so a slow query
-  does not block the connection behind it. `core/src/socketTransport.ts` is the only module that
-  touches a socket, which is what makes a different runtime a rewrite of one file. The protocol
-  package owns the daemon methods' shapes; core remains the sole socket implementation and
-  validates both sides. `docs/daemon-protocol.md` is the wire as a client sees it.
+  does not block the connection behind it. `core/src/socketTransport.ts` is the daemon half and
+  the client package's `transport.ts` the client half, the only two modules that touch a socket,
+  which is what makes a different runtime a rewrite of one file per side. The protocol package
+  owns the daemon methods' shapes; core is the daemon half and the sole writer and validates both
+  sides; the client package is the client half, for lexicon's own adapters and for any other node
+  project. `docs/daemon-protocol.md` is the wire as a client sees it, `docs/client.md` the package
+  a consumer holds.
 
 ## Storage
 
@@ -57,11 +63,12 @@ Two rules hold the design together:
 
 ## Diagnostics
 
-A daemon that dies of its heap leaves nothing to read on its own. Two owners in `core/` change that.
+A daemon that dies of its heap leaves nothing to read on its own. Two owners change that.
 
-- **`procfs.ts`** is the only reader of `/proc`: a process's identity, its resident size and
-  high-water mark, the host's memory. Null where there is no procfs, never a guess, and a residue
-  test keeps the mount out of every other module.
+- **`procfs.ts`**, in `client/` since a client judges a lock holder's liveness by the same read, is
+  the only reader of `/proc`: a process's identity, its resident size and high-water mark, the
+  host's memory. Null where there is no procfs, never a guess, and a residue test keeps the mount
+  out of every other module in the client, core and the adapters.
 - **`diagnostics.ts`** owns the collection in `diagnostics.json` beside the index: a ring of
   samples (the daemon's heap, every provider's RSS and high-water, what the daemon was doing), a
   ring of incidents (a provider death with its signal and last size), and a peak per process. It

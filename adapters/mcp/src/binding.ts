@@ -3,14 +3,15 @@
 // Nothing is discovered. A project is known because it was registered, which is durable, and asked
 // because this session bound it, which is not. The warm index is what outlives the session.
 
+import { currentHost, lockHolderAlive } from "@nyaa-lexicon/client";
 import {
 	admitWorkspace,
 	listProjectStores,
-	lockHolderAlive,
 	registerProject,
 	type SessionBinds,
 	type SessionProject,
 	type SessionSyncOutcome,
+	sameStore,
 } from "@nyaa-lexicon/core";
 import { z } from "zod";
 
@@ -25,8 +26,12 @@ interface ToolResult {
 /** Injected so tests drive the registry without touching a real state directory. */
 export interface BindingDeps {
 	list: () => SessionProject[];
+	/** Keyed by store: a default store by its key, a custom one by its directory. */
 	indexTimes?: () => ReadonlyMap<string, number | null>;
-	register: (root: string) =>
+	register: (
+		root: string,
+		stateDir?: string,
+	) =>
 		| {
 				registered: true;
 				project: SessionProject;
@@ -75,6 +80,11 @@ export const ListProjectsInput = {};
 
 export const RegisterProjectInput = {
 	root: z.string().min(1).describe(`Absolute workspace root path.`),
+	stateDir: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(`Absolute directory to hold this project's store, instead of the default.`),
 };
 
 export const BindProjectInput = {
@@ -91,16 +101,27 @@ function text(body: string, isError = false): ToolResult {
 	};
 }
 
+/** How a project's row finds its store in `indexTimes`. */
+function storeOf(project: SessionProject): string {
+	return project.stateDir ?? project.key;
+}
+
 /** Live deps, for production call sites. Binds come from the session, registration from disk. */
 export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	return {
 		list: () => binds.all(),
-		indexTimes: () => new Map(listProjectStores(lockHolderAlive).map((store) => [store.key, store.lastIndexedAt])),
-		register: (root) => {
-			const outcome = registerProject(root, (candidate) => admitWorkspace(candidate));
+		indexTimes: () =>
+			new Map(
+				listProjectStores(lockHolderAlive).map((store) => [
+					store.custom ? store.directory : store.key,
+					store.lastIndexedAt,
+				]),
+			),
+		register: (root, stateDir) => {
+			const outcome = registerProject(root, (candidate) => admitWorkspace(candidate), currentHost(), stateDir);
 			if (!outcome.registered) return outcome;
 			const sync = binds.sync();
-			const project = binds.all().find((entry) => entry.key === outcome.project.key);
+			const project = binds.all().find((entry) => sameStore(entry, outcome.project));
 			if (project === undefined)
 				return {
 					registered: false,
@@ -132,19 +153,22 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 	const rows = projects
 		.map((project) => ({
 			project,
-			lastIndexedAt: indexTimes.get(project.key) ?? null,
+			lastIndexedAt: indexTimes.get(storeOf(project)) ?? null,
 		}))
 		.sort((left, right) => {
 			const byTime = (right.lastIndexedAt ?? -Infinity) - (left.lastIndexedAt ?? -Infinity);
 			return byTime || left.project.name.localeCompare(right.project.name);
 		});
+	// The store column appears only once some project chose a directory; the default needs no row.
+	const anyCustom = projects.some((project) => project.stateDir !== undefined);
 	const cells = rows.map(({ project, lastIndexedAt }) => [
 		project.bound ? "●" : "",
 		project.name,
 		lastIndexedAt === null ? "never" : new Date(lastIndexedAt).toISOString().slice(0, 19).replace("T", " "),
 		project.root,
+		...(anyCustom ? [project.stateDir ?? ""] : []),
 	]);
-	const headers = ["", "Project", "Last Indexed", "Workspace"];
+	const headers = ["", "Project", "Last Indexed", "Workspace", ...(anyCustom ? ["Store"] : [])];
 	const widths = headers.map((header, column) =>
 		Math.max(header.length, ...cells.map((row) => row[column]?.length ?? 0)),
 	);
@@ -158,35 +182,21 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 	return text(`# Projects\n\n${table}`);
 }
 
-export function registerProjectTool(deps: BindingDeps, args: { root: string }): ToolResult {
-	const outcome = deps.register(args.root);
+export function registerProjectTool(deps: BindingDeps, args: { root: string; stateDir?: string }): ToolResult {
+	const outcome = deps.register(args.root, args.stateDir);
 	if (!outcome.registered) return text(outcome.reason, true);
 	const renamed = outcome.sync.renames.map((entry) => `${entry.from} is now ${entry.to} for ${entry.root}.`);
 	const recovery = outcome.sync.bindingsCleared
 		? "All session bindings were cleared. Call `list_projects`, match full roots, then `bind_project`."
 		: null;
-	if (outcome.already) {
-		const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
-		return text(
-			[
-				`# Project already registered`,
-				"",
-				`\`${outcome.project.name}\``,
-				`\`${outcome.project.root}\``,
-				...renamed,
-				"",
-				next,
-			].join("\n"),
-		);
-	}
-
 	const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
 	return text(
 		[
-			"# Project registered",
+			outcome.already ? "# Project already registered" : "# Project registered",
 			"",
 			`\`${outcome.project.name}\``,
 			`\`${outcome.project.root}\``,
+			...(outcome.project.stateDir === undefined ? [] : [`Store: \`${outcome.project.stateDir}\``]),
 			...renamed,
 			"",
 			next,

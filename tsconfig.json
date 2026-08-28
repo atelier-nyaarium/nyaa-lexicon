@@ -3,6 +3,7 @@
 	"files": [],
 	"references": [
 		{ "path": "./protocol" },
+		{ "path": "./client" },
 		{ "path": "./core" },
 		{ "path": "./formats" },
 		{ "path": "./adapters/mcp" },
