@@ -840,6 +840,12 @@ resolve against the plugin's checkout. Lexicon never cared where the server ran;
   their git toplevel, as the cwd was before, so a host that opened a package inside a repository
   still resolves against the repository. Non-`file:` URIs and unparseable entries are ignored; a
   host that declares the `roots` capability and answers an empty list is the cwd case.
+- The cwd case has one correction, found by reading the Copilot server's environment: Copilot
+  1.0.81 starts a plugin's server with cwd inside the plugin's own directory and `PWD` still the
+  shell the user launched it from. A cwd inside `pluginRoot()` is therefore not a project, and
+  `startDirectory(cwd, PWD, plugin)` answers `PWD` when it names a directory. Whether Copilot
+  declares the `roots` capability could not be read from its logs; with this rule the root is the
+  project either way.
 - The host is asked once the session is up (`oninitialized`), and again on
   `notifications/roots/list_changed`. `expectHostRoots()` runs before `connect`, so a reply that
   arrives before the answer waits on `hostRootsSettled()` in `appendRefArtifacts` instead of
