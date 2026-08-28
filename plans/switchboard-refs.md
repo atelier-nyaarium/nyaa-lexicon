@@ -543,7 +543,7 @@ above, this is what the code does.
   warmup-failed daemon and, for daemons that still refuse it, `retire` reads the
   `warmup failed:` prefix (owned by the protocol package) as "no transaction is open".
 
-## Phase 2 - Switchboard: the resolver rebuilt on the index
+## Phase 2 - Switchboard: the resolver rebuilt on the index ✅
 
 Audited (lap 2, seven angles: wiring and build, workspace and paths, the pipeline, errors and
 session, teaching and console, tests and CI, principles and scope). The plan as rethought.
@@ -817,6 +817,16 @@ above, this is what the code does.
   (`setReferencesEnabled`, `setLexiconRoot`, `setSessionFactory`) stay three module-level setters;
   an owning `ReferenceRuntime` value is recorded under Painpoints rather than built under the
   release.
+- Released as 8.4.0 (`Build 8.4.0`, 74390817) with the submodule at `Build 3.0.2`. Smoke: both
+  hosts updated through their plugin commands and showed the server connected in `/mcp`, each
+  running `dist/main-mcp.js` under bun from its own copy and spawning a lexicon daemon from its
+  own lexicon install. A hand-launched `claude`, a hand-launched `copilot` and a gateway-started
+  Copilot Agent each resolved two refs and were refused at the byte plane (tokenless callers,
+  Painpoints). The live reply came from a host-daemon-managed Claude Code session woken on the
+  8.4.0 plugin in the switchboard checkout: `notify_human` with `resolveRefs` and `renderRefusal`
+  returned `Notice delivered.` and nothing else, which is the exact path (a refusal is an error
+  and a degraded ref adds a `refs:` notice). No bound Copilot session can be started from this
+  session, so the Copilot half of the live reply is the resolution without the upload.
 
 ## Painpoints
 
