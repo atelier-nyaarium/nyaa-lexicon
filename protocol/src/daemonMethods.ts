@@ -322,6 +322,11 @@ export function methodMutates(name: DaemonMethod): boolean {
 
 export type DaemonMethod = keyof typeof DAEMON_METHODS;
 
+/** The methods a read-only face may ask: every entry the table does not mark `mutates`. */
+export type ReadMethod = {
+	[M in DaemonMethod]: (typeof DAEMON_METHODS)[M] extends { mutates: true } ? never : M;
+}[DaemonMethod];
+
 ////////////////////////////////
 //  Functions & Helpers
 

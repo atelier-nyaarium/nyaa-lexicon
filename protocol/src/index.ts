@@ -14,6 +14,7 @@ export {
 	type DaemonMethod,
 	isDaemonMethod,
 	methodMutates,
+	type ReadMethod,
 	type RequestOf,
 	type ResponseOf,
 } from "./daemonMethods.js";
@@ -325,11 +326,13 @@ export {
 	ProjectModelSchema,
 } from "./project.js";
 export {
+	angleDelta,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	discoverByWalk,
 	handlersFor,
 	type ProviderMethods,
 	projectDiagnostic,
+	qualifierDescriptors,
 	type WalkOptions,
 	walkWorkspace,
 	workspaceFile,

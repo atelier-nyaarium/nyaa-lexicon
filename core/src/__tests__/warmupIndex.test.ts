@@ -475,6 +475,49 @@ describe("warmup pass", () => {
 		expect(service.warmFailure()).toMatch(/provider was unavailable/);
 		expect(service.warmHold()).toBeNull();
 		expect(store.readScanSummary()?.outlined).not.toBe(true);
+
+		await service.applyBatch([{ kind: "changed", module: "gone.fake", contentHash: "gone-2" }]);
+		expect(service.warmFailure()).toMatch(/provider was unavailable/);
+	});
+
+	it("records a plain provider error as a parse failure for that file", async () => {
+		initGit();
+		put("bad.fake", "POISON\n");
+		service = serviceOver(depthSupervisor(["bad.fake"], true, []));
+
+		const outcomes = await service.warmupWorkspace();
+
+		expect(outcomes).toContainEqual({
+			module: "bad.fake",
+			action: "skipped",
+			cause: "parseFailed",
+			reason: "parse failed",
+			failure: "poisoned file",
+		});
+		expect(store.parseFailureOf("bad.fake")).toEqual({ module: "bad.fake", reason: "poisoned file" });
+	});
+
+	it("classifies an escaped indexer fault without recording a file failure", async () => {
+		initGit();
+		put("bad.fake", "export class Bad {}\n");
+		const replaceFile = store.replaceFile.bind(store);
+		store.replaceFile = (...args: Parameters<IndexStore["replaceFile"]>) => {
+			if (args[0] === "bad.fake") throw new Error("store broke");
+			return replaceFile(...args);
+		};
+		service = serviceOver(depthSupervisor(["bad.fake"], true, []));
+
+		const outcomes = await service.warmupWorkspace();
+
+		expect(outcomes).toContainEqual({
+			module: "bad.fake",
+			action: "skipped",
+			cause: "fault",
+			reason: "the indexer failed on this file",
+			failure: "store broke",
+		});
+		expect(store.parseFailures()).toEqual([]);
+		expect(service.warmFailure()).toContain("indexer failed");
 	});
 });
 

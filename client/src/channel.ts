@@ -10,7 +10,7 @@ import {
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import type { DaemonSource } from "./discover.js";
-import { ensureDaemon } from "./ensure.js";
+import { ensureDaemon, ensureFailure } from "./ensure.js";
 import { DaemonError } from "./errors.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./transport.js";
 
@@ -58,15 +58,7 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 							...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
 						};
 						const daemon = await ensureDaemon(daemonOptions);
-						if (!daemon.connected)
-							throw new DaemonError(
-								`no indexer for ${workspaceRoot}: ${daemon.detail}`,
-								daemon.reason === "spawnFailed" ||
-									daemon.reason === "unbuilt" ||
-									daemon.reason === "noBunRuntime"
-									? "spawnFailed"
-									: "daemon",
-							);
+						if (!daemon.connected) throw ensureFailure(daemon, `no indexer for ${workspaceRoot}: `);
 						const frameOptions = {
 							...(options.patience === undefined ? {} : { patience: options.patience }),
 							...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
@@ -78,8 +70,10 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 					// shape this client cannot read is an error here rather than a typed value that lies.
 					const parsed = DAEMON_METHODS[method].response.safeParse(answer);
 					if (!parsed.success) {
+						// The field, never the issue list: a consumer reads this sentence, not zod's.
+						const field = parsed.error.issues[0]?.path.join(".") || "the answer";
 						throw new DaemonError(
-							`the daemon answered ${method} with a shape this client cannot read: ${parsed.error.message}`,
+							`the daemon answered ${method} with a shape this client cannot read at ${field}`,
 							"daemon",
 						);
 					}

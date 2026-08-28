@@ -364,7 +364,7 @@ describe("awaitIndexed reads the daemon's outcome", () => {
 		expect(await after(outcome)).toEqual(answer);
 	});
 
-	it("throws only for the daemon's own trouble: a provider outage, or an outcome without a cause", async () => {
+	it("throws only for the daemon's own trouble: a provider outage, an indexer fault, or an outcome without a cause", async () => {
 		const down = after({
 			action: "skipped",
 			cause: "providerDown",
@@ -373,6 +373,15 @@ describe("awaitIndexed reads the daemon's outcome", () => {
 		});
 		await expect(down).rejects.toThrow(DaemonError);
 		await expect(down).rejects.toThrow("ts died");
+
+		const fault = after({
+			action: "skipped",
+			cause: "fault",
+			reason: "the indexer failed on this file",
+			failure: "store broke",
+		});
+		await expect(fault).rejects.toThrow(DaemonError);
+		await expect(fault).rejects.toThrow("store broke");
 
 		const unknown = after({ action: "skipped", reason: "outside roots and reachability" });
 		await expect(unknown).rejects.toThrow(DaemonError);

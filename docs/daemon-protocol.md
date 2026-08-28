@@ -108,14 +108,18 @@ dispatch order, with a doc line on every entry. The twelve whose repetition is n
 knowledge writes and the refactor steps, carry `mutates: true`, read through `methodMutates`;
 `indexFile` writes the store too, but asked twice it answers `current` the second time, so it is
 not marked. Nothing else in the table is optional. `hubs` is its own entry aliasing `mostReferenced`,
-so the accepted method set is exactly what older clients ask by. Three types derive from it, and
+so the accepted method set is exactly what older clients ask by. Four types derive from it, and
 nothing else is hand-written:
 
 ```ts
 type DaemonMethod = keyof typeof DAEMON_METHODS;
 type RequestOf<M extends DaemonMethod> = z.infer<(typeof DAEMON_METHODS)[M]["request"]>;
 type ResponseOf<M extends DaemonMethod> = z.infer<(typeof DAEMON_METHODS)[M]["response"]>;
+type ReadMethod = every DaemonMethod whose entry is not marked mutates
 ```
+
+`ReadMethod` is how a read-only face is held to its word: the editor adapter asks through a
+function typed by it, so a write asked from there fails to compile.
 
 `DaemonChannel.ask<M>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>` is typed by them,
 and a facade built by one loop over the table's keys is what a client library looks like. The doc
@@ -145,8 +149,9 @@ recorded `failure`), what one read of the file found (`read.kind`: `text`, `miss
 row), `diskHash` (the hash of the bytes that same read loaded, null unless text) and the
 declaration rows, from ONE synchronous snapshot: `core/src/moduleDeclarations.ts` runs to
 completion, a residue forbids `await` and `async` in it, so no field describes a different
-version of the file than another. `moduleStatus` and `declarationsIn` keep their shapes; a
-consumer that wants "cannot disagree" asks the one method.
+version of the file than another. `moduleStatus` and `declarationsIn` keep their shapes as older
+views of the same store, each answered on its own; a consumer that wants "cannot disagree" asks
+the one method. `fileNotes` is a different question, the diagnostics the snapshot does not carry.
 
 The hash is `hashContent` in the protocol package, the one implementation the daemon files under
 and a consumer compares against: the first 32 hex characters of the sha256 of the file's UTF-8
@@ -156,7 +161,7 @@ the client.
 
 `indexFile` answers a closed `cause` beside its prose whenever it did not index, absent when it
 did: `missing`, `binary`, `tooLarge`, `unclaimed`, `parseFailed`, `current` (the index already
-holds this version) or `providerDown`.
+holds this version), `providerDown` or `fault` (the indexer failed while handling the file).
 A provider's parse failure is an answer, not an error frame, so a caller reindexing a restored
 file is not failed by it; only a provider outage is the daemon's own trouble.
 
@@ -184,12 +189,14 @@ is the one read and indexed, and the other is unreachable by name. A write lands
 root: a directory link inside the workspace pointing outside it is refused for writing, while
 reads follow the name as given.
 
-To the caller, either failure is the same thing: the promise from `request` or `ask` rejects with an
-`Error` whose message is the daemon's `error` string. For a parse failure that string is zod's issue
-list, one entry per problem with the `path` into the object, the `code` and what was expected. An
-agent driving the MCP adapter sees it as the tool's error text. A malformed answer therefore reaches
-nobody: the daemon reports it against the method that produced it, instead of shipping an object
-that the client's types say cannot exist.
+To the caller, either failure is the same thing: the promise from `request` or `ask` rejects with a
+`DaemonError` whose message is the daemon's `error` string. For a request that did not fit its
+schema that string is `<method> refused: <field>: <what was wrong>`, lexicon's own words, never a
+zod issue list; a module path that leaves the workspace is the same sentence with cause
+`refusedModule`. An agent driving the MCP adapter sees it as the tool's error text. A malformed
+answer therefore reaches nobody: the daemon reports it against the method that produced it, and a
+client that cannot read an answer names the field it stopped at, instead of shipping an object that
+the client's types say cannot exist.
 
 ## Compatibility
 

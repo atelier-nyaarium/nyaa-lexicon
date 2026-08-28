@@ -1,5 +1,6 @@
 import {
 	ANONYMOUS_NAMESPACE,
+	angleDelta,
 	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
@@ -9,6 +10,7 @@ import {
 	type Import,
 	type Literal,
 	type Metrics,
+	qualifierDescriptors,
 	type Range,
 	type Reference,
 	type TypeInfo,
@@ -83,6 +85,7 @@ type DraftType =
 interface DraftRecord {
 	parent: DraftRecord | null;
 	qualifier?: Descriptor[];
+	qualifierNames?: string[];
 	own: Descriptor;
 	kind: Declaration["kind"];
 	name: string;
@@ -361,9 +364,7 @@ function canonicalParameterSignature(tokens: Token[], startIndex: number, endInd
 		else if (value === ")") parentheses--;
 		else if (value === "[") brackets++;
 		else if (value === "]") brackets--;
-		else if (value === "<") angles++;
-		else if (value === ">") angles--;
-		else if (value === ">>") angles -= 2;
+		else angles += angleDelta(value);
 		if (value === "," && parentheses === 0 && brackets === 0 && angles === 0) flush();
 		else part.push(index);
 	}
@@ -405,9 +406,7 @@ function matchingAngle(tokens: Token[], openIndex: number, limit = tokens.length
 		if (index <= guard) throw new Error("angle scan failed to advance");
 		guard = index;
 		const value = tokenAt(tokens, index)?.text;
-		if (value === "<") depth++;
-		if (value === ">") depth--;
-		if (value === ">>") depth -= 2;
+		depth += angleDelta(value ?? "");
 		if (depth === 0) return index;
 		if (value === ";" || value === "{") return -1;
 	}
@@ -582,6 +581,7 @@ class StructuralParser {
 			templateDependent: false,
 		});
 		this.checkDelimiters();
+		this.settleQualifiers();
 	}
 
 	finish(): CppFacts {
@@ -775,6 +775,19 @@ class StructuralParser {
 				const draft = group[index];
 				if (draft !== undefined) draft.own.disambiguator = String(index);
 			}
+		}
+	}
+
+	private settleQualifiers(): void {
+		const declared = (name: string): Descriptor | undefined =>
+			this.drafts.find(
+				(draft) =>
+					draft.name === name &&
+					(draft.kind === "class" || draft.kind === "struct" || draft.kind === "namespace"),
+			)?.own;
+		for (const draft of this.drafts) {
+			if (draft.qualifierNames === undefined) continue;
+			draft.qualifier = qualifierDescriptors(draft.qualifierNames, declared);
 		}
 	}
 
@@ -1180,9 +1193,7 @@ class StructuralParser {
 		let depth = 0;
 		for (let index = openIndex + 1; index <= closeIndex; index++) {
 			const value = tokenAt(this.tokens, index)?.text;
-			if (value === "<") depth++;
-			if (value === ">") depth--;
-			if (value === ">>") depth -= 2;
+			depth += angleDelta(value ?? "");
 			if ((value === "," && depth === 0) || index === closeIndex) {
 				const end = index === closeIndex ? index : index;
 				const nameIndex = this.lastName(segmentStart, end);
@@ -1622,10 +1633,8 @@ class StructuralParser {
 		let depth = 0;
 		for (let current = index; current >= prefix.keywordIndex; current--) {
 			const value = tokenAt(this.tokens, current)?.text;
-			if (value === ">") depth++;
-			else if (value === ">>") depth += 2;
-			else if (value === "<") {
-				depth--;
+			depth -= angleDelta(value ?? "");
+			if (value === "<") {
 				if (depth === 0) {
 					const nameIndex = significantBefore(this.tokens, current);
 					const name = tokenAt(this.tokens, nameIndex);
@@ -1643,10 +1652,8 @@ class StructuralParser {
 		let depth = close === ">>" ? 2 : 1;
 		for (let index = closeIndex - 1; index >= prefix.keywordIndex; index--) {
 			const value = tokenAt(this.tokens, index)?.text;
-			if (value === ">") depth++;
-			else if (value === ">>") depth += 2;
-			else if (value === "<") {
-				depth--;
+			depth -= angleDelta(value ?? "");
+			if (value === "<") {
 				if (depth !== 0) continue;
 				const nameIndex = significantBefore(this.tokens, index);
 				const nameToken = tokenAt(this.tokens, nameIndex);
@@ -1689,20 +1696,20 @@ class StructuralParser {
 		const operator = nameInfo.name.startsWith("operator");
 		const templateDependent = this.templateDependent(scope, prefix);
 		const returnInfo = this.functionReturnType(prefix, nameInfo, close, bodyOrEnd.end);
-		const qualifier = qualifiedParent === null ? this.qualifierDescriptors(nameInfo.qualifier) : [];
+		const qualifierNames = qualifiedParent === null ? nameInfo.qualifier : [];
 		const parameterSignature = `${canonicalParameterSignature(this.tokens, openIndex + 1, close)})${functionQualifiers(this.tokens, close + 1, bodyOrEnd.end)}`;
 		const existing = this.drafts.find(
 			(draft) =>
 				draft.parent === parent &&
 				draft.own.name === nameInfo.name &&
 				draft.parameterSignature === parameterSignature &&
-				JSON.stringify(draft.qualifier ?? []) === JSON.stringify(qualifier),
+				JSON.stringify(draft.qualifierNames ?? []) === JSON.stringify(qualifierNames),
 		);
 		const record =
 			existing ??
 			this.addDraft({
 				parent,
-				...(qualifier.length === 0 ? {} : { qualifier }),
+				...(qualifierNames.length === 0 ? {} : { qualifierNames }),
 				own: { kind: "method", name: nameInfo.name },
 				kind: operator ? "operator" : isConstructor ? "constructor" : member ? "method" : "function",
 				name: nameInfo.name,
@@ -2213,17 +2220,6 @@ class StructuralParser {
 				);
 			});
 		return candidates.sort((left, right) => namePath(right).length - namePath(left).length)[0] ?? null;
-	}
-
-	private qualifierDescriptors(names: string[]): Descriptor[] {
-		return names.map((name) => {
-			const declaration = this.drafts.find(
-				(draft) =>
-					draft.name === name &&
-					(draft.kind === "class" || draft.kind === "struct" || draft.kind === "namespace"),
-			);
-			return declaration?.own ?? { kind: "namespace", name };
-		});
 	}
 
 	private addTemplateReturnInference(record: DraftRecord, bodyIndex: number, bodyClose: number): void {

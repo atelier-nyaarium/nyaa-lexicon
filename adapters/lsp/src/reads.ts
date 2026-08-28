@@ -15,6 +15,7 @@ import type {
 	TypeHierarchy,
 	TypeInfo,
 } from "@nyaa-lexicon/core";
+import type { ReadMethod, RequestOf, ResponseOf } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -48,22 +49,25 @@ export interface LexiconReads {
  * The open connection is what tells the daemon this editor exists.
  */
 export function daemonReads(channel: DaemonChannel): LexiconReads {
+	// Typed by the table's read set, so a write cannot be asked from here without failing to compile.
+	const read = <M extends ReadMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>> =>
+		channel.ask(method, params);
 	return {
-		declarationsIn: (module) => channel.ask("declarationsIn", { module }),
-		declarationOf: (symbolId) => channel.ask("declarationOf", { symbolId }),
-		describe: (symbolId) => channel.ask("describe", { symbolId }),
-		findReferences: (symbolId, limit) => channel.ask("findReferences", { symbolId, limit }),
-		typeOf: (symbolId) => channel.ask("typeOf", { symbolId }),
-		typeHierarchy: (symbolId) => channel.ask("typeHierarchy", { symbolId }),
-		callHierarchy: (symbolId) => channel.ask("callHierarchy", { symbolId }),
+		declarationsIn: (module) => read("declarationsIn", { module }),
+		declarationOf: (symbolId) => read("declarationOf", { symbolId }),
+		describe: (symbolId) => read("describe", { symbolId }),
+		findReferences: (symbolId, limit) => read("findReferences", { symbolId, limit }),
+		typeOf: (symbolId) => read("typeOf", { symbolId }),
+		typeHierarchy: (symbolId) => read("typeHierarchy", { symbolId }),
+		callHierarchy: (symbolId) => read("callHierarchy", { symbolId }),
 		// One method, both arities. No question means all.
 		recallAnswers: async (symbolId) => {
-			const answer = await channel.ask("recallAnswer", { symbolId });
+			const answer = await read("recallAnswer", { symbolId });
 			return Array.isArray(answer) ? answer : answer === null ? [] : [answer];
 		},
-		prepareRename: (symbolId, newName) => channel.ask("prepareRename", { symbolId, newName }),
-		renameEdits: (symbolId, newName) => channel.ask("renameEdits", { symbolId, newName }),
-		transactionOpen: async () => (await channel.ask("refactorStatus", {})).open,
+		prepareRename: (symbolId, newName) => read("prepareRename", { symbolId, newName }),
+		renameEdits: (symbolId, newName) => read("renameEdits", { symbolId, newName }),
+		transactionOpen: async () => (await read("refactorStatus", {})).open,
 	};
 }
 

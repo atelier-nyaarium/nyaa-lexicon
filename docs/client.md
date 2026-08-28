@@ -198,7 +198,7 @@ reader types. `segments` uses the chain's.
 `{ indexed: true }`, also for a file already indexed at this depth, or `{ indexed: false }` with a
 `reason` sharing `resolveChain`'s: `missing`, `binary`, `tooLarge`, `unclaimed` or `parseFailed`,
 with `detail` carrying the provider's or the reader's words. A content refusal is an answer;
-only a provider outage, or an outcome without a cause, is a `DaemonError`.
+only a provider outage, an indexer `fault`, or an outcome without a cause, is a `DaemonError`.
 
 ## The runtime
 

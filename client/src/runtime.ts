@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import path from "node:path";
+import { newerBuild } from "./lock.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -40,15 +41,7 @@ export function runtimeVerdict(versions: Record<string, string | undefined> = pr
 	const match = /^(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(bun);
 	if (match === null) return { kind: "notBun", runtime: `bun ${bun}` };
 	const release = match[1] as string;
-	const floor = BUN_FLOOR.split(".").map(Number);
-	const actual = release.split(".").map(Number);
-	let below = false;
-	for (let index = 0; index < 3; index++) {
-		if ((actual[index] as number) === (floor[index] as number)) continue;
-		below = (actual[index] as number) < (floor[index] as number);
-		break;
-	}
-	if (below || (release === BUN_FLOOR && match[2] !== undefined)) {
+	if (newerBuild(BUN_FLOOR, release) || (release === BUN_FLOOR && match[2] !== undefined)) {
 		return { kind: "belowFloor", version: bun, floor: BUN_FLOOR };
 	}
 	return { kind: "bun", version: bun };

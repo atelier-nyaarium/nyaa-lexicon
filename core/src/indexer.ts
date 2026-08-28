@@ -5,6 +5,7 @@
 
 import type {
 	ImportResolution,
+	IndexCause,
 	IndexDepth,
 	IndexOutcome,
 	IndexStatus,
@@ -105,15 +106,15 @@ export class WorkspaceIndexer {
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
 		const claim = this.claimOf(module);
-		if (!claim.claimed) return { module, action: "skipped", cause: "unclaimed", reason: claim.unclaimedReason };
+		if (!claim.claimed) return this.outcome(module, "unclaimed", claim.unclaimedReason);
 		// The claim above came from this route; the guard only narrows the type.
 		const route = this.supervisor.route(module);
-		if (!route.owned) return { module, action: "skipped", cause: "unclaimed", reason: "unclaimed" };
+		if (!route.owned) return this.outcome(module, "unclaimed");
 
 		const read = this.readSource(module);
 		if (read.kind === "missing") {
 			this.forgetFile(module);
-			return { module, action: "forgotten", cause: "missing", reason: "file is gone" };
+			return this.outcome(module, "missing");
 		}
 		if (read.kind !== "text") {
 			// Whatever it held before is not this file; the failure says why it holds nothing now.
@@ -121,7 +122,7 @@ export class WorkspaceIndexer {
 			const failure = unreadableReason(read);
 			this.store.recordFailure(module, failure);
 			this.upgradeFailed.add(module);
-			return { module, action: "skipped", cause: read.kind, reason: "parse failed", failure };
+			return this.outcome(module, read.kind, failure);
 		}
 		const text = read.text;
 		// Read, so it exists: evidence for a shared claim that no scan has seen.
@@ -141,7 +142,7 @@ export class WorkspaceIndexer {
 				if (held !== "outline") this.store.clearFailure(module);
 				// A row from before content was recorded learns it without a parse.
 				this.store.recordContent(module, route.content);
-				return { module, action: "skipped", cause: "current", reason: "already indexed at this depth" };
+				return this.outcome(module, "current");
 			}
 		}
 
@@ -154,9 +155,11 @@ export class WorkspaceIndexer {
 				...(depth === "full" ? {} : { depth }),
 			});
 		} catch (error) {
-			// A provider dying mid-parse is an outcome with its cause; anything else is still a fault.
-			if (error instanceof ProviderUnavailableError) return this.failedOutcome(module, error);
-			throw error;
+			const failure = error instanceof Error ? error.message : String(error);
+			if (error instanceof ProviderUnavailableError) return this.outcome(module, "providerDown", failure);
+			this.store.recordFailure(module, failure);
+			this.upgradeFailed.add(module);
+			return this.outcome(module, "parseFailed", failure);
 		}
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 		if (errors.length > 0) {
@@ -165,7 +168,7 @@ export class WorkspaceIndexer {
 			const failure = errors.map((diagnostic) => diagnostic.message).join("; ");
 			this.store.recordFailure(module, failure);
 			this.upgradeFailed.add(module);
-			return { module, action: "skipped", cause: "parseFailed", reason: "parse failed", failure };
+			return this.outcome(module, "parseFailed", failure);
 		}
 		// Below error, kept with the facts.
 		const notes: FileNote[] = facts.diagnostics.flatMap((diagnostic) =>
@@ -259,7 +262,7 @@ export class WorkspaceIndexer {
 				try {
 					outcome = await this.indexOne(module, undefined, floor === "outline");
 				} catch (error) {
-					outcome = this.failedOutcome(module, error);
+					outcome = this.faultOutcome(module, error);
 				}
 				if (floor === "outline" && this.coverage.state === "outlining") this.coverage.attempting.delete(module);
 				outcomes.push(outcome);
@@ -272,14 +275,17 @@ export class WorkspaceIndexer {
 			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
 			outcomes.push(...this.prune(seen));
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
-			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown");
+			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown" || outcome.cause === "fault");
 			if (outages.length > 0) {
 				// Files an outage left unread would hide behind every answer if this pass read as covered.
 				const first = outages[0] as IndexOutcome;
 				this.writeScanSummary(false);
 				this.coverage = {
 					state: "failed",
-					reason: `${outages.length} file(s) unread because a provider was unavailable: ${first.failure ?? first.reason}`,
+					reason:
+						first.cause === "providerDown"
+							? `${outages.length} file(s) unread because a provider was unavailable: ${first.failure ?? first.reason}`
+							: `${outages.length} file(s) failed because the indexer failed: ${first.failure ?? first.reason}`,
 				};
 				return outcomes;
 			}
@@ -365,7 +371,7 @@ export class WorkspaceIndexer {
 			// backlog or the pump spins on it forever.
 			if (outcome.action === "skipped") this.upgradeFailed.add(module);
 		} catch (error) {
-			this.failedOutcome(module, error);
+			this.faultOutcome(module, error);
 		}
 	}
 
@@ -380,7 +386,7 @@ export class WorkspaceIndexer {
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
 		if (this.currentScope().denies(module)) {
-			return { module, action: "skipped", cause: "unclaimed", reason: "denied by scope" };
+			return this.outcome(module, "unclaimed", "denied by scope");
 		}
 		return this.indexFile(module, depth, skipIfCurrent);
 	}
@@ -388,16 +394,30 @@ export class WorkspaceIndexer {
 	/** Exclude failures from the retryable background backlog. */
 	private upgradeFailed = new Set<string>();
 
-	private failedOutcome(module: string, error: unknown): IndexOutcome {
+	/** The one place an outcome's action and reason are chosen for its cause; `forgot` says rows were removed. */
+	private outcome(module: string, cause: IndexCause, detail?: string, forgot = false): IndexOutcome {
+		switch (cause) {
+			case "missing":
+				return { module, action: "forgotten", cause, reason: "file is gone" };
+			case "current":
+				return { module, action: "skipped", cause, reason: detail ?? "already indexed at this depth" };
+			case "binary":
+			case "tooLarge":
+			case "parseFailed":
+				return { module, action: "skipped", cause, reason: "parse failed", failure: detail };
+			case "providerDown":
+				return { module, action: "skipped", cause, reason: "provider unavailable", failure: detail };
+			case "fault":
+				return { module, action: "skipped", cause, reason: "the indexer failed on this file", failure: detail };
+			case "unclaimed":
+				return { module, action: forgot ? "forgotten" : "skipped", cause, reason: detail ?? "unclaimed" };
+		}
+	}
+
+	private faultOutcome(module: string, error: unknown): IndexOutcome {
 		const failure = error instanceof Error ? error.message : String(error);
 		this.upgradeFailed.add(module);
-		// Provider outages do not blame files.
-		if (error instanceof ProviderUnavailableError) {
-			return { module, action: "skipped", cause: "providerDown", reason: "provider unavailable", failure };
-		}
-		// Persist the failure for coverage reporting.
-		this.store.recordFailure(module, failure);
-		return { module, action: "skipped", cause: "parseFailed", reason: "parse failed", failure };
+		return this.outcome(module, "fault", failure);
 	}
 
 	/** Whether anything will index a module: the scope's word, then the routing's. */
@@ -461,7 +481,7 @@ export class WorkspaceIndexer {
 					// facts must not be demoted by an outline-floor rescan.
 					outcomes.push(await this.indexOne(module, undefined, floor === "outline"));
 				} catch (error) {
-					outcomes.push(this.failedOutcome(module, error));
+					outcomes.push(this.faultOutcome(module, error));
 				}
 			}
 		}
@@ -473,7 +493,7 @@ export class WorkspaceIndexer {
 		for (const module of this.store.indexedFiles()) {
 			if (reachable.has(module)) continue;
 			this.forgetFile(module);
-			outcomes.push({ module, action: "forgotten", cause: "unclaimed", reason: "no longer a root or reachable" });
+			outcomes.push(this.outcome(module, "unclaimed", "no longer a root or reachable", true));
 		}
 		// A failure row for a file that was never stored has no files row to sweep it away with.
 		for (const { module } of this.store.parseFailures()) {
@@ -613,28 +633,18 @@ export class WorkspaceIndexer {
 			if (decision.action === "forget") {
 				pending.delete(decision.module);
 				this.forgetFile(decision.module);
-				outcomes.push({
-					module: decision.module,
-					action: "forgotten",
-					cause: "missing",
-					reason: "file is gone",
-				});
+				outcomes.push(this.outcome(decision.module, "missing"));
 				continue;
 			}
 			if (decision.action === "ignore") {
 				pending.delete(decision.module);
 				const cause = decision.reason === "content is unchanged" ? "current" : "unclaimed";
-				outcomes.push({ module: decision.module, action: "skipped", cause, reason: decision.reason });
+				outcomes.push(this.outcome(decision.module, cause, decision.reason));
 				continue;
 			}
 			if (!roots.has(decision.module) && this.store.contentHashOf(decision.module) === null) {
 				pending.delete(decision.module);
-				outcomes.push({
-					module: decision.module,
-					action: "skipped",
-					cause: "unclaimed",
-					reason: "outside roots and reachability",
-				});
+				outcomes.push(this.outcome(decision.module, "unclaimed", "outside roots and reachability"));
 				continue;
 			}
 			attempted.add(decision.module);
@@ -647,7 +657,7 @@ export class WorkspaceIndexer {
 				outcomes.push(outcome);
 				if (outcome.action === "forgotten") roots.delete(decision.module);
 			} catch (error) {
-				outcomes.push(this.failedOutcome(decision.module, error));
+				outcomes.push(this.faultOutcome(decision.module, error));
 			}
 		}
 
@@ -665,7 +675,7 @@ export class WorkspaceIndexer {
 				outcomes.push(outcome);
 				if (outcome.action === "forgotten") roots.delete(module);
 			} catch (error) {
-				outcomes.push(this.failedOutcome(module, error));
+				outcomes.push(this.faultOutcome(module, error));
 			}
 		}
 
@@ -673,7 +683,7 @@ export class WorkspaceIndexer {
 		outcomes.push(...(await this.followImports(seen, false, previousDepths)));
 		outcomes.push(...this.prune(seen));
 		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
-		this.coverage = { state: "covered" };
+		if (this.coverage.state !== "failed") this.coverage = { state: "covered" };
 		return outcomes;
 	}
 }

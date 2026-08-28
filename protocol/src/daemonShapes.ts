@@ -636,7 +636,7 @@ export type FindImportsResult = z.infer<typeof FindImportsResultSchema>;
 
 /** Why a file was not indexed, closed; `current` means the index already holds this version. */
 export const IndexCauseSchema = z
-	.enum(["missing", "binary", "tooLarge", "unclaimed", "parseFailed", "current", "providerDown"])
+	.enum(["missing", "binary", "tooLarge", "unclaimed", "parseFailed", "current", "providerDown", "fault"])
 	.meta({ id: "IndexCause" });
 
 export type IndexCause = z.infer<typeof IndexCauseSchema>;

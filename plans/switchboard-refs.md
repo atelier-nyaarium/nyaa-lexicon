@@ -386,8 +386,9 @@ Sol's window ran out). The plan as rethought.
 - The occurrence convention needs no provider work: `protocol/src/serve.ts` wraps every
   provider's `parseFile` answer in `withOccurrences` (all thirteen go through `serveProvider`),
   and `core/src/factAdmission.ts` refuses a duplicate id before anything is written. The first
-  audit's silent-overwrite story was wrong. Filed separately: `providers/python/src/extract.py`
-  reimplementing the convention outside `serve.ts`.
+  audit's silent-overwrite story was wrong, and so was the note that
+  `providers/python/src/extract.py` reimplements the convention: it mints method disambiguators
+  for same-named declarations, which is identity, not occurrences, and nothing needs filing.
 - `core/src/__tests__/language-branch-residue.test.ts` sweeps `client/src` too (the qualifier
   work lands in `chain.ts`) and `LANGUAGE_NAMES` gains the names it lacks (cpp, c++, kotlin,
   markdown, c). It lands green (no quoted language name in `client/src` today), so it is planted
@@ -478,6 +479,43 @@ Sol's window ran out). The plan as rethought.
   holds no literals case with a code fixture; the CLI exits 1 on it at HEAD before this work and
   after it. The gate is right and the corpus is short; a literals case per code language is its
   own change.
+
+### As shipped
+
+Reconciled after the red-team and architecture passes of lap 2. Where this differs from the text
+above, this is what the code does.
+
+- The method table marks the twelve non-idempotent writes, the knowledge writes and the refactor
+  steps, `mutates: true`, read through `methodMutates`. `daemonChannel` asks a read again after a
+  lost connection even when its frame was sent, and reports a sent write as `connectionLost` with
+  the outcome unknown. `ReadMethod` derives the read set from the table and types the LSP
+  adapter's asks, so a write asked there fails to compile. `ensureFailure` in `ensure.ts` is the
+  one mapping from `EnsureReason` to a `DaemonError` cause. `runtimeVerdict` compares through
+  `lock.ts`'s `newerBuild`, one comparator. `stopDaemon` judges the install before closing the
+  channel, so a refusal leaves the session whole. A client that cannot read an answer names the
+  field, never zod's issue list.
+- `IndexOutcome` carries the cause `fault` beside `providerDown`. At the `supervisor.ask` boundary
+  in `indexFile` a dead provider is `providerDown` and any other ask failure (a timeout, a
+  malformed answer) is `parseFailed` with the failure recorded; an error escaping `indexFile` or
+  `indexOne` in the scan, upgrade and watcher loops is `fault`, unrecorded, excluded from the
+  background retry. One private constructor owns every outcome's action and reason. A warmup
+  pass with any outage or fault ends `failed`, every request says so until a restart, and a
+  watcher batch does not revive it. A pruned file that left scope is `forgotten` with cause
+  `unclaimed`; `awaitIndexed` throws `DaemonError` for `fault` as for `providerDown`.
+- `qualifierDescriptors(names, declared)` and `angleDelta(text)` in `providerKit` own the
+  qualifier rule and angle-bracket depth; both parsers keep qualifier names on their records and
+  settle descriptors after the whole parse, so a qualifier's kind does not depend on declaration
+  order. The C++ merge key is the canonical signature: parameter types with names and default
+  arguments dropped and integral spellings folded, then the cv and ref qualifiers, so `f() const`
+  stays apart from `f()` and `f(unsigned)` merges with `f(unsigned int)`. The prototype's name
+  token is a `read` reference to the merged symbol and the definition's is the declaration.
+  Overloads sharing a path are numbered by their final source position, stated in
+  `docs/provider-protocol.md`. Known limit, not fixed: a qualified definition written BEFORE its
+  class (ill-formed C++) settles to the right path but is not merged with the later prototype;
+  the two ids do not collide.
+- `insideWorkspace` also refuses a write through a directory link that leaves the real root; the
+  chain compares names NFC on both sides; `moduleStatus` and `declarationsIn` stay as older views
+  of the same store, documented as such, not as projections.
 
 ## Phase 2 - Switchboard: the resolver rebuilt on the index
 

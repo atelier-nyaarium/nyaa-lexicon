@@ -1,4 +1,5 @@
 import {
+	angleDelta,
 	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
@@ -8,6 +9,7 @@ import {
 	type ImportedName,
 	type Literal,
 	type Metrics,
+	qualifierDescriptors,
 	type Range,
 	type Reference,
 	type SymbolKind,
@@ -461,9 +463,7 @@ export class CsharpParser {
 		for (let current = index; current < end; current++) {
 			const item = this.token(current);
 			const value = item?.kind === "punctuation" ? item.value : undefined;
-			if (value === "<") depth++;
-			else if (value === ">") depth--;
-			else if (value === ">>") depth -= 2;
+			depth += angleDelta(value ?? "");
 			if (depth === 0 && current > index) return current;
 		}
 		return -1;
@@ -892,8 +892,9 @@ export class CsharpParser {
 		let depth = 0;
 		for (let cursor = segmentStart; cursor <= end; cursor++) {
 			const value = this.value(cursor);
-			if (value === "<" || value === "[" || value === "(") depth++;
-			else if (value === ">" || value === "]" || value === ")") depth--;
+			if (value === "[" || value === "(") depth++;
+			else if (value === "]" || value === ")") depth--;
+			else depth += angleDelta(value ?? "");
 			if ((value === "," && depth === 0) || cursor === end) {
 				const segmentEnd = value === "," ? cursor : end;
 				this.addTypeReference(segmentStart, segmentEnd - 1, "typeUse");
@@ -1128,10 +1129,8 @@ export class CsharpParser {
 			else if (value === ")") parentheses--;
 			else if (value === "[") brackets++;
 			else if (value === "]") brackets--;
-			else if (value === "<") angles++;
-			else if (value === ">") angles--;
-			else if (value === ">>") angles -= 2;
-			else if (value === "," && parentheses === 0 && brackets === 0 && angles === 0) {
+			angles += angleDelta(value ?? "");
+			if (value === "," && parentheses === 0 && brackets === 0 && angles === 0) {
 				segments.push({ start: segmentStart, end: current });
 				segmentStart = current + 1;
 			}
@@ -1151,9 +1150,7 @@ export class CsharpParser {
 		let angle = 0;
 		while (current >= 0 && current < end) {
 			const value = this.value(current);
-			if (value === "<") angle++;
-			else if (value === ">") angle--;
-			else if (value === ">>") angle -= 2;
+			angle += angleDelta(value ?? "");
 			if (value === "=" && angle === 0) {
 				equals = current;
 				break;
@@ -1457,11 +1454,9 @@ export class CsharpParser {
 			const value = this.value(current);
 			if (value === "[") brackets++;
 			else if (value === "]") brackets--;
-			else if (value === "<") angles++;
-			else if (value === ">") angles--;
-			else if (value === ">>") angles -= 2;
-			else if (value === "=" || value === "=>") return -1;
-			else if (value === "(" && brackets === 0 && angles === 0) return current;
+			angles += angleDelta(value ?? "");
+			if (value === "=" || value === "=>") return -1;
+			if (value === "(" && brackets === 0 && angles === 0) return current;
 		}
 		return -1;
 	}
@@ -1472,10 +1467,8 @@ export class CsharpParser {
 		let depth = 0;
 		for (let current = nameIndex; current >= start; current--) {
 			const value = this.value(current);
-			if (value === ">") depth++;
-			else if (value === ">>") depth += 2;
-			else if (value === "<") {
-				depth--;
+			depth -= angleDelta(value ?? "");
+			if (value === "<") {
 				if (depth <= 0) return this.previousSignificant(current, start);
 			}
 		}
@@ -1496,18 +1489,6 @@ export class CsharpParser {
 		return names;
 	}
 
-	/** A qualifier declared in this parse takes its own descriptor, wherever in the file; any other is a namespace. */
-	private qualifierDescriptors(names: string[]): Descriptor[] {
-		return names.map((name) => {
-			const declaration = this.rawDeclarations.find(
-				(raw) =>
-					raw.name === name &&
-					(raw.kind === "class" || raw.kind === "interface" || raw.kind === "struct" || raw.kind === "enum"),
-			);
-			return declaration?.descriptor ?? { kind: "namespace", name };
-		});
-	}
-
 	private genericInterfaceBefore(index: number, start: number): { name: string; start: number } | null {
 		const token = this.token(index);
 		if (isIdentifier(token)) return { name: token.value, start: index };
@@ -1515,10 +1496,8 @@ export class CsharpParser {
 		let depth = 0;
 		for (let current = index; current >= start; current--) {
 			const value = this.value(current);
-			if (value === ">") depth++;
-			else if (value === ">>") depth += 2;
-			else if (value === "<") {
-				depth--;
+			depth -= angleDelta(value ?? "");
+			if (value === "<") {
 				if (depth === 0) {
 					const nameIndex = this.previousSignificant(current, start);
 					const name = this.token(nameIndex);
@@ -1618,10 +1597,8 @@ export class CsharpParser {
 			else if (value === "]") brackets--;
 			else if (value === "{") braces++;
 			else if (value === "}") braces--;
-			else if (value === "<") angles++;
-			else if (value === ">") angles--;
-			else if (value === ">>") angles -= 2;
-			else if (value === "," && parentheses === 0 && brackets === 0 && braces === 0 && angles === 0) {
+			angles += angleDelta(value ?? "");
+			if (value === "," && parentheses === 0 && brackets === 0 && braces === 0 && angles === 0) {
 				segments.push({ start: segmentStart, end: current });
 				segmentStart = current + 1;
 			}
@@ -1782,7 +1759,21 @@ export class CsharpParser {
 
 	private descriptorPath(raw: RawDeclaration, cache: Map<RawDeclaration, string>): Descriptor[] {
 		const path: Descriptor[] = raw.parent === undefined ? [] : this.descriptorPath(raw.parent, cache);
-		if (raw.qualifier !== undefined) path.push(...this.qualifierDescriptors(raw.qualifier));
+		if (raw.qualifier !== undefined)
+			path.push(
+				...qualifierDescriptors(
+					raw.qualifier,
+					(name) =>
+						this.rawDeclarations.find(
+							(item) =>
+								item.name === name &&
+								(item.kind === "class" ||
+									item.kind === "interface" ||
+									item.kind === "struct" ||
+									item.kind === "enum"),
+						)?.descriptor,
+				),
+			);
 		if (raw.descriptor !== undefined) path.push(raw.descriptor);
 		return path;
 	}

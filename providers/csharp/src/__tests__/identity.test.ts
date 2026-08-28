@@ -64,6 +64,11 @@ describe("C# stable explicit interface identity", () => {
 		]);
 	});
 
+	test("keeps nested generic parameter boundaries", () => {
+		const items = declarations("class S { void M(A<B<C>> value, int other) {} }\n");
+		expect(items.find((item) => item.name === "M")?.signature).toContain("A<B<C>> value");
+	});
+
 	test("qualifies explicit properties and events", () => {
 		const first = declarations("class S { int IFoo.Value { get; } event EventHandler IFoo.Changed; }\n");
 		const second = declarations("class S { event EventHandler IFoo.Changed; int IFoo.Value { get; } }\n");

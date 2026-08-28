@@ -33,6 +33,7 @@ export async function awaitIndexed(session: Pick<Session, "ask">, module: string
 		case "parseFailed":
 			return { indexed: false, reason: outcome.cause, ...(detail === undefined ? {} : { detail }) };
 		case "providerDown":
+		case "fault":
 			throw new DaemonError(`${module} was not indexed: ${detail ?? "a provider is unavailable"}`, "daemon");
 		case undefined:
 			throw new DaemonError(`${module} was not indexed: ${detail ?? "no reason given"}`, "daemon");

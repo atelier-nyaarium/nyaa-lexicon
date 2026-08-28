@@ -2,6 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { hashContent } from "../hash";
 
+/** Built at runtime, so the file itself carries no byte the residue sweep forbids. */
+const BOM = String.fromCharCode(0xfeff);
+
 describe("hashContent", () => {
 	it("is the first 32 hex characters of the sha256 of the decoded text", () => {
 		const text = "export const a = 1;\n";
@@ -10,7 +13,7 @@ describe("hashContent", () => {
 	});
 
 	it("keeps a BOM and line endings as part of the text", () => {
-		expect(hashContent("﻿a\n")).not.toBe(hashContent("a\n"));
+		expect(hashContent(`${BOM}a\n`)).not.toBe(hashContent("a\n"));
 		expect(hashContent("a\r\nb")).not.toBe(hashContent("a\nb"));
 	});
 

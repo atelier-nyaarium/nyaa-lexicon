@@ -6,6 +6,7 @@ import type { z } from "zod";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import type { ProjectModel } from "./project.js";
 import type { ProviderHandlers } from "./serve.js";
+import type { Descriptor } from "./symbolId.js";
 import { normalizeModulePath } from "./symbolId.js";
 
 ////////////////////////////////
@@ -105,6 +106,22 @@ export function workspaceFile(root: string, module: string): string | null {
 
 export function projectDiagnostic(root: string, message: string): ProjectModel {
 	return { files: [], externalRoots: [], configFiles: [], diagnostics: [{ severity: "error", message, path: root }] };
+}
+
+/** Resolves written qualifiers: same-parse declarations keep their descriptor; other segments use namespace identity. */
+export function qualifierDescriptors(
+	names: string[],
+	declared: (name: string) => Descriptor | undefined,
+): Descriptor[] {
+	return names.map((name) => declared(name) ?? { kind: "namespace", name });
+}
+
+/** Returns angle depth change; `>>=` is not a closer here. */
+export function angleDelta(text: string): number {
+	if (text === "<") return 1;
+	if (text === ">") return -1;
+	if (text === ">>") return -2;
+	return 0;
 }
 
 /** Every claimed file under `root`, sorted. An unreadable directory is skipped, never fatal. */

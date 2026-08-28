@@ -87,9 +87,23 @@ describe("C++ stable declaration identity", () => {
 	test("keeps the prototype name as the one reference, and the definition's name as the declaration", () => {
 		const sources = ["class A { void f(); }; void A::f() {}\n", "class A { void f() {} };\n"];
 		const facts = parseCppFile("identity.cpp", sources[0] as string);
-		expect(facts.references.filter((item) => item.name === "f").map((item) => item.role)).toEqual(["read"]);
+		// The prototype's name (column 15) is the one reference; the definition's (column 31) is the declaration.
+		expect(
+			facts.references.filter((item) => item.name === "f").map((item) => [item.role, item.range.start.character]),
+		).toEqual([["read", 15]]);
+		expect(facts.declarations.find((item) => item.name === "f")?.selectionRange?.start.character).toBe(31);
 		expect(parseCppFile("identity.cpp", sources[1] as string).declarations.some((item) => item.name === "f")).toBe(
 			true,
+		);
+	});
+
+	test("settles a written qualifier from declarations later in the file", () => {
+		const facts = parseCppFile("identity.cpp", "void A::f() {}\nclass A { void f(); };\n");
+		expect(facts.declarations.find((item) => item.name === "f")?.symbolId).toBe(
+			id("identity.cpp", [
+				{ kind: "type", name: "A" },
+				{ kind: "method", name: "f" },
+			]),
 		);
 	});
 

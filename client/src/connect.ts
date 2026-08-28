@@ -18,7 +18,7 @@ import { awaitIndexed, type IndexedAnswer } from "./awaitIndexed.js";
 import { type ChainAnswer, resolveChain } from "./chain.js";
 import { daemonChannel } from "./channel.js";
 import { bundleStamp, type DaemonSource, findDaemon } from "./discover.js";
-import { ensureDaemon } from "./ensure.js";
+import { ensureDaemon, ensureFailure } from "./ensure.js";
 import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
 import { readInstallRecord, readInstallVersion } from "./install.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
@@ -124,13 +124,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 	}).catch((error: unknown) => {
 		throw asDaemonError(error);
 	});
-	if (!daemon.connected)
-		throw new DaemonError(
-			daemon.detail,
-			daemon.reason === "spawnFailed" || daemon.reason === "unbuilt" || daemon.reason === "noBunRuntime"
-				? "spawnFailed"
-				: "daemon",
-		);
+	if (!daemon.connected) throw ensureFailure(daemon);
 
 	let lock = daemon.lock;
 	const lockFile = workspacePaths(host, workspaceRoot, options.stateDir).lockFile;

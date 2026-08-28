@@ -19,6 +19,7 @@ import {
 	type SpawnWatch,
 	spawnDaemonProcess,
 } from "./discover.js";
+import { DaemonError } from "./errors.js";
 import type { LockDecision } from "./lock.js";
 import { currentHost, workspacePaths } from "./paths.js";
 import { notifyWaiting } from "./transport.js";
@@ -57,6 +58,12 @@ export type EnsureReason = "otherWorkspace" | "noBunRuntime" | "unbuilt" | "spaw
 export type EnsureResult =
 	| { connected: true; lock: DaemonLock }
 	| { connected: false; reason: EnsureReason; detail: string };
+
+/** The one reading of a refusal as a session error: nothing to start from is `spawnFailed`, the rest is the daemon's. */
+export function ensureFailure(result: Extract<EnsureResult, { connected: false }>, context = ""): DaemonError {
+	const spawn = result.reason === "spawnFailed" || result.reason === "unbuilt" || result.reason === "noBunRuntime";
+	return new DaemonError(`${context}${result.detail}`, spawn ? "spawnFailed" : "daemon");
+}
 
 ////////////////////////////////
 //  Constants

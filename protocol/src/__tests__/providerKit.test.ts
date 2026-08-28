@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PROVIDER_METHODS } from "../methods";
 import {
+	angleDelta,
 	discoverByWalk,
 	handlersFor,
 	type ProviderMethods,
+	qualifierDescriptors,
 	walkWorkspace,
 	workspaceFile,
 	workspaceModule,
@@ -47,6 +49,21 @@ describe("naming a workspace file", () => {
 		expect(workspaceFile(root, "./src/a.ts")).toBe(path.join(root, "src", "a.ts"));
 		expect(workspaceFile(root, "../escape.ts")).toBeNull();
 		expect(workspaceFile(root, "/etc/passwd")).toBeNull();
+	});
+});
+
+describe("shared parser primitives", () => {
+	it("maps angle tokens to depth changes", () => {
+		expect(["<", ">", ">>", ">>=", "text"].map(angleDelta)).toEqual([1, -1, -2, 0, 0]);
+	});
+
+	it("uses declared descriptors and namespace identity for qualifiers", () => {
+		expect(qualifierDescriptors(["A", "N"], (name) => (name === "A" ? { kind: "type", name } : undefined))).toEqual(
+			[
+				{ kind: "type", name: "A" },
+				{ kind: "namespace", name: "N" },
+			],
+		);
 	});
 });
 

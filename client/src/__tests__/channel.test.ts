@@ -134,7 +134,7 @@ describe("daemon channel reconnects", () => {
 		await expect(session.ask("cacheStats", {})).rejects.toMatchObject({ cause: "spawnFailed" });
 	});
 
-	it("reopens after a welcomed connection is lost before a request is written", async () => {
+	it("reopens and asks a read again when the first connection closes right after its welcome", async () => {
 		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
 		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
 		fake = await fakeDaemon((connection, request) =>
