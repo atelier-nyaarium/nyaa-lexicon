@@ -1,8 +1,7 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connect, DaemonError, type PlatformEnv, type Session, writeInstallRecord } from "@nyaa-lexicon/client";
-import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type RunningDaemon, startDaemon } from "../daemon";
 import { createDispatch } from "../dispatch";
@@ -12,7 +11,6 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
-import { BUILD_VERSION } from "../version";
 import { WorkspaceGate } from "../workspaceGate";
 
 ////////////////////////////////
@@ -24,9 +22,11 @@ const ROOT = path.join(import.meta.dirname, "..", "..", "..");
 const TYPESCRIPT = path.join(ROOT, "providers", "typescript", "src", "main.ts");
 const CSHARP = path.join(ROOT, "providers", "csharp", "src", "main.ts");
 
-/** The bundle this checkout's daemon stamps into its lock. Absent in a checkout never built. */
-const OWN_BUNDLE = path.join(lexiconRoot(), "dist", "daemon.js");
-const whenBuilt = existsSync(OWN_BUNDLE) ? describe : describe.skip;
+// The install IS this checkout, so the lock's bundle stamp and the install's come from one file.
+const INSTALL = lexiconRoot();
+const whenBuilt = ["daemon.js", "version.json"].every((file) => existsSync(path.join(INSTALL, "dist", file)))
+	? describe
+	: describe.skip;
 
 const FILES: Record<string, string> = {
 	// Project-model driven: without an include list the provider enumerates nothing.
@@ -75,7 +75,6 @@ const FILES: Record<string, string> = {
 };
 
 let state: string;
-let install: string;
 let workspace: string;
 let host: PlatformEnv;
 let previousStateHome: string | undefined;
@@ -83,19 +82,6 @@ let store: IndexStore;
 let supervisor: ProviderSupervisor;
 let daemon: RunningDaemon;
 let session: Session;
-
-/** An install wearing this daemon's identity: its build, and a bundle with the same size and mtime. */
-function installLikeOurs(root: string): void {
-	const bundle = path.join(root, "dist", "daemon.js");
-	mkdirSync(path.dirname(bundle), { recursive: true });
-	copyFileSync(OWN_BUNDLE, bundle);
-	const own = statSync(OWN_BUNDLE);
-	utimesSync(bundle, own.atime, own.mtime);
-	writeFileSync(
-		path.join(root, "dist", "version.json"),
-		JSON.stringify({ buildVersion: BUILD_VERSION, protocolVersion: PROTOCOL_VERSION }),
-	);
-}
 
 async function exact(module: string, segments: string[]) {
 	const answer = await session.resolveChain(module, segments);
@@ -110,15 +96,13 @@ async function exact(module: string, segments: string[]) {
 whenBuilt("resolveChain and awaitIndexed over a real daemon", () => {
 	beforeAll(async () => {
 		state = mkdtempSync(path.join(tmpdir(), "lexicon-chain-state-"));
-		install = mkdtempSync(path.join(tmpdir(), "lexicon-chain-install-"));
 		workspace = mkdtempSync(path.join(tmpdir(), "lexicon-chain-work-"));
 		host = { platform: "linux", env: { XDG_STATE_HOME: state }, home: state };
 		// connect() reads the live host, so the record and the lock land in this test's state root.
 		previousStateHome = process.env["XDG_STATE_HOME"];
 		process.env["XDG_STATE_HOME"] = state;
 		for (const [name, text] of Object.entries(FILES)) writeFileSync(path.join(workspace, name), text);
-		installLikeOurs(install);
-		writeInstallRecord(install, host);
+		writeInstallRecord(INSTALL, host);
 
 		store = IndexStore.open(path.join(state, "index.sqlite")).store;
 		supervisor = new ProviderSupervisor();
@@ -148,7 +132,7 @@ whenBuilt("resolveChain and awaitIndexed over a real daemon", () => {
 		store?.close();
 		if (previousStateHome === undefined) delete process.env["XDG_STATE_HOME"];
 		else process.env["XDG_STATE_HOME"] = previousStateHome;
-		for (const dir of [state, install, workspace]) rmSync(dir, { recursive: true, force: true });
+		for (const dir of [state, workspace]) rmSync(dir, { recursive: true, force: true });
 	});
 
 	it("names a method under its class, with the line it starts on", async () => {
