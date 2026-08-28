@@ -33,6 +33,8 @@ export interface ConnectFramesOptions {
 	/** How long a request waits on a starting daemon; zero asks once. */
 	patience?: number;
 	onWaiting?: WaitingCallback;
+	/** Accept a daemon behind this client's major: retiring one asks `refactorStatus` and `shutdown`, which every major answers. */
+	acceptOlder?: boolean;
 }
 
 export type WaitingEvent = { waitingFor: string; retryInMs: number; elapsedMs: number };
@@ -176,7 +178,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 			if (frame.kind === "welcome") {
 				if (welcomed) return;
 				// Judged here as well as from the lock, so a direct connection cannot bypass the rule.
-				if (behindUs(frame.protocolVersion)) {
+				if (behindUs(frame.protocolVersion) && options.acceptOlder !== true) {
 					clearTimeout(connectDeadline);
 					rejectConnect(
 						new Incompatible(
@@ -283,8 +285,14 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 }
 
 /** One question, one connection: for callers that ask and exit. */
-export async function requestOnce(port: number, token: string, method: string, params?: unknown): Promise<unknown> {
-	const client = await connectFrames(port, token);
+export async function requestOnce(
+	port: number,
+	token: string,
+	method: string,
+	params?: unknown,
+	options: Pick<ConnectFramesOptions, "acceptOlder"> = {},
+): Promise<unknown> {
+	const client = await connectFrames(port, token, options);
 	try {
 		return await client.request(method, params);
 	} finally {

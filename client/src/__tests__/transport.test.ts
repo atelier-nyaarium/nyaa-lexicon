@@ -63,6 +63,15 @@ describe("the welcome check", () => {
 		await expect(client.request("overview", {})).resolves.toBe("served");
 		client.close();
 	});
+
+	// Retirement is the one conversation with an older daemon, and it must be able to happen.
+	it("accepts a lower major when the caller is retiring it", async () => {
+		const fake = await daemonAnswering(() => ({ ok: true, result: { open: false } }), "1.0.0");
+
+		const client = await connectFrames(fake.port, TOKEN, { acceptOlder: true });
+		await expect(client.request("refactorStatus", {})).resolves.toEqual({ open: false });
+		client.close();
+	});
 });
 
 describe("patience with a starting daemon", () => {

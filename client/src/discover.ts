@@ -131,8 +131,13 @@ export function findDaemon(
  * persistent connection instead (`connectFrames`), because the open connection is what tells the
  * daemon the session exists.
  */
-export async function callDaemon(lock: DaemonLock, method: string, params?: unknown): Promise<unknown> {
-	return requestOnce(lock.port, lock.token, method, params);
+export async function callDaemon(
+	lock: DaemonLock,
+	method: string,
+	params?: unknown,
+	options: { acceptOlder?: boolean } = {},
+): Promise<unknown> {
+	return requestOnce(lock.port, lock.token, method, params, options);
 }
 
 ////////////////////////////////

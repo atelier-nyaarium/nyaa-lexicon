@@ -520,6 +520,14 @@ above, this is what the code does.
 - `insideWorkspace` also refuses a write through a directory link that leaves the real root; the
   chain compares names NFC on both sides; `moduleStatus` and `declarationsIn` stay as older views
   of the same store, documented as such, not as projections.
+- Found by the smoke, shipped as 3.0.1: a 3.0.0 client could not retire a 2.x daemon. `retire`
+  asks `refactorStatus` through `connectFrames`, whose welcome check refused the older daemon
+  before the question was sent, so every request on a workspace with a lingering 2.x daemon
+  failed as `spawnFailed` ("it would not say whether a refactor is open"). `connectFrames` takes
+  `acceptOlder`, `callDaemon` passes it, and `ensureDaemon`'s default ask sets it; the retirement
+  is the one conversation across a major, since `refactorStatus` and `shutdown` are answered by
+  every major. Pinned over the real socket in `ensure.test.ts`; the injected-ask tests had
+  replaced the seam that failed.
 
 ## Phase 2 - Switchboard: the resolver rebuilt on the index
 
@@ -809,6 +817,12 @@ Collected after Phase 1.
   predated the edit and reported the export missing; a second `tsc --build` regenerated it and
   passed. Not understood, recorded: a red gate right after an export was added is worth one
   re-run before it is believed.
+- **An injected test double can replace exactly the seam that fails.** Every retirement test in
+  `client/src/__tests__/ensure.test.ts` injects `ask`, so none of them could see that the real
+  ask refuses an older daemon at its welcome; the suite was green through a handover that failed
+  on every workspace with a 2.x daemon alive. The smoke found it in one prompt. When a seam is
+  injected for speed, one test per suite must still cross it for real (the fake daemon exists for
+  this), and the smoke stays in the ladder for what no fake can model.
 - **`IndexOutcome.action` is chosen at the site, not derived from the mutation.** The cause-keyed
   constructor in `core/src/indexer.ts` needed a `forgot` flag because `unclaimed` is `forgotten`
   when rows were removed and `skipped` when there were none; an outcome whose action came from

@@ -43,7 +43,10 @@ Four things are read, in this order, and each can refuse before the next is touc
 
 The socket opens on the first question, not inside `connect`. Its welcome frame is judged again
 there: a daemon behind the client's protocol major is refused as `Incompatible`, so a direct
-connection cannot bypass the lock's rule.
+connection cannot bypass the lock's rule. The one conversation that accepts an older daemon is
+its retirement: `ensureDaemon` asks it `refactorStatus` and `shutdown`, which every major
+answers, before spawning the install's own, since a daemon that cannot be asked to stop would
+hold its workspace until it lingered out.
 
 ## Three versions
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { DaemonSource } from "../discover";
 import { ensureDaemon } from "../ensure";
 import type { LockDecision } from "../lock";
+import { fakeDaemon } from "./fakeDaemon";
 
 ////////////////////////////////
 //  Helpers
@@ -240,6 +241,46 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		expect(events).toEqual(["ask:refactorStatus", "ask:shutdown"]);
 		expect(started).toBe(1);
 		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	// Through the real socket, not an injected ask: the daemon being retired is behind this major,
+	// and the welcome check must not refuse the conversation that retires it.
+	it("asks a daemon of an older protocol major to stop over the wire", async () => {
+		const fake = await fakeDaemon({
+			token: "t".repeat(32),
+			protocolVersion: "1.0.0",
+			answer: () => ({ ok: true, result: { open: false } }),
+		});
+		const older = { ...LOCK, port: fake.port, token: "t".repeat(32) };
+		const events: string[] = [];
+		try {
+			const result = await ensureDaemon({
+				...options,
+				look: looking([
+					{
+						action: "replace",
+						lock: older,
+						reason: "the daemon speaks 1.0.0, we speak 3.0.0",
+						cause: "protocol",
+					},
+					{ action: "spawn", reason: "gone" },
+					{ action: "spawn", reason: "gone" },
+					{ action: "connect", lock: older },
+				]),
+				stop: (pid) => {
+					events.push(`stop:${pid}`);
+				},
+				start: () => {
+					events.push("start");
+				},
+			});
+
+			expect(fake.asked).toEqual(["refactorStatus", "shutdown"]);
+			expect(events).toEqual(["start"]);
+			expect(result).toEqual({ connected: true, lock: older });
+		} finally {
+			await fake.close();
+		}
 	});
 
 	it("falls back to the signal only once the lock has outlived the ask, and only after asking", async () => {

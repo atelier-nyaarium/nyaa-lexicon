@@ -2,6 +2,15 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
+## 3.0.1
+
+A 3.0.0 client could not retire a 2.x daemon still serving a workspace: the welcome check refused
+the older daemon before the client could ask it to stop, so every request failed with "the
+daemon speaks 2.0.0, we speak 3.0.0, and it would not say whether a refactor is open" until the
+old daemon lingered out. The retirement conversation now accepts the older daemon for its two
+questions, `refactorStatus` and `shutdown`, and the install's own daemon replaces it. Updating
+from 2.x lands on this patch, not 3.0.0.
+
 ## 3.0.0
 
 A protocol major, and a clean break with no migration window: reload every session, and update

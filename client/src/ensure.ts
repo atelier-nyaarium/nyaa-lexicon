@@ -90,7 +90,8 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	const wait = (ms: number) => (options.clock ?? systemSleeper).sleep(ms);
 	const stop = options.stop ?? ((pid) => process.kill(pid, "SIGTERM"));
 	const alive = options.alive ?? lockHolderAlive;
-	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}));
+	// The daemon being retired is behind this major by definition, so the retirement conversation accepts it.
+	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}, { acceptOlder: true }));
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const startedAt = Date.now();
 	let waitingNotified = false;
