@@ -57,9 +57,9 @@ A \`●\` marks projects bound in this session.
 export const REGISTER_PROJECT_DESCRIPTION = `
 # \`register_project\`
 
-Register a codebase by its absolute root path.
+Register a codebase by absolute root path.
 
-Registration does not index or bind it. \`bind_project\` starts its indexer for this session.
+Does not index or bind it. \`bind_project\` starts its indexer for this session.
 `.trim();
 
 export const BIND_PROJECT_DESCRIPTION = `

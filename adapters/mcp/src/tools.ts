@@ -258,7 +258,7 @@ export const RefactorInsertInput = {
 	text: z.string().min(1).describe(`The declaration(s), flush-left. Indentation is applied from the anchor.`),
 };
 
-const RE2_NOTE = "RE2 syntax: linear time, no lookaround or backreferences.";
+const RE2_NOTE = `RE2 syntax: linear time, no lookaround or backreferences.`;
 
 export const RefactorPreviewInput = {
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
@@ -352,28 +352,11 @@ export const RecordAnswerInput = {
 		.string()
 		.min(1)
 		.describe(
-			`
-			State what the cited facts establish in roughly 1 to 2 concise incomplete sentences. May be longer if it's too complex for ≤2.
-			`.trim(),
+			`State what the cited facts establish in roughly 1 to 2 concise incomplete sentences. May be longer if too complex for ≤2.`,
 		),
-	citations: z
-		.array(z.string().min(1))
-		.min(1)
-		.describe(
-			`
-			Current full fact IDs from \`symbol_facts\`.
-			`.trim(),
-		),
+	citations: z.array(z.string().min(1)).min(1).describe(`Current full fact IDs from \`symbol_facts\`.`),
 	model: z.string().min(1).optional().describe(`Author or model name.`),
-	resolvesDoubt: z
-		.string()
-		.min(1)
-		.optional()
-		.describe(
-			`
-			Doubt ID from \`recall_answer\`. Omit to carry it forward.
-			`.trim(),
-		),
+	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\`. Omit to carry it forward.`),
 	omitting: z.string().min(1).optional().describe(`Why an existing fact ID is omitted.`),
 };
 
@@ -401,11 +384,7 @@ export const ReaffirmAnswerInput = {
 	citations: z
 		.array(z.string().min(1))
 		.optional()
-		.describe(
-			`
-			Current full fact IDs from \`symbol_facts\`. Omit when only clearing a doubt.
-			`.trim(),
-		),
+		.describe(`Current full fact IDs from \`symbol_facts\`. Omit when only clearing a doubt.`),
 	model: z.string().min(1).optional().describe(`Author or model name.`),
 	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\`.`),
 };

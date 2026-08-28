@@ -73,9 +73,9 @@ Use a row's key or directory with \`project_diagnostics\`, \`delete_project_stor
 export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 # \`project_diagnostics\`
 
-Memory record of a store's daemon and providers, and the reports beside it. Read from disk, so it answers for a daemon that has died.
+Read a store's daemon, providers, and adjacent reports from disk. Works after the daemon dies.
 
-Pass a key or directory from \`list_project_stores\`. Answers peaks against the host's memory, incidents newest first with what the daemon was doing, the sampled range, each report's trigger and memory, and each snapshot's size.
+Pass a key or directory from \`list_project_stores\`. Shows peaks against host memory, newest incidents first with daemon activity, sampled range, report triggers and memory, and snapshot sizes.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -83,7 +83,7 @@ export const DELETE_STORE_DESCRIPTION = `
 
 Permanently delete an index and its recorded answers. **Irreversible.**
 
-Confirm the store row with the user first. Refused while its daemon is serving it.
+Confirm the store row with the user first. Refused while its daemon serves it.
 
 Call \`stop_project_daemon\` first. Existing workspaces reindex on use.
 `.trim();
@@ -91,7 +91,7 @@ Call \`stop_project_daemon\` first. Existing workspaces reindex on use.
 export const STOP_DAEMON_DESCRIPTION = `
 # \`stop_project_daemon\`
 
-Stop the daemon serving an index. Already stopped is success.
+Stop the daemon serving an index. Already stopped succeeds.
 
 Refused while the project is bound. Call \`unbind_project\` first. Use before \`delete_project_store\` for a live daemon.
 `.trim();
