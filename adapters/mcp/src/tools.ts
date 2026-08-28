@@ -762,8 +762,7 @@ async function withIndexState(backend: ToolBackend, body: string, concerning?: s
 	const notes: string[] = [];
 
 	// Concerning file first.
-	const retry =
-		"Fix what the reason names and save; a changed file is re-read at once, an unchanged one on the next scan.";
+	const retry = `Fix what the reason names and save; a changed file is re-read at once, an unchanged one on the next scan.`;
 	if (status.concerning !== undefined) {
 		notes.push(
 			`\`${status.concerning.module}\`, the file this answer concerns, failed to parse: ${oneLine(status.concerning.reason)}. Its facts are missing or predate the failure. ${retry}`,
@@ -778,7 +777,7 @@ async function withIndexState(backend: ToolBackend, body: string, concerning?: s
 				? ""
 				: `: ${named.map((failure) => `\`${failure.module}\` (${oneLine(failure.reason)})`).join(", ")}${more > 0 ? `, and ${more} more` : ""}`;
 		notes.push(
-			`${others} ${status.concerning === undefined ? "" : "other "}file${others === 1 ? "" : "s"} failed to parse; facts indexed before each failure were kept${list}. \`overview\` lists every one.${status.concerning === undefined ? ` ${retry}` : ""}`,
+			`${others} ${status.concerning === undefined ? "" : `other `}file${others === 1 ? "" : "s"} failed to parse; facts indexed before each failure were kept${list}. \`overview\` lists every one.${status.concerning === undefined ? ` ${retry}` : ""}`,
 		);
 	}
 
@@ -798,7 +797,7 @@ async function withIndexState(backend: ToolBackend, body: string, concerning?: s
 		} else if (status.state === "warming" || status.state === "indexing") {
 			notes.push(`Still indexing: ${status.done} of ${status.total} files read. This answer may be incomplete.`);
 		} else {
-			notes.push("The index has not been built yet, so this answer covers nothing.");
+			notes.push(`The index has not been built yet, so this answer covers nothing.`);
 		}
 	}
 
@@ -835,7 +834,7 @@ function moduleOf(symbolId: string): string | undefined {
  */
 async function resolveOne(backend: ToolBackend, args: SymbolArgs): Promise<{ symbolId: string } | { problem: string }> {
 	if (args.symbolId) return { symbolId: args.symbolId };
-	if (!args.name) return { problem: "Give either `symbolId` or `name`." };
+	if (!args.name) return { problem: `Give either \`symbolId\` or \`name\`.` };
 
 	const candidates = await backend.findByName(args.name, args.module);
 	if (candidates.length === 0) return { problem: `No symbol named \`${args.name}\` is indexed.` };
@@ -961,7 +960,7 @@ export async function refactorPreview(
 	args: SymbolArgs & { newName?: string | undefined; toModule?: string | undefined },
 ): Promise<ToolResult> {
 	if ((args.newName === undefined) === (args.toModule === undefined)) {
-		return text("Give `newName` for a rename preview or `toModule` for a move preview, not both.", true);
+		return text(`Give \`newName\` for a rename preview or \`toModule\` for a move preview, not both.`, true);
 	}
 	try {
 		const resolved = await resolveOne(backend, args);
@@ -985,7 +984,7 @@ export async function refactorTrack(backend: ToolBackend, args: { module: string
 		const outcome = await backend.refactorTrack(args.module);
 		return outcome.tracked
 			? `Tracking \`${args.module}\`. Its current contents are the state \`refactor_revert\` returns it to.`
-			: (outcome.reason ?? "the file could not be tracked");
+			: (outcome.reason ?? `the file could not be tracked`);
 	});
 }
 
@@ -1002,7 +1001,7 @@ export async function refactorRevert(backend: ToolBackend): Promise<ToolResult> 
 		const outcome = await backend.refactorRevert();
 		if (!outcome.reverted) return `Nothing was reverted. ${outcome.reason ?? ""}`.trim();
 		return outcome.modules.length === 0
-			? "Reverted. No file had been changed."
+			? `Reverted. No file had been changed.`
 			: `Reverted ${outcome.modules.length} file(s) to how the transaction found them: ${outcome.modules
 					.map((m) => `\`${m}\``)
 					.join(", ")}.`;
@@ -1030,7 +1029,7 @@ export async function refactorInsert(
 	args: { after?: string | undefined; module?: string | undefined; text: string },
 ): Promise<ToolResult> {
 	if ((args.after === undefined) === (args.module === undefined)) {
-		return text("Set exactly one of `after` or `module`.", true);
+		return text(`Set exactly one of \`after\` or \`module\`.`, true);
 	}
 	const outcome = await backend.refactorInsert(args).catch(
 		(error: unknown): Awaited<ReturnType<ToolBackend["refactorInsert"]>> => ({
@@ -1061,7 +1060,7 @@ export async function findComments(
 	args: CommentQuery & { limit?: number | undefined },
 ): Promise<ToolResult> {
 	if (args.text !== undefined && args.regex !== undefined) {
-		return text("Set `text` or `regex`, not both.", true);
+		return text(`Set \`text\` or \`regex\`, not both.`, true);
 	}
 	const refused = refusedTerm(args.text);
 	if (refused !== undefined) return refused;
@@ -1080,7 +1079,7 @@ export async function searchDocs(
 	args: DocQuery & { limit?: number | undefined },
 ): Promise<ToolResult> {
 	if (args.text !== undefined && args.regex !== undefined) {
-		return text("Set `text` or `regex`, not both.", true);
+		return text(`Set \`text\` or \`regex\`, not both.`, true);
 	}
 	const refused = refusedTerm(args.text);
 	if (refused !== undefined) return refused;
@@ -1108,7 +1107,7 @@ export async function searchSymbols(
 	},
 ): Promise<ToolResult> {
 	if ((args.text === undefined) === (args.regex === undefined)) {
-		return text("Set exactly one of `text` or `regex`.", true);
+		return text(`Set exactly one of \`text\` or \`regex\`.`, true);
 	}
 	if (args.regex !== undefined) {
 		try {
@@ -1145,7 +1144,7 @@ export async function findImports(
 		(value) => value !== undefined,
 	).length;
 	if (targets !== 1) {
-		return text("Set exactly one of `specifier`, `specifierRegex`, `module`, or `moduleRegex`.", true);
+		return text(`Set exactly one of \`specifier\`, \`specifierRegex\`, \`module\`, or \`moduleRegex\`.`, true);
 	}
 	for (const regex of [args.specifierRegex, args.moduleRegex]) {
 		if (regex === undefined) continue;
@@ -1213,7 +1212,7 @@ export async function recallAnswer(
 					(r): r is RecalledAnswer => r !== null,
 				);
 	if (recalled.length === 0) {
-		const which = args.question === undefined ? "Nothing is" : `No ${args.question} answer is`;
+		const which = args.question === undefined ? `Nothing is` : `No ${args.question} answer is`;
 		return text(
 			await withIndexState(
 				backend,

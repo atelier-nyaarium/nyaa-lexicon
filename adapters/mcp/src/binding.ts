@@ -125,7 +125,7 @@ export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 			if (project === undefined)
 				return {
 					registered: false,
-					reason: "registered project is missing from this session",
+					reason: `registered project is missing from this session`,
 				};
 			return { registered: true, project, already: outcome.already, sync };
 		},
@@ -162,13 +162,13 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 	// The store column appears only once some project chose a directory; the default needs no row.
 	const anyCustom = projects.some((project) => project.stateDir !== undefined);
 	const cells = rows.map(({ project, lastIndexedAt }) => [
-		project.bound ? "●" : "",
+		project.bound ? `●` : "",
 		project.name,
-		lastIndexedAt === null ? "never" : new Date(lastIndexedAt).toISOString().slice(0, 19).replace("T", " "),
+		lastIndexedAt === null ? `never` : new Date(lastIndexedAt).toISOString().slice(0, 19).replace("T", " "),
 		project.root,
 		...(anyCustom ? [project.stateDir ?? ""] : []),
 	]);
-	const headers = ["", "Project", "Last Indexed", "Workspace", ...(anyCustom ? ["Store"] : [])];
+	const headers = ["", `Project`, `Last Indexed`, `Workspace`, ...(anyCustom ? [`Store`] : [])];
 	const widths = headers.map((header, column) =>
 		Math.max(header.length, ...cells.map((row) => row[column]?.length ?? 0)),
 	);
@@ -192,7 +192,7 @@ export function registerProjectTool(deps: BindingDeps, args: { root: string; sta
 	const next = recovery ?? `Call \`bind_project\` with ${outcome.project.name} to answer from it.`;
 	return text(
 		[
-			outcome.already ? "# Project already registered" : "# Project registered",
+			outcome.already ? `# Project already registered` : `# Project registered`,
 			"",
 			`\`${outcome.project.name}\``,
 			`\`${outcome.project.root}\``,

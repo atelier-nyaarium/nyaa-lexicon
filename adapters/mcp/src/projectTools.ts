@@ -170,7 +170,7 @@ function queryBatch(input: Record<string, z.ZodType>, validation?: QueryValidati
 export const PROJECT_TOOL_DEFINITIONS = [
 	{
 		name: "describe_symbol",
-		title: "Describe Symbol",
+		title: `Describe Symbol`,
 		description: DESCRIBE_DESCRIPTION,
 		scope: "query",
 		input: DescribeSymbolInput,
@@ -178,7 +178,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "find_references",
-		title: "Find References",
+		title: `Find References`,
 		description: REFERENCES_DESCRIPTION,
 		scope: "query",
 		input: FindReferencesInput,
@@ -186,7 +186,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "resolve_import",
-		title: "Resolve Import",
+		title: `Resolve Import`,
 		description: RESOLVE_IMPORT_DESCRIPTION,
 		scope: "query",
 		input: ResolveImportInput,
@@ -194,7 +194,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "type_of",
-		title: "Type Of",
+		title: `Type Of`,
 		description: TYPE_OF_DESCRIPTION,
 		scope: "query",
 		input: TypeOfInput,
@@ -202,7 +202,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_move",
-		title: "Refactor Move",
+		title: `Refactor Move`,
 		description: REFACTOR_MOVE_DESCRIPTION,
 		scope: "mutation",
 		input: RefactorMoveInput,
@@ -210,7 +210,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_rename",
-		title: "Refactor Rename",
+		title: `Refactor Rename`,
 		description: REFACTOR_RENAME_DESCRIPTION,
 		scope: "mutation",
 		input: RefactorRenameInput,
@@ -218,7 +218,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "symbol_source",
-		title: "Symbol Source",
+		title: `Symbol Source`,
 		description: SYMBOL_SOURCE_DESCRIPTION,
 		scope: "query",
 		input: SymbolSourceInput,
@@ -226,7 +226,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_start",
-		title: "Refactor Start",
+		title: `Refactor Start`,
 		description: REFACTOR_START_DESCRIPTION,
 		scope: "mutation",
 		input: {},
@@ -234,7 +234,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_status",
-		title: "Refactor Status",
+		title: `Refactor Status`,
 		description: REFACTOR_STATUS_DESCRIPTION,
 		scope: "query",
 		batch: false,
@@ -243,7 +243,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_preview",
-		title: "Refactor Preview",
+		title: `Refactor Preview`,
 		description: REFACTOR_PREVIEW_DESCRIPTION,
 		scope: "query",
 		input: RefactorPreviewInput,
@@ -251,7 +251,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_track",
-		title: "Refactor Track",
+		title: `Refactor Track`,
 		description: REFACTOR_TRACK_DESCRIPTION,
 		scope: "mutation",
 		input: RefactorTrackInput,
@@ -259,7 +259,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_replace",
-		title: "Refactor Replace",
+		title: `Refactor Replace`,
 		description: REFACTOR_REPLACE_DESCRIPTION,
 		scope: "mutation",
 		input: RefactorReplaceInput,
@@ -267,7 +267,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_insert",
-		title: "Refactor Insert",
+		title: `Refactor Insert`,
 		description: REFACTOR_INSERT_DESCRIPTION,
 		scope: "mutation",
 		input: RefactorInsertInput,
@@ -275,7 +275,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_undo",
-		title: "Refactor Undo",
+		title: `Refactor Undo`,
 		description: REFACTOR_UNDO_DESCRIPTION,
 		scope: "mutation",
 		input: {},
@@ -283,7 +283,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_commit",
-		title: "Refactor Commit",
+		title: `Refactor Commit`,
 		description: REFACTOR_COMMIT_DESCRIPTION,
 		scope: "mutation",
 		input: RefactorCommitInput,
@@ -291,7 +291,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "refactor_revert",
-		title: "Refactor Revert",
+		title: `Refactor Revert`,
 		description: REFACTOR_REVERT_DESCRIPTION,
 		scope: "mutation",
 		input: {},
@@ -299,7 +299,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "find_literals",
-		title: "Find Literals",
+		title: `Find Literals`,
 		description: FIND_LITERALS_DESCRIPTION,
 		scope: "query",
 		input: FindLiteralsInput,
@@ -307,7 +307,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "find_comments",
-		title: "Find Comments",
+		title: `Find Comments`,
 		description: FIND_COMMENTS_DESCRIPTION,
 		scope: "query",
 		input: FindCommentsInput,
@@ -315,7 +315,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "search_docs",
-		title: "Search Docs",
+		title: `Search Docs`,
 		description: SEARCH_DOCS_DESCRIPTION,
 		scope: "query",
 		input: SearchDocsInput,
@@ -323,7 +323,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "co_changed_with",
-		title: "Co-changed With",
+		title: `Co-changed With`,
 		description: CO_CHANGED_WITH_DESCRIPTION,
 		scope: "query",
 		input: CoChangedWithInput,
@@ -331,7 +331,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "file_history",
-		title: "File History",
+		title: `File History`,
 		description: FILE_HISTORY_DESCRIPTION,
 		scope: "query",
 		input: FileHistoryInput,
@@ -339,7 +339,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "symbol_facts",
-		title: "Symbol Facts",
+		title: `Symbol Facts`,
 		description: SYMBOL_FACTS_DESCRIPTION,
 		scope: "query",
 		input: SymbolFactsInput,
@@ -347,7 +347,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "symbol_history",
-		title: "Symbol History",
+		title: `Symbol History`,
 		description: SYMBOL_HISTORY_DESCRIPTION,
 		scope: "query",
 		input: SymbolHistoryInput,
@@ -355,7 +355,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "record_answer",
-		title: "Record Answer",
+		title: `Record Answer`,
 		description: RECORD_ANSWER_DESCRIPTION,
 		scope: "mutation",
 		input: RecordAnswerInput,
@@ -363,7 +363,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "recall_answer",
-		title: "Recall Answer",
+		title: `Recall Answer`,
 		description: RECALL_ANSWER_DESCRIPTION,
 		scope: "query",
 		input: RecallAnswerInput,
@@ -371,7 +371,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "invalidate_answer",
-		title: "Invalidate Answer",
+		title: `Invalidate Answer`,
 		description: INVALIDATE_ANSWER_DESCRIPTION,
 		scope: "mutation",
 		input: InvalidateAnswerInput,
@@ -379,7 +379,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "reaffirm_answer",
-		title: "Reaffirm Answer",
+		title: `Reaffirm Answer`,
 		description: REAFFIRM_ANSWER_DESCRIPTION,
 		scope: "mutation",
 		input: ReaffirmAnswerInput,
@@ -387,7 +387,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "knowledge_gaps",
-		title: "Knowledge Gaps",
+		title: `Knowledge Gaps`,
 		description: KNOWLEDGE_GAPS_DESCRIPTION,
 		scope: "query",
 		input: KnowledgeGapsInput,
@@ -395,7 +395,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "overview",
-		title: "Overview",
+		title: `Overview`,
 		description: OVERVIEW_DESCRIPTION,
 		scope: "query",
 		batch: false,
@@ -404,19 +404,19 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "search_symbols",
-		title: "Search Symbols",
+		title: `Search Symbols`,
 		description: SEARCH_SYMBOLS_DESCRIPTION,
 		scope: "query",
 		queryValidation: {
 			check: (query) => (query.text === undefined) !== (query.regex === undefined),
-			message: "Set exactly one of `text` or `regex`.",
+			message: `Set exactly one of \`text\` or \`regex\`.`,
 		},
 		input: SearchSymbolsInput,
 		handler: searchSymbols,
 	},
 	{
 		name: "outline_module",
-		title: "Outline Module",
+		title: `Outline Module`,
 		description: OUTLINE_MODULE_DESCRIPTION,
 		scope: "query",
 		input: OutlineModuleInput,
@@ -424,7 +424,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 	},
 	{
 		name: "find_imports",
-		title: "Find Imports",
+		title: `Find Imports`,
 		description: FIND_IMPORTS_DESCRIPTION,
 		scope: "query",
 		queryValidation: {
@@ -432,14 +432,14 @@ export const PROJECT_TOOL_DEFINITIONS = [
 				[query.specifier, query.specifierRegex, query.module, query.moduleRegex].filter(
 					(value) => value !== undefined,
 				).length === 1,
-			message: "Set exactly one of `specifier`, `specifierRegex`, `module`, or `moduleRegex`.",
+			message: `Set exactly one of \`specifier\`, \`specifierRegex\`, \`module\`, or \`moduleRegex\`.`,
 		},
 		input: FindImportsInput,
 		handler: findImports,
 	},
 	{
 		name: "most_referenced",
-		title: "Most Referenced",
+		title: `Most Referenced`,
 		description: MOST_REFERENCED_DESCRIPTION,
 		scope: "query",
 		input: MostReferencedInput,

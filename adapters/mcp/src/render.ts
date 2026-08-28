@@ -77,51 +77,64 @@ function renderGroupedModules(title: string, groups: Iterable<readonly [string, 
 }
 
 function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): void {
-	lines.push("", "## Type hierarchy", "");
+	lines.push(`
+## Type hierarchy
+`);
 	const hasRelationships =
 		result.supertypes.length > 0 ||
 		result.subtypes.length > 0 ||
 		result.ancestors.length > 0 ||
 		result.unboundSupertypes.length > 0;
 	if (!hasRelationships) {
-		lines.push("No supertypes or subtypes in the index.");
+		lines.push(`No supertypes or subtypes in the index.`);
 		return;
 	}
 
 	const list = (label: string, entries: SymbolSummary[]) => {
 		if (entries.length === 0) return;
-		lines.push(`### ${label}`, "");
+		lines.push(`
+### ${label}
+`);
 		for (const entry of entries) lines.push(`- ${line(entry)}  \`${entry.module}\``);
 	};
-	list("Extends", result.supertypes);
-	list("Extended by", result.subtypes);
+	list(`Extends`, result.supertypes);
+	list(`Extended by`, result.subtypes);
 
 	const indirect = result.ancestors.filter(
 		(ancestor) => !result.supertypes.some((direct) => direct.symbolId === ancestor.symbolId),
 	);
 	if (indirect.length > 0) {
-		lines.push("### Further up", "", `- ${indirect.map((ancestor) => `\`${ancestor.name}\``).join(" <- ")}`);
+		lines.push(`
+### Further up
+
+- ${indirect.map((ancestor) => `\`${ancestor.name}\``).join(" <- ")}`);
 	}
 	if (result.unboundSupertypes.length > 0) {
-		lines.push("### Outside the index", "");
+		lines.push(`
+### Outside the index
+`);
 		for (const name of result.unboundSupertypes) lines.push(`- \`${name}\``);
 	}
 }
 
 function appendDependencies(lines: string[], summary: DescribeResult["graph"]): void {
 	const via = summary.viaMembers === undefined ? "" : ` across the symbol and its ${summary.viaMembers} members`;
-	lines.push(
-		"",
-		"## Dependencies",
-		"",
-		`- Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}`,
-	);
+	lines.push(`
+## Dependencies
+
+- Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}
+`);
 	if (summary.cycle) {
-		lines.push("", "### Cycle", "");
+		lines.push(`
+### Cycle
+`);
 		for (const member of summary.cycle.slice(0, 10)) lines.push(`- \`${member}\``);
-		if (summary.cycle.length > 10) lines.push("", `> ${summary.cycle.length - 10} more cycle members not shown.`);
+		if (summary.cycle.length > 10)
+			lines.push(`
+> ${summary.cycle.length - 10} more cycle members not shown.`);
 	}
-	lines.push("", "> Counts use resolved indexed bindings.");
+	lines.push(`
+> Counts use resolved indexed bindings.`);
 }
 
 /** One symbol as its complete surface. */
@@ -146,46 +159,66 @@ export function renderDescribe(result: DescribeResult): string {
 	];
 
 	if (result.prose !== undefined && result.prose.length > 0) {
-		lines.push("", "## Prose", "");
+		lines.push(`
+## Prose
+`);
 		for (const region of result.prose) {
 			const where = region.fenced ? ` (in a code block)` : "";
 			lines.push(`- Line ${region.line + 1}${where}: ${summarize(region.text)}`);
 		}
 		if (result.moreProse !== undefined) {
-			lines.push("", `> ${result.moreProse} more not shown. Call \`search_docs\` with this module.`);
+			lines.push(`
+> ${result.moreProse} more not shown. Call \`search_docs\` with this module.`);
 		}
 	}
 
 	if (result.symbol.docComment) {
-		lines.push("", "## Documentation", "", summarize(result.symbol.docComment));
+		lines.push(`
+## Documentation
+
+${summarize(result.symbol.docComment)}
+`);
 	}
 
 	if (result.members.length > 0) {
-		lines.push("", "## Members", "");
+		lines.push(`
+## Members
+`);
 		for (const member of result.members) lines.push(symbolBullet(member));
 	}
 
 	// What someone wrote about it that is not its documentation, which is otherwise only reachable
 	// by opening the file.
 	if (result.comments !== undefined && result.comments.length > 0) {
-		lines.push("", "## Notes", "");
+		lines.push(`
+## Notes
+`);
 		for (const comment of result.comments) {
 			lines.push(`- Line ${comment.line + 1} (${comment.form}): ${summarize(comment.text)}`);
 		}
 		if (result.moreComments !== undefined) {
-			lines.push("", `> ${result.moreComments} more not shown. Call \`find_comments\` with this module.`);
+			lines.push(`
+> ${result.moreComments} more not shown. Call \`find_comments\` with this module.`);
 		}
 	}
 
 	// Nothing calls, extends or depends on a section, so zero here would read as a checked fact
 	// rather than a question that does not apply.
 	if (result.symbol.kind === "heading") {
-		lines.push("", "## Usage", "", "A section is document structure, so nothing calls, extends or uses it.");
+		lines.push(`
+## Usage
+
+A section is document structure, so nothing calls, extends or uses it.
+`);
 		return lines.join("\n");
 	}
 
-	lines.push("", "## Usage", "", `Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.`);
-	if (result.referenceCount > 0) lines.push("Call `find_references` for the list.");
+	lines.push(`
+## Usage
+
+Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.
+`);
+	if (result.referenceCount > 0) lines.push(`Call \`find_references\` for the list.`);
 	appendHierarchy(lines, result.hierarchy);
 	appendDependencies(lines, result.graph);
 	return lines.join("\n");
@@ -216,15 +249,34 @@ export function renderReferences(result: ReferencesResult): string {
  * a caller that cannot tell them apart will treat the second as the first.
  */
 export function renderType(name: string, type: TypeInfo): string {
-	const lines: string[] = [`# \`${name}\``, "", "## Type", ""];
+	const lines: string[] = [
+		`# \`${name}\`
+
+## Type
+`,
+	];
 	if (type.status === "known") {
-		lines.push("```ts", type.display, "```", "", "## Provenance", "");
-		const from = type.provenance === "declared" ? "declared in source" : `established by ${type.provenance}`;
+		lines.push(
+			"```ts",
+			type.display,
+			"```",
+			`
+## Provenance
+`,
+		);
+		const from = type.provenance === "declared" ? `declared in source` : `established by ${type.provenance}`;
 		lines.push(`- Known: ${from}`);
 		return lines.join("\n");
 	}
 	if (type.status === "inferred") {
-		lines.push("```ts", type.display, "```", "", "## Provenance", "");
+		lines.push(
+			"```ts",
+			type.display,
+			"```",
+			`
+## Provenance
+`,
+		);
 		lines.push(`- Inferred from: ${type.basis}`);
 		return lines.join("\n");
 	}
@@ -236,12 +288,12 @@ export function renderType(name: string, type: TypeInfo): string {
 export function renderRenamePlan(plan: RenamePlan): string {
 	if (plan.blockers.length > 0) {
 		const lines = [
-			`# Rename blocked`,
-			"",
-			`Cannot rename \`${plan.oldName || plan.symbolId}\`.`,
-			"",
-			"## Blockers",
-			"",
+			`# Rename blocked
+
+Cannot rename \`${plan.oldName || plan.symbolId}\`.
+
+## Blockers
+`,
 		];
 		for (const blocker of plan.blockers) lines.push(`- **${blocker.kind}:** ${blocker.detail}`);
 		return lines.join("\n");
@@ -255,12 +307,12 @@ export function renderRenamePlan(plan: RenamePlan): string {
 	const withCalls = calls === 0 ? touches : `${touches} and ${calls} call${calls === 1 ? "" : "s"} that name it`;
 
 	const lines = [
-		`# Rename ${plan.oldName} to ${plan.newName}`,
-		"",
-		`Touches ${withCalls} in ${plan.files.length} file${plan.files.length === 1 ? "" : "s"}.`,
-		"",
-		"## Files",
-		"",
+		`# Rename ${plan.oldName} to ${plan.newName}
+
+Touches ${withCalls} in ${plan.files.length} file${plan.files.length === 1 ? "" : "s"}.
+
+## Files
+`,
 	];
 	for (const file of plan.files) {
 		const here = file.ownerCalls?.length ?? 0;
@@ -272,11 +324,16 @@ export function renderRenamePlan(plan: RenamePlan): string {
 	// Never omitted when empty in a way a reader could mistake for silence: the absence of this
 	// section is itself the claim that the index saw everything.
 	if (plan.warnings.length === 0) {
-		lines.push("", "Every occurrence is a bound edge.");
+		lines.push(`
+Every occurrence is a bound edge.`);
 		return lines.join("\n");
 	}
 
-	lines.push("", "## Warnings", "", "This set may not be complete.");
+	lines.push(`
+## Warnings
+
+This set may not be complete.
+`);
 	for (const warning of plan.warnings) {
 		lines.push(`- **${warning.kind}:** ${warning.detail}`);
 		for (const site of warning.sites ?? []) lines.push(`  - \`${site.module}:${site.line}\``);
@@ -292,23 +349,29 @@ export function renderMovePlan(plan: MovePlan): string {
 	const needed = plan.dependencies.filter((dependency) => dependency.origin.kind !== "insideClosure");
 	const moved = plan.removal.end.line - plan.removal.start.line + 1;
 	const lines = [
-		`# Move ${plan.name} from \`${plan.fromModule}\` to \`${plan.toModule}\``,
-		"",
-		"## Files",
-		"",
-		`- \`${plan.fromModule}\`: lines ${plan.removal.start.line + 1} to ${plan.removal.end.line + 1} removed${plan.usedAtSource ? ", and an import back added, since something here still uses it" : ""}`,
-		`- \`${plan.toModule}\`: ${moved} line${moved === 1 ? "" : "s"} inserted${needed.length === 0 ? "" : ", plus the imports below"}`,
+		`# Move ${plan.name} from \`${plan.fromModule}\` to \`${plan.toModule}\`
+
+## Files
+
+- \`${plan.fromModule}\`: lines ${plan.removal.start.line + 1} to ${plan.removal.end.line + 1} removed${plan.usedAtSource ? ", and an import back added, since something here still uses it" : ""}
+- \`${plan.toModule}\`: ${moved} line${moved === 1 ? "" : "s"} inserted${needed.length === 0 ? "" : ", plus the imports below"}`,
 	];
 	for (const module of plan.referencing) lines.push(`- \`${module}\`: import specifier re-pointed`);
 	if (plan.closure.length > 1) {
-		lines.push("", `Moves ${plan.closure.length} symbols: the declaration and what it contains.`);
+		lines.push(`
+Moves ${plan.closure.length} symbols: the declaration and what it contains.`);
 	}
 
 	if (needed.length === 0) {
-		lines.push("", "The moved text depends on nothing outside itself.");
+		lines.push(`
+The moved text depends on nothing outside itself.`);
 		return lines.join("\n");
 	}
-	lines.push("", "## Dependencies", "", "Names the moved text uses, and where each would be imported from.");
+	lines.push(`
+## Dependencies
+
+Names the moved text uses, and where each would be imported from.
+`);
 	for (const dependency of needed) {
 		const origin = dependency.origin;
 		switch (origin.kind) {
@@ -454,10 +517,11 @@ export function renderCoChange(result: {
 	}
 
 	const lines = [
-		`# Changed alongside \`${result.module}\``,
-		"",
-		"| Module | Together | Share |",
-		"| --- | ---: | ---: |",
+		`# Changed alongside \`${result.module}\`
+
+| Module | Together | Share |
+| --- | ---: | ---: |
+`,
 	];
 	for (const partner of result.partners) {
 		const share = Math.round((partner.together / Math.max(partner.outOf, 1)) * 100);
@@ -465,16 +529,17 @@ export function renderCoChange(result: {
 	}
 
 	if (result.total > result.partners.length)
-		lines.push("", `> ${result.total - result.partners.length} more partners not shown.`);
-	lines.push("", `Read from ${result.commits} commits.`);
+		lines.push(`
+> ${result.total - result.partners.length} more partners not shown.`);
+	lines.push(`
+Read from ${result.commits} commits.`);
 	// Named rather than silent: a sweep touching hundreds of files pairs every one of them with
 	// every other, so dropping those is what keeps the signal meaningful, and a reader deserves to
 	// know a filter ran at all.
 	if (result.skippedWideCommits > 0) {
-		lines.push(
-			"",
-			`> ${result.skippedWideCommits} commits touching over ${result.widthLimit} files were ignored as sweeps.`,
-		);
+		lines.push(`
+> ${result.skippedWideCommits} commits touching over ${result.widthLimit} files were ignored as sweeps.
+`);
 	}
 	return lines.join("\n");
 }
@@ -500,12 +565,12 @@ export function renderFileHistory(result: {
 
 	const commits = `${result.commits} commit${result.commits === 1 ? "" : "s"}`;
 	const lines = [
-		`# \`${result.module}\``,
-		"",
-		"## History",
-		"",
-		`- Commits: ${commits}`,
-		`- Lines: +${result.linesAdded} / -${result.linesDeleted}`,
+		`# \`${result.module}\`
+
+## History
+
+- Commits: ${commits}
+- Lines: +${result.linesAdded} / -${result.linesDeleted}`,
 	];
 	if (result.lastTouched !== null) lines.push(`- Last touched: ${ago(result.lastTouched)}`);
 	if (result.firstSeen !== null) {
@@ -516,7 +581,12 @@ export function renderFileHistory(result: {
 		);
 	}
 	if (result.recent.length > 0) {
-		lines.push("", "## Recent commits", "", "| When | Commit | Lines | Subject |", "| --- | --- | ---: | --- |");
+		lines.push(`
+## Recent commits
+
+| When | Commit | Lines | Subject |
+| --- | --- | ---: | --- |
+`);
 		for (const commit of result.recent) {
 			const subject = commit.subject.replaceAll("|", "\\|");
 			lines.push(
@@ -524,7 +594,8 @@ export function renderFileHistory(result: {
 			);
 		}
 		if (result.commits > result.recent.length) {
-			lines.push("", `> ${result.commits - result.recent.length} older commits not shown.`);
+			lines.push(`
+> ${result.commits - result.recent.length} older commits not shown.`);
 		}
 	}
 	return lines.join("\n");
@@ -535,7 +606,7 @@ function questionTitle(question: string): string {
 }
 
 /** Recorded knowledge, or a short invitation to write it. */
-export function renderKnowledge(recalled: RecalledAnswer | null, question = "knowledge"): string {
+export function renderKnowledge(recalled: RecalledAnswer | null, question = `knowledge`): string {
 	if (recalled === null)
 		return `## ${questionTitle(question)}\n\nNo answer recorded. Call \`symbol_facts\` for the current supporting facts.`;
 
@@ -546,20 +617,21 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = "kno
 		"",
 		`\`${recalled.answer.factId}\``,
 	];
-	if (recalled.answer.thin) lines.push("", "**THIN:** Only the declaration was cited.");
+	if (recalled.answer.thin)
+		lines.push(`
+**THIN:** Only the declaration was cited.`);
 	const status: string[] = [];
 	if (recalled.answer.doubt !== undefined) {
 		const by = recalled.answer.doubt.by === undefined ? "" : ` (${recalled.answer.doubt.by})`;
-		lines.push(
-			"",
-			"#### Doubt",
-			"",
-			`${recalled.answer.doubt.reason}${by}`,
-			"",
-			`\`${recalled.answer.doubt.factId}\``,
-			"",
-			"Clear with `record_answer` or `reaffirm_answer`, citing this doubt ID as `resolvesDoubt`.",
-		);
+		lines.push(`
+#### Doubt
+
+${recalled.answer.doubt.reason}${by}
+
+\`${recalled.answer.doubt.factId}\`
+
+Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.
+`);
 	}
 	if (recalled.stale.length > 0) {
 		status.push(
@@ -576,36 +648,56 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = "kno
 			`**SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Address those first.`,
 		);
 	}
-	if (status.length > 0) lines.push("", "### Status", "", status.join("\n"));
+	if (status.length > 0)
+		lines.push(`
+### Status
+
+${status.join("\n")}
+`);
 	return lines.join("\n");
 }
 
 export function renderRecordOutcome(outcome: RecordOutcome): string {
 	if (outcome.recorded) {
 		const carried = outcome.doubtCarried === undefined ? undefined : outcome.doubtCarried;
-		const lines = ["# Answer recorded", "", `\`${outcome.answer.factId}\``];
-		if (outcome.answer.thin) lines.push("", "**THIN:** Only the declaration was cited.");
+		const lines = [
+			`# Answer recorded
+
+\`${outcome.answer.factId}\``,
+		];
+		if (outcome.answer.thin)
+			lines.push(`
+**THIN:** Only the declaration was cited.`);
 		if (carried !== undefined) {
-			lines.push(
-				"",
-				"## Doubt",
-				"",
-				carried.reason,
-				"",
-				`\`${carried.factId}\``,
-				"",
-				"Cite this ID as `resolvesDoubt` to clear the doubt.",
-			);
+			lines.push(`
+## Doubt
+
+${carried.reason}
+
+\`${carried.factId}\`
+
+Cite this ID as \`resolvesDoubt\` to clear the doubt.
+`);
 		}
 		return lines.join("\n");
 	}
-	const lines = ["# Answer not recorded", "", outcome.reason];
+	const lines = [
+		`# Answer not recorded
+
+${outcome.reason}`,
+	];
 	if ((outcome.unresolved ?? []).length > 0) {
-		lines.push("", "## Unresolved fact IDs", "");
+		lines.push(`
+## Unresolved fact IDs
+`);
 		for (const factId of outcome.unresolved ?? []) lines.push(`- \`${factId}\``);
 	}
 	if (outcome.uncovered !== undefined && outcome.uncovered.length > 0) {
-		lines.push("", "## Uncovered fact IDs", "", "Fact IDs from the existing answer:");
+		lines.push(`
+## Uncovered fact IDs
+
+Fact IDs from the existing answer:
+`);
 		for (const factId of outcome.uncovered) lines.push(`- \`${factId}\``);
 	}
 	return lines.join("\n");
@@ -616,27 +708,29 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 	if (outcome.refused !== undefined) return `# Doubt not recorded\n\n${outcome.refused}.`;
 
 	const title = outcome.doubted.length > 0 ? "# Doubt recorded" : "# Gap recorded";
-	const lines: string[] = [title, "", `**Symbol:** \`${outcome.symbolId}\``];
+	const lines: string[] = [
+		`${title}
+
+**Symbol:** \`${outcome.symbolId}\``,
+	];
 	for (const entry of outcome.doubted) {
 		const by = entry.doubt.by === undefined ? "" : ` (${entry.doubt.by})`;
-		lines.push(
-			"",
-			`## ${questionTitle(entry.question)}`,
-			"",
-			`${entry.doubt.reason}${by}`,
-			"",
-			`\`${entry.doubt.factId}\``,
-			"",
-			"Clear with `record_answer` or `reaffirm_answer`, citing this doubt ID as `resolvesDoubt`.",
-		);
+		lines.push(`
+## ${questionTitle(entry.question)}
+
+${entry.doubt.reason}${by}
+
+\`${entry.doubt.factId}\`
+
+Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.
+`);
 	}
 	if (outcome.noAnswer.length > 0) {
-		lines.push(
-			"",
-			"## No answer",
-			"",
-			`No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`knowledge_gaps\`.`,
-		);
+		lines.push(`
+## No answer
+
+No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`knowledge_gaps\`.
+`);
 	}
 	return lines.join("\n");
 }
@@ -652,19 +746,27 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 	const lead = gapScope(gaps, root);
 	if (gaps.scope !== undefined && gaps.scope.declarations === 0) {
 		return [
-			"# Knowledge gaps",
+			`# Knowledge gaps`,
 			"",
 			`\`${gaps.scope.module}\` holds no indexed declarations: not indexed yet, or no provider claims it. Call \`overview\` for coverage.`,
 		].join("\n");
 	}
 	if (gaps.total === 0) {
-		const lines = [`# Knowledge gaps`, "", `${lead}: no ${gaps.question} gaps.`];
+		const lines = [
+			`# Knowledge gaps
+
+${lead}: no ${gaps.question} gaps.`,
+		];
 		if (gaps.external > 0)
-			lines.push("", `> ${gaps.external} dependencies are outside the index and cannot be answered.`);
+			lines.push(`
+> ${gaps.external} dependencies are outside the index and cannot be answered.`);
 		return lines.join("\n");
 	}
 
-	const lines: string[] = ["# Knowledge gaps", ""];
+	const lines: string[] = [
+		`# Knowledge gaps
+`,
+	];
 	const plural = gaps.total === 1 ? "" : "s";
 	const what =
 		gaps.seeded === true
@@ -674,28 +776,42 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 				: `${gaps.total} ${gaps.question} gap${plural}`;
 	lines.push(`${lead}: ${what}.`);
 
-	lines.push("", "| Symbol | Module | State | Asked | Fan-in |", "| --- | --- | --- | ---: | ---: |");
+	lines.push(`
+| Symbol | Module | State | Asked | Fan-in |
+| --- | --- | --- | ---: | ---: |`);
 	for (const row of gaps.rows) {
 		const tail = row.symbolId.split(" ").slice(3).join(" ");
 		const symbol = row.name === undefined ? `\`${tail}\`` : `**${row.kind ?? "symbol"}** \`${tail}\``;
-		const state = row.why === "stale" ? "**STALE**" : row.why === "doubted" ? "**DOUBTED**" : "MISSING";
+		const state = row.why === "stale" ? `**STALE**` : row.why === "doubted" ? `**DOUBTED**` : `MISSING`;
 		const question = row.question === gaps.question ? "" : ` (${row.question})`;
 		lines.push(
 			`| ${symbol}${question} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
 		);
 	}
-	if (gaps.total > gaps.rows.length) lines.push("", `> ${gaps.total - gaps.rows.length} more gaps not shown.`);
+	if (gaps.total > gaps.rows.length)
+		lines.push(`
+> ${gaps.total - gaps.rows.length} more gaps not shown.`);
 	const first = gaps.rows[0];
-	if (first !== undefined) lines.push("", `**Full ID example:** \`${first.symbolId}\``);
-	if (gaps.truncated) lines.push("", "> The dependency walk hit its cap, so the total above is a floor.");
+	if (first !== undefined)
+		lines.push(`
+**Full ID example:** \`${first.symbolId}\``);
+	if (gaps.truncated)
+		lines.push(`
+> The dependency walk hit its cap, so the total above is a floor.`);
 	if (gaps.staleScanSkipped === true) {
-		lines.push("", "> The index skipped its full staleness scan. Stale answers surface when recalled.");
+		lines.push(`
+> The index skipped its full staleness scan. Stale answers surface when recalled.`);
 	}
 	if (gaps.external > 0) {
-		lines.push("", `> ${gaps.external} dependencies are outside the index: nothing citable exists for them.`);
+		lines.push(`
+> ${gaps.external} dependencies are outside the index: nothing citable exists for them.`);
 	}
 
-	lines.push("", "## Next step", "", "For each row, call `symbol_facts`.");
+	lines.push(`
+## Next step
+
+For each row, call \`symbol_facts\`.
+`);
 	return lines.join("\n");
 }
 
@@ -715,12 +831,13 @@ export function renderMentions(result: {
 	}
 
 	const lines = [
-		`# Commits naming \`${result.name}\``,
-		"",
-		"## Matches",
-		"",
-		"| Commit | When | Files | Subject |",
-		"| --- | --- | ---: | --- |",
+		`# Commits naming \`${result.name}\`
+
+## Matches
+
+| Commit | When | Files | Subject |
+| --- | --- | ---: | --- |
+`,
 	];
 	for (const mention of result.mentions) {
 		const days = Math.round((Date.now() / 1000 - mention.at) / 86_400);
@@ -728,7 +845,8 @@ export function renderMentions(result: {
 		const files = `${mention.files} file${mention.files === 1 ? "" : "s"}`;
 		lines.push(`| \`${mention.hash.slice(0, 7)}\` | ${when} | ${files} | ${mention.subject} |`);
 	}
-	lines.push("", `Read from ${result.commits} commits.`);
+	lines.push(`
+Read from ${result.commits} commits.`);
 	return lines.join("\n");
 }
 
@@ -754,8 +872,13 @@ export function renderFacts(result: {
 	const answers = factsByKind.get("answer") ?? [];
 	const descriptions = answers.filter((fact) => fact.summary.startsWith("describe: "));
 	if (descriptions.length > 0) {
-		lines.push("", "## Description", "");
-		for (const fact of descriptions) lines.push(fact.summary.slice("describe: ".length), "", `\`${fact.factId}\``);
+		lines.push(`
+## Description
+`);
+		for (const fact of descriptions)
+			lines.push(`${fact.summary.slice("describe: ".length)}
+
+\`${fact.factId}\``);
 	}
 
 	// Keyed by FactKind, so a new kind fails the type check here rather than going unrendered.
@@ -774,23 +897,32 @@ export function renderFacts(result: {
 		const heading = headings[kind];
 		const group = factsByKind.get(kind) ?? [];
 		if (heading === null || group.length === 0) continue;
-		lines.push("", `## ${heading}`, "");
+		lines.push(`
+## ${heading}
+`);
 		for (const fact of group) lines.push(`- ${fact.summary}`, `  \`${fact.factId}\``);
 	}
 
 	const otherAnswers = answers.filter((fact) => !fact.summary.startsWith("describe: "));
 	if (otherAnswers.length > 0) {
-		lines.push("", "## Recorded answers", "");
+		lines.push(`
+## Recorded answers
+`);
 		for (const fact of otherAnswers) {
 			const separator = fact.summary.indexOf(": ");
-			const question = separator < 0 ? "Answer" : questionTitle(fact.summary.slice(0, separator));
+			const question = separator < 0 ? `Answer` : questionTitle(fact.summary.slice(0, separator));
 			const prose = separator < 0 ? fact.summary : fact.summary.slice(separator + 2);
-			lines.push(`### ${question}`, "", prose, "", `\`${fact.factId}\``);
+			lines.push(`### ${question}
+
+${prose}
+
+\`${fact.factId}\``);
 		}
 	}
 
 	if (result.truncated.length > 0) {
-		lines.push("", `> More ${result.truncated.join(" and ")} facts are not shown. Raise \`limit\`.`);
+		lines.push(`
+> More ${result.truncated.join(" and ")} facts are not shown. Raise \`limit\`.`);
 	}
 	return lines.join("\n");
 }
@@ -827,20 +959,29 @@ export function renderOverview(result: {
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
 	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
 }): string {
-	const lines = ["# Workspace overview", "", "## Workspace", "", `\`${result.scope}\``, "", "## Index", ""];
+	const lines = [
+		`# Workspace overview
+
+## Workspace
+
+\`${result.scope}\`
+
+## Index
+`,
+	];
 
 	// Show progress for counted states.
 	const counted = ["warming", "indexing", "upgrading"].includes(result.index.state);
 	const stateNote =
 		result.index.state === "unstarted"
-			? "serving stored facts; nothing rescanned this run"
+			? `serving stored facts; nothing rescanned this run`
 			: `${result.index.state}${counted ? ` (${result.index.done} of ${result.index.total})` : ""}`;
 	lines.push(`- State: ${stateNote}`);
 
 	const outline = result.index.outlineFiles ?? 0;
 	if (outline > 0) {
 		lines.push(`- Depth: ${result.index.fullFiles ?? 0} modules at final depth, ${outline} outline only`);
-		lines.push("  - reference and literal counts are lower bounds until the upgrade finishes");
+		lines.push(`  - reference and literal counts are lower bounds until the upgrade finishes`);
 	}
 
 	const failures = result.index.failures ?? 0;
@@ -875,29 +1016,34 @@ export function renderOverview(result: {
 		}
 		const ranked = [...byReason.entries()].sort((a, b) => b[1].length - a[1].length);
 
-		lines.push("", "## Failed to parse", "");
+		lines.push(`
+## Failed to parse
+`);
 		for (const [reason, modules] of ranked) {
 			lines.push(`- ${reason}${modules.length === 1 ? "" : ` (${modules.length} files)`}`);
 			for (const module of modules) lines.push(`  - \`${module}\``);
 		}
 	}
 
-	lines.push(
-		"",
-		"## Counts",
-		"",
-		"| Files | Symbols | References | Imports | Literals | Modules |",
-		"| ---: | ---: | ---: | ---: | ---: | ---: |",
-		`| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |`,
-	);
+	lines.push(`
+## Counts
+
+| Files | Symbols | References | Imports | Literals | Modules |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |
+`);
 
 	// Named where the number is, because "symbols" reads as callable code and a fixture's keys are not.
 	if (result.content !== undefined) {
 		const { files, symbols } = result.content;
 		if (files.data + files.document > 0) {
-			lines.push("", `> Files: ${contentClasses(files, "")}. Symbols: ${contentClasses(symbols, "in ")}.`);
+			lines.push(`
+> Files: ${contentClasses(files, "")}. Symbols: ${contentClasses(symbols, "in ")}.
+`);
 		}
-		if (files.text > 0) lines.push("", `> ${files.text} files read as plain text.`);
+		if (files.text > 0)
+			lines.push(`
+> ${files.text} files read as plain text.`);
 		if (files.unknown > 0) {
 			lines.push(
 				"",
@@ -905,10 +1051,9 @@ export function renderOverview(result: {
 			);
 		}
 		if (symbols.data > symbols.code) {
-			lines.push(
-				"",
-				"> Data files carry more symbols than code. A `deny` list in `lexicon.json` at the workspace root keeps fixture directories out of the index.",
-			);
+			lines.push(`
+> Data files carry more symbols than code. A \`deny\` list in \`lexicon.json\` at the workspace root keeps fixture directories out of the index.
+`);
 		}
 	}
 
@@ -916,15 +1061,18 @@ export function renderOverview(result: {
 	// reference a line that is not on the page.
 	const external = (result.index.stored ?? result.files) - result.files;
 	if (external > 0) {
-		lines.push(
-			"",
-			`> Counts cover workspace files. The index holds ${external} external surface module${external === 1 ? "" : "s"} besides, ${result.index.stored} in total.`,
-		);
+		lines.push(`
+> Counts cover workspace files. The index holds ${external} external surface module${external === 1 ? "" : "s"} besides, ${result.index.stored} in total.
+`);
 	}
 
 	if (result.knowledge !== undefined) {
 		if (result.knowledge.answers === 0) {
-			lines.push("", "## Knowledge", "", "None recorded yet. `knowledge_gaps` lists what is worth writing.");
+			lines.push(`
+## Knowledge
+
+None recorded yet. \`knowledge_gaps\` lists what is worth writing.
+`);
 		} else {
 			// Absent means staleness was skipped.
 			const stale =
@@ -937,21 +1085,24 @@ export function renderOverview(result: {
 				result.knowledge.doubted === undefined || result.knowledge.doubted === 0
 					? ""
 					: `, ${result.knowledge.doubted} doubted`;
-			lines.push(
-				"",
-				"## Knowledge",
-				"",
-				`${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. \`knowledge_gaps\` lists what is missing.`,
-			);
+			lines.push(`
+## Knowledge
+
+${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. \`knowledge_gaps\` lists what is missing.
+`);
 		}
 	}
 
-	lines.push("", "## Largest modules", "");
+	lines.push(`
+## Largest modules
+`);
 	for (const module of result.largest) lines.push(`- \`${module.module}\`: ${module.symbols} symbols`);
 
 	const data = result.largestData ?? [];
 	if (data.length > 0) {
-		lines.push("", "## Largest data and document files", "");
+		lines.push(`
+## Largest data and document files
+`);
 		for (const row of data) lines.push(`- \`${row.module}\`: ${row.symbols} symbols (${row.content})`);
 	}
 	return lines.join("\n");
@@ -1012,14 +1163,21 @@ export function renderMostReferenced(
 ): string {
 	if (rows.length === 0) return `# Most referenced\n\nNothing is referenced yet.`;
 
-	const lines = ["# Most referenced", "", "| Symbol | References |", "| --- | ---: |"];
+	const lines = [
+		`# Most referenced
+
+| Symbol | References |
+| --- | ---: |
+`,
+	];
 	for (const row of rows) {
 		const where = row.declaration
 			? `${line(row.declaration)} in \`${row.declaration.module}\``
 			: `\`${row.symbolId}\``;
 		lines.push(`| ${where} | ${row.count} |`);
 	}
-	lines.push("", "> Counts are bounded by what binding resolved.");
+	lines.push(`
+> Counts are bounded by what binding resolved.`);
 	return lines.join("\n");
 }
 
@@ -1043,7 +1201,7 @@ export function renderSymbolSearch(result: {
 	}
 
 	const body = renderGroupedModules(`${countLabel(result.count, "symbol")} matching ${query}`, byModule);
-	const raise = "Raise `limit` or narrow by kind or module.";
+	const raise = `Raise \`limit\` or narrow by kind or module.`;
 	return body + pagingNotes(result.count, result.symbols.length, "symbol", "symbols", raise);
 }
 
@@ -1052,10 +1210,14 @@ function renderFileNotes(notes: FileNotes | undefined): string[] {
 	if (notes === undefined || (notes.known && notes.notes.length === 0)) return [];
 	if (!notes.known) {
 		return notes.reason === "indexedBeforeNotes"
-			? ["", "> Provider notes unknown: indexed before notes were kept. Known after its next read."]
+			? ["", `> Provider notes unknown: indexed before notes were kept. Known after its next read.`]
 			: [];
 	}
-	const lines = ["", "## Provider notes", ""];
+	const lines = [
+		`
+## Provider notes
+`,
+	];
 	for (const note of notes.notes) {
 		const where = note.range === undefined ? "" : `Line ${note.range.start.line + 1}: `;
 		lines.push(`- ${where}${note.severity}: ${note.message}`);
@@ -1066,7 +1228,7 @@ function renderFileNotes(notes: FileNotes | undefined): string[] {
 /** Everything one file declares, nested by container. The "open the file" answer. */
 export function renderOutline(module: string, declarations: SymbolSummary[], notes?: FileNotes): string {
 	if (declarations.length === 0) {
-		return [`# \`${module}\``, "", "No indexed declarations.", ...renderFileNotes(notes)].join("\n");
+		return [`# \`${module}\``, "", `No indexed declarations.`, ...renderFileNotes(notes)].join("\n");
 	}
 
 	const children = new Map<string, typeof declarations>();
@@ -1082,7 +1244,12 @@ export function renderOutline(module: string, declarations: SymbolSummary[], not
 		children.set(parent, list);
 	}
 
-	const lines = [`# \`${module}\``, "", `## ${declarations.length} declarations`, ""];
+	const lines = [
+		`# \`${module}\`
+
+## ${declarations.length} declarations
+`,
+	];
 	const walk = (nodes: typeof declarations, depth: number) => {
 		for (const node of nodes) {
 			lines.push(`${"  ".repeat(depth)}- ${line(node)}`);
@@ -1121,7 +1288,10 @@ export function renderSymbolSource(source: SymbolSource): string {
 export function renderIssues(issues: RefactorIssue[]): string[] {
 	if (issues.length === 0) return [];
 
-	const lines = ["## Issues", ""];
+	const lines = [
+		`## Issues
+`,
+	];
 	for (const issue of issues) {
 		const where = issue.module === undefined ? "" : ` (\`${issue.module}\`${issue.line ? `:${issue.line}` : ""})`;
 		const step = issue.stepNo === undefined ? "" : ` [step ${issue.stepNo}]`;
@@ -1139,38 +1309,38 @@ export function renderIssues(issues: RefactorIssue[]): string[] {
 export function renderRefactorStart(outcome: RefactorStartResult): string {
 	if (!outcome.started) {
 		return [
-			"# Refactor already open",
+			`# Refactor already open`,
 			"",
 			`Transaction \`${outcome.id}\` is already open on this workspace. One transaction at a time.`,
 			"",
-			"Call `refactor_status` to see it, then continue it, `refactor_commit` it, or `refactor_revert` it.",
+			`Call \`refactor_status\` to see it, then continue it, \`refactor_commit\` it, or \`refactor_revert\` it.`,
 		].join("\n");
 	}
 
 	return [
 		`# Refactor \`${outcome.id}\` open`,
 		"",
-		"## Before you edit anything by hand",
+		`## Before you edit anything by hand`,
 		"",
-		"Call `refactor_track` on the file FIRST. Only tracked files and files a refactor tool touched",
-		"can be put back. An untracked edit is invisible to undo and survives revert.",
+		`Call \`refactor_track\` on the file FIRST. Only tracked files and files a refactor tool touched`,
+		`can be put back. An untracked edit is invisible to undo and survives revert.`,
 		"",
-		"## How it unwinds",
+		`## How it unwinds`,
 		"",
-		"- `refactor_undo` removes the newest step. It refuses if that step's files changed since,",
-		"  rather than overwriting whatever changed them.",
-		"- `refactor_revert` returns every tracked file to how this transaction found it, discarding",
-		"  manual edits made since.",
-		"- `refactor_commit` keeps what is on disk and ends the transaction. Nothing is undoable after.",
-		"  It refuses while issues are outstanding; pass `force` to accept them deliberately.",
+		`- \`refactor_undo\` removes the newest step. It refuses if that step's files changed since,`,
+		`  rather than overwriting whatever changed them.`,
+		`- \`refactor_revert\` returns every tracked file to how this transaction found it, discarding`,
+		`  manual edits made since.`,
+		`- \`refactor_commit\` keeps what is on disk and ends the transaction. Nothing is undoable after.`,
+		`  It refuses while issues are outstanding; pass \`force\` to accept them deliberately.`,
 		"",
-		"## While it is open",
+		`## While it is open`,
 		"",
-		"Re-fetch addresses after every step. Ranges move, so a symbolId or range read before a step",
-		"may not describe the same text after it.",
+		`Re-fetch addresses after every step. Ranges move, so a symbolId or range read before a step`,
+		`may not describe the same text after it.`,
 		"",
-		"Any session may operate this transaction. There is no owner token, so `refactor_status` is",
-		"how you find out what someone else already did.",
+		`Any session may operate this transaction. There is no owner token, so \`refactor_status\` is`,
+		`how you find out what someone else already did.`,
 	].join("\n");
 }
 
@@ -1179,24 +1349,35 @@ export function renderRefactorStatus(status: TransactionStatus): string {
 		return `# Refactor status\n\nNo transaction is open. Call \`refactor_start\` to begin one.`;
 	}
 
-	const lines = [`# Refactor \`${status.id}\``, ""];
+	const lines = [
+		`# Refactor \`${status.id}\`
+`,
+	];
 
-	if (status.steps.length === 0) lines.push("No steps yet.");
+	if (status.steps.length === 0) lines.push(`No steps yet.`);
 	else {
-		lines.push("## Steps", "");
+		lines.push(`
+## Steps
+`);
 		for (const step of status.steps) {
-			const files = step.modules.length === 0 ? "no files" : step.modules.map((m) => `\`${m}\``).join(", ");
+			const files = step.modules.length === 0 ? `no files` : step.modules.map((m) => `\`${m}\``).join(", ");
 			lines.push(`${step.stepNo}. **${step.kind}** (${step.phase}): ${files}`);
 		}
 	}
 
 	if (status.tracked.length > 0) {
-		lines.push("", "## Tracked", "", status.tracked.map((module) => `- \`${module}\``).join("\n"));
+		lines.push(`
+## Tracked
+
+${status.tracked.map((module) => `- \`${module}\``).join("\n")}
+`);
 	}
 
 	const issues = renderIssues(status.issues);
 	if (issues.length > 0) lines.push("", ...issues);
-	else if (status.steps.length > 0) lines.push("", "No outstanding issues. `refactor_commit` would succeed.");
+	else if (status.steps.length > 0)
+		lines.push(`
+No outstanding issues. \`refactor_commit\` would succeed.`);
 
 	return lines.join("\n");
 }
@@ -1209,18 +1390,21 @@ export function renderRefactorStatus(status: TransactionStatus): string {
  */
 export function renderReplaceOutcome(outcome: ReplaceOutcome): string {
 	if (!outcome.replaced) {
-		return `# Not replaced\n\n${outcome.reason ?? "the replacement could not be applied"}`;
+		return `# Not replaced\n\n${outcome.reason ?? `the replacement could not be applied`}`;
 	}
 
-	const lines = [`# Replaced in \`${outcome.module}\``, ""];
+	const lines = [
+		`# Replaced in \`${outcome.module}\`
+`,
+	];
 	if (outcome.issues.length === 0) {
-		lines.push("Nothing else stopped resolving. `refactor_commit` would succeed.");
+		lines.push(`Nothing else stopped resolving. \`refactor_commit\` would succeed.`);
 		return lines.join("\n");
 	}
 
 	lines.push(
 		`Applied, but it introduced ${outcome.issues.length} issue${outcome.issues.length === 1 ? "" : "s"}.`,
-		"Fix them in a later step, `refactor_undo` this one, or commit with force.",
+		`Fix them in a later step, \`refactor_undo\` this one, or commit with force.`,
 		"",
 		...renderIssues(outcome.issues),
 	);
@@ -1233,15 +1417,18 @@ export function renderInsertOutcome(outcome: InsertOutcome): string {
 		return `# Already inserted\n\nThe exact text already sits at that spot in \`${outcome.module}\`; nothing was written.`;
 	}
 	if (!outcome.inserted) {
-		return `# Not inserted\n\n${outcome.reason ?? "the insert could not be applied"}`;
+		return `# Not inserted\n\n${outcome.reason ?? `the insert could not be applied`}`;
 	}
 
-	const lines = [`# Inserted into \`${outcome.module}\``, ""];
+	const lines = [
+		`# Inserted into \`${outcome.module}\`
+`,
+	];
 	for (const symbolId of outcome.symbolIds ?? []) lines.push(`- ID: \`${symbolId}\``);
 	if ((outcome.symbolIds ?? []).length > 0) lines.push("");
 
 	if (outcome.issues.length === 0) {
-		lines.push("Everything the new text names resolves. `refactor_commit` would succeed.");
+		lines.push(`Everything the new text names resolves. \`refactor_commit\` would succeed.`);
 		return lines.join("\n");
 	}
 	lines.push(
@@ -1255,19 +1442,24 @@ export function renderInsertOutcome(outcome: InsertOutcome): string {
 /** A move step. A blocked site stops the whole move, so a refusal names what could not be written. */
 export function renderMoveOutcome(toModule: string, outcome: MoveOutcome): string {
 	if (!outcome.moved) {
-		const lines = ["# Not moved", "", outcome.reason ?? "the move could not be carried out"];
+		const lines = [
+			`# Not moved
+
+${outcome.reason ?? `the move could not be carried out`}`,
+		];
 		if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
 		return lines.join("\n");
 	}
 
 	const modules = outcome.modules ?? [];
 	const lines = [
-		`# Moved to \`${toModule}\``,
-		"",
-		`${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map((m) => `\`${m}\``).join(", ")}`,
+		`# Moved to \`${toModule}\`
+
+${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map((m) => `\`${m}\``).join(", ")}`,
 	];
 	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
-		lines.push("", `Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
+		lines.push(`
+Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
 	}
 	if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
 	return lines.join("\n");
@@ -1276,21 +1468,26 @@ export function renderMoveOutcome(toModule: string, outcome: MoveOutcome): strin
 /** A rename step, including what it carried across and what the index could not promise. */
 export function renderRenameStep(newName: string, outcome: RenameStepOutcome): string {
 	if (!outcome.renamed) {
-		const lines = ["# Not renamed", "", outcome.reason ?? "the rename could not be carried out"];
+		const lines = [
+			`# Not renamed
+
+${outcome.reason ?? `the rename could not be carried out`}`,
+		];
 		if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
 		return lines.join("\n");
 	}
 
 	const modules = outcome.modules ?? [];
 	const lines = [
-		`# Renamed to ${newName}`,
-		"",
-		`${modules.length} file${modules.length === 1 ? "" : "s"} reindexed: ${modules.map((m) => `\`${m}\``).join(", ")}`,
+		`# Renamed to ${newName}
+
+${modules.length} file${modules.length === 1 ? "" : "s"} reindexed: ${modules.map((m) => `\`${m}\``).join(", ")}`,
 	];
 
 	// Worth saying: the prose written about a symbol is the one thing a re-index cannot rebuild.
 	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
-		lines.push("", `Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
+		lines.push(`
+Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
 	}
 
 	if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
@@ -1304,9 +1501,9 @@ export function renderRefactorCommit(outcome: RefactorCommitResult): string {
 	}
 
 	return [
-		"# Not committed",
+		`# Not committed`,
 		"",
-		outcome.reason ?? "the transaction could not be committed",
+		outcome.reason ?? `the transaction could not be committed`,
 		"",
 		...renderIssues(outcome.issues),
 	].join("\n");
@@ -1326,8 +1523,13 @@ export function renderCandidates(name: string, candidates: SymbolSummary[]): str
 	// eight identical minified methods with no way to be told apart short of guessing ids blind.
 	const lines = [`# ${candidates.length} symbols named \`${name}\``];
 	for (const candidate of candidates) {
-		lines.push("", `## \`${candidate.module}\``, "", `- ${line(candidate)}`, `  ID: \`${candidate.symbolId}\``);
+		lines.push(`
+## \`${candidate.module}\`
+
+- ${line(candidate)}
+  ID: \`${candidate.symbolId}\``);
 	}
-	lines.push("", "Pass one of the IDs above to pick one.");
+	lines.push(`
+Pass one of the IDs above to pick one.`);
 	return lines.join("\n");
 }

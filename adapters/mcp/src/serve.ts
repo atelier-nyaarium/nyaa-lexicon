@@ -211,25 +211,25 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 
 	server.registerTool(
 		"list_projects",
-		{ title: "List Projects", description: LIST_PROJECTS_DESCRIPTION, inputSchema: listProjectsShape },
+		{ title: `List Projects`, description: LIST_PROJECTS_DESCRIPTION, inputSchema: listProjectsShape },
 		adapt(async () => listProjectsTool(binding)),
 	);
 
 	server.registerTool(
 		"register_project",
-		{ title: "Register Project", description: REGISTER_PROJECT_DESCRIPTION, inputSchema: registerProjectShape },
+		{ title: `Register Project`, description: REGISTER_PROJECT_DESCRIPTION, inputSchema: registerProjectShape },
 		adapt(async (args) => registerProjectTool(binding, args)),
 	);
 
 	server.registerTool(
 		"bind_project",
-		{ title: "Bind Project", description: BIND_PROJECT_DESCRIPTION, inputSchema: bindProjectShape },
+		{ title: `Bind Project`, description: BIND_PROJECT_DESCRIPTION, inputSchema: bindProjectShape },
 		adapt(async (args) => bindProjectTool(binding, args)),
 	);
 
 	server.registerTool(
 		"unbind_project",
-		{ title: "Unbind Project", description: UNBIND_PROJECT_DESCRIPTION, inputSchema: bindProjectShape },
+		{ title: `Unbind Project`, description: UNBIND_PROJECT_DESCRIPTION, inputSchema: bindProjectShape },
 		adapt(async (args) => unbindProjectTool(binding, args)),
 	);
 
@@ -240,25 +240,25 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 
 	server.registerTool(
 		"list_project_stores",
-		{ title: "List Project Stores", description: LIST_STORES_DESCRIPTION, inputSchema: listStoresShape },
+		{ title: `List Project Stores`, description: LIST_STORES_DESCRIPTION, inputSchema: listStoresShape },
 		adapt(async () => listProjectStoresTool(manage)),
 	);
 
 	server.registerTool(
 		"project_diagnostics",
-		{ title: "Project Diagnostics", description: PROJECT_DIAGNOSTICS_DESCRIPTION, inputSchema: diagnosticsShape },
+		{ title: `Project Diagnostics`, description: PROJECT_DIAGNOSTICS_DESCRIPTION, inputSchema: diagnosticsShape },
 		adapt(async (args) => projectDiagnosticsTool(manage, args)),
 	);
 
 	server.registerTool(
 		"delete_project_store",
-		{ title: "Delete Project Store", description: DELETE_STORE_DESCRIPTION, inputSchema: deleteStoreShape },
+		{ title: `Delete Project Store`, description: DELETE_STORE_DESCRIPTION, inputSchema: deleteStoreShape },
 		adapt(async (args) => deleteProjectStoreTool(manage, args)),
 	);
 
 	server.registerTool(
 		"stop_project_daemon",
-		{ title: "Stop Project Daemon", description: STOP_DAEMON_DESCRIPTION, inputSchema: stopDaemonShape },
+		{ title: `Stop Project Daemon`, description: STOP_DAEMON_DESCRIPTION, inputSchema: stopDaemonShape },
 		adapt(async (args) =>
 			stopProjectDaemonTool(manage, () => binding.list().filter((project) => project.bound), args),
 		),

@@ -217,7 +217,7 @@ function servesBound(store: ProjectStore, bound: BoundStore[]): boolean {
 
 /** A size that cannot be is a question mark, and nothing is rounded up to a kilobyte. */
 function describeSize(bytes: number): string {
-	if (!Number.isFinite(bytes) || bytes < 0) return "?";
+	if (!Number.isFinite(bytes) || bytes < 0) return `?`;
 	if (bytes < 1024) return `${Math.round(bytes)}B`;
 	if (bytes >= BYTES_PER_GB) return `${(bytes / BYTES_PER_GB).toFixed(2)}GB`;
 	return bytes < BYTES_PER_MB ? `${Math.round(bytes / 1024)}KB` : `${(bytes / BYTES_PER_MB).toFixed(1)}MB`;
@@ -269,15 +269,15 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 	if (stores.length === 0) return `# Project indexes\n\nThis machine holds no indexes.`;
 
 	const lines = stores.map((store) => {
-		const where = store.workspaceRoot ?? "(this index predates recording its workspace)";
+		const where = store.workspaceRoot ?? `(this index predates recording its workspace)`;
 		const state =
 			store.livePid !== null
 				? `in use by pid ${store.livePid}`
 				: store.workspace === "present"
-					? "idle"
+					? `idle`
 					: store.workspace === "missing"
-						? "ORPHANED, its workspace is gone"
-						: "UNVERIFIED, it does not say what it indexed";
+						? `ORPHANED, its workspace is gone`
+						: `UNVERIFIED, it does not say what it indexed`;
 		return [
 			store.custom ? `## \`${store.key}\` (custom directory)` : `## \`${store.key}\``,
 			"",
@@ -295,7 +295,7 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 
 	const notes: string[] = [];
 	if (orphaned.length === 0 && unverified.length === 0) {
-		notes.push("Every index here belongs to a project still on disk.");
+		notes.push(`Every index here belongs to a project still on disk.`);
 	}
 	if (orphaned.length > 0) {
 		notes.push(
@@ -309,11 +309,11 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 	}
 
 	return [
-		`# ${stores.length} indexed ${stores.length === 1 ? "project" : "projects"}`,
+		`# ${stores.length} indexed ${stores.length === 1 ? `project` : `projects`}`,
 		"",
 		lines.join("\n\n"),
 		"",
-		"## Notes",
+		`## Notes`,
 		"",
 		notes.map((note) => `- ${note}`).join("\n"),
 	].join("\n");
@@ -330,7 +330,7 @@ export function renderDiagnostics(
 	const total = memTotal ?? 0;
 	const host =
 		memTotal === null || memAvailable === null
-			? "host memory unknown"
+			? `host memory unknown`
 			: `host ${describeSize(memAvailable)} of ${describeSize(memTotal)} available`;
 
 	const peaks = [...data.peaks]
@@ -365,7 +365,7 @@ export function renderDiagnostics(
 			: ` over ${describeElapsed(last.at - first.at).replace(" ago", "")}`;
 	const sampled =
 		data.samples.length === 0
-			? ["None yet."]
+			? [`None yet.`]
 			: [
 					`${data.samples.length} samples${span}, the last ${describeElapsed(now - (last?.at ?? now))}, ${describeContext(last?.context ?? null)}.`,
 					...[...ranges.entries()].map(
@@ -383,7 +383,7 @@ export function renderDiagnostics(
 				? `resident ${describeSize(report.rss)} of host ${describeSize(report.hostTotal)}`
 				: report.heapUsed !== null && report.heapLimit !== null
 					? `heap ${describeSize(report.heapUsed)} of ${describeSize(report.heapLimit)}`
-					: "memory unknown";
+					: `memory unknown`;
 		const when = report.at === null ? "" : `, ${describeElapsed(now - report.at)}`;
 		return `- ${name}: ${report.event} (${report.trigger}), pid ${report.pid ?? "?"}, ${memory}${when}`;
 	});
@@ -398,28 +398,28 @@ export function renderDiagnostics(
 		`- Memory: ${host}`,
 		`- Sampler: ${data.host.sampler}; runtime: ${data.host.runtime}`,
 		"",
-		"## Peaks",
+		`## Peaks`,
 		"",
-		...(peaks.length === 0 ? ["None yet."] : peaks),
+		...(peaks.length === 0 ? [`None yet.`] : peaks),
 		"",
-		"## Incidents",
+		`## Incidents`,
 		"",
-		...(incidents.length === 0 ? ["None recorded."] : incidents),
+		...(incidents.length === 0 ? [`None recorded.`] : incidents),
 		"",
-		"## Samples",
+		`## Samples`,
 		"",
 		...sampled,
 		"",
-		"## Reports",
+		`## Reports`,
 		"",
 		...(reportLines.length === 0
-			? ["None. Nothing has died of its memory or crossed the high-water mark."]
+			? [`None. Nothing has died of its memory or crossed the high-water mark.`]
 			: reportLines),
 		...(reports.some((report) => report.kind === "snapshot")
 			? []
 			: [
 					"",
-					"A report says where a heap went, not what held it. That needs a heap snapshot, which is opt-in: `LEXICON_HEAP_SNAPSHOT=1` on the daemon, gigabytes each.",
+					`A report says where a heap went, not what held it. That needs a heap snapshot, which is opt-in: \`LEXICON_HEAP_SNAPSHOT=1\` on the daemon, gigabytes each.`,
 				]),
 		"",
 		`Raw: ${file}`,
