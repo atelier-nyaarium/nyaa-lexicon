@@ -8,6 +8,7 @@ export { type ChainAnswer, type ChainCandidate, resolveChain } from "./chain.js"
 export { type DaemonChannel, type DaemonChannelOptions, daemonChannel } from "./channel.js";
 export { type ConnectOptions, connect, type Facade, type Session } from "./connect.js";
 export {
+	bundleFiles,
 	bundleStamp,
 	callDaemon,
 	type DaemonSource,

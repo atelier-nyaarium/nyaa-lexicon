@@ -73,9 +73,9 @@ Use a row's key or directory with \`project_diagnostics\`, \`delete_project_stor
 export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 # \`project_diagnostics\`
 
-Memory record of a store's daemon and providers, and node's crash reports beside it. Read from disk, so it answers for a daemon that has died.
+Memory record of a store's daemon and providers, and the reports beside it. Read from disk, so it answers for a daemon that has died.
 
-Pass a key or directory from \`list_project_stores\`. Answers peaks against the host's memory, incidents newest first with what the daemon was doing, the sampled range, each node report's trigger and heap, and each snapshot's size.
+Pass a key or directory from \`list_project_stores\`. Answers peaks against the host's memory, incidents newest first with what the daemon was doing, the sampled range, each report's trigger and memory, and each snapshot's size.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `

@@ -8,7 +8,17 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+	closeSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import path from "node:path";
 import { type DaemonLock, PROTOCOL_VERSION, TransactionStatusSchema } from "@nyaa-lexicon/protocol";
 import { decideFromLock, type LockDecision } from "./lock.js";
@@ -132,7 +142,7 @@ export function daemonCommand(root: string, workspaceRoot: string, stateDir?: st
 	const bundle = path.join(root, "dist", "daemon.js");
 	try {
 		// A directory or dangling symlink wearing the name is not a program.
-		if (!statSync(bundle).isFile()) return null;
+		if (!lstatSync(bundle).isFile()) return null;
 	} catch {
 		return null;
 	}
@@ -150,9 +160,33 @@ export function daemonCommand(root: string, workspaceRoot: string, stateDir?: st
  * differs. Null when unbuilt or unreadable: nothing to compare, never a guess.
  */
 export function bundleStamp(root: string): string | null {
+	const files = bundleFiles(root);
+	if (files === null) return null;
+	try {
+		const dist = path.join(root, "dist");
+		const digest = createHash("sha256");
+		for (const file of files) {
+			digest.update(path.relative(dist, file));
+			digest.update("\0");
+			digest.update(readFileSync(file));
+			digest.update("\0");
+		}
+		return `${files.length}:${digest.digest("hex").slice(0, 16)}`;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The one inventory of a root's bundles: every regular `.js` under dist/, sorted, absolute. Null
+ * when unbuilt (no `dist/daemon.js` file) or unreadable, so identity and settling agree on what
+ * a bundle is.
+ */
+export function bundleFiles(root: string): string[] | null {
 	const dist = path.join(root, "dist");
 	try {
-		if (!statSync(path.join(dist, "daemon.js")).isFile()) return null;
+		// lstat, like the walk's Dirent: a link wearing the name is not a bundle either.
+		if (!lstatSync(path.join(dist, "daemon.js")).isFile()) return null;
 		const files: string[] = [];
 		const visit = (dir: string): void => {
 			for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -162,14 +196,7 @@ export function bundleStamp(root: string): string | null {
 			}
 		};
 		visit(dist);
-		const digest = createHash("sha256");
-		for (const file of files.sort()) {
-			digest.update(path.relative(dist, file));
-			digest.update("\0");
-			digest.update(readFileSync(file));
-			digest.update("\0");
-		}
-		return `${files.length}:${digest.digest("hex").slice(0, 16)}`;
+		return files.sort();
 	} catch {
 		return null;
 	}

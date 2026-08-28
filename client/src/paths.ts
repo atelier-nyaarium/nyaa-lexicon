@@ -83,7 +83,7 @@ export function storePaths(directory: string) {
 		logFile: path.join(directory, "daemon.log"),
 		/** The bounded memory collection. Rewritten whole, never appended. */
 		diagnosticsFile: path.join(directory, "diagnostics.json"),
-		/** Node's own crash and signal reports, pruned to a few. */
+		/** Crash reports and the daemon's high-water report, pruned to a few. */
 		reportsDir: path.join(directory, "reports"),
 	};
 }

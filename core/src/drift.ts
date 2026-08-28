@@ -6,7 +6,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { bundleStamp, daemonCommand, newerBuild } from "@nyaa-lexicon/client";
+import { bundleFiles, bundleStamp, daemonCommand, newerBuild } from "@nyaa-lexicon/client";
 import { type Clock, systemClock } from "./clock.js";
 
 ////////////////////////////////
@@ -42,18 +42,10 @@ const DEFAULT_SETTLE_MS = 3_000;
 /** Every bundle under a root must sit still: a provider rebuilt last is the one still being written. */
 function settled(root: string, options: DriftOptions): boolean {
 	const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS;
-	const dist = path.join(root, "dist");
+	const files = bundleFiles(root);
+	if (files === null) return false;
 	try {
-		let newest = statSync(path.join(dist, "daemon.js")).mtimeMs;
-		const visit = (dir: string): void => {
-			for (const entry of readdirSync(dir, { withFileTypes: true })) {
-				const file = path.join(dir, entry.name);
-				if (entry.isDirectory()) visit(file);
-				else if (entry.isFile() && entry.name.endsWith(".js"))
-					newest = Math.max(newest, statSync(file).mtimeMs);
-			}
-		};
-		visit(dist);
+		const newest = Math.max(...files.map((file) => statSync(file).mtimeMs));
 		return (options.clock ?? systemClock).now() - newest >= settleMs;
 	} catch {
 		return false;

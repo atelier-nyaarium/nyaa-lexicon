@@ -23,6 +23,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { codeOnly } from "../protocol/src/residue.js";
 import { PROTOCOL_VERSION } from "../protocol/src/version.js";
 
 ////////////////////////////////
@@ -317,6 +318,20 @@ export function checkDerivedSites(root: string): void {
 	}
 }
 
+/** The conformance CLI serves provider teams on their own runtime, so it alone stays unguarded. */
+const UNGUARDED_ENTRYPOINT = "conformance.js";
+
+/** Every entry point judges its runtime by name before anything else; the build is where the set is known. */
+export function checkEntryGuards(root: string): void {
+	for (const entry of ENTRYPOINTS) {
+		if (entry.out === UNGUARDED_ENTRYPOINT) continue;
+		if (codeOnly(readFileSync(path.join(root, entry.source), "utf8")).includes("refuseRuntime(")) continue;
+		throw new Error(
+			`${entry.source} does not call refuseRuntime, so dist/${entry.out} would die on a builtin instead of naming the runtime it needs.`,
+		);
+	}
+}
+
 /** Space-separated fields ahead of the path, per porcelain v2 record type. */
 const PATH_FIELD_OFFSET: Record<string, number> = { "1": 8, "2": 9, u: 10 };
 
@@ -377,6 +392,7 @@ function main(argv: string[]): void {
 	// Before writing anything: a broken derivation means the bump would be incomplete, and half a
 	// bump is worse than none (the manifests move, the running server reports the old version).
 	checkDerivedSites(ROOT);
+	checkEntryGuards(ROOT);
 
 	// A clean tree is what makes the rollback below safe. --build-only writes no tracked file, so
 	// it has nothing to roll back and no reason to care.

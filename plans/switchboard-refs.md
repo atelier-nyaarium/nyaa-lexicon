@@ -131,7 +131,9 @@ Phase 1.
   `adapters/lsp/src/main.ts` assert their own runtime and floor on their first line and exit with
   a named message (each is a bootstrap that judges the runtime, then imports `serve.ts`; the
   bundle hoists builtin imports above it, so the sentence is guaranteed on any node that has
-  `node:sqlite`, the oldest node lexicon 2 ran on); bun on PATH is the documented prerequisite.
+  `node:sqlite`, the oldest node lexicon 2 ran on); the build refuses to bundle an entry point
+  whose source does not call `refuseRuntime(`, the conformance CLI excepted, since the build is
+  where the set of entry points is known; bun on PATH is the documented prerequisite.
   The editor command becomes
   `bun <install>/dist/lsp.js`, a breaking change the CHANGELOG lists, since no manifest owns it
   today. The client spawns `bun <root>/dist/daemon.js`; the daemon spawns bundled providers
@@ -144,7 +146,9 @@ Phase 1.
   and equal-version daemons with different stamps retire each other on every connect (verified by
   probe). Copilot updates a plugin IN PLACE (same path, new bytes), the case the stamp exists to
   detect, and `decideFromLock` retires an equal-version daemon on a stamp change (verified); the
-  daemon's own drift check settles on the newest of every bundle, not the daemon's alone. One install record per state root, shared by every host on
+  daemon's own drift check settles on the newest of every bundle, not the daemon's alone, and
+  both read the one inventory, `bundleFiles(root)` in the client, so identity and settling cannot
+  disagree about what a bundle is. One install record per state root, shared by every host on
   a machine, last writer wins between the MCP and the daemon: pre-existing, recorded by the smoke,
   not redesigned here.
 - **One runtime owner.** The client owns one bun executable, shared by the client spawn, the
@@ -392,6 +396,10 @@ Sol's window ran out). The plan as rethought.
   that runs `--version` once per process and caches it, refusing missing, malformed and
   below-floor by name. The daemon's provider spawn and handover take the same executable, so the
   `runtime: "node"` label and the node report arguments in `core/src/providers.ts` go with it.
+  To enforce here: a residue forbidding `process.execPath` in production source outside
+  `runtime.ts`, so the sites it takes over (`client/src/discover.ts`, `core/src/providers.ts`,
+  `scripts/build.ts`'s smoke) cannot drift back; the build already refuses an entry point whose
+  source lacks a `refuseRuntime(` call (Phase 0, `checkEntryGuards`, the conformance CLI excepted).
 - `classifyWorkspaceRoot(path)` moves from `core/src/workspaceAdmission.ts` to the client (core
   imports it), so a consumer knows before its first spawn that the daemon would refuse `/` or
   `$HOME` as a workspace, and `docs/client.md` says so. `daemonCommand` returns a closed outcome
