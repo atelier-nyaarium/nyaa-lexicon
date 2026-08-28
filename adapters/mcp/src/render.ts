@@ -256,28 +256,24 @@ export function renderType(name: string, type: TypeInfo): string {
 `,
 	];
 	if (type.status === "known") {
-		lines.push(
-			"```ts",
-			type.display,
-			"```",
-			`
-## Provenance
-`,
-		);
 		const from = type.provenance === "declared" ? `declared in source` : `established by ${type.provenance}`;
-		lines.push(`- Known: ${from}`);
+		lines.push(`\`\`\`ts
+${type.display}
+\`\`\`
+
+## Provenance
+
+- Known: ${from}`);
 		return lines.join("\n");
 	}
 	if (type.status === "inferred") {
-		lines.push(
-			"```ts",
-			type.display,
-			"```",
-			`
+		lines.push(`\`\`\`ts
+${type.display}
+\`\`\`
+
 ## Provenance
-`,
-		);
-		lines.push(`- Inferred from: ${type.basis}`);
+
+- Inferred from: ${type.basis}`);
 		return lines.join("\n");
 	}
 	lines.push(`Unknown: ${type.reason}${type.detail ? `: ${type.detail}` : ""}`);
