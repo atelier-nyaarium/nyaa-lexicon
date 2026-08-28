@@ -828,7 +828,7 @@ above, this is what the code does.
   and a degraded ref adds a `refs:` notice). No bound Copilot session can be started from this
   session, so the Copilot half of the live reply is the resolution without the upload.
 
-## Phase 3 - The workspace root from the host
+## Phase 3 - The workspace root from the host ✅
 
 Asked for by the owner after the 8.4.0 report, from the Copilot finding under Painpoints: Copilot
 starts a plugin's MCP server in the plugin's directory, so the cwd rule made every bare ref path
@@ -860,6 +860,13 @@ resolve against the plugin's checkout. Lexicon never cared where the server ran;
   reply until `setHostRoots`.
 - Verification: a patch release, then each host started in tmux on the switchboard checkout with
   no lexicon daemon alive for it, a ref sent, and the root read off the daemon each host spawns.
+- As shipped: 8.4.1 (`roots/list`, the wait, `list_changed`) and 8.4.2 (the start-directory rule,
+  the vanished cwd). Two Luna passes; applied: a stale `roots/list` answer overwriting a newer one
+  (an ask counter), one reply reading the root twice across a change (the session bound to the
+  reply's root), `process.cwd()` throwing on a deleted directory. Verified on 8.4.2: Copilot
+  1.0.81, started in tmux on the checkout with no daemon alive for it, spawned its lexicon daemon
+  on `/home/nyaarium/projects/switchboard` (before: the plugin directory); Claude Code resolved on
+  the same root. Both sends were then refused at the byte plane, as decided under Phase 2.
 
 ## Painpoints
 
