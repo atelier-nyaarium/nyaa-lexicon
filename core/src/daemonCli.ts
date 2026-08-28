@@ -19,6 +19,7 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
+import { WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
 import { type Collector, makeReportsDir, startDiagnostics } from "./diagnostics.js";
@@ -61,7 +62,7 @@ export function warmRefusal(
 	service: Pick<LexiconService, "warmHold" | "warmFailure">,
 ): DaemonStartingError | Error | null {
 	const failure = service.warmFailure();
-	if (failure !== null) return new Error(`warmup failed: ${failure}; restart the daemon`);
+	if (failure !== null) return new Error(`${WARMUP_FAILED_PREFIX} ${failure}; restart the daemon`);
 	const hold = service.warmHold();
 	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
 }
@@ -423,7 +424,8 @@ async function main(argv: string[]): Promise<void> {
 			// Asking about the workspace IS the request to index it.
 			warm();
 
-			const refusal = warmRefusal(service);
+			// Retirement asks this of a daemon whose warmup may have failed; the journal, not the index, answers it.
+			const refusal = method === "refactorStatus" ? null : warmRefusal(service);
 			if (refusal !== null) throw refusal;
 			// Counted so shutdown waits for the answer and the linger cannot fire under it.
 			inFlight += 1;

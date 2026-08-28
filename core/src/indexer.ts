@@ -14,6 +14,7 @@ import type {
 } from "@nyaa-lexicon/protocol";
 import { hashContent } from "@nyaa-lexicon/protocol";
 import { attachComments } from "./commentAttach.js";
+import { FactAdmissionError } from "./factAdmission.js";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
@@ -187,19 +188,28 @@ export class WorkspaceIndexer {
 		const storedDepth = facts.depth ?? (depth === "surface" ? "surface" : "full");
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
 		// question only the source text answers, and this is the last place holding it.
-		this.store.replaceFile(
-			module,
-			readHash,
-			facts.declarations,
-			facts.references,
-			facts.imports,
-			facts.literals,
-			storedDepth,
-			attachComments(facts.declarations, facts.comments ?? [], text),
-			facts.docs ?? [],
-			notes,
-			route.content,
-		);
+		try {
+			this.store.replaceFile(
+				module,
+				readHash,
+				facts.declarations,
+				facts.references,
+				facts.imports,
+				facts.literals,
+				storedDepth,
+				attachComments(facts.declarations, facts.comments ?? [], text),
+				facts.docs ?? [],
+				notes,
+				route.content,
+			);
+		} catch (error) {
+			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
+			if (!(error instanceof FactAdmissionError)) throw error;
+			const failure = `the provider's answer was refused: ${error.message}`;
+			this.store.recordFailure(module, failure);
+			this.upgradeFailed.add(module);
+			return this.outcome(module, "parseFailed", failure);
+		}
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
@@ -275,17 +285,15 @@ export class WorkspaceIndexer {
 			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
 			outcomes.push(...this.prune(seen));
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
-			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown" || outcome.cause === "fault");
+			// A restart heals an outage, so the pass says so; a fault is per file, recorded, and does not.
+			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown");
 			if (outages.length > 0) {
 				// Files an outage left unread would hide behind every answer if this pass read as covered.
 				const first = outages[0] as IndexOutcome;
 				this.writeScanSummary(false);
 				this.coverage = {
 					state: "failed",
-					reason:
-						first.cause === "providerDown"
-							? `${outages.length} file(s) unread because a provider was unavailable: ${first.failure ?? first.reason}`
-							: `${outages.length} file(s) failed because the indexer failed: ${first.failure ?? first.reason}`,
+					reason: `${outages.length} file(s) unread because a provider was unavailable: ${first.failure ?? first.reason}`,
 				};
 				return outcomes;
 			}
@@ -416,6 +424,8 @@ export class WorkspaceIndexer {
 
 	private faultOutcome(module: string, error: unknown): IndexOutcome {
 		const failure = error instanceof Error ? error.message : String(error);
+		// Recorded under its own wording, so the file shows among the failures without being blamed.
+		this.store.recordFailure(module, `the indexer failed on this file: ${failure}`);
 		this.upgradeFailed.add(module);
 		return this.outcome(module, "fault", failure);
 	}

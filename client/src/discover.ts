@@ -20,7 +20,12 @@ import {
 	statSync,
 } from "node:fs";
 import path from "node:path";
-import { type DaemonLock, PROTOCOL_VERSION, TransactionStatusSchema } from "@nyaa-lexicon/protocol";
+import {
+	type DaemonLock,
+	PROTOCOL_VERSION,
+	TransactionStatusSchema,
+	WARMUP_FAILED_PREFIX,
+} from "@nyaa-lexicon/protocol";
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { processIdentity } from "./procfs.js";
@@ -299,7 +304,10 @@ export async function retire(
 	try {
 		status = await options.ask(lock, "refactorStatus");
 	} catch (error) {
-		return { retired: false, reason: `it would not say whether a refactor is open: ${errorText(error)}` };
+		// A daemon whose warmup failed refuses the question, and could not have opened a transaction.
+		if (!(error instanceof Error && error.message.startsWith(WARMUP_FAILED_PREFIX)))
+			return { retired: false, reason: `it would not say whether a refactor is open: ${errorText(error)}` };
+		status = { open: false };
 	}
 
 	// Only `open` decides, so an older daemon's fuller or thinner status still answers the question.

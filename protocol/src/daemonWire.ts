@@ -77,6 +77,9 @@ export const ClientFrameSchema = z.discriminatedUnion("kind", [HelloFrameSchema,
 /** Everything a server may say. */
 export const ServerFrameSchema = z.union([WelcomeFrameSchema, RejectFrameSchema, ResponseFrameSchema, PingFrameSchema]);
 
+/** How a daemon whose warmup failed refuses a request; a client retiring it reads the prefix. */
+export const WARMUP_FAILED_PREFIX = "warmup failed:";
+
 ////////////////////////////////
 //  Interfaces & Types
 

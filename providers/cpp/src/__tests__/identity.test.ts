@@ -107,6 +107,31 @@ describe("C++ stable declaration identity", () => {
 		);
 	});
 
+	// The store refuses a container the file never declares, so a written scope is identity only.
+	test("names a container only when the file declares it", () => {
+		const outOfLine = parseCppFile("identity.cpp", "void Physics::World::step() {}\n");
+		const step = outOfLine.declarations.find((item) => item.name === "step");
+		expect(step?.symbolId).toBe(
+			id("identity.cpp", [
+				{ kind: "namespace", name: "Physics" },
+				{ kind: "namespace", name: "World" },
+				{ kind: "method", name: "step" },
+			]),
+		);
+		expect(step?.containerId).toBeUndefined();
+
+		const declared = parseCppFile(
+			"identity.cpp",
+			"namespace Physics { class World { void step(); }; }\nvoid Physics::World::step() {}\n",
+		);
+		expect(declared.declarations.find((item) => item.name === "step")?.containerId).toBe(
+			id("identity.cpp", [
+				{ kind: "namespace", name: "Physics" },
+				{ kind: "type", name: "World" },
+			]),
+		);
+	});
+
 	test("tells overloads apart by cv qualifiers, and one function apart from its spellings", () => {
 		const method = (name: string, disambiguator?: string) =>
 			id("identity.cpp", [

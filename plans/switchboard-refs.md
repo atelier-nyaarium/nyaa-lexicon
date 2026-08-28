@@ -528,6 +528,17 @@ above, this is what the code does.
   is the one conversation across a major, since `refactorStatus` and `shutdown` are answered by
   every major. Pinned over the real socket in `ensure.test.ts`; the injected-ask tests had
   replaced the seam that failed.
+- Found by the same smoke, shipped as 3.0.2: switchboard's C++ fixture `engine.cpp` (an
+  out-of-line `Physics::World::step` with no class in the file) made the provider name a
+  `containerId` the file never declares; the store's admission refused it, the refusal escaped as
+  a `fault`, the fault failed the whole warmup pass, and a daemon whose warmup failed refused
+  every request, `refactorStatus` included, so it could not be retired and the workspace stayed
+  unusable across restarts. The provider names a container only when the file declares it (the
+  written scope stays in the id and `containerPath` reads it from there); an admission refusal is
+  that file's `parseFailed`; a `fault` is recorded in its own words against the file and no longer
+  fails the pass, which fails only on a provider outage; `refactorStatus` is answered by a
+  warmup-failed daemon and, for daemons that still refuse it, `retire` reads the
+  `warmup failed:` prefix (owned by the protocol package) as "no transaction is open".
 
 ## Phase 2 - Switchboard: the resolver rebuilt on the index
 
@@ -823,6 +834,14 @@ Collected after Phase 1.
   on every workspace with a 2.x daemon alive. The smoke found it in one prompt. When a seam is
   injected for speed, one test per suite must still cross it for real (the fake daemon exists for
   this), and the smoke stays in the ladder for what no fake can model.
+- **A whole-workspace refusal on a per-file defect is a brick, and the ladder never saw it.**
+  The outage rule (a warmup with any `fault` ends `failed`) was reasoned about, audited and
+  green, and it made one deterministic provider defect in one fixture file take the daemon down
+  on every restart. `grade.js` passed because it asks questions the fixture does not touch, and
+  the suite's fake provider never mints an inadmissible answer. Only a real workspace with a real
+  provider showed it. Anything that turns one file's failure into a refusal of everything needs a
+  reason a restart would change; and the ladder needs one step that indexes a real, mixed
+  workspace and asserts the pass ended covered.
 - **`IndexOutcome.action` is chosen at the site, not derived from the mutation.** The cause-keyed
   constructor in `core/src/indexer.ts` needed a `forgot` flag because `unclaimed` is `forgotten`
   when rows were removed and `skipped` when there were none; an outcome whose action came from

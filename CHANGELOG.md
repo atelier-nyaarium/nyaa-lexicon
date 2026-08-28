@@ -2,6 +2,19 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
+## 3.0.2
+
+A single file the indexer could not store, a C++ out-of-line definition whose written scope the
+file does not declare, failed the whole warmup pass in 3.0.0 and 3.0.1, and a daemon in that state
+refused every request, its own retirement included, so the workspace stayed unusable across
+restarts. Three things change: the C++ provider names as `containerId` only a container the file
+declares (the written scope stays in the id); an answer the store refuses is recorded as that
+file's parse failure, and an indexer fault on one file is recorded in its own words rather than
+failing the pass, which now fails only on a provider outage; and `refactorStatus` is answered by
+a daemon whose warmup failed, so the client can retire it, and a client meeting an older daemon
+that still refuses it reads the refusal as "no transaction is open" and retires it anyway, since
+that daemon could not have opened one.
+
 ## 3.0.1
 
 A 3.0.0 client could not retire a 2.x daemon still serving a workspace: the welcome check refused

@@ -813,16 +813,14 @@ class StructuralParser {
 			...(draft.languageKind === undefined ? {} : { languageKind: draft.languageKind }),
 			...(draft.exported ? { exported: true } : {}),
 			...(draft.signature === undefined ? {} : { signature: draft.signature }),
-			...(draft.parent === null && draft.qualifier === undefined
+			// A written qualifier the file does not declare is identity only; the container is what the file declares.
+			...(draft.parent === null
 				? {}
 				: {
 						containerId: composeSymbolId({
 							language: LANGUAGE,
 							module: this.module,
-							descriptors:
-								draft.qualifier === undefined
-									? namePath(draft.parent)
-									: [...namePath(draft.parent), ...draft.qualifier],
+							descriptors: namePath(draft.parent),
 						}),
 					}),
 			...(draft.metrics === undefined ? {} : { metrics: draft.metrics }),

@@ -283,6 +283,35 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		}
 	});
 
+	// Its warmup failed, so it refuses the question; it could not have opened a transaction either.
+	it("retires a daemon that refuses the question because its warmup failed", async () => {
+		const events: string[] = [];
+		const result = await ensureDaemon({
+			...options,
+			look: looking([
+				stale,
+				{ action: "spawn", reason: "gone" },
+				{ action: "spawn", reason: "gone" },
+				{ action: "connect", lock: LOCK },
+			]),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				if (method === "refactorStatus")
+					throw new Error("warmup failed: a provider was unavailable; restart the daemon");
+				return { stopping: true };
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {
+				events.push("start");
+			},
+		});
+
+		expect(events).toEqual(["ask:refactorStatus", "ask:shutdown", "start"]);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
 	it("falls back to the signal only once the lock has outlived the ask, and only after asking", async () => {
 		const events: string[] = [];
 		const afterSignal = looking([

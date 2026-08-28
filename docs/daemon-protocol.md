@@ -91,7 +91,10 @@ mirrored on the client, since two independently chosen numbers cannot stay in ag
 it re-sends every 250 ms, under a five-minute ceiling that exists only as a backstop against a
 countdown that never reaches zero. When the daemon's countdown runs out, the caller sees
 `<message> (gave up waiting on <waitingFor>; ask again later)`. A warmup that failed is not a hold:
-it answers a plain error naming the reason and asking for a restart.
+it answers a plain error, `warmup failed: <reason>; restart the daemon`, to everything but
+`refactorStatus` and `shutdown`, so a daemon in that state can still be retired. A provider
+outage during the pass fails it, since a restart heals an outage; a fault on one file is recorded
+against that file and the pass serves.
 
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
 with `...; this daemon is stopping`, closes its server, and every client lands on its reconnect

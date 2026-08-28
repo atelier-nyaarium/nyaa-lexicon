@@ -91,6 +91,9 @@ function depthSupervisor(
 				const declarations = [...request.text.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)].map((match) =>
 					declaration(request.module, match[1] as string),
 				);
+				// A container the file never declares, which the store's admission refuses.
+				if (request.text.includes("BADCONTAINER") && declarations[0] !== undefined)
+					declarations[0].containerId = `lexicon fake ${request.module} Missing.`;
 				const outlined = honorOutline && request.depth === "outline";
 				return {
 					module: request.module,
@@ -497,15 +500,16 @@ describe("warmup pass", () => {
 		expect(store.parseFailureOf("bad.fake")).toEqual({ module: "bad.fake", reason: "poisoned file" });
 	});
 
-	it("classifies an escaped indexer fault without recording a file failure", async () => {
+	it("classifies an escaped indexer fault, records it in its own words, and keeps the pass covered", async () => {
 		initGit();
 		put("bad.fake", "export class Bad {}\n");
+		put("good.fake", "export class Good {}\n");
 		const replaceFile = store.replaceFile.bind(store);
 		store.replaceFile = (...args: Parameters<IndexStore["replaceFile"]>) => {
 			if (args[0] === "bad.fake") throw new Error("store broke");
 			return replaceFile(...args);
 		};
-		service = serviceOver(depthSupervisor(["bad.fake"], true, []));
+		service = serviceOver(depthSupervisor(["bad.fake", "good.fake"], true, []));
 
 		const outcomes = await service.warmupWorkspace();
 
@@ -516,8 +520,25 @@ describe("warmup pass", () => {
 			reason: "the indexer failed on this file",
 			failure: "store broke",
 		});
-		expect(store.parseFailures()).toEqual([]);
-		expect(service.warmFailure()).toContain("indexer failed");
+		expect(store.parseFailureOf("bad.fake")?.reason).toBe("the indexer failed on this file: store broke");
+		// One file's fault is not the workspace's: a restart would meet the same fault, so the pass serves.
+		expect(service.warmFailure()).toBeNull();
+		expect(service.warmHold()).toBeNull();
+		expect(service.findByName("Good")).toHaveLength(1);
+	});
+
+	it("records an answer the store refuses as that file's parse failure", async () => {
+		initGit();
+		put("orphan.fake", "BADCONTAINER export class Child {}\n");
+		service = serviceOver(depthSupervisor(["orphan.fake"], true, []));
+
+		const outcomes = await service.warmupWorkspace();
+
+		expect(outcomes).toContainEqual(
+			expect.objectContaining({ module: "orphan.fake", cause: "parseFailed", action: "skipped" }),
+		);
+		expect(store.parseFailureOf("orphan.fake")?.reason).toMatch(/refused: .*is not declared in this file/);
+		expect(service.warmFailure()).toBeNull();
 	});
 });
 

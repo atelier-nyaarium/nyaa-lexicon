@@ -231,6 +231,7 @@ export {
 	SERVER_LINE_CAP,
 	type ServerFrame,
 	ServerFrameSchema,
+	WARMUP_FAILED_PREFIX,
 	type WelcomeFrame,
 	WelcomeFrameSchema,
 } from "./daemonWire.js";
