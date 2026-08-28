@@ -109,8 +109,10 @@ that pin.
 
 ## Phase 0 - Lexicon runs on bun ✅
 
-Shipped as 90ad711 and c94a5ee. Open: the two-host smoke and the GitHub Release, which wait for
-the single 3.0 release at the end of Phase 1.
+Shipped as 90ad711 and c94a5ee, released with Phase 1 as 3.0.0 through 3.0.2. The two-host
+smoke passed on 3.0.2 (Claude Code through its update path, Copilot through its install path,
+both spawning and sharing one daemon under bun); the transcripts are on the GitHub Release
+v3.0.2.
 
 Audited (lap 3, six angles on Sol with Opus fallback: entry points and spawn, the store, `bun
 test`, diagnostics, build and release and the smoke, principles). The plan as rethought.
@@ -235,8 +237,9 @@ Phase 1.
 ## Phase 1 - Lexicon 3.0: what a ref needs from the index ✅
 
 Shipped as 5cebf74 (the index contract, containment, the runtime owner, the providers) and
-60e3751 (the architecture pass). The 3.0.0 release build follows the docs commit; open after it:
-the two-host smoke and the GitHub Release, shared with Phase 0.
+60e3751 (the architecture pass), released as 3.0.0 (fb05661), then 3.0.1 (f6f10c1) and 3.0.2
+(336ed77) for the two defects the two-host smoke found. The smoke passed on 3.0.2 on both hosts;
+its transcripts are on the GitHub Release v3.0.2, shared with Phase 0.
 
 Audited twice (lap 1, eight angles; lap 4, six angles after the Phase 2 additions, on Opus once
 Sol's window ran out). The plan as rethought.
