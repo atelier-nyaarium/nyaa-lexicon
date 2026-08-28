@@ -1,8 +1,5 @@
-// Getting a daemon, rather than only noticing there isn't one.
-//
-// `decideFromLock` has always returned `spawn` with a reason, and nothing acted on it: every client
-// checked for `connect` and silently fell back to indexing in its own process. A named decision
-// nothing carries out reads as handled and is not.
+// Getting a daemon, rather than only noticing there isn't one: every `decideFromLock` verdict is
+// carried out here, so no client falls back to indexing in its own process.
 //
 // The daemon is shared and outlives whoever spawned it: its lock claim resolves parallel starts
 // (the loser exits before touching the store), and callers ensure one per request, so a client

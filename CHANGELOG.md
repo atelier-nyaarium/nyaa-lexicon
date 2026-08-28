@@ -24,7 +24,17 @@ the parameter descriptor. `awaitIndexed` answers a content refusal with the same
 of throwing; `indexFile` carries a closed `cause`. `DaemonError` carries a closed `cause`
 (`unknownMethod`, `refusedModule`, `spawnFailed`, `connectionLost`, `daemon`). `connect` takes
 `onWaiting`, fired during the spawn wait too, and a connection lost during the handshake is
-reopened once like any other.
+reopened once like any other. A read is asked again over the reopened connection even when its
+request had been sent; a write that had been sent is not repeated, since the daemon may have
+applied it, and is reported as `connectionLost` with the outcome unknown. The method table says
+which is which (`mutates`), and `ReadMethod` names the read set for a face that must never write.
+`indexFile` also answers `fault` when the indexer itself failed on a file, distinct from a
+provider outage or a parse failure, and a warmup pass that met either refuses every request until
+the daemon is restarted rather than reporting the workspace covered. C++ overloads are told apart
+by their canonical signature, parameter types with names and defaults dropped and integral
+spellings folded plus the cv and ref qualifiers, so `f() const` and `f()` stay two symbols and
+`f(unsigned)` and `f(unsigned int)` are one; same-named overloads are numbered by where they are
+reported, which for a merged definition is its body.
 
 Workspace containment: every path-valued request field is normalized to the index's own key and
 refused before any read or write when it is absolute, escapes the workspace or carries a control

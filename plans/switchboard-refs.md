@@ -232,7 +232,11 @@ Phase 1.
   pins. Switchboard's release ritual is unchanged. Copilot resolves `${CLAUDE_PLUGIN_ROOT}` in a
   plugin's `.mcp.json` (verified: it launched Switchboard's bundle from its own copy).
 
-## Phase 1 - Lexicon 3.0: what a ref needs from the index
+## Phase 1 - Lexicon 3.0: what a ref needs from the index ✅
+
+Shipped as 5cebf74 (the index contract, containment, the runtime owner, the providers) and
+60e3751 (the architecture pass). The 3.0.0 release build follows the docs commit; open after it:
+the two-host smoke and the GitHub Release, shared with Phase 0.
 
 Audited twice (lap 1, eight angles; lap 4, six angles after the Phase 2 additions, on Opus once
 Sol's window ran out). The plan as rethought.
@@ -771,10 +775,42 @@ Collected after Phase 0. Not fixed here; candidates for a later phase or a plan 
 - **Executable selection is written three times until Phase 1's owner lands**:
   `client/src/discover.ts` (`daemonCommand`), `core/src/providers.ts` (`specFor`) and
   `scripts/build.ts` (the smoke) each say `process.execPath`, and the tests say it a dozen more
-  times. Phase 1's `bunExecutable(host, probe)` and its residue are the answer; recorded so the
-  next reader does not take the repetition for a pattern.
+  times. Landed in Phase 1: `client/src/runtime.ts` owns it and the exec-path residue holds it;
+  kept so the next reader knows the repetition was never a pattern.
 - **Older plans under `plans/` still describe the node era** (`plans/refactor-production.md`,
   `plans/client-package.md`, `plans/diagnostics.md`: `node dist/...`, node floors, vitest). They are
   history, not instructions, and nothing says so at the top of the directory; a reader following
   one will run a command that refuses by name. Either a one-line README in `plans/` or a status
   line at the top of each retired plan.
+
+Collected after Phase 1.
+
+- **A behavior test that never failed pins whatever the code does.** Twice this phase an agent's
+  new test encoded the defect it was written for: `client/src/__tests__/channel.test.ts` titled a
+  case "lost before a request is written" over a fake that could not make that happen, and
+  `providers/cpp/src/__tests__/identity.test.ts` asserted two `f` references where the second
+  was the definition's own name leaking as a call. Residue tests already have the rule (plant the
+  violation, watch it fail); behavior tests do not. The rule belongs in `CLAUDE.md` beside the
+  residue one: a test added with a fix is run against the code before the fix, or against a
+  deliberately broken build, once.
+- **Codex sandboxes cannot bind `127.0.0.1`.** Every Luna run this phase reported the socket
+  suites and both conformance CLIs as failed or `STALL`ed, and each spent a paragraph deciding
+  whether that was a defect. It never was. A prompt that says so up front, and a conformance CLI
+  that names the bind failure instead of a stall, would end it; the CLI change is the honest one.
+- **The C++ parser is one 2200-line file with two clocks.** Identity is decided at parse time
+  (`parseFunction`'s merge lookup, `findQualifiedParent`) and again at settle time
+  (`settleQualifiers`, `assignDisambiguators`), and a rule that must hold across both, such as the
+  merge of a definition with a prototype declared later, cannot be written in either. The draft
+  index the architecture pass proposed (one identity index keyed by the settled descriptor path,
+  consulted by merge, parent lookup and numbering) is the shape; deferred because it changes no
+  output for valid source today.
+- **`tsc --build` once served a stale declaration.** After adding `ReadMethod` to
+  `protocol/src/index.ts`, the LSP project compiled against a `protocol/.tsbuild/index.d.ts` that
+  predated the edit and reported the export missing; a second `tsc --build` regenerated it and
+  passed. Not understood, recorded: a red gate right after an export was added is worth one
+  re-run before it is believed.
+- **`IndexOutcome.action` is chosen at the site, not derived from the mutation.** The cause-keyed
+  constructor in `core/src/indexer.ts` needed a `forgot` flag because `unclaimed` is `forgotten`
+  when rows were removed and `skipped` when there were none; an outcome whose action came from
+  the store call that removed the rows could not disagree with it. The shape wanted: the store's
+  `forgetFile` answering whether it removed anything, and the outcome built from that answer.
