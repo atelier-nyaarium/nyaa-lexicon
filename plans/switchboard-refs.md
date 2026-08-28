@@ -898,3 +898,37 @@ Collected after Phase 1.
   when rows were removed and `skipped` when there were none; an outcome whose action came from
   the store call that removed the rows could not disagree with it. The shape wanted: the store's
   `forgetFile` answering whether it removed anything, and the outcome built from that answer.
+
+Collected after Phase 2.
+
+- **Four teaching texts by hand.** `CLAUDE.md`, `skills/crosstalk/SKILL.md`,
+  `src/mcp/capabilities.ts` and the console manifest's `agent_instructions` must say one thing,
+  and two audits in one lap found them saying it differently (the "absence" wording, then an
+  incomplete cause list). `ref-teaching.test.ts` pulls the examples back out of the prose with a
+  regex that once stopped at `]`. The shape wanted: one source (the rule and the example list as
+  data) rendered into the four places, with the test reading the data, not the prose.
+- **A token count as a bundling proof.** The post-build zod gate counted a marker string to
+  count copies of zod and refused a correct bundle, because one copy carries the marker twice. A
+  proxy chosen from one observation is the same mistake as a residue that matches a spelling; the
+  honest proof of "one copy" is the bundler's own module list (a metafile), not a grep over its
+  output.
+- **The reply budget is a constant the server cannot learn.** `REPLY_PATIENCE_MS` is 45 s because
+  the MCP SDK's default request timeout is 60 s and the server is never told what the caller
+  applied; a caller with a shorter timeout gets a cancelled call and a reply that still posts.
+  Nothing lexicon or switchboard owns can fix it; recorded so the number is not mistaken for a
+  measurement.
+- **Three module-level setters as test seams.** `attachRefs.ts` exposes `setReferencesEnabled`,
+  `setLexiconRoot` and `setSessionFactory`, and every test's `beforeEach`/`afterEach` resets all
+  three plus `resetWorkspaceRoot`. The state has one owner in spirit and four in code. An owning
+  value (`ReferenceRuntime`: enabled, workspace, lexicon root, session cache, deadline) built once
+  at startup and once per test would replace the setters and the resets; deferred because it is a
+  test-shape change under a release, not a defect.
+- **Codex sandboxes, again.** No loopback bind and no bun on PATH, so every Luna run reported the
+  daemon-backed suites as failed, and the client's `noBunRuntime` outcome surfaced as
+  `DaemonError: missing`, one word, which two agents read as a defect. Prompts now say up front
+  which failures are environmental. The one-word message is lexicon's (`ensure.ts` passes the
+  runtime verdict's detail straight through) and is worth a patch that says "bun is not on PATH".
+- **A whole-file ref counts the trailing newline.** `lineCount` is `split("\n").length`, so a
+  file ending in a newline reports one line more than an editor shows, and the e2e assertion for
+  the whole-file case had to learn that. Consistent with the snapshot the console renders (the
+  content is the same string), so it stays; recorded because it will surprise the next reader.
