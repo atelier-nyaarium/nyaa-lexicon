@@ -193,7 +193,7 @@ export function renderDescribe(result: DescribeResult): string {
 
 /** Uses of a symbol, grouped by file so the shape of the usage is visible at a glance. */
 export function renderReferences(result: ReferencesResult): string {
-	if (result.total === 0) return "# References\n\nNo references found.";
+	if (result.total === 0) return `# References\n\nNo references found.`;
 
 	const byModule = new Map<string, string[]>();
 	for (const reference of result.references) {
@@ -341,15 +341,17 @@ function pagingNotes(count: Count, shown: number, noun: string, plural = `${noun
 	const notes: string[] = [];
 	if (count.kind === "exact") {
 		const more = count.count - shown;
-		if (more > 0) notes.push(`${more} more ${more === 1 ? noun : plural} not shown. ${raise}`);
+		if (more > 0) notes.push(`\n\n> ${more} more ${more === 1 ? noun : plural} not shown. ${raise}`);
 	} else {
 		if (count.reason !== "scanCapped")
-			notes.push(`More ${plural} exist than the ${shown} shown, uncounted. ${raise}`);
+			notes.push(`\n\n> More ${plural} exist than the ${shown} shown, uncounted. ${raise}`);
 		if (count.reason !== "pageCapped") {
-			notes.push("The scan stopped before the end of the index, so matches beyond it were never looked at.");
+			notes.push(
+				`\n\n> The scan stopped before the end of the index, so matches beyond it were never looked at.`,
+			);
 		}
 	}
-	return notes.map((note) => `\n\n> ${note}`).join("");
+	return notes.join("");
 }
 
 export function renderComments(result: CommentsResult): string {
@@ -492,7 +494,7 @@ export function renderFileHistory(result: {
 
 	const ago = (at: number) => {
 		const days = Math.round((Date.now() / 1000 - at) / 86_400);
-		if (days === 0) return "today";
+		if (days === 0) return `today`;
 		return `${days} day${days === 1 ? "" : "s"} ago`;
 	};
 
@@ -642,7 +644,7 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 /** Every answer leads with its scope. */
 function gapScope(gaps: KnowledgeGaps, root: string | undefined): string {
 	if (gaps.scope !== undefined) return `In \`${gaps.scope.module}\``;
-	if (root === undefined) return "Workspace-wide";
+	if (root === undefined) return `Workspace-wide`;
 	return `Under \`${root}\`, leaves first`;
 }
 
@@ -1008,7 +1010,7 @@ export function renderMostReferenced(
 		declaration: SymbolSummary | null;
 	}>,
 ): string {
-	if (rows.length === 0) return "# Most referenced\n\nNothing is referenced yet.";
+	if (rows.length === 0) return `# Most referenced\n\nNothing is referenced yet.`;
 
 	const lines = ["# Most referenced", "", "| Symbol | References |", "| --- | ---: |"];
 	for (const row of rows) {
@@ -1174,7 +1176,7 @@ export function renderRefactorStart(outcome: RefactorStartResult): string {
 
 export function renderRefactorStatus(status: TransactionStatus): string {
 	if (!status.open) {
-		return "# Refactor status\n\nNo transaction is open. Call `refactor_start` to begin one.";
+		return `# Refactor status\n\nNo transaction is open. Call \`refactor_start\` to begin one.`;
 	}
 
 	const lines = [`# Refactor \`${status.id}\``, ""];

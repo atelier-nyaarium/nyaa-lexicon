@@ -224,9 +224,9 @@ function describeSize(bytes: number): string {
 }
 
 function describeElapsed(ms: number): string {
-	if (ms < 0) return "in the future";
+	if (ms < 0) return `in the future`;
 	const seconds = Math.floor(ms / 1000);
-	if (seconds < 5) return "just now";
+	if (seconds < 5) return `just now`;
 	if (seconds < 60) return `${seconds}s ago`;
 	const minutes = Math.floor(seconds / 60);
 	if (minutes < 60) return `${minutes}m ${seconds % 60}s ago`;
@@ -237,12 +237,12 @@ function describeElapsed(ms: number): string {
 
 /** Against the heap limit, or honest about there being nothing to compare. */
 function againstHost(bytes: number, total: number): string {
-	if (!Number.isFinite(bytes) || bytes < 0) return "size unknown";
-	return total > 0 ? `${Math.round((100 * bytes) / total)}% of host memory` : "host memory unknown";
+	if (!Number.isFinite(bytes) || bytes < 0) return `size unknown`;
+	return total > 0 ? `${Math.round((100 * bytes) / total)}% of host memory` : `host memory unknown`;
 }
 
 function describeContext(context: SampleContext | null): string {
-	if (context === null) return "before any sample";
+	if (context === null) return `before any sample`;
 	const { index, inFlight, connections } = context;
 	const scan =
 		index.state === "ready" || index.state === "unstarted"
@@ -256,17 +256,17 @@ function describeDeath(code: number | null, signal: string | null): string {
 }
 
 function describeAge(modifiedAt: number | null, now: number): string {
-	if (modifiedAt === null) return "never written";
+	if (modifiedAt === null) return `never written`;
 	const days = Math.floor((now - modifiedAt) / 86_400_000);
-	if (days < 1) return "today";
-	if (days === 1) return "yesterday";
+	if (days < 1) return `today`;
+	if (days === 1) return `yesterday`;
 	return `${days} days ago`;
 }
 
 /** An index that never recorded its workspace reads as UNVERIFIED, never orphaned: folding the two
  * once offered nine live projects for deletion. */
 export function renderStores(stores: ProjectStore[], now: number): string {
-	if (stores.length === 0) return "# Project indexes\n\nThis machine holds no indexes.";
+	if (stores.length === 0) return `# Project indexes\n\nThis machine holds no indexes.`;
 
 	const lines = stores.map((store) => {
 		const where = store.workspaceRoot ?? "(this index predates recording its workspace)";
