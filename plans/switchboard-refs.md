@@ -770,6 +770,54 @@ normal path).
   `/mcp` connected, the bundle running under bun from each host's own copy), then a live reply
   with refs to the owner's console from each host.
 
+### As shipped
+
+Reconciled after the red-team and architecture passes of lap 3. Where this differs from the text
+above, this is what the code does.
+
+- Wiring: the post-build zod count is not asserted. One zod copy in the bundle carries the
+  `$ZodAny` marker twice, so a count gate on the marker refused a correct bundle; the
+  `lexicon/*/node_modules` refusal and the root pin assertion stay and are the guard. `main-mcp.ts`
+  runs the bun-floor verdict first and only then imports the server, so the verdict is printed
+  before the SDK is loaded on a runtime that cannot load it. `.mcp.json`, the submodule pin at
+  `Build 3.0.2`, `scripts/link-lexicon.mjs` (run as `bun ... || node ...`), the porcelain v2
+  submodule records, `biome.json`, `vitest.config.ts` and CI are as written. "Dependency-free"
+  above means the submodule INSTALLS nothing under the superproject; `lexicon/protocol/package.json`
+  still declares its two pins, and the root's copies are the ones a build resolves.
+- Paths: `loadRefFile(absolute, written)` takes the classified path; the residue forbids
+  `os.homedir(`, `realpath` and `path.resolve(` outside `refWorkspace.ts`, `function lineOf(` and
+  `function columnOf(` outside `refCoordinates.ts` (the definitions, not their uses: a use is what
+  the owners export), and `referenceRoot`, `web-tree-sitter` and `grammarSources` anywhere under
+  `src/`. Two spellings of one file (an alias, `./`) ship one snapshot under the first spelling
+  seen, keyed by `identityOf`.
+- The pipeline: refusals are values. `Refusal` in `refNotices.ts` is a closed union (`file`,
+  `matcher`, `outsideChain`, `vanished`, `unclaimed`, `parseFailed`, `disagree`, `ambiguous`,
+  `noMatch`) and `renderRefusal` is the one place their sentences are written, beside the notices
+  and the wire reason; `refResolve.ts` builds the value and never a sentence. The hash loop brings
+  the index up once and re-reads a moved file once, then refuses; a `none` answer for `noMatch`,
+  `parseFailed` and `unread` speaks for the file's bytes and joins the loop, the other reasons do
+  not. Every daemon ask runs inside `withinBudget`, a race against the reply's deadline
+  (`REPLY_PATIENCE_MS`, 45 s from `appendRefArtifacts`), and a spent budget degrades as `warming`;
+  `onWaiting` is not wired, since `DaemonError.waitingFor` already names what the daemon waited on
+  and the notice prints it. An install whose `dist/daemon.js` is not a file answers `NotInstalled`
+  (the client's `unbuilt` outcome maps there), not `DaemonError`.
+- Teaching: the four texts say lexicon being UNABLE TO ANSWER degrades (not installed,
+  incompatible, still warming, a daemon that failed, or an index that refuses the workspace or the
+  file), which is the `DegradeCause` enum in words; "absence" was narrower than the code. The
+  absolute and home examples are illustrative and parse-only, as planned. A chain on an outside
+  path is refused naming the workspace root and the `#text` form.
+- Console: the wire keeps `ambiguous` and `matchCount` on `RefKeyMeta`, since an installed console
+  reads them; the producer no longer emits them. `noticeFor` and the `link-fuzzy` rule are
+  unchanged.
+- Tests: the daemon-backed suite runs over a temp copy of `tests/fixtures/ref-project` with its own
+  `git init` and `XDG_STATE_HOME`, so the fixture directory is never written and no state leaks
+  into the developer's own; the daemon is stopped in `afterAll` and each test disposes its own
+  blob wire in `afterEach`. `ref-resolve.test.ts` pins the budget (a deadline already spent, and
+  one that runs out mid-ask) and the alias spelling over a fake session. The session seams
+  (`setReferencesEnabled`, `setLexiconRoot`, `setSessionFactory`) stay three module-level setters;
+  an owning `ReferenceRuntime` value is recorded under Painpoints rather than built under the
+  release.
+
 ## Painpoints
 
 Collected after Phase 0. Not fixed here; candidates for a later phase or a plan of their own.
