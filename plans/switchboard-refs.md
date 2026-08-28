@@ -107,7 +107,10 @@ refuses teaches agents to avoid it, and a major that retires stored facts should
 Two releases, in order: lexicon 3.0 first (Phases 0 and 1, one major), then Switchboard against
 that pin.
 
-## Phase 0 - Lexicon runs on bun
+## Phase 0 - Lexicon runs on bun ✅
+
+Shipped as 90ad711 and c94a5ee. Open: the two-host smoke and the GitHub Release, which wait for
+the single 3.0 release at the end of Phase 1.
 
 Audited (lap 3, six angles on Sol with Opus fallback: entry points and spawn, the store, `bun
 test`, diagnostics, build and release and the smoke, principles). The plan as rethought.
@@ -685,3 +688,38 @@ normal path).
   bumped and pushed, then the same two-host smoke as Phase 0 (Claude Code and Copilot in tmux,
   `/mcp` connected, the bundle running under bun from each host's own copy), then a live reply
   with refs to the owner's console from each host.
+
+## Painpoints
+
+Collected after Phase 0. Not fixed here; candidates for a later phase or a plan of their own.
+
+- **`bun test` fails a test on a throw inside an in-process server callback while the test awaits
+  `expect(promise).rejects`.** `core/src/__tests__/daemon.test.ts` ("reports a handler's failure")
+  hit it: the handler's own `Error` was attributed to the running test and the sockets were torn
+  down before the reply frame landed, so the client saw "the daemon connection closed". The same
+  scenario passes as a script and as a test that catches by hand, which is the form the test now
+  takes. Every future test that runs a daemon in-process and asserts a rejection meets this; the
+  honest fix is a daemon-in-subprocess harness for those tests, not another hand-caught promise.
+- **Memory limits have no provenance in the value.** `core/src/diagnostics.ts` keys the high-water
+  mark on the host's `memTotal` from procfs because the runtime states no heap limit
+  (`v8.getHeapStatistics().heap_size_limit` on bun is a figure the heap grows straight past). A
+  cgroup limit below the host's is invisible, and the collection cannot say which limit the mark
+  was judged against. The shape wanted: `memoryLimit: { kind: "host" | "cgroup" | "none"; bytes }`
+  read by one owner (`client/src/procfs.ts` beside `hostMemory`), stored in `HostSchema`, consumed
+  by `watchHighWater` and rendered by `project_diagnostics`.
+- **The clock seam covers seven core modules and no transport.** `core/src/__tests__/clock-residue.test.ts`
+  routes `service.ts` and six others through `core/src/clock.ts`; `client/src/transport.ts`,
+  `core/src/socketTransport.ts`, `core/src/supervisor.ts` and `core/src/daemonCli.ts` still hold
+  raw timers and wall-clock reads, so a deterministic test of a connect deadline, a heartbeat miss,
+  a respawn backoff or the linger can only be written with a real sleep. One clock boundary shared
+  by client and core, and one residue over every production module that keeps time, is the shape.
+- **Executable selection is written three times until Phase 1's owner lands**:
+  `client/src/discover.ts` (`daemonCommand`), `core/src/providers.ts` (`specFor`) and
+  `scripts/build.ts` (the smoke) each say `process.execPath`, and the tests say it a dozen more
+  times. Phase 1's `bunExecutable(host, probe)` and its residue are the answer; recorded so the
+  next reader does not take the repetition for a pattern.
+- **Older plans under `plans/` still describe the node era** (`plans/refactor-production.md`,
+  `plans/client-package.md`, `plans/diagnostics.md`: `node dist/...`, node floors, vitest). They are
+  history, not instructions, and nothing says so at the top of the directory; a reader following
+  one will run a command that refuses by name. Either a one-line README in `plans/` or a status
+  line at the top of each retired plan.

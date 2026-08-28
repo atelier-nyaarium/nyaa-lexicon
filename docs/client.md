@@ -170,6 +170,15 @@ the protocol's, 0-based, unconverted. Ambiguity is a list, never an error.
 `resolveChain` asks `moduleStatus` first, the read-only question of whether one file exists, is
 claimed and is indexed, without indexing it, and its first three `none` reasons are that answer.
 
+## The runtime
+
+The package runs under node or bun; the daemon it spawns runs under bun 1.4.0 or newer only. The
+owner of that floor is exported for a consumer that wants the same judgement: `BUN_FLOOR`,
+`runtimeVerdict(versions?)` answering `bun`, `belowFloor` with the floor, or `notBun` naming what
+it is, and `refuseRuntime(what)`, the sentence lexicon's own entry points print before exiting,
+or null when the runtime is accepted. `bundleStamp(root)` and `bundleFiles(root)` are the bundle
+identity the lock carries, described under Compatibility in `docs/daemon-protocol.md`.
+
 ## Depending on it from a git submodule
 
 The client and the protocol package are imported as source through the consumer's own bun

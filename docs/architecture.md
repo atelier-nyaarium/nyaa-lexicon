@@ -46,6 +46,25 @@ index cannot live in the stdio process. That process is a thin client to a daemo
   project. `docs/daemon-protocol.md` is the wire as a client sees it, `docs/client.md` the package
   a consumer holds.
 
+## The runtime
+
+Bun, and only bun, 1.4.0 or newer; node is not a runtime lexicon runs on. `client/src/runtime.ts`
+is the one owner of that fact: `BUN_FLOOR`, measured against the whole gate and the build smoke
+on the floor and on the newest bun (the CI matrix pins both), `runtimeVerdict` judging the
+process from `process.versions` (a prerelease of the floor is below it; a version that does not
+parse is not bun's), and `refuseRuntime`, the sentence an entry point prints before exiting.
+`adapters/mcp/src/main.ts` and `adapters/lsp/src/main.ts` are bootstraps: judge, then import
+`serve.ts`; the daemon, indexer and grader CLIs judge at the top of `main`. The build refuses to
+bundle an entry point whose source lacks the call (`checkEntryGuards` in `scripts/build.ts`), the
+conformance CLI excepted since a provider team runs it on their own toolchain.
+
+A bundle's identity is its bytes. `bundleFiles` in the client is the one inventory of a root's
+bundles (every regular `.js` under `dist/`); `bundleStamp` digests their contents into the
+daemon's lock, so two copies of one release agree whatever their mtimes (two plugin hosts install
+the same release side by side) and any rebuild, a provider's alone included, retires the daemon
+serving the old copy. `core/src/drift.ts` asks the same inventory whether the newest bundle has
+settled before the daemon hands over to a rebuild under it.
+
 ## Storage
 
 SQLite in WAL mode: many readers, the daemon as sole writer. Reverse lookup is the reason. Nothing
