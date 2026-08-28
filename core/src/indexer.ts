@@ -3,17 +3,25 @@
 // Two writers race and the loser leaves a plausible-looking index, so a residue test holds this as
 // the only one. Reaches wide on purpose: indexing IS reading files and asking providers.
 
-import type { ImportResolution, IndexDepth, IndexOutcome, IndexStatus, ModuleStatus } from "@nyaa-lexicon/protocol";
+import type {
+	ImportResolution,
+	IndexDepth,
+	IndexOutcome,
+	IndexStatus,
+	ModuleDeclarations,
+	ModuleStatus,
+} from "@nyaa-lexicon/protocol";
+import { hashContent } from "@nyaa-lexicon/protocol";
 import { attachComments } from "./commentAttach.js";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
+import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarations.js";
 import type { ResultCache } from "./resultCache.js";
 import { type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
 import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
-import { hashContent } from "./watcher.js";
 
 export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
 
@@ -96,17 +104,16 @@ export class WorkspaceIndexer {
 	 * so facts are never filed under the hash of a different version.
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
-		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
+		const claim = this.claimOf(module);
+		if (!claim.claimed) return { module, action: "skipped", cause: "unclaimed", reason: claim.unclaimedReason };
+		// The claim above came from this route; the guard only narrows the type.
 		const route = this.supervisor.route(module);
-		if (!route.owned) {
-			const reason = route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed";
-			return { module, action: "skipped", reason };
-		}
+		if (!route.owned) return { module, action: "skipped", cause: "unclaimed", reason: "unclaimed" };
 
 		const read = this.readSource(module);
 		if (read.kind === "missing") {
 			this.forgetFile(module);
-			return { module, action: "forgotten", reason: "file is gone" };
+			return { module, action: "forgotten", cause: "missing", reason: "file is gone" };
 		}
 		if (read.kind !== "text") {
 			// Whatever it held before is not this file; the failure says why it holds nothing now.
@@ -114,7 +121,7 @@ export class WorkspaceIndexer {
 			const failure = unreadableReason(read);
 			this.store.recordFailure(module, failure);
 			this.upgradeFailed.add(module);
-			return { module, action: "skipped", reason: "parse failed", failure };
+			return { module, action: "skipped", cause: read.kind, reason: "parse failed", failure };
 		}
 		const text = read.text;
 		// Read, so it exists: evidence for a shared claim that no scan has seen.
@@ -134,22 +141,31 @@ export class WorkspaceIndexer {
 				if (held !== "outline") this.store.clearFailure(module);
 				// A row from before content was recorded learns it without a parse.
 				this.store.recordContent(module, route.content);
-				return { module, action: "skipped", reason: "already indexed at this depth" };
+				return { module, action: "skipped", cause: "current", reason: "already indexed at this depth" };
 			}
 		}
 
-		const facts = await this.supervisor.ask(module, "parseFile", {
-			module,
-			contentHash: readHash,
-			text,
-			...(depth === "full" ? {} : { depth }),
-		});
+		let facts: Awaited<ReturnType<ProviderSupervisor["ask"]>>;
+		try {
+			facts = await this.supervisor.ask(module, "parseFile", {
+				module,
+				contentHash: readHash,
+				text,
+				...(depth === "full" ? {} : { depth }),
+			});
+		} catch (error) {
+			// A provider dying mid-parse is an outcome with its cause; anything else is still a fault.
+			if (error instanceof ProviderUnavailableError) return this.failedOutcome(module, error);
+			throw error;
+		}
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 		if (errors.length > 0) {
-			// Recorded here so every caller's failure reaches coverage, not only the scan loops.
+			// An answer, not a throw: the file is the reason, and a caller reindexing a restored file
+			// must not fail on it. Recorded here so every caller's failure reaches coverage.
 			const failure = errors.map((diagnostic) => diagnostic.message).join("; ");
 			this.store.recordFailure(module, failure);
-			throw new Error(failure);
+			this.upgradeFailed.add(module);
+			return { module, action: "skipped", cause: "parseFailed", reason: "parse failed", failure };
 		}
 		// Below error, kept with the facts.
 		const notes: FileNote[] = facts.diagnostics.flatMap((diagnostic) =>
@@ -256,6 +272,17 @@ export class WorkspaceIndexer {
 			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
 			outcomes.push(...this.prune(seen));
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
+			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown");
+			if (outages.length > 0) {
+				// Files an outage left unread would hide behind every answer if this pass read as covered.
+				const first = outages[0] as IndexOutcome;
+				this.writeScanSummary(false);
+				this.coverage = {
+					state: "failed",
+					reason: `${outages.length} file(s) unread because a provider was unavailable: ${first.failure ?? first.reason}`,
+				};
+				return outcomes;
+			}
 			// A full pass covers at least what an outline pass would.
 			this.writeScanSummary(true);
 			this.coverage = { state: "covered" };
@@ -352,7 +379,9 @@ export class WorkspaceIndexer {
 		depth = this.depths.get(module) ?? this.rootDepth(module),
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
-		if (this.currentScope().denies(module)) return { module, action: "skipped", reason: "denied by scope" };
+		if (this.currentScope().denies(module)) {
+			return { module, action: "skipped", cause: "unclaimed", reason: "denied by scope" };
+		}
 		return this.indexFile(module, depth, skipIfCurrent);
 	}
 
@@ -364,11 +393,22 @@ export class WorkspaceIndexer {
 		this.upgradeFailed.add(module);
 		// Provider outages do not blame files.
 		if (error instanceof ProviderUnavailableError) {
-			return { module, action: "skipped", reason: "provider unavailable", failure };
+			return { module, action: "skipped", cause: "providerDown", reason: "provider unavailable", failure };
 		}
 		// Persist the failure for coverage reporting.
 		this.store.recordFailure(module, failure);
-		return { module, action: "skipped", reason: "parse failed", failure };
+		return { module, action: "skipped", cause: "parseFailed", reason: "parse failed", failure };
+	}
+
+	/** Whether anything will index a module: the scope's word, then the routing's. */
+	claimOf(module: string): ModuleClaim {
+		if (this.currentScope().denies(module)) return { claimed: false, unclaimedReason: "denied by scope" };
+		const route = this.supervisor.route(module);
+		if (route.owned) return { claimed: true, provider: route.providerId };
+		return {
+			claimed: false,
+			unclaimedReason: route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed",
+		};
 	}
 
 	/**
@@ -433,7 +473,7 @@ export class WorkspaceIndexer {
 		for (const module of this.store.indexedFiles()) {
 			if (reachable.has(module)) continue;
 			this.forgetFile(module);
-			outcomes.push({ module, action: "forgotten", reason: "no longer a root or reachable" });
+			outcomes.push({ module, action: "forgotten", cause: "unclaimed", reason: "no longer a root or reachable" });
 		}
 		// A failure row for a file that was never stored has no files row to sweep it away with.
 		for (const { module } of this.store.parseFailures()) {
@@ -512,26 +552,16 @@ export class WorkspaceIndexer {
 
 	/** What `indexFile` would find, decided in its order, without asking a provider or writing. */
 	moduleStatus(module: string): ModuleStatus {
-		const route = this.supervisor.route(module);
-		const unclaimedReason = this.currentScope().denies(module)
-			? "denied by scope"
-			: route.owned
-				? null
-				: route.reason === "contested"
-					? `claimed by ${route.providerIds.join(", ")}`
-					: "unclaimed";
-		const depth = this.store.depthOf(module);
-		const failure = this.store.parseFailureOf(module);
-		return {
-			module,
-			exists: this.readSource(module).kind !== "missing",
-			claimed: unclaimedReason === null,
-			...(route.owned && unclaimedReason === null ? { provider: route.providerId } : {}),
-			...(unclaimedReason === null ? {} : { unclaimedReason }),
-			indexed: depth !== null,
-			...(depth === null ? {} : { depth }),
-			...(failure === null ? {} : { failure: failure.reason }),
-		};
+		return statusOf(module, this.claimOf(module), this.readSource(module), this.store);
+	}
+
+	/** Status, both hashes and the rows from one read: `moduleDeclarations.ts` owns the snapshot. */
+	moduleDeclarations(module: string): ModuleDeclarations {
+		return moduleDeclarations(module, {
+			claimOf: (m) => this.claimOf(m),
+			readSource: this.readSource,
+			store: this.store,
+		});
 	}
 
 	/** Why a request must wait, or null. The one readiness decision; `indexStatus` is diagnostics. */
@@ -583,17 +613,28 @@ export class WorkspaceIndexer {
 			if (decision.action === "forget") {
 				pending.delete(decision.module);
 				this.forgetFile(decision.module);
-				outcomes.push({ module: decision.module, action: "forgotten" });
+				outcomes.push({
+					module: decision.module,
+					action: "forgotten",
+					cause: "missing",
+					reason: "file is gone",
+				});
 				continue;
 			}
 			if (decision.action === "ignore") {
 				pending.delete(decision.module);
-				outcomes.push({ module: decision.module, action: "skipped", reason: decision.reason });
+				const cause = decision.reason === "content is unchanged" ? "current" : "unclaimed";
+				outcomes.push({ module: decision.module, action: "skipped", cause, reason: decision.reason });
 				continue;
 			}
 			if (!roots.has(decision.module) && this.store.contentHashOf(decision.module) === null) {
 				pending.delete(decision.module);
-				outcomes.push({ module: decision.module, action: "skipped", reason: "outside roots and reachability" });
+				outcomes.push({
+					module: decision.module,
+					action: "skipped",
+					cause: "unclaimed",
+					reason: "outside roots and reachability",
+				});
 				continue;
 			}
 			attempted.add(decision.module);

@@ -32,6 +32,20 @@ export interface ConnectFramesOptions {
 	timeoutMs?: number;
 	/** How long a request waits on a starting daemon; zero asks once. */
 	patience?: number;
+	onWaiting?: WaitingCallback;
+}
+
+export type WaitingEvent = { waitingFor: string; retryInMs: number; elapsedMs: number };
+export type WaitingCallback = (event: WaitingEvent) => void | PromiseLike<void>;
+
+export function notifyWaiting(callback: WaitingCallback | undefined, event: WaitingEvent): void {
+	if (callback === undefined) return;
+	try {
+		const result = callback(event);
+		if (result !== undefined) Promise.resolve(result).catch(() => undefined);
+	} catch {
+		return;
+	}
 }
 
 /** Not ready yet, answered as retryable. Carries the daemon's own countdown, so a client never
@@ -47,7 +61,15 @@ export class DaemonStartingError extends Error {
 }
 
 /** The socket died with requests in flight. The caller's cue to reconnect, not to report failure. */
-export class ConnectionLostError extends Error {}
+export class ConnectionLostError extends Error {
+	constructor(
+		message: string,
+		readonly sent = false,
+	) {
+		super(message);
+		this.name = "ConnectionLostError";
+	}
+}
 
 ////////////////////////////////
 //  Constants
@@ -65,6 +87,13 @@ function behindUs(theirs: string): boolean {
 	const them = parseVersion(theirs);
 	const us = parseVersion(PROTOCOL_VERSION);
 	return them === null || us === null || them.major < us.major;
+}
+
+/** The daemon's refusals are worded once, so the cause is read from the words. */
+function daemonCause(message: string): DaemonError["cause"] {
+	if (message.startsWith("unknown method:")) return "unknownMethod";
+	if (/^\w+ refused: [\w.]+: module path must/.test(message)) return "refusedModule";
+	return "daemon";
 }
 
 ////////////////////////////////
@@ -93,8 +122,10 @@ export function lineSplitter(
 	};
 }
 
-export function writeFrame(socket: Socket, frame: ServerFrame | Record<string, unknown>): void {
-	if (!socket.destroyed) socket.write(`${JSON.stringify(frame)}\n`);
+export function writeFrame(socket: Socket, frame: ServerFrame | Record<string, unknown>): boolean {
+	if (socket.destroyed) return false;
+	socket.write(`${JSON.stringify(frame)}\n`);
+	return true;
 }
 
 ////////////////////////////////
@@ -104,6 +135,8 @@ export function writeFrame(socket: Socket, frame: ServerFrame | Record<string, u
 export function connectFrames(port: number, token: string, options: ConnectFramesOptions = {}): Promise<FrameClient> {
 	const timeoutMs = options.timeoutMs ?? CONNECT_TIMEOUT_MS;
 	const patience = options.patience ?? STARTING_CEILING_MS;
+	const startedAt = Date.now();
+	let notified: string | undefined;
 	return new Promise((resolveConnect, rejectConnect) => {
 		const socket = netConnect({ port, host: "127.0.0.1" });
 		socket.setNoDelay(true);
@@ -112,7 +145,10 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 		let welcomed = false;
 		let closed = false;
 		let nextId = 0;
-		const pending = new Map<number, { resolve: (frame: ResponseFrame) => void; reject: (error: Error) => void }>();
+		const pending = new Map<
+			number,
+			{ resolve: (frame: ResponseFrame) => void; reject: (error: Error) => void; sent: boolean }
+		>();
 
 		const connectDeadline = setTimeout(() => {
 			if (!welcomed) {
@@ -159,7 +195,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 			}
 			if (frame.kind === "reject") {
 				socket.destroy();
-				rejectConnect(new Error(`the daemon refused the connection: ${frame.reason}`));
+				rejectConnect(new DaemonError(`the daemon refused the connection: ${frame.reason}`, "daemon"));
 				return;
 			}
 			if (frame.kind === "ping") {
@@ -181,8 +217,8 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 		socket.on("close", () => {
 			closed = true;
 			clearTimeout(connectDeadline);
-			const lost = new ConnectionLostError("the daemon connection closed");
-			for (const waiter of pending.values()) waiter.reject(lost);
+			for (const waiter of pending.values())
+				waiter.reject(new ConnectionLostError("the daemon connection closed", waiter.sent));
 			pending.clear();
 			if (!welcomed) {
 				rejectConnect(
@@ -196,12 +232,13 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 		function sendRequest(method: string, params: unknown): Promise<ResponseFrame> {
 			return new Promise((resolve, reject) => {
 				if (closed) {
-					reject(new ConnectionLostError("the daemon connection is closed"));
+					reject(new ConnectionLostError("the daemon connection is closed", false));
 					return;
 				}
 				const id = nextId++;
-				pending.set(id, { resolve, reject });
-				writeFrame(socket, { kind: "request", id, method, params });
+				const waiter = { resolve, reject, sent: false };
+				pending.set(id, waiter);
+				waiter.sent = writeFrame(socket, { kind: "request", id, method, params });
 			});
 		}
 
@@ -216,15 +253,24 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 				for (;;) {
 					const frame = await sendRequest(method, params);
 					if (frame.ok) return frame.result;
-					if (!frame.starting) throw new Error(frame.error);
+					if (!frame.starting) throw new DaemonError(frame.error, daemonCause(frame.error));
 					const remaining = ceiling - Date.now();
+					const waitingFor = frame.waitingFor ?? "startup";
+					if (notified !== waitingFor) {
+						notified = waitingFor;
+						notifyWaiting(options.onWaiting, {
+							waitingFor,
+							retryInMs: frame.retryInMs ?? 0,
+							elapsedMs: Date.now() - startedAt,
+						});
+					}
 					if ((frame.retryInMs ?? 0) > 0 && remaining > 0) {
 						await new Promise((resolve) => setTimeout(resolve, Math.min(STARTING_RETRY_MS, remaining)));
 						continue;
 					}
-					const waitingFor = frame.waitingFor ?? "startup";
 					throw new DaemonError(
 						`${frame.error} (gave up waiting on ${waitingFor}; ask again later)`,
+						"daemon",
 						waitingFor,
 					);
 				}

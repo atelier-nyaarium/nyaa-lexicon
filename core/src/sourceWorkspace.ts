@@ -3,11 +3,10 @@
 // Kept apart from the index because a stale answer IS the two disagreeing. Decides what to write;
 // sourceWriter.ts decides how.
 
-import path from "node:path";
-import { coordinatesOf, type Range, type SymbolSource } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, hashContent, type Range, type SymbolSource } from "@nyaa-lexicon/protocol";
+import { insideWorkspace } from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
-import { hashContent } from "./watcher.js";
 
 export type { SymbolSource } from "@nyaa-lexicon/protocol";
 
@@ -94,7 +93,7 @@ export class SourceWorkspace {
 	 * has to make the replacement itself uninterruptible.
 	 */
 	writeModule(module: string, text: string): void {
-		writeSourceFile(path.join(this.workspaceRoot, module), text);
+		writeSourceFile(insideWorkspace(this.workspaceRoot, module), text);
 	}
 
 	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */

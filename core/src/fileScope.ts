@@ -14,6 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { type Dirent, existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { normalizeModulePath, workspaceFile } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -58,14 +59,9 @@ const MAX_INCLUDE_DEPTH = 12;
 /** Whether a workspace-relative module is outside the workspace or under a dependency directory. */
 export function isExternalModule(workspaceRoot: string, module: string): boolean {
 	const root = path.resolve(workspaceRoot);
-	const absolute = path.resolve(root, module);
-	const relative = path.relative(root, absolute);
-	return (
-		relative.startsWith(`..${path.sep}`) ||
-		relative === ".." ||
-		path.isAbsolute(relative) ||
-		relative.split(path.sep).includes("node_modules")
-	);
+	const file = workspaceFile(root, module);
+	if (file === null) return true;
+	return path.relative(root, file).split(path.sep).includes("node_modules");
 }
 
 ////////////////////////////////
@@ -151,7 +147,18 @@ export function gitFiles(workspaceRoot: string): Set<string> | null {
 			maxBuffer: 128 * 1024 * 1024,
 			encoding: "utf8",
 		});
-		return new Set(stdout.split("\0").filter((line) => line.length > 0));
+		// The id grammar's key, or out of scope: a name it cannot spell would index under one key and
+		// be asked about under another.
+		return new Set(
+			stdout.split("\0").flatMap((line) => {
+				if (line.length === 0) return [];
+				try {
+					return [normalizeModulePath(line)];
+				} catch {
+					return [];
+				}
+			}),
+		);
 	} catch {
 		return null;
 	}

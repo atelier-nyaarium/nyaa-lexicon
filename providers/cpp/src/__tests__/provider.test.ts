@@ -48,6 +48,26 @@ afterEach(() => {
 });
 
 describe("C++ provider contract", () => {
+	test("qualifies out-of-line definitions and merges their prototypes", () => {
+		const text = "namespace Physics { class World { public: void step(); }; }\nvoid Physics::World::step() {}\n";
+		const facts = parseCppFile("qualified.cpp", text);
+		const steps = facts.declarations.filter((declaration) => declaration.name === "step");
+
+		expect(steps).toHaveLength(1);
+		expect(steps[0]?.symbolId).toBe(
+			composeSymbolId({
+				language: "cpp",
+				module: "qualified.cpp",
+				descriptors: [
+					{ kind: "namespace", name: "Physics" },
+					{ kind: "type", name: "World" },
+					{ kind: "method", name: "step" },
+				],
+			}),
+		);
+		expect(steps[0]?.range.start.line).toBe(1);
+	});
+
 	test("declares its supported extensions, roles, and tiers", () => {
 		const provider = new CppProvider();
 		const info = provider.initialize(process.cwd());

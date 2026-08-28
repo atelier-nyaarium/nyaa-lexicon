@@ -112,7 +112,11 @@ describe("getting a daemon", () => {
 		});
 
 		expect(started).toBe(0);
-		expect(result.connected === false && result.reason).toMatch(/no built daemon/);
+		expect(result).toMatchObject({
+			connected: false,
+			reason: "unbuilt",
+			detail: expect.stringContaining("no built daemon"),
+		});
 	});
 
 	it("gives up with a reason rather than waiting forever", async () => {
@@ -123,7 +127,7 @@ describe("getting a daemon", () => {
 		});
 
 		expect(result).toMatchObject({ connected: false });
-		expect((result as { reason: string }).reason).toContain("did not publish a lock");
+		expect((result as { detail: string }).detail).toContain("did not publish a lock");
 	});
 
 	// Issue #7: a crashing daemon read as "did not publish a lock within 10000ms", every time,
@@ -140,7 +144,7 @@ describe("getting a daemon", () => {
 		});
 
 		expect(result).toMatchObject({ connected: false });
-		expect((result as { reason: string }).reason).toContain("exited with code 3");
+		expect((result as { detail: string }).detail).toContain("exited with code 3");
 		// Reported on the first poll, not after the full timeout's worth of looking.
 		expect(looks).toBeLessThan(4);
 	});
@@ -192,7 +196,7 @@ describe("getting a daemon", () => {
 
 		expect(started).toBe(0);
 		expect(stopped).toBe(0);
-		expect(result).toEqual({ connected: false, reason: "the daemon serves /other" });
+		expect(result).toEqual({ connected: false, reason: "otherWorkspace", detail: "the daemon serves /other" });
 	});
 });
 
@@ -321,7 +325,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 
 		expect(stopped).toBe(0);
 		expect(result).toMatchObject({ connected: false });
-		expect(result.connected === false && result.reason).toMatch(/refactor transaction is open/);
+		expect(result.connected === false && result.detail).toMatch(/refactor transaction is open/);
 	});
 
 	// An unclear answer is the one case we can reason least about, so it must not read as consent.
@@ -340,7 +344,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		});
 
 		expect(stopped).toBe(0);
-		expect(result.connected === false && result.reason).toMatch(/would not say/);
+		expect(result.connected === false && result.detail).toMatch(/would not say/);
 	});
 
 	it("leaves alone a daemon whose answer has no open flag at all", async () => {
@@ -356,7 +360,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		});
 
 		expect(stopped).toBe(0);
-		expect(result.connected === false && result.reason).toMatch(/did not answer/);
+		expect(result.connected === false && result.detail).toMatch(/did not answer/);
 	});
 
 	// A signal sent on the old number lands on whoever wears it now, so a holder that stopped being
@@ -393,7 +397,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		});
 
 		expect(started).toBe(0);
-		expect(result.connected === false && result.reason).toMatch(/still holds the lock/);
+		expect(result.connected === false && result.detail).toMatch(/still holds the lock/);
 	});
 
 	it("connects instead when someone else replaced it first", async () => {

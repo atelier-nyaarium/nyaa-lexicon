@@ -13,6 +13,7 @@ export {
 	DAEMON_METHODS,
 	type DaemonMethod,
 	isDaemonMethod,
+	methodMutates,
 	type RequestOf,
 	type ResponseOf,
 } from "./daemonMethods.js";
@@ -98,6 +99,8 @@ export {
 	GraphSummarySchema,
 	type ImportQuery,
 	ImportQuerySchema,
+	type IndexCause,
+	IndexCauseSchema,
 	type IndexOutcome,
 	IndexOutcomeSchema,
 	type IndexStatus,
@@ -114,6 +117,8 @@ export {
 	LiteralsResultSchema,
 	type Mention,
 	MentionSchema,
+	type ModuleDeclarations,
+	ModuleDeclarationsSchema,
 	type ModuleStatus,
 	ModuleStatusSchema,
 	type MostReferencedEntry,
@@ -171,6 +176,8 @@ export {
 	SharedLiteralSchema,
 	type SharedLiteralsResult,
 	SharedLiteralsResultSchema,
+	type SourceReadOutcome,
+	SourceReadOutcomeSchema,
 	type StepKind,
 	StepKindSchema,
 	type StepPhase,
@@ -254,6 +261,7 @@ export {
 	parseFactIdResult,
 	referenceFactId,
 } from "./factId.js";
+export { hashContent } from "./hash.js";
 export {
 	BindRequestSchema,
 	DiscoverProjectRequestSchema,

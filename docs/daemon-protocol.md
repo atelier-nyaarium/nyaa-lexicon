@@ -96,13 +96,18 @@ it answers a plain error naming the reason and asking for a restart.
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
 with `...; this daemon is stopping`, closes its server, and every client lands on its reconnect
 path. `daemonChannel` reconnects once on a lost connection, through `ensureDaemon` again, and gives
-up if the connection is lost twice.
+up if the connection is lost twice. Only a read is asked again after its request was sent; a
+method the table marks `mutates` may already have landed, so its loss is reported as
+`connectionLost` with the outcome unknown rather than repeated.
 
 ## The method table
 
 `DAEMON_METHODS`, in the protocol package, is the one owner of what the daemon answers:
-forty-nine entries, each a method name with a `request` schema and a `response` schema, in
-dispatch order, with a doc line on every entry. `hubs` is its own entry aliasing `mostReferenced`,
+fifty entries, each a method name with a `request` schema and a `response` schema, in
+dispatch order, with a doc line on every entry. The twelve whose repetition is not harmless, the
+knowledge writes and the refactor steps, carry `mutates: true`, read through `methodMutates`;
+`indexFile` writes the store too, but asked twice it answers `current` the second time, so it is
+not marked. Nothing else in the table is optional. `hubs` is its own entry aliasing `mostReferenced`,
 so the accepted method set is exactly what older clients ask by. Three types derive from it, and
 nothing else is hand-written:
 
@@ -132,6 +137,29 @@ One method is not in the table. `shutdown` is answered by the daemon process its
 dispatch, with `{ stopping: true }` sent before it stops so the caller reads success rather than a
 dropped connection.
 
+### One read binds an answer to its bytes
+
+`moduleDeclarations` answers one module's status (`exists`, `claimed`, `indexed`, `depth`, the
+recorded `failure`), what one read of the file found (`read.kind`: `text`, `missing`, `binary` or
+`tooLarge`, with `detail` for the last two), `contentHash` (the hash the index holds, null with no
+row), `diskHash` (the hash of the bytes that same read loaded, null unless text) and the
+declaration rows, from ONE synchronous snapshot: `core/src/moduleDeclarations.ts` runs to
+completion, a residue forbids `await` and `async` in it, so no field describes a different
+version of the file than another. `moduleStatus` and `declarationsIn` keep their shapes; a
+consumer that wants "cannot disagree" asks the one method.
+
+The hash is `hashContent` in the protocol package, the one implementation the daemon files under
+and a consumer compares against: the first 32 hex characters of the sha256 of the file's UTF-8
+DECODED text. A BOM and CRLF are part of the text; the result equals a hash of the raw bytes
+exactly when they were valid UTF-8. A residue forbids a second `createHash(` over text in core and
+the client.
+
+`indexFile` answers a closed `cause` beside its prose whenever it did not index, absent when it
+did: `missing`, `binary`, `tooLarge`, `unclaimed`, `parseFailed`, `current` (the index already
+holds this version) or `providerDown`.
+A provider's parse failure is an answer, not an error frame, so a caller reindexing a restored
+file is not failed by it; only a provider outage is the daemon's own trouble.
+
 ## Validation, both directions
 
 `createDispatch` is the one place a request meets the table, and it does three things in order. A
@@ -141,6 +169,20 @@ the build because that is what decides the table. The params are parsed through 
 parsed through the entry's `response` schema before it reaches the frame writer, and a failure
 there throws like any other error, which the transport turns into an error frame. Both parses are
 always on.
+
+Every path-valued request field (`module`, `toModule`, `fromModule`) is the `ModulePath` schema:
+a transform through the id grammar's `normalizeModulePath`, so `./src/a.ts`, a backslash path and
+an NFD filename are served under the one key the index files them by, and an absolute path, a path
+escaping the workspace or one carrying a control character is refused in the grammar's own words
+before any handler reads or writes. That is workspace containment: nothing the wire names can
+reach a file outside the root, `refactorTrack` included. Filters (`within`, substring and regex
+matches) are not paths and are left alone. No case folding and no realpath at query time: two
+names are two modules, and a file the grammar cannot spell is out of scope rather than indexed
+under a key nobody can ask by. Two names that normalize to ONE key (a composed and a decomposed
+spelling of the same filename, both on a case-sensitive disk) are one module; the composed file
+is the one read and indexed, and the other is unreachable by name. A write lands under the real
+root: a directory link inside the workspace pointing outside it is refused for writing, while
+reads follow the name as given.
 
 To the caller, either failure is the same thing: the promise from `request` or `ask` rejects with an
 `Error` whose message is the daemon's `error` string. For a parse failure that string is zod's issue

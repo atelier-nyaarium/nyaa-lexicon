@@ -152,6 +152,150 @@ const CASES: ConformanceCase[] = [
 		declarations: [{ name: "Cart", descriptors: ["type:Cart"] }],
 	},
 	{
+		id: "cpp-qualified-definition-merges-prototype",
+		tier: "declarations",
+		about: "An out-of-line C++ definition keeps its written qualifier path and replaces its prototype range.",
+		fixtures: {
+			[CPP]: {
+				files: {
+					"src/physics.cpp":
+						"namespace Physics { class World { public: void step(); }; }\nvoid Physics::World::step() {}\n",
+				},
+				subject: "src/physics.cpp",
+			},
+		},
+		declarations: [
+			{
+				name: "step",
+				descriptors: ["namespace:Physics", "type:World", "method:step"],
+				nameStart: { line: 1, character: 21 },
+			},
+		],
+	},
+	{
+		id: "cpp-overload-definition-signatures",
+		tier: "declarations",
+		about: "C++ overload definitions keep ids matched to parameter signatures.",
+		fixtures: {
+			[CPP]: {
+				files: {
+					"src/overloads.cpp":
+						"class A { public: void f(int); void f(double); };\nvoid A::f(double) {}\nvoid A::f(int) {}\n",
+				},
+				subject: "src/overloads.cpp",
+			},
+		},
+		declarations: [
+			{ name: "f", descriptors: ["type:A", "method:f"], nameStart: { line: 1, character: 8 } },
+			{ name: "f", descriptors: ["type:A", "method:f(1)"], nameStart: { line: 2, character: 8 } },
+		],
+	},
+	{
+		id: "csharp-file-scoped-namespace-parameters",
+		tier: "declarations",
+		about: "A C# file-scoped namespace and method parameters use their descriptor kinds.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/service.cs": "namespace Acme.Services;\nclass Service { void Compute(string name) {} }\n",
+				},
+				subject: "src/service.cs",
+			},
+		},
+		declarations: [
+			{ name: "Compute", descriptors: ["namespace:Acme.Services", "type:Service", "method:Compute"] },
+			{
+				name: "name",
+				descriptors: ["namespace:Acme.Services", "type:Service", "method:Compute", "parameter:name"],
+			},
+		],
+	},
+	{
+		id: "csharp-explicit-interface-qualifier",
+		tier: "declarations",
+		about: "A C# explicit interface implementation uses the written interface as its qualifier.",
+		fixtures: {
+			[CSHARP]: {
+				files: { "src/service.cs": "class Service { void IFoo.Compute(string name) {} }\n" },
+				subject: "src/service.cs",
+			},
+		},
+		declarations: [{ name: "Compute", descriptors: ["type:Service", "namespace:IFoo", "method:Compute"] }],
+	},
+	{
+		id: "csharp-generic-explicit-interface-qualifier",
+		tier: "declarations",
+		about: "Generic C# explicit interface implementations keep their interface qualifier.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/service.cs": "class Service { void IFoo<int>.Compute() {} void IFoo<T>.Compute() {} }\n",
+				},
+				subject: "src/service.cs",
+			},
+		},
+		declarations: [
+			{
+				name: "Compute",
+				descriptors: ["type:Service", "namespace:IFoo", "method:Compute"],
+				nameStart: { line: 0, character: 31 },
+			},
+			{
+				name: "Compute",
+				descriptors: ["type:Service", "namespace:IFoo", "method:Compute(1)"],
+				nameStart: { line: 0, character: 57 },
+			},
+		],
+	},
+	{
+		id: "gdscript-class-name-descriptor",
+		tier: "declarations",
+		about: "A GDScript class_name is a type descriptor.",
+		fixtures: {
+			[GDSCRIPT]: { files: { "src/player.gd": "class_name Player\nextends Node\n" }, subject: "src/player.gd" },
+		},
+		declarations: [{ name: "Player", descriptors: ["type:Player"] }],
+	},
+	{
+		id: "tsx-member-descriptor",
+		tier: "declarations",
+		about: "A TSX class member is nested under its type descriptor.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"tsconfig.json": '{"compilerOptions":{"allowJs":true,"jsx":"preserve"}}',
+					"src/view.tsx": "class View { render() { return <div />; } }\n",
+				},
+				subject: "src/view.tsx",
+			},
+		},
+		declarations: [{ name: "render", descriptors: ["type:View", "method:render"] }],
+	},
+	{
+		id: "javascript-anonymous-nesting",
+		tier: "declarations",
+		about: "An anonymous JavaScript nesting still gives its member a stable descriptor path.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"tsconfig.json": '{"compilerOptions":{"allowJs":true,"jsx":"preserve"}}',
+					"src/util.js": "export default { deepHandler() {} };\n",
+				},
+				subject: "src/util.js",
+			},
+		},
+		declarations: [{ name: "deepHandler", descriptors: ["term:default", "method:deepHandler"] }],
+	},
+	{
+		id: "markdown-dotted-heading",
+		tier: "declarations",
+		about: "A markdown heading keeps a dot in its full name.",
+		fixtures: {
+			[MARKDOWN]: { files: { "README.md": "# Node.js setup\n" }, subject: "README.md" },
+		},
+		declarations: [{ name: "Node.js setup", descriptors: ["namespace:Node.js setup"] }],
+	},
+	{
 		id: "position-is-utf16-code-units",
 		tier: "declarations",
 		about: "A column counts UTF-16 code units, so an astral character before a name shifts it by two.",

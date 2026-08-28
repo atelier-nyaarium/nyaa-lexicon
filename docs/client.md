@@ -18,6 +18,7 @@ stateDir       a store directory of the caller's choosing; the default is derive
                workspace under the state root
 lexiconRoot    the install to spawn from, instead of the one last recorded
 patience       how long a request waits on a starting daemon, in milliseconds; zero asks once
+onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and `elapsedMs`
 ```
 
 Four things are read, in this order, and each can refuse before the next is touched:
@@ -84,8 +85,10 @@ lock()               the lock of the daemon this session reaches, re-read on eve
 ```
 
 A session holds one lazy socket. A connection that drops is reopened once, through `ensureDaemon`
-again, so a handover or a restart costs the request in flight and nothing after it; a connection
-lost twice is a `DaemonError`.
+again, including a loss during the handshake, and a read is asked again over it. A write whose
+request was already sent is not repeated, since the daemon may have applied it: it is a
+`DaemonError` with cause `connectionLost` and an unknown outcome. The table's `mutates` flag is what
+tells the two apart. A connection lost twice is a `DaemonError`.
 
 ## Errors
 
@@ -96,9 +99,11 @@ message.
   longer holds an install.
 - `Incompatible`, with `client` and `installed`: the two protocol majors cannot meet, the
   install's before any lock, the daemon's at welcome.
-- `DaemonError`, with `waitingFor` when a wait ran out: the daemon's own words, `unknown method`
-  and the issue list for a request that did not fit its schema included, a spawn that failed, a
-  connection lost twice, a daemon that would not stop.
+- `DaemonError`, with a closed `cause` of `unknownMethod`, `refusedModule`, `spawnFailed`,
+  `connectionLost` or `daemon`, plus `waitingFor` when a wait ran out.
+
+An unbuilt install or missing Bun runtime has cause `spawnFailed`. An unsuitable workspace or a
+startup timeout has cause `daemon`.
 
 The first two are the client's own verdicts, reached before any daemon is asked. Anything else
 the wire throws is wrapped as a `DaemonError`, so there is no fourth class to catch.
@@ -151,33 +156,65 @@ if nothing else is left in it.
 ## The helpers
 
 Two hand-written members sit beside the facade, each a composition a consumer would otherwise
-copy. `resolveChain(module, segments)` walks a name chain inside one module and answers `exact`
-with the one candidate, `ambiguous` with every candidate in document order, or `none` with a
-closed reason: `missing` (not on disk), `unclaimed` (no provider owns it, or the scope denies it),
-`unread` (owned, not indexed yet) or `noMatch`. The first segment matches any declaration in the
-module and each later one any declaration beneath the previous candidates, however many unnamed
-layers sit between. A segment is a name; a dotted or `::` run such as `Acme.Services`, matching a
-declaration named so in either spelling or a run of nested names; `name[n]`, the n-th match in
-document order counted from 1; `arguments`, the previous candidate's parameter list as one span
-from its first parameter to its last, carrying the owner's id and no selection range; or, after
-`arguments`, one parameter's name. A candidate carries `symbolId`, `kind`, `name`, `range`,
-`selectionRange` where the name is in the source, and `containerPath`, outermost first. Ranges are
-the protocol's, 0-based, unconverted. Ambiguity is a list, never an error.
+copy. `resolveChain(module, segments)` asks `moduleDeclarations` once (one snapshot: the read,
+both hashes and the rows) and walks a name chain inside the module. Every answer carries
+`contentHash`, the hash the index holds, and `diskHash`, the hash of the file as that read found
+it, so a consumer knows whether the ranges it was handed describe the file on disk. The answer is
+`exact` with the one candidate, `ambiguous` with every candidate in document order, or `none`
+with a closed `reason` in this precedence: `missing` (not on disk), `binary` or `tooLarge` (with
+`detail`), `unclaimed` (no provider owns it, or the scope denies it, `detail` saying which),
+`parseFailed` (a recorded failure and no rows; a file whose outline pass succeeded and whose full
+upgrade failed still resolves at outline depth), `unread` (owned, not indexed yet) or `noMatch`. A
+`none` also says where the walk stopped: `matched` is `{ containerPaths, consumed, count }`, the
+paths the walk stood on, how many segments it consumed and how many matches the failing segment's
+base name had; `available` is every declaration name beneath that frontier (every name in the
+module when nothing matched), deduped in document order and capped, with `availableTotal` beside
+it.
+
+The first segment matches any declaration in the module and each later one any declaration
+beneath the previous candidates, however many unnamed layers sit between, or a descriptor prefix
+their ids pass through: an out-of-line C++ definition `Physics::World::step` names its scope in
+its id without declaring it, so `Physics`, `World`, `step` walks it split, `Physics::World::step`
+joined, and `Physics`, `step` across the layer. A segment is a name; a dotted or `::` run such as
+`Acme.Services`, matching a declaration named so in either spelling or a run of nested names;
+`name[n]`, the n-th match in document order counted from 1; `arguments`, the previous candidate's
+parameter list as one span from its first parameter to its last, carrying the owner's id and no
+selection range; or, after `arguments`, one parameter's name. A run of segments also matches a
+declaration named by the run joined (`Acme`, `Services` reaches `Acme.Services`), never a proper
+prefix of one (`Node` does not reach a heading `Node.js setup`): the plain fold is tried first,
+then the joined readings, and a tie across readings is `ambiguous`. A candidate carries
+`symbolId`, `kind`, `name`, `range`, `selectionRange` where the name is in the source,
+`containerPath`, outermost first, and `segments`, a chain that resolves to exactly this candidate
+(the container names as written, the last with `[n]` where the path alone is ambiguous), so a
+consumer can offer a paste-ready ref for each candidate of an ambiguous answer. Ranges are the
+protocol's, 0-based, unconverted. Ambiguity is a list, never an error.
+
+Two ordinal readings sit side by side and count differently. The id grammar's `name[n]` numbers
+same-named siblings of one container from 2, an identity minted by the provider; the chain's
+`[n]` numbers the matches of a segment across depths from 1, in document order, an address a
+reader types. `segments` uses the chain's.
 
 `awaitIndexed(module)` indexes one module now, under the daemon's write gate, and answers
-`{ indexed: true }`, also for a file already indexed at this depth, or `{ indexed: false }` with
-`unclaimed` or `missing`; a parse failure is a `DaemonError` carrying the provider's reason.
-`resolveChain` asks `moduleStatus` first, the read-only question of whether one file exists, is
-claimed and is indexed, without indexing it, and its first three `none` reasons are that answer.
+`{ indexed: true }`, also for a file already indexed at this depth, or `{ indexed: false }` with a
+`reason` sharing `resolveChain`'s: `missing`, `binary`, `tooLarge`, `unclaimed` or `parseFailed`,
+with `detail` carrying the provider's or the reader's words. A content refusal is an answer;
+only a provider outage, or an outcome without a cause, is a `DaemonError`.
 
 ## The runtime
 
-The package runs under node or bun; the daemon it spawns runs under bun 1.4.0 or newer only. The
-owner of that floor is exported for a consumer that wants the same judgement: `BUN_FLOOR`,
+The package runs under node or bun; the daemon and providers it spawns run under bun 1.4.0 or newer
+only. `bunExecutable(host, probe)` selects the running bun, PATH bun, or `BUN_INSTALL/bin`, probes
+`--version` once per process, and returns a closed missing, malformed or below-floor result.
+The owner of that floor is exported for a consumer that wants the same judgement: `BUN_FLOOR`,
 `runtimeVerdict(versions?)` answering `bun`, `belowFloor` with the floor, or `notBun` naming what
 it is, and `refuseRuntime(what)`, the sentence lexicon's own entry points print before exiting,
 or null when the runtime is accepted. `bundleStamp(root)` and `bundleFiles(root)` are the bundle
 identity the lock carries, described under Compatibility in `docs/daemon-protocol.md`.
+
+`classifyWorkspaceRoot(path)` answers before spawning whether the path is the filesystem root or
+the caller's home directory. The install source is a thunk re-derived for each ensure, channel,
+lock and stop invocation, so rebuilds and removed installs are observed immediately. A stale
+install looks like a `DaemonError` or `Incompatible` before a request reaches the daemon.
 
 ## Depending on it from a git submodule
 

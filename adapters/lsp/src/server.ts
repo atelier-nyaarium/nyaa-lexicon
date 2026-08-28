@@ -12,6 +12,7 @@
 // here rather than discovered later in a file full of emoji.
 
 import type { StoredDeclaration, SymbolKind } from "@nyaa-lexicon/core";
+import { workspaceModule } from "@nyaa-lexicon/protocol";
 import type { LexiconReads } from "./reads.js";
 
 ////////////////////////////////
@@ -114,15 +115,19 @@ export function toUri(workspaceRoot: string, module: string): string {
 /** The absolute path a file URI names, or null for any other scheme. */
 export function pathFromUri(uri: string): string | null {
 	if (!uri.startsWith("file://")) return null;
-	return decodeURIComponent(uri.slice("file://".length));
+	try {
+		return decodeURIComponent(uri.slice("file://".length));
+	} catch {
+		// A malformed escape names no file.
+		return null;
+	}
 }
 
-/** The inverse, back to a workspace-relative module. Null when the URI names another workspace. */
+/** The inverse, to the id grammar's own key. Null when the URI names another workspace or a name it cannot spell. */
 export function toModule(workspaceRoot: string, uri: string): string | null {
 	const full = pathFromUri(uri);
 	if (full === null) return null;
-	const root = `${workspaceRoot.replace(/\/+$/, "")}/`;
-	return full.startsWith(root) ? full.slice(root.length) : null;
+	return workspaceModule(workspaceRoot, full);
 }
 
 function locationOf(workspaceRoot: string, declaration: StoredDeclaration): Location {

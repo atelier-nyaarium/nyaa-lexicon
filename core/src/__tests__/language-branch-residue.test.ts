@@ -7,28 +7,18 @@ import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
 //  Interfaces & Types
 
 /**
- * Enforces the CLAUDE.md review rule: core must never branch on a language name.
- *
- * Bug class killed: capability variation leaking from returned values into control
- * flow. Every provider implements every method, and a missing capability answers
- * Unknown with a reason, so a language check in core means the contract is missing
- * a field. The fix is that field, never the branch.
- *
- * This exists at scaffold time on purpose: a residue test written after the first
- * violation has to argue with existing code.
+ * Core never branches on a language name: a missing capability answers Unknown with a reason, so
+ * a language check means the provider contract lacks a field, and the fix is that field.
  */
 const CORE_SRC = join(import.meta.dirname, "..");
 
-/**
- * `formats/` too, because it is the one other place the rule can be bent.
- *
- * A format reader is shared by several providers and takes the language as DATA. A comparison there
- * turns one reading into per-language readings, which is the second interpretation the package was
- * created to prevent.
- */
+/** A format reader takes the language as DATA; a comparison there makes one reading several. */
 const FORMATS_SRC = join(CORE_SRC, "..", "..", "formats", "src");
 
-const SWEPT = [CORE_SRC, FORMATS_SRC];
+/** The client resolves chains over every provider's declarations, so the rule holds there too. */
+const CLIENT_SRC = join(CORE_SRC, "..", "..", "client", "src");
+
+const SWEPT = [CORE_SRC, FORMATS_SRC, CLIENT_SRC];
 
 const SKIP = ["__tests__", "dist", "node_modules"];
 
@@ -39,11 +29,16 @@ const LANGUAGE_NAMES = [
 	"python",
 	"csharp",
 	"c#",
+	"c",
+	"cpp",
+	"c++",
 	"gdscript",
 	"godot",
 	"rust",
 	"golang",
 	"java",
+	"kotlin",
+	"markdown",
 ];
 
 ////////////////////////////////

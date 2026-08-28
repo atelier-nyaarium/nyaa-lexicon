@@ -16,6 +16,7 @@ export interface PlatformEnv {
 	platform: NodeJS.Platform;
 	env: Record<string, string | undefined>;
 	home: string;
+	execPath?: string;
 }
 
 ////////////////////////////////
@@ -94,5 +95,6 @@ export function currentHost(): PlatformEnv {
 		platform: process.platform,
 		env: process.env,
 		home: process.env["HOME"] ?? process.env["USERPROFILE"] ?? process.cwd(),
+		execPath: process["execPath"],
 	};
 }

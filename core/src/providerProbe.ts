@@ -11,8 +11,8 @@ import type {
 	RenameEditsRequest,
 	RenameEditsResponse,
 } from "@nyaa-lexicon/protocol";
+import { hashContent } from "@nyaa-lexicon/protocol";
 import type { ProviderSupervisor } from "./supervisor.js";
-import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
 //  Interfaces & Types

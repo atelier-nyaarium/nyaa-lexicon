@@ -162,6 +162,10 @@ export class LexiconService {
 		return this.indexer.moduleStatus(module);
 	}
 
+	moduleDeclarations(module: string): ReturnType<WorkspaceIndexer["moduleDeclarations"]> {
+		return this.indexer.moduleDeclarations(module);
+	}
+
 	warmHold(): string | null {
 		return this.indexer.warmHold();
 	}

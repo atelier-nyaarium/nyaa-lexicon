@@ -232,6 +232,19 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			indexed: false,
 		});
 	},
+	moduleDeclarations: async () => {
+		const held = await ask("moduleDeclarations", { module: "cart.ref" });
+		expect(held).toMatchObject({ exists: true, claimed: true, indexed: true, read: { kind: "text" } });
+		expect(held.diskHash).toBe(held.contentHash);
+		expect(held.declarations.map((row) => row.name)).toEqual(["Cart", "add"]);
+		expect(await ask("moduleDeclarations", { module: "ghost.ref" })).toMatchObject({
+			exists: false,
+			read: { kind: "missing" },
+			contentHash: null,
+			diskHash: null,
+			declarations: [],
+		});
+	},
 	findImports: () => ask("findImports", { specifier: "./item", limit: 5 }),
 	overview: async () => {
 		const overview = await ask("overview", {});

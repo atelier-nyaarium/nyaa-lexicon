@@ -2,7 +2,44 @@
 
 Only releases that ask something of you. A patch that changes nothing you can observe is not here.
 
-## Unreleased
+## 3.0.0
+
+A protocol major, and a clean break with no migration window: reload every session, and update
+any consumer pinned to the 2.x client (a 2.x client rides a 3.0 daemon forward as before; a 3.0
+client refuses a 2.x install by name). Every store re-indexes once, since the store's
+compatibility key moves with the major and C++ and C# symbol identities changed; recorded
+answers survive as stale and heal where the facts they cite are unchanged.
+
+A ref can now be bound to its bytes. `moduleDeclarations` answers one module's status, what one
+read of the file found, the hash the index holds, the hash of the bytes that read loaded, and its
+declarations, from one synchronous snapshot, so no field describes a different version than
+another. `resolveChain` asks it and carries both hashes on every answer; its `none` answers say
+why in a closed reason (`missing`, `binary`, `tooLarge`, `unclaimed`, `parseFailed`, `unread`,
+`noMatch`), where the walk stopped and what was there to choose from, and each candidate carries
+`segments`, a chain that reaches it alone. A run of segments matches a dotted name in full, an
+out-of-line C++ definition resolves through the scope its id names, and `Physics::World::step` is
+one symbol: C++ mints written qualifiers as descriptors and merges a definition into its
+prototype; C# does the same for an explicit interface implementation and mints parameters with
+the parameter descriptor. `awaitIndexed` answers a content refusal with the same reasons instead
+of throwing; `indexFile` carries a closed `cause`. `DaemonError` carries a closed `cause`
+(`unknownMethod`, `refusedModule`, `spawnFailed`, `connectionLost`, `daemon`). `connect` takes
+`onWaiting`, fired during the spawn wait too, and a connection lost during the handshake is
+reopened once like any other.
+
+Workspace containment: every path-valued request field is normalized to the index's own key and
+refused before any read or write when it is absolute, escapes the workspace or carries a control
+character; `refactorTrack("../x")` no longer snapshots a file above the root. Two names are two
+modules, and a file the id grammar cannot spell is out of scope. Not a security fix: the socket is
+loopback with a token and every client already runs as the user.
+
+The client owns the bun it spawns: `bunExecutable(host, probe)` finds the running bun, or `bun` on
+PATH, or `BUN_INSTALL/bin`, probes its version once per process and refuses a missing, malformed
+or below-floor one by name; the daemon spawns its providers and its successor through the same
+owner, `daemonCommand` answers a closed `command`, `unbuilt` or `noBunRuntime`, and
+`classifyWorkspaceRoot` is exported so a consumer can learn before its first spawn that the daemon
+would refuse `/` or `$HOME`. A session re-derives the lexicon install once per invocation instead
+of freezing it at `connect`, so a plugin updated in place under a long-lived session spawns the
+new bundle rather than the retired one. `hashContent` lives in the protocol package.
 
 Nothing you see changes unless an answer was malformed. Every daemon method's request and response
 shape now lives in one table in the protocol package, `DAEMON_METHODS`, and the daemon checks both

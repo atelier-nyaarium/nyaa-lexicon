@@ -81,7 +81,7 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
 		if (!newerBuild(entry, best?.version ?? options.version)) continue;
 		const sibling = path.join(parent, entry);
 		// Only a root with a runnable, settled bundle is a target.
-		if (daemonCommand(sibling, options.workspaceRoot) === null) continue;
+		if (daemonCommand(sibling, options.workspaceRoot).kind !== "command") continue;
 		if (!settled(sibling, options)) continue;
 		// The manifest must agree with the directory name. A bundle compiled as some OTHER version
 		// writes that version into its lock, which clients then replace, which respawns the daemon

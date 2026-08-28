@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { daemonChannel, writeInstallRecord } from "@nyaa-lexicon/client";
 import {
+	createDispatch,
 	createSessionBinds,
 	IndexStore,
 	LexiconService,
@@ -62,6 +63,9 @@ import type { ToolBackend, ToolResult } from "./tools.js";
  */
 export const SERVER_INFO = { name: "nyaa-lexicon", version: packageJson.version } as const;
 
+/** The typed question a backend asks, whichever side of the wire answers it. */
+type Asker = ReturnType<typeof daemonChannel>["ask"];
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -79,7 +83,11 @@ export function daemonBackend(workspaceRoot: string, stateDir?: string): ToolBac
 		source: ownSource(),
 		...(stateDir === undefined ? {} : { stateDir }),
 	});
+	return backendOver(ask);
+}
 
+/** One table over one `ask`, so the daemon's socket and the in-process dispatcher meet the wire alike. */
+function backendOver(ask: Asker): ToolBackend {
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),
 		describe: (symbolId) => ask("describe", { symbolId }),
@@ -142,36 +150,32 @@ const NO_JOURNAL =
 	"refactor transactions need the daemon, whose index is on disk; this session is running its own in-memory index, where an undo record would not survive the process";
 
 export function localBackend(workspaceRoot: string): ToolBackend {
-	let ready: Promise<LexiconService> | null = null;
+	let ready: Promise<Asker> | null = null;
 
-	async function build(): Promise<LexiconService> {
+	// Through the daemon's own dispatcher, so a request meets the wire's validation and containment
+	// here exactly as it would over the socket.
+	async function build(): Promise<Asker> {
 		const { store } = IndexStore.open(":memory:");
 		const supervisor = new ProviderSupervisor();
 		await startProviders(supervisor, workspaceRoot);
 
 		const service = new LexiconService(store, supervisor, sourceReader(workspaceRoot), workspaceRoot);
 		await service.indexWorkspace();
-		return service;
+		const dispatch = createDispatch(service);
+		return ((method, params) => dispatch(method, params)) as Asker;
 	}
 
-	function service(): Promise<LexiconService> {
+	function asker(): Promise<Asker> {
 		ready ??= build();
 		return ready;
 	}
 
 	return {
-		findByName: async (name, module) => (await service()).findByName(name, module),
-		describe: async (symbolId) => (await service()).describe(symbolId),
-		findReferences: async (symbolId, limit, within) => (await service()).findReferences(symbolId, limit, within),
-		resolveImport: async (fromModule, specifier) => (await service()).resolveImport(fromModule, specifier),
-		typeOf: async (symbolId) => (await service()).typeOf(symbolId),
-		symbolSource: async (address) => (await service()).symbolSource(address),
+		...backendOver((async (method, params) => (await asker())(method, params as never)) as Asker),
 		// A journal in an in-memory index dies with the process, so this backend would offer an undo
 		// it could not honour and leave written files with no record of what they replaced.
 		refactorStart: async () => ({ started: false, id: "", reason: NO_JOURNAL }),
 		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
-		prepareRename: async (symbolId, newName) => (await service()).prepareRename(symbolId, newName),
-		planMove: async (symbolId, toModule) => (await service()).planMove(symbolId, toModule),
 		refactorTrack: async () => ({ tracked: false, reason: NO_JOURNAL }),
 		refactorUndo: async () => ({ undone: false, reason: NO_JOURNAL }),
 		refactorRevert: async () => ({ reverted: false, modules: [], reason: NO_JOURNAL }),
@@ -180,30 +184,6 @@ export function localBackend(workspaceRoot: string): ToolBackend {
 		refactorInsert: async () => ({ inserted: false, issues: [], reason: NO_JOURNAL }),
 		refactorRename: async () => ({ renamed: false, issues: [], reason: NO_JOURNAL }),
 		refactorMove: async () => ({ moved: false, issues: [], reason: NO_JOURNAL }),
-		indexStatus: async (concerning) => (await service()).indexStatus(concerning),
-		findLiterals: async ({ limit, ...query }) => (await service()).findLiterals(query, limit),
-		findComments: async ({ limit, ...query }) => (await service()).findComments(query, limit),
-		findDocs: async ({ limit, ...query }) => (await service()).findDocs(query, limit),
-		coChangedWith: async (module, limit) => (await service()).coChangedWith(module, limit),
-		searchSymbols: async (text, options) => (await service()).searchSymbols(text, options),
-		outlineModule: async (module) => (await service()).outline(module),
-		fileNotes: async (module) => (await service()).fileNotes(module),
-		findImports: async (query) => (await service()).findImports(query),
-		hubs: async (limit) => (await service()).mostReferenced(limit),
-		overview: async () => (await service()).overview(),
-		fileHistory: async (module) => (await service()).fileHistory(module),
-		factsFor: async (symbolId, limit) => (await service()).factsFor(symbolId, limit),
-		commitsMentioning: async (name, limit) => (await service()).commitsMentioning(name, limit),
-		recordAnswer: async (symbolId, question, prose, citations, options) =>
-			(await service()).recordAnswer(symbolId, question, prose, citations, options),
-		recallAnswer: async (symbolId, question) => (await service()).recallAnswer(symbolId, question),
-		recallAnswers: async (symbolId) => (await service()).recallAnswers(symbolId),
-		invalidateAnswer: async (symbolId, reason, question, by) =>
-			(await service()).invalidateAnswer(symbolId, reason, question, by),
-		reaffirmAnswer: async (symbolId, question, options) =>
-			(await service()).reaffirmAnswer(symbolId, question, options),
-		knowledgeGaps: async (root, question, limit, module) =>
-			(await service()).knowledgeGaps(root, question, limit, module),
 	};
 }
 

@@ -20,6 +20,7 @@ import {
 	comparePositions,
 	composeSymbolId,
 	coordinatesOf,
+	hashContent,
 	isParameterSymbol,
 	isWithin,
 	normalizeModulePath,
@@ -34,7 +35,6 @@ import type { ProviderProbe } from "./providerProbe.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
-import { hashContent } from "./watcher.js";
 
 export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } from "@nyaa-lexicon/protocol";
 

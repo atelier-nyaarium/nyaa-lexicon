@@ -35,6 +35,7 @@ export interface ConnectOptions {
 	lexiconRoot?: string;
 	/** How long a request waits on a starting daemon, in milliseconds. Zero asks once. */
 	patience?: number;
+	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 }
 
 /** Every daemon method as a typed call. Mapped from the table, so its JSDoc reaches hover. */
@@ -61,7 +62,7 @@ export interface Session extends Facade {
 /** The client's three classes pass; anything else was the daemon's, or the wire's, and is wrapped. */
 function asDaemonError(error: unknown): Error {
 	if (error instanceof NotInstalled || error instanceof Incompatible || error instanceof DaemonError) return error;
-	return new DaemonError(error instanceof Error ? error.message : String(error));
+	return new DaemonError(error instanceof Error ? error.message : String(error), "connectionLost");
 }
 
 /** An explicit root wins; otherwise the record's. Either is trusted only as far as its version file. */
@@ -105,25 +106,42 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 	const install = locateInstall(options, host);
 	refuseAhead(install.root, install.version.protocolVersion);
 
-	const source: DaemonSource = {
-		root: install.root,
-		buildVersion: install.version.buildVersion,
-		bundleStamp: bundleStamp(install.root),
+	const source = (): DaemonSource => {
+		const current = locateInstall(options, currentHost());
+		refuseAhead(current.root, current.version.protocolVersion);
+		return {
+			root: current.root,
+			buildVersion: current.version.buildVersion,
+			bundleStamp: bundleStamp(current.root),
+		};
 	};
 	const stateDir = options.stateDir === undefined ? {} : { stateDir: options.stateDir };
-	const daemon = await ensureDaemon({ workspaceRoot, source, ...stateDir }).catch((error: unknown) => {
+	const daemon = await ensureDaemon({
+		workspaceRoot,
+		source,
+		...stateDir,
+		...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+	}).catch((error: unknown) => {
 		throw asDaemonError(error);
 	});
-	if (!daemon.connected) throw new DaemonError(daemon.reason);
+	if (!daemon.connected)
+		throw new DaemonError(
+			daemon.detail,
+			daemon.reason === "spawnFailed" || daemon.reason === "unbuilt" || daemon.reason === "noBunRuntime"
+				? "spawnFailed"
+				: "daemon",
+		);
 
 	let lock = daemon.lock;
 	const lockFile = workspacePaths(host, workspaceRoot, options.stateDir).lockFile;
-	const channel = daemonChannel({
+	const channelOptions = {
 		workspaceRoot,
 		source,
 		...stateDir,
 		...(options.patience === undefined ? {} : { patience: options.patience }),
-	});
+		...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+	};
+	const channel = daemonChannel(channelOptions);
 
 	async function ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>> {
 		try {
@@ -144,15 +162,16 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		close: () => channel.close(),
 		// Re-read, since a handover replaces the daemon under a session that keeps working.
 		lock: () => {
-			const now = findDaemon(workspaceRoot, source, host, options.stateDir);
+			const now = findDaemon(workspaceRoot, source(), host, options.stateDir);
 			if (now.action === "connect") lock = now.lock;
 			return lock;
 		},
 		stopDaemon: async () => {
-			// Closed first, or the channel would reconnect to a daemon on its way out.
-			channel.close();
-			const current = findDaemon(workspaceRoot, source, host, options.stateDir);
+			// The install is judged before the channel closes, so a refusal leaves the session whole.
+			const current = findDaemon(workspaceRoot, source(), host, options.stateDir);
 			if (current.action === "connect") lock = current.lock;
+			// Closed before the stop, or the channel would reconnect to a daemon on its way out.
+			channel.close();
 			await shutdownDaemon(lock, lockFile);
 		},
 		resolveChain: (module: string, segments: string[]) => resolveChain({ ask }, module, segments),

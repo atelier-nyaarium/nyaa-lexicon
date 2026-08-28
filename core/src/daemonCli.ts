@@ -9,7 +9,6 @@
 // only record of what happened.
 
 import { mkdirSync, statSync } from "node:fs";
-import path from "node:path";
 import {
 	canonicalRoot,
 	currentHost,
@@ -396,8 +395,9 @@ async function main(argv: string[]): Promise<void> {
 					// Lock released above, so the successor's claim cannot lose to a corpse. It inherits the
 					// store directory, or it would claim a different store and leave this one orphaned.
 					const command = daemonCommand(target.root, root, stateDir);
-					if (command === null) log(`no runnable bundle under ${target.root}; the next client starts one`);
-					else spawnDaemonProcess([...command, "--warm"], paths.logFile);
+					if (command.kind !== "command")
+						log(`no runnable bundle under ${target.root}; the next client starts one`);
+					else spawnDaemonProcess([...command.command, "--warm"], paths.logFile);
 					log("stopped (exit 0) after handover");
 				} finally {
 					process.exit(0);

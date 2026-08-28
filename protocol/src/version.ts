@@ -26,7 +26,9 @@ export type Compatibility =
 // Outline requests and extraction-depth metadata are part of the 1.2 wire contract.
 // 2.0.0: comment spans are emitted and docComment is retired, so a declaration no longer carries
 // its own prose; the major is the removal, not the addition.
-export const PROTOCOL_VERSION = "2.0.0" as const;
+// 3.0.0: every path-valued request field is normalized and contained, `moduleDeclarations` binds an
+// answer to its bytes, and `IndexOutcome` carries a closed cause. A clean break, no window.
+export const PROTOCOL_VERSION = "3.0.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

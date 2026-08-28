@@ -33,10 +33,12 @@ export class Incompatible extends Error {
 /** The daemon refused, failed, or could not be reached; `waitingFor` names a wait that ran out. */
 export class DaemonError extends Error {
 	readonly waitingFor: string | undefined;
+	override readonly cause: "unknownMethod" | "refusedModule" | "spawnFailed" | "connectionLost" | "daemon";
 
-	constructor(message: string, waitingFor?: string) {
+	constructor(message: string, cause: DaemonError["cause"] = "daemon", waitingFor?: string) {
 		super(message);
 		this.name = "DaemonError";
 		this.waitingFor = waitingFor;
+		this.cause = cause;
 	}
 }

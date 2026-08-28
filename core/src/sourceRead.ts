@@ -1,8 +1,9 @@
 // The one reading of a workspace file for indexing. Routing is the caller's; the bound and the
 // text check are here, so no second read site can decode a binary or stall on a giant.
 
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { workspaceFile } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -27,8 +28,37 @@ const BINARY_PROBE_BYTES = 8 * 1024;
 ////////////////////////////////
 //  Functions & Helpers
 
+/**
+ * The absolute path a WRITE may land on, or a named refusal. Reads follow the name as given;
+ * a write must also land under the real root, since a directory link inside the workspace can
+ * point outside it and a rename through it would create the file there.
+ */
+export function insideWorkspace(root: string, module: string): string {
+	const file = workspaceFile(root, module);
+	if (file === null) throw new Error(`module path must stay inside the workspace, got: ${module}`);
+	const realRoot = realpathSync(root);
+	const parent = realpathSync(nearestExisting(path.dirname(file)));
+	if (parent !== realRoot && !parent.startsWith(realRoot + path.sep)) {
+		throw new Error(`module path must not leave the workspace through a link, got: ${module}`);
+	}
+	return file;
+}
+
+/** The closest ancestor on disk, so a file in a directory not yet created is judged by its future parent. */
+function nearestExisting(dir: string): string {
+	let current = dir;
+	while (!existsSync(current)) {
+		const up = path.dirname(current);
+		if (up === current) return current;
+		current = up;
+	}
+	return current;
+}
+
 export function readSource(root: string, module: string): SourceRead {
-	const file = path.join(root, module);
+	// Outside the root there is nothing of this workspace to read.
+	const file = workspaceFile(root, module);
+	if (file === null) return { kind: "missing" };
 	let fd: number;
 	try {
 		// Before open: opening a FIFO blocks until someone writes it.

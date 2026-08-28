@@ -45,7 +45,14 @@ export {
 	processIdentity,
 	processMemory,
 } from "./procfs.js";
-export { BUN_FLOOR, type RuntimeVerdict, refuseRuntime, runtimeVerdict } from "./runtime.js";
+export {
+	BUN_FLOOR,
+	type BunExecutable,
+	bunExecutable,
+	type RuntimeVerdict,
+	refuseRuntime,
+	runtimeVerdict,
+} from "./runtime.js";
 export { type ShutdownWait, shutdownDaemon } from "./stop.js";
 export {
 	type ConnectFramesOptions,
@@ -54,6 +61,10 @@ export {
 	DaemonStartingError,
 	type FrameClient,
 	lineSplitter,
+	notifyWaiting,
 	requestOnce,
+	type WaitingCallback,
+	type WaitingEvent,
 	writeFrame,
 } from "./transport.js";
+export { classifyWorkspaceRoot, type WorkspaceAdmission } from "./workspaceAdmission.js";

@@ -12,6 +12,45 @@ import {
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
+import { CsharpParser } from "../parser.js";
+
+it("uses qualifier and parameter descriptors", () => {
+	const text = "class C { void IFoo.Bar(int name) {} }\n";
+	const facts = new CsharpParser("qualified.cs", text, false).parse();
+	const method = facts.declarations.find((declaration) => declaration.name === "Bar");
+	const parameter = facts.declarations.find((declaration) => declaration.name === "name");
+
+	expect(method?.symbolId).toBe(
+		composeSymbolId({
+			language: "csharp",
+			module: "qualified.cs",
+			descriptors: [
+				{ kind: "type", name: "C" },
+				{ kind: "namespace", name: "IFoo" },
+				{ kind: "method", name: "Bar" },
+			],
+		}),
+	);
+	expect(parameter?.symbolId).toBe(
+		composeSymbolId({
+			language: "csharp",
+			module: "qualified.cs",
+			descriptors: [
+				{ kind: "type", name: "C" },
+				{ kind: "namespace", name: "IFoo" },
+				{ kind: "method", name: "Bar" },
+				{ kind: "parameter", name: "name" },
+			],
+		}),
+	);
+	expect(method?.containerId).toBe(
+		composeSymbolId({
+			language: "csharp",
+			module: "qualified.cs",
+			descriptors: [{ kind: "type", name: "C" }],
+		}),
+	);
+});
 
 const roots: string[] = [];
 

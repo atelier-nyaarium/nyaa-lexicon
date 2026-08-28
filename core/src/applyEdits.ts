@@ -3,8 +3,8 @@
 // The splice itself lives in the protocol package beside TextEdit, so the conformance suite checks
 // provider edits with the same code that applies them here.
 
-import path from "node:path";
 import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
+import { insideWorkspace } from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 
 export type { FileEdits } from "@nyaa-lexicon/protocol";
@@ -46,7 +46,7 @@ export function writeAll(
 
 	for (const file of staged) {
 		try {
-			writeSourceFile(path.join(workspaceRoot, file.module), file.text);
+			writeSourceFile(insideWorkspace(workspaceRoot, file.module), file.text);
 		} catch (error) {
 			return {
 				applied: false,

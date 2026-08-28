@@ -65,5 +65,6 @@ export async function shutdownDaemon(lock: DaemonLock, lockFile: string, wait: S
 		refusal === null
 			? `pid ${lock.pid} was asked to stop but still holds ${lockFile} after ${timeoutMs}ms`
 			: `pid ${lock.pid} could not be asked to stop (${refusal}) and still holds ${lockFile}`,
+		"daemon",
 	);
 }

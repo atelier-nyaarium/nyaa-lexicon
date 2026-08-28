@@ -45,6 +45,16 @@ describe("turning a path into a module", () => {
 		expect(toModule("/w", "/elsewhere/a.ts")).toBeNull();
 		expect(toModule("/w", "/w")).toBeNull();
 	});
+
+	// The id grammar's key: a decomposed filename indexes under the composed one every host asks by.
+	it("composes the name the platform reported, so one file has one key", () => {
+		const decomposed = path.join(root, "src", "café.ts");
+		expect(toModule(root, decomposed)).toBe("src/café.ts");
+	});
+
+	it("drops a name the grammar cannot spell rather than minting a key nobody can ask by", () => {
+		expect(toModule(root, path.join(root, `bad${String.fromCharCode(7)}.ts`))).toBeNull();
+	});
 });
 
 describe("ignoring churn", () => {

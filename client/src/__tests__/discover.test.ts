@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { bundleStamp, daemonCommand, findDaemon, lockHolderAlive, processIsAlive } from "../discover";
 import { canonicalRoot, type PlatformEnv, workspacePaths } from "../paths";
 import { processIdentity } from "../procfs";
+import { BUN_FLOOR, bunExecutable } from "../runtime";
 
 ////////////////////////////////
 //  Helpers
@@ -113,11 +114,41 @@ describe("finding a daemon on disk", () => {
 });
 
 describe("the bundle under a root", () => {
+	it("selects bun and probes one executable once", () => {
+		const calls: string[] = [];
+		const host: PlatformEnv = { platform: "linux", env: {}, home: "/home/me", execPath: "/opt/node" };
+		const probe = (executable: string) => {
+			calls.push(executable);
+			return "1.4.2";
+		};
+
+		expect(bunExecutable(host, probe)).toEqual({ kind: "bun", executable: "bun", version: "1.4.2" });
+		expect(bunExecutable(host, probe)).toEqual({ kind: "bun", executable: "bun", version: "1.4.2" });
+		expect(calls).toEqual(["bun"]);
+	});
+
+	it("names missing, malformed and below-floor runtimes", () => {
+		const makeHost = (execPath: string, platform: NodeJS.Platform = "linux"): PlatformEnv => ({
+			platform,
+			env: {},
+			home: "/home/me",
+			execPath,
+		});
+		expect(bunExecutable(makeHost("/opt/test-missing", "win32"), () => null).kind).toBe("missing");
+		expect(bunExecutable(makeHost("/tmp/test-malformed/bun"), () => "not-a-version")).toMatchObject({
+			kind: "malformed",
+		});
+		expect(bunExecutable(makeHost("/tmp/test-old/bun"), () => "1.3.9")).toMatchObject({
+			kind: "belowFloor",
+			floor: BUN_FLOOR,
+		});
+	});
+
 	it("stamps and commands nothing when the root was never built", () => {
 		const root = scratch("lexicon-root-");
 
 		expect(bundleStamp(root)).toBeNull();
-		expect(daemonCommand(root, "/w")).toBeNull();
+		expect(daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
 	});
 
 	it("runs the bundle on this runtime against the workspace it is given", () => {
@@ -127,7 +158,7 @@ describe("the bundle under a root", () => {
 		writeFileSync(bundle, "// bundle\n");
 
 		expect(bundleStamp(root)).toMatch(/^1:[0-9a-f]{16}$/);
-		expect(daemonCommand(root, "/w")).toEqual([process.execPath, bundle, "/w"]);
+		expect(daemonCommand(root, "/w")).toMatchObject({ kind: "command", command: [process.execPath, bundle, "/w"] });
 	});
 
 	// A provider rebuilt alone must retire a daemon still serving its old copy.
@@ -167,6 +198,6 @@ describe("the bundle under a root", () => {
 		const root = scratch("lexicon-root-");
 		mkdirSync(path.join(root, "dist", "daemon.js"), { recursive: true });
 
-		expect(daemonCommand(root, "/w")).toBeNull();
+		expect(daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
 	});
 });

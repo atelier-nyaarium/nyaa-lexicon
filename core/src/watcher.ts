@@ -3,9 +3,8 @@
 // Everything interesting is in that pure decision. This half only debounces, hashes, and converts
 // an absolute path into a workspace-relative module.
 
-import { createHash } from "node:crypto";
 import { type FSWatcher, watch } from "node:fs";
-import path from "node:path";
+import { hashContent, workspaceModule } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import { coalesce, type FileEvent } from "./invalidation.js";
 import { readSource } from "./sourceRead.js";
@@ -42,20 +41,17 @@ const DEFAULT_IGNORE = ["node_modules", ".git", "dist", ".tsbuild", "target", "_
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Same normalization the symbol id grammar uses, so a module means one thing everywhere. */
+/** The id grammar's own key (NFC, forward slashes); null outside the workspace or unrepresentable. */
 export function toModule(workspaceRoot: string, absolute: string): string | null {
-	const relative = path.relative(workspaceRoot, absolute).replace(/\\/g, "/");
-	// Outside the workspace: `relative` climbs out, and such a file has no module identity.
-	return relative === "" || relative.startsWith("../") ? null : relative;
+	return workspaceModule(workspaceRoot, absolute);
 }
 
 export function isIgnored(module: string, ignore: string[]): boolean {
 	return module.split("/").some((segment) => ignore.includes(segment));
 }
 
-export function hashContent(text: string): string {
-	return createHash("sha256").update(text).digest("hex").slice(0, 32);
-}
+/** The protocol's, re-exported: the index and a consumer's own read must hash alike. */
+export { hashContent };
 
 /**
  * Read a file into an event, or report it deleted.

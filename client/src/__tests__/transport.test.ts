@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { DaemonError, Incompatible } from "../errors";
-import { connectFrames } from "../transport";
+import { connectFrames, notifyWaiting } from "../transport";
 import { type FakeAnswer, type FakeDaemon, fakeDaemon } from "./fakeDaemon";
 
 ////////////////////////////////
@@ -66,6 +66,23 @@ describe("the welcome check", () => {
 });
 
 describe("patience with a starting daemon", () => {
+	it("does not let waiting callbacks reject or throw into the request", () => {
+		const events: string[] = [];
+		notifyWaiting(
+			() => {
+				throw new Error("ignored");
+			},
+			{ waitingFor: "index", retryInMs: 0, elapsedMs: 0 },
+		);
+		notifyWaiting(() => Promise.reject(new Error("ignored")), {
+			waitingFor: "providers",
+			retryInMs: 0,
+			elapsedMs: 0,
+		});
+		notifyWaiting(() => void events.push("continued"), { waitingFor: "done", retryInMs: 0, elapsedMs: 0 });
+		expect(events).toEqual(["continued"]);
+	});
+
 	it("keeps asking while the daemon says it still needs time, then takes the answer", async () => {
 		let answered = 0;
 		const fake = await daemonAnswering(() => (answered++ < 2 ? STARTING : { ok: true, result: "warm" }));
@@ -98,6 +115,30 @@ describe("patience with a starting daemon", () => {
 
 		await expect(client.request("overview", {})).rejects.toThrow(DaemonError);
 		expect(fake.asked).toHaveLength(1);
+		client.close();
+	});
+});
+
+describe("daemon refusal causes", () => {
+	it("recognizes the dispatcher's module refusal prefix", async () => {
+		const fake = await daemonAnswering(() => ({
+			ok: false,
+			error: "overview refused: within.filter: module path must stay inside the workspace",
+		}));
+		const client = await connectFrames(fake.port, TOKEN);
+
+		await expect(client.request("overview", {})).rejects.toMatchObject({ cause: "refusedModule" });
+		client.close();
+	});
+
+	it("does not classify a handler message that only quotes the refusal words", async () => {
+		const fake = await daemonAnswering(() => ({
+			ok: false,
+			error: "handler failed: within filter echoes 'module path must stay inside the workspace'",
+		}));
+		const client = await connectFrames(fake.port, TOKEN);
+
+		await expect(client.request("overview", {})).rejects.toMatchObject({ cause: "daemon" });
 		client.close();
 	});
 });

@@ -24,6 +24,7 @@ import { type DaemonLock, PROTOCOL_VERSION, TransactionStatusSchema } from "@nya
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { processIdentity } from "./procfs.js";
+import { type BunExecutable, bunExecutable } from "./runtime.js";
 import { requestOnce } from "./transport.js";
 
 ////////////////////////////////
@@ -138,17 +139,29 @@ export async function callDaemon(lock: DaemonLock, method: string, params?: unkn
 //  The bundle
 
 /** The bundle, run on the shipping runtime. Absent in a source checkout that was never built. */
-export function daemonCommand(root: string, workspaceRoot: string, stateDir?: string): string[] | null {
+export type DaemonCommand =
+	| { kind: "command"; command: string[] }
+	| { kind: "unbuilt" }
+	| { kind: "noBunRuntime"; runtime: BunExecutable };
+
+export function daemonCommand(
+	root: string,
+	workspaceRoot: string,
+	stateDir?: string,
+	host: PlatformEnv = currentHost(),
+): DaemonCommand {
 	const bundle = path.join(root, "dist", "daemon.js");
 	try {
 		// A directory or dangling symlink wearing the name is not a program.
-		if (!lstatSync(bundle).isFile()) return null;
+		if (!lstatSync(bundle).isFile()) return { kind: "unbuilt" };
 	} catch {
-		return null;
+		return { kind: "unbuilt" };
 	}
-	const command = [process.execPath, bundle, workspaceRoot];
+	const runtime = bunExecutable(host);
+	if (runtime.kind !== "bun") return { kind: "noBunRuntime", runtime };
+	const command = [runtime.executable, bundle, workspaceRoot];
 	if (stateDir !== undefined) command.push("--state-dir", stateDir);
-	return command;
+	return { kind: "command", command };
 }
 
 /**

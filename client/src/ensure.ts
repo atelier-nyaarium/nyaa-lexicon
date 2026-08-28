@@ -21,6 +21,7 @@ import {
 } from "./discover.js";
 import type { LockDecision } from "./lock.js";
 import { currentHost, workspacePaths } from "./paths.js";
+import { notifyWaiting } from "./transport.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -33,7 +34,7 @@ export interface Sleeper {
 export interface EnsureDaemonOptions {
 	workspaceRoot: string;
 	/** Where a daemon is spawned from, and what a found lock is judged against. */
-	source: DaemonSource;
+	source: DaemonSource | (() => DaemonSource);
 	/** A store directory of the caller's choosing; the default is derived from the workspace. */
 	stateDir?: string;
 	/** How long to wait for a spawned daemon to publish its lock. */
@@ -45,13 +46,17 @@ export interface EnsureDaemonOptions {
 	clock?: Sleeper;
 	/** Injected so a test never signals a real process. */
 	stop?: (pid: number) => void;
+	onWaiting?: Parameters<typeof notifyWaiting>[0];
 	/** Whether the lock's holder still lives as itself. Injected for the same reason. */
 	alive?: (holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	/** Asks the outgoing daemon whether anything is in flight. Injected for the same reason. */
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
 }
 
-export type EnsureResult = { connected: true; lock: DaemonLock } | { connected: false; reason: string };
+export type EnsureReason = "otherWorkspace" | "noBunRuntime" | "unbuilt" | "spawnFailed" | "timeout";
+export type EnsureResult =
+	| { connected: true; lock: DaemonLock }
+	| { connected: false; reason: EnsureReason; detail: string };
 
 ////////////////////////////////
 //  Constants
@@ -74,13 +79,17 @@ const systemSleeper: Sleeper = {
  * we cannot use is retired instead, since every session reaching it is equally stuck.
  */
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<EnsureResult> {
-	const look =
-		options.look ?? (() => findDaemon(options.workspaceRoot, options.source, currentHost(), options.stateDir));
+	// Once per invocation: the install is judged here and held; every poll below re-reads the LOCK.
+	const install = typeof options.source === "function" ? options.source() : options.source;
+	const source = () => install;
+	const look = options.look ?? (() => findDaemon(options.workspaceRoot, install, currentHost(), options.stateDir));
 	const wait = (ms: number) => (options.clock ?? systemSleeper).sleep(ms);
 	const stop = options.stop ?? ((pid) => process.kill(pid, "SIGTERM"));
 	const alive = options.alive ?? lockHolderAlive;
 	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}));
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const startedAt = Date.now();
+	let waitingNotified = false;
 
 	/** Looks until the outgoing daemon's lock stops naming it, or the budget ends. */
 	async function awaitRelease(): Promise<LockDecision> {
@@ -95,7 +104,8 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	if (decision.action === "connect") return { connected: true, lock: decision.lock };
 
 	if (decision.action === "replace") {
-		if (decision.cause === "otherWorkspace") return { connected: false, reason: decision.reason };
+		if (decision.cause === "otherWorkspace")
+			return { connected: false, reason: "otherWorkspace", detail: decision.reason };
 
 		const retired = await retire(decision.lock, {
 			ask,
@@ -103,7 +113,8 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 			alive,
 			released: async () => (await awaitRelease()).action !== "replace",
 		});
-		if (!retired.retired) return { connected: false, reason: `${decision.reason}, and ${retired.reason}` };
+		if (!retired.retired)
+			return { connected: false, reason: "spawnFailed", detail: `${decision.reason}, and ${retired.reason}` };
 
 		// Its lock goes on the way out, so the wait below is for OUR daemon rather than a race against
 		// the corpse of the one just stopped.
@@ -115,24 +126,44 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		if (next.action === "replace") {
 			return {
 				connected: false,
-				reason: `pid ${decision.lock.pid} was asked to stop but still holds the lock after ${timeoutMs}ms`,
+				reason: "timeout",
+				detail: `pid ${decision.lock.pid} was asked to stop but still holds the lock after ${timeoutMs}ms`,
 			};
 		}
 	}
 
-	const command = daemonCommand(options.source.root, options.workspaceRoot, options.stateDir);
-	if (command === null) return { connected: false, reason: "no built daemon to start; run the build first" };
+	const command = daemonCommand(source().root, options.workspaceRoot, options.stateDir);
+	if (command.kind === "unbuilt")
+		return { connected: false, reason: "unbuilt", detail: "no built daemon to start; run the build first" };
+	if (command.kind === "noBunRuntime")
+		return { connected: false, reason: "noBunRuntime", detail: command.runtime.kind };
 	const logFile = workspacePaths(currentHost(), options.workspaceRoot, options.stateDir).logFile;
-	const watch = (options.start ?? ((argv) => spawnDaemonProcess(argv, logFile)))(command);
+	const watch = (options.start ?? ((argv) => spawnDaemonProcess(argv, logFile)))(command.command);
 
 	for (let waited = 0; waited < timeoutMs; waited += POLL_MS) {
+		if (!waitingNotified) {
+			waitingNotified = true;
+			notifyWaiting(options.onWaiting, {
+				waitingFor: "daemon startup",
+				retryInMs: POLL_MS,
+				elapsedMs: Date.now() - startedAt,
+			});
+		}
 		await wait(POLL_MS);
 		const next = look();
 		if (next.action === "connect") return { connected: true, lock: next.lock };
 		const death = watch?.death() ?? null;
 		if (death !== null) {
-			return { connected: false, reason: `the daemon ${death} during startup; its log is ${logFile}` };
+			return {
+				connected: false,
+				reason: "spawnFailed",
+				detail: `the daemon ${death} during startup; its log is ${logFile}`,
+			};
 		}
 	}
-	return { connected: false, reason: `daemon did not publish a lock within ${timeoutMs}ms; its log is ${logFile}` };
+	return {
+		connected: false,
+		reason: "timeout",
+		detail: `daemon did not publish a lock within ${timeoutMs}ms; its log is ${logFile}`,
+	};
 }

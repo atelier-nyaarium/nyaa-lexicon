@@ -211,7 +211,12 @@ describe("workspace roots", () => {
 		const outcomes = await service.indexWorkspace();
 
 		expect(service.findByName("Root")).toEqual([]);
-		expect(outcomes).toContainEqual({ module: "root.fake", action: "forgotten", reason: "file is gone" });
+		expect(outcomes).toContainEqual({
+			module: "root.fake",
+			action: "forgotten",
+			cause: "missing",
+			reason: "file is gone",
+		});
 	});
 
 	it("moves indexed facts with a live rename batch", async () => {
@@ -298,6 +303,7 @@ describe("root exclusions and includes", () => {
 		await expect(service.indexFile("reference.fake")).resolves.toEqual({
 			module: "reference.fake",
 			action: "skipped",
+			cause: "unclaimed",
 			reason: "denied by scope",
 		});
 		expect(requests).toEqual([]);
@@ -325,6 +331,7 @@ describe("root exclusions and includes", () => {
 		expect(outcomes).toContainEqual({
 			module: "generated.fake",
 			action: "forgotten",
+			cause: "unclaimed",
 			reason: "no longer a root or reachable",
 		});
 	});
@@ -454,11 +461,13 @@ describe("reachability and failures", () => {
 		expect(outcomes).toContainEqual({
 			module: "reachable.fake",
 			action: "forgotten",
+			cause: "unclaimed",
 			reason: "no longer a root or reachable",
 		});
 		expect(outcomes).toContainEqual({
 			module: "leaf.fake",
 			action: "forgotten",
+			cause: "unclaimed",
 			reason: "no longer a root or reachable",
 		});
 	});
@@ -484,6 +493,7 @@ describe("reachability and failures", () => {
 		expect(outcomes).toContainEqual({
 			module: "reference/entry.fake",
 			action: "forgotten",
+			cause: "unclaimed",
 			reason: "no longer a root or reachable",
 		});
 	});
@@ -534,6 +544,7 @@ describe("reachability and failures", () => {
 		expect(outcomes).toContainEqual({
 			module: "bad.fake",
 			action: "skipped",
+			cause: "parseFailed",
 			reason: "parse failed",
 			failure: "poisoned file",
 		});
@@ -576,6 +587,7 @@ describe("reachability and failures", () => {
 		expect(outcomes).toContainEqual({
 			module: "blob.fake",
 			action: "skipped",
+			cause: "binary",
 			reason: "parse failed",
 			failure: expect.stringContaining("NUL"),
 		});
@@ -606,6 +618,7 @@ describe("reachability and failures", () => {
 		expect(broken).toContainEqual({
 			module: "root.fake",
 			action: "skipped",
+			cause: "parseFailed",
 			reason: "parse failed",
 			failure: "syntax error",
 		});
@@ -634,6 +647,7 @@ describe("reachability and failures", () => {
 		expect(outcomes).toContainEqual({
 			module: "reachable.fake",
 			action: "skipped",
+			cause: "parseFailed",
 			reason: "parse failed",
 			failure: "poisoned file",
 		});

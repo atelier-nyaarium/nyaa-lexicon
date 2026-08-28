@@ -634,10 +634,19 @@ export type FindImportsResult = z.infer<typeof FindImportsResultSchema>;
 ////////////////////////////////
 //  Index state
 
+/** Why a file was not indexed, closed; `current` means the index already holds this version. */
+export const IndexCauseSchema = z
+	.enum(["missing", "binary", "tooLarge", "unclaimed", "parseFailed", "current", "providerDown"])
+	.meta({ id: "IndexCause" });
+
+export type IndexCause = z.infer<typeof IndexCauseSchema>;
+
 export const IndexOutcomeSchema = z
 	.object({
 		module: z.string(),
 		action: z.enum(["indexed", "forgotten", "skipped"]),
+		/** Absent when indexed. `reason` and `failure` are the prose; this is the value. */
+		cause: IndexCauseSchema.optional(),
 		reason: z.string().optional(),
 		failure: z.string().optional(),
 		declarations: z.number().optional(),
@@ -666,6 +675,31 @@ export const ModuleStatusSchema = z
 	.meta({ id: "ModuleStatus" });
 
 export type ModuleStatus = z.infer<typeof ModuleStatusSchema>;
+
+/** What one read of the file found. `detail` says why for `binary` and `tooLarge`. */
+export const SourceReadOutcomeSchema = z
+	.object({
+		kind: z.enum(["text", "missing", "binary", "tooLarge"]),
+		detail: z.string().optional(),
+	})
+	.meta({ id: "SourceReadOutcome" });
+
+export type SourceReadOutcome = z.infer<typeof SourceReadOutcomeSchema>;
+
+/**
+ * One module's status, the hash the index holds, the hash of the bytes one read loaded, and its
+ * declaration rows, from one synchronous snapshot, so no field can describe a different version.
+ */
+export const ModuleDeclarationsSchema = ModuleStatusSchema.extend({
+	read: SourceReadOutcomeSchema,
+	/** The hash the index holds; null when it holds no row. */
+	contentHash: z.string().nullable(),
+	/** The hash of the bytes the read loaded; null unless `read.kind` is `text`. */
+	diskHash: z.string().nullable(),
+	declarations: z.array(StoredDeclarationSchema),
+}).meta({ id: "ModuleDeclarations" });
+
+export type ModuleDeclarations = z.infer<typeof ModuleDeclarationsSchema>;
 
 const failedFile = z.object({ module: z.string(), reason: z.string() });
 

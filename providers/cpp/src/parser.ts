@@ -40,12 +40,17 @@ export interface CppDeclarationRecord {
 	parameterNames: Set<string>;
 }
 
-type DraftInput = Omit<DraftRecord, "languageKind" | "signature" | "metrics" | "type" | "parameterNames"> & {
+type DraftInput = Omit<
+	DraftRecord,
+	"languageKind" | "signature" | "metrics" | "type" | "parameterNames" | "parameterSignature" | "hasBody"
+> & {
 	languageKind?: string | undefined;
 	signature?: string | undefined;
 	metrics?: Metrics | undefined;
 	type?: DraftType | undefined;
 	parameterNames?: Set<string>;
+	parameterSignature?: string;
+	hasBody?: boolean;
 };
 
 export interface CppReferenceRecord {
@@ -77,6 +82,7 @@ type DraftType =
 
 interface DraftRecord {
 	parent: DraftRecord | null;
+	qualifier?: Descriptor[];
 	own: Descriptor;
 	kind: Declaration["kind"];
 	name: string;
@@ -92,6 +98,8 @@ interface DraftRecord {
 	type: DraftType | undefined;
 	templateDependent: boolean;
 	parameterNames: Set<string>;
+	parameterSignature: string | undefined;
+	hasBody: boolean;
 }
 
 interface TemplateParameter {
@@ -304,6 +312,75 @@ function joinTokens(tokens: Token[], startIndex: number, endIndex: number): stri
 	return output.trim();
 }
 
+const INTEGRAL_WORDS = new Set(["signed", "unsigned", "short", "long", "int", "char"]);
+
+/** Function qualifiers that take part in overload identity; `noexcept`, `override` and a trailing return do not. */
+const FUNCTION_QUALIFIERS = new Set(["const", "volatile", "&", "&&"]);
+
+/** One spelling per integral type, so `unsigned` and `unsigned int` name one overload. */
+function foldIntegral(words: string[]): string[] {
+	if (words.includes("double") || !words.some((word) => INTEGRAL_WORDS.has(word))) return words;
+	const has = (word: string) => words.includes(word);
+	const longs = words.filter((word) => word === "long").length;
+	let type: string;
+	if (has("char")) type = has("unsigned") ? "unsigned char" : has("signed") ? "signed char" : "char";
+	else {
+		const size = has("short") ? "short" : longs >= 2 ? "long long" : longs === 1 ? "long" : "int";
+		type = has("unsigned") ? `unsigned ${size}` : size;
+	}
+	return [type, ...words.filter((word) => !INTEGRAL_WORDS.has(word))];
+}
+
+/**
+ * Overload identity, never shown: each parameter's type with its name and default argument
+ * dropped, then the function's cv and ref qualifiers.
+ */
+function canonicalParameterSignature(tokens: Token[], startIndex: number, endIndex: number): string {
+	const parts: string[] = [];
+	let part: number[] = [];
+	let parentheses = 0;
+	let brackets = 0;
+	let angles = 0;
+	const flush = () => {
+		const assign = part.findIndex((index) => tokenAt(tokens, index)?.text === "=");
+		const indexes = assign < 0 ? part : part.slice(0, assign);
+		if (indexes.length > 1) {
+			const last = indexes.at(-1) as number;
+			const before = indexes.at(-2) as number;
+			if (tokenAt(tokens, last)?.kind === "identifier" && tokenAt(tokens, before)?.text !== "::") indexes.pop();
+		}
+		if (indexes.length > 0)
+			parts.push(foldIntegral(indexes.map((index) => tokenAt(tokens, index)?.text ?? "")).join(" "));
+		part = [];
+	};
+	for (let index = startIndex; index < endIndex; index++) {
+		const token = tokenAt(tokens, index);
+		if (token === undefined || !isSignificant(token)) continue;
+		const value = token.text;
+		if (value === "(") parentheses++;
+		else if (value === ")") parentheses--;
+		else if (value === "[") brackets++;
+		else if (value === "]") brackets--;
+		else if (value === "<") angles++;
+		else if (value === ">") angles--;
+		else if (value === ">>") angles -= 2;
+		if (value === "," && parentheses === 0 && brackets === 0 && angles === 0) flush();
+		else part.push(index);
+	}
+	flush();
+	return parts.join(",");
+}
+
+function functionQualifiers(tokens: Token[], startIndex: number, endIndex: number): string {
+	const found: string[] = [];
+	for (let index = startIndex; index < endIndex; index++) {
+		const value = tokenAt(tokens, index)?.text;
+		if (value === "{" || value === ";" || value === "=" || value === "->") break;
+		if (value !== undefined && FUNCTION_QUALIFIERS.has(value)) found.push(value);
+	}
+	return found.join(" ");
+}
+
 function matching(tokens: Token[], openIndex: number, open: string, close: string, limit = tokens.length): number {
 	let depth = 0;
 	let guard = -1;
@@ -400,7 +477,7 @@ function isNameToken(token: Token | undefined): boolean {
 
 function namePath(record: DraftRecord | null): Descriptor[] {
 	if (record === null) return [];
-	return [...namePath(record.parent), record.own];
+	return [...namePath(record.parent), ...(record.qualifier ?? []), record.own];
 }
 
 function formatType(tokens: Token[], indexes: number[]): string {
@@ -683,13 +760,17 @@ class StructuralParser {
 		const groups = new Map<string, DraftRecord[]>();
 		for (const draft of this.drafts) {
 			if (draft.own.kind !== "method") continue;
-			const key = `${draft.parent === null ? "root" : this.drafts.indexOf(draft.parent)}:${draft.own.kind}:${draft.own.name}`;
+			const key = namePath(draft)
+				.map((descriptor) => `${descriptor.kind}:${descriptor.name}`)
+				.join("/");
 			const group = groups.get(key) ?? [];
 			group.push(draft);
 			groups.set(key, group);
 		}
 		for (const group of groups.values()) {
 			if (group.length < 2) continue;
+			// Numbered where each is reported, so a merged definition counts at its body, not its prototype.
+			group.sort((left, right) => left.startIndex - right.startIndex);
 			for (let index = 1; index < group.length; index++) {
 				const draft = group[index];
 				if (draft !== undefined) draft.own.disambiguator = String(index);
@@ -719,13 +800,16 @@ class StructuralParser {
 			...(draft.languageKind === undefined ? {} : { languageKind: draft.languageKind }),
 			...(draft.exported ? { exported: true } : {}),
 			...(draft.signature === undefined ? {} : { signature: draft.signature }),
-			...(draft.parent === null
+			...(draft.parent === null && draft.qualifier === undefined
 				? {}
 				: {
 						containerId: composeSymbolId({
 							language: LANGUAGE,
 							module: this.module,
-							descriptors: namePath(draft.parent),
+							descriptors:
+								draft.qualifier === undefined
+									? namePath(draft.parent)
+									: [...namePath(draft.parent), ...draft.qualifier],
 						}),
 					}),
 			...(draft.metrics === undefined ? {} : { metrics: draft.metrics }),
@@ -749,7 +833,7 @@ class StructuralParser {
 			const token = tokenAt(this.tokens, index);
 			if (
 				token?.kind !== "identifier" ||
-				this.excludedTokenIndexes.has(index) ||
+				(this.excludedTokenIndexes.has(index) && !this.roleByToken.has(index)) ||
 				this.templateTokenIndexes.has(index)
 			)
 				continue;
@@ -1522,13 +1606,34 @@ class StructuralParser {
 		let current = significantBefore(this.tokens, nameStartIndex);
 		while (current >= prefix.keywordIndex && tokenAt(this.tokens, current)?.text === "::") {
 			const qualifierName = significantBefore(this.tokens, current);
-			const qualifierToken = tokenAt(this.tokens, qualifierName);
-			if (qualifierToken?.kind !== "identifier") break;
-			qualifier.unshift(qualifierToken.value);
-			qualifierStart = qualifierName;
-			current = significantBefore(this.tokens, qualifierName);
+			const segment = this.templateQualifierBefore(qualifierName, prefix);
+			if (segment === null) break;
+			qualifier.unshift(segment.name);
+			qualifierStart = segment.startIndex;
+			current = significantBefore(this.tokens, segment.startIndex);
 		}
 		return { name, nameStartIndex, nameEndIndex, qualifier, qualifierStart };
+	}
+
+	private templateQualifierBefore(index: number, prefix: Prefix): { name: string; startIndex: number } | null {
+		const token = tokenAt(this.tokens, index);
+		if (token?.kind === "identifier") return { name: token.value, startIndex: index };
+		if (token?.text !== ">" && token?.text !== ">>") return null;
+		let depth = 0;
+		for (let current = index; current >= prefix.keywordIndex; current--) {
+			const value = tokenAt(this.tokens, current)?.text;
+			if (value === ">") depth++;
+			else if (value === ">>") depth += 2;
+			else if (value === "<") {
+				depth--;
+				if (depth === 0) {
+					const nameIndex = significantBefore(this.tokens, current);
+					const name = tokenAt(this.tokens, nameIndex);
+					return name?.kind === "identifier" ? { name: name.value, startIndex: nameIndex } : null;
+				}
+			}
+		}
+		return null;
 	}
 
 	private templateNameBefore(openIndex: number, prefix: Prefix): { name: string; nameStartIndex: number } | null {
@@ -1584,32 +1689,71 @@ class StructuralParser {
 		const operator = nameInfo.name.startsWith("operator");
 		const templateDependent = this.templateDependent(scope, prefix);
 		const returnInfo = this.functionReturnType(prefix, nameInfo, close, bodyOrEnd.end);
-		const record = this.addDraft({
-			parent,
-			own: { kind: "method", name: nameInfo.name },
-			kind: operator ? "operator" : isConstructor ? "constructor" : member ? "method" : "function",
-			name: nameInfo.name,
-			visibility: this.visibilityFor(scope, prefix.modifiers, access),
-			languageKind: nameInfo.name.startsWith("operator")
-				? "operator"
-				: nameInfo.name.startsWith("~")
-					? "destructor"
-					: undefined,
-			exported: prefix.exported,
-			startIndex: prefix.startIndex,
-			endIndex: Math.max(prefix.startIndex + 1, declarationEnd),
-			nameStartIndex: nameInfo.nameStartIndex,
-			nameEndIndex: nameInfo.nameEndIndex,
-			signature: joinTokens(this.tokens, prefix.startIndex, body >= 0 ? body : bodyOrEnd.end + 1),
-			metrics: bodyMetrics(this.tokens, prefix.startIndex, Math.max(prefix.startIndex + 1, declarationEnd)),
-			type: templateDependent
+		const qualifier = qualifiedParent === null ? this.qualifierDescriptors(nameInfo.qualifier) : [];
+		const parameterSignature = `${canonicalParameterSignature(this.tokens, openIndex + 1, close)})${functionQualifiers(this.tokens, close + 1, bodyOrEnd.end)}`;
+		const existing = this.drafts.find(
+			(draft) =>
+				draft.parent === parent &&
+				draft.own.name === nameInfo.name &&
+				draft.parameterSignature === parameterSignature &&
+				JSON.stringify(draft.qualifier ?? []) === JSON.stringify(qualifier),
+		);
+		const record =
+			existing ??
+			this.addDraft({
+				parent,
+				...(qualifier.length === 0 ? {} : { qualifier }),
+				own: { kind: "method", name: nameInfo.name },
+				kind: operator ? "operator" : isConstructor ? "constructor" : member ? "method" : "function",
+				name: nameInfo.name,
+				visibility: this.visibilityFor(scope, prefix.modifiers, access),
+				languageKind: nameInfo.name.startsWith("operator")
+					? "operator"
+					: nameInfo.name.startsWith("~")
+						? "destructor"
+						: undefined,
+				exported: prefix.exported,
+				startIndex: prefix.startIndex,
+				endIndex: Math.max(prefix.startIndex + 1, declarationEnd),
+				nameStartIndex: nameInfo.nameStartIndex,
+				nameEndIndex: nameInfo.nameEndIndex,
+				signature: joinTokens(this.tokens, prefix.startIndex, body >= 0 ? body : bodyOrEnd.end + 1),
+				metrics: bodyMetrics(this.tokens, prefix.startIndex, Math.max(prefix.startIndex + 1, declarationEnd)),
+				type: templateDependent
+					? unknownTemplateType("template-dependent return type is not resolved")
+					: returnInfo,
+				templateDependent,
+				parameterNames: new Set(),
+				parameterSignature,
+				hasBody: body >= 0,
+			});
+		if (existing !== undefined && body >= 0) {
+			if (!existing.hasBody) this.roleByToken.set(existing.nameStartIndex, "read");
+			// The definition's own name is the declaration, not a use of it.
+			for (let index = nameInfo.nameStartIndex; index < nameInfo.nameEndIndex; index++)
+				this.excludedTokenIndexes.add(index);
+			existing.startIndex = prefix.startIndex;
+			existing.endIndex = Math.max(prefix.startIndex + 1, declarationEnd);
+			existing.nameStartIndex = nameInfo.nameStartIndex;
+			existing.nameEndIndex = nameInfo.nameEndIndex;
+			existing.signature = joinTokens(this.tokens, prefix.startIndex, body);
+			existing.metrics = bodyMetrics(
+				this.tokens,
+				prefix.startIndex,
+				Math.max(prefix.startIndex + 1, declarationEnd),
+			);
+			existing.hasBody = true;
+			existing.type = templateDependent
 				? unknownTemplateType("template-dependent return type is not resolved")
-				: returnInfo,
-			templateDependent,
-			parameterNames: new Set(),
-		});
-		this.addTemplateParameters(prefix.template, record, scope);
-		const parameterCount = this.parseParameters(openIndex + 1, close, record, templateDependent);
+				: returnInfo;
+		} else if (existing !== undefined) {
+			this.roleByToken.set(nameInfo.nameStartIndex, "read");
+		}
+		if (existing === undefined) this.addTemplateParameters(prefix.template, record, scope);
+		const parameterCount =
+			existing === undefined
+				? this.parseParameters(openIndex + 1, close, record, templateDependent)
+				: record.parameterNames.size;
 		if (record.metrics !== undefined) record.metrics = { ...record.metrics, parameters: parameterCount };
 		if (body >= 0) {
 			const bodyClose = matching(this.tokens, body, "{", "}", limit);
@@ -1952,6 +2096,8 @@ class StructuralParser {
 			metrics: input.metrics,
 			type: input.type,
 			parameterNames: input.parameterNames ?? new Set(),
+			parameterSignature: input.parameterSignature,
+			hasBody: input.hasBody ?? false,
 		};
 		this.drafts.push(draft);
 		for (let index = draft.nameStartIndex; index < draft.nameEndIndex; index++)
@@ -2067,6 +2213,17 @@ class StructuralParser {
 				);
 			});
 		return candidates.sort((left, right) => namePath(right).length - namePath(left).length)[0] ?? null;
+	}
+
+	private qualifierDescriptors(names: string[]): Descriptor[] {
+		return names.map((name) => {
+			const declaration = this.drafts.find(
+				(draft) =>
+					draft.name === name &&
+					(draft.kind === "class" || draft.kind === "struct" || draft.kind === "namespace"),
+			);
+			return declaration?.own ?? { kind: "namespace", name };
+		});
 	}
 
 	private addTemplateReturnInference(record: DraftRecord, bodyIndex: number, bodyClose: number): void {

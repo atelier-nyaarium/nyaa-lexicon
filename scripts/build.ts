@@ -148,7 +148,8 @@ function checkBundlesAreSelfContained(root: string): number {
 function smokeProviders(root: string, providers: Array<{ out: string }>): void {
 	for (const entry of providers) {
 		const bundle = path.join(root, DIST_DIR, entry.out);
-		// The bun this script runs on is what consumers run.
+		// The bun running this script is the owner's own first answer; tsc's rootDir keeps the client
+		// source out of scripts/, so the owner is not imported here.
 		// Closed stdin is a clean shutdown, so a healthy provider loads, starts and exits zero.
 		// Import-time death exits nonzero with its reason on stderr, which is the failure hunted here.
 		const probe = spawnSync(process.execPath, [bundle], {

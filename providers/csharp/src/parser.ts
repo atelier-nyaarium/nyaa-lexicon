@@ -62,6 +62,7 @@ interface Documentation {
 
 interface RawDeclaration {
 	kind: SymbolKind;
+	qualifier?: string[];
 	languageKind?: string | undefined;
 	name: string;
 	parent?: RawDeclaration | undefined;
@@ -1059,6 +1060,7 @@ export class CsharpParser {
 			return this.advanceBoundary(boundary, end);
 		}
 		const isConstructor = operator === undefined && declarationName === parent.name;
+		const qualifier = operator === undefined ? this.explicitInterfaceQualifier(start, nameIndex) : [];
 		const kind: SymbolKind = operator === undefined ? (isConstructor ? "constructor" : "method") : "operator";
 		const selectionStart = operator === undefined ? name : this.token(operator.start);
 		const selectionEnd = operator === undefined ? name : this.token(operator.end);
@@ -1079,6 +1081,7 @@ export class CsharpParser {
 		const endIndex = bodyClose >= 0 ? bodyClose : boundary.kind === "semicolon" ? boundary.index : end - 1;
 		const method = this.addDeclaration({
 			kind,
+			...(qualifier.length === 0 ? {} : { qualifier }),
 			languageKind: operator === undefined ? (isConstructor ? "constructor" : "method") : "conversionOperator",
 			name: declarationName,
 			parent,
@@ -1267,8 +1270,10 @@ export class CsharpParser {
 		if (boundary.kind === "body" && close < 0)
 			this.report("Property body is not closed.", this.token(boundary.index));
 		const visibility = visibilityFor(modifiers, parent, "property");
+		const qualifier = this.explicitInterfaceQualifier(start, nameIndex);
 		const property = this.addDeclaration({
 			kind: "property",
+			...(qualifier.length === 0 ? {} : { qualifier }),
 			languageKind: "property",
 			name: name.value,
 			parent,
@@ -1320,6 +1325,7 @@ export class CsharpParser {
 		const close = boundary.kind === "body" ? this.matching(boundary.index, "{", "}", end) : -1;
 		const visibility = visibilityFor(modifiers, parent, "event");
 		const typeText = this.outline ? undefined : this.typeTextBeforeName(start + 1, firstNameIndex);
+		const qualifier = this.explicitInterfaceQualifier(start + 1, firstNameIndex);
 		for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
 			const segment = segments[segmentIndex] as { start: number; end: number };
 			const nameIndex = this.findDeclaratorName(segment.start, segment.end);
@@ -1328,6 +1334,7 @@ export class CsharpParser {
 			this.ignoredOffsets.add(name.startOffset);
 			const event = this.addDeclaration({
 				kind: "event",
+				...(qualifier.length === 0 ? {} : { qualifier }),
 				languageKind: "event",
 				name: name.value,
 				parent,
@@ -1473,6 +1480,53 @@ export class CsharpParser {
 			}
 		}
 		return nameIndex;
+	}
+
+	/** The written interface of an explicit implementation, as names; kinds are settled once the parse is whole. */
+	private explicitInterfaceQualifier(start: number, nameIndex: number): string[] {
+		const names: string[] = [];
+		let current = this.previousSignificant(nameIndex, start);
+		while (current >= start && this.value(current) === ".") {
+			const qualifier = this.previousSignificant(current, start);
+			const segment = this.genericInterfaceBefore(qualifier, start);
+			if (segment === null) break;
+			names.unshift(segment.name);
+			current = this.previousSignificant(segment.start, start);
+		}
+		return names;
+	}
+
+	/** A qualifier declared in this parse takes its own descriptor, wherever in the file; any other is a namespace. */
+	private qualifierDescriptors(names: string[]): Descriptor[] {
+		return names.map((name) => {
+			const declaration = this.rawDeclarations.find(
+				(raw) =>
+					raw.name === name &&
+					(raw.kind === "class" || raw.kind === "interface" || raw.kind === "struct" || raw.kind === "enum"),
+			);
+			return declaration?.descriptor ?? { kind: "namespace", name };
+		});
+	}
+
+	private genericInterfaceBefore(index: number, start: number): { name: string; start: number } | null {
+		const token = this.token(index);
+		if (isIdentifier(token)) return { name: token.value, start: index };
+		if (this.value(index) !== ">" && this.value(index) !== ">>") return null;
+		let depth = 0;
+		for (let current = index; current >= start; current--) {
+			const value = this.value(current);
+			if (value === ">") depth++;
+			else if (value === ">>") depth += 2;
+			else if (value === "<") {
+				depth--;
+				if (depth === 0) {
+					const nameIndex = this.previousSignificant(current, start);
+					const name = this.token(nameIndex);
+					return isIdentifier(name) ? { name: name.value, start: nameIndex } : null;
+				}
+			}
+		}
+		return null;
 	}
 
 	private operatorName(start: number, open: number): { name: string; start: number; end: number } | undefined {
@@ -1677,7 +1731,9 @@ export class CsharpParser {
 			...input,
 			nameTokenOffsets: uniqueStrings(input.nameTokenOffsets.map(String)).map(Number),
 		};
-		if (input.kind === "method" || input.kind === "constructor" || input.kind === "function") {
+		if (input.languageKind === "parameter") {
+			raw.descriptor = { kind: "parameter", name: input.name };
+		} else if (input.kind === "method" || input.kind === "constructor" || input.kind === "function") {
 			raw.descriptor =
 				ordinal === 0
 					? { kind: "method", name: input.name }
@@ -1707,13 +1763,12 @@ export class CsharpParser {
 	private pathFor(raw: RawDeclaration, cache: Map<RawDeclaration, string>): string {
 		const cached = cache.get(raw);
 		if (cached !== undefined) return cached;
-		const parentPath = raw.parent === undefined ? [] : this.descriptorPath(raw.parent, cache);
 		const id =
 			raw.localOrdinal === undefined
 				? composeSymbolId({
 						language: LANGUAGE,
 						module: this.module,
-						descriptors: [...parentPath, raw.descriptor as Descriptor],
+						descriptors: this.descriptorPath(raw, cache),
 					})
 				: composeSymbolId({
 						language: LANGUAGE,
@@ -1727,6 +1782,7 @@ export class CsharpParser {
 
 	private descriptorPath(raw: RawDeclaration, cache: Map<RawDeclaration, string>): Descriptor[] {
 		const path: Descriptor[] = raw.parent === undefined ? [] : this.descriptorPath(raw.parent, cache);
+		if (raw.qualifier !== undefined) path.push(...this.qualifierDescriptors(raw.qualifier));
 		if (raw.descriptor !== undefined) path.push(raw.descriptor);
 		return path;
 	}

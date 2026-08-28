@@ -9,7 +9,6 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import path from "node:path";
 import type {
 	RefactorCommitResult,
 	RefactorIssue,
@@ -25,6 +24,8 @@ import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 
 export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
+
+import { insideWorkspace } from "./sourceRead.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -390,7 +391,7 @@ export class TransactionManager {
 	//  Files
 
 	private full(module: string): string {
-		return path.join(this.workspaceRoot, module);
+		return insideWorkspace(this.workspaceRoot, module);
 	}
 
 	/** Reads bytes and stores them, returning what is needed to put the file back exactly. */

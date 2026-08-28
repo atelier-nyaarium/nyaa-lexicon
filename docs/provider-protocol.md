@@ -97,6 +97,25 @@ the conformance suite asks every provider for `../escaped` to prove the refusal.
 
 ## Names and ids
 
+### Qualifier descriptors
+
+A written qualifier is part of symbol identity. Each qualifier segment uses the descriptor kind of
+a declaration with that name in the same parse. If the parse does not declare the segment, the
+provider emits a `namespace` descriptor. This describes identity and does not classify the
+language construct. The qualifier is appended to the enclosing declaration path, not substituted
+for it.
+
+A prototype and its definition in one parse are one declaration: the provider merges them by
+name, qualifier path and signature (C++ reads the signature as parameter types with names and
+default arguments dropped and integral spellings folded, then the cv and ref qualifiers, so
+`f() const` and `f()` stay two), keeps the definition's ranges, and reports the prototype's name as
+a `read` reference to the merged symbol. Overloads sharing a path carry a disambiguator, `f(1)`,
+numbered by where each is reported: a merged definition counts at its body, so reordering the
+definitions renumbers them and the header's order does not.
+
+Providers emit occurrences through the shared server boundary. The required convention is applied
+by `serve.ts` with `withOccurrences` for every provider.
+
 A declaration's `name` is the source's spelling. The id normalizes that spelling to NFC, because
 macOS stores filenames decomposed and Linux composed, and one symbol must mint one id. So `name`
 and the id's last descriptor agree for composed source and differ for decomposed source. The id is
@@ -214,11 +233,10 @@ The prose is separate, one `DocRegion` per contiguous stretch:
   twice, so one search returns the same prose as two facts.
 - A range slices its own text back out, with fence delimiter lines excluded from both.
 
-**A repeated heading needs an occurrence.** `## Notes` twice under one parent would otherwise be one
-symbol, so the second carries a disambiguator: `Parent/Notes(2)/`. That id moves if a sibling is
-inserted above it, which is a known and accepted weakness, recorded in `plans/docs-tier.md`. Emit a
-diagnostic when you disambiguate, so a reader learns it there rather than when knowledge stops
-resolving.
+**A repeated heading carries an occurrence.** `## Notes` twice under one parent would otherwise be
+one symbol, so the second is `Parent/Notes[2]/`. That id moves if a sibling is inserted above it,
+an accepted weakness of naming by position. The occurrence is applied by `withOccurrences` in
+`serve.ts` for every provider; a provider emits the plain id and nothing else.
 
 ## Positions
 

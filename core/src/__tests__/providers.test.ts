@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { BunExecutable } from "@nyaa-lexicon/client";
 import { describeStart, discoverProviders, lexiconRoot, startProviders } from "../providers";
 import type { ProviderSpec, ProviderSupervisor } from "../supervisor";
 
@@ -54,6 +55,18 @@ afterEach(() => {
 //  Tests
 
 describe("finding providers", () => {
+	it("refuses to discover providers without a usable bun", () => {
+		const root = tree(["alpha"]);
+		const runtime: BunExecutable = { kind: "belowFloor", executable: "/x/bun", version: "1.3.9", floor: "1.4.0" };
+		expect(() => discoverProviders(root, runtime)).toThrow("providers cannot start: belowFloor /x/bun 1.3.9");
+	});
+
+	it("refuses to start providers without a usable bun", async () => {
+		const runtime: BunExecutable = { kind: "missing", executable: "/x/bun" };
+		await expect(startProviders(supervisor(), "/w", { commands: [], runtime })).rejects.toThrow(
+			"providers cannot start: missing /x/bun unknown",
+		);
+	});
 	it("finds every provider on disk without being told any of their names", () => {
 		const found = discoverProviders(tree(["alpha", "beta", "gamma"]));
 		expect(found.map((p) => p.directory)).toEqual(["alpha", "beta", "gamma"]);

@@ -126,6 +126,15 @@ describe("reaching a daemon", () => {
 
 		expect(await session.cacheStats({})).toEqual(STATS);
 	});
+
+	it("refuses an install that falls behind this client before a session lock read", async () => {
+		writeInstallRecord(install, host);
+		await daemonAnswering(serving);
+		const session = await open({ workspaceRoot: workspace });
+		installAt(install, "1.0.0");
+
+		expect(() => session.lock()).toThrow(Incompatible);
+	});
 });
 
 describe("refusing before any daemon is asked", () => {

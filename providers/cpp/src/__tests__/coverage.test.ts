@@ -150,7 +150,7 @@ describe("C++ structural coverage", () => {
 			),
 		).toBe(true);
 		expect(methods.every((declaration) => declaration.containerId?.includes("Thing#"))).toBe(true);
-		expect(methods.map((declaration) => declaration.symbolId)).toHaveLength(2);
+		expect(methods.map((declaration) => declaration.symbolId)).toHaveLength(1);
 	});
 
 	test("containers qualified namespace definitions", () => {

@@ -467,10 +467,14 @@ describe("warmup pass", () => {
 		const outcomes = await service.warmupWorkspace();
 		const skipped = outcomes.find((outcome) => outcome.module === "gone.fake");
 
-		expect(skipped).toMatchObject({ action: "skipped", reason: "provider unavailable" });
+		expect(skipped).toMatchObject({ action: "skipped", cause: "providerDown", reason: "provider unavailable" });
 		// Provider outages do not create per-file failure records.
 		expect(store.parseFailures()).toEqual([]);
 		expect(service.indexStatus().failures).toBe(0);
+		// Nor does the pass read as covered: the file is unread, and every request says so until a restart.
+		expect(service.warmFailure()).toMatch(/provider was unavailable/);
+		expect(service.warmHold()).toBeNull();
+		expect(store.readScanSummary()?.outlined).not.toBe(true);
 	});
 });
 

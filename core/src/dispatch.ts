@@ -363,6 +363,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		outlineModule: (params) => service.outline(params.module),
 		fileNotes: (params) => service.fileNotes(params.module),
 		moduleStatus: (params) => service.moduleStatus(params.module),
+		moduleDeclarations: (params) => service.moduleDeclarations(params.module),
 		findImports: (params) => service.findImports(params),
 		overview: () => service.overview(),
 		coChangedWith: (params) => service.coChangedWith(params.module, params.limit),
@@ -451,7 +452,16 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			// Names the build, since the likeliest cause is a client and daemon on different ones.
 			throw new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
 		}
-		const args = DAEMON_METHODS[method].request.parse(params ?? {});
+		let args: unknown;
+		try {
+			args = DAEMON_METHODS[method].request.parse(params ?? {});
+		} catch (error) {
+			// Lexicon's own words, never a zod blob: the field, then what the schema said about it.
+			const issues =
+				(error as { issues?: Array<{ path: Array<string | number>; message: string }> }).issues ?? [];
+			const worded = issues.map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`);
+			throw new Error(`${method} refused: ${worded.length === 0 ? String(error) : worded.join("; ")}`);
+		}
 		// Looked up by a runtime key, the handler's parameter is the intersection of every request.
 		const answer = await handlers[method](args as never);
 		return DAEMON_METHODS[method].response.parse(answer);

@@ -293,10 +293,12 @@ Sol's window ran out). The plan as rethought.
   so the daemon and a consumer that imports protocol and client share one implementation. Its
   contract, stated in `docs/daemon-protocol.md` and tested: the first 32 hex characters of the
   sha256 of the file's UTF-8 DECODED text; BOM and CRLF are part of the text; equal to a hash of
-  the raw bytes exactly when they are valid UTF-8. The residue forbids the bare token
-  `createHash(` across `core/src` and `client/src` with an owners allowlist, planted against the
-  four live instances (`transactions.ts`, `watcher.ts`, `client/src/paths.ts`,
-  `protocol/src/factId.ts`); `update(text` would match only the site being moved. Documented
+  the raw bytes exactly when they are valid UTF-8. The residue forbids `createHash(` in any
+  spacing across `core/src` and `client/src`, allowing the three hashes of something other than
+  text (`core/src/transactions.ts` over image bytes, `client/src/paths.ts` over a workspace key,
+  `client/src/discover.ts` over bundle bytes); `watcher.ts` re-exports the protocol's and hashes
+  nothing itself, and `protocol/src/factId.ts` is the grammar's own. Planted and seen to fire.
+  `awaitIndexed` carries `detail` on every refusal, `missing` included. Documented
   divergences from Switchboard's file tier: lexicon's 4 MiB source cap against Switchboard's 8 MB,
   and UTF-16 (lexicon calls it binary, Switchboard decodes it); both end in a refusal, never a
   wrong chip.
@@ -318,7 +320,12 @@ Sol's window ran out). The plan as rethought.
   `path.join(this.workspaceRoot, module)`, so `refactorTrack("../secret.md")` answers
   `{ tracked: true }` today and `refactorRevert` then overwrites that file above the root.
   `refactorInsert` and `refactorMove` already pass `refactorPlanner.ts : workspaceModule`, which
-  normalizes; the wire schema is defence in depth for them.
+  normalizes; the wire schema is defence in depth for them. The adapters' local fallbacks meet
+  the same wire: the MCP's in-process backend asks `createDispatch(service)` through the one
+  table the daemon backend asks over the socket, and the LSP's URI-to-module conversion is the
+  protocol's `workspaceModule`, so no adapter path reaches core with a raw module. A wire refusal
+  is worded by dispatch (`<method> refused: <field>: <the grammar's sentence>`), never a zod
+  blob, and the client reads `refusedModule` from those words.
 - `readSource` stays total (`text | missing | binary | tooLarge`; `moduleStatus` derives `exists`
   from `missing`). The assert against a non-canonical module lives in the wire transform, not in
   `readSource`: the watcher feeds OS-supplied filenames to `readSource` inside its `fs.watch`
@@ -356,10 +363,14 @@ Sol's window ran out). The plan as rethought.
   definition into an existing prototype draft of the same qualifier and signature, keeping the
   definition's range, before disambiguators are assigned. Then `Physics::World::step` never
   answers `ambiguous` against itself.
-- `containerPath` falls back to the id's descriptor names (`parseSymbolId`) when `containerId` is
-  absent, and the scope carried between segments is a descriptor PREFIX, so a segment may match a
-  descriptor name at any prefix depth: the split spelling `Physics:World:step` the manifest
-  teaches resolves, and `segments` can tell two candidates apart.
+- `containerPath` is the id's own descriptor names (`parseSymbolId`), the identity every provider
+  mints, and the container chain only for an id carrying no path of its own: a written scope
+  nothing declares (an out-of-line definition, an explicit interface implementation inside its
+  class) is then on the path even where `containerId` names the class. The scope carried between
+  segments is a descriptor PREFIX, so a segment may match a descriptor name at any prefix depth:
+  the split spelling `Physics:World:step` the manifest teaches resolves, and `segments` can tell
+  two candidates apart. The C# explicit implementation keeps its enclosing class in the id
+  (`Service/IRun#Go()`), so two classes implementing one member never collide.
 - Run matching: a run of segments matches a declaration name IN FULL when joined
   (`Acme:Services` reaches `Acme.Services`), never a proper prefix, since `QUALIFIER` applies to
   every language and a markdown heading `Node.js setup` must not answer `README.md:Node`.
@@ -380,7 +391,7 @@ Sol's window ran out). The plan as rethought.
 - `core/src/__tests__/language-branch-residue.test.ts` sweeps `client/src` too (the qualifier
   work lands in `chain.ts`) and `LANGUAGE_NAMES` gains the names it lacks (cpp, c++, kotlin,
   markdown, c). It lands green (no quoted language name in `client/src` today), so it is planted
-  before it is trusted.
+  before it is trusted (planted with a quoted `kotlin` in `chain.ts`; it fired).
 
 ### C# parameters
 
@@ -399,10 +410,12 @@ Sol's window ran out). The plan as rethought.
   that runs `--version` once per process and caches it, refusing missing, malformed and
   below-floor by name. The daemon's provider spawn and handover take the same executable, so the
   `runtime: "node"` label and the node report arguments in `core/src/providers.ts` go with it.
-  To enforce here: a residue forbidding `process.execPath` in production source outside
-  `runtime.ts`, so the sites it takes over (`client/src/discover.ts`, `core/src/providers.ts`,
-  `scripts/build.ts`'s smoke) cannot drift back; the build already refuses an entry point whose
-  source lacks a `refuseRuntime(` call (Phase 0, `checkEntryGuards`, the conformance CLI excepted).
+  Enforced by a residue forbidding a `process.execPath` read, in either spelling, in production
+  source outside `runtime.ts` and the live-host seam `paths.ts` (`currentHost()`), planted and
+  seen to fire; `scripts/build.ts`'s smoke spawns on the bun running the build, the owner's own
+  first answer, since tsc's `rootDir` keeps the client source out of `scripts/`. The build
+  already refuses an entry point whose source lacks a `refuseRuntime(` call (Phase 0,
+  `checkEntryGuards`, the conformance CLI excepted).
 - `classifyWorkspaceRoot(path)` moves from `core/src/workspaceAdmission.ts` to the client (core
   imports it), so a consumer knows before its first spawn that the daemon would refuse `/` or
   `$HOME` as a workspace, and `docs/client.md` says so. `daemonCommand` returns a closed outcome
@@ -460,7 +473,11 @@ Sol's window ran out). The plan as rethought.
   Then `bun run build major` once for both phases.
 - Verification: the suite, conformance across every provider, `grade.js` against the switchboard
   checkout (extraction and resolution both change), then the consumer probe against the built
-  install.
+  install. Known and older than this phase: the conformance gate
+  `literals/claimed-tier-is-tested/literals` fails for every code provider, since the corpus
+  holds no literals case with a code fixture; the CLI exits 1 on it at HEAD before this work and
+  after it. The gate is right and the corpus is short; a literals case per code language is its
+  own change.
 
 ## Phase 2 - Switchboard: the resolver rebuilt on the index
 

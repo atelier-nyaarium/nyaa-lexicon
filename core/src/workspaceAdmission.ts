@@ -5,7 +5,9 @@
 
 import { lstatSync, mkdirSync, type Stats } from "node:fs";
 import path from "node:path";
-import { currentHost, type PlatformEnv } from "@nyaa-lexicon/client";
+import { classifyWorkspaceRoot, currentHost, type PlatformEnv } from "@nyaa-lexicon/client";
+
+export { classifyWorkspaceRoot } from "@nyaa-lexicon/client";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -89,18 +91,5 @@ export function admitStateDir(dir: string, owner: DirectoryOwner = currentOwner(
 
 /** Whether this root is a project, or something every project merely lives inside. */
 export function admitWorkspace(workspaceRoot: string, host: PlatformEnv = currentHost()): Admission {
-	const root = path.resolve(workspaceRoot);
-
-	if (root === path.parse(root).root) {
-		return { admitted: false, reason: `${root} is the filesystem root, which is never one project` };
-	}
-
-	if (root === path.resolve(host.home)) {
-		return {
-			admitted: false,
-			reason: `${root} is your home directory, which is never one project. Register the project you mean instead.`,
-		};
-	}
-
-	return { admitted: true };
+	return classifyWorkspaceRoot(workspaceRoot, host);
 }

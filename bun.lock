@@ -16,6 +16,7 @@
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/core": "workspace:*",
+        "@nyaa-lexicon/protocol": "workspace:*",
       },
     },
     "adapters/mcp": {

@@ -7,6 +7,7 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { type BunExecutable, bunExecutable, currentHost } from "@nyaa-lexicon/client";
 import type { ProviderClaims } from "./routing.js";
 import type { ProviderSpec, ProviderSupervisor } from "./supervisor.js";
 
@@ -21,6 +22,7 @@ export interface ProviderCommand {
 
 export interface StartOptions {
 	commands?: ProviderCommand[];
+	runtime?: BunExecutable;
 }
 
 export interface StartedProvider {
@@ -66,7 +68,8 @@ export function lexiconRoot(): string {
  * installs dependencies and one that does not otherwise behave completely differently. Both run on
  * the executable this process runs on.
  */
-export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
+export function discoverProviders(root = lexiconRoot(), runtime = bunExecutable(currentHost())): ProviderCommand[] {
+	assertRuntime(runtime);
 	const directory = path.join(root, "providers");
 	if (!existsSync(directory)) return [];
 
@@ -76,14 +79,21 @@ export function discoverProviders(root = lexiconRoot()): ProviderCommand[] {
 
 		const bundled = path.join(root, "dist", "providers", entry.name, "main.js");
 		if (existsSync(bundled)) {
-			found.push({ directory: entry.name, command: [process.execPath, bundled] });
+			found.push({ directory: entry.name, command: [runtime.executable, bundled] });
 			continue;
 		}
 
 		const source = path.join(directory, entry.name, "src", "main.ts");
-		if (existsSync(source)) found.push({ directory: entry.name, command: [process.execPath, "run", source] });
+		if (existsSync(source)) found.push({ directory: entry.name, command: [runtime.executable, "run", source] });
 	}
 	return found.sort((a, b) => a.directory.localeCompare(b.directory));
+}
+
+function assertRuntime(runtime: BunExecutable): void {
+	if (runtime.kind !== "bun")
+		throw new Error(
+			`providers cannot start: ${runtime.kind} ${runtime.executable} ${"version" in runtime ? runtime.version : "unknown"}`,
+		);
 }
 
 function specFor(entry: ProviderCommand): ProviderSpec {
@@ -102,7 +112,9 @@ export async function startProviders(
 	workspaceRoot: string,
 	options: StartOptions = {},
 ): Promise<StartReport> {
-	const commands = options.commands ?? discoverProviders();
+	const runtime = options.runtime ?? bunExecutable(currentHost());
+	assertRuntime(runtime);
+	const commands = options.commands ?? discoverProviders(undefined, runtime);
 	const report: StartReport = { started: [], failed: [] };
 
 	// Concurrent: sequential made the worst case the SUM of every provider's timeout.
