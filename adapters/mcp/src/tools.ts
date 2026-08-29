@@ -346,7 +346,8 @@ export const SymbolHistoryInput = {
 const QUESTIONS = ["describe", "why", "relate", "contract", "effects", "usage"] as const;
 
 export const RecordAnswerInput = {
-	symbolId: z.string().min(1).describe(`Exact \`symbolId\` from an earlier result.`),
+	// Both id kinds appear in one `symbol_facts` answer, and this tool takes one of each.
+	symbolId: z.string().min(1).describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
 	question: z.enum(QUESTIONS).describe(`Answer category for \`prose\`.`),
 	prose: z
 		.string()
@@ -378,7 +379,7 @@ export const InvalidateAnswerInput = {
 
 export const ReaffirmAnswerInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
-	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	symbolId: z.string().min(1).optional().describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
 	question: z.enum(QUESTIONS).describe(`Answer category to refresh.`),
 	citations: z
