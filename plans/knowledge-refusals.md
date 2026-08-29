@@ -92,14 +92,19 @@ Phase 5 waits on the owner.
   the same name on the container descriptor too. Different module. This is what lists candidates
   for a person.
 
+Both return false for a local id, whose parse carries an ordinal and no descriptors, matching
+`rebaseSymbolId`'s refusal to trace one. A stranded local is therefore dated and never migrated,
+and its refusal lists no candidates and says a local has none.
+
 The store answers both through `declarationsNamed`, which is already indexed by name, filtered by
 the predicate. Phase 4 uses the strict one; the refusals below use the loose one. The two are
 stated here once, and the plan refers to them by name from here on.
 
 **Stranded state, readable by every refusal.** The store exposes `strandedState(symbolId)`:
-`{ answers: number, gaps: number, strandedAt: number | null, exempt: boolean }`, where `exempt` is
-true when the subject's module is in `parse_failures`. `subjectRefused` reads it before composing,
-so the wording agrees with whatever the sweep last left the row in:
+`{ answers: number, gaps: number, strandedAt: number | null, exempt: boolean, reason: string | null }`,
+where `exempt` is true when the subject's module is in `parse_failures` and `reason` is that
+failure's recorded reason, so the lookup has one owner. `subjectRefused` reads it before
+composing, so the wording agrees with whatever the sweep last left the row in:
 
 - No declaration, answers or gaps recorded, not exempt: **stranded**. The refusal says the
   knowledge recorded under this id is stranded because the symbol is gone, names `strandedAt` if
@@ -118,17 +123,22 @@ it from `strandedState` when the subject has no declaration. `renderKnowledge` r
 line from it and replaces the reaffirm instruction, which a stranded subject cannot follow, with
 the re-record path and the candidates. An optional field is a minor.
 
-**Recall stops charging for it.** `recallAnswer` records demand on a miss and on a stale recall
-today. A stranded or dated subject records no demand and is excluded from the stale count in
-`knowledgeGaps`, or a dated row would re-enter the queue this plan says it leaves.
+**Recall stops charging for it.** Today `recallAnswer` records demand on a miss only when the
+subject has an indexed declaration, and on every unhealthy recall (stale, doubted, or inheriting
+either) regardless of the subject. The miss path is already right. The unhealthy path is the one
+that charges for a stranded answer, since a stranded answer exists and is permanently stale, so
+the stranded check goes before `recordGap` there. A stranded or dated subject is also excluded
+from the stale count in `knowledgeGaps`, or a dated row would re-enter the queue this plan says
+it leaves.
 
 **Tests:** plant a symbol, record an answer, replace the file without the symbol. `recordAnswer`,
 `reaffirmAnswer`, `invalidateAnswer` and `recallAnswer` on the dead id each say stranded and name
-the candidates; `recallAnswer` carries the field and records no gap. Plant only a gap row at a
-dead id: the demand wording. Put the module into `parse_failures` with the file present: the
-waiting wording, nothing dated. Plant two same-named declarations in other modules: both listed as
-candidates by `sameNameAndKind`, neither authorized by `sameDeclaration`. Watch the old wording
-fail first.
+the candidates; `recallAnswer` carries the field and records no gap on the unhealthy path, which
+is the branch the fix touches. Plant only a gap row at a dead id: the demand wording. Put the
+module into `parse_failures` with the file present: the waiting wording with the failure's reason,
+nothing dated. Plant two same-named declarations in other modules: both listed as candidates by
+`sameNameAndKind`, neither authorized by `sameDeclaration`. Strand a local id: no candidates, and
+the refusal says why. Watch the old wording fail first.
 
 ## Phase 0 - One diagnosis for a bad subject id, reached from every tool
 
@@ -145,30 +155,37 @@ the shortlist. Registered in the method table, dispatched in `dispatch.ts` throu
 minor.
 
 **The chokepoint.** `resolveOne` in the MCP adapter is where a supplied `symbolId` is currently
-returned unvalidated to twelve handlers. It calls `diagnoseSubject` when the id names no
+returned unvalidated to eleven handlers. It calls `diagnoseSubject` when the id names no
 declaration and returns the reason as the problem, so every handler that funnels through it gets
-the diagnosis without knowing it. The two paths that take a symbol id without `resolveOne`,
-`symbol_source` and `symbol_facts`, call the same helper. The knowledge writers already diagnose in
-core and are unchanged.
+the diagnosis without knowing it. The one path that takes a symbol id without `resolveOne`,
+`symbol_source`, calls the same helper on its `symbolId` argument; its `factId` argument is a
+separate parameter, so a fact id in the `symbolId` slot is the fact-id-as-subject case and nothing
+has to guess. The knowledge writers already diagnose in core and are unchanged. The two sites
+that answer `No symbol with ID ... is indexed` after a `null` from core, in `describe_symbol` and
+`symbol_facts`, remain as guards against a file replaced between resolution and the read, and
+answer through the helper too.
 
 **Per tool, stated so nothing is implicit:**
 
 - Through `resolveOne`, therefore diagnosed on absence: `describe_symbol`, `find_references`,
-  `type_of`, `refactor_move`, `refactor_rename`, `refactor_preview`, `symbol_history`,
-  `recall_answer`, `reaffirm_answer`, `invalidate_answer`, `knowledge_gaps` by root, and
-  `co_changed_with` by symbol. `type_of` keeps its own three-valued Unknown for the reasons that
-  remain after the id is known to exist.
-- Direct, calling the helper themselves: `symbol_source`, `symbol_facts`.
-- Diagnosing in core already: `record_answer`.
-- Taking a module, not a symbol, so out of scope: `outline_module`, `file_history`, `search_*`,
-  `find_*` by text.
+  `type_of`, `refactor_move`, `refactor_rename`, `refactor_preview`, `recall_answer`,
+  `reaffirm_answer`, `invalidate_answer`, `symbol_facts`, and `knowledge_gaps` when a root is
+  supplied; a rootless `knowledge_gaps` never resolves and is not diagnosed. `type_of` keeps its
+  own three-valued Unknown for the reasons that remain after the id is known to exist.
+- Direct, calling the helper itself: `symbol_source`.
+- Diagnosing in core already: `record_answer`, and `refactor_insert` through its `after` anchor,
+  which is one of the routed instances below.
+- Taking a module or a name, never a symbol id, so out of scope: `symbol_history`,
+  `co_changed_with`, `outline_module`, `file_history`, `search_*`, `find_*` by text.
 
-**The residue.** The token is `is not in the index`, forbidden anywhere under `core/` and
-`adapters/` except `subjectRefused`. The six existing instances outside the owner, in `service`
-(the `type_of` NotIndexed detail), `sourceWorkspace`, and four sites in `refactorPlanner`, all
-take a symbol id that names nothing, which is this concept, so each routes through the diagnosis
-and the residue is run against all six before it is trusted. "No symbol named X is indexed" is a
-name-lookup miss, a different concept, and is not touched.
+**The residue.** Two tokens, `is not in the index` and `No symbol with ID`, forbidden in
+production source under `core/` and `adapters/` except `subjectRefused`; `__tests__` is excluded
+because a test asserts the owner's output and a mock imitates it. The six existing instances of
+the first outside the owner, in `service` (the `type_of` NotIndexed detail), `sourceWorkspace`,
+and four sites in `refactorPlanner`, all take a symbol id that names nothing, which is this
+concept, so each routes through the diagnosis; the two instances of the second are the adapter
+guards named above. The residue is run against all eight before it is trusted. "No symbol named
+X is indexed" is a name-lookup miss, a different concept, and is not touched.
 
 **Tests:** each of the four outcomes handed to `describe_symbol`, `symbol_facts`, `symbol_source`
 and `find_references` produces the sentence `record_answer` produces for it, and `type_of` and one
@@ -203,16 +220,22 @@ branch produced the rows, which mirrors the core's structure into the renderer. 
 instead. `KnowledgeGapsSchema` gains an optional `filtered: boolean`. Every return sets it
 explicitly: `true` from the seeded fallback, the module scope and the subtree walk, whose rows all
 honour the asked question; `false` from the workspace demand sweep, which deliberately carries
-every question with rechecks first. The renderer names the question only on `true`, and treats an
-omitted field as an older peer, which is the only thing omission means once every branch sets it.
+every question with rechecks first. The renderer names the question only on `true`, in the
+zero-row branch as well as the listed one, since today the zero-row branch names it
+unconditionally. An omitted field is a legacy or synthetic result and reads as unfiltered, which
+is the safe direction: a legacy module-scoped result loses its question label rather than a
+legacy workspace sweep gaining a false one.
 
 **Wire:** an optional field on a result shape is additive, and a minor.
 
-**Tests, each named by the request that reaches its branch:** no arguments reaches the workspace
-sweep, `filtered: false`; `{ module }` reaches the module scope, `true`; `{ name }` or
-`{ symbolId }` reaches the subtree walk, `true`; no arguments on an empty ledger reaches the seeded
-fallback, `true`. Renderer: `true` names the question, `false` does not, omitted does not, with the
-lying case planted, a page of matching rows on a mixed total.
+**Tests, at the core layer, each named by the request that reaches its branch:** `{}` reaches the
+workspace sweep, `filtered: false`; `{ module }` reaches the module scope, `true`; `{ root }`
+reaches the subtree walk, `true`; `{}` with no outstanding gap or recheck rows reaches the seeded
+fallback, `true`, and that trigger is reached by a workspace whose every gap has been answered,
+not only by one never asked, since `saveAnswer` clears the gap it answers. At the adapter,
+`resolveOne` turns `name` or `symbolId` into `root`, one test. Renderer: `true` names the
+question, `false` does not, omitted does not, in both branches, with the lying case planted, a
+page of matching rows on a mixed total.
 
 ## Phase 4 - Orphaned knowledge: dated, migrated, or deleted by the store
 
@@ -228,9 +251,10 @@ indexer and facts in the store, and presence is a source-dependent decision.
   watcher batch already converge on prune, it runs the sweep inline. It is synchronous like prune
   and it is bounded, so it costs the scan a bounded amount; the plan does not claim it costs
   nothing.
-- The **store** exposes `sweepOrphans(batch, presence, clock)`: one bounded batch, one transaction.
-  `presence` is a function the indexer supplies, answering for a module whether it is present and
-  parsing, defined below. The store never touches the filesystem.
+- The **store** exposes `sweepOrphans(batch, presence, now)`: one bounded batch, one transaction.
+  `presence` is a function the indexer supplies, answering for a module with one closed value,
+  `presentParsing`, `presentFailing` or `absent`, defined below. The store never touches the
+  filesystem and never sees a hash.
 
 **Transactions.** `inTransaction` is a raw `BEGIN`/`COMMIT` and not re-entrant, and the public
 `migrateKnowledge` opens its own. The migration body is factored into a non-transactional
@@ -238,51 +262,68 @@ primitive used by both: the public method wraps it in a transaction as today, an
 the primitive inside its own batch transaction. Each batch is one transaction; the sweep as a
 whole is many, which is what lets it stop and resume.
 
-**Presence, decided by the indexer, bound to content.** A module is present and parsing when its
-source read is `text` and the read's content hash equals the `files.contentHash` the index holds
-for it. `missing`, `binary` and `tooLarge` reads are not present. A file deleted and recreated
-under the same path with different content hashes differently, so it is not the same file and its
-missing symbol is a real strand.
+**Presence, decided by the indexer from the scan it just finished.** The sweep runs after prune,
+and prune has just computed the reachable set and forgotten every module outside it, including
+that module's `parse_failures` row. So a module is `absent` when it is outside the reachable set,
+`presentFailing` when it is inside it and `parseFailureOf` holds a row, and `presentParsing`
+otherwise. No source is read and no hash is compared: a parse failure never writes
+`files.contentHash`, so a hash comparison would call every file edited into a failure changed and
+date it, which is the mid-refactor case the owner exempted. A file deleted and recreated under the
+same path is `presentParsing` if it parses, and its missing symbol is a real strand, or
+`presentFailing` if it does not, and is exempt like any other failing file.
 
 **Two passes, so the loop can reach what it must.** An orphan-only loop can never un-strand,
 because a row whose subject resolves again is not an orphan.
 
-Pass A, over dated rows, read by the `strandedAt` index:
+Pass A, over dated rows, read by the `strandedAt` index on each table:
 
 1. **Un-strand** a dated row whose subject resolves again: the date is cleared.
 2. **Delete** a row whose date is thirty or more days behind the clock, answers and demand rows
    alike. A date ahead of the clock is treated as now, so a clock that went backwards cannot
    delete early.
 
-Pass B, over undated orphans, read by a keyset over `(symbolId, question)` left-joined to
-`symbols`:
+Pass B, over undated orphans, read as one `UNION ALL` over `answers` and `gaps` carrying a row
+kind, keyed `(kind, symbolId, question)` and left-joined to `symbols` on the subject id. The two
+tables share no row, so a cursor over one key cannot say which table it left, and the triple is
+what the cursor persists. The orphan's module comes from `moduleOf` in the grammar, since the
+join yields none for an orphan by definition; a malformed id has no module, can never be exempt,
+and is dated on first sight.
 
-3. **Exempt** when the subject's module is in `parse_failures` and `presence` says present. A
-   present, failing file may be mid-refactor, and nothing is written for it.
-4. **Migrate** when exactly one declaration in the index satisfies `sameDeclaration` from Phase 1.
-   The primitive carries answers and demand the way a rename through the refactor tools does. No
-   date is set on a move. **Collision:** the migration moves only the questions the destination
+3. **Exempt** when `presence` answers `presentFailing`. A present, failing file may be
+   mid-refactor, and nothing is written for it.
+4. **Migrate** when exactly one declaration in the index satisfies `sameDeclaration` from Phase 1,
+   which a local or malformed id never does. The primitive carries answers and demand the way a
+   rename through the refactor tools does. No date is set on a move. **Collision:** the migration
+   moves only the questions the destination
    lacks and deletes every remaining source row, so a stranded answer whose question the
    destination already holds is deleted and the destination's prose wins, even where the stranded
    prose was better. That is the current behaviour, kept as written, and it is the one place this
    phase asks the owner to look again.
 5. **Date** otherwise: `strandedAt` is set on first sight and left alone after.
 
-**Budget and continuation.** The unit is rows examined per scan across both passes, capped by one
-constant beside `STALE_SCAN_CAP`. A sweep that reaches the cap stops, persists its keyset position
-in store meta beside the scan summary, and resumes from it on the next scan; a sweep that finishes
-clears the position. What it did is reported as an optional `knowledgeSweep` object on the scan
-summary and on `overview`: examined, un-stranded, migrated, dated, deleted, and whether it stopped
-early. Optional fields are a minor.
+**Budget and continuation.** The unit is rows examined per scan across both passes, capped by
+`ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepOrphans`;
+`STALE_SCAN_CAP` is a file-local constant of the knowledge layer, which neither the indexer nor
+the store imports, and stays where it is. A sweep that reaches the cap stops, persists its cursor
+triple in store meta beside the scan summary, and resumes from it on the next scan; a sweep that
+finishes clears the cursor. What it did is reported as an optional `knowledgeSweep` object on the
+scan summary and on `overview`: examined, un-stranded, migrated, dated, deleted, and whether it
+stopped early. Optional fields are a minor.
 
-**The clock.** The store reads `Date.now` at four sites today and a residue holds one owner for
-the routed modules, `clock.ts`, whose `Clock` is injectable. The sweep takes `now` from the clock
-the indexer hands it, so the aging test sets the clock rather than faking a date in the row.
+**The clock.** `clock.ts` owns time for the routed modules and its `Clock` is injectable into the
+service, but the service builds `WorkspaceIndexer` without one. The indexer gains a `Clock`
+parameter, the service passes its own, and the clock residue's routed list grows by `indexer.ts`,
+so a `Date.now` in the sweep fails the build. The sweep passes `now` into `sweepOrphans` as a
+value, so the store's four existing `Date.now` reads, all write timestamps, stay unrouted and the
+aging test sets the clock rather than faking a date in the row.
 
 **What a dated row stops costing.** It leaves the stale sweep and the `STALE_SCAN_CAP` count at
-once, it never leads the demand queue, and `recallAnswer` records no demand for it (Phase 1).
-`knowledge_gaps` shows it in a stranded section with its date, so a person can see what is about to
-go. That is a window, not a task.
+once, it never leads the demand queue, and `recallAnswer` records no demand for it (Phase 1). It
+still reaches the workspace demand sweep of `knowledge_gaps`, carrying `stranded: true` and its
+date, sorted after every recheck and missing row, counted in `total`, and the renderer groups
+those rows under a stranded heading, so a person can see what is about to go. A module scope or
+subtree walk never holds one, since a stranded row has no declaration under any scope. That is a
+window, not a task.
 
 **Storage.** One nullable `strandedAt` column on `answers` and on `gaps`, added in place with
 `ALTER TABLE` like every other added column, one atomic statement, an old row reads as not yet
@@ -302,9 +343,11 @@ module as the only `sameDeclaration` match: migrated, undated, recalled at the n
 second match: dated, not migrated. Record a different answer at the destination first, then move:
 the destination's prose survives and the source row is gone, which pins the collision rule.
 Advance the injected clock thirty days: gone. Set the clock behind a date: not deleted. Force a
-rebuild: the date survives. Plant more orphans than the cap: the sweep stops, reports it, and the
-next scan finishes from the persisted position. An older client parses a row carrying the new
-fields. Each case watches the old behaviour fail first.
+rebuild: the date survives. Plant more orphans than the cap across both tables: the sweep stops
+inside one, reports it, and the next scan finishes from the persisted triple without re-examining
+the other. Plant a malformed subject id and a stranded local id: both dated, neither migrated,
+neither exempt. An older client parses a row carrying the new fields. Each case watches the old
+behaviour fail first.
 
 ## Phase 5 - Fan-in seeding per language [deferred, decision-complete]
 
@@ -317,14 +360,22 @@ fan-in and say nothing.
 
 **Recommended design, priced against what the store holds.**
 
-- **Eligible:** exported, not generated, and carrying at least one comment anchored to the
-  declaration or at least one reference or literal beyond the declaration itself. The three counts
-  are answered from indexes that exist: `comments_anchor`, `refs_target`, `literals_container`.
-- **Generated, as a three-valued fact.** The scan learns it from `git check-attr` and today
-  collapses "not generated" and "could not tell" into one empty set. It is persisted on `files` as
-  `generated: yes | no | unknown` with a reason from a closed enum for unknown, `noGit` or
-  `gitFailed`, added in place. Unknown files are eligible and the seeded result reports how many
-  candidates were unknown, so the bias is visible rather than silent.
+- **Eligible:** not `exported: false`, not generated, and carrying at least one comment anchored
+  to the declaration or at least one reference or literal beyond the declaration itself. The three
+  counts are answered from indexes that exist: `comments_anchor`, `refs_target`,
+  `literals_container`. `exported` is optional on the declaration and stored as null when a
+  language cannot answer, so requiring `true` would exclude such a language whole; an unknown is
+  eligible and counted in the same report as unknown generated status.
+- **Generated, as a three-valued fact, with a path to the row.** The scan learns it from
+  `git check-attr` and today `generatedFiles` returns one set of paths, collapsing "not generated"
+  and "could not tell", which its one caller uses only to compute reachability and drops. It
+  becomes a per-module verdict map, `yes`, `no`, or `unknown` with a reason from a closed enum,
+  `noGit`, `gitFailed`, or `unscanned`, threaded from the scan through `indexFile` into a new
+  `replaceFile` parameter and persisted on `files` in two columns added in place, carried by
+  `restoreKnowledge` like every other survivor of a rebuild. A module indexed by a watcher batch
+  between scans, which never ran the git call, is `unknown` with `unscanned` until the next full
+  scan. Unknown files are eligible and the seeded result reports how many candidates were unknown,
+  so the bias is visible rather than silent.
 - **Order within a language:** language-local fan-in, ties by symbol id.
 - **Language order:** the store persists no language and every symbol id carries one, so the order
   is derived, not stored: languages sorted by their declaration count descending, ties by name.
@@ -341,9 +392,11 @@ be accepted or not, not an accident.
 
 **Tests, so the phase is done when decided:** a two-language store where one language's top
 symbol is a generated container: the container is not seeded, the language's best comment-bearing
-declaration is. A `noGit` workspace: candidates seed as unknown and the report says so. Equal
-fan-in ties: the same order on two runs. The cheaper form: the comment-less substantive
-declaration is absent and the test names it.
+declaration is. A `noGit` workspace: candidates seed as unknown and the report says so. A language
+that reports no `exported`: its declarations are eligible and counted as unknown. Seeding on a
+workspace whose every gap has been answered, not only on one never asked. Equal fan-in ties: the
+same order on two runs. The cheaper form: the comment-less substantive declaration is absent and
+the test names it.
 
 **Release:** a minor if it persists the generated fact, a patch under the cheaper form. Not in
 any release line until the owner decides.
@@ -373,7 +426,10 @@ checker's `ok: false`:
 - Fact id as subject, unminted id, unknown module, stranded id: Phase 0 and Phase 1.
 - Prose too long: names the limit and the length. Kept.
 - Replacing an answer whose citations still hold: names the fix (`omitting`). Kept.
-- No standing doubt to clear, or the wrong doubt id: names the fix (recall and cite it). Kept.
+- The wrong doubt id: names the fix (recall and cite it). Kept.
+- **"no doubt stands on the Q answer about X": fails the rule.** It states a condition and no
+  action. Reworded to say the answer carries no doubt, so `resolvesDoubt` is omitted, and that
+  `invalidate_answer` is how a doubt is raised if one was intended.
 - A doubt with no reason: names what the reason is for (the next writer reads it). Kept.
 - No answer recorded to re-affirm: names the fix (`record_answer` writes one). Kept.
 - **"an answer needs prose": fails the rule.** It states a condition and no action. Reworded to
@@ -392,13 +448,20 @@ Ordered by how much it proves, as the repository already orders it.
 - Unit: every phase plants the mistake and watches the old message fail before the new one is
   trusted. The render-shape gate already covers every renderer's output.
 - A gate that can fail. Every refusal is composed through one owner, a catalog of reason
-  constructors in the knowledge layer, and a residue fails the build on a refusal composed
-  anywhere else, under any of the three shapes: a `recorded: false`, a `refused:`, or a helper's
-  `ok: false` carrying a reason. The sweep asserts it found constructors and found call sites, so a
-  run matching nothing fails. Each constructor is named by a test that asserts the returned reason
-  AND the action taken, since a test that merely names a reason does not prove the branch ran. The
-  density bar in the repository's rules stays. The gate is proven by planting a stray refusal under
-  each of the three shapes and watching each fail.
+  constructors in its own module of the knowledge layer, and the refusals reach their three
+  shapes, a `recorded: false`, a `refused:`, or the citation checker's `ok: false`, only through
+  it. The residue is scoped, not workspace-wide: `refused:` has two dozen unrelated instances
+  across core and `ok: false` three dozen, in dispatch, the refactor planner, transactions and
+  argument parsing, none of them refusals of this layer, so a token sweep over those spellings
+  would fail everywhere or be narrowed until it checked nothing. The sweep reads `knowledge.ts` and
+  `answers.ts` only, and forbids a string literal composed directly after `reason:` or `refused:`
+  anywhere in them, which is the narrowest token a refusal composed inline carries and a
+  constructor call does not. The catalog module is exempt because it is the owner, and the citation
+  checker's `ok: false` is a catalog member, not a violation. The sweep asserts it found the two
+  files and found constructor calls, so a run matching nothing fails. Each constructor is named by
+  a test that asserts the returned reason AND the action taken, since a test that merely names a
+  reason does not prove the branch ran. The density bar in the repository's rules stays. The gate
+  is proven by planting one inline literal per shape in the scoped files and watching each fail.
 - Drive the built server: hand each refusal the exact bad input from the overnight logs, a fact
   id as subject, a member id without its terminator, a stranded id, and read what comes back, and
   drive `diagnoseSubject` and one `sweepOrphans` batch through the real daemon.
@@ -457,3 +520,16 @@ Collected during the overnight knowledge run, the review of its patches, and the
   generated" and "could not tell" into one absence. The lesson is the plan's own rule turned on
   the plan: a sentence that names a mechanism the code does not have is a refusal that names no
   fix.
+- Lap 3 of plan refinement: ten auditors, eighteen findings, eighteen held, one of them only in
+  part. Twenty-four of the twenty-five lap 2 fixes had landed. The two blockers were new surface
+  from lap 2's own fixes: the presence rule compared a content hash a parse failure never writes,
+  so it would have dated the exact file the owner exempted, and the three-shape refusal gate was
+  written as a workspace token sweep over spellings with sixty unrelated instances. Both fixes
+  were the same move, narrowing to what the code already knows: prune has just computed presence,
+  so the sweep reads it instead of the disk, and the gate reads two files instead of the tree.
+  The rest were the lap 2 rewrite's own arithmetic: eleven `resolveOne` callers rather than twelve
+  with two tools named that never take an id, a cursor over one key for two tables, matchers
+  undefined for local ids, a cap placed in a file the sweep cannot import, a clock the indexer was
+  never handed, and a "stranded section" beside a flat-row wire. The zero-row gap header was
+  found structurally lying while no live path reaches it, since the workspace sweep falls through
+  to seeding, and was fixed anyway because the renderer is not supposed to know that.
