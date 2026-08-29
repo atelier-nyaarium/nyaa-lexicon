@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { codeOnly } from "../residue";
+import { codeOnly, readSwept } from "../residue";
 
 /** Holds providerKit.ts as the one walk, path conversion and handler table a provider entry point uses. */
 const PROVIDERS = join(import.meta.dirname, "..", "..", "..", "providers");
@@ -28,7 +28,9 @@ describe("one kit scaffolds every provider", () => {
 	it("has no entry point walking the workspace, converting a path, or wiring handlers itself", () => {
 		const offenders: string[] = [];
 		for (const file of swept()) {
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const pattern of PRIVATE) {
 				if (pattern.test(code)) offenders.push(`${file.slice(PROVIDERS.length + 1)}: ${pattern.source}`);
 			}

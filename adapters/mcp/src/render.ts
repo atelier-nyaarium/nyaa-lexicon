@@ -389,7 +389,13 @@ function countLabel(count: Count, noun: string, plural = `${noun}s`): string {
 }
 
 /** What was cut, from the count. */
-function pagingNotes(count: Count, shown: number, noun: string, plural = `${noun}s`, raise = "Raise `limit`."): string {
+function pagingNotes(
+	count: Count,
+	shown: number,
+	noun: string,
+	plural = `${noun}s`,
+	raise = `Raise \`limit\`.`,
+): string {
 	const notes: string[] = [];
 	if (count.kind === "exact") {
 		const more = count.count - shown;

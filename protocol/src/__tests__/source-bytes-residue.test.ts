@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readSwept } from "../residue";
 
 /**
  * Enforces the two character rules that were prose with nothing behind them.
@@ -65,11 +65,11 @@ function isRawControl(code: number): boolean {
 function offendersIn(offends: (code: number) => boolean): string[] {
 	const found: string[] = [];
 	for (const path of trackedFiles()) {
-		// Tracked but gone is an ordinary state mid-delete or mid-rename. Reading it threw ENOENT and
-		// failed the whole sweep, which reads as a byte violation in a file nobody can open.
-		const absolute = join(REPO_ROOT, path);
-		if (!existsSync(absolute)) continue;
-		const lines = readFileSync(absolute, "utf8").split("\n");
+		// Tracked but gone is an ordinary state mid-delete or mid-rename, and checking before reading
+		// leaves the window open. A vanished file reads as null; anything else still throws.
+		const source = readSwept(join(REPO_ROOT, path));
+		if (source === null) continue;
+		const lines = source.split("\n");
 		for (const [index, line] of lines.entries()) {
 			for (const character of line) {
 				const code = character.codePointAt(0) ?? 0;

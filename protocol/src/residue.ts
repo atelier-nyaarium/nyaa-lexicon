@@ -35,12 +35,16 @@ export function sourceFiles(dir: string, skip: Iterable<string>): string[] {
  * Listing and reading are two moments. A file written and removed by a test running in parallel
  * exists for the first and not the second, and a sweep that reads it directly dies on ENOENT with a
  * message about the wrong thing. A path that no longer exists holds no violation.
+ *
+ * Only disappearance is tolerated. A file that cannot be read for any other reason is a file the
+ * sweep did not check, and swallowing that would report clean on a rule it never applied.
  */
 export function readSwept(file: string): string | null {
 	try {
 		return readFileSync(file, "utf8");
-	} catch {
-		return null;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
 	}
 }
 

@@ -16,9 +16,10 @@ function rendered(name: string): string[] {
 	return (CASES[name] ?? []).map((args) => textOf(fn(...args)));
 }
 
-/** A delimiter row followed by a blank line, which splits the table from its own rows. */
+/** A delimiter row that no row follows, whether a blank line split them or none were written. */
 function brokenTable(text: string): boolean {
-	return /^\|[\s|:-]+\|$\n$/m.test(text);
+	const lines = text.split("\n");
+	return lines.some((line, index) => /^\|[\s|:-]+\|$/.test(line) && !/^\|.*\|$/.test(lines[index + 1] ?? ""));
 }
 
 ////////////////////////////////
@@ -38,6 +39,18 @@ describe("what every renderer's markdown must hold", () => {
 	it("found the fixtures it claims to run", () => {
 		const total = Object.values(CASES).reduce((sum, cases) => sum + cases.length, 0);
 		expect(total).toBeGreaterThan(60);
+	});
+
+	// The invariants below assert nothing about an empty answer, so the one renderer that returns one
+	// is pinned here instead of passing them vacuously.
+	it("answers nothing only where a caller needs nothing", () => {
+		const empty = Object.keys(CASES).flatMap((name) =>
+			rendered(name).flatMap((text, index) => (text === "" ? [`${name}[${index}]`] : [])),
+		);
+
+		// One symbol needs no disambiguation, and no issue needs no section.
+		expect(empty).toEqual(["renderIssues[0]", "renderCandidates[1]"]);
+		expect(render.renderCandidates("add", [])).not.toBe("");
 	});
 
 	for (const name of Object.keys(CASES)) {
