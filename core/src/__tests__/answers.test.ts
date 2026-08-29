@@ -144,6 +144,20 @@ describe("writing an answer down", () => {
 		expect(outcome.recorded).toBe(true);
 	});
 
+	// Both ids are long space-separated strings and `symbol_facts` answers with both, so the refusal
+	// has to say WHICH id was handed over. "Not in the index" sends the author hunting for a symbol.
+	it("names the mix-up when a fact id arrives where the symbol id belongs", async () => {
+		const [declaration] = plant();
+
+		const outcome = await service.recordAnswer(declaration as string, "describe", "A shopping cart.", [
+			declaration as string,
+		]);
+
+		expect(outcome.recorded).toBe(false);
+		expect(!outcome.recorded && outcome.reason).toContain("is a fact id, not a symbol id");
+		expect(!outcome.recorded && outcome.reason).toContain("citations");
+	});
+
 	// Prose under a heading is evidence about that heading, the way a comment is evidence about the
 	// symbol it documents. An answer about a section could otherwise cite nothing at all.
 	it("records an answer citing the prose under a heading", async () => {

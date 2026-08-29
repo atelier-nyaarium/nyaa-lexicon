@@ -7,6 +7,7 @@ import {
 	answerFactId,
 	type CitedFact,
 	doubtFactId,
+	FACT_SCHEME,
 	type FactKind,
 	type FactSet,
 	type GapRow,
@@ -64,6 +65,23 @@ export const DEFAULT_FACT_LIMIT = 40;
  * is about the longest a working task should block on knowledge it is waiting to lean on.
  */
 export const INLINE_GAP_THRESHOLD = 20;
+
+////////////////////////////////
+//  Functions & Helpers
+
+/**
+ * Why a subject id names no declaration.
+ *
+ * A fact id and a symbol id are both long space-separated strings, and `symbol_facts` answers with
+ * both, so handing over the wrong one is the ordinary mistake rather than an exotic one. Saying only
+ * that it is not indexed sends the author looking for a missing symbol instead of at the id.
+ */
+function subjectRefused(symbolId: string): string {
+	if (symbolId.startsWith(`${FACT_SCHEME} `)) {
+		return `${symbolId} is a fact id, not a symbol id. Cite it in \`citations\` and name the symbol it belongs to in \`symbolId\``;
+	}
+	return `${symbolId} is not in the index`;
+}
 
 ////////////////////////////////
 //  Class
@@ -199,7 +217,7 @@ export class KnowledgeLedger {
 	): Promise<RecordOutcome> {
 		const { model, resolvesDoubt, omitting } = options;
 		if (this.store.declaration(symbolId) === null) {
-			return { recorded: false, reason: `${symbolId} is not in the index` };
+			return { recorded: false, reason: subjectRefused(symbolId) };
 		}
 		if (prose.trim() === "") return { recorded: false, reason: "an answer needs prose" };
 		if (prose.length > MAX_PROSE) {
