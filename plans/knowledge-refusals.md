@@ -209,7 +209,7 @@ knowledge_subjects (
                      'journalRename', 'batchExactMatch', 'ambiguous', 'none')),
   lastDigest       TEXT,                        -- the address's pattern digest when last seen bound
   lastCoverage     TEXT,                        -- commentsStripped | commentsKept, null with no digest
-  CHECK (state = 'bound' OR orphanedAt IS NOT NULL),
+  CHECK ((state = 'bound' AND orphanedAt IS NULL) OR (state = 'orphaned' AND orphanedAt IS NOT NULL)),
   CHECK (lastCoverage IS NULL OR lastDigest IS NOT NULL)
 )
 CREATE INDEX knowledge_subjects_orphaned ON knowledge_subjects(orphanedAt);
@@ -229,15 +229,18 @@ Verification holds both.
 **Answer identity carries the subject.** `answerFactId` digests the address, the question, the
 prose and the citations today, and an address is reusable under this model: a subject rebinds
 away and a later write at the vacated address mints a new subject, so two subjects could hold one
-citable id and `factById` would resolve whichever row comes first. `answerFactId` gains the
-`subjectId` as its first part, `recordedAs` stays as the module-bearing address the id grammar
-needs, and `doubtFactId` gains it the same way. Stored ids are never recomputed, so existing rows
+citable id and `factById` would resolve whichever row comes first. The two signatures become
+`answerFactId(subjectId, recordedAs, question, prose, citations)` and
+`doubtFactId(subjectId, recordedAs, question, reason, at)`: the module is taken from
+`recordedAs`, as it is taken from the address today, and `subjectId` is digested as the first
+part, never handed to `moduleOf`. Stored ids are never recomputed, so existing rows
 keep the ids other answers cite; only new records carry the new digest. The `UNIQUE` on `factId`
 is the loud guard underneath.
 
 **Invariants, and who enforces each.** By the schema: one row per subject (`PRIMARY KEY`), one
 subject per address (`UNIQUE`), a closed state and a closed evidence (`CHECK`), a date on every
-orphan, a coverage only beside a digest. By the owner, backed by the residue and by a test that
+orphan and none on a bound subject, so a restore that forgot to clear the clock fails to write, a
+coverage only beside a digest. By the owner, backed by the residue and by a test that
 refuses each illegal transition: no merge operation exists, nothing changes a row's `subjectId`,
 nothing updates `answers.subjectId` or `gaps.subjectId`, and identity changes only by rebinding
 `currentSymbolId`. The repository's own `migrateKnowledge` is the standing proof that a key an
@@ -286,13 +289,20 @@ only after `completeStep("reindexed")`, and `recover` never replays `finish`. So
 the reindex and the finish leaves the files moved and the knowledge addressed to ids that no
 longer exist, and the sweep would orphan them with `none` although a journaled move is exactly
 the evidence that existed. The rebind therefore becomes part of the step record: `PlannedStep`
-gains `rebind: { map, evidence }`, written with the step at `written`, and `completeStep(...,
-"reindexed")` applies the rebind through the identity owner in the same transaction that marks
-the phase. `recover` re-applies the rebind for a step found at `reindexed`, which is idempotent
-because rebinding an address that already holds the subject is a no-op. `migrateKnowledge` is
-retired from the ledger, the service and the store, and its name is forbidden by the residue so a
-row move cannot come back. The sweep remains a detector for an unjournaled loss, never the
-recovery path for a journaled one.
+gains `rebind: { entries: Array<{ from, to }>, evidence }`, written with the step at `written`.
+The step marks `reindexed` unconditionally today, after a loop that only notes a module whose
+reindex threw, and the `finish` that holds the migration is guarded on every module having
+reindexed; the rebind must keep that guard, or a step whose destination failed to reindex would
+commit an address that resolves to nothing and pass B would orphan it with `none`. So the journal
+gains one phase after `reindexed`, `rebound`: an entry is applied through the identity owner only
+when its destination module reindexed in this step, the step advances to `rebound` when no entry
+is pending, and a partial reindex leaves the remaining entries pending in the step record beside
+a `RebindDeferred` issue, which `refactor_status` shows. `recover` re-runs the reindex of a
+pending entry's module and applies it, which is idempotent because rebinding an address that
+already holds the subject is a no-op; nothing else applies a pending entry, and the step is not
+finalized while one exists. `migrateKnowledge` is retired from the ledger, the service and the
+store, and its name is forbidden by the residue so a row move cannot come back. The sweep remains
+a detector for an unjournaled loss, never the recovery path for a journaled one.
 
 **The pattern digest, for `batchExactMatch` only.** At `indexFile`, where the text is held
 transiently and `attachComments` already walks every declaration with it, core computes per
@@ -580,9 +590,11 @@ order:
 
 1. **Exempt** when `presence` of the address's module answers `presentFailing`. Nothing is
    written. What protects the ordinary mid-refactor file is upstream of this step: a parse
-   failure records a failure row and never reaches `replaceFile`, so a failing module keeps the
-   declarations of its last good parse, its subjects keep resolving, and pass B never selects
-   them; retained declarations in a failing module cause neither orphaning nor aging. This step
+   failure writes no facts, since a provider throw and an error diagnostic return before
+   `replaceFile`, and a fact set the store refuses is rejected by `replaceFile`'s admission guard
+   before its transaction opens, so a failing module keeps the declarations of its last good
+   parse, its subjects keep resolving, and pass B never selects them; retained declarations in a
+   failing module cause neither orphaning nor aging. This step
    is reached only by the narrower sequence in which a clean reindex first dropped the
    declaration and a later edit broke the parse, and its test reaches it that way. A malformed
    address has no module through `moduleOf`, can never be exempt, and is orphaned on first sight.
@@ -606,7 +618,12 @@ Pass A, over orphaned subjects, read by the `orphanedAt` index in `(orphanedAt, 
 `ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepSubjects`;
 `STALE_SCAN_CAP` is a file-local constant of the knowledge layer, which neither the indexer nor
 the store imports, and stays where it is. A sweep that reaches the cap stops and persists a cursor
-`(epoch, pass, lastKey)` in store meta beside the scan summary; the next sweep resumes from it. A
+in store meta beside the scan summary, shaped by the pass it stopped in:
+`{ epoch, pass: "B", after: subjectId | null }` or
+`{ epoch, pass: "A", after: { orphanedAt, subjectId } | null }`, starting at pass B with no key,
+crossing to pass A with no key when pass B ends, and resuming by a strict tuple comparison on the
+pass's own order, so subjects that share an `orphanedAt` advance past the key rather than repeat
+under it. The next sweep resumes from the cursor. A
 sweep that reaches the end of pass A clears the key and advances the epoch, so the one after it
 starts pass B from the beginning, and the epoch advances even when every sweep is capped, since
 each capped sweep still moves the key forward. A subject written behind the key is therefore
@@ -924,3 +941,14 @@ Collected during the overnight knowledge run, the review of its patches, and the
   shallow parse would have worn falsely. "Invariants, enforced by the schema" had listed four and
   the schema held one; the repository's own `CHECK` pattern now holds three and the owner holds
   the rest, in writing.
+- Identity rewrite, lap 2, narrow: four auditors, five findings, five held, two angles clean, all
+  fourteen lap 1 fixes landed, three in part. The one that would have shipped wrong was lap 1's
+  own fix: moving the rebind into `completeStep("reindexed")` moved it out from behind the
+  `fullyReindexed` guard today's migration sits behind, so a step whose destination failed to
+  reindex would have committed an address that resolves to nothing. The journal gains a `rebound`
+  phase and pending entries instead. The rest were shapes left to prose: a scalar cursor key for
+  a composite order, a one-directional `CHECK`, two fact id signatures, and one wrong reason for
+  a right conclusion about parse failures. Two blocker claims were the auditors' misreadings and
+  the plan's text settled both. Stopped here: the synthesis judged a third lap worth less than
+  these five sentences, and the owner's implement-and-see order puts Phase 4, the phase with the
+  most inferred mechanism, behind an amendment with real code in front of it.
