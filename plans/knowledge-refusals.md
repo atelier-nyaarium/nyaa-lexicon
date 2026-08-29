@@ -133,9 +133,11 @@ Both return false for a local id, whose parse carries an ordinal and no descript
 `rebaseSymbolId`'s refusal to trace one. A stranded local is therefore dated and never migrated,
 and its refusal lists no candidates and says a local has none.
 
-The store answers both through `declarationsNamed`, which is already indexed by name, filtered by
-the predicate. Phase 4 uses the strict one; the refusals below use the loose one. The two are
-stated here once, and the plan refers to them by name from here on.
+The store's `declarationsNamed(name)`, already indexed by name, returns the shortlist unchanged,
+and one helper in the knowledge layer, `matchingDeclarations(symbolId, predicate)`, applies the
+predicate from the grammar to it. Phase 4's migration authorization and the candidate list below
+are that one call with the strict or the loose predicate. The two are stated here once, and the
+plan refers to them by name from here on.
 
 **Stranded state, readable by every refusal.** The store exposes `strandedState(symbolId)`:
 `{ answers: number, gaps: number, strandedAt: number | null, exempt: boolean, reason: string | null }`,
@@ -304,13 +306,18 @@ indexer and facts in the store, and presence is a source-dependent decision.
   synchronous like prune and it is bounded, so it costs the scan a bounded amount, and the plan
   does not claim it costs nothing. And periodically, because the owner asked for periodic checks
   and an idle workspace has no scans: `startLiveIndex`, which already takes the daemon's
-  exclusive gate and the injected clock and runs every watcher batch as
-  `gate.exclusive(() => service.applyBatch(events))`, gains a clock timer at
-  `KNOWLEDGE_SWEEP_EVERY_MS`, one hour, that runs `gate.exclusive(() => service.sweepKnowledge())`
-  the same way, so it never overlaps a batch, and it stops when the live index stops. The
-  indexer keeps the reachable set it last pruned against for the timer's presence answer; a file
-  that changed since is a watcher event, and that event's batch runs its own sweep. Both
-  triggers share one cap and one cursor, so a capped sweep resumes within the hour.
+  exclusive gate and runs every watcher batch as `gate.exclusive(() => service.applyBatch(events))`,
+  gains a clock timer at `KNOWLEDGE_SWEEP_EVERY_MS`, one hour, that runs
+  `gate.exclusive(() => service.sweepKnowledge())` the same way, so it never overlaps a batch, and
+  it stops when the live index stops. Its clock is a change, not a given: `startLiveIndex` accepts
+  a `clock` today and forwards it only to the watcher's debounce, and the daemon passes none,
+  while it builds the service on the default `systemClock`. The daemon holds one `Clock` and
+  hands the same instance to both, so the service, the indexer it builds, the watcher debounce
+  and the sweep timer read one time source, and a test that supplies a fake through those two
+  options controls all four; `clock` stops being optional on `startLiveIndex`. The indexer keeps
+  the reachable set it last pruned against for the timer's presence answer; a file that changed
+  since is a watcher event, and that event's batch runs its own sweep. Both triggers share one
+  cap and one cursor, so a capped sweep resumes within the hour.
 - The **store** exposes `sweepOrphans(batch, presence, now)`: one bounded batch, one transaction.
   `presence` is a function the indexer supplies, answering for a module with one closed value,
   `presentParsing`, `presentFailing` or `absent`, defined below. The store never touches the
@@ -509,6 +516,9 @@ checker's `ok: false`:
   omitted, and that `invalidate_answer` is how a doubt is raised if one was intended.
 - A doubt with no reason: names what the reason is for (the next writer reads it). Kept.
 - No answer recorded to re-affirm: names the fix (`record_answer` writes one). Kept.
+- Citations no longer resolve on re-affirm: names the count and the fix (check the prose against
+  `symbol_facts`, re-affirm with the replacements). Kept.
+- Clearing a doubt without citing it: names the fix (recall, read the reason, pass its id). Kept.
 - **"an answer needs prose": fails the rule.** It states a condition and no action. The catalog
   phase rewords it to say what to send.
 - **"nothing to re-affirm: every citation resolves and no doubt stands": fails the rule.** It
@@ -624,3 +634,10 @@ Collected during the overnight knowledge run, the review of its patches, and the
   and a fallback that skipped parenthesised spans but not the backtick-quoted ones the grammar
   produces. The synthesis judged a fifth broad lap not worth running and a narrow one over the
   catalog seam and Phase 4's store surface worth it.
+- Lap 5 of plan refinement, narrow: five auditors, two findings, both held, three angles clean,
+  all fourteen lap 4 fixes landed. The periodic trigger had claimed the live index "already takes
+  the injected clock", which is true of its option and false of its wiring, since the daemon
+  passes none; and the matcher paragraph had left unsaid who applies the predicate to the
+  name-indexed rows. The author's own re-read added two kept refusals the doctrine list had
+  omitted. Folded without a verifying lap, on the judgement that three clean angles and one
+  wiring sentence do not earn a sixth.
