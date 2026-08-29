@@ -188,6 +188,10 @@ Ordered by how much they prove:
   first run.
 - **Parsers follow `docs/parsing.md`.** Check for a library before writing one.
 - **Comments state constraints, not narration.** One line, two at most for a critical one.
+- **A refusal names what the author did and what to do instead.** "Not in the index" was correct
+  and cost a night: two agents concluded a queue was exhausted and one minted demand rows nobody
+  could answer. Every knowledge refusal is a constructor in `core/src/refusals.ts`; a raw string
+  in a reason slot is a type error in core and a residue refuses the cast.
 
 ## Blind test corpora
 
