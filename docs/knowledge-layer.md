@@ -19,7 +19,7 @@ comments inside it, the imports that reach it, the answers already recorded on i
 heading, the prose under it. An answer is never ABOUT prose, but prose is evidence, so a section's
 own text is what an explanation of that section cites.
 
-Four refusals, each closing a different way of recording something ungrounded:
+Four citation refusals, each closing a different way of recording something ungrounded:
 
 - **No citations.** The cold answer this layer exists to prevent.
 - **A citation that is not a fact id.** Diagnosed separately from one that does not resolve,
@@ -33,6 +33,15 @@ Four refusals, each closing a different way of recording something ungrounded:
 An answer whose citations all sit on the subject's own declaration is stored and graded THIN. It is
 a paraphrase of what a reader already sees: grounded, legitimate, and adding little. Refusing it
 would teach citation padding, so a visible grade invites a better answer instead.
+
+## Refusals name the mistake
+
+A refusal is the only channel through which an author learns what to do, since the core never
+calls a model and cannot fix a write itself. So every refusal names what the author did and what to
+do instead, and every one is composed in one module, `core/src/refusals.ts`, as a named constructor
+returning a branded sentence. The ledger and the citation checker choose an outcome and put a
+constructor's result in the reason slot; they compose none of their own. A raw string in that slot
+is a type error in core, and a residue test refuses the cast, in every spelling, outside the owner.
 
 ## Question classes
 
