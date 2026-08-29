@@ -166,6 +166,15 @@ store. The ledger and the checker keep their three return shapes, `recorded: fal
 and `ok: false`, and put a constructor's result in the reason slot. The refactor planner and the
 service reach `subjectRefused` from the same module when Phase 0 routes them.
 
+**The brand.** A constructor returns `Refusal`, a branded string only the owner mints through its
+one cast, and the ledger's outcomes and the checker's result are typed with it in core
+(`LedgerRecordOutcome`, `LedgerInvalidateOutcome`, narrowed views of the wire shapes), so a raw
+sentence in a reason slot anywhere in core is a type error. The brand widens to the wire's
+`string` by subtyping, so the protocol schemas and every adapter are untouched. A cast is the way
+past a brand, in several spellings, and an `any` is another the type checker cannot see; the
+residue in Verification sweeps core for every minting spelling outside the owner, and `any` is
+the one hole it states rather than closes.
+
 **The constructors, by the branch each replaces:** `needsProse`, `proseTooLong`, `noDoubtStands`,
 `wrongDoubtId`, `replacesSoundAnswer`, `doubtNeedsReason`, `nothingToDoubt`,
 `noAnswerToReaffirm`, `citationsNoLongerResolve`, `nothingToReaffirm`, `clearingRequiresCiting`,
@@ -817,10 +826,14 @@ Ordered by how much it proves, as the repository already orders it.
   which is the narrowest token a refusal composed inline carries and a constructor call does not.
   The catalog module is exempt because it is the owner, and the citation checker's `ok: false` is
   a catalog member, not a violation. The sweep asserts it found the two files and found
-  constructor calls, so a run matching nothing fails. Each constructor is named by a test that
-  asserts the returned reason AND the action taken, since a test that merely names a reason does
-  not prove the branch ran. The density bar in the repository's rules stays. The gate is proven
-  by planting one inline literal per shape in the scoped files and watching each fail.
+  constructor calls, that every exported constructor is called and every call names an export,
+  and that nothing in core but the owner, matched by exact path, mints the brand in any spelling
+  of a cast.
+  Each constructor is named by a test that asserts the returned reason AND the action taken,
+  since a test that merely names a reason does not prove the branch ran; the four reworded
+  sentences are pinned independently of their constructors. The density bar in the repository's
+  rules stays. The gate is proven by planting one inline literal per shape in the scoped files
+  and watching each fail.
 - A gate that can fail, for identity. Scoped the way the index-writer residue already is,
   production source across the five packages with `__tests__`, `dist`, `fixtures` and the like
   excluded, so plan and doc prose is exempt by the same convention: the token

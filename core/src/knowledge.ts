@@ -30,6 +30,18 @@ import type { IndexStore, StoredFact } from "./store.js";
 export type { CitedFact, FactSet, GapRow, InvalidateOutcome, KnowledgeGaps } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
+//  Types
+
+type Refused = Extract<RecordOutcome, { recorded: false }>;
+
+/** The wire shape with its reason slot narrowed to the catalog's brand; it widens to the wire freely. */
+export type LedgerRecordOutcome =
+	| Exclude<RecordOutcome, Refused>
+	| (Omit<Refused, "reason"> & { reason: refusal.Refusal });
+
+export type LedgerInvalidateOutcome = Omit<InvalidateOutcome, "refused"> & { refused?: refusal.Refusal };
+
+////////////////////////////////
 //  Constants
 
 /** What a walk found beneath one answer. Mutated in place so a cycle reads the partial result. */
@@ -197,7 +209,7 @@ export class KnowledgeLedger {
 		prose: string,
 		citations: string[],
 		options: { model?: string; resolvesDoubt?: string; omitting?: string } = {},
-	): Promise<RecordOutcome> {
+	): Promise<LedgerRecordOutcome> {
 		const { model, resolvesDoubt, omitting } = options;
 		if (this.store.declaration(symbolId) === null) {
 			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
@@ -287,7 +299,7 @@ export class KnowledgeLedger {
 	 * here. The doubt cascades to everything citing this answer through the recall walk, and each
 	 * doubted slot re-enters the gap ledger as measured recheck demand.
 	 */
-	invalidateAnswer(symbolId: string, reason: string, question?: QuestionClass, by?: string): InvalidateOutcome {
+	invalidateAnswer(symbolId: string, reason: string, question?: QuestionClass, by?: string): LedgerInvalidateOutcome {
 		if (reason.trim() === "") {
 			return { symbolId, doubted: [], noAnswer: [], refused: refusal.doubtNeedsReason() };
 		}
@@ -340,7 +352,7 @@ export class KnowledgeLedger {
 		symbolId: string,
 		question: QuestionClass,
 		options: { citations?: string[]; model?: string; resolvesDoubt?: string } = {},
-	): Promise<RecordOutcome> {
+	): Promise<LedgerRecordOutcome> {
 		// Before the answer lookup: a wrong id would otherwise be sent on to record_answer unchanged.
 		if (this.store.declaration(symbolId) === null) {
 			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };

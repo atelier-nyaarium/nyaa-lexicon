@@ -36,27 +36,15 @@ export function isQuestionClass(text: string): text is QuestionClass {
 }
 
 /**
- * Whether an answer may be written down.
- *
- * Four refusals, and each closes a different way of recording something ungrounded:
- *
- * - No citations at all. This is the cold answer the whole layer exists to prevent.
- * - A citation that is not a fact id at all. Diagnosed separately from unresolved, because the
- *   common cause is copying only the trailing digest, and the unresolved wording sends that author
- *   off to re-fetch ids that were never the problem. One agent burned three full write rounds on
- *   exactly that misdirection.
- * - A citation that resolves to nothing. A fact id is a digest of its own contents, so an id that
- *   does not resolve was either invented or describes something that has since changed, and both
- *   are reasons to refuse rather than to store.
- * - Nothing cited about the SUBJECT. An answer can legitimately cite a neighbour, since answers
- *   compound, but one citing only neighbours is not about the symbol it claims to describe.
+ * Whether an answer may be written down: cited, by fact ids, that resolve, at least one about the
+ * subject. Malformed is split from unresolved because the remedies differ.
  */
 export function checkCitations(
 	symbolId: string,
 	citations: string[],
 	resolve: (factId: string) => StoredFact | null,
 	subjectFacts: Set<string>,
-): { ok: true } | { ok: false; reason: string; unresolved?: string[] } {
+): { ok: true } | { ok: false; reason: refusal.Refusal; unresolved?: string[] } {
 	if (citations.length === 0) return { ok: false, reason: refusal.citesNothing() };
 
 	const malformed = citations.filter((factId) => !isFactId(factId));
@@ -66,9 +54,6 @@ export function checkCitations(
 
 	const unresolved = citations.filter((factId) => resolve(factId) === null);
 	if (unresolved.length > 0) {
-		// Two innocent explanations and one bad one share this failure, and the wording carries all
-		// three: a re-index since the ids were fetched retires them legitimately, and telling an
-		// honest author only "you invented this" teaches distrust of a system that was healing.
 		return { ok: false, reason: refusal.unresolvedCitations(unresolved.length), unresolved };
 	}
 

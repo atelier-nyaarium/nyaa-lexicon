@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { join } from "node:path";
-import { coordinatesOf, readSwept } from "@nyaa-lexicon/protocol";
+import { basename, join } from "node:path";
+import { coordinatesOf, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
  * Holds refusals.ts as the only composer of a knowledge refusal.
@@ -21,6 +21,18 @@ const CALL = /\brefusal\.(\w+)\(/g;
 
 /** An exported constructor of the owner. */
 const EXPORTED = /^export function (\w+)\(/gm;
+
+/** Every spelling that mints the brand by hand; the owner alone may write one. */
+const MINTS = [
+	/\bas\s+(?:refusal\.)?Refusal\b/,
+	/<(?:refusal\.)?Refusal>/,
+	/\bsatisfies\s+(?:refusal\.)?Refusal\b/,
+	/\bReturnType<typeof refusal\./,
+];
+
+const CORE = join(import.meta.dirname, "..");
+
+const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "fixtures"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -58,6 +70,33 @@ describe("one module composes every knowledge refusal", () => {
 		);
 		expect([...called].filter((name) => !exported.has(name))).toEqual([]);
 		expect([...exported].filter((name) => !called.has(name) && !insideOwner.includes(name))).toEqual([]);
+	});
+
+	// The brand makes a raw sentence a type error; a cast is the way past it, in any spelling.
+	it("has nobody in core but the owner minting the brand", () => {
+		const files = sourceFiles(CORE, SKIP_DIRS);
+		expect(files).toContain(OWNER);
+		const offenders = files
+			.filter((file) => file !== OWNER)
+			.flatMap((file) => {
+				const source = readSwept(file) ?? "";
+				return MINTS.filter((mint) => mint.test(source)).map((mint) => `${basename(file)}: ${mint.source}`);
+			});
+		expect(offenders, "minting a refusal belongs to core/src/refusals.ts; call a constructor").toEqual([]);
+	});
+
+	it("recognises each minting spelling when planted", () => {
+		const planted = [
+			"const r = text as Refusal;",
+			"const r = <refusal.Refusal>text;",
+			"const r = text satisfies Refusal;",
+			"const r = text as ReturnType<typeof refusal.needsProse>;",
+		];
+		for (const line of planted)
+			expect(
+				MINTS.some((mint) => mint.test(line)),
+				line,
+			).toBe(true);
 	});
 
 	it("catches a planted literal under each of the three shapes", () => {

@@ -308,16 +308,16 @@ describe("every refusal is a named constructor", () => {
 
 	// Routing is proven above; the text itself is pinned here, independently of the constructor.
 	it("pins the four reworded sentences to the plan's text", () => {
-		expect(refusal.needsProse()).toBe(
+		expect<string>(refusal.needsProse()).toBe(
 			"an answer needs prose. Send the sentence or two the cited facts establish in `prose`",
 		);
-		expect(refusal.nothingToReaffirm()).toBe(
+		expect<string>(refusal.nothingToReaffirm()).toBe(
 			"this answer is already sound: every citation resolves and no doubt stands. Re-affirming changes nothing. To replace its prose call `record_answer`; to doubt it call `invalidate_answer`",
 		);
-		expect(refusal.nothingToDoubt("X")).toBe(
+		expect<string>(refusal.nothingToDoubt("X")).toBe(
 			"nothing is recorded about X, so there is no answer to doubt. Doubting an unwritten answer asks for one, and `record_answer` writes it",
 		);
-		expect(refusal.noDoubtStands("why", "X")).toBe(
+		expect<string>(refusal.noDoubtStands("why", "X")).toBe(
 			"no doubt stands on the why answer about X, so omit `resolvesDoubt`. To raise one, call `invalidate_answer`",
 		);
 	});
