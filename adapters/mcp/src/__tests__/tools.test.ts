@@ -268,6 +268,34 @@ describe("knowledge_gaps scopes", () => {
 		expect(result.content[0]?.text).toContain("Workspace-wide: no describe gaps");
 	});
 
+	// The workspace list sweeps unhealthy answers to every question. Calling those "why gaps" reads
+	// as a filter, and an author who trusts it stops while why gaps sit under the rechecks.
+	it("does not call the list by the asked question when it carries other ones", async () => {
+		const mixed = backend({
+			knowledgeGaps: async () => ({
+				question: "why" as const,
+				rows: [
+					{
+						symbolId: "lexicon ts src/a.ts Cart.",
+						question: "describe" as const,
+						why: "stale" as const,
+						askCount: 2,
+						fanIn: 3,
+					},
+				],
+				total: 4,
+				external: 0,
+				truncated: false,
+			}),
+		});
+
+		const result = await knowledgeGaps(mixed, { question: "why" });
+
+		expect(result.content[0]?.text).toContain("4 gaps, ranked by demand");
+		expect(result.content[0]?.text).not.toContain("4 why gaps");
+		expect(result.content[0]?.text).toContain("(describe)");
+	});
+
 	it("calls an unindexed file unindexed, never clean", async () => {
 		const result = await knowledgeGaps(
 			backend({

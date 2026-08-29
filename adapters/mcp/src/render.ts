@@ -758,12 +758,17 @@ ${lead}: no ${gaps.question} gaps.`,
 `,
 	];
 	const plural = gaps.total === 1 ? "" : "s";
+	// The workspace list sweeps unhealthy answers to every question, not only the one asked for, so
+	// naming that question here would promise a filter the rows do not honor. A reader who acts on
+	// "no why gaps" stops working while why gaps are sitting below the rechecks.
+	const mixed = gaps.rows.some((row) => row.question !== gaps.question);
+	const asked = mixed ? "" : `${gaps.question} `;
 	const what =
 		gaps.seeded === true
 			? `the ${gaps.total} most-referenced unanswered ${gaps.question} candidate${plural}, since no demand is recorded yet`
 			: gaps.scope === undefined && root === undefined
-				? `${gaps.total} ${gaps.question} gap${plural}, ranked by demand`
-				: `${gaps.total} ${gaps.question} gap${plural}`;
+				? `${gaps.total} ${asked}gap${plural}, ranked by demand, rechecks first`
+				: `${gaps.total} ${asked}gap${plural}`;
 	lines.push(`${lead}: ${what}.`);
 
 	lines.push(`
