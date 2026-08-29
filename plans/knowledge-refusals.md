@@ -76,10 +76,47 @@ two design questions the overnight run surfaced.
 Phases read as a specification. What each phase looked like before an audit corrected it, and why,
 lives under Painpoints, so an implementer meets only the current design here.
 
-**Order and dependencies.** Phase 1 defines the one matcher and the stranded wording that Phase 0
-and Phase 4 both use, so it lands first. Phase 0 and Phase 3 are independent of each other. Phase 4
-depends on Phase 1's matcher and stranded state. Phase 2 depends on nothing and can land any time.
-Phase 5 waits on the owner.
+**Order and dependencies.** The catalog phase lands first, because the gate in Verification fails
+the build on any refusal composed outside it, so every later phase's wording is a constructor.
+Phase 1 defines the one matcher and the stranded wording that Phase 0 and Phase 4 both use, so it
+lands next. Phase 0 and Phase 3 are independent of each other. Phase 4 depends on Phase 1's matcher
+and stranded state. Phase 2 depends on the catalog only. Phase 5 waits on the owner.
+
+## The catalog phase - Every refusal is a named constructor in one module
+
+**What:** the knowledge layer composes fifteen refusal strings inline today, eleven in the ledger
+and four in the citation checker, plus the four diagnoses `subjectRefused` composes. They move
+into `core/src/refusals.ts`, one exported constructor per refusal, each returning the finished
+sentence; `subjectRefused` moves there with them, since it is the constructor that reads the
+store. The ledger and the checker keep their three return shapes, `recorded: false`, `refused:`
+and `ok: false`, and put a constructor's result in the reason slot. The refactor planner and the
+service reach `subjectRefused` from the same module when Phase 0 routes them.
+
+**The constructors, by the branch each replaces:** `needsProse`, `proseTooLong`, `noDoubtStands`,
+`wrongDoubtId`, `replacesSoundAnswer`, `doubtNeedsReason`, `nothingToDoubt`,
+`noAnswerToReaffirm`, `citationsNoLongerResolve`, `nothingToReaffirm`, `clearingRequiresCiting`,
+`citesNothing`, `malformedCitations`, `unresolvedCitations`, `citesOnlyNeighbours`, and the four
+diagnoses `factIdAsSubject`, `unmintedId`, `strandedId`, `unknownId`. A constructor takes the
+values its sentence names and nothing else.
+
+**The four rewordings the doctrine marks as failing land here, with their text pinned:**
+
+- `needsProse`: "an answer needs prose. Send the sentence or two the cited facts establish in
+  `prose`".
+- `nothingToReaffirm`: "this answer is already sound: every citation resolves and no doubt
+  stands. Re-affirming changes nothing. To replace its prose call `record_answer`; to doubt it
+  call `invalidate_answer`".
+- `nothingToDoubt`: "nothing is recorded about X, so there is no answer to doubt. Doubting an
+  unwritten answer asks for one, and `record_answer` writes it".
+- `noDoubtStands`: "no doubt stands on the Q answer about X, so omit `resolvesDoubt`. To raise
+  one, call `invalidate_answer`".
+
+**Tests:** each constructor is named by a test that asserts the returned reason AND the action
+the caller took, so a test that merely names a reason does not pass for a branch that never ran.
+The residue in Verification is planted at one inline literal per shape and watched failing.
+
+**Release:** internal. No wire shape changes; the same reasons reach the same slots. Ships in the
+minor with Phases 1, 0, 2 and 3.
 
 ## Phase 1 - One matcher, and a stranded row says it is stranded
 
@@ -103,8 +140,10 @@ stated here once, and the plan refers to them by name from here on.
 **Stranded state, readable by every refusal.** The store exposes `strandedState(symbolId)`:
 `{ answers: number, gaps: number, strandedAt: number | null, exempt: boolean, reason: string | null }`,
 where `exempt` is true when the subject's module is in `parse_failures` and `reason` is that
-failure's recorded reason, so the lookup has one owner. `subjectRefused` reads it before
-composing, so the wording agrees with whatever the sweep last left the row in:
+failure's recorded reason, so the lookup has one owner. Exemption is a property of rows: with no
+answer and no gap recorded, `exempt` is reported but nothing is waiting, and the id falls through
+to the unminted shortlist below. `subjectRefused` reads the state before composing, so the wording
+agrees with whatever the sweep last left the row in:
 
 - No declaration, answers or gaps recorded, not exempt: **stranded**. The refusal says the
   knowledge recorded under this id is stranded because the symbol is gone, names `strandedAt` if
@@ -131,10 +170,17 @@ the stranded check goes before `recordGap` there. A stranded or dated subject is
 from the stale count in `knowledgeGaps`, or a dated row would re-enter the queue this plan says
 it leaves.
 
+**A stranded answer stays doubtable.** `invalidateAnswer` refuses only an id with no answers, by
+design: a doubt is prose about the answer, the migration carries it, and a reader who found the
+stranded prose wrong is right to say so. What it must not do is mint demand: today the doubt path
+records a gap unconditionally after `setDoubt`, where the unwritten-answer path already guards on
+the subject being indexed. The doubt path takes the same guard, and the comment above it carries
+this rule in place of the one it states now.
+
 **Tests:** plant a symbol, record an answer, replace the file without the symbol. `recordAnswer`,
-`reaffirmAnswer`, `invalidateAnswer` and `recallAnswer` on the dead id each say stranded and name
-the candidates; `recallAnswer` carries the field and records no gap on the unhealthy path, which
-is the branch the fix touches. Plant only a gap row at a dead id: the demand wording. Put the
+`reaffirmAnswer` and `recallAnswer` on the dead id each say stranded and name the candidates;
+`recallAnswer` carries the field and records no gap on the unhealthy path, which is the branch
+the fix touches. `invalidateAnswer` on the dead id records the doubt and no gap. Plant only a gap row at a dead id: the demand wording. Put the
 module into `parse_failures` with the file present: the waiting wording with the failure's reason,
 nothing dated. Plant two same-named declarations in other modules: both listed as candidates by
 `sameNameAndKind`, neither authorized by `sameDeclaration`. Strand a local id: no candidates, and
@@ -173,8 +219,11 @@ answer through the helper too.
   supplied; a rootless `knowledge_gaps` never resolves and is not diagnosed. `type_of` keeps its
   own three-valued Unknown for the reasons that remain after the id is known to exist.
 - Direct, calling the helper itself: `symbol_source`.
-- Diagnosing in core already: `record_answer`, and `refactor_insert` through its `after` anchor,
-  which is one of the routed instances below.
+- Diagnosing in core already: `record_answer`.
+- Routed in core by this phase: `refactor_insert` through its `after` anchor, which the planner
+  refuses today with the token itself. The planner holds the store, so it calls `subjectRefused`
+  from the catalog for the anchor, and for the container branch names the container id as the bad
+  subject, which is what it names today.
 - Taking a module or a name, never a symbol id, so out of scope: `symbol_history`,
   `co_changed_with`, `outline_module`, `file_history`, `search_*`, `find_*` by text.
 
@@ -201,11 +250,14 @@ spelling, so the ranking borrows the grammar's own parse.
 
 **The partial parse.** `parseDescriptors` keeps its results in a local and every failure path
 discards them, so a malformed id yields nothing today. The grammar gains `parseSymbolIdPrefix`,
-which returns the descriptors parsed before the failure together with the failure, and the
-existing parser is unchanged. The ranking matches declaration names against those descriptor
-names. Only when zero descriptors parse does it fall back to matching `quoteName(name)` as a whole
-token in the tail, bounded by structural characters, and never inside a `(...)` disambiguator
-span, which is skipped as a unit.
+returning `{ descriptors, failure }`, the descriptors parsed before the failure and the failure
+itself, since the existing result type's failure arm carries no payload; it is exported from the
+protocol barrel like its neighbours, or core cannot reach it, and `parseSymbolIdResult` is
+unchanged. The ranking matches declaration names against those descriptor names. Only when zero
+descriptors parse does it fall back to matching `quoteName(name)` as a whole token in the tail,
+bounded by structural characters. Two span kinds are skipped as units there: a `(...)`
+disambiguator, and a backtick-quoted name, which `quoteName` produces for any name carrying a
+structural character and whose interior can hold a bare declaration name such as `to`.
 
 **Tests:** plant `at` and `Total`; a bad id naming `Total` lists `Total` first and does not promote
 `at`, and one naming `at` still finds it. Plant `to` and a bad id whose disambiguator is `to`: not
@@ -247,10 +299,18 @@ chore a person performs.
 **Who does what.** Two owners, because the repository puts source-dependent decisions in the
 indexer and facts in the store, and presence is a source-dependent decision.
 
-- The **indexer** orchestrates. After a completed scan, at the point both the full scan and the
-  watcher batch already converge on prune, it runs the sweep inline. It is synchronous like prune
-  and it is bounded, so it costs the scan a bounded amount; the plan does not claim it costs
-  nothing.
+- The **indexer** orchestrates, on two triggers. After a completed scan, at the point both the
+  full scan and the watcher batch already converge on prune, it runs the sweep inline; it is
+  synchronous like prune and it is bounded, so it costs the scan a bounded amount, and the plan
+  does not claim it costs nothing. And periodically, because the owner asked for periodic checks
+  and an idle workspace has no scans: `startLiveIndex`, which already takes the daemon's
+  exclusive gate and the injected clock and runs every watcher batch as
+  `gate.exclusive(() => service.applyBatch(events))`, gains a clock timer at
+  `KNOWLEDGE_SWEEP_EVERY_MS`, one hour, that runs `gate.exclusive(() => service.sweepKnowledge())`
+  the same way, so it never overlaps a batch, and it stops when the live index stops. The
+  indexer keeps the reachable set it last pruned against for the timer's presence answer; a file
+  that changed since is a watcher event, and that event's batch runs its own sweep. Both
+  triggers share one cap and one cursor, so a capped sweep resumes within the hour.
 - The **store** exposes `sweepOrphans(batch, presence, now)`: one bounded batch, one transaction.
   `presence` is a function the indexer supplies, answering for a module with one closed value,
   `presentParsing`, `presentFailing` or `absent`, defined below. The store never touches the
@@ -301,14 +361,20 @@ and is dated on first sight.
    phase asks the owner to look again.
 5. **Date** otherwise: `strandedAt` is set on first sight and left alone after.
 
-**Budget and continuation.** The unit is rows examined per scan across both passes, capped by
+**Budget and continuation.** The unit is rows examined per sweep across both passes, capped by
 `ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepOrphans`;
 `STALE_SCAN_CAP` is a file-local constant of the knowledge layer, which neither the indexer nor
-the store imports, and stays where it is. A sweep that reaches the cap stops, persists its cursor
-triple in store meta beside the scan summary, and resumes from it on the next scan; a sweep that
-finishes clears the cursor. What it did is reported as an optional `knowledgeSweep` object on the
-scan summary and on `overview`: examined, un-stranded, migrated, dated, deleted, and whether it
-stopped early. Optional fields are a minor.
+the store imports, and stays where it is. Each pass reads in one explicit order and resumes by a
+tuple predicate over it: pass A by `(strandedAt, kind, symbolId, question)`, pass B by
+`(kind, symbolId, question)`. A sweep that reaches the cap stops and persists a cursor naming
+the pass and the last tuple examined, in store meta beside the scan summary; the next sweep
+resumes from it, and a sweep that finishes clears it. A row written behind the cursor between
+sweeps is examined by the next full sweep, which is the one after the current one finishes; a
+row deleted behind it costs nothing. What a sweep did is reported as an optional `knowledgeSweep`
+field on `ScanCountsSchema`, which `writeScanSummary` persists and `readScanSummary` restores and
+`overview` already carries as `scan`: examined, un-stranded, migrated, dated, deleted, and
+whether it stopped early. Both the scan and the watcher batch fold the result into the summary
+they already write. Optional fields are a minor.
 
 **The clock.** `clock.ts` owns time for the routed modules and its `Clock` is injectable into the
 service, but the service builds `WorkspaceIndexer` without one. The indexer gains a `Clock`
@@ -317,13 +383,17 @@ so a `Date.now` in the sweep fails the build. The sweep passes `now` into `sweep
 value, so the store's four existing `Date.now` reads, all write timestamps, stay unrouted and the
 aging test sets the clock rather than faking a date in the row.
 
-**What a dated row stops costing.** It leaves the stale sweep and the `STALE_SCAN_CAP` count at
-once, it never leads the demand queue, and `recallAnswer` records no demand for it (Phase 1). It
-still reaches the workspace demand sweep of `knowledge_gaps`, carrying `stranded: true` and its
-date, sorted after every recheck and missing row, counted in `total`, and the renderer groups
-those rows under a stranded heading, so a person can see what is about to go. A module scope or
-subtree walk never holds one, since a stranded row has no declaration under any scope. That is a
-window, not a task.
+**What a dated row stops costing, and where it is still seen.** It leaves the stale sweep and the
+`STALE_SCAN_CAP` count at once, it never leads the demand queue, and `recallAnswer` records no
+demand for it (Phase 1). The workspace demand sweep reads `gaps` and `allAnswers` today, neither
+of which carries a date, so the store gains two reads for the window: `strandedRows(limit)`, dated
+rows of both tables oldest first, and `strandedCount()`. The sweep excludes dated rows from its
+recheck and missing groups, appends `strandedRows` after them inside the page, each carrying
+`stranded: true` and `strandedAt`, and reports `strandedCount` as an optional `stranded` number
+on the result; `total` keeps counting actionable rows only. A page full of actionable rows shows
+no stranded row and still shows the count. The renderer groups the rows under a stranded heading
+with their dates. A module scope or subtree walk never holds one, since a stranded row has no
+declaration under any scope. That is a window, not a task.
 
 **Storage.** One nullable `strandedAt` column on `answers` and on `gaps`, added in place with
 `ALTER TABLE` like every other added column, one atomic statement, an old row reads as not yet
@@ -333,7 +403,11 @@ restart every thirty-day count. No compatibility bump, no rebuild, no major.
 
 **Wire.** The gap row gains an optional `strandedAt` and an optional `stranded` flag, never a
 fourth `why` value, because clients ride forward and an older client would fail to parse the newer
-row. With the `knowledgeSweep` report and Phase 1's recall field, this phase is a minor.
+row. `why` keeps its ordinary value on a stranded row, `stale` for an answer whose citations can
+never resolve again and `missing` for demand, so an older client reads it as it always did, and
+the renderer checks `stranded` before `why` when choosing the heading and the state word. With
+the result's `stranded` count, the `knowledgeSweep` report and Phase 1's recall field, this phase
+is a minor.
 
 **Tests:** plant, record, answer, replace the file without the symbol: dated on the next sweep,
 absent from the stale count, not at the head of the queue, no demand recorded on recall. Replace
@@ -342,8 +416,9 @@ parsing without the symbol: dated. Put the symbol back: pass A clears the date. 
 module as the only `sameDeclaration` match: migrated, undated, recalled at the new id. Add a
 second match: dated, not migrated. Record a different answer at the destination first, then move:
 the destination's prose survives and the source row is gone, which pins the collision rule.
-Advance the injected clock thirty days: gone. Set the clock behind a date: not deleted. Force a
-rebuild: the date survives. Plant more orphans than the cap across both tables: the sweep stops
+Advance the injected clock thirty days with no scan and no event: the timer's sweep deletes it,
+so an idle workspace ages. Set the clock behind a date: not deleted. Force a rebuild: the date
+survives. Plant more orphans than the cap across both tables: the sweep stops
 inside one, reports it, and the next scan finishes from the persisted triple without re-examining
 the other. Plant a malformed subject id and a stranded local id: both dated, neither migrated,
 neither exempt. An older client parses a row carrying the new fields. Each case watches the old
@@ -370,12 +445,14 @@ fan-in and say nothing.
   `git check-attr` and today `generatedFiles` returns one set of paths, collapsing "not generated"
   and "could not tell", which its one caller uses only to compute reachability and drops. It
   becomes a per-module verdict map, `yes`, `no`, or `unknown` with a reason from a closed enum,
-  `noGit`, `gitFailed`, or `unscanned`, threaded from the scan through `indexFile` into a new
-  `replaceFile` parameter and persisted on `files` in two columns added in place, carried by
-  `restoreKnowledge` like every other survivor of a rebuild. A module indexed by a watcher batch
-  between scans, which never ran the git call, is `unknown` with `unscanned` until the next full
-  scan. Unknown files are eligible and the seeded result reports how many candidates were unknown,
-  so the bias is visible rather than silent.
+  `noGit` or `gitFailed`, threaded from the scan through `indexFile` into a new `replaceFile`
+  parameter and persisted on `files` in two columns added in place, carried by `restoreKnowledge`
+  like every other survivor of a rebuild. A watcher batch recomputes its roots through the same
+  admission that runs the git call, so it persists a verdict exactly as a full scan does and no
+  third reason is needed. Unknown files are eligible, and the seeded result reports how many
+  candidates were unknown through an optional `seededUnknown: { generated, exported }` on
+  `KnowledgeGapsSchema`, filled by the fallback and rendered as one line under the header, so the
+  bias is visible rather than silent.
 - **Order within a language:** language-local fan-in, ties by symbol id.
 - **Language order:** the store persists no language and every symbol id carries one, so the order
   is derived, not stored: languages sorted by their declaration count descending, ties by name.
@@ -428,18 +505,18 @@ checker's `ok: false`:
 - Replacing an answer whose citations still hold: names the fix (`omitting`). Kept.
 - The wrong doubt id: names the fix (recall and cite it). Kept.
 - **"no doubt stands on the Q answer about X": fails the rule.** It states a condition and no
-  action. Reworded to say the answer carries no doubt, so `resolvesDoubt` is omitted, and that
-  `invalidate_answer` is how a doubt is raised if one was intended.
+  action. The catalog phase rewords it to say the answer carries no doubt, so `resolvesDoubt` is
+  omitted, and that `invalidate_answer` is how a doubt is raised if one was intended.
 - A doubt with no reason: names what the reason is for (the next writer reads it). Kept.
 - No answer recorded to re-affirm: names the fix (`record_answer` writes one). Kept.
-- **"an answer needs prose": fails the rule.** It states a condition and no action. Reworded to
-  say what to send.
+- **"an answer needs prose": fails the rule.** It states a condition and no action. The catalog
+  phase rewords it to say what to send.
 - **"nothing to re-affirm: every citation resolves and no doubt stands": fails the rule.** It
-  states a condition and no action, and an author who reached it wanted something. Reworded to
-  say the answer is already sound and what re-affirming would change if they still want it.
+  states a condition and no action, and an author who reached it wanted something. The catalog
+  phase rewords it to say the answer is already sound and what to call instead.
 - **"nothing is recorded about X to doubt": fails the rule.** It states a condition and no action.
-  Reworded to say that doubting an unwritten answer is a request for one, and that `record_answer`
-  is how it gets written.
+  The catalog phase rewords it to say that doubting an unwritten answer is a request for one, and
+  that `record_answer` is how it gets written.
 
 ## Verification
 
@@ -447,10 +524,11 @@ Ordered by how much it proves, as the repository already orders it.
 
 - Unit: every phase plants the mistake and watches the old message fail before the new one is
   trusted. The render-shape gate already covers every renderer's output.
-- A gate that can fail. Every refusal is composed through one owner, a catalog of reason
-  constructors in its own module of the knowledge layer, and the refusals reach their three
-  shapes, a `recorded: false`, a `refused:`, or the citation checker's `ok: false`, only through
-  it. The residue is scoped, not workspace-wide: `refused:` has two dozen unrelated instances
+- A gate that can fail. Every refusal is composed through one owner, the catalog phase's
+  `refusals.ts`, and the refusals reach their three shapes, a `recorded: false`, a `refused:`, or
+  the citation checker's `ok: false`, only through it; the fifteen inline literals that exist
+  today are the catalog's migration and the gate's first catch. The residue is scoped, not
+  workspace-wide: `refused:` has two dozen unrelated instances
   across core and `ok: false` three dozen, in dispatch, the refactor planner, transactions and
   argument parsing, none of them refusals of this layer, so a token sweep over those spellings
   would fail everywhere or be narrowed until it checked nothing. The sweep reads `knowledge.ts` and
@@ -465,10 +543,11 @@ Ordered by how much it proves, as the repository already orders it.
 - Drive the built server: hand each refusal the exact bad input from the overnight logs, a fact
   id as subject, a member id without its terminator, a stranded id, and read what comes back, and
   drive `diagnoseSubject` and one `sweepOrphans` batch through the real daemon.
-- Release: **minor** after Phases 1, 0, 2 and 3 together. Phase 0 adds a daemon method, Phase 1
-  and Phase 3 add optional fields, and the protocol doc prices each as a minor. Phase 4 is a minor
-  for its optional fields. Phase 5 is priced in its own section and is in no release line until
-  decided. Nothing here needs a major: no extraction changes and no method is removed or renamed.
+- Release: **minor** after the catalog phase and Phases 1, 0, 2 and 3 together. Phase 0 adds a
+  daemon method, Phase 1 and Phase 3 add optional fields, and the protocol doc prices each as a
+  minor; the catalog is internal. Phase 4 is a minor for its optional fields. Phase 5 is priced
+  in its own section and is in no release line until decided. Nothing here needs a major: no
+  extraction changes and no method is removed or renamed.
 
 ## Painpoints
 
@@ -533,3 +612,15 @@ Collected during the overnight knowledge run, the review of its patches, and the
   never handed, and a "stranded section" beside a flat-row wire. The zero-row gap header was
   found structurally lying while no live path reaches it, since the workspace sweep falls through
   to seeding, and was fixed anyway because the renderer is not supposed to know that.
+- Lap 4 of plan refinement: ten auditors, fourteen findings, fourteen held. All eighteen lap 3
+  fixes had landed, three of them in part. The blocker was the plan's own enforcement: the
+  refusal gate was specified in detail and the catalog it fails the build for was named in no
+  phase, so the first phase to land would have failed the gate protecting it, and the four
+  doctrine rewordings had waited on the same missing phase in the past tense. The rest were the
+  seams the lap 3 fixes created: a cursor shaped for one pass, stranded rows sent to a list whose
+  reads cannot see a date, no periodic trigger while Question 4 asks for one, a doubt on a
+  stranded answer minting the demand row the plan exists to stop, `refactor_insert` labelled as
+  diagnosing when it emits the forbidden token, an `unscanned` reason for a path that does scan,
+  and a fallback that skipped parenthesised spans but not the backtick-quoted ones the grammar
+  produces. The synthesis judged a fifth broad lap not worth running and a narrow one over the
+  catalog seam and Phase 4's store surface worth it.
