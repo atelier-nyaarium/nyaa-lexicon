@@ -158,6 +158,9 @@ Phase 1. Phase 2 depends on the catalog only. Phase 5 waits on the owner.
 
 ## The catalog phase - Every refusal is a named constructor in one module
 
+✅ Shipped: the catalog and its residue (39832c9), the brand (7cfcc1c), the doc and the rule
+(23c8556, 6c21819). `strandedId` and `movedId` land with Phases 1 and 0.
+
 **What:** the knowledge layer composes fifteen refusal strings inline today, eleven in the ledger
 and four in the citation checker, plus the four diagnoses `subjectRefused` composes. They move
 into `core/src/refusals.ts`, one exported constructor per refusal, each returning the finished
@@ -972,3 +975,11 @@ Collected during the overnight knowledge run, the review of its patches, and the
   the plan's text settled both. Stopped here: the synthesis judged a third lap worth less than
   these five sentences, and the owner's implement-and-see order puts Phase 4, the phase with the
   most inferred mechanism, behind an amendment with real code in front of it.
+- Building the catalog phase: the answers test file's `plant` helper is documented as giving "two
+  facts to cite and one to leave out" and returns only the declaration's fact id, so the literal
+  has to be fetched through `literalsContainedBy` by hand, which cost one wrong test. The file is
+  past twelve hundred lines with one fixture set shared across nine describes, a split candidate
+  for a later architecture pass. The coordinate residue caught a line count by `split` in the new
+  residue test, which is the gate working, though its message names the owner file and not the
+  method (`positionAt`) that should be called instead. The catalog itself went cleanly; the
+  brand was the one design move the phase did not plan and should have.
