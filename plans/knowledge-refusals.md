@@ -156,6 +156,24 @@ the migration explicitly; it never applies itself.
 **Recommendation:** surface and demote now, in one change. Migration stays a proposal, never an
 action, because a wrong migration is the one lie this project exists to stop telling.
 
+**Reclaim it [proposed, unbuilt].** Surfacing fixes visibility; nothing above frees a row. The
+store keeps `answers` and `gaps` keyed by `(symbolId, question)` with no link to the declaration,
+and `replaceFile` and `forgetFile` clear the fact tables only, so a hand move leaves both rows for
+the life of the store. The cost is not memory. A dead demand row holds its slot at the head of the
+queue by ask count forever. A stranded answer is stale forever, so the recheck sweep resolves its
+citations on every workspace `knowledge_gaps` call and lists it as work nobody can do, and it
+counts toward `STALE_SCAN_CAP`, past which staleness detection switches off for the whole
+workspace. The rule is asymmetric because the two rows are worth different amounts:
+
+- A stranded **answer** is kept. It is prose somebody wrote and may re-home. It leaves the stale
+  sweep and the cap count, and appears only in the stranded section.
+- A stranded **demand row with no answer** is deleted once it has been shown as stranded. Nothing
+  can ever satisfy it, and its only remaining effect is to occupy the queue.
+
+**Tests:** plant, record, answer, replace the file without the symbol. The workspace gap list
+shows the answer as stranded and does not count it as stale; the demand row is gone after one
+listing; the cap arithmetic excludes stranded answers.
+
 ## Phase 5 - Fan-in seeding per language [decision]
 
 **The defect:** the cold-start fallback ranks the whole workspace by fan-in. Cross-language calls
@@ -236,3 +254,8 @@ Collected during the overnight knowledge run and the review of its patches.
   prints it, the whole space-separated line ending in the digest, never the trailing digest
   alone", was hit and is NOT in this plan on purpose: it already names the mistake and the fix.
   It is the shape every other refusal here is being brought up to.
+- Stranded rows are a slow leak, found when the owner asked whether they were. Knowledge rows
+  have no link to the declaration and no cleanup on file replace or forget; the only deletes are
+  answering a gap and the rename migration. They cost queue position and per-call scan work, and
+  they count toward the cap that turns staleness detection off. Phase 4 carries the reclamation
+  rule.
