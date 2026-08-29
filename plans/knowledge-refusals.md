@@ -61,12 +61,17 @@ with rebinding an address, which honours every requirement here without moving a
 
 > "Auto migration as you suggested." ... "Orphans deleted after 30 days."
 
-## Question 5 - Should fan-in seeding rank within a language? [Open, owner's call]
+## Question 5 - Should fan-in seeding rank within a language? (settled in chat)
 
 Q: References do not bind across Kotlin and TypeScript, so the console's fan-in counts only its
 own callers and ranks permanently below the server, even where its doctrine is as deep. The agent
 confirmed the Kotlin comments carry the same weight. Should seeding rank per language?
-A: Undecided. Phase 5 is priced and decision-complete, and it waits behind Question 9's rewrite.
+A: Yes, the full design in Phase 5: eligibility, generated persisted as a three-valued fact,
+language order derived from declaration counts, five reserved global hubs, `seededUnknown`
+reported. It lands after the replan point, with Phase 4, since both rewrite the seeding path in
+`knowledgeGaps`. The cheaper form is not taken.
+
+> "A."
 
 ## Question 6 - When a migration collides, what wins? [Superseded by Question 9]
 
@@ -740,8 +745,8 @@ workspace whose every gap has been answered, not only on one never asked. Equal 
 same order on two runs. The cheaper form: the comment-less substantive declaration is absent and
 the test names it.
 
-**Release:** a minor if it persists the generated fact, a patch under the cheaper form. Not in
-any release line until the owner decides.
+**Release:** decided by the owner in Question 5, the full design. A minor, in the second release
+line with Phase 4, after the replan point.
 
 ## Doctrine
 
