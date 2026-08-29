@@ -65,7 +65,7 @@ for a proposal-only form; the owner heard that and decided.
 Q: References do not bind across Kotlin and TypeScript, so the console's fan-in counts only its
 own callers and ranks permanently below the server, even where its doctrine is as deep. The agent
 confirmed the Kotlin comments carry the same weight. Should seeding rank per language?
-A: Undecided. Phase 5 lays out the options with a recommendation.
+A: Undecided. Phase 5 is priced and decision-complete, and it waits.
 
 # Plan
 
@@ -73,236 +73,280 @@ The rule this plan installs, stated once: **a refusal names what the author did 
 instead, or it is not finished.** Every phase below is that rule applied to one message, plus the
 two design questions the overnight run surfaced.
 
-## Phase 0 - One diagnosis for a bad subject id, reached from every tool
+Phases read as a specification. What each phase looked like before an audit corrected it, and why,
+lives under Painpoints, so an implementer meets only the current design here.
 
-**Found by review, not by the author.** The overnight patches taught `record_answer`,
-`reaffirm_answer` and `invalidate_answer` to tell a fact id from an unminted member id from an
-unknown symbol. The READ tools never learned. `describe_symbol`, `symbol_facts`, `type_of` and
-their siblings still answer "No symbol with ID `...` is indexed. Copy IDs verbatim from a result
-row." That is the message an agent hit for a member id missing its terminator, and it could not
-tell which of the three mistakes it had made. Same class, different door.
+**Order and dependencies.** Phase 1 defines the one matcher and the stranded wording that Phase 0
+and Phase 4 both use, so it lands first. Phase 0 and Phase 3 are independent of each other. Phase 4
+depends on Phase 1's matcher and stranded state. Phase 2 depends on nothing and can land any time.
+Phase 5 waits on the owner.
 
-**What:** the subject diagnosis in `subjectRefused` becomes the one owner every tool reaches when
-a symbol id names nothing: fact id as subject, unminted id with the module's shortlist, stranded
-id with its live candidates, or genuinely unknown. The adapter stops composing its own sentence.
+## Phase 1 - One matcher, and a stranded row says it is stranded
 
-**How it is reached:** one new read method on the daemon answers the diagnosis for any id. A new
-method grows the table, which the protocol doc prices as a **minor**, the same as a new optional
-field. Decide at implementation whether the adapter calls it on every absence or the daemon's
-lookups return it beside the null; either way the sentence is composed in one place.
+**The one matcher.** The id grammar gains two named predicates over parsed descriptors, in
+`symbolId.ts`, so nothing outside the grammar decides what "the same declaration" means:
 
-**Per tool, because "every tool" was found not to mean one thing.** Only `describe_symbol` and
-`symbol_facts` compose the absence sentence today. `type_of` never checks absence: it renders the
-type's own Unknown, which already carries `NotIndexed` as its reason, so it stays three-valued and
-gains nothing from the diagnosis. `find_references` never checks either and answers an empty list
-for an absent id, which reads as "nothing uses it" and is the wrong answer; it calls the diagnosis.
-The implementation enumerates every tool that takes a symbol id and states, per tool, which of the
-two it does. No tool is left implicit.
+- `sameDeclaration(a, b)`: same language, same kind, same full descriptor path including
+  disambiguators and occurrences, different module. This is what authorizes a migration.
+- `sameNameAndKind(a, b)`: same language, same kind, same last descriptor name, and for a member,
+  the same name on the container descriptor too. Different module. This is what lists candidates
+  for a person.
 
-**The residue, matched on the token and not the phrase.** "is indexed" is the wrong token: the
-adapter also says "No symbol named X is indexed" for a name-lookup miss, which is deliberate and
-stays, and core spells the same bad-subject concept "is not in the index" in `service`,
-`sourceWorkspace` and `refactorPlanner`. The sweep forbids the narrowest token that only the owner
-may compose, scoped by concept rather than by directory, and it is run against every existing
-instance listed above before it is trusted, as the repository's rule for residues requires.
+The store answers both through `declarationsNamed`, which is already indexed by name, filtered by
+the predicate. Phase 4 uses the strict one; the refusals below use the loose one. The two are
+stated here once, and the plan refers to them by name from here on.
 
-**Tests:** each of the four mistakes, handed to `describe_symbol`, `symbol_facts` and
-`find_references`, produces the sentence `record_answer` produces for it; `type_of` produces its
-Unknown with `NotIndexed`. The residue is planted and watched failing before it is kept.
+**Stranded state, readable by every refusal.** The store exposes `strandedState(symbolId)`:
+`{ answers: number, gaps: number, strandedAt: number | null, exempt: boolean }`, where `exempt` is
+true when the subject's module is in `parse_failures`. `subjectRefused` reads it before composing,
+so the wording agrees with whatever the sweep last left the row in:
 
-## Phase 1 - A stranded answer says it is stranded
+- No declaration, answers or gaps recorded, not exempt: **stranded**. The refusal says the
+  knowledge recorded under this id is stranded because the symbol is gone, names `strandedAt` if
+  the sweep has dated it and that deletion follows thirty days after, and lists the
+  `sameNameAndKind` candidates so the prose can be recorded again where a reader will find it.
+- No declaration, rows recorded, exempt: **waiting on a parse failure**. The refusal says the
+  module is present and not parsing, that nothing will be dated or deleted while that holds, and
+  names the parse failure's reason.
+- No declaration, only demand rows and no answer: the same two sentences with "the demand recorded
+  against it" in place of "the answers", so a dead id that was only ever asked about is told the
+  truth too.
 
-**What:** `subjectRefused` gains one branch. When the subject has no declaration but DOES have
-recorded answers, that is the moved-symbol case, and today's refusal says "not in the index" and
-lists the module, which is true and misses the point. The refusal says the answers recorded under
-this id are stranded because the symbol is gone, and points at the live id in the shortlist so the
-prose can be recorded again where a reader will find it.
+**Recall carries it on the wire.** `RecalledAnswerSchema` gains an optional
+`stranded: { since: number | null, exempt: boolean, candidates: string[] }`. `recallAnswer` fills
+it from `strandedState` when the subject has no declaration. `renderKnowledge` renders the status
+line from it and replaces the reaffirm instruction, which a stranded subject cannot follow, with
+the re-record path and the candidates. An optional field is a minor.
 
-**Where else it shows:** `recallAnswer` on a stranded id returns the answer as STALE with the
-reaffirm instruction, and reaffirm cannot succeed because there is nothing current to cite. The
-status line says stranded instead, and names the re-record path. `renderKnowledge` carries it.
-
-**The live candidates:** the module is the thing that changed, so the shortlist for a stranded id
-is NOT the old module's declarations. It is every declaration in the index with the same name and
-kind, and for a member, the same name under a container of the same name. One hit is the answer.
-Several are listed. None means the symbol is gone, and the prose is worth keeping only by hand.
-
-**Why it is its own phase:** Phase 4 decides what the store does with a stranded row over time.
-This phase decides what an author is told the moment they touch one, which is needed on day one
-and in the window before the sweep has run or migrated. Execution is Phase 4's; the wording is
-this phase's, and it must agree with whatever state the sweep has left the row in.
+**Recall stops charging for it.** `recallAnswer` records demand on a miss and on a stale recall
+today. A stranded or dated subject records no demand and is excluded from the stale count in
+`knowledgeGaps`, or a dated row would re-enter the queue this plan says it leaves.
 
 **Tests:** plant a symbol, record an answer, replace the file without the symbol. `recordAnswer`,
-`reaffirmAnswer` and `recallAnswer` on the dead id each say stranded and name the live shortlist.
-Watch the old wording fail first.
+`reaffirmAnswer`, `invalidateAnswer` and `recallAnswer` on the dead id each say stranded and name
+the candidates; `recallAnswer` carries the field and records no gap. Plant only a gap row at a
+dead id: the demand wording. Put the module into `parse_failures` with the file present: the
+waiting wording, nothing dated. Plant two same-named declarations in other modules: both listed as
+candidates by `sameNameAndKind`, neither authorized by `sameDeclaration`. Watch the old wording
+fail first.
 
-## Phase 2 - The shortlist matches names at a boundary
+## Phase 0 - One diagnosis for a bad subject id, reached from every tool
+
+**What:** the subject diagnosis in `subjectRefused` becomes the one owner every tool reaches when
+a symbol id names nothing. Four outcomes, closed: a fact id supplied as the subject, an unminted id
+with the module's shortlist, a stranded id with its candidates and state from Phase 1, or a
+genuinely unknown id whose module is not indexed either.
+
+**The daemon method.** `diagnoseSubject`, request `{ symbolId: string }`, response
+`{ kind: "factIdAsSubject" | "unminted" | "stranded" | "unknown", reason: string, candidates:
+string[] }`, where `reason` is the sentence `record_answer` already composes and `candidates` is
+the shortlist. Registered in the method table, dispatched in `dispatch.ts` through the same
+`.parse(params` path as every other method, exposed on the client session. A new method is a
+minor.
+
+**The chokepoint.** `resolveOne` in the MCP adapter is where a supplied `symbolId` is currently
+returned unvalidated to twelve handlers. It calls `diagnoseSubject` when the id names no
+declaration and returns the reason as the problem, so every handler that funnels through it gets
+the diagnosis without knowing it. The two paths that take a symbol id without `resolveOne`,
+`symbol_source` and `symbol_facts`, call the same helper. The knowledge writers already diagnose in
+core and are unchanged.
+
+**Per tool, stated so nothing is implicit:**
+
+- Through `resolveOne`, therefore diagnosed on absence: `describe_symbol`, `find_references`,
+  `type_of`, `refactor_move`, `refactor_rename`, `refactor_preview`, `symbol_history`,
+  `recall_answer`, `reaffirm_answer`, `invalidate_answer`, `knowledge_gaps` by root, and
+  `co_changed_with` by symbol. `type_of` keeps its own three-valued Unknown for the reasons that
+  remain after the id is known to exist.
+- Direct, calling the helper themselves: `symbol_source`, `symbol_facts`.
+- Diagnosing in core already: `record_answer`.
+- Taking a module, not a symbol, so out of scope: `outline_module`, `file_history`, `search_*`,
+  `find_*` by text.
+
+**The residue.** The token is `is not in the index`, forbidden anywhere under `core/` and
+`adapters/` except `subjectRefused`. The six existing instances outside the owner, in `service`
+(the `type_of` NotIndexed detail), `sourceWorkspace`, and four sites in `refactorPlanner`, all
+take a symbol id that names nothing, which is this concept, so each routes through the diagnosis
+and the residue is run against all six before it is trusted. "No symbol named X is indexed" is a
+name-lookup miss, a different concept, and is not touched.
+
+**Tests:** each of the four outcomes handed to `describe_symbol`, `symbol_facts`, `symbol_source`
+and `find_references` produces the sentence `record_answer` produces for it, and `type_of` and one
+refactor tool produce it too, which proves the chokepoint rather than the two named tools. The
+residue is planted at a seventh site and watched failing. A built-server test drives
+`diagnoseSubject` through the real daemon.
+
+## Phase 2 - The shortlist matches names the grammar recognises
 
 **What:** the shortlist promotes declarations whose name appears in the bad id by substring, so a
-name like `at` or `to` is promoted by any id containing those letters. The first fix proposed
-matching at structural characters, and the audit showed that is still wrong twice: a disambiguator
-sits raw between parentheses, so a declaration named `to` matches inside `(to)` where `to` is not a
-name, and `quoteName` wraps any name carrying a structural character in backticks, doubling inner
-ones, so the raw `declaration.name` is never found in the encoded tail for such a name. Compare
-against what the grammar actually produces instead: parse the bad id as far as it goes and match
-declaration names against the parsed descriptor names, falling back to `quoteName(name)` against
-the tail when the id does not parse. The grammar owns the spelling; the ranking borrows it.
+name like `at` or `to` is promoted by any id containing those letters. The grammar owns the
+spelling, so the ranking borrows the grammar's own parse.
+
+**The partial parse.** `parseDescriptors` keeps its results in a local and every failure path
+discards them, so a malformed id yields nothing today. The grammar gains `parseSymbolIdPrefix`,
+which returns the descriptors parsed before the failure together with the failure, and the
+existing parser is unchanged. The ranking matches declaration names against those descriptor
+names. Only when zero descriptors parse does it fall back to matching `quoteName(name)` as a whole
+token in the tail, bounded by structural characters, and never inside a `(...)` disambiguator
+span, which is skipped as a unit.
 
 **Tests:** plant `at` and `Total`; a bad id naming `Total` lists `Total` first and does not promote
-`at`, and one naming `at` still finds it. Plant a declaration named `to` and a bad id whose
-disambiguator is `to`: not promoted. Plant a name that quotes, such as one carrying a dot: found.
+`at`, and one naming `at` still finds it. Plant `to` and a bad id whose disambiguator is `to`: not
+promoted. Plant a name that quotes, such as one carrying a dot: found. A bad id missing only its
+terminator: the descriptors before the terminator are parsed and the right declaration leads. An
+id that fails at its first descriptor: the fallback runs and still refuses `(to)`.
 
 ## Phase 3 - The gap header is told whether it filtered
 
 **What:** `renderKnowledgeGaps` decides whether to name the asked question by inferring which core
 branch produced the rows, which mirrors the core's structure into the renderer. The core says so
-instead. `KnowledgeGapsSchema` gains an optional `filtered: boolean`, true when every row honours
-the asked question. The seeded, module and subtree branches set it. The workspace demand sweep,
-which deliberately carries every question with rechecks first, leaves it unset. The renderer reads
-the flag and the scope inference goes.
+instead. `KnowledgeGapsSchema` gains an optional `filtered: boolean`. Every return sets it
+explicitly: `true` from the seeded fallback, the module scope and the subtree walk, whose rows all
+honour the asked question; `false` from the workspace demand sweep, which deliberately carries
+every question with rechecks first. The renderer names the question only on `true`, and treats an
+omitted field as an older peer, which is the only thing omission means once every branch sets it.
 
-**Wire:** an optional field on a result shape is additive, and the protocol doc prices it as a
-**minor**, not a patch. No protocol major.
+**Wire:** an optional field on a result shape is additive, and a minor.
 
-**Tests:** core, that `moduleGaps`, the seeded fallback and the subtree walk each flag filtered,
-and the workspace sweep does not; the subtree walk is the third return path and was unlisted until
-the audit named it. Renderer, that a flagged result names the question and an unflagged one does
-not, with the lying case planted: a page of matching rows on a mixed total.
+**Tests, each named by the request that reaches its branch:** no arguments reaches the workspace
+sweep, `filtered: false`; `{ module }` reaches the module scope, `true`; `{ name }` or
+`{ symbolId }` reaches the subtree walk, `true`; no arguments on an empty ledger reaches the seeded
+fallback, `true`. Renderer: `true` names the question, `false` does not, omitted does not, with the
+lying case planted, a page of matching rows on a mixed total.
 
 ## Phase 4 - Orphaned knowledge: dated, migrated, or deleted by the store
 
-Decided by the owner; see Question 4. The store does this inside the scan. No agent is ever asked
-to clean up, and nothing here is a chore a person performs.
+Decided by the owner; see Question 4. No agent is ever asked to clean up, and nothing here is a
+chore a person performs.
 
 **Orphan:** a row in `answers` or `gaps` whose subject id resolves to no declaration.
 
-**Who owns it.** The store exposes one sweep as a single method, and that method runs every step
-below inside one transaction: candidate selection, the uniqueness read and the migration it
-authorizes are never separate operations, because a reindex landing between them would migrate
-onto a declaration that just vanished. The indexer invokes it once, after a completed scan, at the
-same point both the full scan and the watcher batch already converge on prune. "In the store" and
-"in the indexer" were two descriptions of the same thing; this is the one.
+**Who does what.** Two owners, because the repository puts source-dependent decisions in the
+indexer and facts in the store, and presence is a source-dependent decision.
 
-**Orphan:** a row in `answers` or `gaps` whose subject id resolves to no declaration.
+- The **indexer** orchestrates. After a completed scan, at the point both the full scan and the
+  watcher batch already converge on prune, it runs the sweep inline. It is synchronous like prune
+  and it is bounded, so it costs the scan a bounded amount; the plan does not claim it costs
+  nothing.
+- The **store** exposes `sweepOrphans(batch, presence, clock)`: one bounded batch, one transaction.
+  `presence` is a function the indexer supplies, answering for a module whether it is present and
+  parsing, defined below. The store never touches the filesystem.
 
-**The sweep.** For each orphan, in this order:
+**Transactions.** `inTransaction` is a raw `BEGIN`/`COMMIT` and not re-entrant, and the public
+`migrateKnowledge` opens its own. The migration body is factored into a non-transactional
+primitive used by both: the public method wraps it in a transaction as today, and the sweep calls
+the primitive inside its own batch transaction. Each batch is one transaction; the sweep as a
+whole is many, which is what lets it stop and resume.
 
-1. **Exempt** when the subject's module is in `parse_failures` AND its file is present. The store
-   records only `(module, reason)` for a failure, so presence is a read the sweep makes itself,
-   through the workspace's own source reader, never a bare filesystem call, and it is bound to
-   content: a file deleted and recreated under the same path is present and parsing, so its
-   missing symbol is a real strand, not an exemption. A present, failing file may be mid-refactor
-   and nothing is written for it.
-2. **Migrate** when exactly one declaration in the index matches. "Matches" is defined once, as
-   one matcher in the id grammar over the parsed descriptors: same name, same kind, same descriptor
-   path including disambiguators and occurrences, in a different module. The store does not hold
-   descriptor shape as a column; the matcher parses both ids. `migrateKnowledge` then carries the
-   rows the way a rename through the refactor tools already does. No date is ever set on a move.
-   **Collision, stated because the code decides it today:** the migration moves only the questions
-   the destination lacks and deletes every remaining source row. So a stranded answer whose
-   question the destination already holds is deleted, and the destination's prose wins, even where
-   the stranded prose was better. That is the current behaviour, kept as written, and it is the one
-   place this phase asks the owner to look again. The guard is uniqueness, and it is the only thing
-   separating a move from a copy, a split, a wrapper or a regenerated declaration; where it fails,
-   the row is dated and waits.
-3. **Date** otherwise: `strandedAt` is set on first sight and left alone after.
-4. **Un-strand** any dated row whose subject resolves again: the date is cleared on that scan.
-5. **Delete** any row whose date is thirty or more days behind the clock, answers and demand rows
-   alike. A date ahead of the clock is treated as now, so a clock that went backwards cannot delete
-   early.
+**Presence, decided by the indexer, bound to content.** A module is present and parsing when its
+source read is `text` and the read's content hash equals the `files.contentHash` the index holds
+for it. `missing`, `binary` and `tooLarge` reads are not present. A file deleted and recreated
+under the same path with different content hashes differently, so it is not the same file and its
+missing symbol is a real strand.
 
-**The clock.** The store reads `Date.now` directly at four sites today, and a residue already holds
-one owner for the routed modules. The sweep takes its now from that owner, injected, so the aging
-test sets the clock rather than waiting thirty days or faking a date in the row.
+**Two passes, so the loop can reach what it must.** An orphan-only loop can never un-strand,
+because a row whose subject resolves again is not an orphan.
 
-**Cost at scale.** `gaps` has a bounded read and `allAnswers` does not, and the knowledge layer
-already refuses a full answer scan past `STALE_SCAN_CAP`. The sweep reads orphans through paged,
-indexed queries and mutates in bounded batches, and when it exceeds its budget in one scan it
-stops, reports how far it got the way the stale scan reports `staleScanSkipped`, and resumes on the
-next scan. It never blocks the scan that invoked it.
+Pass A, over dated rows, read by the `strandedAt` index:
+
+1. **Un-strand** a dated row whose subject resolves again: the date is cleared.
+2. **Delete** a row whose date is thirty or more days behind the clock, answers and demand rows
+   alike. A date ahead of the clock is treated as now, so a clock that went backwards cannot
+   delete early.
+
+Pass B, over undated orphans, read by a keyset over `(symbolId, question)` left-joined to
+`symbols`:
+
+3. **Exempt** when the subject's module is in `parse_failures` and `presence` says present. A
+   present, failing file may be mid-refactor, and nothing is written for it.
+4. **Migrate** when exactly one declaration in the index satisfies `sameDeclaration` from Phase 1.
+   The primitive carries answers and demand the way a rename through the refactor tools does. No
+   date is set on a move. **Collision:** the migration moves only the questions the destination
+   lacks and deletes every remaining source row, so a stranded answer whose question the
+   destination already holds is deleted and the destination's prose wins, even where the stranded
+   prose was better. That is the current behaviour, kept as written, and it is the one place this
+   phase asks the owner to look again.
+5. **Date** otherwise: `strandedAt` is set on first sight and left alone after.
+
+**Budget and continuation.** The unit is rows examined per scan across both passes, capped by one
+constant beside `STALE_SCAN_CAP`. A sweep that reaches the cap stops, persists its keyset position
+in store meta beside the scan summary, and resumes from it on the next scan; a sweep that finishes
+clears the position. What it did is reported as an optional `knowledgeSweep` object on the scan
+summary and on `overview`: examined, un-stranded, migrated, dated, deleted, and whether it stopped
+early. Optional fields are a minor.
+
+**The clock.** The store reads `Date.now` at four sites today and a residue holds one owner for
+the routed modules, `clock.ts`, whose `Clock` is injectable. The sweep takes `now` from the clock
+the indexer hands it, so the aging test sets the clock rather than faking a date in the row.
 
 **What a dated row stops costing.** It leaves the stale sweep and the `STALE_SCAN_CAP` count at
-once, and it never leads the demand queue. `knowledge_gaps` shows it in a stranded section with
-its date, so a person can see what is about to go. That is a window, not a task.
+once, it never leads the demand queue, and `recallAnswer` records no demand for it (Phase 1).
+`knowledge_gaps` shows it in a stranded section with its date, so a person can see what is about to
+go. That is a window, not a task.
 
-**Storage, corrected by the audit.** The plan first asked for a store-compatibility bump "so an
-older core refuses the newer store". That was wrong twice: the compatibility key is the release
-major and nothing else, so it cannot move without a major, and a mismatch does not refuse, it drops
-every table and rebuilds. The store already has the right pattern: a nullable column added in
-place with `ALTER TABLE`, one atomic statement, an old row reads as not yet recorded. `strandedAt`
-goes onto both tables that way. No bump, no rebuild, no major. Because a rebuild still salvages
-knowledge through fixed column lists in `restoreKnowledge`, the column is added to both inserts
-there too, or a rebuild would silently clear every date and restart every thirty-day count.
+**Storage.** One nullable `strandedAt` column on `answers` and on `gaps`, added in place with
+`ALTER TABLE` like every other added column, one atomic statement, an old row reads as not yet
+recorded. An index on `strandedAt` for each table, since pass A reads by it. Both columns added to
+the fixed insert lists in `restoreKnowledge`, or a rebuild would silently clear every date and
+restart every thirty-day count. No compatibility bump, no rebuild, no major.
 
-**Wire, corrected by the audit.** Showing a stranded row with its date is a wire change: the gap
-row's `why` is a closed enum and carries no date. It gains an optional `strandedAt` and an optional
-`stranded` flag, never a fourth `why` value, because clients ride forward and an older client
-would fail to parse the newer row. The protocol doc prices an optional field as a **minor**, and
-that is what this phase is.
+**Wire.** The gap row gains an optional `strandedAt` and an optional `stranded` flag, never a
+fourth `why` value, because clients ride forward and an older client would fail to parse the newer
+row. With the `knowledgeSweep` report and Phase 1's recall field, this phase is a minor.
 
-**Tests:** plant, record, answer, then replace the file without the symbol: dated on the next
-sweep, absent from the stale count, not at the head of the queue. Replace it with a parse failure
-while the file is present: not dated. Delete the file and recreate it parsing without the symbol:
-dated. Put the symbol back: date cleared. Move it to another module as the only candidate:
-migrated, undated, recalled at the new id. Add a second candidate: dated, not migrated. Record a
-different answer at the destination first, then move: the destination's prose survives and the
-source row is gone, which pins the collision rule. Advance the injected clock thirty days: gone.
-Set the clock behind a date: not deleted. Force a rebuild: the date survives. An older client
-parses a row carrying the new fields. Each case watches the old behaviour fail first.
+**Tests:** plant, record, answer, replace the file without the symbol: dated on the next sweep,
+absent from the stale count, not at the head of the queue, no demand recorded on recall. Replace
+it with a parse failure while the file is present: not dated. Delete the file and recreate it
+parsing without the symbol: dated. Put the symbol back: pass A clears the date. Move it to another
+module as the only `sameDeclaration` match: migrated, undated, recalled at the new id. Add a
+second match: dated, not migrated. Record a different answer at the destination first, then move:
+the destination's prose survives and the source row is gone, which pins the collision rule.
+Advance the injected clock thirty days: gone. Set the clock behind a date: not deleted. Force a
+rebuild: the date survives. Plant more orphans than the cap: the sweep stops, reports it, and the
+next scan finishes from the persisted position. An older client parses a row carrying the new
+fields. Each case watches the old behaviour fail first.
 
-**Why the leak mattered.** `answers` and `gaps` are keyed by `(symbolId, question)` with no link
-to the declaration, and `replaceFile` and `forgetFile` clear the fact tables only, so a hand move
-left both rows for the life of the store. A dead demand row held the head of the queue by ask
-count. A stranded answer was stale forever, so every workspace `knowledge_gaps` call resolved its
-citations and listed it as work nobody could do, and it counted toward the cap past which
-staleness detection switches off. The sweep above is what closes it.
-
-## Phase 5 - Fan-in seeding per language [decision]
+## Phase 5 - Fan-in seeding per language [deferred, decision-complete]
 
 **The defect:** the cold-start fallback ranks the whole workspace by fan-in. Cross-language calls
 do not bind, so any language that is called through a wire rather than an import is under-counted
-and ranks last. Kotlin here; a Python extractor beside a TypeScript core elsewhere.
+and ranks last. Kotlin here; a Python extractor beside a TypeScript core elsewhere. The reviewer
+who worked the two-language repository confirmed that a raw interleave would put `Protocol.kt`'s
+generated containers in front of the console's real doctrine, because they have the highest Kotlin
+fan-in and say nothing.
 
-**Options:** rank within each language present in the index and interleave, so every language's
-best candidates appear in the first page. Or weight by each language's share of declarations. Or
-leave the global ranking as it is.
+**Recommended design, priced against what the store holds.**
 
-**What the reviewer who worked the two-language repository said:** a raw interleave would have
-put `Protocol.kt`'s generated containers in front of the console's real doctrine, because they
-have the highest Kotlin fan-in and say nothing. Fan-in is the wrong primary signal for a language
-nothing binds into. A comment-bearing declaration is the better one: it is where that half of the
-repository keeps its reasoning, and it is what the run actually found worth recording.
+- **Eligible:** exported, not generated, and carrying at least one comment anchored to the
+  declaration or at least one reference or literal beyond the declaration itself. The three counts
+  are answered from indexes that exist: `comments_anchor`, `refs_target`, `literals_container`.
+- **Generated, as a three-valued fact.** The scan learns it from `git check-attr` and today
+  collapses "not generated" and "could not tell" into one empty set. It is persisted on `files` as
+  `generated: yes | no | unknown` with a reason from a closed enum for unknown, `noGit` or
+  `gitFailed`, added in place. Unknown files are eligible and the seeded result reports how many
+  candidates were unknown, so the bias is visible rather than silent.
+- **Order within a language:** language-local fan-in, ties by symbol id.
+- **Language order:** the store persists no language and every symbol id carries one, so the order
+  is derived, not stored: languages sorted by their declaration count descending, ties by name.
+  It is stable under rescans and drifts only when the workspace's proportions do.
+- **Reserved hubs:** the top five eligible hubs by global fan-in stay at the head, ties by symbol
+  id, then the interleave takes one candidate per language in turn. Five is written down so it can
+  be argued with. `mostReferenced` gains the eligibility predicate and a tie-break, since today it
+  has neither.
 
-**Recommendation:** filter, then interleave. Candidates are exported, non-generated declarations
-that carry a comment or substantive facts; generated containers and declaration-only shells are
-out before ranking. Within a language, order by language-local fan-in. Across languages, take one
-strong candidate per language in turn, and keep the workspace's top global hubs at the head so
-the protocol and core symbols a newcomer needs are not pushed under an obscure provider's best
-representative. Saying so in the `knowledge_gaps` description is honesty, not a substitute for
-any of that.
+**The cheaper form, with its loss stated:** interleave only among comment-bearing declarations,
+skip generated status and the reference and literal counts. It costs no column and drops every
+eligible declaration that carries substantive facts but no comment, which is a documented loss to
+be accepted or not, not an accident.
 
-**What the audit found the recommendation resting on.** Generated status is not a fact the store
-holds. It is a scan-time `git check-attr linguist-generated` lookup in `generatedFiles`, consumed
-while scoping files and never written to a declaration. So "non-generated" is either a new
-persisted per-file fact, one nullable column on `files` set by the scan, or it is not available to
-the seed at all. The rest of the filter was named without a predicate. Before the owner decides,
-the recommendation is priced as follows, and each item is a line the implementation must write:
+**Tests, so the phase is done when decided:** a two-language store where one language's top
+symbol is a generated container: the container is not seeded, the language's best comment-bearing
+declaration is. A `noGit` workspace: candidates seed as unknown and the report says so. Equal
+fan-in ties: the same order on two runs. The cheaper form: the comment-less substantive
+declaration is absent and the test names it.
 
-- **Generated:** persisted on `files` at scan time, nullable, added in place like every other
-  column here. Cost is one column and one write per scanned file.
-- **Comment-bearing:** at least one comment fact anchored to the declaration, which the store can
-  answer from the comments table by anchor id. **Substantive facts** means at least one reference
-  or literal fact beyond the declaration itself. Both are one indexed count each.
-- **Language order:** the order languages first appear in the index, fixed for the life of the
-  store, so the interleave is stable as files are added. **Tie-break** within a language is by
-  symbol id, so two runs over one store agree.
-- **Reserved hubs:** the top five global hubs by fan-in stay at the head regardless of language,
-  then the interleave begins. Five is a number to be argued with, and it is written down so it can
-  be.
-
-The cheaper alternative, if the owner does not want a new persisted fact: interleave only among
-comment-bearing declarations and skip generated status entirely, accepting that a generated file
-with comments still competes. That is honest about what the store knows and costs no column.
+**Release:** a minor if it persists the generated fact, a patch under the cheaper form. Not in
+any release line until the owner decides.
 
 ## Doctrine
 
@@ -317,22 +361,29 @@ id whose symbol moved. A reviewer who hit the undistinguished version could not 
 done, and that is the whole cost.
 
 **Every refusal the knowledge layer produces, audited against the rule.** A rule with one named
-exclusion and an unlisted remainder is a rule nobody can check. The disposition of each:
+exclusion and an unlisted remainder is a rule nobody can check. The disposition of each, across
+all three shapes a refusal is returned in, `recorded: false`, `refused:` and the citation
+checker's `ok: false`:
 
 - Cites nothing: names the fix (cite the facts drawn from). Kept.
 - A citation is not a fact id: names the fix (the whole line, never the digest). Kept; it is the
   shape the rest are raised to.
 - A citation does not resolve: names both causes and the fix (re-fetch or refuse). Kept.
 - Nothing cited about the subject: names the mistake (neighbours describe themselves). Kept.
-- Fact id as subject, unminted id, unknown module: rewritten overnight; Phase 0 spreads them.
+- Fact id as subject, unminted id, unknown module, stranded id: Phase 0 and Phase 1.
 - Prose too long: names the limit and the length. Kept.
 - Replacing an answer whose citations still hold: names the fix (`omitting`). Kept.
 - No standing doubt to clear, or the wrong doubt id: names the fix (recall and cite it). Kept.
+- A doubt with no reason: names what the reason is for (the next writer reads it). Kept.
+- No answer recorded to re-affirm: names the fix (`record_answer` writes one). Kept.
 - **"an answer needs prose": fails the rule.** It states a condition and no action. Reworded to
   say what to send.
 - **"nothing to re-affirm: every citation resolves and no doubt stands": fails the rule.** It
   states a condition and no action, and an author who reached it wanted something. Reworded to
   say the answer is already sound and what re-affirming would change if they still want it.
+- **"nothing is recorded about X to doubt": fails the rule.** It states a condition and no action.
+  Reworded to say that doubting an unwritten answer is a request for one, and that `record_answer`
+  is how it gets written.
 
 ## Verification
 
@@ -340,26 +391,25 @@ Ordered by how much it proves, as the repository already orders it.
 
 - Unit: every phase plants the mistake and watches the old message fail before the new one is
   trusted. The render-shape gate already covers every renderer's output.
-- A gate that can fail, corrected by the audit. The first version swept `recorded: false` reason
-  literals, and there are almost none: every reason is an interpolated template built inside a
-  helper and returned through a caller. The gate sweeps construction sites instead. Every refusal
-  is composed through one owner, a catalog of reason constructors, and the residue fails the build
-  on a `recorded: false` composed anywhere else, asserts it found constructors to check so a run
-  matching nothing fails, and requires each constructor to be named by a test that asserts the
-  returned reason AND the action taken, since a test that merely names a reason does not prove
-  the branch ran. The density bar in the repository's rules stays; it was never this gate's to
-  replace, and this gate is proven by planting a stray refusal and watching it fail.
+- A gate that can fail. Every refusal is composed through one owner, a catalog of reason
+  constructors in the knowledge layer, and a residue fails the build on a refusal composed
+  anywhere else, under any of the three shapes: a `recorded: false`, a `refused:`, or a helper's
+  `ok: false` carrying a reason. The sweep asserts it found constructors and found call sites, so a
+  run matching nothing fails. Each constructor is named by a test that asserts the returned reason
+  AND the action taken, since a test that merely names a reason does not prove the branch ran. The
+  density bar in the repository's rules stays. The gate is proven by planting a stray refusal under
+  each of the three shapes and watching each fail.
 - Drive the built server: hand each refusal the exact bad input from the overnight logs, a fact
-  id as subject, a member id without its terminator, a stranded id, and read what comes back.
-- Release, corrected by the audit: **minor** after Phases 0 to 3. Phase 0 adds a daemon method
-  and Phase 3 an optional field, and the protocol doc prices each as a minor, not a patch. Phase 4
-  is a minor for its optional gap-row fields. Phase 5 ships when decided, a minor if it persists
-  the generated flag, a patch if it takes the cheaper form. Nothing here needs a major: no
-  extraction changes and no method is removed or renamed.
+  id as subject, a member id without its terminator, a stranded id, and read what comes back, and
+  drive `diagnoseSubject` and one `sweepOrphans` batch through the real daemon.
+- Release: **minor** after Phases 1, 0, 2 and 3 together. Phase 0 adds a daemon method, Phase 1
+  and Phase 3 add optional fields, and the protocol doc prices each as a minor. Phase 4 is a minor
+  for its optional fields. Phase 5 is priced in its own section and is in no release line until
+  decided. Nothing here needs a major: no extraction changes and no method is removed or renamed.
 
 ## Painpoints
 
-Collected during the overnight knowledge run and the review of its patches.
+Collected during the overnight knowledge run, the review of its patches, and the refinement laps.
 
 - Two agents read "16 why gaps" as a filter and stopped while why gaps waited under the rechecks.
 - Demand rows at dead ids led the queue with the highest ask counts in the store and could not be
@@ -393,6 +443,17 @@ Collected during the overnight knowledge run and the review of its patches.
   rule.
 - Lap 1 of plan refinement: eight auditors, sixteen findings, sixteen held against the code, none
   dismissed. The plan had been confident about its own cost in three places it had not read: a
-  compatibility bump that was a major and rebuilt rather than refused, a "no wire change" that was
-  a minor, and a migration that deletes colliding prose. A plan should be audited at the same bar
-  as the code it describes, and this one was not until it was.
+  compatibility bump that was a release major and rebuilt rather than refused, a "no wire change"
+  that was a minor, and a migration that deletes colliding prose. The storage fix is the pattern
+  the store already uses for added columns, `ALTER TABLE` in place, nullable.
+- Lap 2 of plan refinement: nine auditors, twenty-five findings, twenty-five held. Two lap 1 fixes
+  had not landed: Phase 0 had named the problem of "every tool" and "the token" without naming a
+  tool table or a token, and Phase 2 had planned a partial parse the grammar cannot do, since the
+  descriptor parser discards everything before a failure. Phase 4 had claimed one transaction with
+  a non-re-entrant transaction helper, "never blocks" for an inline synchronous call, a presence
+  read in a store that reads only the database, and an un-strand step inside a loop that by
+  definition never reaches it. The doctrine's "every refusal" list had missed three and the gate
+  swept one of three refusal shapes. Phase 5's nullable generated column had collapsed "not
+  generated" and "could not tell" into one absence. The lesson is the plan's own rule turned on
+  the plan: a sentence that names a mechanism the code does not have is a refusal that names no
+  fix.
