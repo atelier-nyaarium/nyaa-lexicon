@@ -38,13 +38,27 @@ A: Not yet. `RecordOutcome` is a wire shape, and replacing `reason: string` is n
 value BESIDE the string the day a consumer branches on it, such as an editor quick fix. Until then
 the string is the product and its quality is what this plan raises.
 
-## Question 4 - Does knowledge follow a symbol that moves? [Open, owner's call]
+## Question 4 - Does knowledge follow a symbol that moves? (settled in chat)
 
 Q: `currentHost` moved from `core` to `client`. Its answer is stranded at the dead id, permanently
 STALE, citing facts that can never resolve. Its prose is better than what a fresh reader wrote for
 the live symbol, and `recall_answer` on the live symbol never shows it. Demand rows strand the same
-way and lead the gap list, which both agents read as the queue being exhausted. What should happen?
-A: Undecided. Phase 4 lays out the options with a recommendation.
+way and lead the gap list, which both agents read as the queue being exhausted. And the rows are a
+slow leak: no link to the declaration, no cleanup on replace or forget. What should happen?
+A: The store cleans up inside the scan, never an agent. Orphans are detected and dated, a file that
+exists but fails to parse is never dated, a date clears when the symbol returns, a unique
+same-shaped declaration elsewhere triggers migration instead of a date, and anything dated for
+thirty days is deleted. Auto-migration ships despite the author's and both reviewers' preference
+for a proposal-only form; the owner heard that and decided.
+
+> "we need to do more than just make them visible. don't make the AI clean it up either. that
+> would just be stupid."
+
+> "Being able to detect all orphans in the database. Periodic checks to date them. But if the file
+> exists and is just failing to parse, don't strand date that file. It could literally be in the
+> middle of a long refactor. Stranded entries that get unstranded remove date next scan."
+
+> "Auto migration as you suggested." ... "Orphans deleted after 30 days."
 
 ## Question 5 - Should fan-in seeding rank within a language? [Open, owner's call]
 
@@ -131,48 +145,47 @@ the flag and the scope inference goes.
 does not. Renderer, that a flagged result names the question and an unflagged one does not, with
 the lying case planted: a page of matching rows on a mixed total.
 
-## Phase 4 - Knowledge that follows a moved symbol [decision]
+## Phase 4 - Orphaned knowledge: dated, migrated, or deleted by the store
 
-Three options, cheapest first. They compose.
+Decided by the owner; see Question 4. The store does this inside the scan. No agent is ever asked
+to clean up, and nothing here is a chore a person performs.
 
-**Surface it.** `knowledge_gaps` gains a state, STRANDED, for a demand row or an answer whose
-subject no longer resolves. Stranded rows do not merely sort last, where a long list buries them:
-they render as their own section after the live rows, each with its prose and its live candidates
-from Phase 1, so re-homing is a read and a `record_answer`, not a search. Honest, cheap, and it
-never guesses.
+**Orphan:** a row in `answers` or `gaps` whose subject id resolves to no declaration.
 
-**Demote it.** At minimum, rows whose subject does not resolve never lead the list. This is the
-part of the first option that costs nothing to decide.
+**The sweep.** Runs after each scan completes, in the indexer, over both tables. For each orphan,
+in this order:
 
-**Migrate on detection.** When a declaration with the same name and descriptors appears in a new
-module after its old id vanished, treat it as a move and carry answers and demand forward, the way
-`migrateKnowledge` already does for a rename through the refactor tools. A hand move, an edit plus
-a `git mv`, is how files usually move, and it bypasses that path entirely. Both reviewers rejected
-this as the default: "exactly one new module" does not distinguish a move from a copy, a split, a
-wrapper, or a regenerated declaration, and each of those would attach prose to the wrong symbol
-silently. If it ever ships, detection proposes the candidate and a person or an agent confirms
-the migration explicitly; it never applies itself.
+1. **Exempt** when the subject's module exists on disk and is in `parse_failures`. That file may be
+   mid-refactor, and a date set now would count down on a symbol that is coming back. Nothing is
+   written for it.
+2. **Migrate** when exactly one declaration in the index has the same name, kind and descriptor
+   shape in a different module. `migrateKnowledge` carries the answers and demand to it, the way a
+   rename through the refactor tools already does. No date is ever set on a move. The guard is
+   uniqueness, and it is the only thing separating a move from a copy, a split, a wrapper or a
+   regenerated declaration; where it fails, the row is dated and waits.
+3. **Date** otherwise: `strandedAt` is set on first sight and left alone after.
+4. **Un-strand** any dated row whose subject resolves again: the date is cleared on that scan.
+5. **Delete** any row dated thirty or more days ago, answers and demand rows alike.
 
-**Recommendation:** surface and demote now, in one change. Migration stays a proposal, never an
-action, because a wrong migration is the one lie this project exists to stop telling.
+**What a dated row stops costing.** It leaves the stale sweep and the `STALE_SCAN_CAP` count at
+once, it never leads the demand queue, and `knowledge_gaps` shows it in a stranded section with
+its date, so a person can see what is about to go. That is a window, not a task.
 
-**Reclaim it [proposed, unbuilt].** Surfacing fixes visibility; nothing above frees a row. The
-store keeps `answers` and `gaps` keyed by `(symbolId, question)` with no link to the declaration,
-and `replaceFile` and `forgetFile` clear the fact tables only, so a hand move leaves both rows for
-the life of the store. The cost is not memory. A dead demand row holds its slot at the head of the
-queue by ask count forever. A stranded answer is stale forever, so the recheck sweep resolves its
-citations on every workspace `knowledge_gaps` call and lists it as work nobody can do, and it
-counts toward `STALE_SCAN_CAP`, past which staleness detection switches off for the whole
-workspace. The rule is asymmetric because the two rows are worth different amounts:
+**Storage:** one nullable `strandedAt` column on each table, a store-compatibility bump so an
+older core refuses the newer store honestly, no wire change, no protocol major.
 
-- A stranded **answer** is kept. It is prose somebody wrote and may re-home. It leaves the stale
-  sweep and the cap count, and appears only in the stranded section.
-- A stranded **demand row with no answer** is deleted once it has been shown as stranded. Nothing
-  can ever satisfy it, and its only remaining effect is to occupy the queue.
+**Tests:** plant, record, answer, then replace the file without the symbol: dated on the next
+sweep, absent from the stale count, not at the head of the queue. Replace it with a parse failure
+instead: not dated. Put the symbol back: date cleared. Move it to another module as the only
+candidate: migrated, undated, recalled at the new id. Add a second candidate: dated, not migrated.
+Age a date past thirty days: gone. Each case watches the old behaviour fail first.
 
-**Tests:** plant, record, answer, replace the file without the symbol. The workspace gap list
-shows the answer as stranded and does not count it as stale; the demand row is gone after one
-listing; the cap arithmetic excludes stranded answers.
+**Why the leak mattered.** `answers` and `gaps` are keyed by `(symbolId, question)` with no link
+to the declaration, and `replaceFile` and `forgetFile` clear the fact tables only, so a hand move
+left both rows for the life of the store. A dead demand row held the head of the queue by ask
+count. A stranded answer was stale forever, so every workspace `knowledge_gaps` call resolved its
+citations and listed it as work nobody could do, and it counted toward the cap past which
+staleness detection switches off. The sweep above is what closes it.
 
 ## Phase 5 - Fan-in seeding per language [decision]
 
