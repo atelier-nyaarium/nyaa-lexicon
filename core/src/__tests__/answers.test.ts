@@ -158,6 +158,27 @@ describe("writing an answer down", () => {
 		expect(!outcome.recorded && outcome.reason).toContain("citations");
 	});
 
+	// An id typed by hand loses the grammar's terminal punctuation, which mints a plausible id for a
+	// symbol that never existed. The module is the half the author got right, so it is the shortlist.
+	it("names what the module holds when the id is plausible and unminted", async () => {
+		plant();
+
+		const outcome = await service.recordAnswer("lexicon reference a.ref Cart", "describe", "A cart.", []);
+
+		expect(outcome.recorded).toBe(false);
+		expect(!outcome.recorded && outcome.reason).toContain("a.ref holds");
+		expect(!outcome.recorded && outcome.reason).toContain(SYMBOL);
+	});
+
+	it("says so when the module itself is not indexed", async () => {
+		plant();
+
+		const outcome = await service.recordAnswer("lexicon reference gone.ref Cart#", "describe", "A cart.", []);
+
+		expect(outcome.recorded).toBe(false);
+		expect(!outcome.recorded && outcome.reason).toContain("neither is gone.ref");
+	});
+
 	// Prose under a heading is evidence about that heading, the way a comment is evidence about the
 	// symbol it documents. An answer about a section could otherwise cite nothing at all.
 	it("records an answer citing the prose under a heading", async () => {

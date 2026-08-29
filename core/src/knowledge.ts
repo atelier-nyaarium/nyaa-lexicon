@@ -13,6 +13,7 @@ import {
 	type GapRow,
 	type InvalidateOutcome,
 	type KnowledgeGaps,
+	parseSymbolIdResult,
 	type ResolveFactsResult,
 } from "@nyaa-lexicon/protocol";
 import {
@@ -69,18 +70,38 @@ export const INLINE_GAP_THRESHOLD = 20;
 ////////////////////////////////
 //  Functions & Helpers
 
+/** How many neighbours a refusal names before the list stops helping. */
+const NEIGHBOURS_SHOWN = 8;
+
 /**
  * Why a subject id names no declaration.
  *
- * A fact id and a symbol id are both long space-separated strings, and `symbol_facts` answers with
- * both, so handing over the wrong one is the ordinary mistake rather than an exotic one. Saying only
- * that it is not indexed sends the author looking for a missing symbol instead of at the id.
+ * Two mistakes account for nearly all of these, and "not in the index" describes neither. A fact id
+ * and a symbol id are both long space-separated strings that `symbol_facts` answers with together,
+ * so the wrong one gets handed over. And an id typed by hand loses its terminal punctuation, which
+ * the grammar needs, leaving a plausible id for a symbol that was never minted. Both send the author
+ * hunting for a missing symbol when the string is what is wrong.
  */
-function subjectRefused(symbolId: string): string {
+function subjectRefused(symbolId: string, store: IndexStore): string {
 	if (symbolId.startsWith(`${FACT_SCHEME} `)) {
 		return `${symbolId} is a fact id, not a symbol id. Cite it in \`citations\` and name the symbol it belongs to in \`symbolId\``;
 	}
-	return `${symbolId} is not in the index`;
+
+	const parsed = parseSymbolIdResult(symbolId);
+	// An id that fails to parse still names its module in the third field, and that is the half worth
+	// answering: the listing below holds the id the author meant, terminator and all.
+	const module = parsed.ok ? parsed.value.module : symbolId.split(" ")[2];
+
+	const neighbours = module === undefined ? [] : store.declarationsIn(module);
+	if (neighbours.length > 0) {
+		const shown = neighbours.slice(0, NEIGHBOURS_SHOWN).map((declaration) => `\`${declaration.symbolId}\``);
+		const rest = neighbours.length - shown.length;
+		const more = rest > 0 ? `, and ${rest} more` : "";
+		return `${symbolId} is not in the index. ${module} holds ${shown.join(", ")}${more}`;
+	}
+
+	if (!parsed.ok) return `${symbolId} is not a symbol id: ${parsed.failure.message}`;
+	return `${symbolId} is not in the index, and neither is ${parsed.value.module}`;
 }
 
 ////////////////////////////////
@@ -217,7 +238,7 @@ export class KnowledgeLedger {
 	): Promise<RecordOutcome> {
 		const { model, resolvesDoubt, omitting } = options;
 		if (this.store.declaration(symbolId) === null) {
-			return { recorded: false, reason: subjectRefused(symbolId) };
+			return { recorded: false, reason: subjectRefused(symbolId, this.store) };
 		}
 		if (prose.trim() === "") return { recorded: false, reason: "an answer needs prose" };
 		if (prose.length > MAX_PROSE) {
