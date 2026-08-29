@@ -268,17 +268,18 @@ describe("knowledge_gaps scopes", () => {
 		expect(result.content[0]?.text).toContain("Workspace-wide: no describe gaps");
 	});
 
-	// The workspace list sweeps unhealthy answers to every question. Calling those "why gaps" reads
-	// as a filter, and an author who trusts it stops while why gaps sit under the rechecks.
-	it("does not call the list by the asked question when it carries other ones", async () => {
-		const mixed = backend({
+	// The workspace demand list sweeps unhealthy answers to every question, and the page shown can
+	// be all one question while the total underneath mixes. So the header is decided by the scope,
+	// never by inspecting the rows: a filter the rows do not honor must not be promised by them.
+	it("does not call the workspace demand list by the asked question, even when the page matches", async () => {
+		const page = backend({
 			knowledgeGaps: async () => ({
 				question: "why" as const,
 				rows: [
 					{
 						symbolId: "lexicon ts src/a.ts Cart.",
-						question: "describe" as const,
-						why: "stale" as const,
+						question: "why" as const,
+						why: "missing" as const,
 						askCount: 2,
 						fanIn: 3,
 					},
@@ -289,11 +290,35 @@ describe("knowledge_gaps scopes", () => {
 			}),
 		});
 
-		const result = await knowledgeGaps(mixed, { question: "why" });
+		const result = await knowledgeGaps(page, { question: "why" });
 
-		expect(result.content[0]?.text).toContain("4 gaps, ranked by demand");
-		expect(result.content[0]?.text).not.toContain("4 why gaps");
-		expect(result.content[0]?.text).toContain("(describe)");
+		expect(result.content[0]?.text).toContain("4 gaps, ranked by demand, rechecks first");
+		expect(result.content[0]?.text).not.toContain("why gap");
+	});
+
+	it("still names the question where the scope filters by it", async () => {
+		const seeded = backend({
+			knowledgeGaps: async () => ({
+				question: "why" as const,
+				rows: [
+					{
+						symbolId: "lexicon ts src/a.ts Cart.",
+						question: "why" as const,
+						why: "missing" as const,
+						askCount: 0,
+						fanIn: 9,
+					},
+				],
+				total: 1,
+				external: 0,
+				truncated: false,
+				seeded: true,
+			}),
+		});
+
+		const result = await knowledgeGaps(seeded, { question: "why" });
+
+		expect(result.content[0]?.text).toContain("unanswered why candidate");
 	});
 
 	it("calls an unindexed file unindexed, never clean", async () => {

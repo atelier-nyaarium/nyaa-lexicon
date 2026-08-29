@@ -179,6 +179,66 @@ describe("writing an answer down", () => {
 		expect(!outcome.recorded && outcome.reason).toContain("neither is gone.ref");
 	});
 
+	// A module can hold hundreds of declarations, and the first eight in store order are rarely the
+	// one meant. The name the author typed is in the bad id, so declarations carrying it lead.
+	it("leads the shortlist with the declaration whose name the bad id carries", async () => {
+		const TOTAL = "lexicon reference a.ref Total#";
+		store.replaceFile(
+			"a.ref",
+			"h2",
+			[
+				{
+					symbolId: SYMBOL,
+					kind: "class",
+					name: "Cart",
+					range: at(0),
+					selectionRange: at(0),
+					visibility: "public",
+				},
+				{
+					symbolId: TOTAL,
+					kind: "class",
+					name: "Total",
+					range: at(1),
+					selectionRange: at(1),
+					visibility: "public",
+				},
+			],
+			[],
+			[],
+			[],
+		);
+
+		const outcome = await service.recordAnswer("lexicon reference a.ref Total", "describe", "A total.", []);
+
+		expect(outcome.recorded).toBe(false);
+		const reason = !outcome.recorded ? outcome.reason : "";
+		expect(reason.indexOf(TOTAL)).toBeGreaterThan(-1);
+		expect(reason.indexOf(TOTAL)).toBeLessThan(reason.indexOf(SYMBOL));
+	});
+
+	// The other two writers refuse the same way, or a wrong id is handed from one to the next.
+	it("refuses a fact id as the subject of a re-affirmation, naming the mix-up", async () => {
+		const [declaration] = plant();
+
+		const outcome = await service.reaffirmAnswer(declaration as string, "describe");
+
+		expect(outcome.recorded).toBe(false);
+		expect(!outcome.recorded && outcome.reason).toContain("is a fact id, not a symbol id");
+	});
+
+	// Doubting an unwritten answer records demand for one. Against an id nothing was minted under,
+	// that demand would name a dead id forever, which is how ghost rows lead the gap list.
+	it("refuses to doubt a symbol the index never held, and records no demand for it", async () => {
+		plant();
+		const ghost = "lexicon reference a.ref Ghost#";
+
+		const outcome = service.invalidateAnswer(ghost, "looks wrong", "describe");
+
+		expect(outcome.refused).toContain("is not in the index");
+		expect(service.knowledgeGaps().rows.map((row) => row.symbolId)).not.toContain(ghost);
+	});
+
 	// Prose under a heading is evidence about that heading, the way a comment is evidence about the
 	// symbol it documents. An answer about a section could otherwise cite nothing at all.
 	it("records an answer citing the prose under a heading", async () => {

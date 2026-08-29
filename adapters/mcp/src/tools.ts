@@ -370,7 +370,7 @@ export const RecallAnswerInput = {
 
 export const InvalidateAnswerInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
-	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
+	symbolId: z.string().min(1).optional().describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
 	reason: z.string().min(1).describe(`Reason for the doubt.`),
 	question: z.enum(QUESTIONS).optional().describe(`Answer category. Omit to doubt every recorded answer.`),

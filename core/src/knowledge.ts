@@ -6,6 +6,7 @@
 import {
 	answerFactId,
 	type CitedFact,
+	decodeModuleField,
 	doubtFactId,
 	FACT_SCHEME,
 	type FactKind,
@@ -67,11 +68,11 @@ export const DEFAULT_FACT_LIMIT = 40;
  */
 export const INLINE_GAP_THRESHOLD = 20;
 
-////////////////////////////////
-//  Functions & Helpers
-
 /** How many neighbours a refusal names before the list stops helping. */
 const NEIGHBOURS_SHOWN = 8;
+
+////////////////////////////////
+//  Functions & Helpers
 
 /**
  * Why a subject id names no declaration.
@@ -88,13 +89,15 @@ function subjectRefused(symbolId: string, store: IndexStore): string {
 	}
 
 	const parsed = parseSymbolIdResult(symbolId);
-	// An id that fails to parse still names its module in the third field, and that is the half worth
-	// answering: the listing below holds the id the author meant, terminator and all.
-	const module = parsed.ok ? parsed.value.module : symbolId.split(" ")[2];
-
-	const neighbours = module === undefined ? [] : store.declarationsIn(module);
+	const module = parsed.ok ? parsed.value.module : moduleFieldOf(symbolId);
+	const neighbours = module === null ? [] : store.declarationsIn(module);
 	if (neighbours.length > 0) {
-		const shown = neighbours.slice(0, NEIGHBOURS_SHOWN).map((declaration) => `\`${declaration.symbolId}\``);
+		// The name the author typed is somewhere in the bad id, so declarations carrying it lead.
+		const named = (declaration: { name: string }) => Number(symbolId.includes(declaration.name));
+		const shown = [...neighbours]
+			.sort((a, b) => named(b) - named(a))
+			.slice(0, NEIGHBOURS_SHOWN)
+			.map((declaration) => `\`${declaration.symbolId}\``);
 		const rest = neighbours.length - shown.length;
 		const more = rest > 0 ? `, and ${rest} more` : "";
 		return `${symbolId} is not in the index. ${module} holds ${shown.join(", ")}${more}`;
@@ -102,6 +105,17 @@ function subjectRefused(symbolId: string, store: IndexStore): string {
 
 	if (!parsed.ok) return `${symbolId} is not a symbol id: ${parsed.failure.message}`;
 	return `${symbolId} is not in the index, and neither is ${parsed.value.module}`;
+}
+
+/** The module an unparseable id still names in its third field, decoded as the grammar would. */
+function moduleFieldOf(symbolId: string): string | null {
+	const field = symbolId.split(" ")[2];
+	if (field === undefined || field === "") return null;
+	try {
+		return decodeModuleField(field);
+	} catch {
+		return null;
+	}
 }
 
 ////////////////////////////////
@@ -345,6 +359,12 @@ export class KnowledgeLedger {
 			};
 		}
 		const now = Date.now();
+		const indexed = this.store.declaration(symbolId) !== null;
+		// An answer stranded by a moved symbol is still doubtable; an id nothing was ever written under
+		// is a typo, and doubting it must not mint demand for a symbol that does not exist.
+		if (!indexed && this.store.answersFor(symbolId).length === 0) {
+			return { symbolId, doubted: [], noAnswer: [], refused: subjectRefused(symbolId, this.store) };
+		}
 		const targets = question === undefined ? this.store.answersFor(symbolId).map((a) => a.question) : [question];
 		if (targets.length === 0) {
 			return { symbolId, doubted: [], noAnswer: [], refused: `nothing is recorded about ${symbolId} to doubt` };
@@ -355,7 +375,8 @@ export class KnowledgeLedger {
 		for (const target of targets) {
 			if (this.store.answer(symbolId, target) === null) {
 				// Doubting an unwritten answer is demand for one, so it lands in the ledger instead.
-				this.store.recordGap(symbolId, target, now);
+				// Only for a symbol the index holds, or the demand would name a dead id forever.
+				if (indexed) this.store.recordGap(symbolId, target, now);
 				noAnswer.push(target);
 				continue;
 			}
@@ -387,6 +408,10 @@ export class KnowledgeLedger {
 		question: QuestionClass,
 		options: { citations?: string[]; model?: string; resolvesDoubt?: string } = {},
 	): Promise<RecordOutcome> {
+		// Before the answer lookup: a wrong id would otherwise be sent on to record_answer unchanged.
+		if (this.store.declaration(symbolId) === null) {
+			return { recorded: false, reason: subjectRefused(symbolId, this.store) };
+		}
 		const existing = this.store.answer(symbolId, question);
 		if (existing === null) {
 			return {
