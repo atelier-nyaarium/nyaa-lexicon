@@ -92,8 +92,7 @@ function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): 
 
 	const list = (label: string, entries: SymbolSummary[]) => {
 		if (entries.length === 0) return;
-		lines.push(`
-### ${label}
+		lines.push(`### ${label}
 `);
 		for (const entry of entries) lines.push(`- ${line(entry)}  \`${entry.module}\``);
 	};
@@ -110,8 +109,7 @@ function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): 
 - ${indirect.map((ancestor) => `\`${ancestor.name}\``).join(" <- ")}`);
 	}
 	if (result.unboundSupertypes.length > 0) {
-		lines.push(`
-### Outside the index
+		lines.push(`### Outside the index
 `);
 		for (const name of result.unboundSupertypes) lines.push(`- \`${name}\``);
 	}
@@ -122,8 +120,7 @@ function appendDependencies(lines: string[], summary: DescribeResult["graph"]): 
 	lines.push(`
 ## Dependencies
 
-- Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}
-`);
+- Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}`);
 	if (summary.cycle) {
 		lines.push(`
 ### Cycle
@@ -176,8 +173,7 @@ export function renderDescribe(result: DescribeResult): string {
 		lines.push(`
 ## Documentation
 
-${summarize(result.symbol.docComment)}
-`);
+${summarize(result.symbol.docComment)}`);
 	}
 
 	if (result.members.length > 0) {
@@ -208,16 +204,14 @@ ${summarize(result.symbol.docComment)}
 		lines.push(`
 ## Usage
 
-A section is document structure, so nothing calls, extends or uses it.
-`);
+A section is document structure, so nothing calls, extends or uses it.`);
 		return lines.join("\n");
 	}
 
 	lines.push(`
 ## Usage
 
-Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.
-`);
+Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.`);
 	if (result.referenceCount > 0) lines.push(`Call \`find_references\` for the list.`);
 	appendHierarchy(lines, result.hierarchy);
 	appendDependencies(lines, result.graph);
@@ -366,8 +360,7 @@ The moved text depends on nothing outside itself.`);
 	lines.push(`
 ## Dependencies
 
-Names the moved text uses, and where each would be imported from.
-`);
+Names the moved text uses, and where each would be imported from.`);
 	for (const dependency of needed) {
 		const origin = dependency.origin;
 		switch (origin.kind) {
@@ -516,8 +509,7 @@ export function renderCoChange(result: {
 		`# Changed alongside \`${result.module}\`
 
 | Module | Together | Share |
-| --- | ---: | ---: |
-`,
+| --- | ---: | ---: |`,
 	];
 	for (const partner of result.partners) {
 		const share = Math.round((partner.together / Math.max(partner.outOf, 1)) * 100);
@@ -581,8 +573,7 @@ export function renderFileHistory(result: {
 ## Recent commits
 
 | When | Commit | Lines | Subject |
-| --- | --- | ---: | --- |
-`);
+| --- | --- | ---: | --- |`);
 		for (const commit of result.recent) {
 			const subject = commit.subject.replaceAll("|", "\\|");
 			lines.push(
@@ -648,8 +639,7 @@ Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`r
 		lines.push(`
 ### Status
 
-${status.join("\n")}
-`);
+${status.join("\n")}`);
 	return lines.join("\n");
 }
 
@@ -718,15 +708,13 @@ ${entry.doubt.reason}${by}
 
 \`${entry.doubt.factId}\`
 
-Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.
-`);
+Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.`);
 	}
 	if (outcome.noAnswer.length > 0) {
 		lines.push(`
 ## No answer
 
-No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`knowledge_gaps\`.
-`);
+No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`knowledge_gaps\`.`);
 	}
 	return lines.join("\n");
 }
@@ -806,8 +794,7 @@ ${lead}: no ${gaps.question} gaps.`,
 	lines.push(`
 ## Next step
 
-For each row, call \`symbol_facts\`.
-`);
+For each row, call \`symbol_facts\`.`);
 	return lines.join("\n");
 }
 
@@ -832,8 +819,7 @@ export function renderMentions(result: {
 ## Matches
 
 | Commit | When | Files | Subject |
-| --- | --- | ---: | --- |
-`,
+| --- | --- | ---: | --- |`,
 	];
 	for (const mention of result.mentions) {
 		const days = Math.round((Date.now() / 1000 - mention.at) / 86_400);
@@ -1026,8 +1012,7 @@ export function renderOverview(result: {
 
 | Files | Symbols | References | Imports | Literals | Modules |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |
-`);
+| ${result.files} | ${result.symbols} | ${result.references} | ${result.imports} | ${result.literals} | ${result.modules} |`);
 
 	// Named where the number is, because "symbols" reads as callable code and a fixture's keys are not.
 	if (result.content !== undefined) {
@@ -1163,8 +1148,7 @@ export function renderMostReferenced(
 		`# Most referenced
 
 | Symbol | References |
-| --- | ---: |
-`,
+| --- | ---: |`,
 	];
 	for (const row of rows) {
 		const where = row.declaration
@@ -1345,12 +1329,11 @@ export function renderRefactorStatus(status: TransactionStatus): string {
 		return `# Refactor status\n\nNo transaction is open. Call \`refactor_start\` to begin one.`;
 	}
 
-	const lines = [
-		`# Refactor \`${status.id}\`
-`,
-	];
+	const lines = [`# Refactor \`${status.id}\``];
 
-	if (status.steps.length === 0) lines.push(`No steps yet.`);
+	if (status.steps.length === 0)
+		lines.push(`
+No steps yet.`);
 	else {
 		lines.push(`
 ## Steps
@@ -1365,8 +1348,7 @@ export function renderRefactorStatus(status: TransactionStatus): string {
 		lines.push(`
 ## Tracked
 
-${status.tracked.map((module) => `- \`${module}\``).join("\n")}
-`);
+${status.tracked.map((module) => `- \`${module}\``).join("\n")}`);
 	}
 
 	const issues = renderIssues(status.issues);

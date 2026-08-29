@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
  * One executable owner. `runtime.ts` chooses the bun a child runs on and `paths.ts` is the seam
@@ -34,7 +33,8 @@ describe("no production source chooses its own executable", () => {
 			for (const file of sourceFiles(dir, SKIP_DIRS)) {
 				const name = relative(ROOT, file);
 				if (OWNERS.has(name)) continue;
-				if (EXEC_PATH.test(codeOnly(readFileSync(file, "utf8")))) offenders.push(name);
+				const source = readSwept(file);
+				if (source !== null && EXEC_PATH.test(codeOnly(source))) offenders.push(name);
 			}
 		}
 

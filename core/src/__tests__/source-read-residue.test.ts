@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
  * Holds sourceRead.ts as the only module that reads a workspace file for indexing.
@@ -53,7 +52,9 @@ describe("one module reads workspace files", () => {
 		const offenders: string[] = [];
 		for (const file of files) {
 			if (OWNERS.has(basename(file))) continue;
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const token of READING_TOKENS) {
 				if (code.includes(token)) offenders.push(`${basename(file)}: ${token}`);
 			}

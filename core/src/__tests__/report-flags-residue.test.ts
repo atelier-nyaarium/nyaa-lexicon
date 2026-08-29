@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { codeOnly } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept } from "@nyaa-lexicon/protocol";
 
 /** Node's report machinery kills a bun child on the signal it arms, so no source may reach for it. */
 const ROOT = path.join(import.meta.dirname, "..", "..", "..");
@@ -42,7 +42,9 @@ describe("no source arms node's report machinery", () => {
 	it("finds no report flag or report API outside the tests", () => {
 		const offenders: string[] = [];
 		for (const file of SWEPT.flatMap(sourceFiles)) {
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const token of FORBIDDEN) {
 				if (code.includes(token)) offenders.push(`${path.relative(ROOT, file)}: ${token}`);
 			}

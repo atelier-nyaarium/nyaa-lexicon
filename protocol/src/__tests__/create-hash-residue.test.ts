@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { codeOnly, sourceFiles } from "../residue";
+import { codeOnly, readSwept, sourceFiles } from "../residue";
 
 /**
  * One content hash, `hashContent` in this package. A second sha256 over file text in core or the
@@ -31,7 +30,8 @@ describe("no second content hash", () => {
 			for (const file of sourceFiles(dir, SKIP_DIRS)) {
 				const name = relative(ROOT, file);
 				if (OWNERS.has(name)) continue;
-				if (/\bcreateHash\s*\(/.test(codeOnly(readFileSync(file, "utf8")))) offenders.push(name);
+				const source = readSwept(file);
+				if (source !== null && /\bcreateHash\s*\(/.test(codeOnly(source))) offenders.push(name);
 			}
 		}
 

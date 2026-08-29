@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "../residue";
+import { codeOnly, readSwept, sourceFiles } from "../residue";
 
 /**
  * Enforces the single-owner rule for both id grammars.
@@ -42,7 +41,9 @@ describe("nothing but the owner spells an id scheme", () => {
 
 		for (const root of ROOTS) {
 			for (const file of swept(root)) {
-				const match = pattern.exec(codeOnly(readFileSync(file, "utf8")));
+				const source = readSwept(file);
+				if (source === null) continue;
+				const match = pattern.exec(codeOnly(source));
 				if (match) offenders.push(`${file}: ${match[0]}`);
 			}
 		}

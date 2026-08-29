@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -43,7 +43,10 @@ describe("only procfs.ts reads /proc", () => {
 	it("has no /proc path anywhere else in the client, core or the adapters", () => {
 		const offenders = SWEPT.flatMap((dir) => sourceFiles(dir, SKIP))
 			.filter((file) => basename(file) !== OWNER)
-			.filter((file) => codeOnly(readFileSync(file, "utf8")).includes(TOKEN));
+			.filter((file) => {
+				const source = readSwept(file);
+				return source !== null && codeOnly(source).includes(TOKEN);
+			});
 
 		expect(
 			offenders,

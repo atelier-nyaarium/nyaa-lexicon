@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
  * Holds WorkspaceIndexer as the only writer of the index.
@@ -46,7 +45,9 @@ describe("one module writes the index", () => {
 
 		for (const file of PACKAGES.flatMap(swept)) {
 			if (exempt.has(basename(file)) || file.includes("__tests__")) continue;
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const pattern of WRITES) {
 				if (pattern.test(code)) offenders.push(`${basename(file)}: ${pattern.source}`);
 			}

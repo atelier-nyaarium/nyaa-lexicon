@@ -1,7 +1,7 @@
 // Sweeping source for a residue test: traversal and comment stripping only. Every rule stays in
 // the test that enforces it, with the roots and skips it chose.
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 ////////////////////////////////
@@ -27,6 +27,21 @@ export function sourceFiles(dir: string, skip: Iterable<string>): string[] {
 		if (entry.endsWith(".ts")) found.push(full);
 	}
 	return found;
+}
+
+/**
+ * A swept file's text, or null when it is gone.
+ *
+ * Listing and reading are two moments. A file written and removed by a test running in parallel
+ * exists for the first and not the second, and a sweep that reads it directly dies on ENOENT with a
+ * message about the wrong thing. A path that no longer exists holds no violation.
+ */
+export function readSwept(file: string): string | null {
+	try {
+		return readFileSync(file, "utf8");
+	} catch {
+		return null;
+	}
 }
 
 /** Comments only. Strings survive: a rule's token inside one is exactly what a sweep looks for. */

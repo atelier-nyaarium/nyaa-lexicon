@@ -354,7 +354,7 @@ export {
 	type RenameSite,
 	RenameSiteSchema,
 } from "./rename.js";
-export { codeOnly, sourceFiles } from "./residue.js";
+export { codeOnly, readSwept, sourceFiles } from "./residue.js";
 export {
 	notImplementedBinding,
 	notImplementedImport,

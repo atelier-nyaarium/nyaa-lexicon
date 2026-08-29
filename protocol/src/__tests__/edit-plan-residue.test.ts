@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "../residue";
+import { codeOnly, readSwept, sourceFiles } from "../residue";
 
 /**
  * Holds edits.ts as the only module deciding what a SET of edits means.
@@ -44,7 +43,9 @@ describe("one module owns what a set of edits means", () => {
 
 		for (const file of PACKAGES.flatMap(swept)) {
 			if (basename(file) === OWNER || basename(file) === RULE) continue;
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const pattern of OVERLAP_SWEEP) {
 				if (pattern.test(code)) offenders.push(`${basename(file)}: ${pattern.source}`);
 			}

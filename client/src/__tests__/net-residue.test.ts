@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -35,7 +34,10 @@ describe("two modules own the daemon wire", () => {
 
 	it("has node:net imported by the client's transport and the daemon's, and nothing else", () => {
 		const importers = SWEPT.flatMap((dir) => sourceFiles(dir, SKIP))
-			.filter((file) => codeOnly(readFileSync(file, "utf8")).includes(TOKEN))
+			.filter((file) => {
+				const source = readSwept(file);
+				return source !== null && codeOnly(source).includes(TOKEN);
+			})
 			.map((file) => relative(ROOT, file).split("\\").join("/"))
 			.sort();
 

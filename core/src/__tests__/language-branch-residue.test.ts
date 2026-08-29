@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -53,7 +52,9 @@ describe("core does not branch on language", () => {
 		const offenders: string[] = [];
 
 		for (const file of SWEPT.flatMap((dir) => sourceFiles(dir, SKIP))) {
-			const code = codeOnly(readFileSync(file, "utf8")).toLowerCase();
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source).toLowerCase();
 			for (const name of LANGUAGE_NAMES) {
 				// The NAME, not the comparison. Requiring an adjacent `===` or `case` let a branch through
 				// under any other spelling: a name held in a constant, a `startsWith`, an object key. There

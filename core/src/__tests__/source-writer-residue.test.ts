@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
  * Holds sourceWriter.ts as the only module that writes a source file in the workspace.
@@ -41,7 +40,9 @@ describe("one module writes source files", () => {
 
 		for (const file of sourceFiles(CORE_SRC, SKIP)) {
 			if (OWNERS.has(basename(file))) continue;
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const call of WRITING_CALLS) {
 				if (code.includes(`${call}(`)) offenders.push(`${basename(file)}: ${call}`);
 			}
@@ -58,7 +59,10 @@ describe("one module writes source files", () => {
 	it("spells the temporary suffix in one place", () => {
 		const offenders = sourceFiles(CORE_SRC, SKIP)
 			.filter((file) => basename(file) !== "sourceWriter.ts")
-			.filter((file) => codeOnly(readFileSync(file, "utf8")).includes(TEMPORARY_SUFFIX))
+			.filter((file) => {
+				const source = readSwept(file);
+				return source !== null && codeOnly(source).includes(TEMPORARY_SUFFIX);
+			})
 			.map((file) => basename(file));
 
 		expect(offenders, "the temp suffix belongs to sourceWriter.ts; ask it rather than retyping it.").toEqual([]);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -53,7 +53,9 @@ describe("only the transaction manager touches the refactor journal", () => {
 
 		for (const file of sourceFiles(CORE_SRC, SKIP)) {
 			if (OWNERS.has(basename(file))) continue;
-			const code = codeOnly(readFileSync(file, "utf8"));
+			const source = readSwept(file);
+			if (source === null) continue;
+			const code = codeOnly(source);
 			for (const table of JOURNAL_TABLES) {
 				if (code.includes(table)) offenders.push(`${file}: ${table}`);
 			}

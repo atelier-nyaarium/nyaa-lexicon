@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { codeOnly, sourceFiles } from "../residue";
+import { codeOnly, readSwept, sourceFiles } from "../residue";
 
 /**
  * Keeps the production packages free of `bun:` modules.
@@ -32,7 +31,9 @@ describe("no production source imports a bun: module", () => {
 
 		for (const root of ROOTS) {
 			for (const file of sourceFiles(root, SKIP_DIRS)) {
-				const match = pattern.exec(codeOnly(readFileSync(file, "utf8")));
+				const source = readSwept(file);
+				if (source === null) continue;
+				const match = pattern.exec(codeOnly(source));
 				if (match) offenders.push(`${file}: ${match[0]}`);
 			}
 		}

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
  * A module reaches the disk through `workspaceFile` (protocol) and its core wrapper alone, which
@@ -30,7 +29,8 @@ describe("no module reaches the disk by a bare join", () => {
 		const offenders: string[] = [];
 		for (const file of sourceFiles(CORE, SKIP)) {
 			if (basename(file) === OWNER) continue;
-			if (BARE_JOIN.test(codeOnly(readFileSync(file, "utf8")))) offenders.push(basename(file));
+			const source = readSwept(file);
+			if (source !== null && BARE_JOIN.test(codeOnly(source))) offenders.push(basename(file));
 		}
 
 		expect(
