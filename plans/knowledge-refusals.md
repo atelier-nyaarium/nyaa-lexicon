@@ -49,7 +49,8 @@ A: The store cleans up inside the scan, never an agent. Orphans are detected and
 exists but fails to parse is never dated, a date clears when the symbol returns, a unique
 same-shaped declaration elsewhere triggers migration instead of a date, and anything dated for
 thirty days is deleted. Auto-migration ships despite the author's and both reviewers' preference
-for a proposal-only form; the owner heard that and decided.
+for a proposal-only form; the owner heard that and decided. Question 9 later replaced "migration"
+with rebinding an address, which honours every requirement here without moving a row.
 
 > "we need to do more than just make them visible. don't make the AI clean it up either. that
 > would just be stupid."
@@ -65,22 +66,90 @@ for a proposal-only form; the owner heard that and decided.
 Q: References do not bind across Kotlin and TypeScript, so the console's fan-in counts only its
 own callers and ranks permanently below the server, even where its doctrine is as deep. The agent
 confirmed the Kotlin comments carry the same weight. Should seeding rank per language?
-A: Undecided. Phase 5 is priced and decision-complete, and it waits.
+A: Undecided. Phase 5 is priced and decision-complete, and it waits behind Question 9's rewrite.
+
+## Question 6 - When a migration collides, what wins? [Superseded by Question 9]
+
+Q: Migration fires only when exactly one same-shaped declaration exists elsewhere, and the sweep
+runs in the batch that saw the change, so a destination holding an answer to the same question
+held it before the move. Keep the destination's prose, keep the newer, carry the stranded prose as
+a doubt, or refuse to migrate?
+A: The owner chose the destination. Superseded: under Question 9 knowledge never moves between
+subjects and two subjects never merge, so the collision cannot occur.
+
+> "A"
+
+## Question 7 - What counts as move evidence? [Folded into Question 9]
+
+Q: Shape alone cannot tell a move from a surviving twin: two files each declaring `const db`,
+one deleted, and the survivor is the only match without being a move target. Proposed evidence:
+the destination's module was first indexed in the same scan or batch that forgot the source.
+A: Not answered on its own; the owner asked to explore a concept that could supersede it. The
+evidence survives inside Question 9's closed evidence set as `batchExactMatch`.
+
+> "I'm afraid of committing to any answers yet. let's explore another concept that could
+> supercede it."
+
+## Question 8 - A heuristic signature as the key? [Folded into Question 9]
+
+Q: Key knowledge by the declaration's code pattern (kind, name, comment-stripped text, hashed) so
+twenty identical `const db = blah();` share one answer and a moved file keeps its knowledge.
+A: As evidence, never as the key. Six investigators priced it and the author measured the twin
+rate: about fourteen percent of body-bearing declarations have a same-shaped twin in another file
+(an upper bound by provider header and metrics), nearly all of them one-to-three-line test setup
+constants; substantive twins are under half a percent. Answers are contextual, grounded in
+references, imports, comments and other answers, so identical text can carry different answers;
+citations are bound to one holder's module and position; the name is in the signature, so a rename
+would change the key. The pattern digest survives as `batchExactMatch` evidence and nothing more.
+
+> "Heirustics signature as a key. Based on the pattern of code, that is the signature. Regardless
+> of comments around it, we know `const db = blah();` is always intending to do exactly the thing
+> it's trying to do. We don't need 20 of the same defs."
+
+## Question 9 - What is knowledge about, and what identity survives which transition? (settled in chat)
+
+Q: Every option so far treated identity as something the knowledge rows carry, so every identity
+change was a row rewrite with a merge policy. A second opinion from a Sol agent named the frame
+and a fifth option: knowledge is about a durable logical declaration, held by an opaque subject
+id, with the symbol id as its current address, rebound through one owner on move or rename, the
+signature demoted to closed-valued evidence, twins distinct, subjects never merged. The author
+vetted it against the code and moved to it.
+A: Adopted. The identity phase below specifies it. It says no to sharing: twenty identical
+definitions are twenty subjects, because an answer about one may not be true of another, and the
+measured substantive cases are under half a percent.
+
+> "Our /architecture goal is always high engineering. Not laziness because our codebase is
+> somewhat solid. Think critical about a strong foundation."
+
+> "ok if you like E, lock it in"
+
+## Question 10 - A writes fact in core [Open, after the identity phase]
+
+Q: Does any fact say whether a function mutates its parameters or its class's properties?
+A: Not yet. References carry a `write` role that the TypeScript, C, C++, C# and Rust providers
+mark on assignment targets, including property writes bound to the property with the enclosing
+declaration recorded, and nothing in core consumes it. A three-valued derivation in core is
+possible without a provider change and is wanted for its own sake. It is its own question after
+this plan, held on the board.
+
+> "I actually want that to exist in core for side goal reasons. perhaps a question after E.
+> excellent potential IDE info."
 
 # Plan
 
 The rule this plan installs, stated once: **a refusal names what the author did and what to do
 instead, or it is not finished.** Every phase below is that rule applied to one message, plus the
-two design questions the overnight run surfaced.
+identity model the overnight run's stranded knowledge turned out to need.
 
 Phases read as a specification. What each phase looked like before an audit corrected it, and why,
 lives under Painpoints, so an implementer meets only the current design here.
 
 **Order and dependencies.** The catalog phase lands first, because the gate in Verification fails
-the build on any refusal composed outside it, so every later phase's wording is a constructor.
-Phase 1 defines the one matcher and the stranded wording that Phase 0 and Phase 4 both use, so it
-lands next. Phase 0 and Phase 3 are independent of each other. Phase 4 depends on Phase 1's matcher
-and stranded state. Phase 2 depends on the catalog only. Phase 5 waits on the owner.
+the build on any refusal composed outside it, so every later phase's wording is a constructor. The
+identity phase lands second: every later phase reads knowledge through it. Phase 1 defines the
+candidate predicate and the stranded wording that Phase 0 and Phase 4 both use, so it lands third.
+Phase 0 and Phase 3 are independent of each other. Phase 4 depends on the identity phase and on
+Phase 1. Phase 2 depends on the catalog only. Phase 5 waits on the owner.
 
 ## The catalog phase - Every refusal is a named constructor in one module
 
@@ -95,9 +164,9 @@ service reach `subjectRefused` from the same module when Phase 0 routes them.
 **The constructors, by the branch each replaces:** `needsProse`, `proseTooLong`, `noDoubtStands`,
 `wrongDoubtId`, `replacesSoundAnswer`, `doubtNeedsReason`, `nothingToDoubt`,
 `noAnswerToReaffirm`, `citationsNoLongerResolve`, `nothingToReaffirm`, `clearingRequiresCiting`,
-`citesNothing`, `malformedCitations`, `unresolvedCitations`, `citesOnlyNeighbours`, and the four
-diagnoses `factIdAsSubject`, `unmintedId`, `strandedId`, `unknownId`. A constructor takes the
-values its sentence names and nothing else.
+`citesNothing`, `malformedCitations`, `unresolvedCitations`, `citesOnlyNeighbours`, and the
+diagnoses `factIdAsSubject`, `unmintedId`, `strandedId`, `movedId`, `unknownId`. A constructor
+takes the values its sentence names and nothing else.
 
 **The four rewordings the doctrine marks as failing land here, with their text pinned:**
 
@@ -115,92 +184,192 @@ values its sentence names and nothing else.
 the caller took, so a test that merely names a reason does not pass for a branch that never ran.
 The residue in Verification is planted at one inline literal per shape and watched failing.
 
-**Release:** internal. No wire shape changes; the same reasons reach the same slots. Ships in the
-minor with Phases 1, 0, 2 and 3.
+**Release:** internal. No wire shape changes; the same reasons reach the same slots.
 
-## Phase 1 - One matcher, and a stranded row says it is stranded
+## The identity phase - Knowledge is about a subject, and the symbol id is its address
 
-**The one matcher.** The id grammar gains two named predicates over parsed descriptors, in
-`symbolId.ts`, so nothing outside the grammar decides what "the same declaration" means:
+Decided by the owner; see Question 9.
 
-- `sameDeclaration(a, b)`: same language, same kind, same full descriptor path including
-  disambiguators and occurrences, different module. This is what authorizes a migration.
-- `sameNameAndKind(a, b)`: same language, same kind, same last descriptor name, and for a member,
-  the same name on the container descriptor too. Different module. This is what lists candidates
-  for a person.
+**What knowledge is about.** A durable logical declaration, called a subject. A position is where
+its evidence sits. A symbol id is its address, durable within a module and re-minted on a move or
+a rename. Declaration text is an observation twins can share. A fact set is grounding at one
+revision. None of those is the subject, so none of them is the key.
 
-Both return false for a local id, whose parse carries an ordinal and no descriptors, matching
-`rebaseSymbolId`'s refusal to trace one. A stranded local is therefore dated and never migrated,
-and its refusal lists no candidates and says a local has none.
+**The owner.** One module, `core/src/subjects.ts`, over one new table:
 
-The store's `declarationsNamed(name)`, already indexed by name, returns the shortlist unchanged,
-and one helper in the knowledge layer, `matchingDeclarations(symbolId, predicate)`, applies the
-predicate from the grammar to it. Phase 4's migration authorization and the candidate list below
-are that one call with the strict or the loose predicate. The two are stated here once, and the
-plan refers to them by name from here on.
+```
+knowledge_subjects (
+  subjectId        TEXT PRIMARY KEY,   -- opaque, minted once
+  currentSymbolId  TEXT UNIQUE,        -- null while orphaned
+  state            TEXT NOT NULL,      -- bound | orphaned
+  boundAt          INTEGER NOT NULL,
+  orphanedAt       INTEGER,            -- the thirty-day clock
+  fromSymbolId     TEXT,               -- the address before the last rebind
+  evidence         TEXT NOT NULL,      -- the last transition's evidence, closed
+  lastDigest       TEXT,               -- the address's pattern digest when last seen bound
+  lastCoverage     TEXT                -- commentsStripped | commentsKept, null with no digest
+)
+```
 
-**Stranded state, readable by every refusal.** The store exposes `strandedState(symbolId)`:
-`{ answers: number, gaps: number, strandedAt: number | null, exempt: boolean, reason: string | null }`,
-where `exempt` is true when the subject's module is in `parse_failures` and `reason` is that
-failure's recorded reason, so the lookup has one owner. Exemption is a property of rows: with no
-answer and no gap recorded, `exempt` is reported but nothing is waiting, and the id falls through
-to the unminted shortlist below. `subjectRefused` reads the state before composing, so the wording
-agrees with whatever the sweep last left the row in:
+`answers` and `gaps` are keyed by `(subjectId, question)`. Each answer keeps `recordedAs`, the
+address at record time, never rewritten, because `answerFactId` and `doubtFactId` digest that
+address and an answer's id is what was written, not where it lives now. `subjectId` is minted from
+the first address and the clock through the protocol's hash helper and is opaque afterwards.
+Nothing outside `subjects.ts` writes the table, and no module but the store's schema names it; a
+residue in Verification holds both.
 
-- No declaration, answers or gaps recorded, not exempt: **stranded**. The refusal says the
-  knowledge recorded under this id is stranded because the symbol is gone, names `strandedAt` if
-  the sweep has dated it and that deletion follows thirty days after, and lists the
-  `sameNameAndKind` candidates so the prose can be recorded again where a reader will find it.
-- No declaration, rows recorded, exempt: **waiting on a parse failure**. The refusal says the
-  module is present and not parsing, that nothing will be dated or deleted while that holds, and
-  names the parse failure's reason.
-- No declaration, only demand rows and no answer: the same two sentences with "the demand recorded
-  against it" in place of "the answers", so a dead id that was only ever asked about is told the
-  truth too.
+**Invariants, enforced by the schema.** A subject has at most one address (`currentSymbolId`
+is a column). An address has at most one subject (`UNIQUE`). Two subjects never merge. Rows never
+change key; identity changes by rebinding the address.
+
+**Resolution.** Every knowledge operation keeps taking a symbol id on the wire and resolves it
+through `subjects.forAddress(symbolId)`. A read on an address with no subject reads nothing. A
+write on an address with no subject mints one, bound, evidence `sameLocator`, if the address
+resolves to a declaration; the catalog's diagnoses refuse it otherwise. One indexed read per call.
+
+**Transitions, and the evidence each records.** The closed set: `sameLocator`, `journalMove`,
+`journalRename`, `batchExactMatch`, `ambiguous`, `none`.
+
+| Transition | What happens |
+|---|---|
+| Edit in place | Same address, same subject. The declaration's facts re-mint, so citations go stale as they do today. Nothing else. |
+| Move through `refactor_move` | The step's id map rebinds every affected subject to its new address, evidence `journalMove`. |
+| Rename through `refactor_rename` | The same, evidence `journalRename`. |
+| External move | The sweep rebinds only on `batchExactMatch`: exactly one declaration whose module was first indexed in the pass that lost the address and whose pattern digest equals `lastDigest`. |
+| Delete, or vanish without evidence | The sweep sets `orphaned` with `orphanedAt` and the evidence it had, `ambiguous` with the candidates or `none`. Rows stay. |
+| Reappear | An orphaned subject whose address resolves again is bound, evidence `sameLocator`, date cleared. |
+| Thirty days orphaned | The subject and its rows are deleted. |
+| Duplicate | A new declaration with identical text is a new subject when knowledge is first recorded against it. |
+| Converge | Two live subjects whose text becomes identical stay two subjects. |
+
+A copy-then-delete inside one pass is indistinguishable from a move with the inputs the index
+has, and rebinds; the evidence says `batchExactMatch`, so the window shows what was concluded and
+from what. That residual is written here rather than hidden.
+
+**The dispatch rituals move into the owner.** Today `dispatch.ts` calls
+`service.migrateKnowledge(idMap)` in the `finish` callback after `refactorMove` and after
+`refactorRename`, so every operation that re-mints an id must remember to carry knowledge. The
+refactor step calls `subjects.rebind(map, evidence)` itself as part of finishing, `migrateKnowledge`
+is retired from the ledger, the service and the store, and its name is forbidden by the residue so
+a row move cannot come back. A forgotten rebind is not silent: the next sweep orphans the subject
+with evidence `none`, and the window shows it.
+
+**The pattern digest, for `batchExactMatch` only.** At `indexFile`, where the text is held
+transiently and `attachComments` already walks every declaration with it, core computes per
+declaration a digest of kind, name and the declaration's range text with the reported comment
+ranges removed and whitespace collapsed. No language is named: the provider reported the comment
+ranges, or it reported none. `symbols` gains `patternDigest` and `patternCoverage`, both nullable,
+`commentsStripped` when the provider's comments tier is on and `commentsKept` when it is off, so a
+digest says what it covers. Existing rows fill on the next full scan. `replaceFile` also refreshes
+`lastDigest` and `lastCoverage` on every bound subject whose address is in the module, one update
+joined on `currentSymbolId`, so the digest survives the declaration it describes. Two digests
+match only when their coverages match. A subject with no digest can never rebind by evidence,
+and orphans honestly.
+
+**Storage and upgrade.** The subjects table is additive, `CREATE TABLE IF NOT EXISTS`. Re-keying
+`answers` and `gaps` is this repository's first in-place table rebuild, and it is written as one:
+at open, guarded the way `columnExists` guards the added columns, create the new tables, copy every
+row minting one subject per distinct old `symbolId`, bound if `symbols` holds the address and
+orphaned as of the upgrade otherwise, drop the old tables and rename, in one transaction. Under
+the compatibility-key rebuild, `salvageKnowledge` and `restoreKnowledge` carry subjects with the
+rows; a restored subject keeps its address, which the scan re-mints for unchanged source, and one
+that does not come back is orphaned by the next sweep, so no post-index pass exists beyond the
+sweep that already runs. A fixture store from 3.0.x opened by the new code, with every answer
+bound and recalled, is the gate.
+
+**Wire.** `AnswerSchema.symbolId` and every result keep carrying the current address. Recall gains
+an optional `subject: { id, recordedAs, evidence, since }`, additive. No method is removed or
+renamed. A minor.
+
+**Tests:** record, then move the file through `refactor_move`: recalled at the new address with
+evidence `journalMove`, the old address diagnosed as moved (Phase 0). Rename through
+`refactor_rename`: the same with `journalRename`. Move the file with the editor: the batch rebinds
+on `batchExactMatch` and the answer's `recordedAs` still names the old address. Two identical
+twins, delete one: the survivor's subject is untouched and the deleted one's is orphaned with
+evidence `none`. Twenty identical twins: twenty subjects, each recorded and recalled alone. Two
+subjects edited into identical text: both bound, both recalled. Delete, then restore the file:
+bound again, date cleared. Delete for thirty injected days: subject and rows gone. Open a 3.0.x
+fixture store: every answer owns a subject and recalls. A compat rebuild: subjects restored and
+bound after the scan. A forgotten rebind, planted by bypassing the step: orphaned with `none` on
+the next sweep. The residue: plant a `knowledge_subjects` write outside the owner and a
+`migrateKnowledge` anywhere, watch both fail.
+
+## Phase 1 - Candidates, and an orphaned subject says it is orphaned
+
+**The candidate predicate.** The id grammar gains one named predicate over parsed descriptors, in
+`symbolId.ts`, so nothing outside the grammar decides what "the same name and kind" means:
+`sameNameAndKind(a, b)`, same language, same kind, same last descriptor name, and for a member,
+the same name on the container descriptor too, different module. It returns false for a local id,
+whose parse carries an ordinal and no descriptors, matching `rebaseSymbolId`'s refusal to trace
+one. The store's `declarationsNamed(name)`, already indexed by name, returns the shortlist
+unchanged, and one helper in the knowledge layer, `candidatesFor(symbolId)`, applies the
+predicate. Candidates are for a person to read; nothing is ever authorized by them. Authorization
+is the identity phase's evidence.
+
+**Subject state, readable by every refusal.** The identity owner exposes `stateOf(symbolId)`:
+`{ subject: id | null, state: bound | orphaned | none, orphanedAt: number | null, evidence,
+forwardedTo: symbolId | null, exempt: boolean, reason: string | null, answers: number,
+gaps: number }`, where `exempt` is true when the address's module is in `parse_failures`,
+`reason` is that failure's recorded reason, and `forwardedTo` is set when the address was rebound
+away, read from `fromSymbolId`. Exemption is a property of subjects: with no subject at the
+address, `exempt` is reported but nothing is waiting, and the id falls through to the unminted
+shortlist. `subjectRefused` reads the state before composing, so the wording agrees with whatever
+the sweep last left the subject in:
+
+- An address whose subject was rebound elsewhere: **moved**. The refusal names the new address
+  and the evidence, and says the knowledge is recalled there.
+- Orphaned subject, not exempt: **stranded**. The refusal says the knowledge recorded here
+  belongs to a subject whose address no longer resolves, names `orphanedAt` and that deletion
+  follows thirty days after, names the evidence if it was `ambiguous` with its candidates, and
+  lists `candidatesFor` so the prose can be recorded again where a reader will find it.
+- Bound subject whose address does not resolve and is exempt: **waiting on a parse failure**. The
+  refusal says the module is present and not parsing, that nothing will be orphaned or deleted
+  while that holds, and names the failure's reason.
+- A subject with only demand and no answer: the same sentences with "the demand recorded against
+  it" in place of "the answers".
 
 **Recall carries it on the wire.** `RecalledAnswerSchema` gains an optional
-`stranded: { since: number | null, exempt: boolean, candidates: string[] }`. `recallAnswer` fills
-it from `strandedState` when the subject has no declaration. `renderKnowledge` renders the status
-line from it and replaces the reaffirm instruction, which a stranded subject cannot follow, with
-the re-record path and the candidates. An optional field is a minor.
+`stranded: { since: number | null, exempt: boolean, evidence, candidates: string[] }`.
+`recallAnswer` fills it when the subject is orphaned or its address does not resolve.
+`renderKnowledge` renders the status line from it and replaces the reaffirm instruction, which
+an orphaned subject cannot follow, with the re-record path and the candidates. Optional, a minor.
 
 **Recall stops charging for it.** Today `recallAnswer` records demand on a miss only when the
 subject has an indexed declaration, and on every unhealthy recall (stale, doubted, or inheriting
 either) regardless of the subject. The miss path is already right. The unhealthy path is the one
-that charges for a stranded answer, since a stranded answer exists and is permanently stale, so
-the stranded check goes before `recordGap` there. A stranded or dated subject is also excluded
-from the stale count in `knowledgeGaps`, or a dated row would re-enter the queue this plan says
-it leaves.
+that charges for an orphaned subject, since its answer exists and is permanently stale, so the
+orphan check goes before `recordGap` there. An orphaned subject is also excluded from the stale
+count in `knowledgeGaps`, or it would re-enter the queue this plan says it leaves.
 
-**A stranded answer stays doubtable.** `invalidateAnswer` refuses only an id with no answers, by
-design: a doubt is prose about the answer, the migration carries it, and a reader who found the
-stranded prose wrong is right to say so. What it must not do is mint demand: today the doubt path
+**An orphaned answer stays doubtable.** `invalidateAnswer` refuses only an address with no
+subject, by design: a doubt is prose about the answer, a rebind carries it, and a reader who found
+the prose wrong is right to say so. What it must not do is mint demand: today the doubt path
 records a gap unconditionally after `setDoubt`, where the unwritten-answer path already guards on
 the subject being indexed. The doubt path takes the same guard, and the comment above it carries
 this rule in place of the one it states now.
 
-**Tests:** plant a symbol, record an answer, replace the file without the symbol. `recordAnswer`,
-`reaffirmAnswer` and `recallAnswer` on the dead id each say stranded and name the candidates;
-`recallAnswer` carries the field and records no gap on the unhealthy path, which is the branch
-the fix touches. `invalidateAnswer` on the dead id records the doubt and no gap. Plant only a gap row at a dead id: the demand wording. Put the
-module into `parse_failures` with the file present: the waiting wording with the failure's reason,
-nothing dated. Plant two same-named declarations in other modules: both listed as candidates by
-`sameNameAndKind`, neither authorized by `sameDeclaration`. Strand a local id: no candidates, and
+**Tests:** record, then delete the file: `recordAnswer`, `reaffirmAnswer` and `recallAnswer` on
+the address each say stranded and name the candidates; `recallAnswer` carries the field and
+records no gap on the unhealthy path; `invalidateAnswer` records the doubt and no gap. Rebind
+through `refactor_move`, then ask the old address: moved, with the new address. Plant only a gap
+at a dead address: the demand wording. Put the module into `parse_failures` with the file present:
+the waiting wording with the failure's reason, nothing orphaned. Plant two same-named declarations
+in other modules: both listed as candidates, neither bound to. Strand a local: no candidates, and
 the refusal says why. Watch the old wording fail first.
 
 ## Phase 0 - One diagnosis for a bad subject id, reached from every tool
 
 **What:** the subject diagnosis in `subjectRefused` becomes the one owner every tool reaches when
-a symbol id names nothing. Four outcomes, closed: a fact id supplied as the subject, an unminted id
-with the module's shortlist, a stranded id with its candidates and state from Phase 1, or a
-genuinely unknown id whose module is not indexed either.
+a symbol id names nothing. Five outcomes, closed: a fact id supplied as the subject, an unminted id
+with the module's shortlist, a moved address with where it went, a stranded subject with its
+candidates and state from Phase 1, or a genuinely unknown id whose module is not indexed either.
 
 **The daemon method.** `diagnoseSubject`, request `{ symbolId: string }`, response
-`{ kind: "factIdAsSubject" | "unminted" | "stranded" | "unknown", reason: string, candidates:
-string[] }`, where `reason` is the sentence `record_answer` already composes and `candidates` is
-the shortlist. Registered in the method table, dispatched in `dispatch.ts` through the same
-`.parse(params` path as every other method, exposed on the client session. A new method is a
-minor.
+`{ kind: "factIdAsSubject" | "unminted" | "moved" | "stranded" | "unknown", reason: string,
+candidates: string[], forwardedTo?: string }`, where `reason` is the sentence `record_answer`
+already composes and `candidates` is the shortlist. Registered in the method table, dispatched in
+`dispatch.ts` through the same `.parse(params` path as every other method, exposed on the client
+session. A new method is a minor.
 
 **The chokepoint.** `resolveOne` in the MCP adapter is where a supplied `symbolId` is currently
 returned unvalidated to eleven handlers. It calls `diagnoseSubject` when the id names no
@@ -238,7 +407,7 @@ concept, so each routes through the diagnosis; the two instances of the second a
 guards named above. The residue is run against all eight before it is trusted. "No symbol named
 X is indexed" is a name-lookup miss, a different concept, and is not touched.
 
-**Tests:** each of the four outcomes handed to `describe_symbol`, `symbol_facts`, `symbol_source`
+**Tests:** each of the five outcomes handed to `describe_symbol`, `symbol_facts`, `symbol_source`
 and `find_references` produces the sentence `record_answer` produces for it, and `type_of` and one
 refactor tool produce it too, which proves the chokepoint rather than the two named tools. The
 residue is planted at a seventh site and watched failing. A built-server test drives
@@ -291,12 +460,13 @@ not only by one never asked, since `saveAnswer` clears the gap it answers. At th
 question, `false` does not, omitted does not, in both branches, with the lying case planted, a
 page of matching rows on a mixed total.
 
-## Phase 4 - Orphaned knowledge: dated, migrated, or deleted by the store
+## Phase 4 - Orphaned subjects: rebound, dated, or deleted by the store
 
-Decided by the owner; see Question 4. No agent is ever asked to clean up, and nothing here is a
-chore a person performs.
+Decided by the owner; see Questions 4 and 9. No agent is ever asked to clean up, and nothing here
+is a chore a person performs. The sweep works on subjects, which are few (one per declaration with
+knowledge), never on rows.
 
-**Orphan:** a row in `answers` or `gaps` whose subject id resolves to no declaration.
+**Orphan:** a bound subject whose `currentSymbolId` resolves to no declaration.
 
 **Who does what.** Two owners, because the repository puts source-dependent decisions in the
 indexer and facts in the store, and presence is a source-dependent decision.
@@ -315,121 +485,113 @@ indexer and facts in the store, and presence is a source-dependent decision.
   hands the same instance to both, so the service, the indexer it builds, the watcher debounce
   and the sweep timer read one time source, and a test that supplies a fake through those two
   options controls all four; `clock` stops being optional on `startLiveIndex`. The indexer keeps
-  the reachable set it last pruned against for the timer's presence answer; a file that changed
-  since is a watcher event, and that event's batch runs its own sweep. Both triggers share one
-  cap and one cursor, so a capped sweep resumes within the hour.
-- The **store** exposes `sweepOrphans(batch, presence, now)`: one bounded batch, one transaction.
-  `presence` is a function the indexer supplies, answering for a module with one closed value,
-  `presentParsing`, `presentFailing` or `absent`, defined below. The store never touches the
-  filesystem and never sees a hash.
-
-**Transactions.** `inTransaction` is a raw `BEGIN`/`COMMIT` and not re-entrant, and the public
-`migrateKnowledge` opens its own. The migration body is factored into a non-transactional
-primitive used by both: the public method wraps it in a transaction as today, and the sweep calls
-the primitive inside its own batch transaction. Each batch is one transaction; the sweep as a
-whole is many, which is what lets it stop and resume.
+  the reachable set and the set of modules first indexed in its last pass for the sweep's
+  answers; a file that changed since is a watcher event, and that event's batch runs its own
+  sweep. Both triggers share one cap and one cursor, so a capped sweep resumes within the hour.
+- The **store**, through the identity owner, exposes `sweepSubjects(batch, pass, now)`: one
+  bounded batch, one transaction. `pass` is what the indexer supplies: `presence(module)`, one
+  closed value `presentParsing`, `presentFailing` or `absent`; `newModules`, the modules first
+  indexed in the pass that just ran, empty for the timer. The store never touches the filesystem
+  and never sees a hash of a file.
 
 **Presence, decided by the indexer from the scan it just finished.** The sweep runs after prune,
 and prune has just computed the reachable set and forgotten every module outside it, including
 that module's `parse_failures` row. So a module is `absent` when it is outside the reachable set,
 `presentFailing` when it is inside it and `parseFailureOf` holds a row, and `presentParsing`
-otherwise. No source is read and no hash is compared: a parse failure never writes
-`files.contentHash`, so a hash comparison would call every file edited into a failure changed and
-date it, which is the mid-refactor case the owner exempted. A file deleted and recreated under the
-same path is `presentParsing` if it parses, and its missing symbol is a real strand, or
-`presentFailing` if it does not, and is exempt like any other failing file.
+otherwise. No source is read: a parse failure never writes `files.contentHash`, so a hash
+comparison would call every file edited into a failure changed, which is the mid-refactor case
+the owner exempted. A file deleted and recreated under the same path is `presentParsing` if it
+parses, and its vanished symbol is a real orphan, or `presentFailing` if it does not, and is
+exempt like any other failing file.
 
-**Two passes, so the loop can reach what it must.** An orphan-only loop can never un-strand,
-because a row whose subject resolves again is not an orphan.
+**Two passes.**
 
-Pass A, over dated rows, read by the `strandedAt` index on each table:
+Pass B first, over bound subjects whose address resolves to no declaration, read by joining
+`knowledge_subjects` to `symbols` on `currentSymbolId` and keeping the misses, in `subjectId`
+order:
 
-1. **Un-strand** a dated row whose subject resolves again: the date is cleared.
-2. **Delete** a row whose date is thirty or more days behind the clock, answers and demand rows
-   alike. A date ahead of the clock is treated as now, so a clock that went backwards cannot
+1. **Exempt** when `presence` of the address's module answers `presentFailing`. Nothing is
+   written. A malformed address has no module through `moduleOf`, can never be exempt, and is
+   orphaned on first sight.
+2. **Rebind** on `batchExactMatch`: exactly one declaration among `newModules` whose
+   `patternDigest` and `patternCoverage` equal the subject's `lastDigest` and `lastCoverage`, and
+   whose kind and name match. The subject's address becomes that declaration, `fromSymbolId`
+   remembers the old one, no date is set. A subject with no digest never matches. The timer pass
+   has no `newModules`, so it never rebinds by evidence.
+3. **Orphan** otherwise: `state = orphaned`, `orphanedAt = now`, evidence `ambiguous` with the
+   `candidatesFor` list when more than one declaration matched by digest, `none` when none did.
+
+Pass A, over orphaned subjects, read by the `orphanedAt` index in `(orphanedAt, subjectId)` order:
+
+4. **Restore** a subject whose address resolves again: `bound`, evidence `sameLocator`, date
+   cleared.
+5. **Delete** a subject orphaned thirty or more days behind the clock, with its answers and its
+   demand. A date ahead of the clock is treated as now, so a clock that went backwards cannot
    delete early.
 
-Pass B, over undated orphans, read as one `UNION ALL` over `answers` and `gaps` carrying a row
-kind, keyed `(kind, symbolId, question)` and left-joined to `symbols` on the subject id. The two
-tables share no row, so a cursor over one key cannot say which table it left, and the triple is
-what the cursor persists. The orphan's module comes from `moduleOf` in the grammar, since the
-join yields none for an orphan by definition; a malformed id has no module, can never be exempt,
-and is dated on first sight.
-
-3. **Exempt** when `presence` answers `presentFailing`. A present, failing file may be
-   mid-refactor, and nothing is written for it.
-4. **Migrate** when exactly one declaration in the index satisfies `sameDeclaration` from Phase 1,
-   which a local or malformed id never does. The primitive carries answers and demand the way a
-   rename through the refactor tools does. No date is set on a move. **Collision:** the migration
-   moves only the questions the destination
-   lacks and deletes every remaining source row, so a stranded answer whose question the
-   destination already holds is deleted and the destination's prose wins, even where the stranded
-   prose was better. That is the current behaviour, kept as written, and it is the one place this
-   phase asks the owner to look again.
-5. **Date** otherwise: `strandedAt` is set on first sight and left alone after.
-
-**Budget and continuation.** The unit is rows examined per sweep across both passes, capped by
-`ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepOrphans`;
+**Budget and continuation.** The unit is subjects examined per sweep across both passes, capped by
+`ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepSubjects`;
 `STALE_SCAN_CAP` is a file-local constant of the knowledge layer, which neither the indexer nor
-the store imports, and stays where it is. Each pass reads in one explicit order and resumes by a
-tuple predicate over it: pass A by `(strandedAt, kind, symbolId, question)`, pass B by
-`(kind, symbolId, question)`. A sweep that reaches the cap stops and persists a cursor naming
-the pass and the last tuple examined, in store meta beside the scan summary; the next sweep
-resumes from it, and a sweep that finishes clears it. A row written behind the cursor between
-sweeps is examined by the next full sweep, which is the one after the current one finishes; a
-row deleted behind it costs nothing. What a sweep did is reported as an optional `knowledgeSweep`
-field on `ScanCountsSchema`, which `writeScanSummary` persists and `readScanSummary` restores and
-`overview` already carries as `scan`: examined, un-stranded, migrated, dated, deleted, and
-whether it stopped early. Both the scan and the watcher batch fold the result into the summary
-they already write. Optional fields are a minor.
+the store imports, and stays where it is. A sweep that reaches the cap stops and persists a cursor
+naming the pass and the last key examined, in store meta beside the scan summary; the next sweep
+resumes from it, and a sweep that finishes clears it. A subject written behind the cursor between
+sweeps is examined by the next full sweep; one deleted behind it costs nothing. What a sweep did
+is reported as an optional `knowledgeSweep` field on `ScanCountsSchema`, which `writeScanSummary`
+persists and `readScanSummary` restores and `overview` already carries as `scan`: examined,
+rebound, orphaned, restored, deleted, ambiguous, and whether it stopped early. Both the scan and
+the watcher batch fold the result into the summary they already write. Optional fields are a
+minor.
+
+**Transactions.** `inTransaction` is a raw `BEGIN`/`COMMIT` and not re-entrant. Each batch of
+the sweep is one transaction opened by the identity owner; the sweep as a whole is many, which is
+what lets it stop and resume. Nothing inside a batch opens another.
 
 **The clock.** `clock.ts` owns time for the routed modules and its `Clock` is injectable into the
 service, but the service builds `WorkspaceIndexer` without one. The indexer gains a `Clock`
-parameter, the service passes its own, and the clock residue's routed list grows by `indexer.ts`,
-so a `Date.now` in the sweep fails the build. The sweep passes `now` into `sweepOrphans` as a
-value, so the store's four existing `Date.now` reads, all write timestamps, stay unrouted and the
-aging test sets the clock rather than faking a date in the row.
+parameter, the service passes its own, and the clock residue's routed list grows by `indexer.ts`
+and `subjects.ts`, so a `Date.now` in the sweep fails the build. The sweep passes `now` into
+`sweepSubjects` as a value, so the store's four existing `Date.now` reads, all write timestamps,
+stay unrouted and the aging test sets the clock rather than faking a date.
 
-**What a dated row stops costing, and where it is still seen.** It leaves the stale sweep and the
-`STALE_SCAN_CAP` count at once, it never leads the demand queue, and `recallAnswer` records no
-demand for it (Phase 1). The workspace demand sweep reads `gaps` and `allAnswers` today, neither
-of which carries a date, so the store gains two reads for the window: `strandedRows(limit)`, dated
-rows of both tables oldest first, and `strandedCount()`. The sweep excludes dated rows from its
-recheck and missing groups, appends `strandedRows` after them inside the page, each carrying
-`stranded: true` and `strandedAt`, and reports `strandedCount` as an optional `stranded` number
-on the result; `total` keeps counting actionable rows only. A page full of actionable rows shows
-no stranded row and still shows the count. The renderer groups the rows under a stranded heading
-with their dates. A module scope or subtree walk never holds one, since a stranded row has no
+**What an orphaned subject stops costing, and where it is still seen.** It leaves the stale sweep
+and the `STALE_SCAN_CAP` count at once, it never leads the demand queue, and `recallAnswer`
+records no demand for it (Phase 1). The workspace demand sweep reads `gaps` and `allAnswers`
+today, neither of which sees a subject's state, so the identity owner gains two reads for the
+window: `orphanedSubjects(limit)`, oldest first with their rows, and `orphanedCount()`. The sweep
+excludes orphaned subjects' rows from its recheck and missing groups, appends the orphaned rows
+after them inside the page, each carrying `stranded: true`, `strandedAt` set to `orphanedAt` and
+the evidence, and reports the count as an optional `stranded` number on the result; `total` keeps
+counting actionable rows only. A page full of actionable rows shows no orphaned row and still
+shows the count. The renderer groups the rows under a stranded heading with their dates and
+evidence. A module scope or subtree walk never holds one, since an orphaned subject has no
 declaration under any scope. That is a window, not a task.
 
-**Storage.** One nullable `strandedAt` column on `answers` and on `gaps`, added in place with
-`ALTER TABLE` like every other added column, one atomic statement, an old row reads as not yet
-recorded. An index on `strandedAt` for each table, since pass A reads by it. Both columns added to
-the fixed insert lists in `restoreKnowledge`, or a rebuild would silently clear every date and
-restart every thirty-day count. No compatibility bump, no rebuild, no major.
+**Storage.** The subjects table and the two digest columns on `symbols` come from the identity
+phase. Indexes on `knowledge_subjects(orphanedAt)` and `knowledge_subjects(state)`, since pass A
+reads by the first and the window by the second. No compatibility bump, no rebuild.
 
-**Wire.** The gap row gains an optional `strandedAt` and an optional `stranded` flag, never a
-fourth `why` value, because clients ride forward and an older client would fail to parse the newer
-row. `why` keeps its ordinary value on a stranded row, `stale` for an answer whose citations can
-never resolve again and `missing` for demand, so an older client reads it as it always did, and
-the renderer checks `stranded` before `why` when choosing the heading and the state word. With
-the result's `stranded` count, the `knowledgeSweep` report and Phase 1's recall field, this phase
-is a minor.
+**Wire.** The gap row gains an optional `strandedAt`, an optional `stranded` flag and an optional
+`evidence`, never a fourth `why` value, because clients ride forward and an older client would
+fail to parse the newer row. `why` keeps its ordinary value on an orphaned row, `stale` for an
+answer whose citations can never resolve again and `missing` for demand, so an older client reads
+it as it always did, and the renderer checks `stranded` before `why` when choosing the heading
+and the state word. With the result's `stranded` count, the `knowledgeSweep` report and Phase 1's
+recall field, this phase is a minor.
 
-**Tests:** plant, record, answer, replace the file without the symbol: dated on the next sweep,
-absent from the stale count, not at the head of the queue, no demand recorded on recall. Replace
-it with a parse failure while the file is present: not dated. Delete the file and recreate it
-parsing without the symbol: dated. Put the symbol back: pass A clears the date. Move it to another
-module as the only `sameDeclaration` match: migrated, undated, recalled at the new id. Add a
-second match: dated, not migrated. Record a different answer at the destination first, then move:
-the destination's prose survives and the source row is gone, which pins the collision rule.
+**Tests:** record, then delete the file: orphaned on the next sweep with evidence `none`, absent
+from the stale count, not at the head of the queue, no demand recorded on recall. Replace it with
+a parse failure while the file is present: not orphaned. Delete the file and recreate it parsing
+without the symbol: orphaned. Put the symbol back: pass A restores it. Move the file with the
+editor: rebound on `batchExactMatch`, undated, recalled at the new address, the old address
+diagnosed as moved. Move it and edit the body in the same save: orphaned with `none`, since the
+digest changed. Two identical twins, delete one: the survivor untouched, the deleted one orphaned
+with `none`. Two candidates by digest among new modules: orphaned with `ambiguous` and both named.
 Advance the injected clock thirty days with no scan and no event: the timer's sweep deletes it,
-so an idle workspace ages. Set the clock behind a date: not deleted. Force a rebuild: the date
-survives. Plant more orphans than the cap across both tables: the sweep stops
-inside one, reports it, and the next scan finishes from the persisted triple without re-examining
-the other. Plant a malformed subject id and a stranded local id: both dated, neither migrated,
-neither exempt. An older client parses a row carrying the new fields. Each case watches the old
-behaviour fail first.
+so an idle workspace ages. Set the clock behind a date: not deleted. Force a compat rebuild: the
+subject and its date survive. Plant more orphaned subjects than the cap: the sweep stops, reports
+it, and the next scan finishes from the persisted key. Plant a malformed address and a local
+address: both orphaned, neither rebound, neither exempt. An older client parses a row carrying
+the new fields. Each case watches the old behaviour fail first.
 
 ## Phase 5 - Fan-in seeding per language [deferred, decision-complete]
 
@@ -493,9 +655,14 @@ exhausted, one re-derived ids by hand for a batch, and one mistake minted demand
 answer. The test for a refusal is whether the author can act on it in one turn.
 
 For a bad symbol id specifically, the rule has a shape: the refusal distinguishes an unknown
-symbol id, a fact id supplied as the subject, a member id missing its terminator, and a stranded
-id whose symbol moved. A reviewer who hit the undistinguished version could not tell which he had
-done, and that is the whole cost.
+symbol id, a fact id supplied as the subject, a member id missing its terminator, an address whose
+subject moved, and a stranded subject whose address is gone. A reviewer who hit the
+undistinguished version could not tell which he had done, and that is the whole cost.
+
+And one more, from Question 9: **knowledge is about a subject; a symbol id is its address.** Rows
+never change key. Identity changes by rebinding an address through one owner, with closed-valued
+evidence, and two subjects never merge. `docs/knowledge-layer.md` and `docs/architecture.md` say
+so in the same words once the identity phase lands.
 
 **Every refusal the knowledge layer produces, audited against the rule.** A rule with one named
 exclusion and an unlisted remainder is a rule nobody can check. The disposition of each, across
@@ -507,7 +674,8 @@ checker's `ok: false`:
   shape the rest are raised to.
 - A citation does not resolve: names both causes and the fix (re-fetch or refuse). Kept.
 - Nothing cited about the subject: names the mistake (neighbours describe themselves). Kept.
-- Fact id as subject, unminted id, unknown module, stranded id: Phase 0 and Phase 1.
+- Fact id as subject, unminted id, moved address, unknown module, stranded subject: Phase 0 and
+  Phase 1.
 - Prose too long: names the limit and the length. Kept.
 - Replacing an answer whose citations still hold: names the fix (`omitting`). Kept.
 - The wrong doubt id: names the fix (recall and cite it). Kept.
@@ -534,29 +702,36 @@ Ordered by how much it proves, as the repository already orders it.
 
 - Unit: every phase plants the mistake and watches the old message fail before the new one is
   trusted. The render-shape gate already covers every renderer's output.
-- A gate that can fail. Every refusal is composed through one owner, the catalog phase's
-  `refusals.ts`, and the refusals reach their three shapes, a `recorded: false`, a `refused:`, or
-  the citation checker's `ok: false`, only through it; the fifteen inline literals that exist
-  today are the catalog's migration and the gate's first catch. The residue is scoped, not
-  workspace-wide: `refused:` has two dozen unrelated instances
-  across core and `ok: false` three dozen, in dispatch, the refactor planner, transactions and
-  argument parsing, none of them refusals of this layer, so a token sweep over those spellings
-  would fail everywhere or be narrowed until it checked nothing. The sweep reads `knowledge.ts` and
-  `answers.ts` only, and forbids a string literal composed directly after `reason:` or `refused:`
-  anywhere in them, which is the narrowest token a refusal composed inline carries and a
-  constructor call does not. The catalog module is exempt because it is the owner, and the citation
-  checker's `ok: false` is a catalog member, not a violation. The sweep asserts it found the two
-  files and found constructor calls, so a run matching nothing fails. Each constructor is named by
-  a test that asserts the returned reason AND the action taken, since a test that merely names a
-  reason does not prove the branch ran. The density bar in the repository's rules stays. The gate
-  is proven by planting one inline literal per shape in the scoped files and watching each fail.
+- A gate that can fail, for refusals. Every refusal is composed through one owner, the catalog
+  phase's `refusals.ts`, and the refusals reach their three shapes, a `recorded: false`, a
+  `refused:`, or the citation checker's `ok: false`, only through it; the fifteen inline literals
+  that exist today are the catalog's migration and the gate's first catch. The residue is scoped,
+  not workspace-wide: `refused:` has two dozen unrelated instances across core and `ok: false`
+  three dozen, in dispatch, the refactor planner, transactions and argument parsing, none of them
+  refusals of this layer, so a token sweep over those spellings would fail everywhere or be
+  narrowed until it checked nothing. The sweep reads `knowledge.ts` and `answers.ts` only, and
+  forbids a string literal composed directly after `reason:` or `refused:` anywhere in them,
+  which is the narrowest token a refusal composed inline carries and a constructor call does not.
+  The catalog module is exempt because it is the owner, and the citation checker's `ok: false` is
+  a catalog member, not a violation. The sweep asserts it found the two files and found
+  constructor calls, so a run matching nothing fails. Each constructor is named by a test that
+  asserts the returned reason AND the action taken, since a test that merely names a reason does
+  not prove the branch ran. The density bar in the repository's rules stays. The gate is proven
+  by planting one inline literal per shape in the scoped files and watching each fail.
+- A gate that can fail, for identity. The token `knowledge_subjects` is forbidden outside
+  `subjects.ts` and the store's schema text, and the token `migrateKnowledge` is forbidden
+  everywhere once retired, so a row move cannot come back and no second writer of identity can
+  appear. Both planted and watched failing. The sweep asserts it found the owner.
 - Drive the built server: hand each refusal the exact bad input from the overnight logs, a fact
-  id as subject, a member id without its terminator, a stranded id, and read what comes back, and
-  drive `diagnoseSubject` and one `sweepOrphans` batch through the real daemon.
-- Release: **minor** after the catalog phase and Phases 1, 0, 2 and 3 together. Phase 0 adds a
-  daemon method, Phase 1 and Phase 3 add optional fields, and the protocol doc prices each as a
-  minor; the catalog is internal. Phase 4 is a minor for its optional fields. Phase 5 is priced
-  in its own section and is in no release line until decided. Nothing here needs a major: no
+  id as subject, a member id without its terminator, a stranded subject, a moved address, and read
+  what comes back; drive `diagnoseSubject`, one `sweepSubjects` batch and one `refactor_move`
+  rebind through the real daemon; open the 3.0.x fixture store through it.
+- Release: **minor** after the catalog phase, the identity phase and Phases 1, 0, 2 and 3
+  together. Phase 0 adds a daemon method, the identity phase, Phase 1 and Phase 3 add optional
+  fields, and the protocol doc prices each as a minor; the catalog is internal. The identity
+  phase's in-place table rebuild preserves the store, which is what a minor promises, and its
+  fixture gate is what proves it. Phase 4 is a minor for its optional fields. Phase 5 is priced in
+  its own section and is in no release line until decided. Nothing here needs a major: no
   extraction changes and no method is removed or renamed.
 
 ## Painpoints
@@ -641,3 +816,14 @@ Collected during the overnight knowledge run, the review of its patches, and the
   name-indexed rows. The author's own re-read added two kept refusals the doctrine list had
   omitted. Folded without a verifying lap, on the judgement that three clean angles and one
   wiring sentence do not earn a sixth.
+- Questions 6 to 8, and the frame they were asked in. Three questions in a row were about how to
+  move knowledge rows: what wins on collision, what proves a move, whether a text pattern should
+  be the key. A Sol second opinion, asked for by the owner, named the frame instead of answering
+  inside it: all four options treated identity as something the rows carry. Six investigators had
+  priced the pattern key and none had said that. The measurement the author took, a fourteen
+  percent twin rate that is almost all one-line test setup, would have argued for the cheapest
+  row-moving option and would still have left every identity change a row rewrite. Sol also
+  caught a fact the author had stated to the owner and to six investigators from memory:
+  `files.content` is the `code | data | document | text` classification, not source text. The
+  lesson is the one the doctrine already carries about refusals, turned on design: name the
+  class, not the instance.
