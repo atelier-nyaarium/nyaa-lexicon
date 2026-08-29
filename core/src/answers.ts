@@ -11,6 +11,7 @@
 // facts: this module can only read them.
 
 import { isFactId, QUESTION_CLASSES, type QuestionClass, type StoredFact } from "@nyaa-lexicon/protocol";
+import * as refusal from "./refusals.js";
 
 export {
 	type Answer,
@@ -56,17 +57,11 @@ export function checkCitations(
 	resolve: (factId: string) => StoredFact | null,
 	subjectFacts: Set<string>,
 ): { ok: true } | { ok: false; reason: string; unresolved?: string[] } {
-	if (citations.length === 0) {
-		return { ok: false, reason: "an answer must cite the facts it was drawn from, and this cites none" };
-	}
+	if (citations.length === 0) return { ok: false, reason: refusal.citesNothing() };
 
 	const malformed = citations.filter((factId) => !isFactId(factId));
 	if (malformed.length > 0) {
-		return {
-			ok: false,
-			reason: `${malformed.length} citation${malformed.length === 1 ? " is" : "s are"} not a fact id at all. Cite the id exactly as symbol_facts prints it, the whole space-separated line ending in the digest, never the trailing digest alone`,
-			unresolved: malformed,
-		};
+		return { ok: false, reason: refusal.malformedCitations(malformed.length), unresolved: malformed };
 	}
 
 	const unresolved = citations.filter((factId) => resolve(factId) === null);
@@ -74,18 +69,11 @@ export function checkCitations(
 		// Two innocent explanations and one bad one share this failure, and the wording carries all
 		// three: a re-index since the ids were fetched retires them legitimately, and telling an
 		// honest author only "you invented this" teaches distrust of a system that was healing.
-		return {
-			ok: false,
-			reason: `${unresolved.length} cited fact${unresolved.length === 1 ? " does" : "s do"} not resolve. Either the index re-derived its facts since these ids were fetched, in which case call symbol_facts again and cite the current ids, or the id was invented, which this check exists to refuse`,
-			unresolved,
-		};
+		return { ok: false, reason: refusal.unresolvedCitations(unresolved.length), unresolved };
 	}
 
 	if (!citations.some((factId) => subjectFacts.has(factId))) {
-		return {
-			ok: false,
-			reason: `nothing cited here is a fact about ${symbolId}. Citing only its neighbours describes them, not it`,
-		};
+		return { ok: false, reason: refusal.citesOnlyNeighbours(symbolId) };
 	}
 
 	return { ok: true };

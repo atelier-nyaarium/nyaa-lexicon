@@ -170,8 +170,10 @@ service reach `subjectRefused` from the same module when Phase 0 routes them.
 `wrongDoubtId`, `replacesSoundAnswer`, `doubtNeedsReason`, `nothingToDoubt`,
 `noAnswerToReaffirm`, `citationsNoLongerResolve`, `nothingToReaffirm`, `clearingRequiresCiting`,
 `citesNothing`, `malformedCitations`, `unresolvedCitations`, `citesOnlyNeighbours`, and the
-diagnoses `factIdAsSubject`, `unmintedId`, `strandedId`, `movedId`, `unknownId`. A constructor
-takes the values its sentence names and nothing else.
+diagnoses `factIdAsSubject`, `unmintedId`, `strandedId`, `movedId`, `unknownModule`,
+`unparsableId`. The last two are the two branches of Phase 0's `unknown` outcome: a module that
+is not indexed, and a spelling with no module to read. A constructor takes the values its
+sentence names and nothing else.
 
 **The four rewordings the doctrine marks as failing land here, with their text pinned:**
 

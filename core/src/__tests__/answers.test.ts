@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { parseSymbolIdResult } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
+import * as refusal from "../refusals";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -118,6 +120,216 @@ afterEach(() => {
 ////////////////////////////////
 //  Tests
 
+const reasonOf = (outcome: { recorded: boolean; reason?: string }) => (outcome.recorded ? "" : outcome.reason);
+
+/** Reason and action, both pinned. */
+describe("every refusal is a named constructor", () => {
+	it("needsProse: refuses blank prose and records nothing", async () => {
+		const [declaration] = plant();
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "   ", [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.needsProse());
+		expect(service.recallAnswer(SYMBOL, "describe")).toBeNull();
+	});
+
+	it("proseTooLong: refuses past the limit, naming it and the length", async () => {
+		const [declaration] = plant();
+		const prose = "x".repeat(4001);
+		const outcome = await service.recordAnswer(SYMBOL, "describe", prose, [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.proseTooLong(4000, 4001));
+		expect(service.recallAnswer(SYMBOL, "describe")).toBeNull();
+	});
+
+	it("noDoubtStands: refuses to clear a doubt that is not there, and keeps the answer", async () => {
+		const [declaration] = plant();
+		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string], {
+			resolvesDoubt: "lexfact doubt a.ref 0000000000000000",
+		});
+		expect(reasonOf(outcome)).toBe(refusal.noDoubtStands("describe", SYMBOL));
+		expect(service.recallAnswer(SYMBOL, "describe")?.answer.prose).toBe("A shopping cart.");
+	});
+
+	it("wrongDoubtId: refuses a token naming the wrong doubt, and the doubt stands", async () => {
+		const [declaration] = plant();
+		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
+		service.invalidateAnswer(SYMBOL, "checkout rewrite", "describe");
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string], {
+			resolvesDoubt: "lexfact doubt a.ref 0000000000000000",
+		});
+		expect(reasonOf(outcome)).toBe(refusal.wrongDoubtId());
+		expect(service.recallAnswer(SYMBOL, "describe")?.answer.doubt?.reason).toBe("checkout rewrite");
+	});
+
+	it("replacesSoundAnswer: refuses a blind replacement, naming what it dropped", async () => {
+		const [declaration] = plant();
+		const literal = store.literalsContainedBy(SYMBOL, 1)[0]?.factId as string;
+		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string, literal]);
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.replacesSoundAnswer());
+		expect(outcome.recorded === false && outcome.uncovered).toEqual([literal]);
+		expect(service.recallAnswer(SYMBOL, "describe")?.answer.prose).toBe("A shopping cart.");
+	});
+
+	it("doubtNeedsReason: refuses a blank reason and sets no doubt", async () => {
+		const [declaration] = plant();
+		const recorded = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
+		expect(recorded.recorded).toBe(true);
+		expect(service.invalidateAnswer(SYMBOL, " ", "describe").refused).toBe(refusal.doubtNeedsReason());
+		expect(service.recallAnswer(SYMBOL, "describe")?.answer.doubt).toBeUndefined();
+	});
+
+	it("nothingToDoubt: refuses where nothing is recorded and opens no gap", () => {
+		plant();
+		expect(service.invalidateAnswer(SYMBOL, "drifted").refused).toBe(refusal.nothingToDoubt(SYMBOL));
+		expect(store.askCount(SYMBOL, "describe")).toBe(0);
+	});
+
+	it("noAnswerToReaffirm: refuses where nothing is recorded and records nothing", async () => {
+		plant();
+		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
+		expect(reasonOf(outcome)).toBe(refusal.noAnswerToReaffirm("describe", SYMBOL));
+		expect(service.recallAnswer(SYMBOL, "describe")).toBeNull();
+	});
+
+	it("citationsNoLongerResolve: names the count and the stale ids", async () => {
+		const [declaration] = plant();
+		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
+		// The declaration moves down a line: still indexed, its fact id re-minted.
+		store.replaceFile(
+			"a.ref",
+			"h2",
+			[
+				{
+					symbolId: SYMBOL,
+					kind: "class",
+					name: "Cart",
+					range: at(3),
+					selectionRange: at(3),
+					visibility: "public",
+				},
+			],
+			[],
+			[],
+			[],
+		);
+		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
+		expect(reasonOf(outcome)).toBe(refusal.citationsNoLongerResolve(1));
+		expect(outcome.recorded === false && outcome.unresolved).toEqual([declaration as string]);
+	});
+
+	it("clearingRequiresCiting: refuses a re-affirmation that names no doubt, and the doubt stands", async () => {
+		const [declaration] = plant();
+		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
+		service.invalidateAnswer(SYMBOL, "checkout rewrite", "describe");
+		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
+		expect(reasonOf(outcome)).toBe(refusal.clearingRequiresCiting());
+		expect(service.recallAnswer(SYMBOL, "describe")?.answer.doubt?.reason).toBe("checkout rewrite");
+	});
+
+	it("citesNothing: refuses an uncited answer and records nothing", async () => {
+		plant();
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", []);
+		expect(reasonOf(outcome)).toBe(refusal.citesNothing());
+		expect(service.recallAnswer(SYMBOL, "describe")).toBeNull();
+	});
+
+	it("malformedCitations: refuses a bare digest, naming it as the malformed one", async () => {
+		plant();
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", ["0000000000000000"]);
+		expect(reasonOf(outcome)).toBe(refusal.malformedCitations(1));
+		expect(outcome.recorded === false && outcome.unresolved).toEqual(["0000000000000000"]);
+	});
+
+	it("unresolvedCitations: refuses an id that resolves to nothing, naming it", async () => {
+		plant();
+		const ghost = "lexfact declaration a.ref 0000000000000000";
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [ghost]);
+		expect(reasonOf(outcome)).toBe(refusal.unresolvedCitations(1));
+		expect(outcome.recorded === false && outcome.unresolved).toEqual([ghost]);
+	});
+
+	it("citesOnlyNeighbours: refuses an answer grounded elsewhere and records nothing", async () => {
+		plant();
+		store.replaceFile(
+			"b.ref",
+			"h1",
+			[
+				{
+					symbolId: "lexicon reference b.ref send#",
+					kind: "function",
+					name: "send",
+					range: at(0),
+					selectionRange: at(0),
+					visibility: "public",
+				},
+			],
+			[],
+		);
+		const elsewhere = store.declarationsIn("b.ref")[0]?.factId as string;
+		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [elsewhere]);
+		expect(reasonOf(outcome)).toBe(refusal.citesOnlyNeighbours(SYMBOL));
+		expect(service.recallAnswer(SYMBOL, "describe")).toBeNull();
+	});
+
+	it("factIdAsSubject: names the mix-up when a fact id sits in the subject slot", async () => {
+		const [declaration] = plant();
+		const outcome = await service.recordAnswer(declaration as string, "describe", "A cart.", [
+			declaration as string,
+		]);
+		expect(reasonOf(outcome)).toBe(refusal.factIdAsSubject(declaration as string));
+		expect(service.recallAnswer(declaration as string, "describe")).toBeNull();
+	});
+
+	it("unmintedId: lists what the module holds for an id it never minted", async () => {
+		const [declaration] = plant();
+		const unminted = "lexicon reference a.ref Cart";
+		const outcome = await service.recordAnswer(unminted, "describe", "A cart.", [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.unmintedId(unminted, "a.ref", [`\`${SYMBOL}\``], 0));
+		expect(service.recallAnswer(unminted, "describe")).toBeNull();
+	});
+
+	it("unknownModule: names the module that is not indexed either", async () => {
+		const [declaration] = plant();
+		const gone = "lexicon reference gone.ref Cart#";
+		const outcome = await service.recordAnswer(gone, "describe", "A cart.", [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.unknownModule(gone, "gone.ref"));
+		expect(service.recallAnswer(gone, "describe")).toBeNull();
+	});
+
+	it("unparsableId: names the grammar's failure for a spelling with no module to read", async () => {
+		const [declaration] = plant();
+		const junk = "lexicon";
+		const parsed = parseSymbolIdResult(junk);
+		const failure = parsed.ok ? "" : parsed.failure.message;
+		const outcome = await service.recordAnswer(junk, "describe", "A cart.", [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.unparsableId(junk, failure));
+		expect(service.recallAnswer(junk, "describe")).toBeNull();
+	});
+
+	// Routing is proven above; the text itself is pinned here, independently of the constructor.
+	it("pins the four reworded sentences to the plan's text", () => {
+		expect(refusal.needsProse()).toBe(
+			"an answer needs prose. Send the sentence or two the cited facts establish in `prose`",
+		);
+		expect(refusal.nothingToReaffirm()).toBe(
+			"this answer is already sound: every citation resolves and no doubt stands. Re-affirming changes nothing. To replace its prose call `record_answer`; to doubt it call `invalidate_answer`",
+		);
+		expect(refusal.nothingToDoubt("X")).toBe(
+			"nothing is recorded about X, so there is no answer to doubt. Doubting an unwritten answer asks for one, and `record_answer` writes it",
+		);
+		expect(refusal.noDoubtStands("why", "X")).toBe(
+			"no doubt stands on the why answer about X, so omit `resolvesDoubt`. To raise one, call `invalidate_answer`",
+		);
+	});
+
+	// The remedies differ, so the two sentences must stay tellable apart.
+	it("keeps a bare digest and a dead id on different remedies", () => {
+		expect(refusal.malformedCitations(1)).toMatch(/not a fact id|digest alone/);
+		expect(refusal.malformedCitations(1)).not.toMatch(/re-derived/);
+		expect(refusal.unresolvedCitations(1)).toMatch(/re-derived|invented/);
+	});
+});
+
 /**
  * The layer's one rule, enforced by the store rather than asked for in a prompt.
  *
@@ -142,41 +354,6 @@ describe("writing an answer down", () => {
 		const outcome = await service.recordAnswer(SYMBOL, "why", "Retains checkout state.", [comment]);
 
 		expect(outcome.recorded).toBe(true);
-	});
-
-	// Both ids are long space-separated strings and `symbol_facts` answers with both, so the refusal
-	// has to say WHICH id was handed over. "Not in the index" sends the author hunting for a symbol.
-	it("names the mix-up when a fact id arrives where the symbol id belongs", async () => {
-		const [declaration] = plant();
-
-		const outcome = await service.recordAnswer(declaration as string, "describe", "A shopping cart.", [
-			declaration as string,
-		]);
-
-		expect(outcome.recorded).toBe(false);
-		expect(!outcome.recorded && outcome.reason).toContain("is a fact id, not a symbol id");
-		expect(!outcome.recorded && outcome.reason).toContain("citations");
-	});
-
-	// An id typed by hand loses the grammar's terminal punctuation, which mints a plausible id for a
-	// symbol that never existed. The module is the half the author got right, so it is the shortlist.
-	it("names what the module holds when the id is plausible and unminted", async () => {
-		plant();
-
-		const outcome = await service.recordAnswer("lexicon reference a.ref Cart", "describe", "A cart.", []);
-
-		expect(outcome.recorded).toBe(false);
-		expect(!outcome.recorded && outcome.reason).toContain("a.ref holds");
-		expect(!outcome.recorded && outcome.reason).toContain(SYMBOL);
-	});
-
-	it("says so when the module itself is not indexed", async () => {
-		plant();
-
-		const outcome = await service.recordAnswer("lexicon reference gone.ref Cart#", "describe", "A cart.", []);
-
-		expect(outcome.recorded).toBe(false);
-		expect(!outcome.recorded && outcome.reason).toContain("neither is gone.ref");
 	});
 
 	// A module can hold hundreds of declarations, and the first eight in store order are rarely the
@@ -249,76 +426,6 @@ describe("writing an answer down", () => {
 
 		expect(facts?.facts.map((fact) => fact.kind)).toContain("doc");
 		expect(outcome.recorded).toBe(true);
-	});
-
-	// The cold answer this whole layer exists to prevent. Prose with no inputs is indistinguishable
-	// from prose about a symbol nobody read.
-	it("refuses an answer that cites nothing", async () => {
-		plant();
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", []);
-
-		expect(outcome).toMatchObject({ recorded: false });
-		expect(outcome.recorded === false && outcome.reason).toMatch(/cites none/);
-	});
-
-	// An id is a digest of its own contents, so one check catches an invented citation and a stale
-	// one together. Both are reasons to refuse rather than to store.
-	it("refuses a citation that resolves to nothing, and names it", async () => {
-		plant();
-		const invented = "lexfact declaration a.ref 0123456789abcdef";
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [invented]);
-
-		expect(outcome).toMatchObject({ recorded: false, unresolved: [invented] });
-		expect(outcome.recorded === false && outcome.reason).toMatch(/re-derived|invented/);
-	});
-
-	// The common cause is copying only the trailing digest off a rendered fact line. The unresolved
-	// wording sent one agent off to re-fetch perfectly good ids three times, so the malformed case
-	// gets its own diagnosis instead of sharing the staleness one.
-	it("tells a bare digest apart from a stale id, since the remedies differ", async () => {
-		const [declaration] = plant();
-		const digestAlone = (declaration as string).split(" ").pop() as string;
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [digestAlone]);
-
-		expect(outcome).toMatchObject({ recorded: false, unresolved: [digestAlone] });
-		expect(outcome.recorded === false && outcome.reason).toMatch(/not a fact id|digest alone/);
-		expect(outcome.recorded === false && outcome.reason).not.toMatch(/re-derived/);
-	});
-
-	it("refuses an answer about a symbol the index does not hold", async () => {
-		const [declaration] = plant();
-		const outcome = await service.recordAnswer("lexicon reference a.ref Ghost#", "describe", "x", [
-			declaration as string,
-		]);
-
-		expect(outcome.recorded === false && outcome.reason).toMatch(/not in the index/);
-	});
-
-	// Answers compound, so citing a neighbour is legitimate. Citing ONLY neighbours is not: it
-	// describes them rather than the subject, while looking like a grounded answer about the subject.
-	it("refuses an answer whose citations are all about something else", async () => {
-		plant();
-		const other = "lexicon reference b.ref Other#";
-		store.replaceFile(
-			"b.ref",
-			"h1",
-			[
-				{
-					symbolId: other,
-					kind: "class",
-					name: "Other",
-					range: at(0),
-					selectionRange: at(0),
-					visibility: "public",
-				},
-			],
-			[],
-		);
-		const neighbour = store.declarationsIn("b.ref")[0]?.factId as string;
-
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [neighbour]);
-
-		expect(outcome.recorded === false && outcome.reason).toMatch(/nothing cited here is a fact about/);
 	});
 
 	it("refuses empty prose, and prose longer than an answer is meant to be", async () => {
@@ -972,18 +1079,6 @@ describe("declared doubt", () => {
 		expect(service.recallAnswer(SYMBOL, "describe")?.answer.doubt?.reason).toBe("checkout rewrite");
 	});
 
-	it("refuses to clear with a token that does not name the standing doubt", async () => {
-		const [declaration] = plant();
-		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
-		service.invalidateAnswer(SYMBOL, "checkout rewrite", "describe");
-
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string], {
-			resolvesDoubt: "lexfact doubt a.ref 0000000000000000",
-		});
-		expect(outcome.recorded).toBe(false);
-		expect(outcome.recorded === false && outcome.reason).toMatch(/does not name the standing doubt/);
-	});
-
 	it("clears when the writer cites the doubt id, which only a recall shows", async () => {
 		const [declaration] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
@@ -1000,12 +1095,6 @@ describe("declared doubt", () => {
 
 		expect(outcome.recorded).toBe(true);
 		expect(service.recallAnswer(SYMBOL, "describe")?.answer.doubt).toBeUndefined();
-	});
-
-	it("refuses a blank reason, and doubting where nothing is recorded", async () => {
-		plant();
-		expect(service.invalidateAnswer(SYMBOL, "   ", "describe").refused).toMatch(/needs a reason/);
-		expect(service.invalidateAnswer(SYMBOL, "drifted").refused).toMatch(/nothing is recorded/);
 	});
 
 	it("re-enters the gap ledger as recheck demand, named doubted rather than stale", async () => {
@@ -1099,32 +1188,6 @@ describe("re-affirming an answer", () => {
 		expect(healed?.stale).toEqual([]);
 	});
 
-	it("refuses a bare re-affirm while citations are dead, naming them", async () => {
-		const [declaration] = plant();
-		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
-				{
-					symbolId: SYMBOL,
-					kind: "class",
-					name: "Cart",
-					range: at(0),
-					selectionRange: at(0),
-					visibility: "public",
-					signature: "class Cart implements Basket",
-				},
-			],
-			[],
-		);
-
-		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
-		expect(outcome.recorded).toBe(false);
-		if (declaration === undefined) throw new Error("declaration citation missing");
-		expect(outcome.recorded === false && outcome.unresolved).toEqual([declaration]);
-	});
-
 	it("clears a doubt while keeping the answer's id, so nothing citing it goes stale", async () => {
 		const [declaration] = plant();
 		const recorded = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
@@ -1145,7 +1208,7 @@ describe("re-affirming an answer", () => {
 
 		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
 		expect(outcome.recorded).toBe(false);
-		expect(outcome.recorded === false && outcome.reason).toMatch(/nothing to re-affirm/);
+		expect(outcome.recorded === false && outcome.reason).toBe(refusal.nothingToReaffirm());
 	});
 
 	it("retires the answer id on re-grounding, so parents heal the same way, leaves first", async () => {
@@ -1212,17 +1275,6 @@ describe("re-affirming an answer", () => {
  * drops. A stale or doubted incumbent is already invited to be rewritten, so the gate stands down.
  */
 describe("the adjudicated supersede gate", () => {
-	it("refuses replacing a live answer without covering its citations, and lists what is uncovered", async () => {
-		const [declaration] = plant();
-		const literal = store.literalsContainedBy(SYMBOL, 10)[0]?.factId as string;
-		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string, literal]);
-
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "Actually a wishlist.", [declaration as string]);
-
-		expect(outcome.recorded).toBe(false);
-		expect(outcome.recorded === false && outcome.uncovered).toEqual([literal]);
-	});
-
 	it("accepts a challenger that explains the omission", async () => {
 		const [declaration] = plant();
 		const literal = store.literalsContainedBy(SYMBOL, 10)[0]?.factId as string;

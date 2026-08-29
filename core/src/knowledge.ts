@@ -6,15 +6,12 @@
 import {
 	answerFactId,
 	type CitedFact,
-	decodeModuleField,
 	doubtFactId,
-	FACT_SCHEME,
 	type FactKind,
 	type FactSet,
 	type GapRow,
 	type InvalidateOutcome,
 	type KnowledgeGaps,
-	parseSymbolIdResult,
 	type ResolveFactsResult,
 } from "@nyaa-lexicon/protocol";
 import {
@@ -27,6 +24,7 @@ import {
 	type RecordOutcome,
 } from "./answers.js";
 import type { ImportResolver } from "./imports.js";
+import * as refusal from "./refusals.js";
 import type { IndexStore, StoredFact } from "./store.js";
 
 export type { CitedFact, FactSet, GapRow, InvalidateOutcome, KnowledgeGaps } from "@nyaa-lexicon/protocol";
@@ -67,56 +65,6 @@ export const DEFAULT_FACT_LIMIT = 40;
  * is about the longest a working task should block on knowledge it is waiting to lean on.
  */
 export const INLINE_GAP_THRESHOLD = 20;
-
-/** How many neighbours a refusal names before the list stops helping. */
-const NEIGHBOURS_SHOWN = 8;
-
-////////////////////////////////
-//  Functions & Helpers
-
-/**
- * Why a subject id names no declaration.
- *
- * Two mistakes account for nearly all of these, and "not in the index" describes neither. A fact id
- * and a symbol id are both long space-separated strings that `symbol_facts` answers with together,
- * so the wrong one gets handed over. And an id typed by hand loses its terminal punctuation, which
- * the grammar needs, leaving a plausible id for a symbol that was never minted. Both send the author
- * hunting for a missing symbol when the string is what is wrong.
- */
-function subjectRefused(symbolId: string, store: IndexStore): string {
-	if (symbolId.startsWith(`${FACT_SCHEME} `)) {
-		return `${symbolId} is a fact id, not a symbol id. Cite it in \`citations\` and name the symbol it belongs to in \`symbolId\``;
-	}
-
-	const parsed = parseSymbolIdResult(symbolId);
-	const module = parsed.ok ? parsed.value.module : moduleFieldOf(symbolId);
-	const neighbours = module === null ? [] : store.declarationsIn(module);
-	if (neighbours.length > 0) {
-		// The name the author typed is somewhere in the bad id, so declarations carrying it lead.
-		const named = (declaration: { name: string }) => Number(symbolId.includes(declaration.name));
-		const shown = [...neighbours]
-			.sort((a, b) => named(b) - named(a))
-			.slice(0, NEIGHBOURS_SHOWN)
-			.map((declaration) => `\`${declaration.symbolId}\``);
-		const rest = neighbours.length - shown.length;
-		const more = rest > 0 ? `, and ${rest} more` : "";
-		return `${symbolId} is not in the index. ${module} holds ${shown.join(", ")}${more}`;
-	}
-
-	if (!parsed.ok) return `${symbolId} is not a symbol id: ${parsed.failure.message}`;
-	return `${symbolId} is not in the index, and neither is ${parsed.value.module}`;
-}
-
-/** The module an unparseable id still names in its third field, decoded as the grammar would. */
-function moduleFieldOf(symbolId: string): string | null {
-	const field = symbolId.split(" ")[2];
-	if (field === undefined || field === "") return null;
-	try {
-		return decodeModuleField(field);
-	} catch {
-		return null;
-	}
-}
 
 ////////////////////////////////
 //  Class
@@ -252,14 +200,11 @@ export class KnowledgeLedger {
 	): Promise<RecordOutcome> {
 		const { model, resolvesDoubt, omitting } = options;
 		if (this.store.declaration(symbolId) === null) {
-			return { recorded: false, reason: subjectRefused(symbolId, this.store) };
+			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
 		}
-		if (prose.trim() === "") return { recorded: false, reason: "an answer needs prose" };
+		if (prose.trim() === "") return { recorded: false, reason: refusal.needsProse() };
 		if (prose.length > MAX_PROSE) {
-			return {
-				recorded: false,
-				reason: `an answer is at most ${MAX_PROSE} characters, and this is ${prose.length}`,
-			};
+			return { recorded: false, reason: refusal.proseTooLong(MAX_PROSE, prose.length) };
 		}
 
 		const previous = this.store.answer(symbolId, question);
@@ -269,13 +214,10 @@ export class KnowledgeLedger {
 		// whose writer believes a doubt was cleared when it was not.
 		if (resolvesDoubt !== undefined) {
 			if (previous?.doubt === undefined) {
-				return { recorded: false, reason: `no doubt stands on the ${question} answer about ${symbolId}` };
+				return { recorded: false, reason: refusal.noDoubtStands(question, symbolId) };
 			}
 			if (previous.doubt.factId !== resolvesDoubt) {
-				return {
-					recorded: false,
-					reason: "resolvesDoubt does not name the standing doubt. Recall the answer and cite the doubt id it shows",
-				};
+				return { recorded: false, reason: refusal.wrongDoubtId() };
 			}
 		}
 
@@ -299,11 +241,7 @@ export class KnowledgeLedger {
 			if (allLive) {
 				const uncovered = previous.citations.filter((factId) => !citations.includes(factId));
 				if (uncovered.length > 0 && omitting === undefined) {
-					return {
-						recorded: false,
-						reason: "this replaces an answer whose every cited input still holds. Cite the facts it cited too, or explain what you are dropping and why in `omitting`",
-						uncovered,
-					};
+					return { recorded: false, reason: refusal.replacesSoundAnswer(), uncovered };
 				}
 			}
 		}
@@ -351,23 +289,18 @@ export class KnowledgeLedger {
 	 */
 	invalidateAnswer(symbolId: string, reason: string, question?: QuestionClass, by?: string): InvalidateOutcome {
 		if (reason.trim() === "") {
-			return {
-				symbolId,
-				doubted: [],
-				noAnswer: [],
-				refused: "a doubt needs a reason: it is what the next writer reads",
-			};
+			return { symbolId, doubted: [], noAnswer: [], refused: refusal.doubtNeedsReason() };
 		}
 		const now = Date.now();
 		const indexed = this.store.declaration(symbolId) !== null;
 		// An answer stranded by a moved symbol is still doubtable; an id nothing was ever written under
 		// is a typo, and doubting it must not mint demand for a symbol that does not exist.
 		if (!indexed && this.store.answersFor(symbolId).length === 0) {
-			return { symbolId, doubted: [], noAnswer: [], refused: subjectRefused(symbolId, this.store) };
+			return { symbolId, doubted: [], noAnswer: [], refused: refusal.subjectRefused(symbolId, this.store) };
 		}
 		const targets = question === undefined ? this.store.answersFor(symbolId).map((a) => a.question) : [question];
 		if (targets.length === 0) {
-			return { symbolId, doubted: [], noAnswer: [], refused: `nothing is recorded about ${symbolId} to doubt` };
+			return { symbolId, doubted: [], noAnswer: [], refused: refusal.nothingToDoubt(symbolId) };
 		}
 
 		const doubted: Array<{ question: QuestionClass; doubt: Doubt }> = [];
@@ -410,14 +343,11 @@ export class KnowledgeLedger {
 	): Promise<RecordOutcome> {
 		// Before the answer lookup: a wrong id would otherwise be sent on to record_answer unchanged.
 		if (this.store.declaration(symbolId) === null) {
-			return { recorded: false, reason: subjectRefused(symbolId, this.store) };
+			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
 		}
 		const existing = this.store.answer(symbolId, question);
 		if (existing === null) {
-			return {
-				recorded: false,
-				reason: `no ${question} answer is recorded about ${symbolId}. record_answer writes a new one`,
-			};
+			return { recorded: false, reason: refusal.noAnswerToReaffirm(question, symbolId) };
 		}
 
 		if (options.citations !== undefined) {
@@ -429,20 +359,13 @@ export class KnowledgeLedger {
 
 		const stale = existing.citations.filter((factId) => this.store.factById(factId) === null);
 		if (stale.length > 0) {
-			return {
-				recorded: false,
-				reason: `${stale.length} citation${stale.length === 1 ? "" : "s"} no longer resolve${stale.length === 1 ? "s" : ""}. Check the prose against symbol_facts, then re-affirm again passing the replacement citations`,
-				unresolved: stale,
-			};
+			return { recorded: false, reason: refusal.citationsNoLongerResolve(stale.length), unresolved: stale };
 		}
 		if (existing.doubt === undefined) {
-			return { recorded: false, reason: "nothing to re-affirm: every citation resolves and no doubt stands" };
+			return { recorded: false, reason: refusal.nothingToReaffirm() };
 		}
 		if (options.resolvesDoubt !== existing.doubt.factId) {
-			return {
-				recorded: false,
-				reason: "clearing a doubt requires citing it. Recall the answer, read the doubt's reason, and pass its id as resolvesDoubt",
-			};
+			return { recorded: false, reason: refusal.clearingRequiresCiting() };
 		}
 
 		const { doubt: _cleared, ...rest } = existing;
