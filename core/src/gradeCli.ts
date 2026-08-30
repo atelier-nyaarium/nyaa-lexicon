@@ -12,6 +12,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { refuseRuntime } from "@nyaa-lexicon/client";
+import { systemClock } from "./clock.js";
 import { startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
@@ -132,11 +133,13 @@ async function main(argv: string[]): Promise<void> {
 	}
 	const TARGET = path.resolve(target);
 
-	const { store } = IndexStore.open(":memory:");
-	const supervisor = new ProviderSupervisor();
+	// An entry point that builds no daemon reads the system clock by name.
+	const clock = systemClock;
+	const { store } = IndexStore.open(":memory:", undefined, undefined, clock);
+	const supervisor = new ProviderSupervisor(clock);
 	await startProviders(supervisor, TARGET);
 
-	const service = new LexiconService(store, supervisor, sourceReader(TARGET), TARGET);
+	const service = new LexiconService(store, supervisor, sourceReader(TARGET), TARGET, clock);
 
 	const outcomes = await service.indexWorkspace();
 	const indexed = outcomes.filter((o) => o.action === "indexed").length;

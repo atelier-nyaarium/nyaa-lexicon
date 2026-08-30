@@ -1084,21 +1084,34 @@ fake clock controls a whole daemon and no operation mixes two clocks.
   it computes in `daemon.ts` and `daemonCli.ts`, the warm timings in the log, the drift ask
   interval. `startDaemon` takes the clock the daemon built, both files read it, and the routed
   list grows by both, so a test can drive the startup allowance and the drift cadence on a fake.
-- `indexCli.ts` reports an elapsed time to a person and calls `Date.now` directly today; it is
-  the one entry point that builds no daemon, so it reads `systemClock` by name at its top, which
-  the residue permits for that file and no other.
+- `indexCli.ts` reports an elapsed time to a person and calls `Date.now` directly today, and
+  `gradeCli.ts` builds a store, a supervisor and a service on their defaults; they are the two
+  entry points that build no daemon, so each reads `systemClock` by name at its top and hands it
+  to the store, the supervisor and the service it builds. The transaction manager's default
+  `now` reads `systemClock` too, so no module but the owner names `Date.now` even as a value.
+- Two modules the section did not name and the widened sweep did: the provider supervisor's
+  request timeouts and respawn delays, and the socket transport's hello deadline and heartbeat.
+  The supervisor takes a `Clock` in its constructor, `withTimeout` takes the clock it arms on,
+  and the daemon hands its clock down; the transport takes a `clock` option from `startDaemon`,
+  and its heartbeat is a timer re-armed per tick, so the clock needs no interval.
 
 **The residue.** The routed list becomes the whole of `core/src` production: every module but
-`clock.ts` is swept, the sweep asserts it found the files, and a raw `Date.now`, `new Date()`
-without an argument, `setTimeout` or `setInterval` in any of them fails the build. `client/` and
+`clock.ts` is swept, the sweep asserts it found the files, and a raw `Date.now` as a call or a
+value, a bracket access on `Date`, `new Date()` without an argument, `performance.now`,
+`process.hrtime`, `setTimeout`, `setInterval`, `setImmediate`, `Bun.sleep`, `Bun.nanoseconds` or
+a `node:timers` import in any of them fails the build. `client/` and
 `protocol/` keep their own measurements: they are importable from a consumer's node process with
 no core clock, and what they time is a transport's patience, not a stored fact.
 
-**Tests:** open a store and a service on one fake clock, record an answer, doubt it, re-affirm it
-and ask for it through the daemon's own write: `createdAt`, `doubtAt`, the gap's ask and the
-subject's `boundAt` all read the fake. Advance the fake past the startup allowance and read the
-daemon's refusal-in-progress `retryInMs` on the fake. The residue planted with a `Date.now` in
-the ledger and watched failing.
+**Tests:** open a store and a service on one fake clock, record an answer, doubt it and ask for
+it through the daemon's own write: `createdAt`, the subject's `boundAt`, the doubt's `at`, and
+both gaps' `lastAsked` (the doubt itself asks for a fresh answer, stamped when raised) read the
+fake. Start a daemon on a fake an hour ahead of the wall: the lock's `startedAt` is the fake's,
+and a request after the default allowance has been advanced past is told to stop waiting, which a
+daemon reading the wall would not say. Serve frames on a fake: one ping per period advanced, a
+pong restarting the count, a silent peer dropped at the limit, a peer that never says hello
+dropped at the deadline, and no timer pending once the sockets close. The residue planted with a
+`Date.now` in the ledger and watched failing.
 
 **Release:** a patch. No wire change, no store change.
 

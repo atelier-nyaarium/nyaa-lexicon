@@ -95,7 +95,7 @@ export class LexiconService {
 				}),
 			);
 		});
-		this.knowledge = new KnowledgeLedger(store, this.imports);
+		this.knowledge = new KnowledgeLedger(store, this.imports, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
 		this.indexer = new WorkspaceIndexer(
 			store,

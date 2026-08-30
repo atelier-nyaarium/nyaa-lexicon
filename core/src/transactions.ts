@@ -21,6 +21,7 @@ import {
 	type StepPhase,
 	type TransactionStatus,
 } from "@nyaa-lexicon/protocol";
+import { systemClock } from "./clock.js";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 import type { AppliedRebind, RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
@@ -86,7 +87,7 @@ export class TransactionManager {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly workspaceRoot: string,
-		private readonly now: () => number = Date.now,
+		private readonly now: () => number = () => systemClock.now(),
 	) {}
 
 	////////////////////////////////

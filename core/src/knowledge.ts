@@ -26,6 +26,7 @@ import {
 	type RecordOutcome,
 } from "./answers.js";
 import { candidatesFor } from "./candidates.js";
+import { type Clock, systemClock } from "./clock.js";
 import type { ImportResolver } from "./imports.js";
 import * as refusal from "./refusals.js";
 import type { IndexStore, SeedCandidate, StoredFact } from "./store.js";
@@ -99,6 +100,7 @@ export class KnowledgeLedger {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly imports: ImportResolver,
+		private readonly clock: Clock = systemClock,
 	) {}
 
 	/**
@@ -271,7 +273,7 @@ export class KnowledgeLedger {
 		// parallel writer who never recalled the answer clear a warning they never saw.
 		const carried = previous?.doubt !== undefined && resolvesDoubt === undefined ? previous.doubt : undefined;
 
-		const now = Date.now();
+		const now = this.clock.now();
 		// The declaration resolved above, so the write claims a subject at its address.
 		const owner = this.store.subjects.claim(symbolId, now) as Subject;
 		const answer: Answer = {
@@ -308,7 +310,7 @@ export class KnowledgeLedger {
 		if (reason.trim() === "") {
 			return { symbolId, doubted: [], noAnswer: [], refused: refusal.doubtNeedsReason() };
 		}
-		const now = Date.now();
+		const now = this.clock.now();
 		const indexed = this.store.declaration(symbolId) !== null;
 		// An answer stranded by a moved symbol is still doubtable; an id nothing was ever written under
 		// is a typo, and doubting it must not mint demand for a symbol that does not exist.
@@ -394,7 +396,7 @@ export class KnowledgeLedger {
 		// nothing citing it goes stale. Only the vouching is fresh.
 		const affirmed: Answer = {
 			...rest,
-			createdAt: Date.now(),
+			createdAt: this.clock.now(),
 			...(options.model === undefined ? {} : { model: options.model }),
 		};
 		const subject = this.store.subjects.claim(symbolId, affirmed.createdAt);
@@ -438,7 +440,7 @@ export class KnowledgeLedger {
 
 	/** Counts one ask under the subject the address claims, which is nothing for a typo. */
 	recordDemand(demand: Demand): void {
-		this.store.recordGap(demand.symbolId, demand.question, Date.now());
+		this.store.recordGap(demand.symbolId, demand.question, this.clock.now());
 	}
 
 	/** Every answer about one symbol, each with its own staleness. Counts no gaps: this is a survey. */

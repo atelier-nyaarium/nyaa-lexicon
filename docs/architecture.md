@@ -226,8 +226,10 @@ The live index applies watcher batches one at a time on one promise tail, and th
 sweep is queued on the same tail under the same gate, so a sweep never runs beside a batch mid-parse
 and a sweep queued when the live index stops never starts. The daemon holds one `Clock` and hands
 the same instance to the store at open, the service and the live index, so every stamp, the
-watcher debounce and the sweep timer read one time source, and a residue routes every raw time read
-in the indexer, the store and the identity owner through it.
+watcher debounce and the sweep timer read one time source, along with the ledger's stamps, the
+transaction manager, the provider supervisor's timeouts and the transport's heartbeat; a residue
+forbids a raw time read or host timer in every core module but `clock.ts`, so one fake clock
+drives a whole daemon in a test.
 
 ## Refactor transactions
 

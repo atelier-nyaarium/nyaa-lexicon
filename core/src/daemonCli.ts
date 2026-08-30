@@ -68,9 +68,12 @@ export function warmRefusal(
 	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
 }
 
+/** The daemon's one time source: every stamp, timer and allowance in this process reads it. */
+const clock = systemClock;
+
 /** Timestamped per line, because stdout is a log file read long after the fact. */
 function log(lines: string): void {
-	const stamp = new Date().toISOString();
+	const stamp = new Date(clock.now()).toISOString();
 	for (const line of lines.split("\n")) console.log(`${stamp} ${line}`);
 }
 
@@ -88,7 +91,7 @@ async function main(argv: string[]): Promise<void> {
 		process.exit(1);
 	}
 
-	const startedAt = Date.now();
+	const startedAt = clock.now();
 	const parsed = parseDaemonArgs(argv);
 	if (!parsed.ok) {
 		console.error(`${parsed.problem}\n${DAEMON_USAGE}`);
@@ -167,10 +170,9 @@ async function main(argv: string[]): Promise<void> {
 	function settled(limitMs: number): Promise<void> {
 		if (inFlight === 0) return Promise.resolve();
 		return new Promise((resolve) => {
-			const limit = setTimeout(resolve, limitMs);
-			limit.unref?.();
+			const limit = clock.setTimer(resolve, limitMs);
 			settledWaiters.push(() => {
-				clearTimeout(limit);
+				clock.clearTimer(limit);
 				resolve();
 			});
 		});
@@ -240,16 +242,17 @@ async function main(argv: string[]): Promise<void> {
 
 	// What a request arriving before the handler is told, so no client is more impatient than this
 	// process is slow.
-	let startingSince = Date.now();
+	let startingSince = clock.now();
 	let waitingFor = "opening the index";
 	const outcome = await startDaemon({
 		workspaceRoot: root,
 		...(stateDir === undefined ? {} : { stateDir }),
 		onConnections: (n) => observe(n),
 		startingNote: () => ({
-			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - Date.now()),
+			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - clock.now()),
 			waitingFor,
 		}),
+		clock,
 		// A lost lock means a successor.
 		onLockLost: (reason) => void shutdown(reason),
 	});
@@ -265,8 +268,6 @@ async function main(argv: string[]): Promise<void> {
 	// future client reading a live pid that serves nothing.
 	try {
 		const source = ownSource();
-		// One time source for the store's stamps, the service, the watcher debounce and the sweep timer.
-		const clock = systemClock;
 		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root, clock);
 		store = opened.store;
 		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
@@ -274,12 +275,12 @@ async function main(argv: string[]): Promise<void> {
 			log(`${opened.unplaced} knowledge row(s) lost their subject and another holds their recorded address`);
 		}
 
-		const spawned = new ProviderSupervisor();
+		const spawned = new ProviderSupervisor(clock);
 		supervisor = spawned;
 		// Held until the collector exists, so a death during startup is still an incident.
 		const earlyExits: Parameters<Collector["recordExit"]>[0][] = [];
 		spawned.observeExits((exit) => (collector === null ? earlyExits.push(exit) : collector.recordExit(exit)));
-		startingSince = Date.now();
+		startingSince = clock.now();
 		waitingFor = "the language providers to start";
 		const providers = await startProviders(spawned, root);
 		log(`providers:\n${describeStart(providers)}`);
@@ -288,7 +289,7 @@ async function main(argv: string[]): Promise<void> {
 		const service = new LexiconService(openStore, supervisor, sourceReader(root), root, clock);
 
 		const gate = new WorkspaceGate();
-		transactions = new TransactionManager(openStore, root);
+		transactions = new TransactionManager(openStore, root, () => clock.now());
 		const journal = transactions;
 
 		// Before the handler is published, so nothing can ask about a workspace still holding a
@@ -339,20 +340,20 @@ async function main(argv: string[]): Promise<void> {
 		function warm(): void {
 			if (scan !== null) return;
 			scan = (async () => {
-				const started = Date.now();
+				const started = clock.now();
 				// The first pass stores declarations and imports for immediate answers.
 				const outcomes = await service.warmupWorkspace();
 				const indexed = outcomes.filter((o) => o.action === "indexed");
 				const failures = outcomes.filter((o) => o.failure !== undefined);
 				const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
 				log(`scope: ${service.scopeReport()}`);
-				log(`warmed ${indexed.length} files, ${symbols} declarations, ${Date.now() - started}ms`);
+				log(`warmed ${indexed.length} files, ${symbols} declarations, ${clock.now() - started}ms`);
 				if (failures.length > 0)
 					log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
 				void service.upgradeRemaining().then(
 					() => {
 						const status = service.indexStatus();
-						log(`upgraded to full facts, ${Date.now() - started}ms total (${status.failures} failures)`);
+						log(`upgraded to full facts, ${clock.now() - started}ms total (${status.failures} failures)`);
 					},
 					(error) => log(`upgrade failed: ${error instanceof Error ? error.message : error}`),
 				);
@@ -419,10 +420,10 @@ async function main(argv: string[]): Promise<void> {
 			});
 		}
 		function considerHandover(): void {
-			if (stopping || Date.now() - lastDriftAsk < DRIFT_CHECK_EVERY_MS) return;
-			lastDriftAsk = Date.now();
+			if (stopping || clock.now() - lastDriftAsk < DRIFT_CHECK_EVERY_MS) return;
+			lastDriftAsk = clock.now();
 			// After the answer is on the wire, never under it.
-			setTimeout(() => void handOverIfDrifted(), 0).unref?.();
+			clock.setTimer(() => void handOverIfDrifted(), 0);
 		}
 
 		// `shutdown` is a daemon method rather than a service one, so it is answered here instead of
@@ -431,7 +432,7 @@ async function main(argv: string[]): Promise<void> {
 		async function handle(method: string, params: unknown): Promise<unknown> {
 			if (stopping) throw new Error("the daemon is stopping");
 			if (method === "shutdown") {
-				setTimeout(() => void shutdown("asked to shut down"), 0).unref?.();
+				clock.setTimer(() => void shutdown("asked to shut down"), 0);
 				return { stopping: true };
 			}
 			// Asking about the workspace IS the request to index it.

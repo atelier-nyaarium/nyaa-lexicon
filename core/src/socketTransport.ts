@@ -18,6 +18,7 @@ import {
 	type RequestFrame,
 	SERVER_LINE_CAP,
 } from "@nyaa-lexicon/protocol";
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -33,6 +34,8 @@ export interface FrameServerOptions {
 	onConnections?: (count: number) => void;
 	heartbeatMs?: number;
 	missedLimit?: number;
+	/** The daemon's one time source; the heartbeat and the hello deadline tick on it. */
+	clock?: Clock;
 }
 
 export interface FrameServer {
@@ -48,6 +51,7 @@ export interface FrameServer {
 export async function serveFrames(options: FrameServerOptions): Promise<FrameServer> {
 	const heartbeatMs = options.heartbeatMs ?? HEARTBEAT_MS;
 	const missedLimit = options.missedLimit ?? HEARTBEAT_MISSED_LIMIT;
+	const clock = options.clock ?? systemClock;
 	const authed = new Set<Socket>();
 	// ALL sockets, so close() cannot be held open by one that never authenticated.
 	const sockets = new Set<Socket>();
@@ -59,24 +63,37 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 		socket.setNoDelay(true);
 		sockets.add(socket);
 
-		const helloDeadline = setTimeout(() => {
+		const helloDeadline = clock.setTimer(() => {
 			if (!helloed) socket.destroy();
 		}, HELLO_DEADLINE_MS);
-		helloDeadline.unref?.();
 
 		// Increment-then-check, switchboard's shape: with a limit of 2, a silent peer is gone on the
-		// second quiet tick rather than the third.
-		const heartbeat = setInterval(() => {
-			if (!helloed) return;
-			missed += 1;
-			if (missed >= missedLimit) {
-				socket.destroy();
-				return;
-			}
-			pings += 1;
-			writeFrame(socket, { kind: "ping", n: pings });
-		}, heartbeatMs);
-		heartbeat.unref?.();
+		// second quiet tick rather than the third. Re-armed per tick against an absolute deadline, so
+		// the clock needs no interval and the cadence does not drift; a closed socket arms nothing.
+		let closed = false;
+		let heartbeat: TimerHandle | null = null;
+		let due = clock.now();
+		const tick = () => {
+			if (closed) return;
+			due += heartbeatMs;
+			heartbeat = clock.setTimer(
+				() => {
+					if (closed) return;
+					if (helloed) {
+						missed += 1;
+						if (missed >= missedLimit) {
+							socket.destroy();
+							return;
+						}
+						pings += 1;
+						writeFrame(socket, { kind: "ping", n: pings });
+					}
+					tick();
+				},
+				Math.max(0, due - clock.now()),
+			);
+		};
+		tick();
 
 		function onFrame(line: string): void {
 			let raw: unknown;
@@ -147,8 +164,9 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 		);
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {
-			clearInterval(heartbeat);
-			clearTimeout(helloDeadline);
+			closed = true;
+			if (heartbeat !== null) clock.clearTimer(heartbeat);
+			clock.clearTimer(helloDeadline);
 			sockets.delete(socket);
 			if (authed.delete(socket)) options.onConnections?.(authed.size);
 		});

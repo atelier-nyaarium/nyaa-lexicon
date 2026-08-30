@@ -7,6 +7,7 @@
 
 import path from "node:path";
 import { refuseRuntime } from "@nyaa-lexicon/client";
+import { systemClock } from "./clock.js";
 import { describeStart, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
@@ -29,16 +30,18 @@ async function main(argv: string[]): Promise<void> {
 	}
 
 	const root = path.resolve(workspace);
-	const { store } = IndexStore.open(":memory:");
-	const supervisor = new ProviderSupervisor();
+	// The one entry point that builds no daemon; it reads the system clock by name.
+	const clock = systemClock;
+	const { store } = IndexStore.open(":memory:", undefined, undefined, clock);
+	const supervisor = new ProviderSupervisor(clock);
 	const providers = await startProviders(supervisor, root);
 	console.log(`providers:\n${describeStart(providers)}`);
 
-	const service = new LexiconService(store, supervisor, sourceReader(root), root);
+	const service = new LexiconService(store, supervisor, sourceReader(root), root, clock);
 
-	const started = Date.now();
+	const started = clock.now();
 	const outcomes = await service.indexWorkspace();
-	const elapsed = Date.now() - started;
+	const elapsed = clock.now() - started;
 
 	const indexed = outcomes.filter((o) => o.action === "indexed");
 	const failures = outcomes.filter((o) => o.failure !== undefined);

@@ -13,6 +13,7 @@ import {
 } from "@nyaa-lexicon/client";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { ownSource } from "../ownSource";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -370,6 +371,20 @@ describe("the starting window", () => {
 		daemon = outcome.daemon;
 
 		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/the language providers to start/);
+	});
+
+	it("counts the default startup allowance on the clock it was given", async () => {
+		// An hour ahead of the wall: a daemon reading the wall would still owe a long wait here.
+		const epoch = Date.now() + 3_600_000;
+		const clock = fakeClock(epoch);
+		const outcome = await startDaemon({ workspaceRoot: WORKSPACE, host, clock });
+		if (!outcome.claimed) throw new Error(outcome.reason);
+		daemon = outcome.daemon;
+		expect(daemon.lock.startedAt).toBe(epoch);
+
+		// The allowance is spent on the fake, so the client is told to stop waiting at once.
+		clock.advance(15_000);
+		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/startup/);
 	});
 });
 

@@ -19,6 +19,7 @@ import {
 	workspacePaths,
 } from "@nyaa-lexicon/client";
 import { type DaemonLock, DaemonLockSchema, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { type Clock, systemClock } from "./clock.js";
 import { ownSource } from "./ownSource.js";
 import { type FrameServer, serveFrames } from "./socketTransport.js";
 
@@ -43,6 +44,8 @@ export interface DaemonOptions {
 	/** Test seams for the heartbeat; production uses the transport's defaults. */
 	heartbeatMs?: number;
 	missedLimit?: number;
+	/** The daemon's one time source: the startup allowance, the lock stamp and the transport's timers. */
+	clock?: Clock;
 }
 
 export interface RunningDaemon {
@@ -135,7 +138,8 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 	// The one derivation: the claim, the loss check and the release all read this lock file.
 	const paths = workspacePaths(host, options.workspaceRoot, options.stateDir);
 	const token = randomBytes(TOKEN_BYTES).toString("hex");
-	const startedAt = Date.now();
+	const clock = options.clock ?? systemClock;
+	const startedAt = clock.now();
 	let handle = options.handle ?? null;
 	let stopped = false;
 	let lockLost: string | null = null;
@@ -154,7 +158,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		handle: async (method, params) => {
 			if (handle === null) {
 				const note = options.startingNote?.() ?? {
-					retryInMs: Math.max(0, startedAt + DEFAULT_STARTING_ALLOWANCE_MS - Date.now()),
+					retryInMs: Math.max(0, startedAt + DEFAULT_STARTING_ALLOWANCE_MS - clock.now()),
 					waitingFor: "startup",
 				};
 				throw new DaemonStartingError(
@@ -176,6 +180,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		...(options.onConnections === undefined ? {} : { onConnections: options.onConnections }),
 		...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
 		...(options.missedLimit === undefined ? {} : { missedLimit: options.missedLimit }),
+		clock,
 	});
 
 	const identity = processIdentity(process.pid);
@@ -189,7 +194,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		buildVersion: source.buildVersion,
 		...(source.bundleStamp === null ? {} : { bundleStamp: source.bundleStamp }),
 		workspaceRoot: canonicalRoot(options.workspaceRoot),
-		startedAt: Date.now(),
+		startedAt: clock.now(),
 	});
 
 	const claim = claimLock(paths.lockFile, lock);

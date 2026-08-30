@@ -20,6 +20,7 @@ import {
 	StreamMessageWriter,
 } from "vscode-jsonrpc/node";
 import type { z } from "zod";
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import { RequestQueue } from "./requestQueue.js";
 import { type ProviderClaims, type Route, type RoutingContext, routeModule, routingContextOf } from "./routing.js";
 
@@ -80,12 +81,12 @@ const RESPAWN_DELAY_MS = 500;
 ////////////////////////////////
 //  Functions & Helpers
 
-function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-	let timer: ReturnType<typeof setTimeout>;
+function withTimeout<T>(clock: Clock, work: Promise<T>, ms: number, what: string): Promise<T> {
+	let timer: TimerHandle;
 	const bounded = new Promise<T>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+		timer = clock.setTimer(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
 	});
-	return Promise.race([work, bounded]).finally(() => clearTimeout(timer));
+	return Promise.race([work, bounded]).finally(() => clock.clearTimer(timer));
 }
 
 /** A signal death has no code, and "code null" hides which signal it was. */
@@ -115,6 +116,8 @@ export function absorbingWrites(stdin: Writable): Writable {
 //  Class
 
 export class ProviderSupervisor {
+	constructor(private readonly clock: Clock = systemClock) {}
+
 	private readonly providers = new Map<string, RunningProvider>();
 	/** What stopAll would otherwise miss. */
 	private readonly starting = new Set<StartingProcess>();
@@ -154,6 +157,7 @@ export class ProviderSupervisor {
 		// failure is an uncaught crash of the whole daemon rather than of this one provider.
 		try {
 			await withTimeout(
+				this.clock,
 				new Promise<void>((resolve, reject) => {
 					running.child.once("spawn", resolve);
 					running.child.once("error", (error) =>
@@ -171,6 +175,7 @@ export class ProviderSupervisor {
 		let info: unknown;
 		try {
 			info = await withTimeout(
+				this.clock,
 				running.connection.sendRequest("initialize", { workspaceRoot, protocolVersion: PROTOCOL_VERSION }),
 				timeout,
 				"initialize",
@@ -262,7 +267,7 @@ export class ProviderSupervisor {
 			console.log(
 				`provider ${entry.claims.providerId} ${describeExit(code, signal)}; respawning (${current.deaths} of ${MAX_RESPAWNS})`,
 			);
-			setTimeout(() => void this.respawn(current), RESPAWN_DELAY_MS).unref?.();
+			this.clock.setTimer(() => void this.respawn(current), RESPAWN_DELAY_MS);
 		};
 		// A death inside the handshake await has already fired 'exit'; catching up here means the
 		// watcher can never miss it. A signal death leaves exitCode null and signalCode set.
@@ -284,6 +289,7 @@ export class ProviderSupervisor {
 			this.starting.add(running);
 			const timeout = previous.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 			const info = await withTimeout(
+				this.clock,
 				running.connection.sendRequest("initialize", {
 					workspaceRoot: previous.workspaceRoot,
 					protocolVersion: PROTOCOL_VERSION,
@@ -313,7 +319,7 @@ export class ProviderSupervisor {
 			);
 			previous.deaths += 1;
 			if (this.stillWanted(previous) && previous.deaths <= MAX_RESPAWNS) {
-				setTimeout(() => void this.respawn(previous), RESPAWN_DELAY_MS).unref?.();
+				this.clock.setTimer(() => void this.respawn(previous), RESPAWN_DELAY_MS);
 			}
 			return;
 		}
@@ -434,7 +440,7 @@ export class ProviderSupervisor {
 			try {
 				// The closed race fails a request in flight at the moment of death, typed.
 				raw = await Promise.race([
-					withTimeout(provider.connection.sendRequest(method, params), timeout, method),
+					withTimeout(this.clock, provider.connection.sendRequest(method, params), timeout, method),
 					provider.closed,
 				]);
 			} catch (error) {
