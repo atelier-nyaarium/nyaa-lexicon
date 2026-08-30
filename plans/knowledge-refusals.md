@@ -1031,9 +1031,16 @@ Ordered by how much it proves, as the repository already orders it.
 - Drive the built server: hand each refusal the exact bad input from the overnight logs, a fact
   id as subject, a member id without its terminator, a stranded subject, a moved address, and read
   what comes back; drive `diagnoseSubject`, one `sweepSubjects` batch and one `refactor_move`
-  rebind through the real daemon; open the 3.0.x fixture store through it.
+  rebind through the real daemon; open the 3.0.x fixture store through it. Done for 3.1.0 with a
+  store seeded under the shipped 3.0.3 bundle and opened twice through the 3.1.0 daemon: the
+  answer and its doubt kept their fact ids, the deleted file's subject read as stranded and
+  refused a write with the same sentence, the gap header carried the flag, and an unminted id got
+  the shortlist. The `sweepSubjects` batch waits for Phase 4 and the `refactor_move` rebind for
+  the fixture provider; a fact id as subject, a member id without its terminator and a moved
+  address were driven at the writer by the tests and not yet by hand.
 - Release: **minor** after the catalog phase, the identity phase and Phases 1, 0, 2 and 3
-  together. Phase 0 adds a daemon method, the identity phase, Phase 1 and Phase 3 add optional
+  together; cut as 3.1.0 (58a7bb0) by Question 12, after the migration probe above, the grade
+  run and a conformance pass whose one failure predates it. Phase 0 adds a daemon method, the identity phase, Phase 1 and Phase 3 add optional
   fields, and the protocol doc prices each as a minor; the catalog is internal. The identity
   phase's in-place table rebuild preserves the store, which is what a minor promises, and its
   fixture gate is what proves it. Phase 4 is a minor for its optional fields. Phase 5 is in the
