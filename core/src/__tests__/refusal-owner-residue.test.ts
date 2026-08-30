@@ -12,18 +12,15 @@ const SWEPT = ["knowledge.ts", "answers.ts"].map((name) => join(import.meta.dirn
 
 const OWNER = join(import.meta.dirname, "..", "refusals.ts");
 
-/** Each file with a narrowed slot, and the type it must still be reading. */
-const NARROWED: Array<[string, string]> = [
-	["refactorPlanner.ts", "PlannedMove"],
-	["sourceWorkspace.ts", "PlannedSource"],
-	["service.ts", "UnknownType"],
-	["transactions.ts", "UndoneStep"],
-	["applyEdits.ts", "WriteOutcome"],
-];
+/** Every file that composes a refusal, for the reachability check. */
+const NARROWED = ["refactorPlanner.ts", "sourceWorkspace.ts", "service.ts", "transactions.ts", "applyEdits.ts"].map(
+	(name) => join(import.meta.dirname, "..", name),
+);
 
 const SLOTS = join(import.meta.dirname, "..", "refusalSlots.ts");
 
-const pathOf = (name: string) => join(import.meta.dirname, "..", name);
+/** Each narrowed slot is asserted against the compiler here, which a text sweep cannot do. */
+const ASSERTIONS = join(import.meta.dirname, "refusalSlots.types.ts");
 
 /** A literal in the reason slot: `reason: "` / `reason: \`` / `refused: '`, whitespace allowed. */
 const INLINE = /\b(reason|refused)\s*:\s*["'`]/g;
@@ -50,7 +47,7 @@ const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "fixtures"]);
 /** This file quotes every minting spelling to prove the check fires, so it cannot sweep itself. */
 const SELF = import.meta.filename;
 
-/** Comments and string literals stripped, so a type named in prose is not read as a type in use. */
+/** Comments and string literals stripped, so a cast spelling quoted in prose is not read as one. */
 function typesOnly(source: string): string {
 	return codeOnly(source)
 		.replace(/`(?:\\[\s\S]|[^\\`])*`/g, '""')
@@ -77,8 +74,7 @@ export function inlineRefusals(source: string): string[] {
 
 describe("one module composes every refusal", () => {
 	it("finds every swept and narrowed file and the owner, so a passing run is never vacuous", () => {
-		const files = [...SWEPT, ...NARROWED.map(([name]) => pathOf(name)), OWNER, SLOTS];
-		for (const file of files) expect(readSwept(file)).not.toBeNull();
+		for (const file of [...SWEPT, ...NARROWED, OWNER, SLOTS, ASSERTIONS]) expect(readSwept(file)).not.toBeNull();
 		const calls = SWEPT.flatMap((file) => [...(readSwept(file) ?? "").matchAll(NAMESPACED)]);
 		expect(calls.length).toBeGreaterThanOrEqual(15);
 	});
@@ -101,18 +97,10 @@ describe("one module composes every refusal", () => {
 		expect([...exported].filter((name) => !named(name) && !insideOwner.includes(name))).toEqual([]);
 	});
 
-	// The narrowing is what refuses a sentence where `reason` also names other things.
-	it("has every file with a narrowed refusal slot still reading its narrowed type", () => {
-		// Past the import, a comment and a string, since none of those narrows anything.
-		const missing = NARROWED.filter(([name, type]) => {
-			const imported = /^import[\s\S]*?from\s+"[^"]*";$/gm;
-			const source = typesOnly((readSwept(pathOf(name)) ?? "").replace(imported, ""));
-			return !new RegExp(`\\b${type}\\b`).test(source);
-		});
-		expect(
-			missing.map(([name]) => name),
-			"a refusal slot is typed through core/src/refusalSlots.ts; widening it back to string returns the raw sentence",
-		).toEqual([]);
+	// One assertion per slot, so a widened one fails the build rather than this sweep.
+	it("asserts every narrowed slot against the compiler", () => {
+		const asserted = [...(readSwept(ASSERTIONS) ?? "").matchAll(/^type _\w+ = Assert</gm)];
+		expect(asserted.length, "each refusal slot needs its own type assertion").toBeGreaterThanOrEqual(15);
 	});
 
 	// The brand makes a raw sentence a type error; a cast is the way past it, in any spelling.

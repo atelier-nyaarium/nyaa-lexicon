@@ -1445,12 +1445,13 @@ string }`. Five of those slots already hold `subjectRefused(...)`, which is a `R
   tried and reverted: `reason` there also names a closed enum value on `TypeInfo` and a field on an
   unbound-reference tally, so the token flags honest code, which is the repository's own rule about
   an ambiguous token. Where a slot is typed, the brand is the guard and the sweep is redundant; the
-  residue instead names the type each narrowed file must still be reading, past its import line,
-  its comments and its strings, since none of those narrows anything and each was a bypass until
-  it was planted and watched failing. The brand sweep now reaches the test tree too: a double
-  minting its own refusal is a sentence nobody reviewed. Its constructor-reachability check reads
-  all of core, since the new constructors are called by name rather than through the namespace,
-  and a constructor nothing calls is drift either way.
+  residue leaves the narrowing to the compiler. `refusalSlots.types.ts` asserts one slot per line,
+  read through each owner's declared signature, so widening any of them fails `tsc`; the residue
+  only counts the assertions, so deleting one is caught too. Three textual attempts at this check
+  each passed a bypass the next round found, which is what the `Bug Classes` note below records.
+  The brand sweep now reaches the test tree: a double minting its own refusal is a sentence nobody
+  reviewed. Its constructor-reachability check reads all of core, since the new constructors are
+  called by name rather than through the namespace, and a constructor nothing calls is drift.
 
 **Tests:** the type is the test, and `tsc` is where it fires: a raw string in any narrowed slot
 fails the build, planted and watched failing on `planMove`'s reason before the narrowing was
@@ -1469,9 +1470,11 @@ satisfies the text and narrows nothing, and each patch only named the spelling t
 Round one asserted the file imports `refusalSlots.js`, and an unused import passed. Round two read
 past the import line, and the type named in a comment, in a string, or in an unrelated generic
 passed. Round three strips comments and strings, which is the third patch to one check.
-**The fix this is not:** a fourth spelling. The compiler already knows the answer, so the check
-should ask it: a file of type-level assertions that `tsc` refuses when a slot widens, the way the
-brand itself refuses a raw sentence. Left for the architecture pass rather than patched again.
+**Fixed, not patched:** `core/src/__tests__/refusalSlots.types.ts` asks the compiler instead, one
+assertion per slot read through its owner's signature. Widening `PlannedSource` was planted and
+failed the build at the assertion and at both call sites; the textual check had passed the same
+plant three ways. The assertion helper's own first draft was wrong for an optional slot, and the
+compiler said so, which is the argument for the whole approach.
 
 **What the brand does not stop.** `JSON.parse` answers `any`, so a narrowed shape assembled from
 parsed JSON carries whatever the JSON held. No path in core does that, and every other route the
