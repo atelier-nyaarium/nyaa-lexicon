@@ -50,8 +50,11 @@ import {
 	KNOWLEDGE_TABLES,
 	KNOWLEDGE_VIEWS,
 	KnowledgeSubjects,
+	normalizeSalvaged,
 	rekeyKnowledge,
 	restoreSubjects,
+	type SalvagedAnswer,
+	type SalvagedGap,
 	type StrandedRow,
 	SWEEP_START,
 	type SweepCursor,
@@ -504,89 +507,86 @@ function salvageKnowledge(db: DatabaseSync): SalvagedKnowledge {
 	return salvaged;
 }
 
-/** The address a salvaged knowledge row was keyed by, whichever shape it was written in. */
-function addressOf(row: Record<string, unknown>): string | null {
-	const recorded = row["recordedAs"];
-	if (typeof recorded === "string") return recorded;
-	const symbolId = row["symbolId"];
-	return typeof symbolId === "string" ? symbolId : null;
+/** How many rows found no subject, since another holds their address, and how many were unreadable. */
+interface RestoreReport {
+	unplaced: number;
+	dropped: number;
 }
 
-/** Returns how many rows could not be placed: their subject was lost and another holds their recorded address. */
-function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: number): number {
+/** The salvaged knowledge put back: subjects as they were, every other row through the one placement. */
+function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: number): RestoreReport {
+	const rows = normalizeSalvaged(salvaged, now);
+	restoreSubjects(db, rows.subjects);
+	const subjects = new KnowledgeSubjects(db);
 	let unplaced = 0;
-	const answers = (salvaged["answers"] ?? []).filter((row) => addressOf(row) !== null);
-	const gaps = (salvaged["gaps"] ?? []).filter((row) => addressOf(row) !== null);
-	// A row written by address gets a subject minted for it; one written by subject keeps its own,
-	// revived at the recorded address if its subject row did not survive.
-	const unkeyed = [...answers, ...gaps]
-		.filter((row) => typeof row["subjectId"] !== "string")
-		.map((row) => addressOf(row) as string);
-	const keyed = [...answers, ...gaps]
-		.filter((row) => typeof row["subjectId"] === "string")
-		.map((row) => ({ subjectId: row["subjectId"] as string, symbolId: addressOf(row) as string }));
-	const subjects = restoreSubjects(db, salvaged, new Set(unkeyed), now, keyed);
-	const restored = new Set(subjects.values());
-	const subjectOf = (row: Record<string, unknown>): string | null => {
-		const own = row["subjectId"];
-		if (typeof own === "string") return restored.has(own) ? own : null;
-		return subjects.get(addressOf(row) as string) ?? null;
-	};
 
-	// Plain inserts: the salvaged tables carried these same keys, so a collision is corruption, and
-	// a rebuild that fails loudly beats one that keeps whichever row came second.
+	// Rows that name a subject are placed before rows that only name an address, newest first, so a
+	// lost subject is revived where it was last written about and nothing mints under it meanwhile.
+	// A subject refused there is refused whole: an older row never resurrects it at a stale address.
+	const placed = new Map<SalvagedAnswer | SalvagedGap, string>();
+	const refused = new Set<string>();
+	const recency = (row: SalvagedAnswer | SalvagedGap) => ("createdAt" in row ? row.createdAt : row.lastAsked);
+	const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+	const ordered = [...rows.answers, ...rows.gaps].sort(
+		(a, b) =>
+			Number(a.subjectId === null) - Number(b.subjectId === null) ||
+			recency(b) - recency(a) ||
+			order(a.recordedAs, b.recordedAs) ||
+			order(a.question, b.question),
+	);
+	for (const row of ordered) {
+		if (row.subjectId !== null && refused.has(row.subjectId)) {
+			unplaced++;
+			continue;
+		}
+		const placement = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
+		if (placement.placed) placed.set(row, placement.subjectId);
+		else {
+			unplaced++;
+			if (row.subjectId !== null) refused.add(row.subjectId);
+		}
+	}
+
+	// Plain inserts: two rows placed on one subject and question is corruption, and a rebuild that
+	// fails loudly beats one that keeps whichever row came second.
 	const answer = db.prepare(
 		`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model,
 		 createdAt, doubtId, doubtReason, doubtAt, doubtBy)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
-	for (const row of answers) {
-		const [prose, factId, subjectId] = [row["prose"], row["factId"], subjectOf(row)];
-		// A row missing its identity or prose is corruption, and restoring it would enshrine that.
-		if (typeof prose !== "string" || typeof factId !== "string") continue;
-		if (subjectId === null) {
-			unplaced++;
-			continue;
-		}
+	for (const row of rows.answers) {
+		const subjectId = placed.get(row);
+		if (subjectId === undefined) continue;
+		// Doubt survives a rebuild for the same reason the answer does: someone's declared distrust
+		// is not derivable from source, and a schema bump erasing it is a silent clear.
 		answer.run(
 			subjectId,
-			String(row["question"] ?? "describe"),
-			addressOf(row),
-			factId,
-			prose,
-			String(row["citations"] ?? "[]"),
-			typeof row["thin"] === "number" ? row["thin"] : 0,
-			typeof row["model"] === "string" ? row["model"] : null,
-			typeof row["createdAt"] === "number" ? row["createdAt"] : 0,
-			// Doubt survives a rebuild for the same reason the answer does: someone's declared
-			// distrust is not derivable from source, and a schema bump erasing it is a silent clear.
-			typeof row["doubtId"] === "string" ? row["doubtId"] : null,
-			typeof row["doubtReason"] === "string" ? row["doubtReason"] : null,
-			typeof row["doubtAt"] === "number" ? row["doubtAt"] : null,
-			typeof row["doubtBy"] === "string" ? row["doubtBy"] : null,
+			row.question,
+			row.recordedAs,
+			row.factId,
+			row.prose,
+			row.citations,
+			row.thin,
+			row.model,
+			row.createdAt,
+			row.doubtId,
+			row.doubtReason,
+			row.doubtAt,
+			row.doubtBy,
 		);
 	}
 
 	const gap = db.prepare(
 		"INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked) VALUES (?, ?, ?, ?, ?)",
 	);
-	for (const row of gaps) {
-		const subjectId = subjectOf(row);
-		if (subjectId === null) {
-			unplaced++;
-			continue;
-		}
-		gap.run(
-			subjectId,
-			String(row["question"] ?? "describe"),
-			addressOf(row),
-			typeof row["askCount"] === "number" ? row["askCount"] : 1,
-			typeof row["lastAsked"] === "number" ? row["lastAsked"] : 0,
-		);
+	for (const row of rows.gaps) {
+		const subjectId = placed.get(row);
+		if (subjectId === undefined) continue;
+		gap.run(subjectId, row.question, row.recordedAs, row.askCount, row.lastAsked);
 	}
 
 	for (const table of JOURNAL_TABLES) restoreByColumn(db, table, salvaged[table] ?? []);
-	return unplaced;
+	return { unplaced, dropped: rows.dropped };
 }
 
 /**
@@ -721,12 +721,13 @@ export class IndexStore {
 		compatibility?: string | null,
 		workspaceRoot?: string,
 		clock: Clock = systemClock,
-	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number } {
+	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number; dropped?: number } {
 		const db = new DatabaseSync(file);
 		db.exec("PRAGMA journal_mode = WAL");
 
 		let rebuilt = false;
 		let unplaced = 0;
+		let dropped = 0;
 		let reason: string | undefined;
 		let version = 0;
 		try {
@@ -765,7 +766,7 @@ export class IndexStore {
 				for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
 				db.exec(SCHEMA);
-				unplaced = restoreKnowledge(db, salvaged, clock.now());
+				({ unplaced, dropped } = restoreKnowledge(db, salvaged, clock.now()));
 				db.exec("COMMIT");
 			} catch (error) {
 				db.exec("ROLLBACK");
@@ -827,6 +828,7 @@ export class IndexStore {
 			rebuilt,
 			...(reason === undefined ? {} : { reason }),
 			...(unplaced === 0 ? {} : { unplaced }),
+			...(dropped === 0 ? {} : { dropped }),
 		};
 	}
 

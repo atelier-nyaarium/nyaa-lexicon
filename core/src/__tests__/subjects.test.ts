@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
-import { KNOWLEDGE_SCHEMA, KNOWLEDGE_VIEWS, restoreSubjects } from "../subjects";
+import { KNOWLEDGE_SCHEMA, KNOWLEDGE_VIEWS, normalizeSalvaged, restoreSubjects } from "../subjects";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
 
@@ -582,11 +582,10 @@ describe("a knowledge row's key", () => {
 });
 
 describe("a salvaged subject row", () => {
-	it("restores with closed values only, so a row from another version cannot fail the rebuild", () => {
+	it("normalizes to closed values only, so a row from another version restores as the schema allows", () => {
 		const db = new DatabaseSync(":memory:");
 		db.exec(KNOWLEDGE_SCHEMA);
-		restoreSubjects(
-			db,
+		const salvaged = normalizeSalvaged(
 			{
 				knowledge_subjects: [
 					{
@@ -600,9 +599,9 @@ describe("a salvaged subject row", () => {
 					},
 				],
 			},
-			[],
 			5,
 		);
+		restoreSubjects(db, salvaged.subjects);
 
 		expect(db.prepare("SELECT evidence, lastDigest, lastCoverage FROM knowledge_subjects").get()).toEqual({
 			evidence: "none",

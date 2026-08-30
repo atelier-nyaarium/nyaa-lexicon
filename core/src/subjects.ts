@@ -101,6 +101,56 @@ export type SweepCursor =
 	| { epoch: number; pass: "B"; after: string | null }
 	| { epoch: number; pass: "A"; after: { orphanedAt: number; subjectId: string } | null };
 
+/** A salvaged subject row with every value closed, so a row from another version cannot fail the rebuild. */
+export interface SalvagedSubject {
+	subjectId: string;
+	symbolId: string;
+	state: SubjectState;
+	boundAt: number;
+	orphanedAt: number | null;
+	fromSymbolId: string | null;
+	evidence: SubjectEvidence;
+	lastDigest: string | null;
+	lastCoverage: PatternCoverage | null;
+}
+
+/** A salvaged answer; `subjectId` is null for a row written by address before subjects existed. */
+export interface SalvagedAnswer {
+	subjectId: string | null;
+	recordedAs: string;
+	question: string;
+	factId: string;
+	prose: string;
+	citations: string;
+	thin: number;
+	model: string | null;
+	createdAt: number;
+	doubtId: string | null;
+	doubtReason: string | null;
+	doubtAt: number | null;
+	doubtBy: string | null;
+}
+
+/** A salvaged demand row; `subjectId` is null for a row written by address before subjects existed. */
+export interface SalvagedGap {
+	subjectId: string | null;
+	recordedAs: string;
+	question: string;
+	askCount: number;
+	lastAsked: number;
+}
+
+/** The salvaged knowledge in closed shapes, and how many rows were unreadable. */
+export interface NormalizedSalvage {
+	subjects: SalvagedSubject[];
+	answers: SalvagedAnswer[];
+	gaps: SalvagedGap[];
+	dropped: number;
+}
+
+/** Where a salvaged row's subject is, or why it has none: another subject holds its address. */
+export type Placement = { placed: true; subjectId: string } | { placed: false; reason: "held" };
+
 /** One orphaned subject's row, for the gap window: never work, always shown with its date. */
 export interface StrandedRow {
 	symbolId: string;
@@ -306,52 +356,122 @@ export function rekeyKnowledge(db: DatabaseSync, now: number): void {
 	db.exec("DROP TABLE gaps_by_address");
 }
 
-/** A subject restores as it was; an address-keyed row gets one minted, bound, for the sweep to judge;
- * a subject-keyed row whose subject row is gone gets it back, same id, at the recorded address. */
-export function restoreSubjects(
-	db: DatabaseSync,
-	salvaged: Record<string, Array<Record<string, unknown>>>,
-	addresses: Iterable<string>,
-	now: number,
-	keyed: Iterable<{ subjectId: string; symbolId: string }> = [],
-): Map<string, string> {
-	const insert = db.prepare(INSERT_SUBJECT);
-	const known = new Map<string, string>();
-	for (const row of salvaged["knowledge_subjects"] ?? []) {
-		const subjectId = row["subjectId"];
-		const symbolId = row["currentSymbolId"];
-		if (typeof subjectId !== "string" || typeof symbolId !== "string") continue;
-		const state = row["state"] === "orphaned" ? "orphaned" : "bound";
-		const evidence = row["evidence"];
-		const lastDigest = typeof row["lastDigest"] === "string" ? row["lastDigest"] : null;
-		const lastCoverage = row["lastCoverage"];
-		insert.run(
+/** Every salvaged table read once into closed values; nothing past this reads a raw row. */
+export function normalizeSalvaged(raw: Record<string, Array<Record<string, unknown>>>, now: number): NormalizedSalvage {
+	let dropped = 0;
+	const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
+	// A whole number, or a numeric string from a text-typed column, or a boolean flag; else the fallback.
+	const num = (value: unknown, fallback: number): number => {
+		if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : fallback;
+		if (typeof value === "boolean") return value ? 1 : 0;
+		if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+			return Math.trunc(Number(value));
+		}
+		return fallback;
+	};
+	// The address a row was keyed by, in either shape it was written in; an empty one is none.
+	const addressOf = (row: Record<string, unknown>): string | null =>
+		(str(row["recordedAs"]) || null) ?? (str(row["symbolId"]) || null);
+	// Citations must read back as a list of ids, or the answer cannot be recalled at all.
+	const citationsOf = (value: unknown): string | null => {
+		const text = str(value) ?? "[]";
+		try {
+			const parsed: unknown = JSON.parse(text);
+			return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? text : null;
+		} catch {
+			return null;
+		}
+	};
+
+	const subjects: SalvagedSubject[] = [];
+	for (const row of raw["knowledge_subjects"] ?? []) {
+		const subjectId = str(row["subjectId"]);
+		const symbolId = str(row["currentSymbolId"]);
+		if (subjectId === null || symbolId === null) {
+			dropped++;
+			continue;
+		}
+		const state: SubjectState = row["state"] === "orphaned" ? "orphaned" : "bound";
+		const evidence = str(row["evidence"]);
+		const lastDigest = str(row["lastDigest"]);
+		const lastCoverage = str(row["lastCoverage"]);
+		subjects.push({
 			subjectId,
 			symbolId,
 			state,
-			typeof row["boundAt"] === "number" ? row["boundAt"] : now,
-			state === "orphaned" ? (typeof row["orphanedAt"] === "number" ? row["orphanedAt"] : now) : null,
-			typeof row["fromSymbolId"] === "string" ? row["fromSymbolId"] : null,
-			typeof evidence === "string" && EVIDENCE.has(evidence) ? evidence : "none",
+			boundAt: num(row["boundAt"], now),
+			orphanedAt: state === "orphaned" ? num(row["orphanedAt"], now) : null,
+			fromSymbolId: str(row["fromSymbolId"]),
+			evidence: evidence !== null && EVIDENCE.has(evidence) ? (evidence as SubjectEvidence) : "none",
 			lastDigest,
-			lastDigest !== null && typeof lastCoverage === "string" && COVERAGE.has(lastCoverage) ? lastCoverage : null,
+			lastCoverage:
+				lastDigest !== null && lastCoverage !== null && COVERAGE.has(lastCoverage)
+					? (lastCoverage as PatternCoverage)
+					: null,
+		});
+	}
+
+	const answers: SalvagedAnswer[] = [];
+	for (const row of raw["answers"] ?? []) {
+		const recordedAs = addressOf(row);
+		const prose = str(row["prose"]);
+		const factId = str(row["factId"]);
+		const citations = citationsOf(row["citations"]);
+		if (recordedAs === null || prose === null || factId === null || citations === null) {
+			dropped++;
+			continue;
+		}
+		answers.push({
+			subjectId: str(row["subjectId"]),
+			recordedAs,
+			question: str(row["question"]) ?? "describe",
+			factId,
+			prose,
+			citations,
+			thin: num(row["thin"], 0),
+			model: str(row["model"]),
+			createdAt: num(row["createdAt"], 0),
+			doubtId: str(row["doubtId"]),
+			doubtReason: str(row["doubtReason"]),
+			doubtAt: num(row["doubtAt"], -1) < 0 ? null : num(row["doubtAt"], -1),
+			doubtBy: str(row["doubtBy"]),
+		});
+	}
+
+	const gaps: SalvagedGap[] = [];
+	for (const row of raw["gaps"] ?? []) {
+		const recordedAs = addressOf(row);
+		if (recordedAs === null) {
+			dropped++;
+			continue;
+		}
+		gaps.push({
+			subjectId: str(row["subjectId"]),
+			recordedAs,
+			question: str(row["question"]) ?? "describe",
+			askCount: num(row["askCount"], 1),
+			lastAsked: num(row["lastAsked"], 0),
+		});
+	}
+	return { subjects, answers, gaps, dropped };
+}
+
+/** Salvaged subject rows put back as they were; every other row finds its subject through `placeRow`. */
+export function restoreSubjects(db: DatabaseSync, subjects: readonly SalvagedSubject[]): void {
+	const insert = db.prepare(INSERT_SUBJECT);
+	for (const row of subjects) {
+		insert.run(
+			row.subjectId,
+			row.symbolId,
+			row.state,
+			row.boundAt,
+			row.orphanedAt,
+			row.fromSymbolId,
+			row.evidence,
+			row.lastDigest,
+			row.lastCoverage,
 		);
-		known.set(symbolId, subjectId);
 	}
-	for (const symbolId of addresses) {
-		if (known.has(symbolId)) continue;
-		const subjectId = mintSubjectId(symbolId, now);
-		insert.run(subjectId, symbolId, "bound", now, null, null, "none", null, null);
-		known.set(symbolId, subjectId);
-	}
-	const ids = new Set(known.values());
-	for (const { subjectId, symbolId } of keyed) {
-		if (ids.has(subjectId) || known.has(symbolId)) continue;
-		insert.run(subjectId, symbolId, "bound", now, null, null, "none", null, null);
-		known.set(symbolId, subjectId);
-		ids.add(subjectId);
-	}
-	return known;
 }
 
 ////////////////////////////////
@@ -436,6 +556,28 @@ export class KnowledgeSubjects {
 	claim(symbolId: string, now: number): Subject | null {
 		const held = this.db.prepare("SELECT 1 FROM symbols WHERE symbolId = ?").get(symbolId) !== undefined;
 		return held ? this.mint(symbolId, now) : this.forAddress(symbolId);
+	}
+
+	/** The one decision of which subject a salvaged row belongs to. Idempotent; two subjects never merge. */
+	placeRow(row: { subjectId: string | null; recordedAs: string; at: number }): Placement {
+		if (row.subjectId !== null && this.byId(row.subjectId) !== null) {
+			return { placed: true, subjectId: row.subjectId };
+		}
+		const holder = this.forAddress(row.recordedAs);
+		if (row.subjectId !== null) {
+			// Its subject is gone: revived at the recorded address, or refused where another stands.
+			if (holder !== null) return { placed: false, reason: "held" };
+			this.db
+				.prepare(INSERT_SUBJECT)
+				.run(row.subjectId, row.recordedAs, "bound", row.at, null, null, "none", null, null);
+			return { placed: true, subjectId: row.subjectId };
+		}
+		if (holder !== null) return { placed: true, subjectId: holder.subjectId };
+		let subjectId = mintSubjectId(row.recordedAs, row.at);
+		for (let nonce = 1; this.byId(subjectId) !== null; nonce++)
+			subjectId = mintSubjectId(row.recordedAs, row.at, nonce);
+		this.db.prepare(INSERT_SUBJECT).run(subjectId, row.recordedAs, "bound", row.at, null, null, "none", null, null);
+		return { placed: true, subjectId };
 	}
 
 	/** An orphan whose address resolves again. */

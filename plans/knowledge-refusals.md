@@ -1120,6 +1120,78 @@ dropped at the deadline, and no timer pending once the sockets close. The residu
 
 **Release:** a patch. No wire change, no store change.
 
+## Replan 2 - One row-placement primitive in the identity owner
+
+The second of the five replan items (Question 11), the architecture assessment's third
+opportunity. A compat rebuild salvages the knowledge tables, rebuilds the index from empty and
+puts the rows back; deciding which subject a salvaged row belongs to is identity inference, and
+today it happens in two functions three implicit ways.
+
+**What exists.** `salvageKnowledge` in `store.ts` reads every salvaged table by column name into
+raw `Record<string, unknown>` rows. `restoreKnowledge` splits the answer and gap rows by whether
+they carry a `subjectId` (rows written by address predate subjects), hands `restoreSubjects` the
+addresses of the unkeyed rows and the `(subjectId, symbolId)` pairs of the keyed ones, and
+`restoreSubjects` runs three loops: it re-inserts the salvaged `knowledge_subjects` rows, mints a
+bound subject at each unkeyed address nobody holds, and re-inserts a keyed row's own subject id at
+its recorded address when neither the id nor the address is known. `restoreKnowledge` then places
+each row through `subjectOf`: its own id when that subject was restored, else the address map,
+else null, counted as `unplaced`. A row missing its prose or fact id is skipped silently. Every
+field is read by `typeof` checks inline at the insert. The count reaches the daemon log at open.
+
+**What changes.**
+
+- **A normalizer, before any SQL.** `normalizeSalvaged(rows)` in `subjects.ts` maps the raw
+  salvaged tables into a closed union, `SalvagedSubject`, `SalvagedAnswer`, `SalvagedGap`, each
+  field validated once, and returns them with a `dropped` count for rows missing their identity,
+  their address (an empty string is none), their prose, their fact id, or citations that do not
+  read back as a list of ids, since an answer whose citations cannot be parsed cannot be recalled.
+  A number a text-typed column stored as a string reads as the number, a boolean flag as one or
+  zero, a fraction as its whole part, and a doubt's stamp the same way, so a doubt survives a
+  legacy column. Nothing past the normalizer reads a raw row, so a field check lives in one place and a
+  corrupt row is a number in the log rather than a silence.
+- **One placement primitive.** `KnowledgeSubjects.placeRow({ subjectId, recordedAs, at })`
+  answers `{ placed: true, subjectId }` or `{ placed: false, reason: "held" }`, and is the only
+  code that decides which subject a salvaged row belongs to. A row naming a subject that exists
+  keeps it. A row naming a subject that is gone revives that id, bound at the recorded address,
+  where nothing holds the address, and is refused `held` where another subject does: two subjects
+  never merge. A row naming no subject joins the subject holding its address, or mints one there,
+  bound, evidence `none`, since nothing knows how the row reached that address. Idempotent: a
+  second call with the same row answers the same subject and writes nothing.
+- **The rebuild shrinks to the primitive.** `restoreSubjects` keeps its first loop only, the
+  salvaged subject rows put back as they were, and drops the other two. `restoreKnowledge`
+  normalizes, restores the subjects, places each answer and gap through `placeRow` in one order,
+  rows that name a subject before rows that only name an address and the most recently recorded
+  first within each, ties by address and question in code-point order, so a lost subject is
+  revived where it was last written about and nothing mints under it meanwhile, whatever order
+  the salvage returned; a subject refused at that address is refused whole, every row of it
+  counted `unplaced`, since an older row reviving it at a stale address would resurrect an
+  identity the store had moved on from; then inserts the placed rows with the normalized fields,
+  and returns `unplaced` and `dropped`; `IndexStore.open`
+  carries each on its result when it is above zero, as it carries `unplaced` today, and the daemon
+  logs each. `addressOf` and `subjectOf` go.
+- **What the primitive is for beyond the rebuild.** `claim`, the write path, keeps its shape,
+  since a live write has an index to consult and a salvaged row does not; the two are the same
+  decision on different evidence, and the section says so rather than folding them.
+
+**Tests:** `placeRow` on each row shape: a row naming a surviving subject keeps it; a row naming a
+lost subject revives it at its address with the same id and reads as bound; the same row where
+another subject holds the address is refused `held`, the holder untouched; a row naming no subject
+joins the holder of its address, or mints there with evidence `none`; the same row placed twice
+answers the same subject and inserts nothing; a row placed in the millisecond another address was
+minted in takes the next nonce. The normalizer drops a row without prose, without a fact id, or
+without an address, counts each, and reads the recorded address before the older address column.
+A rebuild across a compatibility key where a subject moved on, a new one took its old address and
+the moved subject's row was then lost: the surviving answer is recalled, the lost one is refused
+`held`, `unplaced` says one. A lost subject written about at two addresses in turn is revived at
+the later one and both answers recalled there; one whose later address another holds is refused
+whole, its older row too, and revived nowhere. A salvage mixing a subject-keyed demand and an
+address-keyed answer at one address: the demand's subject is revived first and the answer joins
+it. An open refactor journal survives the rebuild. A rebuild of an old address-keyed schema: one
+subject minted per address and shared by its answer and its demand, the answer recalled, an
+unreadable row counted as `dropped`. Each existing rebuild test keeps passing unchanged.
+
+**Release:** a patch. No wire change; the open result's `dropped` is internal to the daemon log.
+
 ## Verification
 
 Ordered by how much it proves, as the repository already orders it.

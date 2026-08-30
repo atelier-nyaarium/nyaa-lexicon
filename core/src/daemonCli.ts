@@ -274,6 +274,9 @@ async function main(argv: string[]): Promise<void> {
 		if (opened.unplaced !== undefined) {
 			log(`${opened.unplaced} knowledge row(s) lost their subject and another holds their recorded address`);
 		}
+		if (opened.dropped !== undefined) {
+			log(`${opened.dropped} salvaged knowledge row(s) were unreadable and were not restored`);
+		}
 
 		const spawned = new ProviderSupervisor(clock);
 		supervisor = spawned;
