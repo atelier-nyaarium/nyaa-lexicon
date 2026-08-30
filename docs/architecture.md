@@ -207,6 +207,15 @@ A provider is a single request-response process, so the supervisor owns one queu
 Serializing there means no call site has to know, and a slow request delays only its own language.
 A provider that dies rejects its waiters at once rather than leaving each to time out in turn.
 
+What core asks of that set is `ProviderPort`, declared where its callers live rather than by the
+supervisor: the indexer, the service and the planner's probe take the port, and only the composition
+root builds the class. A member core starts calling that the port does not carry fails the type
+check at the caller, and adding one fails every test double until it answers, which is where a
+missing method used to surface as a runtime break instead. The doubles are one shared
+`fakeSupervisor`, which settles what the supervisor settles at the wire: an unowned or contested
+module is refused, a provider that is not running is refused, a parse answer keeps its comments
+only where the declared tiers say so, and every answer is parsed by its own schema.
+
 That queue orders one provider's calls, not the workspace. The daemon answers frames concurrently
 and the watcher reindexes on its own schedule, so `WorkspaceGate` orders everything that writes:
 refactor steps, undo and revert, rename, indexing, and watcher batches. Writers run alone; readers
@@ -294,7 +303,10 @@ rename's does: the address map is journaled with the step and applied once the f
 
 Whether the repair actually landed is asked of the reindexed facts rather than of the edits: a
 specifier can be well formed and point nowhere, and that shows up as an importer whose reference no
-longer binds.
+longer binds. Which modules to ask is itself a claim: importers are found from stored references
+and import sites, each written by the provider owning the file they are in, so a module whose
+provider reports neither rides an `ImportersUnchecked` issue on the move rather than passing for a
+file with nothing to repair.
 
 Only the TypeScript provider implements `moveEdits` today. The others refuse `NotImplemented`, so
 a move in those languages is declined rather than half-done.

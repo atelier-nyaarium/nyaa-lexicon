@@ -1281,6 +1281,10 @@ older client's `safeParse` drops. No version bump now.
 
 ## Replan 4 - A provider port the indexer depends on, one shared FakeSupervisor, and a move-capable fixture provider
 
+✅ Shipped: the port, the one typed fake answering as the wire does, the fixture provider, the
+rebind driven through dispatch, the importers warning and the relocated mutants (c2516d3, after
+one alignment audit and two red team rounds; the docs and the rule followed in the next commit).
+
 The fourth of the five replan items (Question 11), the architecture assessment's fifth
 opportunity, scheduled for the Phase 0 lap and carried since. Three pieces of test
 infrastructure, each of which cost a defect or a deferred proof: the supervisor's fakes are
@@ -1740,3 +1744,20 @@ Collected during the overnight knowledge run, the review of its patches, and the
   restores its files before the commit that closes the journal, so a crash between strands the
   newest move, pre-existing, `bd_d710ce80`. The relay swallowed a report for the fourth lap
   running; the recovery script read it out of the transcript.
+- Building the provider port item: sixteen alignment findings, then two red team rounds of sixteen
+  and nine, twenty-three fixed and four disproved. The disproved ones are the lesson. One angle
+  reported the port's own mutants as surviving because its sandbox lacked a dependency and ran
+  four tests instead of the suite; another called the fixture provider dead on arrival from a
+  machine at load nine. Round two's prompt made each auditor prove it could run
+  `workspaceIndex.test.ts` before reporting anything, and every angle then verified first: an
+  auditor's environment is part of its evidence and has to be checked like any other claim. What
+  the rounds did find was the fake still lying in ways the cast had hidden: it answered for
+  modules nobody owned, kept comments a provider never declared, accepted responses the wire would
+  reject, and routed to a provider that never ran. Each is settled the way the supervisor settles
+  it now, and undeclaring the comments tier fails five tests, which is the check working. The one
+  production defect the fixture exposed was a move reporting success while every importer kept
+  pointing at the old module, since importers come from stored references and imports and a
+  provider declaring neither reported none, which is not the same as there being none. Held for
+  the owner: the fake models no request queue, no provider death and no timeout, so a suite
+  wanting `ProviderUnavailableError` still throws it by hand; and `RefactorIssue.kind` is an open
+  string at the protocol boundary, so `ImportersUnchecked` joins a vocabulary nothing enumerates.

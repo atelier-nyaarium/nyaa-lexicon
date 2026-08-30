@@ -176,6 +176,13 @@ Ordered by how much they prove:
   token already has instances on disk, run the check against ALL of them before trusting it.
 - **Never branch on a language in `core/` or `formats/`.** A residue test fails the build on the
   quoted name itself; the fix is a new field on the provider contract.
+- **Core asks providers through `ProviderPort`, and tests double it through `fakeSupervisor`.**
+  The port is declared where its callers live, so a member core starts calling fails the type check
+  rather than a suite at runtime, which is how `declares` broke comment indexing. A residue forbids
+  casting a double to the supervisor class. The shared double settles what the wire settles: an
+  unowned or contested module refused, a provider that is not running refused, comments kept only
+  where the tiers declare them, every answer parsed by its schema. A double that skips one of those
+  proves a path the daemon cannot reach.
 - **Never write a control byte, em dash, smart quote or zero-width character into source.** Enforced
   over every tracked file. A raw NUL is legal to tsc, invisible in an editor, identical at runtime,
   and makes git call the file binary and grep return nothing for any pattern in it. Scan with
