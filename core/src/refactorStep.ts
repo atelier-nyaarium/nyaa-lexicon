@@ -5,6 +5,7 @@
 // index afterwards. An operation now DECLARES its parts; the policy cannot be re-implemented
 // wrongly, and a fifth operation is one declaration.
 
+import { noTransactionOpen, type Refusal, stepNotWritten, stepRefused } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
 import type { RefactorIssue, StepKind, TransactionManager } from "./transactions.js";
@@ -28,7 +29,7 @@ export interface PlannedStep {
 	 * write and completion. */
 	plannedText?: Array<{ module: string; text: string }>;
 	/** Inside the gate, before journaling: null while the planned world still holds. */
-	stale: () => string | null;
+	stale: () => Refusal | null;
 	/** Inside the gate, after stale passes, before journaling. Position is free: beginStep touches
 	 * only the journal, which no capture reads. */
 	begin?: () => void;
@@ -44,7 +45,7 @@ export interface PlannedStep {
 }
 
 export type PlanAnswer<Outcome> =
-	| { refused: string; issues?: RefactorIssue[] }
+	| { refused: Refusal; issues?: RefactorIssue[] }
 	| { done: Outcome }
 	| { planned: PlannedStep };
 
@@ -60,7 +61,7 @@ export interface StepShape<Outcome> {
 	 * Owns its refusal ordering; the executor reorders nothing. */
 	plan: () => Promise<PlanAnswer<Outcome>>;
 	/** Refusal strings pass through verbatim; the executor authors only the write-failure frame. */
-	refuse: (reason: string, issues: RefactorIssue[]) => Outcome;
+	refuse: (reason: Refusal, issues: RefactorIssue[]) => Outcome;
 	succeed: (issues: RefactorIssue[]) => Outcome;
 }
 
@@ -74,7 +75,7 @@ function describeError(error: unknown): string {
 export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Promise<Outcome> {
 	const { service, transactions, write } = deps;
 	if (!transactions.openTransaction()) {
-		return shape.refuse("no refactor transaction is open; call refactor_start", []);
+		return shape.refuse(noTransactionOpen(), []);
 	}
 
 	// Sites read from outline modules would be missed sites.
@@ -108,15 +109,13 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 			for (const module of undone.modules ?? []) {
 				await service.indexFile(module).catch(() => undefined);
 			}
-			let reason =
-				error instanceof StepRefusal
-					? error.message
-					: `the ${shape.kind} could not be written: ${describeError(error)}`;
 			// A file matching neither image cannot be safely restored; the step stays for a human
 			// decision rather than being silently stranded.
-			if (!undone.undone) {
-				reason += `; the journaled step remains (${undone.reason ?? "it could not be undone"}), refactor_revert restores the tracked files`;
-			}
+			const stranded = undone.undone ? null : (undone.reason ?? "it could not be undone");
+			const reason =
+				error instanceof StepRefusal
+					? stepRefused(error.message, stranded)
+					: stepNotWritten(shape.kind, describeError(error), stranded);
 			return shape.refuse(reason, []);
 		}
 

@@ -4,6 +4,8 @@
 // provider edits with the same code that applies them here.
 
 import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
+import type { WriteOutcome } from "./refusalSlots.js";
+import { editsRefused, moduleUnreadable, writeThrew } from "./refusals.js";
 import { insideWorkspace } from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 
@@ -12,7 +14,7 @@ export type { FileEdits } from "@nyaa-lexicon/protocol";
 ////////////////////////////////
 //  Interfaces & Types
 
-export type ApplyOutcome = { applied: true; modules: string[] } | { applied: false; reason: string; module?: string };
+export type ApplyOutcome = WriteOutcome;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -37,10 +39,10 @@ export function writeAll(
 
 	for (const file of files) {
 		const before = readFile(file.module);
-		if (before === null) return { applied: false, reason: "file could not be read", module: file.module };
+		if (before === null) return { applied: false, reason: moduleUnreadable(file.module), module: file.module };
 
 		const result = applyEdits(before, file.edits);
-		if ("problem" in result) return { applied: false, reason: result.problem, module: file.module };
+		if ("problem" in result) return { applied: false, reason: editsRefused(result.problem), module: file.module };
 		staged.push({ module: file.module, text: result.text });
 	}
 
@@ -48,11 +50,7 @@ export function writeAll(
 		try {
 			writeSourceFile(insideWorkspace(workspaceRoot, file.module), file.text);
 		} catch (error) {
-			return {
-				applied: false,
-				reason: error instanceof Error ? error.message : String(error),
-				module: file.module,
-			};
+			return { applied: false, reason: writeThrew(error), module: file.module };
 		}
 	}
 	return { applied: true, modules: staged.map((file) => file.module) };

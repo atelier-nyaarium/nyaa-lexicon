@@ -3,8 +3,10 @@
 // Kept apart from the index because a stale answer IS the two disagreeing. Decides what to write;
 // sourceWriter.ts decides how.
 
-import { coordinatesOf, hashContent, type Range, type SymbolSource } from "@nyaa-lexicon/protocol";
-import { subjectRefused } from "./refusals.js";
+import { coordinatesOf, hashContent, type Range } from "@nyaa-lexicon/protocol";
+import type { PlannedSource } from "./refusalSlots.js";
+import type { Refusal } from "./refusals.js";
+import * as refusal from "./refusals.js";
 import { insideWorkspace } from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
@@ -40,25 +42,21 @@ export class SourceWorkspace {
 	 * A stale index refuses rather than slicing: the stored range describes text that has moved, so
 	 * cutting at it produces something that looks like source and is not the symbol.
 	 */
-	symbolSource(address: { symbolId?: string | undefined; factId?: string | undefined }): SymbolSource {
+	symbolSource(address: { symbolId?: string | undefined; factId?: string | undefined }): PlannedSource {
 		const located = this.locate(address);
 		if ("problem" in located) return { found: false, reason: located.problem };
 
 		const { module, range, name, kind } = located;
 		const text = this.readFile(module);
-		if (text === null) return { found: false, reason: `${module} is not on disk any more` };
+		if (text === null) return { found: false, reason: refusal.moduleNotOnDisk(module) };
 
 		const stored = this.store.contentHashOf(module);
 		if (stored !== null && stored !== hashContent(text)) {
-			return {
-				found: false,
-				reason: `${module} changed since it was indexed, so its ranges are stale`,
-				stale: true,
-			};
+			return { found: false, reason: refusal.moduleStale(module), stale: true };
 		}
 
 		const sliced = sliceRange(text, range);
-		if (sliced === null) return { found: false, reason: `the stored range falls outside ${module}` };
+		if (sliced === null) return { found: false, reason: refusal.rangeOutsideModule(module) };
 
 		return { found: true, module, name, kind, range, text: sliced, contentHash: hashContent(text) };
 	}
@@ -101,10 +99,10 @@ export class SourceWorkspace {
 	private locate(address: {
 		symbolId?: string | undefined;
 		factId?: string | undefined;
-	}): { module: string; range: Range; name: string; kind: string } | { problem: string } {
+	}): { module: string; range: Range; name: string; kind: string } | { problem: Refusal } {
 		if (address.symbolId !== undefined) {
 			const declaration = this.store.declaration(address.symbolId);
-			if (!declaration) return { problem: subjectRefused(address.symbolId, this.store) };
+			if (!declaration) return { problem: refusal.subjectRefused(address.symbolId, this.store) };
 			return {
 				module: declaration.module,
 				range: declaration.range,
@@ -115,15 +113,13 @@ export class SourceWorkspace {
 
 		if (address.factId !== undefined) {
 			const fact = this.store.factById(address.factId);
-			if (!fact) return { problem: `${address.factId} names nothing in the index any more` };
+			if (!fact) return { problem: refusal.factNamesNothing(address.factId) };
 			if (fact.fact !== "literal") {
-				return {
-					problem: `${address.factId} names a ${fact.fact}, and only a literal is addressable by fact id`,
-				};
+				return { problem: refusal.factNotAddressable(address.factId, fact.fact) };
 			}
 			return { module: fact.module, range: fact.range, name: fact.value, kind: `${fact.kind} literal` };
 		}
 
-		return { problem: "give either a symbolId or a literal's factId" };
+		return { problem: refusal.noAddressGiven() };
 	}
 }

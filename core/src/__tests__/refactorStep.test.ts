@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { journaledStep, type PlannedStep, StepRefusal } from "../refactorStep";
+import { changedWhilePlanned } from "../refusals";
 import type { LexiconService } from "../service";
 import { IndexStore } from "../store";
 import { type RefactorIssue, TransactionManager } from "../transactions";
@@ -132,11 +133,14 @@ describe("the one failure policy every operation now shares", () => {
 	it("refuses a stale world inside the gate with nothing journaled", async () => {
 		transactions.start();
 		const outcome = await run({
-			stale: () => "the world moved",
+			stale: () => changedWhilePlanned("src/a.ts", "step"),
 			apply: () => write("src/a.ts", "after\n"),
 		});
 
-		expect(outcome).toMatchObject({ ok: false, reason: "the world moved" });
+		expect(outcome).toMatchObject({
+			ok: false,
+			reason: expect.stringContaining("changed while the step was planned"),
+		});
 		expect(transactions.status().steps).toEqual([]);
 	});
 

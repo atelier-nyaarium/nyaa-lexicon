@@ -1,23 +1,35 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
-import { coordinatesOf, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { codeOnly, coordinatesOf, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 
 /**
- * Holds refusals.ts as the only composer of a knowledge refusal.
+ * Holds refusals.ts as the only composer of a refusal.
  *
- * Scoped to the two files that return refusals, because `refused:` and `ok: false` are ordinary
- * outcome shapes elsewhere in core. The token is a string literal opening directly after the
- * reason slot, which an inline sentence carries and a constructor call does not.
+ * Swept only where `reason:` always names one; elsewhere it also names an enum value and a tally
+ * field, and the brand guards those slots instead.
  */
 const SWEPT = ["knowledge.ts", "answers.ts"].map((name) => join(import.meta.dirname, "..", name));
 
 const OWNER = join(import.meta.dirname, "..", "refusals.ts");
 
+/** Each file with a narrowed slot, and the type it must still be reading. */
+const NARROWED: Array<[string, string]> = [
+	["refactorPlanner.ts", "PlannedMove"],
+	["sourceWorkspace.ts", "PlannedSource"],
+	["service.ts", "UnknownType"],
+	["transactions.ts", "UndoneStep"],
+	["applyEdits.ts", "WriteOutcome"],
+];
+
+const SLOTS = join(import.meta.dirname, "..", "refusalSlots.ts");
+
+const pathOf = (name: string) => join(import.meta.dirname, "..", name);
+
 /** A literal in the reason slot: `reason: "` / `reason: \`` / `refused: '`, whitespace allowed. */
 const INLINE = /\b(reason|refused)\s*:\s*["'`]/g;
 
 /** A constructor reached through the owner's namespace. */
-const CALL = /\brefusal\.(\w+)\(/g;
+const NAMESPACED = /\brefusal\.(\w+)\(/g;
 
 /** An exported constructor of the owner. */
 const EXPORTED = /^export function (\w+)\(/gm;
@@ -32,7 +44,19 @@ const MINTS = [
 
 const CORE = join(import.meta.dirname, "..");
 
-const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "fixtures"]);
+/** Tests are swept too: a double minting its own refusal is a sentence nobody reviewed. */
+const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "fixtures"]);
+
+/** This file quotes every minting spelling to prove the check fires, so it cannot sweep itself. */
+const SELF = import.meta.filename;
+
+/** Comments and string literals stripped, so a type named in prose is not read as a type in use. */
+function typesOnly(source: string): string {
+	return codeOnly(source)
+		.replace(/`(?:\\[\s\S]|[^\\`])*`/g, '""')
+		.replace(/'(?:\\[\s\S]|[^\\'])*'/g, '""')
+		.replace(/"(?:\\[\s\S]|[^\\"])*"/g, '""');
+}
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -51,35 +75,55 @@ export function inlineRefusals(source: string): string[] {
 ////////////////////////////////
 //  Tests
 
-describe("one module composes every knowledge refusal", () => {
-	it("finds both swept files and the owner, so a passing run is never vacuous", () => {
-		for (const file of [...SWEPT, OWNER]) expect(readSwept(file)).not.toBeNull();
-		const calls = SWEPT.flatMap((file) => [...(readSwept(file) ?? "").matchAll(CALL)]);
+describe("one module composes every refusal", () => {
+	it("finds every swept and narrowed file and the owner, so a passing run is never vacuous", () => {
+		const files = [...SWEPT, ...NARROWED.map(([name]) => pathOf(name)), OWNER, SLOTS];
+		for (const file of files) expect(readSwept(file)).not.toBeNull();
+		const calls = SWEPT.flatMap((file) => [...(readSwept(file) ?? "").matchAll(NAMESPACED)]);
 		expect(calls.length).toBeGreaterThanOrEqual(15);
 	});
 
-	// Every constructor has a caller and every call names a constructor, so neither drifts alone.
+	// A constructor nothing calls and a call naming no constructor are both drift.
 	it("has each exported constructor called, and each call naming an export", () => {
 		const owner = readSwept(OWNER) ?? "";
 		const exported = new Set([...owner.matchAll(EXPORTED)].map((match) => match[1] as string));
-		const called = new Set(
-			SWEPT.flatMap((file) => [...(readSwept(file) ?? "").matchAll(CALL)].map((match) => match[1] as string)),
-		);
+		const callers = sourceFiles(CORE, SKIP_DIRS)
+			.filter((file) => file !== OWNER)
+			.map((file) => readSwept(file) ?? "");
+		const named = (name: string) => callers.some((source) => new RegExp(`\\b${name}\\(`).test(source));
 		const insideOwner = [...exported].filter((name) =>
 			new RegExp(`\\b${name}\\(`).test(owner.replace(EXPORTED, "")),
 		);
-		expect([...called].filter((name) => !exported.has(name))).toEqual([]);
-		expect([...exported].filter((name) => !called.has(name) && !insideOwner.includes(name))).toEqual([]);
+		const namespaced = new Set(
+			SWEPT.flatMap((file) => [...(readSwept(file) ?? "").matchAll(NAMESPACED)].map((m) => m[1] as string)),
+		);
+		expect([...namespaced].filter((name) => !exported.has(name))).toEqual([]);
+		expect([...exported].filter((name) => !named(name) && !insideOwner.includes(name))).toEqual([]);
+	});
+
+	// The narrowing is what refuses a sentence where `reason` also names other things.
+	it("has every file with a narrowed refusal slot still reading its narrowed type", () => {
+		// Past the import, a comment and a string, since none of those narrows anything.
+		const missing = NARROWED.filter(([name, type]) => {
+			const imported = /^import[\s\S]*?from\s+"[^"]*";$/gm;
+			const source = typesOnly((readSwept(pathOf(name)) ?? "").replace(imported, ""));
+			return !new RegExp(`\\b${type}\\b`).test(source);
+		});
+		expect(
+			missing.map(([name]) => name),
+			"a refusal slot is typed through core/src/refusalSlots.ts; widening it back to string returns the raw sentence",
+		).toEqual([]);
 	});
 
 	// The brand makes a raw sentence a type error; a cast is the way past it, in any spelling.
 	it("has nobody in core but the owner minting the brand", () => {
 		const files = sourceFiles(CORE, SKIP_DIRS);
 		expect(files).toContain(OWNER);
+		expect(files).toContain(SELF);
 		const offenders = files
-			.filter((file) => file !== OWNER)
+			.filter((file) => file !== OWNER && file !== SELF)
 			.flatMap((file) => {
-				const source = readSwept(file) ?? "";
+				const source = typesOnly(readSwept(file) ?? "");
 				return MINTS.filter((mint) => mint.test(source)).map((mint) => `${basename(file)}: ${mint.source}`);
 			});
 		expect(offenders, "minting a refusal belongs to core/src/refusals.ts; call a constructor").toEqual([]);

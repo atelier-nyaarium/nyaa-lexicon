@@ -23,6 +23,21 @@ import {
 	type TransactionStatus,
 } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
+import type {
+	CommittedTransaction,
+	RevertedTransaction,
+	StartedTransaction,
+	TrackedFile,
+	UndoneStep,
+} from "./refusalSlots.js";
+import {
+	noTransactionOpen,
+	nothingToUndo,
+	type Refusal,
+	transactionAlreadyOpen,
+	undoWouldDiscard,
+	unresolvedIssues,
+} from "./refusals.js";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 import type { AppliedRebind, KeptRebind, RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
@@ -44,7 +59,7 @@ export interface FileImage {
 	hash: string | null;
 }
 
-export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: string };
+export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: Refusal };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -75,9 +90,9 @@ export class TransactionManager {
 	//  Lifecycle
 
 	/** Refuses a second transaction rather than nesting: one workspace, one stack of undo. */
-	start(): RefactorStartResult {
+	start(): StartedTransaction {
 		const open = this.openTransaction();
-		if (open) return { started: false, id: open.id, reason: "a refactor transaction is already open" };
+		if (open) return { started: false, id: open.id, reason: transactionAlreadyOpen() };
 
 		const id = `rt-${this.now().toString(36)}-${Math.trunc(Math.random() * 0xfffff).toString(36)}`;
 		this.store.journal((db) => {
@@ -104,9 +119,9 @@ export class TransactionManager {
 	 * mark revert restores to, so revert would stop at a mid-transaction state and call it the
 	 * beginning.
 	 */
-	track(module: string): RefactorTrackResult {
+	track(module: string): TrackedFile {
 		const open = this.openTransaction();
-		if (!open) return { tracked: false, reason: "no refactor transaction is open" };
+		if (!open) return { tracked: false, reason: noTransactionOpen() };
 
 		if (this.imageFor(open.id, "baseline", 0, module)) return { tracked: true };
 		this.writeImage(open.id, "baseline", 0, this.snapshot(module));
@@ -179,7 +194,7 @@ export class TransactionManager {
 		plannedText?: Array<{ module: string; text: string }>,
 	): StepOutcome {
 		const open = this.openTransaction();
-		if (!open) return { ok: false, reason: "no refactor transaction is open" };
+		if (!open) return { ok: false, reason: noTransactionOpen() };
 
 		const stepNo = this.nextStepNo(open.id);
 		const images = modules.map((module) => this.snapshot(module));
@@ -303,16 +318,16 @@ export class TransactionManager {
 	 * step is not the step's output any more, and putting the old bytes back would silently discard
 	 * whatever replaced them.
 	 */
-	undo(): RefactorUndoResult {
+	undo(): UndoneStep {
 		const open = this.openTransaction();
-		if (!open) return { undone: false, reason: "no refactor transaction is open" };
+		if (!open) return { undone: false, reason: noTransactionOpen() };
 
 		const top = this.store.journal((db) =>
 			db
 				.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC LIMIT 1")
 				.get(open.id),
 		) as { stepNo: number } | undefined;
-		if (!top) return { undone: false, reason: "this transaction has no steps to undo" };
+		if (!top) return { undone: false, reason: nothingToUndo() };
 
 		const images = this.imagesOf(open.id, "step", top.stepNo);
 		for (const image of images) {
@@ -322,10 +337,7 @@ export class TransactionManager {
 			// so undoing is a no-op restore, never a discard.
 			if (current.hash === image.beforeHash && current.existed === image.existedBefore) continue;
 			if (current.hash !== image.afterHash) {
-				return {
-					undone: false,
-					reason: `${image.module} changed after step ${top.stepNo}, so undoing it would discard that edit`,
-				};
+				return { undone: false, reason: undoWouldDiscard(image.module, top.stepNo) };
 			}
 		}
 
@@ -354,9 +366,9 @@ export class TransactionManager {
 	}
 
 	/** Puts every tracked file back to its opening image, whatever happened in between. */
-	revert(): RefactorRevertResult {
+	revert(): RevertedTransaction {
 		const open = this.openTransaction();
-		if (!open) return { reverted: false, modules: [], reason: "no refactor transaction is open" };
+		if (!open) return { reverted: false, modules: [], reason: noTransactionOpen() };
 
 		const images = this.imagesOf(open.id, "baseline", 0);
 		for (const image of images) this.restore(image);
@@ -382,17 +394,13 @@ export class TransactionManager {
 	}
 
 	/** Keeps what is on disk and drops the journal, so nothing can be undone afterwards. */
-	commit(options: { force?: boolean | undefined } = {}): RefactorCommitResult {
+	commit(options: { force?: boolean | undefined } = {}): CommittedTransaction {
 		const open = this.openTransaction();
-		if (!open) return { committed: false, issues: [], reason: "no refactor transaction is open" };
+		if (!open) return { committed: false, issues: [], reason: noTransactionOpen() };
 
 		const issues = this.issues(open.id);
 		if (issues.length > 0 && options.force !== true) {
-			return {
-				committed: false,
-				issues,
-				reason: `${issues.length} unresolved issue${issues.length === 1 ? "" : "s"}; undo and correct, or commit with force`,
-			};
+			return { committed: false, issues, reason: unresolvedIssues(issues.length) };
 		}
 
 		this.close(open.id, "committed");

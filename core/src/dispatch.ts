@@ -15,6 +15,7 @@ import {
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import { journaledStep, StepRefusal } from "./refactorStep.js";
+import { changedWhilePlanned, renameBlocked, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
@@ -125,14 +126,11 @@ function refactorMove(
 						planRecord: { from: plan.fromModule, to: plan.toModule },
 						stale: () => {
 							if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
-								return `${plan.fromModule} changed while the move was planned`;
+								return changedWhilePlanned(plan.fromModule, "move");
 							}
 							// Import sites were chosen from stored ranges; the same rule applies.
 							const stale = service.staleModules(plan.referencing);
-							if (stale.length > 0) {
-								return `${stale.join(", ")} changed since being indexed, so the move would rewrite stale positions`;
-							}
-							return null;
+							return stale.length > 0 ? staleSincePlanned(stale, "move") : null;
 						},
 						begin: () => {
 							for (const id of plan.closure) {
@@ -194,7 +192,7 @@ function refactorRename(
 				const plan = await service.prepareRename(args.symbolId, args.newName);
 				if (plan.blockers.length > 0) {
 					return {
-						refused: plan.blockers[0]?.detail ?? "the rename is blocked",
+						refused: plan.blockers[0]?.detail ?? renameBlocked(),
 						issues: plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
 					};
 				}
@@ -213,10 +211,7 @@ function refactorRename(
 							// Every site was chosen from stored ranges; a changed module has moved
 							// them, so rewriting would hit some occurrences and miss others.
 							const stale = service.staleModules(edited);
-							if (stale.length > 0) {
-								return `${stale.join(", ")} changed since being indexed, so the rename would rewrite stale positions`;
-							}
-							return null;
+							return stale.length > 0 ? staleSincePlanned(stale, "rename") : null;
 						},
 						rebind: () => ({
 							entries: [...idMap].map(([from, to]) => ({ from, to })),
@@ -279,7 +274,7 @@ function refactorReplace(
 						// changed it since invalidates the splice.
 						stale: () =>
 							service.currentHashOf(plan.module) !== plan.baseHash
-								? `${plan.module} changed while the replacement was planned`
+								? changedWhilePlanned(plan.module, "replacement")
 								: null,
 						apply: () => service.writeModule(plan.module, plan.text),
 						reindex: [plan.module],
@@ -336,7 +331,7 @@ function refactorInsert(
 							const fresh = plan.created
 								? service.currentHashOf(plan.module) === null
 								: service.currentHashOf(plan.module) === plan.baseHash;
-							return fresh ? null : `${plan.module} changed while the insert was planned`;
+							return fresh ? null : changedWhilePlanned(plan.module, "insert");
 						},
 						begin: () => {
 							held = new Set(service.declarationsIn(plan.module).map((d) => d.symbolId));

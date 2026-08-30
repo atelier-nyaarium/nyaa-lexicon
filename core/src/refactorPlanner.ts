@@ -32,7 +32,33 @@ import {
 import type { FileEdits } from "./applyEdits.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
-import { subjectRefused } from "./refusals.js";
+import type { PlannedMove, PlannedRename, PlannedRenameEdits, RenameBlocker } from "./refusalSlots.js";
+import {
+	alreadyInModule,
+	alreadyNamed,
+	candidateDoesNotParse,
+	editsRefused,
+	moduleChangedReindex,
+	moduleNotOnDisk,
+	moduleUnreadable,
+	nameAlreadyDeclared,
+	nameAlreadyImported,
+	nameNotInSource,
+	noInsertionPoint,
+	noProviderOwns,
+	noSingleLineName,
+	nothingToInsert,
+	occurrencesBlocked,
+	oneAnchorOnly,
+	providerRefused,
+	type Refusal,
+	replacementRenames,
+	sharesId,
+	sharesSpan,
+	siteBlocked,
+	subjectRefused,
+	unrepresentableModule,
+} from "./refusals.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -43,16 +69,12 @@ export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } 
 //  Functions & Helpers
 
 /** A module a plan may create or write, in its canonical spelling, or why not. */
-function workspaceModule(raw: string): { module: string } | { refused: string } {
+function workspaceModule(raw: string): { module: string } | { refused: Refusal } {
 	try {
 		return { module: normalizeModulePath(raw) };
 	} catch (error) {
-		return { refused: error instanceof Error ? error.message : String(error) };
+		return { refused: unrepresentableModule(error instanceof Error ? error.message : String(error)) };
 	}
-}
-
-function detailOf(detail: string | undefined): string {
-	return detail === undefined ? "" : `: ${detail}`;
 }
 
 /**
@@ -135,12 +157,12 @@ export type ReplacementPlan =
 			baseHash: string;
 			issues: RefactorIssue[];
 	  }
-	| { ok: false; reason: string };
+	| { ok: false; reason: Refusal };
 
 /** Whole new contents per module, so the writer never re-derives an edit it did not check. */
 export type MoveEditsOutcome =
 	| { ok: true; files: Array<{ module: string; text: string }>; issues: RefactorIssue[] }
-	| { ok: false; issues: RefactorIssue[]; reason: string };
+	| { ok: false; issues: RefactorIssue[]; reason: Refusal };
 
 export interface InsertArgs {
 	/** Sibling anchor: the new declaration goes directly after this one. */
@@ -167,7 +189,7 @@ export type InsertPlan =
 			issues: RefactorIssue[];
 	  }
 	| { state: "present"; module: string }
-	| { state: "refused"; reason: string };
+	| { state: "refused"; reason: Refusal };
 
 /** Where an insert lands. `line` null means append at end of file. */
 interface SplicePoint {
@@ -211,18 +233,18 @@ export class RefactorPlanner {
 		if (guard) return { ok: false, reason: guard };
 
 		const before = this.readFile(source.module);
-		if (before === null) return { ok: false, reason: `${source.module} is not on disk any more` };
+		if (before === null) return { ok: false, reason: moduleNotOnDisk(source.module) };
 
 		const spliced = applyEdits(before, [{ range: source.range, newText }]);
-		if ("problem" in spliced) return { ok: false, reason: spliced.problem };
+		if ("problem" in spliced) return { ok: false, reason: editsRefused(spliced.problem) };
 
 		const owner = this.probe.owner(source.module);
-		if (!owner.owned) return { ok: false, reason: `no provider owns ${source.module}` };
+		if (!owner.owned) return { ok: false, reason: noProviderOwns(source.module) };
 
 		// The probe restores the provider's view of the module before it returns, on every path, so
 		// nothing below has to remember to.
 		const candidate = await this.probe.parseCandidate(source.module, spliced.text);
-		if (!candidate.parsed) return { ok: false, reason: `the replacement does not parse: ${candidate.reason}` };
+		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("replacement", candidate.reason) };
 
 		const renamed = this.renamedDeclaration(address, candidate.facts, source);
 		if (renamed) return { ok: false, reason: renamed };
@@ -249,9 +271,9 @@ export class RefactorPlanner {
 	 */
 	async planInsert(args: InsertArgs): Promise<InsertPlan> {
 		const flush = args.text.replace(/\s+$/, "");
-		if (flush.trim().length === 0) return { state: "refused", reason: "nothing to insert" };
+		if (flush.trim().length === 0) return { state: "refused", reason: nothingToInsert() };
 		if ((args.after === undefined) === (args.module === undefined)) {
-			return { state: "refused", reason: "set exactly one of after or module" };
+			return { state: "refused", reason: oneAnchorOnly() };
 		}
 
 		const point = args.after !== undefined ? this.afterPoint(args.after) : this.endPoint(args.module as string);
@@ -265,13 +287,13 @@ export class RefactorPlanner {
 		if (this.blockPresent(point, block)) return { state: "present", module: point.module };
 
 		const candidate = this.spliceBlock(point, block);
-		if (typeof candidate !== "string") return { state: "refused", reason: candidate.problem };
+		if (typeof candidate !== "string") return { state: "refused", reason: editsRefused(candidate.problem) };
 
 		const owner = this.probe.owner(point.module);
-		if (!owner.owned) return { state: "refused", reason: `no provider owns ${point.module}: ${owner.reason}` };
+		if (!owner.owned) return { state: "refused", reason: noProviderOwns(point.module, owner.reason) };
 
 		const parsed = await this.probe.parseCandidate(point.module, candidate);
-		if (!parsed.parsed) return { state: "refused", reason: `the insert does not parse: ${parsed.reason}` };
+		if (!parsed.parsed) return { state: "refused", reason: candidateDoesNotParse("insert", parsed.reason) };
 
 		const issues = this.impactOf(point.module, parsed.facts);
 		const unchecked = this.syntaxUnchecked(owner.providerId, point.module);
@@ -290,17 +312,17 @@ export class RefactorPlanner {
 	}
 
 	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
-	private afterPoint(after: string): SplicePoint | { refused: string } {
+	private afterPoint(after: string): SplicePoint | { refused: Refusal } {
 		const anchor = this.store.declaration(after);
 		if (!anchor) return { refused: subjectRefused(after, this.store) };
 		const module = anchor.module;
 		const before = this.readFile(module);
-		if (before === null) return { refused: `${module} is not on disk any more` };
+		if (before === null) return { refused: moduleNotOnDisk(module) };
 
 		// The stored ranges address ONE version of the file; a moved file makes them wrong lines.
 		const indexed = this.store.contentHashOf(module);
 		if (indexed !== null && indexed !== hashContent(before)) {
-			return { refused: `${module} changed since it was indexed; reindex and retry` };
+			return { refused: moduleChangedReindex(module) };
 		}
 
 		// The name line is the declaration line; the range starts at leading comments, which may
@@ -309,11 +331,11 @@ export class RefactorPlanner {
 			anchor.selectionRange === undefined ||
 			anchor.selectionRange.start.line !== anchor.selectionRange.end.line
 		) {
-			return { refused: `the provider gives ${anchor.name} no single-line name, so indentation cannot be read` };
+			return { refused: noSingleLineName(anchor.name) };
 		}
 		const coords = coordinatesOf(before);
 		const nameLine = coords.lineText(anchor.selectionRange.start.line);
-		if (nameLine === undefined) return { refused: `${module} changed since it was indexed; reindex and retry` };
+		if (nameLine === undefined) return { refused: moduleChangedReindex(module) };
 		const indent = /^[ \t]*/.exec(nameLine)?.[0] ?? "";
 
 		// SAME SCOPE only: without the container filter, a member anchor's "next sibling" was the
@@ -331,9 +353,7 @@ export class RefactorPlanner {
 			if (next === null || comparePositions(candidate.range.start, next.range.start) < 0) next = candidate;
 		}
 
-		const shared = (who: string) => ({
-			refused: `no whole-line insertion point exists after the anchor (${who} leaves it no line of its own); hand-edit or anchor elsewhere`,
-		});
+		const shared = (who: string) => ({ refused: noInsertionPoint(who) });
 
 		if (next !== null) {
 			if (next.range.start.line === anchor.range.end.line) return shared(next.name);
@@ -360,7 +380,7 @@ export class RefactorPlanner {
 		return { module, before, created: false, line: endPos.line, indent, trailingBlank: false };
 	}
 
-	private endPoint(rawModule: string): SplicePoint | { refused: string } {
+	private endPoint(rawModule: string): SplicePoint | { refused: Refusal } {
 		// "Created if absent" must never mean created OUTSIDE the workspace.
 		const target = workspaceModule(rawModule);
 		if ("refused" in target) return target;
@@ -472,14 +492,14 @@ export class RefactorPlanner {
 	 * which come out of the index. Rendering the text is the provider's, so this stops at handing
 	 * each module a request.
 	 */
-	planMove(symbolId: string, rawTarget: string): MovePlan {
+	planMove(symbolId: string, rawTarget: string): PlannedMove {
 		const target = workspaceModule(rawTarget);
 		if ("refused" in target) return { ok: false, reason: target.refused };
 		const toModule = target.module;
 
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) return { ok: false, reason: subjectRefused(symbolId, this.store) };
-		if (declaration.module === toModule) return { ok: false, reason: `${symbolId} is already in ${toModule}` };
+		if (declaration.module === toModule) return { ok: false, reason: alreadyInModule(symbolId, toModule) };
 
 		const source = this.source.symbolSource({ symbolId });
 		if (!source.found) return { ok: false, reason: source.reason };
@@ -522,7 +542,7 @@ export class RefactorPlanner {
 	 * One blocked site anywhere fails the whole move. A relocated declaration whose importers still
 	 * point at the old module is code that does not build, which is worse than not starting.
 	 */
-	async moveEdits(plan: Extract<MovePlan, { ok: true }>): Promise<MoveEditsOutcome> {
+	async moveEdits(plan: Extract<PlannedMove, { ok: true }>): Promise<MoveEditsOutcome> {
 		const requests = this.moveRequests(plan);
 		const files: Array<{ module: string; text: string }> = [];
 		const blocked: RefactorIssue[] = [];
@@ -532,11 +552,7 @@ export class RefactorPlanner {
 			const answer = await this.probe.moveEdits(request.module, { ...request, text: before });
 
 			if (answer.status === "refused") {
-				return {
-					ok: false,
-					issues: [],
-					reason: `${request.module}: ${answer.reason}${detailOf(answer.detail)}`,
-				};
+				return { ok: false, issues: [], reason: providerRefused(request.module, answer.reason, answer.detail) };
 			}
 			for (const site of answer.blocked) {
 				blocked.push({
@@ -549,19 +565,19 @@ export class RefactorPlanner {
 
 			const applied = applyEdits(before, answer.edits);
 			if ("problem" in applied) {
-				return { ok: false, issues: [], reason: `${request.module}: ${applied.problem}` };
+				return { ok: false, issues: [], reason: providerRefused(request.module, applied.problem) };
 			}
 			files.push({ module: request.module, text: applied.text });
 		}
 
 		if (blocked.length > 0) {
-			return { ok: false, issues: blocked, reason: "some occurrences cannot be rewritten" };
+			return { ok: false, issues: blocked, reason: occurrencesBlocked() };
 		}
 		return { ok: true, files, issues: this.importersUnfound([plan.fromModule, ...plan.referencing]) };
 	}
 
 	/** One request per involved module, each describing only that module's part. */
-	private moveRequests(plan: Extract<MovePlan, { ok: true }>): MoveEditsRequest[] {
+	private moveRequests(plan: Extract<PlannedMove, { ok: true }>): MoveEditsRequest[] {
 		const shared = {
 			symbolId: plan.symbolId,
 			name: plan.name,
@@ -777,7 +793,7 @@ export class RefactorPlanner {
 	private replacementGuard(
 		address: { symbolId?: string | undefined },
 		source: Extract<SymbolSource, { found: true }>,
-	): string | null {
+	): Refusal | null {
 		if (address.symbolId === undefined) return null;
 
 		// Two declarations sharing an id means the store kept one and discarded the other, so the
@@ -785,9 +801,7 @@ export class RefactorPlanner {
 		const sharing = this.store
 			.declarationsIn(source.module)
 			.filter((declaration) => declaration.symbolId === address.symbolId);
-		if (sharing.length > 1) {
-			return `${address.symbolId} names more than one declaration in ${source.module}, so it cannot be replaced safely`;
-		}
+		if (sharing.length > 1) return sharesId(address.symbolId, source.module);
 
 		// One statement can declare several names, giving each the same span. Replacing that span
 		// would rewrite siblings the caller never addressed.
@@ -798,8 +812,7 @@ export class RefactorPlanner {
 			return sameRange(declaration.range, source.range);
 		});
 		if (overlapping.length > 0) {
-			const names = overlapping.map((declaration) => declaration.name).join(", ");
-			return `${source.name} shares its span with ${names}, so replacing it would rewrite them too`;
+			return sharesSpan(source.name, overlapping.map((declaration) => declaration.name).join(", "));
 		}
 
 		return null;
@@ -816,7 +829,7 @@ export class RefactorPlanner {
 		address: { symbolId?: string | undefined },
 		candidate: FileFacts,
 		source: Extract<SymbolSource, { found: true }>,
-	): string | null {
+	): Refusal | null {
 		if (address.symbolId === undefined) return null;
 		if (candidate.declarations.some((declaration) => declaration.symbolId === address.symbolId)) return null;
 
@@ -833,7 +846,7 @@ export class RefactorPlanner {
 		);
 		if (!replacement) return null;
 
-		return `the replacement renames ${source.name} to ${replacement.name}, which replace cannot do. Keep the name, or use refactor_rename.`;
+		return replacementRenames(source.name, replacement.name);
 	}
 
 	/**
@@ -895,7 +908,7 @@ export class RefactorPlanner {
 	 * The occurrences come from bound edges alone, because a name match is a guess and a guess is
 	 * acceptable in a reading tool and disqualifying in a writing one.
 	 */
-	async prepareRename(symbolId: string, newName: string): Promise<RenamePlan> {
+	async prepareRename(symbolId: string, newName: string): Promise<PlannedRename> {
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) {
 			return {
@@ -918,9 +931,7 @@ export class RefactorPlanner {
 				newName,
 				files: [],
 				occurrences: 0,
-				blockers: [
-					{ kind: "NameNotInSource", detail: `${oldName} is named after its file, not written in it` },
-				],
+				blockers: [{ kind: "NameNotInSource", detail: nameNotInSource(oldName) }],
 				warnings: [],
 			};
 		}
@@ -968,7 +979,7 @@ export class RefactorPlanner {
 		}));
 		const blockers =
 			newName === oldName
-				? [{ kind: "SameName", detail: `already named ${oldName}` }]
+				? [{ kind: "SameName", detail: alreadyNamed(oldName) }]
 				: this.renameCollisions(symbolId, newName, new Set(byModule.keys()));
 
 		return {
@@ -1052,18 +1063,18 @@ export class RefactorPlanner {
 	 * far enough. Each one names the conflicting site and both ways out, since a refusal that does
 	 * not say what to do next just moves the search to the caller.
 	 */
-	private renameCollisions(symbolId: string, newName: string, touched: Set<string>): RenameConcern[] {
+	private renameCollisions(symbolId: string, newName: string, touched: Set<string>): RenameBlocker[] {
 		const declared = this.store
 			.declarationsNamed(newName)
 			.filter((other) => other.symbolId !== symbolId && touched.has(other.module));
 
 		const bound = this.store.importsBinding(newName).filter((entry) => touched.has(entry.module));
 
-		const concerns: RenameConcern[] = [];
+		const concerns: RenameBlocker[] = [];
 		if (declared.length > 0) {
 			concerns.push({
 				kind: "NameTaken",
-				detail: `${newName} is already declared in ${declared.length === 1 ? "a file" : `${declared.length} files`} this rename rewrites. Rename that declaration first, or pick another name.`,
+				detail: nameAlreadyDeclared(newName, declared.length),
 				sites: declared.map((other) => ({
 					module: other.module,
 					line: (other.selectionRange ?? other.range).start.line,
@@ -1073,7 +1084,7 @@ export class RefactorPlanner {
 		if (bound.length > 0) {
 			concerns.push({
 				kind: "NameImported",
-				detail: `${newName} is already imported in ${bound.length === 1 ? "a file" : `${bound.length} files`} this rename rewrites, so the rewritten uses would bind to that import instead. Rename or alias that import first, or pick another name.`,
+				detail: nameAlreadyImported(newName, bound.length),
 				sites: bound.map((entry) => ({ module: entry.module, line: entry.range?.start.line ?? 0 })),
 			});
 		}
@@ -1089,16 +1100,17 @@ export class RefactorPlanner {
 	 * One blocked site fails the whole operation: it is an occurrence that should change and cannot,
 	 * so applying the rest leaves code that no longer builds.
 	 */
-	async renameEdits(symbolId: string, newName: string): Promise<RenameEditPlan> {
+	async renameEdits(symbolId: string, newName: string): Promise<PlannedRenameEdits> {
 		const plan = await this.prepareRename(symbolId, newName);
-		if (plan.blockers.length > 0) return { ok: false, plan, reason: plan.blockers[0]?.detail ?? "blocked" };
+		const blocker = plan.blockers[0];
+		if (blocker !== undefined) return { ok: false, plan, reason: blocker.detail };
 
 		const files: FileEdits[] = [];
-		const blocked: RenameConcern[] = [];
+		const blocked: RenameBlocker[] = [];
 
 		for (const file of plan.files) {
 			const text = this.readFile(file.module);
-			if (text === null) return { ok: false, plan, reason: `${file.module} could not be read` };
+			if (text === null) return { ok: false, plan, reason: moduleUnreadable(file.module) };
 
 			const answer = await this.probe.renameEdits(file.module, {
 				module: file.module,
@@ -1110,12 +1122,12 @@ export class RefactorPlanner {
 			});
 
 			if (answer.status === "refused") {
-				return { ok: false, plan, reason: `${file.module}: ${answer.reason}${detailOf(answer.detail)}` };
+				return { ok: false, plan, reason: providerRefused(file.module, answer.reason, answer.detail) };
 			}
 			for (const site of answer.blocked) {
 				blocked.push({
 					kind: site.reason,
-					detail: `${file.module}: ${site.detail ?? "cannot be rewritten safely"}`,
+					detail: siteBlocked(file.module, site.detail),
 					sites: [{ module: file.module, line: site.range.start.line + 1 }],
 				});
 			}
@@ -1123,11 +1135,7 @@ export class RefactorPlanner {
 		}
 
 		if (blocked.length > 0) {
-			return {
-				ok: false,
-				plan: { ...plan, blockers: blocked },
-				reason: "some occurrences cannot be rewritten",
-			};
+			return { ok: false, plan: { ...plan, blockers: blocked }, reason: occurrencesBlocked() };
 		}
 		return { ok: true, plan, files };
 	}

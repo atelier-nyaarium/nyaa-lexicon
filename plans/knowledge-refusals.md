@@ -1397,6 +1397,92 @@ nothing in `core/src`.
 **Release:** none. Test infrastructure, a type narrowing and four type exports from the core
 barrel; the protocol barrel is untouched; no wire change, no store change. No version bump now.
 
+## Replan 5 - Refusal-typed slots outside the knowledge layer
+
+The last of the five replan items (Question 11), found by the Phase 0 red team. The catalog phase
+made a knowledge refusal a named constructor and gave `Refusal` a brand, so a raw sentence in a
+knowledge reason slot is a type error. Everything the refactor and source paths refuse is still a
+plain `string`, so the same sentence composed one file over compiles.
+
+**What exists.** `core/src/refusals.ts` owns `Refusal`, a branded string minted by one cast, and
+every constructor that composes one. `refusal-owner-residue.test.ts` holds that ownership, but it
+sweeps two files, `knowledge.ts` and `answers.ts`, for a literal opening directly after `reason:`
+or `refused:`, and it forbids minting the brand anywhere in core but the owner. Outside those two
+files, the slots that say why an operation will not happen are `string`: `SourceWorkspace.locate`
+returns `{ problem: string }` and `symbolSource` a `{ found: false; reason: string }`, both from
+the protocol's `SymbolSource`; `planMove` returns the protocol's `MovePlan` whose refused arm is
+`{ ok: false; reason: string }`, and `workspaceModule` answers `{ refused: string }`;
+`planReplacement` and `moveEdits` refuse with the same shape; `planInsert` refuses with
+`{ state: "refused"; reason: string }` and `afterPoint` and `endPoint` with `{ refused: string }`;
+`prepareRename` puts a blocker in the same `RenameConcern` shape its warnings use, so its `detail`
+is a string; `LexiconService.typeOf` returns `{ status: "unknown"; reason: "NotIndexed"; detail:
+string }`. Five of those slots already hold `subjectRefused(...)`, which is a `Refusal` widening to
+`string` on the way in, and the other fourteen hold sentences written where they are returned.
+
+**What changes.**
+
+- **The catalog covers what refuses, not just what the knowledge layer refuses.** Every sentence in
+  a slot above becomes an exported constructor in `refusals.ts`, under a `Refactor` and a `Source`
+  heading beside the knowledge ones. The file's own comment stops saying "knowledge".
+- **Those slots are typed `Refusal` in core.** The shapes core owns (`ReplacementPlan`,
+  `InsertPlan`, `MoveEditsOutcome`, `StepOutcome`, `PlanAnswer`, `ApplyOutcome`, the splice points
+  and the two guards) narrow in place. The ones the protocol owns cannot, since the wire carries a
+  string, so `core/src/refusalSlots.ts` declares the narrowings: `PlannedSource`, `PlannedMove`,
+  `PlannedRename`, `PlannedRenameEdits`, `UnknownType`, `RenameBlocker`, `WriteOutcome`, and one
+  per journal answer (`StartedTransaction`, `TrackedFile`, `UndoneStep`, `RevertedTransaction`,
+  `CommittedTransaction`). A `Refusal` is a `string`, so dispatch hands the protocol type back
+  unchanged and no widening is written anywhere. The channel is typed end to end: the source
+  reader, the planner, the executor, the journal and the writer, since half a channel typed leaves
+  the same sentence composable next door.
+- **A blocker is not a warning.** `prepareRename` keeps `RenameConcern` for its warnings and gains
+  `RenameBlocker`, the same shape with `detail: Refusal`. Blockers refuse the rename; warnings ride
+  a plan that still runs, and the two have never been the same thing.
+- **What stays a string, deliberately.** `RefactorIssue.detail` is the channel a SUCCESS rides on:
+  `SyntaxUnchecked`, `ImportersUnchecked`, `ReindexFailed`, `UnresolvedAfterMove` and the collision
+  warnings all report something a caller may want and none of them refuses anything. A warning is
+  not a refusal, and putting it in the catalog would say it was.
+- **The residue guards what the type cannot.** Extending its inline sweep to the narrowed files was
+  tried and reverted: `reason` there also names a closed enum value on `TypeInfo` and a field on an
+  unbound-reference tally, so the token flags honest code, which is the repository's own rule about
+  an ambiguous token. Where a slot is typed, the brand is the guard and the sweep is redundant; the
+  residue instead names the type each narrowed file must still be reading, past its import line,
+  its comments and its strings, since none of those narrows anything and each was a bypass until
+  it was planted and watched failing. The brand sweep now reaches the test tree too: a double
+  minting its own refusal is a sentence nobody reviewed. Its constructor-reachability check reads
+  all of core, since the new constructors are called by name rather than through the namespace,
+  and a constructor nothing calls is drift either way.
+
+**Tests:** the type is the test, and `tsc` is where it fires: a raw string in any narrowed slot
+fails the build, planted and watched failing on `planMove`'s reason before the narrowing was
+trusted. The residue keeps catching a planted literal under each of its three shapes, gains the
+import check, and its non-vacuity check names every swept and narrowed file. Every existing refusal test passes unchanged, since the
+sentences move rather than change: the ones asserted on today (`is not on disk any more`, `is
+already in`, `changed since it was indexed`) read identically from their constructors. One test per
+new constructor is not written; the sentences are asserted where they already are, at the call
+sites that return them.
+
+### Bug Classes
+
+**Mechanism:** the residue check that proves a narrowed slot is still narrowed.
+**Class:** proving a TYPE-level property by matching TEXT. Every round found another spelling that
+satisfies the text and narrows nothing, and each patch only named the spelling that round found.
+Round one asserted the file imports `refusalSlots.js`, and an unused import passed. Round two read
+past the import line, and the type named in a comment, in a string, or in an unrelated generic
+passed. Round three strips comments and strings, which is the third patch to one check.
+**The fix this is not:** a fourth spelling. The compiler already knows the answer, so the check
+should ask it: a file of type-level assertions that `tsc` refuses when a slot widens, the way the
+brand itself refuses a raw sentence. Left for the architecture pass rather than patched again.
+
+**What the brand does not stop.** `JSON.parse` answers `any`, so a narrowed shape assembled from
+parsed JSON carries whatever the JSON held. No path in core does that, and every other route the
+red team tried (a generic helper, a spread, `as const`, a ternary, a mixed array, a
+`string | Refusal` return, and `Omit`, `Pick`, `Partial` and the `Refusing` helper) is refused by
+the compiler. It is written here rather than guarded, because guarding `any` is not something a
+brand can do.
+
+**Release:** none. Core-side type narrowing and a catalog that grew; the protocol schemas stay
+`z.string()` and no wire shape moves. No version bump now.
+
 ## Verification
 
 Ordered by how much it proves, as the repository already orders it.

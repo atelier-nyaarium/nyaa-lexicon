@@ -44,7 +44,8 @@ import { KnowledgeLedger } from "./knowledge.js";
 import type { ProviderPort } from "./providerPort.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
-import { diagnoseSubject, type SubjectDiagnosis, subjectRefused } from "./refusals.js";
+import type { UnknownType } from "./refusalSlots.js";
+import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
 import { ResultCache } from "./resultCache.js";
 import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
@@ -65,7 +66,7 @@ const COMMENT_COUNT_SCAN = 200_000;
 /** The plan rides along either way, so a refusal can say what it would have done. */
 export type RenameOutcome =
 	| { renamed: true; plan: RenamePlan; modules: string[] }
-	| { renamed: false; plan: RenamePlan; reason: string };
+	| { renamed: false; plan: RenamePlan; reason: Refusal };
 
 ////////////////////////////////
 ////////////////////////////////
@@ -597,7 +598,7 @@ export class LexiconService {
 
 		const written = writeAll(this.workspaceRoot, files, this.readFile);
 		if (!written.applied) {
-			return { renamed: false, plan, reason: `${written.module ?? "a file"}: ${written.reason}` };
+			return { renamed: false, plan, reason: writeFailed(written.module, written.reason) };
 		}
 
 		// Re-indexed immediately, since every edited file's facts are now wrong and a rename is
@@ -617,7 +618,12 @@ export class LexiconService {
 	async typeOf(symbolId: string): Promise<TypeInfo> {
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) {
-			return { status: "unknown", reason: "NotIndexed", detail: subjectRefused(symbolId, this.store) };
+			const unknown: UnknownType = {
+				status: "unknown",
+				reason: "NotIndexed",
+				detail: subjectRefused(symbolId, this.store),
+			};
+			return unknown;
 		}
 		return this.supervisor.ask(declaration.module, "typeOf", { symbolId });
 	}

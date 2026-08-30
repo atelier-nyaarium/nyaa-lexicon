@@ -1,6 +1,5 @@
-// Every refusal the knowledge layer composes. A refusal names what the author did and what to do
-// instead; the ledger and the checker call in and compose none: the brand refuses a raw string
-// and a residue refuses the cast.
+// Every refusal core composes: why something will not happen, and what to do instead. A warning
+// riding a success is not one. The brand refuses a raw string and a residue refuses the cast.
 
 import { decodeModuleField, FACT_SCHEME, isLocalSymbol, parseSymbolIdResult, spellsName } from "@nyaa-lexicon/protocol";
 import { candidatesFor } from "./candidates.js";
@@ -267,6 +266,206 @@ export function diagnoseSubject(symbolId: string, store: IndexStore): SubjectDia
 /** The diagnosis's sentence, for a reason slot. */
 export function subjectRefused(symbolId: string, store: IndexStore): Refusal {
 	return diagnoseSubject(symbolId, store).reason;
+}
+
+////////////////////////////////
+//  Source
+
+export function moduleNotOnDisk(module: string): Refusal {
+	return mint(`${module} is not on disk any more. Re-index the workspace if it was deleted or moved`);
+}
+
+export function moduleStale(module: string): Refusal {
+	return mint(`${module} changed since it was indexed, so its ranges are stale. Re-index it and ask again`);
+}
+
+export function moduleChangedReindex(module: string): Refusal {
+	return mint(`${module} changed since it was indexed; reindex and retry`);
+}
+
+export function moduleUnreadable(module: string): Refusal {
+	return mint(`${module} could not be read. Check it exists and is readable, then try again`);
+}
+
+export function rangeOutsideModule(module: string): Refusal {
+	return mint(`the stored range falls outside ${module}. Re-index it and ask again`);
+}
+
+export function factNamesNothing(factId: string): Refusal {
+	return mint(`${factId} names nothing in the index any more`);
+}
+
+export function factNotAddressable(factId: string, fact: string): Refusal {
+	return mint(
+		`${factId} names a ${fact}, and only a literal is addressable by fact id. Name the symbol it belongs to in \`symbolId\``,
+	);
+}
+
+export function noAddressGiven(): Refusal {
+	return mint(`give either a symbolId or a literal's factId`);
+}
+
+/** A path the grammar cannot represent; the thrower's message says which rule it broke. */
+export function unrepresentableModule(problem: string): Refusal {
+	return mint(problem);
+}
+
+////////////////////////////////
+//  Refactor
+
+export function noProviderOwns(module: string, detail?: string): Refusal {
+	return mint(
+		`no provider owns ${module}${detail === undefined ? "" : `: ${detail}`}. Only a claimed file can be rewritten`,
+	);
+}
+
+/** The provider's own refusal, named with the module it was asked about. */
+export function providerRefused(module: string, reason: string, detail?: string): Refusal {
+	return mint(`${module}: ${reason}${detail === undefined ? "" : `: ${detail}`}`);
+}
+
+export function candidateDoesNotParse(what: "replacement" | "insert", reason: string): Refusal {
+	return mint(`the ${what} does not parse: ${reason}`);
+}
+
+/** An edit that cannot be applied to the text it was cut from; the applier's message says why. */
+export function editsRefused(problem: string): Refusal {
+	return mint(problem);
+}
+
+export function sharesId(symbolId: string, module: string): Refusal {
+	return mint(`${symbolId} names more than one declaration in ${module}, so it cannot be replaced safely`);
+}
+
+export function sharesSpan(name: string, others: string): Refusal {
+	return mint(`${name} shares its span with ${others}, so replacing it would rewrite them too`);
+}
+
+export function replacementRenames(from: string, to: string): Refusal {
+	return mint(
+		`the replacement renames ${from} to ${to}, which replace cannot do. Keep the name, or use refactor_rename.`,
+	);
+}
+
+export function nothingToInsert(): Refusal {
+	return mint(`nothing to insert. Send the declaration in \`text\``);
+}
+
+export function oneAnchorOnly(): Refusal {
+	return mint(`set exactly one of after or module`);
+}
+
+export function noSingleLineName(name: string): Refusal {
+	return mint(`the provider gives ${name} no single-line name, so indentation cannot be read`);
+}
+
+export function noInsertionPoint(who: string): Refusal {
+	return mint(
+		`no whole-line insertion point exists after the anchor (${who} leaves it no line of its own); hand-edit or anchor elsewhere`,
+	);
+}
+
+export function alreadyInModule(symbolId: string, module: string): Refusal {
+	return mint(`${symbolId} is already in ${module}, so there is nothing to move`);
+}
+
+export function occurrencesBlocked(): Refusal {
+	return mint(`some occurrences cannot be rewritten; the blocked sites name which and why`);
+}
+
+/** One occurrence the provider will not rewrite, with whatever it said about why. */
+export function siteBlocked(module: string, detail: string | undefined): Refusal {
+	return mint(`${module}: ${detail ?? "cannot be rewritten safely"}`);
+}
+
+export function writeFailed(module: string | undefined, reason: string): Refusal {
+	return mint(`${module ?? "a file"}: ${reason}`);
+}
+
+/** The filesystem's own words for a write that threw, which name the condition better than we can. */
+export function writeThrew(error: unknown): Refusal {
+	return mint(error instanceof Error ? error.message : String(error));
+}
+
+////////////////////////////////
+//  Transactions
+
+export function noTransactionOpen(): Refusal {
+	return mint(`no refactor transaction is open; call refactor_start`);
+}
+
+export function transactionAlreadyOpen(): Refusal {
+	return mint(`a refactor transaction is already open; commit or revert it before starting another`);
+}
+
+export function nothingToUndo(): Refusal {
+	return mint(`this transaction has no steps to undo`);
+}
+
+/** The step is journaled and the files are not, so the caller is told what still stands. */
+export function stepNotWritten(kind: string, problem: string, stranded: string | null): Refusal {
+	const remains =
+		stranded === null
+			? ""
+			: `; the journaled step remains (${stranded}), refactor_revert restores the tracked files`;
+	return mint(`the ${kind} could not be written: ${problem}${remains}`);
+}
+
+/** What a provider or the writer refused, kept as its own words. */
+export function stepRefused(problem: string, stranded: string | null): Refusal {
+	const remains =
+		stranded === null
+			? ""
+			: `; the journaled step remains (${stranded}), refactor_revert restores the tracked files`;
+	return mint(`${problem}${remains}`);
+}
+
+export function renameBlocked(): Refusal {
+	return mint(`the rename is blocked; the blockers name what stands in the way`);
+}
+
+/** The world moved between planning and the gate, so the plan describes text that is gone. */
+export function changedWhilePlanned(module: string, kind: string): Refusal {
+	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);
+}
+
+export function staleSincePlanned(modules: string[], kind: string): Refusal {
+	return mint(
+		`${modules.join(", ")} changed since being indexed, so the ${kind} would rewrite stale positions. Re-index and plan again`,
+	);
+}
+
+export function undoWouldDiscard(module: string, stepNo: number): Refusal {
+	return mint(
+		`${module} changed after step ${stepNo}, so undoing it would discard that edit. Keep the edit, or revert the transaction`,
+	);
+}
+
+export function unresolvedIssues(count: number): Refusal {
+	return mint(`${count} unresolved issue${count === 1 ? "" : "s"}; undo and correct, or commit with force`);
+}
+
+////////////////////////////////
+//  Renaming
+
+export function nameNotInSource(oldName: string): Refusal {
+	return mint(`${oldName} is named after its file, not written in it. Rename a declaration the source spells`);
+}
+
+export function alreadyNamed(oldName: string): Refusal {
+	return mint(`already named ${oldName}; pick a different name`);
+}
+
+export function nameAlreadyDeclared(newName: string, files: number): Refusal {
+	return mint(
+		`${newName} is already declared in ${files === 1 ? "a file" : `${files} files`} this rename rewrites. Rename that declaration first, or pick another name.`,
+	);
+}
+
+export function nameAlreadyImported(newName: string, files: number): Refusal {
+	return mint(
+		`${newName} is already imported in ${files === 1 ? "a file" : `${files} files`} this rename rewrites, so the rewritten uses would bind to that import instead. Rename or alias that import first, or pick another name.`,
+	);
 }
 
 /** The module an unparseable id still names in its third field, decoded as the grammar would. */
