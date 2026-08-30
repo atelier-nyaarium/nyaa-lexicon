@@ -215,6 +215,13 @@ found is counted afterwards as the daemon's own write.
 Nothing acquires the gate twice. Whatever a held operation calls runs already held, which is why
 the service methods do not take it defensively.
 
+The live index applies watcher batches one at a time on one promise tail, and the hourly knowledge
+sweep is queued on the same tail under the same gate, so a sweep never runs beside a batch mid-parse
+and a sweep queued when the live index stops never starts. The daemon holds one `Clock` and hands
+the same instance to the store at open, the service and the live index, so every stamp, the
+watcher debounce and the sweep timer read one time source, and a residue routes every raw time read
+in the indexer, the store and the identity owner through it.
+
 ## Refactor transactions
 
 A transaction is a stack of steps over one workspace, at most one open at a time. Writes go to

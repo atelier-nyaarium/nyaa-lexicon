@@ -720,6 +720,11 @@ the module call.
 
 ## Phase 4 - Orphaned subjects: rebound, dated, or deleted by the store
 
+✅ Shipped: the sweep, the cursor, the clock at open, the window and the wire (8847dc9, after a
+hygiene and alignment audit and two red team rounds); the documentation and this record in the
+commit that carries this line. No version bump; 3.2.0 waits for Phase 5. Not written: the
+import-reached move test, which waits for a harness where a file is not a root.
+
 Decided by the owner; see Questions 4 and 9. No agent is ever asked to clean up, and nothing here
 is a chore a person performs. The sweep works on subjects, which are few (one per declaration with
 knowledge), never on rows.
@@ -1281,3 +1286,21 @@ Collected during the overnight knowledge run, the review of its patches, and the
   hidden it; both decided in the text. The two misreads: the twins test, whose survivor is no
   match because its module is not new to the pass, and the wire sentence, which was right about
   the fourth `why` value and muddled about why.
+- Building Phase 4: one hygiene and alignment finding, then two red team rounds, eight and three
+  findings, ten fixed and one held. The two majors were both a mechanism trusted one step past
+  where it was proven: `refreshDigests` ran only when a write carried digests, so an outline
+  write left a subject wearing the digest of a body the index no longer knew, and the timer's
+  sweep ran under the gate but not on the batch tail, so without a gate it could delete an
+  expired orphan while the batch recreating its file was mid-parse. Both fixes narrowed to what
+  the code already owns: every write sets the module's digests to what `symbols` holds, and
+  `serializeBatches` gained `run` so a sweep is one more item on the one tail. The test harness
+  bit twice: `advance` fires timers inside the call and the sweep now runs in the microtask after
+  it, so a test that read "not yet deleted" between the two was reading the old synchronous
+  timing; and the store lived inside the watched root, so its own sqlite writes arrived as a
+  watcher batch whose sweep took the deletion the timer test was asserting on. The daemon's two
+  teardown paths differ: the handover holds the gate through `releaseEverything` so a queued
+  batch can never reach a closing store, and the signal path does not, so a batch mid-parse at
+  SIGTERM can still write after `store.close()`. Pre-existing, one line to align, and the owner's
+  call, since holding the gate at SIGTERM makes a wedged provider a wedged exit. Held: a provider
+  outage on a module whose last good parse already lacked the declaration orphans it, which is
+  the plan's orphan, and the next parse restores it.

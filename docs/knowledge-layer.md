@@ -110,11 +110,34 @@ is never a rebind target: two subjects never merge, and the one already there ke
 the code as it stands. Prose survives a move; its citations go stale on their own, which is
 correct, because the facts underneath really did change identity.
 
-An address that stops resolving keeps its subject, bound and unresolved, until the declaration
-comes back: a re-index that puts it back at the kept address restores the subject as it lands, and
-so does a write there. Nothing orphans a subject on its own yet: the sweep that judges a vanished
-address by pattern digest, dates orphans and deletes them is not built, and `unresolved` lists
-what it would judge.
+An address that stops resolving keeps its subject, bound and unresolved, until a sweep judges it.
+The indexer runs one after every prune, at the end of a full scan and of every watcher batch, and
+the live index runs one every hour so an idle workspace still ages; the store's identity owner does
+the judging in `sweepSubjects`, one bounded batch in one transaction, from what the indexer just
+decided about presence: a module is absent when the prune did not reach it, failing when it holds
+a parse failure, parsing otherwise. Every write of a module sets its bound subjects' pattern
+digests to exactly what the index holds, null after an outline or surface parse.
+
+- **Exempt.** A subject in a failing module is left alone; nothing is dated while a person is
+  mid-edit. A malformed address has no module and is never exempt.
+- **Rebound.** Exactly one declaration among the modules first indexed in the pass digests the
+  same, with the same name and kind: the subject moves there with evidence `batchExactMatch`, no
+  date is set, and the old address forwards. A subject with no digest never matches, and the timer
+  has no new modules, so it never rebinds. A target another subject already holds is refused, and
+  the refusal reads `ambiguous` naming the holder.
+- **Orphaned.** Otherwise the subject is dated, with evidence `ambiguous` and the candidates when
+  several declarations matched, `none` when none did. An orphan leaves every queue at once and
+  costs nothing until a module write restores it: a re-index that puts the declaration back at the
+  kept address restores the subject as it lands, so does a write there, and a compat rebuild keeps
+  an orphan orphaned with its date.
+- **Deleted.** Thirty days after the date, with its answers and its demand. A date ahead of the
+  clock reads as now, so a clock that went backwards deletes nothing early.
+
+A sweep examines at most `ORPHAN_SWEEP_CAP` subjects and persists a cursor in store meta, so the
+next one resumes where it stopped and every subject is examined within an epoch. What it did is
+the `knowledgeSweep` field of the scan summary. The indexer, the store and the sweep timer read one
+`Clock`, the same instance the daemon opens the store with, which is what lets one fake clock age a
+workspace in a test.
 
 ## A refusal says what stands at the address
 
@@ -160,6 +183,13 @@ queue. The raw readers stay for recall, doubt and diagnosis, which must see stra
 residue forbids them in the ledger's ranking paths. Demand is decided at the write: `recordGap`
 inserts only where `symbols` holds the address, so a recall of a stranded answer counts nothing,
 and the `stranded` field on the wire is explanation, never eligibility.
+
+Orphaned subjects are still seen. The workspace gap list appends their rows after the actionable
+ones, each flagged `stranded` with the date and the evidence, and carries their count apart from
+`total`, which counts actionable rows only; the seeded fallback decides on actionable rows, so a
+workspace whose only knowledge is stranded still seeds its hubs. The rows come from
+`strandedRows`, the identity owner's one reader over the addressed views, in the order pass A
+reads. That is a window, not a task, and a module scope or subtree walk never holds one.
 
 The gap list says whether it filtered by the asked question: `filtered` is set by every core
 return, `false` from the workspace demand sweep, which carries every question with rechecks first,
