@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/core",
-	"version": "3.0.3",
+	"version": "3.1.0",
 	"private": true,
 	"type": "module",
 	"description": "Daemon, SQLite store, provider supervisor, query planning, narrative composition",
