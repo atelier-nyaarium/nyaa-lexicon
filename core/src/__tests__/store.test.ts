@@ -338,6 +338,23 @@ describe("opening the index", () => {
 				`INSERT INTO refactor_images (transactionId, scope, stepNo, module, existedBefore, beforeHash)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
 			).run("t1", "step", 1, "src/a.ts", 1, "blob-a");
+			db.prepare(
+				`INSERT INTO refactor_rebinds (transactionId, stepNo, ordinal, subjectId, fromSymbolId, toSymbolId,
+				 priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"t1",
+				1,
+				0,
+				"s1",
+				"lexicon ts src/a.ts add#",
+				"lexicon ts src/b.ts add#",
+				null,
+				"sameLocator",
+				1,
+				"bound",
+				null,
+			);
 		});
 		first.store.putBlob("blob-a", before);
 		first.store.close();
@@ -353,6 +370,10 @@ describe("opening the index", () => {
 		const open = second.store.journal((db) => db.prepare("SELECT * FROM refactor_transactions").all());
 		expect(open).toEqual([{ id: "t1", state: "open", startedAt: 1 }]);
 		expect(second.store.blob("blob-a")).toEqual(before);
+		const moves = second.store.journal((db) =>
+			db.prepare("SELECT subjectId, toSymbolId FROM refactor_rebinds WHERE transactionId = 't1'").all(),
+		);
+		expect(moves).toEqual([{ subjectId: "s1", toSymbolId: "lexicon ts src/b.ts add#" }]);
 		second.store.close();
 	});
 

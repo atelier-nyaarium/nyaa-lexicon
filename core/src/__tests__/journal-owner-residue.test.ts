@@ -24,6 +24,7 @@ const JOURNAL_TABLES = [
 	"refactor_blobs",
 	"refactor_images",
 	"refactor_issues",
+	"refactor_rebinds",
 ];
 
 /** transactions.ts decides what the rows mean; store.ts holds the schema and the row plumbing. */

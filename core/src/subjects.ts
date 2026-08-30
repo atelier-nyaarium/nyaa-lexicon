@@ -77,6 +77,21 @@ export interface RebindResult {
 	applied: AppliedRebind[];
 }
 
+/** A move a reversal left standing: the subject is gone, moved on past its `to`, or another holds its `from`. */
+export interface KeptRebind {
+	subjectId: string;
+	from: string;
+	to: string;
+	reason: "gone" | "movedOn" | "fromHeld";
+}
+
+export interface RebindBackResult {
+	subjects: number;
+	answers: number;
+	gaps: number;
+	kept: KeptRebind[];
+}
+
 /** What the indexer knows about a module after its last prune; the store reads no file to learn it. */
 export type ModulePresence = "presentParsing" | "presentFailing" | "absent";
 
@@ -172,16 +187,29 @@ export const ORPHAN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const SWEEP_START: SweepCursor = { epoch: 0, pass: "B", after: null };
 
+const EVIDENCE_VALUES = [
+	"sameLocator",
+	"journalMove",
+	"journalRename",
+	"batchExactMatch",
+	"ambiguous",
+	"none",
+] as const;
+
+/** The closed values the schema CHECKs, spelled once for every table that holds a subject's state. */
+export const STATE_IN = "'bound', 'orphaned'";
+export const EVIDENCE_IN = EVIDENCE_VALUES.map((value) => `'${value}'`).join(", ");
+
 /** The knowledge tables, keyed by subject, and the views the store reads them through. */
 export const KNOWLEDGE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS knowledge_subjects (
   subjectId        TEXT PRIMARY KEY,
   currentSymbolId  TEXT NOT NULL UNIQUE,
-  state            TEXT NOT NULL CHECK (state IN ('bound', 'orphaned')),
+  state            TEXT NOT NULL CHECK (state IN (${STATE_IN})),
   boundAt          INTEGER NOT NULL,
   orphanedAt       INTEGER,
   fromSymbolId     TEXT,
-  evidence         TEXT NOT NULL CHECK (evidence IN ('sameLocator', 'journalMove', 'journalRename', 'batchExactMatch', 'ambiguous', 'none')),
+  evidence         TEXT NOT NULL CHECK (evidence IN (${EVIDENCE_IN})),
   lastDigest       TEXT,
   lastCoverage     TEXT CHECK (lastCoverage IN ('commentsStripped', 'commentsKept')),
   CHECK ((state = 'bound' AND orphanedAt IS NULL) OR (state = 'orphaned' AND orphanedAt IS NOT NULL)),
@@ -257,15 +285,8 @@ export const KNOWLEDGE_VIEWS = [
 /** The tables a rebuild salvages, subjects first so the rows that key by them restore after. */
 export const KNOWLEDGE_TABLES = ["knowledge_subjects", "answers", "gaps"] as const;
 
-/** The closed values the schema CHECKs, so a salvaged row from another version cannot fail the rebuild. */
-const EVIDENCE = new Set<string>([
-	"sameLocator",
-	"journalMove",
-	"journalRename",
-	"batchExactMatch",
-	"ambiguous",
-	"none",
-]);
+/** Checked before the insert, so a salvaged row from another version cannot fail the rebuild. */
+const EVIDENCE = new Set<string>(EVIDENCE_VALUES);
 
 const COVERAGE = new Set<string>(["commentsStripped", "commentsKept"]);
 
@@ -631,20 +652,33 @@ export class KnowledgeSubjects {
 		return { subjects: applied.length, answers, gaps, applied };
 	}
 
-	/** Puts back exactly what a rebind moved: each subject still at its `to`, to the state it had,
-	 * unless something else now holds its `from`. A replay finds nothing at `to` and does nothing. */
-	rebindBack(applied: AppliedRebind[]): RebindResult {
+	/** Puts back exactly what a rebind moved: each subject still at its `to`, to the state it had.
+	 * A move it cannot put back is named, never forced: two subjects never merge. */
+	rebindBack(applied: readonly AppliedRebind[]): RebindBackResult {
 		let subjects = 0;
 		let answers = 0;
 		let gaps = 0;
+		const kept: KeptRebind[] = [];
 		const back = this.db.prepare(
 			"UPDATE knowledge_subjects SET currentSymbolId = ?, fromSymbolId = ?, boundAt = ?, evidence = ?, state = ?, orphanedAt = ? WHERE subjectId = ?",
 		);
 		const countAnswers = this.db.prepare("SELECT COUNT(*) AS n FROM answers WHERE subjectId = ?");
 		const countGaps = this.db.prepare("SELECT COUNT(*) AS n FROM gaps WHERE subjectId = ?");
-		for (const entry of applied) {
+		// Newest move first, so a subject moved twice in one step comes all the way back.
+		for (const entry of [...applied].reverse()) {
 			const subject = this.byId(entry.subjectId);
-			if (subject === null || subject.symbolId !== entry.to || this.forAddress(entry.from) !== null) continue;
+			const reason =
+				subject === null
+					? "gone"
+					: subject.symbolId !== entry.to
+						? "movedOn"
+						: this.forAddress(entry.from) !== null
+							? "fromHeld"
+							: null;
+			if (reason !== null) {
+				kept.push({ subjectId: entry.subjectId, from: entry.from, to: entry.to, reason });
+				continue;
+			}
 			back.run(
 				entry.from,
 				entry.priorFrom,
@@ -658,7 +692,7 @@ export class KnowledgeSubjects {
 			answers += (countAnswers.get(entry.subjectId) as { n: number }).n;
 			gaps += (countGaps.get(entry.subjectId) as { n: number }).n;
 		}
-		return { subjects, answers, gaps, applied: [] };
+		return { subjects, answers, gaps, kept };
 	}
 
 	/** The subject and its rows, gone. */

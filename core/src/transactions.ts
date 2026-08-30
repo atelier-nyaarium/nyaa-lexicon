@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import {
 	moduleOf,
 	type RefactorCommitResult,
@@ -24,7 +25,7 @@ import {
 import { systemClock } from "./clock.js";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
-import type { AppliedRebind, RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
+import type { AppliedRebind, KeptRebind, RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
 
 export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
 
@@ -51,26 +52,6 @@ export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: st
 /** Over bytes, not decoded text, so two files that differ only in encoding never share an image. */
 export function hashBytes(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex").slice(0, 32);
-}
-
-/** What a journaled step actually moved, read back from its plan record. */
-function appliedOf(plan: string | null): AppliedRebind[] | null {
-	if (plan === null) return null;
-	try {
-		const record = JSON.parse(plan) as { rebind?: { applied?: unknown } };
-		const applied = record.rebind?.applied;
-		if (!Array.isArray(applied)) return null;
-		return applied.filter(
-			(entry): entry is AppliedRebind =>
-				typeof entry === "object" &&
-				entry !== null &&
-				typeof (entry as AppliedRebind).subjectId === "string" &&
-				typeof (entry as AppliedRebind).from === "string" &&
-				typeof (entry as AppliedRebind).to === "string",
-		);
-	} catch {
-		return null;
-	}
 }
 
 ////////////////////////////////
@@ -259,26 +240,41 @@ export class TransactionManager {
 		});
 	}
 
-	/** Moves the subjects a step re-minted and journals exactly what moved, in one transaction, so a
-	 * reversal puts back that and nothing else. */
+	/** Moves the subjects a step re-minted and journals exactly what moved, one row each in the same
+	 * transaction, so a reversal puts back that and nothing else. */
 	rebind(stepNo: number, entries: RebindEntry[], evidence: RebindEvidence): RebindResult {
 		const open = this.openTransaction();
 		if (!open) throw new Error("no refactor transaction is open");
 		return this.store.journal((db) => {
 			const result = this.store.subjects.rebind(entries, evidence, this.now());
-			const row = db
-				.prepare("SELECT plan FROM refactor_steps WHERE transactionId = ? AND stepNo = ?")
-				.get(open.id, stepNo) as { plan: string | null } | undefined;
-			const record = (row?.plan == null ? {} : JSON.parse(row.plan)) as Record<string, unknown>;
-			record["rebind"] = {
-				...(record["rebind"] as Record<string, unknown> | undefined),
-				applied: result.applied,
-			};
-			db.prepare("UPDATE refactor_steps SET plan = ? WHERE transactionId = ? AND stepNo = ?").run(
-				JSON.stringify(record),
-				open.id,
-				stepNo,
+			const next = (
+				db
+					.prepare(
+						"SELECT COALESCE(MAX(ordinal), -1) + 1 AS next FROM refactor_rebinds WHERE transactionId = ? AND stepNo = ?",
+					)
+					.get(open.id, stepNo) as { next: number }
+			).next;
+			const insert = db.prepare(
+				`INSERT INTO refactor_rebinds
+				 (transactionId, stepNo, ordinal, subjectId, fromSymbolId, toSymbolId,
+				  priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
+			result.applied.forEach((move, index) => {
+				insert.run(
+					open.id,
+					stepNo,
+					next + index,
+					move.subjectId,
+					move.from,
+					move.to,
+					move.priorFrom,
+					move.priorEvidence,
+					move.priorBoundAt,
+					move.priorState,
+					move.priorOrphanedAt,
+				);
+			});
 			return result;
 		});
 	}
@@ -313,9 +309,9 @@ export class TransactionManager {
 
 		const top = this.store.journal((db) =>
 			db
-				.prepare("SELECT stepNo, plan FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC LIMIT 1")
+				.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC LIMIT 1")
 				.get(open.id),
-		) as { stepNo: number; plan: string | null } | undefined;
+		) as { stepNo: number } | undefined;
 		if (!top) return { undone: false, reason: "this transaction has no steps to undo" };
 
 		const images = this.imagesOf(open.id, "step", top.stepNo);
@@ -334,20 +330,27 @@ export class TransactionManager {
 		}
 
 		for (const image of images) this.restore(image);
-		// The files went back, so what the step moved goes back with them.
-		const applied = appliedOf(top.plan);
-		if (applied !== null) this.store.subjects.rebindBack(applied);
-
-		this.store.journal((db) => {
+		// The files went back, so what the step moved goes back with them, in one commit with the rows
+		// that recorded it: a crash between the two cannot report a reversed move as kept.
+		const applied = this.rebindsOf(open.id, top.stepNo);
+		const kept = this.store.journal((db) => {
+			const { kept } = this.store.subjects.rebindBack(applied);
 			db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
 				open.id,
 				top.stepNo,
 			);
 			db.prepare("DELETE FROM refactor_issues WHERE transactionId = ? AND stepNo = ?").run(open.id, top.stepNo);
+			db.prepare("DELETE FROM refactor_rebinds WHERE transactionId = ? AND stepNo = ?").run(open.id, top.stepNo);
 			db.prepare("DELETE FROM refactor_steps WHERE transactionId = ? AND stepNo = ?").run(open.id, top.stepNo);
+			return kept;
 		});
 
-		return { undone: true, stepNo: top.stepNo, modules: images.map((image) => image.module) };
+		return {
+			undone: true,
+			stepNo: top.stepNo,
+			modules: images.map((image) => image.module),
+			...(kept.length === 0 ? {} : { unreversed: kept }),
+		};
 	}
 
 	/** Puts every tracked file back to its opening image, whatever happened in between. */
@@ -357,17 +360,25 @@ export class TransactionManager {
 
 		const images = this.imagesOf(open.id, "baseline", 0);
 		for (const image of images) this.restore(image);
-		// Every step's rebind retraces, newest first, so a subject moved twice comes all the way back.
+		// Every step's rebind retraces, newest first, so a subject moved twice comes all the way back,
+		// and the journal closes in the same commit so a replay after a crash finds nothing to retrace.
 		const steps = this.store.journal((db) =>
-			db.prepare("SELECT plan FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC").all(open.id),
-		) as Array<{ plan: string | null }>;
-		for (const step of steps) {
-			const applied = appliedOf(step.plan);
-			if (applied !== null) this.store.subjects.rebindBack(applied);
-		}
-		this.close(open.id, "reverted");
+			db.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC").all(open.id),
+		) as Array<{ stepNo: number }>;
+		const moves = steps.map((step) => this.rebindsOf(open.id, step.stepNo));
+		const kept = this.store.journal((db) => {
+			const kept: KeptRebind[] = [];
+			for (const applied of moves) kept.push(...this.store.subjects.rebindBack(applied).kept);
+			this.drop(db, open.id, "reverted");
+			return kept;
+		});
+		this.store.pruneBlobs();
 
-		return { reverted: true, modules: images.map((image) => image.module) };
+		return {
+			reverted: true,
+			modules: images.map((image) => image.module),
+			...(kept.length === 0 ? {} : { unreversed: kept }),
+		};
 	}
 
 	/** Keeps what is on disk and drops the journal, so nothing can be undone afterwards. */
@@ -399,22 +410,29 @@ export class TransactionManager {
 	 * never overwritten: reporting a conflict is recoverable, and silently reverting a stranger's
 	 * work is not.
 	 */
-	recover(): { recovered: boolean; transactionId?: string; restored: string[]; conflicts: string[] } {
+	recover(): {
+		recovered: boolean;
+		transactionId?: string;
+		restored: string[];
+		conflicts: string[];
+		unreversed: KeptRebind[];
+	} {
 		this.sweepTemporaries();
 
 		const open = this.openTransaction();
-		if (!open) return { recovered: false, restored: [], conflicts: [] };
+		if (!open) return { recovered: false, restored: [], conflicts: [], unreversed: [] };
 
 		const unfinished = this.store.journal((db) =>
 			db
 				.prepare(
-					"SELECT stepNo, phase, plan FROM refactor_steps WHERE transactionId = ? AND phase != 'finalized' ORDER BY stepNo DESC",
+					"SELECT stepNo, phase FROM refactor_steps WHERE transactionId = ? AND phase != 'finalized' ORDER BY stepNo DESC",
 				)
 				.all(open.id),
-		) as Array<{ stepNo: number; phase: StepPhase; plan: string | null }>;
+		) as Array<{ stepNo: number; phase: StepPhase }>;
 
 		const restored: string[] = [];
 		const conflicts: string[] = [];
+		const unreversed: KeptRebind[] = [];
 
 		for (const step of unfinished) {
 			const conflictsBefore = conflicts.length;
@@ -431,17 +449,20 @@ export class TransactionManager {
 				conflicts.push(image.module);
 			}
 
-			// Files went back to their before-images, so what the step moved goes back too. A move
-			// whose modules both conflicted stays, with the files nobody restored.
-			const applied = appliedOf(step.plan);
-			if (applied !== null) {
-				const conflicted = new Set(conflicts.slice(conflictsBefore));
-				const touched = (symbolId: string) => conflicted.has(moduleOf(symbolId) ?? "");
-				this.store.subjects.rebindBack(applied.filter(({ from, to }) => !(touched(from) && touched(to))));
-			}
-
-			this.store.journal((db) => {
+			// Files went back to their before-images, so what the step moved goes back too, in one commit
+			// with the step's rows. A move whose modules both conflicted stays, with the files nobody restored.
+			const conflicted = new Set(conflicts.slice(conflictsBefore));
+			const touched = (symbolId: string) => conflicted.has(moduleOf(symbolId) ?? "");
+			const applied = this.rebindsOf(open.id, step.stepNo).filter(
+				({ from, to }) => !(touched(from) && touched(to)),
+			);
+			const kept = this.store.journal((db) => {
+				const { kept } = this.store.subjects.rebindBack(applied);
 				db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
+					open.id,
+					step.stepNo,
+				);
+				db.prepare("DELETE FROM refactor_rebinds WHERE transactionId = ? AND stepNo = ?").run(
 					open.id,
 					step.stepNo,
 				);
@@ -449,10 +470,12 @@ export class TransactionManager {
 					open.id,
 					step.stepNo,
 				);
+				return kept;
 			});
+			unreversed.push(...kept);
 		}
 
-		return { recovered: true, transactionId: open.id, restored, conflicts };
+		return { recovered: true, transactionId: open.id, restored, conflicts, unreversed };
 	}
 
 	////////////////////////////////
@@ -533,6 +556,37 @@ export class TransactionManager {
 		return rows.map((row) => ({ ...row, existedBefore: row.existedBefore === 1 }));
 	}
 
+	/** What a step moved, in the order it moved it; the schema vouched for every field at the write. */
+	private rebindsOf(transactionId: string, stepNo: number): AppliedRebind[] {
+		const rows = this.store.journal((db) =>
+			db
+				.prepare(
+					`SELECT subjectId, fromSymbolId, toSymbolId, priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt
+					 FROM refactor_rebinds WHERE transactionId = ? AND stepNo = ? ORDER BY ordinal`,
+				)
+				.all(transactionId, stepNo),
+		) as Array<{
+			subjectId: string;
+			fromSymbolId: string;
+			toSymbolId: string;
+			priorFrom: string | null;
+			priorEvidence: AppliedRebind["priorEvidence"];
+			priorBoundAt: number;
+			priorState: AppliedRebind["priorState"];
+			priorOrphanedAt: number | null;
+		}>;
+		return rows.map((row) => ({
+			subjectId: row.subjectId,
+			from: row.fromSymbolId,
+			to: row.toSymbolId,
+			priorFrom: row.priorFrom,
+			priorEvidence: row.priorEvidence,
+			priorBoundAt: row.priorBoundAt,
+			priorState: row.priorState,
+			priorOrphanedAt: row.priorOrphanedAt,
+		}));
+	}
+
 	private imageFor(transactionId: string, scope: ImageScope, stepNo: number, module: string): boolean {
 		const row = this.store.journal((db) =>
 			db
@@ -571,12 +625,16 @@ export class TransactionManager {
 
 	/** Drops everything but the transaction row, which keeps its outcome for anyone still asking. */
 	private close(transactionId: string, state: "committed" | "reverted"): void {
-		this.store.journal((db) => {
-			db.prepare("DELETE FROM refactor_images WHERE transactionId = ?").run(transactionId);
-			db.prepare("DELETE FROM refactor_issues WHERE transactionId = ?").run(transactionId);
-			db.prepare("DELETE FROM refactor_steps WHERE transactionId = ?").run(transactionId);
-			db.prepare("UPDATE refactor_transactions SET state = ? WHERE id = ?").run(state, transactionId);
-		});
+		this.store.journal((db) => this.drop(db, transactionId, state));
 		this.store.pruneBlobs();
+	}
+
+	/** The deletes of a close, for a caller already inside the journal's transaction. */
+	private drop(db: DatabaseSync, transactionId: string, state: "committed" | "reverted"): void {
+		db.prepare("DELETE FROM refactor_images WHERE transactionId = ?").run(transactionId);
+		db.prepare("DELETE FROM refactor_issues WHERE transactionId = ?").run(transactionId);
+		db.prepare("DELETE FROM refactor_rebinds WHERE transactionId = ?").run(transactionId);
+		db.prepare("DELETE FROM refactor_steps WHERE transactionId = ?").run(transactionId);
+		db.prepare("UPDATE refactor_transactions SET state = ? WHERE id = ?").run(state, transactionId);
 	}
 }

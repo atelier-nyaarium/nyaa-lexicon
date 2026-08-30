@@ -1083,11 +1083,24 @@ export const RefactorTrackResultSchema = z
 
 export type RefactorTrackResult = z.infer<typeof RefactorTrackResultSchema>;
 
+/** A subject move a reversal left standing, and why it could not be put back. */
+export const UnreversedRebindSchema = z
+	.object({
+		subjectId: z.string(),
+		from: z.string(),
+		to: z.string(),
+		reason: z.enum(["gone", "movedOn", "fromHeld"]),
+	})
+	.meta({ id: "UnreversedRebind" });
+
+export type UnreversedRebind = z.infer<typeof UnreversedRebindSchema>;
+
 export const RefactorUndoResultSchema = z
 	.object({
 		undone: z.boolean(),
 		stepNo: z.number().optional(),
 		modules: z.array(z.string()).optional(),
+		unreversed: z.array(UnreversedRebindSchema).optional(),
 		reason: z.string().optional(),
 	})
 	.meta({ id: "RefactorUndoResult" });
@@ -1095,7 +1108,12 @@ export const RefactorUndoResultSchema = z
 export type RefactorUndoResult = z.infer<typeof RefactorUndoResultSchema>;
 
 export const RefactorRevertResultSchema = z
-	.object({ reverted: z.boolean(), modules: z.array(z.string()), reason: z.string().optional() })
+	.object({
+		reverted: z.boolean(),
+		modules: z.array(z.string()),
+		unreversed: z.array(UnreversedRebindSchema).optional(),
+		reason: z.string().optional(),
+	})
 	.meta({ id: "RefactorRevertResult" });
 
 export type RefactorRevertResult = z.infer<typeof RefactorRevertResultSchema>;

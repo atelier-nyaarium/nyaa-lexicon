@@ -310,6 +310,13 @@ async function main(argv: string[]): Promise<void> {
 			if (recovered.conflicts.length > 0) {
 				log(`left alone, changed by someone else: ${recovered.conflicts.join(", ")}`);
 			}
+			if (recovered.unreversed.length > 0) {
+				log(
+					`${recovered.unreversed.length} subject move(s) could not be put back: ${recovered.unreversed
+						.map((move) => `${move.from} -> ${move.to} (${move.reason})`)
+						.join(", ")}`,
+				);
+			}
 		}
 
 		const dispatch = createDispatch(service, { gate, transactions: journal });

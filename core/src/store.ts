@@ -46,6 +46,7 @@ import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 import {
+	EVIDENCE_IN,
 	KNOWLEDGE_SCHEMA,
 	KNOWLEDGE_TABLES,
 	KNOWLEDGE_VIEWS,
@@ -55,6 +56,7 @@ import {
 	restoreSubjects,
 	type SalvagedAnswer,
 	type SalvagedGap,
+	STATE_IN,
 	type StrandedRow,
 	SWEEP_START,
 	type SweepCursor,
@@ -144,6 +146,33 @@ CREATE TABLE IF NOT EXISTS notes (
   PRIMARY KEY (module, ordinal)
 );
 CREATE INDEX IF NOT EXISTS notes_module ON notes(module);
+`;
+
+/** Added in place, so IF NOT EXISTS. What a refactor step moved, one row each, in the order it moved them. */
+const REBINDS_TABLE = `
+-- Written in the same transaction as the move it records. The CHECKs are the subjects table's
+-- own, so a row here is a prior state it accepts back.
+CREATE TABLE IF NOT EXISTS refactor_rebinds (
+  transactionId   TEXT NOT NULL,
+  stepNo          INTEGER NOT NULL,
+  ordinal         INTEGER NOT NULL,
+  subjectId       TEXT NOT NULL,
+  fromSymbolId    TEXT NOT NULL,
+  toSymbolId      TEXT NOT NULL,
+  priorFrom       TEXT,
+  priorEvidence   TEXT NOT NULL CHECK (priorEvidence IN (${EVIDENCE_IN})),
+  priorBoundAt    INTEGER NOT NULL,
+  priorState      TEXT NOT NULL CHECK (priorState IN (${STATE_IN})),
+  priorOrphanedAt INTEGER,
+  PRIMARY KEY (transactionId, stepNo, ordinal),
+  CHECK ((priorState = 'bound' AND priorOrphanedAt IS NULL) OR (priorState = 'orphaned' AND priorOrphanedAt IS NOT NULL)),
+  CHECK (typeof(subjectId) = 'text' AND subjectId != ''),
+  CHECK (typeof(fromSymbolId) = 'text' AND fromSymbolId != ''),
+  CHECK (typeof(toSymbolId) = 'text' AND toSymbolId != ''),
+  CHECK (priorFrom IS NULL OR (typeof(priorFrom) = 'text' AND priorFrom != '')),
+  CHECK (typeof(priorBoundAt) = 'integer'),
+  CHECK (priorOrphanedAt IS NULL OR typeof(priorOrphanedAt) = 'integer')
+);
 `;
 
 // Every range is stored whole. Keeping only a start meant the index could say where something was
@@ -357,7 +386,7 @@ CREATE TABLE refactor_steps (
   createdAt     INTEGER NOT NULL,
   PRIMARY KEY (transactionId, stepNo)
 );
-
+${REBINDS_TABLE}
 -- Content addressed, so snapshotting every layer of a long transaction stores each distinct file
 -- version once rather than once per layer. Bytes, not text: a file that is not valid UTF-8 still
 -- has to come back byte-identical.
@@ -462,6 +491,7 @@ const SALVAGED_TABLES = [
 	"refactor_blobs",
 	"refactor_images",
 	"refactor_issues",
+	"refactor_rebinds",
 ] as const;
 
 /** Journal tables, whose loss is worse than a failed open: it strands edits already on disk. */
@@ -594,7 +624,8 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: nu
  *
  * Column-wise rather than positional, so adding a journal column keeps old rows loadable instead
  * of dropping every one of them the first time the schema moves. A row losing a column it no
- * longer has is fine; a row losing its whole transaction is not.
+ * longer has is fine; a row losing its whole transaction is not. A column added later must allow
+ * NULL or carry a default, or every older row fails the open.
  */
 function restoreByColumn(db: DatabaseSync, table: string, rows: Array<Record<string, unknown>>): void {
 	if (rows.length === 0) return;
@@ -611,6 +642,115 @@ function restoreByColumn(db: DatabaseSync, table: string, rows: Array<Record<str
 		);
 		statement.run(...present.map((column) => row[column] as string | number | null | Uint8Array));
 	}
+}
+
+/**
+ * Migration shim, removed at 4.0.0. A store from before 3.2.0 journaled what a step moved as JSON
+ * in the step's plan; this is the last read of that shape. Returns how many entries the schema
+ * refused.
+ */
+function liftAppliedRebinds(db: DatabaseSync): number {
+	const steps = db
+		.prepare(
+			`SELECT s.transactionId, s.stepNo, s.plan FROM refactor_steps s
+			 JOIN refactor_transactions t ON t.id = s.transactionId
+			 WHERE t.state = 'open' AND s.plan IS NOT NULL`,
+		)
+		.all() as Array<{ transactionId: string; stepNo: number; plan: string }>;
+	const insert = db.prepare(
+		`INSERT INTO refactor_rebinds
+		 (transactionId, stepNo, ordinal, subjectId, fromSymbolId, toSymbolId,
+		  priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	);
+	let dropped = 0;
+	for (const step of steps) {
+		let applied: unknown;
+		try {
+			applied = (JSON.parse(step.plan) as { rebind?: { applied?: unknown } }).rebind?.applied;
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(applied)) continue;
+		// A step named each move once; a repeat would read as moved on when the newer one retraced
+		// first, so it is lifted once, and a repeat disagreeing on the prior state is not a record.
+		const seen = new Map<string, string>();
+		applied.forEach((entry, ordinal) => {
+			const move = liftedMove(entry);
+			if (move === null) {
+				dropped++;
+				return;
+			}
+			const key = JSON.stringify([move.subjectId, move.from, move.to]);
+			const whole = JSON.stringify(move);
+			const earlier = seen.get(key);
+			if (earlier !== undefined) {
+				if (earlier !== whole) dropped++;
+				return;
+			}
+			seen.set(key, whole);
+			try {
+				insert.run(
+					step.transactionId,
+					step.stepNo,
+					ordinal,
+					move.subjectId,
+					move.from,
+					move.to,
+					move.priorFrom,
+					move.priorEvidence,
+					move.priorBoundAt,
+					move.priorState,
+					move.priorOrphanedAt,
+				);
+			} catch {
+				dropped++;
+			}
+		});
+	}
+	return dropped;
+}
+
+interface LiftedMove {
+	subjectId: string;
+	from: string;
+	to: string;
+	priorFrom: string | null;
+	priorEvidence: string;
+	priorBoundAt: number;
+	priorState: string;
+	priorOrphanedAt: number | null;
+}
+
+/** Each field read as the type its column declares, never coerced; the closed values are the CHECKs' to refuse. */
+function liftedMove(entry: unknown): LiftedMove | null {
+	if (typeof entry !== "object" || entry === null) return null;
+	const move = entry as Record<string, unknown>;
+	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+	const stamp = (value: unknown) => (typeof value === "number" && Number.isInteger(value) ? value : null);
+	const subjectId = text(move["subjectId"]);
+	const from = text(move["from"]);
+	const to = text(move["to"]);
+	const priorEvidence = text(move["priorEvidence"]);
+	const priorState = text(move["priorState"]);
+	const priorBoundAt = stamp(move["priorBoundAt"]);
+	const priorFrom = move["priorFrom"] ?? null;
+	const priorOrphanedAt = move["priorOrphanedAt"] ?? null;
+	if (subjectId === null || from === null || to === null || priorEvidence === null || priorState === null)
+		return null;
+	if (priorBoundAt === null) return null;
+	if (priorFrom !== null && text(priorFrom) === null) return null;
+	if (priorOrphanedAt !== null && stamp(priorOrphanedAt) === null) return null;
+	return {
+		subjectId,
+		from,
+		to,
+		priorFrom: priorFrom as string | null,
+		priorEvidence,
+		priorBoundAt,
+		priorState,
+		priorOrphanedAt: priorOrphanedAt as number | null,
+	};
 }
 
 /** Null when the table is absent, which is the case on an index written before it existed. */
@@ -738,6 +878,8 @@ export class IndexStore {
 
 		// Read before any rebuild drops the table it lives in.
 		const stored = version === SCHEMA_VERSION ? readMeta(db, COMPATIBILITY_KEY) : null;
+		// Read before a rebuild creates it: a store without the table journaled its moves as JSON.
+		const liftRebinds = !tableExists(db, "refactor_rebinds");
 		if (version === SCHEMA_VERSION && compatibility != null && stored !== null && stored !== compatibility) {
 			version = -1;
 			reason = "a major version has shipped since this index was written";
@@ -767,6 +909,8 @@ export class IndexStore {
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
 				db.exec(SCHEMA);
 				({ unplaced, dropped } = restoreKnowledge(db, salvaged, clock.now()));
+				// The steps are back, so what they journaled as JSON moves into the table in the same commit.
+				if (liftRebinds) dropped += liftAppliedRebinds(db);
 				db.exec("COMMIT");
 			} catch (error) {
 				db.exec("ROLLBACK");
@@ -774,6 +918,17 @@ export class IndexStore {
 			}
 			db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 			rebuilt = version !== 0;
+		} else if (liftRebinds) {
+			// Table and lift in one commit, or a crash between them reads as a store that already lifted.
+			db.exec("BEGIN");
+			try {
+				db.exec(REBINDS_TABLE);
+				dropped += liftAppliedRebinds(db);
+				db.exec("COMMIT");
+			} catch (error) {
+				db.exec("ROLLBACK");
+				throw error;
+			}
 		}
 
 		// Index additions are safe to apply in place, so existing stores get this lookup without a rebuild.

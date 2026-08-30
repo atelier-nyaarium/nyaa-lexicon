@@ -1196,6 +1196,85 @@ unreadable row counted as `dropped`. Each existing rebuild test keeps passing un
 
 **Release:** a patch. No wire change; the open result's `dropped` is internal to the daemon log.
 
+## Replan 3 - Typed refactor_rebinds rows instead of applied rebinds as JSON inside the step plan
+
+The third of the five replan items (Question 11), the architecture assessment's fourth
+opportunity, contested there as smaller and less certain than the clock and placement items, and
+scheduled as hardening rather than unfinished business. What a refactor step moved is the one
+record that lets undo, revert and recovery put identity back, and today it is JSON inside the
+step's plan column, validated by hand at the read.
+
+**What exists.** `TransactionManager.rebind` moves the subjects through `KnowledgeSubjects.rebind`
+and merges the returned `applied` entries into the step's `plan` JSON under `rebind.applied`, in
+the same `store.journal` transaction as the move. `appliedOf` reads them back for `undo`, `revert`
+and `recover`: it parses the JSON, keeps an entry only when `subjectId`, `from` and `to` are
+strings, and answers null on any parse failure, so a malformed entry or an unreadable record reads
+as no record and recovery deletes a step whose identity effects stand. The prior-state fields
+(`priorFrom`, `priorEvidence`, `priorBoundAt`, `priorState`, `priorOrphanedAt`) are not checked
+and reach `rebindBack` as whatever the JSON held. `rebindBack` skips an entry whose subject is no
+longer at its `to` or whose `from` another subject holds, and returns counts only, so a reversal
+that put back fewer moves than it was handed reads the same as a full one. The journal residue
+lists five tables, `SALVAGED_TABLES` carries them across a rebuild by column, and the undo and
+revert results on the wire name the files restored and nothing about subjects.
+
+**What changes.**
+
+- **A table in the journal.** `refactor_rebinds (transactionId, stepNo, ordinal, subjectId,
+  fromSymbolId, toSymbolId, priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt)`,
+  primary key `(transactionId, stepNo, ordinal)`, `NOT NULL` on every field `AppliedRebind`
+  requires, the `CHECK`s `knowledge_subjects` carries on the state, the evidence and the
+  state-date pair, `typeof` pinned on the two stamps, since SQLite's affinity would otherwise
+  store a string in an integer column, and the addresses and `priorFrom` refused empty, so a row
+  the schema accepts is an `AppliedRebind` by construction and a malformed one is refused at the
+  write instead of dropped at the read. A number bound to a text column lands as text before any
+  `CHECK` sees it, which is why the lift below reads each field by type rather than trusting the
+  table to. It joins `SCHEMA`,
+  `SALVAGED_TABLES` (and so `JOURNAL_TABLES`, whose loss fails the open) and the journal residue's
+  list.
+- **Written with the move.** `TransactionManager.rebind` inserts one row per applied entry,
+  ordinal in application order, in the same `store.journal` transaction as the subject update. The
+  plan JSON keeps the decided `rebind.entries` and never carries `applied` again. `appliedOf`
+  goes; `rebindsOf(transactionId, stepNo)` reads the rows by ordinal and maps columns to
+  `AppliedRebind` with no validation, since the schema did it, and `rebindBack` retraces them
+  newest first, so a subject moved twice in one step comes all the way back. `undo` and `recover` delete a
+  step's rows with its images and issues, and a revert or commit deletes the transaction's; each
+  reversal puts the subjects back and deletes the rows in one commit, so a crash between the two
+  cannot report a reversed move as kept on the next attempt.
+- **A partial reversal is a report.** `rebindBack` returns the entries it did not put back as
+  `kept`, each with why, a closed value: the subject is `gone`, it has `movedOn` past its `to`,
+  or another subject holds its `from` (`fromHeld`). `undo` and `revert` carry them as an optional `unreversed` list on `RefactorUndoResult`
+  and `RefactorRevertResult`, present only when non-empty, and the MCP renderer names each move
+  it left standing. `recover` returns them beside `restored` and `conflicts`, and `daemonCli` logs
+  them with the recovery.
+- **The table lands in place.** `IndexStore.open` creates it `IF NOT EXISTS`, the way `notes`
+  landed, so no store rebuilds for it. When the table did not exist before this open, the open
+  lifts `rebind.applied` from every step of the open transaction into rows, the last read of that
+  JSON, in the same commit that creates the table (the rebuild's own, when one runs), so a crash
+  between the two cannot read as a store that already lifted. Each entry is read field by field
+  as the type its column declares and never coerced; one that does not fit, or that the schema
+  refuses, is dropped and counted into the open result's `dropped`; a move a step names twice is
+  lifted once, and a repeat that disagrees on the prior state is dropped and counted. A store that already has the table lifts
+  nothing. The lift is a migration shim, removed at 4.0.0, and its comment says so.
+- **What stays.** `KnowledgeSubjects.rebind`, `rebindBack` and `AppliedRebind` keep their shapes.
+  The identity owner still decides what moved; the journal only records it.
+
+**Tests:** a step's rebind writes one row per applied entry in ordinal order and the plan JSON
+carries no `applied`; a step that rebinds twice continues its ordinals, and undo retraces both,
+as it does a subject moved twice in one call. The existing undo, revert and recovery reversals
+pass unchanged, reading rows. A row missing its subject, or with a state outside the closed set, or `orphaned` without a
+date, or with a state outside the closed set, is refused by the schema. Undo after another
+subject was claimed at a move's `from` reports the kept move on its result, revert the same, and
+recovery returns it beside the conflicts; a subject that moved on or was deleted since the step
+is named with that reason. A store opened with `rebind.applied` in an open step's plan and no
+table lifts the entries into rows, across a rebuild too, recovery reverses from them, an entry
+the schema refuses or a field of the wrong type is counted as `dropped`, and a repeated move is
+lifted once. An unfinished refactor's rebind rows survive a rebuild. A reversal whose journal
+commit is refused leaves identity as it was, for the write, undo, revert and recovery alike, and
+a subject moved onward while another took its old address reads as moved on.
+
+**Release:** rides in the pending minor. The two result shapes gain an optional field, which an
+older client's `safeParse` drops. No version bump now.
+
 ## Verification
 
 Ordered by how much it proves, as the repository already orders it.

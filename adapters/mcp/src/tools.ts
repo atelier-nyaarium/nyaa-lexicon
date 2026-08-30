@@ -50,6 +50,7 @@ import type {
 	StoredDeclaration,
 	SubjectDiagnosis,
 	TypeInfo,
+	UnreversedRebind,
 } from "@nyaa-lexicon/protocol";
 import { parseSymbolId } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
@@ -1003,11 +1004,29 @@ export async function refactorTrack(backend: ToolBackend, args: { module: string
 	});
 }
 
+const UNREVERSED_WHY: Record<UnreversedRebind["reason"], string> = {
+	gone: `its subject no longer exists`,
+	movedOn: `its subject has moved on since`,
+	fromHeld: `another subject now holds the old address`,
+};
+
+/** The subject moves a reversal left standing, one line each, so the caller knows which knowledge stayed where. */
+function unreversedLines(unreversed: UnreversedRebind[] | undefined): string[] {
+	if (unreversed === undefined || unreversed.length === 0) return [];
+	return [
+		`${unreversed.length} subject move(s) stayed as the step left them:`,
+		...unreversed.map((move) => `- \`${move.from}\` to \`${move.to}\`: ${UNREVERSED_WHY[move.reason]}.`),
+	];
+}
+
 export async function refactorUndo(backend: ToolBackend): Promise<ToolResult> {
 	return rendered(async () => {
 		const outcome = await backend.refactorUndo();
 		if (!outcome.undone) return `Nothing was undone. ${outcome.reason ?? ""}`.trim();
-		return `Undid step ${outcome.stepNo}, restoring ${(outcome.modules ?? []).map((m) => `\`${m}\``).join(", ")}.`;
+		return [
+			`Undid step ${outcome.stepNo}, restoring ${(outcome.modules ?? []).map((m) => `\`${m}\``).join(", ")}.`,
+			...unreversedLines(outcome.unreversed),
+		].join("\n");
 	});
 }
 
@@ -1015,11 +1034,13 @@ export async function refactorRevert(backend: ToolBackend): Promise<ToolResult> 
 	return rendered(async () => {
 		const outcome = await backend.refactorRevert();
 		if (!outcome.reverted) return `Nothing was reverted. ${outcome.reason ?? ""}`.trim();
-		return outcome.modules.length === 0
-			? `Reverted. No file had been changed.`
-			: `Reverted ${outcome.modules.length} file(s) to how the transaction found them: ${outcome.modules
-					.map((m) => `\`${m}\``)
-					.join(", ")}.`;
+		const reverted =
+			outcome.modules.length === 0
+				? `Reverted. No file had been changed.`
+				: `Reverted ${outcome.modules.length} file(s) to how the transaction found them: ${outcome.modules
+						.map((m) => `\`${m}\``)
+						.join(", ")}.`;
+		return [reverted, ...unreversedLines(outcome.unreversed)].join("\n");
 	});
 }
 

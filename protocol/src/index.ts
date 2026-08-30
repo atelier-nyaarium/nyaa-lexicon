@@ -211,6 +211,8 @@ export {
 	TransactionStepSchema,
 	type TypeHierarchy,
 	TypeHierarchySchema,
+	type UnreversedRebind,
+	UnreversedRebindSchema,
 } from "./daemonShapes.js";
 export {
 	CLIENT_LINE_CAP,
