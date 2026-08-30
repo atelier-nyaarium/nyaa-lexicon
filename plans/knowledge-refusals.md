@@ -639,6 +639,10 @@ and `Cart#Total` leads with `Cart` then `Total`.
 
 ## Phase 3 - The gap header is told whether it filtered
 
+✅ Shipped: the field, the four core returns and the renderer (6cd53fe, after a hygiene audit, an
+alignment audit and a red team); the documentation and this record in the commit that carries
+this line. No version bump. The run stops here for the replan before Phase 4.
+
 **What:** `renderKnowledgeGaps` decides whether to name the asked question by inferring which core
 branch produced the rows, which mirrors the core's structure into the renderer. The core says so
 instead. `KnowledgeGapsSchema` gains an optional `filtered: boolean`. Every return sets it
@@ -1146,3 +1150,12 @@ Collected during the overnight knowledge run, the review of its patches, and the
   rest together is simpler to state and promotes `Total` in `Cart#Total`, and the plan was
   rewritten to what shipped. The relay prompt that demands the final response verbatim held for
   all six relays this lap.
+- Building Phase 3: the smallest phase, and the audits still found the seeded sentence naming the
+  question whatever the flag said, one of four places the renderer composed the question and the
+  only one the plan had not listed; the fix was the same `asked` the other three use. The
+  zero-row branch said "no gaps" over a staleness scan that had not run, a lie by omission older
+  than the phase and one line to close. A relay swallowed its report for the third time across
+  three laps despite the verbatim demand, so the recovery script in the scratchpad is now part of
+  the routine rather than a repair. Every `knowledgeGaps` test that mocks the shape had to learn
+  the field, since an omitted flag now drops the question label, which is the safe direction
+  the plan chose and the cost it did not name.

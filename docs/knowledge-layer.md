@@ -161,6 +161,11 @@ residue forbids them in the ledger's ranking paths. Demand is decided at the wri
 inserts only where `symbols` holds the address, so a recall of a stranded answer counts nothing,
 and the `stranded` field on the wire is explanation, never eligibility.
 
+The gap list says whether it filtered by the asked question: `filtered` is set by every core
+return, `false` from the workspace demand sweep, which carries every question with rechecks first,
+and `true` from the seeded fallback, the module scope and the subtree walk. The MCP renderer names
+the question only when the core says so, and reads an omitted flag as unfiltered.
+
 ## Rules
 
 - **Narration never edits facts.** The answer path can only resolve ids, so a hallucinated edge has
