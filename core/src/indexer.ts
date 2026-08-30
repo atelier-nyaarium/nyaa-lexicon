@@ -16,7 +16,7 @@ import { hashContent } from "@nyaa-lexicon/protocol";
 import type { Clock } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
-import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
+import { type FileScope, fileScopeFor, type GeneratedVerdict, generatedVerdicts, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
@@ -96,6 +96,8 @@ export class WorkspaceIndexer {
 
 	/** Counts sum to `tracked`. */
 	private breakdown: ScanBreakdown | null = null;
+	/** Git's word per admitted module, refreshed with the scope. */
+	private generated = new Map<string, GeneratedVerdict>();
 	private coverage: WarmCoverage = { state: "idle" };
 
 	/** Full-parse orders run between background files. */
@@ -219,6 +221,7 @@ export class WorkspaceIndexer {
 				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
 				// supervisor drops a comments field from a provider that never declared the tier.
 				storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
+				this.verdictFor(module),
 			);
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
@@ -303,6 +306,7 @@ export class WorkspaceIndexer {
 			}
 
 			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
+			this.store.syncGenerated(this.generated);
 			outcomes.push(...this.prune(seen));
 			this.sweepAfterPrune(seen);
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
@@ -536,6 +540,7 @@ export class WorkspaceIndexer {
 				}
 			}
 			if (found.length === 0) break;
+			this.rememberVerdicts(found);
 			for (const module of found) {
 				if (
 					!indexExisting &&
@@ -579,9 +584,25 @@ export class WorkspaceIndexer {
 			(module) => !goneSet.has(module),
 		);
 		const candidates = everything.filter((module) => this.scope?.allows(module) ?? true);
-		const generated = generatedFiles(this.workspaceRoot, candidates);
-		const reachable = candidates.filter((module) => namedSet.has(module) || !generated.has(module));
+		this.generated = generatedVerdicts(this.workspaceRoot, candidates);
+		const reachable = candidates.filter(
+			(module) => namedSet.has(module) || this.generated.get(module)?.status !== "yes",
+		);
 		return { everything, candidates, reachable };
+	}
+
+	/** One git call for what a round reached past admission, so an import closure never asks per file. */
+	private rememberVerdicts(modules: string[]): void {
+		const missing = modules.filter((module) => !this.generated.has(module));
+		if (missing.length === 0) return;
+		for (const [module, verdict] of generatedVerdicts(this.workspaceRoot, missing))
+			this.generated.set(module, verdict);
+	}
+
+	/** Admission's verdict, or git asked for a module written outside any pass. */
+	private verdictFor(module: string): GeneratedVerdict {
+		this.rememberVerdicts([module]);
+		return this.generated.get(module) as GeneratedVerdict;
 	}
 
 	private rootModules(extra: Iterable<string> = [], gone: Iterable<string> = []): Set<string> {
@@ -749,6 +770,8 @@ export class WorkspaceIndexer {
 
 		const seen = new Set(roots);
 		outcomes.push(...(await this.followImports(seen, false, previousDepths)));
+		// A file the batch left unread takes the verdict its admission reached, a .gitattributes edit included.
+		this.store.syncGenerated(this.generated);
 		outcomes.push(...this.prune(seen));
 		this.sweepAfterPrune(seen);
 		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);

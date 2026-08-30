@@ -6,7 +6,7 @@ import path from "node:path";
 import {
 	describeScope,
 	fileScopeFor,
-	generatedFiles,
+	generatedVerdicts,
 	gitFiles,
 	globToRegExp,
 	includedFiles,
@@ -104,7 +104,39 @@ describe("the scoping rule", () => {
 			"src/a.ts": "",
 		});
 
-		expect(generatedFiles(root, ["generated/a.ts", "src/a.ts"])).toEqual(new Set(["generated/a.ts"]));
+		expect(generatedVerdicts(root, ["generated/a.ts", "src/a.ts"])).toEqual(
+			new Map([
+				["generated/a.ts", { status: "yes" }],
+				["src/a.ts", { status: "no" }],
+			]),
+		);
+	});
+
+	it("reads an attribute set to false as not generated, the way linguist does", () => {
+		const root = repo({
+			".gitattributes": "generated/** linguist-generated\ngenerated/keep.ts linguist-generated=false\n",
+			"generated/a.ts": "",
+			"generated/keep.ts": "",
+		});
+
+		expect(generatedVerdicts(root, ["generated/a.ts", "generated/keep.ts"])).toEqual(
+			new Map([
+				["generated/a.ts", { status: "yes" }],
+				["generated/keep.ts", { status: "no" }],
+			]),
+		);
+	});
+
+	it("answers unknown with the reason when there is no git to ask", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-scope-nogit-"));
+		try {
+			expect(generatedVerdicts(root, ["src/a.ts"])).toEqual(
+				new Map([["src/a.ts", { status: "unknown", reason: "noGit" }]]),
+			);
+			expect(generatedVerdicts(root, [])).toEqual(new Map());
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("lets an explicit include override an exclude", () => {

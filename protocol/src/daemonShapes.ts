@@ -363,6 +363,8 @@ export const KnowledgeGapsSchema = z
 		truncated: z.boolean(),
 		/** Set when the ledger was empty and the rows are hub-ranked candidates, not measured demand. */
 		seeded: z.boolean().optional(),
+		/** Seeded rows whose generated status or export status the index could not tell; eligible, and said so. */
+		seededUnknown: z.object({ generated: z.number(), exported: z.number() }).optional(),
 		/** Set when the knowledge base is too large to resolve every answer's citations here. */
 		staleScanSkipped: z.boolean().optional(),
 		/** Set when scoped to one file. Zero declarations means unindexed, which is not the same as clean. */

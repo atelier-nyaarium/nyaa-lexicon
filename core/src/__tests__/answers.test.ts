@@ -778,7 +778,7 @@ describe("the gap ledger", () => {
 	it("counts nothing on the read itself, and counts through the daemon as the daemon's own write", async () => {
 		plant();
 		service.recallAnswer(SYMBOL, "describe");
-		expect(service.knowledgeGaps().rows).toEqual([]);
+		expect(service.knowledgeGaps()).toMatchObject({ seeded: true });
 
 		const dispatch = createDispatch(service);
 		await dispatch("recallAnswer", { symbolId: SYMBOL, question: "describe" });
@@ -792,7 +792,9 @@ describe("the gap ledger", () => {
 		plant();
 		ask("lexicon reference a.ref Ghost#", "describe");
 
-		expect(service.knowledgeGaps().rows).toEqual([]);
+		const page = service.knowledgeGaps();
+		expect(page.seeded).toBe(true);
+		expect(page.rows.map((row) => row.symbolId)).not.toContain("lexicon reference a.ref Ghost#");
 	});
 
 	it("closes the gap the moment an answer lands", async () => {

@@ -238,6 +238,28 @@ export const CASES: Record<string, unknown[][]> = {
 		[
 			{
 				question: "describe",
+				total: 2,
+				external: 0,
+				seeded: true,
+				seededUnknown: { generated: 1, exported: 2 },
+				rows: [
+					{
+						symbolId: SYMBOL.symbolId,
+						name: "add",
+						kind: "function",
+						module: "src/a.ts",
+						why: "missing",
+						askCount: 0,
+						fanIn: 4,
+						question: "describe",
+					},
+				],
+			},
+			undefined,
+		],
+		[
+			{
+				question: "describe",
 				total: 3,
 				external: 0,
 				seeded: true,

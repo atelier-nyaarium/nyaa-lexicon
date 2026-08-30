@@ -473,6 +473,12 @@ export function moduleOf(text: string): string | null {
 	return parseSymbolId(text)?.module ?? null;
 }
 
+/** The language field alone, read from the head so a bulk grouping never parses descriptors. */
+export function languageOf(text: string): string | null {
+	const head = parseHead(new Cursor(text), text);
+	return head.ok ? head.value.language : null;
+}
+
 /**
  * The declaration this symbol belongs TO, by dropping its last descriptor.
  *

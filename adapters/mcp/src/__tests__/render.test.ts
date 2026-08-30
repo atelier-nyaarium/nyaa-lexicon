@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { renderDescribe, renderDocs, renderFacts, renderOutline, renderOverview } from "../render";
+import { renderDescribe, renderDocs, renderFacts, renderKnowledgeGaps, renderOutline, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -21,6 +21,64 @@ function overview(extra: Partial<Parameters<typeof renderOverview>[0]> = {}): st
 
 ////////////////////////////////
 //  Tests
+
+describe("saying what a seeded page could not tell", () => {
+	const row = {
+		symbolId: "lexicon typescript src/a.ts add().",
+		question: "describe",
+		why: "missing" as const,
+		askCount: 0,
+		fanIn: 4,
+	};
+
+	it("names the unknown counts under a seeded header, in a sentence", () => {
+		const rendered = renderKnowledgeGaps(
+			{
+				question: "describe",
+				rows: [row],
+				total: 1,
+				external: 0,
+				truncated: false,
+				seeded: true,
+				seededUnknown: { generated: 1, exported: 2 },
+			},
+			undefined,
+		);
+
+		expect(rendered).toContain(
+			"> Of these, 1 comes from a file git could not call generated or not, and 2 have no export verdict from the provider; all stay eligible.",
+		);
+	});
+
+	it("says nothing when nothing was unknown, and nothing on a page of measured demand", () => {
+		const seeded = renderKnowledgeGaps(
+			{
+				question: "describe",
+				rows: [row],
+				total: 1,
+				external: 0,
+				truncated: false,
+				seeded: true,
+				seededUnknown: { generated: 0, exported: 0 },
+			},
+			undefined,
+		);
+		const measured = renderKnowledgeGaps(
+			{
+				question: "describe",
+				rows: [{ ...row, askCount: 3 }],
+				total: 1,
+				external: 0,
+				truncated: false,
+				seededUnknown: { generated: 1, exported: 0 },
+			},
+			undefined,
+		);
+
+		expect(seeded).not.toContain("Of these");
+		expect(measured).not.toContain("Of these");
+	});
+});
 
 describe("keeping the page's several file counts apart", () => {
 	// Name modules absent from workspace counts.

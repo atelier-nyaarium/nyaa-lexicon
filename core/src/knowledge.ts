@@ -12,6 +12,7 @@ import {
 	type GapRow,
 	type InvalidateOutcome,
 	type KnowledgeGaps,
+	languageOf,
 	moduleOf,
 	type ResolveFactsResult,
 } from "@nyaa-lexicon/protocol";
@@ -27,7 +28,7 @@ import {
 import { candidatesFor } from "./candidates.js";
 import type { ImportResolver } from "./imports.js";
 import * as refusal from "./refusals.js";
-import type { IndexStore, StoredFact } from "./store.js";
+import type { IndexStore, SeedCandidate, StoredFact } from "./store.js";
 import type { Subject } from "./subjects.js";
 
 export type { CitedFact, FactSet, GapRow, InvalidateOutcome, KnowledgeGaps } from "@nyaa-lexicon/protocol";
@@ -75,6 +76,9 @@ export const DEFAULT_GAP_LIMIT = 60;
  * tree that large is a seeding pass, not a tree; the cap is reported so it never reads as the total.
  */
 const GAP_TREE_CAP = 500;
+
+/** Hubs by global fan-in that lead a seeded page before the per-language interleave. */
+export const RESERVED_HUBS = 5;
 
 /** Per kind, not overall, so a symbol with a thousand references does not crowd out its literals. */
 export const DEFAULT_FACT_LIMIT = 40;
@@ -620,20 +624,16 @@ export class KnowledgeLedger {
 			// worth writing, and answering "no gaps" on a workspace with no knowledge at all would
 			// read as completion. Fan-in is the only demand signal that exists before any asks, which
 			// is the doc's "pre-warm only high fan-in symbols" made queryable.
-			const seeded = this.store
-				.mostReferenced(limit * 3)
-				.filter((hub) => this.store.answer(hub.symbolId, question) === null)
-				.filter((hub) => this.store.declaration(hub.symbolId) !== null)
-				.slice(0, limit)
-				.map((hub) => this.gapRow(hub.symbolId, question, 0, "missing"));
+			const seeded = this.seedCandidates(question, limit);
 			return this.withStranded(
 				{
 					question,
-					rows: seeded,
-					total: seeded.length,
+					rows: seeded.rows,
+					total: seeded.rows.length,
 					external: 0,
 					truncated: false,
 					seeded: true,
+					seededUnknown: seeded.unknown,
 					filtered: true,
 					...(staleScanSkipped ? { staleScanSkipped } : {}),
 				},
@@ -742,6 +742,58 @@ export class KnowledgeLedger {
 		if (answer.doubt !== undefined) return "doubted";
 		if (answer.citations.some((factId) => this.store.factById(factId) === null)) return "stale";
 		return null;
+	}
+
+	/** Reserved hubs, then one candidate per language in turn: cross-language calls never bind, so a global rank buries a language called over a wire. */
+	private seedCandidates(
+		question: QuestionClass,
+		limit: number,
+	): { rows: GapRow[]; unknown: { generated: number; exported: number } } {
+		const pool = this.store
+			.seedCandidates()
+			.filter((candidate) => this.store.answer(candidate.symbolId, question) === null);
+		const languages = [...this.store.declarationsByLanguage().entries()]
+			.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+			.map(([language]) => language);
+		const perLanguage = new Map<string, SeedCandidate[]>();
+		for (const candidate of pool) {
+			const language = languageOf(candidate.symbolId);
+			if (language === null) continue;
+			perLanguage.set(language, [...(perLanguage.get(language) ?? []), candidate]);
+		}
+
+		const chosen: SeedCandidate[] = [];
+		const taken = new Set<string>();
+		const take = (candidate: SeedCandidate) => {
+			chosen.push(candidate);
+			taken.add(candidate.symbolId);
+		};
+		for (const hub of pool.filter((candidate) => candidate.fanIn > 0).slice(0, Math.min(RESERVED_HUBS, limit))) {
+			take(hub);
+		}
+		const cursors = new Map(languages.map((language) => [language, 0]));
+		let progressed = true;
+		while (chosen.length < limit && progressed) {
+			progressed = false;
+			for (const language of languages) {
+				if (chosen.length >= limit) break;
+				const list = perLanguage.get(language) ?? [];
+				let at = cursors.get(language) ?? 0;
+				while (at < list.length && taken.has((list[at] as SeedCandidate).symbolId)) at++;
+				cursors.set(language, at + 1);
+				const next = list[at];
+				if (next === undefined) continue;
+				take(next);
+				progressed = true;
+			}
+		}
+		return {
+			rows: chosen.map((candidate) => this.gapRow(candidate.symbolId, question, 0, "missing")),
+			unknown: {
+				generated: chosen.filter((candidate) => candidate.generatedUnknown).length,
+				exported: chosen.filter((candidate) => candidate.exportedUnknown).length,
+			},
+		};
 	}
 
 	private gapRow(

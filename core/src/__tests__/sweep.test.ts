@@ -3,15 +3,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Declaration, GapRowSchema, type Import } from "@nyaa-lexicon/protocol";
+import { GapRowSchema } from "@nyaa-lexicon/protocol";
 import { KNOWLEDGE_SWEEP_EVERY_MS, startLiveIndex } from "../liveIndex";
-import { type ProviderClaims, routeModule, routingContextOf } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ORPHAN_TTL_MS, type SweepPass } from "../subjects";
-import type { ProviderSupervisor } from "../supervisor";
 import { type FakeClock, fakeClock } from "./fakeClock";
+import { fakeSupervisor } from "./fakeProvider";
 
 ////////////////////////////////
 //  Helpers
@@ -25,7 +24,6 @@ let clock: FakeClock;
 const DAY = 24 * 60 * 60 * 1000;
 const CART = "lexicon fake cart.fake Cart#";
 const CART_TEXT = "export class Cart {\n  total() { return 1; }\n}\n";
-const claims: ProviderClaims = { providerId: "fake", language: "fake", extensions: [".fake"] };
 
 /** Every module present and parsing, nothing new: the timer's pass. */
 const idle: SweepPass = { presence: () => "presentParsing", newModules: new Set() };
@@ -38,92 +36,6 @@ function put(module: string, text: string): void {
 
 function remove(module: string): void {
 	rmSync(path.join(root, module));
-}
-
-/** Classes with the span of their body, so two identical bodies digest alike and an edited one does not. */
-function parseClasses(module: string, text: string): Declaration[] {
-	const lines = text.split("\n");
-	const out: Declaration[] = [];
-	for (const [line, source] of lines.entries()) {
-		const match = /^export class ([A-Za-z_$][\w$]*)/.exec(source);
-		if (match === null) continue;
-		let end = line;
-		while (end < lines.length - 1 && !(lines[end] as string).includes("}")) end++;
-		const name = match[1] as string;
-		out.push({
-			symbolId: `lexicon fake ${module} ${name}#`,
-			kind: "class",
-			name,
-			range: { start: { line, character: 0 }, end: { line: end, character: (lines[end] as string).length } },
-			selectionRange: { start: { line, character: 13 }, end: { line, character: 13 + name.length } },
-			visibility: "public",
-			exported: true,
-		});
-	}
-	return out;
-}
-
-function importsFrom(text: string): Import[] {
-	return [...text.matchAll(/import\s+["']([^"']+)["']/g)].map((match) => ({
-		specifier: match[1] as string,
-		imported: [],
-		reExport: false,
-	}));
-}
-
-function fakeSupervisor(): ProviderSupervisor {
-	let evidence: () => Iterable<string> = () => [];
-	let routing: ReturnType<typeof routingContextOf> | undefined;
-	const context = () => {
-		routing ??= routingContextOf(evidence());
-		return routing;
-	};
-	return {
-		running: () => [claims],
-		route: (module: string) => routeModule(module, [claims], context()),
-		evidenceFrom: (modules: () => Iterable<string>) => {
-			evidence = modules;
-		},
-		observeWorkspace: (modules: Iterable<string>) => {
-			routing = routingContextOf(modules);
-		},
-		observeModule: (module: string) => context().observe(module),
-		askProvider: async () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
-		ask: async (_module: string, method: string, params: unknown) => {
-			if (method === "parseFile") {
-				const request = params as {
-					module: string;
-					contentHash: string;
-					text: string;
-					depth?: "outline" | "surface";
-				};
-				return {
-					module: request.module,
-					contentHash: request.contentHash,
-					...(request.depth === "outline" ? { depth: "outline" as const } : {}),
-					declarations: parseClasses(request.module, request.text),
-					references: [],
-					imports: importsFrom(request.text),
-					literals: [],
-					diagnostics: request.text.includes("SYNTAX")
-						? [{ severity: "error" as const, message: "syntax error" }]
-						: [],
-				};
-			}
-			if (method === "resolveImport") {
-				const request = params as { fromModule: string; specifier: string };
-				if (!request.specifier.startsWith(".")) return { status: "unresolved", reason: "NotImplemented" };
-				return {
-					status: "resolved",
-					module: path.posix.normalize(
-						path.posix.join(path.posix.dirname(request.fromModule), request.specifier),
-					),
-				};
-			}
-			throw new Error(`unexpected method ${method}`);
-		},
-		stopAll: () => {},
-	} as unknown as ProviderSupervisor;
 }
 
 /** Outside the workspace, so the watcher never sees the store's own writes as a batch. */

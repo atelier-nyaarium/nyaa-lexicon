@@ -947,25 +947,35 @@ fan-in and say nothing.
   language cannot answer, so requiring `true` would exclude such a language whole; an unknown is
   eligible and counted in the same report as unknown generated status.
 - **Generated, as a three-valued fact, with a path to the row.** The scan learns it from
-  `git check-attr` and today `generatedFiles` returns one set of paths, collapsing "not generated"
-  and "could not tell", which its one caller uses only to compute reachability and drops. It
-  becomes a per-module verdict map, `yes`, `no`, or `unknown` with a reason from a closed enum,
+  `git check-attr`; the reader it replaces returned one set of paths, collapsing "not generated"
+  and "could not tell", which its one caller used only to compute reachability and dropped. It is
+  `generatedVerdicts`, a per-module verdict map, `yes`, `no`, or `unknown` with a reason from a closed enum,
   `noGit` or `gitFailed`, threaded from the scan through `indexFile` into a new `replaceFile`
-  parameter and persisted on `files` in two columns added in place, carried by `restoreKnowledge`
-  like every other survivor of a rebuild. A watcher batch recomputes its roots through the same
-  admission that runs the git call, so it persists a verdict exactly as a full scan does and no
-  third reason is needed. Unknown files are eligible, and the seeded result reports how many
-  candidates were unknown through an optional `seededUnknown: { generated, exported }` on
-  `KnowledgeGapsSchema`, filled by the fallback and rendered as one line under the header, so the
-  bias is visible rather than silent.
+  parameter and persisted on `files` in two columns added in place; a rebuild rescans every file
+  through the same admission, so nothing salvages it. A watcher batch recomputes its roots through
+  the same admission that runs the git call, so it persists a verdict exactly as a full scan does
+  and no third reason is needed. A module reached past admission, an import into ignored
+  territory, is asked of git in one call per round of the import closure and the answer is kept
+  for the pass. Every pass then writes its verdicts onto the `files` rows it holds one for, before
+  it prunes, so a file the pass left unread, an unchanged root, an import-reached module, a file
+  whose provider was down, takes the verdict of the attributes as they stand; a stored verdict is
+  as of the last admission, and the background upgrade writes that one. Git's
+  `linguist-generated=false` reads as `no`, as linguist reads it. A
+  writer that never asked git, a direct `replaceFile`, records no verdict: a null, read as unknown
+  and counted, kept apart from git asked and unable to tell. Unknown files are eligible, and the
+  seeded result reports how many rows on the page were unknown through an optional
+  `seededUnknown: { generated, exported }` on `KnowledgeGapsSchema`, filled by the fallback and
+  rendered as one line under the header, so the bias is visible rather than silent.
 - **Order within a language:** language-local fan-in, ties by symbol id.
 - **Language order:** the store persists no language and every symbol id carries one, so the order
-  is derived, not stored: languages sorted by their declaration count descending, ties by name.
-  It is stable under rescans and drifts only when the workspace's proportions do.
+  is derived, not stored: languages sorted by their declaration count descending, ties by name,
+  the language read through the grammar's `languageOf` from one id per module, since a module has
+  one provider. It is stable under rescans and drifts only when the workspace's proportions do.
 - **Reserved hubs:** the top five eligible hubs by global fan-in stay at the head, ties by symbol
-  id, then the interleave takes one candidate per language in turn. Five is written down so it can
-  be argued with. `mostReferenced` gains the eligibility predicate and a tie-break, since today it
-  has neither.
+  id, then the interleave takes one candidate per language in turn. Five is `RESERVED_HUBS`,
+  written down so it can be argued with. The eligibility predicate is the store's
+  `seedCandidates`, one reader the fallback alone uses; `mostReferenced` keeps its meaning for
+  the `hubs` tool, which asks a different question, and gains only the tie-break it lacked.
 
 **The cheaper form, with its loss stated:** interleave only among comment-bearing declarations,
 skip generated status and the reference and literal counts. It costs no column and drops every
@@ -977,8 +987,17 @@ symbol is a generated container: the container is not seeded, the language's bes
 declaration is. A `noGit` workspace: candidates seed as unknown and the report says so. A language
 that reports no `exported`: its declarations are eligible and counted as unknown. Seeding on a
 workspace whose every gap has been answered, not only on one never asked. Equal fan-in ties: the
-same order on two runs. The cheaper form: the comment-less substantive declaration is absent and
-the test names it.
+same order on two runs. The cheaper form was not taken (Question 5), so its test is the inverse: a
+comment-less declaration carrying references or a literal is seeded, and one carrying nothing is
+not. A generated file reached only through an import from ignored territory: its verdict is
+persisted `yes` on the scan and again on a watcher batch, its importer's `no`; an attributes edit
+delivered as a batch changes the stored verdict of two files the batch never re-reads. A no-git
+workspace whose provider discovers the file still indexes it, unknown `noGit`. A store whose
+migration stopped between the two column adds finishes it on the next open. A declaration whose
+only reference is its own is not seeded. A stored `yes` beside a stray reason reads as no
+verdict. The renderer's line appears only under a seeded header with a count above zero. A row
+written without a verdict reads as unknown and is counted. An older client parses the result
+without the field.
 
 **Release:** decided by the owner in Question 5, the full design. A minor, in the second release
 line with Phase 4, after the replan point.

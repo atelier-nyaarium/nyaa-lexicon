@@ -381,6 +381,7 @@ export {
 	isParameterSymbol,
 	isSymbolId,
 	isWithin,
+	languageOf,
 	moduleOf,
 	normalizeModulePath,
 	ownerOf,

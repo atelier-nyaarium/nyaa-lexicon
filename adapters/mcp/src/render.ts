@@ -822,6 +822,22 @@ ${lead}: no ${asked}gaps.`,
 				? `${gaps.total} ${asked}gap${plural}, ranked by demand, rechecks first`
 				: `${gaps.total} ${asked}gap${plural}`;
 	lines.push(`${lead}: ${what}.`);
+	// The bias a seeded page carries is said, never silent: unknown status keeps a candidate eligible.
+	const unknown = gaps.seededUnknown;
+	if (gaps.seeded === true && unknown !== undefined && (unknown.generated > 0 || unknown.exported > 0)) {
+		const parts = [
+			...(unknown.generated > 0
+				? [
+						`${unknown.generated} ${unknown.generated === 1 ? "comes" : "come"} from a file git could not call generated or not`,
+					]
+				: []),
+			...(unknown.exported > 0
+				? [`${unknown.exported} ${unknown.exported === 1 ? "has" : "have"} no export verdict from the provider`]
+				: []),
+		];
+		lines.push(`
+> Of these, ${parts.join(", and ")}; all stay eligible.`);
+	}
 
 	lines.push(`
 | Symbol | Module | State | Asked | Fan-in |

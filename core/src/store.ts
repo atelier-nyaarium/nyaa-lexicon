@@ -22,6 +22,7 @@ import {
 	type IndexDepth,
 	importFactId,
 	type Literal,
+	languageOf,
 	literalFactId,
 	type Metrics,
 	parseFactId,
@@ -39,6 +40,7 @@ import {
 import { type Clock, systemClock } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
+import type { GeneratedReason, GeneratedVerdict } from "./fileScope.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
@@ -158,7 +160,10 @@ CREATE TABLE files (
   -- Outline rows require a full parse.
   depth       TEXT NOT NULL DEFAULT 'full',
   -- What the owning provider declared its files are; NULL on a row written before that was kept.
-  content     TEXT
+  content     TEXT,
+  -- Git's word: 'yes', 'no' or 'unknown' with its reason; NULL on a row written without asking.
+  generated        TEXT,
+  generatedReason  TEXT
 );
 CREATE INDEX files_indexed_at ON files(indexedAt);
 CREATE INDEX files_depth ON files(depth);
@@ -774,6 +779,9 @@ export class IndexStore {
 		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
 		// Nullable, so the add is one atomic statement and an old row reads as not yet recorded.
 		if (!columnExists(db, "files", "content")) db.exec("ALTER TABLE files ADD COLUMN content TEXT");
+		// Each column checked on its own, so a crash between the two adds is finished on the next open.
+		if (!columnExists(db, "files", "generated")) db.exec("ALTER TABLE files ADD COLUMN generated TEXT");
+		if (!columnExists(db, "files", "generatedReason")) db.exec("ALTER TABLE files ADD COLUMN generatedReason TEXT");
 		if (!columnExists(db, "symbols", "synthesizedName")) {
 			db.exec("ALTER TABLE symbols ADD COLUMN synthesizedName INTEGER");
 		}
@@ -845,6 +853,8 @@ export class IndexStore {
 		notes: FileNote[] = [],
 		content: FileContent = "code",
 		digests: PatternDigest[] = [],
+		// Null is a writer that did not ask git, kept apart from git having been asked and unable to tell.
+		generated: GeneratedVerdict | null = null,
 	): void {
 		admitFacts(module, { declarations, references, literals, docs });
 		const digestOf = new Map(digests.map((digest) => [digest.symbolId, digest]));
@@ -852,9 +862,18 @@ export class IndexStore {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
-					"INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content) VALUES (?, ?, ?, ?, ?)",
+					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, generated, generatedReason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				)
-				.run(module, contentHash, this.clock.now(), depth, content);
+				.run(
+					module,
+					contentHash,
+					this.clock.now(),
+					depth,
+					content,
+					generated?.status ?? null,
+					generated?.status === "unknown" ? generated.reason : null,
+				);
 			// A successful parse clears its failure record.
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 
@@ -1888,14 +1907,85 @@ export class IndexStore {
 			.all() as Array<{ from: string; to: string }>;
 	}
 
-	/** Most-referenced symbols first. Hub rank, which is fan-in sorted. */
+	/** Most-referenced symbols first. Hub rank, which is fan-in sorted, ties by id so two runs agree. */
 	mostReferenced(limit: number): Array<{ symbolId: string; count: number }> {
 		return this.db
 			.prepare(
 				`SELECT targetId AS symbolId, COUNT(*) AS count FROM refs
-				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC LIMIT ?`,
+				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC, targetId LIMIT ?`,
 			)
 			.all(limit) as Array<{ symbolId: string; count: number }>;
+	}
+
+	/** Git's word on a file as recorded; null on a row written without asking. */
+	generatedOf(module: string): GeneratedVerdict | null {
+		const row = this.db.prepare("SELECT generated, generatedReason FROM files WHERE module = ?").get(module) as
+			| { generated: string | null; generatedReason: string | null }
+			| undefined;
+		if (row === undefined || row.generated === null) return null;
+		return verdictFromRow(row.generated, row.generatedReason);
+	}
+
+	/** Seedable: exported or unknown, file not generated, with a comment, an outside reference or a literal; fan-in then id. */
+	// Reads a verdict exactly as `verdictFromRow` does: only a clean yes excludes, only a clean no is known.
+	seedCandidates(): SeedCandidate[] {
+		const rows = this.db
+			.prepare(
+				`SELECT s.symbolId AS symbolId,
+				        (SELECT COUNT(*) FROM refs r WHERE r.targetId = s.symbolId) AS fanIn,
+				        (s.exported IS NULL) AS exportedUnknown,
+				        (NOT (f.generated IS 'no' AND f.generatedReason IS NULL)) AS generatedUnknown
+				 FROM symbols s JOIN files f ON f.module = s.module
+				 WHERE (s.exported IS NULL OR s.exported = 1)
+				   AND NOT (f.generated IS 'yes' AND f.generatedReason IS NULL)
+				   AND (EXISTS (SELECT 1 FROM comments c WHERE c.anchorId = s.symbolId)
+				     OR EXISTS (SELECT 1 FROM refs r WHERE r.targetId = s.symbolId AND (r.fromId IS NULL OR r.fromId <> s.symbolId))
+				     OR EXISTS (SELECT 1 FROM literals l WHERE l.containerId = s.symbolId))
+				 ORDER BY fanIn DESC, s.symbolId`,
+			)
+			.all() as Array<{ symbolId: string; fanIn: number; exportedUnknown: number; generatedUnknown: number }>;
+		return rows.map((row) => ({
+			symbolId: row.symbolId,
+			fanIn: row.fanIn,
+			exportedUnknown: row.exportedUnknown === 1,
+			generatedUnknown: row.generatedUnknown === 1,
+		}));
+	}
+
+	/** Every row takes the verdict admission just reached, so a file left unread keeps no stale one. */
+	syncGenerated(verdicts: ReadonlyMap<string, GeneratedVerdict>): number {
+		const rows = this.db.prepare("SELECT module, generated, generatedReason FROM files").all() as Array<{
+			module: string;
+			generated: string | null;
+			generatedReason: string | null;
+		}>;
+		const stale = rows.flatMap((row) => {
+			const verdict = verdicts.get(row.module);
+			if (verdict === undefined) return [];
+			const reason = verdict.status === "unknown" ? verdict.reason : null;
+			return row.generated === verdict.status && row.generatedReason === reason
+				? []
+				: [{ module: row.module, status: verdict.status, reason }];
+		});
+		if (stale.length === 0) return 0;
+		const update = this.db.prepare("UPDATE files SET generated = ?, generatedReason = ? WHERE module = ?");
+		this.inTransaction(() => {
+			for (const row of stale) update.run(row.status, row.reason, row.module);
+		});
+		return stale.length;
+	}
+
+	/** Declarations per language, read from one id per module since a module has one provider. */
+	declarationsByLanguage(): Map<string, number> {
+		const counts = new Map<string, number>();
+		const rows = this.db
+			.prepare("SELECT MIN(symbolId) AS sample, COUNT(*) AS declarations FROM symbols GROUP BY module")
+			.all() as Array<{ sample: string; declarations: number }>;
+		for (const row of rows) {
+			const language = languageOf(row.sample);
+			if (language !== null) counts.set(language, (counts.get(language) ?? 0) + row.declarations);
+		}
+		return counts;
 	}
 
 	/** Symbols nothing references. Honest only as far as binding reaches, which the caller states. */
@@ -1915,6 +2005,23 @@ export class IndexStore {
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** One seedable declaration, with what the index could not tell about it. */
+export interface SeedCandidate {
+	symbolId: string;
+	fanIn: number;
+	exportedUnknown: boolean;
+	generatedUnknown: boolean;
+}
+
+/** A stored verdict read back; a pair the store never writes reads as none. */
+function verdictFromRow(status: string, reason: string | null): GeneratedVerdict | null {
+	if ((status === "yes" || status === "no") && reason === null) return { status };
+	if (status === "unknown" && (reason === "noGit" || reason === "gitFailed")) {
+		return { status, reason: reason as GeneratedReason };
+	}
+	return null;
+}
 
 /** Row shapes, named so the mappers read as field access rather than a wall of casts. */
 interface SymbolRow {
