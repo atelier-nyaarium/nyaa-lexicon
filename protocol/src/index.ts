@@ -112,6 +112,8 @@ export {
 	InvalidateOutcomeSchema,
 	type KnowledgeGaps,
 	KnowledgeGapsSchema,
+	type KnowledgeSweep,
+	KnowledgeSweepSchema,
 	type LiteralQuery,
 	LiteralQuerySchema,
 	type LiteralsResult,

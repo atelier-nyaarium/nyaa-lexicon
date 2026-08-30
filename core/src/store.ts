@@ -36,6 +36,7 @@ import {
 	type StoredLiteral,
 	type StoredReference,
 } from "@nyaa-lexicon/protocol";
+import { type Clock, systemClock } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
 import type { PatternDigest } from "./patternDigest.js";
@@ -49,6 +50,11 @@ import {
 	KnowledgeSubjects,
 	rekeyKnowledge,
 	restoreSubjects,
+	type StrandedRow,
+	SWEEP_START,
+	type SweepCursor,
+	type SweepPass,
+	type SweepReport,
 } from "./subjects.js";
 
 export type {
@@ -428,6 +434,9 @@ function rowToNote(row: NoteRow): FileNote {
 /** Where the last scan's coverage arithmetic lives in the meta table. */
 const SCAN_SUMMARY_KEY = "scanSummary";
 
+/** Where the last capped sweep stopped, beside the scan summary. */
+const SWEEP_CURSOR_KEY = "knowledgeSweepCursor";
+
 /**
  * Where the indexed workspace's path lives in the meta table.
  *
@@ -613,6 +622,54 @@ function writeMeta(db: DatabaseSync, key: string, value: string): void {
 	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
 }
 
+/** The persisted cursor, or the start when none is held or the held one has no recognisable shape. */
+function readSweepCursor(db: DatabaseSync): SweepCursor {
+	const raw = readMeta(db, SWEEP_CURSOR_KEY);
+	if (raw === null) return SWEEP_START;
+	try {
+		const parsed = JSON.parse(raw) as Partial<SweepCursor>;
+		if (typeof parsed.epoch !== "number") return SWEEP_START;
+		if (parsed.pass === "B" && (parsed.after === null || typeof parsed.after === "string")) {
+			return { epoch: parsed.epoch, pass: "B", after: parsed.after };
+		}
+		if (parsed.pass === "A") {
+			const after = parsed.after;
+			if (after === null) return { epoch: parsed.epoch, pass: "A", after: null };
+			if (
+				typeof after === "object" &&
+				typeof after.orphanedAt === "number" &&
+				typeof after.subjectId === "string"
+			) {
+				return {
+					epoch: parsed.epoch,
+					pass: "A",
+					after: { orphanedAt: after.orphanedAt, subjectId: after.subjectId },
+				};
+			}
+		}
+		return SWEEP_START;
+	} catch {
+		return SWEEP_START;
+	}
+}
+
+/** A sweep report survives the summary only whole; a partial one reads as no sweep. */
+function sweepReportOf(value: unknown): SweepReport | null {
+	if (typeof value !== "object" || value === null) return null;
+	const report = value as Record<string, unknown>;
+	const counts = ["examined", "rebound", "orphaned", "deleted", "ambiguous"] as const;
+	if (counts.some((key) => typeof report[key] !== "number") || typeof report["stoppedEarly"] !== "boolean")
+		return null;
+	return {
+		examined: report["examined"] as number,
+		rebound: report["rebound"] as number,
+		orphaned: report["orphaned"] as number,
+		deleted: report["deleted"] as number,
+		ambiguous: report["ambiguous"] as number,
+		stoppedEarly: report["stoppedEarly"] as boolean,
+	};
+}
+
 function tableExists(db: DatabaseSync, name: string): boolean {
 	return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 }
@@ -629,7 +686,10 @@ export class IndexStore {
 	/** The one owner of knowledge identity. */
 	readonly subjects: KnowledgeSubjects;
 
-	private constructor(private readonly db: DatabaseSync) {
+	private constructor(
+		private readonly db: DatabaseSync,
+		private readonly clock: Clock,
+	) {
 		this.subjects = new KnowledgeSubjects(db);
 	}
 
@@ -655,6 +715,7 @@ export class IndexStore {
 		file: string,
 		compatibility?: string | null,
 		workspaceRoot?: string,
+		clock: Clock = systemClock,
 	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number } {
 		const db = new DatabaseSync(file);
 		db.exec("PRAGMA journal_mode = WAL");
@@ -699,7 +760,7 @@ export class IndexStore {
 				for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
 				db.exec(SCHEMA);
-				unplaced = restoreKnowledge(db, salvaged, Date.now());
+				unplaced = restoreKnowledge(db, salvaged, clock.now());
 				db.exec("COMMIT");
 			} catch (error) {
 				db.exec("ROLLBACK");
@@ -724,7 +785,7 @@ export class IndexStore {
 		if (!columnExists(db, "answers", "subjectId")) {
 			db.exec("BEGIN");
 			try {
-				rekeyKnowledge(db, Date.now());
+				rekeyKnowledge(db, clock.now());
 				db.exec("COMMIT");
 			} catch (error) {
 				db.exec("ROLLBACK");
@@ -738,7 +799,7 @@ export class IndexStore {
 		if (!tableExists(db, "notes")) {
 			db.exec("BEGIN");
 			try {
-				if (readMeta(db, NOTES_SINCE_KEY) === null) writeMeta(db, NOTES_SINCE_KEY, String(Date.now()));
+				if (readMeta(db, NOTES_SINCE_KEY) === null) writeMeta(db, NOTES_SINCE_KEY, String(clock.now()));
 				db.exec(NOTES_TABLE);
 				db.exec("COMMIT");
 			} catch (error) {
@@ -754,7 +815,7 @@ export class IndexStore {
 		if (workspaceRoot !== undefined) writeMeta(db, WORKSPACE_KEY, workspaceRoot);
 
 		return {
-			store: new IndexStore(db),
+			store: new IndexStore(db, clock),
 			rebuilt,
 			...(reason === undefined ? {} : { reason }),
 			...(unplaced === 0 ? {} : { unplaced }),
@@ -793,7 +854,7 @@ export class IndexStore {
 				.prepare(
 					"INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content) VALUES (?, ?, ?, ?, ?)",
 				)
-				.run(module, contentHash, Date.now(), depth, content);
+				.run(module, contentHash, this.clock.now(), depth, content);
 			// A successful parse clears its failure record.
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
 
@@ -836,8 +897,8 @@ export class IndexStore {
 					digest?.patternCoverage ?? null,
 				);
 			}
-			this.subjects.restoreResolving(module, Date.now());
-			if (digests.length > 0) this.subjects.refreshDigests(module);
+			this.subjects.restoreResolving(module, this.clock.now());
+			this.subjects.refreshDigests(module);
 
 			const reference = this.db.prepare(
 				`INSERT INTO refs (factId, module, name, role, targetId, fromId, provenance, startLine, startChar, endLine, endChar)
@@ -1050,7 +1111,7 @@ export class IndexStore {
 	recordFailure(module: string, reason: string): void {
 		this.db
 			.prepare("INSERT OR REPLACE INTO parse_failures (module, reason, failedAt) VALUES (?, ?, ?)")
-			.run(module, reason, Date.now());
+			.run(module, reason, this.clock.now());
 	}
 
 	clearFailure(module: string): void {
@@ -1079,7 +1140,24 @@ export class IndexStore {
 
 	/** Persists scan counts used to explain coverage gaps. */
 	writeScanSummary(summary: ScanCounts): void {
-		writeMeta(this.db, SCAN_SUMMARY_KEY, JSON.stringify({ ...summary, at: Date.now() }));
+		writeMeta(this.db, SCAN_SUMMARY_KEY, JSON.stringify({ ...summary, at: this.clock.now() }));
+	}
+
+	/** One bounded sweep, one transaction, resuming from the cursor the last one persisted. */
+	sweepSubjects(batch: number, pass: SweepPass, now: number): SweepReport {
+		return this.inTransaction(() => {
+			const { report, cursor } = this.subjects.sweepSubjects(batch, pass, now, readSweepCursor(this.db));
+			writeMeta(this.db, SWEEP_CURSOR_KEY, JSON.stringify(cursor));
+			return report;
+		});
+	}
+
+	strandedRows(limit: number): StrandedRow[] {
+		return this.subjects.strandedRows(limit);
+	}
+
+	strandedCount(): number {
+		return this.subjects.strandedCount();
 	}
 
 	readScanSummary(): (ScanCounts & { at: number }) | null {
@@ -1097,6 +1175,9 @@ export class IndexStore {
 				generated: parsed.generated as number,
 				denied: parsed.denied as number,
 				outlined: parsed.outlined === true,
+				...(sweepReportOf(parsed.knowledgeSweep) === null
+					? {}
+					: { knowledgeSweep: sweepReportOf(parsed.knowledgeSweep) as SweepReport }),
 				at: parsed.at ?? 0,
 			};
 		} catch {

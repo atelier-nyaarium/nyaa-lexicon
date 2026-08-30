@@ -2,7 +2,7 @@
 // table: rows keyed by a subject never change key, and the store reads through the views below.
 
 import type { DatabaseSync } from "node:sqlite";
-import { hashContent, moduleOf } from "@nyaa-lexicon/protocol";
+import { hashContent, moduleOf, sameNameAndKind } from "@nyaa-lexicon/protocol";
 import type { PatternCoverage } from "./patternDigest.js";
 
 ////////////////////////////////
@@ -77,8 +77,50 @@ export interface RebindResult {
 	applied: AppliedRebind[];
 }
 
+/** What the indexer knows about a module after its last prune; the store reads no file to learn it. */
+export type ModulePresence = "presentParsing" | "presentFailing" | "absent";
+
+/** What one sweep is handed: presence per module, and the modules first indexed in the pass that ran. */
+export interface SweepPass {
+	presence: (module: string) => ModulePresence;
+	newModules: ReadonlySet<string>;
+}
+
+/** What one sweep did. `ambiguous` counts within `orphaned`. */
+export interface SweepReport {
+	examined: number;
+	rebound: number;
+	orphaned: number;
+	deleted: number;
+	ambiguous: number;
+	stoppedEarly: boolean;
+}
+
+/** Where a capped sweep stopped, shaped by the pass it stopped in; the epoch advances when pass A ends. */
+export type SweepCursor =
+	| { epoch: number; pass: "B"; after: string | null }
+	| { epoch: number; pass: "A"; after: { orphanedAt: number; subjectId: string } | null };
+
+/** One orphaned subject's row, for the gap window: never work, always shown with its date. */
+export interface StrandedRow {
+	symbolId: string;
+	question: string;
+	held: "answer" | "demand";
+	/** An answer under a standing doubt keeps saying so. */
+	doubted: boolean;
+	askCount: number;
+	recordedAs: string;
+	orphanedAt: number;
+	evidence: SubjectEvidence;
+}
+
 ////////////////////////////////
 //  Constants
+
+/** An orphan this long behind the clock is deleted with its rows. */
+export const ORPHAN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const SWEEP_START: SweepCursor = { epoch: 0, pass: "B", after: null };
 
 /** The knowledge tables, keyed by subject, and the views the store reads them through. */
 export const KNOWLEDGE_SCHEMA = `
@@ -204,6 +246,15 @@ const INSERT_SUBJECT = `INSERT INTO knowledge_subjects
  (subjectId, currentSymbolId, state, boundAt, orphanedAt, fromSymbolId, evidence, lastDigest, lastCoverage)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
+/** The digest the index holds at an address, so a subject minted between scans still carries one. */
+function digestAt(db: DatabaseSync, symbolId: string): { digest: string; coverage: PatternCoverage } | null {
+	const row = db.prepare("SELECT patternDigest, patternCoverage FROM symbols WHERE symbolId = ?").get(symbolId) as
+		| { patternDigest: string | null; patternCoverage: PatternCoverage | null }
+		| undefined;
+	if (row === undefined || row.patternDigest === null || row.patternCoverage === null) return null;
+	return { digest: row.patternDigest, coverage: row.patternCoverage };
+}
+
 /** In the caller's transaction. One subject per address; rows keep their fact ids, so citations still resolve. */
 export function rekeyKnowledge(db: DatabaseSync, now: number): void {
 	// A rename rewrites any view over the table; none should exist here, and none may survive it.
@@ -221,6 +272,7 @@ export function rekeyKnowledge(db: DatabaseSync, now: number): void {
 	for (const { symbolId } of addresses) {
 		const subjectId = mintSubjectId(symbolId, now);
 		const bound = held.get(symbolId) !== undefined;
+		const digest = bound ? digestAt(db, symbolId) : null;
 		insert.run(
 			subjectId,
 			symbolId,
@@ -229,8 +281,8 @@ export function rekeyKnowledge(db: DatabaseSync, now: number): void {
 			bound ? null : now,
 			null,
 			"none",
-			null,
-			null,
+			digest?.digest ?? null,
+			digest?.coverage ?? null,
 		);
 		subjects.set(symbolId, subjectId);
 	}
@@ -363,7 +415,20 @@ export class KnowledgeSubjects {
 		if (existing !== null) return existing.state === "orphaned" ? this.restore(existing.subjectId, now) : existing;
 		let subjectId = mintSubjectId(symbolId, now);
 		for (let nonce = 1; this.byId(subjectId) !== null; nonce++) subjectId = mintSubjectId(symbolId, now, nonce);
-		this.db.prepare(INSERT_SUBJECT).run(subjectId, symbolId, "bound", now, null, null, "sameLocator", null, null);
+		const digest = digestAt(this.db, symbolId);
+		this.db
+			.prepare(INSERT_SUBJECT)
+			.run(
+				subjectId,
+				symbolId,
+				"bound",
+				now,
+				null,
+				null,
+				"sameLocator",
+				digest?.digest ?? null,
+				digest?.coverage ?? null,
+			);
 		return this.byId(subjectId) as Subject;
 	}
 
@@ -471,7 +536,8 @@ export class KnowledgeSubjects {
 			.run(now, module);
 	}
 
-	/** Copies a module's fresh pattern digests onto the bound subjects addressed in it. */
+	/** Bound subjects in a module take exactly the digest the index holds, null when the write carried none,
+	 * so a body the index does not know never matches. */
 	refreshDigests(module: string): void {
 		this.db
 			.prepare(
@@ -479,7 +545,7 @@ export class KnowledgeSubjects {
 				 SET lastDigest = (SELECT patternDigest FROM symbols WHERE symbols.symbolId = knowledge_subjects.currentSymbolId),
 				     lastCoverage = (SELECT patternCoverage FROM symbols WHERE symbols.symbolId = knowledge_subjects.currentSymbolId)
 				 WHERE state = 'bound'
-				   AND currentSymbolId IN (SELECT symbolId FROM symbols WHERE module = ? AND patternDigest IS NOT NULL)`,
+				   AND currentSymbolId IN (SELECT symbolId FROM symbols WHERE module = ?)`,
 			)
 			.run(module);
 	}
@@ -508,5 +574,165 @@ export class KnowledgeSubjects {
 				n: number;
 			}
 		).n;
+	}
+
+	/** Orphaned subjects' rows in pass A's order; for the window, never for ranking. */
+	strandedRows(limit: number): StrandedRow[] {
+		const rows = this.db
+			.prepare(
+				`SELECT subjectId, symbolId, question, 'answer' AS held, doubtId IS NOT NULL AS doubted, 0 AS askCount,
+				        recordedAs, orphanedAt, evidence
+				 FROM answers_addressed WHERE state = 'orphaned'
+				 UNION ALL
+				 SELECT subjectId, symbolId, question, 'demand' AS held, 0 AS doubted, askCount,
+				        recordedAs, orphanedAt, evidence
+				 FROM gaps_addressed WHERE state = 'orphaned'
+				 ORDER BY orphanedAt, subjectId, question LIMIT ?`,
+			)
+			.all(limit) as Array<Record<string, unknown>>;
+		return rows.map((row) => ({
+			symbolId: row["symbolId"] as string,
+			question: row["question"] as string,
+			held: row["held"] as "answer" | "demand",
+			doubted: row["doubted"] === 1,
+			askCount: row["askCount"] as number,
+			recordedAs: row["recordedAs"] as string,
+			orphanedAt: row["orphanedAt"] as number,
+			evidence: row["evidence"] as SubjectEvidence,
+		}));
+	}
+
+	strandedCount(): number {
+		return (
+			this.db
+				.prepare(
+					`SELECT (SELECT COUNT(*) FROM answers_addressed WHERE state = 'orphaned')
+					      + (SELECT COUNT(*) FROM gaps_addressed WHERE state = 'orphaned') AS n`,
+				)
+				.get() as { n: number }
+		).n;
+	}
+
+	/** One bounded sweep in the caller's transaction: pass B judges the unresolved, pass A deletes the
+	 * expired, and a cap stops it where the cursor says. */
+	sweepSubjects(
+		batch: number,
+		pass: SweepPass,
+		now: number,
+		cursor: SweepCursor,
+	): { report: SweepReport; cursor: SweepCursor } {
+		const report: SweepReport = {
+			examined: 0,
+			rebound: 0,
+			orphaned: 0,
+			deleted: 0,
+			ambiguous: 0,
+			stoppedEarly: false,
+		};
+		let at = cursor;
+		// A budget of nothing would persist the same cursor forever, so the floor is one.
+		let budget = Number.isFinite(batch) ? Math.max(1, Math.floor(batch)) : 1;
+		let finished = false;
+
+		if (at.pass === "B") {
+			const asked = budget;
+			const rows = this.unresolvedAfter(at.after, asked);
+			for (const subject of rows) {
+				this.judge(subject, pass, now, report);
+				report.examined++;
+				budget--;
+				at = { epoch: at.epoch, pass: "B", after: subject.subjectId };
+			}
+			// Fewer than asked is the end of the pass.
+			if (rows.length < asked) at = { epoch: at.epoch, pass: "A", after: null };
+		}
+
+		if (at.pass === "A" && budget > 0) {
+			const asked = budget;
+			const rows = this.orphanedAfter(at.after, asked);
+			for (const subject of rows) {
+				const orphanedAt = subject.orphanedAt as number;
+				// A date ahead of the clock reads as now, so a clock that went backwards deletes nothing early.
+				if (now - Math.min(orphanedAt, now) >= ORPHAN_TTL_MS) {
+					this.delete(subject.subjectId);
+					report.deleted++;
+				}
+				report.examined++;
+				budget--;
+				at = { epoch: at.epoch, pass: "A", after: { orphanedAt, subjectId: subject.subjectId } };
+			}
+			if (rows.length < asked) {
+				at = { epoch: at.epoch + 1, pass: "B", after: null };
+				finished = true;
+			}
+		}
+
+		report.stoppedEarly = !finished;
+		return { report, cursor: at };
+	}
+
+	/** Exempt when its module is present and failing; rebound on exactly one digest match the address is free for; orphaned otherwise. */
+	private judge(subject: Subject, pass: SweepPass, now: number, report: SweepReport): void {
+		const module = moduleOf(subject.symbolId);
+		if (module !== null && pass.presence(module) === "presentFailing") return;
+
+		const matches = this.digestMatches(subject, pass.newModules);
+		if (matches.length === 1) {
+			const { applied } = this.rebind(
+				[{ from: subject.symbolId, to: matches[0] as string }],
+				"batchExactMatch",
+				now,
+			);
+			if (applied.length === 1) {
+				report.rebound++;
+				return;
+			}
+		}
+		const ambiguous = matches.length >= 1;
+		this.orphan(subject.subjectId, now, ambiguous ? "ambiguous" : "none");
+		report.orphaned++;
+		if (ambiguous) report.ambiguous++;
+	}
+
+	/** Declarations among the new modules carrying the subject's digest, coverage, name and kind. */
+	private digestMatches(subject: Subject, newModules: ReadonlySet<string>): string[] {
+		if (subject.lastDigest === null || subject.lastCoverage === null || newModules.size === 0) return [];
+		const rows = this.db
+			.prepare(
+				"SELECT symbolId, module FROM symbols WHERE patternDigest = ? AND patternCoverage = ? ORDER BY symbolId",
+			)
+			.all(subject.lastDigest, subject.lastCoverage) as Array<{ symbolId: string; module: string }>;
+		return rows
+			.filter((row) => newModules.has(row.module) && sameNameAndKind(subject.symbolId, row.symbolId))
+			.map((row) => row.symbolId);
+	}
+
+	private unresolvedAfter(after: string | null, limit: number): Subject[] {
+		const rows = this.db
+			.prepare(
+				`SELECT s.* FROM knowledge_subjects s LEFT JOIN symbols y ON y.symbolId = s.currentSymbolId
+				 WHERE s.state = 'bound' AND y.symbolId IS NULL AND (? IS NULL OR s.subjectId > ?)
+				 ORDER BY s.subjectId LIMIT ?`,
+			)
+			.all(after, after, limit);
+		return rows.map((row) => rowToSubject(row as Record<string, unknown>));
+	}
+
+	/** Strictly after the key on the pass's own order, so subjects sharing a date advance past it. */
+	private orphanedAfter(after: { orphanedAt: number; subjectId: string } | null, limit: number): Subject[] {
+		const rows = this.db
+			.prepare(
+				`SELECT * FROM knowledge_subjects WHERE state = 'orphaned'
+				 AND (? IS NULL OR orphanedAt > ? OR (orphanedAt = ? AND subjectId > ?))
+				 ORDER BY orphanedAt, subjectId LIMIT ?`,
+			)
+			.all(
+				after?.orphanedAt ?? null,
+				after?.orphanedAt ?? null,
+				after?.orphanedAt ?? null,
+				after?.subjectId ?? null,
+				limit,
+			);
+		return rows.map((row) => rowToSubject(row as Record<string, unknown>));
 	}
 }

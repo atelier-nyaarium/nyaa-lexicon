@@ -104,6 +104,7 @@ export class LexiconService {
 			workspaceRoot,
 			this.cache,
 			(from, specifier) => this.imports.resolveImport(from, specifier),
+			this.clock,
 		);
 		this.source = new SourceWorkspace(store, readFile, workspaceRoot);
 		this.probe = liveProbe(supervisor, readFile);
@@ -153,6 +154,11 @@ export class LexiconService {
 
 	applyBatch(...args: Parameters<WorkspaceIndexer["applyBatch"]>): ReturnType<WorkspaceIndexer["applyBatch"]> {
 		return this.indexer.applyBatch(...args);
+	}
+
+	/** The timer's sweep: nothing new to the pass, presence as of the last prune. */
+	sweepKnowledge(): ReturnType<WorkspaceIndexer["sweepKnowledge"]> {
+		return this.indexer.sweepKnowledge();
 	}
 
 	indexStatus(concerning?: string): ReturnType<WorkspaceIndexer["indexStatus"]> {

@@ -13,6 +13,7 @@ import type {
 	ModuleStatus,
 } from "@nyaa-lexicon/protocol";
 import { hashContent } from "@nyaa-lexicon/protocol";
+import type { Clock } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
 import { type FileScope, fileScopeFor, generatedFiles, includedFiles } from "./fileScope.js";
@@ -24,6 +25,7 @@ import { patternDigests } from "./patternDigest.js";
 import type { ResultCache } from "./resultCache.js";
 import { type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
+import type { ModulePresence, SweepReport } from "./subjects.js";
 import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
 
 export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
@@ -50,6 +52,9 @@ type WarmCoverage =
 /** How many failed files an answer names; `overview` lists every one. */
 export const NAMED_FAILURES = 3;
 
+/** Subjects one sweep examines across both passes; a capped sweep resumes from its cursor. */
+export const ORPHAN_SWEEP_CAP = 200;
+
 /** The scope's verdict on the tracked set, each a subset of the one before. */
 interface Admitted {
 	everything: string[];
@@ -70,10 +75,17 @@ export class WorkspaceIndexer {
 		private readonly cache: ResultCache,
 		/** Resolution belongs to the import resolver; the indexer only follows where it points. */
 		private readonly resolve: (fromModule: string, specifier: string) => Promise<ImportResolution>,
+		private readonly clock: Clock,
 	) {
 		// A route asked before the first scan still sees the workspace.
 		supervisor.evidenceFrom(() => this.admitted().reachable);
 	}
+
+	/** What the last prune kept; null until one has run, and the timer's sweep judges nothing before that. */
+	private reachable: Set<string> | null = null;
+	/** Modules first indexed in the pass in progress: the only rebind targets. */
+	private newInPass = new Set<string>();
+	private lastSweep: SweepReport | null = null;
 
 	/** Scan progress is process-local; stored counts come from the database. */
 	private status: Pick<IndexStatus, "state" | "done" | "total"> = { state: "unstarted", done: 0, total: 0 };
@@ -187,6 +199,8 @@ export class WorkspaceIndexer {
 		);
 		// An absent depth means full facts, except surface remains a permission ceiling.
 		const storedDepth = facts.depth ?? (depth === "surface" ? "surface" : "full");
+		// No depth before the write and facts after it: new to the pass, root or reached alike.
+		const fresh = this.store.depthOf(module) === null;
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
 		// question only the source text answers, and this is the last place holding it.
 		try {
@@ -214,6 +228,7 @@ export class WorkspaceIndexer {
 			this.upgradeFailed.add(module);
 			return this.outcome(module, "parseFailed", failure);
 		}
+		if (fresh) this.newInPass.add(module);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
@@ -243,6 +258,7 @@ export class WorkspaceIndexer {
 		if (floor === "outline") this.coverage = { state: "discovering" };
 		this.status = { state: "discovering", done: 0, total: 0 };
 		try {
+			this.newInPass = new Set();
 			this.discovered = new Set<string>();
 			for (const provider of this.supervisor.running()) {
 				const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
@@ -288,6 +304,7 @@ export class WorkspaceIndexer {
 
 			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
 			outcomes.push(...this.prune(seen));
+			this.sweepAfterPrune(seen);
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
 			// A restart heals an outage, so the pass says so; a fault is per file, recorded, and does not.
 			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown");
@@ -389,7 +406,43 @@ export class WorkspaceIndexer {
 
 	/** The mark is carried forward unless a caller says otherwise. */
 	private writeScanSummary(outlined = this.store.readScanSummary()?.outlined === true): void {
-		if (this.breakdown !== null) this.store.writeScanSummary({ ...this.breakdown, outlined });
+		if (this.breakdown === null) return;
+		const knowledgeSweep = this.lastSweep ?? this.store.readScanSummary()?.knowledgeSweep;
+		this.store.writeScanSummary({
+			...this.breakdown,
+			outlined,
+			...(knowledgeSweep === undefined ? {} : { knowledgeSweep }),
+		});
+	}
+
+	/** After prune, which has just decided presence: the pass's new modules are the rebind targets. */
+	private sweepAfterPrune(reachable: Set<string>): void {
+		this.reachable = reachable;
+		this.runSweep(this.newInPass);
+		this.newInPass = new Set();
+	}
+
+	/** The timer's sweep: nothing is new, and presence is what the last prune decided. */
+	sweepKnowledge(): SweepReport {
+		return this.runSweep(new Set());
+	}
+
+	private runSweep(newModules: ReadonlySet<string>): SweepReport {
+		const reachable = this.reachable;
+		// No prune yet means no presence to judge by; an absent module would read as gone.
+		if (reachable === null) {
+			return { examined: 0, rebound: 0, orphaned: 0, deleted: 0, ambiguous: 0, stoppedEarly: false };
+		}
+		const presence = (module: string): ModulePresence =>
+			!reachable.has(module)
+				? "absent"
+				: this.store.parseFailureOf(module) !== null
+					? "presentFailing"
+					: "presentParsing";
+		const report = this.store.sweepSubjects(ORPHAN_SWEEP_CAP, { presence, newModules }, this.clock.now());
+		this.lastSweep = report;
+		this.writeScanSummary();
+		return report;
 	}
 
 	private async indexOne(
@@ -621,6 +674,7 @@ export class WorkspaceIndexer {
 		if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
 			throw new Error("live indexing cannot run under the warmup pass");
 		}
+		this.newInPass = new Set();
 		const outcomes: IndexOutcome[] = [];
 		const previousRoots = this.roots;
 		const previousDepths = this.depths;
@@ -696,6 +750,7 @@ export class WorkspaceIndexer {
 		const seen = new Set(roots);
 		outcomes.push(...(await this.followImports(seen, false, previousDepths)));
 		outcomes.push(...this.prune(seen));
+		this.sweepAfterPrune(seen);
 		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
 		if (this.coverage.state !== "failed") this.coverage = { state: "covered" };
 		return outcomes;

@@ -435,6 +435,43 @@ describe("knowledge_gaps scopes", () => {
 		expect(await seededHeader(undefined)).not.toContain("why candidate");
 	});
 
+	it("shows the stranded window apart from the work, and when nothing is actionable", async () => {
+		const stranded = {
+			symbolId: "lexicon ts src/gone.ts Cart.",
+			question: "describe" as const,
+			why: "stale" as const,
+			askCount: 0,
+			fanIn: 0,
+			stranded: true,
+			strandedAt: Date.UTC(2026, 7, 1),
+			evidence: "none",
+		};
+		const windowed = (rows: Array<typeof stranded | typeof row>, total: number) =>
+			backend({
+				knowledgeGaps: async () => ({
+					question: "describe" as const,
+					rows,
+					total,
+					external: 0,
+					truncated: false,
+					filtered: false,
+					stranded: 3,
+				}),
+			});
+		const row = { ...stranded, symbolId: "lexicon ts src/a.ts Cart.", stranded: false };
+
+		const empty = (await knowledgeGaps(windowed([stranded], 0), {})).content[0]?.text ?? "";
+		expect(empty).toContain("no gaps");
+		expect(empty).toContain("## Stranded");
+		expect(empty).toContain("| `Cart.` | describe | answer | 2026-08-01 | none |");
+		expect(empty).toContain("2 more stranded rows not shown");
+
+		const listed = (await knowledgeGaps(windowed([row, stranded], 1), {})).content[0]?.text ?? "";
+		expect(listed).toContain("1 gap, ranked by demand");
+		expect(listed.indexOf("## Stranded")).toBeGreaterThan(listed.indexOf("**Full ID example:**"));
+		expect(listed).not.toContain("| `Cart.` | `src/gone.ts` |");
+	});
+
 	it("says the staleness scan was skipped even when it lists no gaps", async () => {
 		const skipped = backend({
 			knowledgeGaps: async () => ({

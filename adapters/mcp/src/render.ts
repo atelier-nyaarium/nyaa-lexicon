@@ -745,6 +745,33 @@ No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`know
 	return lines.join("\n");
 }
 
+/** The window on orphaned subjects: dated, with the evidence, and what the sweep does to them. Nothing to do. */
+function renderStranded(count: number, rows: KnowledgeGaps["rows"]): string[] {
+	if (count === 0 && rows.length === 0) return [];
+	const lines = [
+		`
+## Stranded
+
+${count} row${count === 1 ? "" : "s"} belong to subjects whose address no longer resolves. They are not work: recall carries the diagnosis, and the sweep deletes each thirty days after the date shown.`,
+	];
+	if (rows.length > 0) {
+		lines.push(`
+| Symbol | Question | Held | Orphaned | Evidence |
+| --- | --- | --- | --- | --- |`);
+		for (const row of rows) {
+			const tail = row.symbolId.split(" ").slice(3).join(" ");
+			const when = row.strandedAt === undefined ? "-" : new Date(row.strandedAt).toISOString().slice(0, 10);
+			lines.push(
+				`| \`${tail}\` | ${row.question} | ${row.why === "missing" ? "demand" : "answer"} | ${when} | ${row.evidence ?? "-"} |`,
+			);
+		}
+	}
+	if (count > rows.length)
+		lines.push(`
+> ${count - rows.length} more stranded rows not shown.`);
+	return lines;
+}
+
 /** Every answer leads with its scope. */
 function gapScope(gaps: KnowledgeGaps, root: string | undefined): string {
 	if (gaps.scope !== undefined) return `In \`${gaps.scope.module}\``;
@@ -763,6 +790,9 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 	}
 	// Only the core knows whether every row honours the asked question; an omitted flag reads as unfiltered.
 	const asked = gaps.filtered === true ? `${gaps.question} ` : "";
+	// A stranded row is a window, never work: shown apart, and shown even when nothing is actionable.
+	const actionable = gaps.rows.filter((row) => row.stranded !== true);
+	const strandedRows = gaps.rows.filter((row) => row.stranded === true);
 	if (gaps.total === 0) {
 		const lines = [
 			`# Knowledge gaps
@@ -776,6 +806,7 @@ ${lead}: no ${asked}gaps.`,
 		if (gaps.external > 0)
 			lines.push(`
 > ${gaps.external} dependencies are outside the index and cannot be answered.`);
+		lines.push(...renderStranded(gaps.stranded ?? 0, strandedRows));
 		return lines.join("\n");
 	}
 
@@ -795,7 +826,7 @@ ${lead}: no ${asked}gaps.`,
 	lines.push(`
 | Symbol | Module | State | Asked | Fan-in |
 | --- | --- | --- | ---: | ---: |`);
-	for (const row of gaps.rows) {
+	for (const row of actionable) {
 		const tail = row.symbolId.split(" ").slice(3).join(" ");
 		const symbol = row.name === undefined ? `\`${tail}\`` : `**${row.kind ?? "symbol"}** \`${tail}\``;
 		const state = row.why === "stale" ? `**STALE**` : row.why === "doubted" ? `**DOUBTED**` : `MISSING`;
@@ -808,13 +839,14 @@ ${lead}: no ${asked}gaps.`,
 			`| ${symbol}${question}${askedAt} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
 		);
 	}
-	if (gaps.total > gaps.rows.length)
+	if (gaps.total > actionable.length)
 		lines.push(`
-> ${gaps.total - gaps.rows.length} more gaps not shown.`);
-	const first = gaps.rows[0];
+> ${gaps.total - actionable.length} more gaps not shown.`);
+	const first = actionable[0];
 	if (first !== undefined)
 		lines.push(`
 **Full ID example:** \`${first.symbolId}\``);
+	lines.push(...renderStranded(gaps.stranded ?? 0, strandedRows));
 	if (gaps.truncated)
 		lines.push(`
 > The dependency walk hit its cap, so the total above is a floor.`);

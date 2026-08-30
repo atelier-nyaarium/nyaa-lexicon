@@ -736,8 +736,10 @@ indexer and facts in the store, and presence is a source-dependent decision.
   and an idle workspace has no scans: `startLiveIndex`, which already takes the daemon's
   exclusive gate and runs every watcher batch as `gate.exclusive(() => service.applyBatch(events))`,
   gains a clock timer at `KNOWLEDGE_SWEEP_EVERY_MS`, one hour, that runs
-  `gate.exclusive(() => service.sweepKnowledge())` the same way, so it never overlaps a batch, and
-  it stops when the live index stops. Its clock is a change, not a given: `startLiveIndex` accepts
+  `gate.exclusive(() => service.sweepKnowledge())` the same way and queued on the batch tail behind
+  any batch in flight, so it never overlaps a batch, gate or not, and it stops when the live index
+  stops: a sweep queued behind a batch when the stop lands never starts, and the batch still
+  applies. Its clock is a change, not a given: `startLiveIndex` accepts
   a `clock` today and forwards it only to the watcher's debounce, and the daemon passes none,
   while it builds the service on the default `systemClock`. The daemon holds one `Clock` and
   hands the same instance to the store at open, the service and `startLiveIndex`, so the store's
@@ -779,15 +781,21 @@ order:
    `replaceFile`, and a fact set the store refuses is rejected by `replaceFile`'s admission guard
    before its transaction opens, so a failing module keeps the declarations of its last good
    parse, its subjects keep resolving, and pass B never selects them; retained declarations in a
-   failing module cause neither orphaning nor aging. This step
-   is reached only by the narrower sequence in which a clean reindex first dropped the
-   declaration and a later edit broke the parse, and its test reaches it that way. A malformed
-   address has no module through `moduleOf`, can never be exempt, and is orphaned on first sight.
+   failing module cause neither orphaning nor aging. Every pass sweeps after its prune, so a
+   declaration dropped cleanly is orphaned by that pass's sweep, and this step is reached only
+   when a capped sweep left the subject unexamined and a later edit broke the parse before the
+   next one; its test hands the sweep that presence directly. A malformed address has no module
+   through `moduleOf`, can never be exempt, and is orphaned on first sight; a local address has
+   one, and is exempt or orphaned like any other.
 2. **Rebind** on `batchExactMatch`: exactly one declaration among `newModules` whose
    `patternDigest` and `patternCoverage` equal the subject's `lastDigest` and `lastCoverage`, and
    whose kind and name match. The subject's address becomes that declaration, `fromSymbolId`
-   remembers the old one, no date is set. A subject with no digest never matches. The timer pass
-   has no `newModules`, so it never rebinds by evidence. A match whose target address another
+   remembers the old one, no date is set. A subject with no digest never matches: every write of a
+   module sets its bound subjects' digests to exactly what the index holds, null after an outline
+   or surface parse, so a body the index does not know never matches by the body it had before. So a subject
+   minted between scans takes the digest the index holds at its address when it is minted, and
+   the re-key does the same for a bound address; only a subject whose module was never fully
+   parsed has none. The timer pass has no `newModules`, so it never rebinds by evidence. A match whose target address another
    subject already holds is not a rebind: `KnowledgeSubjects.rebind` skips it and names in
    `applied` only what moved, so an entry the sweep submitted and `applied` does not name was
    refused for a held target, since the sweep read the subject it submitted. It takes step 3 with
@@ -810,7 +818,8 @@ an orphan orphaned with its date through `restoreSubjects`. A third owner of the
 be reached by nothing.
 
 **Budget and continuation.** The unit is subjects examined per sweep across both passes, capped by
-`ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepSubjects`;
+`ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepSubjects`,
+which floors it at one, since a budget of nothing would persist the same cursor forever;
 `STALE_SCAN_CAP` is a file-local constant of the knowledge layer, which neither the indexer nor
 the store imports, and stays where it is. A sweep that reaches the cap stops and persists a cursor
 in store meta beside the scan summary, shaped by the pass it stopped in:
@@ -855,7 +864,8 @@ owner already answers `orphaned(limit)`, oldest first, and `orphanedCount()`. Wh
 still needs is the orphaned subjects' rows, and the ledger may not fetch them through the raw
 readers, which its residue forbids, so the owner gains `strandedRows(limit)`, one reader over
 `answers_addressed` and `gaps_addressed` returning, per row, the address, the question, whether it
-is an answer or a demand, `recordedAs`, `orphanedAt` and the evidence, oldest subject first. The
+is an answer or a demand, whether an answer is under a doubt, `recordedAs`, `orphanedAt` and the
+evidence, in pass A's order. The
 gate that decides whether the seeded fallback runs reads actionable rows only, so a workspace
 whose only knowledge is stranded still seeds its hubs. The sweep appends the stranded rows after
 the actionable ones inside the page, seeded or not, each carrying `stranded: true`, `strandedAt`
@@ -873,8 +883,9 @@ diagnosis by `fromSymbolId`. No compatibility bump, no rebuild.
 **Wire.** The gap row gains an optional `strandedAt`, an optional `stranded` flag and an optional
 `evidence`, never a fourth `why` value: an older client validates the row with its own schema,
 which strips the optional fields it does not know and reads on, and refuses a `why` value it does
-not know. `why` keeps its ordinary value on an orphaned row, `stale` for an
-answer whose citations can never resolve again and `missing` for demand, so an older client reads
+not know. `why` keeps its ordinary value on an orphaned row, `doubted` for an answer under a
+standing doubt, `stale` for any other answer, whose citations can never resolve again, and
+`missing` for demand, so an older client reads
 it as it always did, and the renderer checks `stranded` before `why` when choosing the heading
 and the state word. With the result's `stranded` count, the `knowledgeSweep` report and Phase 1's
 recall field, this phase is a minor.
@@ -899,11 +910,18 @@ so an idle workspace ages. Set the clock behind a date: not deleted. Force a com
 subject and its date survive. Plant more orphaned subjects than the cap: the sweep stops, reports
 it, and the next scan finishes from the persisted key; insert a subject behind the key between
 two capped sweeps and it is examined within one epoch. Reindex the symbol away cleanly, then
-break the parse, then sweep: exempt, and the test names that as the only way to step 1. Move a
-file whose destination is reached through an import rather than as a root: rebound. Plant a
-malformed address and a local
-address: both orphaned, neither rebound, neither exempt. An older client parses a row carrying
-the new fields. Each case is written before its mechanism and watched failing first; where a
+break the parse, then sweep: exempt, handed that presence directly, since a sweep runs after every
+prune. Move a file whose destination is reached through an import rather than as a root: rebound,
+which the same `indexFile` path marks new; not written, since the fake harness roots every owned
+file, and it waits for the fixture provider. Plant a malformed address and a local address under
+an absent module: both orphaned, neither rebound. An older client parses a row carrying the new
+fields. Recreate a deleted body under another name in a new module: orphaned with `none`, never
+rebound. Write a module as an outline after recording: the subject's digest is forgotten, and the
+same body elsewhere no longer matches. Stop the live index: no timer stands and an hour later
+nothing sweeps; stop it with a sweep queued behind a batch: the batch applies and the sweep never
+starts. Call the timer's sweep before any prune: nothing examined. Doubt a stranded
+answer: its row reads `doubted`. Each case is written before its mechanism and watched failing
+first; where a
 behaviour exists today, the case pins it before exercising the changed path.
 
 ## Phase 5 - Fan-in seeding per language [after Phase 4, same release line]

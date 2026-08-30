@@ -343,6 +343,10 @@ export const GapRowSchema = z
 		name: z.string().optional(),
 		kind: z.string().optional(),
 		module: z.string().optional(),
+		/** The subject's address no longer resolves; the row is a window, not work, and `why` keeps its ordinary value. */
+		stranded: z.boolean().optional(),
+		strandedAt: z.number().optional(),
+		evidence: z.string().optional(),
 	})
 	.meta({ id: "GapRow" });
 
@@ -365,6 +369,8 @@ export const KnowledgeGapsSchema = z
 		scope: z.object({ module: z.string(), declarations: z.number() }).optional(),
 		/** True when every row honours the asked question; the workspace demand sweep carries every question. Omitted reads as unfiltered. */
 		filtered: z.boolean().optional(),
+		/** Rows whose subject is orphaned, counted whole; `total` never includes them. */
+		stranded: z.number().optional(),
 	})
 	.meta({ id: "KnowledgeGaps" });
 
@@ -763,6 +769,21 @@ export const IndexStatusSchema = z
 
 export type IndexStatus = z.infer<typeof IndexStatusSchema>;
 
+/** What the last knowledge sweep did; `ambiguous` counts within `orphaned`. */
+export const KnowledgeSweepSchema = z
+	.object({
+		examined: z.number(),
+		rebound: z.number(),
+		orphaned: z.number(),
+		deleted: z.number(),
+		ambiguous: z.number(),
+		/** The cap stopped it; the next sweep resumes from where it stopped. */
+		stoppedEarly: z.boolean(),
+	})
+	.meta({ id: "KnowledgeSweep" });
+
+export type KnowledgeSweep = z.infer<typeof KnowledgeSweepSchema>;
+
 /** Parts sum to `tracked`. */
 export const ScanCountsSchema = z
 	.object({
@@ -772,6 +793,8 @@ export const ScanCountsSchema = z
 		generated: z.number(),
 		denied: z.number(),
 		outlined: z.boolean(),
+		/** Absent until a sweep has run in this store. */
+		knowledgeSweep: KnowledgeSweepSchema.optional(),
 	})
 	.meta({ id: "ScanCounts" });
 

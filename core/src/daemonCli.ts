@@ -20,6 +20,7 @@ import {
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
 import { WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
+import { systemClock } from "./clock.js";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
 import { type Collector, makeReportsDir, startDiagnostics } from "./diagnostics.js";
@@ -264,7 +265,9 @@ async function main(argv: string[]): Promise<void> {
 	// future client reading a live pid that serves nothing.
 	try {
 		const source = ownSource();
-		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root);
+		// One time source for the store's stamps, the service, the watcher debounce and the sweep timer.
+		const clock = systemClock;
+		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root, clock);
 		store = opened.store;
 		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
 		if (opened.unplaced !== undefined) {
@@ -282,7 +285,7 @@ async function main(argv: string[]): Promise<void> {
 		log(`providers:\n${describeStart(providers)}`);
 
 		const openStore = store;
-		const service = new LexiconService(openStore, supervisor, sourceReader(root), root);
+		const service = new LexiconService(openStore, supervisor, sourceReader(root), root, clock);
 
 		const gate = new WorkspaceGate();
 		transactions = new TransactionManager(openStore, root);
@@ -360,6 +363,13 @@ async function main(argv: string[]): Promise<void> {
 					service,
 					workspaceRoot: root,
 					gate,
+					clock,
+					onSwept: (report) => {
+						if (report.examined > 0)
+							log(
+								`knowledge sweep: ${report.examined} examined, ${report.rebound} rebound, ${report.orphaned} orphaned, ${report.deleted} deleted${report.stoppedEarly ? ", stopped at the cap" : ""}`,
+							);
+					},
 					onApplied: (applied) => {
 						const touched = applied.filter((o) => o.action !== "skipped");
 						const failures = applied.filter((o) => o.failure !== undefined);

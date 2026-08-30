@@ -12,6 +12,7 @@ import {
 	type GapRow,
 	type InvalidateOutcome,
 	type KnowledgeGaps,
+	moduleOf,
 	type ResolveFactsResult,
 } from "@nyaa-lexicon/protocol";
 import {
@@ -599,16 +600,20 @@ export class KnowledgeLedger {
 			}
 
 			const rows = [...recheck, ...missing];
+			// The gate reads actionable rows only; the stranded window follows whichever branch runs.
 			if (rows.length > 0) {
-				return {
-					question,
-					rows: rows.slice(0, limit),
-					total: rows.length,
-					external: 0,
-					truncated: false,
-					filtered: false,
-					...(staleScanSkipped ? { staleScanSkipped } : {}),
-				};
+				return this.withStranded(
+					{
+						question,
+						rows: rows.slice(0, limit),
+						total: rows.length,
+						external: 0,
+						truncated: false,
+						filtered: false,
+						...(staleScanSkipped ? { staleScanSkipped } : {}),
+					},
+					limit,
+				);
 			}
 
 			// The cold-start fallback. An empty ledger means nobody has asked yet, not that nothing is
@@ -621,16 +626,19 @@ export class KnowledgeLedger {
 				.filter((hub) => this.store.declaration(hub.symbolId) !== null)
 				.slice(0, limit)
 				.map((hub) => this.gapRow(hub.symbolId, question, 0, "missing"));
-			return {
-				question,
-				rows: seeded,
-				total: seeded.length,
-				external: 0,
-				truncated: false,
-				seeded: true,
-				filtered: true,
-				...(staleScanSkipped ? { staleScanSkipped } : {}),
-			};
+			return this.withStranded(
+				{
+					question,
+					rows: seeded,
+					total: seeded.length,
+					external: 0,
+					truncated: false,
+					seeded: true,
+					filtered: true,
+					...(staleScanSkipped ? { staleScanSkipped } : {}),
+				},
+				limit,
+			);
 		}
 
 		// The tree: post-order walk of what the root uses, so children precede their parents.
@@ -702,6 +710,29 @@ export class KnowledgeLedger {
 			scope: { module, declarations: declarations.length },
 			filtered: true,
 		};
+	}
+
+	/** The window on orphaned subjects, after the actionable rows inside the page; the count is whole. */
+	private withStranded(result: KnowledgeGaps, limit: number): KnowledgeGaps {
+		const count = this.store.strandedCount();
+		if (count === 0) return result;
+		const room = Math.max(0, limit - result.rows.length);
+		const stranded = this.store.strandedRows(room).map((row): GapRow => {
+			const module = moduleOf(row.symbolId);
+			return {
+				symbolId: row.symbolId,
+				question: row.question,
+				why: row.held === "demand" ? "missing" : row.doubted ? "doubted" : "stale",
+				askCount: row.askCount,
+				...(row.recordedAs === row.symbolId ? {} : { recordedAs: row.recordedAs }),
+				fanIn: 0,
+				...(module === null ? {} : { module }),
+				stranded: true,
+				strandedAt: row.orphanedAt,
+				evidence: row.evidence,
+			};
+		});
+		return { ...result, rows: [...result.rows, ...stranded], stranded: count };
 	}
 
 	/** Missing, doubted, stale on its own citations, or null for healthy. */

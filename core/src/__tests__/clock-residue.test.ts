@@ -10,7 +10,17 @@ const SRC = join(import.meta.dirname, "..");
 const OWNER = "clock.ts";
 
 /** Modules that take time only from the clock. Add a module here when routing it. */
-const ROUTED = ["diagnostics.ts", "drift.ts", "lifetime.ts", "liveIndex.ts", "service.ts", "subjects.ts", "watcher.ts"];
+const ROUTED = [
+	"diagnostics.ts",
+	"drift.ts",
+	"indexer.ts",
+	"lifetime.ts",
+	"liveIndex.ts",
+	"service.ts",
+	"store.ts",
+	"subjects.ts",
+	"watcher.ts",
+];
 
 /** Reaching for the wall or the host timers directly. */
 const RAW = [
