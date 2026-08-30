@@ -43,6 +43,14 @@ returning a branded sentence. The ledger and the citation checker choose an outc
 constructor's result in the reason slot; they compose none of their own. A raw string in that slot
 is a type error in core, and a residue test refuses the cast, in every spelling, outside the owner.
 
+That holds beyond the knowledge layer. Everything that says why a read, a refactor step, a journal
+operation or a write will not happen answers with the same brand: the source reader, the planner,
+the executor, the transaction journal and the file writer. Where the protocol carries a plain
+string on the wire, `core/src/refusalSlots.ts` narrows the shape for core alone, and
+`refusalSlots.types.ts` asserts each of those slots against the compiler, so widening one back to
+`string` fails the build. A warning is not a refusal and stays a string: `RefactorIssue.detail`
+rides a step that succeeded, and putting it in the catalog would claim otherwise.
+
 ## Question classes
 
 A closed vocabulary rather than free-form chat, because a class the core cannot render is worse

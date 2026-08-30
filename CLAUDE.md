@@ -210,8 +210,11 @@ Ordered by how much they prove:
 - **Comments state constraints, not narration.** One line, two at most for a critical one.
 - **A refusal names what the author did and what to do instead.** "Not in the index" was correct
   and cost a night: two agents concluded a queue was exhausted and one minted demand rows nobody
-  could answer. Every knowledge refusal is a constructor in `core/src/refusals.ts`; a raw string
-  in a reason slot is a type error in core and a residue refuses the cast.
+  could answer. Every refusal is a constructor in `core/src/refusals.ts`, knowledge and refactor
+  alike; a raw string in a reason slot is a type error in core and a residue refuses the cast.
+  Slots the protocol types as `string` are narrowed for core in `refusalSlots.ts` and asserted in
+  `refusalSlots.types.ts`, so widening one fails `tsc`. A warning riding a success is not a
+  refusal and stays a string.
 - **Knowledge is keyed by a subject, never by a symbol id.** `core/src/subjects.ts` owns the table
   and every transition; a row's key never changes (a trigger refuses the update), and identity moves
   only by rebinding the address. A refactor step journals what its rebind moved, with the state it

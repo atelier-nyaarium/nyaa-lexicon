@@ -1399,6 +1399,10 @@ barrel; the protocol barrel is untouched; no wire change, no store change. No ve
 
 ## Replan 5 - Refusal-typed slots outside the knowledge layer
 
+✅ Shipped: the catalog extended to the refactor and source channel, every slot in it typed with
+the brand, and the narrowing asserted against the compiler (a111daa and ddbe22c, after one
+alignment audit and one red team round; the docs and the rule followed in the next commit).
+
 The last of the five replan items (Question 11), found by the Phase 0 red team. The catalog phase
 made a knowledge refusal a named constructor and gave `Refusal` a brand, so a raw sentence in a
 knowledge reason slot is a type error. Everything the refactor and source paths refuse is still a
@@ -1850,3 +1854,19 @@ Collected during the overnight knowledge run, the review of its patches, and the
   the owner: the fake models no request queue, no provider death and no timeout, so a suite
   wanting `ProviderUnavailableError` still throws it by hand; and `RefactorIssue.kind` is an open
   string at the protocol boundary, so `ImportersUnchecked` joins a vocabulary nothing enumerates.
+- Building the refusal slots item: fourteen alignment findings and eight red team ones, nineteen
+  fixed. Typing five slots was the ask, and typing five of nine would have left the sentence
+  composable next door, so the channel went end to end: reader, planner, executor, journal, writer.
+  Each widening caught something the reading had missed, three raw sentences among them, including
+  a `?? "the rename is blocked"` fallback nobody would have grepped for. The residue was the
+  lesson. Three textual attempts to prove a slot stayed narrowed each passed the next round's
+  bypass: an unused import, then the type named in a comment, then in a string. The fourth stopped
+  matching text and asked the compiler, and its own first draft was wrong for an optional slot,
+  which the compiler said at once. Extending the inline sweep to the new files was tried and
+  reverted: `reason` there also names a closed enum value and a tally field, so the token flags
+  honest code, which is this repository's own rule about an ambiguous token turned on itself. The
+  red team found one escape from the brand, `JSON.parse` answering `any`, which no core path takes
+  and no brand can guard, so it is written down rather than chased. Running three full suites at
+  once put the machine at load sixteen and produced twenty-six provider-corpus timeouts that read
+  exactly like failures; the suite is 48 seconds idle and 132 under contention, and the auditors
+  hit the same wall until their prompt made them prove they could run it first.
