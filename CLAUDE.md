@@ -181,6 +181,12 @@ Ordered by how much they prove:
   and makes git call the file binary and grep return nothing for any pattern in it. Scan with
   `grep -a`: without it the file that has the byte is exactly the file grep goes silent on, and a
   "no match" then read as clean while an auditor was right.
+- **Time in `core/` comes from `clock.ts`.** Every module but the owner is swept for `Date.now`,
+  `new Date()`, `setTimeout`, `setInterval`, `setImmediate`, `Bun.sleep` and their kin, and one
+  `Clock` is handed from the daemon's composition root to the store, the service, the ledger, the
+  transaction manager, the supervisor and the transport, so a fake clock drives a whole daemon in a
+  test. A new stamp or timer takes the clock it is handed; an entry point that builds no daemon
+  reads `systemClock` by name at its top.
 - **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
   mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
   by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore
