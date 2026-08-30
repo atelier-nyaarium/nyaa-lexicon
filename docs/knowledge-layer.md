@@ -191,6 +191,17 @@ workspace whose only knowledge is stranded still seeds its hubs. The rows come f
 `strandedRows`, the identity owner's one reader over the addressed views, in the order pass A
 reads. That is a window, not a task, and a module scope or subtree walk never holds one.
 
+The seeded fallback, which runs when the ledger holds no demand, ranks per language rather than
+across the workspace, since cross-language calls never bind and a global fan-in rank buries every
+language called over a wire. A candidate is a declaration the store's `seedCandidates` admits: not
+`exported: false`, not in a file git calls generated, and carrying a comment, a reference from
+outside itself or a literal; an unknown export or generated status keeps it eligible and is counted
+on the page as `seededUnknown`, which the renderer says under the header. `RESERVED_HUBS` hubs by
+global fan-in lead, then the languages take turns, ordered by their declaration count, each
+offering its next candidate by fan-in and then id, so two runs agree. Git's word on a file is a
+three-valued verdict persisted on its `files` row, written by the pass that read the file and
+refreshed by every later admission, so a file a pass left unread never keeps a stale one.
+
 The gap list says whether it filtered by the asked question: `filtered` is set by every core
 return, `false` from the workspace demand sweep, which carries every question with rechecks first,
 and `true` from the seeded fallback, the module scope and the subtree walk. The MCP renderer names

@@ -81,6 +81,13 @@ Two rules hold the design together:
   with their subjects, and their citations heal on their own, because unchanged code mints
   identical fact ids. A store written before subjects is re-keyed in place on first open.
 
+A `files` row also carries git's word on whether the file is generated, three-valued: `yes`, `no`,
+or `unknown` with the reason git could not say. The indexer asks git once per admission for every
+candidate and once per import-closure round for what it reached past admission, writes the verdict
+with the file's facts, and refreshes every stored row from the map before it prunes, so a file a
+pass left unread carries the attributes as they stand. Reachability reads only a clean `yes`; the
+knowledge layer's seeded fallback reads the rest (`docs/knowledge-layer.md`).
+
 ## Diagnostics
 
 A daemon that dies of its heap leaves nothing to read on its own. Two owners change that.

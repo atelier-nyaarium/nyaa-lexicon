@@ -931,6 +931,11 @@ behaviour exists today, the case pins it before exercising the changed path.
 
 ## Phase 5 - Fan-in seeding per language [after Phase 4, same release line]
 
+✅ Shipped: the verdict on every file, the eligibility reader, the reserved hubs and the
+per-language interleave, the wire field and the renderer line (52baa65, after a hygiene, test and
+alignment audit and two red team rounds); the documentation and this record in the commit that
+carries this line. No version bump; Phase 4 and this phase are 3.2.0 when the owner cuts it.
+
 **The defect:** the cold-start fallback ranks the whole workspace by fan-in. Cross-language calls
 do not bind, so any language that is called through a wire rather than an import is under-counted
 and ranks last. Kotlin here; a Python extractor beside a TypeScript core elsewhere. The reviewer
@@ -1323,3 +1328,22 @@ Collected during the overnight knowledge run, the review of its patches, and the
   call, since holding the gate at SIGTERM makes a wedged provider a wedged exit. Held: a provider
   outage on a module whose last good parse already lacked the declaration orphans it, which is
   the plan's orphan, and the next parse restores it.
+- Building Phase 5: an eleven-finding first audit, then two red team rounds, fifteen and five
+  findings, of which fourteen were fixed, four held and one disproved. The pattern was the same
+  as Phase 4's: a verdict trusted one step past where it was written. The map admission built was
+  read at write time only, so a `.gitattributes` edit reached no file the pass left unread, an
+  outage kept an old verdict, and the background upgrade wrote the map it had; the fix was to
+  make every pass write its map onto every row before pruning, a sync, rather than to chase each
+  reader. The migration put two column adds under one existence check, so a crash between them
+  would have skipped the second forever: each column checks itself now. The seeding SQL and the
+  decoder read a corrupt row two different ways until the SQL was written to say exactly what
+  `verdictFromRow` says. Pre-existing and found by the way: `linguist-generated=false` had read as
+  generated since the reachability rule was written. The test harness bit again: a root that
+  becomes generated is pruned, correctly, so two tests that expected a stored verdict to change
+  under a root were asserting on a row the pass had rightly forgotten; the sync is only visible
+  on a file something still imports. One auditor claim, that the batch test would pass without
+  the sync, was settled by removing the call and watching the test fail, which is the cheapest
+  argument there is. Deviations recorded in the phase text: `mostReferenced` keeps the `hubs`
+  tool's meaning and gains only the tie-break, the language is read from one id per module
+  through `languageOf`, `seededUnknown` counts the page, and a direct writer records no verdict
+  rather than a lie.
