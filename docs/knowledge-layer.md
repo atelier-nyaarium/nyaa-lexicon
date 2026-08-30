@@ -110,10 +110,42 @@ is never a rebind target: two subjects never merge, and the one already there ke
 the code as it stands. Prose survives a move; its citations go stale on their own, which is
 correct, because the facts underneath really did change identity.
 
-An address that stops resolving keeps its subject, bound and unresolved, until a write at the kept
-address restores it. Nothing orphans a subject on its own yet: the sweep that judges a vanished
+An address that stops resolving keeps its subject, bound and unresolved, until the declaration
+comes back: a re-index that puts it back at the kept address restores the subject as it lands, and
+so does a write there. Nothing orphans a subject on its own yet: the sweep that judges a vanished
 address by pattern digest, dates orphans and deletes them is not built, and `unresolved` lists
 what it would judge.
+
+## A refusal says what stands at the address
+
+Every write at an address the index does not hold, and every recall of an answer whose address no
+longer resolves, is diagnosed from the subject's state (`KnowledgeSubjects.stateOf`) before any
+sentence is composed, so the wording agrees with what the identity owner last recorded:
+
+- **Moved.** The address was vacated by a rebind: the refusal names the new address and the
+  evidence, and says the knowledge is recalled there. Only the last vacated address of a subject
+  forwards; one two rebinds old reads as unminted.
+- **Stranded.** A subject still names the address and the index no longer holds it: the refusal
+  says whose knowledge stands there (the answers, or only the demand), the date it was orphaned if
+  it was, and where a reader might find the declaration now. Candidates are declarations elsewhere
+  with the same name and kind (`sameNameAndKind` in the id grammar, applied by `candidatesFor`);
+  they are for a person to read, and nothing is ever bound by one.
+- **Waiting on a parse failure.** A bound subject whose module is present and not parsing: the
+  refusal names the failure's reason and says nothing is orphaned or deleted while that holds.
+- Otherwise the unminted shortlist, the unknown module, or the unparsable spelling, as before.
+
+Recall carries the same diagnosis as `stranded` beside the answer, and the MCP surface renders it in
+place of the re-affirm instruction, which a stranded subject cannot follow.
+
+## Work exists only at an address the index holds
+
+The identity owner declares `answers_live` and `gaps_live`, the addressed views joined to
+`symbols`, and every ranking reader in the ledger (the gap queue, both recheck scans, the overview's
+stale count) reads them through the store's `live*` surfaces, so a dead address cannot reach a
+queue. The raw readers stay for recall, doubt and diagnosis, which must see stranded rows, and a
+residue forbids them in the ledger's ranking paths. Demand is decided at the write: `recordGap`
+inserts only where `symbols` holds the address, so a recall of a stranded answer counts nothing,
+and the `stranded` field on the wire is explanation, never eligibility.
 
 ## Rules
 

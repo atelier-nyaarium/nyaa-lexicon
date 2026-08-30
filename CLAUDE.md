@@ -204,6 +204,10 @@ Ordered by how much they prove:
   only by rebinding the address. A refactor step journals what its rebind moved, with the state it
   replaced, in the same transaction as the move, and every reversal restores exactly that.
   Reversal inferred from a subject's current state was patched twice before that design landed.
+- **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
+  store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there;
+  the rule was remembered at four sites before the projection owned it. Recall, doubt and diagnosis
+  read raw rows on purpose, since a stranded subject must still be seen.
 
 ## Blind test corpora
 

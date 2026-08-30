@@ -432,6 +432,13 @@ every reversal restores exactly that.
 
 ## Phase 1 - Candidates, and an orphaned subject says it is orphaned
 
+✅ Shipped: the predicate, the subject state, the candidates, the three diagnoses, the `stranded`
+field and its rendering (b6f3503, after a hygiene audit, an alignment audit and a red team); the
+store-owned live projection with the guarded gap write and the re-index restore (385d864, the
+architecture pass, red-teamed); the documentation and this record in the commit that carries this
+line. No version bump. The `refactor_move` sentence is driven through the owner until Phase 0's
+move-capable fixture.
+
 **The candidate predicate.** The id grammar gains one named predicate over parsed descriptors, in
 `symbolId.ts`, so nothing outside the grammar decides what "the same name and kind" means:
 `sameNameAndKind(a, b)`, same language, same kind, same last descriptor name, and for a member,
@@ -1067,3 +1074,13 @@ Collected during the overnight knowledge run, the review of its patches, and the
   ids into markdown tables and code spans with no escaping for a pipe or a backtick, a class older
   than this phase. The cycle's step text carries the phase as it read when the cycle started, not
   as the file reads after reconciliation; auditors were pointed at the file each time.
+- Building Phase 1: where demand eligibility lives moved three times, from the recall, to
+  `demandOf` reading the `stranded` field, to the store's guarded insert, before it had one owner;
+  the "dead address is not work" rule was remembered at four ledger sites before the live views
+  owned it (the phase's Bug Classes). `replaceFile` clears `parse_failures` for its module, so a
+  test that wants a present-and-failing module has to empty the file before recording the
+  failure, which nothing documents. The reference provider refuses moves, so the end-to-end
+  `refactor_move` sentence still waits on a fixture provider. The residue that keeps raw readers
+  out of the ledger matches spellings, so an alias or a helper in another module walks past it,
+  the same limit the refusal residue has. The overview's answer total is raw and its stale count is
+  live, which reads as a discrepancy until one knows the first is coverage and the second is work.
