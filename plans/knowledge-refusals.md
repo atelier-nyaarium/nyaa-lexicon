@@ -68,8 +68,9 @@ own callers and ranks permanently below the server, even where its doctrine is a
 confirmed the Kotlin comments carry the same weight. Should seeding rank per language?
 A: Yes, the full design in Phase 5: eligibility, generated persisted as a three-valued fact,
 language order derived from declaration counts, five reserved global hubs, `seededUnknown`
-reported. It lands after the replan point, with Phase 4, since both rewrite the seeding path in
-`knowledgeGaps`. The cheaper form is not taken.
+reported. It lands after the replan point, with Phase 4. The two do not share the seeding path:
+they share `replaceFile`'s parameter list, the `knowledgeGaps` result shape, and the gate that
+decides whether the seeded fallback runs at all. The cheaper form is not taken.
 
 > "A."
 
@@ -139,6 +140,39 @@ this plan, held on the board.
 
 > "I actually want that to exist in core for side goal reasons. perhaps a question after E.
 > excellent potential IDE info."
+
+## Question 11 - What lands before Phase 4? (settled in chat)
+
+Q: Five replan items came out of the identity build: one injected clock, a row-placement
+primitive, typed rebind rows, a provider port with a move-capable fixture, and Refusal-typed slots
+outside the knowledge layer. Is any of them something the sweep reads, or are all five follow-ups?
+A: Phase 4 as written, all five after. Everything the sweep reads is shipped in the identity
+owner; the thirty-day expiry reads `orphanedAt`, written only by the sweep from its own `now`;
+the placement primitive targets the schema rebuild Phase 4 forbids itself; the fixture provider
+gates the refactor end-to-end, not the editor move the sweep matches. Four advocates, a pick and
+two adversaries; the adversaries landed four corrections to Phase 4's text, applied there: the
+`restoreResolving` call inside `replaceFile` routed through the indexer's clock, pass A's restore
+stated as reachable mostly at index time, an explicit collision rule for a held target address,
+and the store's clock-read count corrected.
+
+> "C it is."
+
+## Question 12 - Cut a 3.1.0 before Phase 4? (settled in chat)
+
+Q: Everything since `Build 3.0.3` (2ddb025) is unreleased: the catalog, the identity phase and
+Phases 1, 0, 2 and 3. Cut a minor now, or hold for Phase 4, or for Phases 4 and 5?
+A: Cut 3.1.0 now; Phase 4 becomes 3.2.0. Nothing since 3.0.3 is a major by the release contract
+(no provider extraction change, no removed daemon method, `PROTOCOL_VERSION` unchanged);
+`SCHEMA_VERSION` is unchanged, so a 3.0.3 store takes the in-place re-key in one transaction and
+keeps every fact id; nothing in production orphans a subject yet, so the accumulation holding
+was argued against does not exist; the live views already keep dead addresses out of the queue
+and ship only with a release. Gated on driving the built daemon against a real 3.0.3 store,
+the grade run, and one conformance pass since the id grammar was rewritten. A rolled-back
+3.0.3 cannot read the re-keyed store, loudly; rows survive and roll forward. Release note:
+`answerFactId` and `doubtFactId` changed arity in the public protocol package; upgrade-minted
+orphan rows stay until Phase 4.
+
+> "A it is."
 
 # Plan
 
@@ -737,14 +771,20 @@ order:
    `patternDigest` and `patternCoverage` equal the subject's `lastDigest` and `lastCoverage`, and
    whose kind and name match. The subject's address becomes that declaration, `fromSymbolId`
    remembers the old one, no date is set. A subject with no digest never matches. The timer pass
-   has no `newModules`, so it never rebinds by evidence.
+   has no `newModules`, so it never rebinds by evidence. A match whose target address another
+   subject already holds is not a rebind: `KnowledgeSubjects.rebind` skips it and reports it in
+   `applied`, and the sweep reads that report and takes step 3 with evidence `ambiguous`, naming
+   the holder among the candidates, never `none`.
 3. **Orphan** otherwise: `state = orphaned`, `orphanedAt = now`, evidence `ambiguous` with the
    `candidatesFor` list when more than one declaration matched by digest, `none` when none did.
 
 Pass A, over orphaned subjects, read by the `orphanedAt` index in `(orphanedAt, subjectId)` order:
 
 4. **Restore** a subject whose address resolves again: `bound`, evidence `sameLocator`, date
-   cleared.
+   cleared. `replaceFile` already does this for its module at index time through
+   `restoreResolving`, and an address resolves again only when its module is written, so this
+   step is reached by a subject restored outside a module write, which today is the compat
+   rebuild; it stays because pass A must not depend on who ran first.
 5. **Delete** a subject orphaned thirty or more days behind the clock, with its answers and its
    demand. A date ahead of the clock is treated as now, so a clock that went backwards cannot
    delete early.
@@ -775,17 +815,22 @@ what lets it stop and resume. Nothing inside a batch opens another.
 
 **The clock.** `clock.ts` owns time for the routed modules and its `Clock` is injectable into the
 service, but the service builds `WorkspaceIndexer` without one. The indexer gains a `Clock`
-parameter, the service passes its own, and the clock residue's routed list grows by `indexer.ts`
-and `subjects.ts`, so a `Date.now` in the sweep fails the build. The sweep passes `now` into
-`sweepSubjects` as a value, so the store's four existing `Date.now` reads, all write timestamps,
-stay unrouted and the aging test sets the clock rather than faking a date.
+parameter, the service passes its own, and the clock residue's routed list, which already holds
+`subjects.ts`, grows by `indexer.ts`, so a `Date.now` in the sweep fails the build. The sweep
+passes `now` into `sweepSubjects` as a value. The store holds seven `Date.now` reads; six are
+write timestamps and stay unrouted, and the seventh, `restoreResolving` inside `replaceFile`, is
+an identity transition that writes `boundAt`, which `forwardedFrom` orders by, so `replaceFile`
+takes `now` from the indexer's clock and every subject transition reads one time source. The
+aging test sets the clock rather than faking a date.
 
 **What an orphaned subject stops costing, and where it is still seen.** It leaves the stale sweep
 and the `STALE_SCAN_CAP` count at once, it never leads the demand queue, and `recallAnswer`
-records no demand for it (Phase 1). The workspace demand sweep reads `gaps` and `allAnswers`
-today, neither of which sees a subject's state, so the identity owner gains two reads for the
-window: `orphanedSubjects(limit)`, oldest first with their rows, and `orphanedCount()`. The sweep
-excludes orphaned subjects' rows from its recheck and missing groups, appends the orphaned rows
+records no demand for it (Phase 1). The workspace demand sweep reads the live views, which
+already keep a dead address out of its recheck and missing groups (Phase 1), and the identity
+owner already answers `orphaned(limit)`, oldest first, and `orphanedCount()`. What the window
+still needs is the orphaned subjects' rows, and the ledger may not fetch them through the raw
+readers, which its residue forbids, so the owner gains one reader over the addressed views for
+that. The sweep appends the orphaned rows
 after them inside the page, each carrying `stranded: true`, `strandedAt` set to `orphanedAt` and
 the evidence, and reports the count as an optional `stranded` number on the result; `total` keeps
 counting actionable rows only. A page full of actionable rows shows no orphaned row and still
@@ -808,11 +853,17 @@ recall field, this phase is a minor.
 **Tests:** record, then delete the file: orphaned on the next sweep with evidence `none`, absent
 from the stale count, not at the head of the queue, no demand recorded on recall. Replace it with
 a parse failure while the file is present: not orphaned. Delete the file and recreate it parsing
-without the symbol: orphaned. Put the symbol back: pass A restores it. Move the file with the
+without the symbol: orphaned. Put the symbol back: bound again with no date, asserted on the
+subject's end state and not on the sweep's `restored` count, since the module write restores it
+before pass A runs. Move the file with the
 editor: rebound on `batchExactMatch`, undated, recalled at the new address, the old address
 diagnosed as moved. Move it and edit the body in the same save: orphaned with `none`, since the
 digest changed. Two identical twins, delete one: the survivor untouched, the deleted one orphaned
 with `none`. Two candidates by digest among new modules: orphaned with `ambiguous` and both named.
+A digest match whose target address another subject holds: not rebound, orphaned with
+`ambiguous` naming the holder. A workspace whose only knowledge is stranded: it seeds today, and
+the stranded rows this phase appends sit above the gate that decides whether seeding runs, so the
+test states which it is and the phase decides it, since Phase 5 rewrites the fallback next.
 Advance the injected clock thirty days with no scan and no event: the timer's sweep deletes it,
 so an idle workspace ages. Set the clock behind a date: not deleted. Force a compat rebuild: the
 subject and its date survive. Plant more orphaned subjects than the cap: the sweep stops, reports
@@ -970,8 +1021,8 @@ Ordered by how much it proves, as the repository already orders it.
   together. Phase 0 adds a daemon method, the identity phase, Phase 1 and Phase 3 add optional
   fields, and the protocol doc prices each as a minor; the catalog is internal. The identity
   phase's in-place table rebuild preserves the store, which is what a minor promises, and its
-  fixture gate is what proves it. Phase 4 is a minor for its optional fields. Phase 5 is priced in
-  its own section and is in no release line until decided. Nothing here needs a major: no
+  fixture gate is what proves it. Phase 4 is a minor for its optional fields. Phase 5 is in the
+  second release line with Phase 4, by Question 5. Nothing here needs a major: no
   extraction changes and no method is removed or renamed.
 
 ## Painpoints
