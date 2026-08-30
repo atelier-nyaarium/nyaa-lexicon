@@ -137,6 +137,16 @@ sentence is composed, so the wording agrees with what the identity owner last re
 Recall carries the same diagnosis as `stranded` beside the answer, and the MCP surface renders it in
 place of the re-affirm instruction, which a stranded subject cannot follow.
 
+The diagnosis is one value, `diagnoseSubject` in `core/src/refusals.ts`: a closed kind
+(`factIdAsSubject`, `unminted`, `moved`, `stranded`, `waiting`, `unknown`), the sentence, the ids a
+reader might mean, and for a vacated address where it forwards. `subjectRefused` is its sentence,
+and every site in core that meets a symbol id naming nothing routes through it: the knowledge
+writers, `typeOf`, `SourceWorkspace`, and the refactor planner. The daemon exposes it as the read
+method `diagnoseSubject`; the MCP adapter's `resolveOne` asks `declarationOf` for any supplied id
+and answers with the diagnosis on a miss, so every tool taking a symbol id says what a writer says.
+An indexed module holding no declarations is unminted territory; an unindexed one is unknown. A
+residue forbids the two absence sentences in production outside the owner.
+
 ## Work exists only at an address the index holds
 
 The identity owner declares `answers_live` and `gaps_live`, the addressed views joined to

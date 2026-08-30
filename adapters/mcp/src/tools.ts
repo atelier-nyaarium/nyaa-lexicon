@@ -835,7 +835,9 @@ function moduleOf(symbolId: string): string | undefined {
  * Resolve what the caller gave into one symbol id.
  *
  * Several matches is an answer, not a failure: the caller is told which ones exist so it can pick,
- * rather than being handed a confident description of whichever happened to be first.
+ * rather than being handed a confident description of whichever happened to be first. A supplied id
+ * is checked against the index and diagnosed on a miss, so every handler behind here says what a
+ * writer says.
  */
 async function resolveOne(backend: ToolBackend, args: SymbolArgs): Promise<{ symbolId: string } | { problem: string }> {
 	if (args.symbolId) {

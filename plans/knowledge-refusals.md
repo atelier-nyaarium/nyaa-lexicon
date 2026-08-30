@@ -523,6 +523,12 @@ ledger's ranking paths.
 
 ## Phase 0 - One diagnosis for a bad subject id, reached from every tool
 
+✅ Shipped: the one value, its daemon method, the chokepoint, the five routed core sites and the
+residue (ac125eb, after a hygiene audit, an alignment audit and a red team); the documentation
+and this record in the commit that carries this line. The built server was driven by hand:
+`describe_symbol`, `symbol_source` and `record_answer` answer a ghost id with one sentence and the
+module's shortlist, where 3.0.3 gave three. No version bump.
+
 **What:** the subject diagnosis becomes one value, `diagnoseSubject` in the refusals module, that
 every tool reaches when a symbol id names nothing, and `subjectRefused` is its sentence. Six
 outcomes, closed: a fact id supplied as the subject, an unminted id with the module's shortlist, a
@@ -1097,3 +1103,16 @@ Collected during the overnight knowledge run, the review of its patches, and the
   out of the ledger matches spellings, so an alias or a helper in another module walks past it,
   the same limit the refusal residue has. The overview's answer total is raw and its stale count is
   live, which reads as a discrepancy until one knows the first is coverage and the second is work.
+- Building Phase 0: two of four relay agents returned "ready, awaiting instruction" in place of the
+  report their Codex agent had written, and the collator counted the angles as empty; the reports
+  were recovered from the relay transcripts and the relay prompt now demands the final response
+  verbatim and nothing else. The hygiene audit caught the line the plan had claimed the code
+  already drew: an indexed module was decided by whether it held declarations, so an indexed
+  module holding none read as unknown, and the store's `depthOf` now decides. The wire shape had
+  let `forwardedTo` ride on any kind; it is a discriminated union. The red team found two refactor
+  handlers returning the resolver's problem without the index state every other handler wraps it
+  in, and `symbol_source` picking the symbol id when handed both ids. The plan's "built-server
+  test" was never a test in this repository; the built bundle is driven by a probe script, and the
+  plan now says so. The stranded case could be reached through the daemon by deleting a file; a
+  moved one needs a provider that moves, which the reference provider refuses, so it is proven at
+  the writer.
