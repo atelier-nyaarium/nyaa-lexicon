@@ -22,11 +22,12 @@ import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
 import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarations.js";
 import { patternDigests } from "./patternDigest.js";
+import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import type { ResultCache } from "./resultCache.js";
 import { type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
-import { type ProviderSupervisor, ProviderUnavailableError } from "./supervisor.js";
+import { ProviderUnavailableError } from "./supervisor.js";
 
 export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
 
@@ -69,7 +70,7 @@ interface Admitted {
 export class WorkspaceIndexer {
 	constructor(
 		private readonly store: IndexStore,
-		private readonly supervisor: ProviderSupervisor,
+		private readonly supervisor: ProviderPort,
 		private readonly readSource: SourceReader,
 		private readonly workspaceRoot: string,
 		private readonly cache: ResultCache,
@@ -162,7 +163,7 @@ export class WorkspaceIndexer {
 			}
 		}
 
-		let facts: Awaited<ReturnType<ProviderSupervisor["ask"]>>;
+		let facts: MethodResponse<"parseFile">;
 		try {
 			facts = await this.supervisor.ask(module, "parseFile", {
 				module,

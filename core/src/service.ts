@@ -41,6 +41,7 @@ import {
 	type TypeHierarchy,
 } from "./indexReads.js";
 import { KnowledgeLedger } from "./knowledge.js";
+import type { ProviderPort } from "./providerPort.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
 import { diagnoseSubject, type SubjectDiagnosis, subjectRefused } from "./refusals.js";
@@ -48,7 +49,6 @@ import { ResultCache } from "./resultCache.js";
 import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredComment, StoredDeclaration } from "./store.js";
-import type { ProviderSupervisor } from "./supervisor.js";
 
 ////////////////////////////////
 //  Constants
@@ -74,7 +74,7 @@ export type RenameOutcome =
 export class LexiconService {
 	constructor(
 		private readonly store: IndexStore,
-		private readonly supervisor: ProviderSupervisor,
+		private readonly supervisor: ProviderPort,
 		readSource: SourceReader,
 		private readonly workspaceRoot = ".",
 		private readonly clock: Clock = systemClock,

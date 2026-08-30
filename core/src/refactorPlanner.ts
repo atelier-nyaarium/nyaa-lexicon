@@ -419,6 +419,26 @@ export class RefactorPlanner {
 		};
 	}
 
+	/** Importers are found from stored references and imports, each written by the provider owning the
+	 * file it is in. One claiming neither reported none, which is not the same as there being none. */
+	private importersUnfound(modules: string[]): RefactorIssue[] {
+		const issues: RefactorIssue[] = [];
+		for (const module of new Set(modules)) {
+			const owner = this.probe.owner(module);
+			if (!owner.owned) continue;
+			const missing = (["references", "imports"] as const).filter(
+				(tier) => !this.probe.declares(owner.providerId, tier),
+			);
+			if (missing.length === 0) continue;
+			issues.push({
+				kind: "ImportersUnchecked",
+				detail: `the provider for ${module} reports no ${missing.join(" and no ")}, so uses of the moved symbol there were not looked for`,
+				module,
+			});
+		}
+		return issues;
+	}
+
 	/** Insert is rename's mirror: a new binder lands among existing uses. Whether that captures
 	 * them is a language question core must not answer, so it is a warning, never a blocker. */
 	private collisionWarnings(module: string, candidate: FileFacts): RefactorIssue[] {
@@ -537,7 +557,7 @@ export class RefactorPlanner {
 		if (blocked.length > 0) {
 			return { ok: false, issues: blocked, reason: "some occurrences cannot be rewritten" };
 		}
-		return { ok: true, files, issues: [] };
+		return { ok: true, files, issues: this.importersUnfound([plan.fromModule, ...plan.referencing]) };
 	}
 
 	/** One request per involved module, each describing only that module's part. */

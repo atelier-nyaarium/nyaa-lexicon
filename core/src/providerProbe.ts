@@ -12,7 +12,7 @@ import type {
 	RenameEditsResponse,
 } from "@nyaa-lexicon/protocol";
 import { hashContent } from "@nyaa-lexicon/protocol";
-import type { ProviderSupervisor } from "./supervisor.js";
+import type { ProviderPort } from "./providerPort.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -36,7 +36,7 @@ export interface ProviderProbe {
 //  Functions & Helpers
 
 /** The live probe over a running provider set. */
-export function liveProbe(supervisor: ProviderSupervisor, readFile: (module: string) => string | null): ProviderProbe {
+export function liveProbe(supervisor: ProviderPort, readFile: (module: string) => string | null): ProviderProbe {
 	async function restore(module: string): Promise<void> {
 		// An absent file restores to EMPTY, or the provider keeps serving the candidate as the view
 		// of a module that does not exist.

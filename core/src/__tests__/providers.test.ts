@@ -3,8 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BunExecutable } from "@nyaa-lexicon/client";
+import type { ProviderStarter } from "../providerPort";
 import { describeStart, discoverProviders, lexiconRoot, startProviders } from "../providers";
-import type { ProviderSpec, ProviderSupervisor } from "../supervisor";
+import type { ProviderSpec } from "../supervisor";
 
 ////////////////////////////////
 //  Helpers
@@ -32,7 +33,7 @@ function tree(sources: string[], bundled: string[] = []): string {
 }
 
 /** Starts fine, or throws, depending on what the test is about. Never spawns a process. */
-function supervisor(failing: string[] = [], started: ProviderSpec[] = []): ProviderSupervisor {
+function supervisor(failing: string[] = [], started: ProviderSpec[] = []): ProviderStarter {
 	return {
 		start: async (spec: ProviderSpec) => {
 			started.push(spec);
@@ -44,7 +45,7 @@ function supervisor(failing: string[] = [], started: ProviderSpec[] = []): Provi
 				extensions: [".x"],
 			};
 		},
-	} as unknown as ProviderSupervisor;
+	};
 }
 
 afterEach(() => {

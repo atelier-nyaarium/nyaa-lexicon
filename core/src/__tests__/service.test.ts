@@ -2,10 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { MethodResponse } from "../providerPort";
 import { LexiconService } from "../service";
 import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
+import { fakeSupervisor } from "./fakeProvider";
+
+/** Owns the `.ts` modules these fixtures plant, so an ask routes the way it does live. */
+const TS_CLAIMS = { providerId: "fake", language: "fake", extensions: [".ts"] };
 
 ////////////////////////////////
 //  Helpers
@@ -1112,11 +1117,10 @@ describe("renaming a symbol that other files import", () => {
 
 	/** Resolves every specifier to the declaring module, which is what makes the import a site. */
 	function resolvingTo(module: string) {
-		return {
-			ask: async (_module: string, method: string) =>
-				method === "resolveImport" ? { status: "resolved", module } : {},
-			evidenceFrom: () => {},
-		} as unknown as ProviderSupervisor;
+		return fakeSupervisor({
+			claims: [TS_CLAIMS],
+			answers: { resolveImport: () => ({ status: "resolved", module }) },
+		});
 	}
 
 	function declare() {
@@ -1233,13 +1237,15 @@ describe("renaming a symbol that other files import", () => {
 
 		service = new LexiconService(
 			store,
-			{
-				ask: async (_m: string, method: string, params: { specifier: string }) =>
-					method === "resolveImport"
-						? { status: "resolved", module: params.specifier === "./cart" ? "src/cart.ts" : "src/index.ts" }
-						: {},
-				evidenceFrom: () => {},
-			} as unknown as ProviderSupervisor,
+			fakeSupervisor({
+				claims: [TS_CLAIMS],
+				answers: {
+					resolveImport: (params) => ({
+						status: "resolved",
+						module: params.specifier === "./cart" ? "src/cart.ts" : "src/index.ts",
+					}),
+				},
+			}),
 			fromText(() => null),
 		);
 
@@ -1362,13 +1368,15 @@ describe("searching imports", () => {
 	});
 
 	it("matches resolved modules with a regex", async () => {
-		const resolving = {
-			ask: async (_module: string, method: string, params: { specifier: string }) =>
-				method === "resolveImport"
-					? { status: "resolved", module: params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts" }
-					: {},
-			evidenceFrom: () => {},
-		} as unknown as ProviderSupervisor;
+		const resolving = fakeSupervisor({
+			claims: [TS_CLAIMS],
+			answers: {
+				resolveImport: (params) => ({
+					status: "resolved",
+					module: params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts",
+				}),
+			},
+		});
 		service = new LexiconService(
 			store,
 			resolving,
@@ -1387,13 +1395,13 @@ describe("performing a rename", () => {
 
 	/** Answers renameEdits however the test needs, and resolves nothing, so only bound sites appear. */
 	function answering(reply: (module: string) => unknown) {
-		return {
-			ask: async (module: string, method: string) =>
-				method === "renameEdits" ? reply(module) : { status: "unresolved", reason: "NotImplemented" },
-			route: () => ({ owned: false, reason: "unclaimed" }),
-			observeModule: () => {},
-			evidenceFrom: () => {},
-		} as unknown as ProviderSupervisor;
+		return fakeSupervisor({
+			claims: [TS_CLAIMS],
+			answers: {
+				renameEdits: (_params, module) => reply(module) as MethodResponse<"renameEdits">,
+				resolveImport: () => ({ status: "unresolved", reason: "NotImplemented" }),
+			},
+		});
 	}
 
 	function plant() {

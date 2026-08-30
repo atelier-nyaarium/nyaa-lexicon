@@ -1,12 +1,16 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { attachComments } from "../commentAttach";
+import { lexiconRoot } from "../providers";
 import { CASES } from "./commentAttachCases";
 
 /** Four mutants, one per attachment defect that shipped; the case table must fail each. */
 const SOURCE = join(import.meta.dirname, "..", "commentAttach.ts");
+
+/** Outside `core/src`, where the residue sweeps walk, and inside the checkout, where packages resolve. */
+const MUTANTS_DIR = join(lexiconRoot(), "temp", "mutants");
 
 interface Mutant {
 	name: string;
@@ -45,20 +49,29 @@ const MUTANTS: Mutant[] = [
 	},
 ];
 
-const written: string[] = [];
+/** One directory per run, so two runs at once never read each other's mutants. */
+let runDir: string | undefined;
+let loads = 0;
 
 afterAll(() => {
-	for (const file of written) rmSync(file, { force: true });
+	if (runDir !== undefined) rmSync(runDir, { recursive: true, force: true });
 });
 
 async function mutated(index: number, mutant: Mutant): Promise<typeof attachComments> {
 	const source = readFileSync(SOURCE, "utf8");
 	expect(source.split(mutant.find).length - 1, `mutant site for: ${mutant.name}`).toBe(1);
-	const file = join(import.meta.dirname, "..", `commentAttach.mutant-${index}.ts`);
-	written.push(file);
-	writeFileSync(file, source.replace(mutant.find, mutant.replace));
-	// A fresh query each run, so a rewritten mutant is never served from the module cache.
-	const loaded = (await import(/* @vite-ignore */ `${pathToFileURL(file).href}?run=${Date.now()}`)) as {
+	mkdirSync(MUTANTS_DIR, { recursive: true });
+	runDir ??= mkdtempSync(join(MUTANTS_DIR, "run-"));
+	const file = join(runDir, `commentAttach.mutant-${index}.ts`);
+	// Relative imports become absolute, so the copy resolves what the source does.
+	const relocated = source.replace(
+		/(from|import)\s+(["'])\.\/([^"']+)\2/g,
+		(_, keyword: string, quote: string, sibling: string) =>
+			`${keyword} ${quote}${join(import.meta.dirname, "..", sibling)}${quote}`,
+	);
+	writeFileSync(file, relocated.replace(mutant.find, mutant.replace));
+	// A fresh query each load, so a rewritten mutant is never served from the module cache.
+	const loaded = (await import(/* @vite-ignore */ `${pathToFileURL(file).href}?run=${++loads}`)) as {
 		attachComments: typeof attachComments;
 	};
 	return loaded.attachComments;

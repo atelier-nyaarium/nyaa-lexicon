@@ -4,12 +4,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Declaration, Import } from "@nyaa-lexicon/protocol";
-import { type ProviderClaims, routeModule, routingContextOf } from "../routing";
+import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
+import type { ProviderPort } from "../providerPort";
+import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import type { ProviderSupervisor } from "../supervisor";
+import { resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
 
 ////////////////////////////////
 //  Helpers
@@ -74,35 +75,15 @@ function importsFrom(text: string): Import[] {
 /** `lazyEvidence: false` ignores the indexer's registered source, so only a scan's own observation routes a header. */
 function fakeSupervisor(
 	discovered: string[] = [],
-	parseRequests: Array<{ module: string; depth?: "full" | "surface" }> = [],
+	parseRequests: Array<{ module: string; depth?: IndexDepth }> = [],
 	{ lazyEvidence = true, fallback = false }: { lazyEvidence?: boolean; fallback?: boolean } = {},
-): ProviderSupervisor {
-	let evidence: () => Iterable<string> = () => [];
-	let routing: ReturnType<typeof routingContextOf> | undefined;
-	const context = () => {
-		routing ??= routingContextOf(evidence());
-		return routing;
-	};
-	const supervisor = {
-		running: () => (fallback ? [claims, dataClaims, fallbackClaims] : [claims, dataClaims]),
-		route: (module: string) =>
-			routeModule(module, [claims, dataClaims, headerClaims, ...(fallback ? [fallbackClaims] : [])], context()),
-		evidenceFrom: (modules: () => Iterable<string>) => {
-			if (lazyEvidence) evidence = modules;
-		},
-		observeWorkspace: (modules: Iterable<string>) => {
-			routing = routingContextOf(modules);
-		},
-		observeModule: (module: string) => context().observe(module),
-		askProvider: async () => ({ files: discovered, externalRoots: [], configFiles: [], diagnostics: [] }),
-		ask: async (_module: string, method: string, params: unknown) => {
-			if (method === "parseFile") {
-				const request = params as {
-					module: string;
-					contentHash: string;
-					text: string;
-					depth?: "full" | "surface";
-				};
+): ProviderPort {
+	return sharedFake({
+		claims: [claims, dataClaims, headerClaims, ...(fallback ? [fallbackClaims] : [])],
+		discover: () => discovered,
+		lazyEvidence,
+		answers: {
+			parseFile: (request) => {
 				parseRequests.push({
 					module: request.module,
 					...(request.depth === undefined ? {} : { depth: request.depth }),
@@ -125,29 +106,17 @@ function fakeSupervisor(
 					literals: [],
 					diagnostics,
 				};
-			}
-			if (method === "resolveImport") {
-				const request = params as { fromModule: string; specifier: string };
-				if (request.specifier.startsWith("external:")) {
-					return {
-						status: "external",
-						packageName: "fixture",
-						surface: { module: request.specifier.slice("external:".length) },
-					};
-				}
-				if (!request.specifier.startsWith(".")) return { status: "unresolved", reason: "NotImplemented" };
-				return {
-					status: "resolved",
-					module: path.posix.normalize(
-						path.posix.join(path.posix.dirname(request.fromModule), request.specifier),
-					),
-				};
-			}
-			throw new Error(`unexpected method ${method}`);
+			},
+			resolveImport: (request) =>
+				request.specifier.startsWith("external:")
+					? {
+							status: "external",
+							packageName: "fixture",
+							surface: { module: request.specifier.slice("external:".length) },
+						}
+					: resolveFake(request),
 		},
-		stopAll: () => {},
-	} as unknown as ProviderSupervisor;
-	return supervisor;
+	});
 }
 
 beforeEach(() => {

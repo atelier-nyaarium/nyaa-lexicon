@@ -1,6 +1,7 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import type { MethodResponse } from "../providerPort";
 import { liveProbe } from "../providerProbe";
-import type { ProviderSupervisor } from "../supervisor";
+import { fakeSupervisor } from "./fakeProvider";
 
 ////////////////////////////////
 //  Helpers
@@ -18,13 +19,18 @@ const NO_DIAGNOSTICS = {
 /** Records every parseFile in order, so a restore is visible as a second call with the disk text. */
 function supervisorSpy(answer: (text: string) => unknown) {
 	const asked: string[] = [];
-	const ask = mock(async (_module: string, _method: string, params: { text: string }) => {
-		asked.push(params.text);
-		const result = answer(params.text);
-		if (result instanceof Error) throw result;
-		return result;
+	const supervisor = fakeSupervisor({
+		claims: [{ providerId: "fake", language: "fake", extensions: [".ts"] }],
+		answers: {
+			parseFile: (request) => {
+				asked.push(request.text);
+				const result = answer(request.text);
+				if (result instanceof Error) throw result;
+				return result as MethodResponse<"parseFile">;
+			},
+		},
 	});
-	return { asked, supervisor: { ask } as unknown as ProviderSupervisor };
+	return { asked, supervisor };
 }
 
 ////////////////////////////////

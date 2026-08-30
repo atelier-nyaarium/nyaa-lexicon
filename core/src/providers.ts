@@ -8,8 +8,9 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { type BunExecutable, bunExecutable, currentHost } from "@nyaa-lexicon/client";
+import type { ProviderStarter } from "./providerPort.js";
 import type { ProviderClaims } from "./routing.js";
-import type { ProviderSpec, ProviderSupervisor } from "./supervisor.js";
+import type { ProviderSpec } from "./supervisor.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -108,7 +109,7 @@ function specFor(entry: ProviderCommand): ProviderSpec {
  * opposite of what separate processes are for.
  */
 export async function startProviders(
-	supervisor: ProviderSupervisor,
+	supervisor: ProviderStarter,
 	workspaceRoot: string,
 	options: StartOptions = {},
 ): Promise<StartReport> {

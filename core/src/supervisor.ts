@@ -21,6 +21,7 @@ import {
 } from "vscode-jsonrpc/node";
 import type { z } from "zod";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
+import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
 import { type ProviderClaims, type Route, type RoutingContext, routeModule, routingContextOf } from "./routing.js";
 
@@ -43,8 +44,6 @@ export interface ProviderExit {
 	code: number | null;
 	signal: string | null;
 }
-
-type MethodResponse<K extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[K]["response"]>;
 
 interface RunningProvider {
 	claims: ProviderClaims;
@@ -115,7 +114,7 @@ export function absorbingWrites(stdin: Writable): Writable {
 ////////////////////////////////
 //  Class
 
-export class ProviderSupervisor {
+export class ProviderSupervisor implements ProviderPort {
 	constructor(private readonly clock: Clock = systemClock) {}
 
 	private readonly providers = new Map<string, RunningProvider>();

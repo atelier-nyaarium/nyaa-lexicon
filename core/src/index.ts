@@ -139,6 +139,7 @@ export {
 	type ProjectStore,
 	storeKeyFor,
 } from "./projectStores.js";
+export type { MethodRequest, MethodResponse, ProviderPort, ProviderStarter } from "./providerPort.js";
 export {
 	describeStart,
 	discoverProviders,

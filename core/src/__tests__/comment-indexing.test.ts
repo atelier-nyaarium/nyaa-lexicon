@@ -10,11 +10,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CommentSpan, Declaration } from "@nyaa-lexicon/protocol";
 import { composeSymbolId } from "@nyaa-lexicon/protocol";
-import type { ProviderClaims, Route } from "../routing";
+import type { ProviderPort } from "../providerPort";
+import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import type { ProviderSupervisor } from "../supervisor";
+import { fakeSupervisor } from "./fakeProvider";
 
 ////////////////////////////////
 //  Helpers
@@ -59,18 +60,13 @@ function span(text: string, line: number, character: number): CommentSpan {
 	};
 }
 
-function supervisorFor(fixture: Fixture): ProviderSupervisor {
-	return {
-		running: () => [claims],
-		route: (module: string): Route =>
-			module.endsWith(".fake")
-				? { owned: true, providerId: claims.providerId, content: "code" }
-				: { owned: false, reason: "unclaimed" },
-		askProvider: async () => ({ files: ["a.fake"], externalRoots: [], configFiles: [], diagnostics: [] }),
-		ask: async (_module: string, method: string, params: unknown) => {
-			if (method !== "parseFile") throw new Error(`unexpected method ${method}`);
-			const request = params as { module: string; contentHash: string };
-			return {
+function supervisorFor(fixture: Fixture): ProviderPort {
+	return fakeSupervisor({
+		claims: [claims],
+		tiers: { comments: true },
+		discover: () => ["a.fake"],
+		answers: {
+			parseFile: (request) => ({
 				module: request.module,
 				contentHash: request.contentHash,
 				declarations: fixture.declarations,
@@ -79,13 +75,9 @@ function supervisorFor(fixture: Fixture): ProviderSupervisor {
 				literals: [],
 				comments: fixture.comments,
 				diagnostics: [],
-			};
+			}),
 		},
-		observeWorkspace: () => {},
-		observeModule: () => {},
-		evidenceFrom: () => {},
-		stopAll: () => {},
-	} as unknown as ProviderSupervisor;
+	});
 }
 
 async function index(fixture: Fixture): Promise<LexiconService> {

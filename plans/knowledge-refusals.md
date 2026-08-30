@@ -1279,6 +1279,120 @@ a subject moved onward while another took its old address reads as moved on.
 **Release:** rides in the pending minor. The two result shapes gain an optional field, which an
 older client's `safeParse` drops. No version bump now.
 
+## Replan 4 - A provider port the indexer depends on, one shared FakeSupervisor, and a move-capable fixture provider
+
+The fourth of the five replan items (Question 11), the architecture assessment's fifth
+opportunity, scheduled for the Phase 0 lap and carried since. Three pieces of test
+infrastructure, each of which cost a defect or a deferred proof: the supervisor's fakes are
+typed by a cast, so a method core starts calling breaks them at runtime; the reference provider
+refuses moves, so the journaled rebind has never been driven through real dispatch; and the
+comment attachment mutants are written into `core/src`, where the residue sweeps race them.
+
+**What exists.** `ProviderSupervisor` in `supervisor.ts` is a class, and `Indexer`, `LexiconService`
+and `liveProbe` take it by that class type while calling eight of its members: `ask`,
+`askProvider`, `route`, `evidenceFrom`, `observeWorkspace`, `observeModule`, `running` and
+`declares`. `startProviders` in `providers.ts` takes the class too and calls `start`. Seven test
+files build a supervisor by hand and cast it `as unknown as ProviderSupervisor`: `fakeProvider.ts`
+(`fakeSupervisor`, shared by three suites), `workspaceIndex.test.ts`, `comment-indexing.test.ts`,
+`warmupIndex.test.ts`, `providerProbe.test.ts`, `providers.test.ts` (a `start`-only fake) and
+`service.test.ts` (four inline fakes answering `resolveImport` or `renameEdits`). None declares
+`declares`, which is how the indexer's first call to it broke comment indexing at runtime and not
+at the type level. The reference provider in `protocol/src/conformance/referenceProvider.ts`
+declares only declarations and comments, refuses `renameEdits` as `NotImplemented`, and answers
+`moveEdits` only for a request carrying neither a removal nor an insertion role, so the core's
+move, whose first two requests are exactly those roles, is refused; every rebind test drives
+`KnowledgeSubjects.rebind` or `TransactionManager.rebind` directly, and the Phase 0, Phase 1 and
+Phase 4 records each defer the `refactor_move` sentence to this fixture. `comment-attach-mutants.test.ts`
+writes `commentAttach.mutant-N.ts` beside `commentAttach.ts` and imports it by file URL, so a
+residue sweep running in parallel can read a mutant, or a path that vanishes under it.
+
+**What changes.**
+
+- **A port, owned by its consumers.** `core/src/providerPort.ts` declares `ProviderPort`, the
+  eight members above with their signatures, and `MethodResponse` moves there from
+  `supervisor.ts`. `ProviderSupervisor implements ProviderPort`; `Indexer`, `LexiconService` and
+  `liveProbe` take a `ProviderPort`, and `startProviders` takes `ProviderStarter`, which is
+  `Pick<ProviderSupervisor, "start">`. A member core starts calling that the port lacks fails
+  `tsc` at the caller; adding it to the port fails every fake that does not implement it, which
+  is the runtime break moved to the type level. The daemon, `indexCli` and `gradeCli` keep
+  building the class and handing it down.
+- **One fake, typed.** `fakeSupervisor` in `fakeProvider.ts` returns a `ProviderPort` with no
+  cast, and takes options: `claims`, `discover`, `tiers` (what `declares` answers), and
+  `answers`, a partial map from provider method to handler that overrides the defaults. The
+  defaults stay what they are: `.fake` classes and imports from the text, a `SYNTAX` line as a
+  parse error, relative specifiers resolved, anything else thrown as an unexpected ask. What the
+  supervisor settles at the wire is settled here too, so no suite can pass on an answer a real
+  provider set would never deliver: `ask` refuses a module nobody owns or two providers claim,
+  naming them as the daemon does, `askProvider` refuses a provider that is not running, a parse
+  answer keeps its `comments` only where `tiers` declares them, and every answer is parsed
+  through `METHOD_SCHEMAS`. One claim list runs, routes and answers, since a claim that routes
+  and never runs is a provider set no daemon can have. The six hand-rolled fakes become calls to it
+  with the answers they need; `providers.test.ts` types its `start`-only fake as a
+  `ProviderStarter`. A residue over `core/src/__tests__` forbids the token `as ProviderSupervisor`,
+  reading each file through `readSwept` and excluding only itself by path, so a cast cannot come
+  back and a same-named file in a subdirectory is still swept.
+- **A fixture provider that moves.** `protocol/src/conformance/fixtureProvider.ts`, beside the
+  reference provider and importing its siblings, is a provider process, run as `bun <path>`
+  under `runProviderOnStdio`, whose handlers are the reference provider's with two replaced:
+  `renameEdits` refuses a new name that is not an identifier as `InvalidName` and a request
+  carrying owner calls as `NotImplemented`, since the grammar owns no parameter and rewrites no
+  call, rewrites each site whose text spells `oldName` to `newName` and blocks one that does not
+  as `ParseError`;
+  `moveEdits` refuses a target that already declares the name as `TargetCollision`, answers the
+  source module with its removal range emptied and the target with the insertion text appended,
+  blocks each dependency as `NotImplemented` since it writes no import, and answers a referencing
+  module through the reference provider's import repointing. It declares the reference
+  provider's tiers, speaks language `reference` with `.ref`, and identifies as
+  `fixture-provider`. The barrel is untouched and the daemon never discovers it, since it lives
+  outside `providers/`; the reference provider itself does not change, since the conformance
+  suite exists to see a partial provider reported as partial.
+- **The rebind, through dispatch.** `fixtureRefactor.test.ts` starts a real `ProviderSupervisor`
+  on the fixture, indexes `.ref` files through `LexiconService`, records knowledge, and drives
+  `refactorStart`, `refactorMove`, `refactorRename`, `refactorUndo` and `refactorRevert` through
+  `createDispatch` with a `TransactionManager` and a `WorkspaceGate`, the same handlers the
+  daemon serves. This is the sentence three records deferred: a move rebinds the subject with
+  `journalMove`, its answer recalls at the new address, the source no longer declares it, and
+  the old address diagnoses as `moved` through `diagnoseSubject` naming the new one; a rename
+  does the same with `journalRename` and re-minted ids; undo and revert put each back, the old
+  address answering again with its prior evidence and no forwarding and the journal emptied; and
+  a move onto a module that already declares the name is refused by the target's provider as
+  `TargetCollision` before any rebind, so both subjects and both answers stand: the no-merge rule
+  is defended upstream of the identity owner, which is why it cannot be reached through dispatch.
+  What stays deferred, and says so: the Phase 4 record's file move reached through an import,
+  which needs a fixture that declares and resolves imports; the corpus holds no `.ref` import
+  fixture for such a tier to be tested against, the same gap the literals tier has on the board,
+  and a fixture answering a tier it does not declare is the one dishonesty this suite exists to
+  catch.
+- **A move says whose importers it never looked for.** Driving a move through a provider that
+  declares neither `references` nor `imports` showed the core reporting success while every
+  importing file kept pointing at the old module: the importer set is derived from stored
+  references and import sites, each written by the provider owning the file it is in, and a
+  provider claiming neither reported none, which is not the same as there being none.
+  `RefactorPlanner.moveEdits` now rides an `ImportersUnchecked` issue per such module, the source
+  and every referencing one, the way `syntaxUnchecked` rides one on a candidate nobody parsed. A
+  warning rather than a refusal, since a declarations-only provider is a legitimate partial
+  provider and a move within one file is still correct; what is not allowed is implying the
+  search happened. A file owned by a provider that reports neither tier is invisible to the
+  index, so it appears in no list and gets no issue of its own: that is the residue this warning
+  names rather than removes.
+- **Mutants written outside `core/src`.** `comment-attach-mutants.test.ts` writes each mutant
+  under `<lexicon root>/temp/mutants/`, which git ignores and no residue sweeps, with the
+  source's relative imports rewritten to absolute paths so the copy resolves what the original
+  did. The cases and the four mutants are unchanged.
+
+**Tests:** `tsc` is the test for the port: the build fails if a fake omits a member, and the
+residue fails if a test casts. `fakeProvider.test.ts` proves `fakeSupervisor` answers the
+defaults, an override, discovery and `declares` from `tiers`, and throws for an unexpected ask.
+Every suite that lost a hand-rolled fake passes unchanged, each now declaring what it answers:
+undeclaring `comments` strips them and fails the comment suite, which is the check working. The
+fixture provider passes the conformance suite from source. The dispatch drive above, each
+sentence its own test, with the journal rows and the wire results checked as the rebind rows
+item shipped them. The mutant test still fails each mutant from its new location and leaves
+nothing in `core/src`.
+
+**Release:** none. Test infrastructure, a type narrowing and four type exports from the core
+barrel; the protocol barrel is untouched; no wire change, no store change. No version bump now.
+
 ## Verification
 
 Ordered by how much it proves, as the repository already orders it.

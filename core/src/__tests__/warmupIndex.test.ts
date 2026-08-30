@@ -7,12 +7,14 @@ import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
 import { warmRefusal } from "../daemonCli";
-import type { ProviderClaims, Route } from "../routing";
+import type { ProviderPort } from "../providerPort";
+import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { type ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
+import { ProviderUnavailableError } from "../supervisor";
 import { fakeClock } from "./fakeClock";
+import { fakeSupervisor, resolveFake } from "./fakeProvider";
 
 ////////////////////////////////
 //  Helpers
@@ -70,20 +72,15 @@ function depthSupervisor(
 		fullParse?: Promise<void>;
 		hangResolve?: boolean;
 	} = {},
-): ProviderSupervisor {
-	return {
-		running: () => [claims],
-		route: (module: string): Route =>
-			module.endsWith(".fake")
-				? { owned: true, providerId: claims.providerId, content: "code" }
-				: { owned: false, reason: "unclaimed" },
-		askProvider: async () => {
-			await options.discovery;
-			return { files: discovered, externalRoots: [], configFiles: [], diagnostics: [] };
-		},
-		ask: async (_module: string, method: string, params: unknown) => {
-			if (method === "parseFile") {
-				const request = params as { module: string; contentHash: string; text: string; depth?: IndexDepth };
+): ProviderPort {
+	return fakeSupervisor({
+		claims: [claims],
+		answers: {
+			discoverProject: async () => {
+				await options.discovery;
+				return { files: discovered, externalRoots: [], configFiles: [], diagnostics: [] };
+			},
+			parseFile: async (request) => {
 				await (request.depth === "outline" ? options.parse : options.fullParse);
 				seen.push({ module: request.module, ...(request.depth === undefined ? {} : { depth: request.depth }) });
 				if (request.text.includes("DEAD")) throw new ProviderUnavailableError("provider exited with code null");
@@ -106,25 +103,13 @@ function depthSupervisor(
 					diagnostics: [],
 					...(outlined ? { depth: "outline" as const } : {}),
 				};
-			}
-			if (method === "resolveImport") {
+			},
+			resolveImport: async (request) => {
 				if (options.hangResolve) await new Promise<void>(() => {});
-				const request = params as { fromModule: string; specifier: string };
-				if (!request.specifier.startsWith(".")) return { status: "unresolved", reason: "NotImplemented" };
-				return {
-					status: "resolved",
-					module: path.posix.normalize(
-						path.posix.join(path.posix.dirname(request.fromModule), request.specifier),
-					),
-				};
-			}
-			throw new Error(`unexpected method ${method}`);
+				return resolveFake(request);
+			},
 		},
-		observeWorkspace: () => {},
-		observeModule: () => {},
-		evidenceFrom: () => {},
-		stopAll: () => {},
-	} as unknown as ProviderSupervisor;
+	});
 }
 
 function deferred(): { promise: Promise<void>; release: () => void } {
@@ -148,7 +133,7 @@ function unread(): boolean {
 	return service.warmHold()?.includes("not yet read") === true;
 }
 
-function serviceOver(supervisor: ProviderSupervisor, clock?: Clock): LexiconService {
+function serviceOver(supervisor: ProviderPort, clock?: Clock): LexiconService {
 	return new LexiconService(store, supervisor, sourceReader(root), root, clock);
 }
 

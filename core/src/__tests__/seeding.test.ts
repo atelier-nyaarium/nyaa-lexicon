@@ -448,12 +448,7 @@ describe("the indexer records git's verdict on every file it writes", () => {
 	});
 
 	it("persists unknown with its reason where there is no git to ask, and still indexes the file", async () => {
-		service = new LexiconService(
-			store,
-			fakeSupervisor(undefined, () => ["app.fake"]),
-			sourceReader(root),
-			root,
-		);
+		service = new LexiconService(store, fakeSupervisor({ discover: () => ["app.fake"] }), sourceReader(root), root);
 		put("app.fake", "export class App {}\n");
 
 		await service.indexWorkspace();
