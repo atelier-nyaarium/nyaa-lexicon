@@ -295,6 +295,19 @@ export const RecalledAnswerSchema = z
 
 export type RecalledAnswer = z.infer<typeof RecalledAnswerSchema>;
 
+/** Why an id names no declaration: a closed kind, the sentence, and what a reader might mean instead. */
+const diagnosed = { reason: z.string(), candidates: z.array(z.string()) };
+
+/** Only a vacated address forwards, so only `moved` carries where. */
+export const SubjectDiagnosisSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.enum(["factIdAsSubject", "unminted", "stranded", "waiting", "unknown"]), ...diagnosed }),
+		z.object({ kind: z.literal("moved"), ...diagnosed, forwardedTo: z.string() }),
+	])
+	.meta({ id: "SubjectDiagnosis" });
+
+export type SubjectDiagnosis = z.infer<typeof SubjectDiagnosisSchema>;
+
 /** One answer or null when a question is named; every answer about the symbol when it is not. */
 export const RecallAnswerResultSchema = z
 	.union([RecalledAnswerSchema.nullable(), z.array(RecalledAnswerSchema)])

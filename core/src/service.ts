@@ -43,6 +43,7 @@ import {
 import { KnowledgeLedger } from "./knowledge.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
+import { diagnoseSubject, type SubjectDiagnosis, subjectRefused } from "./refusals.js";
 import { ResultCache } from "./resultCache.js";
 import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
@@ -411,6 +412,11 @@ export class LexiconService {
 		return this.knowledge.recallAnswer(...args);
 	}
 
+	/** Why an id names no declaration, as every tool answers it. */
+	diagnoseSubject(symbolId: string): SubjectDiagnosis {
+		return diagnoseSubject(symbolId, this.store);
+	}
+
 	demandOf(...args: Parameters<KnowledgeLedger["demandOf"]>): ReturnType<KnowledgeLedger["demandOf"]> {
 		return this.knowledge.demandOf(...args);
 	}
@@ -605,7 +611,7 @@ export class LexiconService {
 	async typeOf(symbolId: string): Promise<TypeInfo> {
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) {
-			return { status: "unknown", reason: "NotIndexed", detail: `${symbolId} is not in the index` };
+			return { status: "unknown", reason: "NotIndexed", detail: subjectRefused(symbolId, this.store) };
 		}
 		return this.supervisor.ask(declaration.module, "typeOf", { symbolId });
 	}

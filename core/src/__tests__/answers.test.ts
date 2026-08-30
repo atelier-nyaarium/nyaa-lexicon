@@ -297,12 +297,28 @@ describe("every refusal is a named constructor", () => {
 		expect(service.recallAnswer(unminted, "describe")).toBeNull();
 	});
 
+	it("unmintedId: an indexed module holding no declarations is still unminted, not unknown", async () => {
+		const [declaration] = plant();
+		store.replaceFile("empty.ref", "h1", [], [], [], []);
+		const unminted = "lexicon reference empty.ref Cart#";
+		const outcome = await service.recordAnswer(unminted, "describe", "A cart.", [declaration as string]);
+		expect(reasonOf(outcome)).toBe(refusal.unmintedId(unminted, "empty.ref", [], 0));
+		expect(service.diagnoseSubject(unminted).kind).toBe("unminted");
+	});
+
 	it("unknownModule: names the module that is not indexed either", async () => {
 		const [declaration] = plant();
 		const gone = "lexicon reference gone.ref Cart#";
 		const outcome = await service.recordAnswer(gone, "describe", "A cart.", [declaration as string]);
 		expect(reasonOf(outcome)).toBe(refusal.unknownModule(gone, "gone.ref"));
 		expect(service.recallAnswer(gone, "describe")).toBeNull();
+	});
+
+	it("typeOf: an id that names nothing carries the diagnosis as its detail", async () => {
+		plant();
+		const gone = "lexicon reference gone.ref Cart#";
+		const type = await service.typeOf(gone);
+		expect(type.status === "unknown" && type.detail).toBe(refusal.unknownModule(gone, "gone.ref"));
 	});
 
 	it("unparsableId: names the grammar's failure for a spelling with no module to read", async () => {

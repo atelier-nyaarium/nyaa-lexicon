@@ -197,6 +197,8 @@ export {
 	StoredLiteralSchema,
 	type StoredReference,
 	StoredReferenceSchema,
+	type SubjectDiagnosis,
+	SubjectDiagnosisSchema,
 	type SymbolSource,
 	SymbolSourceSchema,
 	type SymbolSummary,

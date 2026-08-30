@@ -14,6 +14,22 @@ declare const refusalBrand: unique symbol;
 /** A sentence this module minted; a reason slot typed with it refuses a raw string. */
 export type Refusal = string & { readonly [refusalBrand]: true };
 
+/** The closed outcomes of asking about an id that names no declaration. */
+export type DiagnosisKind = "factIdAsSubject" | "unminted" | "moved" | "stranded" | "waiting" | "unknown";
+
+/** One diagnosis, reached from every tool: the kind, its sentence, and what a reader might mean instead. */
+interface Diagnosed<K extends DiagnosisKind> {
+	kind: K;
+	reason: Refusal;
+	/** The shortlist for an unminted id, the same-name-and-kind declarations for a stranded one. */
+	candidates: string[];
+}
+
+/** Only a vacated address forwards, so only `moved` carries where. */
+export type SubjectDiagnosis =
+	| Diagnosed<Exclude<DiagnosisKind, "moved">>
+	| (Diagnosed<"moved"> & { forwardedTo: string });
+
 ////////////////////////////////
 //  Constants
 
@@ -126,8 +142,8 @@ export function factIdAsSubject(symbolId: string): Refusal {
 }
 
 export function unmintedId(symbolId: string, module: string, shown: string[], rest: number): Refusal {
-	const more = rest > 0 ? `, and ${rest} more` : "";
-	return mint(`${symbolId} is not in the index. ${module} holds ${shown.join(", ")}${more}`);
+	const held = shown.length === 0 ? "no declarations" : `${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
+	return mint(`${symbolId} is not in the index. ${module} holds ${held}`);
 }
 
 export function unknownModule(symbolId: string, module: string): Refusal {
@@ -177,11 +193,14 @@ export function waitingOnParseFailure(symbolId: string, module: string, reason: 
 }
 
 /**
- * Why a subject id names no declaration: a fact id in the subject slot, an id the module never
- * minted, a module not indexed, or a spelling the grammar refuses. Never "not in the index" alone.
+ * Why a subject id names no declaration, as one value every tool reaches: the closed kind, the
+ * sentence, the ids a reader might mean, and where a vacated address forwards. Never "not in the
+ * index" alone.
  */
-export function subjectRefused(symbolId: string, store: IndexStore): Refusal {
-	if (symbolId.startsWith(`${FACT_SCHEME} `)) return factIdAsSubject(symbolId);
+export function diagnoseSubject(symbolId: string, store: IndexStore): SubjectDiagnosis {
+	if (symbolId.startsWith(`${FACT_SCHEME} `)) {
+		return { kind: "factIdAsSubject", reason: factIdAsSubject(symbolId), candidates: [] };
+	}
 
 	const parsed = parseSymbolIdResult(symbolId);
 	const module = parsed.ok ? parsed.value.module : moduleFieldOf(symbolId);
@@ -189,35 +208,64 @@ export function subjectRefused(symbolId: string, store: IndexStore): Refusal {
 	// What the identity owner last left at the address decides the wording before any shortlist.
 	const status = store.subjects.stateOf(symbolId, (of) => store.parseFailureOf(of)?.reason ?? null);
 	if (status.subject === null && status.forwardedTo !== null) {
-		return movedId(symbolId, status.forwardedTo, status.evidence ?? "none");
+		return {
+			kind: "moved",
+			reason: movedId(symbolId, status.forwardedTo, status.evidence ?? "none"),
+			candidates: [],
+			forwardedTo: status.forwardedTo,
+		};
 	}
 	if (status.subject !== null && !status.resolves) {
 		// Only a bound subject waits; an orphan under a failing module was judged before it failed.
 		if (status.exempt && status.state === "bound") {
-			return waitingOnParseFailure(symbolId, module ?? "", status.reason ?? "");
+			return {
+				kind: "waiting",
+				reason: waitingOnParseFailure(symbolId, module ?? "", status.reason ?? ""),
+				candidates: [],
+			};
 		}
-		return strandedId(
-			symbolId,
-			status.answers > 0 ? "answers" : "demand",
-			status.orphanedAt,
-			status.evidence,
-			candidatesFor(store, symbolId),
-			isLocalSymbol(symbolId),
-		);
+		const candidates = candidatesFor(store, symbolId);
+		return {
+			kind: "stranded",
+			reason: strandedId(
+				symbolId,
+				status.answers > 0 ? "answers" : "demand",
+				status.orphanedAt,
+				status.evidence,
+				candidates,
+				isLocalSymbol(symbolId),
+			),
+			candidates,
+		};
 	}
-	const neighbours = module === null ? [] : store.declarationsIn(module);
-	if (module !== null && neighbours.length > 0) {
+	// An indexed module is unminted territory even when it holds nothing; an unindexed one is unknown.
+	const neighbours = module !== null && store.depthOf(module) !== null ? store.declarationsIn(module) : null;
+	if (module !== null && neighbours !== null) {
 		// The name the author typed is somewhere in the bad id, so declarations carrying it lead.
 		const named = (declaration: { name: string }) => Number(symbolId.includes(declaration.name));
 		const shown = [...neighbours]
 			.sort((a, b) => named(b) - named(a))
 			.slice(0, NEIGHBOURS_SHOWN)
-			.map((declaration) => `\`${declaration.symbolId}\``);
-		return unmintedId(symbolId, module, shown, neighbours.length - shown.length);
+			.map((declaration) => declaration.symbolId);
+		return {
+			kind: "unminted",
+			reason: unmintedId(
+				symbolId,
+				module,
+				shown.map((id) => `\`${id}\``),
+				neighbours.length - shown.length,
+			),
+			candidates: shown,
+		};
 	}
 
-	if (!parsed.ok) return unparsableId(symbolId, parsed.failure.message);
-	return unknownModule(symbolId, parsed.value.module);
+	if (!parsed.ok) return { kind: "unknown", reason: unparsableId(symbolId, parsed.failure.message), candidates: [] };
+	return { kind: "unknown", reason: unknownModule(symbolId, parsed.value.module), candidates: [] };
+}
+
+/** The diagnosis's sentence, for a reason slot. */
+export function subjectRefused(symbolId: string, store: IndexStore): Refusal {
+	return diagnoseSubject(symbolId, store).reason;
 }
 
 /** The module an unparseable id still names in its third field, decoded as the grammar would. */

@@ -4,6 +4,7 @@
 // sourceWriter.ts decides how.
 
 import { coordinatesOf, hashContent, type Range, type SymbolSource } from "@nyaa-lexicon/protocol";
+import { subjectRefused } from "./refusals.js";
 import { insideWorkspace } from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
@@ -103,7 +104,7 @@ export class SourceWorkspace {
 	}): { module: string; range: Range; name: string; kind: string } | { problem: string } {
 		if (address.symbolId !== undefined) {
 			const declaration = this.store.declaration(address.symbolId);
-			if (!declaration) return { problem: `${address.symbolId} is not in the index` };
+			if (!declaration) return { problem: subjectRefused(address.symbolId, this.store) };
 			return {
 				module: declaration.module,
 				range: declaration.range,

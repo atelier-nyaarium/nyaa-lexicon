@@ -523,31 +523,37 @@ ledger's ranking paths.
 
 ## Phase 0 - One diagnosis for a bad subject id, reached from every tool
 
-**What:** the subject diagnosis in `subjectRefused` becomes the one owner every tool reaches when
-a symbol id names nothing. Five outcomes, closed: a fact id supplied as the subject, an unminted id
-with the module's shortlist, a moved address with where it went, a stranded subject with its
-candidates and state from Phase 1, or an unknown id. The line between the last and the second is
-the one the code already draws: an id whose module field decodes to an indexed module is
-unminted and gets the shortlist, whether or not the rest of it parses; one whose module is
-unindexed or does not decode is unknown.
+**What:** the subject diagnosis becomes one value, `diagnoseSubject` in the refusals module, that
+every tool reaches when a symbol id names nothing, and `subjectRefused` is its sentence. Six
+outcomes, closed: a fact id supplied as the subject, an unminted id with the module's shortlist, a
+moved address with where it went, a stranded subject with its candidates and state from Phase 1,
+a bound subject waiting on a parse failure (Phase 1's fourth wording, which the first draft of
+this list omitted), or an unknown id. The line between the last and the second is the one the
+code already draws: an id whose module field decodes to an indexed module is unminted and gets the
+shortlist, whether or not the rest of it parses; one whose module is unindexed or does not decode
+is unknown.
 
 **The daemon method.** `diagnoseSubject`, request `{ symbolId: string }`, response
-`{ kind: "factIdAsSubject" | "unminted" | "moved" | "stranded" | "unknown", reason: string,
-candidates: string[], forwardedTo?: string }`, where `reason` is the sentence `record_answer`
-already composes and `candidates` is the shortlist. Registered in the method table, dispatched in
-`dispatch.ts` through the same `.parse(params` path as every other method, exposed on the client
-session. A new method is a minor.
+`{ kind: "factIdAsSubject" | "unminted" | "stranded" | "waiting" | "unknown", reason: string,
+candidates: string[] }` or `{ kind: "moved", reason, candidates, forwardedTo: string }`, a
+discriminated union so the wire refuses `forwardedTo` on any kind but the one that vacated an
+address; `reason` is the sentence `record_answer` already composes and `candidates` is the
+shortlist for an unminted id and the same-name-and-kind declarations for a stranded one.
+Registered in the method table, dispatched as a `read` through the same `.parse(params` path as
+every other method, exposed on the client session, which derives its calls from the table. A new
+method is a minor.
 
-**The chokepoint.** `resolveOne` in the MCP adapter is where a supplied `symbolId` is currently
-returned unvalidated to eleven handlers. It calls `diagnoseSubject` when the id names no
-declaration and returns the reason as the problem, so every handler that funnels through it gets
-the diagnosis without knowing it. The one path that takes a symbol id without `resolveOne`,
-`symbol_source`, calls the same helper on its `symbolId` argument; its `factId` argument is a
-separate parameter, so a fact id in the `symbolId` slot is the fact-id-as-subject case and nothing
-has to guess. The knowledge writers already diagnose in core and are unchanged. The two sites
-that answer `No symbol with ID ... is indexed` after a `null` from core, in `describe_symbol` and
+**The chokepoint.** `resolveOne` in the MCP adapter is where a supplied `symbolId` was returned
+unvalidated to eleven handlers. It now asks `declarationOf`, one indexed read, and when the id
+names no declaration returns the diagnosis's reason as the problem, so every handler that funnels
+through it says the same thing without knowing it. `symbol_source` takes a symbol id without
+`resolveOne`; its refusal is composed in core, where `SourceWorkspace` holds the store and calls
+`subjectRefused`, so the adapter renders what core said; its `factId` argument is a separate
+parameter, so a fact id in the `symbolId` slot is the fact-id-as-subject case and nothing has to
+guess. The knowledge writers already diagnose in core and are unchanged. The two sites that
+answered `No symbol with ID ... is indexed` after a `null` from core, in `describe_symbol` and
 `symbol_facts`, remain as guards against a file replaced between resolution and the read, and
-answer through the helper too.
+answer through the diagnosis too.
 
 **Per tool, stated so nothing is implicit:**
 
@@ -574,11 +580,18 @@ concept, so each routes through the diagnosis; the two instances of the second a
 guards named above. The residue is run against all eight before it is trusted. "No symbol named
 X is indexed" is a name-lookup miss, a different concept, and is not touched.
 
-**Tests:** each of the five outcomes handed to `describe_symbol`, `symbol_facts`, `symbol_source`
-and `find_references` produces the sentence `record_answer` produces for it, and `type_of` and one
-refactor tool produce it too, which proves the chokepoint rather than the two named tools. The
-residue is planted at a seventh site and watched failing. A built-server test drives
-`diagnoseSubject` through the real daemon.
+**Tests:** through the fake backend, every handler behind the resolver (`describe_symbol`,
+`find_references`, `type_of`, `symbol_facts`, `refactor_preview`) renders the diagnosis it is
+handed, and the guard in `describe_symbol` is proven to fire after the resolver passed. Through a
+real daemon over its socket with a real provider process, the four outcomes that harness can
+reach (`factIdAsSubject`, `unminted`, `unknown`, and `stranded` after the file vanishes) produce,
+from `describe_symbol`, `symbol_facts`, `find_references`, `symbol_source`, `type_of` and
+`refactor_preview`, the sentence `record_answer` refuses with; `moved` and `waiting` are proven at
+the writer by the identity and Phase 1 tests, and the chokepoint never reads the kind. The daemon
+sample asks `diagnoseSubject` and compares its reason with the writer's. An indexed module holding
+no declarations is unminted, not unknown. The residue was planted at a seventh and an eighth site,
+`service` and the adapter's tools module, and named both. No test launches the built bundle; the
+built server is driven by hand before the commit.
 
 ## Phase 2 - The shortlist matches names the grammar recognises
 

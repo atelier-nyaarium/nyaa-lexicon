@@ -13,7 +13,16 @@ import {
 	type RunningDaemon,
 	startDaemon,
 } from "@nyaa-lexicon/core";
-import { describeSymbol, findReferences, resolveImport, type ToolBackend } from "../tools";
+import {
+	describeSymbol,
+	findReferences,
+	refactorPreview,
+	resolveImport,
+	symbolFacts,
+	symbolSource,
+	type ToolBackend,
+	typeOfSymbol,
+} from "../tools";
 
 ////////////////////////////////
 //  Helpers
@@ -50,6 +59,8 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		findReferences: (symbolId, limit) => ask("findReferences", { symbolId, limit }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
+		declarationOf: (symbolId) => ask("declarationOf", { symbolId }),
+		diagnoseSubject: (symbolId) => ask("diagnoseSubject", { symbolId }),
 		indexStatus: (concerning) => ask("indexStatus", concerning === undefined ? {} : { concerning }),
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
@@ -148,6 +159,65 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 
 		expect(result.isError).toBe(true);
 	}, 30_000);
+
+	it("says the same thing about an id that names nothing as a writer would", async () => {
+		const backend = backendOverDaemon(dir);
+		const ghost = "lexicon reference cart.ref Ghost#";
+		const diagnosis = await backend.diagnoseSubject(ghost);
+		const result = await describeSymbol(backend, { symbolId: ghost });
+
+		expect(diagnosis.kind).toBe("unminted");
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toContain(JSON.stringify(diagnosis.reason).slice(1, -1));
+		const refused = await backend.recordAnswer(ghost, "describe", "Nothing.", []);
+		if (refused.recorded) throw new Error("expected a refusal");
+		expect(refused.reason).toBe(diagnosis.reason);
+	}, 30_000);
+
+	it("says what a writer says for every outcome the daemon reaches, from every tool taking an id", async () => {
+		const backend = backendOverDaemon(dir);
+		const [cart] = await backend.findByName("Cart", undefined);
+		const cartId = cart?.symbolId as string;
+		const cartFacts = await backend.factsFor(cartId, undefined);
+		const declaration = cartFacts?.facts.find((fact) => fact.kind === "declaration")?.factId as string;
+
+		// An answer recorded about Item, whose file then vanishes, leaves its subject stranded.
+		files.set("item.ref", "export class Item {}\n");
+		await callDaemon(daemon.lock, "indexFile", { module: "item.ref" });
+		const [item] = await backend.findByName("Item", undefined);
+		const itemId = item?.symbolId as string;
+		const itemFacts = await backend.factsFor(itemId, undefined);
+		const itemDeclaration = itemFacts?.facts.find((fact) => fact.kind === "declaration")?.factId as string;
+		expect((await backend.recordAnswer(itemId, "describe", "An item.", [itemDeclaration])).recorded).toBe(true);
+		files.delete("item.ref");
+		await callDaemon(daemon.lock, "indexFile", { module: "item.ref" });
+
+		const outcomes: Array<[string, string]> = [
+			["factIdAsSubject", declaration],
+			["unminted", "lexicon reference cart.ref Ghost#"],
+			["unknown", "lexicon reference nowhere.ref Ghost#"],
+			["stranded", itemId],
+		];
+		for (const [kind, symbolId] of outcomes) {
+			const diagnosis = await backend.diagnoseSubject(symbolId);
+			expect<string>(diagnosis.kind).toBe(kind);
+			const refused = await backend.recordAnswer(symbolId, "describe", "Nothing.", []);
+			expect(refused.recorded ? "recorded" : refused.reason).toBe(diagnosis.reason);
+
+			const results = [
+				await describeSymbol(backend, { symbolId }),
+				await symbolFacts(backend, { symbolId }),
+				await findReferences(backend, { symbolId }),
+				await symbolSource(backend, { symbolId }),
+				await typeOfSymbol(backend, { symbolId }),
+				await refactorPreview(backend, { symbolId, newName: "Renamed" }),
+			];
+			for (const result of results) {
+				expect(result.isError).toBe(true);
+				expect(JSON.stringify(result)).toContain(JSON.stringify(diagnosis.reason).slice(1, -1));
+			}
+		}
+	}, 60_000);
 
 	it("reflects a re-index, so an edit is visible without restarting anything", async () => {
 		files.set("cart.ref", "export class Cart {}\nexport class Basket {}\n");

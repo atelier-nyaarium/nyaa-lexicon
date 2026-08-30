@@ -47,6 +47,7 @@ import {
 	SearchSymbolsResultSchema,
 	SharedLiteralsResultSchema,
 	StoredDeclarationSchema,
+	SubjectDiagnosisSchema,
 	SymbolSourceSchema,
 	SymbolSummarySchema,
 	TransactionStatusSchema,
@@ -281,6 +282,8 @@ export const DAEMON_METHODS = {
 	recallAnswer: { request: RecallAnswer, response: RecallAnswerResultSchema },
 	/** Missing, stale or doubted answers, ranked by demand. */
 	knowledgeGaps: { request: Gaps, response: KnowledgeGapsSchema },
+	/** Why an id names no declaration, as every tool answers it. */
+	diagnoseSubject: { request: BySymbol, response: SubjectDiagnosisSchema },
 	/** A symbol's resolved type. */
 	typeOf: { request: BySymbol, response: TypeInfoSchema },
 	/** What a rename would touch, with blockers and warnings. */

@@ -47,6 +47,8 @@ import type {
 	RenameStepOutcome,
 	ReplaceOutcome,
 	SearchSymbolsResult,
+	StoredDeclaration,
+	SubjectDiagnosis,
 	TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { parseSymbolId } from "@nyaa-lexicon/protocol";
@@ -165,6 +167,8 @@ export interface ToolBackend {
 		options?: { citations?: string[]; model?: string; resolvesDoubt?: string },
 	) => Promise<RecordOutcome>;
 	knowledgeGaps: (root?: string, question?: QuestionClass, limit?: number, module?: string) => Promise<KnowledgeGaps>;
+	declarationOf: (symbolId: string) => Promise<StoredDeclaration | null>;
+	diagnoseSubject: (symbolId: string) => Promise<SubjectDiagnosis>;
 }
 
 /** The backend's overview, with every section past the counts optional so a stub can omit it. */
@@ -834,13 +838,23 @@ function moduleOf(symbolId: string): string | undefined {
  * rather than being handed a confident description of whichever happened to be first.
  */
 async function resolveOne(backend: ToolBackend, args: SymbolArgs): Promise<{ symbolId: string } | { problem: string }> {
-	if (args.symbolId) return { symbolId: args.symbolId };
+	if (args.symbolId) {
+		// An id that names nothing is diagnosed once, here, so every handler behind this says the same thing.
+		if ((await backend.declarationOf(args.symbolId)) === null)
+			return { problem: await diagnosed(backend, args.symbolId) };
+		return { symbolId: args.symbolId };
+	}
 	if (!args.name) return { problem: `Give either \`symbolId\` or \`name\`.` };
 
 	const candidates = await backend.findByName(args.name, args.module);
 	if (candidates.length === 0) return { problem: `No symbol named \`${args.name}\` is indexed.` };
 	if (candidates.length > 1) return { problem: renderCandidates(args.name, candidates) };
 	return { symbolId: (candidates[0] as SymbolSummary).symbolId };
+}
+
+/** The one sentence for an id that names nothing, the same one `record_answer` composes. */
+async function diagnosed(backend: ToolBackend, symbolId: string): Promise<string> {
+	return (await backend.diagnoseSubject(symbolId)).reason;
 }
 
 ////////////////////////////////
@@ -851,16 +865,11 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const described = await backend.describe(resolved.symbolId);
-	// An absence claim is the one that has to know how much was read, so it carries the state and
-	// the successful answer does not. The copy-verbatim hint earns its place: an id's trailing
-	// period is invisible next to sentence punctuation, and one agent burned five calls learning it.
+	// A file replaced between resolution and the read: the absence claim carries the index state,
+	// and the diagnosis, so the answer never says less than the writers do.
 	if (!described)
 		return text(
-			await withIndexState(
-				backend,
-				`No symbol with ID \`${resolved.symbolId}\` is indexed. Copy IDs verbatim from a result row.`,
-				moduleOf(resolved.symbolId),
-			),
+			await withIndexState(backend, await diagnosed(backend, resolved.symbolId), moduleOf(resolved.symbolId)),
 			true,
 		);
 
@@ -894,7 +903,7 @@ export async function typeOfSymbol(backend: ToolBackend, args: SymbolArgs): Prom
 
 export async function refactorMove(backend: ToolBackend, args: SymbolArgs & { toModule: string }): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(resolved.problem, true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule).catch(
 		(error: unknown): Awaited<ReturnType<ToolBackend["refactorMove"]>> => ({
@@ -911,7 +920,7 @@ export async function refactorRename(
 	args: SymbolArgs & { newName: string },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(resolved.problem, true);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const outcome = await backend.refactorRename(resolved.symbolId, args.newName).catch((error: unknown) => ({
 		renamed: false,
@@ -943,6 +952,9 @@ export async function symbolSource(
 	backend: ToolBackend,
 	args: { symbolId?: string | undefined; factId?: string | undefined },
 ): Promise<ToolResult> {
+	if ((args.symbolId === undefined) === (args.factId === undefined)) {
+		return text(`Set exactly one of \`symbolId\` or \`factId\`.`, true);
+	}
 	const source = await backend.symbolSource(args);
 	const concerning = args.symbolId === undefined ? undefined : moduleOf(args.symbolId);
 	return text(await withIndexState(backend, renderSymbolSource(source), concerning), !source.found);
@@ -1299,11 +1311,9 @@ export async function symbolFacts(
 
 	const facts = await backend.factsFor(resolved.symbolId, args.limit);
 	const concerning = moduleOf(resolved.symbolId);
-	if (facts === null)
-		return text(
-			await withIndexState(backend, `No symbol with ID \`${resolved.symbolId}\` is indexed.`, concerning),
-			true,
-		);
+	if (facts === null) {
+		return text(await withIndexState(backend, await diagnosed(backend, resolved.symbolId), concerning), true);
+	}
 	return text(await withIndexState(backend, renderFacts(facts), concerning));
 }
 

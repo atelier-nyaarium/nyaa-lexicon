@@ -181,6 +181,10 @@ describe("an address a subject vacated", () => {
 		const reason = refused(await service.recordAnswer(CART, "describe", "Again.", []));
 		expect(reason).toContain(`was rebound to ${moved} (journalMove)`);
 		expect(service.recallAnswer(moved, "describe")?.answer.prose).toBe("A shopping cart.");
+
+		const diagnosis = service.diagnoseSubject(CART);
+		expect(diagnosis.kind === "moved" && diagnosis.forwardedTo).toBe(moved);
+		expect<string>(diagnosis.reason).toBe(reason);
 	});
 
 	it("forwards only the last vacated address; two rebinds back reads as unminted", async () => {

@@ -32,6 +32,7 @@ import {
 import type { FileEdits } from "./applyEdits.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
+import { subjectRefused } from "./refusals.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -291,7 +292,7 @@ export class RefactorPlanner {
 	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
 	private afterPoint(after: string): SplicePoint | { refused: string } {
 		const anchor = this.store.declaration(after);
-		if (!anchor) return { refused: `${after} is not in the index` };
+		if (!anchor) return { refused: subjectRefused(after, this.store) };
 		const module = anchor.module;
 		const before = this.readFile(module);
 		if (before === null) return { refused: `${module} is not on disk any more` };
@@ -343,7 +344,7 @@ export class RefactorPlanner {
 			return { module, before, created: false, line: null, indent, trailingBlank: false };
 		}
 		const container = this.store.declaration(anchor.containerId);
-		if (!container) return { refused: `${anchor.containerId} is not in the index` };
+		if (!container) return { refused: subjectRefused(anchor.containerId, this.store) };
 		const endPos = container.range.end;
 		const endLine = coords.lineText(endPos.line);
 		// Computable only when the end line holds nothing but closers: range.end is exclusive, and
@@ -457,7 +458,7 @@ export class RefactorPlanner {
 		const toModule = target.module;
 
 		const declaration = this.store.declaration(symbolId);
-		if (!declaration) return { ok: false, reason: `${symbolId} is not in the index` };
+		if (!declaration) return { ok: false, reason: subjectRefused(symbolId, this.store) };
 		if (declaration.module === toModule) return { ok: false, reason: `${symbolId} is already in ${toModule}` };
 
 		const source = this.source.symbolSource({ symbolId });
@@ -883,7 +884,7 @@ export class RefactorPlanner {
 				newName,
 				files: [],
 				occurrences: 0,
-				blockers: [{ kind: "NotIndexed", detail: `${symbolId} is not in the index` }],
+				blockers: [{ kind: "NotIndexed", detail: subjectRefused(symbolId, this.store) }],
 				warnings: [],
 			};
 		}

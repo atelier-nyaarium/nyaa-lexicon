@@ -476,6 +476,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		knowledgeGaps: read((params) =>
 			service.knowledgeGaps(params.root, params.question, params.limit, params.module),
 		),
+		diagnoseSubject: read((params) => service.diagnoseSubject(params.symbolId)),
 		typeOf: treeFirst(
 			(params) => params.symbolId,
 			(params) => service.typeOf(params.symbolId),

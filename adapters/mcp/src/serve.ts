@@ -136,6 +136,8 @@ function backendOver(ask: Asker): ToolBackend {
 			ask("invalidateAnswer", { symbolId, reason, question, by }),
 		reaffirmAnswer: (symbolId, question, options) => ask("reaffirmAnswer", { symbolId, question, ...options }),
 		knowledgeGaps: (root, question, limit, module) => ask("knowledgeGaps", { root, question, limit, module }),
+		declarationOf: (symbolId) => ask("declarationOf", { symbolId }),
+		diagnoseSubject: (symbolId) => ask("diagnoseSubject", { symbolId }),
 	};
 }
 

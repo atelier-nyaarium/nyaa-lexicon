@@ -173,6 +173,19 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	declarationOf: async () => {
 		expect(await ask("declarationOf", { symbolId: cart })).not.toBeNull();
 	},
+	diagnoseSubject: async () => {
+		const ghost = "lexicon reference cart.ref Ghost#";
+		const diagnosis = await ask("diagnoseSubject", { symbolId: ghost });
+		expect(diagnosis.kind).toBe("unminted");
+		expect(diagnosis.candidates).toContain(cart);
+		const refused = await ask("recordAnswer", {
+			symbolId: ghost,
+			question: "describe",
+			prose: "Nothing.",
+			citations: [],
+		});
+		expect(refused.recorded ? "recorded" : refused.reason).toBe(diagnosis.reason);
+	},
 	declarationsIn: async () => {
 		expect(await ask("declarationsIn", { module: "cart.ref" })).toHaveLength(2);
 	},

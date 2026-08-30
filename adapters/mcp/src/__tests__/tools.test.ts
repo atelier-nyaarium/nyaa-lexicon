@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { DescribeResult, SymbolSummary } from "@nyaa-lexicon/core";
+import type { StoredDeclaration } from "@nyaa-lexicon/protocol";
 import {
 	describeSymbol,
 	findReferences,
@@ -11,6 +12,8 @@ import {
 	resolveImport,
 	searchDocs,
 	searchSymbols,
+	symbolFacts,
+	symbolSource,
 	type ToolBackend,
 	typeOfSymbol,
 } from "../tools";
@@ -34,6 +37,9 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 	return {
 		findByName: async () => [],
 		describe: async () => null,
+		// Resolves by default, so a test that hands an id reaches its handler; a test about a bad id overrides it.
+		declarationOf: async (symbolId) => ({ symbolId }) as unknown as StoredDeclaration,
+		diagnoseSubject: async (symbolId) => ({ kind: "unknown", reason: `${symbolId} diagnosed`, candidates: [] }),
 		findReferences: async (symbolId) => ({ symbolId, references: [], total: 0, truncated: false, tier: "bound" }),
 		resolveImport: async () => ({ status: "unresolved", reason: "NotImplemented" }),
 		typeOf: async () => ({ status: "unknown", reason: "NotImplemented" }),
@@ -196,6 +202,55 @@ describe("resolving what the caller gave", () => {
 		);
 		expect(seen).toBe("x");
 		expect(result.isError).toBeUndefined();
+	});
+
+	it("diagnoses an id that names nothing once, for every handler behind the resolver", async () => {
+		const dead = backend({ declarationOf: async () => null });
+		const results = [
+			await describeSymbol(dead, { symbolId: "x" }),
+			await findReferences(dead, { symbolId: "x" }),
+			await typeOfSymbol(dead, { symbolId: "x" }),
+			await symbolFacts(dead, { symbolId: "x" }),
+			await refactorPreview(dead, { symbolId: "x", newName: "y" }),
+		];
+
+		for (const result of results) {
+			expect(result.isError).toBe(true);
+			expect(JSON.stringify(result)).toContain("x diagnosed");
+		}
+	});
+
+	it("answers a file replaced between resolution and the read with the same diagnosis", async () => {
+		let resolved = 0;
+		const replaced = backend({
+			declarationOf: async (symbolId) => {
+				resolved += 1;
+				return { symbolId } as unknown as StoredDeclaration;
+			},
+			describe: async () => null,
+		});
+		const result = await describeSymbol(replaced, { symbolId: "x" });
+
+		expect(resolved).toBe(1);
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toContain("x diagnosed");
+
+		const facts = await symbolFacts(backend({ factsFor: async () => null }), { symbolId: "x" });
+		expect(facts.isError).toBe(true);
+		expect(JSON.stringify(facts)).toContain("x diagnosed");
+	});
+
+	it("refuses a symbol_source call naming both ids or neither, rather than picking one", async () => {
+		let asked = 0;
+		const counting = backend({
+			symbolSource: async () => {
+				asked += 1;
+				return { found: false, reason: "unreached" };
+			},
+		});
+		expect((await symbolSource(counting, { symbolId: "x", factId: "y" })).isError).toBe(true);
+		expect((await symbolSource(counting, {})).isError).toBe(true);
+		expect(asked).toBe(0);
 	});
 
 	it("resolves a unique name", async () => {
