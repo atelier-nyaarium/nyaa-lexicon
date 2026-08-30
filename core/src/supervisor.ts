@@ -450,7 +450,15 @@ export class ProviderSupervisor {
 			}
 			// Validated here so a malformed answer fails at the provider that produced it, rather
 			// than as a confusing shape error somewhere downstream.
-			return METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
+			const parsed = METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
+			// The comments tier the provider declared is the one its answer carries: a field from a
+			// provider without the tier reports nothing stripped, and one with the tier reported spans.
+			if (method === "parseFile" && typeof parsed === "object" && parsed !== null) {
+				const answer = parsed as { comments?: unknown[] };
+				if (provider.tiers.comments === true) answer.comments ??= [];
+				else delete answer.comments;
+			}
+			return parsed;
 		});
 	}
 

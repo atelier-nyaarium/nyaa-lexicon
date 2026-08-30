@@ -83,6 +83,20 @@ describe("indexing a file end to end", () => {
 		expect(await service.indexFile("a.ref")).toMatchObject({ action: "forgotten" });
 		expect(service.findByName("Cart")).toEqual([]);
 	}, 30_000);
+
+	it("digests each declaration's pattern on a full index, blind to whitespace", async () => {
+		await boot();
+		files.set("a.ref", "export class Cart {}\n");
+		await service.indexFile("a.ref");
+		const cart = service.findByName("Cart")[0]?.symbolId as string;
+		const first = store.patternDigestOf(cart);
+
+		files.set("a.ref", "export   class Cart {}\n");
+		await service.indexFile("a.ref");
+
+		expect(first).not.toBeNull();
+		expect(store.patternDigestOf(cart)?.digest).toBe(first?.digest as string);
+	}, 30_000);
 });
 
 describe("applying a watcher batch", () => {
@@ -617,7 +631,7 @@ describe("carrying knowledge across a rename", () => {
 		}
 	});
 
-	it("moves an answer to the new id, leaving nothing under the old one", async () => {
+	it("rebinds the subject to the new id, and the answer recalls there with its recorded address", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
 		await service.indexFile("a.ref");
@@ -631,17 +645,25 @@ describe("carrying knowledge across a rename", () => {
 		if (!wrote.recorded) throw new Error(`answer not recorded: ${wrote.reason}`);
 
 		const map = service.renameIdMap(cart, "Basket");
-		const moved = service.migrateKnowledge(map);
+		const rebound = store.subjects.rebind(
+			[...map].map(([from, to]) => ({ from, to })),
+			"journalRename",
+			Date.now(),
+		);
 		const newId = map.get(cart) as string;
 
-		expect(moved.answers).toBe(1);
-		expect(service.recallAnswer(newId, "describe")?.answer.prose).toBe("A shopping cart.");
+		expect(rebound).toMatchObject({ subjects: 1, answers: 1 });
+		const recalled = service.recallAnswer(newId, "describe");
+		expect(recalled?.answer.prose).toBe("A shopping cart.");
+		expect(recalled?.answer.symbolId).toBe(newId);
+		expect(recalled?.answer.recordedAs).toBe(cart);
+		expect(recalled?.subject?.evidence).toBe("journalRename");
 		expect(service.recallAnswer(cart, "describe")).toBeNull();
 	});
 
-	// The new id's own answer was written about the code as it stands. Overwriting it with the old
-	// symbol's would be a silent downgrade, so the old one is dropped instead.
-	it("keeps an answer already written about the new id", async () => {
+	// Two subjects never merge: an address that already holds a subject is not a rebind target, so
+	// each keeps its own answer and the source stays where it was.
+	it("leaves both subjects alone when the new id already has one", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\nexport class Basket {}\n");
 		await service.indexFile("a.ref");
@@ -652,10 +674,11 @@ describe("carrying knowledge across a rename", () => {
 		await service.recordAnswer(cart, "describe", "The old one.", [await cite(cart)]);
 		await service.recordAnswer(basket, "describe", "The one that stays.", [await cite(basket)]);
 
-		service.migrateKnowledge(new Map([[cart, basket]]));
+		const rebound = store.subjects.rebind([{ from: cart, to: basket }], "journalRename", Date.now());
 
+		expect(rebound.subjects).toBe(0);
 		expect(service.recallAnswer(basket, "describe")?.answer.prose).toBe("The one that stays.");
-		expect(service.recallAnswer(cart, "describe")).toBeNull();
+		expect(service.recallAnswer(cart, "describe")?.answer.prose).toBe("The old one.");
 	});
 });
 

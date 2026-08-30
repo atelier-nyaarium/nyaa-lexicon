@@ -180,7 +180,10 @@ export type Doubt = z.infer<typeof DoubtSchema>;
 
 export const AnswerSchema = z
 	.object({
+		/** The subject's current address. */
 		symbolId: z.string(),
+		/** The address the answer was recorded at, kept when the subject has since moved. */
+		recordedAs: z.string().optional(),
 		question: QuestionClassSchema,
 		/** The answer's own citable id, in the fact grammar with kind `answer`. */
 		factId: z.string(),
@@ -263,6 +266,15 @@ export type RecordOutcome = z.infer<typeof RecordOutcomeSchema>;
 export const RecalledAnswerSchema = z
 	.object({
 		answer: AnswerSchema,
+		/** The durable subject the answer belongs to, and how it came to sit at its address. */
+		subject: z
+			.object({
+				id: z.string(),
+				recordedAs: z.string(),
+				evidence: z.string(),
+				since: z.number(),
+			})
+			.optional(),
 		/** Cited facts that no longer resolve. */
 		stale: z.array(z.string()),
 		/** Cited answers that still resolve but are themselves stale underneath. */
@@ -303,6 +315,8 @@ export const GapRowSchema = z
 		why: z.enum(["missing", "stale", "doubted"]),
 		/** Asks that found nothing, the measured demand. */
 		askCount: z.number(),
+		/** The address first asked at, when the subject has since been rebound. */
+		recordedAs: z.string().optional(),
 		fanIn: z.number(),
 		name: z.string().optional(),
 		kind: z.string().optional(),

@@ -41,6 +41,8 @@ function processesMatching(script: string): string[] {
 
 const HEADER = path.join(import.meta.dirname, "fixtures", "headerProvider.ts");
 
+const UNDECLARED = path.join(import.meta.dirname, "fixtures", "undeclaredCommentsProvider.ts");
+
 function start(script = REFERENCE) {
 	supervisor = new ProviderSupervisor();
 	// A real directory: the workspace root is the provider's cwd, and spawn refuses a missing one.
@@ -140,6 +142,21 @@ describe("starting a provider", () => {
 		expect(processesMatching(script)).toEqual([]);
 
 		rmSync(root, { recursive: true, force: true });
+	}, 30_000);
+});
+
+describe("a parse answer", () => {
+	// A field the provider never declared reports nothing stripped, so it is not a report.
+	it("loses a comments field from a provider that declared no comments tier", async () => {
+		await start(UNDECLARED);
+
+		const facts = await supervisor.ask("a.undeclared", "parseFile", {
+			module: "a.undeclared",
+			contentHash: "h",
+			text: "// a\n",
+		});
+
+		expect("comments" in facts).toBe(false);
 	}, 30_000);
 });
 

@@ -241,9 +241,11 @@ is the only key by which a refusal, a recall or the sweep's restore can find it 
 alone says whether it resolves. `answers` and `gaps` are keyed by `(subjectId, question)` and
 `answers.factId` is `UNIQUE`. Each row keeps `recordedAs`, the address at record time for an
 answer and at first ask for a gap, never rewritten. `subjectId` is minted from the first address
-and the clock through the protocol's `hashContent` and is opaque afterwards. Nothing outside
-`subjects.ts` writes the table, and no module but the store's schema names it; a residue in
-Verification holds both.
+and the clock through the protocol's `hashContent` and is opaque afterwards. `subjects.ts` owns
+the table's DDL, the DDL of `answers` and `gaps`, and three views (`subjects_addressed`,
+`answers_addressed`, `gaps_addressed`) that project a row onto its subject's current address; the
+store embeds that DDL in its schema and reads through the views, so no module but the owner
+names the table, which a residue in Verification holds.
 
 **Answer identity carries the subject.** `answerFactId` digests the address, the question, the
 prose and the citations today, and an address is reusable under this model: a subject rebinds
@@ -259,18 +261,19 @@ is the loud guard underneath.
 **Invariants, and who enforces each.** By the schema: one row per subject (`PRIMARY KEY`), one
 subject per address (`UNIQUE`), a closed state and a closed evidence (`CHECK`), a date on every
 orphan and none on a bound subject, so a restore that forgot to clear the clock fails to write, a
-coverage only beside a digest. By the owner, backed by the residue and by a test that
-refuses each illegal transition: no merge operation exists, nothing changes a row's `subjectId`,
-nothing updates `answers.subjectId` or `gaps.subjectId`, and identity changes only by rebinding
-`currentSymbolId`. The repository's own `migrateKnowledge` is the standing proof that a key an
+coverage only beside a digest, and a `subjectId` that never changes on any of the three tables,
+held by a `BEFORE UPDATE OF subjectId` trigger that aborts the write. By the owner, backed by the
+residue and by a test that refuses each illegal transition: no merge operation exists, and
+identity changes only by rebinding `currentSymbolId`. The repository's own `migrateKnowledge` is the standing proof that a key an
 application can rewrite will be rewritten, which is why it is retired rather than kept beside
 this.
 
 **Resolution.** Every knowledge operation keeps taking a symbol id on the wire and resolves it
 through `subjects.forAddress(symbolId)`, which finds bound and orphaned subjects alike since the
-address is kept. A read on an address with no subject reads nothing. A write on an address with
-no subject mints one, bound, evidence `sameLocator`, if the address resolves to a declaration;
-the catalog's diagnoses refuse it otherwise. One indexed read per call.
+address is kept. A read on an address with no subject reads nothing. A write claims through one
+owner method: where the address resolves to a declaration it mints a subject, or restores the
+orphan kept there, bound, evidence `sameLocator`; where it does not, an orphan is kept as it is,
+and an address holding neither is refused by the catalog's diagnoses. One indexed read per call.
 
 **Projection, stated once.** Every reader is address-shaped today: `answer`, `answersFor`,
 `allAnswers`, `doubtedAnswers`, `gaps`, `askCount`, `factById`'s answer branch, and `rowToAnswer`,
@@ -308,20 +311,21 @@ only after `completeStep("reindexed")`, and `recover` never replays `finish`. So
 the reindex and the finish leaves the files moved and the knowledge addressed to ids that no
 longer exist, and the sweep would orphan them with `none` although a journaled move is exactly
 the evidence that existed. The rebind therefore becomes part of the step record: `PlannedStep`
-gains `rebind: { entries: Array<{ from, to }>, evidence }`, written with the step at `written`.
-The step marks `reindexed` unconditionally today, after a loop that only notes a module whose
-reindex threw, and the `finish` that holds the migration is guarded on every module having
-reindexed; the rebind must keep that guard, or a step whose destination failed to reindex would
-commit an address that resolves to nothing and pass B would orphan it with `none`. So the journal
-gains one phase after `reindexed`, `rebound`: an entry is applied through the identity owner only
-when its destination module reindexed in this step, the step advances to `rebound` when no entry
-is pending, and a partial reindex leaves the remaining entries pending in the step record beside
-a `RebindDeferred` issue, which `refactor_status` shows. `recover` re-runs the reindex of a
-pending entry's module and applies it, which is idempotent because rebinding an address that
-already holds the subject is a no-op; nothing else applies a pending entry, and the step is not
-finalized while one exists. `migrateKnowledge` is retired from the ledger, the service and the
-store, and its name is forbidden by the residue so a row move cannot come back. The sweep remains
-a detector for an unjournaled loss, never the recovery path for a journaled one.
+gains `rebind`, read after `begin` and journaled inside the step's plan record at `beginStep`, so
+the entries exist before any file is touched. The executor applies them through the transaction
+manager once the files are written and the reindex has been attempted, whatever it returned: the
+journal is the evidence, and an address the index has not caught up with is unresolved with
+evidence `journalMove` until it does, which the sweep can tell from a loss. The move and its
+record are one transaction: the step record gains what actually moved, each subject with the
+state it replaced, so a reversal restores exactly that, a journaled no-op reverses nothing, and a
+subject two steps moved retraces both. `recover` undoes an unfinished step by restoring its
+before-images, so it reverses what the step moved the same way, keeping a move whose modules both
+conflicted; `undo` reverses the top step's and `revert` retraces every step's, newest first. A
+replay finds nothing at the vacated address and does nothing. No new journal phase:
+`StepPhase` is on the wire in `refactor_status`, and a new enum value would break an older client
+where an optional field would not. `migrateKnowledge` is retired from the ledger, the service,
+the store and dispatch, and its name is forbidden by the residue so a row move cannot come back.
+The sweep remains a detector for an unjournaled loss, never the recovery path for a journaled one.
 
 **The pattern digest, for `batchExactMatch` only.** At `indexFile`, where the text is held
 transiently and `attachComments` already walks every declaration with it, core computes per
@@ -353,32 +357,57 @@ the upgrade otherwise, drop the old tables and rename. The subjects table alone 
 `CREATE TABLE IF NOT EXISTS`. On the rebuild path, `salvageKnowledge` and `restoreKnowledge` carry
 subjects with the rows; a restored subject keeps its address, which the scan re-mints for
 unchanged source, and one that does not come back is orphaned by the next sweep, so no post-index
-pass exists beyond the sweep that already runs. Two fixture stores are the gate, because the two
-paths are different code: a same-version store from before this phase, opened by the new code,
-proves the in-place re-key on first open; a 3.0.x store proves the rebuild path carries subjects.
-Both end with every answer bound and recalled.
+pass exists beyond the sweep that already runs. Two pre-identity stores are the gate, because the
+two paths are different code, and the test synthesizes both from the address-keyed DDL rather than
+committing a binary: a store rewound at the same version, opened by the new code, proves the
+in-place re-key on first open; one rewound at the previous version proves the rebuild path carries
+subjects. Both end with every answer bound and recalled. A build older than this one cannot read
+a re-keyed store, since its readers name `answers.symbolId`; a plugin ships as one checkout, and
+`SCHEMA_VERSION` stays, so no store is rebuilt for this.
 
 **Wire.** `AnswerSchema.symbolId` and every result keep carrying the current address. Recall gains
 an optional `subject: { id, recordedAs, evidence, since }`, additive. No method is removed or
 renamed. A minor.
 
-**Tests:** record, then move the file through `refactor_move`: recalled at the new address with
-evidence `journalMove`, the old address diagnosed as moved (Phase 0). Rename through
-`refactor_rename`: the same with `journalRename`. Move the file with the editor: the batch rebinds
-on `batchExactMatch` and the answer's `recordedAs` still names the old address. Two identical
-twins, delete one: the survivor's subject is untouched and the deleted one's is orphaned with
-evidence `none`. Twenty identical twins: twenty subjects, each recorded and recalled alone. Two
-subjects edited into identical text: both bound, both recalled. Delete, then restore the file:
-bound again, date cleared. Delete for thirty injected days: subject and rows gone. Open a 3.0.x
-fixture store: every answer owns a subject and recalls. A compat rebuild: subjects restored and
-bound after the scan. A same-version pre-identity fixture: re-keyed in place on first open, every
-answer bound. A forgotten rebind, planted by bypassing the step: orphaned with `none` on the next
-sweep. A crash planted between `reindexed` and the rebind: `recover` completes the rebind and the
-answer recalls at the new address. Move a subject away, then record an answer with identical
-prose and citations at the vacated address: two subjects, two distinct fact ids. Digest one
-declaration at outline depth and at full depth: no digest at outline, one at full. The residue:
-plant a `knowledge_subjects` write outside the owner and a `migrateKnowledge` in production
-source, watch both fail.
+**Tests, this phase:** a journaled step whose reindex succeeds rebinds and reports the count
+through `finish`; one whose reindex fails is rebound all the same and says `ReindexFailed`. A step
+planted as unfinished with its rebind applied: `recover` reverses the rebind with the files; when
+both of an entry's files conflict, the rebind stays where the step put it, because nothing
+restored them; when only the destination conflicts, it goes back with the source. A step that
+never rebound leaves a subject already at the destination alone, and a journaled no-op after an
+earlier move leaves that move alone on undo. `undo` and `revert` reverse a rebind with the files,
+and `revert` retraces a subject two steps moved to the state it started in. A rebuild that cannot
+place a row, its subject lost and its recorded address held, counts it for the daemon's log. A re-mint at a reused address in the same millisecond gets a distinct id.
+A second subject's answer under an existing fact id is refused, not swapped in. A rebuild that
+lost a subject row revives it at the recorded address. A comment straddling a declaration's edge
+digests nothing outside it. A provider that reports comments without declaring the tier loses
+them at the supervisor, so its digests say `commentsKept`. Twenty identical twins: twenty subjects, each recorded and recalled alone, and a rebind of
+one moves one. Two subjects re-indexed onto one digest: both bound, both recalled. Orphan, then
+write at the kept address: bound again, date cleared; delete: subject and rows gone. Move a
+subject away, then record an answer with identical prose and citations at the vacated address:
+two subjects, two distinct fact ids. A gap asked at an address nothing holds mints no subject. The
+two pre-identity stores above. Digest one declaration at outline depth and at full depth: no
+digest at outline, one at full. The residue: its patterns fire on the spellings they forbid, and
+production names the table nowhere but the owner.
+
+**Tests, in later laps:** record, then move the file through `refactor_move`: recalled at the new
+address with evidence `journalMove`, the old address diagnosed as moved; rename through
+`refactor_rename`: the same with `journalRename` (Phase 0, which supplies the diagnosis). Move the
+file with the editor: the batch rebinds on `batchExactMatch` and `recordedAs` still names the old
+address. Two identical twins, delete one: the survivor untouched, the other orphaned with `none`.
+Delete for thirty injected days: subject and rows gone. A forgotten rebind, planted by bypassing
+the step: orphaned with `none` on the next sweep (Phase 4, which is the sweep).
+
+### Bug Classes
+
+**Rebind reversal in the journal.** The class: a reversal inferred from the subject's current
+state instead of from the step's own record. Round one reversed any subject found at the
+destination; a twin that already lived there went back to a source it never came from. Round two
+reversed only a subject whose `fromSymbolId` named the source; a journaled no-op then reversed an
+earlier step's move, and a subject two steps moved stopped halfway on revert, because one mutable
+field is not a history. Round three closed the class: `TransactionManager.rebind` writes what the
+rebind moved, each subject with the state it replaced, in the same transaction as the move, and
+every reversal restores exactly that.
 
 ## Phase 1 - Candidates, and an orphaned subject says it is orphaned
 
@@ -840,7 +869,7 @@ Ordered by how much it proves, as the repository already orders it.
 - A gate that can fail, for identity. Scoped the way the index-writer residue already is,
   production source across the five packages with `__tests__`, `dist`, `fixtures` and the like
   excluded, so plan and doc prose is exempt by the same convention: the token
-  `knowledge_subjects` is forbidden outside `subjects.ts` and the store's schema text, and the
+  `knowledge_subjects` is forbidden outside `subjects.ts`, and the
   token `migrateKnowledge` is forbidden once retired, so a row move cannot come back and no
   second writer of identity can appear. The two tests in `service.test.ts` that call
   `migrateKnowledge` today are rewritten against `rebind` as part of the identity phase, since the

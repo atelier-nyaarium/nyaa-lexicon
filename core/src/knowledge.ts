@@ -26,6 +26,7 @@ import {
 import type { ImportResolver } from "./imports.js";
 import * as refusal from "./refusals.js";
 import type { IndexStore, StoredFact } from "./store.js";
+import type { Subject } from "./subjects.js";
 
 export type { CitedFact, FactSet, GapRow, InvalidateOutcome, KnowledgeGaps } from "@nyaa-lexicon/protocol";
 
@@ -101,18 +102,6 @@ export class KnowledgeLedger {
 			if (this.resolveFacts(answer.citations).missing.length > 0) stale++;
 		}
 		return stale;
-	}
-
-	/** Moves recorded knowledge across a whole re-minted subtree, deepest ids included. */
-	migrateKnowledge(map: Map<string, string>): { answers: number; gaps: number } {
-		let answers = 0;
-		let gaps = 0;
-		for (const [from, to] of map) {
-			const moved = this.store.migrateKnowledge(from, to);
-			answers += moved.answers;
-			gaps += moved.gaps;
-		}
-		return { answers, gaps };
 	}
 
 	/**
@@ -270,20 +259,24 @@ export class KnowledgeLedger {
 		// parallel writer who never recalled the answer clear a warning they never saw.
 		const carried = previous?.doubt !== undefined && resolvesDoubt === undefined ? previous.doubt : undefined;
 
+		const now = Date.now();
+		// The declaration resolved above, so the write claims a subject at its address.
+		const owner = this.store.subjects.claim(symbolId, now) as Subject;
 		const answer: Answer = {
 			symbolId,
+			recordedAs: symbolId,
 			question,
-			factId: answerFactId(symbolId, question, prose, citations),
+			factId: answerFactId(owner.subjectId, symbolId, question, prose, citations),
 			prose,
 			citations,
 			thin,
-			createdAt: Date.now(),
+			createdAt: now,
 			...(model === undefined ? {} : { model }),
 			...(carried === undefined ? {} : { doubt: carried }),
 		};
-		this.store.saveAnswer(answer);
+		this.store.saveAnswer(owner.subjectId, answer);
 		// Saving closed the gap row, but a carried doubt is still open work, so the demand stays.
-		if (carried !== undefined) this.store.recordGap(symbolId, question, Date.now());
+		if (carried !== undefined) this.store.recordGap(symbolId, question, now);
 		return {
 			recorded: true,
 			answer,
@@ -318,15 +311,17 @@ export class KnowledgeLedger {
 		const doubted: Array<{ question: QuestionClass; doubt: Doubt }> = [];
 		const noAnswer: QuestionClass[] = [];
 		for (const target of targets) {
-			if (this.store.answer(symbolId, target) === null) {
+			const existing = this.store.answer(symbolId, target);
+			if (existing === null) {
 				// Doubting an unwritten answer is demand for one, so it lands in the ledger instead.
 				// Only for a symbol the index holds, or the demand would name a dead id forever.
 				if (indexed) this.store.recordGap(symbolId, target, now);
 				noAnswer.push(target);
 				continue;
 			}
+			const subject = this.store.subjects.claim(symbolId, now);
 			const doubt: Doubt = {
-				factId: doubtFactId(symbolId, target, reason, now),
+				factId: doubtFactId(subject?.subjectId ?? "", existing.recordedAs ?? symbolId, target, reason, now),
 				reason,
 				at: now,
 				...(by === undefined ? {} : { by }),
@@ -388,7 +383,9 @@ export class KnowledgeLedger {
 			createdAt: Date.now(),
 			...(options.model === undefined ? {} : { model: options.model }),
 		};
-		this.store.saveAnswer(affirmed);
+		const subject = this.store.subjects.claim(symbolId, affirmed.createdAt);
+		if (subject === null) return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
+		this.store.saveAnswer(subject.subjectId, affirmed);
 		return { recorded: true, answer: affirmed };
 	}
 
@@ -405,8 +402,7 @@ export class KnowledgeLedger {
 	recallAnswer(symbolId: string, question: QuestionClass): RecalledAnswer | null {
 		const answer = this.store.answer(symbolId, question);
 		if (answer === null) {
-			// Only symbols the index holds become gaps, or a typo would sit in the ledger forever.
-			if (this.store.declaration(symbolId) !== null) this.store.recordGap(symbolId, question, Date.now());
+			this.store.recordGap(symbolId, question, Date.now());
 			return null;
 		}
 		const recalled = this.staleness(answer);
@@ -425,7 +421,8 @@ export class KnowledgeLedger {
 
 	/** Every answer about one symbol, each with its own staleness. Counts no gaps: this is a survey. */
 	recallAnswers(symbolId: string): RecalledAnswer[] {
-		return this.store.answersFor(symbolId).map((answer) => this.staleness(answer));
+		const subject = this.store.subjects.forAddress(symbolId);
+		return this.store.answersFor(symbolId).map((answer) => this.staleness(answer, subject));
 	}
 
 	/**
@@ -435,7 +432,10 @@ export class KnowledgeLedger {
 	 * `stale`, but what it says is in question, so leaning on it is too. Walked with a guard because
 	 * answers may legally cite in cycles once `relate` lands.
 	 */
-	private staleness(answer: Answer): RecalledAnswer {
+	private staleness(
+		answer: Answer,
+		subject: Subject | null = this.store.subjects.forAddress(answer.symbolId),
+	): RecalledAnswer {
 		const stale = this.resolveFacts(answer.citations).missing;
 
 		const inheritedStale: string[] = [];
@@ -449,7 +449,22 @@ export class KnowledgeLedger {
 			if (beneath.stale) inheritedStale.push(citation);
 			if (beneath.doubted) doubtedUpstream.push(citation);
 		}
-		return { answer, stale, inheritedStale, doubtedUpstream };
+		return {
+			answer,
+			...(subject === null
+				? {}
+				: {
+						subject: {
+							id: subject.subjectId,
+							recordedAs: answer.recordedAs ?? answer.symbolId,
+							evidence: subject.evidence,
+							since: subject.boundAt,
+						},
+					}),
+			stale,
+			inheritedStale,
+			doubtedUpstream,
+		};
 	}
 
 	/**
@@ -508,7 +523,7 @@ export class KnowledgeLedger {
 				known.add(`${gap.symbolId}\0${gap.question}`);
 				const answer = this.store.answer(gap.symbolId, gap.question);
 				if (answer === null) {
-					missing.push(this.gapRow(gap.symbolId, gap.question, gap.askCount, "missing"));
+					missing.push(this.gapRow(gap.symbolId, gap.question, gap.askCount, "missing", gap.recordedAs));
 				} else {
 					recheck.push(
 						this.gapRow(
@@ -516,6 +531,7 @@ export class KnowledgeLedger {
 							gap.question,
 							gap.askCount,
 							answer.doubt === undefined ? "stale" : "doubted",
+							gap.recordedAs,
 						),
 					);
 				}
@@ -539,13 +555,13 @@ export class KnowledgeLedger {
 								? "stale"
 								: null;
 					if (why === null) continue;
-					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, why));
+					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, why, answer.recordedAs));
 				}
 			} else {
 				staleScanSkipped = true;
 				for (const answer of this.store.doubtedAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
-					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, "doubted"));
+					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, "doubted", answer.recordedAs));
 				}
 			}
 
@@ -660,13 +676,20 @@ export class KnowledgeLedger {
 		return null;
 	}
 
-	private gapRow(symbolId: string, question: string, askCount: number, why: GapRow["why"]): GapRow {
+	private gapRow(
+		symbolId: string,
+		question: string,
+		askCount: number,
+		why: GapRow["why"],
+		recordedAs?: string,
+	): GapRow {
 		const declaration = this.store.declaration(symbolId);
 		return {
 			symbolId,
 			question,
 			why,
 			askCount,
+			...(recordedAs === undefined || recordedAs === symbolId ? {} : { recordedAs }),
 			fanIn: this.store.referencesTo(symbolId).length,
 			...(declaration === null
 				? {}

@@ -38,9 +38,18 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
+import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
+import {
+	KNOWLEDGE_SCHEMA,
+	KNOWLEDGE_TABLES,
+	KNOWLEDGE_VIEWS,
+	KnowledgeSubjects,
+	rekeyKnowledge,
+	restoreSubjects,
+} from "./subjects.js";
 
 export type {
 	ContentCounts,
@@ -183,7 +192,10 @@ CREATE TABLE symbols (
   mLines      INTEGER,
   mParameters INTEGER,
   mNesting    INTEGER,
-  mBranches   INTEGER
+  mBranches   INTEGER,
+  -- Evidence that a vanished declaration reappeared elsewhere; null before a full parse.
+  patternDigest   TEXT,
+  patternCoverage TEXT
 );
 CREATE INDEX symbols_module ON symbols(module);
 CREATE INDEX symbols_name ON symbols(name);
@@ -306,43 +318,9 @@ CREATE INDEX docs_module ON docs(module);
 CREATE INDEX docs_anchor ON docs(anchorId);
 CREATE INDEX docs_fact ON docs(factId);
 
--- The knowledge layer's read side. One answer per symbol per question class, replaced rather than
--- versioned, because a superseded answer is a decision to make deliberately rather than a pile to
--- accumulate. Citations are stored as JSON: they are read whole, never queried by element.
--- The factId makes an answer citable BY other answers; replacing an answer retires its id, which is
--- how staleness cascades into everything built on it without any bookkeeping.
-CREATE TABLE answers (
-  symbolId  TEXT NOT NULL,
-  question  TEXT NOT NULL,
-  factId    TEXT NOT NULL,
-  prose     TEXT NOT NULL,
-  citations TEXT NOT NULL,
-  -- Structurally computed at record time: 1 when nothing cited reaches beyond the subject's own
-  -- declaration. Stored rather than derived on read, because deriving it re-resolves every
-  -- citation and the flag has to survive those citations going stale.
-  thin      INTEGER NOT NULL DEFAULT 0,
-  model     TEXT,
-  createdAt INTEGER NOT NULL,
-  -- A declared doubt, all four columns present or all null. The id is a handshake token: clearing
-  -- the doubt requires citing it, which proves the clearing writer recalled and read the reason.
-  doubtId     TEXT,
-  doubtReason TEXT,
-  doubtAt     INTEGER,
-  doubtBy     TEXT,
-  PRIMARY KEY (symbolId, question)
-);
-CREATE INDEX answers_symbol ON answers(symbolId);
-CREATE INDEX answers_fact ON answers(factId);
-
--- Demand for knowledge nobody has written, counted per ask. The ledger half of honest
--- incompleteness: a gap is not an error, it is a measured fact about where effort would pay.
-CREATE TABLE gaps (
-  symbolId  TEXT NOT NULL,
-  question  TEXT NOT NULL,
-  askCount  INTEGER NOT NULL,
-  lastAsked INTEGER NOT NULL,
-  PRIMARY KEY (symbolId, question)
-);
+-- The knowledge layer's tables, keyed by subject and owned by subjects.ts. One answer per subject
+-- per question class, replaced rather than versioned; citations are JSON, read whole.
+${KNOWLEDGE_SCHEMA}
 
 -- The refactor journal. One open transaction per workspace, enforced by the partial index below
 -- rather than by whoever happens to check first.
@@ -461,8 +439,7 @@ const WORKSPACE_KEY = "workspaceRoot";
 
 /** Tables a rebuild carries across, because no re-index can regenerate what is in them. */
 const SALVAGED_TABLES = [
-	"answers",
-	"gaps",
+	...KNOWLEDGE_TABLES,
 	"refactor_transactions",
 	"refactor_steps",
 	"refactor_blobs",
@@ -513,19 +490,54 @@ function salvageKnowledge(db: DatabaseSync): SalvagedKnowledge {
 	return salvaged;
 }
 
-function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge): void {
+/** The address a salvaged knowledge row was keyed by, whichever shape it was written in. */
+function addressOf(row: Record<string, unknown>): string | null {
+	const recorded = row["recordedAs"];
+	if (typeof recorded === "string") return recorded;
+	const symbolId = row["symbolId"];
+	return typeof symbolId === "string" ? symbolId : null;
+}
+
+/** Returns how many rows could not be placed: their subject was lost and another holds their recorded address. */
+function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: number): number {
+	let unplaced = 0;
+	const answers = (salvaged["answers"] ?? []).filter((row) => addressOf(row) !== null);
+	const gaps = (salvaged["gaps"] ?? []).filter((row) => addressOf(row) !== null);
+	// A row written by address gets a subject minted for it; one written by subject keeps its own,
+	// revived at the recorded address if its subject row did not survive.
+	const unkeyed = [...answers, ...gaps]
+		.filter((row) => typeof row["subjectId"] !== "string")
+		.map((row) => addressOf(row) as string);
+	const keyed = [...answers, ...gaps]
+		.filter((row) => typeof row["subjectId"] === "string")
+		.map((row) => ({ subjectId: row["subjectId"] as string, symbolId: addressOf(row) as string }));
+	const subjects = restoreSubjects(db, salvaged, new Set(unkeyed), now, keyed);
+	const restored = new Set(subjects.values());
+	const subjectOf = (row: Record<string, unknown>): string | null => {
+		const own = row["subjectId"];
+		if (typeof own === "string") return restored.has(own) ? own : null;
+		return subjects.get(addressOf(row) as string) ?? null;
+	};
+
+	// Plain inserts: the salvaged tables carried these same keys, so a collision is corruption, and
+	// a rebuild that fails loudly beats one that keeps whichever row came second.
 	const answer = db.prepare(
-		`INSERT OR REPLACE INTO answers (symbolId, question, factId, prose, citations, thin, model, createdAt,
-		 doubtId, doubtReason, doubtAt, doubtBy)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model,
+		 createdAt, doubtId, doubtReason, doubtAt, doubtBy)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
-	for (const row of salvaged["answers"] ?? []) {
-		const [symbolId, prose, factId] = [row["symbolId"], row["prose"], row["factId"]];
+	for (const row of answers) {
+		const [prose, factId, subjectId] = [row["prose"], row["factId"], subjectOf(row)];
 		// A row missing its identity or prose is corruption, and restoring it would enshrine that.
-		if (typeof symbolId !== "string" || typeof prose !== "string" || typeof factId !== "string") continue;
+		if (typeof prose !== "string" || typeof factId !== "string") continue;
+		if (subjectId === null) {
+			unplaced++;
+			continue;
+		}
 		answer.run(
-			symbolId,
+			subjectId,
 			String(row["question"] ?? "describe"),
+			addressOf(row),
 			factId,
 			prose,
 			String(row["citations"] ?? "[]"),
@@ -541,19 +553,26 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge): void {
 		);
 	}
 
-	const gap = db.prepare("INSERT OR REPLACE INTO gaps (symbolId, question, askCount, lastAsked) VALUES (?, ?, ?, ?)");
-	for (const row of salvaged["gaps"] ?? []) {
-		const symbolId = row["symbolId"];
-		if (typeof symbolId !== "string") continue;
+	const gap = db.prepare(
+		"INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked) VALUES (?, ?, ?, ?, ?)",
+	);
+	for (const row of gaps) {
+		const subjectId = subjectOf(row);
+		if (subjectId === null) {
+			unplaced++;
+			continue;
+		}
 		gap.run(
-			symbolId,
+			subjectId,
 			String(row["question"] ?? "describe"),
+			addressOf(row),
 			typeof row["askCount"] === "number" ? row["askCount"] : 1,
 			typeof row["lastAsked"] === "number" ? row["lastAsked"] : 0,
 		);
 	}
 
 	for (const table of JOURNAL_TABLES) restoreByColumn(db, table, salvaged[table] ?? []);
+	return unplaced;
 }
 
 /**
@@ -607,7 +626,12 @@ function columnExists(db: DatabaseSync, table: string, column: string): boolean 
 //  Class
 
 export class IndexStore {
-	private constructor(private readonly db: DatabaseSync) {}
+	/** The one owner of knowledge identity. */
+	readonly subjects: KnowledgeSubjects;
+
+	private constructor(private readonly db: DatabaseSync) {
+		this.subjects = new KnowledgeSubjects(db);
+	}
 
 	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. */
 	private inTransaction<T>(work: () => T): T {
@@ -631,11 +655,12 @@ export class IndexStore {
 		file: string,
 		compatibility?: string | null,
 		workspaceRoot?: string,
-	): { store: IndexStore; rebuilt: boolean; reason?: string } {
+	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number } {
 		const db = new DatabaseSync(file);
 		db.exec("PRAGMA journal_mode = WAL");
 
 		let rebuilt = false;
+		let unplaced = 0;
 		let reason: string | undefined;
 		let version = 0;
 		try {
@@ -671,9 +696,10 @@ export class IndexStore {
 			// leave a store with no journal and a workspace with a half-applied refactor in it.
 			db.exec("BEGIN");
 			try {
+				for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
 				db.exec(SCHEMA);
-				restoreKnowledge(db, salvaged);
+				unplaced = restoreKnowledge(db, salvaged, Date.now());
 				db.exec("COMMIT");
 			} catch (error) {
 				db.exec("ROLLBACK");
@@ -690,6 +716,23 @@ export class IndexStore {
 		if (!columnExists(db, "symbols", "synthesizedName")) {
 			db.exec("ALTER TABLE symbols ADD COLUMN synthesizedName INTEGER");
 		}
+		if (!columnExists(db, "symbols", "patternDigest")) db.exec("ALTER TABLE symbols ADD COLUMN patternDigest TEXT");
+		if (!columnExists(db, "symbols", "patternCoverage")) {
+			db.exec("ALTER TABLE symbols ADD COLUMN patternCoverage TEXT");
+		}
+		// Once, in place, preserving every row.
+		if (!columnExists(db, "answers", "subjectId")) {
+			db.exec("BEGIN");
+			try {
+				rekeyKnowledge(db, Date.now());
+				db.exec("COMMIT");
+			} catch (error) {
+				db.exec("ROLLBACK");
+				throw error;
+			}
+		}
+		// Every statement is IF NOT EXISTS, so an index, trigger or view added later lands on an existing store here.
+		db.exec(KNOWLEDGE_SCHEMA);
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
@@ -710,7 +753,12 @@ export class IndexStore {
 		if (compatibility != null) writeMeta(db, COMPATIBILITY_KEY, compatibility);
 		if (workspaceRoot !== undefined) writeMeta(db, WORKSPACE_KEY, workspaceRoot);
 
-		return { store: new IndexStore(db), rebuilt, ...(reason === undefined ? {} : { reason }) };
+		return {
+			store: new IndexStore(db),
+			rebuilt,
+			...(reason === undefined ? {} : { reason }),
+			...(unplaced === 0 ? {} : { unplaced }),
+		};
 	}
 
 	////////////////////////////////
@@ -735,8 +783,10 @@ export class IndexStore {
 		docs: DocRegion[] = [],
 		notes: FileNote[] = [],
 		content: FileContent = "code",
+		digests: PatternDigest[] = [],
 	): void {
 		admitFacts(module, { declarations, references, literals, docs });
+		const digestOf = new Map(digests.map((digest) => [digest.symbolId, digest]));
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
@@ -751,12 +801,13 @@ export class IndexStore {
 				`INSERT OR REPLACE INTO symbols
 				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
-				  synthesizedName, mLines, mParameters, mNesting, mBranches)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
 				// The name columns are NOT NULL from before names could be absent; the flag says which.
 				const named = d.selectionRange ?? { start: d.range.start, end: d.range.start };
+				const digest = digestOf.get(d.symbolId);
 				symbol.run(
 					d.symbolId,
 					declarationFactId(module, d),
@@ -781,8 +832,11 @@ export class IndexStore {
 					d.metrics?.parameters ?? null,
 					d.metrics?.nesting ?? null,
 					d.metrics?.branches ?? null,
+					digest?.patternDigest ?? null,
+					digest?.patternCoverage ?? null,
 				);
 			}
+			if (digests.length > 0) this.subjects.refreshDigests(module);
 
 			const reference = this.db.prepare(
 				`INSERT INTO refs (factId, module, name, role, targetId, fromId, provenance, startLine, startChar, endLine, endChar)
@@ -1119,7 +1173,7 @@ export class IndexStore {
 				return row ? { fact: "comment", ...rowToComment(row) } : null;
 			}
 			case "answer": {
-				const row = this.db.prepare("SELECT * FROM answers WHERE factId = ?").get(factId);
+				const row = this.db.prepare("SELECT * FROM answers_addressed WHERE factId = ?").get(factId);
 				return row ? { fact: "answer", ...rowToAnswer(row as unknown as AnswerRow) } : null;
 			}
 			// A doubt id is a clear-handshake token, not a citable fact. Refusing to resolve it here is
@@ -1140,17 +1194,22 @@ export class IndexStore {
 	////////////////////////////////
 	//  Answers
 
-	/** Writes or replaces one answer. Validation happens above this: the store records, it does not judge. */
-	saveAnswer(answer: Answer): void {
+	/** Writes or replaces one answer under its subject. Validation happens above this: the store records, it does not judge. */
+	saveAnswer(subjectId: string, answer: Answer): void {
 		this.db
 			.prepare(
-				`INSERT OR REPLACE INTO answers (symbolId, question, factId, prose, citations, thin, model, createdAt,
-				 doubtId, doubtReason, doubtAt, doubtBy)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model,
+				 createdAt, doubtId, doubtReason, doubtAt, doubtBy)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(subjectId, question) DO UPDATE SET recordedAs = excluded.recordedAs, factId = excluded.factId,
+				 prose = excluded.prose, citations = excluded.citations, thin = excluded.thin, model = excluded.model,
+				 createdAt = excluded.createdAt, doubtId = excluded.doubtId, doubtReason = excluded.doubtReason,
+				 doubtAt = excluded.doubtAt, doubtBy = excluded.doubtBy`,
 			)
 			.run(
-				answer.symbolId,
+				subjectId,
 				answer.question,
+				answer.recordedAs ?? answer.symbolId,
 				answer.factId,
 				answer.prose,
 				JSON.stringify(answer.citations),
@@ -1164,7 +1223,7 @@ export class IndexStore {
 			);
 		// Answering closes the gap. The ask count served its purpose; keeping the row would make
 		// every later gap query filter it out forever.
-		this.db.prepare("DELETE FROM gaps WHERE symbolId = ? AND question = ?").run(answer.symbolId, answer.question);
+		this.db.prepare("DELETE FROM gaps WHERE subjectId = ? AND question = ?").run(subjectId, answer.question);
 	}
 
 	/**
@@ -1176,7 +1235,8 @@ export class IndexStore {
 	setDoubt(symbolId: string, question: string, doubt: Doubt): boolean {
 		const result = this.db
 			.prepare(
-				"UPDATE answers SET doubtId = ?, doubtReason = ?, doubtAt = ?, doubtBy = ? WHERE symbolId = ? AND question = ?",
+				`UPDATE answers SET doubtId = ?, doubtReason = ?, doubtAt = ?, doubtBy = ?
+				 WHERE subjectId = (SELECT subjectId FROM subjects_addressed WHERE symbolId = ?) AND question = ?`,
 			)
 			.run(doubt.factId, doubt.reason, doubt.at, doubt.by ?? null, symbolId, question);
 		return result.changes > 0;
@@ -1191,74 +1251,55 @@ export class IndexStore {
 	/** Every answer carrying a declared doubt. One indexed read, cheap at any knowledge-base size. */
 	doubtedAnswers(): Answer[] {
 		const rows = this.db
-			.prepare("SELECT * FROM answers WHERE doubtId IS NOT NULL ORDER BY symbolId, question")
+			.prepare("SELECT * FROM answers_addressed WHERE doubtId IS NOT NULL ORDER BY symbolId, question")
 			.all();
 		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
 	}
 
-	/** Counts one ask that found nothing, or found something stale. The demand half of the ledger. */
+	/** Counts one ask that found nothing, or found something stale, under the subject the address claims.
+	 * A typo claims none and counts nothing, or it would sit in the ledger forever. */
 	recordGap(symbolId: string, question: string, at: number): void {
+		const subject = this.subjects.claim(symbolId, at);
+		if (subject === null) return;
 		this.db
 			.prepare(
-				`INSERT INTO gaps (symbolId, question, askCount, lastAsked) VALUES (?, ?, 1, ?)
-				 ON CONFLICT(symbolId, question) DO UPDATE SET askCount = askCount + 1, lastAsked = excluded.lastAsked`,
+				`INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked) VALUES (?, ?, ?, 1, ?)
+				 ON CONFLICT(subjectId, question) DO UPDATE SET askCount = askCount + 1, lastAsked = excluded.lastAsked`,
 			)
-			.run(symbolId, question, at);
+			.run(subject.subjectId, question, symbolId, at);
 	}
 
 	/** Open gaps, most asked-for first. Fan-in joins in above this, since it lives in refs. */
-	gaps(limit: number): Array<{ symbolId: string; question: string; askCount: number; lastAsked: number }> {
+	gaps(limit: number): GapRow[] {
 		return this.db
-			.prepare("SELECT * FROM gaps ORDER BY askCount DESC, lastAsked DESC LIMIT ?")
-			.all(limit) as Array<{ symbolId: string; question: string; askCount: number; lastAsked: number }>;
+			.prepare(
+				"SELECT symbolId, question, recordedAs, askCount, lastAsked FROM gaps_addressed ORDER BY askCount DESC, lastAsked DESC LIMIT ?",
+			)
+			.all(limit) as unknown as GapRow[];
 	}
 
 	/** One gap's ask count, zero when nobody has asked. */
 	askCount(symbolId: string, question: string): number {
 		const row = this.db
-			.prepare("SELECT askCount FROM gaps WHERE symbolId = ? AND question = ?")
+			.prepare("SELECT askCount FROM gaps_addressed WHERE symbolId = ? AND question = ?")
 			.get(symbolId, question) as { askCount: number } | undefined;
 		return row?.askCount ?? 0;
 	}
 
 	answer(symbolId: string, question: string): Answer | null {
 		const row = this.db
-			.prepare("SELECT * FROM answers WHERE symbolId = ? AND question = ?")
+			.prepare("SELECT * FROM answers_addressed WHERE symbolId = ? AND question = ?")
 			.get(symbolId, question) as AnswerRow | undefined;
 		return row === undefined ? null : rowToAnswer(row);
 	}
 
-	/** Every answer about one symbol, whatever was asked. */
-	/**
-	 * Moves recorded knowledge from one symbol id to another.
-	 *
-	 * Renaming and moving both re-mint an id, and the prose written about a symbol is the one thing
-	 * here no re-index can regenerate. A row whose destination already has an answer is left alone:
-	 * the new id's own answer was written about the code as it stands, and overwriting it with the
-	 * old symbol's would be a silent downgrade.
-	 */
-	migrateKnowledge(fromId: string, toId: string): { answers: number; gaps: number } {
-		return this.inTransaction(() => {
-			const answers = this.db
-				.prepare(
-					`UPDATE OR IGNORE answers SET symbolId = ? WHERE symbolId = ?
-					 AND question NOT IN (SELECT question FROM answers WHERE symbolId = ?)`,
-				)
-				.run(toId, fromId, toId);
-			const gaps = this.db
-				.prepare(
-					`UPDATE OR IGNORE gaps SET symbolId = ? WHERE symbolId = ?
-					 AND question NOT IN (SELECT question FROM gaps WHERE symbolId = ?)`,
-				)
-				.run(toId, fromId, toId);
-
-			// Anything left behind names a symbol that no longer exists, and keeping it would leave
-			// prose attached to an id nothing can resolve.
-			this.db.prepare("DELETE FROM answers WHERE symbolId = ?").run(fromId);
-			this.db.prepare("DELETE FROM gaps WHERE symbolId = ?").run(fromId);
-
-			return { answers: Number(answers.changes), gaps: Number(gaps.changes) };
-		});
+	/** A declaration's pattern digest and what it covers, or null before a full parse minted one. */
+	patternDigestOf(symbolId: string): { digest: string; coverage: string } | null {
+		const row = this.db
+			.prepare("SELECT patternDigest, patternCoverage FROM symbols WHERE symbolId = ?")
+			.get(symbolId) as { patternDigest: string | null; patternCoverage: string | null } | undefined;
+		if (row === undefined || row.patternDigest === null || row.patternCoverage === null) return null;
+		return { digest: row.patternDigest, coverage: row.patternCoverage };
 	}
 
 	/** Every symbol id the index holds for one module, which is the subtree a rename re-mints. */
@@ -1269,14 +1310,17 @@ export class IndexStore {
 		return rows.map((row) => row.symbolId);
 	}
 
+	/** Every answer about one symbol, whatever was asked. */
 	answersFor(symbolId: string): Answer[] {
-		const rows = this.db.prepare("SELECT * FROM answers WHERE symbolId = ? ORDER BY question").all(symbolId);
+		const rows = this.db
+			.prepare("SELECT * FROM answers_addressed WHERE symbolId = ? ORDER BY question")
+			.all(symbolId);
 		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
 	}
 
 	/** The whole knowledge base, for coverage reporting. Small by nature: prose, not facts. */
 	allAnswers(): Answer[] {
-		const rows = this.db.prepare("SELECT * FROM answers ORDER BY symbolId, question").all();
+		const rows = this.db.prepare("SELECT * FROM answers_addressed ORDER BY symbolId, question").all();
 		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
 	}
 
@@ -2087,8 +2131,19 @@ function rowToImport(raw: unknown): StoredImport {
 	};
 }
 
-interface AnswerRow {
+/** One open gap, at the subject's current address and at the address it was first asked at. */
+export interface GapRow {
 	symbolId: string;
+	question: string;
+	recordedAs: string;
+	askCount: number;
+	lastAsked: number;
+}
+
+interface AnswerRow {
+	subjectId: string;
+	symbolId: string;
+	recordedAs: string;
 	question: string;
 	factId: string;
 	prose: string;
@@ -2117,6 +2172,7 @@ function rowToAnswer(row: AnswerRow): Answer {
 				};
 	return {
 		symbolId: row.symbolId,
+		recordedAs: row.recordedAs,
 		question: row.question as Answer["question"],
 		factId: row.factId,
 		prose: row.prose,

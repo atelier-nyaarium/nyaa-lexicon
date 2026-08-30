@@ -424,7 +424,7 @@ describe("citable facts", () => {
 	});
 
 	it("does not resolve a doubt id", () => {
-		const doubt = doubtFactId(idOf("add"), "describe", "needs review", 1);
+		const doubt = doubtFactId("subject", idOf("add"), "describe", "needs review", 1);
 
 		expect(store.factById(doubt)).toBeNull();
 	});

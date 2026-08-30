@@ -641,6 +641,11 @@ Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`r
 			`**SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Address those first.`,
 		);
 	}
+	if (recalled.subject !== undefined && recalled.subject.recordedAs !== recalled.answer.symbolId) {
+		status.push(
+			`**REBOUND:** Recorded at \`${recalled.subject.recordedAs}\`; followed to this address by \`${recalled.subject.evidence}\`.`,
+		);
+	}
 	if (status.length > 0)
 		lines.push(`
 ### Status
@@ -780,8 +785,12 @@ ${lead}: no ${gaps.question} gaps.`,
 		const symbol = row.name === undefined ? `\`${tail}\`` : `**${row.kind ?? "symbol"}** \`${tail}\``;
 		const state = row.why === "stale" ? `**STALE**` : row.why === "doubted" ? `**DOUBTED**` : `MISSING`;
 		const question = row.question === gaps.question ? "" : ` (${row.question})`;
+		const askedAt =
+			row.recordedAs === undefined || row.recordedAs === row.symbolId
+				? ""
+				: ` (asked at \`${row.recordedAs.split(" ").slice(3).join(" ")}\`)`;
 		lines.push(
-			`| ${symbol}${question} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
+			`| ${symbol}${question}${askedAt} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
 		);
 	}
 	if (gaps.total > gaps.rows.length)

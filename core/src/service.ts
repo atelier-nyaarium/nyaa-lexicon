@@ -419,12 +419,6 @@ export class LexiconService {
 		return this.knowledge.knowledgeGaps(...args);
 	}
 
-	migrateKnowledge(
-		...args: Parameters<KnowledgeLedger["migrateKnowledge"]>
-	): ReturnType<KnowledgeLedger["migrateKnowledge"]> {
-		return this.knowledge.migrateKnowledge(...args);
-	}
-
 	////////////////////////////////
 	//  Indexing
 

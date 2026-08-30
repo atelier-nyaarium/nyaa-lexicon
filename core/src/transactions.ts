@@ -9,19 +9,21 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import type {
-	RefactorCommitResult,
-	RefactorIssue,
-	RefactorRevertResult,
-	RefactorStartResult,
-	RefactorTrackResult,
-	RefactorUndoResult,
-	StepKind,
-	StepPhase,
-	TransactionStatus,
+import {
+	moduleOf,
+	type RefactorCommitResult,
+	type RefactorIssue,
+	type RefactorRevertResult,
+	type RefactorStartResult,
+	type RefactorTrackResult,
+	type RefactorUndoResult,
+	type StepKind,
+	type StepPhase,
+	type TransactionStatus,
 } from "@nyaa-lexicon/protocol";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
+import type { AppliedRebind, RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
 
 export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
 
@@ -48,6 +50,26 @@ export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: st
 /** Over bytes, not decoded text, so two files that differ only in encoding never share an image. */
 export function hashBytes(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+}
+
+/** What a journaled step actually moved, read back from its plan record. */
+function appliedOf(plan: string | null): AppliedRebind[] | null {
+	if (plan === null) return null;
+	try {
+		const record = JSON.parse(plan) as { rebind?: { applied?: unknown } };
+		const applied = record.rebind?.applied;
+		if (!Array.isArray(applied)) return null;
+		return applied.filter(
+			(entry): entry is AppliedRebind =>
+				typeof entry === "object" &&
+				entry !== null &&
+				typeof (entry as AppliedRebind).subjectId === "string" &&
+				typeof (entry as AppliedRebind).from === "string" &&
+				typeof (entry as AppliedRebind).to === "string",
+		);
+	} catch {
+		return null;
+	}
 }
 
 ////////////////////////////////
@@ -236,6 +258,30 @@ export class TransactionManager {
 		});
 	}
 
+	/** Moves the subjects a step re-minted and journals exactly what moved, in one transaction, so a
+	 * reversal puts back that and nothing else. */
+	rebind(stepNo: number, entries: RebindEntry[], evidence: RebindEvidence): RebindResult {
+		const open = this.openTransaction();
+		if (!open) throw new Error("no refactor transaction is open");
+		return this.store.journal((db) => {
+			const result = this.store.subjects.rebind(entries, evidence, this.now());
+			const row = db
+				.prepare("SELECT plan FROM refactor_steps WHERE transactionId = ? AND stepNo = ?")
+				.get(open.id, stepNo) as { plan: string | null } | undefined;
+			const record = (row?.plan == null ? {} : JSON.parse(row.plan)) as Record<string, unknown>;
+			record["rebind"] = {
+				...(record["rebind"] as Record<string, unknown> | undefined),
+				applied: result.applied,
+			};
+			db.prepare("UPDATE refactor_steps SET plan = ? WHERE transactionId = ? AND stepNo = ?").run(
+				JSON.stringify(record),
+				open.id,
+				stepNo,
+			);
+			return result;
+		});
+	}
+
 	recordIssues(stepNo: number, issues: RefactorIssue[]): void {
 		const open = this.openTransaction();
 		if (!open || issues.length === 0) return;
@@ -266,9 +312,9 @@ export class TransactionManager {
 
 		const top = this.store.journal((db) =>
 			db
-				.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC LIMIT 1")
+				.prepare("SELECT stepNo, plan FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC LIMIT 1")
 				.get(open.id),
-		) as { stepNo: number } | undefined;
+		) as { stepNo: number; plan: string | null } | undefined;
 		if (!top) return { undone: false, reason: "this transaction has no steps to undo" };
 
 		const images = this.imagesOf(open.id, "step", top.stepNo);
@@ -287,6 +333,9 @@ export class TransactionManager {
 		}
 
 		for (const image of images) this.restore(image);
+		// The files went back, so what the step moved goes back with them.
+		const applied = appliedOf(top.plan);
+		if (applied !== null) this.store.subjects.rebindBack(applied);
 
 		this.store.journal((db) => {
 			db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
@@ -307,6 +356,14 @@ export class TransactionManager {
 
 		const images = this.imagesOf(open.id, "baseline", 0);
 		for (const image of images) this.restore(image);
+		// Every step's rebind retraces, newest first, so a subject moved twice comes all the way back.
+		const steps = this.store.journal((db) =>
+			db.prepare("SELECT plan FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC").all(open.id),
+		) as Array<{ plan: string | null }>;
+		for (const step of steps) {
+			const applied = appliedOf(step.plan);
+			if (applied !== null) this.store.subjects.rebindBack(applied);
+		}
 		this.close(open.id, "reverted");
 
 		return { reverted: true, modules: images.map((image) => image.module) };
@@ -350,15 +407,16 @@ export class TransactionManager {
 		const unfinished = this.store.journal((db) =>
 			db
 				.prepare(
-					"SELECT stepNo, phase FROM refactor_steps WHERE transactionId = ? AND phase != 'finalized' ORDER BY stepNo DESC",
+					"SELECT stepNo, phase, plan FROM refactor_steps WHERE transactionId = ? AND phase != 'finalized' ORDER BY stepNo DESC",
 				)
 				.all(open.id),
-		) as Array<{ stepNo: number; phase: StepPhase }>;
+		) as Array<{ stepNo: number; phase: StepPhase; plan: string | null }>;
 
 		const restored: string[] = [];
 		const conflicts: string[] = [];
 
 		for (const step of unfinished) {
+			const conflictsBefore = conflicts.length;
 			for (const image of this.imagesOf(open.id, "step", step.stepNo)) {
 				const current = this.snapshot(image.module);
 
@@ -370,6 +428,15 @@ export class TransactionManager {
 				}
 				// Matches neither: written past what the journal knows, or edited by someone else.
 				conflicts.push(image.module);
+			}
+
+			// Files went back to their before-images, so what the step moved goes back too. A move
+			// whose modules both conflicted stays, with the files nobody restored.
+			const applied = appliedOf(step.plan);
+			if (applied !== null) {
+				const conflicted = new Set(conflicts.slice(conflictsBefore));
+				const touched = (symbolId: string) => conflicted.has(moduleOf(symbolId) ?? "");
+				this.store.subjects.rebindBack(applied.filter(({ from, to }) => !(touched(from) && touched(to))));
 			}
 
 			this.store.journal((db) => {

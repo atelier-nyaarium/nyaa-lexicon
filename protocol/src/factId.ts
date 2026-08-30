@@ -195,10 +195,16 @@ export function docFactId(module: string, d: DocRegion): string {
  * the model: re-affirming the same words over the same inputs is the same answer, while changing a
  * word or a citation retires the id and cascades staleness into everything that cited it.
  */
-export function answerFactId(subjectSymbolId: string, question: string, prose: string, citations: string[]): string {
-	const module = moduleOf(subjectSymbolId);
-	if (module === null) throw new Error(`an answer's subject must be a well-formed symbol id: ${subjectSymbolId}`);
-	return composeFactId("answer", module, [subjectSymbolId, question, prose, ...citations]);
+export function answerFactId(
+	subjectId: string,
+	recordedAs: string,
+	question: string,
+	prose: string,
+	citations: string[],
+): string {
+	const module = moduleOf(recordedAs);
+	if (module === null) throw new Error(`an answer's address must be a well-formed symbol id: ${recordedAs}`);
+	return composeFactId("answer", module, [subjectId, recordedAs, question, prose, ...citations]);
 }
 
 /**
@@ -209,10 +215,16 @@ export function answerFactId(subjectSymbolId: string, question: string, prose: s
  * what stops a parallel writer erasing a doubt it never saw. The timestamp is IN the identity, so a
  * doubt declared again after a clear mints a fresh id and a saved-up old token cannot clear it.
  */
-export function doubtFactId(subjectSymbolId: string, question: string, reason: string, at: number): string {
-	const module = moduleOf(subjectSymbolId);
-	if (module === null) throw new Error(`a doubt's subject must be a well-formed symbol id: ${subjectSymbolId}`);
-	return composeFactId("doubt", module, [subjectSymbolId, question, reason, at]);
+export function doubtFactId(
+	subjectId: string,
+	recordedAs: string,
+	question: string,
+	reason: string,
+	at: number,
+): string {
+	const module = moduleOf(recordedAs);
+	if (module === null) throw new Error(`a doubt's address must be a well-formed symbol id: ${recordedAs}`);
+	return composeFactId("doubt", module, [subjectId, recordedAs, question, reason, at]);
 }
 
 /** Canonical form, carrying a diagnosis. `parseFactId` is the null-returning shim over it. */

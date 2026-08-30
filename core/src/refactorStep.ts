@@ -6,6 +6,7 @@
 // wrongly, and a fifth operation is one declaration.
 
 import type { LexiconService } from "./service.js";
+import type { RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
 import type { RefactorIssue, StepKind, TransactionManager } from "./transactions.js";
 
 ////////////////////////////////
@@ -13,6 +14,12 @@ import type { RefactorIssue, StepKind, TransactionManager } from "./transactions
 
 /** Thrown by apply() to refuse with a caller-facing reason. Anything else is a write failure. */
 export class StepRefusal extends Error {}
+
+/** The addresses a step re-mints, journaled at begin so recovery can put them back. */
+export interface StepRebind {
+	entries: RebindEntry[];
+	evidence: RebindEvidence;
+}
 
 export interface PlannedStep {
 	modules: string[];
@@ -25,13 +32,15 @@ export interface PlannedStep {
 	/** Inside the gate, after stale passes, before journaling. Position is free: beginStep touches
 	 * only the journal, which no capture reads. */
 	begin?: () => void;
+	/** Read after begin, journaled with the step, applied only once every reindex succeeded. */
+	rebind?: () => StepRebind;
 	/** Writes files. May own internal reindexing (rename does). */
 	apply: () => Promise<void> | void;
 	/** Reindexed after apply, in order: only what apply did not already reindex. */
 	reindex: string[];
 	issues: RefactorIssue[];
 	/** Runs ONLY when every reindex succeeded: half-reindexed facts must never feed a verifier. */
-	finish?: (issues: RefactorIssue[]) => void | Promise<void>;
+	finish?: (issues: RefactorIssue[], rebound: RebindResult | undefined) => void | Promise<void>;
 }
 
 export type PlanAnswer<Outcome> =
@@ -81,7 +90,13 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 		if (stale !== null) return shape.refuse(stale, []);
 		planned.begin?.();
 
-		const begun = transactions.beginStep(shape.kind, planned.modules, planned.planRecord, planned.plannedText);
+		// Journaled with the plan, so recovery of an unfinished step can rebind the addresses back.
+		const rebind = planned.rebind?.();
+		const record =
+			rebind === undefined
+				? planned.planRecord
+				: { ...(planned.planRecord as Record<string, unknown> | undefined), rebind };
+		const begun = transactions.beginStep(shape.kind, planned.modules, record, planned.plannedText);
 		if (!begun.ok) return shape.refuse(begun.reason, []);
 
 		try {
@@ -125,9 +140,14 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 		}
 		transactions.completeStep(begun.stepNo, "reindexed");
 
+		// The journal is the evidence, so the rebind follows the written files whatever the reindex
+		// did: an address the index has not caught up with stays unresolved until it does.
+		const rebound =
+			rebind === undefined ? undefined : transactions.rebind(begun.stepNo, rebind.entries, rebind.evidence);
+
 		if (fullyReindexed && planned.finish !== undefined) {
 			try {
-				await planned.finish(issues);
+				await planned.finish(issues, rebound);
 			} catch (error) {
 				issues.push({
 					kind: "FinishIncomplete",

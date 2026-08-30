@@ -97,6 +97,10 @@ function refactorMove(
 								if (rebased !== null) idMap.set(id, rebased);
 							}
 						},
+						rebind: () => ({
+							entries: [...idMap].map(([from, to]) => ({ from, to })),
+							evidence: "journalMove",
+						}),
 						apply: () => {
 							for (const file of edits.files) service.writeModule(file.module, file.text);
 						},
@@ -104,8 +108,8 @@ function refactorMove(
 						// already exists in its new home rather than one that has just vanished.
 						reindex: [plan.toModule, ...touched.filter((m) => m !== plan.toModule)],
 						issues: edits.issues,
-						finish: (issues) => {
-							migrated = service.migrateKnowledge(idMap);
+						finish: (issues, rebound) => {
+							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
 							// Asked of the reindexed facts, since a specifier can be well formed and
 							// still point nowhere.
 							issues.push(...service.checkMoveLanded(plan.name, touched));
@@ -171,6 +175,10 @@ function refactorRename(
 							}
 							return null;
 						},
+						rebind: () => ({
+							entries: [...idMap].map(([from, to]) => ({ from, to })),
+							evidence: "journalRename",
+						}),
 						// renameSymbol writes AND reindexes the edited files itself; only the
 						// stale-binding modules remain for the executor.
 						apply: async () => {
@@ -182,8 +190,8 @@ function refactorRename(
 						},
 						reindex: alsoBound,
 						issues: plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail })),
-						finish: () => {
-							migrated = service.migrateKnowledge(idMap);
+						finish: (_issues, rebound) => {
+							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
 						},
 					},
 				};

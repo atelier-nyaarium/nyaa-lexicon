@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	answerFactId,
 	commentFactId,
 	composeFactId,
 	declarationFactId,
@@ -198,13 +199,29 @@ describe("what each kind counts as its identity", () => {
 	// The clear-handshake token. The timestamp is IN the identity so a doubt declared again after a
 	// clear mints a fresh id, and a saved-up old token cannot clear the new doubt.
 	it("gives a re-declared doubt a fresh id, so an old token cannot clear it", () => {
-		const subject = "lexicon ts src/a.ts add().";
-		const first = doubtFactId(subject, "describe", "purpose drifted", 1000);
+		const address = "lexicon ts src/a.ts add().";
+		const first = doubtFactId("s1", address, "describe", "purpose drifted", 1000);
 
 		expect(isFactId(first)).toBe(true);
 		expect(factKindOf(first)).toBe("doubt");
-		expect(doubtFactId(subject, "describe", "purpose drifted", 1000)).toBe(first);
-		expect(doubtFactId(subject, "describe", "purpose drifted", 2000)).not.toBe(first);
-		expect(doubtFactId(subject, "why", "purpose drifted", 1000)).not.toBe(first);
+		expect(doubtFactId("s1", address, "describe", "purpose drifted", 1000)).toBe(first);
+		expect(doubtFactId("s1", address, "describe", "purpose drifted", 2000)).not.toBe(first);
+		expect(doubtFactId("s1", address, "why", "purpose drifted", 1000)).not.toBe(first);
+		expect(doubtFactId("s2", address, "describe", "purpose drifted", 1000)).not.toBe(first);
+	});
+
+	// The subject is in the identity, so an address a subject vacated and another took cannot mint
+	// the id the first one holds.
+	it("separates two subjects recording the same prose at one address", () => {
+		const address = "lexicon ts src/a.ts add().";
+		const first = answerFactId("s1", address, "describe", "Adds.", [
+			"lexfact declaration src/a.ts 0000000000000000",
+		]);
+		const second = answerFactId("s2", address, "describe", "Adds.", [
+			"lexfact declaration src/a.ts 0000000000000000",
+		]);
+
+		expect(isFactId(first)).toBe(true);
+		expect(second).not.toBe(first);
 	});
 });

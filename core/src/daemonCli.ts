@@ -267,6 +267,9 @@ async function main(argv: string[]): Promise<void> {
 		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root);
 		store = opened.store;
 		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
+		if (opened.unplaced !== undefined) {
+			log(`${opened.unplaced} knowledge row(s) lost their subject and another holds their recorded address`);
+		}
 
 		const spawned = new ProviderSupervisor();
 		supervisor = spawned;

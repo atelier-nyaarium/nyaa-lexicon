@@ -20,6 +20,7 @@ import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation } from "./invalidation.js";
 import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarations.js";
+import { patternDigests } from "./patternDigest.js";
 import type { ResultCache } from "./resultCache.js";
 import { type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
@@ -201,6 +202,9 @@ export class WorkspaceIndexer {
 				facts.docs ?? [],
 				notes,
 				route.content,
+				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
+				// supervisor drops a comments field from a provider that never declared the tier.
+				storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
 			);
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.

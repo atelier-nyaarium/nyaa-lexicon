@@ -83,6 +83,43 @@ afterEach(() => {
 ////////////////////////////////
 //  Tests
 
+describe("the addresses a step re-mints", () => {
+	const from = "lexicon reference src/a.ts Cart#";
+	const to = "lexicon reference src/b.ts Cart#";
+	const rebind = () => ({ entries: [{ from, to }], evidence: "journalMove" as const });
+
+	it("are rebound once every reindex succeeded, and reported through finish", async () => {
+		transactions.start();
+		store.subjects.mint(from, 1);
+		let reported: unknown;
+		const outcome = await run({
+			rebind,
+			apply: () => write("src/a.ts", "after\n"),
+			finish: (_issues, rebound) => {
+				reported = rebound;
+			},
+		});
+
+		expect(outcome.ok).toBe(true);
+		expect(reported).toMatchObject({ subjects: 1 });
+		expect(store.subjects.forAddress(to)?.evidence).toBe("journalMove");
+		expect(store.subjects.forAddress(from)).toBeNull();
+	});
+
+	// The journal is the evidence; the index catching up is a separate matter the issue names.
+	it("are rebound even when a reindex failed, and the step says the facts are stale", async () => {
+		transactions.start();
+		store.subjects.mint(from, 1);
+		failReindexOf = "src/a.ts";
+		const outcome = await run({ rebind, apply: () => write("src/a.ts", "after\n") });
+
+		expect(outcome.ok).toBe(true);
+		expect(outcome.issues.map((issue) => issue.kind)).toContain("ReindexFailed");
+		expect(store.subjects.forAddress(to)?.evidence).toBe("journalMove");
+		expect(store.subjects.forAddress(from)).toBeNull();
+	});
+});
+
 describe("the one failure policy every operation now shares", () => {
 	it("refuses without an open transaction, before planning anything", async () => {
 		const outcome = await run({ apply: () => write("src/a.ts", "after\n") });
