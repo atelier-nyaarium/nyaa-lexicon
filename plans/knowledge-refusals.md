@@ -601,6 +601,10 @@ built server is driven by hand before the commit.
 
 ## Phase 2 - The shortlist matches names the grammar recognises
 
+✅ Shipped: the prefix parse, the matcher and the ranking (3a74cd5, after a hygiene audit, an
+alignment audit and a red team); the documentation and this record in the commit that carries
+this line. No version bump.
+
 **What:** the shortlist promoted declarations whose name appeared in the bad id by substring, so a
 name like `at` or `to` was promoted by any id containing those letters, and a name like `ref` by
 every id whose language or module field held it. The grammar owns the spelling, so the ranking
@@ -1127,3 +1131,14 @@ Collected during the overnight knowledge run, the review of its patches, and the
   plan now says so. The stranded case could be reached through the daemon by deleting a file; a
   moved one needs a provider that moves, which the reference provider refuses, so it is proven at
   the writer.
+- Building Phase 2: the plan's own fixture was wrong about its trap, since `Total` does not contain
+  `at`, and the first service test passed for the substring ranking as much as for the grammar's;
+  `Cart` contains `at` and `ref` sits in every id's language and module fields, which is the
+  fixture that discriminates. The first cut sliced the unparsed rest from the text by offset, past
+  the cursor the parsing law names as the only reader; rewinding to the descriptor's mark reads it
+  through the cursor, at the cost of `readOccurrence` no longer marking its own bracket, so an
+  occurrence failure now brackets the whole descriptor like every other descriptor failure. The
+  plan had said the tail fallback runs only when nothing parses; matching parsed names and the
+  rest together is simpler to state and promotes `Total` in `Cart#Total`, and the plan was
+  rewritten to what shipped. The relay prompt that demands the final response verbatim held for
+  all six relays this lap.

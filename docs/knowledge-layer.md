@@ -132,7 +132,11 @@ sentence is composed, so the wording agrees with what the identity owner last re
   they are for a person to read, and nothing is ever bound by one.
 - **Waiting on a parse failure.** A bound subject whose module is present and not parsing: the
   refusal names the failure's reason and says nothing is orphaned or deleted while that holds.
-- Otherwise the unminted shortlist, the unknown module, or the unparsable spelling, as before.
+- Otherwise the unminted shortlist, the unknown module, or the unparsable spelling. The shortlist
+  leads with the declarations the bad id spells, as the grammar reads it: `parseSymbolIdPrefix`
+  keeps the descriptors parsed before the failure and the text from the failing descriptor on, and
+  `spellsName` matches a name against those descriptors and the whole tokens of that rest, so a
+  name like `at` is not promoted by every id containing those letters.
 
 Recall carries the same diagnosis as `stranded` beside the answer, and the MCP surface renders it in
 place of the re-affirm instruction, which a stranded subject cannot follow.
