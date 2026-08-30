@@ -1257,9 +1257,10 @@ export class IndexStore {
 	}
 
 	/** Counts one ask that found nothing, or found something stale, under the subject the address claims.
-	 * A typo claims none and counts nothing, or it would sit in the ledger forever. */
+	 * Only an address the index holds counts: a typo would sit in the ledger forever, and a stranded
+	 * subject's demand could never be answered where it was asked. */
 	recordGap(symbolId: string, question: string, at: number): void {
-		const subject = this.subjects.claim(symbolId, at);
+		const subject = this.declaration(symbolId) === null ? null : this.subjects.claim(symbolId, at);
 		if (subject === null) return;
 		this.db
 			.prepare(

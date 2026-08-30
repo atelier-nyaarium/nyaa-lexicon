@@ -275,6 +275,15 @@ export const RecalledAnswerSchema = z
 				since: z.number(),
 			})
 			.optional(),
+		/** Set when the subject's address no longer resolves: the answer stands, and nothing can heal it here. */
+		stranded: z
+			.object({
+				since: z.number().nullable(),
+				exempt: z.boolean(),
+				evidence: z.string(),
+				candidates: z.array(z.string()),
+			})
+			.optional(),
 		/** Cited facts that no longer resolve. */
 		stale: z.array(z.string()),
 		/** Cited answers that still resolve but are themselves stale underneath. */

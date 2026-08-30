@@ -387,6 +387,7 @@ export {
 	rebaseSymbolId,
 	SYMBOL_SCHEME,
 	type SymbolId,
+	sameNameAndKind,
 } from "./symbolId.js";
 export {
 	type Declaration,

@@ -2,7 +2,7 @@
 // table: rows keyed by a subject never change key, and the store reads through the views below.
 
 import type { DatabaseSync } from "node:sqlite";
-import { hashContent } from "@nyaa-lexicon/protocol";
+import { hashContent, moduleOf } from "@nyaa-lexicon/protocol";
 import type { PatternCoverage } from "./patternDigest.js";
 
 ////////////////////////////////
@@ -33,6 +33,24 @@ export interface Subject {
 	evidence: SubjectEvidence;
 	lastDigest: string | null;
 	lastCoverage: PatternCoverage | null;
+}
+
+/** What stands at an address, in one read each: for a refusal to say and a recall to carry. */
+export interface SubjectStatus {
+	subject: string | null;
+	state: SubjectState | "none";
+	/** Whether the index holds a declaration at the address. */
+	resolves: boolean;
+	orphanedAt: number | null;
+	/** The subject's evidence, or the forwarding subject's when the address was vacated. */
+	evidence: SubjectEvidence | null;
+	/** The address the subject that vacated this one now holds. */
+	forwardedTo: string | null;
+	/** The address's module is present and failing to parse, so nothing about it is judged. */
+	exempt: boolean;
+	reason: string | null;
+	answers: number;
+	gaps: number;
 }
 
 export interface RebindEntry {
@@ -286,6 +304,35 @@ export class KnowledgeSubjects {
 	byId(subjectId: string): Subject | null {
 		const row = this.db.prepare("SELECT * FROM knowledge_subjects WHERE subjectId = ?").get(subjectId);
 		return row === undefined ? null : rowToSubject(row as Record<string, unknown>);
+	}
+
+	/** Only the last vacated address of a subject forwards; one two rebinds old names no row and reads as unminted. */
+	stateOf(symbolId: string, failureOf: (module: string) => string | null): SubjectStatus {
+		const subject = this.forAddress(symbolId);
+		const forwarded = subject === null ? this.forwardedFrom(symbolId) : null;
+		const resolves = this.db.prepare("SELECT 1 FROM symbols WHERE symbolId = ?").get(symbolId) !== undefined;
+		const module = moduleOf(symbolId);
+		const reason = module === null ? null : failureOf(module);
+		const count = (table: "answers" | "gaps"): number =>
+			subject === null
+				? 0
+				: (
+						this.db
+							.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE subjectId = ?`)
+							.get(subject.subjectId) as { n: number }
+					).n;
+		return {
+			subject: subject?.subjectId ?? null,
+			state: subject?.state ?? "none",
+			resolves,
+			orphanedAt: subject?.orphanedAt ?? null,
+			evidence: subject?.evidence ?? forwarded?.evidence ?? null,
+			forwardedTo: forwarded?.symbolId ?? null,
+			exempt: reason !== null,
+			reason,
+			answers: count("answers"),
+			gaps: count("gaps"),
+		};
 	}
 
 	/** The subject that vacated an address by its last rebind; the most recently bound one when several did. */

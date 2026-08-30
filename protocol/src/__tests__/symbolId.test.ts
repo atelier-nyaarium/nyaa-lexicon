@@ -14,6 +14,7 @@ import {
 	quoteName,
 	rebaseSymbolId,
 	type SymbolId,
+	sameNameAndKind,
 } from "../symbolId";
 
 ////////////////////////////////
@@ -419,6 +420,55 @@ describe("failure diagnoses", () => {
 			expect(parseSymbolId(bad)).toBeNull();
 			expect(parseSymbolIdResult(bad).ok).toBe(false);
 		}
+	});
+});
+
+describe("sameNameAndKind", () => {
+	const type = (module: string, name: string) =>
+		composeSymbolId({ language: "typescript", module, descriptors: [{ kind: "type", name }] });
+
+	it("matches the same name and kind in another module, and nothing in the same one", () => {
+		expect(sameNameAndKind(type("src/cart.ts", "Cart"), type("src/old.ts", "Cart"))).toBe(true);
+		expect(sameNameAndKind(type("src/cart.ts", "Cart"), type("src/cart.ts", "Cart"))).toBe(false);
+		expect(sameNameAndKind(type("src/cart.ts", "Cart"), type("src/old.ts", "Basket"))).toBe(false);
+		const term = composeSymbolId({
+			language: "typescript",
+			module: "src/old.ts",
+			descriptors: [{ kind: "term", name: "Cart" }],
+		});
+		expect(sameNameAndKind(type("src/cart.ts", "Cart"), term)).toBe(false);
+		const python = composeSymbolId({
+			language: "python",
+			module: "old.py",
+			descriptors: [{ kind: "type", name: "Cart" }],
+		});
+		expect(sameNameAndKind(type("src/cart.ts", "Cart"), python)).toBe(false);
+	});
+
+	it("needs the container's name too for a member, and never matches a local", () => {
+		const add = composeSymbolId(CART);
+		expect(sameNameAndKind(add, composeSymbolId({ ...CART, module: "src/old.ts" }))).toBe(true);
+		const elsewhere: Descriptor[] = [
+			{ kind: "type", name: "Basket" },
+			{ kind: "method", name: "add" },
+		];
+		expect(sameNameAndKind(add, composeSymbolId({ ...CART, module: "src/old.ts", descriptors: elsewhere }))).toBe(
+			false,
+		);
+		expect(sameNameAndKind(add, type("src/old.ts", "add"))).toBe(false);
+		// A nested type is not a member: the same Inner under another outer is still a candidate.
+		const nested = (module: string, outer: string) =>
+			composeSymbolId({
+				language: "typescript",
+				module,
+				descriptors: [
+					{ kind: "namespace", name: outer },
+					{ kind: "type", name: "Inner" },
+				],
+			});
+		expect(sameNameAndKind(nested("src/a.ts", "Outer"), nested("src/b.ts", "Other"))).toBe(true);
+		const local = composeSymbolId({ language: "typescript", module: "src/old.ts", descriptors: [], local: 0 });
+		expect(sameNameAndKind(local, composeSymbolId({ ...CART, descriptors: [], local: 0 }))).toBe(false);
 	});
 });
 

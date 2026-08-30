@@ -623,10 +623,25 @@ ${recalled.answer.doubt.reason}${by}
 
 \`${recalled.answer.doubt.factId}\`
 
-Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.
+${
+	recalled.stranded === undefined
+		? "Clear with `record_answer` or `reaffirm_answer`, citing this doubt ID as `resolvesDoubt`."
+		: "Nothing at this address can clear it; the doubt rides along when the prose is recorded again."
+}
 `);
 	}
-	if (recalled.stale.length > 0) {
+	if (recalled.stranded !== undefined) {
+		// Nothing at this address can be re-affirmed; the way forward is to record it where a reader will find it.
+		const shown = recalled.stranded.candidates.slice(0, 8).map((id) => `\`${id}\``);
+		const rest = recalled.stranded.candidates.length - shown.length;
+		const candidates = `${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
+		const hold = recalled.stranded.exempt
+			? " while its module fails to parse; nothing is orphaned or deleted until that is fixed"
+			: "";
+		status.push(
+			`**STRANDED:** This address no longer resolves${hold}. Record the prose again where a reader will find it${candidates === "" ? "" : `: ${candidates}`}.`,
+		);
+	} else if (recalled.stale.length > 0) {
 		status.push(
 			`**STALE:** ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed. Re-check \`symbol_facts\`, then call \`reaffirm_answer\` or \`record_answer\`.`,
 		);

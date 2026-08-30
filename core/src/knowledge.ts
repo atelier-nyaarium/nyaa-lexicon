@@ -23,6 +23,7 @@ import {
 	type RecalledAnswer,
 	type RecordOutcome,
 } from "./answers.js";
+import { candidatesFor } from "./candidates.js";
 import type { ImportResolver } from "./imports.js";
 import * as refusal from "./refusals.js";
 import type { IndexStore, StoredFact } from "./store.js";
@@ -105,6 +106,8 @@ export class KnowledgeLedger {
 
 		let stale = 0;
 		for (const answer of this.store.allAnswers()) {
+			// A stranded answer is stale for good and is not work this count invites.
+			if (this.store.declaration(answer.symbolId) === null) continue;
 			if (this.resolveFacts(answer.citations).missing.length > 0) stale++;
 		}
 		return stale;
@@ -296,7 +299,7 @@ export class KnowledgeLedger {
 	 * The declared-invalidation path from `docs/knowledge-layer.md`: mechanical staleness cannot see
 	 * semantic drift, so an agent that just changed a function's purpose flags the recorded prose
 	 * here. The doubt cascades to everything citing this answer through the recall walk, and each
-	 * doubted slot re-enters the gap ledger as measured recheck demand.
+	 * doubted slot re-enters the gap ledger as recheck demand where its address still resolves.
 	 */
 	invalidateAnswer(symbolId: string, reason: string, question?: QuestionClass, by?: string): LedgerInvalidateOutcome {
 		if (reason.trim() === "") {
@@ -333,6 +336,8 @@ export class KnowledgeLedger {
 				...(by === undefined ? {} : { by }),
 			};
 			this.store.setDoubt(symbolId, target, doubt);
+			// A doubt is demand to address it, counted only where the address still resolves: a
+			// stranded answer stays doubtable, and the doubt rides its rebind, but nothing is queued.
 			this.store.recordGap(symbolId, target, now);
 			doubted.push({ question: target, doubt });
 		}
@@ -416,6 +421,8 @@ export class KnowledgeLedger {
 	 * The ledger measures what is missing, not what is popular.
 	 */
 	demandOf(symbolId: string, question: QuestionClass, recalled: RecalledAnswer | null): Demand | null {
+		// A stranded answer is stale for good; charging for it would queue work nobody can do here.
+		if (recalled?.stranded !== undefined) return null;
 		if (
 			recalled === null ||
 			recalled.stale.length > 0 ||
@@ -463,6 +470,7 @@ export class KnowledgeLedger {
 			if (beneath.stale) inheritedStale.push(citation);
 			if (beneath.doubted) doubtedUpstream.push(citation);
 		}
+		const stranded = subject === null ? undefined : this.strandedOf(answer.symbolId);
 		return {
 			answer,
 			...(subject === null
@@ -475,9 +483,25 @@ export class KnowledgeLedger {
 							since: subject.boundAt,
 						},
 					}),
+			...(stranded === undefined ? {} : { stranded }),
 			stale,
 			inheritedStale,
 			doubtedUpstream,
+		};
+	}
+
+	/** Set when the subject is orphaned or its address no longer resolves; the candidates are for a reader. */
+	private strandedOf(symbolId: string): RecalledAnswer["stranded"] | undefined {
+		const status = this.store.subjects.stateOf(
+			symbolId,
+			(module) => this.store.parseFailureOf(module)?.reason ?? null,
+		);
+		if (status.state !== "orphaned" && status.resolves) return undefined;
+		return {
+			since: status.orphanedAt,
+			exempt: status.exempt,
+			evidence: status.evidence ?? "none",
+			candidates: candidatesFor(this.store, symbolId),
 		};
 	}
 
@@ -535,6 +559,8 @@ export class KnowledgeLedger {
 			const known = new Set<string>();
 			for (const gap of all) {
 				known.add(`${gap.symbolId}\0${gap.question}`);
+				// Demand at an address that no longer resolves is nothing anyone can answer there.
+				if (this.store.declaration(gap.symbolId) === null) continue;
 				const answer = this.store.answer(gap.symbolId, gap.question);
 				if (answer === null) {
 					missing.push(this.gapRow(gap.symbolId, gap.question, gap.askCount, "missing", gap.recordedAs));
@@ -562,6 +588,8 @@ export class KnowledgeLedger {
 			if (counts.total <= STALE_SCAN_CAP) {
 				for (const answer of this.store.allAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
+					// A stranded answer is stale for good and leaves the queue rather than re-entering it.
+					if (this.store.declaration(answer.symbolId) === null) continue;
 					const why =
 						answer.doubt !== undefined
 							? "doubted"
@@ -575,6 +603,7 @@ export class KnowledgeLedger {
 				staleScanSkipped = true;
 				for (const answer of this.store.doubtedAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
+					if (this.store.declaration(answer.symbolId) === null) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, "doubted", answer.recordedAs));
 				}
 			}

@@ -490,12 +490,24 @@ this rule in place of the one it states now.
 **Tests:** record, then delete the file: `recordAnswer`, `reaffirmAnswer` and `recallAnswer` on
 the address each say stranded and name the candidates; `recallAnswer` carries the field and
 records no gap on the unhealthy path; `invalidateAnswer` records the doubt and no gap. Rebind
-through `refactor_move`, then ask the old address: moved, with the new address. Plant only a gap
+the subject away (through the owner until Phase 0's move-capable fixture lets `refactor_move`
+itself be driven), then ask the old address: moved, with the new address. Plant only a gap
 at a dead address: the demand wording. Put the module into `parse_failures` with the file present:
 the waiting wording with the failure's reason, nothing orphaned. Plant two same-named declarations
 in other modules: both listed as candidates, neither bound to. Strand a local: no candidates, and
 the refusal says why. Rebind twice: the middle address forwards, the first diagnoses as unminted.
-Watch the old wording fail first.
+Demand recorded before the address vanished leaves the queue with the stale rows, and the
+overview's stale count skips a stranded answer. An orphan under a module that later fails to
+parse reads as stranded, since only a bound subject waits. Watch the old wording fail first.
+
+### Bug Classes
+
+**Work at a dead address.** The class: every reader that ranks or counts knowledge work has to
+remember that an address the index no longer holds is not work. Round one added the check to the
+two recheck loops in `knowledgeGaps`; round two added it to the demand rows there and to
+`staleAnswerCount`, beside the one `recordGap` already carries. Four sites remember one rule. The
+architecture pass decides whether the store answers it once, as a projection that joins `symbols`
+so a dead address never reaches a ranking reader.
 
 ## Phase 0 - One diagnosis for a bad subject id, reached from every tool
 

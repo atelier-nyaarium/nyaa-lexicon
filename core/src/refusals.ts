@@ -2,7 +2,8 @@
 // instead; the ledger and the checker call in and compose none: the brand refuses a raw string
 // and a residue refuses the cast.
 
-import { decodeModuleField, FACT_SCHEME, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
+import { decodeModuleField, FACT_SCHEME, isLocalSymbol, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
+import { candidatesFor } from "./candidates.js";
 import type { IndexStore } from "./store.js";
 
 ////////////////////////////////
@@ -138,6 +139,43 @@ export function unparsableId(symbolId: string, failure: string): Refusal {
 	return mint(`${symbolId} is not a symbol id: ${failure}`);
 }
 
+export function movedId(symbolId: string, to: string, evidence: string): Refusal {
+	return mint(
+		`${symbolId} was rebound to ${to} (${evidence}), and the knowledge recorded about it is recalled there. Ask about ${to}`,
+	);
+}
+
+/** An address a subject still names and the index no longer holds; the candidates are for a person to read. */
+export function strandedId(
+	symbolId: string,
+	held: "answers" | "demand",
+	since: number | null,
+	evidence: string | null,
+	candidates: string[],
+	local: boolean,
+): Refusal {
+	const what = held === "answers" ? `the answers about ${symbolId}` : `the demand recorded against ${symbolId}`;
+	const dated =
+		since === null ? "" : `, orphaned at ${new Date(since).toISOString()}, and deletion follows thirty days after`;
+	const judged = evidence === "ambiguous" ? " (more than one declaration could have been it)" : "";
+	const shown = candidates.slice(0, NEIGHBOURS_SHOWN).map((candidate) => `\`${candidate}\``);
+	const rest = candidates.length - shown.length;
+	const where = local
+		? "; a local has no candidates, since its ordinal names no chain"
+		: candidates.length === 0
+			? "; nothing else in the index carries its name and kind"
+			: `: ${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
+	return mint(
+		`${what} belong to a subject whose address no longer resolves${dated}${judged}. Record the prose again where a reader will find it${where}`,
+	);
+}
+
+export function waitingOnParseFailure(symbolId: string, module: string, reason: string): Refusal {
+	return mint(
+		`${symbolId} is waiting on ${module}, which is present and not parsing (${reason}); nothing about it is orphaned or deleted while that holds. Fix the parse, then ask again`,
+	);
+}
+
 /**
  * Why a subject id names no declaration: a fact id in the subject slot, an id the module never
  * minted, a module not indexed, or a spelling the grammar refuses. Never "not in the index" alone.
@@ -147,6 +185,26 @@ export function subjectRefused(symbolId: string, store: IndexStore): Refusal {
 
 	const parsed = parseSymbolIdResult(symbolId);
 	const module = parsed.ok ? parsed.value.module : moduleFieldOf(symbolId);
+
+	// What the identity owner last left at the address decides the wording before any shortlist.
+	const status = store.subjects.stateOf(symbolId, (of) => store.parseFailureOf(of)?.reason ?? null);
+	if (status.subject === null && status.forwardedTo !== null) {
+		return movedId(symbolId, status.forwardedTo, status.evidence ?? "none");
+	}
+	if (status.subject !== null && !status.resolves) {
+		// Only a bound subject waits; an orphan under a failing module was judged before it failed.
+		if (status.exempt && status.state === "bound") {
+			return waitingOnParseFailure(symbolId, module ?? "", status.reason ?? "");
+		}
+		return strandedId(
+			symbolId,
+			status.answers > 0 ? "answers" : "demand",
+			status.orphanedAt,
+			status.evidence,
+			candidatesFor(store, symbolId),
+			isLocalSymbol(symbolId),
+		);
+	}
 	const neighbours = module === null ? [] : store.declarationsIn(module);
 	if (module !== null && neighbours.length > 0) {
 		// The name the author typed is somewhere in the bad id, so declarations carrying it lead.

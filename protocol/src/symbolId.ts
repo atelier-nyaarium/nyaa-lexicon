@@ -406,6 +406,27 @@ export function isParameterSymbol(text: string): boolean {
 	return parseSymbolId(text)?.descriptors.at(-1)?.kind === "parameter";
 }
 
+/** The same last descriptor, container name and language in another module, for a person to
+ * read as a candidate; never a local, whose ordinal names no chain. */
+export function sameNameAndKind(a: string, b: string): boolean {
+	const left = parseSymbolId(a);
+	const right = parseSymbolId(b);
+	if (left === null || right === null) return false;
+	if (left.local !== undefined || right.local !== undefined) return false;
+	if (left.language !== right.language || left.module === right.module) return false;
+	const last = left.descriptors.at(-1) as Descriptor;
+	const other = right.descriptors.at(-1) as Descriptor;
+	if (last.kind !== other.kind || last.name !== other.name) return false;
+	if (!MEMBER_KINDS.has(last.kind)) return true;
+	const container = left.descriptors.at(-2);
+	const otherContainer = right.descriptors.at(-2);
+	if (container === undefined || otherContainer === undefined) return container === otherContainer;
+	return container.name === otherContainer.name;
+}
+
+/** Kinds that belong to their container, so the same name under another container is another thing. */
+const MEMBER_KINDS = new Set<DescriptorKind>(["method", "parameter", "typeParameter", "term"]);
+
 function sameDescriptor(a: Descriptor, b: Descriptor): boolean {
 	return (
 		a.kind === b.kind && a.name === b.name && a.disambiguator === b.disambiguator && a.occurrence === b.occurrence

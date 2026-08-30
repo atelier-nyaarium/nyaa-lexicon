@@ -222,7 +222,7 @@ describe("a subject and its address", () => {
 		expect(store.subjects.unresolved(10).map((subject) => subject.symbolId)).toEqual([CART]);
 	});
 
-	it("counts a gap only under an address the index holds or a subject already claims", () => {
+	it("counts a gap only under an address the index holds", () => {
 		store.recordGap("lexicon reference typo.ref Nope#", "describe", 5);
 		plant();
 		store.recordGap(CART, "describe", 5);
