@@ -139,6 +139,18 @@ the `knowledgeSweep` field of the scan summary. The indexer, the store and the s
 `Clock`, the same instance the daemon opens the store with, which is what lets one fake clock age a
 workspace in a test.
 
+A compat rebuild salvages the knowledge tables before the index is emptied and puts them back
+after. `normalizeSalvaged` maps every raw row into a closed value first, so nothing past it reads a
+raw row: a row missing its address, its prose or its fact id, or whose citations do not parse, is
+dropped and counted. The subject rows go back as they were, and every answer and gap is placed
+through `placeRow`, the one method that decides which subject a salvaged row belongs to. A row
+naming a subject that survived keeps it. A row naming a subject that is gone revives that id, bound
+at its recorded address, and is refused `held` when another subject holds the address, since two
+subjects never merge. A row naming no subject joins the holder of its address, or mints one there
+with evidence `none`. Rows are placed subject-keyed first and newest first, so a subject is judged
+at its newest address, and one refused there is refused whole rather than revived by an older row.
+The open result carries the unplaced and dropped counts and the daemon logs both.
+
 ## A refusal says what stands at the address
 
 Every write at an address the index does not hold, and every recall of an answer whose address no

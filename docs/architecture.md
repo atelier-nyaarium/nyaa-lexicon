@@ -79,7 +79,9 @@ Two rules hold the design together:
   data loss, so no migration path has to be carried forever. The one exception is the knowledge
   layer: recorded answers cannot be regenerated from source, so they are salvaged across a rebuild
   with their subjects, and their citations heal on their own, because unchanged code mints
-  identical fact ids. A store written before subjects is re-keyed in place on first open.
+  identical fact ids. Every salvaged row is normalized to a closed value and placed through the
+  identity owner's one placement method; a row it cannot read or place is a count in the daemon
+  log, never a merge. A store written before subjects is re-keyed in place on first open.
 
 A `files` row also carries git's word on whether the file is generated, three-valued: `yes`, `no`,
 or `unknown` with the reason git could not say. The indexer asks git once per admission for every

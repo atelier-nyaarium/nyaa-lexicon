@@ -1122,6 +1122,10 @@ dropped at the deadline, and no timer pending once the sockets close. The residu
 
 ## Replan 2 - One row-placement primitive in the identity owner
 
+✅ Shipped: the normalizer, the placement primitive, the ordered rebuild, and the two counts on
+the open result and in the daemon log (7d5be7d, after one alignment audit and two red team rounds;
+the docs followed in the next commit).
+
 The second of the five replan items (Question 11), the architecture assessment's third
 opportunity. A compat rebuild salvages the knowledge tables, rebuilds the index from empty and
 puts the rows back; deciding which subject a salvaged row belongs to is identity inference, and
@@ -1514,3 +1518,14 @@ Collected during the overnight knowledge run, the review of its patches, and the
   clock cannot distinguish from a relative one, so that mutant stays uncaught and is noted here.
   The auditors' sandbox cannot bind loopback, so every transport claim they made was static; the
   test that binds runs here.
+- Building the placement item: ten alignment findings, then two red team rounds, four findings,
+  all fixed. The primitive went as written; what the audits found was around it. Placement
+  depended on the order the salvage was read in, which the section had not said: a subject whose
+  newest address was held could be revived at an older one by the next row, so the rebuild orders
+  subject-keyed rows first and newest first, and a subject refused at its newest address is
+  refused whole. The normalizer had trusted the column types the schema declares and sqlite does
+  not enforce: a count stored as text or as a fraction, a doubt stamp stored as a string,
+  citations that do not parse and an empty address each have one rule now. Ties had broken by
+  `localeCompare`, which places rows differently on two machines; they break by code point. Held:
+  `restoreByColumn` drops a journal row whose columns are missing, pre-existing, and the daemon's
+  log line for dropped rows has no test.
