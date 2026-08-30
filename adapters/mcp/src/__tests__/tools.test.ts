@@ -293,6 +293,7 @@ describe("knowledge_gaps scopes", () => {
 					total: 0,
 					external: 0,
 					truncated: false,
+					filtered: true,
 					...(module === undefined ? {} : { scope: { module, declarations: 3 } }),
 				};
 			},
@@ -313,6 +314,9 @@ describe("knowledge_gaps scopes", () => {
 
 		expect(asked).toEqual([{ root: "lexicon ts src/a.ts Cart.", module: undefined }]);
 		expect(result.content[0]?.text).toContain("Under `lexicon ts src/a.ts Cart.`, leaves first: no describe gaps");
+
+		await knowledgeGaps(gapBackend(asked), { symbolId: "lexicon ts src/a.ts Cart." });
+		expect(asked[1]).toEqual({ root: "lexicon ts src/a.ts Cart.", module: undefined });
 	});
 
 	it("asks for the workspace when given nothing, and says so first", async () => {
@@ -324,8 +328,8 @@ describe("knowledge_gaps scopes", () => {
 	});
 
 	// The workspace demand list sweeps unhealthy answers to every question, and the page shown can
-	// be all one question while the total underneath mixes. So the header is decided by the scope,
-	// never by inspecting the rows: a filter the rows do not honor must not be promised by them.
+	// be all one question while the total underneath mixes. So the header is decided by what the
+	// core says it filtered, never by inspecting the rows.
 	it("does not call the workspace demand list by the asked question, even when the page matches", async () => {
 		const page = backend({
 			knowledgeGaps: async () => ({
@@ -342,6 +346,7 @@ describe("knowledge_gaps scopes", () => {
 				total: 4,
 				external: 0,
 				truncated: false,
+				filtered: false,
 			}),
 		});
 
@@ -368,12 +373,86 @@ describe("knowledge_gaps scopes", () => {
 				external: 0,
 				truncated: false,
 				seeded: true,
+				filtered: true,
 			}),
 		});
 
 		const result = await knowledgeGaps(seeded, { question: "why" });
 
 		expect(result.content[0]?.text).toContain("unanswered why candidate");
+	});
+
+	it("names the question only when the core says it filtered, listed or empty, and never on an omitted flag", async () => {
+		const row = {
+			symbolId: "lexicon ts src/a.ts Cart.",
+			question: "why" as const,
+			why: "missing" as const,
+			askCount: 0,
+			fanIn: 9,
+		};
+		const answering = (rows: (typeof row)[], filtered: boolean | undefined) =>
+			backend({
+				knowledgeGaps: async (_root, _question, _limit, module) => ({
+					question: "why" as const,
+					rows,
+					total: rows.length,
+					external: 0,
+					truncated: false,
+					scope: { module: module ?? "", declarations: 3 },
+					...(filtered === undefined ? {} : { filtered }),
+				}),
+			});
+		const header = async (rows: (typeof row)[], filtered: boolean | undefined) =>
+			(await knowledgeGaps(answering(rows, filtered), { module: "src/a.ts", question: "why" })).content[0]
+				?.text ?? "";
+
+		expect(await header([row], true)).toContain("1 why gap");
+		expect(await header([row], false)).toContain("1 gap");
+		expect(await header([row], false)).not.toContain("why gap");
+		expect(await header([row], undefined)).not.toContain("why gap");
+
+		expect(await header([], true)).toContain("no why gaps");
+		expect(await header([], false)).toContain("no gaps");
+		expect(await header([], undefined)).toContain("no gaps");
+		expect(await header([], undefined)).not.toContain("why gaps");
+
+		const seeded = (filtered: boolean | undefined) =>
+			backend({
+				knowledgeGaps: async () => ({
+					question: "why" as const,
+					rows: [row],
+					total: 1,
+					external: 0,
+					truncated: false,
+					seeded: true,
+					...(filtered === undefined ? {} : { filtered }),
+				}),
+			});
+		const seededHeader = async (filtered: boolean | undefined) =>
+			(await knowledgeGaps(seeded(filtered), { question: "why" })).content[0]?.text ?? "";
+		expect(await seededHeader(true)).toContain("unanswered why candidate");
+		expect(await seededHeader(false)).toContain("unanswered candidate");
+		expect(await seededHeader(undefined)).not.toContain("why candidate");
+	});
+
+	it("says the staleness scan was skipped even when it lists no gaps", async () => {
+		const skipped = backend({
+			knowledgeGaps: async () => ({
+				question: "describe" as const,
+				rows: [],
+				total: 0,
+				external: 0,
+				truncated: false,
+				seeded: true,
+				filtered: true,
+				staleScanSkipped: true,
+			}),
+		});
+
+		const result = await knowledgeGaps(skipped, {});
+
+		expect(result.content[0]?.text).toContain("no describe gaps");
+		expect(result.content[0]?.text).toContain("skipped its full staleness scan");
 	});
 
 	it("calls an unindexed file unindexed, never clean", async () => {

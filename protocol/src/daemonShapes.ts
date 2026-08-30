@@ -363,6 +363,8 @@ export const KnowledgeGapsSchema = z
 		staleScanSkipped: z.boolean().optional(),
 		/** Set when scoped to one file. Zero declarations means unindexed, which is not the same as clean. */
 		scope: z.object({ module: z.string(), declarations: z.number() }).optional(),
+		/** True when every row honours the asked question; the workspace demand sweep carries every question. Omitted reads as unfiltered. */
+		filtered: z.boolean().optional(),
 	})
 	.meta({ id: "KnowledgeGaps" });
 

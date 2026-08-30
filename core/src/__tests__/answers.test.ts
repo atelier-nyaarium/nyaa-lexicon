@@ -762,6 +762,19 @@ describe("the gap ledger", () => {
 		expect(gaps.rows[0]).toMatchObject({ symbolId: SYMBOL, askCount: 2, why: "missing" });
 	});
 
+	it("says whether it filtered by the asked question, from the branch that knows", async () => {
+		const [declaration] = plant();
+		ask(SYMBOL, "describe");
+
+		expect(service.knowledgeGaps()).toMatchObject({ filtered: false, total: 1 });
+		expect(service.knowledgeGaps(undefined, "describe", 10, "a.ref")).toMatchObject({ filtered: true, total: 1 });
+		expect(service.knowledgeGaps(SYMBOL)).toMatchObject({ filtered: true, total: 1 });
+
+		// saveAnswer clears the gap it answers, so an answered ledger is empty, not unasked.
+		await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string]);
+		expect(service.knowledgeGaps()).toMatchObject({ seeded: true, filtered: true, total: 0 });
+	});
+
 	it("counts nothing on the read itself, and counts through the daemon as the daemon's own write", async () => {
 		plant();
 		service.recallAnswer(SYMBOL, "describe");

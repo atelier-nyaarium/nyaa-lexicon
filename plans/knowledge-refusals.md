@@ -645,10 +645,12 @@ instead. `KnowledgeGapsSchema` gains an optional `filtered: boolean`. Every retu
 explicitly: `true` from the seeded fallback, the module scope and the subtree walk, whose rows all
 honour the asked question; `false` from the workspace demand sweep, which deliberately carries
 every question with rechecks first. The renderer names the question only on `true`, in the
-zero-row branch as well as the listed one, since today the zero-row branch names it
-unconditionally. An omitted field is a legacy or synthetic result and reads as unfiltered, which
-is the safe direction: a legacy module-scoped result loses its question label rather than a
-legacy workspace sweep gaining a false one.
+zero-row branch, the listed one and the seeded sentence, since before this the zero-row branch
+and the seeded sentence named it unconditionally. An omitted field is a legacy or synthetic
+result and reads as unfiltered, which is the safe direction: a legacy module-scoped result loses
+its question label rather than a legacy workspace sweep gaining a false one. The zero-row branch
+also carries the skipped-staleness-scan note the listed branch already had, since "no gaps" over a
+scan that did not run was the same lie by omission.
 
 **Wire:** an optional field on a result shape is additive, and a minor.
 
@@ -658,8 +660,10 @@ reaches the subtree walk, `true`; `{}` with no outstanding gap or recheck rows r
 fallback, `true`, and that trigger is reached by a workspace whose every gap has been answered,
 not only by one never asked, since `saveAnswer` clears the gap it answers. At the adapter,
 `resolveOne` turns `name` or `symbolId` into `root`, one test. Renderer: `true` names the
-question, `false` does not, omitted does not, in both branches, with the lying case planted, a
-page of matching rows on a mixed total.
+question, `false` does not, omitted does not, in both branches and the seeded sentence, with the
+lying case planted, a page of matching rows on a mixed total; the zero-row branch shows the
+skipped-scan note. The daemon sample proves the flag survives the wire on both the workspace and
+the module call.
 
 ## Phase 4 - Orphaned subjects: rebound, dated, or deleted by the store
 

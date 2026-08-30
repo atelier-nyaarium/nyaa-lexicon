@@ -278,8 +278,10 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect((await ask("commitsMentioning", { name: "Cart", limit: 5 })).mentions).toHaveLength(1);
 	},
 	knowledgeGaps: async () => {
-		await ask("knowledgeGaps", {});
-		expect((await ask("knowledgeGaps", { module: "cart.ref", question: "why", limit: 5 })).scope).toBeDefined();
+		const workspace = await ask("knowledgeGaps", {});
+		expect(workspace.filtered).toBe(workspace.seeded === true);
+		const scoped = await ask("knowledgeGaps", { module: "cart.ref", question: "why", limit: 5 });
+		expect(scoped).toMatchObject({ filtered: true, scope: { module: "cart.ref" } });
 	},
 	typeOf: async () => {
 		expect((await ask("typeOf", { symbolId: cart })).status).toBe("unknown");

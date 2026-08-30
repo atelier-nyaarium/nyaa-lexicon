@@ -606,6 +606,7 @@ export class KnowledgeLedger {
 					total: rows.length,
 					external: 0,
 					truncated: false,
+					filtered: false,
 					...(staleScanSkipped ? { staleScanSkipped } : {}),
 				};
 			}
@@ -627,6 +628,7 @@ export class KnowledgeLedger {
 				external: 0,
 				truncated: false,
 				seeded: true,
+				filtered: true,
 				...(staleScanSkipped ? { staleScanSkipped } : {}),
 			};
 		}
@@ -669,7 +671,7 @@ export class KnowledgeLedger {
 				rows.push(this.gapRow(symbolId, question, this.store.askCount(symbolId, question), why));
 			}
 		}
-		return { question, rows, total, external, truncated };
+		return { question, rows, total, external, truncated, filtered: true };
 	}
 
 	/**
@@ -698,6 +700,7 @@ export class KnowledgeLedger {
 			external: 0,
 			truncated: false,
 			scope: { module, declarations: declarations.length },
+			filtered: true,
 		};
 	}
 

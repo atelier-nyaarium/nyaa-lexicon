@@ -761,12 +761,18 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 			`\`${gaps.scope.module}\` holds no indexed declarations: not indexed yet, or no provider claims it. Call \`overview\` for coverage.`,
 		].join("\n");
 	}
+	// Only the core knows whether every row honours the asked question; an omitted flag reads as unfiltered.
+	const asked = gaps.filtered === true ? `${gaps.question} ` : "";
 	if (gaps.total === 0) {
 		const lines = [
 			`# Knowledge gaps
 
-${lead}: no ${gaps.question} gaps.`,
+${lead}: no ${asked}gaps.`,
 		];
+		if (gaps.staleScanSkipped === true) {
+			lines.push(`
+> The index skipped its full staleness scan. Stale answers surface when recalled.`);
+		}
 		if (gaps.external > 0)
 			lines.push(`
 > ${gaps.external} dependencies are outside the index and cannot be answered.`);
@@ -778,15 +784,9 @@ ${lead}: no ${gaps.question} gaps.`,
 `,
 	];
 	const plural = gaps.total === 1 ? "" : "s";
-	// Every scope but the workspace demand list filters by the question asked. That one sweeps
-	// unhealthy answers to every question, so naming the question there promises a filter the rows do
-	// not honor, and the visible slice cannot be trusted to show it: a page of matching rows can sit
-	// on a total that mixes. A reader who acts on "no why gaps" stops while why gaps wait below.
-	const filtered = gaps.seeded === true || gaps.scope !== undefined || root !== undefined;
-	const asked = filtered ? `${gaps.question} ` : "";
 	const what =
 		gaps.seeded === true
-			? `the ${gaps.total} most-referenced unanswered ${gaps.question} candidate${plural}, since no demand is recorded yet`
+			? `the ${gaps.total} most-referenced unanswered ${asked}candidate${plural}, since no demand is recorded yet`
 			: gaps.scope === undefined && root === undefined
 				? `${gaps.total} ${asked}gap${plural}, ranked by demand, rechecks first`
 				: `${gaps.total} ${asked}gap${plural}`;
