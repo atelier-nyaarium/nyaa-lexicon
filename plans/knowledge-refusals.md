@@ -302,7 +302,7 @@ singular does.
 | Rename through `refactor_rename` | The same, evidence `journalRename`. |
 | External move | The sweep rebinds only on `batchExactMatch`: exactly one declaration whose module was first indexed in the pass that lost the address and whose pattern digest equals `lastDigest`. |
 | Delete, or vanish without evidence | The sweep sets `orphaned` with `orphanedAt` and the evidence it had, `ambiguous` with the candidates or `none`. The address and the rows stay. |
-| Reappear | An orphaned subject whose kept address resolves again is bound, evidence `sameLocator`, date cleared. A write at that address finds the orphan through `UNIQUE` and restores it rather than minting a second subject. |
+| Reappear | An orphaned subject whose kept address resolves again is bound, evidence `sameLocator`, date cleared: the re-index that puts the declaration back restores it as it lands, and a write at that address finds the orphan through `UNIQUE` and restores it rather than minting a second subject. |
 | Thirty days orphaned | The subject and its rows are deleted. |
 | Duplicate | A new declaration with identical text is a new subject when knowledge is first recorded against it. |
 | Converge | Two live subjects whose text becomes identical stay two subjects. |
@@ -473,12 +473,16 @@ the sweep last left the subject in:
 `renderKnowledge` renders the status line from it and replaces the reaffirm instruction, which
 an orphaned subject cannot follow, with the re-record path and the candidates. Optional, a minor.
 
-**Recall stops charging for it.** Today `recallAnswer` records demand on a miss only when the
-subject has an indexed declaration, and on every unhealthy recall (stale, doubted, or inheriting
-either) regardless of the subject. The miss path is already right. The unhealthy path is the one
-that charges for an orphaned subject, since its answer exists and is permanently stale, so the
-orphan check goes before `recordGap` there. An orphaned subject is also excluded from the stale
-count in `knowledgeGaps`, or it would re-enter the queue this plan says it leaves.
+**Recall stops charging for it, and the store owns the rule.** Work exists only at an address the
+index holds. The identity owner declares two views over the addressed ones, `answers_live` and
+`gaps_live`, joined to `symbols`, and the store reads them through `liveAnswers`,
+`liveDoubtedAnswers`, `liveGaps` and `liveAnswerCount`; every ranking reader in the ledger, the
+demand rows and both recheck scans of `knowledgeGaps` and the overview's stale count, reads those
+and cannot see a dead address, which a residue holds by forbidding the raw readers in the ledger.
+The raw readers stay for recall, doubt and diagnosis, which must see stranded rows. `recordGap`
+is guarded in its own statement, an insert selected only where `symbols` holds the address, so a
+recall's demand for a stranded answer is decided at the write and writes nothing; `demandOf`
+decides nothing about eligibility, and the `stranded` field on the wire is explanation only.
 
 **An orphaned answer stays doubtable.** `invalidateAnswer` refuses only an address with no
 subject, by design: a doubt is prose about the answer, a rebind carries it, and a reader who found
@@ -505,9 +509,10 @@ parse reads as stranded, since only a bound subject waits. Watch the old wording
 **Work at a dead address.** The class: every reader that ranks or counts knowledge work has to
 remember that an address the index no longer holds is not work. Round one added the check to the
 two recheck loops in `knowledgeGaps`; round two added it to the demand rows there and to
-`staleAnswerCount`, beside the one `recordGap` already carries. Four sites remember one rule. The
-architecture pass decides whether the store answers it once, as a projection that joins `symbols`
-so a dead address never reaches a ranking reader.
+`staleAnswerCount`, beside the one `recordGap` already carries. Four sites remembered one rule.
+Closed by the architecture pass: the store's live projection is the one owner, the four checks
+are gone, the write is guarded in its own statement, and a residue forbids the raw readers in the
+ledger's ranking paths.
 
 ## Phase 0 - One diagnosis for a bad subject id, reached from every tool
 

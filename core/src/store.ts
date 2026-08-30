@@ -836,6 +836,7 @@ export class IndexStore {
 					digest?.patternCoverage ?? null,
 				);
 			}
+			this.subjects.restoreResolving(module, Date.now());
 			if (digests.length > 0) this.subjects.refreshDigests(module);
 
 			const reference = this.db.prepare(
@@ -1256,18 +1257,27 @@ export class IndexStore {
 		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
 	}
 
-	/** Counts one ask that found nothing, or found something stale, under the subject the address claims.
-	 * Only an address the index holds counts: a typo would sit in the ledger forever, and a stranded
-	 * subject's demand could never be answered where it was asked. */
+	/** Doubted answers whose address the index holds: the ones a reader can go and address. */
+	liveDoubtedAnswers(): Answer[] {
+		const rows = this.db
+			.prepare("SELECT * FROM answers_live WHERE doubtId IS NOT NULL ORDER BY symbolId, question")
+			.all();
+		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
+	}
+
+	/** Counts one ask that found nothing, or found something stale, under the subject the address
+	 * claims. The insert is guarded on the address being held, in the statement itself: a typo would
+	 * sit in the ledger forever, and a stranded subject's demand could never be answered where asked. */
 	recordGap(symbolId: string, question: string, at: number): void {
-		const subject = this.declaration(symbolId) === null ? null : this.subjects.claim(symbolId, at);
+		const subject = this.subjects.claim(symbolId, at);
 		if (subject === null) return;
 		this.db
 			.prepare(
-				`INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked) VALUES (?, ?, ?, 1, ?)
+				`INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked)
+				 SELECT ?, ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM symbols WHERE symbolId = ?)
 				 ON CONFLICT(subjectId, question) DO UPDATE SET askCount = askCount + 1, lastAsked = excluded.lastAsked`,
 			)
-			.run(subject.subjectId, question, symbolId, at);
+			.run(subject.subjectId, question, symbolId, at, symbolId);
 	}
 
 	/** Open gaps, most asked-for first. Fan-in joins in above this, since it lives in refs. */
@@ -1275,6 +1285,15 @@ export class IndexStore {
 		return this.db
 			.prepare(
 				"SELECT symbolId, question, recordedAs, askCount, lastAsked FROM gaps_addressed ORDER BY askCount DESC, lastAsked DESC LIMIT ?",
+			)
+			.all(limit) as unknown as GapRow[];
+	}
+
+	/** Open gaps whose address the index holds, most asked-for first: the demand somebody can meet. */
+	liveGaps(limit: number): GapRow[] {
+		return this.db
+			.prepare(
+				"SELECT symbolId, question, recordedAs, askCount, lastAsked FROM gaps_live ORDER BY askCount DESC, lastAsked DESC LIMIT ?",
 			)
 			.all(limit) as unknown as GapRow[];
 	}
@@ -1323,6 +1342,17 @@ export class IndexStore {
 	allAnswers(): Answer[] {
 		const rows = this.db.prepare("SELECT * FROM answers_addressed ORDER BY symbolId, question").all();
 		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
+	}
+
+	/** Answers whose address the index holds: the ones staleness can invite work on. */
+	liveAnswers(): Answer[] {
+		const rows = this.db.prepare("SELECT * FROM answers_live ORDER BY symbolId, question").all();
+		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
+	}
+
+	/** How many answers are live, which is what a scan cap over them must count. */
+	liveAnswerCount(): number {
+		return (this.db.prepare("SELECT COUNT(*) AS n FROM answers_live").get() as { n: number }).n;
 	}
 
 	/** How many answers exist, and how many under one author tag. The count nobody has to keep. */

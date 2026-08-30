@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
-import { KNOWLEDGE_SCHEMA, restoreSubjects } from "../subjects";
+import { KNOWLEDGE_SCHEMA, KNOWLEDGE_VIEWS, restoreSubjects } from "../subjects";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
 
@@ -58,8 +58,7 @@ CREATE TABLE gaps (
 function rewindToAddresses(version: number): void {
 	store.close();
 	const db = new DatabaseSync(file);
-	for (const view of ["subjects_addressed", "answers_addressed", "gaps_addressed"])
-		db.exec(`DROP VIEW IF EXISTS ${view}`);
+	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS ${view}`);
 	for (const table of ["answers", "gaps", "knowledge_subjects"]) db.exec(`DROP TABLE IF EXISTS ${table}`);
 	db.exec(OLD_KNOWLEDGE);
 	db.prepare(
@@ -212,6 +211,23 @@ describe("a subject and its address", () => {
 		store.subjects.delete(subject.subjectId);
 		expect(store.subjects.forAddress(CART)).toBeNull();
 		expect(store.answer(CART, "describe")).toBeNull();
+	});
+
+	it("is bound again when a re-index puts the declaration back at its kept address", async () => {
+		plant();
+		await record(CART);
+		const subject = store.subjects.forAddress(CART);
+		store.subjects.orphan(subject?.subjectId as string, 20, "none");
+
+		plant();
+
+		expect(store.subjects.forAddress(CART)).toMatchObject({
+			subjectId: subject?.subjectId as string,
+			state: "bound",
+			orphanedAt: null,
+			evidence: "sameLocator",
+		});
+		expect(store.liveAnswers().map((answer) => answer.symbolId)).toEqual([CART]);
 	});
 
 	it("lists bound subjects whose address no longer resolves", async () => {

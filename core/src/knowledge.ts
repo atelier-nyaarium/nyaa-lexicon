@@ -102,12 +102,10 @@ export class KnowledgeLedger {
 	 * Undefined rather than partial: a count covering part of the base reads as the whole.
 	 */
 	staleAnswerCount(): number | undefined {
-		if (this.store.answerCounts().total > STALE_SCAN_CAP) return undefined;
+		if (this.store.liveAnswerCount() > STALE_SCAN_CAP) return undefined;
 
 		let stale = 0;
-		for (const answer of this.store.allAnswers()) {
-			// A stranded answer is stale for good and is not work this count invites.
-			if (this.store.declaration(answer.symbolId) === null) continue;
+		for (const answer of this.store.liveAnswers()) {
 			if (this.resolveFacts(answer.citations).missing.length > 0) stale++;
 		}
 		return stale;
@@ -421,8 +419,6 @@ export class KnowledgeLedger {
 	 * The ledger measures what is missing, not what is popular.
 	 */
 	demandOf(symbolId: string, question: QuestionClass, recalled: RecalledAnswer | null): Demand | null {
-		// A stranded answer is stale for good; charging for it would queue work nobody can do here.
-		if (recalled?.stranded !== undefined) return null;
 		if (
 			recalled === null ||
 			recalled.stale.length > 0 ||
@@ -553,14 +549,12 @@ export class KnowledgeLedger {
 		if (root === undefined) {
 			// A gap row with a recorded answer means the answer went stale or doubted after being
 			// asked for again. Those lead the list: the prose exists and most are re-affirmations.
-			const all = this.store.gaps(limit * 4);
+			const all = this.store.liveGaps(limit * 4);
 			const recheck: GapRow[] = [];
 			const missing: GapRow[] = [];
 			const known = new Set<string>();
 			for (const gap of all) {
 				known.add(`${gap.symbolId}\0${gap.question}`);
-				// Demand at an address that no longer resolves is nothing anyone can answer there.
-				if (this.store.declaration(gap.symbolId) === null) continue;
 				const answer = this.store.answer(gap.symbolId, gap.question);
 				if (answer === null) {
 					missing.push(this.gapRow(gap.symbolId, gap.question, gap.askCount, "missing", gap.recordedAs));
@@ -584,12 +578,9 @@ export class KnowledgeLedger {
 			// always included; staleness costs a resolve per answer, so it honors the same cap as
 			// overview and is honestly reported as skipped past it rather than sampled.
 			let staleScanSkipped = false;
-			const counts = this.store.answerCounts();
-			if (counts.total <= STALE_SCAN_CAP) {
-				for (const answer of this.store.allAnswers()) {
+			if (this.store.liveAnswerCount() <= STALE_SCAN_CAP) {
+				for (const answer of this.store.liveAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
-					// A stranded answer is stale for good and leaves the queue rather than re-entering it.
-					if (this.store.declaration(answer.symbolId) === null) continue;
 					const why =
 						answer.doubt !== undefined
 							? "doubted"
@@ -601,9 +592,8 @@ export class KnowledgeLedger {
 				}
 			} else {
 				staleScanSkipped = true;
-				for (const answer of this.store.doubtedAnswers()) {
+				for (const answer of this.store.liveDoubtedAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
-					if (this.store.declaration(answer.symbolId) === null) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, "doubted", answer.recordedAs));
 				}
 			}
@@ -664,7 +654,8 @@ export class KnowledgeLedger {
 			}
 			ordered.push(symbolId);
 		};
-		walk(root);
+		// A root the index no longer holds is no tree, whatever knowledge stands at its address.
+		if (this.store.declaration(root) !== null) walk(root);
 
 		// A tree node needs work when its answer is missing, doubted, or stale on its OWN citations.
 		// Inherited shakiness is not counted here: the shaky child is its own row in the same list.

@@ -96,7 +96,12 @@ describe("a subject whose address stopped resolving", () => {
 			evidence: "sameLocator",
 			candidates: ["lexicon reference b.ref Cart#", "lexicon reference c.ref Cart#"],
 		});
-		expect(service.demandOf(CART, "describe", recalled)).toBeNull();
+		// Demand is decided at the write: the guarded insert writes nothing at a dead address.
+		const demand = service.demandOf(CART, "describe", recalled);
+		expect(demand).toEqual({ symbolId: CART, question: "describe" });
+		if (demand === null) throw new Error("expected demand");
+		service.recordDemand(demand);
+		expect(store.gaps(10)).toEqual([]);
 
 		const doubted = service.invalidateAnswer(CART, "wrong now");
 		expect(doubted.doubted.map((entry) => entry.question)).toEqual(["describe"]);
@@ -114,6 +119,13 @@ describe("a subject whose address stopped resolving", () => {
 
 		expect(service.knowledgeGaps().rows.map((row) => row.symbolId)).not.toContain(CART);
 		expect(service.knowledgeGaps(undefined, "why").rows.map((row) => row.symbolId)).not.toContain(CART);
+		expect(service.knowledgeGaps(CART).rows).toEqual([]);
+		// The live surfaces are where every ranking reader looks; the rows themselves stay.
+		expect(store.liveAnswers()).toEqual([]);
+		expect(store.liveGaps(10)).toEqual([]);
+		expect(store.liveAnswerCount()).toBe(0);
+		expect(store.answersFor(CART)).toHaveLength(1);
+		expect(store.gaps(10).map((gap) => gap.question)).toEqual(["why"]);
 	});
 
 	it("names the demand when only a gap stands at the dead address", async () => {

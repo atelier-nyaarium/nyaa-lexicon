@@ -145,10 +145,22 @@ CREATE VIEW IF NOT EXISTS answers_addressed AS
 CREATE VIEW IF NOT EXISTS gaps_addressed AS
   SELECT g.*, s.currentSymbolId AS symbolId, s.state, s.orphanedAt, s.evidence
   FROM gaps g JOIN knowledge_subjects s ON s.subjectId = g.subjectId;
+
+-- Work: rows whose address the index holds. A ranking reader reads these and cannot see a dead address.
+CREATE VIEW IF NOT EXISTS answers_live AS
+  SELECT a.* FROM answers_addressed a JOIN symbols y ON y.symbolId = a.symbolId;
+CREATE VIEW IF NOT EXISTS gaps_live AS
+  SELECT g.* FROM gaps_addressed g JOIN symbols y ON y.symbolId = g.symbolId;
 `;
 
 /** The view names, so a rebuild can drop them before the tables they read. */
-export const KNOWLEDGE_VIEWS = ["subjects_addressed", "answers_addressed", "gaps_addressed"] as const;
+export const KNOWLEDGE_VIEWS = [
+	"subjects_addressed",
+	"answers_addressed",
+	"gaps_addressed",
+	"answers_live",
+	"gaps_live",
+] as const;
 
 /** The tables a rebuild salvages, subjects first so the rows that key by them restore after. */
 export const KNOWLEDGE_TABLES = ["knowledge_subjects", "answers", "gaps"] as const;
@@ -194,6 +206,8 @@ const INSERT_SUBJECT = `INSERT INTO knowledge_subjects
 
 /** In the caller's transaction. One subject per address; rows keep their fact ids, so citations still resolve. */
 export function rekeyKnowledge(db: DatabaseSync, now: number): void {
+	// A rename rewrites any view over the table; none should exist here, and none may survive it.
+	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
 	db.exec("ALTER TABLE answers RENAME TO answers_by_address");
 	db.exec("ALTER TABLE gaps RENAME TO gaps_by_address");
 	db.exec(KNOWLEDGE_SCHEMA);
@@ -445,6 +459,16 @@ export class KnowledgeSubjects {
 		this.db.prepare("DELETE FROM answers WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM gaps WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(subjectId);
+	}
+
+	/** Orphans whose kept address the module holds again are bound: the address resolves, so nothing was lost. */
+	restoreResolving(module: string, now: number): void {
+		this.db
+			.prepare(
+				`UPDATE knowledge_subjects SET state = 'bound', orphanedAt = NULL, boundAt = ?, evidence = 'sameLocator'
+				 WHERE state = 'orphaned' AND currentSymbolId IN (SELECT symbolId FROM symbols WHERE module = ?)`,
+			)
+			.run(now, module);
 	}
 
 	/** Copies a module's fresh pattern digests onto the bound subjects addressed in it. */
