@@ -365,6 +365,18 @@ subjects. Both end with every answer bound and recalled. A build older than this
 a re-keyed store, since its readers name `answers.symbolId`; a plugin ships as one checkout, and
 `SCHEMA_VERSION` stays, so no store is rebuilt for this.
 
+**Gating.** Every daemon handler declares its effect: `read` runs under the shared gate, `write`
+alone under the exclusive one, `staged` takes the gate in parts through the one it is handed, and
+only those three mint a handler, so a bare function cannot sit in the table and no method runs
+without saying whether it writes. The three knowledge writes are `write`. A recall is a read;
+the demand it found is `demandOf`, a value, and `recordDemand`, a write the daemon runs under
+its gate after the read, so a count never rides inside a shared hold and a read-only face never
+records one. The protocol's `mutates` flag answers a different question, whether a lost call may
+be asked again, and stays separate. The planners' full-parse upgrade runs ungated, as the
+background pass's own work does; only their answer takes the gate. `staged` is the one shape the
+type cannot check, since a handler handed the gate may ignore it, so a residue pins the methods
+that take the gate in parts by name and the mint calls to three: adding either is a reviewed edit.
+
 **Wire.** `AnswerSchema.symbolId` and every result keep carrying the current address. Recall gains
 an optional `subject: { id, recordedAs, evidence, since }`, additive. No method is removed or
 renamed. A minor.
@@ -381,7 +393,9 @@ place a row, its subject lost and its recorded address held, counts it for the d
 A second subject's answer under an existing fact id is refused, not swapped in. A rebuild that
 lost a subject row revives it at the recorded address. A comment straddling a declaration's edge
 digests nothing outside it. A provider that reports comments without declaring the tier loses
-them at the supervisor, so its digests say `commentsKept`. Twenty identical twins: twenty subjects, each recorded and recalled alone, and a rebind of
+them at the supervisor, so its digests say `commentsKept`. A recall on the service counts
+nothing; through the daemon it counts, as the daemon's own write. The one cast to the handler
+brand is counted by a residue. Twenty identical twins: twenty subjects, each recorded and recalled alone, and a rebind of
 one moves one. Two subjects re-indexed onto one digest: both bound, both recalled. Orphan, then
 write at the kept address: bound again, date cleared; delete: subject and rows gone. Move a
 subject away, then record an answer with identical prose and citations at the vacated address:

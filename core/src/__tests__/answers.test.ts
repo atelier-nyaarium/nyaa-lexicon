@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseSymbolIdResult } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
+import { createDispatch } from "../dispatch";
 import * as refusal from "../refusals";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
@@ -21,6 +22,14 @@ const SYMBOL = "lexicon reference a.ref Cart#";
 const at = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 8 } });
 
 /** One class with a literal inside it, which gives two facts to cite and one to leave out. */
+/** What the daemon does for one recall: the read, then the demand it found, counted. */
+function ask(symbolId: string, question: Parameters<LexiconService["recallAnswer"]>[1]) {
+	const recalled = service.recallAnswer(symbolId, question);
+	const demand = service.demandOf(symbolId, question, recalled);
+	if (demand !== null) service.recordDemand(demand);
+	return recalled;
+}
+
 function plant(): string[] {
 	store.replaceFile(
 		"a.ref",
@@ -700,25 +709,37 @@ describe("answers citing answers", () => {
 describe("the gap ledger", () => {
 	it("counts each ask that found nothing", () => {
 		plant();
-		service.recallAnswer(SYMBOL, "describe");
-		service.recallAnswer(SYMBOL, "describe");
+		ask(SYMBOL, "describe");
+		ask(SYMBOL, "describe");
 
 		const gaps = service.knowledgeGaps();
 		expect(gaps.rows).toHaveLength(1);
 		expect(gaps.rows[0]).toMatchObject({ symbolId: SYMBOL, askCount: 2, why: "missing" });
 	});
 
+	it("counts nothing on the read itself, and counts through the daemon as the daemon's own write", async () => {
+		plant();
+		service.recallAnswer(SYMBOL, "describe");
+		expect(service.knowledgeGaps().rows).toEqual([]);
+
+		const dispatch = createDispatch(service);
+		await dispatch("recallAnswer", { symbolId: SYMBOL, question: "describe" });
+		await dispatch("recallAnswer", { symbolId: SYMBOL, question: "describe" });
+
+		expect(service.knowledgeGaps().rows[0]).toMatchObject({ symbolId: SYMBOL, askCount: 2, why: "missing" });
+	});
+
 	// A typo asked about forever would otherwise sit in the queue looking like demand.
 	it("does not open a gap for a symbol the index does not hold", () => {
 		plant();
-		service.recallAnswer("lexicon reference a.ref Ghost#", "describe");
+		ask("lexicon reference a.ref Ghost#", "describe");
 
 		expect(service.knowledgeGaps().rows).toEqual([]);
 	});
 
 	it("closes the gap the moment an answer lands", async () => {
 		const [cartFact] = plant();
-		service.recallAnswer(SYMBOL, "describe");
+		ask(SYMBOL, "describe");
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [cartFact as string]);
 
 		expect(service.knowledgeGaps().rows).toEqual([]);
@@ -744,7 +765,7 @@ describe("the gap ledger", () => {
 			],
 			[],
 		);
-		service.recallAnswer(SYMBOL, "describe");
+		ask(SYMBOL, "describe");
 
 		expect(service.knowledgeGaps().rows[0]).toMatchObject({ symbolId: SYMBOL, why: "stale" });
 	});
@@ -955,8 +976,8 @@ describe("the gaps in one file", () => {
 
 	it("counts the demand per row and the total past the limit", () => {
 		plantFiles();
-		service.recallAnswer(IDS.line, "describe");
-		service.recallAnswer(IDS.line, "describe");
+		ask(IDS.line, "describe");
+		ask(IDS.line, "describe");
 		const gaps = service.knowledgeGaps(undefined, "describe", 1, "m.ref");
 
 		expect(gaps.rows.map((row) => [row.name, row.askCount])).toEqual([["Cart", 0]]);

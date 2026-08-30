@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DAEMON_METHODS, type DaemonMethod, type RequestOf, type ResponseOf } from "@nyaa-lexicon/protocol";
-import { createDispatch, daemonHandlers } from "../dispatch";
+import { createDispatch, daemonHandlers, type Gate, gateOf } from "../dispatch";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -35,6 +35,7 @@ const TYPESCRIPT = path.join(ROOT, "providers", "typescript", "src", "main.ts");
 interface Harness {
 	service: LexiconService;
 	handlers: ReturnType<typeof daemonHandlers>;
+	gate: Gate;
 	dispatch: (method: string, params: unknown) => Promise<unknown>;
 	symbol: (name: string, module: string) => string;
 	close: () => void;
@@ -73,6 +74,7 @@ async function openWorkspace(files: Record<string, string>, providers: string[],
 	return {
 		service,
 		handlers: daemonHandlers(service, refactor),
+		gate: gateOf(refactor),
 		dispatch: createDispatch(service, refactor),
 		symbol: (name, module) => {
 			const found = service.findByName(name, module)[0];
@@ -111,7 +113,7 @@ async function ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Pro
 	const args = entry.request.parse(params);
 	expect(args, `${method} request`).toEqual(params);
 
-	const raw: unknown = await harness.handlers[method](args as never);
+	const raw: unknown = await harness.handlers[method].run(args as never, harness.gate);
 	const parsed = entry.response.parse(raw);
 	expect(raw, `${method} answer`).toEqual(parsed);
 

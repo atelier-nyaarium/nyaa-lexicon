@@ -411,6 +411,14 @@ export class LexiconService {
 		return this.knowledge.recallAnswer(...args);
 	}
 
+	demandOf(...args: Parameters<KnowledgeLedger["demandOf"]>): ReturnType<KnowledgeLedger["demandOf"]> {
+		return this.knowledge.demandOf(...args);
+	}
+
+	recordDemand(...args: Parameters<KnowledgeLedger["recordDemand"]>): ReturnType<KnowledgeLedger["recordDemand"]> {
+		return this.knowledge.recordDemand(...args);
+	}
+
 	recallAnswers(...args: Parameters<KnowledgeLedger["recallAnswers"]>): ReturnType<KnowledgeLedger["recallAnswers"]> {
 		return this.knowledge.recallAnswers(...args);
 	}

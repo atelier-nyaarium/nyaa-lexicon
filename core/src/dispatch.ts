@@ -35,6 +35,49 @@ export interface RefactorDeps {
 	transactions: TransactionManager;
 }
 
+/** The workspace gate as a handler sees it. Without a workspace to protect, both run the work as is. */
+export interface Gate {
+	read<T>(work: () => Promise<T> | T): Promise<T>;
+	write<T>(work: () => Promise<T> | T): Promise<T>;
+}
+
+type Effect = "read" | "write" | "staged";
+
+type Run<M extends DaemonMethod> = (params: RequestOf<M>, gate: Gate) => Promise<ResponseOf<M>> | ResponseOf<M>;
+
+declare const handlerBrand: unique symbol;
+
+/** A handler names its effect, and only `read`, `write` and `staged` mint one: a bare function
+ * cannot sit in the table, so no method runs without saying whether it writes. */
+interface Handler<M extends DaemonMethod> {
+	readonly effect: Effect;
+	readonly run: Run<M>;
+	readonly [handlerBrand]: true;
+}
+
+function mint<M extends DaemonMethod>(effect: Effect, run: Run<M>): Handler<M> {
+	return { effect, run } as Handler<M>;
+}
+
+/** Runs under the shared gate: alongside other readers, never inside a write. */
+const read = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("read", run);
+
+/** Runs alone under the exclusive gate. */
+const write = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("write", run);
+
+/** Takes the gate itself, in parts, through the one it is handed: for work that plans outside and writes inside. */
+const staged = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("staged", run);
+
+/** Mutations take the gate; a caller with no gate is a test driving the service directly. */
+export function gateOf(refactor: RefactorDeps | undefined): Gate {
+	return {
+		read: <T>(work: () => Promise<T> | T): Promise<T> =>
+			refactor ? refactor.gate.shared(async () => work()) : Promise.resolve(work()),
+		write: <T>(work: () => Promise<T> | T): Promise<T> =>
+			refactor ? refactor.gate.exclusive(async () => work()) : Promise.resolve(work()),
+	};
+}
+
 ////////////////////////////////
 //  Steps
 
@@ -324,12 +367,6 @@ function refactorInsert(
  * over a stub.
  */
 export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps) {
-	/** Mutations take the gate; a caller with no gate is a test driving the service directly. */
-	const write = <T>(work: () => Promise<T> | T): Promise<T> =>
-		refactor ? refactor.gate.exclusive(async () => work()) : Promise.resolve(work());
-	const read = <T>(work: () => Promise<T> | T): Promise<T> =>
-		refactor ? refactor.gate.shared(async () => work()) : Promise.resolve(work());
-
 	function transactions(): TransactionManager {
 		if (!refactor) throw new Error("this daemon was built without refactor support");
 		return refactor.transactions;
@@ -339,112 +376,139 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 	 * Tier 1: a symbol answer full-parses its tree ahead of the background upgrade, then answers.
 	 *
 	 * The one spelling of the shortcut. A handler that wires the tree by hand instead of through
-	 * here is the drift the tier test fails on.
+	 * here is the drift the tier test fails on. The upgrade writes, so it runs alone before the read.
 	 */
-	const treeFirst = async <T>(symbolId: string, answer: () => Promise<T> | T): Promise<T> => {
-		await service.ensureTreeFor(symbolId);
-		return answer();
-	};
+	const treeFirst = <M extends DaemonMethod>(
+		symbolOf: (params: RequestOf<M>) => string,
+		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
+	): Handler<M> =>
+		staged(async (params, gate) => {
+			await gate.write(() => service.ensureTreeFor(symbolOf(params)));
+			return gate.read(() => answer(params));
+		});
+
+	/** Complete reference facts first: the upgrade is the background pass's own work and runs
+	 * ungated as it does there; only the answer takes the gate. */
+	const upgradedRead = <M extends DaemonMethod>(
+		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
+	): Handler<M> =>
+		staged(async (params, gate) => {
+			await service.upgradeRemaining();
+			return gate.read(() => answer(params));
+		});
 
 	return {
-		findByName: (params) => service.findByName(params.name, params.module),
-		describe: (params) => treeFirst(params.symbolId, () => service.describe(params.symbolId)),
+		findByName: read((params) => service.findByName(params.name, params.module)),
+		describe: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.describe(params.symbolId),
+		),
 		// The four below exist for the editor, which asks by position rather than by name and so
 		// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.
-		declarationOf: (params) => service.declarationOf(params.symbolId),
-		declarationsIn: (params) => service.declarationsIn(params.module),
-		typeHierarchy: (params) => treeFirst(params.symbolId, () => service.typeHierarchy(params.symbolId)),
-		callHierarchy: (params) => treeFirst(params.symbolId, () => service.callHierarchy(params.symbolId)),
-		findReferences: (params) =>
-			treeFirst(params.symbolId, () => service.findReferences(params.symbolId, params.limit, params.within)),
-		resolveImport: (params) => service.resolveImport(params.fromModule, params.specifier),
-		indexStatus: (params) => service.indexStatus(params.concerning),
-		findLiterals: ({ limit, ...query }) => service.findLiterals(query, limit),
-		findComments: ({ limit, ...query }) => service.findComments(query, limit),
-		findDocs: ({ limit, ...query }) => service.findDocs(query, limit),
-		sharedLiterals: (params) => service.sharedLiterals(params.minimumFiles, params.limit),
-		cycles: (params) => service.cycles(params.limit),
-		mostReferenced: (params) => service.mostReferenced(params.limit),
-		hubs: (params) => service.mostReferenced(params.limit),
-		cacheStats: () => service.cacheStats(),
-		searchSymbols: (params) => service.searchSymbols(params.text, params),
-		outlineModule: (params) => service.outline(params.module),
-		fileNotes: (params) => service.fileNotes(params.module),
-		moduleStatus: (params) => service.moduleStatus(params.module),
-		moduleDeclarations: (params) => service.moduleDeclarations(params.module),
-		findImports: (params) => service.findImports(params),
-		overview: () => service.overview(),
-		coChangedWith: (params) => service.coChangedWith(params.module, params.limit),
-		fileHistory: (params) => service.fileHistory(params.module),
-		commitsMentioning: (params) => service.commitsMentioning(params.name, params.limit),
+		declarationOf: read((params) => service.declarationOf(params.symbolId)),
+		declarationsIn: read((params) => service.declarationsIn(params.module)),
+		typeHierarchy: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.typeHierarchy(params.symbolId),
+		),
+		callHierarchy: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.callHierarchy(params.symbolId),
+		),
+		findReferences: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.findReferences(params.symbolId, params.limit, params.within),
+		),
+		resolveImport: read((params) => service.resolveImport(params.fromModule, params.specifier)),
+		indexStatus: read((params) => service.indexStatus(params.concerning)),
+		findLiterals: read(({ limit, ...query }) => service.findLiterals(query, limit)),
+		findComments: read(({ limit, ...query }) => service.findComments(query, limit)),
+		findDocs: read(({ limit, ...query }) => service.findDocs(query, limit)),
+		sharedLiterals: read((params) => service.sharedLiterals(params.minimumFiles, params.limit)),
+		cycles: read((params) => service.cycles(params.limit)),
+		mostReferenced: read((params) => service.mostReferenced(params.limit)),
+		hubs: read((params) => service.mostReferenced(params.limit)),
+		cacheStats: read(() => service.cacheStats()),
+		searchSymbols: read((params) => service.searchSymbols(params.text, params)),
+		outlineModule: read((params) => service.outline(params.module)),
+		fileNotes: read((params) => service.fileNotes(params.module)),
+		moduleStatus: read((params) => service.moduleStatus(params.module)),
+		moduleDeclarations: read((params) => service.moduleDeclarations(params.module)),
+		findImports: read((params) => service.findImports(params)),
+		overview: read(() => service.overview()),
+		coChangedWith: read((params) => service.coChangedWith(params.module, params.limit)),
+		fileHistory: read((params) => service.fileHistory(params.module)),
+		commitsMentioning: read((params) => service.commitsMentioning(params.name, params.limit)),
 		// Tier 1 too: its answer carries the declaring module's references and literals, which
 		// outline facts genuinely lack.
-		factsFor: (params) => treeFirst(params.symbolId, () => service.factsFor(params.symbolId, params.limit)),
-		resolveFacts: (params) => service.resolveFacts(params.factIds),
-		recordAnswer: (params) =>
+		factsFor: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.factsFor(params.symbolId, params.limit),
+		),
+		resolveFacts: read((params) => service.resolveFacts(params.factIds)),
+		recordAnswer: write((params) =>
 			service.recordAnswer(params.symbolId, params.question, params.prose, params.citations, {
 				...(params.model === undefined ? {} : { model: params.model }),
 				...(params.resolvesDoubt === undefined ? {} : { resolvesDoubt: params.resolvesDoubt }),
 				...(params.omitting === undefined ? {} : { omitting: params.omitting }),
 			}),
-		invalidateAnswer: (params) =>
+		),
+		invalidateAnswer: write((params) =>
 			service.invalidateAnswer(params.symbolId, params.reason, params.question, params.by),
-		reaffirmAnswer: (params) =>
+		),
+		reaffirmAnswer: write((params) =>
 			service.reaffirmAnswer(params.symbolId, params.question, {
 				...(params.citations === undefined ? {} : { citations: params.citations }),
 				...(params.model === undefined ? {} : { model: params.model }),
 				...(params.resolvesDoubt === undefined ? {} : { resolvesDoubt: params.resolvesDoubt }),
 			}),
-		recallAnswer: (params) =>
-			params.question === undefined
-				? service.recallAnswers(params.symbolId)
-				: service.recallAnswer(params.symbolId, params.question),
-		knowledgeGaps: (params) => service.knowledgeGaps(params.root, params.question, params.limit, params.module),
-		typeOf: (params) => treeFirst(params.symbolId, () => service.typeOf(params.symbolId)),
-		// Rename planning requires complete reference facts.
+		),
+		// The survey counts nothing. One question's recall is a read, and the demand it found is
+		// counted afterwards as its own write, so the count never rides inside a shared hold.
+		recallAnswer: staged(async (params, gate) => {
+			const { symbolId, question } = params;
+			if (question === undefined) return gate.read(() => service.recallAnswers(symbolId));
+			const recalled = await gate.read(() => service.recallAnswer(symbolId, question));
+			const demand = service.demandOf(symbolId, question, recalled);
+			if (demand !== null) await gate.write(() => service.recordDemand(demand));
+			return recalled;
+		}),
+		knowledgeGaps: read((params) =>
+			service.knowledgeGaps(params.root, params.question, params.limit, params.module),
+		),
+		typeOf: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.typeOf(params.symbolId),
+		),
 		// Read-only, and kept because the editor asks it to decide whether to offer a rename.
-		prepareRename: async (params) => {
-			await service.upgradeRemaining();
-			return read(() => service.prepareRename(params.symbolId, params.newName));
-		},
-		// The edits a rename would make, for a caller that applies them itself. Nothing is written
-		// here, so it takes the shared lock like any other read.
-		renameEdits: async (params) => {
-			await service.upgradeRemaining();
-			return read(() => service.renameEdits(params.symbolId, params.newName));
-		},
-		// Read-only, like prepareRename.
-		planMove: async (params) => {
-			await service.upgradeRemaining();
-			return read(() => service.planMove(params.symbolId, params.toModule));
-		},
-		indexFile: (params) => write(() => service.indexFile(params.module)),
-		symbolSource: (params) => read(() => service.symbolSource(params)),
-		refactorStart: () => write(() => transactions().start()),
-		refactorStatus: () => read(() => transactions().status()),
-		refactorTrack: (params) => write(() => transactions().track(params.module)),
+		prepareRename: upgradedRead((params) => service.prepareRename(params.symbolId, params.newName)),
+		// The edits a rename would make, for a caller that applies them itself.
+		renameEdits: upgradedRead((params) => service.renameEdits(params.symbolId, params.newName)),
+		planMove: upgradedRead((params) => service.planMove(params.symbolId, params.toModule)),
+		indexFile: write((params) => service.indexFile(params.module)),
+		symbolSource: read((params) => service.symbolSource(params)),
+		refactorStart: write(() => transactions().start()),
+		refactorStatus: read(() => transactions().status()),
+		refactorTrack: write((params) => transactions().track(params.module)),
 		// Restoring puts back text the index does not describe, so the facts for those files are
 		// of a version that no longer exists on disk.
-		refactorUndo: () =>
-			write(async () => {
-				const outcome = transactions().undo();
-				for (const module of outcome.modules ?? []) await service.indexFile(module);
-				return outcome;
-			}),
-		refactorRevert: () =>
-			write(async () => {
-				const outcome = transactions().revert();
-				for (const module of outcome.modules) await service.indexFile(module);
-				return outcome;
-			}),
-		refactorCommit: (params) => write(() => transactions().commit(params)),
-		refactorReplace: (params) => refactorReplace(service, transactions(), write, params),
-		refactorInsert: (params) => refactorInsert(service, transactions(), write, params),
-		refactorRename: (params) => refactorRename(service, transactions(), write, params),
-		refactorMove: (params) => refactorMove(service, transactions(), write, params),
-	} satisfies {
-		[M in DaemonMethod]: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>;
-	};
+		refactorUndo: write(async () => {
+			const outcome = transactions().undo();
+			for (const module of outcome.modules ?? []) await service.indexFile(module);
+			return outcome;
+		}),
+		refactorRevert: write(async () => {
+			const outcome = transactions().revert();
+			for (const module of outcome.modules) await service.indexFile(module);
+			return outcome;
+		}),
+		refactorCommit: write((params) => transactions().commit(params)),
+		// A journaled step plans outside the gate and writes inside it, through the gate it is handed.
+		refactorReplace: staged((params, gate) => refactorReplace(service, transactions(), gate.write, params)),
+		refactorInsert: staged((params, gate) => refactorInsert(service, transactions(), gate.write, params)),
+		refactorRename: staged((params, gate) => refactorRename(service, transactions(), gate.write, params)),
+		refactorMove: staged((params, gate) => refactorMove(service, transactions(), gate.write, params)),
+	} satisfies { [M in DaemonMethod]: Handler<M> };
 }
 
 /**
@@ -455,6 +519,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
  */
 export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
 	const handlers = daemonHandlers(service, refactor);
+	const gate = gateOf(refactor);
 	return async (method: string, params: unknown): Promise<unknown> => {
 		if (!isDaemonMethod(method)) {
 			// Names the build, since the likeliest cause is a client and daemon on different ones.
@@ -471,7 +536,14 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 			throw new Error(`${method} refused: ${worded.length === 0 ? String(error) : worded.join("; ")}`);
 		}
 		// Looked up by a runtime key, the handler's parameter is the intersection of every request.
-		const answer = await handlers[method](args as never);
+		const handler: { effect: Effect; run: (params: never, gate: Gate) => unknown } = handlers[method];
+		const run = () => handler.run(args as never, gate);
+		const answer =
+			handler.effect === "read"
+				? await gate.read(run)
+				: handler.effect === "write"
+					? await gate.write(run)
+					: await run();
 		return DAEMON_METHODS[method].response.parse(answer);
 	};
 }

@@ -46,6 +46,12 @@ export type LedgerInvalidateOutcome = Omit<InvalidateOutcome, "refused"> & { ref
 //  Constants
 
 /** What a walk found beneath one answer. Mutated in place so a cycle reads the partial result. */
+/** One ask that found nothing, or nothing sound, at an address: what a recall says and a gated write counts. */
+export interface Demand {
+	symbolId: string;
+	question: QuestionClass;
+}
+
 interface ShakyResult {
 	stale: boolean;
 	doubted: boolean;
@@ -396,27 +402,35 @@ export class KnowledgeLedger {
 	 * a lookup. This is the mechanical invalidation path `docs/knowledge-layer.md` puts first, and
 	 * the whole reason a fact id is content rather than a row number.
 	 *
-	 * A miss and a stale hit both count a gap, since both are demand for writing work. A fresh hit
-	 * counts nothing: the ledger measures what is missing, not what is popular.
+	 * Reads only. What the recall says about demand is `demandOf`, and recording it is
+	 * `recordDemand`: a write the daemon runs under its gate after the read, and a read-only face
+	 * never runs.
 	 */
 	recallAnswer(symbolId: string, question: QuestionClass): RecalledAnswer | null {
 		const answer = this.store.answer(symbolId, question);
-		if (answer === null) {
-			this.store.recordGap(symbolId, question, Date.now());
-			return null;
-		}
-		const recalled = this.staleness(answer);
-		// A doubted answer counts a gap on every recall too: each reader who hits the warning is
-		// renewed demand for someone to address it.
+		return answer === null ? null : this.staleness(answer);
+	}
+
+	/**
+	 * A miss and a stale, shaky or doubted hit are demand for writing work; a fresh hit is none.
+	 * The ledger measures what is missing, not what is popular.
+	 */
+	demandOf(symbolId: string, question: QuestionClass, recalled: RecalledAnswer | null): Demand | null {
 		if (
+			recalled === null ||
 			recalled.stale.length > 0 ||
 			recalled.inheritedStale.length > 0 ||
 			recalled.doubtedUpstream.length > 0 ||
 			recalled.answer.doubt !== undefined
 		) {
-			this.store.recordGap(symbolId, question, Date.now());
+			return { symbolId, question };
 		}
-		return recalled;
+		return null;
+	}
+
+	/** Counts one ask under the subject the address claims, which is nothing for a typo. */
+	recordDemand(demand: Demand): void {
+		this.store.recordGap(demand.symbolId, demand.question, Date.now());
 	}
 
 	/** Every answer about one symbol, each with its own staleness. Counts no gaps: this is a survey. */
