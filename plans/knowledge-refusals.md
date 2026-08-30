@@ -209,6 +209,13 @@ The residue in Verification is planted at one inline literal per shape and watch
 
 Decided by the owner; see Question 9.
 
+✅ Shipped: the owner, the journaled rebind and its reversals, the digest, the upgrade and the
+surface (2fc8701, after two alignment audits and two red teams); every daemon handler declaring
+its effect, with recall demand counted as the daemon's own write (b64d7d5, the architecture
+pass, red-teamed); the documentation, the walker's stat-time race and this record in the commit
+that carries this line. No version bump. The end-to-end refactor tests wait for Phase 0, the
+sweep tests for Phase 4, as the Tests paragraphs say.
+
 **What knowledge is about.** A durable logical declaration, called a subject. A position is where
 its evidence sits. A symbol id is its address, durable within a module and re-minted on a move or
 a rename. Declaration text is an observation twins can share. A fact set is grounding at one
@@ -1012,7 +1019,8 @@ Collected during the overnight knowledge run, the review of its patches, and the
   own fix: moving the rebind into `completeStep("reindexed")` moved it out from behind the
   `fullyReindexed` guard today's migration sits behind, so a step whose destination failed to
   reindex would have committed an address that resolves to nothing. The journal gains a `rebound`
-  phase and pending entries instead. The rest were shapes left to prose: a scalar cursor key for
+  phase and pending entries instead. (Built without that phase: the executor applies the rebind
+  once the files are written, and the step journals what moved; see the phase's Bug Classes.) The rest were shapes left to prose: a scalar cursor key for
   a composite order, a one-directional `CHECK`, two fact id signatures, and one wrong reason for
   a right conclusion about parse failures. Two blocker claims were the auditors' misreadings and
   the plan's text settled both. Stopped here: the synthesis judged a third lap worth less than
@@ -1026,3 +1034,19 @@ Collected during the overnight knowledge run, the review of its patches, and the
   residue test, which is the gate working, though its message names the owner file and not the
   method (`positionAt`) that should be called instead. The catalog itself went cleanly; the
   brand was the one design move the phase did not plan and should have.
+- Building the identity phase: the Write tool put a raw NUL where an escaped separator was meant,
+  in `mintSubjectId` and the digest, and the first scan called the files clean because grep goes
+  silent on a file it thinks binary; an auditor was right and was dismissed for a round. The
+  rebind reversal was patched three times before `TransactionManager.rebind` journaled what
+  moved (the phase's Bug Classes entry). Six test files hand-roll a `ProviderSupervisor` fake, so
+  the indexer's first call to `declares` broke comment indexing at runtime and not at the type
+  level; the boundary then moved into the supervisor, which is where it belonged. The step plan is
+  a JSON blob in `refactor_steps.plan` that `appliedOf` validates by hand. The ledger stamps
+  `Date.now` while the store, subjects and the journal take a clock. `restoreKnowledge` decides a
+  salvaged row's subject three ways. `comment-attach-mutants.test.ts` writes into `core/src` and
+  raced the residue sweeps until the walker tolerated a vanished path; the writer should still
+  move to a temp copy. The protocol table's `mutates` flag means safe to retry and reads as
+  "writes", which nearly got it cross-checked against the handler effects. The MCP renderer puts
+  ids into markdown tables and code spans with no escaping for a pipe or a backtick, a class older
+  than this phase. The cycle's step text carries the phase as it read when the cycle started, not
+  as the file reads after reconciliation; auditors were pointed at the file each time.

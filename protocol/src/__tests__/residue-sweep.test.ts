@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codeOnly, readSwept, sourceFiles } from "../residue.js";
@@ -24,6 +24,20 @@ describe("sweeping a tree that another test is writing into", () => {
 
 			expect(readSwept(doomed)).toBeNull();
 			expect(listed.map((file) => readSwept(file)).filter((source) => source !== null)).toHaveLength(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// A dangling link is listed and cannot be stat'ed, which is the shape of a file removed in between.
+	it("skips a path that vanished between the listing and its stat", () => {
+		const root = mkdtempSync(join(tmpdir(), "residue-sweep-"));
+		try {
+			mkdirSync(join(root, "src"));
+			writeFileSync(join(root, "src", "kept.ts"), "export const a = 1;\n");
+			symlinkSync(join(root, "src", "gone.mutant-0.ts"), join(root, "src", "dangling.ts"));
+
+			expect(sourceFiles(root, []).map((file) => file.split("/").pop())).toEqual(["kept.ts"]);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

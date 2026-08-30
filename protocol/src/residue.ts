@@ -19,7 +19,10 @@ export function sourceFiles(dir: string, skip: Iterable<string>): string[] {
 	}
 	for (const entry of entries) {
 		const full = join(dir, entry);
-		if (statSync(full).isDirectory()) {
+		// Listing and stat are two moments, as with the read below: a path gone between them holds no violation.
+		const stat = statSync(full, { throwIfNoEntry: false });
+		if (stat === undefined) continue;
+		if (stat.isDirectory()) {
 			if (skipped.has(entry)) continue;
 			found.push(...sourceFiles(full, skipped));
 			continue;

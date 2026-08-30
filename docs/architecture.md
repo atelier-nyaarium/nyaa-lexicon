@@ -78,7 +78,8 @@ Two rules hold the design together:
 - **The index is always derivable.** A schema mismatch or an unreadable file is a rebuild, never
   data loss, so no migration path has to be carried forever. The one exception is the knowledge
   layer: recorded answers cannot be regenerated from source, so they are salvaged across a rebuild
-  and their citations heal on their own, because unchanged code mints identical fact ids.
+  with their subjects, and their citations heal on their own, because unchanged code mints
+  identical fact ids. A store written before subjects is re-keyed in place on first open.
 
 ## Diagnostics
 
@@ -166,7 +167,7 @@ answer.
 
 ## Identity
 
-Two id grammars, each with exactly one owner.
+Three id grammars, each with exactly one owner.
 
 **Symbol ids** are SCIP-shaped: scheme, module, descriptors. Workspace-relative modules rather than
 package-and-version, because a monorepo has no useful package identity. One module composes,
@@ -178,6 +179,11 @@ Identity IS content, so the digest covers every field including position. That m
 id and asking whether it changed the same operation, and it makes a citation that stops resolving
 exactly a fact that moved. The cost is stated rather than hidden: a fact that merely moved gets a
 new id.
+
+**Subject ids** name what knowledge is about: an opaque identity minted once from a declaration's
+first address and the clock, whose current address is a symbol id. Answers and gaps key by it, so
+a move or a rename rebinds the address and no row changes key. `core/src/subjects.ts` owns the
+table and every transition; `docs/knowledge-layer.md` has the rules.
 
 ## Cycles
 
@@ -200,8 +206,11 @@ a multi-file change.
 
 Acquiring the gate is the linearization point. A step takes its number, rechecks its hashes and
 writes inside one hold, so two callers racing on the same file cannot both conclude their
-preconditions still hold. Taking it is opt-in per call site, which was forgotten twice, so a
-residue test now fails the build when a writing dispatch case sits outside it.
+preconditions still hold. Every daemon handler declares its effect, `read`, `write` or `staged`,
+and only those three constructors mint a handler, so the dispatcher takes the gate by tag and a
+bare function cannot sit in the table; a residue pins by name the few methods that take the gate
+in parts, since a handler handed the gate may ignore it. A recall is a read, and the demand it
+found is counted afterwards as the daemon's own write.
 
 Nothing acquires the gate twice. Whatever a held operation calls runs already held, which is why
 the service methods do not take it defensively.
@@ -262,7 +271,8 @@ because a relocated declaration whose importers still point at the old module do
 
 The target is created when absent, journaled as having not existed, so undo deletes it rather than
 leaving an empty file behind. Reindexing puts the target first, so everything else rebinds against
-a declaration that already exists in its new home.
+a declaration that already exists in its new home. Recorded knowledge follows the same way a
+rename's does: the address map is journaled with the step and applied once the files are written.
 
 Whether the repair actually landed is asked of the reindexed facts rather than of the edits: a
 specifier can be well formed and point nowhere, and that shows up as an importer whose reference no
@@ -279,9 +289,10 @@ text rewrite would drop.
 The first is recorded knowledge. A symbol id embeds its name, and a member's id embeds its
 container's, so renaming a class re-mints its methods and their parameters too. `renameIdMap` builds
 the whole old-to-new mapping from the id grammar before anything is written, since afterwards the
-old ids resolve to nothing. Answers and gaps move across it. An answer already written about the
-destination is kept, because it describes the code as it stands and replacing it would be a silent
-downgrade.
+old ids resolve to nothing. The map is journaled with the step; once the files are written, the
+transaction manager rebinds each subject to its new address and records what moved, so undo and
+recovery put it back. A subject already at a destination stays, because it describes the code as
+it stands and replacing it would be a silent downgrade.
 
 The second is files that never change. A module calling a renamed class's METHOD contains no
 occurrence of the class name, so it gets no edit, yet its stored references point at ids that are

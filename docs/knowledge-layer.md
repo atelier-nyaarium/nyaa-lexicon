@@ -81,21 +81,39 @@ the incumbent's live citations or explaining the omission.
 Re-affirming is the heal: the same prose re-grounded on current ids in one call, which retires the
 old id so anything citing it heals the same way, leaves first.
 
-## When a symbol's id changes
+## Knowledge is about a subject
 
 A symbol id embeds the symbol's name and its module, and a member's id embeds its container's, so
 renaming a class or moving it to another file re-mints its whole subtree: its methods, their
 parameters, everything declared inside it. Nothing about the code changed meaning, but every id
 written about it stops resolving.
 
-Answers and gaps are therefore MIGRATED across those id changes, not left to rot. A rename or move
-builds the old-to-new mapping from the id grammar before it writes anything, since afterwards the
-old ids name nothing, and carries the rows over. Prose survives; its citations go stale on their
-own, which is correct, because the facts underneath really did change identity.
+Knowledge is therefore not keyed by the id. It is keyed by a subject: an opaque identity minted
+the first time anything is written about a declaration, whose current address is the symbol id.
+`core/src/subjects.ts` owns the table and every transition. The store reads through views that
+join a row to its subject and hand back the current address, with the address the row was
+recorded at beside it, and recall carries the subject: where the answer was recorded, the
+evidence that brought it to this address, and since when. A row's key never changes: a trigger
+refuses the update, no merge exists, and identity moves only by rebinding the address.
 
-An answer already written about the destination id is kept rather than overwritten. It describes
-the code as it stands, and replacing it with the incoming symbol's would be a silent downgrade of
-the more current of the two.
+A write claims through one owner method: where the address resolves to a declaration it mints a
+subject or restores the orphan kept there; where it does not, an orphan is kept as it is, and an
+address holding neither is refused with the catalog's diagnosis. A recall is a read; the demand
+it found is counted afterwards as the daemon's own write.
+
+A rename or move through a refactor step builds the old-to-new address map from the id grammar
+before it writes anything and journals it with the step. Once the files are written and the
+reindex has been attempted, whatever it returned, the transaction manager rebinds the subjects
+and records exactly what moved, each with the state it replaced, in the same transaction, so
+recovery, undo and revert put back that and nothing else. An address that already holds a subject
+is never a rebind target: two subjects never merge, and the one already there keeps describing
+the code as it stands. Prose survives a move; its citations go stale on their own, which is
+correct, because the facts underneath really did change identity.
+
+An address that stops resolving keeps its subject, bound and unresolved, until a write at the kept
+address restores it. Nothing orphans a subject on its own yet: the sweep that judges a vanished
+address by pattern digest, dates orphans and deletes them is not built, and `unresolved` lists
+what it would judge.
 
 ## Rules
 

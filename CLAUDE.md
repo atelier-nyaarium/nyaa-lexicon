@@ -178,7 +178,14 @@ Ordered by how much they prove:
   quoted name itself; the fix is a new field on the provider contract.
 - **Never write a control byte, em dash, smart quote or zero-width character into source.** Enforced
   over every tracked file. A raw NUL is legal to tsc, invisible in an editor, identical at runtime,
-  and makes git call the file binary and grep return nothing for any pattern in it.
+  and makes git call the file binary and grep return nothing for any pattern in it. Scan with
+  `grep -a`: without it the file that has the byte is exactly the file grep goes silent on, and a
+  "no match" then read as clean while an auditor was right.
+- **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
+  mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
+  by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore
+  it; a residue pins those methods by name, and adding one is a reviewed edit. A read never
+  counts demand: the recall handler counts it afterwards as the daemon's own write.
 - **A test asserting current behavior is not a test.** After a fix, tests that encoded the bug will
   fail; that is the fix working.
 - **A conformance `STALL` is the machine or the run, never the provider.** A timeout or a dead
@@ -192,6 +199,11 @@ Ordered by how much they prove:
   and cost a night: two agents concluded a queue was exhausted and one minted demand rows nobody
   could answer. Every knowledge refusal is a constructor in `core/src/refusals.ts`; a raw string
   in a reason slot is a type error in core and a residue refuses the cast.
+- **Knowledge is keyed by a subject, never by a symbol id.** `core/src/subjects.ts` owns the table
+  and every transition; a row's key never changes (a trigger refuses the update), and identity moves
+  only by rebinding the address. A refactor step journals what its rebind moved, with the state it
+  replaced, in the same transaction as the move, and every reversal restores exactly that.
+  Reversal inferred from a subject's current state was patched twice before that design landed.
 
 ## Blind test corpora
 
