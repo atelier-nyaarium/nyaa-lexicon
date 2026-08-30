@@ -601,26 +601,37 @@ built server is driven by hand before the commit.
 
 ## Phase 2 - The shortlist matches names the grammar recognises
 
-**What:** the shortlist promotes declarations whose name appears in the bad id by substring, so a
-name like `at` or `to` is promoted by any id containing those letters. The grammar owns the
-spelling, so the ranking borrows the grammar's own parse.
+**What:** the shortlist promoted declarations whose name appeared in the bad id by substring, so a
+name like `at` or `to` was promoted by any id containing those letters, and a name like `ref` by
+every id whose language or module field held it. The grammar owns the spelling, so the ranking
+now borrows the grammar's own parse.
 
-**The partial parse.** `parseDescriptors` keeps its results in a local and every failure path
-discards them, so a malformed id yields nothing today. The grammar gains `parseSymbolIdPrefix`,
-returning `{ descriptors, failure }`, the descriptors parsed before the failure and the failure
-itself, since the existing result type's failure arm carries no payload; it is exported from the
-protocol barrel like its neighbours, or core cannot reach it, and `parseSymbolIdResult` is
-unchanged. The ranking matches declaration names against those descriptor names. Only when zero
-descriptors parse does it fall back to matching `quoteName(name)` as a whole token in the tail,
-bounded by structural characters. Two span kinds are skipped as units there: a `(...)`
-disambiguator, and a backtick-quoted name, which `quoteName` produces for any name carrying a
-structural character and whose interior can hold a bare declaration name such as `to`.
+**The partial parse.** `parseDescriptors` kept its results in a local and every failure path
+discarded them, so a malformed id yielded nothing. It now fills a caller's array and, on a failure,
+rewinds to the mark it set at the failing descriptor and reads the rest through the cursor, per
+the parsing law; `readOccurrence` no longer re-marks at its bracket, so a failure there brackets
+the whole descriptor. `parseSymbolIdResult` is unchanged in what it answers. The grammar gains `parseSymbolIdPrefix`, returning `{ descriptors, failure,
+rest }`: the descriptors parsed before the failure, the failure itself, and the descriptor text
+from the failing descriptor on, empty when everything parsed or the head failed. It is exported
+from the protocol barrel like its neighbours, or core cannot reach it.
 
-**Tests:** plant `at` and `Total`; a bad id naming `Total` lists `Total` first and does not promote
-`at`, and one naming `at` still finds it. Plant `to` and a bad id whose disambiguator is `to`: not
-promoted. Plant a name that quotes, such as one carrying a dot: found. A bad id missing only its
-terminator: the descriptors before the terminator are parsed and the right declaration leads. An
-id that fails at its first descriptor: the fallback runs and still refuses `(to)`.
+**The matcher.** `spellsName(symbolId)` in the grammar returns a predicate over declaration
+names: a name is spelled when a parsed descriptor carries it or the unparsed rest holds it as a
+whole token. The rest is read through the cursor, per the parsing law, and two span kinds are one
+unit each: a `(...)` span, whether a disambiguator or a parameter, since nothing parsed can tell
+them apart, and a backtick-quoted name, whose interior can hold a bare declaration name such as
+`to`; structural characters bound every other token. Names compare NFC-normalized, as the composer
+writes them. The ranking in `diagnoseSubject` sorts the declarations the id spells first and keeps
+store order among the rest. A descriptor that parsed and text that did not are matched together
+rather than the latter only when nothing parsed, so `Cart#Total` promotes both.
+
+**Tests:** at the grammar, a prefix keeps what parsed and the text from the failing descriptor on;
+a whole id and a local leave nothing over; a failing head parses nothing. `Total` spells `Total`
+and not `at`, and `at` still spells `at`; `Cart(to)#x` spells `Cart` and `x` and not `to`, and
+`#(to)` spells nothing; a quoted `a.b` is found and a quoted `a.to` does not spell `to`;
+`Cart#Total` spells both. At the service, `at`, `Cart` and `Total` planted in that order: a bad id
+naming `Total` lists `Total` first and leaves `at` in store order, one naming `at` leads with it,
+and `Cart#Total` leads with `Cart` then `Total`.
 
 ## Phase 3 - The gap header is told whether it filtered
 

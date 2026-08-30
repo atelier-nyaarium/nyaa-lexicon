@@ -297,6 +297,35 @@ describe("every refusal is a named constructor", () => {
 		expect(service.recallAnswer(unminted, "describe")).toBeNull();
 	});
 
+	it("unmintedId: the shortlist leads with the names the bad id spells, not the ones it contains", async () => {
+		const named = (symbolId: string, name: string) => ({
+			symbolId,
+			kind: "class" as const,
+			name,
+			range: at(0),
+			selectionRange: at(0),
+			visibility: "public" as const,
+		});
+		// `at` sits inside `Cart`, and `ref` inside every id's language and module fields.
+		const AT = "lexicon reference a.ref at#";
+		const TOTAL = "lexicon reference a.ref Total#";
+		const REF = "lexicon reference a.ref ref#";
+		store.replaceFile(
+			"a.ref",
+			"h1",
+			[named(AT, "at"), named(SYMBOL, "Cart"), named(TOTAL, "Total"), named(REF, "ref")],
+			[],
+			[],
+			[],
+		);
+		const shortlist = (bad: string) => service.diagnoseSubject(`lexicon reference a.ref ${bad}`).candidates;
+
+		expect(shortlist("Cart")).toEqual([SYMBOL, AT, TOTAL, REF]);
+		expect(shortlist("Total")).toEqual([TOTAL, AT, SYMBOL, REF]);
+		expect(shortlist("at")).toEqual([AT, SYMBOL, TOTAL, REF]);
+		expect(shortlist("Cart#Total")).toEqual([SYMBOL, TOTAL, AT, REF]);
+	});
+
 	it("unmintedId: an indexed module holding no declarations is still unminted, not unknown", async () => {
 		const [declaration] = plant();
 		store.replaceFile("empty.ref", "h1", [], [], [], []);

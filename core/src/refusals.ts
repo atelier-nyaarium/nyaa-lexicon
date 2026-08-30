@@ -2,7 +2,7 @@
 // instead; the ledger and the checker call in and compose none: the brand refuses a raw string
 // and a residue refuses the cast.
 
-import { decodeModuleField, FACT_SCHEME, isLocalSymbol, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
+import { decodeModuleField, FACT_SCHEME, isLocalSymbol, parseSymbolIdResult, spellsName } from "@nyaa-lexicon/protocol";
 import { candidatesFor } from "./candidates.js";
 import type { IndexStore } from "./store.js";
 
@@ -241,8 +241,9 @@ export function diagnoseSubject(symbolId: string, store: IndexStore): SubjectDia
 	// An indexed module is unminted territory even when it holds nothing; an unindexed one is unknown.
 	const neighbours = module !== null && store.depthOf(module) !== null ? store.declarationsIn(module) : null;
 	if (module !== null && neighbours !== null) {
-		// The name the author typed is somewhere in the bad id, so declarations carrying it lead.
-		const named = (declaration: { name: string }) => Number(symbolId.includes(declaration.name));
+		// Declarations the bad id spells lead: a parsed descriptor, or a whole token of the unparsed rest.
+		const spells = spellsName(symbolId);
+		const named = (declaration: { name: string }) => Number(spells(declaration.name));
 		const shown = [...neighbours]
 			.sort((a, b) => named(b) - named(a))
 			.slice(0, NEIGHBOURS_SHOWN)

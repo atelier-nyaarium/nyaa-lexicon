@@ -10,11 +10,13 @@ import {
 	normalizeModulePath,
 	ownerOf,
 	parseSymbolId,
+	parseSymbolIdPrefix,
 	parseSymbolIdResult,
 	quoteName,
 	rebaseSymbolId,
 	type SymbolId,
 	sameNameAndKind,
+	spellsName,
 } from "../symbolId";
 
 ////////////////////////////////
@@ -743,5 +745,80 @@ describe("re-minting a subtree when its container is renamed or its module moves
 		expect(isWithin(addQuantity, cartClass)).toBe(true);
 		expect(isWithin(cartClass, cartClass)).toBe(true);
 		expect(isWithin(cartClass, addMethod)).toBe(false);
+	});
+});
+
+describe("what a malformed id still spells", () => {
+	const head = "lexicon typescript src/cart.ts";
+
+	it("keeps the descriptors parsed before the failure and the text from the failing one on", () => {
+		const prefix = parseSymbolIdPrefix(`${head} Cart#add(2).Total`);
+
+		expect(prefix.descriptors.map((d) => d.name)).toEqual(["Cart", "add"]);
+		expect(prefix.failure?.message).toContain("expected a descriptor suffix");
+		expect(prefix.rest).toBe("Total");
+	});
+
+	it("starts the rest at the descriptor, not at the occurrence bracket the failure sits in", () => {
+		const prefix = parseSymbolIdPrefix(`${head} Cart#add[x].`);
+
+		expect(prefix.descriptors.map((d) => d.name)).toEqual(["Cart"]);
+		expect(prefix.failure?.message).toContain("occurrence");
+		expect(prefix.rest).toBe("add[x].");
+		expect(prefix.failure?.context).toContain("[add[]x].");
+	});
+
+	it("parses a whole id and a local with no failure and nothing left over", () => {
+		const whole = parseSymbolIdPrefix(composeSymbolId(CART));
+		expect(whole.descriptors).toEqual(CART.descriptors);
+		expect(whole).toMatchObject({ failure: null, rest: "" });
+
+		const local = parseSymbolIdPrefix(`${head} local3`);
+		expect(local).toEqual({ descriptors: [], failure: null, rest: "" });
+	});
+
+	it("parses nothing past a head that fails, and says why", () => {
+		const prefix = parseSymbolIdPrefix("lexicon typescript /abs/cart.ts Cart#");
+
+		expect(prefix.descriptors).toEqual([]);
+		expect(prefix.failure).not.toBeNull();
+		expect(prefix.rest).toBe("");
+	});
+
+	it("matches a name by a whole token, so `at` is not spelled by `Total`", () => {
+		const spells = spellsName(`${head} Total`);
+
+		expect(spells("Total")).toBe(true);
+		expect(spells("at")).toBe(false);
+		expect(spellsName(`${head} at`)("at")).toBe(true);
+	});
+
+	it("takes a disambiguator as a unit, parsed or not", () => {
+		expect(spellsName(`${head} Cart(to)#x`)("to")).toBe(false);
+		expect(spellsName(`${head} Cart(to)#x`)("Cart")).toBe(true);
+		expect(spellsName(`${head} Cart(to)#x`)("x")).toBe(true);
+		expect(spellsName(`${head} #(to)`)("to")).toBe(false);
+	});
+
+	it("reads a quoted name whole, so its interior spells nothing on its own", () => {
+		expect(spellsName(`${head} ${quoteName("a.b")}`)("a.b")).toBe(true);
+		expect(spellsName(`${head} ${quoteName("a.to")}`)("to")).toBe(false);
+		expect(spellsName(`${head} ${quoteName("a.to")}`)("a.to")).toBe(true);
+	});
+
+	it("spells the names of parsed descriptors and of the unparsed rest together", () => {
+		const spells = spellsName(`${head} Cart#Total`);
+
+		expect(spells("Cart")).toBe(true);
+		expect(spells("Total")).toBe(true);
+		expect(spells("art")).toBe(false);
+	});
+
+	it("compares spellings NFC-normalized, so a decomposed id spells a composed name and back", () => {
+		const composed = "café";
+		const decomposed = "café";
+
+		expect(spellsName(`${head} ${decomposed}`)(composed)).toBe(true);
+		expect(spellsName(`${head} ${composed}#`)(decomposed)).toBe(true);
 	});
 });

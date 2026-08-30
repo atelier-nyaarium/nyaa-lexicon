@@ -40,6 +40,27 @@ export interface SymbolId {
 	local?: number;
 }
 
+/** What a malformed id still spells. */
+export interface SymbolIdPrefix {
+	/** The descriptors parsed before the failure; every descriptor when there is none. */
+	descriptors: Descriptor[];
+	failure: ParseFailure | null;
+	/** The descriptor text from the failing descriptor on; empty when everything parsed. */
+	rest: string;
+}
+
+interface IdHead {
+	language: string;
+	module: string;
+	local?: number;
+}
+
+interface DescriptorFailure {
+	failure: ParseFailure;
+	/** The text from the failing descriptor on. */
+	rest: string;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -223,7 +244,6 @@ function readName(c: Cursor): string | null {
 /** `[n]` after a name or its parens, or nothing; the bracket opening a type parameter never sits there. */
 function readOccurrence(c: Cursor): ParseResult<number | undefined> {
 	if (c.peek() !== "[") return ok(undefined);
-	c.mark();
 	c.next();
 	const digits = c.takeWhile((ch) => ch >= "0" && ch <= "9");
 	if (digits === "") return err(c.fail("expected an occurrence ordinal"));
@@ -238,9 +258,13 @@ function readOccurrence(c: Cursor): ParseResult<number | undefined> {
  * Token stage collapsed on purpose, per docs/parsing.md rule 2: the grammar is non-recursive and
  * the input is machine-generated, so a token type would carry no information the caller can use.
  */
-function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
-	const out: Descriptor[] = [];
+function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | null {
 	let guard = -1;
+	// The mark is the failing descriptor's start, so rewinding to it reads the rest through the cursor.
+	const failed = (failure: ParseFailure): DescriptorFailure => {
+		c.resetToMark();
+		return { failure, rest: c.takeWhile(() => true) };
+	};
 
 	while (c.good()) {
 		// Asserted rather than reasoned about, since a future branch could stall the loop.
@@ -254,13 +278,14 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 			const close = ch === "(" ? ")" : "]";
 			c.next();
 			const name = readName(c);
-			if (name === null) return err(c.fail("expected a parameter name"));
-			if (ch === "[" && DIGITS_RE.test(name))
-				return err(c.fail("a type parameter cannot be named by digits alone"));
-			if (c.peek() !== close) return err(c.fail(`expected ${close} to close the parameter`));
+			if (name === null) return failed(c.fail("expected a parameter name"));
+			if (ch === "[" && DIGITS_RE.test(name)) {
+				return failed(c.fail("a type parameter cannot be named by digits alone"));
+			}
+			if (c.peek() !== close) return failed(c.fail(`expected ${close} to close the parameter`));
 			c.next();
 			const occurrence = readOccurrence(c);
-			if (!occurrence.ok) return occurrence;
+			if (!occurrence.ok) return failed(occurrence.failure);
 			out.push({
 				kind: ch === "(" ? "parameter" : "typeParameter",
 				name,
@@ -270,17 +295,17 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 		}
 
 		const name = readName(c);
-		if (name === null) return err(c.fail("expected a descriptor name"));
+		if (name === null) return failed(c.fail("expected a descriptor name"));
 
 		// The open paren is what separates a method from a term of the same name.
 		if (c.peek() === "(") {
 			c.next();
 			// Charset-restricted rather than balanced, per parsing law rule 4.
 			const disambiguator = c.takeWhile((x) => DISAMBIGUATOR_RE.test(x));
-			if (c.peek() !== ")") return err(c.fail("expected ) to close the disambiguator"));
+			if (c.peek() !== ")") return failed(c.fail("expected ) to close the disambiguator"));
 			c.next();
 			const occurrence = readOccurrence(c);
-			if (!occurrence.ok) return occurrence;
+			if (!occurrence.ok) return failed(occurrence.failure);
 			const carried = occurrence.value === undefined ? {} : { occurrence: occurrence.value };
 
 			// A dot after the parens is the method form, so it cannot be read as a term suffix.
@@ -291,24 +316,30 @@ function parseDescriptors(c: Cursor): ParseResult<Descriptor[]> {
 			}
 
 			const kind = SUFFIX_KIND.get(c.peek());
-			if (kind === undefined) return err(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+			if (kind === undefined) {
+				return failed(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+			}
 			// Empty parens stay method-only, or one symbol would have two spellings.
-			if (disambiguator === "") return err(c.fail("only a method descriptor may carry an empty disambiguator"));
+			if (disambiguator === "") {
+				return failed(c.fail("only a method descriptor may carry an empty disambiguator"));
+			}
 			c.next();
 			out.push({ kind, name, disambiguator, ...carried });
 			continue;
 		}
 
 		const occurrence = readOccurrence(c);
-		if (!occurrence.ok) return occurrence;
+		if (!occurrence.ok) return failed(occurrence.failure);
 		const kind = SUFFIX_KIND.get(c.peek());
-		if (kind === undefined) return err(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+		if (kind === undefined) {
+			return failed(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+		}
 		c.next();
 		out.push({ kind, name, ...(occurrence.value === undefined ? {} : { occurrence: occurrence.value }) });
 	}
 
-	if (out.length === 0) return err(c.fail("a symbol needs at least one descriptor"));
-	return ok(out);
+	if (out.length === 0) return { failure: c.fail("a symbol needs at least one descriptor"), rest: "" };
+	return null;
 }
 
 /** Leaves the delimiter unconsumed, so a failure brackets the field and not the space after it. */
@@ -325,10 +356,8 @@ export function expectIdSpace(c: Cursor, after: string): ParseFailure | null {
 	return null;
 }
 
-/** Canonical form, carrying a diagnosis. `parseSymbolId` is the null-returning shim over it. */
-export function parseSymbolIdResult(text: string): ParseResult<SymbolId> {
-	const c = new Cursor(text);
-
+/** Scheme, language, module and the local form; leaves the cursor at the first descriptor. */
+function parseHead(c: Cursor, text: string): ParseResult<IdHead> {
 	const scheme = readIdField(c, "the scheme");
 	if (!scheme.ok) return scheme;
 	if (scheme.value !== SYMBOL_SCHEME) return err(c.fail(`expected scheme ${SYMBOL_SCHEME}`));
@@ -358,13 +387,71 @@ export function parseSymbolIdResult(text: string): ParseResult<SymbolId> {
 			const digits = localMatch[1] as string;
 			const local = safeDigits(digits);
 			if (local === null) return err(c.fail(`local ordinal is not a safe integer: ${digits}`));
-			return ok({ language: language.value, module, descriptors: [], local });
+			return ok({ language: language.value, module, local });
 		}
 	}
 
-	const descriptors = parseDescriptors(c);
-	if (!descriptors.ok) return descriptors;
-	return ok({ language: language.value, module, descriptors: descriptors.value });
+	return ok({ language: language.value, module });
+}
+
+/** Canonical form, carrying a diagnosis. `parseSymbolId` is the null-returning shim over it. */
+export function parseSymbolIdResult(text: string): ParseResult<SymbolId> {
+	const c = new Cursor(text);
+	const head = parseHead(c, text);
+	if (!head.ok) return head;
+	const { language, module, local } = head.value;
+	if (local !== undefined) return ok({ language, module, descriptors: [], local });
+
+	const descriptors: Descriptor[] = [];
+	const failed = parseDescriptors(c, descriptors);
+	if (failed !== null) return err(failed.failure);
+	return ok({ language, module, descriptors });
+}
+
+/** The descriptors a malformed id parsed before it failed, and the text it did not. */
+export function parseSymbolIdPrefix(text: string): SymbolIdPrefix {
+	const c = new Cursor(text);
+	const head = parseHead(c, text);
+	if (!head.ok) return { descriptors: [], failure: head.failure, rest: "" };
+	if (head.value.local !== undefined) return { descriptors: [], failure: null, rest: "" };
+
+	const descriptors: Descriptor[] = [];
+	const failed = parseDescriptors(c, descriptors);
+	if (failed === null) return { descriptors, failure: null, rest: "" };
+	return { descriptors, ...failed };
+}
+
+/** Whole tokens of unparsed descriptor text; a quoted name and a `(...)` span are one unit each. */
+function tailTokens(rest: string): string[] {
+	const c = new Cursor(rest);
+	const tokens: string[] = [];
+	while (c.good()) {
+		const ch = c.peek();
+		if (ch === "`") {
+			const quoted = readName(c);
+			if (quoted !== null) tokens.push(quoted);
+			continue;
+		}
+		if (ch === "(") {
+			c.takeWhile((x) => x !== ")");
+			c.next();
+			continue;
+		}
+		if (STRUCTURAL.has(ch)) {
+			c.next();
+			continue;
+		}
+		tokens.push(c.takeWhile((x) => !STRUCTURAL.has(x)));
+	}
+	return tokens;
+}
+
+/** Whether a bad id spells a name: a parsed descriptor carries it, or the unparsed rest holds it whole. */
+export function spellsName(text: string): (name: string) => boolean {
+	const prefix = parseSymbolIdPrefix(text);
+	const names = new Set(prefix.descriptors.map((d) => d.name.normalize("NFC")));
+	for (const token of tailTokens(prefix.rest)) names.add(token.normalize("NFC"));
+	return (name) => names.has(name.normalize("NFC"));
 }
 
 /** Null rather than throwing: malformed ids arrive from providers and from disk. */

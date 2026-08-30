@@ -383,13 +383,16 @@ export {
 	normalizeModulePath,
 	ownerOf,
 	parseSymbolId,
+	parseSymbolIdPrefix,
 	parseSymbolIdResult,
 	quoteName,
 	readIdField,
 	rebaseSymbolId,
 	SYMBOL_SCHEME,
 	type SymbolId,
+	type SymbolIdPrefix,
 	sameNameAndKind,
+	spellsName,
 } from "./symbolId.js";
 export {
 	type Declaration,
