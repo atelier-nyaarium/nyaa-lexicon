@@ -1548,8 +1548,11 @@ Ordered by how much it proves, as the repository already orders it.
   fields, and the protocol doc prices each as a minor; the catalog is internal. The identity
   phase's in-place table rebuild preserves the store, which is what a minor promises, and its
   fixture gate is what proves it. Phase 4 is a minor for its optional fields. Phase 5 is in the
-  second release line with Phase 4, by Question 5. Nothing here needs a major: no
-  extraction changes and no method is removed or renamed.
+  second release line with Phase 4, by Question 5, cut as 3.2.0 (13dfe05) with the five replan
+  items, after 2703 unit tests, a conformance pass over all fourteen bundled providers whose only
+  failure is the corpus gap that predates 3.1.0, and a grade run answering all eight questions over
+  1169 files. Nothing here needs a major: no extraction changes and no method is removed or
+  renamed.
 
 ## Painpoints
 
