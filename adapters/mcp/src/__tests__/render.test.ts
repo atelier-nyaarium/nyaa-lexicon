@@ -174,6 +174,30 @@ describe("explaining where a workspace's files went", () => {
 		expect(rendered).toContain("- 3 claimed by no provider");
 	});
 
+	it("reports the last knowledge sweep beside the scan, and its cap when it hit one", () => {
+		const sweep = { examined: 7, rebound: 1, orphaned: 2, deleted: 0, ambiguous: 1, stoppedEarly: false };
+		const rendered = overview({
+			scan: { tracked: 12, claimed: 9, unclaimed: 3, generated: 0, denied: 0, knowledgeSweep: sweep },
+		});
+		expect(rendered).toContain("\n  - Last knowledge sweep: 7 subjects examined, 1 rebound, 2 orphaned, 0 deleted");
+		expect(rendered).not.toContain("stopped at its cap");
+
+		const capped = overview({
+			scan: {
+				tracked: 12,
+				claimed: 9,
+				unclaimed: 3,
+				generated: 0,
+				denied: 0,
+				knowledgeSweep: { ...sweep, stoppedEarly: true },
+			},
+		});
+		expect(capped).toContain("stopped at its cap, resuming next pass");
+		expect(overview({ scan: { tracked: 1, claimed: 1, unclaimed: 0, generated: 0, denied: 0 } })).not.toContain(
+			"knowledge sweep",
+		);
+	});
+
 	it("names generated and out-of-scope files only when there are some", () => {
 		const withBoth = overview({ scan: { tracked: 10, claimed: 5, unclaimed: 2, generated: 2, denied: 1 } });
 		expect(withBoth).toContain("2 generated");

@@ -1926,7 +1926,8 @@ export class IndexStore {
 		return verdictFromRow(row.generated, row.generatedReason);
 	}
 
-	/** Seedable: exported or unknown, file not generated, with a comment, an outside reference or a literal; fan-in then id. */
+	/** Seedable: exported or unknown, file not generated, with a comment, prose, an outside reference, or in code a literal; fan-in then id. */
+	// A data field's value literal is the field itself, so it is substance in a code file only.
 	// Reads a verdict exactly as `verdictFromRow` does: only a clean yes excludes, only a clean no is known.
 	seedCandidates(): SeedCandidate[] {
 		const rows = this.db
@@ -1938,9 +1939,9 @@ export class IndexStore {
 				 FROM symbols s JOIN files f ON f.module = s.module
 				 WHERE (s.exported IS NULL OR s.exported = 1)
 				   AND NOT (f.generated IS 'yes' AND f.generatedReason IS NULL)
-				   AND (EXISTS (SELECT 1 FROM comments c WHERE c.anchorId = s.symbolId)
+				   AND (EXISTS (SELECT 1 FROM comments c WHERE c.anchorId = s.symbolId) OR EXISTS (SELECT 1 FROM docs d WHERE d.anchorId = s.symbolId)
 				     OR EXISTS (SELECT 1 FROM refs r WHERE r.targetId = s.symbolId AND (r.fromId IS NULL OR r.fromId <> s.symbolId))
-				     OR EXISTS (SELECT 1 FROM literals l WHERE l.containerId = s.symbolId))
+				     OR ((f.content IS NULL OR f.content = 'code') AND EXISTS (SELECT 1 FROM literals l WHERE l.containerId = s.symbolId)))
 				 ORDER BY fanIn DESC, s.symbolId`,
 			)
 			.all() as Array<{ symbolId: string; fanIn: number; exportedUnknown: number; generatedUnknown: number }>;

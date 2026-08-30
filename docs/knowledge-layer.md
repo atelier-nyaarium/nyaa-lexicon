@@ -194,8 +194,9 @@ reads. That is a window, not a task, and a module scope or subtree walk never ho
 The seeded fallback, which runs when the ledger holds no demand, ranks per language rather than
 across the workspace, since cross-language calls never bind and a global fan-in rank buries every
 language called over a wire. A candidate is a declaration the store's `seedCandidates` admits: not
-`exported: false`, not in a file git calls generated, and carrying a comment, a reference from
-outside itself or a literal; an unknown export or generated status keeps it eligible and is counted
+`exported: false`, not in a file git calls generated, and carrying a comment, prose under it, a
+reference from outside itself, or in a code file a literal, since a data field's value is the field
+itself; an unknown export or generated status keeps it eligible and is counted
 on the page as `seededUnknown`, which the renderer says under the header. `RESERVED_HUBS` hubs by
 global fan-in lead, then the languages take turns, ordered by their declaration count, each
 offering its next candidate by fan-in and then id, so two runs agree. Git's word on a file is a

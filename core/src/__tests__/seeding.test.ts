@@ -303,6 +303,57 @@ describe("the seeded fallback interleaves languages", () => {
 		expect(seededIds()).not.toContain(recursive as string);
 	});
 
+	it("counts a literal as substance in code only, and a heading by the prose under it", () => {
+		const field = "lexicon json config.json name.";
+		const heading = "lexicon markdown guide.md Principles/";
+		const bare = "lexicon markdown guide.md Empty/";
+		const declaration = (
+			symbolId: string,
+			kind: "property" | "heading",
+			name: string,
+			line: number,
+		): Declaration => ({
+			symbolId,
+			kind,
+			name,
+			range: at(line),
+			selectionRange: at(line),
+			visibility: "public",
+		});
+		store.replaceFile(
+			"config.json",
+			"h-json",
+			[declaration(field, "property", "name", 0)],
+			[],
+			[],
+			[{ kind: "string", value: "switchboard", range: at(0), containerId: field }],
+			"full",
+			[],
+			[],
+			[],
+			"data",
+			[],
+			{ status: "no" },
+		);
+		store.replaceFile(
+			"guide.md",
+			"h-md",
+			[declaration(heading, "heading", "Principles", 0), declaration(bare, "heading", "Empty", 5)],
+			[],
+			[],
+			[],
+			"full",
+			[],
+			[{ range: at(1), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: heading }],
+			[],
+			"document",
+			[],
+			{ status: "no" },
+		);
+
+		expect(seededIds()).toEqual([heading]);
+	});
+
 	it("reads a row written without a verdict as unknown, and says so", () => {
 		const ids = plant(
 			"typescript",

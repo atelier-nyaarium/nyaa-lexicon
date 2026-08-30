@@ -946,9 +946,12 @@ fan-in and say nothing.
 **Recommended design, priced against what the store holds.**
 
 - **Eligible:** not `exported: false`, not generated, and carrying at least one comment anchored
-  to the declaration or at least one reference or literal beyond the declaration itself. The three
-  counts are answered from indexes that exist: `comments_anchor`, `refs_target`,
-  `literals_container`. `exported` is optional on the declaration and stored as null when a
+  to the declaration, prose anchored to it (a document heading's section), a reference from
+  outside itself, or, in a code file only, a literal inside it. A data field's value literal is
+  the field, not evidence of doctrine: driven against the two-language checkout, the first page
+  gave JSON, YAML, XML and HTML fields and a frontmatter key their turns on their own values. The
+  counts are answered from indexes that exist: `comments_anchor`, `docs_anchor`, `refs_target`,
+  `literals_container`, and the file's content class on `files`. `exported` is optional on the declaration and stored as null when a
   language cannot answer, so requiring `true` would exclude such a language whole; an unknown is
   eligible and counted in the same report as unknown generated status.
 - **Generated, as a three-valued fact, with a path to the row.** The scan learns it from
@@ -1000,9 +1003,12 @@ delivered as a batch changes the stored verdict of two files the batch never re-
 workspace whose provider discovers the file still indexes it, unknown `noGit`. A store whose
 migration stopped between the two column adds finishes it on the next open. A declaration whose
 only reference is its own is not seeded. A stored `yes` beside a stray reason reads as no
-verdict. The renderer's line appears only under a seeded header with a count above zero. A row
-written without a verdict reads as unknown and is counted. An older client parses the result
-without the field.
+verdict. The renderer's line appears only under a seeded header with a count above zero. A data
+file's field holding only its value is not seeded; a document heading with prose under it is. A
+row written without a verdict reads as unknown and is counted. An older client parses the result
+without the field. Driven through the built server against the two-language checkout: five
+TypeScript hubs, then TypeScript, Kotlin and the rest in turn, the unknown line counting the
+providers that report no export verdict.
 
 **Release:** decided by the owner in Question 5, the full design. A minor, in the second release
 line with Phase 4, after the replan point.
@@ -1056,6 +1062,46 @@ checker's `ok: false`:
   The catalog phase rewords it to say that doubting an unwritten answer is a request for one, and
   that `record_answer` is how it gets written.
 
+## Replan 1 - One clock through the composition root
+
+The first of the five replan items (Question 11), scheduled after Phase 5. Phase 4 landed most of
+it: the daemon hands one `Clock` to the store at open, the service, the indexer it builds and the
+live index, and `store.ts`, `indexer.ts` and `subjects.ts` sit on the clock residue's routed
+list. What is left is every raw time read in `core/` production outside `clock.ts`, so that one
+fake clock controls a whole daemon and no operation mixes two clocks.
+
+**What remains, by site.**
+
+- The ledger. `KnowledgeLedger` stamps four moments itself: an answer's `createdAt`, a doubt's
+  `doubtAt` in `invalidateAnswer`, the `now` the re-affirm path passes down, and the gap's ask in
+  `recordDemand`. The ledger gains a `Clock` in its constructor, handed by the service, which
+  already holds one, and every stamp reads it. Nothing on the wire changes: the stamps were
+  milliseconds and stay milliseconds.
+- The transaction manager. It accepts an injected `now()` but the daemon builds it with the store
+  and the root only, so it runs on its default `Date.now`; the daemon hands it the same clock's
+  `now`, so a step's `startedAt` and a rebind's `boundAt` agree with the store's.
+- The daemon's own moments, all raw `Date.now` today: the startup allowance and the `retryInMs`
+  it computes in `daemon.ts` and `daemonCli.ts`, the warm timings in the log, the drift ask
+  interval. `startDaemon` takes the clock the daemon built, both files read it, and the routed
+  list grows by both, so a test can drive the startup allowance and the drift cadence on a fake.
+- `indexCli.ts` reports an elapsed time to a person and calls `Date.now` directly today; it is
+  the one entry point that builds no daemon, so it reads `systemClock` by name at its top, which
+  the residue permits for that file and no other.
+
+**The residue.** The routed list becomes the whole of `core/src` production: every module but
+`clock.ts` is swept, the sweep asserts it found the files, and a raw `Date.now`, `new Date()`
+without an argument, `setTimeout` or `setInterval` in any of them fails the build. `client/` and
+`protocol/` keep their own measurements: they are importable from a consumer's node process with
+no core clock, and what they time is a transport's patience, not a stored fact.
+
+**Tests:** open a store and a service on one fake clock, record an answer, doubt it, re-affirm it
+and ask for it through the daemon's own write: `createdAt`, `doubtAt`, the gap's ask and the
+subject's `boundAt` all read the fake. Advance the fake past the startup allowance and read the
+daemon's refusal-in-progress `retryInMs` on the fake. The residue planted with a `Date.now` in
+the ledger and watched failing.
+
+**Release:** a patch. No wire change, no store change.
+
 ## Verification
 
 Ordered by how much it proves, as the repository already orders it.
@@ -1098,9 +1144,14 @@ Ordered by how much it proves, as the repository already orders it.
   store seeded under the shipped 3.0.3 bundle and opened twice through the 3.1.0 daemon: the
   answer and its doubt kept their fact ids, the deleted file's subject read as stranded and
   refused a write with the same sentence, the gap header carried the flag, and an unminted id got
-  the shortlist. The `sweepSubjects` batch waits for Phase 4 and the `refactor_move` rebind for
-  the fixture provider; a fact id as subject, a member id without its terminator and a moved
-  address were driven at the writer by the tests and not yet by hand.
+  the shortlist. Done after Phase 4 and 5 through the built server on a scratch git workspace of
+  markdown files: a deleted file's subject was orphaned by the watcher batch's sweep, dated, and
+  its recall and describe refused with the stranded sentence naming the date and the thirty days;
+  a moved file's subject was rebound by `batchExactMatch` and recalled at the new address as
+  REBOUND and STALE, the old address diagnosed as moved; the gap list showed the stranded window
+  and `overview` the sweep's report. The `refactor_move` rebind still waits for the fixture
+  provider; a fact id as subject, a member id without its terminator and a moved address were
+  driven at the writer by the tests and by hand only for the moved address.
 - Release: **minor** after the catalog phase, the identity phase and Phases 1, 0, 2 and 3
   together; cut as 3.1.0 (58a7bb0) by Question 12, after the migration probe above, the grade
   run and a conformance pass whose one failure predates it. Phase 0 adds a daemon method, the identity phase, Phase 1 and Phase 3 add optional

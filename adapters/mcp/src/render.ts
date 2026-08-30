@@ -27,6 +27,7 @@ import {
 	FACT_KINDS,
 	type FactKind,
 	type InsertOutcome,
+	type KnowledgeSweep,
 	type MoveOutcome,
 	type RefactorCommitResult,
 	type RefactorStartResult,
@@ -752,7 +753,7 @@ function renderStranded(count: number, rows: KnowledgeGaps["rows"]): string[] {
 		`
 ## Stranded
 
-${count} row${count === 1 ? "" : "s"} belong to subjects whose address no longer resolves. They are not work: recall carries the diagnosis, and the sweep deletes each thirty days after the date shown.`,
+${count} row${count === 1 ? " belongs" : "s belong"} to subjects whose address no longer resolves. They are not work: recall carries the diagnosis, and the sweep deletes each thirty days after the date shown.`,
 	];
 	if (rows.length > 0) {
 		lines.push(`
@@ -1018,7 +1019,14 @@ export function renderOverview(result: {
 		fullFiles?: number;
 		outlineFiles?: number;
 	};
-	scan?: { tracked: number; claimed: number; unclaimed: number; generated: number; denied: number };
+	scan?: {
+		tracked: number;
+		claimed: number;
+		unclaimed: number;
+		generated: number;
+		denied: number;
+		knowledgeSweep?: KnowledgeSweep;
+	};
 	parseFailures?: Array<{ module: string; reason: string }>;
 	notes?: { noted: number; unknown: number };
 	largest: Array<{ module: string; symbols: number }>;
@@ -1069,6 +1077,13 @@ export function renderOverview(result: {
 		lines.push(`  - ${unclaimed} claimed by no provider`);
 		if (generated > 0) lines.push(`  - ${generated} generated`);
 		if (denied > 0) lines.push(`  - ${denied} outside scope`);
+		const sweep = result.scan.knowledgeSweep;
+		if (sweep !== undefined) {
+			const early = sweep.stoppedEarly ? "; stopped at its cap, resuming next pass" : "";
+			lines.push(
+				`  - Last knowledge sweep: ${sweep.examined} subjects examined, ${sweep.rebound} rebound, ${sweep.orphaned} orphaned, ${sweep.deleted} deleted${early}`,
+			);
+		}
 	}
 
 	// Keep every path; group only repeated reasons.
