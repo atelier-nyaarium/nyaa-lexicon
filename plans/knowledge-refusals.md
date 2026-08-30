@@ -174,6 +174,19 @@ orphan rows stay until Phase 4.
 
 > "A it is."
 
+## Question 13 - Where does Phase 5 sit? (settled in chat)
+
+Q: Question 5 settled Phase 5's design and put it with Phase 4; only its place in the order and
+its release line were open.
+A: Directly after Phase 4, in the same release line, full design. The two phases do not share the
+seeding path (the live views already keep dead addresses out of the queue); they share
+`replaceFile`'s parameter list, the `knowledgeGaps` result shape, and the gate that decides
+whether the seeded fallback runs, which is where one interaction waits for whichever phase lands
+first: a workspace whose only knowledge is stranded. Two adversaries: one corrected Question 5's
+reason, one argued Phase 5 first on a premise the plan contradicts.
+
+> "A"
+
 # Plan
 
 The rule this plan installs, stated once: **a refusal names what the author did and what to do
@@ -188,7 +201,9 @@ the build on any refusal composed outside it, so every later phase's wording is 
 identity phase lands second: every later phase reads knowledge through it. Phase 1 defines the
 candidate predicate and the stranded wording that Phase 0 and Phase 4 both use, so it lands third.
 Phase 0 and Phase 3 are independent of each other. Phase 4 depends on the identity phase and on
-Phase 1. Phase 2 depends on the catalog only. Phase 5 waits on the owner.
+Phase 1. Phase 2 depends on the catalog only. After the replan (Questions 11 to 13): 3.1.0 carries
+everything shipped so far; Phase 4 as amended and then Phase 5 land together as 3.2.0; the five
+replan items on the board follow, the clock first.
 
 ## The catalog phase - Every refusal is a named constructor in one module
 
@@ -875,7 +890,7 @@ malformed address and a local
 address: both orphaned, neither rebound, neither exempt. An older client parses a row carrying
 the new fields. Each case watches the old behaviour fail first.
 
-## Phase 5 - Fan-in seeding per language [deferred, decision-complete]
+## Phase 5 - Fan-in seeding per language [after Phase 4, same release line]
 
 **The defect:** the cold-start fallback ranks the whole workspace by fan-in. Cross-language calls
 do not bind, so any language that is called through a wire rather than an import is under-counted
