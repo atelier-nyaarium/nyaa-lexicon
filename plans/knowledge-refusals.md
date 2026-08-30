@@ -1064,6 +1064,11 @@ checker's `ok: false`:
 
 ## Replan 1 - One clock through the composition root
 
+✅ Shipped: the ledger, the transaction manager, the daemon's moments, the supervisor's timeouts,
+the transport's timers, both non-daemon entry points and the whole-core residue (6c85854, after a
+hygiene, test, alignment and behaviour audit and a red team); the docs and this record in the
+commit that carries this line. A patch when cut; no version bump.
+
 The first of the five replan items (Question 11), scheduled after Phase 5. Phase 4 landed most of
 it: the daemon hands one `Clock` to the store at open, the service, the indexer it builds and the
 live index, and `store.ts`, `indexer.ts` and `subjects.ts` sit on the clock residue's routed
@@ -1425,3 +1430,15 @@ Collected during the overnight knowledge run, the review of its patches, and the
   page says so. The plan's own Replan 1 section was written in the present tense about wiring
   that does not exist yet and the audit caught it, the same fault the refinement laps kept
   naming.
+- Building the clock item: the inventory found two modules the section had not named, the
+  supervisor's timeouts and the transport's heartbeat, which is what a whole-core sweep is for.
+  Eleven findings over two audits, all fixed: a fake epoch behind the wall let the mutant it was
+  written against pass, a `Date.now` held as a value slipped a regex written for the call, a
+  heartbeat re-armed after its socket closed, `gradeCli` was a second daemon-less root the
+  section called the only one, and the residue's token list was short by `Date[`,
+  `setImmediate`, `Bun.sleep` and `node:timers`. Match the token, never the context around it,
+  was the rule already written down; the regex had matched the call and not the name. The
+  transport's heartbeat became a timer re-armed against an absolute deadline, which the fake
+  clock cannot distinguish from a relative one, so that mutant stays uncaught and is noted here.
+  The auditors' sandbox cannot bind loopback, so every transport claim they made was static; the
+  test that binds runs here.
