@@ -1149,8 +1149,10 @@ Ordered by how much it proves, as the repository already orders it.
   its recall and describe refused with the stranded sentence naming the date and the thirty days;
   a moved file's subject was rebound by `batchExactMatch` and recalled at the new address as
   REBOUND and STALE, the old address diagnosed as moved; the gap list showed the stranded window
-  and `overview` the sweep's report. The `refactor_move` rebind still waits for the fixture
-  provider; a fact id as subject, a member id without its terminator and a moved address were
+  and `overview` the sweep's report. The seeded page against the two-language checkout: five
+  TypeScript hubs, then TypeScript, Kotlin, a `CLAUDE.md` section and the other languages one
+  turn each, with the unknown line counting the providers that report no export verdict. The
+  `refactor_move` rebind still waits for the fixture provider; a fact id as subject, a member id without its terminator and a moved address were
   driven at the writer by the tests and by hand only for the moved address.
 - Release: **minor** after the catalog phase, the identity phase and Phases 1, 0, 2 and 3
   together; cut as 3.1.0 (58a7bb0) by Question 12, after the migration probe above, the grade
@@ -1398,3 +1400,15 @@ Collected during the overnight knowledge run, the review of its patches, and the
   tool's meaning and gains only the tie-break, the language is read from one id per module
   through `languageOf`, `seededUnknown` counts the page, and a direct writer records no verdict
   rather than a lie.
+- The verification drive after Phase 5, through the built server. The sweep scenario passed on
+  the first run. The seeded page against the two-language checkout took two runs, twelve minutes
+  to index 1172 files and a probe whose timeout was shorter than that, and showed what no
+  planted store had: with one turn per language, JSON, YAML, XML and HTML fields took turns on
+  their own value literals, so eligibility now counts a literal in code files only and a heading
+  by its prose. What the rule still admits is by design and is the owner's to weigh: a YAML key
+  with a comment above it, a fixture language under `tests/fixtures` with fan-in one, and a test
+  helper as a global hub (`frame()` in a `__tests__` helper, fan-in 300). Three minified vendor
+  scripts time out the TypeScript provider at sixty seconds on every scan; pre-existing, and the
+  page says so. The plan's own Replan 1 section was written in the present tense about wiring
+  that does not exist yet and the audit caught it, the same fault the refinement laps kept
+  naming.
