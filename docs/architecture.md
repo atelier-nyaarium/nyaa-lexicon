@@ -308,9 +308,10 @@ The first is recorded knowledge. A symbol id embeds its name, and a member's id 
 container's, so renaming a class re-mints its methods and their parameters too. `renameIdMap` builds
 the whole old-to-new mapping from the id grammar before anything is written, since afterwards the
 old ids resolve to nothing. The map is journaled with the step; once the files are written, the
-transaction manager rebinds each subject to its new address and records what moved, so undo and
-recovery put it back. A subject already at a destination stays, because it describes the code as
-it stands and replacing it would be a silent downgrade.
+transaction manager rebinds each subject to its new address and records what moved as rows the
+journal's schema vouches for, so undo and recovery put it back, and name any move they could not.
+A subject already at a destination stays, because it describes the code as it stands and
+replacing it would be a silent downgrade.
 
 The second is files that never change. A module calling a renamed class's METHOD contains no
 occurrence of the class name, so it gets no edit, yet its stored references point at ids that are

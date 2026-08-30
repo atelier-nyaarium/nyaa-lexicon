@@ -104,11 +104,16 @@ it found is counted afterwards as the daemon's own write.
 A rename or move through a refactor step builds the old-to-new address map from the id grammar
 before it writes anything and journals it with the step. Once the files are written and the
 reindex has been attempted, whatever it returned, the transaction manager rebinds the subjects
-and records exactly what moved, each with the state it replaced, in the same transaction, so
-recovery, undo and revert put back that and nothing else. An address that already holds a subject
-is never a rebind target: two subjects never merge, and the one already there keeps describing
-the code as it stands. Prose survives a move; its citations go stale on their own, which is
-correct, because the facts underneath really did change identity.
+and records each move as a `refactor_rebinds` row, with the state it replaced, in the same
+transaction as the move; the row's schema vouches for every field, so nothing is validated at
+the read. Recovery, undo and revert put back exactly those moves, newest first, and delete the
+rows in the same commit, so a crash between the two cannot report a reversed move as kept. A move
+a reversal cannot put back, because its subject is gone, has moved on, or another subject holds
+its old address, is named with that reason on the undo and revert results and in the recovery
+log rather than silently left. An address that already holds a subject is never a rebind target:
+two subjects never merge, and the one already there keeps describing the code as it stands.
+Prose survives a move; its citations go stale on their own, which is correct, because the facts
+underneath really did change identity.
 
 An address that stops resolving keeps its subject, bound and unresolved, until a sweep judges it.
 The indexer runs one after every prune, at the end of a full scan and of every watcher batch, and

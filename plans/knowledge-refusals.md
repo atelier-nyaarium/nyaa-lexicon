@@ -1198,6 +1198,10 @@ unreadable row counted as `dropped`. Each existing rebuild test keeps passing un
 
 ## Replan 3 - Typed refactor_rebinds rows instead of applied rebinds as JSON inside the step plan
 
+✅ Shipped: the table, the rows written with the move, the reversals that commit with their rows,
+the kept moves reported on the wire and in the recovery log, and the one-time lift (d6dec1c,
+after one alignment audit and two red team rounds; the docs followed in the next commit).
+
 The third of the five replan items (Question 11), the architecture assessment's fourth
 opportunity, contested there as smaller and less certain than the clock and placement items, and
 scheduled as hardening rather than unfinished business. What a refactor step moved is the one
@@ -1608,3 +1612,17 @@ Collected during the overnight knowledge run, the review of its patches, and the
   `localeCompare`, which places rows differently on two machines; they break by code point. Held:
   `restoreByColumn` drops a journal row whose columns are missing, pre-existing, and the daemon's
   log line for dropped rows has no test.
+- Building the rebind rows item: seven alignment findings, then two red team rounds of ten each,
+  eleven fixed and nine held. The table went in as written; what the rounds found was around it.
+  The lift ran after the commit that created its table, so a crash mid-lift disabled its own
+  retry. Each reversal put the subjects back in one transaction and deleted its rows in another,
+  so a crash between would have reported a reversed move as kept on the next try. SQLite applies
+  affinity before a `CHECK` sees the value, so `typeof` on a text column can never fail, which is
+  why the lift reads each legacy field by type instead of trusting the table to. A step's moves
+  were retraced oldest first, so a subject moved twice in one step would have stopped halfway.
+  Two surviving mutants were coverage, not code: the rebuild-path lift and a step that rebinds
+  twice. The atomicity mutants needed a refused commit to catch, done with a temp trigger that
+  refuses one write, which is a cheaper crash than a crash. Held and on the board: revert
+  restores its files before the commit that closes the journal, so a crash between strands the
+  newest move, pre-existing, `bd_d710ce80`. The relay swallowed a report for the fourth lap
+  running; the recovery script read it out of the transcript.
