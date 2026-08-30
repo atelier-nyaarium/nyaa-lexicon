@@ -740,9 +740,10 @@ indexer and facts in the store, and presence is a source-dependent decision.
   it stops when the live index stops. Its clock is a change, not a given: `startLiveIndex` accepts
   a `clock` today and forwards it only to the watcher's debounce, and the daemon passes none,
   while it builds the service on the default `systemClock`. The daemon holds one `Clock` and
-  hands the same instance to both, so the service, the indexer it builds, the watcher debounce
-  and the sweep timer read one time source, and a test that supplies a fake through those two
-  options controls all four; `clock` stops being optional on `startLiveIndex`. The indexer keeps
+  hands the same instance to the store at open, the service and `startLiveIndex`, so the store's
+  stamps, the service, the indexer it builds, the watcher debounce and the sweep timer read one
+  time source, and a test that supplies a fake through those three options controls all of them;
+  `clock` stops being optional on `startLiveIndex`. The indexer keeps
   the reachable set it last pruned against, and the modules first indexed in its last pass,
   derived where the only place that knows is: `indexFile` reads `depthOf(module)` before its
   write, and a module with no depth before the write and a successful `replaceFile` after it is
@@ -787,22 +788,26 @@ order:
    whose kind and name match. The subject's address becomes that declaration, `fromSymbolId`
    remembers the old one, no date is set. A subject with no digest never matches. The timer pass
    has no `newModules`, so it never rebinds by evidence. A match whose target address another
-   subject already holds is not a rebind: `KnowledgeSubjects.rebind` skips it and reports it in
-   `applied`, and the sweep reads that report and takes step 3 with evidence `ambiguous`, naming
-   the holder among the candidates, never `none`.
+   subject already holds is not a rebind: `KnowledgeSubjects.rebind` skips it and names in
+   `applied` only what moved, so an entry the sweep submitted and `applied` does not name was
+   refused for a held target, since the sweep read the subject it submitted. It takes step 3 with
+   evidence `ambiguous`, never `none`; the diagnosis names the holder when `candidatesFor`
+   includes it, which is a holder in another module with the same name and kind, and a holder in
+   the same module is the same-name twin case and reads `ambiguous` without a name.
 3. **Orphan** otherwise: `state = orphaned`, `orphanedAt = now`, evidence `ambiguous` with the
    `candidatesFor` list when more than one declaration matched by digest, `none` when none did.
 
 Pass A, over orphaned subjects, read by the `orphanedAt` index in `(orphanedAt, subjectId)` order:
 
-4. **Restore** a subject whose address resolves again: `bound`, evidence `sameLocator`, date
-   cleared. `replaceFile` already does this for its module at index time through
-   `restoreResolving`, and an address resolves again only when its module is written, so this
-   step is reached by a subject restored outside a module write, which today is the compat
-   rebuild; it stays because pass A must not depend on who ran first.
-5. **Delete** a subject orphaned thirty or more days behind the clock, with its answers and its
+4. **Delete** a subject orphaned thirty or more days behind the clock, with its answers and its
    demand. A date ahead of the clock is treated as now, so a clock that went backwards cannot
    delete early.
+
+Restore is not a sweep step. An address resolves again only when its module is written, and
+`replaceFile` restores every orphan its module holds again through `restoreResolving` as it
+writes; a write at an orphaned address restores it through `claim`; and the compat rebuild keeps
+an orphan orphaned with its date through `restoreSubjects`. A third owner of the transition would
+be reached by nothing.
 
 **Budget and continuation.** The unit is subjects examined per sweep across both passes, capped by
 `ORPHAN_SWEEP_CAP`, owned by the indexer beside the sweep call and passed into `sweepSubjects`;
@@ -820,7 +825,7 @@ each capped sweep still moves the key forward. A subject written behind the key 
 examined within the following epoch, and one deleted behind it costs nothing. What a sweep did
 is reported as an optional `knowledgeSweep` field on `ScanCountsSchema`, which `writeScanSummary`
 persists and `readScanSummary` restores and `overview` already carries as `scan`: examined,
-rebound, orphaned, restored, deleted, ambiguous, and whether it stopped early. Both the scan and
+rebound, orphaned, deleted, ambiguous, and whether it stopped early. Both the scan and
 the watcher batch fold the result into the summary they already write. Optional fields are a
 minor.
 
@@ -830,13 +835,17 @@ what lets it stop and resume. Nothing inside a batch opens another.
 
 **The clock.** `clock.ts` owns time for the routed modules and its `Clock` is injectable into the
 service, but the service builds `WorkspaceIndexer` without one. The indexer gains a `Clock`
-parameter, the service passes its own, and the clock residue's routed list, which already holds
-`subjects.ts`, grows by `indexer.ts`, so a `Date.now` in the sweep fails the build. The sweep
-passes `now` into `sweepSubjects` as a value. The store holds seven `Date.now` reads; six are
-write timestamps and stay unrouted, and the seventh, `restoreResolving` inside `replaceFile`, is
-an identity transition that writes `boundAt`, which `forwardedFrom` orders by, so `replaceFile`
-takes `now` from the indexer's clock and every subject transition reads one time source. The
-aging test sets the clock rather than faking a date.
+parameter and the service passes its own, so the sweep passes `now` into `sweepSubjects` as a
+value. The store holds seven `Date.now` reads: four write timestamps (`files.indexedAt`, the
+parse failure's `failedAt`, the scan summary's `at`, the notes marker) and three identity stamps,
+`restoreKnowledge` and `rekeyKnowledge` at open and `restoreResolving` inside `replaceFile`, which
+writes `boundAt`, the column `forwardedFrom` orders by. `replaceFile` keeps its signature, since a
+dozen tests call it directly: `IndexStore.open` takes a `Clock`, default `systemClock`, every
+`Date.now` in `store.ts` becomes the store's clock, and the daemon hands one `Clock` instance to
+the store at open, the service and `startLiveIndex`. The residue's routed list, which already
+holds `subjects.ts`, grows by `indexer.ts` and `store.ts`, so a raw time read in either fails the
+build, and the aging test opens the store and the service on one fake clock rather than faking a
+date.
 
 **What an orphaned subject stops costing, and where it is still seen.** It leaves the stale sweep
 and the `STALE_SCAN_CAP` count at once, it never leads the demand queue, and `recallAnswer`
@@ -844,22 +853,27 @@ records no demand for it (Phase 1). The workspace demand sweep reads the live vi
 already keep a dead address out of its recheck and missing groups (Phase 1), and the identity
 owner already answers `orphaned(limit)`, oldest first, and `orphanedCount()`. What the window
 still needs is the orphaned subjects' rows, and the ledger may not fetch them through the raw
-readers, which its residue forbids, so the owner gains one reader over the addressed views for
-that. The sweep appends the orphaned rows
-after them inside the page, each carrying `stranded: true`, `strandedAt` set to `orphanedAt` and
-the evidence, and reports the count as an optional `stranded` number on the result; `total` keeps
-counting actionable rows only. A page full of actionable rows shows no orphaned row and still
-shows the count. The renderer groups the rows under a stranded heading with their dates and
-evidence. A module scope or subtree walk never holds one, since an orphaned subject has no
-declaration under any scope. That is a window, not a task.
+readers, which its residue forbids, so the owner gains `strandedRows(limit)`, one reader over
+`answers_addressed` and `gaps_addressed` returning, per row, the address, the question, whether it
+is an answer or a demand, `recordedAs`, `orphanedAt` and the evidence, oldest subject first. The
+gate that decides whether the seeded fallback runs reads actionable rows only, so a workspace
+whose only knowledge is stranded still seeds its hubs. The sweep appends the stranded rows after
+the actionable ones inside the page, seeded or not, each carrying `stranded: true`, `strandedAt`
+set to `orphanedAt` and the evidence, and reports the count as an optional `stranded` number on
+the result; `total` keeps counting actionable rows only. A page full of actionable rows shows no
+stranded row and still shows the count. The renderer renders the stranded section, with dates and
+evidence, whenever the result carries stranded rows or a stranded count, before the no-gaps
+return that a zero `total` takes today. A module scope or subtree walk never holds one, since an
+orphaned subject has no declaration under any scope. That is a window, not a task.
 
 **Storage.** The subjects table, its three indexes and the two digest columns on `symbols` come
 from the identity phase; pass A reads by `orphanedAt`, the window by `state`, and the moved
 diagnosis by `fromSymbolId`. No compatibility bump, no rebuild.
 
 **Wire.** The gap row gains an optional `strandedAt`, an optional `stranded` flag and an optional
-`evidence`, never a fourth `why` value, because clients ride forward and an older client would
-fail to parse the newer row. `why` keeps its ordinary value on an orphaned row, `stale` for an
+`evidence`, never a fourth `why` value: an older client validates the row with its own schema,
+which strips the optional fields it does not know and reads on, and refuses a `why` value it does
+not know. `why` keeps its ordinary value on an orphaned row, `stale` for an
 answer whose citations can never resolve again and `missing` for demand, so an older client reads
 it as it always did, and the renderer checks `stranded` before `why` when choosing the heading
 and the state word. With the result's `stranded` count, the `knowledgeSweep` report and Phase 1's
@@ -869,16 +883,17 @@ recall field, this phase is a minor.
 from the stale count, not at the head of the queue, no demand recorded on recall. Replace it with
 a parse failure while the file is present: not orphaned. Delete the file and recreate it parsing
 without the symbol: orphaned. Put the symbol back: bound again with no date, asserted on the
-subject's end state and not on the sweep's `restored` count, since the module write restores it
-before pass A runs. Move the file with the
+subject's end state, since the module write restores it and the sweep never does. Move the file
+with the
 editor: rebound on `batchExactMatch`, undated, recalled at the new address, the old address
 diagnosed as moved. Move it and edit the body in the same save: orphaned with `none`, since the
-digest changed. Two identical twins, delete one: the survivor untouched, the deleted one orphaned
-with `none`. Two candidates by digest among new modules: orphaned with `ambiguous` and both named.
-A digest match whose target address another subject holds: not rebound, orphaned with
-`ambiguous` naming the holder. A workspace whose only knowledge is stranded: it seeds today, and
-the stranded rows this phase appends sit above the gate that decides whether seeding runs, so the
-test states which it is and the phase decides it, since Phase 5 rewrites the fallback next.
+digest changed. Two identical twins, delete one: the survivor untouched, since its module is not
+new to the pass and so is no match, and the deleted one orphaned with `none`. Two candidates by
+digest among new modules: orphaned with `ambiguous` and both named. A digest match whose target
+address another subject holds, planted in another module with the same name and kind: not
+rebound, orphaned with `ambiguous` naming the holder. A workspace whose only knowledge is
+stranded: the fallback still seeds its hubs and the stranded rows follow the candidates, with the
+count, and the renderer shows the stranded section when the actionable total is zero.
 Advance the injected clock thirty days with no scan and no event: the timer's sweep deletes it,
 so an idle workspace ages. Set the clock behind a date: not deleted. Force a compat rebuild: the
 subject and its date survive. Plant more orphaned subjects than the cap: the sweep stops, reports
@@ -888,7 +903,8 @@ break the parse, then sweep: exempt, and the test names that as the only way to 
 file whose destination is reached through an import rather than as a root: rebound. Plant a
 malformed address and a local
 address: both orphaned, neither rebound, neither exempt. An older client parses a row carrying
-the new fields. Each case watches the old behaviour fail first.
+the new fields. Each case is written before its mechanism and watched failing first; where a
+behaviour exists today, the case pins it before exercising the changed path.
 
 ## Phase 5 - Fan-in seeding per language [after Phase 4, same release line]
 
@@ -1232,3 +1248,18 @@ Collected during the overnight knowledge run, the review of its patches, and the
   the routine rather than a repair. Every `knowledgeGaps` test that mocks the shape had to learn
   the field, since an omitted flag now drops the question label, which is the safe direction
   the plan chose and the cost it did not name.
+- Phase 4 refinement, narrow, after the replan: five auditors over the five paragraphs amended
+  at Questions 11 to 13, eleven findings, nine held, two misread. The amendments made in a day
+  had the same fault the plan's own rule names: a mechanism stated from memory. The store's
+  clock reads were miscounted and misclassified, and routing one of them through a new
+  `replaceFile` parameter would have broken a dozen direct test callers, so the store takes the
+  clock at open instead and joins the routed list. `rebind` names only what moved, so a refused
+  collision is read as the submitted entry `applied` does not name, and the holder is named only
+  where the candidate predicate already includes it. Pass A's restore step was reached by
+  nothing: `replaceFile` restores on the write, `claim` on a write at the address, and the
+  rebuild keeps an orphan orphaned, so the step is gone and restore has the two owners it had.
+  The stranded window sat above the seeding gate, which would have stopped seeding on a
+  workspace whose only knowledge is stranded, and the renderer's no-gaps return would have
+  hidden it; both decided in the text. The two misreads: the twins test, whose survivor is no
+  match because its module is not new to the pass, and the wire sentence, which was right about
+  the fourth `why` value and muddled about why.
