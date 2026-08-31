@@ -319,36 +319,44 @@ function corpusSourceFiles(root: string): string[] {
 	return files.sort();
 }
 
-test("parses every owned nlohmann/json corpus file when available", () => {
-	if (!corpusPresent) throw new Error("C++ corpus is absent");
-	const started = performance.now();
-	const provider = new CppProvider();
-	provider.initialize(corpusRoot);
-	const files = corpusSourceFiles(corpusRoot);
-	const errorFiles: string[] = [];
-	// A span whose range does not cut its own text back out attaches to the wrong symbol,
-	// and only real source has the string forms that break that.
-	const strayed: string[] = [];
-	let spans = 0;
-	for (const module of files) {
-		const text = readFileSync(path.join(corpusRoot, module), "utf8");
-		const facts = provider.parseFile({ module, contentHash: `corpus:${module}`, text });
-		if (facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")) errorFiles.push(module);
+// A missing corpus is a local mistake and a CI fact, `temp/` being ignored and never cloned there.
+// Skipping in CI keeps the throw below meaningful where the corpus is supposed to exist.
+const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
 
-		const coordinates = coordinatesOf(text);
-		for (const comment of facts.comments ?? []) {
-			spans++;
-			if (coordinates.sliceRange(comment.range) !== comment.text) {
-				strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
+corpusTest(
+	"parses every owned nlohmann/json corpus file",
+	() => {
+		if (!corpusPresent) throw new Error("C++ corpus is absent");
+		const started = performance.now();
+		const provider = new CppProvider();
+		provider.initialize(corpusRoot);
+		const files = corpusSourceFiles(corpusRoot);
+		const errorFiles: string[] = [];
+		// A span whose range does not cut its own text back out attaches to the wrong symbol,
+		// and only real source has the string forms that break that.
+		const strayed: string[] = [];
+		let spans = 0;
+		for (const module of files) {
+			const text = readFileSync(path.join(corpusRoot, module), "utf8");
+			const facts = provider.parseFile({ module, contentHash: `corpus:${module}`, text });
+			if (facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")) errorFiles.push(module);
+
+			const coordinates = coordinatesOf(text);
+			for (const comment of facts.comments ?? []) {
+				spans++;
+				if (coordinates.sliceRange(comment.range) !== comment.text) {
+					strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
+				}
 			}
 		}
-	}
-	const wallMs = Math.round(performance.now() - started);
-	console.log(
-		`[cpp corpus] files=${files.length} comments=${spans} errorFiles=${errorFiles.length} wallMs=${wallMs}`,
-	);
-	expect(files.length).toBeGreaterThan(0);
-	expect(errorFiles).toEqual([]);
-	expect(strayed).toEqual([]);
-	expect(spans).toBeGreaterThan(0);
-}, 120_000);
+		const wallMs = Math.round(performance.now() - started);
+		console.log(
+			`[cpp corpus] files=${files.length} comments=${spans} errorFiles=${errorFiles.length} wallMs=${wallMs}`,
+		);
+		expect(files.length).toBeGreaterThan(0);
+		expect(errorFiles).toEqual([]);
+		expect(strayed).toEqual([]);
+		expect(spans).toBeGreaterThan(0);
+	},
+	120_000,
+);

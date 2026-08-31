@@ -1261,67 +1261,75 @@ const corpusPresent =
 	existsSync(ghidraCorpusRoot) &&
 	statSync(ghidraCorpusRoot).isDirectory();
 
-test("parses every claimed C file from both requested corpora", () => {
-	if (!corpusPresent) throw new Error("C corpora are absent");
-	const started = performance.now();
-	let files = 0;
-	let bytes = 0;
-	let declarations = 0;
-	let references = 0;
-	let imports = 0;
-	const rootCounts: Array<{ root: string; files: number }> = [];
-	const syntaxErrorFiles: string[] = [];
-	// A span whose range does not cut its own text back out attaches to the wrong symbol, and
-	// only real source has the string forms that break that.
-	const strayed: string[] = [];
-	let spans = 0;
+// A missing corpus is a local mistake and a CI fact, `temp/` being ignored and never cloned there.
+// Skipping in CI keeps the throw below meaningful where the corpus is supposed to exist.
+const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
 
-	for (const root of [libuvCorpusRoot, ghidraCorpusRoot]) {
-		const provider = new CProvider();
-		provider.initialize(root);
-		const project = provider.discoverProject(root);
-		expect(project.diagnostics).toEqual([]);
-		const modules = project.files.filter((module) => module.endsWith(".c") || module.endsWith(".h"));
-		rootCounts.push({ root: path.relative(process.cwd(), root), files: modules.length });
+corpusTest(
+	"parses every claimed C file from both requested corpora",
+	() => {
+		if (!corpusPresent) throw new Error("C corpora are absent");
+		const started = performance.now();
+		let files = 0;
+		let bytes = 0;
+		let declarations = 0;
+		let references = 0;
+		let imports = 0;
+		const rootCounts: Array<{ root: string; files: number }> = [];
+		const syntaxErrorFiles: string[] = [];
+		// A span whose range does not cut its own text back out attaches to the wrong symbol, and
+		// only real source has the string forms that break that.
+		const strayed: string[] = [];
+		let spans = 0;
 
-		for (const module of modules) {
-			const source = readFileSync(path.join(root, module), "utf8");
-			const parsed = facts(provider, module, source);
-			files++;
-			bytes += source.length;
-			declarations += parsed.declarations.length;
-			references += parsed.references.length;
-			imports += parsed.imports.length;
-			if (parsed.diagnostics.some((diagnostic) => diagnostic.severity === "error"))
-				syntaxErrorFiles.push(path.relative(process.cwd(), path.join(root, module)).replace(/\\/gu, "/"));
+		for (const root of [libuvCorpusRoot, ghidraCorpusRoot]) {
+			const provider = new CProvider();
+			provider.initialize(root);
+			const project = provider.discoverProject(root);
+			expect(project.diagnostics).toEqual([]);
+			const modules = project.files.filter((module) => module.endsWith(".c") || module.endsWith(".h"));
+			rootCounts.push({ root: path.relative(process.cwd(), root), files: modules.length });
 
-			const coordinates = coordinatesOf(source);
-			for (const comment of parsed.comments ?? []) {
-				spans++;
-				if (coordinates.sliceRange(comment.range) !== comment.text) {
-					strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
+			for (const module of modules) {
+				const source = readFileSync(path.join(root, module), "utf8");
+				const parsed = facts(provider, module, source);
+				files++;
+				bytes += source.length;
+				declarations += parsed.declarations.length;
+				references += parsed.references.length;
+				imports += parsed.imports.length;
+				if (parsed.diagnostics.some((diagnostic) => diagnostic.severity === "error"))
+					syntaxErrorFiles.push(path.relative(process.cwd(), path.join(root, module)).replace(/\\/gu, "/"));
+
+				const coordinates = coordinatesOf(source);
+				for (const comment of parsed.comments ?? []) {
+					spans++;
+					if (coordinates.sliceRange(comment.range) !== comment.text) {
+						strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
+					}
 				}
+
+				if (root === libuvCorpusRoot && module === "src/unix/netbsd.c")
+					expect(declarationOf(parsed, "uv__platform_loop_init")).toMatchObject({
+						name: "uv__platform_loop_init",
+						kind: "function",
+					});
+				if (root === ghidraCorpusRoot && module === "libwifi1/co_ring.o.c")
+					expect(declarationOf(parsed, "Elf32_Shdr", "struct")).toMatchObject({
+						name: "Elf32_Shdr",
+						kind: "struct",
+					});
 			}
-
-			if (root === libuvCorpusRoot && module === "src/unix/netbsd.c")
-				expect(declarationOf(parsed, "uv__platform_loop_init")).toMatchObject({
-					name: "uv__platform_loop_init",
-					kind: "function",
-				});
-			if (root === ghidraCorpusRoot && module === "libwifi1/co_ring.o.c")
-				expect(declarationOf(parsed, "Elf32_Shdr", "struct")).toMatchObject({
-					name: "Elf32_Shdr",
-					kind: "struct",
-				});
 		}
-	}
 
-	const seconds = (performance.now() - started) / 1000;
-	console.log(
-		`[c corpus] roots=${JSON.stringify(rootCounts)} files=${files} bytes=${bytes} declarations=${declarations} references=${references} imports=${imports} comments=${spans} syntaxErrorFiles=${syntaxErrorFiles.length} wallSeconds=${seconds.toFixed(3)}`,
-	);
-	expect(files).toBeGreaterThan(0);
-	expect(syntaxErrorFiles).toEqual([]);
-	expect(strayed).toEqual([]);
-	expect(spans).toBeGreaterThan(0);
-}, 120_000);
+		const seconds = (performance.now() - started) / 1000;
+		console.log(
+			`[c corpus] roots=${JSON.stringify(rootCounts)} files=${files} bytes=${bytes} declarations=${declarations} references=${references} imports=${imports} comments=${spans} syntaxErrorFiles=${syntaxErrorFiles.length} wallSeconds=${seconds.toFixed(3)}`,
+		);
+		expect(files).toBeGreaterThan(0);
+		expect(syntaxErrorFiles).toEqual([]);
+		expect(strayed).toEqual([]);
+		expect(spans).toBeGreaterThan(0);
+	},
+	120_000,
+);
