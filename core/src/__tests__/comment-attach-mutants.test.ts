@@ -63,12 +63,19 @@ async function mutated(index: number, mutant: Mutant): Promise<typeof attachComm
 	mkdirSync(MUTANTS_DIR, { recursive: true });
 	runDir ??= mkdtempSync(join(MUTANTS_DIR, "run-"));
 	const file = join(runDir, `commentAttach.mutant-${index}.ts`);
-	// Relative imports become absolute, so the copy resolves what the source does.
-	const relocated = source.replace(
-		/(from|import)\s+(["'])\.\/([^"']+)\2/g,
-		(_, keyword: string, quote: string, sibling: string) =>
-			`${keyword} ${quote}${join(import.meta.dirname, "..", sibling)}${quote}`,
-	);
+	// Every import becomes absolute, so the copy resolves what the source does. Workspace packages
+	// are rewritten too: the copy lives outside any node_modules that would otherwise resolve them.
+	const relocated = source
+		.replace(
+			/(from|import)\s+(["'])\.\/([^"']+)\2/g,
+			(_, keyword: string, quote: string, sibling: string) =>
+				`${keyword} ${quote}${join(import.meta.dirname, "..", sibling)}${quote}`,
+		)
+		.replace(
+			/(["'])@nyaa-lexicon\/([a-z-]+)\1/g,
+			(_, quote: string, workspacePackage: string) =>
+				`${quote}${join(lexiconRoot(), workspacePackage, "src", "index.ts")}${quote}`,
+		);
 	writeFileSync(file, relocated.replace(mutant.find, mutant.replace));
 	// A fresh query each load, so a rewritten mutant is never served from the module cache.
 	const loaded = (await import(/* @vite-ignore */ `${pathToFileURL(file).href}?run=${++loads}`)) as {
