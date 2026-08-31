@@ -12,12 +12,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
 	moduleOf,
-	type RefactorCommitResult,
 	type RefactorIssue,
-	type RefactorRevertResult,
-	type RefactorStartResult,
-	type RefactorTrackResult,
-	type RefactorUndoResult,
 	type StepKind,
 	type StepPhase,
 	type TransactionStatus,
@@ -61,6 +56,8 @@ export interface FileImage {
 
 export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: Refusal };
 
+type RecoveryIntent = { operation: "undo" | "revert"; stepNo: number | null };
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -84,6 +81,7 @@ export class TransactionManager {
 		private readonly store: IndexStore,
 		private readonly workspaceRoot: string,
 		private readonly now: () => number = () => systemClock.now(),
+		private readonly failAfterRestore?: () => void,
 	) {}
 
 	////////////////////////////////
@@ -321,6 +319,13 @@ export class TransactionManager {
 	undo(): UndoneStep {
 		const open = this.openTransaction();
 		if (!open) return { undone: false, reason: noTransactionOpen() };
+		const intent = this.recoveryIntent(open.id);
+		if (intent !== null) {
+			if (intent.operation !== "undo" || intent.stepNo === null)
+				return { undone: false, reason: nothingToUndo() };
+			for (const image of this.imagesOf(open.id, "step", intent.stepNo)) this.restore(image);
+			return this.finalizeUndo(open.id, intent.stepNo);
+		}
 
 		const top = this.store.journalRead((db) =>
 			db
@@ -341,56 +346,28 @@ export class TransactionManager {
 			}
 		}
 
+		this.markRecovery(open.id, "undo", top.stepNo);
 		for (const image of images) this.restore(image);
-		// The files went back, so what the step moved goes back with them, in one commit with the rows
-		// that recorded it: a crash between the two cannot report a reversed move as kept.
-		const applied = this.rebindsOf(open.id, top.stepNo);
-		const kept = this.store.journalWrite((db) => {
-			const { kept } = this.store.subjects.rebindBack(applied);
-			db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
-				open.id,
-				top.stepNo,
-			);
-			db.prepare("DELETE FROM refactor_issues WHERE transactionId = ? AND stepNo = ?").run(open.id, top.stepNo);
-			db.prepare("DELETE FROM refactor_rebinds WHERE transactionId = ? AND stepNo = ?").run(open.id, top.stepNo);
-			db.prepare("DELETE FROM refactor_steps WHERE transactionId = ? AND stepNo = ?").run(open.id, top.stepNo);
-			return kept;
-		});
-
-		return {
-			undone: true,
-			stepNo: top.stepNo,
-			modules: images.map((image) => image.module),
-			...(kept.length === 0 ? {} : { unreversed: kept }),
-		};
+		this.failAfterRestore?.();
+		return this.finalizeUndo(open.id, top.stepNo);
 	}
 
 	/** Puts every tracked file back to its opening image, whatever happened in between. */
 	revert(): RevertedTransaction {
 		const open = this.openTransaction();
 		if (!open) return { reverted: false, modules: [], reason: noTransactionOpen() };
+		const intent = this.recoveryIntent(open.id);
+		if (intent !== null) {
+			if (intent.operation !== "revert") return { reverted: false, modules: [], reason: noTransactionOpen() };
+			for (const image of this.imagesOf(open.id, "baseline", 0)) this.restore(image);
+			return this.finalizeRevert(open.id);
+		}
 
 		const images = this.imagesOf(open.id, "baseline", 0);
+		this.markRecovery(open.id, "revert", null);
 		for (const image of images) this.restore(image);
-		// Every step's rebind retraces, newest first, so a subject moved twice comes all the way back,
-		// and the journal closes in the same commit so a replay after a crash finds nothing to retrace.
-		const steps = this.store.journalRead((db) =>
-			db.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC").all(open.id),
-		) as Array<{ stepNo: number }>;
-		const moves = steps.map((step) => this.rebindsOf(open.id, step.stepNo));
-		const kept = this.store.journalWrite((db) => {
-			const kept: KeptRebind[] = [];
-			for (const applied of moves) kept.push(...this.store.subjects.rebindBack(applied).kept);
-			this.drop(db, open.id, "reverted");
-			return kept;
-		});
-		this.store.pruneBlobs();
-
-		return {
-			reverted: true,
-			modules: images.map((image) => image.module),
-			...(kept.length === 0 ? {} : { unreversed: kept }),
-		};
+		this.failAfterRestore?.();
+		return this.finalizeRevert(open.id);
 	}
 
 	/** Keeps what is on disk and drops the journal, so nothing can be undone afterwards. */
@@ -429,6 +406,31 @@ export class TransactionManager {
 
 		const open = this.openTransaction();
 		if (!open) return { recovered: false, restored: [], conflicts: [], unreversed: [] };
+		const intent = this.recoveryIntent(open.id);
+		if (intent?.operation === "undo" && intent.stepNo !== null) {
+			const images = this.imagesOf(open.id, "step", intent.stepNo);
+			for (const image of images) this.restore(image);
+			const outcome = this.finalizeUndo(open.id, intent.stepNo);
+			return {
+				recovered: true,
+				transactionId: open.id,
+				restored: images.map((image) => image.module),
+				conflicts: [],
+				unreversed: outcome.unreversed ?? [],
+			};
+		}
+		if (intent?.operation === "revert") {
+			const images = this.imagesOf(open.id, "baseline", 0);
+			for (const image of images) this.restore(image);
+			const outcome = this.finalizeRevert(open.id);
+			return {
+				recovered: true,
+				transactionId: open.id,
+				restored: images.map((image) => image.module),
+				conflicts: [],
+				unreversed: outcome.unreversed ?? [],
+			};
+		}
 
 		const unfinished = this.store.journalRead((db) =>
 			db
@@ -488,6 +490,72 @@ export class TransactionManager {
 
 	////////////////////////////////
 	//  Files
+
+	private recoveryIntent(transactionId: string): RecoveryIntent | null {
+		const row = this.store.journalRead((db) =>
+			db
+				.prepare("SELECT operation, stepNo FROM refactor_recovery_intents WHERE transactionId = ?")
+				.get(transactionId),
+		) as RecoveryIntent | undefined;
+		return row ?? null;
+	}
+
+	private markRecovery(transactionId: string, operation: RecoveryIntent["operation"], stepNo: number | null): void {
+		this.store.journalWrite((db) =>
+			db
+				.prepare("INSERT INTO refactor_recovery_intents (transactionId, operation, stepNo) VALUES (?, ?, ?)")
+				.run(transactionId, operation, stepNo),
+		);
+	}
+
+	private finalizeUndo(transactionId: string, stepNo: number): UndoneStep {
+		const images = this.imagesOf(transactionId, "step", stepNo);
+		const applied = this.rebindsOf(transactionId, stepNo);
+		const kept = this.store.journalWrite((db) => {
+			const { kept } = this.store.subjects.rebindBack(applied);
+			db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
+				transactionId,
+				stepNo,
+			);
+			db.prepare("DELETE FROM refactor_issues WHERE transactionId = ? AND stepNo = ?").run(transactionId, stepNo);
+			db.prepare("DELETE FROM refactor_rebinds WHERE transactionId = ? AND stepNo = ?").run(
+				transactionId,
+				stepNo,
+			);
+			db.prepare("DELETE FROM refactor_steps WHERE transactionId = ? AND stepNo = ?").run(transactionId, stepNo);
+			db.prepare("DELETE FROM refactor_recovery_intents WHERE transactionId = ?").run(transactionId);
+			return kept;
+		});
+		return {
+			undone: true,
+			stepNo,
+			modules: images.map((image) => image.module),
+			...(kept.length === 0 ? {} : { unreversed: kept }),
+		};
+	}
+
+	private finalizeRevert(transactionId: string): RevertedTransaction {
+		const images = this.imagesOf(transactionId, "baseline", 0);
+		const steps = this.store.journalRead((db) =>
+			db
+				.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC")
+				.all(transactionId),
+		) as Array<{ stepNo: number }>;
+		const moves = steps.map((step) => this.rebindsOf(transactionId, step.stepNo));
+		const kept = this.store.journalWrite((db) => {
+			const kept: KeptRebind[] = [];
+			for (const applied of moves) kept.push(...this.store.subjects.rebindBack(applied).kept);
+			this.drop(db, transactionId, "reverted");
+			db.prepare("DELETE FROM refactor_recovery_intents WHERE transactionId = ?").run(transactionId);
+			return kept;
+		});
+		this.store.pruneBlobs();
+		return {
+			reverted: true,
+			modules: images.map((image) => image.module),
+			...(kept.length === 0 ? {} : { unreversed: kept }),
+		};
+	}
 
 	private full(module: string): string {
 		return insideWorkspace(this.workspaceRoot, module);

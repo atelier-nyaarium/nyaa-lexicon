@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -44,6 +45,18 @@ afterEach(() => {
 //  Tests
 
 describe("nextVersion", () => {
+	it("executes the shipped MCP artifact", () => {
+		const result = spawnSync(
+			process.execPath,
+			[path.join(import.meta.dirname, "..", "..", "dist", "main.js"), "--version"],
+			{
+				encoding: "utf8",
+			},
+		);
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+	});
+
 	it("rejects every AMD wrapper spelling", () => {
 		for (const source of [
 			'typeof define === "function" && define.amd',

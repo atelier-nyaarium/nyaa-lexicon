@@ -145,7 +145,7 @@ export interface ReplaceFileInput {
 // 17: document prose, anchored to the heading it sits under. A comment answers with the symbol it
 //    documents; a document region answers with the heading path it was found under, which is a
 //    different question and so a different table.
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -189,6 +189,14 @@ CREATE TABLE IF NOT EXISTS refactor_rebinds (
   CHECK (priorFrom IS NULL OR (typeof(priorFrom) = 'text' AND priorFrom != '')),
   CHECK (typeof(priorBoundAt) = 'integer'),
   CHECK (priorOrphanedAt IS NULL OR typeof(priorOrphanedAt) = 'integer')
+);
+`;
+
+const RECOVERY_INTENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS refactor_recovery_intents (
+  transactionId TEXT PRIMARY KEY,
+  operation TEXT NOT NULL CHECK (operation IN ('undo', 'revert')),
+  stepNo INTEGER
 );
 `;
 
@@ -404,6 +412,7 @@ CREATE TABLE refactor_steps (
   PRIMARY KEY (transactionId, stepNo)
 );
 ${REBINDS_TABLE}
+${RECOVERY_INTENTS_TABLE}
 -- Content addressed, so snapshotting every layer of a long transaction stores each distinct file
 -- version once rather than once per layer. Bytes, not text: a file that is not valid UTF-8 still
 -- has to come back byte-identical.
@@ -509,6 +518,7 @@ const SALVAGED_TABLES = [
 	"refactor_images",
 	"refactor_issues",
 	"refactor_rebinds",
+	"refactor_recovery_intents",
 ] as const;
 
 /** Journal tables, whose loss is worse than a failed open: it strands edits already on disk. */

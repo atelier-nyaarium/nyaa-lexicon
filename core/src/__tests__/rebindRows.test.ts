@@ -367,6 +367,39 @@ describe("a reversal commits with its journal, or not at all", () => {
 	});
 });
 
+describe("a recovery intent survives the filesystem gap", () => {
+	it("lets recover finish an undo after restore throws", async () => {
+		plant();
+		await record(CART);
+		const transactions = journalMove([{ from: CART, to: MOVED }]);
+		const failing = new TransactionManager(store, dir, undefined, () => {
+			throw new Error("injected after restore");
+		});
+
+		expect(() => failing.undo()).toThrow("injected after restore");
+		const recovered = new TransactionManager(store, dir).recover();
+
+		expect(recovered.unreversed).toEqual([]);
+		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(store.subjects.forAddress(MOVED)).toBeNull();
+		expect(rows()).toHaveLength(0);
+	});
+
+	it("lets revert finish after restore throws", async () => {
+		plant();
+		await record(CART);
+		journalMove([{ from: CART, to: MOVED }]);
+		const failing = new TransactionManager(store, dir, undefined, () => {
+			throw new Error("injected after restore");
+		});
+
+		expect(() => failing.revert()).toThrow("injected after restore");
+		expect(new TransactionManager(store, dir).revert().reverted).toBe(true);
+		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(store.subjects.forAddress(MOVED)).toBeNull();
+	});
+});
+
 describe("a store from before the table", () => {
 	/** An open step journaled the way the JSON shape did, its subject already at the destination. */
 	async function journalAsJson(applied: (subjectId: string) => unknown[]): Promise<void> {

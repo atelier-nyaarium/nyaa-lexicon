@@ -77,7 +77,7 @@ function marked(cut: string, full: string): string {
 
 function renderGroupedModules(title: string, groups: Iterable<readonly [string, readonly string[]]>): string {
 	const sections = [`# ${title}`];
-	for (const [module, rows] of groups) sections.push(`## \`${module}\`\n\n${rows.join("\n")}`);
+	for (const [module, rows] of groups) sections.push(`## \`${codeSpan(module)}\`\n\n${rows.join("\n")}`);
 	return sections.join("\n\n");
 }
 
@@ -99,7 +99,7 @@ function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): 
 		if (entries.length === 0) return;
 		lines.push(`### ${label}
 `);
-		for (const entry of entries) lines.push(`- ${line(entry)}  \`${entry.module}\``);
+		for (const entry of entries) lines.push(`- ${line(entry)}  \`${codeSpan(entry.module)}\``);
 	};
 	list(`Extends`, result.supertypes);
 	list(`Extended by`, result.subtypes);
@@ -116,7 +116,7 @@ function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): 
 	if (result.unboundSupertypes.length > 0) {
 		lines.push(`### Outside the index
 `);
-		for (const name of result.unboundSupertypes) lines.push(`- \`${name}\``);
+		for (const name of result.unboundSupertypes) lines.push(`- \`${codeSpan(name)}\``);
 	}
 }
 
@@ -144,8 +144,8 @@ export function renderDescribe(result: DescribeResult): string {
 	// The line span makes "read the body" a range read of exactly those lines, never a file read.
 	const location =
 		result.symbol.lines === undefined
-			? `\`${result.symbol.module}\``
-			: `\`${result.symbol.module}:${result.symbol.lines.start + 1}-${result.symbol.lines.end + 1}\``;
+			? `\`${codeSpan(result.symbol.module)}\``
+			: `\`${codeSpan(result.symbol.module)}:${result.symbol.lines.start + 1}-${result.symbol.lines.end + 1}\``;
 	// A signature block for a heading would be a code fence around a section title, which reads as
 	// code that does not exist.
 	const signature =
@@ -285,7 +285,7 @@ export function renderRenamePlan(plan: RenamePlan): string {
 		const lines = [
 			`# Rename blocked
 
-Cannot rename \`${plan.oldName || plan.symbolId}\`.
+Cannot rename \`${codeSpan(plan.oldName || plan.symbolId)}\`.
 
 ## Blockers
 `,
@@ -431,7 +431,9 @@ export function renderComments(result: CommentsResult): string {
 			comment.anchor === null
 				? `${comment.form} (module)`
 				: `${comment.form} \`${comment.anchor.name}\` (${comment.anchor.kind})`;
-		rows.push(`- Line ${comment.range.start.line + 1}: ${about}\n  \`${comment.factId}\`\n${indent(comment.raw)}`);
+		rows.push(
+			`- Line ${comment.range.start.line + 1}: ${about}\n  \`${codeSpan(comment.factId)}\`\n${indent(comment.raw)}`,
+		);
 		byModule.set(comment.module, rows);
 	}
 
@@ -455,7 +457,7 @@ export function renderDocs(result: DocsResult): string {
 			region.hit === undefined
 				? `Line ${region.range.start.line + 1}`
 				: `Line ${region.hit.line + 1}:${region.hit.character + 1}`;
-		rows.push(`- ${location}: ${where}\n  \`${region.factId}\`\n${indent(region.raw)}`);
+		rows.push(`- ${location}: ${where}\n  \`${codeSpan(region.factId)}\`\n${indent(region.raw)}`);
 		byModule.set(region.module, rows);
 	}
 
@@ -488,7 +490,7 @@ export function renderLiterals(result: LiteralsResult): string {
 			literal.containerName === undefined
 				? literal.containerId === null
 					? ""
-					: `  in \`${literal.containerId.split(" ").slice(3).join(" ")}\``
+					: `  in \`${codeSpan(literal.containerId.split(" ").slice(3).join(" "))}\``
 				: `  in ${literal.containerKind ?? "declaration"} \`${literal.containerName}\``;
 		rows.push(`- Line ${literal.range.start.line + 1}: **${literal.kind}** ${JSON.stringify(shown)}${container}`);
 		byModule.set(literal.module, rows);
@@ -613,7 +615,7 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = `kno
 		"",
 		recalled.answer.prose,
 		"",
-		`\`${recalled.answer.factId}\``,
+		`\`${codeSpan(recalled.answer.factId)}\``,
 	];
 	if (recalled.answer.thin)
 		lines.push(`
@@ -626,7 +628,7 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = `kno
 
 ${recalled.answer.doubt.reason}${by}
 
-\`${recalled.answer.doubt.factId}\`
+	\`${codeSpan(recalled.answer.doubt.factId)}\`
 
 ${
 	recalled.stranded === undefined
@@ -637,7 +639,7 @@ ${
 	}
 	if (recalled.stranded !== undefined) {
 		// Nothing at this address can be re-affirmed; the way forward is to record it where a reader will find it.
-		const shown = recalled.stranded.candidates.slice(0, 8).map((id) => `\`${id}\``);
+		const shown = recalled.stranded.candidates.slice(0, 8).map((id) => `\`${codeSpan(id)}\``);
 		const rest = recalled.stranded.candidates.length - shown.length;
 		const candidates = `${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
 		const hold = recalled.stranded.exempt
@@ -663,7 +665,7 @@ ${
 	}
 	if (recalled.subject !== undefined && recalled.subject.recordedAs !== recalled.answer.symbolId) {
 		status.push(
-			`**REBOUND:** Recorded at \`${recalled.subject.recordedAs}\`; followed to this address by \`${recalled.subject.evidence}\`.`,
+			`**REBOUND:** Recorded at \`${codeSpan(recalled.subject.recordedAs)}\`; followed to this address by \`${codeSpan(recalled.subject.evidence)}\`.`,
 		);
 	}
 	if (status.length > 0)
@@ -680,7 +682,7 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 		const lines = [
 			`# Answer recorded
 
-\`${outcome.answer.factId}\``,
+	\`${codeSpan(outcome.answer.factId)}\``,
 		];
 		if (outcome.answer.thin)
 			lines.push(`
@@ -691,7 +693,7 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 
 ${carried.reason}
 
-\`${carried.factId}\`
+	\`${codeSpan(carried.factId)}\`
 
 Cite this ID as \`resolvesDoubt\` to clear the doubt.
 `);
@@ -707,7 +709,7 @@ ${outcome.reason}`,
 		lines.push(`
 ## Unresolved fact IDs
 `);
-		for (const factId of outcome.unresolved ?? []) lines.push(`- \`${factId}\``);
+		for (const factId of outcome.unresolved ?? []) lines.push(`- \`${codeSpan(factId)}\``);
 	}
 	if (outcome.uncovered !== undefined && outcome.uncovered.length > 0) {
 		lines.push(`
@@ -715,7 +717,7 @@ ${outcome.reason}`,
 
 Fact IDs from the existing answer:
 `);
-		for (const factId of outcome.uncovered) lines.push(`- \`${factId}\``);
+		for (const factId of outcome.uncovered) lines.push(`- \`${codeSpan(factId)}\``);
 	}
 	return lines.join("\n");
 }
@@ -728,7 +730,7 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 	const lines: string[] = [
 		`${title}
 
-**Symbol:** \`${outcome.symbolId}\``,
+**Symbol:** \`${codeSpan(outcome.symbolId)}\``,
 	];
 	for (const entry of outcome.doubted) {
 		const by = entry.doubt.by === undefined ? "" : ` (${entry.doubt.by})`;
@@ -737,7 +739,7 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 
 ${entry.doubt.reason}${by}
 
-\`${entry.doubt.factId}\`
+\`${codeSpan(entry.doubt.factId)}\`
 
 Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.`);
 	}
@@ -767,7 +769,7 @@ ${count} row${count === 1 ? " belongs" : "s belong"} to subjects whose address n
 			const tail = row.symbolId.split(" ").slice(3).join(" ");
 			const when = row.strandedAt === undefined ? "-" : new Date(row.strandedAt).toISOString().slice(0, 10);
 			lines.push(
-				`| \`${tail}\` | ${row.question} | ${row.why === "missing" ? "demand" : "answer"} | ${when} | ${row.evidence ?? "-"} |`,
+				`| \`${codeSpan(tail)}\` | ${row.question} | ${row.why === "missing" ? "demand" : "answer"} | ${when} | ${row.evidence ?? "-"} |`,
 			);
 		}
 	}
@@ -849,13 +851,14 @@ ${lead}: no ${asked}gaps.`,
 | --- | --- | --- | ---: | ---: |`);
 	for (const row of actionable) {
 		const tail = row.symbolId.split(" ").slice(3).join(" ");
-		const symbol = row.name === undefined ? `\`${tail}\`` : `**${row.kind ?? "symbol"}** \`${tail}\``;
+		const symbol =
+			row.name === undefined ? `\`${codeSpan(tail)}\`` : `**${row.kind ?? "symbol"}** \`${codeSpan(tail)}\``;
 		const state = row.why === "stale" ? `**STALE**` : row.why === "doubted" ? `**DOUBTED**` : `MISSING`;
 		const question = row.question === gaps.question ? "" : ` (${row.question})`;
 		const askedAt =
 			row.recordedAs === undefined || row.recordedAs === row.symbolId
 				? ""
-				: ` (asked at \`${row.recordedAs.split(" ").slice(3).join(" ")}\`)`;
+				: ` (asked at \`${codeSpan(row.recordedAs.split(" ").slice(3).join(" "))}\`)`;
 		lines.push(
 			`| ${symbol}${question}${askedAt} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
 		);
@@ -866,7 +869,7 @@ ${lead}: no ${asked}gaps.`,
 	const first = actionable[0];
 	if (first !== undefined)
 		lines.push(`
-**Full ID example:** \`${first.symbolId}\``);
+**Full ID example:** \`${codeSpan(first.symbolId)}\``);
 	lines.push(...renderStranded(gaps.stranded ?? 0, strandedRows));
 	if (gaps.truncated)
 		lines.push(`
@@ -932,7 +935,7 @@ export function renderFacts(result: {
 	}>;
 	truncated: string[];
 }): string {
-	const lines = [`# Facts about \`${result.symbolId}\``];
+	const lines = [`# Facts about \`${codeSpan(result.symbolId)}\``];
 	const factsByKind = new Map<string, typeof result.facts>();
 	for (const fact of result.facts) {
 		const group = factsByKind.get(fact.kind) ?? [];
@@ -949,7 +952,7 @@ export function renderFacts(result: {
 		for (const fact of descriptions)
 			lines.push(`${fact.summary.slice("describe: ".length)}
 
-\`${fact.factId}\``);
+\`${codeSpan(fact.factId)}\``);
 	}
 
 	// Keyed by FactKind, so a new kind fails the type check here rather than going unrendered.
@@ -971,7 +974,7 @@ export function renderFacts(result: {
 		lines.push(`
 ## ${heading}
 `);
-		for (const fact of group) lines.push(`- ${fact.summary}`, `  \`${fact.factId}\``);
+		for (const fact of group) lines.push(`- ${fact.summary}`, `  \`${codeSpan(fact.factId)}\``);
 	}
 
 	const otherAnswers = answers.filter((fact) => !fact.summary.startsWith("describe: "));
@@ -987,7 +990,7 @@ export function renderFacts(result: {
 
 ${prose}
 
-\`${fact.factId}\``);
+\`${codeSpan(fact.factId)}\``);
 		}
 	}
 
@@ -1256,7 +1259,7 @@ export function renderMostReferenced(
 	for (const row of rows) {
 		const where = row.declaration
 			? `${line(row.declaration)} in \`${row.declaration.module}\``
-			: `\`${row.symbolId}\``;
+			: `\`${codeSpan(row.symbolId)}\``;
 		lines.push(`| ${where} | ${row.count} |`);
 	}
 	lines.push(`
@@ -1279,7 +1282,7 @@ export function renderSymbolSearch(result: {
 		const rows = byModule.get(symbol.module) ?? [];
 		// The id rides along because it is the address every other tool takes. Without it a search
 		// hit has to be looked up again before it can be read, replaced or renamed.
-		rows.push(symbolBullet(symbol), `  ID: \`${symbol.symbolId}\``);
+		rows.push(symbolBullet(symbol), `  ID: \`${codeSpan(symbol.symbolId)}\``);
 		byModule.set(symbol.module, rows);
 	}
 
@@ -1505,7 +1508,7 @@ export function renderInsertOutcome(outcome: InsertOutcome): string {
 		`# Inserted into \`${outcome.module}\`
 `,
 	];
-	for (const symbolId of outcome.symbolIds ?? []) lines.push(`- ID: \`${symbolId}\``);
+	for (const symbolId of outcome.symbolIds ?? []) lines.push(`- ID: \`${codeSpan(symbolId)}\``);
 	if ((outcome.symbolIds ?? []).length > 0) lines.push("");
 
 	if (outcome.issues.length === 0) {
@@ -1608,7 +1611,7 @@ export function renderCandidates(name: string, candidates: SymbolSummary[]): str
 ## \`${candidate.module}\`
 
 - ${line(candidate)}
-  ID: \`${candidate.symbolId}\``);
+  ID: \`${codeSpan(candidate.symbolId)}\``);
 	}
 	lines.push(`
 Pass one of the IDs above to pick one.`);
