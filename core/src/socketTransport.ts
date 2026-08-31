@@ -100,12 +100,14 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 			try {
 				raw = JSON.parse(line);
 			} catch {
+				process.stderr.write("malformed JSON\n");
 				socket.destroy();
 				return;
 			}
 			const parsed = ClientFrameSchema.safeParse(raw);
 			// A malformed frame is a broken or hostile peer either way; there is no id to answer.
 			if (!parsed.success) {
+				process.stderr.write("invalid frame shape\n");
 				socket.destroy();
 				return;
 			}
@@ -160,7 +162,10 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 
 		socket.on(
 			"data",
-			lineSplitter(SERVER_LINE_CAP, onFrame, () => socket.destroy()),
+			lineSplitter(SERVER_LINE_CAP, onFrame, (reason) => {
+				process.stderr.write(`${reason}\n`);
+				socket.destroy();
+			}),
 		);
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {

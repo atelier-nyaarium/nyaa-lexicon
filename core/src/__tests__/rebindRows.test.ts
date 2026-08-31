@@ -34,7 +34,12 @@ function declaration(symbolId: string, name: string, line = 0) {
 }
 
 function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
-	store.replaceFile(module, "h1", [declaration(symbolId, name)], []);
+	store.replaceFile({
+		module: module,
+		contentHash: "h1",
+		declarations: [declaration(symbolId, name)],
+		references: [],
+	});
 }
 
 async function record(symbolId: string, prose = "A shopping cart.") {
@@ -98,7 +103,12 @@ afterEach(() => {
 
 describe("what a step moved is rows, not JSON", () => {
 	it("writes one row per applied move in the order applied, and the plan keeps only what was decided", async () => {
-		store.replaceFile("a.ref", "h1", [declaration(CART, "Cart"), declaration(TOTAL, "Total", 1)], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declaration(CART, "Cart"), declaration(TOTAL, "Total", 1)],
+			references: [],
+		});
 		await record(CART);
 		await record(TOTAL, "The total.");
 		const movedTotal = "lexicon reference b.ref Total#";

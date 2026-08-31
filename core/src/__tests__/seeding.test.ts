@@ -100,21 +100,21 @@ function plant(
 				]
 			: [],
 	);
-	store.replaceFile(
-		module,
-		`h-${module}`,
-		decls,
-		refs,
-		[],
-		literals,
-		"full",
-		comments,
-		[],
-		[],
-		"code",
-		[],
-		generated,
-	);
+	store.replaceFile({
+		module: module,
+		contentHash: `h-${module}`,
+		declarations: decls,
+		references: refs,
+		imports: [],
+		literals: literals,
+		depth: "full",
+		comments: comments,
+		docs: [],
+		notes: [],
+		content: "code",
+		digests: [],
+		generated: generated,
+	});
 	return ids;
 }
 
@@ -320,36 +320,36 @@ describe("the seeded fallback interleaves languages", () => {
 			selectionRange: at(line),
 			visibility: "public",
 		});
-		store.replaceFile(
-			"config.json",
-			"h-json",
-			[declaration(field, "property", "name", 0)],
-			[],
-			[],
-			[{ kind: "string", value: "switchboard", range: at(0), containerId: field }],
-			"full",
-			[],
-			[],
-			[],
-			"data",
-			[],
-			{ status: "no" },
-		);
-		store.replaceFile(
-			"guide.md",
-			"h-md",
-			[declaration(heading, "heading", "Principles", 0), declaration(bare, "heading", "Empty", 5)],
-			[],
-			[],
-			[],
-			"full",
-			[],
-			[{ range: at(1), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: heading }],
-			[],
-			"document",
-			[],
-			{ status: "no" },
-		);
+		store.replaceFile({
+			module: "config.json",
+			contentHash: "h-json",
+			declarations: [declaration(field, "property", "name", 0)],
+			references: [],
+			imports: [],
+			literals: [{ kind: "string", value: "switchboard", range: at(0), containerId: field }],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [],
+			content: "data",
+			digests: [],
+			generated: { status: "no" },
+		});
+		store.replaceFile({
+			module: "guide.md",
+			contentHash: "h-md",
+			declarations: [declaration(heading, "heading", "Principles", 0), declaration(bare, "heading", "Empty", 5)],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [{ range: at(1), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: heading }],
+			notes: [],
+			content: "document",
+			digests: [],
+			generated: { status: "no" },
+		});
 
 		expect(seededIds()).toEqual([heading]);
 	});

@@ -70,7 +70,12 @@ describe("what decides that stored facts expired", () => {
 			IndexStore.open(file, storeCompatibilityKey(root(`{"version": "${version}"}`)));
 
 		const first = openAt("1.12.0");
-		first.store.replaceFile("src/a.ts", "h1", [declaration], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration],
+			references: [],
+		});
 		first.store.close();
 
 		for (const release of ["1.12.1", "1.13.0"]) {

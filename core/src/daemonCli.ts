@@ -163,6 +163,7 @@ async function main(argv: string[]): Promise<void> {
 	let live: { stop: () => void } | null = null;
 	let linger: ReturnType<typeof lingerWhileEmpty> | null = null;
 	let collector: Collector | null = null;
+	const gate = new WorkspaceGate();
 
 	// Requests being answered right now. What shutdown waits out and the linger refuses to orphan.
 	let inFlight = 0;
@@ -195,7 +196,7 @@ async function main(argv: string[]): Promise<void> {
 			if (transactions?.status().open) {
 				log("a refactor transaction stays open in the journal; the next daemon recovers it");
 			}
-			await releaseEverything();
+			await gate.exclusive(() => releaseEverything());
 			log(`stopped (exit ${code})`);
 		} finally {
 			process.exit(code);
@@ -291,7 +292,6 @@ async function main(argv: string[]): Promise<void> {
 		const openStore = store;
 		const service = new LexiconService(openStore, supervisor, sourceReader(root), root, clock);
 
-		const gate = new WorkspaceGate();
 		transactions = new TransactionManager(openStore, root, () => clock.now());
 		const journal = transactions;
 

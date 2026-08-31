@@ -39,7 +39,12 @@ afterEach(() => {
 describe("a symbol search past its page", () => {
 	it("answers a floor of limit + 1, and an exact count once the page holds everything", () => {
 		const names = Array.from({ length: 60 }, (_, index) => `thing${index}`);
-		store.replaceFile("src/a.ts", "h1", names.map(declaration), []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: names.map(declaration),
+			references: [],
+		});
 
 		const capped = reads.searchSymbols("thing", { limit: 50 });
 		expect(capped.symbols).toHaveLength(50);

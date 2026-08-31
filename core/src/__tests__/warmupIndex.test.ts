@@ -259,7 +259,7 @@ describe("warmup pass", () => {
 		rmSync(path.join(root, "b.fake"));
 		parse.release();
 		const outcomes = await warming;
-		expect(outcomes).toContainEqual(expect.objectContaining({ module: "b.fake", action: "forgotten" }));
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "b.fake", action: "skipped" }));
 		expect(service.warmHold()).toBeNull();
 	});
 
@@ -491,7 +491,7 @@ describe("warmup pass", () => {
 		put("good.fake", "export class Good {}\n");
 		const replaceFile = store.replaceFile.bind(store);
 		store.replaceFile = (...args: Parameters<IndexStore["replaceFile"]>) => {
-			if (args[0] === "bad.fake") throw new Error("store broke");
+			if (args[0].module === "bad.fake") throw new Error("store broke");
 			return replaceFile(...args);
 		};
 		service = serviceOver(depthSupervisor(["bad.fake", "good.fake"], true, []));

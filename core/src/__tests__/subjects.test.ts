@@ -33,7 +33,12 @@ function declaration(symbolId: string, name: string, line = 0) {
 }
 
 function plant(module = "a.ref", symbolId = CART, name = "Cart"): string {
-	store.replaceFile(module, "h1", [declaration(symbolId, name)], []);
+	store.replaceFile({
+		module: module,
+		contentHash: "h1",
+		declarations: [declaration(symbolId, name)],
+		references: [],
+	});
 	return store.declarationsIn(module)[0]?.factId as string;
 }
 
@@ -233,7 +238,12 @@ describe("a subject and its address", () => {
 	it("lists bound subjects whose address no longer resolves", async () => {
 		plant();
 		await record(CART);
-		store.replaceFile("a.ref", "h2", [], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [],
+			references: [],
+		});
 
 		expect(store.subjects.unresolved(10).map((subject) => subject.symbolId)).toEqual([CART]);
 	});
@@ -252,20 +262,20 @@ describe("a subject and its address", () => {
 	it("keeps twenty twins apart: one name, one digest, twenty subjects, and a rebind moves one", async () => {
 		const twins = Array.from({ length: 20 }, (_, i) => `lexicon reference m${i}.ref Cart#`);
 		for (const [i, symbolId] of twins.entries()) {
-			store.replaceFile(
-				`m${i}.ref`,
-				"h1",
-				[declaration(symbolId, "Cart")],
-				[],
-				[],
-				[],
-				"full",
-				[],
-				[],
-				[],
-				"code",
-				[{ symbolId, patternDigest: "same", patternCoverage: "commentsStripped" }],
-			);
+			store.replaceFile({
+				module: `m${i}.ref`,
+				contentHash: "h1",
+				declarations: [declaration(symbolId, "Cart")],
+				references: [],
+				imports: [],
+				literals: [],
+				depth: "full",
+				comments: [],
+				docs: [],
+				notes: [],
+				content: "code",
+				digests: [{ symbolId, patternDigest: "same", patternCoverage: "commentsStripped" }],
+			});
 			await record(symbolId, `Cart ${i}.`);
 		}
 		const moved = "lexicon reference moved.ref Cart#";
@@ -286,21 +296,51 @@ describe("a subject and its address", () => {
 
 describe("the pattern digest", () => {
 	it("is minted by a full parse and not by a shallow one", () => {
-		store.replaceFile("a.ref", "h1", [declaration(CART, "Cart")], [], [], [], "outline");
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declaration(CART, "Cart")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "outline",
+		});
 		expect(store.patternDigestOf(CART)).toBeNull();
 
-		store.replaceFile("a.ref", "h1", [declaration(CART, "Cart")], [], [], [], "full", [], [], [], "code", [
-			{ symbolId: CART, patternDigest: "abc", patternCoverage: "commentsStripped" },
-		]);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declaration(CART, "Cart")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [],
+			content: "code",
+			digests: [{ symbolId: CART, patternDigest: "abc", patternCoverage: "commentsStripped" }],
+		});
 		expect(store.patternDigestOf(CART)).toEqual({ digest: "abc", coverage: "commentsStripped" });
 	});
 
 	it("follows the bound subject when the declaration is re-indexed", async () => {
 		plant();
 		await record(CART);
-		store.replaceFile("a.ref", "h2", [declaration(CART, "Cart")], [], [], [], "full", [], [], [], "code", [
-			{ symbolId: CART, patternDigest: "abc", patternCoverage: "commentsKept" },
-		]);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [declaration(CART, "Cart")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [],
+			content: "code",
+			digests: [{ symbolId: CART, patternDigest: "abc", patternCoverage: "commentsKept" }],
+		});
 
 		expect(store.subjects.forAddress(CART)).toMatchObject({ lastDigest: "abc", lastCoverage: "commentsKept" });
 	});
@@ -315,9 +355,20 @@ describe("the pattern digest", () => {
 			["a.ref", CART, "Cart"],
 			["b.ref", basket, "Basket"],
 		] as const) {
-			store.replaceFile(module, "h2", [declaration(symbolId, name)], [], [], [], "full", [], [], [], "code", [
-				{ symbolId, patternDigest: "same", patternCoverage: "commentsStripped" },
-			]);
+			store.replaceFile({
+				module: module,
+				contentHash: "h2",
+				declarations: [declaration(symbolId, name)],
+				references: [],
+				imports: [],
+				literals: [],
+				depth: "full",
+				comments: [],
+				docs: [],
+				notes: [],
+				content: "code",
+				digests: [{ symbolId, patternDigest: "same", patternCoverage: "commentsStripped" }],
+			});
 		}
 
 		const a = store.subjects.forAddress(CART);

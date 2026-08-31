@@ -61,10 +61,10 @@ describe("scoped search reads", () => {
 		const child = id("inside", "a.ts", "routes");
 		const outside = id("outside", "a.ts");
 		const target = id("target", "a.ts");
-		store.replaceFile(
-			"a.ts",
-			"a",
-			[
+		store.replaceFile({
+			module: "a.ts",
+			contentHash: "a",
+			declarations: [
 				{
 					...declaration(
 						composeSymbolId({
@@ -81,15 +81,15 @@ describe("scoped search reads", () => {
 				declaration(outside, "outside"),
 				declaration(target, "target"),
 			],
-			[reference(target, child), reference(null)],
-			[],
-			[
+			references: [reference(target, child), reference(null)],
+			imports: [],
+			literals: [
 				{ kind: "string", value: "warning", range: POINT, containerId: child },
 				{ kind: "string", value: "warning", range: POINT },
 			],
-			"full",
-			[comment(child), comment(null)],
-		);
+			depth: "full",
+			comments: [comment(child), comment(null)],
+		});
 
 		const scopedSearch = reads.searchSymbols("in", { within: "routes" });
 		expect(scopedSearch.symbols.map((symbol) => symbol.name)).toEqual(["inside"]);
@@ -120,17 +120,17 @@ describe("scoped search reads", () => {
 
 	it("uses the immediate container for regex keys and excludes top-level literals", () => {
 		const container = id("field", "a.ts");
-		store.replaceFile(
-			"a.ts",
-			"a",
-			[declaration(container, "field")],
-			[],
-			[],
-			[
+		store.replaceFile({
+			module: "a.ts",
+			contentHash: "a",
+			declarations: [declaration(container, "field")],
+			references: [],
+			imports: [],
+			literals: [
 				{ kind: "string", value: "warning", range: POINT, containerId: container },
 				{ kind: "string", value: "warning", range: POINT },
 			],
-		);
+		});
 
 		expect(reads.findLiterals({ regex: "/warning/", key: "field" })).toMatchObject({ count: { count: 1 } });
 		expect(reads.findLiterals({ regex: "/warning/", key: "field" }).literals).toHaveLength(1);

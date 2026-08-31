@@ -130,16 +130,15 @@ export class WorkspaceIndexer {
 
 		const read = this.readSource(module);
 		if (read.kind === "missing") {
-			this.forgetFile(module);
-			return this.outcome(module, "missing");
+			return this.outcome(module, "missing", undefined, this.forgetFile(module));
 		}
 		if (read.kind !== "text") {
 			// Whatever it held before is not this file; the failure says why it holds nothing now.
-			this.forgetFile(module);
+			const forgotten = this.forgetFile(module);
 			const failure = unreadableReason(read);
 			this.store.recordFailure(module, failure);
 			this.upgradeFailed.add(module);
-			return this.outcome(module, read.kind, failure);
+			return this.outcome(module, read.kind, failure, forgotten);
 		}
 		const text = read.text;
 		// Read, so it exists: evidence for a shared claim that no scan has seen.
@@ -207,23 +206,23 @@ export class WorkspaceIndexer {
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
 		// question only the source text answers, and this is the last place holding it.
 		try {
-			this.store.replaceFile(
+			this.store.replaceFile({
 				module,
-				readHash,
-				facts.declarations,
-				facts.references,
-				facts.imports,
-				facts.literals,
-				storedDepth,
-				attachComments(facts.declarations, facts.comments ?? [], text),
-				facts.docs ?? [],
+				contentHash: readHash,
+				declarations: facts.declarations,
+				references: facts.references,
+				imports: facts.imports,
+				literals: facts.literals,
+				depth: storedDepth,
+				comments: attachComments(facts.declarations, facts.comments ?? [], text),
+				docs: facts.docs ?? [],
 				notes,
-				route.content,
+				content: route.content,
 				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
 				// supervisor drops a comments field from a provider that never declared the tier.
-				storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
-				this.verdictFor(module),
-			);
+				digests: storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
+				generated: this.verdictFor(module),
+			});
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
 			if (!(error instanceof FactAdmissionError)) throw error;
@@ -464,11 +463,11 @@ export class WorkspaceIndexer {
 	/** Exclude failures from the retryable background backlog. */
 	private upgradeFailed = new Set<string>();
 
-	/** The one place an outcome's action and reason are chosen for its cause; `forgot` says rows were removed. */
+	/** The one place an outcome's action and reason are chosen for its cause. */
 	private outcome(module: string, cause: IndexCause, detail?: string, forgot = false): IndexOutcome {
 		switch (cause) {
 			case "missing":
-				return { module, action: "forgotten", cause, reason: "file is gone" };
+				return { module, action: forgot ? "forgotten" : "skipped", cause, reason: "file is gone" };
 			case "current":
 				return { module, action: "skipped", cause, reason: detail ?? "already indexed at this depth" };
 			case "binary":
@@ -565,8 +564,7 @@ export class WorkspaceIndexer {
 		const outcomes: IndexOutcome[] = [];
 		for (const module of this.store.indexedFiles()) {
 			if (reachable.has(module)) continue;
-			this.forgetFile(module);
-			outcomes.push(this.outcome(module, "unclaimed", "no longer a root or reachable", true));
+			outcomes.push(this.outcome(module, "unclaimed", "no longer a root or reachable", this.forgetFile(module)));
 		}
 		// A failure row for a file that was never stored has no files row to sweep it away with.
 		for (const { module } of this.store.parseFailures()) {
@@ -633,9 +631,10 @@ export class WorkspaceIndexer {
 		return ceiling === "surface" ? "surface" : floor;
 	}
 
-	private forgetFile(module: string): void {
-		this.store.forgetFile(module);
+	private forgetFile(module: string): boolean {
+		const removed = this.store.forgetFile(module);
 		this.cache.invalidate();
+		return removed;
 	}
 
 	/**
@@ -722,8 +721,7 @@ export class WorkspaceIndexer {
 
 			if (decision.action === "forget") {
 				pending.delete(decision.module);
-				this.forgetFile(decision.module);
-				outcomes.push(this.outcome(decision.module, "missing"));
+				outcomes.push(this.outcome(decision.module, "missing", undefined, this.forgetFile(decision.module)));
 				continue;
 			}
 			if (decision.action === "ignore") {

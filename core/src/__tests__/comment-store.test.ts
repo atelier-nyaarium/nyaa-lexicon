@@ -57,9 +57,16 @@ afterEach(() => {
 
 describe("storing comments", () => {
 	it("reads back what it stored, raw and normalized apart", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], [], [], [], "full", [
-			comment("// refuses rather than clamping", idOf("add")),
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [comment("// refuses rather than clamping", idOf("add"))],
+		});
 
 		const [found] = store.commentsAnchoredTo(idOf("add"));
 		expect(found?.raw).toBe("// refuses rather than clamping");
@@ -70,30 +77,55 @@ describe("storing comments", () => {
 	// This pins the COLUMN search reads. That the normalized value is right is the normalizer's
 	// test, and that the whole path joins up is comment-indexing's.
 	it("searches the normalized column rather than the raw one", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], [], [], [], "full", [
-			{
-				...comment("// refuses rather than\n// clamping", idOf("add")),
-				normalized: "refuses rather than clamping",
-			},
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				{
+					...comment("// refuses rather than\n// clamping", idOf("add")),
+					normalized: "refuses rather than clamping",
+				},
+			],
+		});
 
 		expect(store.commentsContaining("than clamping", 10)).toHaveLength(1);
 		expect(store.commentsContaining("nothing here", 10)).toEqual([]);
 	});
 
 	it("treats a LIKE wildcard in the query as a literal character", () => {
-		store.replaceFile("src/a.ts", "h1", [], [], [], [], "full", [
-			{ ...comment("// one hundred percent", null), normalized: "one hundred percent" },
-			{ ...comment("// 100% sure", null), normalized: "100% sure" },
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				{ ...comment("// one hundred percent", null), normalized: "one hundred percent" },
+				{ ...comment("// 100% sure", null), normalized: "100% sure" },
+			],
+		});
 
 		expect(store.commentsContaining("100%", 10).map((item) => item.normalized)).toEqual(["100% sure"]);
 	});
 
 	it("keeps a module-level comment anchored to nothing", () => {
-		store.replaceFile("src/a.ts", "h1", [], [], [], [], "full", [
-			{ ...comment("// Copyright someone", null), form: "standalone", placement: "inside" },
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [{ ...comment("// Copyright someone", null), form: "standalone", placement: "inside" }],
+		});
 
 		const [found] = store.commentsToScan(10);
 		expect(found?.anchorId).toBeNull();
@@ -101,10 +133,19 @@ describe("storing comments", () => {
 	});
 
 	it("filters a scan by form", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], [], [], [], "full", [
-			comment("// leads", idOf("add")),
-			{ ...comment("// trails", idOf("add")), form: "trailing", placement: "after" },
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				comment("// leads", idOf("add")),
+				{ ...comment("// trails", idOf("add")), form: "trailing", placement: "after" },
+			],
+		});
 
 		expect(store.commentsToScan(10, { form: "trailing" }).map((item) => item.raw)).toEqual(["// trails"]);
 	});
@@ -112,23 +153,44 @@ describe("storing comments", () => {
 	// The invariant: an anchor is rewritten by the next pass, never carried forward. A symbol that
 	// moved cannot leave a comment pointing at where it used to be.
 	it("rewrites anchors on reindex rather than migrating them", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], [], [], [], "full", [
-			comment("// docs", idOf("add")),
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [comment("// docs", idOf("add"))],
+		});
 		expect(store.commentsAnchoredTo(idOf("add"))).toHaveLength(1);
 
-		store.replaceFile("src/a.ts", "h2", [declaration("renamed")], [], [], [], "full", [
-			comment("// docs", idOf("renamed")),
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h2",
+			declarations: [declaration("renamed")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [comment("// docs", idOf("renamed"))],
+		});
 
 		expect(store.commentsAnchoredTo(idOf("add"))).toEqual([]);
 		expect(store.commentsAnchoredTo(idOf("renamed"))).toHaveLength(1);
 	});
 
 	it("drops a file's comments when the file is forgotten", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], [], [], [], "full", [
-			comment("// docs", idOf("add")),
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [comment("// docs", idOf("add"))],
+		});
 
 		store.forgetFile("src/a.ts");
 
@@ -137,22 +199,40 @@ describe("storing comments", () => {
 
 	// Two identical comments in one file are two facts, exactly as two identical literals are.
 	it("stores two identical comments as two rows", () => {
-		store.replaceFile("src/a.ts", "h1", [], [], [], [], "full", [
-			{
-				...comment("// same", null),
-				range: { start: { line: 1, character: 0 }, end: { line: 1, character: 7 } },
-			},
-			{
-				...comment("// same", null),
-				range: { start: { line: 5, character: 0 }, end: { line: 5, character: 7 } },
-			},
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				{
+					...comment("// same", null),
+					range: { start: { line: 1, character: 0 }, end: { line: 1, character: 7 } },
+				},
+				{
+					...comment("// same", null),
+					range: { start: { line: 5, character: 0 }, end: { line: 5, character: 7 } },
+				},
+			],
+		});
 
 		expect(store.commentsToScan(10)).toHaveLength(2);
 	});
 
 	it("gives every comment a parseable fact id", () => {
-		store.replaceFile("src/a.ts", "h1", [], [], [], [], "full", [comment("// docs", null)]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [comment("// docs", null)],
+		});
 
 		const [found] = store.commentsToScan(10);
 		expect(found?.factId).toMatch(/^lexfact comment /);

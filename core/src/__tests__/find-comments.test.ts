@@ -61,13 +61,29 @@ afterEach(() => {
 
 describe("searching comments", () => {
 	beforeEach(() => {
-		store.replaceFile("src/a.ts", "h1", [declaration("work")], [], [], [], "full", [
-			comment("refuses rather than clamping", idOf("work")),
-			{ ...comment("TODO handle the empty case", idOf("work")), form: "trailing", placement: "after" },
-		]);
-		store.replaceFile("src/b.ts", "h1", [], [], [], [], "full", [
-			{ ...comment("Copyright someone", null), form: "standalone", placement: "inside" },
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("work")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				comment("refuses rather than clamping", idOf("work")),
+				{ ...comment("TODO handle the empty case", idOf("work")), form: "trailing", placement: "after" },
+			],
+		});
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [{ ...comment("Copyright someone", null), form: "standalone", placement: "inside" }],
+		});
 	});
 
 	it("finds by substring and names the symbol it was written about", () => {
@@ -128,11 +144,20 @@ describe("searching comments", () => {
 	});
 
 	it("says when a page was cut rather than reporting the cap as a total", () => {
-		store.replaceFile("src/c.ts", "h1", [], [], [], [], "full", [
-			comment("shared word one", null),
-			comment("shared word two", null),
-			comment("shared word three", null),
-		]);
+		store.replaceFile({
+			module: "src/c.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				comment("shared word one", null),
+				comment("shared word two", null),
+				comment("shared word three", null),
+			],
+		});
 
 		const found = reads.findComments({ text: "shared word" }, 2);
 		expect(found.comments).toHaveLength(2);
@@ -143,7 +168,16 @@ describe("searching comments", () => {
 
 	it("counts every match, however far past the page it goes", () => {
 		const many = Array.from({ length: 40 }, (_, index) => comment(`common phrase ${index}`, null));
-		store.replaceFile("src/e.ts", "h1", [], [], [], [], "full", many);
+		store.replaceFile({
+			module: "src/e.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: many,
+		});
 
 		const found = reads.findComments({ text: "common phrase" }, 5);
 		expect(found.comments).toHaveLength(5);
@@ -153,7 +187,16 @@ describe("searching comments", () => {
 	// A long banner is hundreds of lines and no caller asked for them.
 	it("caps a long comment and says how much it cut", () => {
 		const lines = Array.from({ length: 20 }, (_, index) => `// line ${index}`).join("\n");
-		store.replaceFile("src/d.ts", "h1", [], [], [], [], "full", [{ ...comment("a banner", null), raw: lines }]);
+		store.replaceFile({
+			module: "src/d.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [{ ...comment("a banner", null), raw: lines }],
+		});
 
 		const [found] = reads.findComments({ text: "a banner" }).comments;
 		expect(found?.raw.split("\n")).toHaveLength(9);
@@ -164,7 +207,16 @@ describe("searching comments", () => {
 	// cap does nothing about.
 	it("caps a comment that is wide rather than tall", () => {
 		const wide = `// ${"W".repeat(5_000)}`;
-		store.replaceFile("src/f.ts", "h1", [], [], [], [], "full", [{ ...comment("a wide one", null), raw: wide }]);
+		store.replaceFile({
+			module: "src/f.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [{ ...comment("a wide one", null), raw: wide }],
+		});
 
 		const [found] = reads.findComments({ text: "a wide one" }).comments;
 		expect(found?.raw.length).toBeLessThan(300);
@@ -180,7 +232,14 @@ describe("a literal search counts every match too", () => {
 			value: "repeated",
 			range: POINT,
 		}));
-		store.replaceFile("src/a.ts", "h1", [], [], [], many);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: many,
+		});
 
 		const found = reads.findLiterals({ value: "repeated" }, 5);
 		expect(found.literals).toHaveLength(5);
@@ -195,7 +254,14 @@ describe("a literal search counts every match too", () => {
 			number: index,
 			range: POINT,
 		}));
-		store.replaceFile("src/b.ts", "h1", [], [], [], many);
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: many,
+		});
 
 		expect(reads.findLiterals({ min: 0, max: 100 }, 4).total).toBe(30);
 	});
@@ -203,10 +269,19 @@ describe("a literal search counts every match too", () => {
 
 describe("describe carries what else was written", () => {
 	it("lists notes but not the documentation, which prints above", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("work")], [], [], [], "full", [
-			comment("what work does", idOf("work")),
-			{ ...comment("why this order", idOf("work")), form: "standalone", placement: "inside" },
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("work")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				comment("what work does", idOf("work")),
+				{ ...comment("why this order", idOf("work")), form: "standalone", placement: "inside" },
+			],
+		});
 
 		const described = reads.describe(idOf("work"));
 		expect(described?.symbol.docComment).toBe("what work does");
@@ -214,9 +289,16 @@ describe("describe carries what else was written", () => {
 	});
 
 	it("omits the section when nothing but documentation was written", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("work")], [], [], [], "full", [
-			comment("what work does", idOf("work")),
-		]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("work")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [comment("what work does", idOf("work"))],
+		});
 
 		expect(reads.describe(idOf("work"))?.comments).toBeUndefined();
 	});

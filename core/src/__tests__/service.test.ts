@@ -192,17 +192,22 @@ describe("type hierarchy and citable facts", () => {
 		const middle = type("Middle", "b.ref");
 		const leaf = type("Leaf", "b.ref");
 
-		store.replaceFile("a.ref", "h1", [base], []);
-		store.replaceFile(
-			"b.ref",
-			"h2",
-			[middle, leaf],
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [base],
+			references: [],
+		});
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h2",
+			declarations: [middle, leaf],
+			references: [
 				heritage("Base", base.symbolId, middle.symbolId, "extends"),
 				heritage("Middle", middle.symbolId, leaf.symbolId, "extends"),
 				heritage("Engine", null, leaf.symbolId, "extends"),
 			],
-		);
+		});
 		return new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -252,8 +257,18 @@ describe("type hierarchy and citable facts", () => {
 			binding: { status: "bound", symbolId: callee.symbolId, provenance: "bound" } as const,
 		}));
 
-		store.replaceFile("a.ref", "h1", [callee], []);
-		store.replaceFile("b.ref", "h2", [caller], twice);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [callee],
+			references: [],
+		});
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h2",
+			declarations: [caller],
+			references: twice,
+		});
 		const built = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -272,8 +287,18 @@ describe("type hierarchy and citable facts", () => {
 	it("ignores a reference that is not a call, so a hierarchy is not a mention list", () => {
 		const callee = type("target");
 		const caller = type("caller", "b.ref");
-		store.replaceFile("a.ref", "h1", [callee], []);
-		store.replaceFile("b.ref", "h2", [caller], [heritage("target", callee.symbolId, caller.symbolId, "extends")]);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [callee],
+			references: [],
+		});
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h2",
+			declarations: [caller],
+			references: [heritage("target", callee.symbolId, caller.symbolId, "extends")],
+		});
 		const built = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -286,14 +311,14 @@ describe("type hierarchy and citable facts", () => {
 
 	it("gathers the declaration, its uses and the text inside it, each with an id", async () => {
 		const base = type("Base");
-		store.replaceFile(
-			"a.ref",
-			"h1",
-			[base],
-			[heritage("Base", base.symbolId, base.symbolId, "extends")],
-			[],
-			[{ kind: "string", value: "hello", range: at(1), containerId: base.symbolId }],
-		);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [base],
+			references: [heritage("Base", base.symbolId, base.symbolId, "extends")],
+			imports: [],
+			literals: [{ kind: "string", value: "hello", range: at(1), containerId: base.symbolId }],
+		});
 		const built = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -309,16 +334,25 @@ describe("type hierarchy and citable facts", () => {
 
 	it("includes comments attached to the subject", async () => {
 		const base = type("Base");
-		store.replaceFile("a.ref", "h1", [base], [], [], [], "full", [
-			{
-				range: at(1),
-				raw: "// Retains checkout state.",
-				normalized: "Retains checkout state.",
-				form: "leading",
-				placement: "above",
-				anchorId: base.symbolId,
-			},
-		]);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [base],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [
+				{
+					range: at(1),
+					raw: "// Retains checkout state.",
+					normalized: "Retains checkout state.",
+					form: "leading",
+					placement: "above",
+					anchorId: base.symbolId,
+				},
+			],
+		});
 		const built = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -336,7 +370,12 @@ describe("type hierarchy and citable facts", () => {
 	it("names the kinds a limit cut off, so a thin answer is not read as a complete one", async () => {
 		const base = type("Base");
 		const uses = Array.from({ length: 5 }, () => heritage("Base", base.symbolId, base.symbolId, "extends"));
-		store.replaceFile("a.ref", "h1", [base], uses);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [base],
+			references: uses,
+		});
 		const built = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -360,7 +399,12 @@ describe("type hierarchy and citable facts", () => {
 	// The staleness path the knowledge layer runs on: cite, edit, and the citation stops resolving.
 	it("stops resolving a cited fact once the code behind it changed", async () => {
 		const base = type("Base");
-		store.replaceFile("a.ref", "h1", [base], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [base],
+			references: [],
+		});
 		const built = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -371,7 +415,12 @@ describe("type hierarchy and citable facts", () => {
 
 		expect(built.resolveFacts(cited).missing).toEqual([]);
 
-		store.replaceFile("a.ref", "h2", [{ ...base, signature: "class Base extends Other" }], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [{ ...base, signature: "class Base extends Other" }],
+			references: [],
+		});
 
 		expect(built.resolveFacts(cited).missing).toEqual(cited);
 	});
@@ -578,17 +627,17 @@ describe("planning a move", () => {
 			fromText((m) => files.get(m) ?? null),
 			dir,
 		);
-		store.replaceFile(
-			"a.ref",
-			built.currentHashOf("a.ref") as string,
-			[move],
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: built.currentHashOf("a.ref") as string,
+			declarations: [move],
+			references: [
 				use("max", "ExternalDependency"),
 				use("int", "DynamicallyTyped"),
 				use("ghost", "NotIndexed"),
 				use("mystery", "Ambiguous"),
 			],
-		);
+		});
 
 		const plan = built.planMove(move.symbolId, "b.ref");
 
@@ -714,17 +763,17 @@ describe("answering about a symbol", () => {
 		if (!target) throw new Error("expected Cart");
 
 		// Written straight to the store: the reference provider does not emit references.
-		store.replaceFile(
-			"uses.ref",
-			"h2",
-			[],
-			Array.from({ length: 5 }, () => ({
+		store.replaceFile({
+			module: "uses.ref",
+			contentHash: "h2",
+			declarations: [],
+			references: Array.from({ length: 5 }, () => ({
 				name: "Cart",
 				range: { start: { line: 1, character: 0 }, end: { line: 1, character: 4 } },
 				role: "call" as const,
 				binding: { status: "bound" as const, symbolId: target, provenance: "bound" as const },
 			})),
-		);
+		});
 
 		const capped = service.findReferences(target, 2);
 		expect(capped).toMatchObject({ total: 5, truncated: true });
@@ -771,10 +820,10 @@ describe("planning a rename", () => {
 	// asks anyone anything, which is the property the whole prepare step exists to have.
 	function plant() {
 		const target = "lexicon ts src/cart.ts add().";
-		store.replaceFile(
-			"src/cart.ts",
-			"h1",
-			[
+		store.replaceFile({
+			module: "src/cart.ts",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: target,
 					kind: "function",
@@ -785,13 +834,13 @@ describe("planning a rename", () => {
 					exported: true,
 				},
 			],
-			[],
-		);
-		store.replaceFile(
-			"src/uses.ts",
-			"h1",
-			[],
-			[
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/uses.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [
 				{
 					name: "add",
 					range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
@@ -799,7 +848,7 @@ describe("planning a rename", () => {
 					binding: { status: "bound", symbolId: target, provenance: "bound" },
 				},
 			],
-		);
+		});
 		return target;
 	}
 
@@ -822,11 +871,11 @@ describe("planning a rename", () => {
 	// would refuse most real renames, and staying quiet would claim a completeness we do not have.
 	it("warns about a same-spelled occurrence that never bound, rather than refusing or hiding it", async () => {
 		const target = plant();
-		store.replaceFile(
-			"src/other.ts",
-			"h1",
-			[],
-			[
+		store.replaceFile({
+			module: "src/other.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [
 				{
 					name: "add",
 					range: { start: { line: 9, character: 2 }, end: { line: 9, character: 5 } },
@@ -834,7 +883,7 @@ describe("planning a rename", () => {
 					binding: { status: "unbound", reason: "NotIndexed" },
 				},
 			],
-		);
+		});
 
 		const plan = await service.prepareRename(target, "append");
 
@@ -881,10 +930,10 @@ describe("planning a rename", () => {
 		});
 
 		function plantParameter() {
-			store.replaceFile(
-				"src/cart.py",
-				"h1",
-				[
+			store.replaceFile({
+				module: "src/cart.py",
+				contentHash: "h1",
+				declarations: [
 					{
 						symbolId: owner,
 						kind: "function",
@@ -903,13 +952,13 @@ describe("planning a rename", () => {
 						containerId: owner,
 					},
 				],
-				[],
-			);
-			store.replaceFile(
-				"src/uses.py",
-				"h1",
-				[],
-				[
+				references: [],
+			});
+			store.replaceFile({
+				module: "src/uses.py",
+				contentHash: "h1",
+				declarations: [],
+				references: [
 					{
 						name: "add",
 						range: span(3, 0, 3),
@@ -917,7 +966,7 @@ describe("planning a rename", () => {
 						binding: { status: "bound", symbolId: owner, provenance: "bound" },
 					},
 				],
-			);
+			});
 			return new LexiconService(
 				store,
 				new ProviderSupervisor(),
@@ -964,11 +1013,11 @@ describe("planning a rename", () => {
 		// from a different function of the same name. Reported rather than guessed at.
 		it("warns about calls to the owner that did not bind, naming them", async () => {
 			const built = plantParameter();
-			store.replaceFile(
-				"src/dynamic.py",
-				"h1",
-				[],
-				[
+			store.replaceFile({
+				module: "src/dynamic.py",
+				contentHash: "h1",
+				declarations: [],
+				references: [
 					{
 						name: "add",
 						range: span(9, 2, 5),
@@ -976,7 +1025,7 @@ describe("planning a rename", () => {
 						binding: { status: "unbound", reason: "NotIndexed" },
 					},
 				],
-			);
+			});
 
 			const warning = (await built.prepareRename(parameter, "amount")).warnings.find(
 				(w) => w.kind === "OwnerCallsUnresolved",
@@ -1004,11 +1053,11 @@ describe("planning a rename", () => {
 
 		it("blocks on a declaration in a file the rename rewrites, and points at it", async () => {
 			const target = plant();
-			store.replaceFile(
-				"src/uses.ts",
-				"h2",
-				[planted("src/uses.ts", "append", 20)],
-				[
+			store.replaceFile({
+				module: "src/uses.ts",
+				contentHash: "h2",
+				declarations: [planted("src/uses.ts", "append", 20)],
+				references: [
 					{
 						name: "add",
 						range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
@@ -1016,7 +1065,7 @@ describe("planning a rename", () => {
 						binding: { status: "bound", symbolId: target, provenance: "bound" },
 					},
 				],
-			);
+			});
 
 			const plan = await service.prepareRename(target, "append");
 			const blocker = plan.blockers.find((b) => b.kind === "NameTaken");
@@ -1027,11 +1076,11 @@ describe("planning a rename", () => {
 
 		it("blocks when the new name is already imported into a file it rewrites", async () => {
 			const target = plant();
-			store.replaceFile(
-				"src/uses.ts",
-				"h2",
-				[],
-				[
+			store.replaceFile({
+				module: "src/uses.ts",
+				contentHash: "h2",
+				declarations: [],
+				references: [
 					{
 						name: "add",
 						range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
@@ -1039,7 +1088,7 @@ describe("planning a rename", () => {
 						binding: { status: "bound", symbolId: target, provenance: "bound" },
 					},
 				],
-				[
+				imports: [
 					{
 						specifier: "./elsewhere.js",
 						reExport: false,
@@ -1051,7 +1100,7 @@ describe("planning a rename", () => {
 						],
 					},
 				],
-			);
+			});
 
 			const blocker = (await service.prepareRename(target, "append")).blockers.find(
 				(b) => b.kind === "NameImported",
@@ -1065,11 +1114,11 @@ describe("planning a rename", () => {
 		// and not under the name its source module uses.
 		it("checks what the importing file calls it, not what the source module does", async () => {
 			const target = plant();
-			store.replaceFile(
-				"src/uses.ts",
-				"h2",
-				[],
-				[
+			store.replaceFile({
+				module: "src/uses.ts",
+				contentHash: "h2",
+				declarations: [],
+				references: [
 					{
 						name: "add",
 						range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
@@ -1077,7 +1126,7 @@ describe("planning a rename", () => {
 						binding: { status: "bound", symbolId: target, provenance: "bound" },
 					},
 				],
-				[
+				imports: [
 					{
 						specifier: "./elsewhere.js",
 						reExport: false,
@@ -1091,7 +1140,7 @@ describe("planning a rename", () => {
 						],
 					},
 				],
-			);
+			});
 
 			expect((await service.prepareRename(target, "append")).blockers.map((b) => b.kind)).toEqual([
 				"NameImported",
@@ -1102,7 +1151,12 @@ describe("planning a rename", () => {
 		// Another module owning the name is ordinary. Only a clash inside a file being edited is one.
 		it("allows a name that is taken somewhere this rename never touches", async () => {
 			const target = plant();
-			store.replaceFile("src/unrelated.ts", "h1", [planted("src/unrelated.ts", "append", 3)], []);
+			store.replaceFile({
+				module: "src/unrelated.ts",
+				contentHash: "h1",
+				declarations: [planted("src/unrelated.ts", "append", 3)],
+				references: [],
+			});
 
 			expect((await service.prepareRename(target, "append")).blockers).toEqual([]);
 		});
@@ -1124,10 +1178,10 @@ describe("renaming a symbol that other files import", () => {
 	}
 
 	function declare() {
-		store.replaceFile(
-			"src/cart.ts",
-			"h1",
-			[
+		store.replaceFile({
+			module: "src/cart.ts",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: target,
 					kind: "function",
@@ -1138,18 +1192,18 @@ describe("renaming a symbol that other files import", () => {
 					exported: false,
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 	}
 
 	it("rewrites the name inside an import, which no reference row covers", async () => {
 		declare();
-		store.replaceFile(
-			"src/uses.ts",
-			"h1",
-			[],
-			[],
-			[
+		store.replaceFile({
+			module: "src/uses.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [
 				{
 					specifier: "./cart",
 					reExport: false,
@@ -1158,7 +1212,7 @@ describe("renaming a symbol that other files import", () => {
 					],
 				},
 			],
-		);
+		});
 		service = new LexiconService(
 			store,
 			resolvingTo("src/cart.ts"),
@@ -1177,12 +1231,12 @@ describe("renaming a symbol that other files import", () => {
 	// local span here would break the very file the rename was meant to keep working.
 	it("rewrites only the source half of an alias, never the local binding", async () => {
 		declare();
-		store.replaceFile(
-			"src/aliased.ts",
-			"h1",
-			[],
-			[],
-			[
+		store.replaceFile({
+			module: "src/aliased.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [
 				{
 					specifier: "./cart",
 					reExport: false,
@@ -1196,7 +1250,7 @@ describe("renaming a symbol that other files import", () => {
 					],
 				},
 			],
-		);
+		});
 		service = new LexiconService(
 			store,
 			resolvingTo("src/cart.ts"),
@@ -1219,21 +1273,21 @@ describe("renaming a symbol that other files import", () => {
 		declare();
 		const span = { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } };
 		// The barrel re-exports from the declaring module.
-		store.replaceFile(
-			"src/index.ts",
-			"h1",
-			[],
-			[],
-			[{ specifier: "./cart", reExport: true, imported: [{ name: "add", range: span }] }],
-		);
+		store.replaceFile({
+			module: "src/index.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [{ specifier: "./cart", reExport: true, imported: [{ name: "add", range: span }] }],
+		});
 		// The consumer imports the package, which lands on the barrel and not on the declaration.
-		store.replaceFile(
-			"src/far.ts",
-			"h1",
-			[],
-			[],
-			[{ specifier: "@scope/pkg", reExport: false, imported: [{ name: "add", range: span }] }],
-		);
+		store.replaceFile({
+			module: "src/far.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [{ specifier: "@scope/pkg", reExport: false, imported: [{ name: "add", range: span }] }],
+		});
 
 		service = new LexiconService(
 			store,
@@ -1257,12 +1311,12 @@ describe("renaming a symbol that other files import", () => {
 
 	it("ignores an import of the same name from somewhere else entirely", async () => {
 		declare();
-		store.replaceFile(
-			"src/elsewhere.ts",
-			"h1",
-			[],
-			[],
-			[
+		store.replaceFile({
+			module: "src/elsewhere.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [
 				{
 					specifier: "./other",
 					reExport: false,
@@ -1271,7 +1325,7 @@ describe("renaming a symbol that other files import", () => {
 					],
 				},
 			],
-		);
+		});
 		service = new LexiconService(
 			store,
 			resolvingTo("src/other.ts"),
@@ -1300,15 +1354,22 @@ describe("searching literals", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile("a.ts", "h1", [], [], [], [literal("thing_happened", 0), literal("30", 1, "number", 30)]);
-		store.replaceFile(
-			"b.ts",
-			"h1",
-			[],
-			[],
-			[],
-			[literal("thing_happened", 5), literal("other", 6), literal("5000", 7, "number", 5000)],
-		);
+		store.replaceFile({
+			module: "a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [literal("thing_happened", 0), literal("30", 1, "number", 30)],
+		});
+		store.replaceFile({
+			module: "b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [literal("thing_happened", 5), literal("other", 6), literal("5000", 7, "number", 5000)],
+		});
 	});
 
 	it("finds an exact value across files", () => {
@@ -1349,16 +1410,16 @@ describe("searching imports", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile(
-			"a.ts",
-			"h1",
-			[],
-			[],
-			[
+		store.replaceFile({
+			module: "a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [
 				{ specifier: "@scope/one", imported: [], reExport: false },
 				{ specifier: "./two", imported: [], reExport: false },
 			],
-		);
+		});
 	});
 
 	it("matches written specifiers with a regex", async () => {
@@ -1406,10 +1467,10 @@ describe("performing a rename", () => {
 
 	function plant() {
 		writeFileSync(path.join(dir, "cart.ts"), "export function add() {}\n");
-		store.replaceFile(
-			"cart.ts",
-			"h1",
-			[
+		store.replaceFile({
+			module: "cart.ts",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: target,
 					kind: "function",
@@ -1420,8 +1481,8 @@ describe("performing a rename", () => {
 					exported: false,
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 	}
 
 	function serviceThat(reply: (module: string) => unknown) {

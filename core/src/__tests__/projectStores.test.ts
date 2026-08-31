@@ -99,7 +99,12 @@ describe("listing what this machine has indexed", () => {
 		const paths = workspacePaths(host, workDir);
 		mkdirSync(paths.dir, { recursive: true });
 		const indexed = IndexStore.open(paths.index, null, workDir).store;
-		indexed.replaceFile("src/a.ts", "h1", [], []);
+		indexed.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+		});
 		indexed.close();
 
 		expect(listProjectStores(NOBODY_ALIVE, host)[0]?.lastIndexedAt).toBeTypeOf("number");

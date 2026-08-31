@@ -49,7 +49,17 @@ function region(text: string, line: number, anchorId?: string, fenced = false, p
 }
 
 function write(declarations: Declaration[], docs: DocRegion[], module = MODULE): void {
-	store.replaceFile(module, "h1", declarations, [], [], [], "full", [], docs);
+	store.replaceFile({
+		module: module,
+		contentHash: "h1",
+		declarations: declarations,
+		references: [],
+		imports: [],
+		literals: [],
+		depth: "full",
+		comments: [],
+		docs: docs,
+	});
 }
 
 beforeEach(() => {

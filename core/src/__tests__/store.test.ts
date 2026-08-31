@@ -72,25 +72,41 @@ describe("keeping what a provider said below error", () => {
 	const info = { severity: "info" as const, message: "comment in strict JSON" };
 
 	it("keeps a file's notes with its facts, replaces them with the file, and forgets them with it", () => {
-		store.replaceFile(
-			"src/a.json",
-			"h1",
-			[declaration("a", "src/a.json")],
-			[],
-			[],
-			[],
-			"full",
-			[],
-			[],
-			[warning, info],
-		);
+		store.replaceFile({
+			module: "src/a.json",
+			contentHash: "h1",
+			declarations: [declaration("a", "src/a.json")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [warning, info],
+		});
 		expect(store.fileNotes("src/a.json")).toEqual({ module: "src/a.json", known: true, notes: [warning, info] });
 		expect(store.noteTotals()).toEqual({ noted: 1, unknown: 0 });
 
-		store.replaceFile("src/a.json", "h2", [declaration("a", "src/a.json")], []);
+		store.replaceFile({
+			module: "src/a.json",
+			contentHash: "h2",
+			declarations: [declaration("a", "src/a.json")],
+			references: [],
+		});
 		expect(store.fileNotes("src/a.json")).toEqual({ module: "src/a.json", known: true, notes: [] });
 
-		store.replaceFile("src/a.json", "h3", [], [], [], [], "full", [], [], [info]);
+		store.replaceFile({
+			module: "src/a.json",
+			contentHash: "h3",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [info],
+		});
 		store.forgetFile("src/a.json");
 		expect(store.fileNotes("src/a.json")).toEqual({ module: "src/a.json", known: false, reason: "notIndexed" });
 		expect(store.noteTotals()).toEqual({ noted: 0, unknown: 0 });
@@ -99,7 +115,12 @@ describe("keeping what a provider said below error", () => {
 	// Added in place; silence would read as clean.
 	it("calls notes unknown for a file read before the table existed, until its next read", () => {
 		const file = path.join(dir, "index.sqlite");
-		store.replaceFile("src/old.ts", "h1", [declaration("old", "src/old.ts")], []);
+		store.replaceFile({
+			module: "src/old.ts",
+			contentHash: "h1",
+			declarations: [declaration("old", "src/old.ts")],
+			references: [],
+		});
 		store.close();
 		const raw = new DatabaseSync(file);
 		raw.exec("DROP TABLE notes; DELETE FROM meta WHERE key = 'notesSince'");
@@ -118,7 +139,12 @@ describe("keeping what a provider said below error", () => {
 			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 1 });
 
 			setSystemTime(now + 2000);
-			store.replaceFile("src/old.ts", "h2", [declaration("old", "src/old.ts")], []);
+			store.replaceFile({
+				module: "src/old.ts",
+				contentHash: "h2",
+				declarations: [declaration("old", "src/old.ts")],
+				references: [],
+			});
 			expect(store.fileNotes("src/old.ts")).toEqual({ module: "src/old.ts", known: true, notes: [] });
 			expect(store.noteTotals()).toEqual({ noted: 0, unknown: 0 });
 		} finally {
@@ -129,7 +155,12 @@ describe("keeping what a provider said below error", () => {
 
 describe("writing a file's facts", () => {
 	it("reads back what it stored", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 
 		expect(store.contentHashOf("src/a.ts")).toBe("h1");
 		expect(store.declarationsIn("src/a.ts").map((d) => d.name)).toEqual(["add"]);
@@ -142,9 +173,19 @@ describe("writing a file's facts", () => {
 			const first = new Date("2026-01-01T00:00:00Z").getTime();
 			const second = new Date("2026-01-02T00:00:00Z").getTime();
 			setSystemTime(first);
-			store.replaceFile("src/a.ts", "h1", [declaration("a")], []);
+			store.replaceFile({
+				module: "src/a.ts",
+				contentHash: "h1",
+				declarations: [declaration("a")],
+				references: [],
+			});
 			setSystemTime(second);
-			store.replaceFile("src/b.ts", "h1", [declaration("b", "src/b.ts")], []);
+			store.replaceFile({
+				module: "src/b.ts",
+				contentHash: "h1",
+				declarations: [declaration("b", "src/b.ts")],
+				references: [],
+			});
 
 			expect(store.newestIndexedAt()).toBe(second);
 		} finally {
@@ -153,12 +194,12 @@ describe("writing a file's facts", () => {
 	});
 
 	it("filters declarations by a regular expression", () => {
-		store.replaceFile(
-			"src/a.ts",
-			"h1",
-			[declaration("FooBar"), declaration("fooBaz", "src/a.ts"), declaration("other", "src/a.ts")],
-			[],
-		);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("FooBar"), declaration("fooBaz", "src/a.ts"), declaration("other", "src/a.ts")],
+			references: [],
+		});
 
 		const found = store.searchSymbols(undefined, { regex: "/foo\\w*bar/i", limit: 50 });
 
@@ -166,7 +207,12 @@ describe("writing a file's facts", () => {
 	});
 
 	it("preserves optional fields, and omits them rather than storing null", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add", "src/a.ts", { signature: "add(): void" })], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add", "src/a.ts", { signature: "add(): void" })],
+			references: [],
+		});
 
 		const stored = store.declaration(idOf("add"));
 		expect(stored?.signature).toBe("add(): void");
@@ -176,12 +222,12 @@ describe("writing a file's facts", () => {
 	it("keeps a declaration's whole span and its name span apart, which is what a rewrite needs", () => {
 		const whole = { start: { line: 3, character: 0 }, end: { line: 9, character: 1 } };
 		const justTheName = { start: { line: 3, character: 15 }, end: { line: 3, character: 19 } };
-		store.replaceFile(
-			"src/a.ts",
-			"h1",
-			[declaration("Cart", "src/a.ts", { range: whole, selectionRange: justTheName })],
-			[],
-		);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("Cart", "src/a.ts", { range: whole, selectionRange: justTheName })],
+			references: [],
+		});
 
 		const stored = store.declaration(idOf("Cart"));
 		expect(stored?.range).toEqual(whole);
@@ -190,12 +236,12 @@ describe("writing a file's facts", () => {
 
 	it("keeps a reference's end, so a caller knows what text the reference occupies", () => {
 		const span = { start: { line: 2, character: 8 }, end: { line: 2, character: 12 } };
-		store.replaceFile(
-			"src/a.ts",
-			"h1",
-			[declaration("Cart")],
-			[{ ...reference("Cart", idOf("Cart")), range: span }],
-		);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("Cart")],
+			references: [{ ...reference("Cart", idOf("Cart")), range: span }],
+		});
 
 		const [stored] = store.referencesTo(idOf("Cart"));
 		expect(stored).toMatchObject({ startLine: 2, startCharacter: 8, endLine: 2, endCharacter: 12 });
@@ -204,7 +250,12 @@ describe("writing a file's facts", () => {
 	it("keeps 'cannot say' about exported distinct from 'no' across the round trip", () => {
 		const cannotSay = declaration("mystery");
 		delete (cannotSay as { exported?: boolean }).exported;
-		store.replaceFile("src/a.ts", "h1", [cannotSay, declaration("known", "src/a.ts", { exported: false })], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [cannotSay, declaration("known", "src/a.ts", { exported: false })],
+			references: [],
+		});
 
 		// A NOT NULL column storing 0 would make these two identical, which is the interface
 		// compelling a claim the provider could not support.
@@ -213,24 +264,54 @@ describe("writing a file's facts", () => {
 	});
 
 	it("drops what a file no longer contains, which an upsert alone would leave behind forever", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add"), declaration("remove")], []);
-		store.replaceFile("src/a.ts", "h2", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add"), declaration("remove")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h2",
+			declarations: [declaration("add")],
+			references: [],
+		});
 
 		expect(store.declarationsIn("src/a.ts").map((d) => d.name)).toEqual(["add"]);
 		expect(store.declaration(idOf("remove"))).toBeNull();
 	});
 
 	it("touches only the file being replaced", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("a", "src/a.ts")], []);
-		store.replaceFile("src/b.ts", "h1", [declaration("b", "src/b.ts")], []);
-		store.replaceFile("src/a.ts", "h2", [], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("a", "src/a.ts")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [declaration("b", "src/b.ts")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h2",
+			declarations: [],
+			references: [],
+		});
 
 		expect(store.declarationsIn("src/a.ts")).toEqual([]);
 		expect(store.declarationsIn("src/b.ts").map((d) => d.name)).toEqual(["b"]);
 	});
 
 	it("forgets a deleted file entirely", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("a")], [reference("a", idOf("a"))]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("a")],
+			references: [reference("a", idOf("a"))],
+		});
 		store.forgetFile("src/a.ts");
 
 		expect(store.contentHashOf("src/a.ts")).toBeNull();
@@ -242,16 +323,41 @@ describe("writing a file's facts", () => {
 describe("reverse lookup", () => {
 	it("finds every use of a symbol across files", () => {
 		const target = idOf("add");
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
-		store.replaceFile("src/b.ts", "h1", [], [reference("add", target)]);
-		store.replaceFile("src/c.ts", "h1", [], [reference("add", target)]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [reference("add", target)],
+		});
+		store.replaceFile({
+			module: "src/c.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [reference("add", target)],
+		});
 
 		expect(store.referencesTo(target).map((r) => r.module)).toEqual(["src/b.ts", "src/c.ts"]);
 	});
 
 	it("excludes an unbound reference, since a name match is not a use of this symbol", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
-		store.replaceFile("src/b.ts", "h1", [], [reference("add", null)]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [reference("add", null)],
+		});
 
 		expect(store.referencesTo(idOf("add"))).toEqual([]);
 		// Kept in the file's own rows though: that it did not bind is itself a fact.
@@ -259,21 +365,46 @@ describe("reverse lookup", () => {
 	});
 
 	it("keeps an unbound reference's reason rather than discarding why it failed", () => {
-		store.replaceFile("src/b.ts", "h1", [], [reference("add", null)]);
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [reference("add", null)],
+		});
 		expect(store.referencesIn("src/b.ts")[0]?.provenance).toBe("NotImplemented");
 	});
 
 	it("stops finding a use once the using file is re-indexed without it", () => {
 		const target = idOf("add");
-		store.replaceFile("src/b.ts", "h1", [], [reference("add", target)]);
-		store.replaceFile("src/b.ts", "h2", [], []);
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [reference("add", target)],
+		});
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h2",
+			declarations: [],
+			references: [],
+		});
 
 		expect(store.referencesTo(target)).toEqual([]);
 	});
 
 	it("reports a symbol nothing references", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("used"), declaration("unused")], []);
-		store.replaceFile("src/b.ts", "h1", [], [reference("used", idOf("used"))]);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("used"), declaration("unused")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [reference("used", idOf("used"))],
+		});
 
 		expect(store.unreferencedSymbols().map((d) => d.name)).toEqual(["unused"]);
 	});
@@ -290,7 +421,12 @@ describe("opening the index", () => {
 	it("reopens an existing index without losing what it holds", () => {
 		const file = path.join(dir, "reopen.sqlite");
 		const first = IndexStore.open(file);
-		first.store.replaceFile("src/a.ts", "h1", [declaration("a")], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("a")],
+			references: [],
+		});
 		first.store.close();
 
 		const second = IndexStore.open(file);
@@ -302,7 +438,12 @@ describe("opening the index", () => {
 	it("rebuilds rather than failing when the schema version does not match", async () => {
 		const file = path.join(dir, "stale.sqlite");
 		const first = IndexStore.open(file);
-		first.store.replaceFile("src/a.ts", "h1", [declaration("a")], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("a")],
+			references: [],
+		});
 		first.store.close();
 
 		// Simulate an index written by a build with a different schema.
@@ -408,14 +549,14 @@ describe("citable facts", () => {
 	const literal = { kind: "string" as const, value: "hello", range: POINT };
 
 	it("gives every kind of fact an id, not just the declaration", () => {
-		store.replaceFile(
-			"src/a.ts",
-			"h1",
-			[declaration("add")],
-			[reference("add", idOf("add"))],
-			[{ specifier: "./b.js", imported: [], reExport: false }],
-			[literal],
-		);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [reference("add", idOf("add"))],
+			imports: [{ specifier: "./b.js", imported: [], reExport: false }],
+			literals: [literal],
+		});
 
 		expect(store.declarationsIn("src/a.ts")[0]?.factId).toMatch(/^lexfact declaration /);
 		expect(store.referencesIn("src/a.ts")[0]?.factId).toMatch(/^lexfact reference /);
@@ -424,16 +565,16 @@ describe("citable facts", () => {
 	});
 
 	it("resolves an id back to the fact it names, whichever kind that is", () => {
-		store.replaceFile(
-			"src/a.ts",
-			"h1",
-			[declaration("add")],
-			[reference("add", idOf("add"))],
-			[],
-			[literal],
-			"full",
-			[comment(idOf("add"))],
-		);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [reference("add", idOf("add"))],
+			imports: [],
+			literals: [literal],
+			depth: "full",
+			comments: [comment(idOf("add"))],
+		});
 
 		const declarationId = store.declarationsIn("src/a.ts")[0]?.factId as string;
 		const literalId = store.literalsWithValue("hello", 10)[0]?.factId as string;
@@ -452,20 +593,40 @@ describe("citable facts", () => {
 
 	// Null IS the staleness signal, which is why the id is a digest of the fact rather than a rowid.
 	it("stops resolving a citation once the fact it named has changed", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		const cited = store.declarationsIn("src/a.ts")[0]?.factId as string;
 
-		store.replaceFile("src/a.ts", "h2", [declaration("add", "src/a.ts", { signature: "(a: number) => void" })], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h2",
+			declarations: [declaration("add", "src/a.ts", { signature: "(a: number) => void" })],
+			references: [],
+		});
 
 		expect(store.factById(cited)).toBeNull();
 		expect(store.declarationsIn("src/a.ts")[0]?.factId).not.toBe(cited);
 	});
 
 	it("keeps resolving a citation when the file was re-indexed without changing", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		const cited = store.declarationsIn("src/a.ts")[0]?.factId as string;
 
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 
 		expect(store.factById(cited)).not.toBeNull();
 	});
@@ -486,7 +647,12 @@ describe("noticing that the indexer itself changed", () => {
 	it("keeps an index written under the same major", () => {
 		const file = path.join(dir, "same.sqlite");
 		const first = IndexStore.open(file, "1");
-		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		first.store.close();
 
 		const second = IndexStore.open(file, "1");
@@ -499,7 +665,12 @@ describe("noticing that the indexer itself changed", () => {
 	it("rebuilds when a major has shipped, and says that is why", () => {
 		const file = path.join(dir, "moved.sqlite");
 		const first = IndexStore.open(file, "1");
-		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		first.store.close();
 
 		const second = IndexStore.open(file, "2");
@@ -514,7 +685,12 @@ describe("noticing that the indexer itself changed", () => {
 	it("skips the check when the caller offers no compatibility key", () => {
 		const file = path.join(dir, "none.sqlite");
 		const first = IndexStore.open(file, "1");
-		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		first.store.close();
 
 		const second = IndexStore.open(file);
@@ -528,7 +704,12 @@ describe("noticing that the indexer itself changed", () => {
 	it("adopts a key rather than rebuilding when none was stored", () => {
 		const file = path.join(dir, "adopt.sqlite");
 		const first = IndexStore.open(file);
-		first.store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		first.store.close();
 
 		const second = IndexStore.open(file, "1");
@@ -543,10 +724,20 @@ describe("noticing that the indexer itself changed", () => {
 
 describe("admitting a provider's ids before writing", () => {
 	it("refuses a dangling container before the transaction, so the file's previous facts stand", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 
 		expect(() =>
-			store.replaceFile("src/a.ts", "h2", [declaration("next", "src/a.ts", { containerId: idOf("Ghost") })], []),
+			store.replaceFile({
+				module: "src/a.ts",
+				contentHash: "h2",
+				declarations: [declaration("next", "src/a.ts", { containerId: idOf("Ghost") })],
+				references: [],
+			}),
 		).toThrow(/container .* is not declared in this file/);
 
 		expect(store.declarationsNamed("add")).toHaveLength(1);
@@ -558,7 +749,12 @@ describe("admitting a provider's ids before writing", () => {
 describe("a declaration whose name is not in the source", () => {
 	it("reads back without a name span, while a named one keeps its span", () => {
 		const { selectionRange: _span, ...unnamed } = declaration("script");
-		store.replaceFile("src/a.ts", "h1", [unnamed, declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [unnamed, declaration("add")],
+			references: [],
+		});
 
 		expect(store.declaration(idOf("script"))).not.toHaveProperty("selectionRange");
 		expect(store.declaration(idOf("add"))?.selectionRange).toEqual(POINT);
@@ -567,7 +763,12 @@ describe("a declaration whose name is not in the source", () => {
 	// Added in place; a row from before the flag is a named one, as every row then was.
 	it("reads a row from a store that predates the flag as named", () => {
 		const file = path.join(dir, "index.sqlite");
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
 		store.close();
 		const raw = new DatabaseSync(file);
 		raw.exec("ALTER TABLE symbols DROP COLUMN synthesizedName");
@@ -580,21 +781,38 @@ describe("a declaration whose name is not in the source", () => {
 
 describe("recording what a file is", () => {
 	it("keeps the owning provider's content class per file and counts by it", () => {
-		store.replaceFile("src/a.ts", "h1", [declaration("add")], []);
-		store.replaceFile(
-			"fixtures/a.json",
-			"h2",
-			[declaration("one", "fixtures/a.json"), declaration("two", "fixtures/a.json")],
-			[],
-			[],
-			[],
-			"full",
-			[],
-			[],
-			[],
-			"data",
-		);
-		store.replaceFile("README.md", "h3", [], [], [], [], "full", [], [], [], "document");
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "fixtures/a.json",
+			contentHash: "h2",
+			declarations: [declaration("one", "fixtures/a.json"), declaration("two", "fixtures/a.json")],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [],
+			content: "data",
+		});
+		store.replaceFile({
+			module: "README.md",
+			contentHash: "h3",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+			depth: "full",
+			comments: [],
+			docs: [],
+			notes: [],
+			content: "document",
+		});
 
 		expect(store.moduleSummary()).toEqual([
 			{ module: "fixtures/a.json", symbols: 2, content: "data" },
@@ -610,7 +828,12 @@ describe("recording what a file is", () => {
 	// Added in place; a row from before reads as unrecorded, never as code.
 	it("adds the column to a store from before it existed, and fills a row only while it is unrecorded", () => {
 		const file = path.join(dir, "index.sqlite");
-		store.replaceFile("src/old.json", "h1", [declaration("old", "src/old.json")], []);
+		store.replaceFile({
+			module: "src/old.json",
+			contentHash: "h1",
+			declarations: [declaration("old", "src/old.json")],
+			references: [],
+		});
 		store.close();
 		const raw = new DatabaseSync(file);
 		raw.exec("ALTER TABLE files DROP COLUMN content");
@@ -628,14 +851,14 @@ describe("recording what a file is", () => {
 
 describe("forgetting a file", () => {
 	it("removes every kind of fact the file contributed", () => {
-		store.replaceFile(
-			"src/a.ts",
-			"h1",
-			[declaration("add")],
-			[reference("add", idOf("add"))],
-			[{ specifier: "./b.js", imported: [], reExport: false }],
-			[{ kind: "string", value: "gone", range: POINT }],
-		);
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [reference("add", idOf("add"))],
+			imports: [{ specifier: "./b.js", imported: [], reExport: false }],
+			literals: [{ kind: "string", value: "gone", range: POINT }],
+		});
 
 		store.forgetFile("src/a.ts");
 

@@ -108,19 +108,29 @@ function daemonCause(message: string): DaemonError["cause"] {
 export function lineSplitter(
 	cap: number,
 	onLine: (line: string) => void,
-	onOverflow: () => void,
+	onError: (reason: "malformed JSON" | "invalid frame shape" | "oversized frame") => void,
 ): (chunk: Buffer) => void {
 	let buffered: Buffer = Buffer.alloc(0);
+	let failed = false;
 	return (chunk) => {
+		if (failed) return;
 		buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk]);
 		let newlineAt = buffered.indexOf(10);
 		while (newlineAt !== -1) {
+			if (newlineAt > cap) {
+				failed = true;
+				onError("oversized frame");
+				return;
+			}
 			const line = buffered.subarray(0, newlineAt).toString("utf8").trim();
 			buffered = buffered.subarray(newlineAt + 1);
 			if (line.length > 0) onLine(line);
 			newlineAt = buffered.indexOf(10);
 		}
-		if (buffered.length > cap) onOverflow();
+		if (buffered.length > cap) {
+			failed = true;
+			onError("oversized frame");
+		}
 	};
 }
 
@@ -165,11 +175,13 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 			try {
 				raw = JSON.parse(line);
 			} catch {
+				process.stderr.write("malformed JSON\n");
 				socket.destroy();
 				return;
 			}
 			const parsed = ServerFrameSchema.safeParse(raw);
 			if (!parsed.success) {
+				process.stderr.write("invalid frame shape\n");
 				socket.destroy();
 				return;
 			}
@@ -213,7 +225,10 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 
 		socket.on(
 			"data",
-			lineSplitter(CLIENT_LINE_CAP, onFrame, () => socket.destroy()),
+			lineSplitter(CLIENT_LINE_CAP, onFrame, (reason) => {
+				process.stderr.write(`${reason}\n`);
+				socket.destroy();
+			}),
 		);
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {

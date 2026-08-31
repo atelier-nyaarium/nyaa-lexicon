@@ -31,12 +31,14 @@ beforeEach(() => {
 		dir,
 		clock,
 	);
-	store.replaceFile(
-		"a.ref",
-		"h1",
-		[{ symbolId: CART, kind: "class", name: "Cart", range: at(0), selectionRange: at(0), visibility: "public" }],
-		[],
-	);
+	store.replaceFile({
+		module: "a.ref",
+		contentHash: "h1",
+		declarations: [
+			{ symbolId: CART, kind: "class", name: "Cart", range: at(0), selectionRange: at(0), visibility: "public" },
+		],
+		references: [],
+	});
 });
 
 afterEach(() => {

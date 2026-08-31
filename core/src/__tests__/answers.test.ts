@@ -31,10 +31,10 @@ function ask(symbolId: string, question: Parameters<LexiconService["recallAnswer
 }
 
 function plant(): string[] {
-	store.replaceFile(
-		"a.ref",
-		"h1",
-		[
+	store.replaceFile({
+		module: "a.ref",
+		contentHash: "h1",
+		declarations: [
 			{
 				symbolId: SYMBOL,
 				kind: "class",
@@ -44,18 +44,18 @@ function plant(): string[] {
 				visibility: "public",
 			},
 		],
-		[],
-		[],
-		[{ kind: "string", value: "cart.updated", range: at(1), containerId: SYMBOL }],
-	);
+		references: [],
+		imports: [],
+		literals: [{ kind: "string", value: "cart.updated", range: at(1), containerId: SYMBOL }],
+	});
 	return store.declarationsIn("a.ref").map((d) => d.factId);
 }
 
 function plantWithComment(): string {
-	store.replaceFile(
-		"a.ref",
-		"h1",
-		[
+	store.replaceFile({
+		module: "a.ref",
+		contentHash: "h1",
+		declarations: [
 			{
 				symbolId: SYMBOL,
 				kind: "class",
@@ -65,11 +65,11 @@ function plantWithComment(): string {
 				visibility: "public",
 			},
 		],
-		[],
-		[],
-		[],
-		"full",
-		[
+		references: [],
+		imports: [],
+		literals: [],
+		depth: "full",
+		comments: [
 			{
 				range: at(1),
 				raw: "// Retains checkout state.",
@@ -79,7 +79,7 @@ function plantWithComment(): string {
 				anchorId: SYMBOL,
 			} satisfies AttachedComment,
 		],
-	);
+	});
 	return store.commentsAnchoredTo(SYMBOL)[0]?.factId as string;
 }
 
@@ -87,10 +87,10 @@ const HEADING = "lexicon markdown guide.md Principles/";
 
 /** A heading and the prose under it, which is the document's answer to what a comment is for code. */
 function plantWithDocRegion(): string {
-	store.replaceFile(
-		"guide.md",
-		"h1",
-		[
+	store.replaceFile({
+		module: "guide.md",
+		contentHash: "h1",
+		declarations: [
 			{
 				symbolId: HEADING,
 				kind: "heading",
@@ -100,13 +100,13 @@ function plantWithDocRegion(): string {
 				visibility: "public",
 			},
 		],
-		[],
-		[],
-		[],
-		"full",
-		[],
-		[{ range: at(1), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: HEADING }],
-	);
+		references: [],
+		imports: [],
+		literals: [],
+		depth: "full",
+		comments: [],
+		docs: [{ range: at(1), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: HEADING }],
+	});
 	return store.docsAnchoredTo(HEADING)[0]?.factId as string;
 }
 
@@ -204,10 +204,10 @@ describe("every refusal is a named constructor", () => {
 		const [declaration] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
 		// The declaration moves down a line: still indexed, its fact id re-minted.
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -217,10 +217,10 @@ describe("every refusal is a named constructor", () => {
 					visibility: "public",
 				},
 			],
-			[],
-			[],
-			[],
-		);
+			references: [],
+			imports: [],
+			literals: [],
+		});
 		const outcome = await service.reaffirmAnswer(SYMBOL, "describe");
 		expect(reasonOf(outcome)).toBe(refusal.citationsNoLongerResolve(1));
 		expect(outcome.recorded === false && outcome.unresolved).toEqual([declaration as string]);
@@ -259,10 +259,10 @@ describe("every refusal is a named constructor", () => {
 
 	it("citesOnlyNeighbours: refuses an answer grounded elsewhere and records nothing", async () => {
 		plant();
-		store.replaceFile(
-			"b.ref",
-			"h1",
-			[
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: "lexicon reference b.ref send#",
 					kind: "function",
@@ -272,8 +272,8 @@ describe("every refusal is a named constructor", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const elsewhere = store.declarationsIn("b.ref")[0]?.factId as string;
 		const outcome = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [elsewhere]);
 		expect(reasonOf(outcome)).toBe(refusal.citesOnlyNeighbours(SYMBOL));
@@ -310,14 +310,14 @@ describe("every refusal is a named constructor", () => {
 		const AT = "lexicon reference a.ref at#";
 		const TOTAL = "lexicon reference a.ref Total#";
 		const REF = "lexicon reference a.ref ref#";
-		store.replaceFile(
-			"a.ref",
-			"h1",
-			[named(AT, "at"), named(SYMBOL, "Cart"), named(TOTAL, "Total"), named(REF, "ref")],
-			[],
-			[],
-			[],
-		);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [named(AT, "at"), named(SYMBOL, "Cart"), named(TOTAL, "Total"), named(REF, "ref")],
+			references: [],
+			imports: [],
+			literals: [],
+		});
 		const shortlist = (bad: string) => service.diagnoseSubject(`lexicon reference a.ref ${bad}`).candidates;
 
 		expect(shortlist("Cart")).toEqual([SYMBOL, AT, TOTAL, REF]);
@@ -328,7 +328,14 @@ describe("every refusal is a named constructor", () => {
 
 	it("unmintedId: an indexed module holding no declarations is still unminted, not unknown", async () => {
 		const [declaration] = plant();
-		store.replaceFile("empty.ref", "h1", [], [], [], []);
+		store.replaceFile({
+			module: "empty.ref",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [],
+			literals: [],
+		});
 		const unminted = "lexicon reference empty.ref Cart#";
 		const outcome = await service.recordAnswer(unminted, "describe", "A cart.", [declaration as string]);
 		expect(reasonOf(outcome)).toBe(refusal.unmintedId(unminted, "empty.ref", [], 0));
@@ -414,10 +421,10 @@ describe("writing an answer down", () => {
 	// one meant. The name the author typed is in the bad id, so declarations carrying it lead.
 	it("leads the shortlist with the declaration whose name the bad id carries", async () => {
 		const TOTAL = "lexicon reference a.ref Total#";
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -435,10 +442,10 @@ describe("writing an answer down", () => {
 					visibility: "public",
 				},
 			],
-			[],
-			[],
-			[],
-		);
+			references: [],
+			imports: [],
+			literals: [],
+		});
 
 		const outcome = await service.recordAnswer("lexicon reference a.ref Total", "describe", "A total.", []);
 
@@ -533,10 +540,10 @@ describe("noticing that an answer's ground moved", () => {
 		const [declaration] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
 
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -547,8 +554,8 @@ describe("noticing that an answer's ground moved", () => {
 					signature: "class Cart implements Basket",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 
 		const recalled = service.recallAnswer(SYMBOL, "describe");
 		if (declaration === undefined) throw new Error("declaration citation missing");
@@ -581,10 +588,10 @@ describe("the knowledge base surviving a rebuild", () => {
 			fromText(() => null),
 			dir,
 		);
-		first.store.replaceFile(
-			"a.ref",
-			"h1",
-			[
+		first.store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -594,8 +601,8 @@ describe("the knowledge base surviving a rebuild", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const cited = first.store.declarationsIn("a.ref")[0]?.factId as string;
 		await built.recordAnswer(SYMBOL, "describe", "A shopping cart.", [cited]);
 		built.recallAnswer("lexicon reference a.ref Cart#", "why");
@@ -616,10 +623,10 @@ describe("the knowledge base surviving a rebuild", () => {
 		expect(recalled?.stale).toEqual([cited]);
 
 		// Re-indexing the unchanged file mints the identical fact id, and the citation heals.
-		second.store.replaceFile(
-			"a.ref",
-			"h1",
-			[
+		second.store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -629,8 +636,8 @@ describe("the knowledge base surviving a rebuild", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		expect(survivor.recallAnswer(SYMBOL, "describe")?.stale).toEqual([]);
 		second.store.close();
 	});
@@ -669,10 +676,10 @@ describe("answers citing answers", () => {
 	const CHILD = "lexicon reference b.ref send#";
 
 	function plantChild(): string {
-		store.replaceFile(
-			"b.ref",
-			"h1",
-			[
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: CHILD,
 					kind: "function",
@@ -682,8 +689,8 @@ describe("answers citing answers", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		return store.declarationsIn("b.ref")[0]?.factId as string;
 	}
 
@@ -713,10 +720,10 @@ describe("answers citing answers", () => {
 		await service.recordAnswer(SYMBOL, "describe", "Retries around send.", [cartFact as string, childAnswerId]);
 
 		// The child's cited declaration changes underneath it.
-		store.replaceFile(
-			"b.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: CHILD,
 					kind: "function",
@@ -727,8 +734,8 @@ describe("answers citing answers", () => {
 					signature: "(frame: Frame) => Promise<void>",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 
 		const recalled = service.recallAnswer(SYMBOL, "describe");
 		expect(recalled?.stale).toEqual([]);
@@ -809,10 +816,10 @@ describe("the gap ledger", () => {
 		const [cartFact] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [cartFact as string]);
 
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -823,8 +830,8 @@ describe("the gap ledger", () => {
 					signature: "class Cart implements Basket",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		ask(SYMBOL, "describe");
 
 		expect(service.knowledgeGaps().rows[0]).toMatchObject({ symbolId: SYMBOL, why: "stale" });
@@ -836,10 +843,10 @@ describe("the gap ledger", () => {
 	it("surfaces an answer gone stale with no recorded demand at all", async () => {
 		const [cartFact] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [cartFact as string]);
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -850,8 +857,8 @@ describe("the gap ledger", () => {
 					signature: "class Cart implements Basket",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 
 		// Deliberately no recall between the ground moving and the ask for gaps.
 		expect(service.knowledgeGaps().rows[0]).toMatchObject({ symbolId: SYMBOL, why: "stale" });
@@ -884,10 +891,10 @@ describe("the gap tree under a root", () => {
 
 	/** top uses mid, mid uses leaf, and mid also calls something outside the index. */
 	function plantTree() {
-		store.replaceFile(
-			"t.ref",
-			"h1",
-			Object.entries(IDS).map(([name, symbolId]) => ({
+		store.replaceFile({
+			module: "t.ref",
+			contentHash: "h1",
+			declarations: Object.entries(IDS).map(([name, symbolId]) => ({
 				symbolId,
 				kind: "function" as const,
 				name,
@@ -895,7 +902,7 @@ describe("the gap tree under a root", () => {
 				selectionRange: at(0),
 				visibility: "public" as const,
 			})),
-			[
+			references: [
 				{
 					name: "mid",
 					range: at(1),
@@ -922,7 +929,7 @@ describe("the gap tree under a root", () => {
 					} as const,
 				},
 			],
-		);
+		});
 	}
 
 	it("orders leaves before the things that use them", () => {
@@ -948,14 +955,14 @@ describe("the gap tree under a root", () => {
 	it("survives a cycle, flattening it where it occurs rather than recursing forever", () => {
 		const a = "lexicon reference c.ref a#";
 		const b = "lexicon reference c.ref b#";
-		store.replaceFile(
-			"c.ref",
-			"h1",
-			[
+		store.replaceFile({
+			module: "c.ref",
+			contentHash: "h1",
+			declarations: [
 				{ symbolId: a, kind: "function", name: "a", range: at(0), selectionRange: at(0), visibility: "public" },
 				{ symbolId: b, kind: "function", name: "b", range: at(1), selectionRange: at(1), visibility: "public" },
 			],
-			[
+			references: [
 				{
 					name: "b",
 					range: at(2),
@@ -971,7 +978,7 @@ describe("the gap tree under a root", () => {
 					binding: { status: "bound", symbolId: a, provenance: "bound" },
 				},
 			],
-		);
+		});
 
 		expect(
 			service
@@ -1007,12 +1014,17 @@ describe("the gaps in one file", () => {
 			visibility: "public" as const,
 		});
 		// Line first on purpose: only fan-in puts Cart ahead of it.
-		store.replaceFile("m.ref", "h1", [declare(IDS.line, "Line"), declare(IDS.cart, "Cart")], []);
-		store.replaceFile(
-			"n.ref",
-			"h2",
-			[declare(IDS.other, "Other")],
-			[
+		store.replaceFile({
+			module: "m.ref",
+			contentHash: "h1",
+			declarations: [declare(IDS.line, "Line"), declare(IDS.cart, "Cart")],
+			references: [],
+		});
+		store.replaceFile({
+			module: "n.ref",
+			contentHash: "h2",
+			declarations: [declare(IDS.other, "Other")],
+			references: [
 				{
 					name: "Cart",
 					range: at(1),
@@ -1021,7 +1033,7 @@ describe("the gaps in one file", () => {
 					binding: { status: "bound", symbolId: IDS.cart, provenance: "bound" } as const,
 				},
 			],
-		);
+		});
 	}
 
 	// The question is "what is unanswered HERE", so nobody needs to have asked first.
@@ -1055,10 +1067,10 @@ describe("the gaps in one file", () => {
 		expect(service.knowledgeGaps(undefined, "describe", 60, "m.ref").rows).toEqual([]);
 
 		// Line's fact id changes with its declaration, so its citation no longer resolves.
-		store.replaceFile(
-			"m.ref",
-			"h3",
-			[
+		store.replaceFile({
+			module: "m.ref",
+			contentHash: "h3",
+			declarations: [
 				{
 					symbolId: IDS.cart,
 					kind: "class",
@@ -1076,8 +1088,8 @@ describe("the gaps in one file", () => {
 					visibility: "private",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 
 		expect(
 			service.knowledgeGaps(undefined, "describe", 60, "m.ref").rows.map((row) => [row.name, row.why]),
@@ -1118,10 +1130,10 @@ describe("declared doubt", () => {
 
 	it("cascades into an answer citing the doubted one, as its own list with its own remedy", async () => {
 		const [cartFact] = plant();
-		store.replaceFile(
-			"b.ref",
-			"h1",
-			[
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: "lexicon reference b.ref send#",
 					kind: "function",
@@ -1131,8 +1143,8 @@ describe("declared doubt", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const childFact = store.declarationsIn("b.ref")[0]?.factId as string;
 		const child = await service.recordAnswer("lexicon reference b.ref send#", "describe", "Sends one frame.", [
 			childFact,
@@ -1197,10 +1209,10 @@ describe("declared doubt", () => {
 			fromText(() => null),
 			dir,
 		);
-		first.store.replaceFile(
-			"a.ref",
-			"h1",
-			[
+		first.store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -1210,8 +1222,8 @@ describe("declared doubt", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const cited = first.store.declarationsIn("a.ref")[0]?.factId as string;
 		await built.recordAnswer(SYMBOL, "describe", "A shopping cart.", [cited]);
 		built.invalidateAnswer(SYMBOL, "checkout rewrite", "describe");
@@ -1241,10 +1253,10 @@ describe("re-affirming an answer", () => {
 		const [declaration] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
 
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -1255,8 +1267,8 @@ describe("re-affirming an answer", () => {
 					signature: "class Cart implements Basket",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		if (declaration === undefined) throw new Error("declaration citation missing");
 		expect(service.recallAnswer(SYMBOL, "describe")?.stale).toEqual([declaration]);
 
@@ -1294,10 +1306,10 @@ describe("re-affirming an answer", () => {
 
 	it("retires the answer id on re-grounding, so parents heal the same way, leaves first", async () => {
 		const [cartFact] = plant();
-		store.replaceFile(
-			"b.ref",
-			"h1",
-			[
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h1",
+			declarations: [
 				{
 					symbolId: "lexicon reference b.ref send#",
 					kind: "function",
@@ -1307,8 +1319,8 @@ describe("re-affirming an answer", () => {
 					visibility: "public",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const childFact = store.declarationsIn("b.ref")[0]?.factId as string;
 		const child = await service.recordAnswer("lexicon reference b.ref send#", "describe", "Sends one frame.", [
 			childFact,
@@ -1317,10 +1329,10 @@ describe("re-affirming an answer", () => {
 		await service.recordAnswer(SYMBOL, "describe", "Retries around send.", [cartFact as string, oldChildAnswerId]);
 
 		// The child's ground moves, then heals by re-affirmation onto the current fact.
-		store.replaceFile(
-			"b.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: "lexicon reference b.ref send#",
 					kind: "function",
@@ -1331,8 +1343,8 @@ describe("re-affirming an answer", () => {
 					signature: "(frame: Frame) => void",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const currentChildFact = store.declarationsIn("b.ref")[0]?.factId as string;
 		const healed = await service.reaffirmAnswer("lexicon reference b.ref send#", "describe", {
 			citations: [currentChildFact],
@@ -1388,10 +1400,10 @@ describe("the adjudicated supersede gate", () => {
 	it("stands down for a stale incumbent, which is already invited to be rewritten", async () => {
 		const [declaration] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
-		store.replaceFile(
-			"a.ref",
-			"h2",
-			[
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [
 				{
 					symbolId: SYMBOL,
 					kind: "class",
@@ -1402,8 +1414,8 @@ describe("the adjudicated supersede gate", () => {
 					signature: "class Cart implements Basket",
 				},
 			],
-			[],
-		);
+			references: [],
+		});
 		const current = store.declarationsIn("a.ref")[0]?.factId as string;
 
 		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart implementing Basket.", [current]);

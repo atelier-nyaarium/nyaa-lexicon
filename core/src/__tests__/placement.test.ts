@@ -219,7 +219,12 @@ describe("a rebuild across a compatibility key", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile("a.ref", "h1", [declare(CART, "Cart", 0), declare(SHOP, "Shop", 1)], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declare(CART, "Cart", 0), declare(SHOP, "Shop", 1)],
+			references: [],
+		});
 		const cited = (symbolId: string) => store.declaration(symbolId)?.factId as string;
 		await service.recordAnswer(CART, "describe", "The cart.", [cited(CART)]);
 		await service.recordAnswer(SHOP, "describe", "The shop.", [cited(SHOP)]);
@@ -245,7 +250,12 @@ describe("a rebuild across a compatibility key", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile("a.ref", "h1", [declare(CART, "Cart", 0)], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declare(CART, "Cart", 0)],
+			references: [],
+		});
 		expect(again.recallAnswer(CART, "describe")?.answer.prose).toBe("The cart.");
 		expect(store.subjects.byId(shop)).toBeNull();
 		expect(store.subjects.forAddress(SHOP)?.subjectId).not.toBe(shop);
@@ -258,7 +268,12 @@ describe("a rebuild across a compatibility key", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile("a.ref", "h1", [declare(SHOP, "Shop", 0), declare(STORE, "Store", 1)], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declare(SHOP, "Shop", 0), declare(STORE, "Store", 1)],
+			references: [],
+		});
 		const cited = (symbolId: string) => store.declaration(symbolId)?.factId as string;
 		await service.recordAnswer(SHOP, "describe", "The shop.", [cited(SHOP)]);
 		const shop = store.subjects.forAddress(SHOP)?.subjectId as string;
@@ -274,7 +289,12 @@ describe("a rebuild across a compatibility key", () => {
 		store = reopened.store;
 		expect(reopened.unplaced).toBeUndefined();
 		expect(store.subjects.byId(shop)).toMatchObject({ symbolId: STORE, state: "bound", evidence: "none" });
-		store.replaceFile("a.ref", "h1", [declare(STORE, "Store", 1)], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declare(STORE, "Store", 1)],
+			references: [],
+		});
 		const again = new LexiconService(
 			store,
 			new ProviderSupervisor(),
@@ -370,7 +390,12 @@ describe("a rebuild across a compatibility key", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile("a.ref", "h1", [declare(CART, "Cart", 0)], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h1",
+			declarations: [declare(CART, "Cart", 0)],
+			references: [],
+		});
 		expect(service.recallAnswer(CART, "describe")?.answer.prose).toBe("The cart.");
 		expect(store.liveGaps(10).map((gap) => [gap.question, gap.askCount])).toEqual([["why", 2]]);
 	});

@@ -93,6 +93,22 @@ export interface DocFilter {
 	module?: string | undefined;
 }
 
+export interface ReplaceFileInput {
+	module: string;
+	contentHash: string;
+	declarations: Declaration[];
+	references: Reference[];
+	imports?: Import[];
+	literals?: Literal[];
+	depth?: IndexDepth;
+	comments?: AttachedComment[];
+	docs?: DocRegion[];
+	notes?: FileNote[];
+	content?: FileContent;
+	digests?: PatternDigest[];
+	generated?: GeneratedVerdict | null;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -997,22 +1013,22 @@ export class IndexStore {
 	 * whole-index rebuild. The delete-then-insert is not an optimization: a symbol removed from a
 	 * file has to disappear, and an upsert alone would leave it behind forever.
 	 */
-	replaceFile(
-		module: string,
-		contentHash: string,
-		declarations: Declaration[],
-		references: Reference[],
-		imports: Import[] = [],
-		literals: Literal[] = [],
-		depth: IndexDepth = "full",
-		comments: AttachedComment[] = [],
-		docs: DocRegion[] = [],
-		notes: FileNote[] = [],
-		content: FileContent = "code",
-		digests: PatternDigest[] = [],
-		// Null is a writer that did not ask git, kept apart from git having been asked and unable to tell.
-		generated: GeneratedVerdict | null = null,
-	): void {
+	replaceFile(input: ReplaceFileInput): void {
+		const {
+			module,
+			contentHash,
+			declarations,
+			references,
+			imports = [],
+			literals = [],
+			depth = "full",
+			comments = [],
+			docs = [],
+			notes = [],
+			content = "code",
+			digests = [],
+			generated = null,
+		} = input;
 		admitFacts(module, { declarations, references, literals, docs });
 		const digestOf = new Map(digests.map((digest) => [digest.symbolId, digest]));
 		this.inTransaction(() => {
@@ -1213,11 +1229,15 @@ export class IndexStore {
 	}
 
 	/** Everything a file contributed, gone. Used when a file is deleted rather than changed. */
-	forgetFile(module: string): void {
-		this.inTransaction(() => {
-			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
-			this.db.prepare("DELETE FROM files WHERE module = ?").run(module);
-			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
+	forgetFile(module: string): boolean {
+		return this.inTransaction(() => {
+			let removed = false;
+			for (const table of FACT_TABLES) {
+				if (this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module).changes > 0) removed = true;
+			}
+			if (this.db.prepare("DELETE FROM files WHERE module = ?").run(module).changes > 0) removed = true;
+			if (this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module).changes > 0) removed = true;
+			return removed;
 		});
 	}
 

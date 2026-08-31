@@ -29,7 +29,12 @@ function declaration(symbolId: string, name: string, line = 0) {
 }
 
 function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
-	store.replaceFile(module, "h1", [declaration(symbolId, name)], []);
+	store.replaceFile({
+		module: module,
+		contentHash: "h1",
+		declarations: [declaration(symbolId, name)],
+		references: [],
+	});
 }
 
 async function record(symbolId: string, prose = "A shopping cart.", question: "describe" | "why" = "describe") {
@@ -41,7 +46,12 @@ async function record(symbolId: string, prose = "A shopping cart.", question: "d
 
 /** The declaration leaves the index; the subject and its rows stay. */
 function strand(module = "a.ref"): void {
-	store.replaceFile(module, "h2", [], []);
+	store.replaceFile({
+		module: module,
+		contentHash: "h2",
+		declarations: [],
+		references: [],
+	});
 }
 
 function refused(outcome: { recorded: boolean; reason?: string }): string {
@@ -197,7 +207,12 @@ describe("an address a subject vacated", () => {
 		plant("c.ref", c);
 		store.subjects.rebind([{ from: b, to: c }], "journalMove", 10);
 		// The first module keeps another declaration, so its shortlist is what an unminted id shows.
-		store.replaceFile("a.ref", "h2", [declaration("lexicon reference a.ref Other#", "Other")], []);
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h2",
+			declarations: [declaration("lexicon reference a.ref Other#", "Other")],
+			references: [],
+		});
 		strand("b.ref");
 
 		expect(refused(await service.recordAnswer(b, "describe", "Again.", []))).toContain(`was rebound to ${c}`);

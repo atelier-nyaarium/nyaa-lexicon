@@ -200,6 +200,7 @@ export {
 	type FileNote,
 	type FileNotes,
 	IndexStore,
+	type ReplaceFileInput,
 	SCHEMA_VERSION,
 	type StoredDeclaration,
 	type StoredFact,
