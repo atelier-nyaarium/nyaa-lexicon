@@ -31,6 +31,7 @@ const JOURNAL_TABLES = [
 const OWNERS = new Set(["transactions.ts", "store.ts"]);
 
 const SKIP = ["__tests__", "dist", "node_modules"];
+const TOKEN = "store.journal(";
 
 ////////////////////////////////
 //  Tests
@@ -66,5 +67,17 @@ describe("only the transaction manager touches the refactor journal", () => {
 			offenders,
 			"the refactor journal belongs to TransactionManager. Route through it rather than reading its tables.",
 		).toEqual([]);
+	});
+
+	it("has no raw journal escape outside the store", () => {
+		const files = sourceFiles(CORE_SRC, SKIP);
+		expect(files.length).toBeGreaterThan(0);
+		const offenders = files
+			.filter((file) => basename(file) !== "store.ts")
+			.flatMap((file) => {
+				const source = readSwept(file);
+				return source !== null && codeOnly(source).includes(TOKEN) ? [file] : [];
+			});
+		expect(offenders).toEqual([]);
 	});
 });

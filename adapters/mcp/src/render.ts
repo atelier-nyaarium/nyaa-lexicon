@@ -39,6 +39,10 @@ import {
 ////////////////////////////////
 //  Functions & Helpers
 
+export function codeSpan(value: string): string {
+	return value.replaceAll("\\", "\\\\").replaceAll("`", "\\`");
+}
+
 function line(summary: SymbolSummary): string {
 	// Three states, not two. A language with no notion of module export renders its visibility
 	// without implying the answer was no.
@@ -153,7 +157,7 @@ export function renderDescribe(result: DescribeResult): string {
 		"",
 		...signature,
 		`**Module:** ${location}`,
-		`**ID:** \`${result.symbol.symbolId}\``,
+		`**ID:** \`${codeSpan(result.symbol.symbolId)}\``,
 	];
 
 	if (result.prose !== undefined && result.prose.length > 0) {

@@ -625,6 +625,9 @@ export class LexiconService {
 			};
 			return unknown;
 		}
+		const providerFailure = this.indexer.providerFailureOf(declaration.module);
+		if (providerFailure !== null)
+			return { status: "unknown", reason: "ProviderUnavailable", detail: providerFailure };
 		return this.supervisor.ask(declaration.module, "typeOf", { symbolId });
 	}
 }

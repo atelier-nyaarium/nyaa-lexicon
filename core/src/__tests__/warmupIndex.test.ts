@@ -459,13 +459,13 @@ describe("warmup pass", () => {
 		// Provider outages do not create per-file failure records.
 		expect(store.parseFailures()).toEqual([]);
 		expect(service.indexStatus().failures).toBe(0);
-		// Nor does the pass read as covered: the file is unread, and every request says so until a restart.
-		expect(service.warmFailure()).toMatch(/provider was unavailable/);
+		// The outage belongs to the affected file value.
+		expect(service.warmFailure()).toBeNull();
 		expect(service.warmHold()).toBeNull();
 		expect(store.readScanSummary()?.outlined).not.toBe(true);
 
 		await service.applyBatch([{ kind: "changed", module: "gone.fake", contentHash: "gone-2" }]);
-		expect(service.warmFailure()).toMatch(/provider was unavailable/);
+		expect(service.warmFailure()).toBeNull();
 	});
 
 	it("records a plain provider error as a parse failure for that file", async () => {

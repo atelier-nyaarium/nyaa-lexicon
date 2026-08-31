@@ -95,7 +95,7 @@ export class TransactionManager {
 		if (open) return { started: false, id: open.id, reason: transactionAlreadyOpen() };
 
 		const id = `rt-${this.now().toString(36)}-${Math.trunc(Math.random() * 0xfffff).toString(36)}`;
-		this.store.journal((db) => {
+		this.store.journalWrite((db) => {
 			db.prepare("INSERT INTO refactor_transactions (id, state, startedAt) VALUES (?, ?, ?)").run(
 				id,
 				"open",
@@ -106,7 +106,7 @@ export class TransactionManager {
 	}
 
 	openTransaction(): { id: string; startedAt: number } | null {
-		const row = this.store.journal((db) =>
+		const row = this.store.journalRead((db) =>
 			db.prepare("SELECT id, startedAt FROM refactor_transactions WHERE state = 'open'").get(),
 		) as { id: string; startedAt: number } | undefined;
 		return row ?? null;
@@ -132,13 +132,13 @@ export class TransactionManager {
 		const open = this.openTransaction();
 		if (!open) return { open: false, steps: [], tracked: [], issues: [] };
 
-		const steps = this.store.journal((db) =>
+		const steps = this.store.journalRead((db) =>
 			db
 				.prepare("SELECT stepNo, kind, phase FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo")
 				.all(open.id),
 		) as Array<{ stepNo: number; kind: StepKind; phase: StepPhase }>;
 
-		const images = this.store.journal((db) =>
+		const images = this.store.journalRead((db) =>
 			db.prepare("SELECT scope, stepNo, module FROM refactor_images WHERE transactionId = ?").all(open.id),
 		) as Array<{ scope: ImageScope; stepNo: number | null; module: string }>;
 
@@ -160,7 +160,7 @@ export class TransactionManager {
 	}
 
 	issues(transactionId: string): RefactorIssue[] {
-		const rows = this.store.journal((db) =>
+		const rows = this.store.journalRead((db) =>
 			db
 				.prepare(
 					"SELECT stepNo, kind, detail, module, line FROM refactor_issues WHERE transactionId = ? ORDER BY stepNo",
@@ -199,7 +199,7 @@ export class TransactionManager {
 		const stepNo = this.nextStepNo(open.id);
 		const images = modules.map((module) => this.snapshot(module));
 
-		this.store.journal((db) => {
+		this.store.journalWrite((db) => {
 			db.prepare(
 				"INSERT INTO refactor_steps (transactionId, stepNo, kind, phase, plan, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
 			).run(open.id, stepNo, kind, "journaled", plan === undefined ? null : JSON.stringify(plan), this.now());
@@ -237,7 +237,7 @@ export class TransactionManager {
 			const modules = this.modulesOf(open.id, stepNo);
 			for (const module of modules) {
 				const after = this.snapshot(module);
-				this.store.journal((db) => {
+				this.store.journalWrite((db) => {
 					db.prepare(
 						`UPDATE refactor_images SET existsAfter = ?, afterHash = ?
 						 WHERE transactionId = ? AND scope = 'step' AND stepNo = ? AND module = ?`,
@@ -246,7 +246,7 @@ export class TransactionManager {
 			}
 		}
 
-		this.store.journal((db) => {
+		this.store.journalWrite((db) => {
 			db.prepare("UPDATE refactor_steps SET phase = ? WHERE transactionId = ? AND stepNo = ?").run(
 				phase,
 				open.id,
@@ -260,7 +260,7 @@ export class TransactionManager {
 	rebind(stepNo: number, entries: RebindEntry[], evidence: RebindEvidence): RebindResult {
 		const open = this.openTransaction();
 		if (!open) throw new Error("no refactor transaction is open");
-		return this.store.journal((db) => {
+		return this.store.journalWrite((db) => {
 			const result = this.store.subjects.rebind(entries, evidence, this.now());
 			const next = (
 				db
@@ -298,7 +298,7 @@ export class TransactionManager {
 		const open = this.openTransaction();
 		if (!open || issues.length === 0) return;
 
-		this.store.journal((db) => {
+		this.store.journalWrite((db) => {
 			const insert = db.prepare(
 				"INSERT INTO refactor_issues (transactionId, stepNo, kind, detail, module, line) VALUES (?, ?, ?, ?, ?, ?)",
 			);
@@ -322,7 +322,7 @@ export class TransactionManager {
 		const open = this.openTransaction();
 		if (!open) return { undone: false, reason: noTransactionOpen() };
 
-		const top = this.store.journal((db) =>
+		const top = this.store.journalRead((db) =>
 			db
 				.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC LIMIT 1")
 				.get(open.id),
@@ -345,7 +345,7 @@ export class TransactionManager {
 		// The files went back, so what the step moved goes back with them, in one commit with the rows
 		// that recorded it: a crash between the two cannot report a reversed move as kept.
 		const applied = this.rebindsOf(open.id, top.stepNo);
-		const kept = this.store.journal((db) => {
+		const kept = this.store.journalWrite((db) => {
 			const { kept } = this.store.subjects.rebindBack(applied);
 			db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
 				open.id,
@@ -374,11 +374,11 @@ export class TransactionManager {
 		for (const image of images) this.restore(image);
 		// Every step's rebind retraces, newest first, so a subject moved twice comes all the way back,
 		// and the journal closes in the same commit so a replay after a crash finds nothing to retrace.
-		const steps = this.store.journal((db) =>
+		const steps = this.store.journalRead((db) =>
 			db.prepare("SELECT stepNo FROM refactor_steps WHERE transactionId = ? ORDER BY stepNo DESC").all(open.id),
 		) as Array<{ stepNo: number }>;
 		const moves = steps.map((step) => this.rebindsOf(open.id, step.stepNo));
-		const kept = this.store.journal((db) => {
+		const kept = this.store.journalWrite((db) => {
 			const kept: KeptRebind[] = [];
 			for (const applied of moves) kept.push(...this.store.subjects.rebindBack(applied).kept);
 			this.drop(db, open.id, "reverted");
@@ -430,7 +430,7 @@ export class TransactionManager {
 		const open = this.openTransaction();
 		if (!open) return { recovered: false, restored: [], conflicts: [], unreversed: [] };
 
-		const unfinished = this.store.journal((db) =>
+		const unfinished = this.store.journalRead((db) =>
 			db
 				.prepare(
 					"SELECT stepNo, phase FROM refactor_steps WHERE transactionId = ? AND phase != 'finalized' ORDER BY stepNo DESC",
@@ -464,7 +464,7 @@ export class TransactionManager {
 			const applied = this.rebindsOf(open.id, step.stepNo).filter(
 				({ from, to }) => !(touched(from) && touched(to)),
 			);
-			const kept = this.store.journal((db) => {
+			const kept = this.store.journalWrite((db) => {
 				const { kept } = this.store.subjects.rebindBack(applied);
 				db.prepare("DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ?").run(
 					open.id,
@@ -526,7 +526,7 @@ export class TransactionManager {
 
 	/** Left behind when a write died between its temp file and its rename. */
 	private sweepTemporaries(): void {
-		const rows = this.store.journal((db) =>
+		const rows = this.store.journalRead((db) =>
 			db.prepare("SELECT DISTINCT module FROM refactor_images").all(),
 		) as Array<{ module: string }>;
 
@@ -537,7 +537,7 @@ export class TransactionManager {
 	//  Journal rows
 
 	private nextStepNo(transactionId: string): number {
-		const row = this.store.journal((db) =>
+		const row = this.store.journalRead((db) =>
 			db.prepare("SELECT MAX(stepNo) AS top FROM refactor_steps WHERE transactionId = ?").get(transactionId),
 		) as { top: number | null };
 		return (row.top ?? 0) + 1;
@@ -552,7 +552,7 @@ export class TransactionManager {
 		scope: ImageScope,
 		stepNo: number,
 	): Array<{ module: string; existedBefore: boolean; beforeHash: string | null; afterHash: string | null }> {
-		const rows = this.store.journal((db) =>
+		const rows = this.store.journalRead((db) =>
 			db
 				.prepare(
 					`SELECT module, existedBefore, beforeHash, afterHash FROM refactor_images
@@ -566,7 +566,7 @@ export class TransactionManager {
 
 	/** What a step moved, in the order it moved it; the schema vouched for every field at the write. */
 	private rebindsOf(transactionId: string, stepNo: number): AppliedRebind[] {
-		const rows = this.store.journal((db) =>
+		const rows = this.store.journalRead((db) =>
 			db
 				.prepare(
 					`SELECT subjectId, fromSymbolId, toSymbolId, priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt
@@ -596,7 +596,7 @@ export class TransactionManager {
 	}
 
 	private imageFor(transactionId: string, scope: ImageScope, stepNo: number, module: string): boolean {
-		const row = this.store.journal((db) =>
+		const row = this.store.journalRead((db) =>
 			db
 				.prepare(
 					"SELECT 1 AS found FROM refactor_images WHERE transactionId = ? AND scope = ? AND stepNo = ? AND module = ?",
@@ -613,7 +613,7 @@ export class TransactionManager {
 		image: FileImage,
 		plannedAfter?: FileImage,
 	): void {
-		this.store.journal((db) => {
+		this.store.journalWrite((db) => {
 			db.prepare(
 				`INSERT OR REPLACE INTO refactor_images
 				 (transactionId, scope, stepNo, module, existedBefore, beforeHash, existsAfter, afterHash)
@@ -633,7 +633,7 @@ export class TransactionManager {
 
 	/** Drops everything but the transaction row, which keeps its outcome for anyone still asking. */
 	private close(transactionId: string, state: "committed" | "reverted"): void {
-		this.store.journal((db) => this.drop(db, transactionId, state));
+		this.store.journalWrite((db) => this.drop(db, transactionId, state));
 		this.store.pruneBlobs();
 	}
 

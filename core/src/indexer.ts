@@ -172,7 +172,10 @@ export class WorkspaceIndexer {
 			});
 		} catch (error) {
 			const failure = error instanceof Error ? error.message : String(error);
-			if (error instanceof ProviderUnavailableError) return this.outcome(module, "providerDown", failure);
+			if (error instanceof ProviderUnavailableError) {
+				this.providerFailures.set(module, failure);
+				return this.outcome(module, "providerDown", failure);
+			}
 			this.store.recordFailure(module, failure);
 			this.upgradeFailed.add(module);
 			return this.outcome(module, "parseFailed", failure);
@@ -310,20 +313,9 @@ export class WorkspaceIndexer {
 			outcomes.push(...this.prune(seen));
 			this.sweepAfterPrune(seen);
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
-			// A restart heals an outage, so the pass says so; a fault is per file, recorded, and does not.
+			// An outage is a file value, not a workspace refusal, but the summary cannot claim a full outline.
 			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown");
-			if (outages.length > 0) {
-				// Files an outage left unread would hide behind every answer if this pass read as covered.
-				const first = outages[0] as IndexOutcome;
-				this.writeScanSummary(false);
-				this.coverage = {
-					state: "failed",
-					reason: `${outages.length} file(s) unread because a provider was unavailable: ${first.failure ?? first.reason}`,
-				};
-				return outcomes;
-			}
-			// A full pass covers at least what an outline pass would.
-			this.writeScanSummary(true);
+			this.writeScanSummary(outages.length === 0);
 			this.coverage = { state: "covered" };
 			return outcomes;
 		} catch (error) {
@@ -462,6 +454,11 @@ export class WorkspaceIndexer {
 
 	/** Exclude failures from the retryable background backlog. */
 	private upgradeFailed = new Set<string>();
+	private providerFailures = new Map<string, string>();
+
+	providerFailureOf(module: string): string | null {
+		return this.providerFailures.get(module) ?? null;
+	}
 
 	/** The one place an outcome's action and reason are chosen for its cause. */
 	private outcome(module: string, cause: IndexCause, detail?: string, forgot = false): IndexOutcome {

@@ -30,6 +30,8 @@ export const UnknownReasonSchema = z
 		 * the usual case. Distinct from RuntimeConstructed, which claims the target cannot be known.
 		 */
 		"NotIndexed",
+		/** The owning provider was unavailable for this file. */
+		"ProviderUnavailable",
 	])
 	.meta({ id: "UnknownReason" });
 

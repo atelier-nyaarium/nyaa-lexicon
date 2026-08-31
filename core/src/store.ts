@@ -37,6 +37,7 @@ import {
 	type StoredLiteral,
 	type StoredReference,
 } from "@nyaa-lexicon/protocol";
+import { z } from "zod";
 import { type Clock, systemClock } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
@@ -683,7 +684,8 @@ function liftAppliedRebinds(db: DatabaseSync): number {
 	for (const step of steps) {
 		let applied: unknown;
 		try {
-			applied = (JSON.parse(step.plan) as { rebind?: { applied?: unknown } }).rebind?.applied;
+			const parsed = LegacyPlanSchema.safeParse(JSON.parse(step.plan));
+			applied = parsed.success ? parsed.data.rebind?.applied : undefined;
 		} catch {
 			continue;
 		}
@@ -738,35 +740,22 @@ interface LiftedMove {
 	priorOrphanedAt: number | null;
 }
 
+const LegacyMoveSchema = z.object({
+	subjectId: z.string().min(1),
+	from: z.string().min(1),
+	to: z.string().min(1),
+	priorFrom: z.string().min(1).nullable(),
+	priorEvidence: z.enum(["sameLocator", "journalMove", "journalRename", "batchExactMatch"]),
+	priorBoundAt: z.number().int(),
+	priorState: z.enum(["bound", "orphaned"]),
+	priorOrphanedAt: z.number().int().nullable(),
+});
+const LegacyPlanSchema = z.object({ rebind: z.object({ applied: z.array(z.unknown()).optional() }).optional() });
+
 /** Each field read as the type its column declares, never coerced; the closed values are the CHECKs' to refuse. */
 function liftedMove(entry: unknown): LiftedMove | null {
-	if (typeof entry !== "object" || entry === null) return null;
-	const move = entry as Record<string, unknown>;
-	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-	const stamp = (value: unknown) => (typeof value === "number" && Number.isInteger(value) ? value : null);
-	const subjectId = text(move["subjectId"]);
-	const from = text(move["from"]);
-	const to = text(move["to"]);
-	const priorEvidence = text(move["priorEvidence"]);
-	const priorState = text(move["priorState"]);
-	const priorBoundAt = stamp(move["priorBoundAt"]);
-	const priorFrom = move["priorFrom"] ?? null;
-	const priorOrphanedAt = move["priorOrphanedAt"] ?? null;
-	if (subjectId === null || from === null || to === null || priorEvidence === null || priorState === null)
-		return null;
-	if (priorBoundAt === null) return null;
-	if (priorFrom !== null && text(priorFrom) === null) return null;
-	if (priorOrphanedAt !== null && stamp(priorOrphanedAt) === null) return null;
-	return {
-		subjectId,
-		from,
-		to,
-		priorFrom: priorFrom as string | null,
-		priorEvidence,
-		priorBoundAt,
-		priorState,
-		priorOrphanedAt: priorOrphanedAt as number | null,
-	};
+	const parsed = LegacyMoveSchema.safeParse(entry);
+	return parsed.success ? parsed.data : null;
 }
 
 /** Null when the table is absent, which is the case on an index written before it existed. */
@@ -1387,9 +1376,19 @@ export class IndexStore {
 	// Rows only. Everything that decides what they MEAN lives in TransactionManager, which a
 	// residue test holds as the single owner of the concept.
 
-	/** Runs `work` inside one SQLite transaction, exposed so the journal writes atomically. */
-	journal<T>(work: (db: DatabaseSync) => T): T {
+	/** Runs a journal read in a store-owned transaction. */
+	journalRead<T>(work: (db: DatabaseSync) => T): T {
 		return this.inTransaction(() => work(this.db));
+	}
+
+	/** Runs a journal write in a store-owned transaction. */
+	journalWrite<T>(work: (db: DatabaseSync) => T): T {
+		return this.inTransaction(() => work(this.db));
+	}
+
+	/** Legacy fixture access. Production code uses journalRead or journalWrite. */
+	journal<T>(work: (db: DatabaseSync) => T): T {
+		return this.journalRead(work);
 	}
 
 	/** Content addressed, so re-snapshotting an unchanged file costs a lookup and no bytes. */
