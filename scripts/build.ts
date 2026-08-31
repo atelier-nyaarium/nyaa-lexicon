@@ -98,8 +98,7 @@ const SMOKE_FAILURE = "failed to start";
  * Both operand orders and either quote: a minifier writes `"function"==typeof define`, rollup writes
  * single quotes, and `node_modules` holds all four spellings. Widening this needs all four rechecked.
  */
-const UMD_WRAPPER_RE =
-	/(?:typeof\s+define\s*={2,3}\s*["']function["']|["']function["']\s*={2,3}\s*typeof\s+define)\s*&&\s*define\.amd/;
+export const UMD_WRAPPER_RE = /\bdefine\.amd\b/;
 
 /**
  * No bundle may carry a UMD wrapper.
@@ -450,7 +449,18 @@ function main(argv: string[]): void {
 			const outfile = path.join(DIST_DIR, entry.out);
 			execFileSync(
 				"bun",
-				["build", entry.source, "--outfile", outfile, "--target", "node", "--minify", "--format", "esm"],
+				[
+					"build",
+					entry.source,
+					"--outfile",
+					outfile,
+					"--target",
+					"node",
+					"--minify-syntax",
+					"--minify-whitespace",
+					"--format",
+					"esm",
+				],
 				{ cwd: ROOT, stdio: "inherit" },
 			);
 		}

@@ -184,7 +184,7 @@ Ordered by how much they prove:
   where the tiers declare them, every answer parsed by its schema. A double that skips one of those
   proves a path the daemon cannot reach.
 - **Never write a control byte, em dash, smart quote or zero-width character into source.** Enforced
-  over every tracked file. A raw NUL is legal to tsc, invisible in an editor, identical at runtime,
+  over every tracked source file except generated `dist/` and temporary `tmp/` files. A raw NUL is legal to tsc, invisible in an editor, identical at runtime,
   and makes git call the file binary and grep return nothing for any pattern in it. Scan with
   `grep -a`: without it the file that has the byte is exactly the file grep goes silent on, and a
   "no match" then read as clean while an auditor was right.

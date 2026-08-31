@@ -9,6 +9,7 @@ import {
 	nextVersion,
 	readVersion,
 	setVersion,
+	UMD_WRAPPER_RE,
 	versionTargets,
 } from "../build";
 
@@ -43,6 +44,15 @@ afterEach(() => {
 //  Tests
 
 describe("nextVersion", () => {
+	it("rejects every AMD wrapper spelling", () => {
+		for (const source of [
+			'typeof define === "function" && define.amd',
+			"typeof define == 'function' && define.amd",
+			'"function" === typeof define && define.amd',
+			"'function' == typeof define && define.amd",
+		])
+			expect(UMD_WRAPPER_RE.test(source)).toBe(true);
+	});
 	it("bumps each component and zeroes the ones below it", () => {
 		expect(nextVersion("1.2.3", "patch")).toBe("1.2.4");
 		expect(nextVersion("1.2.3", "minor")).toBe("1.3.0");

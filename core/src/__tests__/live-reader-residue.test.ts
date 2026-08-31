@@ -9,7 +9,7 @@ import { codeOnly, readSwept } from "@nyaa-lexicon/protocol";
  */
 const LEDGER = join(import.meta.dirname, "..", "knowledge.ts");
 
-const RAW = /\.(allAnswers|doubtedAnswers|gaps)\(/g;
+const RAW = /\.(?:allAnswers|doubtedAnswers|gaps)\s*\(/g;
 
 ////////////////////////////////
 //  Tests
@@ -20,6 +20,8 @@ describe("the ledger ranks over live rows", () => {
 		expect("const all = this.store.gaps(limit * 4);".match(RAW)).toHaveLength(1);
 		expect("for (const answer of this.store.doubtedAnswers()) {".match(RAW)).toHaveLength(1);
 		expect("this.store.liveGaps(limit)".match(RAW)).toBeNull();
+		expect("store.allAnswers ()".match(RAW)).toHaveLength(1);
+		expect("store.doubtedAnswers\n()".match(RAW)).toHaveLength(1);
 	});
 
 	it("reaches no raw answer or gap reader from the ledger", () => {

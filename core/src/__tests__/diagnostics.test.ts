@@ -314,6 +314,22 @@ describe("what the collection keeps", () => {
 
 // The runtime states no heap limit; the host's memory is the one the OS enforces.
 describe("writing a report near the host's memory", () => {
+	it("uses and records the cgroup limit when it is lower than host memory", () => {
+		const limit = HOST / 2;
+		const { clock, state, selfReports, collector } = harness({
+			readHost: () => ({
+				memTotal: HOST,
+				memAvailable: HOST / 2,
+				memoryLimit: { bytes: limit, source: "cgroupV2" },
+			}),
+		});
+		state.self = { ...state.self, rss: limit * 0.9 };
+		clock.advance(SAMPLE);
+
+		expect(selfReports).toEqual([SELF_REPORT]);
+		expect(collector.current().host.memoryLimit).toEqual({ bytes: limit, source: "cgroupV2" });
+	});
+
 	it("writes its own report once above the high mark, and again only after its size has come down", () => {
 		const { clock, state, selfReports } = harness();
 		state.self = { ...state.self, rss: HOST * 0.9 };

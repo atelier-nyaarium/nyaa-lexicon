@@ -84,6 +84,10 @@ const HostSchema = z.object({
 	runtime: z.enum(["bun", "node"]),
 	memTotal: z.number().nullable(),
 	memAvailable: z.number().nullable(),
+	memoryLimit: z
+		.object({ bytes: z.number(), source: z.enum(["cgroupV1", "cgroupV2"]) })
+		.nullable()
+		.optional(),
 	sampler: z.enum(["procfs", "none"]),
 });
 
@@ -143,7 +147,11 @@ export interface CollectorOptions {
 	clock?: Clock;
 	selfMemory?: () => SelfMemory;
 	readMemory?: (pid: number) => { rss: number; hwm: number } | null;
-	readHost?: () => { memTotal: number; memAvailable: number } | null;
+	readHost?: () => {
+		memTotal: number;
+		memAvailable: number;
+		memoryLimit?: { bytes: number; source: "cgroupV1" | "cgroupV2" } | null;
+	} | null;
 	/** Writes the high-water report; the default writes a sample under `SELF_REPORT`. */
 	writeSelfReport?: (file: string, sample: Sample, hostTotal: number) => void;
 	/** Writes a heap snapshot into the reports directory; the default asks the runtime. */
@@ -320,6 +328,7 @@ function fromLegacy(legacy: z.infer<typeof LegacyDiagnosticsSchema>): Diagnostic
 			runtime: "node",
 			memTotal: host.memTotal,
 			memAvailable: host.memAvailable,
+			memoryLimit: null,
 			sampler: host.sampler,
 		},
 	};
@@ -521,7 +530,8 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 			const taken = takeSample();
 			push(samples, taken, SAMPLE_RING);
 			notePeaks(taken);
-			watchHighWater(taken, readHost()?.memTotal ?? null);
+			const host = readHost();
+			watchHighWater(taken, host?.memoryLimit?.bytes ?? host?.memTotal ?? null);
 		} catch (error) {
 			options.onError?.(`diagnostics sample failed: ${describe(error)}`);
 		}
@@ -538,6 +548,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 				runtime,
 				memTotal: host?.memTotal ?? null,
 				memAvailable: host?.memAvailable ?? null,
+				memoryLimit: host?.memoryLimit ?? null,
 				sampler,
 			},
 			peaks: [...peaks.values()],

@@ -86,13 +86,19 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 }
 
 /** Busy machine or broken provider. */
-function environment(startedAt: number): string {
+function environment(startedAt: number, timeoutMs: number): string {
 	const [load] = loadavg();
-	return `load ${(load ?? 0).toFixed(2)} on ${cpus().length} cpus, ${Math.round((Date.now() - startedAt) / 1000)}s into the run`;
+	return `timeout ${timeoutMs}ms, load ${(load ?? 0).toFixed(2)} on ${cpus().length} cpus, ${Math.round((Date.now() - startedAt) / 1000)}s into the run`;
 }
 
-function stalled(caseId: string, tier: Tier | "protocol", stall: Stall, startedAt: number): CaseResult {
-	return { caseId, tier, outcome: "stalled", problems: [`${stall.message} (${environment(startedAt)})`] };
+function stalled(
+	caseId: string,
+	tier: Tier | "protocol",
+	stall: Stall,
+	startedAt: number,
+	timeoutMs: number,
+): CaseResult {
+	return { caseId, tier, outcome: "stalled", problems: [`${stall.message} (${environment(startedAt, timeoutMs)})`] };
 }
 
 ////////////////////////////////
@@ -473,7 +479,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			} catch (again) {
 				if (!(again instanceof Stall)) throw again;
 				const stall = new Stall(again.why, `initialize stalled twice: ${first.message}; then ${again.message}`);
-				return unreached(stalled("initialize", "protocol", stall, startedAt));
+				return unreached(stalled("initialize", "protocol", stall, startedAt, timeoutMs));
 			}
 		}
 		const results: CaseResult[] = [];
@@ -522,7 +528,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				// A thrown request is this case's failure, never the suite's: the remaining cases
 				// still carry information about what the provider does get right.
 				if (error instanceof Stall) {
-					results.push(stalled(testCase.id, tier, error, startedAt));
+					results.push(stalled(testCase.id, tier, error, startedAt, timeoutMs));
 					continue;
 				}
 				const message = error instanceof Error ? error.message : String(error);
@@ -551,7 +557,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				results.push(await runMoveCase(session, testCase, fixture));
 			} catch (error) {
 				if (error instanceof Stall) {
-					results.push(stalled(testCase.id, "protocol", error, startedAt));
+					results.push(stalled(testCase.id, "protocol", error, startedAt, timeoutMs));
 					continue;
 				}
 				results.push({
@@ -570,7 +576,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			results.push(await checkBadModuleIsRefused(session));
 		} catch (error) {
 			if (!(error instanceof Stall)) throw error;
-			results.push(stalled("protocol-probes", "protocol", error, startedAt));
+			results.push(stalled("protocol-probes", "protocol", error, startedAt, timeoutMs));
 		}
 
 		results.push(...untestedClaims(info.tiers, options.cases, results));

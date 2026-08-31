@@ -949,9 +949,45 @@ export type SymbolSource = z.infer<typeof SymbolSourceSchema>;
 ////////////////////////////////
 //  Refactoring
 
+export const REFACTOR_ISSUE_KINDS = [
+	"ExportedBeyondIndex",
+	"FinishIncomplete",
+	"ImportersUnchecked",
+	"NameAlreadyBound",
+	"NameImported",
+	"NameNotInSource",
+	"NameTaken",
+	"NotIndexed",
+	"OrphanedReference",
+	"OwnerCallsUnresolved",
+	"OwnerNotIndexed",
+	"ReindexFailed",
+	"SameName",
+	"SameSpellingUnbound",
+	"SyntaxUnchecked",
+	"UnboundReference",
+	"UnresolvedAfterMove",
+	"NotImplemented",
+	"ParseError",
+	"StringLiteral",
+	"ExternalContract",
+	"NotEditable",
+	"PrivateSibling",
+	"NoExportPath",
+	"NoImportPath",
+	"AmbiguousImportPath",
+	"DynamicDependency",
+	"Landed",
+] as const;
+
 export const RefactorIssueSchema = z
 	.object({
-		kind: z.string(),
+		kind: z
+			.string()
+			.refine(
+				(kind) => (REFACTOR_ISSUE_KINDS as readonly string[]).includes(kind),
+				"unknown refactor issue kind",
+			),
 		detail: z.string(),
 		module: z.string().optional(),
 		line: z.number().optional(),

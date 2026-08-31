@@ -59,7 +59,11 @@ describe("parsing memory rows", () => {
 
 	it("reads total and available from meminfo", () => {
 		const meminfo = "MemTotal:       32149904 kB\nMemFree:         1 kB\nMemAvailable:   22342984 kB\n";
-		expect(parseMeminfo(meminfo)).toEqual({ memTotal: 32149904 * 1024, memAvailable: 22342984 * 1024 });
+		expect(parseMeminfo(meminfo)).toEqual({
+			memTotal: 32149904 * 1024,
+			memAvailable: 22342984 * 1024,
+			memoryLimit: null,
+		});
 	});
 });
 

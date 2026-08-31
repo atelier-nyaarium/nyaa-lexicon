@@ -32,6 +32,8 @@ export interface FakeOptions {
 	/** What `declares` answers; an omitted tier is undeclared. */
 	tiers?: Partial<ProviderTiers>;
 	answers?: FakeAnswers;
+	/** Failures the live supervisor can expose while a request is pending. */
+	fail?: { providerDown?: boolean; timeoutMs?: number; queue?: number };
 	/** Whether the indexer's registered source feeds routing before a scan observed anything. */
 	lazyEvidence?: boolean;
 }
@@ -121,6 +123,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 	const discover = options.discover ?? (() => []);
 	const tiers = options.tiers ?? {};
 	const answers = options.answers ?? {};
+	const failure = options.fail ?? {};
 	const lazyEvidence = options.lazyEvidence ?? true;
 	let evidence: () => Iterable<string> = () => [];
 	let routing: ReturnType<typeof routingContextOf> | undefined;
@@ -134,6 +137,11 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		method: K,
 		params: unknown,
 	): Promise<MethodResponse<K>> {
+		if (failure.providerDown) throw new Error("provider is not running");
+		if (failure.queue !== undefined && failure.queue > 0) {
+			failure.queue--;
+			await new Promise<void>((resolve) => setTimeout(resolve, failure.timeoutMs ?? 0));
+		}
 		const override = answers[method] as Answer<K> | undefined;
 		const answered =
 			override !== undefined
@@ -147,6 +155,16 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		}
 		// Validated as the wire validates it, so no fixture can assert on a shape a provider cannot send.
 		return METHOD_SCHEMAS[method].response.parse(answered) as MethodResponse<K>;
+	}
+
+	function pending<K extends ProviderMethod>(work: Promise<MethodResponse<K>>): Promise<MethodResponse<K>> {
+		if (failure.timeoutMs === undefined) return work;
+		return Promise.race([
+			work,
+			new Promise<MethodResponse<K>>((_, reject) =>
+				setTimeout(() => reject(new Error("provider request timed out")), failure.timeoutMs),
+			),
+		]);
 	}
 
 	const port: ProviderPort = {
@@ -168,13 +186,13 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 					route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed";
 				throw new Error(`no provider owns ${module}: ${detail}`);
 			}
-			return answer(module, method, params);
+			return pending(answer(module, method, params));
 		},
 		askProvider: async (providerId, method, params) => {
 			if (!claims.some((claim) => claim.providerId === providerId)) {
 				throw new Error(`provider ${providerId} is not running`);
 			}
-			return answer(providerId, method, params);
+			return pending(answer(providerId, method, params));
 		},
 	};
 	return port;

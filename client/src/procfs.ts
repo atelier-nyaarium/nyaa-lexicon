@@ -20,6 +20,7 @@ export interface ProcessMemory {
 export interface HostMemory {
 	memTotal: number;
 	memAvailable: number;
+	memoryLimit: { bytes: number; source: "cgroupV1" | "cgroupV2" } | null;
 }
 
 ////////////////////////////////
@@ -51,7 +52,14 @@ export function parseProcStatus(status: string): ProcessMemory | null {
 export function parseMeminfo(meminfo: string): HostMemory | null {
 	const memTotal = kbField(meminfo, "MemTotal");
 	const memAvailable = kbField(meminfo, "MemAvailable");
-	return memTotal === null || memAvailable === null ? null : { memTotal, memAvailable };
+	return memTotal === null || memAvailable === null ? null : { memTotal, memAvailable, memoryLimit: null };
+}
+
+function parseLimit(value: string, source: "cgroupV1" | "cgroupV2"): HostMemory["memoryLimit"] {
+	const trimmed = value.trim();
+	if (trimmed === "" || trimmed === "max") return null;
+	const bytes = Number(trimmed);
+	return Number.isSafeInteger(bytes) && bytes > 0 ? { bytes, source } : null;
 }
 
 function readProc(relative: string): string | null {
@@ -76,5 +84,18 @@ export function processMemory(pid: number): ProcessMemory | null {
 
 export function hostMemory(): HostMemory | null {
 	const meminfo = readProc("meminfo");
-	return meminfo === null ? null : parseMeminfo(meminfo);
+	const parsed = meminfo === null ? null : parseMeminfo(meminfo);
+	if (parsed === null) return null;
+	const v2 = readProc("self/cgroup")
+		?.split("\n")
+		.find((line) => line.startsWith("0::"));
+	const v2Path = v2?.slice(3) ?? "/";
+	const v2Limit = readProc(`self/root/sys/fs/cgroup${v2Path}/memory.max`);
+	const v1Limit = readProc("self/root/sys/fs/cgroup/memory/memory.limit_in_bytes");
+	return {
+		...parsed,
+		memoryLimit:
+			(v2Limit === null ? null : parseLimit(v2Limit, "cgroupV2")) ??
+			(v1Limit === null ? null : parseLimit(v1Limit, "cgroupV1")),
+	};
 }

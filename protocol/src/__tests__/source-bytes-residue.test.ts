@@ -16,7 +16,7 @@ import { readSwept } from "../residue";
  */
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
 
-/** The shipped bundle is generated, and its contents are its inputs' problem rather than its own. */
+/** Generated bundles are checked by the build gate. */
 const SKIP_PREFIXES = ["dist/", "tmp/"];
 
 const CHECKED_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".gd", ".md", ".json", ".yml", ".yaml"];
