@@ -224,6 +224,13 @@ Ordered by how much they prove:
   store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there;
   the rule was remembered at four sites before the projection owned it. Recall, doubt and diagnosis
   read raw rows on purpose, since a stranded subject must still be seen.
+- **A daemon wire object strips unknown keys; never `strict`, never `passthrough`.** A client and a
+  daemon are separately versioned, so a strict schema refuses a newer peer's extra field and a
+  passthrough one carries it somewhere nothing validates it. Tool argument schemas are the opposite
+  case and do reject the unknown, since a typo there is the caller's mistake, not a version skew.
+- **A pattern digest is evidence, never an identity key.** Two declarations can be textually
+  identical and carry different knowledge and citations, so a digest may support `batchExactMatch`
+  and may never key a row.
 
 ## Blind test corpora
 
