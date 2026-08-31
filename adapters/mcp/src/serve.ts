@@ -4,17 +4,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { daemonChannel, writeInstallRecord } from "@nyaa-lexicon/client";
 import {
-	createDispatch,
 	createSessionBinds,
-	IndexStore,
-	LexiconService,
 	lexiconRoot,
 	ownSource,
-	ProviderSupervisor,
 	readRegistry,
 	type SessionProject,
-	sourceReader,
-	startProviders,
 	storeIdentity,
 } from "@nyaa-lexicon/core";
 import packageJson from "../../../package.json";
@@ -138,54 +132,6 @@ function backendOver(ask: Asker): ToolBackend {
 		knowledgeGaps: (root, question, limit, module) => ask("knowledgeGaps", { root, question, limit, module }),
 		declarationOf: (symbolId) => ask("declarationOf", { symbolId }),
 		diagnoseSubject: (symbolId) => ask("diagnoseSubject", { symbolId }),
-	};
-}
-
-/**
- * An index living in this process, for when no daemon is running.
- *
- * Indexes lazily on the first question rather than at startup, so an MCP client's handshake is not
- * held behind a scan of the workspace. The cost is that each session builds its own index, which
- * is exactly what the daemon exists to avoid; this is the fallback, not the design.
- */
-const NO_JOURNAL =
-	"refactor transactions need the daemon, whose index is on disk; this session is running its own in-memory index, where an undo record would not survive the process";
-
-export function localBackend(workspaceRoot: string): ToolBackend {
-	let ready: Promise<Asker> | null = null;
-
-	// Through the daemon's own dispatcher, so a request meets the wire's validation and containment
-	// here exactly as it would over the socket.
-	async function build(): Promise<Asker> {
-		const { store } = IndexStore.open(":memory:");
-		const supervisor = new ProviderSupervisor();
-		await startProviders(supervisor, workspaceRoot);
-
-		const service = new LexiconService(store, supervisor, sourceReader(workspaceRoot), workspaceRoot);
-		await service.indexWorkspace();
-		const dispatch = createDispatch(service);
-		return ((method, params) => dispatch(method, params)) as Asker;
-	}
-
-	function asker(): Promise<Asker> {
-		ready ??= build();
-		return ready;
-	}
-
-	return {
-		...backendOver((async (method, params) => (await asker())(method, params as never)) as Asker),
-		// A journal in an in-memory index dies with the process, so this backend would offer an undo
-		// it could not honour and leave written files with no record of what they replaced.
-		refactorStart: async () => ({ started: false, id: "", reason: NO_JOURNAL }),
-		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
-		refactorTrack: async () => ({ tracked: false, reason: NO_JOURNAL }),
-		refactorUndo: async () => ({ undone: false, reason: NO_JOURNAL }),
-		refactorRevert: async () => ({ reverted: false, modules: [], reason: NO_JOURNAL }),
-		refactorCommit: async () => ({ committed: false, issues: [], reason: NO_JOURNAL }),
-		refactorReplace: async () => ({ replaced: false, issues: [], reason: NO_JOURNAL }),
-		refactorInsert: async () => ({ inserted: false, issues: [], reason: NO_JOURNAL }),
-		refactorRename: async () => ({ renamed: false, issues: [], reason: NO_JOURNAL }),
-		refactorMove: async () => ({ moved: false, issues: [], reason: NO_JOURNAL }),
 	};
 }
 

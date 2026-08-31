@@ -691,7 +691,3 @@ export function previousSignificant(tokens: CToken[], index: number): number {
 	}
 	return -1;
 }
-
-export function sameLine(left: CToken, right: CToken): boolean {
-	return left.start.line === right.start.line;
-}

@@ -447,7 +447,3 @@ export function tokenize(source: string): ScanResult {
 
 	return { tokens, comments, diagnostics, lineTokens };
 }
-
-export function tokenText(source: string, token: RustToken): string {
-	return sourceRange(source, token.startOffset, token.endOffset);
-}

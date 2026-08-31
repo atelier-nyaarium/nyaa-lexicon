@@ -81,13 +81,6 @@ export interface ParsedFile {
 	lineTokens: Map<number, RustToken[]>;
 }
 
-export interface TokenBlock {
-	open: RustToken;
-	close?: RustToken;
-	start: number;
-	end: number;
-}
-
 export function rangeOf(span: CursorSpan): Range {
 	return { start: span.start, end: span.end };
 }
@@ -99,5 +92,3 @@ export function tokenRange(token: RustToken): Range {
 export function pointRange(position: Position): Range {
 	return { start: position, end: { line: position.line, character: position.character + 1 } };
 }
-
-export type ParsedImportName = ImportedName;
