@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
 import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { calleeOf, callsIn, lineOf, parseSource, reachedCalls } from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds sourceWriter.ts as the only module that writes a source file in the workspace.
@@ -12,8 +13,29 @@ import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
  */
 const CORE_SRC = join(import.meta.dirname, "..");
 
-/** Writing a file to the workspace, and the temp name recovery looks for. */
-const WRITING_CALLS = ["writeFileSync", "renameSync"];
+const FS_MODULES = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
+
+/**
+ * Every way node puts bytes on disk or moves them there.
+ *
+ * Matched by BINDING rather than by spelling: an alias is caught, and a same-named method on some
+ * other object is not, since nothing imported it.
+ */
+const WRITERS = new Set([
+	"writeFile",
+	"writeFileSync",
+	"write",
+	"writeSync",
+	"appendFile",
+	"appendFileSync",
+	"rename",
+	"renameSync",
+	"copyFile",
+	"copyFileSync",
+	"createWriteStream",
+	"truncate",
+	"truncateSync",
+]);
 
 const TEMPORARY_SUFFIX = "lexicon-tmp";
 
@@ -40,11 +62,18 @@ describe("one module writes source files", () => {
 
 		for (const file of sourceFiles(CORE_SRC, SKIP)) {
 			if (OWNERS.has(basename(file))) continue;
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source);
-			for (const call of WRITING_CALLS) {
-				if (code.includes(`${call}(`)) offenders.push(`${basename(file)}: ${call}`);
+			const text = readSwept(file);
+			if (text === null) continue;
+			const parsed = parseSource(file, text);
+			for (const { call, name } of reachedCalls(parsed.source, FS_MODULES, WRITERS)) {
+				offenders.push(`${basename(file)}:${lineOf(parsed, call)} ${name}`);
+			}
+			// Bun's writer arrives on a global rather than through an import.
+			for (const call of callsIn(parsed.source)) {
+				const callee = calleeOf(call);
+				if (callee?.receiver === "Bun" && callee.name === "write") {
+					offenders.push(`${basename(file)}:${lineOf(parsed, call)} Bun.write`);
+				}
 			}
 		}
 

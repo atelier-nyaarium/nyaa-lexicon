@@ -53,9 +53,7 @@ const KIND_OF = { class: "class", function: "function", const: "constant" } as c
 //  Functions & Helpers
 
 function lineOf(text: string, index: number): number {
-	let line = 0;
-	for (let i = 0; i < index; i++) if (text[i] === "\n") line++;
-	return line;
+	return coordinatesOf(text).positionAt(index)?.line ?? 0;
 }
 
 function offsetAt(text: string, position: Range["start"]): number | undefined {
@@ -144,7 +142,7 @@ function namedImportEdit(request: MoveEditsRequest, index: number): TextEdit | u
 		return undefined;
 	}
 
-	const statementStart = request.text.lastIndexOf("\n", nameStart) + 1;
+	const statementStart = coordinatesOf(request.text).lineStartAt(nameStart) ?? 0;
 	const nextLine = request.text.indexOf("\n", nameEnd);
 	const statementEnd = nextLine === -1 ? request.text.length : nextLine;
 	const statement = request.text.slice(statementStart, statementEnd);

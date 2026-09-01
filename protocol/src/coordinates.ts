@@ -32,6 +32,13 @@ export interface TextCoordinates {
 	offsetsForRange(range: Range): OffsetRange | undefined;
 	rangeAt(start: number, end: number): Range | undefined;
 	sliceRange(range: Range): string | undefined;
+	/**
+	 * Where the line holding `offset` begins. Undefined when the offset is outside the text.
+	 *
+	 * The primitive behind "what is on this line before me", which callers otherwise reach for as
+	 * `lastIndexOf("\n", offset) + 1` and then own a bounds rule nobody else shares.
+	 */
+	lineStartAt(offset: number): number | undefined;
 	/** One line's content, terminator excluded. Undefined when the line does not exist. */
 	lineText(line: number): string | undefined;
 	/** Lines in the text; the count of addressable line numbers. */
@@ -106,6 +113,10 @@ export function coordinatesOf(text: string): TextCoordinates {
 		sliceRange(range) {
 			const offsets = offsetsForRange(range);
 			return offsets === undefined ? undefined : text.slice(offsets.start, offsets.end);
+		},
+		lineStartAt(offset) {
+			const position = positionAt(offset);
+			return position === undefined ? undefined : (starts[position.line] as number);
 		},
 		lineText(line) {
 			const start = starts[line];

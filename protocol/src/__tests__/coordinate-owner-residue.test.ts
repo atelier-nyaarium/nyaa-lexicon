@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "../residue";
+import ts from "typescript";
+import { calleeOf, callsIn, lineOf, type ParsedSource, parseSource } from "../astResidue";
+import { readSwept, sourceFiles } from "../residue";
 
 /**
  * Holds coordinates.ts as the only module that maps an offset to a position.
@@ -22,13 +24,48 @@ const OWNER = "coordinates.ts";
 
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "tmp", "fixtures"]);
 
-/**
- * Deriving a line or a character from raw text. Every copy this replaced started with one of these,
- * because there is no other way to build the line index by hand.
- */
-const ARITHMETIC = [/\.lastIndexOf\("\\n"\)/, /\.split\("\\n"\)\.length/, /=== "\\n"\)\s*\w*\.?push\(/];
-
 const swept = (dir: string) => sourceFiles(dir, SKIP_DIRS);
+
+////////////////////////////////
+//  Functions & Helpers
+
+/** A newline, however it is written: `"\n"`, `'\n'`, or a regex matching one. */
+function isNewline(node: ts.Node | undefined): boolean {
+	if (node === undefined) return false;
+	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text === "\n";
+	if (ts.isRegularExpressionLiteral(node)) return /^\/\\n\/[a-z]*$/.test(node.text);
+	return false;
+}
+
+/**
+ * Deriving a LINE or a CHARACTER from raw text, rather than merely splitting text into lines.
+ *
+ * Splitting for display is everywhere and legitimate; what is not is asking how MANY newlines came
+ * before a point, or where the last one was. Those two questions are the coordinate, and the shape
+ * of the answer is what is recognized here rather than the names a copy happened to use.
+ */
+function arithmetic(parsed: ParsedSource): Array<{ node: ts.Node; why: string }> {
+	const found: Array<{ node: ts.Node; why: string }> = [];
+	for (const call of callsIn(parsed.source)) {
+		const callee = calleeOf(call);
+		if (callee === undefined || !isNewline(call.arguments[0])) continue;
+		// Where the line containing an offset begins: a character coordinate, never a display concern.
+		if (callee.name === "lastIndexOf") found.push({ node: call, why: "lastIndexOf a newline" });
+		// How many lines precede a point. The count is the line number; the split alone is not.
+		if (
+			(callee.name === "split" || callee.name === "match" || callee.name === "matchAll") &&
+			ts.isPropertyAccessExpression(call.parent) &&
+			call.parent.name.text === "length"
+		) {
+			found.push({ node: call, why: `counting newlines with ${callee.name}` });
+		}
+	}
+	// NOT flagged, and this is the rule's known limit: `character === "\n"`. A hand-written lexer
+	// advancing its own line counter is tokenizing, which docs/parsing.md rule 6 requires of it, and
+	// every parser here does it. A one-off counter loop wears the same shape, so it walks past;
+	// nothing here distinguishes the two, and a rule that cannot be stated is worse than a stated gap.
+	return found;
+}
 
 ////////////////////////////////
 //  Tests
@@ -47,11 +84,11 @@ describe("one module owns text coordinates", () => {
 
 		for (const file of PACKAGES.flatMap(swept)) {
 			if (basename(file) === OWNER) continue;
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source);
-			for (const pattern of ARITHMETIC) {
-				if (pattern.test(code)) offenders.push(`${basename(file)}: ${pattern.source}`);
+			const text = readSwept(file);
+			if (text === null) continue;
+			const parsed = parseSource(file, text);
+			for (const { node, why } of arithmetic(parsed)) {
+				offenders.push(`${basename(file)}:${lineOf(parsed, node)} ${why}`);
 			}
 		}
 

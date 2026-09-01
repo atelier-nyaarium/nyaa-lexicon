@@ -214,7 +214,7 @@ function rewriteImportSite(
 	}
 
 	const remaining = statement.aliases.filter((candidate) => candidate !== alias);
-	const indentation = statementIndent(request.text, offsets.start);
+	const indentation = statementIndent(request.text, coordinates, offsets.start);
 	return {
 		edit: {
 			range: statement.range,
@@ -394,20 +394,24 @@ function importInsertionPosition(text: string, coordinates: TextCoordinates, fac
 	for (const statement of facts.importStatements) {
 		if (statement.kind !== "from" || statement.specifier !== "__future__") continue;
 		const offsets = coordinates.offsetsForRange(statement.range);
-		if (offsets === undefined || !isTopLevel(text, offsets.start)) continue;
+		if (offsets === undefined || !isTopLevel(text, coordinates, offsets.start)) continue;
 		position = Math.max(position, afterLine(text, offsets.end));
 	}
 	return position;
 }
 
-function isTopLevel(text: string, offset: number): boolean {
-	const lineStart = text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
-	return text.slice(lineStart, offset) === "";
+/** What precedes `offset` on its own line, which is where both questions below start. */
+function beforeOnLine(text: string, coordinates: TextCoordinates, offset: number): string {
+	const lineStart = coordinates.lineStartAt(offset);
+	return lineStart === undefined ? "" : text.slice(lineStart, offset);
 }
 
-function statementIndent(text: string, offset: number): string {
-	const lineStart = text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
-	return text.slice(lineStart, offset).match(/^[ \t]*/)?.[0] ?? "";
+function isTopLevel(text: string, coordinates: TextCoordinates, offset: number): boolean {
+	return beforeOnLine(text, coordinates, offset) === "";
+}
+
+function statementIndent(text: string, coordinates: TextCoordinates, offset: number): string {
+	return beforeOnLine(text, coordinates, offset).match(/^[ \t]*/)?.[0] ?? "";
 }
 
 function afterLine(text: string, offset: number): number {

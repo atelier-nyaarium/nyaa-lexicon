@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { calleeOf, callsIn, lineOf, parseSource, reachedCalls } from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds sourceRead.ts as the only module that reads a workspace file for indexing.
@@ -31,8 +32,24 @@ const OWNERS = new Set([
 
 const SKIP = ["__tests__", "dist", "node_modules"];
 
-/** Every way node reads a file's bytes. `readFile(` alone is the injected text reader, not fs. */
-const READING_TOKENS = ["readFileSync(", "readSync(", "createReadStream(", '"node:fs/promises"'];
+const FS_MODULES = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
+
+/**
+ * Every way node hands back a file's bytes.
+ *
+ * Matched by BINDING rather than by spelling, so an alias is caught and an injected `readFile`
+ * parameter is not: nothing imported it, so it reaches no capability of its own.
+ */
+const READERS = new Set([
+	"readFile",
+	"readFileSync",
+	"read",
+	"readSync",
+	"createReadStream",
+	"open",
+	"openSync",
+	"openAsBlob",
+]);
 
 ////////////////////////////////
 //  Tests
@@ -52,11 +69,18 @@ describe("one module reads workspace files", () => {
 		const offenders: string[] = [];
 		for (const file of files) {
 			if (OWNERS.has(basename(file))) continue;
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source);
-			for (const token of READING_TOKENS) {
-				if (code.includes(token)) offenders.push(`${basename(file)}: ${token}`);
+			const text = readSwept(file);
+			if (text === null) continue;
+			const parsed = parseSource(file, text);
+			for (const { call, name } of reachedCalls(parsed.source, FS_MODULES, READERS)) {
+				offenders.push(`${basename(file)}:${lineOf(parsed, call)} ${name}`);
+			}
+			// Bun's file reader arrives on a global rather than through an import.
+			for (const call of callsIn(parsed.source)) {
+				const callee = calleeOf(call);
+				if (callee?.receiver === "Bun" && (callee.name === "file" || callee.name === "mmap")) {
+					offenders.push(`${basename(file)}:${lineOf(parsed, call)} Bun.${callee.name}`);
+				}
 			}
 		}
 

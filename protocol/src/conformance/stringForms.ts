@@ -34,7 +34,7 @@ const C_LINES = [
 ];
 
 /** Keyed by the language a provider reports at initialize. */
-const FORMS: Record<string, Forms> = {
+export const FORMS: Record<string, Forms> = {
 	reference: {
 		subject: "src/forms.ref",
 		real: SLASH_REAL,
