@@ -31,6 +31,10 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
   design. Touch counts are not a reason to defer.
 - **Bug-class elimination is the unit of work.** Do not fix the bug; build the primitive that makes
   the class impossible, then write down that it is impossible.
+- **Anything repeatable across languages is abstracted before it repeats again.** A shape landing in
+  a second provider is the signal; the third is a defect class. The primitive goes in `protocol/`,
+  language facts stay with the provider, and a residue forbids a provider redefining a member the
+  kit owns.
 - **Single-owner invariants, enforced.** One module owns a concept, everything else routes through
   it, and a residue test fails the build if another module touches it.
 - **Uncertainty lives in the value, never the interface.** Three-valued answers over absence, and
@@ -50,13 +54,12 @@ bun run lint:fix
 ```
 
 **Read both halves of the gate.** Grepping lint output for `error TS` misses every formatting
-failure, which has already produced a confident "gate clean" that was not. When in doubt, run
-`bunx biome ci . --reporter=summary` on its own.
+failure. When in doubt, run `bunx biome ci . --reporter=summary` on its own.
 
 **Bun is the one runtime**, for development, tests and shipping; the floor is `BUN_FLOOR` in
-`client/src/runtime.ts`, measured before it was written (1.3.9 and below resolve no `node:sqlite`
-and lack the `bun test` flags the gate uses), and every entry point but the conformance CLI, which
-a provider team may run anywhere, refuses anything else by name. Consumers run `bun dist/main.js` with no install step, which is the whole reason
+`client/src/runtime.ts`, since 1.3.9 and below resolve no `node:sqlite` and lack the `bun test`
+flags the gate uses, and every entry point but the conformance CLI, which a provider team may run
+anywhere, refuses anything else by name. Consumers run `bun dist/main.js` with no install step, which is the whole reason
 `dist/` is committed: Claude Code runs `bun install` in an installed plugin, Copilot copies the
 repository and runs nothing, and the bundle needs neither. The bundle is built for node's module
 surface and carries no `bun:` import, so `client/` and `protocol/` stay importable from a consumer's
@@ -90,9 +93,8 @@ bun dist/conformance.js bun run providers/<language>/src/main.ts   # same thing,
 Use the `dist/` form to check what actually ships, and before a release.
 
 **Dogfooding runs through the installed plugin.** `.mcp.json` resolves through
-`${CLAUDE_PLUGIN_ROOT}`, so this checkout no longer registers a server for itself. Pointing lexicon
-at its own code is how most of its real defects were found, so after changing anything the tools
-reach, rebuild and reload the plugin rather than assuming the running server is current.
+`${CLAUDE_PLUGIN_ROOT}`, so this checkout registers no server for itself. After changing anything
+the tools reach, rebuild and reload the plugin rather than assuming the running server is current.
 
 ### Releasing
 
@@ -125,9 +127,8 @@ provider changes a kind, name, range, binding or literal for unchanged source, s
 Correcting `typeParameter` to `interface` is this case.
 
 **Removing or renaming a daemon method requires a PROTOCOL major.** Clients connect to daemons
-NEWER than themselves on the premise that method tables only grow within a protocol major. Removals
-have happened (`graphOf`, `renameSymbol`); each now costs a protocol major, or a stale client's
-calls start failing as `unknown method`.
+NEWER than themselves on the premise that method tables only grow within a protocol major. Without
+the major, a stale client's calls start failing as `unknown method`.
 
 Patch and minor releases preserve stores. Build updates every provider manifest, so core-only
 releases do not invalidate facts.
@@ -156,38 +157,35 @@ Ordered by how much they prove:
    is not "produces the right output".
 
    **Budget minutes, and do not wrap it in a short timeout.** It indexes about a thousand files
-   into an in-memory store on every run, which has taken five minutes, and a run killed early looks
-   exactly like a hang. That reading has already arrived as a release blocker. Nothing lexicon owns
-   persists between runs, so a repeat that finishes in seconds is not a store being reused.
-4. Drive the built server against a real workspace. **A green gate is not evidence.** A multi-file
-   cold-bind defect and a test that could never fail both survived a clean gate, and both died to a
-   five-line probe.
+   into an in-memory store on every run, up to five minutes, and a run killed early looks exactly
+   like a hang. Nothing lexicon owns persists between runs, so a repeat that finishes in seconds is
+   not a store being reused.
+4. Drive the built server against a real workspace. **A green gate is not evidence.** A defect the
+   suite cannot express survives a clean gate and dies to a five-line probe.
 
-## Rules that already cost something
+## Rules
 
 - **Residue tests are build gates.** When adding one, plant the violation and watch it fail before
-  trusting it. The first one here passed against a real violation. Every sweep also asserts it FOUND
-  files to check, so a run matching nothing fails instead of quietly reporting clean.
+  trusting it. Every sweep also asserts it FOUND files to check, so a run matching nothing fails
+  instead of quietly reporting clean.
 - **Match the token, never the context around it.** Planting proves a check fires on the case you
-  thought of, and says nothing about the ones you did not. Two checks written against the spelling
-  that motivated them both let other spellings straight through: the UMD gate matched one of four
-  real AMD headers, and the language sweep required an adjacent `===`, so a name held in a `const`
-  or reached by `startsWith` walked past. Forbid the narrowest unambiguous token instead. Where the
+  thought of, and says nothing about the ones you did not. A check written against the spelling that
+  motivated it lets every other spelling through. Forbid the narrowest unambiguous token. Where the
   token already has instances on disk, run the check against ALL of them before trusting it.
 - **Never branch on a language in `core/` or `formats/`.** A residue test fails the build on the
   quoted name itself; the fix is a new field on the provider contract.
 - **Core asks providers through `ProviderPort`, and tests double it through `fakeSupervisor`.**
   The port is declared where its callers live, so a member core starts calling fails the type check
-  rather than a suite at runtime, which is how `declares` broke comment indexing. A residue forbids
-  casting a double to the supervisor class. The shared double settles what the wire settles: an
+  rather than a suite at runtime. A residue forbids casting a double to the supervisor class. The
+  shared double settles what the wire settles: an
   unowned or contested module refused, a provider that is not running refused, comments kept only
   where the tiers declare them, every answer parsed by its schema. A double that skips one of those
   proves a path the daemon cannot reach.
 - **Never write a control byte, em dash, smart quote or zero-width character into source.** Enforced
-  over every tracked source file except generated `dist/` and temporary `tmp/` files. A raw NUL is legal to tsc, invisible in an editor, identical at runtime,
-  and makes git call the file binary and grep return nothing for any pattern in it. Scan with
-  `grep -a`: without it the file that has the byte is exactly the file grep goes silent on, and a
-  "no match" then read as clean while an auditor was right.
+  over every tracked source file except generated `dist/` and temporary `tmp/` files. A raw NUL is
+  legal to tsc, invisible in an editor, identical at runtime, and makes git call the file binary and
+  grep return nothing for any pattern in it. Scan with `grep -a`: without it the file holding the
+  byte is exactly the file grep goes silent on, so "no match" reads as clean.
 - **Time in `core/` comes from `clock.ts`.** Every module but the owner is swept for `Date.now`,
   `new Date()`, `setTimeout`, `setInterval`, `setImmediate`, `Bun.sleep` and their kin, and one
   `Clock` is handed from the daemon's composition root to the store, the service, the ledger, the
@@ -203,27 +201,25 @@ Ordered by how much they prove:
   fail; that is the fix working.
 - **A conformance `STALL` is the machine or the run, never the provider.** A timeout or a dead
   process is reported as stalled, with the load and the elapsed time, and the CLI exits 3 rather
-  than 1. Five times a loaded machine read as a provider defect, once as a release blocker, and none
-  reproduced. Re-run at lower load before believing one; never file it as a provider bug from the
-  first run.
+  than 1. Re-run at lower load before believing one; never file it as a provider bug from the first
+  run.
 - **Parsers follow `docs/parsing.md`.** Check for a library before writing one.
 - **Comments state constraints, not narration.** One line, two at most for a critical one.
-- **A refusal names what the author did and what to do instead.** "Not in the index" was correct
-  and cost a night: two agents concluded a queue was exhausted and one minted demand rows nobody
-  could answer. Every refusal is a constructor in `core/src/refusals.ts`, knowledge and refactor
-  alike; a raw string in a reason slot is a type error in core and a residue refuses the cast.
+- **A refusal names what the author did and what to do instead.** A merely correct refusal, like
+  "not in the index", leaves the reader to invent a next step and invent it wrong. Every refusal is
+  a constructor in `core/src/refusals.ts`, knowledge and refactor alike; a raw string in a reason
+  slot is a type error in core and a residue refuses the cast.
   Slots the protocol types as `string` are narrowed for core in `refusalSlots.ts` and asserted in
   `refusalSlots.types.ts`, so widening one fails `tsc`. A warning riding a success is not a
   refusal and stays a string.
 - **Knowledge is keyed by a subject, never by a symbol id.** `core/src/subjects.ts` owns the table
   and every transition; a row's key never changes (a trigger refuses the update), and identity moves
   only by rebinding the address. A refactor step journals what its rebind moved, with the state it
-  replaced, in the same transaction as the move, and every reversal restores exactly that.
-  Reversal inferred from a subject's current state was patched twice before that design landed.
+  replaced, in the same transaction as the move, and every reversal restores exactly that, never a
+  state inferred from the subject as it stands.
 - **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
-  store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there;
-  the rule was remembered at four sites before the projection owned it. Recall, doubt and diagnosis
-  read raw rows on purpose, since a stranded subject must still be seen.
+  store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there.
+  Recall, doubt and diagnosis read raw rows on purpose, since a stranded subject must still be seen.
 - **A daemon wire object strips unknown keys; never `strict`, never `passthrough`.** A client and a
   daemon are separately versioned, so a strict schema refuses a newer peer's extra field and a
   passthrough one carries it somewhere nothing validates it. Tool argument schemas are the opposite
@@ -258,8 +254,8 @@ Corpora clone into `temp/`, which is ignored.
 
 ## References
 
-Sibling projects this one learned from. Paths are wherever they are checked out; nothing here
-assumes a layout.
+Sibling projects to consult. Paths are wherever they are checked out; nothing here assumes a
+layout.
 
 - **nyaadot** - the framework-first role model. Read its doctrine and its `util/` primitives before
   designing a new mechanism here.

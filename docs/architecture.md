@@ -210,8 +210,8 @@ A provider that dies rejects its waiters at once rather than leaving each to tim
 What core asks of that set is `ProviderPort`, declared where its callers live rather than by the
 supervisor: the indexer, the service and the planner's probe take the port, and only the composition
 root builds the class. A member core starts calling that the port does not carry fails the type
-check at the caller, and adding one fails every test double until it answers, which is where a
-missing method used to surface as a runtime break instead. The doubles are one shared
+check at the caller, and adding one fails every test double until it answers, rather than surfacing
+as a runtime break. The doubles are one shared
 `fakeSupervisor`, which settles what the supervisor settles at the wire: an unowned or contested
 module is refused, a provider that is not running is refused, a parse answer keeps its comments
 only where the declared tiers say so, and every answer is parsed by its own schema.
@@ -308,8 +308,8 @@ and import sites, each written by the provider owning the file they are in, so a
 provider reports neither rides an `ImportersUnchecked` issue on the move rather than passing for a
 file with nothing to repair.
 
-Only the TypeScript provider implements `moveEdits` today. The others refuse `NotImplemented`, so
-a move in those languages is declined rather than half-done.
+TypeScript, Python and GDScript implement `moveEdits`. The other eleven providers refuse
+`NotImplemented`, so a move in those languages is declined rather than half-done.
 
 ### Renaming
 

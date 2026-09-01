@@ -1,8 +1,8 @@
 # Parsing law
 
-Every hand-written parser here follows these rules. Each earned its place by catching something. If
-a parser teaches a rule this list does not have, add it and bring the existing parsers up to it,
-rather than leaving the law describing code that no longer follows it.
+Every hand-written parser here follows these rules. If a parser teaches a rule this list does not
+have, add it and bring the existing parsers up to it, rather than leaving the law describing code
+that does not follow it.
 
 ## 1. Check for a library before writing the parser
 
@@ -16,7 +16,7 @@ indented code and markers inside HTML comments, and a hand-written scanner gets 
 in turn. A format is only rejected for a library when no maintained one reports source POSITIONS,
 since a declaration without a range is not a declaration.
 
-Choosing one takes three questions, and the spike that picked these answered only the first.
+Choosing one takes three questions.
 
 **Does it report positions, and are they right?** The obvious one, and the one a correctness spike
 covers.
@@ -32,8 +32,8 @@ in 81ms, 16000 in 1.4 seconds, 100000 in about three minutes. It is still the ri
 nothing else reads YAML correctly, but a cost like that has to be known and written down rather than
 discovered by a repository that contains one large file.
 
-XML is read through `@rgrove/parse-xml` and HTML through `parse5`, and their spike answered all
-three. Both put offsets on every node, parse5 on every attribute too; both bundle for node with no
+XML is read through `@rgrove/parse-xml` and HTML through `parse5`, and both answer all three.
+Both put offsets on every node, parse5 on every attribute too; both bundle for node with no
 UMD wrapper; and 6 MB of either parses in under half a second. Their nesting cost is the one to
 know: parse-xml recurses and overflows the stack at ten thousand nested elements under node, and
 parse5 survives a hundred thousand but spends thirty-five seconds on them, so `markupTooDeep` in
@@ -44,9 +44,9 @@ parse5 survives a hundred thousand but spends thirty-five seconds on them, so `m
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes
 peek, next and a good flag, and tracks line, column and offset as it goes.
 
-A structural search that bypasses the cursor is the defect this law exists to prevent. The first
-bug found in this repo's own id parser was an `indexOf(")")` picking the wrong delimiter, which
-collapsed two distinct symbols onto one id, and nothing in the code made it look wrong.
+A structural search that bypasses the cursor is the defect this law exists to prevent. An
+`indexOf(")")` picks the wrong delimiter and collapses two distinct symbols onto one id, and
+nothing in the code makes it look wrong.
 
 ## 3. Three stages, collapsible only downward
 
@@ -108,9 +108,9 @@ comments from the CST, which are two entry points into one grammar and so cannot
 inside a quoted scalar or a block scalar stays content, which is the whole point of the rule.
 
 The corollary costs more than the rule: every hole in the string grammar surfaces as a false
-comment. This caught four parsers here in one change, each a string form the lexer did not know it
-had, including an interpolation hole holding a string of its own and a backslash-newline the
-language splices inside strings as well as comments. Nothing the parser reports about itself
+comment. The holes to look for are an interpolation hole holding a string of its own, and a
+backslash-newline the language splices inside strings as well as comments. Nothing the parser
+reports about itself
 contradicts a false comment, because the bad span is internally consistent, so the only guard is a
 case that plants a marker inside each string form the language has.
 

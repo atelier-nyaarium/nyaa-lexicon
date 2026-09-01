@@ -176,7 +176,7 @@ where a provider has one, or the same library's own parser where the values come
 
 This is the tier's one recurring defect, and it is worth knowing why before writing another
 language. A comment is defined by what is NOT a string, so every hole in your string grammar
-becomes a false comment. It has bitten four providers: a string ending at the first quote inside an
+becomes a false comment. The shapes to check for: a string ending at the first quote inside an
 interpolation, an empty block comment read as a doc opener and running to end of file, a string
 ending at a backslash-newline that the language splices, and interpolation holes never tracked at
 all. Nothing the provider reports about itself can catch this, so the corpus is the only guard. Its

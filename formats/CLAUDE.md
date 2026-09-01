@@ -7,9 +7,8 @@ would be a second opinion, and the two would drift on the first edge case only o
 ## Import the reader you read
 
 There is no root export, only `./yaml`, `./json`, `./xml`, `./html` and `./text`. The bare package name does
-not resolve, and that is deliberate: a barrel makes every consumer carry every format's parser. The
-YAML provider once bundled `jsonc-parser` through one and died on node over a package it never
-calls.
+not resolve, and that is deliberate: a barrel makes every consumer carry every format's parser, so a
+provider dies at load over a package it never calls.
 
 ## Context is DATA, never a language to branch on
 
@@ -38,4 +37,4 @@ coordinate map belongs to the whole file, never to the slice.
   and noted at `info`, never refused: the tool exists to learn a codebase, not to judge one, and a
   refused file is a file nobody can ask about.
 
-Parser selection is `docs/parsing.md` rule 1. Its three questions were all earned here.
+Parser selection is `docs/parsing.md` rule 1.
