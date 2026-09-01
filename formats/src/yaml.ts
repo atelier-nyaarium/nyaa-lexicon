@@ -1,5 +1,5 @@
 // The one reading of YAML. Markdown frontmatter and a `.yml` file both arrive here, differing only
-// in where their text sits. Package rules in formats/CLAUDE.md.
+// in where their text sits. Package rules in formats/AGENTS.md.
 
 import {
 	type CommentSpan,

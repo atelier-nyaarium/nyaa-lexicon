@@ -93,7 +93,7 @@ describe("what bytes a source file may contain", () => {
 	it("has no raw control byte in any tracked source file", () => {
 		expect(
 			offendersIn(isRawControl),
-			"write a control character as an escape, which is byte-identical at runtime and keeps the file readable to git and grep. See CLAUDE.md > Development.",
+			"write a control character as an escape, which is byte-identical at runtime and keeps the file readable to git and grep. See AGENTS.md > Development.",
 		).toEqual([]);
 	});
 

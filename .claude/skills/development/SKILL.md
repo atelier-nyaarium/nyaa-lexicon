@@ -6,7 +6,7 @@ description: How to build, test, and verify changes in nyaa-lexicon. Load before
 # Developing nyaa-lexicon
 
 The gate, the runtimes, the release ritual and the rules that already cost something all live in
-`CLAUDE.md`, which is loaded for this project anyway. Read its Development, Verifying a change, and
+`AGENTS.md`, which is loaded for this project anyway. Read its Development, Verifying a change, and
 Rules sections rather than a second copy here, because two copies of a command list drift and the
 drift is silent.
 

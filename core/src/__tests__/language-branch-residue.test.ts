@@ -67,7 +67,7 @@ describe("core does not branch on language", () => {
 
 		expect(
 			offenders,
-			"core/ and formats/ must not branch on a language name. The fix is a new field on the provider contract, never the branch. See CLAUDE.md > Mission.",
+			"core/ and formats/ must not branch on a language name. The fix is a new field on the provider contract, never the branch. See AGENTS.md > Mission.",
 		).toEqual([]);
 	});
 });
