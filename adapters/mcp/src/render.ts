@@ -39,16 +39,33 @@ import {
 ////////////////////////////////
 //  Functions & Helpers
 
-export function codeSpan(value: string): string {
-	return value.replaceAll("\\", "\\\\").replaceAll("`", "\\`");
+/**
+ * A COMPLETE Markdown code span, delimiters included, so no caller writes its own.
+ *
+ * CommonMark gives a backslash no meaning inside a code span and closes the span on the first
+ * backtick run matching the opening one, so the fence has to come from the content. A caller that
+ * wrapped this in backticks of its own would reopen exactly that.
+ */
+export function code(value: string): string {
+	// CommonMark has no empty code span, and a line ending inside one becomes a space.
+	if (value === "") return "";
+	const flat = value.replace(/\r\n|\r|\n/g, " ");
+	const longest = [...flat.matchAll(/`+/g)].reduce((run, match) => Math.max(run, match[0].length), 0);
+	// One space is stripped from each end only when both ends carry one and the content is not all spaces.
+	const padded =
+		!/^ +$/.test(flat) &&
+		(flat.startsWith("`") || flat.endsWith("`") || (flat.startsWith(" ") && flat.endsWith(" ")));
+	const fence = "`".repeat(longest + 1);
+	const pad = padded ? " " : "";
+	return `${fence}${pad}${flat}${pad}${fence}`;
 }
 
 function line(summary: SymbolSummary): string {
 	// Three states, not two. A language with no notion of module export renders its visibility
 	// without implying the answer was no.
 	const exported = summary.exported === true ? "" : ` (${summary.visibility})`;
-	const signature = summary.signature === undefined ? "" : `: \`${summary.signature}\``;
-	return `**${summary.kind}** \`${summary.name}\`${exported}${signature}`;
+	const signature = summary.signature === undefined ? "" : `: ${code(summary.signature)}`;
+	return `**${summary.kind}** ${code(summary.name)}${exported}${signature}`;
 }
 
 function symbolBullet(summary: SymbolSummary): string {
@@ -77,7 +94,7 @@ function marked(cut: string, full: string): string {
 
 function renderGroupedModules(title: string, groups: Iterable<readonly [string, readonly string[]]>): string {
 	const sections = [`# ${title}`];
-	for (const [module, rows] of groups) sections.push(`## \`${codeSpan(module)}\`\n\n${rows.join("\n")}`);
+	for (const [module, rows] of groups) sections.push(`## ${code(module)}\n\n${rows.join("\n")}`);
 	return sections.join("\n\n");
 }
 
@@ -99,7 +116,7 @@ function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): 
 		if (entries.length === 0) return;
 		lines.push(`### ${label}
 `);
-		for (const entry of entries) lines.push(`- ${line(entry)}  \`${codeSpan(entry.module)}\``);
+		for (const entry of entries) lines.push(`- ${line(entry)}  ${code(entry.module)}`);
 	};
 	list(`Extends`, result.supertypes);
 	list(`Extended by`, result.subtypes);
@@ -111,12 +128,12 @@ function appendHierarchy(lines: string[], result: DescribeResult["hierarchy"]): 
 		lines.push(`
 ### Further up
 
-- ${indirect.map((ancestor) => `\`${ancestor.name}\``).join(" <- ")}`);
+- ${indirect.map((ancestor) => code(ancestor.name)).join(" <- ")}`);
 	}
 	if (result.unboundSupertypes.length > 0) {
 		lines.push(`### Outside the index
 `);
-		for (const name of result.unboundSupertypes) lines.push(`- \`${codeSpan(name)}\``);
+		for (const name of result.unboundSupertypes) lines.push(`- ${code(name)}`);
 	}
 }
 
@@ -130,7 +147,7 @@ function appendDependencies(lines: string[], summary: DescribeResult["graph"]): 
 		lines.push(`
 ### Cycle
 `);
-		for (const member of summary.cycle.slice(0, 10)) lines.push(`- \`${member}\``);
+		for (const member of summary.cycle.slice(0, 10)) lines.push(`- ${code(member)}`);
 		if (summary.cycle.length > 10)
 			lines.push(`
 > ${summary.cycle.length - 10} more cycle members not shown.`);
@@ -144,8 +161,8 @@ export function renderDescribe(result: DescribeResult): string {
 	// The line span makes "read the body" a range read of exactly those lines, never a file read.
 	const location =
 		result.symbol.lines === undefined
-			? `\`${codeSpan(result.symbol.module)}\``
-			: `\`${codeSpan(result.symbol.module)}:${result.symbol.lines.start + 1}-${result.symbol.lines.end + 1}\``;
+			? code(result.symbol.module)
+			: code(`${result.symbol.module}:${result.symbol.lines.start + 1}-${result.symbol.lines.end + 1}`);
 	// A signature block for a heading would be a code fence around a section title, which reads as
 	// code that does not exist.
 	const signature =
@@ -157,7 +174,7 @@ export function renderDescribe(result: DescribeResult): string {
 		"",
 		...signature,
 		`**Module:** ${location}`,
-		`**ID:** \`${codeSpan(result.symbol.symbolId)}\``,
+		`**ID:** ${code(result.symbol.symbolId)}`,
 	];
 
 	if (result.prose !== undefined && result.prose.length > 0) {
@@ -249,7 +266,7 @@ export function renderReferences(result: ReferencesResult): string {
  */
 export function renderType(name: string, type: TypeInfo): string {
 	const lines: string[] = [
-		`# \`${name}\`
+		`# ${code(name)}
 
 ## Type
 `,
@@ -285,7 +302,7 @@ export function renderRenamePlan(plan: RenamePlan): string {
 		const lines = [
 			`# Rename blocked
 
-Cannot rename \`${codeSpan(plan.oldName || plan.symbolId)}\`.
+Cannot rename ${code(plan.oldName || plan.symbolId)}.
 
 ## Blockers
 `,
@@ -312,7 +329,7 @@ Touches ${withCalls} in ${plan.files.length} file${plan.files.length === 1 ? "" 
 	for (const file of plan.files) {
 		const here = file.ownerCalls?.length ?? 0;
 		lines.push(
-			`- \`${file.module}\`: ${file.sites.length} occurrence${file.sites.length === 1 ? "" : "s"}${here === 0 ? "" : ` plus ${here} call${here === 1 ? "" : "s"}`}`,
+			`- ${code(file.module)}: ${file.sites.length} occurrence${file.sites.length === 1 ? "" : "s"}${here === 0 ? "" : ` plus ${here} call${here === 1 ? "" : "s"}`}`,
 		);
 	}
 
@@ -331,7 +348,7 @@ This set may not be complete.
 `);
 	for (const warning of plan.warnings) {
 		lines.push(`- **${warning.kind}:** ${warning.detail}`);
-		for (const site of warning.sites ?? []) lines.push(`  - \`${site.module}:${site.line}\``);
+		for (const site of warning.sites ?? []) lines.push(`  - ${code(`${site.module}:${site.line}`)}`);
 	}
 	return lines.join("\n");
 }
@@ -344,14 +361,14 @@ export function renderMovePlan(plan: MovePlan): string {
 	const needed = plan.dependencies.filter((dependency) => dependency.origin.kind !== "insideClosure");
 	const moved = plan.removal.end.line - plan.removal.start.line + 1;
 	const lines = [
-		`# Move ${plan.name} from \`${plan.fromModule}\` to \`${plan.toModule}\`
+		`# Move ${plan.name} from ${code(plan.fromModule)} to ${code(plan.toModule)}
 
 ## Files
 
-- \`${plan.fromModule}\`: lines ${plan.removal.start.line + 1} to ${plan.removal.end.line + 1} removed${plan.usedAtSource ? ", and an import back added, since something here still uses it" : ""}
-- \`${plan.toModule}\`: ${moved} line${moved === 1 ? "" : "s"} inserted${needed.length === 0 ? "" : ", plus the imports below"}`,
+- ${code(plan.fromModule)}: lines ${plan.removal.start.line + 1} to ${plan.removal.end.line + 1} removed${plan.usedAtSource ? ", and an import back added, since something here still uses it" : ""}
+- ${code(plan.toModule)}: ${moved} line${moved === 1 ? "" : "s"} inserted${needed.length === 0 ? "" : ", plus the imports below"}`,
 	];
-	for (const module of plan.referencing) lines.push(`- \`${module}\`: import specifier re-pointed`);
+	for (const module of plan.referencing) lines.push(`- ${code(module)}: import specifier re-pointed`);
 	if (plan.closure.length > 1) {
 		lines.push(`
 Moves ${plan.closure.length} symbols: the declaration and what it contains.`);
@@ -371,17 +388,17 @@ Names the moved text uses, and where each would be imported from.`);
 		switch (origin.kind) {
 			case "sourceModule":
 				lines.push(
-					`- \`${dependency.name}\`: stays in \`${plan.fromModule}\`${origin.exported === false ? ", and is not exported, which blocks the move" : ""}`,
+					`- ${code(dependency.name)}: stays in ${code(plan.fromModule)}${origin.exported === false ? ", and is not exported, which blocks the move" : ""}`,
 				);
 				break;
 			case "workspaceModule":
-				lines.push(`- \`${dependency.name}\`: from \`${origin.module}\``);
+				lines.push(`- ${code(dependency.name)}: from ${code(origin.module)}`);
 				break;
 			case "external":
-				lines.push(`- \`${dependency.name}\`: from \`${origin.via.specifier}\`, outside the workspace`);
+				lines.push(`- ${code(dependency.name)}: from ${code(origin.via.specifier)}, outside the workspace`);
 				break;
 			case "unresolved":
-				lines.push(`- \`${dependency.name}\`: unresolved (${origin.reason}), so the provider decides`);
+				lines.push(`- ${code(dependency.name)}: unresolved (${origin.reason}), so the provider decides`);
 				break;
 		}
 	}
@@ -430,9 +447,9 @@ export function renderComments(result: CommentsResult): string {
 		const about =
 			comment.anchor === null
 				? `${comment.form} (module)`
-				: `${comment.form} \`${comment.anchor.name}\` (${comment.anchor.kind})`;
+				: `${comment.form} ${code(comment.anchor.name)} (${comment.anchor.kind})`;
 		rows.push(
-			`- Line ${comment.range.start.line + 1}: ${about}\n  \`${codeSpan(comment.factId)}\`\n${indent(comment.raw)}`,
+			`- Line ${comment.range.start.line + 1}: ${about}\n  ${code(comment.factId)}\n${indent(comment.raw)}`,
 		);
 		byModule.set(comment.module, rows);
 	}
@@ -457,7 +474,7 @@ export function renderDocs(result: DocsResult): string {
 			region.hit === undefined
 				? `Line ${region.range.start.line + 1}`
 				: `Line ${region.hit.line + 1}:${region.hit.character + 1}`;
-		rows.push(`- ${location}: ${where}\n  \`${codeSpan(region.factId)}\`\n${indent(region.raw)}`);
+		rows.push(`- ${location}: ${where}\n  ${code(region.factId)}\n${indent(region.raw)}`);
 		byModule.set(region.module, rows);
 	}
 
@@ -490,8 +507,8 @@ export function renderLiterals(result: LiteralsResult): string {
 			literal.containerName === undefined
 				? literal.containerId === null
 					? ""
-					: `  in \`${codeSpan(literal.containerId.split(" ").slice(3).join(" "))}\``
-				: `  in ${literal.containerKind ?? "declaration"} \`${literal.containerName}\``;
+					: `  in ${code(literal.containerId.split(" ").slice(3).join(" "))}`
+				: `  in ${literal.containerKind ?? "declaration"} ${code(literal.containerName)}`;
 		rows.push(`- Line ${literal.range.start.line + 1}: **${literal.kind}** ${JSON.stringify(shown)}${container}`);
 		byModule.set(literal.module, rows);
 	}
@@ -515,18 +532,18 @@ export function renderCoChange(result: {
 	widthLimit: number;
 }): string {
 	if (result.partners.length === 0) {
-		return `# Co-change\n\nNothing has changed alongside \`${result.module}\` in the last ${result.commits} commits.`;
+		return `# Co-change\n\nNothing has changed alongside ${code(result.module)} in the last ${result.commits} commits.`;
 	}
 
 	const lines = [
-		`# Changed alongside \`${result.module}\`
+		`# Changed alongside ${code(result.module)}
 
 | Module | Together | Share |
 | --- | ---: | ---: |`,
 	];
 	for (const partner of result.partners) {
 		const share = Math.round((partner.together / Math.max(partner.outOf, 1)) * 100);
-		lines.push(`| \`${partner.module}\` | ${partner.together} / ${partner.outOf} | ${share}% |`);
+		lines.push(`| ${code(partner.module)} | ${partner.together} / ${partner.outOf} | ${share}% |`);
 	}
 
 	if (result.total > result.partners.length)
@@ -556,7 +573,7 @@ export function renderFileHistory(result: {
 	lastTouched: number | null;
 	truncated: boolean;
 }): string {
-	if (result.commits === 0) return `# \`${result.module}\`\n\nNo commits in the history window.`;
+	if (result.commits === 0) return `# ${code(result.module)}\n\nNo commits in the history window.`;
 
 	const ago = (at: number) => {
 		const days = Math.round((Date.now() / 1000 - at) / 86_400);
@@ -566,7 +583,7 @@ export function renderFileHistory(result: {
 
 	const commits = `${result.commits} commit${result.commits === 1 ? "" : "s"}`;
 	const lines = [
-		`# \`${result.module}\`
+		`# ${code(result.module)}
 
 ## History
 
@@ -590,7 +607,7 @@ export function renderFileHistory(result: {
 		for (const commit of result.recent) {
 			const subject = commit.subject.replaceAll("|", "\\|");
 			lines.push(
-				`| ${ago(commit.at)} | \`${commit.hash.slice(0, 7)}\` | +${commit.added} / -${commit.deleted} | ${subject} |`,
+				`| ${ago(commit.at)} | ${code(commit.hash.slice(0, 7))} | +${commit.added} / -${commit.deleted} | ${subject} |`,
 			);
 		}
 		if (result.commits > result.recent.length) {
@@ -615,7 +632,7 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = `kno
 		"",
 		recalled.answer.prose,
 		"",
-		`\`${codeSpan(recalled.answer.factId)}\``,
+		code(recalled.answer.factId),
 	];
 	if (recalled.answer.thin)
 		lines.push(`
@@ -628,7 +645,7 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = `kno
 
 ${recalled.answer.doubt.reason}${by}
 
-	\`${codeSpan(recalled.answer.doubt.factId)}\`
+	${code(recalled.answer.doubt.factId)}
 
 ${
 	recalled.stranded === undefined
@@ -639,7 +656,7 @@ ${
 	}
 	if (recalled.stranded !== undefined) {
 		// Nothing at this address can be re-affirmed; the way forward is to record it where a reader will find it.
-		const shown = recalled.stranded.candidates.slice(0, 8).map((id) => `\`${codeSpan(id)}\``);
+		const shown = recalled.stranded.candidates.slice(0, 8).map((id) => code(id));
 		const rest = recalled.stranded.candidates.length - shown.length;
 		const candidates = `${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
 		const hold = recalled.stranded.exempt
@@ -665,7 +682,7 @@ ${
 	}
 	if (recalled.subject !== undefined && recalled.subject.recordedAs !== recalled.answer.symbolId) {
 		status.push(
-			`**REBOUND:** Recorded at \`${codeSpan(recalled.subject.recordedAs)}\`; followed to this address by \`${codeSpan(recalled.subject.evidence)}\`.`,
+			`**REBOUND:** Recorded at ${code(recalled.subject.recordedAs)}; followed to this address by ${code(recalled.subject.evidence)}.`,
 		);
 	}
 	if (status.length > 0)
@@ -682,7 +699,7 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 		const lines = [
 			`# Answer recorded
 
-	\`${codeSpan(outcome.answer.factId)}\``,
+	${code(outcome.answer.factId)}`,
 		];
 		if (outcome.answer.thin)
 			lines.push(`
@@ -693,7 +710,7 @@ export function renderRecordOutcome(outcome: RecordOutcome): string {
 
 ${carried.reason}
 
-	\`${codeSpan(carried.factId)}\`
+	${code(carried.factId)}
 
 Cite this ID as \`resolvesDoubt\` to clear the doubt.
 `);
@@ -709,7 +726,7 @@ ${outcome.reason}`,
 		lines.push(`
 ## Unresolved fact IDs
 `);
-		for (const factId of outcome.unresolved ?? []) lines.push(`- \`${codeSpan(factId)}\``);
+		for (const factId of outcome.unresolved ?? []) lines.push(`- ${code(factId)}`);
 	}
 	if (outcome.uncovered !== undefined && outcome.uncovered.length > 0) {
 		lines.push(`
@@ -717,7 +734,7 @@ ${outcome.reason}`,
 
 Fact IDs from the existing answer:
 `);
-		for (const factId of outcome.uncovered) lines.push(`- \`${codeSpan(factId)}\``);
+		for (const factId of outcome.uncovered) lines.push(`- ${code(factId)}`);
 	}
 	return lines.join("\n");
 }
@@ -730,7 +747,7 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 	const lines: string[] = [
 		`${title}
 
-**Symbol:** \`${codeSpan(outcome.symbolId)}\``,
+**Symbol:** ${code(outcome.symbolId)}`,
 	];
 	for (const entry of outcome.doubted) {
 		const by = entry.doubt.by === undefined ? "" : ` (${entry.doubt.by})`;
@@ -739,7 +756,7 @@ export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
 
 ${entry.doubt.reason}${by}
 
-\`${codeSpan(entry.doubt.factId)}\`
+${code(entry.doubt.factId)}
 
 Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.`);
 	}
@@ -769,7 +786,7 @@ ${count} row${count === 1 ? " belongs" : "s belong"} to subjects whose address n
 			const tail = row.symbolId.split(" ").slice(3).join(" ");
 			const when = row.strandedAt === undefined ? "-" : new Date(row.strandedAt).toISOString().slice(0, 10);
 			lines.push(
-				`| \`${codeSpan(tail)}\` | ${row.question} | ${row.why === "missing" ? "demand" : "answer"} | ${when} | ${row.evidence ?? "-"} |`,
+				`| ${code(tail)} | ${row.question} | ${row.why === "missing" ? "demand" : "answer"} | ${when} | ${row.evidence ?? "-"} |`,
 			);
 		}
 	}
@@ -781,9 +798,9 @@ ${count} row${count === 1 ? " belongs" : "s belong"} to subjects whose address n
 
 /** Every answer leads with its scope. */
 function gapScope(gaps: KnowledgeGaps, root: string | undefined): string {
-	if (gaps.scope !== undefined) return `In \`${gaps.scope.module}\``;
+	if (gaps.scope !== undefined) return `In ${code(gaps.scope.module)}`;
 	if (root === undefined) return `Workspace-wide`;
-	return `Under \`${root}\`, leaves first`;
+	return `Under ${code(root)}, leaves first`;
 }
 
 export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefined): string {
@@ -792,7 +809,7 @@ export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefine
 		return [
 			`# Knowledge gaps`,
 			"",
-			`\`${gaps.scope.module}\` holds no indexed declarations: not indexed yet, or no provider claims it. Call \`overview\` for coverage.`,
+			`${code(gaps.scope.module)} holds no indexed declarations: not indexed yet, or no provider claims it. Call \`overview\` for coverage.`,
 		].join("\n");
 	}
 	// Only the core knows whether every row honours the asked question; an omitted flag reads as unfiltered.
@@ -851,16 +868,15 @@ ${lead}: no ${asked}gaps.`,
 | --- | --- | --- | ---: | ---: |`);
 	for (const row of actionable) {
 		const tail = row.symbolId.split(" ").slice(3).join(" ");
-		const symbol =
-			row.name === undefined ? `\`${codeSpan(tail)}\`` : `**${row.kind ?? "symbol"}** \`${codeSpan(tail)}\``;
+		const symbol = row.name === undefined ? code(tail) : `**${row.kind ?? "symbol"}** ${code(tail)}`;
 		const state = row.why === "stale" ? `**STALE**` : row.why === "doubted" ? `**DOUBTED**` : `MISSING`;
 		const question = row.question === gaps.question ? "" : ` (${row.question})`;
 		const askedAt =
 			row.recordedAs === undefined || row.recordedAs === row.symbolId
 				? ""
-				: ` (asked at \`${codeSpan(row.recordedAs.split(" ").slice(3).join(" "))}\`)`;
+				: ` (asked at ${code(row.recordedAs.split(" ").slice(3).join(" "))})`;
 		lines.push(
-			`| ${symbol}${question}${askedAt} | \`${row.module ?? "unknown"}\` | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
+			`| ${symbol}${question}${askedAt} | ${code(row.module ?? "unknown")} | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
 		);
 	}
 	if (gaps.total > actionable.length)
@@ -869,7 +885,7 @@ ${lead}: no ${asked}gaps.`,
 	const first = actionable[0];
 	if (first !== undefined)
 		lines.push(`
-**Full ID example:** \`${codeSpan(first.symbolId)}\``);
+**Full ID example:** ${code(first.symbolId)}`);
 	lines.push(...renderStranded(gaps.stranded ?? 0, strandedRows));
 	if (gaps.truncated)
 		lines.push(`
@@ -902,11 +918,11 @@ export function renderMentions(result: {
 	commits: number;
 }): string {
 	if (result.mentions.length === 0) {
-		return `# Symbol history\n\nNo commit message in the last ${result.commits} commits names \`${result.name}\`.`;
+		return `# Symbol history\n\nNo commit message in the last ${result.commits} commits names ${code(result.name)}.`;
 	}
 
 	const lines = [
-		`# Commits naming \`${result.name}\`
+		`# Commits naming ${code(result.name)}
 
 ## Matches
 
@@ -917,7 +933,7 @@ export function renderMentions(result: {
 		const days = Math.round((Date.now() / 1000 - mention.at) / 86_400);
 		const when = days === 0 ? "today" : `${days}d ago`;
 		const files = `${mention.files} file${mention.files === 1 ? "" : "s"}`;
-		lines.push(`| \`${mention.hash.slice(0, 7)}\` | ${when} | ${files} | ${mention.subject} |`);
+		lines.push(`| ${code(mention.hash.slice(0, 7))} | ${when} | ${files} | ${mention.subject} |`);
 	}
 	lines.push(`
 Read from ${result.commits} commits.`);
@@ -935,7 +951,7 @@ export function renderFacts(result: {
 	}>;
 	truncated: string[];
 }): string {
-	const lines = [`# Facts about \`${codeSpan(result.symbolId)}\``];
+	const lines = [`# Facts about ${code(result.symbolId)}`];
 	const factsByKind = new Map<string, typeof result.facts>();
 	for (const fact of result.facts) {
 		const group = factsByKind.get(fact.kind) ?? [];
@@ -952,7 +968,7 @@ export function renderFacts(result: {
 		for (const fact of descriptions)
 			lines.push(`${fact.summary.slice("describe: ".length)}
 
-\`${codeSpan(fact.factId)}\``);
+${code(fact.factId)}`);
 	}
 
 	// Keyed by FactKind, so a new kind fails the type check here rather than going unrendered.
@@ -974,7 +990,7 @@ export function renderFacts(result: {
 		lines.push(`
 ## ${heading}
 `);
-		for (const fact of group) lines.push(`- ${fact.summary}`, `  \`${codeSpan(fact.factId)}\``);
+		for (const fact of group) lines.push(`- ${fact.summary}`, `  ${code(fact.factId)}`);
 	}
 
 	const otherAnswers = answers.filter((fact) => !fact.summary.startsWith("describe: "));
@@ -990,7 +1006,7 @@ export function renderFacts(result: {
 
 ${prose}
 
-\`${codeSpan(fact.factId)}\``);
+${code(fact.factId)}`);
 		}
 	}
 
@@ -1045,7 +1061,7 @@ export function renderOverview(result: {
 
 ## Workspace
 
-\`${result.scope}\`
+${code(result.scope)}
 
 ## Index
 `,
@@ -1109,7 +1125,7 @@ export function renderOverview(result: {
 `);
 		for (const [reason, modules] of ranked) {
 			lines.push(`- ${reason}${modules.length === 1 ? "" : ` (${modules.length} files)`}`);
-			for (const module of modules) lines.push(`  - \`${module}\``);
+			for (const module of modules) lines.push(`  - ${code(module)}`);
 		}
 	}
 
@@ -1183,14 +1199,14 @@ ${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? ""
 	lines.push(`
 ## Largest modules
 `);
-	for (const module of result.largest) lines.push(`- \`${module.module}\`: ${module.symbols} symbols`);
+	for (const module of result.largest) lines.push(`- ${code(module.module)}: ${module.symbols} symbols`);
 
 	const data = result.largestData ?? [];
 	if (data.length > 0) {
 		lines.push(`
 ## Largest data and document files
 `);
-		for (const row of data) lines.push(`- \`${row.module}\`: ${row.symbols} symbols (${row.content})`);
+		for (const row of data) lines.push(`- ${code(row.module)}: ${row.symbols} symbols (${row.content})`);
 	}
 	return lines.join("\n");
 }
@@ -1230,7 +1246,7 @@ export function renderImports(result: {
 	for (const [module, specifiers] of byModule) {
 		rows.set(
 			module,
-			Array.from(specifiers, (specifier) => `- \`${specifier}\``),
+			Array.from(specifiers, (specifier) => `- ${code(specifier)}`),
 		);
 	}
 	const body = renderGroupedModules(
@@ -1258,8 +1274,8 @@ export function renderMostReferenced(
 	];
 	for (const row of rows) {
 		const where = row.declaration
-			? `${line(row.declaration)} in \`${row.declaration.module}\``
-			: `\`${codeSpan(row.symbolId)}\``;
+			? `${line(row.declaration)} in ${code(row.declaration.module)}`
+			: code(row.symbolId);
 		lines.push(`| ${where} | ${row.count} |`);
 	}
 	lines.push(`
@@ -1282,7 +1298,7 @@ export function renderSymbolSearch(result: {
 		const rows = byModule.get(symbol.module) ?? [];
 		// The id rides along because it is the address every other tool takes. Without it a search
 		// hit has to be looked up again before it can be read, replaced or renamed.
-		rows.push(symbolBullet(symbol), `  ID: \`${codeSpan(symbol.symbolId)}\``);
+		rows.push(symbolBullet(symbol), `  ID: ${code(symbol.symbolId)}`);
 		byModule.set(symbol.module, rows);
 	}
 
@@ -1314,7 +1330,7 @@ function renderFileNotes(notes: FileNotes | undefined): string[] {
 /** Everything one file declares, nested by container. The "open the file" answer. */
 export function renderOutline(module: string, declarations: SymbolSummary[], notes?: FileNotes): string {
 	if (declarations.length === 0) {
-		return [`# \`${module}\``, "", `No indexed declarations.`, ...renderFileNotes(notes)].join("\n");
+		return [`# ${code(module)}`, "", `No indexed declarations.`, ...renderFileNotes(notes)].join("\n");
 	}
 
 	const children = new Map<string, typeof declarations>();
@@ -1331,7 +1347,7 @@ export function renderOutline(module: string, declarations: SymbolSummary[], not
 	}
 
 	const lines = [
-		`# \`${module}\`
+		`# ${code(module)}
 
 ## ${declarations.length} declarations
 `,
@@ -1360,9 +1376,9 @@ export function renderSymbolSource(source: SymbolSource): string {
 
 	const { start, end } = source.range;
 	return [
-		`# \`${source.name}\``,
+		`# ${code(source.name)}`,
 		"",
-		`${source.kind} in \`${source.module}\`, lines ${start.line + 1} to ${end.line + 1}.`,
+		`${source.kind} in ${code(source.module)}, lines ${start.line + 1} to ${end.line + 1}.`,
 		"",
 		"```",
 		source.text,
@@ -1379,7 +1395,8 @@ export function renderIssues(issues: RefactorIssue[]): string[] {
 `,
 	];
 	for (const issue of issues) {
-		const where = issue.module === undefined ? "" : ` (\`${issue.module}\`${issue.line ? `:${issue.line}` : ""})`;
+		const where =
+			issue.module === undefined ? "" : ` (${code(`${issue.module}${issue.line ? `:${issue.line}` : ""}`)})`;
 		const step = issue.stepNo === undefined ? "" : ` [step ${issue.stepNo}]`;
 		lines.push(`- **${issue.kind}:**${step} ${issue.detail}${where}`);
 	}
@@ -1397,14 +1414,14 @@ export function renderRefactorStart(outcome: RefactorStartResult): string {
 		return [
 			`# Refactor already open`,
 			"",
-			`Transaction \`${outcome.id}\` is already open on this workspace. One transaction at a time.`,
+			`Transaction ${code(outcome.id)} is already open on this workspace. One transaction at a time.`,
 			"",
 			`Call \`refactor_status\` to see it, then continue it, \`refactor_commit\` it, or \`refactor_revert\` it.`,
 		].join("\n");
 	}
 
 	return [
-		`# Refactor \`${outcome.id}\` open`,
+		`# Refactor ${code(outcome.id)} open`,
 		"",
 		`## Before you edit anything by hand`,
 		"",
@@ -1435,7 +1452,8 @@ export function renderRefactorStatus(status: TransactionStatus): string {
 		return `# Refactor status\n\nNo transaction is open. Call \`refactor_start\` to begin one.`;
 	}
 
-	const lines = [`# Refactor \`${status.id}\``];
+	// Optional on the wire, so an absent one is a malformed peer rather than a closed transaction.
+	const lines = [`# Refactor ${code(status.id ?? "unknown")}`];
 
 	if (status.steps.length === 0)
 		lines.push(`
@@ -1445,7 +1463,7 @@ No steps yet.`);
 ## Steps
 `);
 		for (const step of status.steps) {
-			const files = step.modules.length === 0 ? `no files` : step.modules.map((m) => `\`${m}\``).join(", ");
+			const files = step.modules.length === 0 ? `no files` : step.modules.map((m) => code(m)).join(", ");
 			lines.push(`${step.stepNo}. **${step.kind}** (${step.phase}): ${files}`);
 		}
 	}
@@ -1454,7 +1472,7 @@ No steps yet.`);
 		lines.push(`
 ## Tracked
 
-${status.tracked.map((module) => `- \`${module}\``).join("\n")}`);
+${status.tracked.map((module) => `- ${code(module)}`).join("\n")}`);
 	}
 
 	const issues = renderIssues(status.issues);
@@ -1478,7 +1496,7 @@ export function renderReplaceOutcome(outcome: ReplaceOutcome): string {
 	}
 
 	const lines = [
-		`# Replaced in \`${outcome.module}\`
+		`# Replaced in ${code(outcome.module ?? "unknown")}
 `,
 	];
 	if (outcome.issues.length === 0) {
@@ -1498,17 +1516,17 @@ export function renderReplaceOutcome(outcome: ReplaceOutcome): string {
 /** An insert, with what it warned about. `alreadyInserted` is the retry answer, not a failure. */
 export function renderInsertOutcome(outcome: InsertOutcome): string {
 	if (outcome.alreadyInserted === true) {
-		return `# Already inserted\n\nThe exact text already sits at that spot in \`${outcome.module}\`; nothing was written.`;
+		return `# Already inserted\n\nThe exact text already sits at that spot in ${code(outcome.module ?? "unknown")}; nothing was written.`;
 	}
 	if (!outcome.inserted) {
 		return `# Not inserted\n\n${outcome.reason ?? `the insert could not be applied`}`;
 	}
 
 	const lines = [
-		`# Inserted into \`${outcome.module}\`
+		`# Inserted into ${code(outcome.module ?? "unknown")}
 `,
 	];
-	for (const symbolId of outcome.symbolIds ?? []) lines.push(`- ID: \`${codeSpan(symbolId)}\``);
+	for (const symbolId of outcome.symbolIds ?? []) lines.push(`- ID: ${code(symbolId)}`);
 	if ((outcome.symbolIds ?? []).length > 0) lines.push("");
 
 	if (outcome.issues.length === 0) {
@@ -1537,9 +1555,9 @@ ${outcome.reason ?? `the move could not be carried out`}`,
 
 	const modules = outcome.modules ?? [];
 	const lines = [
-		`# Moved to \`${toModule}\`
+		`# Moved to ${code(toModule)}
 
-${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map((m) => `\`${m}\``).join(", ")}`,
+${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map((m) => code(m)).join(", ")}`,
 	];
 	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
 		lines.push(`
@@ -1565,7 +1583,7 @@ ${outcome.reason ?? `the rename could not be carried out`}`,
 	const lines = [
 		`# Renamed to ${newName}
 
-${modules.length} file${modules.length === 1 ? "" : "s"} reindexed: ${modules.map((m) => `\`${m}\``).join(", ")}`,
+${modules.length} file${modules.length === 1 ? "" : "s"} reindexed: ${modules.map((m) => code(m)).join(", ")}`,
 	];
 
 	// Worth saying: the prose written about a symbol is the one thing a re-index cannot rebuild.
@@ -1600,18 +1618,18 @@ export function renderRefactorCommit(outcome: RefactorCommitResult): string {
  * confidently reading about the wrong symbol.
  */
 export function renderCandidates(name: string, candidates: SymbolSummary[]): string {
-	if (candidates.length === 0) return `# Symbol lookup\n\nNo symbol named \`${name}\` is indexed.`;
+	if (candidates.length === 0) return `# Symbol lookup\n\nNo symbol named ${code(name)} is indexed.`;
 	if (candidates.length === 1) return "";
 
 	// The id per row is the whole point: telling a caller to pass a symbolId while showing none left
 	// eight identical minified methods with no way to be told apart short of guessing ids blind.
-	const lines = [`# ${candidates.length} symbols named \`${name}\``];
+	const lines = [`# ${candidates.length} symbols named ${code(name)}`];
 	for (const candidate of candidates) {
 		lines.push(`
-## \`${candidate.module}\`
+## ${code(candidate.module)}
 
 - ${line(candidate)}
-  ID: \`${codeSpan(candidate.symbolId)}\``);
+  ID: ${code(candidate.symbolId)}`);
 	}
 	lines.push(`
 Pass one of the IDs above to pick one.`);

@@ -13,5 +13,9 @@
 		"@nyaa-lexicon/core": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
 		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"mdast-util-from-markdown": "2.0.3",
+		"typescript": "6.0.3"
 	}
 }
