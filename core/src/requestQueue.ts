@@ -24,7 +24,8 @@ interface Waiting<T> {
 
 export class RequestQueue {
 	private queue: Waiting<unknown>[] = [];
-	private running = false;
+	/** In flight. `close` fails its caller too. */
+	private running: Waiting<unknown> | null = null;
 	private closed: Error | null = null;
 
 	/**
@@ -42,19 +43,19 @@ export class RequestQueue {
 	}
 
 	private async pump(): Promise<void> {
-		if (this.running) return;
-		this.running = true;
+		if (this.running !== null) return;
 
 		while (this.queue.length > 0) {
 			const next = this.queue.shift() as Waiting<unknown>;
+			this.running = next;
 			try {
 				next.resolve(await next.work());
 			} catch (error) {
 				next.reject(error);
+			} finally {
+				if (this.running === next) this.running = null;
 			}
 		}
-
-		this.running = false;
 	}
 
 	/**
@@ -68,6 +69,8 @@ export class RequestQueue {
 		const waiting = this.queue;
 		this.queue = [];
 		for (const entry of waiting) entry.reject(reason);
+		// A late answer from the dead provider then settles nothing.
+		this.running?.reject(reason);
 	}
 
 	/** Lets a closed queue serve a restarted provider, rather than being replaced. */
@@ -76,6 +79,6 @@ export class RequestQueue {
 	}
 
 	stats(): QueueStats {
-		return { pending: this.queue.length, running: this.running };
+		return { pending: this.queue.length, running: this.running !== null };
 	}
 }

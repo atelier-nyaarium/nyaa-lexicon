@@ -80,7 +80,7 @@ describe("a failure settles its own caller only", () => {
 });
 
 describe("closing when the provider dies", () => {
-	it("rejects everything waiting, rather than leaving callers to time out one by one", async () => {
+	it("rejects everything waiting and the request in flight, rather than leaving callers to time out", async () => {
 		const queue = new RequestQueue();
 		const blocker = deferred<string>();
 		const running = queue.run(() => blocker.promise);
@@ -89,8 +89,20 @@ describe("closing when the provider dies", () => {
 		queue.close(new Error("provider exited"));
 
 		await expect(waiting).rejects.toThrow("provider exited");
+		// Settled by the close itself, not by the work: a tick later is too late.
+		const settled = await Promise.race([
+			running.then(
+				() => "resolved",
+				() => "rejected",
+			),
+			tick().then(() => "pending"),
+		]);
+		expect(settled).toBe("rejected");
+
+		// The late answer settles nothing and wedges nothing.
 		blocker.resolve("done");
-		await expect(running).resolves.toBe("done");
+		await tick();
+		expect(queue.stats()).toEqual({ pending: 0, running: false });
 	});
 
 	it("refuses new work while closed", async () => {

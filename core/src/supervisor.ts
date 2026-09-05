@@ -20,7 +20,8 @@ import {
 	StreamMessageWriter,
 } from "vscode-jsonrpc/node";
 import type { z } from "zod";
-import { type Clock, systemClock, type TimerHandle } from "./clock.js";
+import { type Clock, systemClock } from "./clock.js";
+import { withTimeout } from "./deadline.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
 import { type ProviderClaims, type Route, type RoutingContext, routeModule, routingContextOf } from "./routing.js";
@@ -51,8 +52,6 @@ interface RunningProvider {
 	child: ChildProcess;
 	connection: MessageConnection;
 	queue: RequestQueue;
-	/** Rejects when the process dies, so an IN-FLIGHT request fails typed, not by timing out. */
-	closed: Promise<never>;
 	spec: ProviderSpec;
 	workspaceRoot: string;
 	/** Unexpected deaths so far. At the cap the provider stays dead rather than crash-looping. */
@@ -79,14 +78,6 @@ const RESPAWN_DELAY_MS = 500;
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function withTimeout<T>(clock: Clock, work: Promise<T>, ms: number, what: string): Promise<T> {
-	let timer: TimerHandle;
-	const bounded = new Promise<T>((_, reject) => {
-		timer = clock.setTimer(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
-	});
-	return Promise.race([work, bounded]).finally(() => clock.clearTimer(timer));
-}
 
 /** A signal death has no code, and "code null" hides which signal it was. */
 function describeExit(code: number | null, signal: string | null): string {
@@ -282,7 +273,7 @@ export class ProviderSupervisor implements ProviderPort {
 
 	private async respawn(previous: RunningProvider): Promise<void> {
 		if (!this.stillWanted(previous)) return;
-		let running: Pick<RunningProvider, "child" | "connection" | "queue" | "closed"> | undefined;
+		let running: StartingProcess | undefined;
 		try {
 			running = this.spawnProcess(previous.spec, previous.workspaceRoot);
 			this.starting.add(running);
@@ -334,10 +325,7 @@ export class ProviderSupervisor implements ProviderPort {
 		console.log(`provider ${previous.claims.providerId} respawned`);
 	}
 
-	private spawnProcess(
-		spec: ProviderSpec,
-		workspaceRoot: string,
-	): Pick<RunningProvider, "child" | "connection" | "queue" | "closed"> {
+	private spawnProcess(spec: ProviderSpec, workspaceRoot: string): StartingProcess {
 		const [bin, ...args] = spec.command as [string, ...string[]];
 		// cwd stated rather than inherited: the daemon's own cwd is its state dir, not the project.
 		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], cwd: workspaceRoot });
@@ -350,17 +338,8 @@ export class ProviderSupervisor implements ProviderPort {
 		connection.listen();
 
 		const queue = new RequestQueue();
-		let closeNow: (error: Error) => void = () => {};
-		const closed = new Promise<never>((_, reject) => {
-			closeNow = reject;
-		});
-		// Raced by callers, so a settled race must never surface as an unhandled rejection here.
-		closed.catch(() => {});
-		const die = (error: ProviderUnavailableError) => {
-			// Queue closure and the closed signal classify queued and in-flight work alike.
-			queue.close(error);
-			closeNow(error);
-		};
+		// The queue fails queued and in-flight callers alike, typed.
+		const die = (error: ProviderUnavailableError) => queue.close(error);
 		child.on("exit", (code, signal) => die(new ProviderUnavailableError(`provider ${describeExit(code, signal)}`)));
 		// A broken pipe fails the request now, typed, rather than at its timeout.
 		child.stdin.on("error", (error) => die(new ProviderUnavailableError(`provider pipe: ${error.message}`)));
@@ -368,7 +347,7 @@ export class ProviderSupervisor implements ProviderPort {
 		// process emits after it, so it can never again be an uncaught crash of the daemon.
 		child.on("error", (error) => die(new ProviderUnavailableError(`provider errored: ${error.message}`)));
 
-		return { child, connection, queue, closed };
+		return { child, connection, queue };
 	}
 
 	////////////////////////////////
@@ -437,11 +416,8 @@ export class ProviderSupervisor implements ProviderPort {
 		return provider.queue.run(async () => {
 			let raw: unknown;
 			try {
-				// The closed race fails a request in flight at the moment of death, typed.
-				raw = await Promise.race([
-					withTimeout(this.clock, provider.connection.sendRequest(method, params), timeout, method),
-					provider.closed,
-				]);
+				// A death mid-request fails this caller through the queue, typed.
+				raw = await withTimeout(this.clock, provider.connection.sendRequest(method, params), timeout, method);
 			} catch (error) {
 				// A transport write error can beat the exit event; a dead child retypes it so the
 				// failure never reads as the file's.
@@ -471,7 +447,7 @@ export class ProviderSupervisor implements ProviderPort {
 	//  Lifecycle
 
 	private stopProcess(running: { child: ChildProcess; connection: MessageConnection; queue: RequestQueue }): void {
-		running.queue.close(new Error("provider stopped"));
+		running.queue.close(new ProviderUnavailableError("provider stopped"));
 		running.connection.dispose();
 		// EOF first, the same signal an abnormal daemon death sends, so both paths exercise it.
 		running.child.stdin?.end();

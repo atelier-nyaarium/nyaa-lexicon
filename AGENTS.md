@@ -192,6 +192,11 @@ Ordered by how much they prove:
   transaction manager, the supervisor and the transport, so a fake clock drives a whole daemon in a
   test. A new stamp or timer takes the clock it is handed; an entry point that builds no daemon
   reads `systemClock` by name at its top.
+- **A race in `core/` is a deadline from `deadline.ts`.** `withTimeout` and `withinBudget` mint
+  their own second arm, and a residue forbids `Promise.race` and `Promise.any` in every other
+  module. A promise that outlives the call, a provider's lifetime for one, keeps a reaction per
+  race until it settles, which for a living provider is never; the supervisor's request queue
+  fails in-flight callers on death instead.
 - **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
   mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
   by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore

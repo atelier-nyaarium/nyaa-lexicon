@@ -116,7 +116,11 @@ is created owner-only and pruned to the newest eight reports and two heap snapsh
 
 The supervisor absorbs writes to a dead child. `vscode-jsonrpc` rethrows a failed pipe write into
 a promise nobody holds, an unhandled rejection the daemon would die of. The death reaches the
-caller through the typed `closed` rejection instead.
+caller through the provider's request queue instead, which fails the request in flight and every
+one waiting with the same typed error. Nothing per provider is raced against a request: a race
+against a promise that lives as long as the provider keeps one reaction per request until the
+provider dies, and `core/src/deadline.ts` is the one module that races at all, minting its own
+second arm so nothing raced outlives the call.
 
 ## Where a comment gets its meaning
 
