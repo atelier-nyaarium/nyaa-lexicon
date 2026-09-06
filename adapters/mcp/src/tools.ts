@@ -52,7 +52,7 @@ import type {
 	TypeInfo,
 	UnreversedRebind,
 } from "@nyaa-lexicon/protocol";
-import { parseSymbolId } from "@nyaa-lexicon/protocol";
+import { defined, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import {
 	renderCandidates,
@@ -1227,9 +1227,7 @@ export async function recordAnswer(
 	},
 ): Promise<ToolResult> {
 	const outcome = await backend.recordAnswer(args.symbolId, args.question, args.prose, args.citations, {
-		...(args.model === undefined ? {} : { model: args.model }),
-		...(args.resolvesDoubt === undefined ? {} : { resolvesDoubt: args.resolvesDoubt }),
-		...(args.omitting === undefined ? {} : { omitting: args.omitting }),
+		...defined({ model: args.model, resolvesDoubt: args.resolvesDoubt, omitting: args.omitting }),
 	});
 	return text(renderRecordOutcome(outcome), !outcome.recorded);
 }
@@ -1289,9 +1287,7 @@ export async function reaffirmAnswer(
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
 	const outcome = await backend.reaffirmAnswer(resolved.symbolId, args.question, {
-		...(args.citations === undefined ? {} : { citations: args.citations }),
-		...(args.model === undefined ? {} : { model: args.model }),
-		...(args.resolvesDoubt === undefined ? {} : { resolvesDoubt: args.resolvesDoubt }),
+		...defined({ citations: args.citations, model: args.model, resolvesDoubt: args.resolvesDoubt }),
 	});
 	return text(renderRecordOutcome(outcome), !outcome.recorded);
 }

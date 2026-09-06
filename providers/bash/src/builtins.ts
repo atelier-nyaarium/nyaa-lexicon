@@ -1,5 +1,6 @@
 // The builtins that declare or write a variable, and the assignment prefix before a command.
 
+import { defined } from "@nyaa-lexicon/protocol";
 import type { AssignmentPrefix, Word } from "unbash";
 import {
 	FUNCTION_NAME_RE,
@@ -152,7 +153,7 @@ export function declaring(w: Walk, scope: Scope, builtin: string, command: Word,
 			local,
 			global,
 			...(exported ? { exported } : {}),
-			...(declaredType === undefined ? {} : { declaredType }),
+			...defined({ declaredType }),
 		});
 		if (match !== null) {
 			const value = spelled.slice(match[0].length);
@@ -225,7 +226,7 @@ export function unsetting(w: Walk, scope: Scope, words: Word[]): void {
 		if (functions) pushReference(w, scope, { name, range, role: "write", ofFunction: true });
 		else {
 			const target = resolve(w, scope, name, { local: false })?.symbolId;
-			pushReference(w, scope, { name, range, role: "write", ...(target === undefined ? {} : { target }) });
+			pushReference(w, scope, { name, range, role: "write", ...defined({ target }) });
 		}
 		walkWord(w, scope, word, false);
 	}

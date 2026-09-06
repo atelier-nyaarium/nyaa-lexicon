@@ -1,6 +1,6 @@
 // Owns GDScript literal parsing and loader literal spans.
 
-import { coordinatesOf, type Literal, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, defined, type Literal, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import { isIdentifierPart, isIdentifierStart } from "./cursor.js";
 import { bodyEndLine, contentEndCharacter } from "./declarations.js";
 import type { DeclarationFact, SourceLine } from "./parse-model.js";
@@ -187,7 +187,7 @@ export function extractLiteralsCore(module: string, text: string, declarations: 
 		const range = coordinates.rangeAt(start, end);
 		if (range === undefined) continue;
 		const containerId = containerFor(start);
-		literals.push({ ...literal, range, ...(containerId === undefined ? {} : { containerId }) });
+		literals.push({ ...literal, range, ...defined({ containerId }) });
 	}
 	return literals;
 }

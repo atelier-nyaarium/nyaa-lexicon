@@ -4,6 +4,7 @@ import {
 	type Binding,
 	comparePositions,
 	type Declaration,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -304,7 +305,7 @@ export class CsharpProvider {
 				status: "known",
 				display: meta.typeText,
 				provenance: "declared",
-				...(symbolId === undefined ? {} : { symbolId }),
+				...defined({ symbolId }),
 			};
 		}
 		if (meta.inferredType !== undefined)

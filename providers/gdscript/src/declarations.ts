@@ -1,6 +1,6 @@
 // Owns GDScript declaration extraction and declaration spans.
 
-import { coordinatesOf, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, defined, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import { Cursor } from "./cursor.js";
 import { basenameOf, containsCharacter, indentOf, isIgnorable, parseLineHead, parseLineHeads } from "./line-syntax.js";
 import type {
@@ -172,13 +172,12 @@ function makeDeclaration(
 	return {
 		symbolId,
 		kind: declarationKindFor(keyword, local),
-		...(languageKind === undefined ? {} : { languageKind }),
+		...defined({ languageKind }),
 		name,
 		range: rangeOf(coordinates, line),
 		selectionRange: selectionRangeOf(line, token),
 		visibility,
-		...(exported === undefined ? {} : { exported }),
-		...(signature === undefined ? {} : { signature }),
+		...defined({ exported, signature }),
 		...(scope.containerId === "" ? {} : { containerId: scope.containerId }),
 	};
 }

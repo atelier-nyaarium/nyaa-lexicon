@@ -2,6 +2,8 @@
 //
 //   daemon <workspace> [--warm] [--state-dir <dir>]
 
+import { defined } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -49,5 +51,5 @@ export function parseDaemonArgs(argv: string[]): ParsedDaemonArgs {
 	}
 
 	if (workspace === undefined) return { ok: false, problem: "no workspace given" };
-	return { ok: true, args: { workspace, warm, ...(stateDir === undefined ? {} : { stateDir }) } };
+	return { ok: true, args: { workspace, warm, ...defined({ stateDir }) } };
 }

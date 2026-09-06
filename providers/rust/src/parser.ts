@@ -3,6 +3,7 @@ import {
 	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
+	defined,
 	type Import,
 	type ImportedName,
 	type Literal,
@@ -526,8 +527,7 @@ export class RustParser {
 			selectionRange: { start: nameToken.start, end: nameToken.end },
 			visibility,
 			exported,
-			...(context.containerId === undefined ? {} : { containerId: context.containerId }),
-			...(options.signature === undefined ? {} : { signature: options.signature }),
+			...defined({ containerId: context.containerId, signature: options.signature }),
 			metrics: options.metrics ?? { lines: endToken.end.line - startToken.start.line + 1 },
 		};
 		const raw: RawDeclaration = {
@@ -537,10 +537,12 @@ export class RustParser {
 			nameToken,
 			descriptorPath,
 			containerPath: context.descriptors,
-			...(options.typeName === undefined ? {} : { typeName: options.typeName }),
-			...(options.typeDisplay === undefined ? {} : { typeDisplay: options.typeDisplay }),
-			...(options.typeRange === undefined ? {} : { typeRange: options.typeRange }),
-			...(options.localOrdinal === undefined ? {} : { localOrdinal: options.localOrdinal }),
+			...defined({
+				typeName: options.typeName,
+				typeDisplay: options.typeDisplay,
+				typeRange: options.typeRange,
+				localOrdinal: options.localOrdinal,
+			}),
 		};
 		this.rawDeclarations.push(raw);
 		this.declarationNameTokens.add(this.tokens.indexOf(nameToken));
@@ -548,7 +550,7 @@ export class RustParser {
 			this.typeAnswers.set(symbolId, {
 				status: "known",
 				display: options.typeDisplay,
-				...(options.typeName === undefined ? {} : { typeName: options.typeName }),
+				...defined({ typeName: options.typeName }),
 			});
 		}
 		return raw;
@@ -664,7 +666,7 @@ export class RustParser {
 		const display = sourceOfTokens(this.text, this.tokens, arrow + 1, typeEnd);
 		if (display === "") return undefined;
 		const typeName = this.simpleTypeName(arrow + 1, typeEnd);
-		return { display, ...(typeName === undefined ? {} : { typeName }) };
+		return { display, ...defined({ typeName }) };
 	}
 
 	private parameterTypes(start: number, end: number): string[] {
@@ -905,9 +907,7 @@ export class RustParser {
 				fieldPrefix.visibility,
 				fieldPrefix.exported,
 				{
-					...(typeDisplay === undefined ? {} : { typeDisplay }),
-					...(typeName === undefined ? {} : { typeName }),
-					...(fieldTypeRange === undefined ? {} : { typeRange: fieldTypeRange }),
+					...defined({ typeDisplay, typeName, typeRange: fieldTypeRange }),
 				},
 			);
 		}
@@ -1025,7 +1025,7 @@ export class RustParser {
 			descriptors: targetPath,
 			...(existing === undefined ? {} : { containerId: existing.declaration.symbolId }),
 			kind: "impl",
-			...(traitName === undefined ? {} : { implTrait: traitName }),
+			...defined({ implTrait: traitName }),
 			typeName: targetName,
 		});
 		return bodyEnd + 1;
@@ -1125,8 +1125,7 @@ export class RustParser {
 					? {}
 					: {
 							typeDisplay,
-							...(typeName === undefined ? {} : { typeName }),
-							...(typeRange === undefined ? {} : { typeRange }),
+							...defined({ typeName, typeRange }),
 						}),
 			},
 		);
@@ -1377,7 +1376,7 @@ export class RustParser {
 				...(entry.localToken === undefined
 					? {}
 					: { localRange: { start: entry.localToken.start, end: entry.localToken.end } }),
-				...(context.containerId === undefined ? {} : { containerId: context.containerId }),
+				...defined({ containerId: context.containerId }),
 				ambiguous: entry.glob,
 			};
 			this.importBindings.push(binding);
@@ -1611,7 +1610,7 @@ export class RustParser {
 		};
 		references.push(reference);
 		const containerId = this.containerAt(token.startOffset);
-		this.rawReferences.push({ reference, token, ...(containerId === undefined ? {} : { containerId }), path });
+		this.rawReferences.push({ reference, token, ...defined({ containerId }), path });
 	}
 
 	private extractLiterals(): Literal[] {
@@ -1624,7 +1623,7 @@ export class RustParser {
 					kind: "string",
 					value: token.value,
 					range: { start: token.start, end: token.end },
-					...(containerId === undefined ? {} : { containerId }),
+					...defined({ containerId }),
 				});
 				continue;
 			}
@@ -1634,7 +1633,7 @@ export class RustParser {
 					kind: "boolean",
 					value: token.value,
 					range: { start: token.start, end: token.end },
-					...(containerId === undefined ? {} : { containerId }),
+					...defined({ containerId }),
 				});
 				continue;
 			}
@@ -1644,9 +1643,9 @@ export class RustParser {
 				literals.push({
 					kind: "number",
 					value: token.value,
-					...(number === undefined ? {} : { number }),
+					...defined({ number }),
 					range: { start: token.start, end: token.end },
-					...(containerId === undefined ? {} : { containerId }),
+					...defined({ containerId }),
 				});
 			}
 		}

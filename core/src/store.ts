@@ -14,6 +14,7 @@ import {
 	type DocRegion,
 	type Doubt,
 	declarationFactId,
+	defined,
 	docFactId,
 	type FileContent,
 	type FileNote,
@@ -996,7 +997,7 @@ export class IndexStore {
 		return {
 			store: new IndexStore(db, clock),
 			rebuilt,
-			...(reason === undefined ? {} : { reason }),
+			...defined({ reason }),
 			...(unplaced === 0 ? {} : { unplaced }),
 			...(dropped === 0 ? {} : { dropped }),
 		};
@@ -2586,7 +2587,7 @@ function rowToAnswer(row: AnswerRow): Answer {
 		thin: row.thin === 1,
 		createdAt: row.createdAt,
 		...(row.model === null ? {} : { model: row.model }),
-		...(doubt === undefined ? {} : { doubt }),
+		...defined({ doubt }),
 	};
 }
 

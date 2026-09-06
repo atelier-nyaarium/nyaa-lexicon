@@ -6,6 +6,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type ImportedName,
 	type Literal,
 	type Metrics,
@@ -661,7 +662,7 @@ export class CsharpParser {
 			specifier,
 			imported,
 			reExport: false,
-			...(alias === undefined ? {} : { alias }),
+			...defined({ alias }),
 			static: isStatic,
 			range: statementRange,
 			specifierRange,
@@ -1241,7 +1242,7 @@ export class CsharpParser {
 				visibility: "local",
 				exported: false,
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
-				...(inferredType === undefined ? {} : { inferredType }),
+				...defined({ inferredType }),
 				nameTokenOffsets: [nameToken.startOffset],
 			});
 			this.recordTypeSpan(explicit ? { start: current, end: next } : undefined, local);
@@ -1400,7 +1401,7 @@ export class CsharpParser {
 				exported: exportedFor(visibility, parent),
 				signature: this.signature(codeStartIndex, boundary.index),
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
-				...(inferredType === undefined ? {} : { inferredType }),
+				...defined({ inferredType }),
 				nameTokenOffsets: [name.startOffset],
 			});
 			this.recordTypeSpan(segmentIndex === 0 ? this.spanBeforeName(start, nameIndex) : undefined, field);
@@ -1822,14 +1823,13 @@ export class CsharpParser {
 			const declaration: Declaration = {
 				symbolId,
 				kind: raw.kind,
-				...(raw.languageKind === undefined ? {} : { languageKind: raw.languageKind }),
+				...defined({ languageKind: raw.languageKind }),
 				name: raw.name,
 				range: { start: raw.startToken.start, end: raw.endToken.end },
 				selectionRange: { start: raw.selectionStart.start, end: raw.selectionEnd.end },
 				visibility: raw.visibility,
 				exported: raw.exported,
-				...(raw.signature === undefined ? {} : { signature: raw.signature }),
-				...(containerId === undefined ? {} : { containerId }),
+				...defined({ signature: raw.signature, containerId }),
 				metrics,
 			};
 			declarations.push(declaration);
@@ -1839,14 +1839,16 @@ export class CsharpParser {
 				endOffset: raw.endToken.endOffset,
 				namespaceName: this.namespaceName(raw.parent),
 				typePath: this.typePath(raw.parent),
-				...(containerId === undefined ? {} : { parentId: containerId }),
-				...(raw.typeText === undefined ? {} : { typeText: raw.typeText }),
-				...(raw.typeName === undefined ? {} : { typeName: raw.typeName }),
-				...(raw.inferredType === undefined ? {} : { inferredType: raw.inferredType }),
-				...(raw.isPartial === undefined ? {} : { isPartial: raw.isPartial }),
+				...defined({ parentId: containerId }),
+				...defined({
+					typeText: raw.typeText,
+					typeName: raw.typeName,
+					inferredType: raw.inferredType,
+					isPartial: raw.isPartial,
+				}),
 				...(raw.bodyStartToken === undefined ? {} : { bodyStartOffset: raw.bodyStartToken.endOffset }),
 				...(raw.bodyEndToken === undefined ? {} : { bodyEndOffset: raw.bodyEndToken.startOffset }),
-				...(raw.parameterCount === undefined ? {} : { parameterCount: raw.parameterCount }),
+				...defined({ parameterCount: raw.parameterCount }),
 			});
 		}
 		return { declarations, metadata };

@@ -7,6 +7,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type Import,
 	type Literal,
 	type Metrics,
@@ -464,7 +465,7 @@ function bodyMetrics(tokens: Token[], startIndex: number, endIndex: number, para
 	const lines = start === undefined || end === undefined ? 1 : end.end.line - start.start.line + 1;
 	return {
 		lines: Math.max(1, lines),
-		...(parameterCount === undefined ? {} : { parameters: parameterCount }),
+		...defined({ parameters: parameterCount }),
 		nesting: deepest,
 		branches,
 	};
@@ -810,9 +811,9 @@ class StructuralParser {
 			range,
 			selectionRange: selection,
 			visibility: draft.visibility,
-			...(draft.languageKind === undefined ? {} : { languageKind: draft.languageKind }),
+			...defined({ languageKind: draft.languageKind }),
 			...(draft.exported ? { exported: true } : {}),
-			...(draft.signature === undefined ? {} : { signature: draft.signature }),
+			...defined({ signature: draft.signature }),
 			// A written qualifier the file does not declare is identity only; the container is what the file declares.
 			...(draft.parent === null
 				? {}
@@ -823,7 +824,7 @@ class StructuralParser {
 							descriptors: namePath(draft.parent),
 						}),
 					}),
-			...(draft.metrics === undefined ? {} : { metrics: draft.metrics }),
+			...defined({ metrics: draft.metrics }),
 		};
 		return {
 			declaration,
@@ -887,7 +888,7 @@ class StructuralParser {
 					kind: "string",
 					value: token.value,
 					range: rangeOfToken(token),
-					...(containerId === undefined ? {} : { containerId }),
+					...defined({ containerId }),
 				});
 				continue;
 			}
@@ -898,7 +899,7 @@ class StructuralParser {
 					value: token.text,
 					...(Number.isFinite(number) ? { number } : {}),
 					range: rangeOfToken(token),
-					...(containerId === undefined ? {} : { containerId }),
+					...defined({ containerId }),
 				});
 				continue;
 			}
@@ -907,7 +908,7 @@ class StructuralParser {
 					kind: "boolean",
 					value: token.value,
 					range: rangeOfToken(token),
-					...(containerId === undefined ? {} : { containerId }),
+					...defined({ containerId }),
 				});
 			}
 		}

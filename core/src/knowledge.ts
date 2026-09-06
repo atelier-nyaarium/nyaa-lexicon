@@ -6,6 +6,7 @@
 import {
 	answerFactId,
 	type CitedFact,
+	defined,
 	doubtFactId,
 	type FactKind,
 	type FactSet,
@@ -285,8 +286,7 @@ export class KnowledgeLedger {
 			citations,
 			thin,
 			createdAt: now,
-			...(model === undefined ? {} : { model }),
-			...(carried === undefined ? {} : { doubt: carried }),
+			...defined({ model, doubt: carried }),
 		};
 		this.store.saveAnswer(owner.subjectId, answer);
 		// Saving closed the gap row, but a carried doubt is still open work, so the demand stays.
@@ -294,7 +294,7 @@ export class KnowledgeLedger {
 		return {
 			recorded: true,
 			answer,
-			...(carried === undefined ? {} : { doubtCarried: carried }),
+			...defined({ doubtCarried: carried }),
 		};
 	}
 
@@ -338,7 +338,7 @@ export class KnowledgeLedger {
 				factId: doubtFactId(subject?.subjectId ?? "", existing.recordedAs ?? symbolId, target, reason, now),
 				reason,
 				at: now,
-				...(by === undefined ? {} : { by }),
+				...defined({ by }),
 			};
 			this.store.setDoubt(symbolId, target, doubt);
 			// A doubt is demand to address it, counted only where the address still resolves: a
@@ -375,8 +375,7 @@ export class KnowledgeLedger {
 
 		if (options.citations !== undefined) {
 			return this.recordAnswer(symbolId, question, existing.prose, options.citations, {
-				...(options.model === undefined ? {} : { model: options.model }),
-				...(options.resolvesDoubt === undefined ? {} : { resolvesDoubt: options.resolvesDoubt }),
+				...defined({ model: options.model, resolvesDoubt: options.resolvesDoubt }),
 			});
 		}
 
@@ -397,7 +396,7 @@ export class KnowledgeLedger {
 		const affirmed: Answer = {
 			...rest,
 			createdAt: this.clock.now(),
-			...(options.model === undefined ? {} : { model: options.model }),
+			...defined({ model: options.model }),
 		};
 		const subject = this.store.subjects.claim(symbolId, affirmed.createdAt);
 		if (subject === null) return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
@@ -486,7 +485,7 @@ export class KnowledgeLedger {
 							since: subject.boundAt,
 						},
 					}),
-			...(stranded === undefined ? {} : { stranded }),
+			...defined({ stranded }),
 			stale,
 			inheritedStale,
 			doubtedUpstream,

@@ -4,6 +4,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type Import,
 	type ImportedName,
 } from "@nyaa-lexicon/protocol";
@@ -514,7 +515,7 @@ function syntaxDiagnostics(module: string, source: ts.SourceFile): Diagnostic[] 
 			severity: "error",
 			message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
 			path: module,
-			...(range === undefined ? {} : { range }),
+			...defined({ range }),
 		};
 	});
 }

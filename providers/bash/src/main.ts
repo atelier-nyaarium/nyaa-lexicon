@@ -7,6 +7,7 @@ import {
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	type Diagnostic,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -170,7 +171,7 @@ export class BashProvider {
 				range: reference.range,
 				role: reference.role,
 				binding,
-				...(reference.fromId === undefined ? {} : { fromId: reference.fromId }),
+				...defined({ fromId: reference.fromId }),
 			});
 		}
 		return {

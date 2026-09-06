@@ -3,6 +3,7 @@ import { readText } from "@nyaa-lexicon/formats/text";
 import {
 	type Binding,
 	coordinatesOf,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -79,7 +80,7 @@ export class TextProvider implements ProviderMethods {
 			comments: [],
 			docs: params.depth === "outline" || params.depth === "surface" ? [] : facts.docs,
 			diagnostics: facts.diagnostics,
-			...(params.depth === undefined ? {} : { depth: params.depth }),
+			...defined({ depth: params.depth }),
 		};
 	}
 

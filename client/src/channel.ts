@@ -5,6 +5,7 @@
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
+	defined,
 	methodMutates,
 	type RequestOf,
 	type ResponseOf,
@@ -54,14 +55,12 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 						const daemonOptions = {
 							workspaceRoot,
 							source: options.source,
-							...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
-							...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+							...defined({ stateDir: options.stateDir, onWaiting: options.onWaiting }),
 						};
 						const daemon = await ensureDaemon(daemonOptions);
 						if (!daemon.connected) throw ensureFailure(daemon, `no indexer for ${workspaceRoot}: `);
 						const frameOptions = {
-							...(options.patience === undefined ? {} : { patience: options.patience }),
-							...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+							...defined({ patience: options.patience, onWaiting: options.onWaiting }),
 						};
 						client = await connectFrames(daemon.lock.port, daemon.lock.token, frameOptions);
 					}

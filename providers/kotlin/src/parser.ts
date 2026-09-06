@@ -5,6 +5,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type ImportedName,
 	type Literal,
 	type Position,
@@ -349,7 +350,7 @@ class CommentSink {
 }
 
 function diagnostic(module: string, message: string, range?: Range): Diagnostic {
-	return { severity: "error", message, ...(range === undefined ? {} : { range }), path: module };
+	return { severity: "error", message, ...defined({ range }), path: module };
 }
 
 function decodeEscape(character: string): string {
@@ -1231,7 +1232,7 @@ class KotlinParser {
 		const declarations = this.declarations.map((meta) => meta.declaration);
 		return {
 			module: this.module,
-			...(this.packageName === undefined ? {} : { packageName: this.packageName }),
+			...defined({ packageName: this.packageName }),
 			tokens: this.tokens,
 			declarations,
 			declarationMeta: this.declarations,
@@ -1376,8 +1377,7 @@ class KotlinParser {
 				startIndex: index,
 				endIndex: end,
 				star: starIndex >= 0,
-				...(importedName === undefined ? {} : { importedName }),
-				...(localName === undefined ? {} : { localName }),
+				...defined({ importedName, localName }),
 			});
 			index = end + 1;
 		}
@@ -1484,14 +1484,13 @@ class KotlinParser {
 		const declaration: Declaration = {
 			symbolId,
 			kind: input.kind,
-			...(input.languageKind === undefined ? {} : { languageKind: input.languageKind }),
+			...defined({ languageKind: input.languageKind }),
 			name: input.name,
 			range,
 			selectionRange,
 			visibility: access.visibility,
 			exported: access.exported,
-			...(input.signature === undefined ? {} : { signature: input.signature }),
-			...(input.scope.containerId === undefined ? {} : { containerId: input.scope.containerId }),
+			...defined({ signature: input.signature, containerId: input.scope.containerId }),
 			metrics: { lines: range.end.line - range.start.line + 1 },
 		};
 		const meta: DeclarationMeta = {
@@ -1500,13 +1499,15 @@ class KotlinParser {
 			nameTokenIndex: input.nameIndex,
 			startIndex: input.startIndex,
 			endIndex: input.endIndex,
-			...(input.bodyStartIndex === undefined ? {} : { bodyStartIndex: input.bodyStartIndex }),
-			...(input.bodyEndIndex === undefined ? {} : { bodyEndIndex: input.bodyEndIndex }),
-			...(input.scope.containerId === undefined ? {} : { scopeId: input.scope.containerId }),
-			...(input.scope.classId === undefined ? {} : { parentClassId: input.scope.classId }),
+			...defined({
+				bodyStartIndex: input.bodyStartIndex,
+				bodyEndIndex: input.bodyEndIndex,
+				scopeId: input.scope.containerId,
+				parentClassId: input.scope.classId,
+			}),
 			functionLike: input.functionLike,
 			typeLike: input.typeLike,
-			...(input.parameterCount === undefined ? {} : { parameterCount: input.parameterCount }),
+			...defined({ parameterCount: input.parameterCount }),
 		};
 		this.declarations.push(meta);
 		this.declarationIndexes.add(input.nameIndex);
@@ -1639,7 +1640,7 @@ class KotlinParser {
 			nameIndex,
 			name,
 			kind: declarationKind,
-			...(languageKind === undefined ? {} : { languageKind }),
+			...defined({ languageKind }),
 			modifiers,
 			scope,
 			descriptorKind: "type",
@@ -1654,7 +1655,7 @@ class KotlinParser {
 			containerId: meta.declaration.symbolId,
 			kind: "class",
 			classId: meta.declaration.symbolId,
-			...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+			...defined({ parentId: scope.containerId }),
 		};
 		this.collectHeritage(keywordIndex + 1, bodyOpen >= 0 ? bodyOpen : declarationEnd + 1);
 		this.scopeParents.set(meta.declaration.symbolId, scope.containerId);
@@ -1663,7 +1664,7 @@ class KotlinParser {
 				startIndex: bodyOpen + 1,
 				endIndex: bodyClose - 1,
 				scopeId: meta.declaration.symbolId,
-				...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+				...defined({ parentId: scope.containerId }),
 				kind: "class",
 			});
 		}
@@ -1826,7 +1827,7 @@ class KotlinParser {
 		this.typeFacts.push({
 			symbolId: declaration.declaration.symbolId,
 			answer: { status: "known", display, provenance: "declared" },
-			...(annotationRange === undefined ? {} : { annotationRange }),
+			...defined({ annotationRange }),
 			startIndex: start,
 			endIndex: end,
 		});
@@ -1894,8 +1895,7 @@ class KotlinParser {
 				containerId: owner.declaration.symbolId,
 				kind: "function",
 				functionId: owner.declaration.symbolId,
-				...(scope.classId === undefined ? {} : { classId: scope.classId }),
-				...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+				...defined({ classId: scope.classId, parentId: scope.containerId }),
 			};
 			const parameterMeta = this.addDeclaration({
 				startIndex: segment.start,
@@ -1991,7 +1991,7 @@ class KotlinParser {
 			nameIndex,
 			name: this.tokens[nameIndex]?.value ?? "function",
 			kind: scope.kind === "class" ? "method" : "function",
-			...(languageKind === undefined ? {} : { languageKind }),
+			...defined({ languageKind }),
 			modifiers,
 			scope,
 			descriptorKind: "method",
@@ -2010,15 +2010,14 @@ class KotlinParser {
 				containerId: meta.declaration.symbolId,
 				kind: "function",
 				functionId: meta.declaration.symbolId,
-				...(scope.classId === undefined ? {} : { classId: scope.classId }),
-				...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+				...defined({ classId: scope.classId, parentId: scope.containerId }),
 			};
 			this.scopeParents.set(meta.declaration.symbolId, scope.containerId);
 			this.scopeSpans.push({
 				startIndex: bodyOpen + 1,
 				endIndex: bodyClose - 1,
 				scopeId: meta.declaration.symbolId,
-				...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+				...defined({ parentId: scope.containerId }),
 				kind: "function",
 			});
 			this.parseRegion(bodyOpen + 1, bodyClose, functionScope);
@@ -2070,7 +2069,7 @@ class KotlinParser {
 			nameIndex,
 			name,
 			kind,
-			...(languageKind === undefined ? {} : { languageKind }),
+			...defined({ languageKind }),
 			modifiers,
 			scope,
 			descriptorKind: "term",
@@ -2188,15 +2187,14 @@ class KotlinParser {
 				containerId: meta.declaration.symbolId,
 				kind: "function",
 				functionId: meta.declaration.symbolId,
-				...(scope.classId === undefined ? {} : { classId: scope.classId }),
-				...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+				...defined({ classId: scope.classId, parentId: scope.containerId }),
 			};
 			this.scopeParents.set(meta.declaration.symbolId, scope.containerId);
 			this.scopeSpans.push({
 				startIndex: bodyOpen + 1,
 				endIndex: bodyClose - 1,
 				scopeId: meta.declaration.symbolId,
-				...(scope.containerId === undefined ? {} : { parentId: scope.containerId }),
+				...defined({ parentId: scope.containerId }),
 				kind: "function",
 			});
 			this.parseRegion(bodyOpen + 1, bodyClose, functionScope);
@@ -2377,9 +2375,9 @@ class KotlinParser {
 			literals.push({
 				kind: token.kind === "string" ? "string" : token.kind === "number" ? "number" : "boolean",
 				value: literal.value,
-				...(literal.number === undefined ? {} : { number: literal.number }),
+				...defined({ number: literal.number }),
 				range: rangeFromToken(token),
-				...(this.containerFor(index) === undefined ? {} : { containerId: this.containerFor(index) }),
+				...defined({ containerId: this.containerFor(index) }),
 			});
 		}
 		return literals;
@@ -2410,7 +2408,7 @@ class KotlinParser {
 			reference,
 			tokenIndex: index,
 			...(scope === undefined ? {} : { scopeId: scope.scopeId }),
-			...(importInfo === undefined ? {} : { importInfo }),
+			...defined({ importInfo }),
 		};
 	}
 

@@ -7,6 +7,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { Writable } from "node:stream";
 import {
+	defined,
 	isCompatibleProtocol,
 	METHOD_SCHEMAS,
 	PROTOCOL_VERSION,
@@ -205,11 +206,13 @@ export class ProviderSupervisor implements ProviderPort {
 			providerId: parsed.providerId,
 			language: parsed.language,
 			extensions: parsed.extensions,
-			...(parsed.filenames === undefined ? {} : { filenames: parsed.filenames }),
-			...(parsed.sharedExtensions === undefined ? {} : { sharedExtensions: parsed.sharedExtensions }),
-			...(parsed.shebangs === undefined ? {} : { shebangs: parsed.shebangs }),
-			...(parsed.fallback === undefined ? {} : { fallback: parsed.fallback }),
-			...(parsed.content === undefined ? {} : { content: parsed.content }),
+			...defined({
+				filenames: parsed.filenames,
+				sharedExtensions: parsed.sharedExtensions,
+				shebangs: parsed.shebangs,
+				fallback: parsed.fallback,
+				content: parsed.content,
+			}),
 		};
 
 		// A second start under the same id must reap the incumbent, not orphan it behind the map.

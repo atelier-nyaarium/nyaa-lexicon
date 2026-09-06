@@ -5,6 +5,7 @@ import {
 	composeSymbolId,
 	coordinatesOf,
 	type Declaration,
+	defined,
 	parseSymbolId,
 	type TextCoordinates,
 	type TypeInfo,
@@ -131,8 +132,7 @@ function known(...values: AbstractValue[]): KnownResult {
 function value(base: string, literal?: string, symbolId?: string): AbstractValue {
 	return {
 		base,
-		...(literal === undefined ? {} : { literal }),
-		...(symbolId === undefined ? {} : { symbolId }),
+		...defined({ literal, symbolId }),
 	};
 }
 
@@ -157,7 +157,7 @@ function mergeResults(first: EvalResult, second: EvalResult): EvalResult {
 function mergeFlow(first: FlowResult, second: FlowResult): FlowResult {
 	return {
 		values: uniqueValues([...first.values, ...second.values]),
-		...(first.unknown === undefined ? {} : { unknown: first.unknown }),
+		...defined({ unknown: first.unknown }),
 		fallsThrough: first.fallsThrough || second.fallsThrough,
 	};
 }
@@ -934,7 +934,7 @@ function inferFile(
 					status: "inferred",
 					display: renderValues(answer.values, true),
 					basis,
-					...(singleSymbolId(answer.values) === undefined ? {} : { symbolId: singleSymbolId(answer.values) }),
+					...defined({ symbolId: singleSymbolId(answer.values) }),
 				});
 			} else if (answer?.status === "unknown") inferred.set(declaration.symbolId, answer);
 			continue;
@@ -958,7 +958,7 @@ function inferFile(
 					status: "inferred",
 					display: renderValues(result.values, declaration.kind === "constant"),
 					basis: "initializer",
-					...(singleSymbolId(result.values) === undefined ? {} : { symbolId: singleSymbolId(result.values) }),
+					...defined({ symbolId: singleSymbolId(result.values) }),
 				});
 			else if (result?.status === "unknown") inferred.set(declaration.symbolId, result);
 			continue;
@@ -969,7 +969,7 @@ function inferFile(
 				status: "inferred",
 				display: renderValues(result.values, declaration.kind === "constant"),
 				basis: "initializer",
-				...(singleSymbolId(result.values) === undefined ? {} : { symbolId: singleSymbolId(result.values) }),
+				...defined({ symbolId: singleSymbolId(result.values) }),
 			});
 		else if (result?.status === "unknown") inferred.set(declaration.symbolId, result);
 	}

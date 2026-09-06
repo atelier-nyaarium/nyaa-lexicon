@@ -3,6 +3,7 @@ import {
 	type Declaration,
 	type Diagnostic,
 	type DocRegion,
+	defined,
 	type Literal,
 	type Range,
 	type TextCoordinates,
@@ -220,7 +221,7 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 				for (let index = node.childNodes.length - 1; index >= 0; index--)
 					pending.push({
 						node: node.childNodes[index] as Node,
-						...(parentId === undefined ? {} : { parentId }),
+						...defined({ parentId }),
 						inFence,
 						parents,
 					});
@@ -232,7 +233,7 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 			for (let index = element.childNodes.length - 1; index >= 0; index--)
 				pending.push({
 					node: element.childNodes[index] as Node,
-					...(parentId === undefined ? {} : { parentId }),
+					...defined({ parentId }),
 					inFence,
 					parents,
 				});
@@ -274,7 +275,7 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 				selectionRange: selection,
 				visibility: "public",
 				signature: signatureOf(text, start, startTag.endOffset),
-				...(parentId === undefined ? {} : { containerId: parentId }),
+				...defined({ containerId: parentId }),
 			});
 		}
 		for (const attribute of element.attrs) {
@@ -314,7 +315,7 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 						text: text.slice(innerStart, innerEnd),
 						plain: visible,
 						fenced: inFence || tag === "pre" || tag === "code",
-						...(heading === undefined ? {} : { anchorId: heading }),
+						...defined({ anchorId: heading }),
 					});
 			}
 		}

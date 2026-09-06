@@ -3,24 +3,25 @@
 // A store and nothing else, held by a residue test. A query that could start a provider or touch
 // the disk would stop being knowably cheap.
 
-import type {
-	CallHierarchy,
-	CallHierarchyEdge,
-	CommentAnchor,
-	CommentQuery,
-	CommentsResult,
-	DescribeResult,
-	DocQuery,
-	DocsResult,
-	GraphSummary,
-	LiteralQuery,
-	LiteralsResult,
-	MostReferencedResult,
-	Range,
-	ReferencesResult,
-	SearchSymbolsResult,
-	SymbolSummary,
-	TypeHierarchy,
+import {
+	type CallHierarchy,
+	type CallHierarchyEdge,
+	type CommentAnchor,
+	type CommentQuery,
+	type CommentsResult,
+	type DescribeResult,
+	type DocQuery,
+	type DocsResult,
+	defined,
+	type GraphSummary,
+	type LiteralQuery,
+	type LiteralsResult,
+	type MostReferencedResult,
+	type Range,
+	type ReferencesResult,
+	type SearchSymbolsResult,
+	type SymbolSummary,
+	type TypeHierarchy,
 } from "@nyaa-lexicon/protocol";
 import { findCycles } from "./graph.js";
 import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
@@ -124,9 +125,11 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 		kind: declaration.kind,
 		module: declaration.module,
 		visibility: declaration.visibility,
-		...(declaration.containerId === undefined ? {} : { containerId: declaration.containerId }),
-		...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
-		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
+		...defined({
+			containerId: declaration.containerId,
+			exported: declaration.exported,
+			signature: declaration.signature,
+		}),
 		...(declaration.range === undefined
 			? {}
 			: { lines: { start: declaration.range.start.line, end: declaration.range.end.line } }),
@@ -259,10 +262,7 @@ export class IndexReadModel {
 		const scope = options.within === undefined ? undefined : resolveScope(this.store, options.within);
 		const scoped = scope === undefined ? undefined : filterFor(scope);
 		const found = this.store.searchSymbols(text, {
-			...(options.regex === undefined ? {} : { regex: options.regex }),
-			...(options.kind === undefined ? {} : { kind: options.kind }),
-			...(options.module === undefined ? {} : { module: options.module }),
-			...(scoped === undefined ? {} : { scope: scoped }),
+			...defined({ regex: options.regex, kind: options.kind, module: options.module, scope: scoped }),
 			limit: options.within === undefined ? (options.limit ?? DEFAULT_REFERENCE_LIMIT) + 1 : REGEX_SCAN_LIMIT,
 		});
 		const paged =
@@ -278,7 +278,7 @@ export class IndexReadModel {
 					);
 		return {
 			text,
-			...(options.regex === undefined ? {} : { regex: options.regex }),
+			...defined({ regex: options.regex }),
 			symbols: paged.items.map(toSummary),
 			...wire(paged),
 		};
@@ -391,8 +391,7 @@ export class IndexReadModel {
 			? Math.min(Math.max(Math.floor(requested), 1), MAX_COMMENT_LIMIT)
 			: DEFAULT_COMMENT_LIMIT;
 		const filter = {
-			...(query.form === undefined ? {} : { form: query.form }),
-			...(query.module === undefined ? {} : { module: query.module }),
+			...defined({ form: query.form, module: query.module }),
 		};
 		const scope = query.within === undefined ? undefined : resolveScope(this.store, query.within);
 
@@ -479,8 +478,7 @@ export class IndexReadModel {
 			? Math.min(Math.max(Math.floor(requested), 1), MAX_COMMENT_LIMIT)
 			: DEFAULT_COMMENT_LIMIT;
 		const filter = {
-			...(query.fenced === undefined ? {} : { fenced: query.fenced }),
-			...(query.module === undefined ? {} : { module: query.module }),
+			...defined({ fenced: query.fenced, module: query.module }),
 		};
 
 		if (query.text !== undefined) {
@@ -537,7 +535,7 @@ export class IndexReadModel {
 				fenced: region.fenced,
 				raw: preview(region.raw),
 				headingPath: anchor === null ? [] : (paths.get(anchor) ?? []),
-				...(hit === undefined ? {} : { hit }),
+				...defined({ hit }),
 			};
 		});
 		return { query, docs: shown, ...wire(paged) };
@@ -581,7 +579,7 @@ export class IndexReadModel {
 			symbolId,
 			name: declaration.name,
 			kind: declaration.kind,
-			...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
+			...defined({ signature: declaration.signature }),
 			line: declaration.range.start.line,
 		};
 	}

@@ -1,6 +1,13 @@
 // Where a name lives and which declaration it reaches: the scope chain, identity, and settlement.
 
-import { comparePositions, composeSymbolId, type Descriptor, type Position, type Range } from "@nyaa-lexicon/protocol";
+import {
+	comparePositions,
+	composeSymbolId,
+	type Descriptor,
+	defined,
+	type Position,
+	type Range,
+} from "@nyaa-lexicon/protocol";
 import {
 	type BashDeclaration,
 	type BashReference,
@@ -24,8 +31,7 @@ interface ResolveOptions extends Pick<DeclareOptions, "local" | "global"> {
 
 export function subshell(scope: Scope): Scope {
 	return {
-		...(scope.fromId === undefined ? {} : { fromId: scope.fromId }),
-		...(scope.descriptor === undefined ? {} : { descriptor: scope.descriptor }),
+		...defined({ fromId: scope.fromId, descriptor: scope.descriptor }),
 		locals: new Map(),
 		parent: scope,
 		confined: true,
@@ -85,14 +91,14 @@ export function declare(
 	const declaration: BashDeclaration = {
 		symbolId: mint(w, nested && scope.descriptor !== undefined ? [scope.descriptor, own] : [own]),
 		kind: options.kind,
-		...(options.languageKind === undefined ? {} : { languageKind: options.languageKind }),
+		...defined({ languageKind: options.languageKind }),
 		name,
 		range,
 		selectionRange: selection,
 		visibility: confined ? "local" : "public",
-		...(options.exported === undefined ? {} : { exported: options.exported }),
+		...defined({ exported: options.exported }),
 		...(nested && scope.fromId !== undefined ? { containerId: scope.fromId } : {}),
-		...(options.declaredType === undefined ? {} : { declaredType: options.declaredType }),
+		...defined({ declaredType: options.declaredType }),
 	};
 	w.out.declarations.push(declaration);
 	if (options.kind === "function") {

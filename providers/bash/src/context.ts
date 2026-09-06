@@ -1,16 +1,17 @@
 // What a walk over the unbash tree carries, and the facts it collects.
 
-import type {
-	CommentSpan,
-	Declaration,
-	Descriptor,
-	Diagnostic,
-	Import,
-	Literal,
-	Range,
-	Reference,
-	SymbolKind,
-	TextCoordinates,
+import {
+	type CommentSpan,
+	type Declaration,
+	type Descriptor,
+	type Diagnostic,
+	defined,
+	type Import,
+	type Literal,
+	type Range,
+	type Reference,
+	type SymbolKind,
+	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 import type { Statement, Word, WordPart } from "unbash";
 
@@ -161,15 +162,15 @@ export function pushLiteral(w: Walk, scope: Scope, value: string, start: number,
 	w.out.literals.push({
 		kind: number === undefined ? "string" : "number",
 		value,
-		...(number === undefined ? {} : { number }),
+		...defined({ number }),
 		range: rangeAt(w, start, end),
-		...(scope.fromId === undefined ? {} : { containerId: scope.fromId }),
+		...defined({ containerId: scope.fromId }),
 	});
 }
 
 export function pushReference(w: Walk, scope: Scope, reference: BashReference): void {
 	w.pending.push({
-		reference: { ...reference, ...(scope.fromId === undefined ? {} : { fromId: scope.fromId }) },
+		reference: { ...reference, ...defined({ fromId: scope.fromId }) },
 		scope,
 	});
 }

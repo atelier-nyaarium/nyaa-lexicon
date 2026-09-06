@@ -2,6 +2,7 @@ import {
 	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
+	defined,
 	type Literal,
 	type Range,
 	type TextCoordinates,
@@ -137,7 +138,7 @@ export function readXml(context: XmlContext): XmlFacts {
 					severity: "error",
 					message: failure.message ?? String(error),
 					path: context.module,
-					...(at === undefined ? {} : { range: at }),
+					...defined({ range: at }),
 				},
 			],
 		};
@@ -212,7 +213,7 @@ export function readXml(context: XmlContext): XmlFacts {
 			selectionRange,
 			visibility: "public",
 			signature: signatureOf(text, node.start, end + 1),
-			...(parentId === undefined ? {} : { containerId: parentId }),
+			...defined({ containerId: parentId }),
 		});
 		for (const attribute of scan.spans) {
 			const attrRange = rangeAt(context, bom + attribute.nameStart, bom + attribute.valueEnd);

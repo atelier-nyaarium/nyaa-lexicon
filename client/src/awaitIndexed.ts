@@ -4,6 +4,7 @@
 // answer a consumer can act on; only the daemon's own trouble, or an outcome without a cause, is a
 // `DaemonError`.
 
+import { defined } from "@nyaa-lexicon/protocol";
 import type { Session } from "./connect.js";
 import { DaemonError } from "./errors.js";
 
@@ -31,7 +32,7 @@ export async function awaitIndexed(session: Pick<Session, "ask">, module: string
 		case "tooLarge":
 		case "unclaimed":
 		case "parseFailed":
-			return { indexed: false, reason: outcome.cause, ...(detail === undefined ? {} : { detail }) };
+			return { indexed: false, reason: outcome.cause, ...defined({ detail }) };
 		case "providerDown":
 		case "fault":
 			throw new DaemonError(`${module} was not indexed: ${detail ?? "a provider is unavailable"}`, "daemon");

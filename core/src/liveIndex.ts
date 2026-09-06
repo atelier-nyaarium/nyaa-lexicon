@@ -4,6 +4,7 @@
 // one at a time, because two overlapping re-indexes of the same file race on the same store rows,
 // and a burst landing mid-apply is ordinary rather than rare.
 
+import { defined } from "@nyaa-lexicon/protocol";
 import type { Clock, TimerHandle } from "./clock.js";
 import type { IndexOutcome } from "./indexer.js";
 import type { FileEvent } from "./invalidation.js";
@@ -70,8 +71,7 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 		onBatch: queue.push,
 		// The index's own scope, so an ignored directory's churn is never read.
 		scope: options.service.watchScope(),
-		...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
-		...(options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs }),
+		...defined({ debounceMs: options.debounceMs, maxWaitMs: options.maxWaitMs }),
 		clock: options.clock,
 	});
 

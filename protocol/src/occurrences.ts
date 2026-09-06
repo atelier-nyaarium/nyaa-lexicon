@@ -2,6 +2,7 @@
 // Positional only: what sits inside a changed declaration follows it, a binding target included.
 
 import { comparePositions } from "./coordinates.js";
+import { defined } from "./defined.js";
 import type { FileFacts } from "./project.js";
 import {
 	composeSymbolId,
@@ -41,7 +42,7 @@ function split(id: string): { base: string; occurrence: number } | null {
 	const bare: Descriptor = {
 		kind: last.kind,
 		name: last.name,
-		...(last.disambiguator === undefined ? {} : { disambiguator: last.disambiguator }),
+		...defined({ disambiguator: last.disambiguator }),
 	};
 	return {
 		base: composeSymbolId({ ...parsed, descriptors: [...parsed.descriptors.slice(0, -1), bare] }),

@@ -5,6 +5,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type ImportedName,
 	type Literal,
 	type Metrics,
@@ -823,7 +824,7 @@ class CParser {
 			imported: [],
 			reExport: false,
 			kind,
-			...(pathRange === undefined ? {} : { range: pathRange }),
+			...defined({ range: pathRange }),
 		});
 	}
 
@@ -1139,7 +1140,7 @@ class CParser {
 			typeText: returnType.text,
 			typeStartIndex: returnType.start,
 			typeEndIndex: returnType.end,
-			...(returnType.typeName === undefined ? {} : { typeName: returnType.typeName }),
+			...defined({ typeName: returnType.typeName }),
 			conditionalKey: this.conditionalByIndex.get(statement.start) ?? "",
 			conditionalGroup: this.conditionalGroupByIndex.get(statement.start) ?? "",
 			isDefinition: body,
@@ -1242,7 +1243,7 @@ class CParser {
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
-				...(declarator.typeName === undefined ? {} : { typeName: declarator.typeName }),
+				...defined({ typeName: declarator.typeName }),
 				conditionalKey: this.conditionalByIndex.get(nameIndex) ?? "",
 				conditionalGroup: this.conditionalGroupByIndex.get(nameIndex) ?? "",
 			});
@@ -1329,7 +1330,7 @@ class CParser {
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
-				...(declarator.typeName === undefined ? {} : { typeName: declarator.typeName }),
+				...defined({ typeName: declarator.typeName }),
 				conditionalKey: this.conditionalByIndex.get(statement.start) ?? "",
 				conditionalGroup: this.conditionalGroupByIndex.get(statement.start) ?? "",
 			});
@@ -1406,7 +1407,7 @@ class CParser {
 						(tagName === undefined ? aggregate.keyword : `${aggregate.keyword} ${tagName}`),
 					typeStartIndex: declarator.typeStart,
 					typeEndIndex: declarator.typeEnd,
-					...(tagName === undefined ? {} : { typeName: tagName }),
+					...defined({ typeName: tagName }),
 					conditionalKey: this.conditionalByIndex.get(statement.start) ?? "",
 					conditionalGroup: this.conditionalGroupByIndex.get(statement.start) ?? "",
 				});
@@ -1431,7 +1432,7 @@ class CParser {
 					typeText: declarator.typeText,
 					typeStartIndex: declarator.typeStart,
 					typeEndIndex: declarator.typeEnd,
-					...(declarator.typeName === undefined ? {} : { typeName: declarator.typeName }),
+					...defined({ typeName: declarator.typeName }),
 					conditionalKey: this.conditionalByIndex.get(statement.start) ?? "",
 					conditionalGroup: this.conditionalGroupByIndex.get(statement.start) ?? "",
 				});
@@ -1504,7 +1505,7 @@ class CParser {
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
-				...(declarator.typeName === undefined ? {} : { typeName: declarator.typeName }),
+				...defined({ typeName: declarator.typeName }),
 				conditionalKey: this.conditionalByIndex.get(first) ?? "",
 				conditionalGroup: this.conditionalGroupByIndex.get(first) ?? "",
 			});
@@ -1656,7 +1657,7 @@ class CParser {
 				typeStart: start,
 				typeEnd: cursor,
 				typeText,
-				...(typeName === undefined ? {} : { typeName }),
+				...defined({ typeName }),
 			});
 		}
 		return names;
@@ -1712,7 +1713,7 @@ class CParser {
 		const end = nameIndex;
 		const text = stripTypeText(renderTokens(this.tokens, start, end));
 		const typeName = this.typeNameForRange(start, end);
-		return { text, start, end: Math.max(start, end - 1), ...(typeName === undefined ? {} : { typeName }) };
+		return { text, start, end: Math.max(start, end - 1), ...defined({ typeName }) };
 	}
 
 	private typeNameForRange(start: number, end: number): string | undefined {
@@ -1823,20 +1824,22 @@ class CParser {
 			range: { start: first.start, end: last.end },
 			selectionRange,
 			visibility: candidate.visibility,
-			...(candidate.languageKind === undefined ? {} : { languageKind: candidate.languageKind }),
-			...(candidate.exported === undefined ? {} : { exported: candidate.exported }),
-			...(candidate.signature === undefined ? {} : { signature: candidate.signature }),
-			...(containerId === undefined ? {} : { containerId }),
-			...(candidate.metrics === undefined ? {} : { metrics: candidate.metrics }),
+			...defined({
+				languageKind: candidate.languageKind,
+				exported: candidate.exported,
+				signature: candidate.signature,
+				containerId,
+				metrics: candidate.metrics,
+			}),
 			descriptorPath,
 			startOffset: first.startOffset,
 			endOffset: last.endOffset,
 			selectionIndex: candidate.selectionIndex,
 			conditionalKey: candidate.conditionalKey,
 			conditionalGroup: candidate.conditionalGroup,
-			...(candidate.isDefinition === undefined ? {} : { isDefinition: candidate.isDefinition }),
+			...defined({ isDefinition: candidate.isDefinition }),
 			...(candidate.typeText === undefined || candidate.typeText === "" ? {} : { typeText: candidate.typeText }),
-			...(typeRange === undefined ? {} : { typeRange }),
+			...defined({ typeRange }),
 		};
 		if (append) this.declarations.push(declaration);
 		this.addTypeAnswer(declaration, candidate.typeName);
@@ -1847,7 +1850,7 @@ class CParser {
 		if (declaration.typeText === undefined || declaration.typeText === "") return;
 		this.typeAnswers.set(declaration.symbolId, {
 			display: declaration.typeText,
-			...(typeName === undefined ? {} : { typeName }),
+			...defined({ typeName }),
 		});
 	}
 
@@ -1864,7 +1867,7 @@ class CParser {
 						kind: "number",
 						value: token.value,
 						range: tokenRange(token),
-						...(numeric.number === undefined ? {} : { number: numeric.number }),
+						...defined({ number: numeric.number }),
 					};
 				}
 			} else if (token.kind === "char") {

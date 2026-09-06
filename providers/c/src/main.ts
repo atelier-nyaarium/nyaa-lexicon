@@ -5,6 +5,7 @@ import {
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	type Diagnostic,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -100,15 +101,17 @@ function declarationWire(declaration: CDeclaration): Declaration {
 	return {
 		symbolId: declaration.symbolId,
 		kind: declaration.kind,
-		...(declaration.languageKind === undefined ? {} : { languageKind: declaration.languageKind }),
+		...defined({ languageKind: declaration.languageKind }),
 		name: declaration.name,
 		range: declaration.range,
 		selectionRange: declaration.selectionRange,
 		visibility: declaration.visibility,
-		...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
-		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
-		...(declaration.containerId === undefined ? {} : { containerId: declaration.containerId }),
-		...(declaration.metrics === undefined ? {} : { metrics: declaration.metrics }),
+		...defined({ exported: declaration.exported }),
+		...defined({
+			signature: declaration.signature,
+			containerId: declaration.containerId,
+			metrics: declaration.metrics,
+		}),
 	};
 }
 
@@ -118,7 +121,7 @@ function referenceWire(reference: CReference, binding: Binding): Reference {
 		range: reference.range,
 		role: reference.role,
 		binding,
-		...(reference.fromId === undefined ? {} : { fromId: reference.fromId }),
+		...defined({ fromId: reference.fromId }),
 	};
 }
 
@@ -403,8 +406,7 @@ export class CProvider {
 		return {
 			candidates,
 			external,
-			...(reason === undefined ? {} : { reason }),
-			...(detail === undefined ? {} : { detail }),
+			...defined({ reason, detail }),
 		};
 	}
 

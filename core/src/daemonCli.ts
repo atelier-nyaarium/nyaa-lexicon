@@ -19,7 +19,7 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
-import { WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
+import { defined, WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
@@ -247,7 +247,7 @@ async function main(argv: string[]): Promise<void> {
 	let waitingFor = "opening the index";
 	const outcome = await startDaemon({
 		workspaceRoot: root,
-		...(stateDir === undefined ? {} : { stateDir }),
+		...defined({ stateDir }),
 		onConnections: (n) => observe(n),
 		startingNote: () => ({
 			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - clock.now()),

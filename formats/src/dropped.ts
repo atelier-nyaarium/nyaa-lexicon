@@ -1,6 +1,6 @@
 // Why a key is not indexed, worded once for every reader.
 
-import type { Diagnostic } from "@nyaa-lexicon/protocol";
+import { type Diagnostic, defined } from "@nyaa-lexicon/protocol";
 
 /**
  * A key the index cannot hold.
@@ -43,6 +43,6 @@ export function droppedKey(
 		severity,
 		message: say(JSON.stringify(name), length),
 		path: module,
-		...(range === undefined ? {} : { range }),
+		...defined({ range }),
 	};
 }

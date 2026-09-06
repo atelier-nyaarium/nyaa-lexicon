@@ -11,6 +11,7 @@ import {
 	type SessionProject,
 	storeIdentity,
 } from "@nyaa-lexicon/core";
+import { defined } from "@nyaa-lexicon/protocol";
 import packageJson from "../../../package.json";
 import {
 	BIND_PROJECT_DESCRIPTION,
@@ -75,7 +76,7 @@ export function daemonBackend(workspaceRoot: string, stateDir?: string): ToolBac
 	const { ask } = daemonChannel({
 		workspaceRoot,
 		source: ownSource(),
-		...(stateDir === undefined ? {} : { stateDir }),
+		...defined({ stateDir }),
 	});
 	return backendOver(ask);
 }
@@ -106,7 +107,7 @@ function backendOver(ask: Asker): ToolBackend {
 		findComments: (query) => ask("findComments", query),
 		findDocs: (query) => ask("findDocs", query),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
-		searchSymbols: (text, options) => ask("searchSymbols", { ...(text === undefined ? {} : { text }), ...options }),
+		searchSymbols: (text, options) => ask("searchSymbols", { ...defined({ text }), ...options }),
 		outlineModule: (module) => ask("outlineModule", { module }),
 		fileNotes: (module) => ask("fileNotes", { module }),
 		findImports: (query) => ask("findImports", query),

@@ -20,6 +20,7 @@ import {
 	comparePositions,
 	composeSymbolId,
 	coordinatesOf,
+	defined,
 	hashContent,
 	isParameterSymbol,
 	isWithin,
@@ -710,7 +711,7 @@ export class RefactorPlanner {
 							kind: "sourceModule",
 							symbolId: target,
 							name: declaration.name,
-							...(declaration.exported === undefined ? {} : { exported: declaration.exported }),
+							...defined({ exported: declaration.exported }),
 						},
 					});
 					continue;
@@ -1118,7 +1119,7 @@ export class RefactorPlanner {
 				oldName: plan.oldName,
 				newName,
 				sites: file.sites,
-				...(file.ownerCalls === undefined ? {} : { ownerCalls: file.ownerCalls }),
+				...defined({ ownerCalls: file.ownerCalls }),
 			});
 
 			if (answer.status === "refused") {

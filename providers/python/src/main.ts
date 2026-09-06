@@ -9,6 +9,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportedName,
@@ -277,8 +278,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 		selectionRange: declaration.selectionRange,
 		visibility: declaration.visibility,
 		exported: declaration.exported,
-		...(declaration.signature === undefined ? {} : { signature: declaration.signature }),
-		...(declaration.metrics === undefined ? {} : { metrics: declaration.metrics }),
+		...defined({ signature: declaration.signature, metrics: declaration.metrics }),
 		...(declaration.containerPath.length === 0 ? {} : { containerId: idFor(module, declaration.containerPath) }),
 	}));
 	const typeAnnotations: MappedTypeAnnotation[] = raw.typeAnnotations.map((annotation) => ({
@@ -290,7 +290,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 	const literals: Literal[] = raw.literals.map((literal) => ({
 		kind: literal.kind,
 		value: literal.value,
-		...(literal.number === undefined ? {} : { number: literal.number }),
+		...defined({ number: literal.number }),
 		range: literal.range,
 		...(literal.containerPath === undefined || literal.containerPath.length === 0
 			? {}
@@ -306,7 +306,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 				...(declaration.typeDescriptorPath === undefined
 					? {}
 					: { symbolId: idFor(module, declaration.typeDescriptorPath) }),
-				...(declaration.typeReference === undefined ? {} : { typeReference: declaration.typeReference }),
+				...defined({ typeReference: declaration.typeReference }),
 			});
 		}
 	}
@@ -325,7 +325,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 			typeAnswers.set(symbolId, {
 				kind: "unknown",
 				reason: inferred.reason,
-				...(inferred.detail === undefined ? {} : { detail: inferred.detail }),
+				...defined({ detail: inferred.detail }),
 			});
 		}
 	}
@@ -795,7 +795,7 @@ function typeOfAnnotation(
 	return {
 		status: "known",
 		display: annotation.text,
-		...(symbolId === undefined ? {} : { symbolId }),
+		...defined({ symbolId }),
 		provenance: "declared",
 	};
 }
@@ -813,7 +813,7 @@ function typeOfAnswer(
 			status: "inferred",
 			display: answer.display,
 			basis: answer.basis,
-			...(symbolId === undefined ? {} : { symbolId }),
+			...defined({ symbolId }),
 		};
 	}
 	return unknownType(answer.reason, answer.detail ?? "inference could not establish a type");

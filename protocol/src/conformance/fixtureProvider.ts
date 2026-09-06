@@ -2,6 +2,7 @@
 // daemon's own handlers against a grammar that fits on one line. Run as `bun <this file>`.
 
 import { coordinatesOf } from "../coordinates.js";
+import { defined } from "../defined.js";
 import type { TextEdit } from "../edits.js";
 import type { MoveBlockedSite, MoveEditsRequest, MoveEditsResponse } from "../move.js";
 import type { BlockedSite, RenameEditsRequest, RenameEditsResponse } from "../rename.js";
@@ -63,7 +64,7 @@ export function makeFixtureMoveEdits(request: MoveEditsRequest): MoveEditsRespon
 	}
 
 	const blocked: MoveBlockedSite[] = request.dependencies.map((dependency) => ({
-		...(dependency.range === undefined ? {} : { range: dependency.range }),
+		...defined({ range: dependency.range }),
 		reason: "NotImplemented" as const,
 		detail: `the fixture provider writes no import for ${dependency.name}`,
 	}));

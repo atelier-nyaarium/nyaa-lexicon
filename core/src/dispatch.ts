@@ -6,6 +6,7 @@
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
+	defined,
 	type InsertOutcome,
 	isDaemonMethod,
 	type MoveOutcome,
@@ -109,7 +110,7 @@ function refactorMove(
 				moved: true,
 				toModule: target,
 				modules: touched,
-				...(migrated === undefined ? {} : { migrated }),
+				...defined({ migrated }),
 				issues,
 			}),
 			plan: async () => {
@@ -185,7 +186,7 @@ function refactorRename(
 			succeed: (issues) => ({
 				renamed: true,
 				modules,
-				...(migrated === undefined ? {} : { migrated }),
+				...defined({ migrated }),
 				issues,
 			}),
 			plan: async () => {
@@ -443,9 +444,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		resolveFacts: read((params) => service.resolveFacts(params.factIds)),
 		recordAnswer: write((params) =>
 			service.recordAnswer(params.symbolId, params.question, params.prose, params.citations, {
-				...(params.model === undefined ? {} : { model: params.model }),
-				...(params.resolvesDoubt === undefined ? {} : { resolvesDoubt: params.resolvesDoubt }),
-				...(params.omitting === undefined ? {} : { omitting: params.omitting }),
+				...defined({ model: params.model, resolvesDoubt: params.resolvesDoubt, omitting: params.omitting }),
 			}),
 		),
 		invalidateAnswer: write((params) =>
@@ -453,9 +452,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		reaffirmAnswer: write((params) =>
 			service.reaffirmAnswer(params.symbolId, params.question, {
-				...(params.citations === undefined ? {} : { citations: params.citations }),
-				...(params.model === undefined ? {} : { model: params.model }),
-				...(params.resolvesDoubt === undefined ? {} : { resolvesDoubt: params.resolvesDoubt }),
+				...defined({ citations: params.citations, model: params.model, resolvesDoubt: params.resolvesDoubt }),
 			}),
 		),
 		// The survey counts nothing. One question's recall is a read, and the demand it found is

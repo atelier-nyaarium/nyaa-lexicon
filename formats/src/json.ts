@@ -7,6 +7,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type Literal,
 	type Range,
 	type TextCoordinates,
@@ -113,7 +114,7 @@ function noted(what: string, count: number, module: string, range: Range | undef
 		severity: "info",
 		message: `read ${count} ${plural}; the strict dialect this extension names has none`,
 		path: module,
-		...(range === undefined ? {} : { range }),
+		...defined({ range }),
 	};
 }
 
@@ -153,7 +154,7 @@ export function readJson(context: JsonContext): JsonFacts {
 			severity: "error",
 			message: printParseErrorCode(problem.error as unknown as ParseError["error"] & ScanError),
 			path: module,
-			...(range === undefined ? {} : { range }),
+			...defined({ range }),
 		});
 	}
 
@@ -165,9 +166,9 @@ export function readJson(context: JsonContext): JsonFacts {
 		literals.push({
 			kind: held.kind,
 			value: held.value,
-			...(held.number === undefined ? {} : { number: held.number }),
+			...defined({ number: held.number }),
 			range,
-			...(containerId === undefined ? {} : { containerId }),
+			...defined({ containerId }),
 		});
 	}
 
@@ -223,7 +224,7 @@ export function readJson(context: JsonContext): JsonFacts {
 				range,
 				selectionRange,
 				visibility: "public",
-				...(containerId === undefined ? {} : { containerId }),
+				...defined({ containerId }),
 			});
 			walk(value, descriptors, symbolId);
 		}

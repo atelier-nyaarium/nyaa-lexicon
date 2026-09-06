@@ -1,6 +1,6 @@
 // Words, their parts, and arithmetic: the literals, the reads, and the writes an expansion or `++` performs.
 
-import type { Reference } from "@nyaa-lexicon/protocol";
+import { defined, type Reference } from "@nyaa-lexicon/protocol";
 import type { ArithmeticExpression, Word, WordPart } from "unbash";
 import {
 	bareNumber,
@@ -38,7 +38,7 @@ export function declareOrWriteWord(w: Walk, scope: Scope, word: Word | undefined
 	declareOrWrite(w, scope, name, selection, wordRange(w, word), {
 		kind: "variable",
 		local: false,
-		...(declaredType === undefined ? {} : { declaredType }),
+		...defined({ declaredType }),
 	});
 	// A subscript may expand, and the word's text is data either way.
 	walkWord(w, scope, word, false);

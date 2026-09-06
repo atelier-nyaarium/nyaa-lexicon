@@ -8,6 +8,7 @@ import {
 	DAEMON_METHODS,
 	type DaemonLock,
 	type DaemonMethod,
+	defined,
 	type InstallVersion,
 	PROTOCOL_VERSION,
 	parseVersion,
@@ -120,7 +121,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		workspaceRoot,
 		source,
 		...stateDir,
-		...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+		...defined({ onWaiting: options.onWaiting }),
 	}).catch((error: unknown) => {
 		throw asDaemonError(error);
 	});
@@ -132,8 +133,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		workspaceRoot,
 		source,
 		...stateDir,
-		...(options.patience === undefined ? {} : { patience: options.patience }),
-		...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+		...defined({ patience: options.patience, onWaiting: options.onWaiting }),
 	};
 	const channel = daemonChannel(channelOptions);
 

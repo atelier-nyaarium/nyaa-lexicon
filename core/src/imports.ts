@@ -3,13 +3,14 @@
 // The knowledge layer and the rename planner both need this, and two answers would be one fact
 // under two names. Providers through a port, never a supervisor.
 
-import type {
-	FindImportsResult,
-	ImportOrigin,
-	ImportResolution,
-	IndexDepth,
-	MoveImportSite,
-	Range,
+import {
+	defined,
+	type FindImportsResult,
+	type ImportOrigin,
+	type ImportResolution,
+	type IndexDepth,
+	type MoveImportSite,
+	type Range,
 } from "@nyaa-lexicon/protocol";
 import { DEFAULT_REFERENCE_LIMIT } from "./indexReads.js";
 import { type Paged, pageProbed, pageScanned, wire } from "./paging.js";
@@ -59,8 +60,7 @@ export class ImportResolver {
 				range: statement.range,
 				specifier: statement.specifier,
 				importKind: statement.name === undefined ? "namespace" : "named",
-				...(statement.name === undefined ? {} : { importedName: statement.name }),
-				...(statement.local === undefined ? {} : { localName: statement.local }),
+				...defined({ importedName: statement.name, localName: statement.local }),
 				reExport: statement.reExport,
 			});
 		}
@@ -75,8 +75,7 @@ export class ImportResolver {
 				specifier: statement.specifier,
 				// A statement naming no export binds the module itself, which is a namespace import.
 				importKind: statement.name === undefined ? "namespace" : "named",
-				...(statement.name === undefined ? {} : { importedName: statement.name }),
-				...(statement.local === undefined ? {} : { localName: statement.local }),
+				...defined({ importedName: statement.name, localName: statement.local }),
 			};
 		}
 		return null;

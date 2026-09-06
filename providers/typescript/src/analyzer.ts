@@ -3,6 +3,7 @@ import {
 	type Binding,
 	coordinatesOf,
 	type Diagnostic,
+	defined,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	parseSymbolId,
@@ -175,7 +176,7 @@ export class TypeScriptAnalyzer {
 			return {
 				severity: "error" as const,
 				message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-				...(range === undefined ? {} : { range }),
+				...defined({ range }),
 				path: module,
 			};
 		});
@@ -302,14 +303,14 @@ export class TypeScriptAnalyzer {
 				status: "known",
 				display,
 				provenance: "declared",
-				...(symbolId === undefined ? {} : { symbolId }),
+				...defined({ symbolId }),
 			};
 		}
 		return {
 			status: "inferred",
 			display,
 			basis: inferenceBasis(declaration),
-			...(symbolId === undefined ? {} : { symbolId }),
+			...defined({ symbolId }),
 		};
 	}
 

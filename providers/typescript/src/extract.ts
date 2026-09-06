@@ -7,6 +7,7 @@ import {
 	composeSymbolId,
 	type Declaration,
 	type Descriptor,
+	defined,
 	type ImportedName,
 	type Literal,
 	type Metrics,
@@ -644,7 +645,7 @@ export function extractFileWithNodes(
 				selectionRange: rangeOf(binding.name, source),
 				visibility: "local",
 				exported: false,
-				...(owner.containerId === undefined ? {} : { containerId: owner.containerId }),
+				...defined({ containerId: owner.containerId }),
 			});
 		}
 	}
@@ -677,8 +678,7 @@ export function extractFileWithNodes(
 				visibility: "public",
 				exported: true,
 				metrics: metricsOf(node, range),
-				...(signature === undefined ? {} : { signature }),
-				...(scope.containerId === undefined ? {} : { containerId: scope.containerId }),
+				...defined({ signature, containerId: scope.containerId }),
 			});
 
 			const inner = { descriptors, containerId: symbolId };
@@ -708,7 +708,7 @@ export function extractFileWithNodes(
 			exported,
 			metrics: metricsOf(node, range),
 			...(signatureOf(node, source) === undefined ? {} : { signature: signatureOf(node, source) as string }),
-			...(scope.containerId === undefined ? {} : { containerId: scope.containerId }),
+			...defined({ containerId: scope.containerId }),
 		});
 
 		const inner = { descriptors, containerId: symbolId };
@@ -741,8 +741,7 @@ export function extractFileWithNodes(
 				visibility: exported ? "public" : "fileLocal",
 				exported,
 				metrics: metricsOf(declaration, range),
-				...(signature === undefined ? {} : { signature }),
-				...(scope.containerId === undefined ? {} : { containerId: scope.containerId }),
+				...defined({ signature, containerId: scope.containerId }),
 			});
 		}
 	}
@@ -808,7 +807,7 @@ export function extractFileWithNodes(
 			range: rangeOf(node, source),
 			role,
 			binding: { status: "unbound", reason: "NotImplemented", detail: "binding runs in the bind tier" },
-			...(scope.containerId === undefined ? {} : { fromId: scope.containerId }),
+			...defined({ fromId: scope.containerId }),
 		});
 	}
 

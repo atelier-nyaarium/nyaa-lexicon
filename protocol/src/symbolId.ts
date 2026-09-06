@@ -6,6 +6,7 @@
 // stays stable.
 
 import { Cursor, err, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
+import { defined } from "./defined.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -289,7 +290,7 @@ function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | nul
 			out.push({
 				kind: ch === "(" ? "parameter" : "typeParameter",
 				name,
-				...(occurrence.value === undefined ? {} : { occurrence: occurrence.value }),
+				...defined({ occurrence: occurrence.value }),
 			});
 			continue;
 		}
@@ -335,7 +336,7 @@ function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | nul
 			return failed(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
 		}
 		c.next();
-		out.push({ kind, name, ...(occurrence.value === undefined ? {} : { occurrence: occurrence.value }) });
+		out.push({ kind, name, ...defined({ occurrence: occurrence.value }) });
 	}
 
 	if (out.length === 0) return { failure: c.fail("a symbol needs at least one descriptor"), rest: "" };

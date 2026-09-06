@@ -1,4 +1,4 @@
-import type { CommentSpan, Diagnostic, Position, Range } from "@nyaa-lexicon/protocol";
+import { type CommentSpan, type Diagnostic, defined, type Position, type Range } from "@nyaa-lexicon/protocol";
 import { Cursor, isHorizontalWhitespace } from "./cursor.js";
 
 export type TokenKind = "identifier" | "number" | "string" | "char" | "symbol" | "newline" | "comment";
@@ -399,11 +399,7 @@ function readToken(module: string, cursor: Cursor, lineStart: boolean, diagnosti
 				start,
 				end,
 				lineStart,
-				comment.terminated
-					? doc === undefined
-						? {}
-						: { doc }
-					: { unterminated: true, ...(doc === undefined ? {} : { doc }) },
+				comment.terminated ? (doc === undefined ? {} : { doc }) : { unterminated: true, ...defined({ doc }) },
 			),
 			lineStart: end.column === 0,
 		};

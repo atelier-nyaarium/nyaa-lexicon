@@ -11,6 +11,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	type DocRegion,
+	defined,
 	type Literal,
 	type Range,
 	type TextCoordinates,
@@ -144,7 +145,7 @@ function declarationFor(
 		range,
 		selectionRange,
 		visibility: "public",
-		...(containerId === undefined ? {} : { containerId }),
+		...defined({ containerId }),
 	};
 }
 
@@ -210,7 +211,7 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 					severity: "info",
 					message: "a heading with no text is not addressable, so it reports no section",
 					path: module,
-					...(at === undefined ? {} : { range: at }),
+					...defined({ range: at }),
 				});
 				continue;
 			}
@@ -257,7 +258,7 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 			range,
 			text: regionText,
 			fenced,
-			...(anchorId === undefined ? {} : { anchorId }),
+			...defined({ anchorId }),
 		});
 	}
 

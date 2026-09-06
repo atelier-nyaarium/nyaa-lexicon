@@ -18,7 +18,7 @@ import {
 	processIdentity,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
-import { type DaemonLock, DaemonLockSchema, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, DaemonLockSchema, defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
 import { ownSource } from "./ownSource.js";
 import { type FrameServer, serveFrames } from "./socketTransport.js";
@@ -177,9 +177,11 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 			}
 			return handle(method, params);
 		},
-		...(options.onConnections === undefined ? {} : { onConnections: options.onConnections }),
-		...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
-		...(options.missedLimit === undefined ? {} : { missedLimit: options.missedLimit }),
+		...defined({
+			onConnections: options.onConnections,
+			heartbeatMs: options.heartbeatMs,
+			missedLimit: options.missedLimit,
+		}),
 		clock,
 	});
 

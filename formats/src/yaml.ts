@@ -7,6 +7,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
+	defined,
 	type Literal,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
@@ -155,7 +156,7 @@ export function readYaml(context: YamlContext): YamlFacts {
 				range,
 				selectionRange,
 				visibility: "public",
-				...(containerId === undefined ? {} : { containerId }),
+				...defined({ containerId }),
 			});
 
 			if (isScalar(value)) pushScalar(value, symbolId);
@@ -172,9 +173,9 @@ export function readYaml(context: YamlContext): YamlFacts {
 		literals.push({
 			kind: held.kind,
 			value: held.value,
-			...(held.number === undefined ? {} : { number: held.number }),
+			...defined({ number: held.number }),
 			range,
-			...(containerId === undefined ? {} : { containerId }),
+			...defined({ containerId }),
 		});
 	}
 
@@ -194,7 +195,7 @@ export function readYaml(context: YamlContext): YamlFacts {
 				severity: "error",
 				message: problem.message,
 				path: module,
-				...(range === undefined ? {} : { range }),
+				...defined({ range }),
 			});
 		}
 		const parents = context.parents ?? [];

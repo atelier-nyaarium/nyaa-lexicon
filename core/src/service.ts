@@ -9,6 +9,7 @@ import {
 	type CoChangedWithResult,
 	type CommitsMentioningResult,
 	type Cycle,
+	defined,
 	type FileHistory,
 	type ImportResolution,
 	type MostReferencedResult,
@@ -515,7 +516,7 @@ export class LexiconService {
 				.map(({ module, symbols, content: kind }) => ({ module, symbols, content: kind })),
 			knowledge: {
 				answers: counts.total,
-				...(stale === undefined ? {} : { stale }),
+				...defined({ stale }),
 				...(doubted === 0 ? {} : { doubted }),
 			},
 		};

@@ -17,6 +17,13 @@
  *
  * Every key becomes optional in the result, which is the honest type: whether one survives is a
  * runtime fact about its value. Spread it into a literal that supplies the required fields.
+ *
+ * WHERE THE LINE IS, since both spellings live side by side. This is for a field whose value IS the
+ * thing tested. A field whose value is COMPUTED from it keeps the conditional spread, because the
+ * guard is load-bearing there: it decides absence AND narrows the value the computation runs on.
+ *
+ *     ...defined({ containerId }),                                              // value is the field
+ *     ...(id === undefined ? {} : { containerId: repoint(id, range) }),         // guard narrows a call
  */
 export function defined<T extends object>(fields: T): { [K in keyof T]?: Exclude<T[K], undefined> } {
 	const kept: Record<string, unknown> = {};

@@ -3,6 +3,7 @@
 import {
 	comparePositions,
 	coordinatesOf,
+	defined,
 	type Position,
 	type Range,
 	type TextCoordinates,
@@ -60,7 +61,7 @@ function typeFact(
 	const display = sourceBetween(coordinates, first, last)?.trim();
 	if (display === undefined || display === "") return null;
 	return {
-		...(symbolId === undefined ? {} : { symbolId }),
+		...defined({ symbolId }),
 		targetRange,
 		typeRange: {
 			start: referenceRange(first).start,

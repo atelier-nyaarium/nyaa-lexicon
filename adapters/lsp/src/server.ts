@@ -12,7 +12,7 @@
 // here rather than discovered later in a file full of emoji.
 
 import type { StoredDeclaration, SymbolKind } from "@nyaa-lexicon/core";
-import { workspaceModule } from "@nyaa-lexicon/protocol";
+import { defined, workspaceModule } from "@nyaa-lexicon/protocol";
 import type { LexiconReads } from "./reads.js";
 
 ////////////////////////////////
@@ -335,7 +335,7 @@ export class LspServer {
 			range: declaration.range,
 			selectionRange: declaration.selectionRange ?? declaration.range,
 			data: declaration.symbolId,
-			...(declaration.signature === undefined ? {} : { detail: declaration.signature }),
+			...defined({ detail: declaration.signature }),
 		};
 	}
 
@@ -357,7 +357,7 @@ export class LspServer {
 				kind: SYMBOL_KIND[declaration.kind] ?? 13,
 				range: declaration.range,
 				selectionRange: declaration.selectionRange ?? declaration.range,
-				...(declaration.signature === undefined ? {} : { detail: declaration.signature }),
+				...defined({ detail: declaration.signature }),
 			});
 		}
 

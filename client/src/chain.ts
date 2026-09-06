@@ -7,6 +7,7 @@
 // declaring it). Coordinates are the protocol's, 0-based, untouched.
 
 import {
+	defined,
 	isParameterSymbol,
 	ownerOf,
 	parseSymbolId,
@@ -332,7 +333,7 @@ function candidateOf(tree: ModuleTree, step: Step): ChainCandidate | null {
 		kind: declaration.kind,
 		name: declaration.name,
 		range: declaration.range,
-		...(declaration.selectionRange === undefined ? {} : { selectionRange: declaration.selectionRange }),
+		...defined({ selectionRange: declaration.selectionRange }),
 		containerPath: pathOf(tree, declaration),
 		segments: segmentsFor(tree, declaration),
 	};
@@ -415,7 +416,7 @@ export async function resolveChain(
 	const nothing = (reason: ChainNoneReason, detail?: string): ChainAnswer => ({
 		kind: "none",
 		reason,
-		...(detail === undefined ? {} : { detail }),
+		...defined({ detail }),
 		matched: { containerPaths: [], consumed: 0, count: 0 },
 		available: availableBeneath(tree, []).slice(0, AVAILABLE_CAP),
 		availableTotal: availableBeneath(tree, []).length,

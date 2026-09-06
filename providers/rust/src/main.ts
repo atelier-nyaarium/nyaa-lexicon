@@ -5,6 +5,7 @@ import {
 	comparePositions,
 	type Declaration,
 	type Diagnostic,
+	defined,
 	handlersFor,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -421,7 +422,7 @@ export class RustProvider {
 		return {
 			status: "known",
 			display,
-			...(typeSymbol === undefined ? {} : { symbolId: typeSymbol }),
+			...defined({ symbolId: typeSymbol }),
 			provenance: "declared",
 		};
 	}

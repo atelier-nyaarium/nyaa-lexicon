@@ -12,7 +12,7 @@ import type {
 	ModuleDeclarations,
 	ModuleStatus,
 } from "@nyaa-lexicon/protocol";
-import { hashContent } from "@nyaa-lexicon/protocol";
+import { defined, hashContent } from "@nyaa-lexicon/protocol";
 import type { Clock } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
@@ -229,8 +229,7 @@ export class WorkspaceIndexer {
 						{
 							severity: diagnostic.severity,
 							message: diagnostic.message,
-							...(diagnostic.range === undefined ? {} : { range: diagnostic.range }),
-							...(diagnostic.path === undefined ? {} : { path: diagnostic.path }),
+							...defined({ range: diagnostic.range, path: diagnostic.path }),
 						},
 					],
 		);
@@ -446,7 +445,7 @@ export class WorkspaceIndexer {
 		this.store.writeScanSummary({
 			...this.breakdown,
 			outlined,
-			...(knowledgeSweep === undefined ? {} : { knowledgeSweep }),
+			...defined({ knowledgeSweep }),
 		});
 	}
 
