@@ -1226,11 +1226,6 @@ const CASES: ConformanceCase[] = [
 		// The whole tier rested on one markup case about oversized values, so twelve providers declared
 		// `literals` and were never asked what one is. On a minified bundle the literals ARE the public
 		// contract, which is the corpus this exists to make trustworthy.
-		//
-		// A boolean's reported value is its SOURCE spelling, not a canonical one: Python answers "True"
-		// where every other language answers "true". The protocol does not say which is right, so this
-		// records what each provider does rather than minting a rule that would fail one of them. Worth
-		// settling: a caller searching booleans by value has to know the language to write the query.
 		literals: [
 			{ value: "cart", kind: "string" },
 			{ value: "2", kind: "number" },
@@ -1246,11 +1241,6 @@ const CASES: ConformanceCase[] = [
 			[PYTHON]: {
 				files: { "src/cart.py": 'NAME = "cart"\nLIMIT = 2\nREADY = True\n' },
 				subject: "src/cart.py",
-				literals: [
-					{ value: "cart", kind: "string" },
-					{ value: "2", kind: "number" },
-					{ value: "True", kind: "boolean" },
-				],
 			},
 			[GDSCRIPT]: {
 				files: { "src/cart.gd": 'const NAME := "cart"\nconst LIMIT := 2\nconst READY := true\n' },
@@ -1308,6 +1298,24 @@ const CASES: ConformanceCase[] = [
 					{ value: "2", kind: "number" },
 				],
 			},
+		},
+	},
+	{
+		id: "a-boolean-value-is-canonical-whatever-the-source-spells",
+		tier: "literals",
+		about: "A boolean literal's decoded value is lowercase true or false, never the source's spelling.",
+		// The rule the shared case cannot state, because it needs a language that spells it otherwise.
+		// Python writes `True` and YAML accepts `TRUE`; both decode to one value, or a caller has to
+		// know which language wrote a literal before it can search for it.
+		literals: [
+			{ value: "true", kind: "boolean" },
+			{ value: "false", kind: "boolean" },
+		],
+		fixtures: {
+			[PYTHON]: { files: { "src/flags.py": "A = True\nB = False\n" }, subject: "src/flags.py" },
+			// YAML 1.2 reads only true and false as booleans, so `yes` stays a string and is not a
+			// third spelling to fold. The capitalized forms are the ones that decode.
+			[YAML]: { files: { "flags.yml": "a: TRUE\nb: False\n" }, subject: "flags.yml" },
 		},
 	},
 	{

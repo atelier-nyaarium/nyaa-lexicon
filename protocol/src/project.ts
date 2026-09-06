@@ -115,7 +115,14 @@ export type Import = z.infer<typeof ImportSchema>;
 export const LiteralSchema = z
 	.object({
 		kind: z.enum(["string", "number", "boolean"]),
-		/** Decoded. Numbers arrive as their numeric value under `number`, not here. */
+		/**
+		 * Decoded. Numbers arrive as their numeric value under `number`, not here.
+		 *
+		 * Decoded means the same across languages, never the source's spelling: a boolean is `true`
+		 * or `false` whatever the file says, so Python's `True` and YAML's `TRUE` both arrive
+		 * lowercase. Otherwise a caller searching for a value has to know which language wrote it,
+		 * and gets a short answer rather than an empty one.
+		 */
 		value: z.string(),
 		/** Present for numeric literals, so a range query is arithmetic rather than string compare. */
 		number: z.number().optional(),

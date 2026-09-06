@@ -368,7 +368,8 @@ describe("Python provider project behavior", () => {
 			},
 			{
 				kind: "boolean",
-				value: "True",
+				// Decoded, so lowercase whatever Python spells: one value across every language.
+				value: "true",
 				range: spanAt(text, text.indexOf("True"), "True"),
 				containerId: add.symbolId,
 			},

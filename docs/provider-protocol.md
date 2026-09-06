@@ -42,6 +42,13 @@ tree is a TypeScript-shaped idea that other languages cannot fill.
 `reason` is a closed enum, and an Unknown without one fails conformance. "The language cannot know
 this" and "nobody has written it yet" must never collapse into the same sentence.
 
+A `Literal`'s `value` is DECODED, which means the same across languages rather than the source's
+spelling. A string carries its characters with the quotes and escapes gone. A boolean is `true` or
+`false` whatever the file writes, so Python's `True` and YAML's `TRUE` both arrive lowercase; a
+number keeps its written form in `value` and its arithmetic value in `number`, because `1e3` and
+`1000` are one number and two literals. Report the spelling and a caller has to know which language
+wrote a literal before it can search for one, which returns a short answer rather than an empty one.
+
 ## Declaring what you cover
 
 A tier boolean may not be an unqualified claim over a vocabulary. Declaring the `references` tier
