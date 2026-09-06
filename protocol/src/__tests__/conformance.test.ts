@@ -8,9 +8,9 @@ import { checkFacts, checkImport, checkType, describeIdParts } from "../conforma
 import { casesForTier, corpusLanguages, loadCorpus } from "../conformance/corpus";
 import { loadMoveCases } from "../conformance/moveCorpus";
 import { extractComments, extractDeclarations, REFERENCE_TIERS } from "../conformance/referenceProvider";
-import { formatReport, runSuite } from "../conformance/runner";
+import { CASE_METADATA, formatReport, runSuite } from "../conformance/runner";
 import type { ConformanceCase, MoveCase } from "../conformance/types";
-import { ConformanceCaseSchema } from "../conformance/types";
+import { ConformanceCaseSchema, ConformanceFixtureSchema } from "../conformance/types";
 import { coordinatesOf } from "../coordinates";
 import type { MoveEditsRequest } from "../move";
 import type { FileFacts } from "../project";
@@ -194,6 +194,24 @@ function referenceCollisionMove(): MoveCase {
 ////////////////////////////////
 //  Tests
 
+/** Case-level fields carrying no expectation. The runner's set adds the fixture-level ones. */
+const CASE_LEVEL_METADATA = new Set(["id", "tier", "about", "fixtures"]);
+
+/** Each value is deliberately WRONG against empty facts, so a live checker must complain. */
+const WRONG_VALUES: Record<string, unknown> = {
+	declarations: [{ name: "Missing" }],
+	declarationNames: ["Missing"],
+	references: [{ name: "missing" }],
+	imports: { from: "src/a.ts", specifier: "./b", resolvesTo: "src/b.ts" },
+	typeOf: { name: "Missing", display: "number" },
+	comments: ["// never emitted"],
+	literals: [{ value: "never emitted", kind: "string" }],
+	docs: [{ text: "never emitted" }],
+	documentation: { declaration: "Missing", comment: "// missing" },
+	parseErrors: "required",
+	notes: "required",
+};
+
 describe("corpus", () => {
 	it("validates every case, so a malformed one fails here and not inside a provider run", () => {
 		expect(() => loadCorpus()).not.toThrow();
@@ -275,34 +293,46 @@ describe("corpus", () => {
 	 * must actually produce a complaint, so adding a field without a checker fails here.
 	 */
 	it("reads every expectation the case schema accepts", () => {
-		const metadata = new Set(["id", "tier", "about", "fixtures"]);
-		// Each value is deliberately WRONG against empty facts, so a live checker must complain.
-		const wrong: Record<string, unknown> = {
-			declarations: [{ name: "Missing" }],
-			declarationNames: ["Missing"],
-			references: [{ name: "missing" }],
-			imports: { from: "src/a.ts", specifier: "./b", resolvesTo: "src/b.ts" },
-			typeOf: { name: "Missing", display: "number" },
-			comments: ["// never emitted"],
-			literals: [{ value: "never emitted", kind: "string" }],
-			docs: [{ text: "never emitted" }],
-			documentation: { declaration: "Missing", comment: "// missing" },
-			parseErrors: "required",
-			notes: "required",
-		};
-
-		const keys = Object.keys(ConformanceCaseSchema.shape).filter((key) => !metadata.has(key));
+		const keys = Object.keys(ConformanceCaseSchema.shape).filter((key) => !CASE_LEVEL_METADATA.has(key));
 		expect(keys).not.toHaveLength(0);
-		expect(Object.keys(wrong).sort()).toEqual(keys.sort());
+		expect(Object.keys(WRONG_VALUES).sort()).toEqual(keys.sort());
 
 		// These three are answered by their own provider calls, so the runner checks them rather
 		// than checkFacts. The table above still has to cover them, which is what forces a decision
 		// about a new field instead of letting it default into nobody's job.
 		const runnerChecked = new Set(["parseErrors", "notes", "imports", "typeOf"]);
 		for (const key of keys.filter((k) => !runnerChecked.has(k))) {
-			const testCase = { [key]: wrong[key] } as unknown as ConformanceCase;
+			const testCase = { [key]: WRONG_VALUES[key] } as unknown as ConformanceCase;
 			expect(checkFacts(testCase, facts({})), key).not.toHaveLength(0);
 		}
+	});
+
+	/**
+	 * The mirror of the test above, and the direction that was unguarded.
+	 *
+	 * The runner assumes a field states an expectation unless `CASE_METADATA` says otherwise, so a
+	 * new field earns a parse whether or not it wants one, which is how `discovery` earned one it
+	 * does not need. Neither list is derived from the schemas, so both rot the same way: a field
+	 * nobody classified, or an entry naming a field that no longer exists.
+	 */
+	it("classifies every field of both schemas as metadata or expectation", () => {
+		const schemaFields = [
+			...Object.keys(ConformanceCaseSchema.shape),
+			...Object.keys(ConformanceFixtureSchema.shape),
+		];
+		const classified = new Set([...CASE_METADATA, ...Object.keys(WRONG_VALUES)]);
+
+		expect(schemaFields.length).toBeGreaterThan(10);
+		expect(
+			schemaFields.filter((field) => !classified.has(field)),
+			"a field in neither CASE_METADATA nor the wrong-value table earns a parse nobody decided on",
+		).toEqual([]);
+
+		// The other rot: an entry outliving the field it names, quietly excusing nothing.
+		expect(
+			[...CASE_METADATA].filter((field) => !schemaFields.includes(field)),
+			"CASE_METADATA names a field neither schema has",
+		).toEqual([]);
 	});
 
 	it("partitions by tier, which is how a team runs only what it claims", () => {

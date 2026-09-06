@@ -45,8 +45,13 @@ export interface RunOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Case and fixture fields that state no expectation. Everything else earns a parse. */
-const CASE_METADATA = new Set(["id", "tier", "about", "fixtures", "files", "subject", "discovery"]);
+/**
+ * Case and fixture fields that state no expectation. Everything else earns a parse.
+ *
+ * Exported so one residue can hold it against both schemas: a field in neither this set nor the
+ * checker's table is classified by nobody, and silently earns a parse it may not want.
+ */
+export const CASE_METADATA = new Set(["id", "tier", "about", "fixtures", "files", "subject", "discovery"]);
 
 ////////////////////////////////
 //  Functions & Helpers
