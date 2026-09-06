@@ -1,4 +1,4 @@
-// The wire face of the Bash provider; extraction lives in extract.ts.
+// The wire face of the Bash provider.
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -159,7 +159,7 @@ export class BashProvider {
 		for (const reference of parsed.references) {
 			const binding = this.bindReference(params.module, parsed, reference);
 			// An unbound command name is a program, not a symbol.
-			if (reference.command && binding.status === "unbound") continue;
+			if (reference.ofFunction && binding.status === "unbound") continue;
 			references.push({
 				name: reference.name,
 				range: reference.range,
@@ -296,7 +296,7 @@ export class BashProvider {
 			}
 		};
 		for (const target of this.sourcedFacts(module, parsed, new Set([module]), report)) {
-			const held = reference.command
+			const held = reference.ofFunction
 				? target.functionsByName.get(reference.name)?.at(-1)
 				: target.globalsByName.get(reference.name);
 			if (held !== undefined) candidates.push(held.symbolId);

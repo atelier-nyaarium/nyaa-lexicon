@@ -72,8 +72,12 @@ A: 4.0.10 (2026-08-09) now; 4.0.11 (2026-09-01) once it is seven days old. Exact
 - Build smoke and the UMD gate pass; `bun dist/grade.js` unchanged since the corpus has no bash.
 - Minor release.
 
-Shipped: `providers/bash/` on `unbash` 4.0.10, with `extract.ts` walking the tree and `main.ts`
-answering the wire. Scope is a chain: a function's locals nest under its own descriptor; a
+Shipped: `providers/bash/` on `unbash` 4.0.10, with `main.ts` answering the wire and the extraction
+split by concern: `extract.ts` walks the tree and composes; `context.ts` holds the facts and the
+walk record; `scope.ts` owns identity, the scope chain and settlement, with one `resolve` for the
+walk and the settle; `words.ts` owns words, parts and arithmetic; `builtins.ts` owns the builtins
+that write and the assignment prefix, over one option parser; `heredoc.ts` owns the here-document
+scan. Scope is a chain: a function's locals nest under its own descriptor; a
 subshell, each side of a pipe, a command substitution and a coproc body keep their assignments to
 themselves; a read settles against the nearest enclosing local declared before it, then the file's
 variable. A call at the top level reaches the definition before it and a call inside a function the
