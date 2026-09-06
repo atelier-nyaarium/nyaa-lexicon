@@ -1121,7 +1121,9 @@ class LiteralVisitor(ast.NodeVisitor):
         if isinstance(value, str):
             self.add_literal("string", value, node)
         elif isinstance(value, bool):
-            self.add_literal("boolean", str(value), node)
+            # Canonical, not str(value): a decoded value is the same across languages or a
+            # caller has to know which one wrote it to search for one.
+            self.add_literal("boolean", "true" if value else "false", node)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             source = ast.get_source_segment(self.analyzer.text, node) or repr(value)
             number = value if not isinstance(value, float) or math.isfinite(value) else None
