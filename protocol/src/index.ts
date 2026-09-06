@@ -241,6 +241,7 @@ export {
 	type WelcomeFrame,
 	WelcomeFrameSchema,
 } from "./daemonWire.js";
+export { defined } from "./defined.js";
 export {
 	applyEdits,
 	type EditConflict,
