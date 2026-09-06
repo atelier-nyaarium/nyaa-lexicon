@@ -48,7 +48,7 @@ A: 4.0.10 (2026-08-09) now; 4.0.11 (2026-09-01) once it is seven days old. Exact
 
 # Plan
 
-## Phase 1 - Provider on unbash
+## Phase 1 - Provider on unbash ✅
 
 - `providers/bash/`: manifest on the GDScript pattern, `unbash` pinned, `@nyaa-lexicon/protocol`
   and `vscode-jsonrpc` as the other providers have them.
@@ -130,3 +130,21 @@ In the switchboard repository, its own plan. Named here because Question 2 decid
 - A grant covers the set the request named. A request whose set is not a subset of the grant's
   asks again. That is the guard the owner deferred.
 - `operationShape` stays the phone's display shape until the console's copy reads the same set.
+
+## Painpoints
+
+- The literals tier cannot be proven. `ConformanceFixtureSchema` has no literal expectation and the
+  only literals case is markup's, so every provider claiming the tier fails
+  `claimed-tier-is-tested/literals` and every conformance run carries a failure that has to be
+  explained away. A corpus literal list, exact like `declarationNames`, is the fix (backlogged).
+- `withOccurrences` re-mints a repeated declaration and leaves its bindings alone, and
+  `docs/provider-protocol.md` says a provider "may" mint occurrences itself. It must, or a reference
+  inside the second definition binds to the first's local after serving. Every provider that binds
+  locals already keeps its own identity bookkeeping; the doc reads as optional (backlogged).
+- A conformance run under load reports `STALL ... 0 passed`, which an auditor reads as a failed
+  provider. The CLI's exit code says otherwise, but a summary written from the output does not.
+- `exactOptionalPropertyTypes` turns every optional fact field into
+  `...(x === undefined ? {} : { x })`. The extractor writes that spread in eleven places. A kit
+  helper that drops undefined fields from a fact would remove the ceremony from every provider.
+- unbash places only an expanding here-document body and never says whether one closed, so the
+  provider carries the one scanner the parsing law forbids, dated for removal (Phase 2).
