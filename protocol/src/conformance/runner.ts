@@ -77,12 +77,11 @@ class Stall extends Error {
 }
 
 function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-	return Promise.race([
-		work,
-		new Promise<T>((_, reject) =>
-			setTimeout(() => reject(new Stall("timeout", `${what} timed out after ${ms}ms`)), ms),
-		),
-	]);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const bounded = new Promise<T>((_, reject) => {
+		timer = setTimeout(() => reject(new Stall("timeout", `${what} timed out after ${ms}ms`)), ms);
+	});
+	return Promise.race([work, bounded]).finally(() => clearTimeout(timer));
 }
 
 /** Busy machine or broken provider. */
@@ -108,25 +107,23 @@ function stalled(
 class ProviderSession {
 	/** Set at death. */
 	private gone: string | null = null;
-	/** Rejects at death. */
-	private readonly dead: Promise<never>;
+	/** Calls in flight, failed at death. Never raced against a promise that outlives the call. */
+	private readonly inFlight = new Set<(stall: Stall) => void>();
 
 	private constructor(
 		private readonly child: ChildProcess,
 		private readonly connection: ReturnType<typeof createMessageConnection>,
 		private readonly timeoutMs: number,
 	) {
-		this.dead = new Promise<never>((_, reject) => {
-			const die = (how: string) => {
-				this.gone ??= how;
-				reject(new Stall("exit", `provider process ${how}`));
-			};
-			child.once("exit", (code, signal) => die(`exited (${signal === null ? `code ${code}` : signal})`));
-			child.once("error", (error) => die(`failed to start (${error.message})`));
-			connection.onClose(() => die("closed its connection"));
-		});
-		// Awaited only inside a race.
-		this.dead.catch(() => {});
+		const die = (how: string) => {
+			this.gone ??= how;
+			const stall = new Stall("exit", `provider process ${how}`);
+			for (const reject of this.inFlight) reject(stall);
+			this.inFlight.clear();
+		};
+		child.once("exit", (code, signal) => die(`exited (${signal === null ? `code ${code}` : signal})`));
+		child.once("error", (error) => die(`failed to start (${error.message})`));
+		connection.onClose(() => die("closed its connection"));
 	}
 
 	static open(command: string[], timeoutMs: number): ProviderSession {
@@ -152,7 +149,13 @@ class ProviderSession {
 		if (this.gone !== null) throw new Stall("exit", `provider process ${this.gone} before ${method}`);
 		let raw: unknown;
 		try {
-			const answer = Promise.race([this.connection.sendRequest(method, params), this.dead]);
+			const answer = new Promise<unknown>((resolve, reject) => {
+				this.inFlight.add(reject);
+				this.connection
+					.sendRequest(method, params)
+					.then(resolve, reject)
+					.finally(() => this.inFlight.delete(reject));
+			});
 			raw = await withTimeout(answer, this.timeoutMs, method);
 		} catch (error) {
 			if (error instanceof Stall) {
