@@ -98,7 +98,7 @@ comment spans. Conformance passes fourteen cases and fails one, `claimed-tier-is
 which every provider fails because the corpus's only literals case is markup's; a corpus literal
 expectation is the fix and belongs to the protocol, not this provider.
 
-## Phase 2 - Comment spans
+## Phase 2 - Comment spans ✅
 
 - Upstream: a pull request to webpro-nl/unbash recording each skipped comment's `[pos, end)` on
   `ParsedScript.comments`, from the lexer's own `opensComment` decision, and placing every
@@ -177,3 +177,13 @@ In the switchboard repository, its own plan. Named here because Question 2 decid
   helper that drops undefined fields from a fact would remove the ceremony from every provider.
 - unbash places only an expanding here-document body and never says whether one closed, so the
   provider carries the one scanner the parsing law forbids, dated for removal (Phase 2).
+- Two repositories, two rules about one directory: switchboard forbids a `node_modules` inside
+  `lexicon/`, and lexicon's own gates need it. Every lap installs it to work and removes it to run
+  switchboard's gates, and a provider test run on the wrong side of that dance fails with
+  `Cannot find package 'unbash'`.
+- A comment-tier corpus case carries one fixture per language inline, so claiming the tier for a
+  new language is ten edits scattered through `corpus.ts` rather than one file per language, and
+  the shared `comments` list at the case level is only ever right for the slash-comment family.
+- `indexCli` spawns the shipped bundle under `dist/`, so proving a source change end to end needs
+  `bun run build --build-only` and a `git restore dist` afterwards, or the release build refuses
+  the dirty tree.

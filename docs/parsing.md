@@ -107,6 +107,13 @@ library's own parser where the values come from a tree. YAML reads values from t
 comments from the CST, which are two entry points into one grammar and so cannot disagree; a hash
 inside a quoted scalar or a block scalar stays content, which is the whole point of the rule.
 
+Bash has no comment in unbash's tree at all, so the provider derives them from the library's own
+spans: every word, part and body the tree tokenized is opaque, and a `#` outside them opens a
+comment. The scan decides nothing about quoting; it looks only where the library left no token.
+`providers/bash/src/__tests__/mask.test.ts` proves the marking exhaustive with a walk that knows
+only the tree's shape, over the machine's bash-completion corpus, because each span the walk had
+forgotten to mark leaked a false comment.
+
 The corollary costs more than the rule: every hole in the string grammar surfaces as a false
 comment. The holes to look for are an interpolation hole holding a string of its own, and a
 backslash-newline the language splices inside strings as well as comments. Nothing the parser
