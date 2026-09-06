@@ -104,6 +104,107 @@ describe("settling a name path declared twice", () => {
 		expect(settled.literals.map((literal) => literal.containerId)).toEqual([CART, CART_2]);
 	});
 
+	it("binds a read inside the second definition to that definition's own local", () => {
+		const input = facts({
+			declarations: [
+				decl(CART, span(0, 2)),
+				decl(A_IN_CART, span(1, 1), CART),
+				decl(CART, span(3, 5)),
+				decl(A_IN_CART, span(4, 4), CART),
+			],
+			references: [
+				{
+					name: "a",
+					range: span(2, 2),
+					role: "read",
+					binding: { status: "bound", symbolId: A_IN_CART, provenance: "bound" },
+				},
+				{
+					name: "a",
+					range: span(5, 5),
+					role: "read",
+					binding: { status: "bound", symbolId: A_IN_CART, provenance: "bound" },
+				},
+			],
+		});
+
+		const settled = withOccurrences(input);
+		const a_in_cart_2 = id({ kind: "type", name: "Cart", occurrence: 2 }, { kind: "term", name: "a" });
+		expect(settled.references.map((reference) => reference.binding)).toEqual([
+			{ status: "bound", symbolId: A_IN_CART, provenance: "bound" },
+			{ status: "bound", symbolId: a_in_cart_2, provenance: "bound" },
+		]);
+	});
+
+	it("leaves a target no re-minted declaration holds, and follows every candidate that one does", () => {
+		const elsewhere = composeSymbolId({
+			language: "ts",
+			module: "src/b.ts",
+			descriptors: [{ kind: "term", name: "a" }],
+		});
+		const input = facts({
+			declarations: [decl(CART, span(0, 2)), decl(CART, span(3, 5)), decl(A_IN_CART, span(4, 4), CART)],
+			references: [
+				// Another file's target is not this parse's to move.
+				{
+					name: "a",
+					range: span(5, 5),
+					role: "read",
+					binding: { status: "bound", symbolId: elsewhere, provenance: "bound" },
+				},
+				// Only the sibling the second definition declares moves.
+				{
+					name: "a",
+					range: span(5, 5),
+					role: "read",
+					binding: { status: "ambiguous", candidates: [A_IN_CART, B_IN_CART], provenance: "bound" },
+				},
+				{
+					name: "a",
+					range: span(1, 1),
+					role: "read",
+					binding: { status: "unbound", reason: "NotImplemented" },
+				},
+			],
+		});
+
+		const settled = withOccurrences(input);
+		const a_in_cart_2 = id({ kind: "type", name: "Cart", occurrence: 2 }, { kind: "term", name: "a" });
+		expect(settled.references[0]?.binding).toEqual({ status: "bound", symbolId: elsewhere, provenance: "bound" });
+		expect(settled.references[1]?.binding).toEqual({
+			status: "ambiguous",
+			candidates: [a_in_cart_2, B_IN_CART],
+			provenance: "bound",
+		});
+		expect(settled.references[2]?.binding).toEqual({ status: "unbound", reason: "NotImplemented" });
+	});
+
+	it("leaves a target whose id the provider minted, rather than taking it for a re-minted one", () => {
+		const a_in_cart_2 = id({ kind: "type", name: "Cart", occurrence: 2 }, { kind: "term", name: "a" });
+		const input = facts({
+			declarations: [
+				decl(CART, span(0, 2)),
+				decl(CART, span(3, 5)),
+				// Minted by the provider, and not inside the second Cart.
+				decl(a_in_cart_2, span(8, 8)),
+			],
+			references: [
+				{
+					name: "a",
+					range: span(4, 4),
+					role: "read",
+					binding: { status: "bound", symbolId: A_IN_CART, provenance: "bound" },
+				},
+			],
+		});
+
+		expect(withOccurrences(input).references[0]?.binding).toEqual({
+			status: "bound",
+			symbolId: A_IN_CART,
+			provenance: "bound",
+		});
+	});
+
 	it("counts in source order whatever order the provider listed them", () => {
 		const input = facts({ declarations: [decl(CART, span(3, 5)), decl(CART, span(0, 2))] });
 		expect(withOccurrences(input).declarations.map((declaration) => declaration.symbolId)).toEqual([CART_2, CART]);

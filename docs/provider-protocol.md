@@ -151,9 +151,15 @@ A macro invocation read as a function, or a template read twice, repeats a param
 way, which is why a parameter carries one too; a type parameter may not be named by digits alone,
 since `[2]` after a descriptor is an occurrence. What sits inside a
 re-minted declaration follows it by position: its members, a reference's owner, a literal's
-container, a doc anchor. A binding target is semantic and is left as the provider bound it. A
-provider that knows its scopes may mint occurrences itself; one that does not still cannot hand the
-store two rows under one id, which the core refuses as a parse failure.
+container, a doc anchor, and a binding target read from inside that same declaration, so a read of
+the second definition's own member lands there rather than on the first's. Three things keep that
+narrow. The target must be a descriptor path the re-minting strictly holds, so a function-scoped
+`local` ordinal, which carries no path, never moves. The rebased id must be one this settlement
+minted, so an id a provider minted itself is left as a provider that knew to bind it. And a target
+naming the re-minted declaration itself stays, since the bare id still declares it and which
+reopening a name means is semantic and the provider's to say. A provider that knows its scopes may
+mint occurrences itself; one that does not still cannot hand the store two rows under one id, which
+the core refuses as a parse failure.
 
 Every id a parse hands over is read once, at the boundary, for what its field says it means. A
 declaration's id names the file being parsed. A `containerId`, a reference's `fromId` and a

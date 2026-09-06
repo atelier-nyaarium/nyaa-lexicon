@@ -1,5 +1,5 @@
 // A name path declared twice in one file is two declarations; the later ones carry an occurrence.
-// Positional only: what sits inside a changed declaration follows it, and a binding is left alone.
+// Positional only: what sits inside a changed declaration follows it, a binding target included.
 
 import { comparePositions } from "./coordinates.js";
 import type { FileFacts } from "./project.js";
@@ -11,7 +11,7 @@ import {
 	rebaseSymbolId,
 	type SymbolId,
 } from "./symbolId.js";
-import type { Declaration, Range } from "./symbols.js";
+import type { Declaration, Range, Reference } from "./symbols.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -126,6 +126,28 @@ export function withOccurrences(facts: FileFacts): FileFacts {
 		const rebased = ancestor === undefined ? null : rebaseSymbolId(id, ancestor.from, ancestor.to);
 		return rebased !== null && declared.has(rebased) ? rebased : id;
 	};
+	const reminted = new Set(moved.map((entry) => entry.to));
+	/**
+	 * A target STRICTLY inside a re-minted declaration, read from inside it, follows that
+	 * declaration, and only to an id this settlement minted. An id the provider minted itself is
+	 * one it knew to bind.
+	 */
+	const follow = (id: string, range: Range): string => {
+		const ancestor = movedAncestor(moved, id, range);
+		if (ancestor === undefined || ancestor.from === id) return id;
+		const rebased = rebaseSymbolId(id, ancestor.from, ancestor.to);
+		return rebased !== null && reminted.has(rebased) ? rebased : id;
+	};
+	/**
+	 * A binding into a re-minted declaration follows it. One naming the declaration itself stays,
+	 * since the bare id still declares it and which reopening a name means is the provider's to say.
+	 */
+	const rebind = (binding: Reference["binding"], range: Range): Reference["binding"] => {
+		if (binding.status === "bound") return { ...binding, symbolId: follow(binding.symbolId, range) };
+		if (binding.status === "ambiguous")
+			return { ...binding, candidates: binding.candidates.map((candidate) => follow(candidate, range)) };
+		return binding;
+	};
 	return {
 		...facts,
 		declarations: facts.declarations.map((declaration, index) => ({
@@ -135,11 +157,11 @@ export function withOccurrences(facts: FileFacts): FileFacts {
 				? {}
 				: { containerId: repoint(declaration.containerId, declaration.range) }),
 		})),
-		references: facts.references.map((reference) =>
-			reference.fromId === undefined
-				? reference
-				: { ...reference, fromId: repoint(reference.fromId, reference.range) },
-		),
+		references: facts.references.map((reference) => ({
+			...reference,
+			binding: rebind(reference.binding, reference.range),
+			...(reference.fromId === undefined ? {} : { fromId: repoint(reference.fromId, reference.range) }),
+		})),
 		literals: facts.literals.map((literal) =>
 			literal.containerId === undefined
 				? literal
