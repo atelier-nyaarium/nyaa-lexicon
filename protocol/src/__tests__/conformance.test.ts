@@ -284,6 +284,7 @@ describe("corpus", () => {
 			imports: { from: "src/a.ts", specifier: "./b", resolvesTo: "src/b.ts" },
 			typeOf: { name: "Missing", display: "number" },
 			comments: ["// never emitted"],
+			literals: [{ value: "never emitted", kind: "string" }],
 			docs: [{ text: "never emitted" }],
 			documentation: { declaration: "Missing", comment: "// missing" },
 			parseErrors: "required",
@@ -599,6 +600,76 @@ describe("checking answers", () => {
 				const facts = withComments([]);
 				facts.comments = [at("// a", 1, 0, 4)];
 				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toHaveLength(1);
+			});
+		});
+	});
+
+	// The tier a minified bundle rests on entirely, and the one that went unchecked longest.
+	describe("literals, exact by decoded value and kind", () => {
+		const lit = (value: string, kind: "string" | "number" | "boolean", line = 0, from = 0, to = 6) => ({
+			kind,
+			value,
+			range: { start: { line, character: from }, end: { line, character: to } },
+		});
+		const wants = (expected: Array<{ value: string; kind: "string" | "number" | "boolean" }>) =>
+			({ literals: expected }) as ConformanceCase;
+
+		it("passes the exact set, whatever order it arrives in", () => {
+			const testCase = wants([
+				{ value: "cart", kind: "string" },
+				{ value: "2", kind: "number" },
+			]);
+			expect(checkFacts(testCase, facts({ literals: [lit("2", "number"), lit("cart", "string")] }))).toEqual([]);
+		});
+
+		it("catches a literal that was never reported", () => {
+			const testCase = wants([{ value: "cart", kind: "string" }]);
+			expect(checkFacts(testCase, facts({ literals: [] }))).toEqual(['literal string "cart": not reported']);
+		});
+
+		// The false positive worth catching: program syntax reported as a value nobody wrote.
+		it("catches a literal reported that the case did not expect", () => {
+			const testCase = wants([{ value: "cart", kind: "string" }]);
+			const extra = facts({ literals: [lit("cart", "string"), lit("phantom", "string")] });
+			expect(checkFacts(testCase, extra)).toEqual(['literal string "phantom": reported but not a literal here']);
+		});
+
+		// Same characters, different meaning: a provider calling a quoted "2" a number is wrong.
+		it("separates kind from value, so the same text under the wrong kind fails", () => {
+			const testCase = wants([{ value: "2", kind: "number" }]);
+			expect(checkFacts(testCase, facts({ literals: [lit("2", "string")] }))).toHaveLength(2);
+		});
+
+		it("counts duplicates, since two identical literals are two facts", () => {
+			const testCase = wants([
+				{ value: "cart", kind: "string" },
+				{ value: "cart", kind: "string" },
+			]);
+			expect(checkFacts(testCase, facts({ literals: [lit("cart", "string")] }))).toHaveLength(1);
+		});
+
+		// A span is never compared to the value, since quotes belong to one and not the other. What
+		// is checked is that the span exists in the file, because a rewrite through it cuts bytes.
+		describe("ranges, checked against the source whenever the caller has it", () => {
+			const source = 'const NAME = "cart";\n';
+
+			it("passes a span that sits inside the file", () => {
+				const inside = facts({ literals: [lit("cart", "string", 0, 13, 19)] });
+				expect(checkFacts({} as ConformanceCase, inside, undefined, source)).toEqual([]);
+			});
+
+			it("catches a span that runs off the file", () => {
+				const outside = facts({ literals: [lit("cart", "string", 9, 0, 6)] });
+				expect(checkFacts({} as ConformanceCase, outside, undefined, source)).toEqual([
+					'literal "cart": range is outside the file',
+				]);
+			});
+
+			it("catches an empty span, which names no bytes to rewrite", () => {
+				const empty = facts({ literals: [lit("cart", "string", 0, 13, 13)] });
+				expect(checkFacts({} as ConformanceCase, empty, undefined, source)).toEqual([
+					'literal "cart": range is empty',
+				]);
 			});
 		});
 	});

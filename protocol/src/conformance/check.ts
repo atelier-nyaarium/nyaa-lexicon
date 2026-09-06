@@ -5,7 +5,7 @@
 
 import type { z } from "zod";
 import { comparePositions, coordinatesOf } from "../coordinates.js";
-import type { CommentSpan, DocRegion, FileFacts, ImportResolution } from "../project.js";
+import type { CommentSpan, DocRegion, FileFacts, ImportResolution, Literal } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
@@ -13,6 +13,7 @@ import type {
 	ConformanceCase,
 	ExpectedDeclarationSchema,
 	ExpectedDocRegionSchema,
+	ExpectedLiteral,
 	ExpectedReferenceSchema,
 } from "./types.js";
 
@@ -182,6 +183,11 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	// Every span, not only expected ones: right text under a lying range attaches to the wrong symbol.
 	if (source !== undefined) problems.push(...checkCommentRanges(source, facts.comments ?? []));
 
+	const wantedLiterals = fixture?.literals ?? testCase.literals;
+	if (wantedLiterals !== undefined) problems.push(...checkLiterals(wantedLiterals, facts.literals ?? []));
+	// Every literal, not only expected ones: a span outside the file corrupts any rewrite through it.
+	if (source !== undefined) problems.push(...checkLiteralRanges(source, facts.literals ?? []));
+
 	const documented = fixture?.documentation ?? testCase.documentation;
 	if (documented !== undefined) problems.push(...checkDocumentation(documented, facts));
 
@@ -333,6 +339,51 @@ function checkComments(expected: string[], actual: CommentSpan[]): string[] {
 	}
 	for (const text of remaining) {
 		problems.push(`comment ${JSON.stringify(text)}: reported but not a comment here`);
+	}
+	return problems;
+}
+
+/**
+ * Decoded value and kind, as a multiset: two identical literals are two facts.
+ *
+ * Compared on the decoded value rather than the source spelling, so one expectation survives every
+ * language's escaping. A number's value is its spelling as written, since `1e3` and `1000` are the
+ * same number and not the same literal.
+ */
+function checkLiterals(expected: ExpectedLiteral[], actual: Literal[]): string[] {
+	const problems: string[] = [];
+	const show = (literal: { kind: string; value: string }) => `${literal.kind} ${JSON.stringify(literal.value)}`;
+	const remaining = actual.map((literal) => ({ kind: literal.kind, value: literal.value }));
+
+	for (const want of expected) {
+		const at = remaining.findIndex((literal) => literal.kind === want.kind && literal.value === want.value);
+		if (at === -1) problems.push(`literal ${show(want)}: not reported`);
+		else remaining.splice(at, 1);
+	}
+	for (const literal of remaining) {
+		problems.push(`literal ${show(literal)}: reported but not a literal here`);
+	}
+	return problems;
+}
+
+/**
+ * Every reported literal's range must sit inside the file.
+ *
+ * Weaker than the comment rule on purpose: a literal's span covers its quotes and its value does
+ * not, so the two cannot be compared without teaching this checker every language's escaping. A
+ * range reaching past the file is the failure worth catching anyway, since a rewrite through it
+ * cuts the wrong bytes.
+ */
+function checkLiteralRanges(source: string, actual: Literal[]): string[] {
+	const coordinates = coordinatesOf(source);
+	const problems: string[] = [];
+	for (const literal of actual) {
+		const cut = coordinates.sliceRange(literal.range);
+		if (cut === undefined) {
+			problems.push(`literal ${JSON.stringify(literal.value)}: range is outside the file`);
+			continue;
+		}
+		if (cut === "") problems.push(`literal ${JSON.stringify(literal.value)}: range is empty`);
 	}
 	return problems;
 }

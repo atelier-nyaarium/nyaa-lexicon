@@ -1220,6 +1220,97 @@ const CASES: ConformanceCase[] = [
 		parseErrors: "required",
 	},
 	{
+		id: "literal-values-and-kinds",
+		tier: "literals",
+		about: "Every string, number and boolean literal is reported once, by decoded value and kind.",
+		// The whole tier rested on one markup case about oversized values, so twelve providers declared
+		// `literals` and were never asked what one is. On a minified bundle the literals ARE the public
+		// contract, which is the corpus this exists to make trustworthy.
+		//
+		// A boolean's reported value is its SOURCE spelling, not a canonical one: Python answers "True"
+		// where every other language answers "true". The protocol does not say which is right, so this
+		// records what each provider does rather than minting a rule that would fail one of them. Worth
+		// settling: a caller searching booleans by value has to know the language to write the query.
+		literals: [
+			{ value: "cart", kind: "string" },
+			{ value: "2", kind: "number" },
+			{ value: "true", kind: "boolean" },
+		],
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"src/cart.ts": 'export const NAME = "cart";\nexport const LIMIT = 2;\nexport const READY = true;\n',
+				},
+				subject: "src/cart.ts",
+			},
+			[PYTHON]: {
+				files: { "src/cart.py": 'NAME = "cart"\nLIMIT = 2\nREADY = True\n' },
+				subject: "src/cart.py",
+				literals: [
+					{ value: "cart", kind: "string" },
+					{ value: "2", kind: "number" },
+					{ value: "True", kind: "boolean" },
+				],
+			},
+			[GDSCRIPT]: {
+				files: { "src/cart.gd": 'const NAME := "cart"\nconst LIMIT := 2\nconst READY := true\n' },
+				subject: "src/cart.gd",
+			},
+			// stdbool, because C's `true` is a macro rather than a keyword and the file must compile.
+			[C]: {
+				files: {
+					"src/cart.c":
+						'#include <stdbool.h>\nconst char *NAME = "cart";\nconst int LIMIT = 2;\nconst bool READY = true;\n',
+				},
+				subject: "src/cart.c",
+			},
+			[CPP]: {
+				files: {
+					"src/cart.cpp": 'const char *NAME = "cart";\nconst int LIMIT = 2;\nconst bool READY = true;\n',
+				},
+				subject: "src/cart.cpp",
+			},
+			[CSHARP]: {
+				files: {
+					"src/cart.cs":
+						'class Cart { public const string NAME = "cart"; public const int LIMIT = 2; public const bool READY = true; }\n',
+				},
+				subject: "src/cart.cs",
+			},
+			[RUST]: {
+				files: {
+					"src/cart.rs":
+						'pub const NAME: &str = "cart";\npub const LIMIT: i32 = 2;\npub const READY: bool = true;\n',
+				},
+				subject: "src/cart.rs",
+			},
+			[KOTLIN]: {
+				files: { "src/cart.kt": 'const val NAME = "cart"\nconst val LIMIT = 2\nconst val READY = true\n' },
+				subject: "src/cart.kt",
+			},
+			[JSON_LANG]: {
+				files: { "cart.json": '{\n\t"name": "cart",\n\t"limit": 2,\n\t"ready": true\n}\n' },
+				subject: "cart.json",
+			},
+			[YAML]: { files: { "cart.yml": "name: cart\nlimit: 2\nready: true\n" }, subject: "cart.yml" },
+			// A document's literals are its frontmatter's, which is the same mapping a .yml file is.
+			[MARKDOWN]: {
+				files: { "cart.md": "---\nname: cart\nlimit: 2\nready: true\n---\n\n# Cart\n\nProse.\n" },
+				subject: "cart.md",
+			},
+			// Bash has no boolean literal. Reporting two rather than pretending a third is the honest
+			// answer, and the override is what lets it say so without failing.
+			[BASH]: {
+				files: { "src/cart.sh": 'NAME="cart"\nLIMIT=2\n' },
+				subject: "src/cart.sh",
+				literals: [
+					{ value: "cart", kind: "string" },
+					{ value: "2", kind: "number" },
+				],
+			},
+		},
+	},
+	{
 		id: "import-resolves-to-module",
 		tier: "imports",
 		about: "A relative specifier resolves to a workspace-relative module path.",

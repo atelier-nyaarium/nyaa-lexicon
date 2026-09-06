@@ -108,6 +108,23 @@ export const ExpectedDocRegionSchema = z
 	})
 	.meta({ id: "ExpectedDocRegion" });
 
+/**
+ * One literal a case expects, by what it MEANS rather than how it is written.
+ *
+ * `value` is the decoded value, so an escape belongs to the language and never to the expectation:
+ * every language spells a tab differently and they all mean one. The range is not stated, because a
+ * literal's span covers its quotes while its value does not, so the two can never be compared; the
+ * checker asserts the span is inside the file instead, which is the failure that corrupts a rewrite.
+ */
+export const ExpectedLiteralSchema = z
+	.object({
+		value: z.string(),
+		kind: z.enum(["string", "number", "boolean"]),
+	})
+	.meta({ id: "ExpectedLiteral" });
+
+export type ExpectedLiteral = z.infer<typeof ExpectedLiteralSchema>;
+
 /** One language's source for a case: the repo to write, and which file the case asks about. */
 export const ConformanceFixtureSchema = z
 	.object({
@@ -146,6 +163,13 @@ export const ConformanceFixtureSchema = z
 		 * every other language overrides it.
 		 */
 		comments: z.array(z.string()).optional(),
+		/**
+		 * Literal expectations only this language can state, replacing the case's when present.
+		 *
+		 * Needed as often as comments: a boolean is `True` in one language, `true` in most, and absent
+		 * from others entirely, so no shared list survives contact with every fixture.
+		 */
+		literals: z.array(ExpectedLiteralSchema).optional(),
 		/** Doc region expectations only this language can state, replacing the case's when present. */
 		docs: z.array(ExpectedDocRegionSchema).optional(),
 		/** Exact declaration names only this language can state, replacing the case's when present. */
@@ -203,6 +227,15 @@ export const ConformanceCaseSchema = z
 		 * positive: a marker inside a string passes an at-least check and poisons search.
 		 */
 		comments: z.array(z.string()).optional(),
+		/**
+		 * EXACTLY these literals, any order, duplicates counted.
+		 *
+		 * Exact for the reason comments are, and it bites harder here. A literal reported for a
+		 * fragment of program syntax is a false public contract, and a literal missed is a contract
+		 * that vanishes; on a minified bundle, where names carry nothing, the literals ARE the API,
+		 * so an at-least check would pass a provider that reports half of one.
+		 */
+		literals: z.array(ExpectedLiteralSchema).optional(),
 		/**
 		 * EXACTLY these doc regions, in document order.
 		 *
