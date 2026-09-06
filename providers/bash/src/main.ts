@@ -46,7 +46,7 @@ export const TIERS = {
 	binding: true,
 	types: true,
 	literals: true,
-	comments: false,
+	comments: true,
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
@@ -101,6 +101,7 @@ function emptyFacts(module: string, diagnostic: Diagnostic): ParsedBashFile {
 		imports: [],
 		sources: [],
 		literals: [],
+		comments: [],
 		diagnostics: [diagnostic],
 		functionsByName: new Map(),
 		globalsByName: new Map(),
@@ -175,6 +176,7 @@ export class BashProvider {
 			references,
 			imports: parsed.imports,
 			literals: parsed.literals,
+			comments: parsed.comments,
 			diagnostics: parsed.diagnostics,
 		};
 	}

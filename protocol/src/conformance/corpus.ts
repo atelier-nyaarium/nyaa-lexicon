@@ -579,6 +579,14 @@ const CASES: ConformanceCase[] = [
 				subject: "comments.yml",
 				comments: ["# leading", "# inline", "# trailing", "# standalone"],
 			},
+			[BASH]: {
+				files: {
+					"src/comments.sh":
+						"# leading\nwork() {\n\t# inline\n\t:\n}\n\ntotal=42 # trailing\n\n# standalone\n",
+				},
+				subject: "src/comments.sh",
+				comments: ["# leading", "# inline", "# trailing", "# standalone"],
+			},
 		},
 		comments: ["// leading", "/* inline */", "// trailing", "/* standalone */"],
 	},
@@ -605,6 +613,11 @@ const CASES: ConformanceCase[] = [
 			[GDSCRIPT]: {
 				files: { "src/crlf.gd": "# leading\r\nvar total = 42 # trailing\r\n" },
 				subject: "src/crlf.gd",
+				comments: ["# leading", "# trailing"],
+			},
+			[BASH]: {
+				files: { "src/crlf.sh": "# leading\r\ntotal=42 # trailing\r\n" },
+				subject: "src/crlf.sh",
 				comments: ["# leading", "# trailing"],
 			},
 			[C]: {
@@ -698,6 +711,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/astral.gd",
 				comments: [`# ${ASTRAL} tail`],
 			},
+			[BASH]: {
+				files: { "src/astral.sh": `s="${ASTRAL}" # ${ASTRAL} tail\n` },
+				subject: "src/astral.sh",
+				comments: [`# ${ASTRAL} tail`],
+			},
 			[C]: {
 				files: { "src/astral.c": `const char *s = "${ASTRAL}"; // ${ASTRAL} tail\n` },
 				subject: "src/astral.c",
@@ -751,6 +769,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/doc.gd",
 				documentation: { declaration: "work", comment: "# What work does." },
 			},
+			[BASH]: {
+				files: { "src/doc.sh": "# What work does.\nwork() {\n\treturn 1\n}\n" },
+				subject: "src/doc.sh",
+				documentation: { declaration: "work", comment: "# What work does." },
+			},
 			[C]: {
 				files: { "src/doc.c": "/** What work does. */\nint work(void) {\n\treturn 1;\n}\n" },
 				subject: "src/doc.c",
@@ -797,6 +820,12 @@ const CASES: ConformanceCase[] = [
 				files: { "src/spliced.cpp": 'const char *x = "foo\\\n// /* #bar";\nint y = 1; // real\n' },
 				subject: "src/spliced.cpp",
 			},
+			// A double-quoted string continues across backslash-newline; a comment does not.
+			[BASH]: {
+				files: { "src/spliced.sh": 'x="foo\\\n# bar"\ny=1 # real\n' },
+				subject: "src/spliced.sh",
+				comments: ["# real"],
+			},
 		},
 		comments: ["// real"],
 	},
@@ -817,6 +846,11 @@ const CASES: ConformanceCase[] = [
 			[KOTLIN]: {
 				files: { "src/Nested.kt": 'fun m() {\n\tval x = "a // ${"b /* c #"} d" // real\n}\n' },
 				subject: "src/Nested.kt",
+			},
+			[BASH]: {
+				files: { "src/nested.sh": 'x="a $(echo "b # c") d" # real\n' },
+				subject: "src/nested.sh",
+				comments: ["# real"],
 			},
 		},
 		comments: ["// real"],
@@ -842,6 +876,11 @@ const CASES: ConformanceCase[] = [
 			[KOTLIN]: {
 				files: { "src/Hole.kt": 'fun m() {\n\tval x = "a ${1 /* here */} b" // real\n}\n' },
 				subject: "src/Hole.kt",
+			},
+			[BASH]: {
+				files: { "src/hole.sh": 'x="a $(\n# here\ntrue) b" # real\n' },
+				subject: "src/hole.sh",
+				comments: ["# here", "# real"],
 			},
 		},
 		comments: ["/* here */", "// real"],
@@ -876,6 +915,11 @@ const CASES: ConformanceCase[] = [
 					"src/markers.gd": 'var url = "https://example.com/path"\nvar hashed = "# not a comment"\n# real\n',
 				},
 				subject: "src/markers.gd",
+				comments: ["# real"],
+			},
+			[BASH]: {
+				files: { "src/markers.sh": 'url="https://example.com/path"\nhashed="# not a comment"\n# real\n' },
+				subject: "src/markers.sh",
 				comments: ["# real"],
 			},
 			[C]: {
@@ -950,6 +994,11 @@ const CASES: ConformanceCase[] = [
 				files: { "src/tool.gd": "#!/usr/bin/env godot\n# real\n\nfunc work():\n\treturn 1\n" },
 				subject: "src/tool.gd",
 				comments: ["#!/usr/bin/env godot", "# real"],
+			},
+			[BASH]: {
+				files: { "src/tool.sh": "#!/usr/bin/env bash\n# real\n\nwork() {\n\treturn 1\n}\n" },
+				subject: "src/tool.sh",
+				comments: ["#!/usr/bin/env bash", "# real"],
 			},
 		},
 	},
@@ -1057,6 +1106,11 @@ const CASES: ConformanceCase[] = [
 			[GDSCRIPT]: {
 				files: { "src/bom.gd": `${BOM}# a note\nvar after = 1\n` },
 				subject: "src/bom.gd",
+				comments: ["# a note"],
+			},
+			[BASH]: {
+				files: { "src/bom.sh": `${BOM}# a note\nafter=1\n` },
+				subject: "src/bom.sh",
 				comments: ["# a note"],
 			},
 			[C]: {

@@ -1,7 +1,7 @@
 // Here-document bodies: the literal, the reads inside an expanding one, and the delimiter bash never saw.
 
 import type { Redirect } from "unbash";
-import { pushLiteral, rangeAt, type Scope, staticValue, type Walk } from "./context.js";
+import { pushLiteral, pushOpaque, rangeAt, type Scope, staticValue, type Walk } from "./context.js";
 import { walkWord } from "./words.js";
 
 ////////////////////////////////
@@ -25,11 +25,14 @@ export function walkRedirect(w: Walk, scope: Scope, redirect: Redirect): void {
 	// `<<-` strips leading tabs from every body line.
 	const value = redirect.operator === "<<-" ? content.replace(/^\t+/gm, "") : content;
 	if (body === undefined || staticValue(body) !== undefined) pushLiteral(w, scope, value, start, end);
+	pushOpaque(w, start, end);
 	walkWord(w, scope, body, false);
 	const delimiter = redirect.target?.value ?? "";
 	const closing =
 		delimiter === "" ? null : new RegExp(`^\\t*${escapeRegExp(delimiter)}(?:\\r?\\n|$)`).exec(w.text.slice(end));
 	w.heredocNext = end + (closing?.[0].length ?? 0);
+	// The delimiter line is the body's end, whatever it spells.
+	pushOpaque(w, end, w.heredocNext);
 	if (closing === null) {
 		w.out.diagnostics.push({
 			severity: "warning",

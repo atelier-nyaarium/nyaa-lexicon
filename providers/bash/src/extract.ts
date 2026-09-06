@@ -14,9 +14,11 @@ import {
 	unsetting,
 	walkAssignmentPrefix,
 } from "./builtins.js";
+import { commentsIn } from "./comments.js";
 import {
 	FUNCTION_NAME_RE,
 	type ParsedBashFile,
+	pushOpaque,
 	pushReference,
 	rangeAt,
 	type Scope,
@@ -102,6 +104,7 @@ function walkFunction(w: Walk, scope: Scope, node: Extract<Node, { type: "Functi
 	const range = rangeAt(w, node.pos, node.end);
 	const declaration = declare(w, scope, name, wordRange(w, node.name), range, { kind: "function", local: false });
 	declaration.metrics = { lines: range.end.line - range.start.line + 1 };
+	pushOpaque(w, node.name.pos, node.name.end);
 	const own = parseSymbolId(declaration.symbolId)?.descriptors.at(-1) ?? { kind: "method", name };
 	const inner: Scope = {
 		fromId: declaration.symbolId,
@@ -179,6 +182,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 			walkArithmetic(w, scope, node.initialize);
 			walkArithmetic(w, scope, node.test);
 			walkArithmetic(w, scope, node.update);
+			pushOpaque(w, node.pos, node.body.pos);
 			walkNode(w, scope, node.body);
 			break;
 		case "TestCommand":
@@ -186,6 +190,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 			break;
 		case "ArithmeticCommand":
 			walkArithmetic(w, scope, node.expression);
+			pushOpaque(w, node.pos, node.end);
 			break;
 	}
 }
@@ -204,6 +209,7 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		imports: [],
 		sources: [],
 		literals: [],
+		comments: [],
 		diagnostics: [],
 		functionsByName: new Map(),
 		globalsByName: new Map(),
@@ -219,10 +225,12 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		minted: new Map(),
 		definedIn: new WeakMap(),
 		statements: (scope, statements) => walkStatements(w, scope, statements),
+		opaque: [],
 	};
 	const script = parse(text);
 	walkStatements(w, { locals: new Map(), confined: false }, script.commands);
 	settle(w);
+	out.comments = commentsIn(w);
 	for (const error of script.errors ?? []) {
 		out.diagnostics.push({
 			severity: "error",

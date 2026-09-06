@@ -4,6 +4,7 @@ import type { AssignmentPrefix, Word } from "unbash";
 import {
 	FUNCTION_NAME_RE,
 	IDENTIFIER_RE,
+	pushOpaque,
 	pushReference,
 	rangeAt,
 	type Scope,
@@ -80,6 +81,10 @@ export function walkAssignmentPrefix(w: Walk, scope: Scope, prefix: AssignmentPr
 	}
 	bareValue(w, scope, prefix.value);
 	walkWord(w, scope, prefix.value, false);
+	// The name and its `=` are data; the value marks itself, and an array body may hold a comment.
+	const valueAt =
+		prefix.value?.pos ?? (prefix.array === undefined ? prefix.end : prefix.pos + prefix.text.indexOf("(") + 1);
+	pushOpaque(w, prefix.pos, valueAt);
 	for (const word of prefix.array ?? []) walkWord(w, scope, word);
 }
 
@@ -192,6 +197,7 @@ export function letting(w: Walk, scope: Scope, words: Word[]): void {
 			walkWord(w, scope, word, false);
 			continue;
 		}
+		pushOpaque(w, word.pos, word.end);
 		let cursor = 0;
 		for (const match of spelled.matchAll(LET_RE)) {
 			const name = match[2] as string;

@@ -108,6 +108,32 @@ expectation is the fix and belongs to the protocol, not this provider.
   the string-forms guard green.
 - Fallback only if upstream refuses: the mask of Question 3, with the corpus as the proof it holds.
 
+Superseded: no automated pull requests to a third-party repository. webpro-nl/unbash#10, comment
+spans, was a feature the maintainer never asked for and is closed. webpro-nl/unbash#11, placing
+every here-document body with `contentPos`, `contentEnd` and `heredocTerminated`, completes a
+positional gap and stays open for the maintainer to judge; if it lands, the scan in `heredoc.ts`
+retires on a release seven days old. Comments therefore take the fallback of Question 3: a mask
+built from unbash's own word, quote and here-document ranges, guarded by the corpus string-forms
+case. The rule is recorded in the owner's global instructions.
+
+Shipped: `comments.ts` reports every `#` outside the spans the walk saw a `#` as data in, up to its
+line's end, the carriage return dropped, the shebang included as the corpus asks. The walk marks
+those spans as it goes, each from unbash's own word and part positions: a word without parts, a
+quoted or expanded part, an arithmetic command, a `let` word, and an assignment's name and `=`; the
+here-document body span comes from the scan in `heredoc.ts` until unbash places it. A command
+substitution is not marked, since its own words mark themselves and a comment inside it is a
+comment. `comments: true`; every corpus comment case bash can state carries a bash fixture and
+passes, and the block-comment and spliced-comment cases do not apply, since bash has neither.
+
+### Bug Classes
+
+- Mechanism: opaque marking is opt-in per call site in the walk. Defect class: text unbash
+  tokenized that no call site marks leaks its `#` as a comment. Patched three times: the assignment
+  prefix (the value's substitution was hidden by marking too much), then the `for (( ))` header and
+  a function's name, then the here-document delimiter line. The class ends when the mask is proven
+  exhaustive by construction: a check that no reported comment overlaps any word or node span a
+  generic walk of the tree finds, over the whole corpus.
+
 ## Phase 3 - Shebang claim
 
 - Protocol: a `shebangs` claim beside `filenames` and `sharedExtensions`: an extensionless file whose

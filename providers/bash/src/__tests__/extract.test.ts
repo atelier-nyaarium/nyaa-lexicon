@@ -416,7 +416,7 @@ describe("scopes", () => {
 	});
 
 	test("special parameters, name listings, and subscripts read what bash reads", () => {
-		const text = 'echo "$_ $1 $0" ${!prefix*} ${!ARR[@]} ${ARR[i+1]} ${MAP[$k]} ${Y:=d}\nARR[j]=x\n';
+		const text = `echo "$_ $1 $0" \${!prefix*} \${!ARR[@]} \${ARR[i+1]} \${MAP[$k]} \${Y:=d}\nARR[j]=x\n`;
 		const shaped = shape("p.sh", text);
 		expect(shaped.declarations).toEqual(["Y.:public", "ARR.:public"]);
 		expect(shaped.references.filter(([, role]) => role === "read").map(([name]) => name)).toEqual([
@@ -467,7 +467,7 @@ describe("builtins that write", () => {
 			"export -f func",
 			"declare 'QUOTED=v'",
 			"alias -- -dash='x'",
-			"f() { local -n ref=NAME; echo ${!ref}; }",
+			`f() { local -n ref=NAME; echo \${!ref}; }`,
 			"",
 		].join("\n");
 		const bash = provider({ "d.sh": text });
@@ -484,6 +484,41 @@ describe("builtins that write", () => {
 			status: "known",
 			display: "name reference",
 		});
+	});
+});
+
+describe("comments", () => {
+	const commentsOf = (text: string) => {
+		const parsed = parseBash("c.sh", text);
+		for (const comment of parsed.comments) expect(sliceOf(text, comment.range)).toBe(comment.text);
+		return parsed.comments.map((comment) => comment.text);
+	};
+
+	test("a hash opens a comment only outside words, quotes, expansions, and heredoc bodies", () => {
+		const text = [
+			"#!/bin/bash",
+			`a="# no" b='# no' c=$'# no' d=plain#no e="\${x#no}" f=$((2#101))`,
+			'echo a#b "$(echo \'# no\')" `echo "# no"` @(x|#no) {a,#no} # yes one',
+			"cat <<EOF # yes two",
+			"# no",
+			"EOF",
+			"x=(",
+			"\ta # yes three",
+			")",
+			"(( y = 2#101 ))",
+			"for ((i=16#a; i<20; i++)); do :; done",
+			"a#b() { :; }",
+			"[[ $z == '#no' ]] # yes four",
+			"",
+		].join("\n");
+		expect(commentsOf(text)).toEqual(["#!/bin/bash", "# yes one", "# yes two", "# yes three", "# yes four"]);
+	});
+
+	test("a substitution holds comments, a return is not comment text, and an unterminated string holds none", () => {
+		expect(commentsOf('x="$(\n# inner\ntrue)"\n')).toEqual(["# inner"]);
+		expect(commentsOf("# lead\r\necho x # tail\r\n")).toEqual(["# lead", "# tail"]);
+		expect(commentsOf('echo "unterminated\n# after\n')).toEqual([]);
+		expect(commentsOf("cat <<'#'\nbody\n#\necho done # yes\n")).toEqual(["# yes"]);
 	});
 });
 

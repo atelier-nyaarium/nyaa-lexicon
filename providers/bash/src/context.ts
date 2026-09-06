@@ -1,6 +1,7 @@
 // What a walk over the unbash tree carries, and the facts it collects.
 
 import type {
+	CommentSpan,
 	Declaration,
 	Descriptor,
 	Diagnostic,
@@ -50,6 +51,7 @@ export interface ParsedBashFile {
 	imports: Import[];
 	sources: SourceImport[];
 	literals: Literal[];
+	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
 	/** Every definition of a name in source order; the last is the one a call reaches. */
 	functionsByName: Map<string, BashDeclaration[]>;
@@ -89,6 +91,8 @@ export interface Walk {
 	definedIn: WeakMap<BashDeclaration, Scope>;
 	/** The statement walk, handed in so a command substitution descends without a module cycle. */
 	statements: (scope: Scope, statements: Statement[]) => void;
+	/** Start and end pairs of every span a `#` is data in; a `#` outside them opens a comment. */
+	opaque: number[];
 }
 
 export interface DeclareOptions {
@@ -173,4 +177,8 @@ export function pushReference(w: Walk, scope: Scope, reference: BashReference): 
 /** A bare word is a number literal when it is all digits; anything else it holds is walked elsewhere. */
 export function bareNumber(w: Walk, scope: Scope, word: Word): void {
 	if (NUMBER_RE.test(word.text)) pushLiteral(w, scope, word.text, word.pos, word.end);
+}
+
+export function pushOpaque(w: Walk, start: number, end: number): void {
+	if (end > start) w.opaque.push(start, end);
 }

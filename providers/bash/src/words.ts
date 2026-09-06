@@ -7,6 +7,7 @@ import {
 	type DeclaredType,
 	IDENTIFIER_RE,
 	pushLiteral,
+	pushOpaque,
 	pushReference,
 	rangeAt,
 	type Scope,
@@ -88,6 +89,7 @@ function walkParts(w: Walk, scope: Scope, parts: WordPart[], start: number): voi
 			case "SingleQuoted":
 			case "AnsiCQuoted":
 				pushLiteral(w, scope, part.value, at, end);
+				pushOpaque(w, at, end);
 				break;
 			case "DoubleQuoted":
 			case "LocaleString": {
@@ -100,6 +102,7 @@ function walkParts(w: Walk, scope: Scope, parts: WordPart[], start: number): voi
 			}
 			case "SimpleExpansion":
 				expansionReference(w, scope, part.text, at);
+				pushOpaque(w, at, end);
 				break;
 			case "ParameterExpansion": {
 				// `${!prefix*}` lists names and reads no variable.
@@ -116,16 +119,21 @@ function walkParts(w: Walk, scope: Scope, parts: WordPart[], start: number): voi
 				]) {
 					walkWord(w, scope, word, false);
 				}
+				pushOpaque(w, at, end);
 				break;
 			}
 			case "CommandExpansion":
 			case "ProcessSubstitution":
+				// A comment can sit inside; the words within mark themselves.
 				if (part.script !== undefined) w.statements(subshell(scope), part.script.commands);
+				else pushOpaque(w, at, end);
 				break;
 			case "ArithmeticExpansion":
 				walkArithmetic(w, scope, part.expression);
+				pushOpaque(w, at, end);
 				break;
 			default:
+				pushOpaque(w, at, end);
 				break;
 		}
 		at = end;
@@ -182,6 +190,7 @@ export function walkWord(w: Walk, scope: Scope, word: Word | undefined, numbers 
 	if (word === undefined) return;
 	if (word.parts === undefined) {
 		if (numbers) bareNumber(w, scope, word);
+		pushOpaque(w, word.pos, word.end);
 		return;
 	}
 	walkParts(w, scope, word.parts, word.pos);
