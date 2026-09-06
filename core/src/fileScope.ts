@@ -164,6 +164,30 @@ export function gitFiles(workspaceRoot: string): Set<string> | null {
 	}
 }
 
+/**
+ * Which of these paths git's ignore rules exclude, in one git call.
+ *
+ * Null when git cannot say, so a caller reads rather than drops. Asked only of paths the scope
+ * does not already hold, so a churning ignored directory costs one call per burst and no read.
+ */
+export function gitIgnored(workspaceRoot: string, modules: Iterable<string>): Set<string> | null {
+	const paths = [...new Set(modules)];
+	if (paths.length === 0) return new Set();
+	if (!existsSync(path.join(workspaceRoot, ".git"))) return null;
+	try {
+		const stdout = execFileSync("git", ["check-ignore", "--stdin", "-z"], {
+			cwd: workspaceRoot,
+			input: `${paths.join("\0")}\0`,
+			maxBuffer: 128 * 1024 * 1024,
+			encoding: "utf8",
+		});
+		return new Set(stdout.split("\0").filter((line) => line.length > 0));
+	} catch (error) {
+		// Exit 1 is git's word that none are ignored; anything else is git unable to say.
+		return (error as { status?: unknown }).status === 1 ? new Set() : null;
+	}
+}
+
 /** What auto-discovery is allowed to index, and how that was decided. */
 export function fileScopeFor(workspaceRoot: string, config = readScopeConfig(workspaceRoot)): FileScope {
 	const known = gitFiles(workspaceRoot);

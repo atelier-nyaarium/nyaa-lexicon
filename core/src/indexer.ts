@@ -16,10 +16,17 @@ import { hashContent } from "@nyaa-lexicon/protocol";
 import type { Clock } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
-import { type FileScope, fileScopeFor, type GeneratedVerdict, generatedVerdicts, includedFiles } from "./fileScope.js";
+import {
+	type FileScope,
+	fileScopeFor,
+	type GeneratedVerdict,
+	generatedVerdicts,
+	gitIgnored,
+	includedFiles,
+} from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import type { FileEvent } from "./invalidation.js";
-import { decideInvalidation } from "./invalidation.js";
+import { decideInvalidation, UNCHANGED_REASON } from "./invalidation.js";
 import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarations.js";
 import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
@@ -28,6 +35,7 @@ import { readHead, type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
+import type { WatchScope } from "./watcher.js";
 
 export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
 
@@ -111,6 +119,14 @@ export class WorkspaceIndexer {
 	currentScope(): FileScope {
 		this.scope ??= fileScopeFor(this.workspaceRoot);
 		return this.scope;
+	}
+
+	/** What the watcher may read unasked: admitted by the scope as it stands, or held by the index. */
+	watchScope(): WatchScope {
+		return {
+			admits: (module) => this.currentScope().allows(module) || this.store.contentHashOf(module) !== null,
+			ignored: (modules) => gitIgnored(this.workspaceRoot, modules),
+		};
 	}
 
 	/**
@@ -693,6 +709,16 @@ export class WorkspaceIndexer {
 		if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
 			throw new Error("live indexing cannot run under the warmup pass");
 		}
+		const decisions = events.map((event) =>
+			decideInvalidation(event, {
+				route: (module) => this.supervisor.route(module),
+				indexedHash: (module) => this.store.contentHashOf(module),
+			}),
+		);
+		// Decided before admission: a save that changed nothing asks neither git nor a provider.
+		if (decisions.every((decision) => decision.action === "ignore" && decision.reason === UNCHANGED_REASON)) {
+			return decisions.map((decision) => this.outcome(decision.module, "current", UNCHANGED_REASON));
+		}
 		this.newInPass = new Set();
 		const outcomes: IndexOutcome[] = [];
 		const previousRoots = this.roots;
@@ -711,12 +737,7 @@ export class WorkspaceIndexer {
 			[...roots].filter((module) => !previousRoots.has(module) && this.store.depthOf(module) === null),
 		);
 
-		for (const event of events) {
-			const decision = decideInvalidation(event, {
-				route: (module) => this.supervisor.route(module),
-				indexedHash: (module) => this.store.contentHashOf(module),
-			});
-
+		for (const decision of decisions) {
 			if (decision.action === "forget") {
 				pending.delete(decision.module);
 				outcomes.push(this.outcome(decision.module, "missing", undefined, this.forgetFile(decision.module)));
@@ -724,7 +745,7 @@ export class WorkspaceIndexer {
 			}
 			if (decision.action === "ignore") {
 				pending.delete(decision.module);
-				const cause = decision.reason === "content is unchanged" ? "current" : "unclaimed";
+				const cause = decision.reason === UNCHANGED_REASON ? "current" : "unclaimed";
 				outcomes.push(this.outcome(decision.module, cause, decision.reason));
 				continue;
 			}
@@ -748,8 +769,11 @@ export class WorkspaceIndexer {
 		}
 
 		for (const module of roots) {
+			// A parse failure is about the file's own bytes, so only its own event can mean they moved.
+			const refused = previousRoots.has(module) && this.store.parseFailureOf(module) !== null;
 			if (
 				attempted.has(module) ||
+				refused ||
 				(this.store.contentHashOf(module) !== null &&
 					previousRoots.has(module) &&
 					previousDepths.get(module) === this.depths.get(module))

@@ -158,6 +158,10 @@ export class LexiconService {
 		return this.indexer.applyBatch(...args);
 	}
 
+	watchScope(): ReturnType<WorkspaceIndexer["watchScope"]> {
+		return this.indexer.watchScope();
+	}
+
 	/** The timer's sweep: nothing new to the pass, presence as of the last prune. */
 	sweepKnowledge(): ReturnType<WorkspaceIndexer["sweepKnowledge"]> {
 		return this.indexer.sweepKnowledge();

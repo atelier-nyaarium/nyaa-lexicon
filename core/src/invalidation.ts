@@ -26,6 +26,12 @@ export interface InvalidationContext {
 }
 
 ////////////////////////////////
+//  Constants
+
+/** The one reason the indexer reads back: a batch made only of these costs it nothing. */
+export const UNCHANGED_REASON = "content is unchanged";
+
+////////////////////////////////
 //  Functions & Helpers
 
 /**
@@ -42,7 +48,7 @@ export function decideInvalidation(event: FileEvent, context: InvalidationContex
 	if (event.kind === "deleted") return { action: "forget", module: event.module };
 
 	if (event.contentHash !== null && context.indexedHash(event.module) === event.contentHash) {
-		return { action: "ignore", module: event.module, reason: "content is unchanged" };
+		return { action: "ignore", module: event.module, reason: UNCHANGED_REASON };
 	}
 
 	const route = context.route(event.module);

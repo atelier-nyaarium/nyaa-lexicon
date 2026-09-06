@@ -8,9 +8,9 @@ import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
-import { MAX_SOURCE_BYTES, sourceReader } from "../sourceRead";
+import { MAX_SOURCE_BYTES, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
+import { parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
 
 ////////////////////////////////
 //  Helpers
@@ -131,6 +131,81 @@ afterEach(() => {
 
 ////////////////////////////////
 //  Tests
+
+describe("a batch that changes nothing", () => {
+	// Admission is git and routing evidence; the tail is every root's imports through the providers.
+	// Neither belongs to a save that moved no bytes.
+	it("admits nothing and asks no provider when every file is unchanged", async () => {
+		initGit();
+		put("root.fake", 'export class Root {}\nimport "./leaf.fake";\n');
+		put("leaf.fake", "export class Leaf {}\n");
+		let parses = 0;
+		let resolves = 0;
+		let admissions = 0;
+		const port = sharedFake({
+			claims: [claims],
+			answers: {
+				parseFile: (request) => {
+					parses++;
+					return parseFake(request);
+				},
+				resolveImport: (request) => {
+					resolves++;
+					return resolveFake(request);
+				},
+			},
+		});
+		const counting: ProviderPort = {
+			...port,
+			observeWorkspace: (modules) => {
+				admissions++;
+				port.observeWorkspace(modules);
+			},
+		};
+		service = new LexiconService(store, counting, sourceReader(root), root);
+		await service.indexWorkspace();
+		expect(service.findByName("Leaf")).toHaveLength(1);
+		const [parsed, resolved, admitted] = [parses, resolves, admissions];
+
+		const outcomes = await service.applyBatch([
+			{ kind: "changed", module: "root.fake", contentHash: store.contentHashOf("root.fake") as string },
+			{ kind: "changed", module: "leaf.fake", contentHash: store.contentHashOf("leaf.fake") as string },
+		]);
+
+		expect(outcomes.map((o) => [o.action, o.cause])).toEqual([
+			["skipped", "current"],
+			["skipped", "current"],
+		]);
+		expect([parses, resolves, admissions]).toEqual([parsed, resolved, admitted]);
+	});
+});
+
+describe("a refused file", () => {
+	// Its bytes are the reason it holds nothing, so only a change to them earns another read.
+	it("is not re-read by a batch that does not name it", async () => {
+		initGit();
+		put("root.fake", "export class Root {}\n");
+		writeFileSync(path.join(root, "blob.bin"), Buffer.from([0x50, 0x4b, 0x00, 0x01]));
+		const reads: string[] = [];
+		const base = sourceReader(root);
+		const reader: SourceReader = (module) => {
+			reads.push(module);
+			return base(module);
+		};
+		service = new LexiconService(store, fakeSupervisor([], [], { fallback: true }), reader, root);
+		await service.indexWorkspace();
+		expect(store.parseFailureOf("blob.bin")?.reason).toContain("not text");
+		const before = reads.filter((module) => module === "blob.bin").length;
+		expect(before).toBeGreaterThan(0);
+
+		put("root.fake", "export class Root {}\nexport class Second {}\n");
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-2" }]);
+
+		expect(outcomes.map((o) => o.module)).not.toContain("blob.bin");
+		expect(reads.filter((module) => module === "blob.bin")).toHaveLength(before);
+		expect(store.parseFailureOf("blob.bin")).not.toBeNull();
+	});
+});
 
 describe("workspace roots", () => {
 	it("routes admitted unowned files to fallback and records guarded failures", async () => {

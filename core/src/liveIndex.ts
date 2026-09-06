@@ -25,6 +25,7 @@ export interface LiveIndexOptions {
 	 */
 	gate?: { exclusive: <T>(work: () => Promise<T>) => Promise<T> };
 	debounceMs?: number;
+	maxWaitMs?: number;
 	/** The one time source, shared with the store and the service, so the sweep timer and the debounce agree. */
 	clock: Clock;
 	onApplied?: (outcomes: IndexOutcome[]) => void;
@@ -67,7 +68,10 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 	const watcher = watchWorkspace({
 		workspaceRoot: options.workspaceRoot,
 		onBatch: queue.push,
+		// The index's own scope, so an ignored directory's churn is never read.
+		scope: options.service.watchScope(),
 		...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
+		...(options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs }),
 		clock: options.clock,
 	});
 

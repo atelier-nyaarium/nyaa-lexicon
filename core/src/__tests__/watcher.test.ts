@@ -3,7 +3,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FileEvent } from "../invalidation";
-import { hashContent, isIgnored, type RunningWatcher, readEvent, toModule, watchWorkspace } from "../watcher";
+import {
+	admitted,
+	hashContent,
+	isIgnored,
+	type RunningWatcher,
+	readEvent,
+	toModule,
+	type WatchScope,
+	watchWorkspace,
+} from "../watcher";
 import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
@@ -185,5 +194,112 @@ describe("batching", () => {
 		await settle(200);
 
 		expect(batches.flat().some((e) => e.module === "real.ts")).toBe(true);
+	});
+
+	it("delivers a burst that never settles at the ceiling rather than holding it", () => {
+		const batches: FileEvent[][] = [];
+		const clock = fakeClock();
+		write("a.ts", "1");
+		watcher = watchWorkspace({
+			workspaceRoot: root,
+			onBatch: (b) => batches.push(b),
+			debounceMs: 20,
+			maxWaitMs: 100,
+			clock,
+		});
+
+		for (let at = 0; at < 100; at += 15) {
+			watcher.inject("a.ts");
+			clock.advance(15);
+		}
+
+		expect(batches).toHaveLength(1);
+		expect(clock.pending()).toBe(0);
+	});
+});
+
+describe("asking the scope before reading", () => {
+	const scopeOf = (admits: WatchScope["admits"], ignored: WatchScope["ignored"]): WatchScope => ({ admits, ignored });
+
+	it("reads what the scope holds without asking git", async () => {
+		const batches: FileEvent[][] = [];
+		let asked = 0;
+		write("a.ts", "1");
+		watcher = watchWorkspace({
+			workspaceRoot: root,
+			onBatch: (b) => batches.push(b),
+			debounceMs: 20,
+			scope: scopeOf(
+				(module) => module === "a.ts",
+				() => {
+					asked++;
+					return new Set();
+				},
+			),
+		});
+
+		watcher.inject("a.ts");
+		await settle();
+
+		expect(batches).toEqual([[{ kind: "changed", module: "a.ts", contentHash: hashContent("1") }]]);
+		expect(asked).toBe(0);
+	});
+
+	it("asks git once per burst for the rest, and never reads what git ignores", async () => {
+		const batches: FileEvent[][] = [];
+		const asked: string[][] = [];
+		write("volumes/state.json", "{}");
+		write("src/new.ts", "1");
+		watcher = watchWorkspace({
+			workspaceRoot: root,
+			onBatch: (b) => batches.push(b),
+			debounceMs: 20,
+			scope: scopeOf(
+				() => false,
+				(modules) => {
+					asked.push(modules);
+					return new Set(["volumes/state.json"]);
+				},
+			),
+		});
+
+		watcher.inject("volumes/state.json");
+		watcher.inject("src/new.ts");
+		watcher.inject("volumes/state.json");
+		await settle();
+
+		expect(asked).toEqual([["volumes/state.json", "src/new.ts"]]);
+		expect(batches).toEqual([[{ kind: "changed", module: "src/new.ts", contentHash: hashContent("1") }]]);
+	});
+
+	it("delivers no batch for a burst git ignores entirely", async () => {
+		const batches: FileEvent[][] = [];
+		write("volumes/state.json", "{}");
+		watcher = watchWorkspace({
+			workspaceRoot: root,
+			onBatch: (b) => batches.push(b),
+			debounceMs: 20,
+			scope: scopeOf(
+				() => false,
+				(modules) => new Set(modules),
+			),
+		});
+
+		watcher.inject("volumes/state.json");
+		await settle();
+
+		expect(batches).toEqual([]);
+	});
+
+	it("reads everything when git cannot say", () => {
+		expect(
+			admitted(
+				["a.ts", "b.ts"],
+				scopeOf(
+					() => false,
+					() => null,
+				),
+			),
+		).toEqual(["a.ts", "b.ts"]);
 	});
 });

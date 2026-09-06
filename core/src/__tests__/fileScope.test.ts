@@ -8,6 +8,7 @@ import {
 	fileScopeFor,
 	generatedVerdicts,
 	gitFiles,
+	gitIgnored,
 	globToRegExp,
 	includedFiles,
 	isExternalModule,
@@ -55,6 +56,26 @@ describe("globs", () => {
 
 	it("treats a dot as a dot rather than as any character", () => {
 		expect(globToRegExp("a.ts").test("axts")).toBe(false);
+	});
+});
+
+describe("what git ignores", () => {
+	it("names the ignored paths among those asked, and only those", () => {
+		const root = repo({ "src/a.ts": "" }, "volumes/\n");
+		write(root, "volumes/state.json", "{}");
+		expect(gitIgnored(root, ["volumes/state.json", "src/new.ts"])).toEqual(new Set(["volumes/state.json"]));
+	});
+
+	// git exits 1 for "none ignored", which is an answer and not a failure.
+	it("answers an empty set when nothing asked is ignored", () => {
+		const root = repo({ "src/a.ts": "" });
+		expect(gitIgnored(root, ["src/a.ts", "src/new.ts"])).toEqual(new Set());
+	});
+
+	it("cannot say outside a repository, rather than guessing", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-scope-"));
+		roots.push(root);
+		expect(gitIgnored(root, ["a.ts"])).toBeNull();
 	});
 });
 

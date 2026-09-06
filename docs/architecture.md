@@ -170,6 +170,18 @@ the file.
 A file event is decided against the stored content hash, so a save that changed nothing re-indexes
 nothing, and a checkout restoring an old file is a hit rather than a miss.
 
+The watcher asks before it reads. A path the scope admits as it stands, or the index holds, is
+read once at the end of the burst; the rest are put to `git check-ignore` together, once per burst,
+and what git ignores is never read. A service flushing its state into an ignored directory every
+few seconds therefore costs one git call per burst and no batch. A batch whose every file hashes to
+what the index holds returns before admission: no git, no provider, no sweep. A burst that never
+settles is delivered at a ceiling rather than held until it does.
+
+A file whose last read failed is not retried by a batch that does not name it. The failure is about
+that file's own bytes, so only its own event can mean they moved, and retrying it every batch reads
+and refuses it again while nothing anywhere changed. It stays named in `overview` and in the failure
+count, because it is still failing; what stops is the repetition.
+
 Extraction depends on the file AND on the code that read it, so the indexer is hashed too. Without
 that, a provider that changes how it classifies leaves every stored fact stale while no file has
 moved, and nothing anywhere would say so.
