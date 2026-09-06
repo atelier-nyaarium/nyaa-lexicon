@@ -7,7 +7,11 @@
 // expected answer a reader can verify by opening the file.
 //
 // The checks below are written against switchboard specifically, naming symbols and the files
-// they live in, so pointing this at anything else fails every check rather than grading it.
+// they live in, so pointing this at anything else grades nothing.
+//
+// Every check states those files in `names`. A file the repository has since moved is reported as
+// STALE and exits 3, never as a failure: the two are indistinguishable otherwise, and a fixture that
+// rots into a red teaches a reader to ignore the strongest check this project has.
 
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -24,6 +28,15 @@ import { ProviderSupervisor } from "./supervisor.js";
 
 interface Check {
 	name: string;
+	/**
+	 * Workspace files this check's expected answer names.
+	 *
+	 * Checked before the check runs, so a file the target repository renamed reads as a stale
+	 * fixture rather than as a wrong answer. Without it a move here is indistinguishable from a
+	 * regression in lexicon, and the strongest verification step this project has becomes a red
+	 * nobody trusts.
+	 */
+	names?: readonly string[];
 	run: (service: LexiconService) => Promise<{ ok: boolean; detail: string } | { skip: string }>;
 }
 
@@ -33,17 +46,19 @@ interface Check {
 const CHECKS: Check[] = [
 	{
 		name: "finds a function in the file its own map names",
+		names: ["src/shared/board-authority.ts"],
 		run: async (service) => {
 			const found = service.findByName("refusalError");
 			const module = found[0]?.module ?? "none";
 			return {
-				ok: found.length === 1 && module === "src/gateway/boardAuthority.ts",
+				ok: found.length === 1 && module === "src/shared/board-authority.ts",
 				detail: `${found.length} match, in ${module}`,
 			};
 		},
 	},
 	{
 		name: "reports a class with its real members",
+		names: ["src/shared/session-store.ts"],
 		run: async (service) => {
 			const found = service.findByName("SessionStore")[0];
 			if (!found) return { ok: false, detail: "SessionStore was not indexed" };
@@ -57,18 +72,23 @@ const CHECKS: Check[] = [
 	},
 	{
 		name: "resolves a relative import to the real file",
+		names: ["src/shared/board-observations.ts", "src/shared/board-authority.ts"],
 		run: async (service) => {
-			const resolution = await service.resolveImport("src/gateway/boardStore.ts", "./boardAuthority.js");
+			const resolution = await service.resolveImport("src/shared/board-observations.ts", "./board-authority.js");
 			return {
-				ok: resolution.status === "resolved" && resolution.module === "src/gateway/boardAuthority.ts",
+				ok: resolution.status === "resolved" && resolution.module === "src/shared/board-authority.ts",
 				detail: JSON.stringify(resolution),
 			};
 		},
 	},
 	{
 		name: "resolves through a barrel to the barrel file",
+		names: ["src/__tests__/bootstrap-staged-install.test.ts", "src/shared/schemas.ts"],
 		run: async (service) => {
-			const resolution = await service.resolveImport("src/gateway/boardStore.ts", "../shared/schemas.js");
+			const resolution = await service.resolveImport(
+				"src/__tests__/bootstrap-staged-install.test.ts",
+				"../shared/schemas.js",
+			);
 			return {
 				ok: resolution.status === "resolved" && resolution.module === "src/shared/schemas.ts",
 				detail: JSON.stringify(resolution),
@@ -77,6 +97,7 @@ const CHECKS: Check[] = [
 	},
 	{
 		name: "calls an installed dependency external, not unresolved",
+		names: ["src/shared/schemas.ts"],
 		run: async (service) => {
 			const resolution = await service.resolveImport("src/shared/schemas.ts", "zod");
 			return { ok: resolution.status === "external", detail: JSON.stringify(resolution) };
@@ -84,6 +105,7 @@ const CHECKS: Check[] = [
 	},
 	{
 		name: "separates exported from file-local in a real file",
+		names: ["src/shared/board-authority.ts"],
 		run: async (service) => {
 			const exported = service.findByName("refusalError")[0]?.exported;
 			return { ok: exported === true, detail: `refusalError exported: ${exported}` };
@@ -93,6 +115,7 @@ const CHECKS: Check[] = [
 		// The whole reverse-lookup story. A name match would find these too, so the check is the TIER:
 		// `bound` means real edges, and anything less means we are guessing from spelling.
 		name: "reverse lookup finds callers, on bound edges rather than name matches",
+		names: ["src/shared/board-authority.ts"],
 		run: async (service) => {
 			const target = service.findByName("refusalError")[0];
 			if (target === undefined) return { ok: false, detail: "refusalError was not indexed" };
@@ -105,6 +128,7 @@ const CHECKS: Check[] = [
 	},
 	{
 		name: "answers a declared type",
+		names: ["src/shared/board-authority.ts"],
 		run: async (service) => {
 			const target = service.findByName("refusalError")[0];
 			if (target === undefined) return { ok: false, detail: "refusalError was not indexed" };
@@ -146,7 +170,16 @@ async function main(argv: string[]): Promise<void> {
 	console.log(`indexed ${indexed} files from ${TARGET}\n`);
 
 	let failed = 0;
+	let stale = 0;
 	for (const check of CHECKS) {
+		const gone = (check.names ?? []).filter((name) => !existsSync(path.join(TARGET, name)));
+		if (gone.length > 0) {
+			stale++;
+			console.log(
+				`STALE ${check.name}\n        this check names ${gone.join(", ")}, which the repository no longer has`,
+			);
+			continue;
+		}
 		const result = await check.run(service);
 		if ("skip" in result) {
 			console.log(`SKIP  ${check.name}\n        ${result.skip}`);
@@ -156,9 +189,16 @@ async function main(argv: string[]): Promise<void> {
 		console.log(`${result.ok ? "PASS" : "FAIL"}  ${check.name}\n        ${result.detail}`);
 	}
 
+	if (stale > 0) {
+		console.log(
+			`\n${stale} check(s) name a file this repository moved. Re-point them; nothing here graded lexicon.`,
+		);
+	}
+
 	supervisor.stopAll();
 	store.close();
-	process.exit(failed === 0 ? 0 : 1);
+	// Stale fixtures exit 3, as conformance does for a stall: neither is a verdict on the code.
+	process.exit(stale > 0 ? 3 : failed === 0 ? 0 : 1);
 }
 
 if (import.meta.main) await main(process.argv.slice(2));
