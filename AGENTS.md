@@ -163,6 +163,11 @@ Ordered by how much they prove:
 4. Drive the built server against a real workspace. **A green gate is not evidence.** A defect the
    suite cannot express survives a clean gate and dies to a five-line probe.
 
+   Provider discovery prefers the bundle over the source, so `indexCli` and the daemon both spawn
+   what is in `dist/`, not what you just edited. Proving a provider change end to end takes
+   `bun run build --build-only` first and a `git restore dist` after, or the next release build
+   refuses the dirty tree.
+
 ## Rules
 
 - **Residue tests are build gates.** When adding one, plant the violation and watch it fail before
