@@ -64,6 +64,19 @@ export const NAMED_FAILURES = 3;
 /** Subjects one sweep examines across both passes; a capped sweep resumes from its cursor. */
 export const ORPHAN_SWEEP_CAP = 200;
 
+/**
+ * Two questions with two lifetimes, so one turnover rule cannot serve both.
+ *
+ * A stored answer is drawn from facts and dies the moment any fact moves. Where a specifier LANDS
+ * is not drawn from facts: it survives every edit to a file's body, and only moves when the set of
+ * modules changes or a provider's config does. Keeping them in one cache made the second question
+ * as expensive as the first, which is a whole workspace of provider round trips on every batch.
+ */
+export interface IndexCaches {
+	facts: ResultCache;
+	resolutions: ResultCache;
+}
+
 /** The scope's verdict on the tracked set, each a subset of the one before. */
 interface Admitted {
 	everything: string[];
@@ -81,7 +94,7 @@ export class WorkspaceIndexer {
 		private readonly supervisor: ProviderPort,
 		private readonly readSource: SourceReader,
 		private readonly workspaceRoot: string,
-		private readonly cache: ResultCache,
+		private readonly caches: IndexCaches,
 		/** Resolution belongs to the import resolver; the indexer only follows where it points. */
 		private readonly resolve: (fromModule: string, specifier: string) => Promise<ImportResolution>,
 		private readonly clock: Clock,
@@ -108,6 +121,8 @@ export class WorkspaceIndexer {
 	private breakdown: ScanBreakdown | null = null;
 	/** Git's word per admitted module, refreshed with the scope. */
 	private generated = new Map<string, GeneratedVerdict>();
+	/** What the providers said they consult, so an edit to one retires every resolution. */
+	private configFiles = new Set<string>();
 	private coverage: WarmCoverage = { state: "idle" };
 
 	/** Full-parse orders run between background files. */
@@ -255,7 +270,7 @@ export class WorkspaceIndexer {
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
-		this.cache.invalidate();
+		this.caches.facts.invalidate();
 		return { module, action: "indexed", declarations: facts.declarations.length };
 	}
 
@@ -283,11 +298,18 @@ export class WorkspaceIndexer {
 		try {
 			this.newInPass = new Set();
 			this.discovered = new Set<string>();
+			this.configFiles = new Set<string>();
+			// The workspace is being re-learned, so nothing a previous pass was told still vouches
+			// for itself. Once, rather than per file: a scan reads what is already on disk.
+			this.caches.resolutions.invalidate();
 			for (const provider of this.supervisor.running()) {
 				const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
 					workspaceRoot: this.workspaceRoot,
 				});
 				for (const module of project.files) this.discovered.add(module);
+				// The provider names them, so core learns which files state the rules without telling
+				// one language from another.
+				for (const module of project.configFiles) this.configFiles.add(module);
 			}
 
 			this.roots = this.rootModules();
@@ -533,10 +555,14 @@ export class WorkspaceIndexer {
 		floor: "full" | "outline" = "full",
 	): Promise<IndexOutcome[]> {
 		const outcomes: IndexOutcome[] = [];
+		// Each round walks only what the last one indexed. A module already walked had its imports
+		// read then, and nothing in this loop rewrites them, so re-walking the whole set every round
+		// asks the same questions again once per round.
+		let frontier = [...seen];
 
-		while (true) {
+		while (frontier.length > 0) {
 			const found: string[] = [];
-			for (const module of [...seen]) {
+			for (const module of frontier) {
 				for (const statement of this.store.importsIn(module)) {
 					const landed = await this.resolve(module, statement.specifier).catch(() => null);
 					const target = landed === null ? null : importTarget(landed);
@@ -570,6 +596,9 @@ export class WorkspaceIndexer {
 					outcomes.push(this.faultOutcome(module, error));
 				}
 			}
+			// What this round indexed, including what it skipped as current: their imports are what
+			// the next round has not read yet.
+			frontier = found;
 		}
 		return outcomes;
 	}
@@ -647,7 +676,7 @@ export class WorkspaceIndexer {
 
 	private forgetFile(module: string): boolean {
 		const removed = this.store.forgetFile(module);
-		this.cache.invalidate();
+		this.caches.facts.invalidate();
 		return removed;
 	}
 
@@ -729,6 +758,17 @@ export class WorkspaceIndexer {
 		const roots = this.rootModules(changed, deleted);
 		this.roots = roots;
 		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
+		// A provider resolves against the files on DISK, not against what this index holds, so only a
+		// file arriving or leaving, or a config restating the rules, moves where a specifier lands.
+		// Editing a body moves none of them, which is the ordinary batch. Asked of the roots the scope
+		// just decided, so a write the workspace does not admit retires nothing.
+		const moved = decisions.some(
+			(decision) =>
+				decision.action === "forget" ||
+				this.configFiles.has(decision.module) ||
+				(roots.has(decision.module) && this.store.contentHashOf(decision.module) === null),
+		);
+		if (moved) this.caches.resolutions.invalidate();
 		// Persisted here too, or a watcher batch leaves overview describing the previous scan.
 		this.writeScanSummary();
 		const attempted = new Set<string>();

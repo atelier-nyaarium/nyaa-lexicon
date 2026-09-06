@@ -8,6 +8,9 @@
 // Whole-index rather than per-file on purpose. A per-file key needs to know which files an answer
 // consulted, and a reverse lookup consults all of them, so the precise version is both harder and
 // barely narrower.
+//
+// The generation is per CACHE, not per index, so two questions with different lifetimes get two
+// instances. `IndexCaches` in indexer.ts names them and owns when each one turns over.
 
 import type { CacheStats } from "@nyaa-lexicon/protocol";
 
@@ -18,6 +21,16 @@ export type { CacheStats } from "@nyaa-lexicon/protocol";
 
 /** Bounded so a long session cannot grow one without limit. Oldest key evicted first. */
 const DEFAULT_CAPACITY = 500;
+
+/**
+ * Room for every distinct import a workspace writes, since a cache that evicts what it is about to
+ * be asked again answers nothing.
+ *
+ * Measured on three real repositories: 2,478 distinct (module, specifier) pairs here, 3,058 in
+ * evie-bot, 8,235 in switchboard. This holds a workspace twice switchboard's size, and a generation
+ * bump clears it whole.
+ */
+export const RESOLUTION_CAPACITY = 20_000;
 
 ////////////////////////////////
 //  Class

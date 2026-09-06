@@ -180,6 +180,117 @@ describe("a batch that changes nothing", () => {
 	});
 });
 
+describe("where a specifier lands", () => {
+	/**
+	 * One root importing a chain of ignored files, so each link is reachable only through the one
+	 * above it and the closure takes a round per link.
+	 */
+	function chain(depth: number): void {
+		initGit();
+		put("root.fake", `export class Root {}\nimport "./link1.fake";\n`);
+		const links = Array.from({ length: depth }, (_, step) => `link${step + 1}.fake`);
+		put(".gitignore", `${links.join("\n")}\n`);
+		for (let step = 1; step <= depth; step++) {
+			const next = step === depth ? "" : `import "./link${step + 1}.fake";\n`;
+			put(`link${step}.fake`, `export class Link${step} {}\n${next}`);
+		}
+	}
+
+	/** Counts a resolve per (module, specifier), so a repeat of one question is visible. */
+	function countingService(asked: string[]): LexiconService {
+		const port = sharedFake({
+			claims: [claims],
+			answers: {
+				resolveImport: (request) => {
+					asked.push(`${request.fromModule} ${request.specifier}`);
+					return resolveFake(request);
+				},
+			},
+		});
+		return new LexiconService(store, port, sourceReader(root), root);
+	}
+
+	// Every round used to re-walk everything seen so far, so a chain asked its head's imports once
+	// per link. The reachability answer is the thing that must not change.
+	it("asks each importer once per scan, and still reaches the whole chain", async () => {
+		chain(4);
+		const asked: string[] = [];
+		service = countingService(asked);
+
+		await service.indexWorkspace();
+
+		expect(service.findByName("Link4")).toHaveLength(1);
+		expect([...asked].sort()).toEqual([
+			"link1.fake ./link2.fake",
+			"link2.fake ./link3.fake",
+			"link3.fake ./link4.fake",
+			"root.fake ./link1.fake",
+		]);
+	});
+
+	// A body edit moves no file and no rule, so where every specifier lands is what it was.
+	it("is not asked again by a batch that only edits a body", async () => {
+		chain(3);
+		const asked: string[] = [];
+		service = countingService(asked);
+		await service.indexWorkspace();
+		asked.length = 0;
+
+		put("link1.fake", 'export class Link1 {}\nexport class Extra {}\nimport "./link2.fake";\n');
+		await service.applyBatch([{ kind: "changed", module: "link1.fake", contentHash: "link1-2" }]);
+
+		expect(service.findByName("Extra")).toHaveLength(1);
+		expect(asked).toEqual([]);
+	});
+
+	// A file that did not exist can be where a specifier lands, so the answers have to be asked again.
+	it("is asked again once a module appears", async () => {
+		chain(2);
+		const asked: string[] = [];
+		service = countingService(asked);
+		await service.indexWorkspace();
+		asked.length = 0;
+
+		put("fresh.fake", "export class Fresh {}\n");
+		await service.applyBatch([{ kind: "changed", module: "fresh.fake", contentHash: "fresh-1" }]);
+
+		expect(service.findByName("Fresh")).toHaveLength(1);
+		expect(asked.length).toBeGreaterThan(0);
+	});
+
+	// The provider names its config files; an edit to one restates where everything lands.
+	it("is asked again once a config the provider named is edited", async () => {
+		initGit();
+		put("root.fake", 'export class Root {}\nimport "./leaf.fake";\n');
+		put("leaf.fake", "export class Leaf {}\n");
+		put("fake.config", "rules\n");
+		const asked: string[] = [];
+		const port = sharedFake({
+			claims: [{ ...claims, extensions: [".fake", ".config"] }],
+			answers: {
+				discoverProject: () => ({
+					files: ["root.fake", "leaf.fake", "fake.config"],
+					externalRoots: [],
+					configFiles: ["fake.config"],
+					diagnostics: [],
+				}),
+				resolveImport: (request) => {
+					asked.push(`${request.fromModule} ${request.specifier}`);
+					return resolveFake(request);
+				},
+			},
+		});
+		service = new LexiconService(store, port, sourceReader(root), root);
+		await service.indexWorkspace();
+		asked.length = 0;
+
+		put("fake.config", "rules\nmore\n");
+		await service.applyBatch([{ kind: "changed", module: "fake.config", contentHash: "config-2" }]);
+
+		expect(asked.length).toBeGreaterThan(0);
+	});
+});
+
 describe("a refused file", () => {
 	// Its bytes are the reason it holds nothing, so only a change to them earns another read.
 	it("is not re-read by a batch that does not name it", async () => {

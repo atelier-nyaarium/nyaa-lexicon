@@ -191,6 +191,19 @@ rather than per-file on purpose: a reverse lookup consults every file, so the pr
 harder to get right and barely narrower, and getting it wrong means serving a confidently stale
 answer.
 
+Two questions live behind two caches, because they turn over at different rates. `IndexCaches` in
+`core/src/indexer.ts` names them. A stored ANSWER is drawn from facts and dies the moment any fact
+moves. Where a SPECIFIER LANDS is not drawn from facts at all: a provider resolves it against the
+files on disk and its own project model, so it survives every edit to a file's body. Its generation
+turns over on three things and nothing else: a file leaving, a file arriving as a root the scope
+admits, and an edit to a config file the provider named in `configFiles`. Held in one cache the
+second question cost what the first does, which was a workspace of provider round trips on every
+batch; with the split, an ordinary edit asks none.
+
+Reachability walks a frontier: each round reads the imports of what the last round indexed, never
+of everything seen so far. A module's imports do not change while the walk runs, so re-reading them
+per round asked the same question once per round.
+
 ## Identity
 
 Three id grammars, each with exactly one owner.

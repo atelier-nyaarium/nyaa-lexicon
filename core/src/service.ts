@@ -23,7 +23,7 @@ import { withinBudget } from "./deadline.js";
 import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
 import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
 import { ImportResolver } from "./imports.js";
-import { WorkspaceIndexer } from "./indexer.js";
+import { type IndexCaches, WorkspaceIndexer } from "./indexer.js";
 import {
 	type CallHierarchy,
 	type CommentQuery,
@@ -47,7 +47,7 @@ import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
 import type { UnknownType } from "./refusalSlots.js";
 import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
-import { ResultCache } from "./resultCache.js";
+import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
 import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredComment, StoredDeclaration } from "./store.js";
@@ -89,7 +89,7 @@ export class LexiconService {
 		this.imports = new ImportResolver(store, (fromModule, specifier) => {
 			const surfaceGlobs = this.currentScope().bundles;
 			const configKey = surfaceGlobs.join("\u0000");
-			return this.cache.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
+			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
 				this.supervisor.ask(fromModule, "resolveImport", {
 					fromModule,
 					specifier,
@@ -104,7 +104,7 @@ export class LexiconService {
 			supervisor,
 			readSource,
 			workspaceRoot,
-			this.cache,
+			this.caches,
 			(from, specifier) => this.imports.resolveImport(from, specifier),
 			this.clock,
 		);
@@ -113,7 +113,10 @@ export class LexiconService {
 		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe, readFile);
 	}
 
-	private readonly cache = new ResultCache();
+	private readonly caches: IndexCaches = {
+		facts: new ResultCache(),
+		resolutions: new ResultCache(RESOLUTION_CAPACITY),
+	};
 
 	private readonly readFile: (module: string) => string | null;
 
@@ -138,7 +141,12 @@ export class LexiconService {
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
 	cacheStats(): CacheStats {
-		return this.cache.stats();
+		return this.caches.facts.stats();
+	}
+
+	/** The other cache's own counts, for a test that asks whether a batch re-resolved anything. */
+	resolutionStats(): CacheStats {
+		return this.caches.resolutions.stats();
 	}
 
 	////////////////////////////////
@@ -535,7 +543,7 @@ export class LexiconService {
 	 * the repository does.
 	 */
 	async coChangedWith(module: string, limit = 20): Promise<CoChangedWithResult> {
-		return this.cache.through(`coChange ${module} ${limit}`, async () => {
+		return this.caches.facts.through(`coChange ${module} ${limit}`, async () => {
 			const commits = await readHistory(this.workspaceRoot);
 			const { partners, report } = coChangesFor(module, commits);
 			return { module, partners: partners.slice(0, limit), total: partners.length, ...report };
@@ -548,7 +556,7 @@ export class LexiconService {
 	 * Cached alongside co-change and keyed separately, since a caller usually wants one or the other.
 	 */
 	async fileHistory(module: string): Promise<FileHistory> {
-		return this.cache.through(`fileHistory ${module}`, async () =>
+		return this.caches.facts.through(`fileHistory ${module}`, async () =>
 			fileHistoryFor(module, await readHistory(this.workspaceRoot)),
 		);
 	}
@@ -560,7 +568,7 @@ export class LexiconService {
 	 * the code is or who touches it; a commit message is the only place someone wrote down why.
 	 */
 	async commitsMentioning(name: string, limit = DEFAULT_MENTION_LIMIT): Promise<CommitsMentioningResult> {
-		return this.cache.through(`mentions ${name} ${limit}`, async () => {
+		return this.caches.facts.through(`mentions ${name} ${limit}`, async () => {
 			const commits = await readHistory(this.workspaceRoot);
 			const mentions = commitsMentioning(name, commits, limit);
 			return { name, mentions, commits: commits.length };
