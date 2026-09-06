@@ -30,6 +30,11 @@ export function repeatedNamePathCase(): ConformanceCase {
 				subject: "src/twice.py",
 				declarationNames: ["work", "work"],
 			},
+			bash: {
+				files: { "src/twice.sh": "work() { :; }\nwork() { :; }\n" },
+				subject: "src/twice.sh",
+				declarationNames: ["work", "work"],
+			},
 		},
 	};
 }

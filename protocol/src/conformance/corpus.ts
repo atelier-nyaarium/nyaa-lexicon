@@ -48,6 +48,7 @@ const JSON_LANG = "json";
 const XML = "xml";
 const HTML = "html";
 const YAML = "yaml";
+const BASH = "bash";
 
 const CASES: ConformanceCase[] = [
 	{
@@ -123,6 +124,15 @@ const CASES: ConformanceCase[] = [
 			[KOTLIN]: {
 				files: { "src/Cart.kt": "package cart\n\nclass Cart\nfun add() {}\nconst val LIMIT = 1\n" },
 				subject: "src/Cart.kt",
+			},
+			// Bash exports variables, never functions, and has no class.
+			[BASH]: {
+				files: { "src/cart.sh": "declare -rx LIMIT=1\nadd() { :; }\n" },
+				subject: "src/cart.sh",
+				declarations: [
+					{ name: "LIMIT", kind: "constant", exported: true },
+					{ name: "add", kind: "function" },
+				],
 			},
 		},
 		declarations: [
@@ -380,6 +390,12 @@ const CASES: ConformanceCase[] = [
 				subject: "data.html",
 				declarations: [{ name: "b", nameStart: { line: 0, character: 10 } }],
 			},
+			// A quoted value holds the character; `X="`, the astral, `"; ` puts Y at 8.
+			[BASH]: {
+				files: { "src/cart.sh": `X="${ASTRAL}"; Y=1\n` },
+				subject: "src/cart.sh",
+				declarations: [{ name: "Y", nameStart: { line: 0, character: 8 } }],
+			},
 		},
 	},
 	{
@@ -442,6 +458,11 @@ const CASES: ConformanceCase[] = [
 				subject: "cart.html",
 				declarations: [{ name: "cart", nameStart: { line: 1, character: 1 } }],
 			},
+			[BASH]: {
+				files: { "src/cart.sh": "\ncart=1\n" },
+				subject: "src/cart.sh",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 0 } }],
+			},
 		},
 	},
 	{
@@ -463,6 +484,7 @@ const CASES: ConformanceCase[] = [
 			[MARKDOWN]: { files: { "empty.md": "\n" }, subject: "empty.md" },
 			[XML]: { files: { "empty.xml": "\n" }, subject: "empty.xml" },
 			[HTML]: { files: { "empty.html": "\n" }, subject: "empty.html" },
+			[BASH]: { files: { "src/empty.sh": "\n" }, subject: "src/empty.sh" },
 		},
 		declarations: [],
 		// The "does not error" half, which the wording claimed and nothing checked. An empty file is
@@ -1107,6 +1129,7 @@ const CASES: ConformanceCase[] = [
 			// noted instead, so neither belongs here.
 			[JSON_LANG]: { files: { "broken.json": '{\n\t"a": \n}\n' }, subject: "broken.json" },
 			[YAML]: { files: { "broken.yml": "a: [1,\n" }, subject: "broken.yml" },
+			[BASH]: { files: { "src/broken.sh": 'echo "unterminated\n' }, subject: "src/broken.sh" },
 		},
 		parseErrors: "required",
 	},
@@ -1184,6 +1207,16 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Cart.kt",
 				imports: [{ specifier: "item.Item", status: "resolved", module: "src/Item.kt" }],
 			},
+			// A sourced path is relative to the sourcing file first, which is how scripts beside each
+			// other find one another whatever the working directory is.
+			[BASH]: {
+				files: {
+					"src/cart.sh": "source ./item.sh\n",
+					"src/item.sh": "item() { :; }\n",
+				},
+				subject: "src/cart.sh",
+				imports: [{ specifier: "./item.sh", status: "resolved", module: "src/item.sh" }],
+			},
 		},
 		imports: [{ specifier: "./item", status: "resolved", module: "src/item.ts" }],
 	},
@@ -1250,6 +1283,12 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Cart.kt",
 				imports: [{ specifier: "kotlin.collections.List", status: "external" }],
 			},
+			// An absolute path outside the workspace is the system's, which every shell has.
+			[BASH]: {
+				files: { "src/cart.sh": "source /etc/profile\n" },
+				subject: "src/cart.sh",
+				imports: [{ specifier: "/etc/profile", status: "external" }],
+			},
 		},
 		imports: [{ specifier: "zod", status: "external" }],
 	},
@@ -1297,6 +1336,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Cart.kt",
 				imports: [{ specifier: "missing.Gone", status: "unresolved" }],
 			},
+			[BASH]: {
+				files: { "src/cart.sh": "source ./gone.sh\n" },
+				subject: "src/cart.sh",
+				imports: [{ specifier: "./gone.sh", status: "unresolved" }],
+			},
 		},
 		imports: [{ specifier: "./gone", status: "unresolved" }],
 	},
@@ -1341,6 +1385,10 @@ const CASES: ConformanceCase[] = [
 				files: { "src/Cart.kt": "package cart\nfun add() {}\nfun run() { add() }\n" },
 				subject: "src/Cart.kt",
 			},
+			[BASH]: {
+				files: { "src/cart.sh": "add() { :; }\nrun() { add; }\n" },
+				subject: "src/cart.sh",
+			},
 		},
 		references: [{ name: "add", status: "bound", bindsTo: "add" }],
 	},
@@ -1381,6 +1429,12 @@ const CASES: ConformanceCase[] = [
 				subject: "src/Cart.kt",
 				typeOf: { name: "LIMIT", display: "Int" },
 			},
+			// `declare -i` is the one type a shell variable can carry; `-r` makes it the constant.
+			[BASH]: {
+				files: { "src/cart.sh": "declare -ri LIMIT=1\n" },
+				subject: "src/cart.sh",
+				typeOf: { name: "LIMIT", display: "integer" },
+			},
 		},
 		typeOf: { name: "LIMIT", display: "number" },
 	},
@@ -1406,6 +1460,7 @@ const CASES: ConformanceCase[] = [
 			},
 			[RUST]: { files: { "src/cart.rs": "pub const LIMIT: i32 = 1;\n" }, subject: "src/cart.rs" },
 			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nconst val LIMIT: Int = 1\n" }, subject: "src/Cart.kt" },
+			[BASH]: { files: { "src/cart.sh": "declare -i LIMIT=1\n" }, subject: "src/cart.sh" },
 		},
 		typeOf: { name: "LIMIT", status: "known" },
 	},

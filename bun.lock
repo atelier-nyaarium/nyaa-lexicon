@@ -12,7 +12,7 @@
     },
     "adapters/lsp": {
       "name": "@nyaa-lexicon/adapter-lsp",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/core": "workspace:*",
@@ -21,7 +21,7 @@
     },
     "adapters/mcp": {
       "name": "@nyaa-lexicon/adapter-mcp",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "@nyaa-lexicon/client": "workspace:*",
@@ -29,17 +29,21 @@
         "@nyaa-lexicon/protocol": "workspace:*",
         "zod": "4.4.3",
       },
+      "devDependencies": {
+        "mdast-util-from-markdown": "2.0.3",
+        "typescript": "6.0.3",
+      },
     },
     "client": {
       "name": "@nyaa-lexicon/client",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
       },
     },
     "core": {
       "name": "@nyaa-lexicon/core",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -50,7 +54,7 @@
     },
     "formats": {
       "name": "@nyaa-lexicon/formats",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "@rgrove/parse-xml": "4.2.3",
@@ -61,15 +65,27 @@
     },
     "protocol": {
       "name": "@nyaa-lexicon/protocol",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "vscode-jsonrpc": "9.0.1",
         "zod": "4.4.3",
       },
+      "devDependencies": {
+        "typescript": "6.0.3",
+      },
+    },
+    "providers/bash": {
+      "name": "@nyaa-lexicon/provider-bash",
+      "version": "3.2.2",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
+        "unbash": "4.0.10",
+        "vscode-jsonrpc": "9.0.1",
+      },
     },
     "providers/c": {
       "name": "@nyaa-lexicon/provider-c",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -77,7 +93,7 @@
     },
     "providers/cpp": {
       "name": "@nyaa-lexicon/provider-cpp",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -85,7 +101,7 @@
     },
     "providers/csharp": {
       "name": "@nyaa-lexicon/provider-csharp",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -93,7 +109,7 @@
     },
     "providers/gdscript": {
       "name": "@nyaa-lexicon/provider-gdscript",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -101,7 +117,7 @@
     },
     "providers/html": {
       "name": "@nyaa-lexicon/provider-html",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -110,7 +126,7 @@
     },
     "providers/json": {
       "name": "@nyaa-lexicon/provider-json",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -119,7 +135,7 @@
     },
     "providers/kotlin": {
       "name": "@nyaa-lexicon/provider-kotlin",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -127,7 +143,7 @@
     },
     "providers/markdown": {
       "name": "@nyaa-lexicon/provider-markdown",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -141,7 +157,7 @@
     },
     "providers/python": {
       "name": "@nyaa-lexicon/provider-python",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -149,7 +165,7 @@
     },
     "providers/rust": {
       "name": "@nyaa-lexicon/provider-rust",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.1",
@@ -157,7 +173,7 @@
     },
     "providers/text": {
       "name": "@nyaa-lexicon/provider-text",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -166,7 +182,7 @@
     },
     "providers/typescript": {
       "name": "@nyaa-lexicon/provider-typescript",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "typescript": "6.0.3",
@@ -175,7 +191,7 @@
     },
     "providers/xml": {
       "name": "@nyaa-lexicon/provider-xml",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -184,7 +200,7 @@
     },
     "providers/yaml": {
       "name": "@nyaa-lexicon/provider-yaml",
-      "version": "2.2.0",
+      "version": "3.2.2",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -226,6 +242,8 @@
     "@nyaa-lexicon/formats": ["@nyaa-lexicon/formats@workspace:formats"],
 
     "@nyaa-lexicon/protocol": ["@nyaa-lexicon/protocol@workspace:protocol"],
+
+    "@nyaa-lexicon/provider-bash": ["@nyaa-lexicon/provider-bash@workspace:providers/bash"],
 
     "@nyaa-lexicon/provider-c": ["@nyaa-lexicon/provider-c@workspace:providers/c"],
 
@@ -514,6 +532,8 @@
     "type-is": ["type-is@2.1.0", "", { "dependencies": { "content-type": "^2.0.0", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA=="],
 
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
+
+    "unbash": ["unbash@4.0.10", "", {}, "sha512-b7zoBQvpWp0vuN5q2vK2RRBR2SvuruQAs50DApdDveBSn3eSYd84IaHodFqQIMlvY9K2VnyBUEXgwOBuGU9GBg=="],
 
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
 
