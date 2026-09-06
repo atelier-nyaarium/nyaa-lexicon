@@ -130,9 +130,12 @@ passes, and the block-comment and spliced-comment cases do not apply, since bash
 - Mechanism: opaque marking is opt-in per call site in the walk. Defect class: text unbash
   tokenized that no call site marks leaks its `#` as a comment. Patched three times: the assignment
   prefix (the value's substitution was hidden by marking too much), then the `for (( ))` header and
-  a function's name, then the here-document delimiter line. The class ends when the mask is proven
-  exhaustive by construction: a check that no reported comment overlaps any word or node span a
-  generic walk of the tree finds, over the whole corpus.
+  a function's name, then the here-document delimiter line, then a builtin's name word whose
+  subscript expands. Closed by `mask.test.ts`, which found that fourth one on its first run: a walk that
+  knows only the tree's shape collects every span unbash tokenized as data, and no reported comment
+  may start inside one, over scripts holding a hash in every hand-marked position and over the
+  machine's bash-completion corpus when present. Here-document bodies and delimiter lines have no
+  span in the tree, so the mask's own scan stays the authority for them.
 
 ## Phase 3 - Shebang claim
 

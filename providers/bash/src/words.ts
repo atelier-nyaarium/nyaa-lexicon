@@ -40,6 +40,8 @@ export function declareOrWriteWord(w: Walk, scope: Scope, word: Word | undefined
 		local: false,
 		...(declaredType === undefined ? {} : { declaredType }),
 	});
+	// A subscript may expand, and the word's text is data either way.
+	walkWord(w, scope, word, false);
 }
 
 /** `$NAME` and every `${NAME...}` form name NAME; a positional or special parameter is no name. */

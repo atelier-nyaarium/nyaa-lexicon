@@ -104,7 +104,7 @@ function walkFunction(w: Walk, scope: Scope, node: Extract<Node, { type: "Functi
 	const range = rangeAt(w, node.pos, node.end);
 	const declaration = declare(w, scope, name, wordRange(w, node.name), range, { kind: "function", local: false });
 	declaration.metrics = { lines: range.end.line - range.start.line + 1 };
-	pushOpaque(w, node.name.pos, node.name.end);
+	walkWord(w, scope, node.name, false);
 	const own = parseSymbolId(declaration.symbolId)?.descriptors.at(-1) ?? { kind: "method", name };
 	const inner: Scope = {
 		fromId: declaration.symbolId,

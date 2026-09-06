@@ -222,12 +222,12 @@ export function unsetting(w: Walk, scope: Scope, words: Word[]): void {
 			continue;
 		}
 		const range = rangeAt(w, word.pos, word.pos + name.length);
-		if (functions) {
-			pushReference(w, scope, { name, range, role: "write", ofFunction: true });
-			continue;
+		if (functions) pushReference(w, scope, { name, range, role: "write", ofFunction: true });
+		else {
+			const target = resolve(w, scope, name, { local: false })?.symbolId;
+			pushReference(w, scope, { name, range, role: "write", ...(target === undefined ? {} : { target }) });
 		}
-		const target = resolve(w, scope, name, { local: false })?.symbolId;
-		pushReference(w, scope, { name, range, role: "write", ...(target === undefined ? {} : { target }) });
+		walkWord(w, scope, word, false);
 	}
 }
 
