@@ -157,7 +157,7 @@ provider claims a shebang, and ranks the claim with a filename claim. `walkWorks
 same bytes for its own discovery. A conformance fixture may now state `discovery`, which files the project model must list
 or leave out, and two `projectModel` cases use it. The Bash provider claims `bash` and `sh`.
 
-## Phase 4 - Switchboard: the structural shape
+## Phase 4 - Switchboard: the structural shape ✅
 
 In the switchboard repository, its own plan. Named here because Question 2 decided it.
 
@@ -168,6 +168,24 @@ In the switchboard repository, its own plan. Named here because Question 2 decid
 - A grant covers the set the request named. A request whose set is not a subset of the grant's
   asks again. That is the guard the owner deferred.
 - `operationShape` stays the phone's display shape until the console's copy reads the same set.
+
+Shipped in switchboard as `gateway/vault/operationSet.ts` on unbash 4.0.10, with `plans/operation-shape.md`
+carrying the questionaire. A window grant records the set and covers a request only when every shape
+the request names is in it; a window recorded before the set was kept covers nothing rather than
+falling back to the display shape, which would have left the old hole open for it. The set walks
+every unbash node kind, so a parser that adds one fails to typecheck, and one `shapeFrom` holds the
+shape rule that the display shape and every set member both take.
+
+### Bug Classes
+
+- **The wrapper peel, `shapeOf` and its option table:** a peel that lands on a word which is not a
+  program, whose shape then equals a real program's. Three rounds patched instances. Round one:
+  `sudo -e file` peeled to `file` and `time -- cmd` gave `-- cmd`, fixed with a per-wrapper stop set
+  and a `time`-only `--` rule. Round two: `sudo --user root cmd`, `xargs --max-args 1 cmd` and
+  bundled `taskset -pa 1 2` all peeled onto a value, fixed by classifying a word rather than
+  matching a token, with long-form and bundle rules. Round three closed the class: an option the
+  table does not list stops the peel, so only an option read from the program's own help can move
+  the peel past a word.
 
 ## Painpoints
 
@@ -199,3 +217,16 @@ In the switchboard repository, its own plan. Named here because Question 2 decid
 - The conformance runner keeps a list of fixture fields that "earn no parse", so a new expectation
   field such as `discovery` silently earns one until the list learns it. The fixture schema and
   that list are two places for one fact.
+- Switchboard's Kotlin codegen writes a new optional field wherever its zod key sits, which for
+  `shapes` was the middle of two constructors, so every positional construction in the Kotlin tests
+  broke at once. The gate catches it, but `kotlin-gate.sh` prints a tail that says only
+  "Compilation error. See log for more details", and the `e:` lines that name the file are further
+  up. The first minutes of this phase went into recovering an error the gate already had.
+- A review agent that runs the switchboard suite in a sandbox gets `listen EPERM` from the two
+  federation harness files and reports two failing suites. Six agents reported it, each as a finding
+  to explain away. A harness that named the sandbox as the reason and skipped itself would have paid
+  for itself in the first report.
+- The gateway's wrapper table is read from each program's `--help` by hand. The fail-closed rule
+  means an option the table omits costs an extra ask, but an option wrongly listed as taking no
+  value still peels onto that value, and nothing in the repository can check the table against the
+  programs. The container the gateway runs in need not even have them.
