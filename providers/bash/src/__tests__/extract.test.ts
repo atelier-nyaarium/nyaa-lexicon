@@ -547,7 +547,7 @@ describe("the wire face", () => {
 		});
 	});
 
-	test("discovery claims the extensions and the exact filenames, and skips what is not bash", () => {
+	test("discovery claims the extensions, the exact filenames, and a bash shebang, and skips the rest", () => {
 		const root = workspace({
 			"bin/run.sh": "",
 			"lib/tools.bash": "",
@@ -555,9 +555,22 @@ describe("the wire face", () => {
 			".zshrc": "",
 			"node_modules/m/setup.sh": "",
 			"README.md": "",
+			"bin/run": "#!/bin/bash\necho hi\n",
+			"bin/strict": "#!/usr/bin/env -S bash -e\n",
+			"bin/posix": "#! /usr/bin/env sh\n",
+			"bin/tool": "#!/usr/bin/env python3\nprint(1)\n",
+			"bin/plain": "echo no shebang\n",
+			"bin/x.py": "#!/bin/bash\n",
 		});
 		const project = new BashProvider().discoverProject(root);
-		expect([...project.files].sort()).toEqual([".bashrc", "bin/run.sh", "lib/tools.bash"]);
+		expect([...project.files].sort()).toEqual([
+			".bashrc",
+			"bin/posix",
+			"bin/run",
+			"bin/run.sh",
+			"bin/strict",
+			"lib/tools.bash",
+		]);
 		expect(project.diagnostics).toEqual([]);
 
 		const missing = new BashProvider().discoverProject(path.join(root, "gone"));

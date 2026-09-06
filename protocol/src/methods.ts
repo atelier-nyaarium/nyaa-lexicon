@@ -69,6 +69,8 @@ export const InitializeResponseSchema = z
 		sharedExtensions: z
 			.array(z.object({ extension: z.string().min(1), beside: z.array(z.string().min(1)).min(1) }))
 			.optional(),
+		/** Interpreters, as `shebangInterpreter` names them, claiming an extensionless file; ranks with a filename claim. */
+		shebangs: z.array(z.string().min(1)).optional(),
 		fallback: z.boolean().optional(),
 		protocolVersion: z.string().min(1),
 		tiers: ProviderTiersSchema,

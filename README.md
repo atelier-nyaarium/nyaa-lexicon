@@ -33,7 +33,7 @@ Fifteen, each in its own process behind a documented protocol.
 | C++        | `.cpp` `.cc` `.cxx` `.hpp` `.hh` `.hxx`               |
 | C          | `.c` `.h`                                             |
 | GDScript   | `.gd`                                                 |
-| Bash       | `.sh` `.bash` `.bashrc` `.bash_profile` `.profile`    |
+| Bash       | `.sh` `.bash`, the `.bashrc` family, `.profile`, and extensionless files whose shebang names `bash` or `sh` |
 | Markdown   | `.md` `.mdc` `.markdown`                              |
 | JSON       | `.json` `.jsonc` `.jsonl` `.ndjson`                   |
 | YAML       | `.yml` `.yaml`                                        |

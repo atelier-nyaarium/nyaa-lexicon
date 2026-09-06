@@ -148,6 +148,15 @@ passes, and the block-comment and spliced-comment cases do not apply, since bash
   interpreter is not taken.
 - Protocol minor: a new optional field, tolerated by older providers.
 
+Shipped: protocol 3.1.0 adds `shebangs` to the initialize answer, a list of interpreters as
+`shebangInterpreter` in `protocol/src/shebang.ts` names them, `env` with its options and its
+assignments looked through, so a provider lists `bash` and `sh` rather than every spelling.
+Routing in `core/src/routing.ts` reads an extensionless module's first line through the
+`HeadReader` the indexer hands the supervisor, from the opening bytes alone and only when some
+provider claims a shebang, and ranks the claim with a filename claim. `walkWorkspace` reads the
+same bytes for its own discovery. A conformance fixture may now state `discovery`, which files the project model must list
+or leave out, and two `projectModel` cases use it. The Bash provider claims `bash` and `sh`.
+
 ## Phase 4 - Switchboard: the structural shape
 
 In the switchboard repository, its own plan. Named here because Question 2 decided it.

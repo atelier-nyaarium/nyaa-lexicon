@@ -7,7 +7,7 @@ import {
 	type ProviderTiers,
 } from "@nyaa-lexicon/protocol";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
-import { type ProviderClaims, routeModule, routingContextOf } from "../routing";
+import { type HeadReader, type ProviderClaims, routeModule, routingContextOf } from "../routing";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -126,9 +126,10 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 	const failure = options.fail ?? {};
 	const lazyEvidence = options.lazyEvidence ?? true;
 	let evidence: () => Iterable<string> = () => [];
+	let head: HeadReader | undefined;
 	let routing: ReturnType<typeof routingContextOf> | undefined;
 	const context = () => {
-		routing ??= routingContextOf(evidence());
+		routing ??= routingContextOf(evidence(), head);
 		return routing;
 	};
 
@@ -173,8 +174,11 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		evidenceFrom: (modules) => {
 			if (lazyEvidence) evidence = modules;
 		},
+		headFrom: (read) => {
+			head = read;
+		},
 		observeWorkspace: (modules) => {
-			routing = routingContextOf(modules);
+			routing = routingContextOf(modules, head);
 		},
 		observeModule: (module) => context().observe(module),
 		declares: (_providerId, tier) => tiers[tier] === true,

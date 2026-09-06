@@ -3,7 +3,7 @@
 // Pure, because this is where a language check would otherwise creep into the core. Providers
 // state what they claim at initialize; nothing here knows what any of those claims mean.
 
-import type { FileContent } from "@nyaa-lexicon/protocol";
+import { type FileContent, shebangInterpreter } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -17,6 +17,8 @@ export interface ProviderClaims {
 	filenames?: string[];
 	/** Claimed only where a file with one of the `beside` extensions exists; outranks a plain claim. */
 	sharedExtensions?: Array<{ extension: string; beside: string[] }>;
+	/** Interpreters whose shebang claims an extensionless file; ranks with a filename claim. */
+	shebangs?: string[];
 	fallback?: boolean;
 	/** As declared at initialize; absent means code, resolved here once. */
 	content?: FileContent;
@@ -26,9 +28,14 @@ export interface ProviderClaims {
 export interface RoutingContext {
 	/** Whether any file with this extension (with its dot, any case) is in the workspace. */
 	hasExtension: (extension: string) => boolean;
+	/** The interpreter a module's shebang names, read once; undefined without one or a reader. */
+	interpreterOf: (module: string) => string | undefined;
 	/** Adds one module as evidence, for a file indexed outside a scan. */
 	observe: (module: string) => void;
 }
+
+/** The first line of a module, for a shebang claim; undefined when it cannot be read. */
+export type HeadReader = (module: string) => string | undefined;
 
 /** Why routing answered as it did, so a caller can report an unowned file honestly. */
 export type Route =
@@ -61,7 +68,8 @@ function extensionOf(module: string): string {
  */
 export function routeModule(module: string, providers: ProviderClaims[], context?: RoutingContext): Route {
 	const name = basenameOf(module);
-	const byName = providers.filter((p) => p.filenames?.includes(name));
+	const byShebang = context === undefined ? [] : matchByShebang(module, providers, context);
+	const byName = providers.filter((p) => p.filenames?.includes(name) || byShebang.includes(p));
 	const shared = byName.length > 0 || context === undefined ? [] : matchBySharedExtension(module, providers, context);
 	const extensions = matchByExtension(module, providers);
 	const fallback = providers.filter((p) => p.fallback === true);
@@ -80,6 +88,14 @@ function matchByExtension(module: string, providers: ProviderClaims[]): Provider
 	const extension = extensionOf(module);
 	if (extension === "") return [];
 	return providers.filter((p) => p.extensions.some((e) => e.toLowerCase() === extension));
+}
+
+/** Providers claiming the interpreter an extensionless module's first line names; the line is read only then. */
+function matchByShebang(module: string, providers: ProviderClaims[], context: RoutingContext): ProviderClaims[] {
+	if (extensionOf(module) !== "" || !providers.some((p) => (p.shebangs?.length ?? 0) > 0)) return [];
+	const interpreter = context.interpreterOf(module);
+	if (interpreter === undefined) return [];
+	return providers.filter((p) => p.shebangs?.includes(interpreter));
 }
 
 /** Providers whose shared claim on this extension holds, given what the workspace contains. */
@@ -110,13 +126,28 @@ export function modulesFor(
 	});
 }
 
-/** The context for one set of workspace modules: which extensions are present at all. */
-export function routingContextOf(modules: Iterable<string>): RoutingContext {
+/** The context for one set of workspace modules: which extensions are present, and each shebang once. */
+export function routingContextOf(modules: Iterable<string>, head?: HeadReader): RoutingContext {
 	const present = new Set<string>();
+	const interpreters = new Map<string, string | undefined>();
 	const observe = (module: string): void => {
 		const extension = extensionOf(module);
 		if (extension !== "") present.add(extension);
 	};
 	for (const module of modules) observe(module);
-	return { hasExtension: (extension) => present.has(extension.toLowerCase()), observe };
+	const interpreterOf = (module: string): string | undefined => {
+		if (head === undefined) return undefined;
+		if (!interpreters.has(module)) {
+			let line: string | undefined;
+			// A file that cannot be read has no shebang; the read's failure is not routing's to raise.
+			try {
+				line = head(module);
+			} catch {
+				line = undefined;
+			}
+			interpreters.set(module, line === undefined ? undefined : shebangInterpreter(line));
+		}
+		return interpreters.get(module);
+	};
+	return { hasExtension: (extension) => present.has(extension.toLowerCase()), interpreterOf, observe };
 }

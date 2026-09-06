@@ -68,6 +68,44 @@ describe("routing a module", () => {
 		expect(route("src/a.ts", [TS, rival])).toEqual(route("src/a.ts", [rival, TS]));
 	});
 
+	it("routes an extensionless file whose shebang names a claimed interpreter, through env too", () => {
+		const bash: ProviderClaims = { providerId: "bash", language: "bash", extensions: [".sh"], shebangs: ["bash"] };
+		const text: ProviderClaims = { providerId: "text", language: "text", extensions: [], fallback: true };
+		const heads: Record<string, string> = {
+			"bin/run": "#!/usr/bin/env -S bash -e",
+			"bin/tool": "#!/usr/bin/env python3",
+			"bin/plain": "echo no",
+			"bin/x.py": "#!/bin/bash",
+		};
+		const context = routingContextOf(Object.keys(heads), (module) => heads[module]);
+		const owner = (module: string) => routeModule(module, [bash, text], context);
+		expect(owner("bin/run")).toEqual({ owned: true, providerId: "bash", content: "code" });
+		expect(owner("bin/tool")).toEqual({ owned: true, providerId: "text", content: "code" });
+		expect(owner("bin/plain")).toEqual({ owned: true, providerId: "text", content: "code" });
+		// An extension decides before any shebang does.
+		expect(owner("bin/x.py")).toEqual({ owned: true, providerId: "text", content: "code" });
+		// Without a reader nothing is read, so the claim never holds; a reader that fails reads nothing.
+		expect(routeModule("bin/run", [bash], routingContextOf(["bin/run"]))).toEqual({
+			owned: false,
+			reason: "unclaimed",
+		});
+		const failing = routingContextOf(["bin/run"], () => {
+			throw new Error("gone");
+		});
+		expect(routeModule("bin/run", [bash], failing)).toEqual({ owned: false, reason: "unclaimed" });
+	});
+
+	it("contests a file that a shebang and a filename both claim", () => {
+		const bash: ProviderClaims = { providerId: "bash", language: "bash", extensions: [], shebangs: ["sh"] };
+		const make: ProviderClaims = { providerId: "make", language: "make", extensions: [], filenames: ["configure"] };
+		const context = routingContextOf(["configure"], () => "#!/bin/sh");
+		expect(routeModule("configure", [bash, make], context)).toEqual({
+			owned: false,
+			reason: "contested",
+			providerIds: ["bash", "make"],
+		});
+	});
+
 	it("answers unclaimed when no provider is registered at all", () => {
 		expect(route("src/a.ts", [])).toEqual({ owned: false, reason: "unclaimed" });
 	});

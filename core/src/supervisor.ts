@@ -24,7 +24,14 @@ import { type Clock, systemClock } from "./clock.js";
 import { withTimeout } from "./deadline.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
-import { type ProviderClaims, type Route, type RoutingContext, routeModule, routingContextOf } from "./routing.js";
+import {
+	type HeadReader,
+	type ProviderClaims,
+	type Route,
+	type RoutingContext,
+	routeModule,
+	routingContextOf,
+} from "./routing.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -200,6 +207,7 @@ export class ProviderSupervisor implements ProviderPort {
 			extensions: parsed.extensions,
 			...(parsed.filenames === undefined ? {} : { filenames: parsed.filenames }),
 			...(parsed.sharedExtensions === undefined ? {} : { sharedExtensions: parsed.sharedExtensions }),
+			...(parsed.shebangs === undefined ? {} : { shebangs: parsed.shebangs }),
 			...(parsed.fallback === undefined ? {} : { fallback: parsed.fallback }),
 			...(parsed.content === undefined ? {} : { content: parsed.content }),
 		};
@@ -358,9 +366,16 @@ export class ProviderSupervisor implements ProviderPort {
 		this.evidence = modules;
 	}
 
+	private head: HeadReader | undefined;
+
+	/** Where a module's first line comes from, for a shebang claim. */
+	headFrom(read: HeadReader): void {
+		this.head = read;
+	}
+
 	/** Records the workspace extensions used by shared claims. */
 	observeWorkspace(modules: Iterable<string>): void {
-		this.routing = routingContextOf(modules);
+		this.routing = routingContextOf(modules, this.head);
 	}
 
 	/** Adds one module to that evidence, for a file indexed outside a scan. */
@@ -378,7 +393,7 @@ export class ProviderSupervisor implements ProviderPort {
 	}
 
 	private routingContext(): RoutingContext {
-		this.routing ??= routingContextOf(this.evidence?.() ?? []);
+		this.routing ??= routingContextOf(this.evidence?.() ?? [], this.head);
 		return this.routing;
 	}
 

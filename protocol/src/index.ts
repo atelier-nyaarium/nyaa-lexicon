@@ -336,6 +336,7 @@ export {
 	angleDelta,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	discoverByWalk,
+	firstLineOfFile,
 	handlersFor,
 	type ProviderMethods,
 	projectDiagnostic,
@@ -370,6 +371,7 @@ export {
 	runProviderOnStdio,
 	serveProvider,
 } from "./serve.js";
+export { firstLineOf, shebangInterpreter } from "./shebang.js";
 export {
 	ANONYMOUS_NAMESPACE,
 	composeSymbolId,

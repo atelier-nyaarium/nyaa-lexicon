@@ -492,6 +492,38 @@ const CASES: ConformanceCase[] = [
 		parseErrors: "forbidden",
 	},
 	{
+		id: "an-extensionless-file-is-claimed-by-its-shebang",
+		tier: "projectModel",
+		about: "A file with no extension whose first line names a claimed interpreter is discovered, through env or not.",
+		fixtures: {
+			[BASH]: {
+				files: {
+					"bin/run": "#!/usr/bin/env bash\necho hi\n",
+					"bin/strict": "#!/bin/bash -e\necho hi\n",
+					"src/lib.sh": "x=1\n",
+				},
+				subject: "bin/run",
+				discovery: { "bin/run": true, "bin/strict": true, "src/lib.sh": true },
+			},
+		},
+	},
+	{
+		id: "an-extensionless-file-with-another-interpreter-is-not-taken",
+		tier: "projectModel",
+		about: "A shebang naming an interpreter the provider does not claim leaves the file to whoever claims it.",
+		fixtures: {
+			[BASH]: {
+				files: {
+					"bin/tool": "#!/usr/bin/env python3\nprint(1)\n",
+					"bin/plain": "echo no shebang\n",
+					"src/lib.sh": "x=1\n",
+				},
+				subject: "src/lib.sh",
+				discovery: { "bin/tool": false, "bin/plain": false, "src/lib.sh": true },
+			},
+		},
+	},
+	{
 		id: "every-comment-shape-is-emitted",
 		tier: "comments",
 		about: "A provider reports every comment as a raw span: leading, trailing, inline, and standalone.",

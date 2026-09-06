@@ -24,7 +24,7 @@ import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarat
 import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import type { ResultCache } from "./resultCache.js";
-import { type SourceReader, unreadableReason } from "./sourceRead.js";
+import { readHead, type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
@@ -80,6 +80,7 @@ export class WorkspaceIndexer {
 	) {
 		// A route asked before the first scan still sees the workspace.
 		supervisor.evidenceFrom(() => this.admitted().reachable);
+		supervisor.headFrom((module) => readHead(this.workspaceRoot, module));
 	}
 
 	/** What the last prune kept; null until one has run, and the timer's sweep judges nothing before that. */

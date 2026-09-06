@@ -70,6 +70,13 @@ as code, which is honest about who answers for it.
 before any ownership is decided; a file indexed outside a scan adds itself to it. It outranks a plain claim on that extension, while two holding shared claims
 contest the file. A filename claim outranks both. Routing then considers a fallback claim.
 
+`shebangs` claims a file with no extension whose first line names one of the listed interpreters,
+as `shebangInterpreter` names them: `bash` for `#!/bin/bash`, `#!/usr/bin/env bash` and
+`#!/usr/bin/env -S bash -e` alike. It ranks with a filename claim, so two providers claiming one
+interpreter contest the file, and an extension decides before any shebang is read. The core and the
+walk each read the opening bytes of an extensionless file for its first line, and only when some
+provider claims a shebang.
+
 In Git mode, tracked files remain in scope even under a default-excluded directory; directory exclusions
 only limit files added by provider discovery. An ignored file never enters scope unless explicitly included.
 Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
@@ -294,7 +301,7 @@ The wiring around a provider is library code from `@nyaa-lexicon/protocol`, link
 process rather than written again per language. `handlersFor(provider)` builds the method table
 from a plain object with one method per protocol method, so a method added to the table fails to
 compile in every provider until it is answered. `discoverByWalk(root, { extensions, filenames,
-configExtensions, excludedDirectories })` is the project model of a workspace with no build system
+shebangs, configExtensions, excludedDirectories })` is the project model of a workspace with no build system
 to ask, and `walkWorkspace` the walk under it. `workspaceModule(root, absolute)` and
 `workspaceFile(root, module)` are the two directions between a path on disk and a module, both
 through `normalizeModulePath`, so a provider cannot spell a module one way in discovery and another

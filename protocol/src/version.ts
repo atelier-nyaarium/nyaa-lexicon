@@ -28,7 +28,8 @@ export type Compatibility =
 // its own prose; the major is the removal, not the addition.
 // 3.0.0: every path-valued request field is normalized and contained, `moduleDeclarations` binds an
 // answer to its bytes, and `IndexOutcome` carries a closed cause. A clean break, no window.
-export const PROTOCOL_VERSION = "3.0.0" as const;
+// 3.1.0: `shebangs` claims an extensionless file by the interpreter its first line names.
+export const PROTOCOL_VERSION = "3.1.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

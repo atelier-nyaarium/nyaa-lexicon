@@ -3,7 +3,7 @@
 
 import type { METHOD_SCHEMAS, ProviderMethod, ProviderTiers } from "@nyaa-lexicon/protocol";
 import type { z } from "zod";
-import type { ProviderClaims, Route } from "./routing.js";
+import type { HeadReader, ProviderClaims, Route } from "./routing.js";
 import type { ProviderSupervisor } from "./supervisor.js";
 
 ////////////////////////////////
@@ -18,6 +18,8 @@ export interface ProviderPort {
 	running(): ProviderClaims[];
 	route(module: string): Route;
 	evidenceFrom(modules: () => Iterable<string>): void;
+	/** Where a module's first line comes from, for a shebang claim. */
+	headFrom(read: HeadReader): void;
 	observeWorkspace(modules: Iterable<string>): void;
 	observeModule(module: string): void;
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;

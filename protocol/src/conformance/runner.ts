@@ -46,7 +46,7 @@ export interface RunOptions {
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Case and fixture fields that state no expectation. Everything else earns a parse. */
-const CASE_METADATA = new Set(["id", "tier", "about", "fixtures", "files", "subject"]);
+const CASE_METADATA = new Set(["id", "tier", "about", "fixtures", "files", "subject", "discovery"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -181,6 +181,20 @@ class ProviderSession {
 
 ////////////////////////////////
 //  Running
+
+/** A fixture's discovery expectations against the files the provider listed. */
+function discoveryProblems(fixture: ConformanceFixture, files: string[]): string[] {
+	const problems: string[] = [];
+	for (const [file, expected] of Object.entries(fixture.discovery ?? {})) {
+		const listed = files.includes(file);
+		if (listed !== expected) {
+			problems.push(
+				expected ? `discovery did not list ${file}` : `discovery listed ${file}, which is not claimed`,
+			);
+		}
+	}
+	return problems;
+}
 
 async function runCase(
 	session: ProviderSession,
@@ -516,8 +530,11 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			// discovery answered differently under conformance than in the real thing. Found when a
 			// GDScript preload of a file plainly sitting in the fixture resolved as external.
 			try {
-				await session.call("discoverProject", { workspaceRoot: root });
-				const problems = await runCase(session, testCase, fixture, info.language, info.referenceRoles);
+				const project = await session.call("discoverProject", { workspaceRoot: root });
+				const problems = [
+					...discoveryProblems(fixture, project.files),
+					...(await runCase(session, testCase, fixture, info.language, info.referenceRoles)),
+				];
 				results.push({
 					caseId: testCase.id,
 					tier,

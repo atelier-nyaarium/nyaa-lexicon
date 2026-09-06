@@ -151,6 +151,8 @@ export const ConformanceFixtureSchema = z
 		/** Exact declaration names only this language can state, replacing the case's when present. */
 		declarationNames: z.array(z.string().min(1)).optional(),
 		documentation: DocumentedSchema.optional(),
+		/** Which of the fixture's files discovery must list (true) or must leave out (false). */
+		discovery: z.record(z.string().min(1), z.boolean()).optional(),
 	})
 	.meta({ id: "ConformanceFixture" });
 

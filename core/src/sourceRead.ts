@@ -3,7 +3,7 @@
 
 import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { workspaceFile } from "@nyaa-lexicon/protocol";
+import { firstLineOfFile, workspaceFile } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -85,6 +85,19 @@ export function readSource(root: string, module: string): SourceRead {
 
 export function sourceReader(root: string): SourceReader {
 	return (module) => readSource(root, module);
+}
+
+/** A module's first line from its opening bytes, for a shebang claim; undefined when unreadable. */
+export function readHead(root: string, module: string): string | undefined {
+	const file = workspaceFile(root, module);
+	if (file === null) return undefined;
+	try {
+		// Before open: opening a FIFO blocks until someone writes it.
+		if (!statSync(file).isFile()) return undefined;
+	} catch {
+		return undefined;
+	}
+	return firstLineOfFile(file);
 }
 
 /** Text or nothing, for a reader with no use for the reason. */
