@@ -312,7 +312,7 @@ and import sites, each written by the provider owning the file they are in, so a
 provider reports neither rides an `ImportersUnchecked` issue on the move rather than passing for a
 file with nothing to repair.
 
-TypeScript, Python and GDScript implement `moveEdits`. The other eleven providers refuse
+TypeScript, Python and GDScript implement `moveEdits`. The other twelve providers refuse
 `NotImplemented`, so a move in those languages is declined rather than half-done.
 
 ### Renaming

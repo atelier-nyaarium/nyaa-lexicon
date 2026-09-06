@@ -21,7 +21,7 @@ prebuilt bundle, so there is no install step and nothing else to set up.
 
 ## Languages
 
-Eleven, each in its own process behind a documented protocol.
+Fifteen, each in its own process behind a documented protocol.
 
 | Provider   | Files                                                 |
 | ---------- | ----------------------------------------------------- |
@@ -33,9 +33,13 @@ Eleven, each in its own process behind a documented protocol.
 | C++        | `.cpp` `.cc` `.cxx` `.hpp` `.hh` `.hxx`               |
 | C          | `.c` `.h`                                             |
 | GDScript   | `.gd`                                                 |
+| Bash       | `.sh` `.bash` `.bashrc` `.bash_profile` `.profile`    |
 | Markdown   | `.md` `.mdc` `.markdown`                              |
 | JSON       | `.json` `.jsonc` `.jsonl` `.ndjson`                   |
 | YAML       | `.yml` `.yaml`                                        |
+| HTML       | `.html` `.htm`                                        |
+| XML        | `.xml` `.xsd` `.xsl` `.xslt` `.xhtml` `.svg` `.plist` `.xaml` `.resx` `.csproj` `.fsproj` `.vbproj` `.props` `.targets` `.nuspec` `.wsdl` |
+| Text       | every file no other provider claims                   |
 
 JSON and YAML answer keys, values and comments, not types or references. A comment or trailing
 comma in a `.json` is read, not refused, and `outline_module` notes that the strict dialect lacks
