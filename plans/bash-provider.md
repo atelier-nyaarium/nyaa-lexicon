@@ -193,10 +193,12 @@ shape rule that the display shape and every set member both take.
   only literals case is markup's, so every provider claiming the tier fails
   `claimed-tier-is-tested/literals` and every conformance run carries a failure that has to be
   explained away. A corpus literal list, exact like `declarationNames`, is the fix (backlogged).
-- `withOccurrences` re-mints a repeated declaration and leaves its bindings alone, and
-  `docs/provider-protocol.md` says a provider "may" mint occurrences itself. It must, or a reference
-  inside the second definition binds to the first's local after serving. Every provider that binds
-  locals already keeps its own identity bookkeeping; the doc reads as optional (backlogged).
+- `withOccurrences` re-minted a repeated declaration and left its bindings alone, so a provider that
+  binds by descriptor path under a repeatable container had a read inside the second definition
+  still bound to the first's member. Closed in 3.7.0: a binding into a re-minted declaration follows
+  it, under three guards. The framing here was wrong in one respect worth keeping: a function-scoped
+  local is a module-wide `local` ordinal carrying no descriptor path, so no provider's locals were
+  ever at risk, and no served facts changed.
 - A conformance run under load reports `STALL ... 0 passed`, which an auditor reads as a failed
   provider. The CLI's exit code says otherwise, but a summary written from the output does not.
 - `exactOptionalPropertyTypes` turns every optional fact field into
