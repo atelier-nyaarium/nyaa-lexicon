@@ -137,7 +137,7 @@ passes, and the block-comment and spliced-comment cases do not apply, since bash
   machine's bash-completion corpus when present. Here-document bodies and delimiter lines have no
   span in the tree, so the mask's own scan stays the authority for them.
 
-## Phase 3 - Shebang claim
+## Phase 3 - Shebang claim ✅
 
 - Protocol: a `shebangs` claim beside `filenames` and `sharedExtensions`: an extensionless file whose
   first line names one of the listed interpreters is claimed, ranked with a filename claim. The
@@ -196,3 +196,6 @@ In the switchboard repository, its own plan. Named here because Question 2 decid
 - `indexCli` spawns the shipped bundle under `dist/`, so proving a source change end to end needs
   `bun run build --build-only` and a `git restore dist` afterwards, or the release build refuses
   the dirty tree.
+- The conformance runner keeps a list of fixture fields that "earn no parse", so a new expectation
+  field such as `discovery` silently earns one until the list learns it. The fixture schema and
+  that list are two places for one fact.
