@@ -94,9 +94,9 @@ inherits is a write to that name, since the copy has no identity of its own; a f
 a subshell is unknown outside it. The here-document body is the one place extract.ts scans source
 text itself: unbash places only an expanding body, so a quoted or unclosed one is found on the line
 after its redirect and its closing delimiter by a regex; both go on the Phase 2 upstream ask beside
-comment spans. Conformance passes fourteen cases and fails one, `claimed-tier-is-tested/literals`,
-which every provider fails because the corpus's only literals case is markup's; a corpus literal
-expectation is the fix and belongs to the protocol, not this provider.
+comment spans. Conformance passed fourteen cases and failed one, `claimed-tier-is-tested/literals`,
+which every provider claiming the tier failed for want of a corpus expectation; 3.6.0 added one and
+bash now passes twenty-eight with none failing.
 
 ## Phase 2 - Comment spans ✅
 
@@ -189,10 +189,14 @@ shape rule that the display shape and every set member both take.
 
 ## Painpoints
 
-- The literals tier cannot be proven. `ConformanceFixtureSchema` has no literal expectation and the
-  only literals case is markup's, so every provider claiming the tier fails
-  `claimed-tier-is-tested/literals` and every conformance run carries a failure that has to be
-  explained away. A corpus literal list, exact like `declarationNames`, is the fix (backlogged).
+- The literals tier could not be proven. `ConformanceFixtureSchema` had no literal expectation and
+  the only literals case was markup's, so every provider claiming the tier failed
+  `claimed-tier-is-tested/literals` and every conformance run carried a failure that had to be
+  explained away. Closed in 3.6.0: an `ExpectedLiteral` on both the case and the fixture, checked as
+  an exact multiset by decoded value and kind, and one case fixtured for the twelve languages that
+  declare the tier. Writing those fixtures from what each provider actually answers, rather than from
+  what the language looked like it should say, turned up what the unchecked tier had been hiding: a
+  boolean's value was the source spelling, so Python answered `True`. 3.6.0 settled that too.
 - `withOccurrences` re-minted a repeated declaration and left its bindings alone, so a provider that
   binds by descriptor path under a repeatable container had a read inside the second definition
   still bound to the first's member. Closed in 3.7.0: a binding into a re-minted declaration follows
@@ -205,7 +209,9 @@ shape rule that the display shape and every set member both take.
   `...(x === undefined ? {} : { x })`. The extractor writes that spread in eleven places. A kit
   helper that drops undefined fields from a fact would remove the ceremony from every provider.
 - unbash places only an expanding here-document body and never says whether one closed, so the
-  provider carries the one scanner the parsing law forbids, dated for removal (Phase 2).
+  provider carries the one scanner the parsing law forbids. Phase 2 did not retire it: the upstream
+  ask is webpro-nl/unbash#11, open for the maintainer to judge, so the scan in `heredoc.ts` goes on a
+  release seven days old only if it lands.
 - Two repositories, two rules about one directory: switchboard forbids a `node_modules` inside
   `lexicon/`, and lexicon's own gates need it. Every lap installs it to work and removes it to run
   switchboard's gates, and a provider test run on the wrong side of that dance fails with
