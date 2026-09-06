@@ -353,7 +353,16 @@ work:
 total: 42 # trailing
 
 # standalone
-`},subject:"comments.yml",comments:["# leading","# inline","# trailing","# standalone"]}},comments:["// leading","/* inline */","// trailing","/* standalone */"]},{id:"a-carriage-return-ends-a-line-comment-and-is-not-its-text",tier:"comments",about:"Under CRLF a line comment stops before the carriage return, so the same file scores alike either way.",fixtures:{[TYPESCRIPT]:{files:{"src/crlf.ts":`// leading\r
+`},subject:"comments.yml",comments:["# leading","# inline","# trailing","# standalone"]},[BASH]:{files:{"src/comments.sh":`# leading
+work() {
+	# inline
+	:
+}
+
+total=42 # trailing
+
+# standalone
+`},subject:"src/comments.sh",comments:["# leading","# inline","# trailing","# standalone"]}},comments:["// leading","/* inline */","// trailing","/* standalone */"]},{id:"a-carriage-return-ends-a-line-comment-and-is-not-its-text",tier:"comments",about:"Under CRLF a line comment stops before the carriage return, so the same file scores alike either way.",fixtures:{[TYPESCRIPT]:{files:{"src/crlf.ts":`// leading\r
 export const total = 42; // trailing\r
 `},subject:"src/crlf.ts"},[REFERENCE]:{files:{"src/crlf.ref":`// leading\r
 export const total = 42; // trailing\r
@@ -361,7 +370,9 @@ export const total = 42; // trailing\r
 total = 42  # trailing\r
 `},subject:"src/crlf.py",comments:["# leading","# trailing"]},[GDSCRIPT]:{files:{"src/crlf.gd":`# leading\r
 var total = 42 # trailing\r
-`},subject:"src/crlf.gd",comments:["# leading","# trailing"]},[C]:{files:{"src/crlf.c":`// leading\r
+`},subject:"src/crlf.gd",comments:["# leading","# trailing"]},[BASH]:{files:{"src/crlf.sh":`# leading\r
+total=42 # trailing\r
+`},subject:"src/crlf.sh",comments:["# leading","# trailing"]},[C]:{files:{"src/crlf.c":`// leading\r
 int total = 42; // trailing\r
 `},subject:"src/crlf.c"},[CPP]:{files:{"src/crlf.cpp":`// leading\r
 int total = 42; // trailing\r
@@ -394,7 +405,8 @@ int total = 42;
 `},subject:"src/astral.ts"},[REFERENCE]:{files:{"src/astral.ref":`export const s = "${ASTRAL}"; // ${ASTRAL} tail
 `},subject:"src/astral.ref"},[PYTHON]:{files:{"src/astral.py":`s = "${ASTRAL}"  # ${ASTRAL} tail
 `},subject:"src/astral.py",comments:[`# ${ASTRAL} tail`]},[GDSCRIPT]:{files:{"src/astral.gd":`var s = "${ASTRAL}" # ${ASTRAL} tail
-`},subject:"src/astral.gd",comments:[`# ${ASTRAL} tail`]},[C]:{files:{"src/astral.c":`const char *s = "${ASTRAL}"; // ${ASTRAL} tail
+`},subject:"src/astral.gd",comments:[`# ${ASTRAL} tail`]},[BASH]:{files:{"src/astral.sh":`s="${ASTRAL}" # ${ASTRAL} tail
+`},subject:"src/astral.sh",comments:[`# ${ASTRAL} tail`]},[C]:{files:{"src/astral.c":`const char *s = "${ASTRAL}"; // ${ASTRAL} tail
 `},subject:"src/astral.c"},[CPP]:{files:{"src/astral.cpp":`const char *s = "${ASTRAL}"; // ${ASTRAL} tail
 `},subject:"src/astral.cpp"},[CSHARP]:{files:{"src/Astral.cs":`public class Astral { public string S = "${ASTRAL}"; } // ${ASTRAL} tail
 `},subject:"src/Astral.cs"},[RUST]:{files:{"src/astral.rs":`pub const S: &str = "${ASTRAL}"; // ${ASTRAL} tail
@@ -411,7 +423,11 @@ def work():
 `},subject:"src/doc.py",documentation:{declaration:"work",comment:"# What work does."}},[GDSCRIPT]:{files:{"src/doc.gd":`# What work does.
 func work():
 	return 1
-`},subject:"src/doc.gd",documentation:{declaration:"work",comment:"# What work does."}},[C]:{files:{"src/doc.c":`/** What work does. */
+`},subject:"src/doc.gd",documentation:{declaration:"work",comment:"# What work does."}},[BASH]:{files:{"src/doc.sh":`# What work does.
+work() {
+	return 1
+}
+`},subject:"src/doc.sh",documentation:{declaration:"work",comment:"# What work does."}},[C]:{files:{"src/doc.c":`/** What work does. */
 int work(void) {
 	return 1;
 }
@@ -439,7 +455,10 @@ int y = 1; // real
 `},subject:"src/spliced.c"},[CPP]:{files:{"src/spliced.cpp":`const char *x = "foo\\
 // /* #bar";
 int y = 1; // real
-`},subject:"src/spliced.cpp"}},comments:["// real"]},{id:"a-marker-inside-a-nested-interpolation-is-not-a-comment",tier:"comments",about:"An interpolation hole may hold a string of its own, and markers inside that string stay text.",fixtures:{[CSHARP]:{files:{"src/Nested.cs":`public class Nested {
+`},subject:"src/spliced.cpp"},[BASH]:{files:{"src/spliced.sh":`x="foo\\
+# bar"
+y=1 # real
+`},subject:"src/spliced.sh",comments:["# real"]}},comments:["// real"]},{id:"a-marker-inside-a-nested-interpolation-is-not-a-comment",tier:"comments",about:"An interpolation hole may hold a string of its own, and markers inside that string stay text.",fixtures:{[CSHARP]:{files:{"src/Nested.cs":`public class Nested {
 	void M() {
 		var x = $"a // {"b /* c #"} d"; // real
 	}
@@ -447,7 +466,8 @@ int y = 1; // real
 `},subject:"src/Nested.cs"},[KOTLIN]:{files:{"src/Nested.kt":`fun m() {
 	val x = "a // \${"b /* c #"} d" // real
 }
-`},subject:"src/Nested.kt"}},comments:["// real"]},{id:"a-comment-inside-an-interpolation-is-a-comment",tier:"comments",about:"An interpolation hole is code, so prose inside it is reported like prose anywhere else.",fixtures:{[TYPESCRIPT]:{files:{"src/hole.ts":"export const x = `a ${1 /* here */} b`; // real\n"},subject:"src/hole.ts"},[CSHARP]:{files:{"src/Hole.cs":`public class Hole {
+`},subject:"src/Nested.kt"},[BASH]:{files:{"src/nested.sh":`x="a $(echo "b # c") d" # real
+`},subject:"src/nested.sh",comments:["# real"]}},comments:["// real"]},{id:"a-comment-inside-an-interpolation-is-a-comment",tier:"comments",about:"An interpolation hole is code, so prose inside it is reported like prose anywhere else.",fixtures:{[TYPESCRIPT]:{files:{"src/hole.ts":"export const x = `a ${1 /* here */} b`; // real\n"},subject:"src/hole.ts"},[CSHARP]:{files:{"src/Hole.cs":`public class Hole {
 	void M() {
 		var x = $"a {1 /* here */} b"; // real
 	}
@@ -455,7 +475,10 @@ int y = 1; // real
 `},subject:"src/Hole.cs"},[KOTLIN]:{files:{"src/Hole.kt":`fun m() {
 	val x = "a \${1 /* here */} b" // real
 }
-`},subject:"src/Hole.kt"}},comments:["/* here */","// real"]},{id:"comment-markers-in-text-are-not-comments",tier:"comments",about:"A marker inside a string literal is not a comment, and the exact set catches it.",fixtures:{[TYPESCRIPT]:{files:{"src/markers.ts":`export const url = "https://example.com/path";
+`},subject:"src/Hole.kt"},[BASH]:{files:{"src/hole.sh":`x="a $(
+# here
+true) b" # real
+`},subject:"src/hole.sh",comments:["# here","# real"]}},comments:["/* here */","// real"]},{id:"comment-markers-in-text-are-not-comments",tier:"comments",about:"A marker inside a string literal is not a comment, and the exact set catches it.",fixtures:{[TYPESCRIPT]:{files:{"src/markers.ts":`export const url = "https://example.com/path";
 export const block = "/* not a comment */";
 // real
 `},subject:"src/markers.ts"},[REFERENCE]:{files:{"src/markers.ref":`export const url = "https://example.com/path";
@@ -467,7 +490,10 @@ hashed = "# not a comment"
 `},subject:"src/markers.py",comments:["# real"]},[GDSCRIPT]:{files:{"src/markers.gd":`var url = "https://example.com/path"
 var hashed = "# not a comment"
 # real
-`},subject:"src/markers.gd",comments:["# real"]},[C]:{files:{"src/markers.c":`const char *url = "https://example.com/path";
+`},subject:"src/markers.gd",comments:["# real"]},[BASH]:{files:{"src/markers.sh":`url="https://example.com/path"
+hashed="# not a comment"
+# real
+`},subject:"src/markers.sh",comments:["# real"]},[C]:{files:{"src/markers.c":`const char *url = "https://example.com/path";
 const char *block = "/* not a comment */";
 // real
 `},subject:"src/markers.c"},[CPP]:{files:{"src/markers.cpp":`const char *url = "https://example.com/path";
@@ -505,7 +531,13 @@ def work():
 
 func work():
 	return 1
-`},subject:"src/tool.gd",comments:["#!/usr/bin/env godot","# real"]}}},{id:"an-unterminated-block-comment-does-not-swallow-the-file",tier:"comments",about:"A block opened and never closed is reported once, not as many spans or none.",fixtures:{[TYPESCRIPT]:{files:{"src/open.ts":`export const before = 1;
+`},subject:"src/tool.gd",comments:["#!/usr/bin/env godot","# real"]},[BASH]:{files:{"src/tool.sh":`#!/usr/bin/env bash
+# real
+
+work() {
+	return 1
+}
+`},subject:"src/tool.sh",comments:["#!/usr/bin/env bash","# real"]}}},{id:"an-unterminated-block-comment-does-not-swallow-the-file",tier:"comments",about:"A block opened and never closed is reported once, not as many spans or none.",fixtures:{[TYPESCRIPT]:{files:{"src/open.ts":`export const before = 1;
 /* opened and never closed`},subject:"src/open.ts"},[REFERENCE]:{files:{"src/open.ref":`export const before = 1;
 /* opened and never closed`},subject:"src/open.ref"},[C]:{files:{"src/open.c":`int before = 1;
 /* opened and never closed`},subject:"src/open.c"},[CPP]:{files:{"src/open.cpp":`int before = 1;
@@ -534,7 +566,9 @@ export const after = 1;
 after = 1
 `},subject:"src/bom.py",comments:["# a note"]},[GDSCRIPT]:{files:{"src/bom.gd":`${BOM}# a note
 var after = 1
-`},subject:"src/bom.gd",comments:["# a note"]},[C]:{files:{"src/bom.c":`${BOM}// a note
+`},subject:"src/bom.gd",comments:["# a note"]},[BASH]:{files:{"src/bom.sh":`${BOM}# a note
+after=1
+`},subject:"src/bom.sh",comments:["# a note"]},[C]:{files:{"src/bom.c":`${BOM}// a note
 int after = 1;
 `},subject:"src/bom.c",comments:["// a note"]},[CPP]:{files:{"src/bom.cpp":`${BOM}// a note
 int after = 1;
