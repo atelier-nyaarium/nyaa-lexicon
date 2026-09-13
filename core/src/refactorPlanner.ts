@@ -38,7 +38,6 @@ import {
 	alreadyInModule,
 	alreadyNamed,
 	candidateDoesNotParse,
-	changedWhilePlanned,
 	editsRefused,
 	moduleChangedReindex,
 	moduleNotOnDisk,
@@ -230,20 +229,14 @@ export class RefactorPlanner {
 		newText: string,
 		expectedSpanHash?: string,
 	): Promise<ReplacementPlan> {
-		const source = this.source.symbolSource(address);
-		if (!source.found) return { ok: false, reason: source.reason };
+		const read = this.source.symbolSourceRead(address);
+		if (!read.found) return { ok: false, reason: read.reason };
+		const { fileText: before, ...source } = read;
 
 		const guard = this.replacementGuard(address, source);
 		if (guard) return { ok: false, reason: guard };
 		if (expectedSpanHash !== undefined && source.spanHash !== expectedSpanHash) {
 			return { ok: false, reason: spanChanged(source.module, source.name), stale: true };
-		}
-
-		const before = this.readFile(source.module);
-		if (before === null) return { ok: false, reason: moduleNotOnDisk(source.module) };
-		// Splice only the bytes whose span was checked.
-		if (hashContent(before) !== source.contentHash) {
-			return { ok: false, reason: changedWhilePlanned(source.module, "replacement") };
 		}
 
 		const spliced = applyEdits(before, [{ range: source.range, newText }]);
@@ -269,7 +262,7 @@ export class RefactorPlanner {
 			module: source.module,
 			text: spliced.text,
 			range: source.range,
-			baseHash: hashContent(before),
+			baseHash: source.contentHash,
 			issues,
 		};
 	}

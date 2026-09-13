@@ -4,7 +4,7 @@
 // sourceWriter.ts decides how.
 
 import { coordinatesOf, hashContent, type Range } from "@nyaa-lexicon/protocol";
-import type { PlannedSource } from "./refusalSlots.js";
+import type { PlannedSource, PlannedSourceRead } from "./refusalSlots.js";
 import type { Refusal } from "./refusals.js";
 import * as refusal from "./refusals.js";
 import { insideWorkspace } from "./sourceRead.js";
@@ -43,6 +43,14 @@ export class SourceWorkspace {
 	 * cutting at it produces something that looks like source and is not the symbol.
 	 */
 	symbolSource(address: { symbolId?: string | undefined; factId?: string | undefined }): PlannedSource {
+		const read = this.symbolSourceRead(address);
+		if (!read.found) return read;
+		const { fileText: _fileText, ...source } = read;
+		return source;
+	}
+
+	/** `symbolSource`, keeping the file text it sliced, so a writer splices the bytes it checked. */
+	symbolSourceRead(address: { symbolId?: string | undefined; factId?: string | undefined }): PlannedSourceRead {
 		const located = this.locate(address);
 		if ("problem" in located) return { found: false, reason: located.problem };
 
@@ -67,6 +75,7 @@ export class SourceWorkspace {
 			text: sliced,
 			contentHash: hashContent(text),
 			spanHash: hashContent(sliced),
+			fileText: text,
 		};
 	}
 

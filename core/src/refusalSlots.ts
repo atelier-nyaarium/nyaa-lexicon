@@ -24,6 +24,11 @@ type Refusing<T extends { reason?: string | undefined }> = Omit<T, "reason"> & {
 
 export type PlannedSource = Extract<SymbolSource, { found: true }> | { found: false; reason: Refusal; stale?: boolean };
 
+/** A source answer with the whole file it was sliced from, for a writer that must splice those bytes. */
+export type PlannedSourceRead =
+	| (Extract<SymbolSource, { found: true }> & { fileText: string })
+	| { found: false; reason: Refusal; stale?: boolean };
+
 export type PlannedMove = Extract<MovePlan, { ok: true }> | { ok: false; reason: Refusal };
 
 /** Core's own answer for an id it holds no declaration for; a provider's unknown passes through. */
