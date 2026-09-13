@@ -106,6 +106,9 @@ export function discoverRustProject(workspaceRoot: string): { state: RustProject
 export class RustProjectResolver {
 	private state: RustProjectState;
 
+	/** Top-level declaration names per module, with the text they were parsed from. */
+	private readonly topLevelNames = new Map<string, { text: string; names: Set<string> }>();
+
 	constructor(workspaceRoot: string) {
 		this.state = discoverRustProject(workspaceRoot).state;
 	}
@@ -113,6 +116,7 @@ export class RustProjectResolver {
 	reset(workspaceRoot: string): ProjectModel {
 		const result = discoverRustProject(workspaceRoot);
 		this.state = result.state;
+		this.topLevelNames.clear();
 		return result.model;
 	}
 
@@ -231,13 +235,21 @@ export class RustProjectResolver {
 		return this.existingModule(parentNamespace, this.rootForModule(module));
 	}
 
+	/** Asked per reference; unchanged text parses once. */
 	private moduleHasDeclaration(module: string, name: string): boolean {
 		const absolute = path.join(this.state.root, ...module.split("/"));
 		if (!existsSync(absolute) || !statSync(absolute).isFile()) return false;
 		try {
-			return parseRustFile(module, readFileSync(absolute, "utf8")).declarations.some(
-				(declaration) => declaration.name === name && declaration.containerId === undefined,
+			const text = readFileSync(absolute, "utf8");
+			const held = this.topLevelNames.get(module);
+			if (held !== undefined && held.text === text) return held.names.has(name);
+			const names = new Set(
+				parseRustFile(module, text)
+					.declarations.filter((declaration) => declaration.containerId === undefined)
+					.map((declaration) => declaration.name),
 			);
+			this.topLevelNames.set(module, { text, names });
+			return names.has(name);
 		} catch {
 			return false;
 		}

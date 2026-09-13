@@ -163,6 +163,53 @@ pub fn helper() {}
 	});
 });
 
+// Each call consults the glob, which asks whether lib.rs declares Token.
+test("binds every call through a glob import of a costly sibling module", () => {
+	const locals = Array.from({ length: 1500 }, (_, index) => `    let v${index} = ${index};`).join("\n");
+	const calls = Array.from({ length: 1000 }, (_, index) => `        c${index}();`).join("\n");
+	const root = workspace({
+		"src/lib.rs": `pub enum Token { Literal }\nfn filler() {\n${locals}\n}\n`,
+		"src/glob.rs": `mod tests {\n    use super::Token::*;\n    fn run() {\n${calls}\n    }\n}\n`,
+	});
+	const provider = new RustProvider();
+	provider.initialize(root);
+	const lib = provider.parseFile({
+		module: "src/lib.rs",
+		contentHash: "lib",
+		text: readFileSync(path.join(root, "src/lib.rs"), "utf8"),
+	});
+	const glob = provider.parseFile({
+		module: "src/glob.rs",
+		contentHash: "glob",
+		text: readFileSync(path.join(root, "src/glob.rs"), "utf8"),
+	});
+	const topLevel = lib.declarations
+		.filter((declaration) => declaration.containerId === undefined)
+		.map((declaration) => declaration.symbolId);
+	const bindings = glob.references.filter((reference) => reference.role === "call").map((call) => call.binding);
+
+	expect(topLevel).toHaveLength(2);
+	expect(bindings).toHaveLength(1000);
+	expect(new Set(bindings.map((binding) => JSON.stringify(binding)))).toEqual(new Set([JSON.stringify(bindings[0])]));
+	expect(bindings[0]).toMatchObject({ status: "ambiguous", candidates: topLevel });
+}, 5_000);
+
+test("answers a base-module symbol import from the module's current text", () => {
+	const root = workspace({
+		"src/lib.rs": "pub enum Token { Literal }\n",
+		"src/glob.rs": "use super::Token;\n",
+	});
+	const provider = new RustProvider();
+	provider.initialize(root);
+	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
+
+	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	writeFileSync(path.join(root, "src/lib.rs"), "pub enum Other { Literal }\n");
+	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
+	writeFileSync(path.join(root, "src/lib.rs"), "pub enum Token { Literal }\n");
+	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+});
+
 test("answers every protocol method, including explicit refusals", () => {
 	const provider = new RustProvider();
 	const handlers = handlersFor(provider);
