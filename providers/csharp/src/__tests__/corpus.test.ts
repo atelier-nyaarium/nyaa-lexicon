@@ -10,7 +10,7 @@ const corpusTest = existsSync(corpusRoot) ? it : it.skip;
 describe("Newtonsoft.Json corpus", () => {
 	corpusTest(
 		"parses every C# file without error diagnostics",
-		() => {
+		async () => {
 			const provider = new CsharpProvider();
 			provider.initialize(corpusRoot);
 			const model = provider.discoverProject(corpusRoot);
@@ -23,6 +23,8 @@ describe("Newtonsoft.Json corpus", () => {
 			const strayed: string[] = [];
 			let spans = 0;
 			for (const module of model.files) {
+				// Yields, so the timeout can fire.
+				await new Promise((resolve) => setImmediate(resolve));
 				const text = readFileSync(path.join(corpusRoot, module), "utf8");
 				const facts = provider.parseFile({ module, contentHash: "corpus", text });
 				const messages = facts.diagnostics

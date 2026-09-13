@@ -23,7 +23,7 @@ const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
 
 corpusTest(
 	"parses every Rust file from the guarded ripgrep corpus",
-	() => {
+	async () => {
 		const root = corpusRoot;
 		if (!corpusPresent) throw new Error("ripgrep corpus is absent");
 		const files = rustFiles(root);
@@ -33,7 +33,10 @@ corpusTest(
 		// real source has the string forms that break that.
 		const strayed: string[] = [];
 		let spans = 0;
-		const parsed = files.map((file) => {
+		const parsed: Array<ReturnType<RustProvider["parseFile"]>> = [];
+		for (const file of files) {
+			// Yields, so the timeout can fire.
+			await new Promise((resolve) => setImmediate(resolve));
 			const module = path.relative(root, file).split(path.sep).join("/");
 			const text = readFileSync(file, "utf8");
 			const facts = provider.parseFile({ module, contentHash: "corpus", text });
@@ -44,8 +47,8 @@ corpusTest(
 					strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
 				}
 			}
-			return facts;
-		});
+			parsed.push(facts);
+		}
 		const errorFiles = parsed
 			.filter((facts) => facts.diagnostics.some((diagnostic) => diagnostic.severity === "error"))
 			.map((facts) => facts.module);

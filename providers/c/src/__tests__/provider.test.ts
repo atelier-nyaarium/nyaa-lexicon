@@ -1267,7 +1267,7 @@ const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
 
 corpusTest(
 	"parses every claimed C file from both requested corpora",
-	() => {
+	async () => {
 		if (!corpusPresent) throw new Error("C corpora are absent");
 		const started = performance.now();
 		let files = 0;
@@ -1291,6 +1291,8 @@ corpusTest(
 			rootCounts.push({ root: path.relative(process.cwd(), root), files: modules.length });
 
 			for (const module of modules) {
+				// Yields, so the timeout can fire.
+				await new Promise((resolve) => setImmediate(resolve));
 				const source = readFileSync(path.join(root, module), "utf8");
 				const parsed = facts(provider, module, source);
 				files++;

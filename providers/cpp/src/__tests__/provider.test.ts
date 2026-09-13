@@ -325,7 +325,7 @@ const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
 
 corpusTest(
 	"parses every owned nlohmann/json corpus file",
-	() => {
+	async () => {
 		if (!corpusPresent) throw new Error("C++ corpus is absent");
 		const started = performance.now();
 		const provider = new CppProvider();
@@ -337,6 +337,8 @@ corpusTest(
 		const strayed: string[] = [];
 		let spans = 0;
 		for (const module of files) {
+			// Yields, so the timeout can fire.
+			await new Promise((resolve) => setImmediate(resolve));
 			const text = readFileSync(path.join(corpusRoot, module), "utf8");
 			const facts = provider.parseFile({ module, contentHash: `corpus:${module}`, text });
 			if (facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")) errorFiles.push(module);

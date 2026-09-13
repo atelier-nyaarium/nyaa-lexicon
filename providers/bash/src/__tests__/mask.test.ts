@@ -81,11 +81,13 @@ function corpus(): [string, string][] {
 describe("the comment mask", () => {
 	// Here-document bodies and delimiter lines are raw text with no span in the tree, so the mask's
 	// own scan is the only authority for them; everything else the tree tokenized is checked here.
-	test("no comment starts inside a span unbash tokenized as data", () => {
+	test("no comment starts inside a span unbash tokenized as data", async () => {
 		const files = corpus();
 		expect(files.length).toBeGreaterThan(SCRIPTS.length - 1);
 		let comments = 0;
 		for (const [name, text] of files) {
+			// Yields, so the timeout can fire.
+			await new Promise((resolve) => setImmediate(resolve));
 			const spans = dataSpans(parse(text));
 			const coordinates = coordinatesOf(text);
 			for (const comment of parseBash(name, text).comments) {

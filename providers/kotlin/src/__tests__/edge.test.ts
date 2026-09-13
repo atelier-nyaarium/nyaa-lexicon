@@ -837,7 +837,7 @@ describe("Kotlin project and protocol wiring", () => {
 
 	test.skipIf(!existsSync(path.resolve("temp/kotlinx-coroutines")))(
 		"parses the full real Kotlin corpus when present",
-		() => {
+		async () => {
 			const corpus = path.resolve("temp/kotlinx-coroutines");
 			const provider = new KotlinProvider();
 			provider.initialize(corpus);
@@ -848,6 +848,8 @@ describe("Kotlin project and protocol wiring", () => {
 			let imports = 0;
 			let syntaxErrorFiles = 0;
 			for (const module of files) {
+				// Yields, so the timeout can fire.
+				await new Promise((resolve) => setImmediate(resolve));
 				const facts = provider.parseFile({
 					module,
 					contentHash: "edge-corpus",
@@ -875,13 +877,15 @@ describe("Kotlin project and protocol wiring", () => {
 
 	test.skipIf(!existsSync(SWITCHBOARD_ANDROID))(
 		"parses the Switchboard Android Kotlin tree when present",
-		() => {
+		async () => {
 			const provider = new KotlinProvider();
 			provider.initialize(SWITCHBOARD_ANDROID);
 			const project = provider.discoverProject(SWITCHBOARD_ANDROID);
 			const files = project.files.filter((file) => file.endsWith(".kt")).sort();
 			let syntaxErrorFiles = 0;
 			for (const module of files) {
+				// Yields, so the timeout can fire.
+				await new Promise((resolve) => setImmediate(resolve));
 				const facts = provider.parseFile({
 					module,
 					contentHash: "switchboard-android",
