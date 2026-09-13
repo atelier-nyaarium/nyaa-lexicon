@@ -129,6 +129,9 @@ function refactorMove(
 							if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
 								return changedWhilePlanned(plan.fromModule, "move");
 							}
+							// The target too: one that changed or appeared would be overwritten.
+							const moved = edits.bases.find((base) => service.currentHashOf(base.module) !== base.hash);
+							if (moved !== undefined) return changedWhilePlanned(moved.module, "move");
 							// Import sites were chosen from stored ranges; the same rule applies.
 							const stale = service.staleModules(plan.referencing);
 							return stale.length > 0 ? staleSincePlanned(stale, "move") : null;

@@ -7,11 +7,25 @@ import { coordinatesOf, hashContent, type Range } from "@nyaa-lexicon/protocol";
 import type { PlannedSource, PlannedSourceRead } from "./refusalSlots.js";
 import type { Refusal } from "./refusals.js";
 import * as refusal from "./refusals.js";
-import { insideWorkspace } from "./sourceRead.js";
+import {
+	insideWorkspace,
+	type SourceReader,
+	textOf,
+	type WritableSource,
+	writableSource,
+	writableText,
+} from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 
 export type { SymbolSource } from "@nyaa-lexicon/protocol";
+
+////////////////////////////////
+//  Interfaces & Types
+
+type ModuleText = { text: string } | { refused: Refusal };
+
+type Address = { symbolId?: string | undefined; factId?: string | undefined };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -24,11 +38,11 @@ function sliceRange(text: string, range: Range): string | null {
 ////////////////////////////////
 //  Class
 
-/** Takes readFile, not node:fs: a fixture and an unsaved buffer are the same question. */
+/** Takes a reader, not node:fs: a fixture and an unsaved buffer are the same question. */
 export class SourceWorkspace {
 	constructor(
 		private readonly store: IndexStore,
-		private readonly readFile: (module: string) => string | null,
+		private readonly readSource: SourceReader,
 		private readonly workspaceRoot: string,
 	) {}
 
@@ -42,21 +56,38 @@ export class SourceWorkspace {
 	 * A stale index refuses rather than slicing: the stored range describes text that has moved, so
 	 * cutting at it produces something that looks like source and is not the symbol.
 	 */
-	symbolSource(address: { symbolId?: string | undefined; factId?: string | undefined }): PlannedSource {
-		const read = this.symbolSourceRead(address);
+	symbolSource(address: Address): PlannedSource {
+		const read = this.sliced(address, (module) => {
+			const text = textOf(this.readSource(module));
+			return text === null ? { refused: refusal.moduleNotOnDisk(module) } : { text };
+		});
 		if (!read.found) return read;
 		const { fileText: _fileText, ...source } = read;
 		return source;
 	}
 
-	/** `symbolSource`, keeping the file text it sliced, so a writer splices the bytes it checked. */
-	symbolSourceRead(address: { symbolId?: string | undefined; factId?: string | undefined }): PlannedSourceRead {
+	/** `symbolSource` through the writer's read, with the file text it sliced. */
+	symbolSourceRead(address: Address): PlannedSourceRead {
+		return this.sliced(address, (module) => {
+			const writable = this.writable(module);
+			if ("refused" in writable) return writable;
+			return writable.text === null ? { refused: refusal.moduleNotOnDisk(module) } : { text: writable.text };
+		});
+	}
+
+	/** One module through `writableSource`. */
+	writable(module: string): WritableSource {
+		return writableSource(module, this.readSource(module));
+	}
+
+	private sliced(address: Address, read: (module: string) => ModuleText): PlannedSourceRead {
 		const located = this.locate(address);
 		if ("problem" in located) return { found: false, reason: located.problem };
 
 		const { module, range, name, kind } = located;
-		const text = this.readFile(module);
-		if (text === null) return { found: false, reason: refusal.moduleNotOnDisk(module) };
+		const current = read(module);
+		if ("refused" in current) return { found: false, reason: current.refused };
+		const { text } = current;
 
 		const stored = this.store.contentHashOf(module);
 		if (stored !== null && stored !== hashContent(text)) {
@@ -99,25 +130,28 @@ export class SourceWorkspace {
 
 	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */
 	currentHashOf(module: string): string | null {
-		const text = this.readFile(module);
+		const text = textOf(this.readSource(module));
 		return text === null ? null : hashContent(text);
 	}
 
 	/**
 	 * Writes one module's whole text, temp file then rename.
 	 *
-	 * The caller holds the workspace gate and has already journaled what was there, so this only
-	 * has to make the replacement itself uninterruptible.
+	 * The caller holds the workspace gate and has already journaled what was there. Checks the disk
+	 * through `writableSource` and the text through `writableText`, so no plan bypasses either.
 	 */
 	writeModule(module: string, text: string): void {
+		const current = this.writable(module);
+		if ("refused" in current) throw new Error(current.refused);
+		const unwritable = writableText(module, text);
+		if (unwritable !== null) throw new Error(unwritable);
 		writeSourceFile(insideWorkspace(this.workspaceRoot, module), text);
 	}
 
 	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */
-	private locate(address: {
-		symbolId?: string | undefined;
-		factId?: string | undefined;
-	}): { module: string; range: Range; name: string; kind: string } | { problem: Refusal } {
+	private locate(
+		address: Address,
+	): { module: string; range: Range; name: string; kind: string } | { problem: Refusal } {
 		if (address.symbolId !== undefined) {
 			const declaration = this.store.declaration(address.symbolId);
 			if (!declaration) return { problem: refusal.subjectRefused(address.symbolId, this.store) };

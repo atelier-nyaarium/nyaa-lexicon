@@ -61,6 +61,7 @@ import {
 	subjectRefused,
 	unrepresentableModule,
 } from "./refusals.js";
+import { writableText } from "./sourceRead.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -163,7 +164,13 @@ export type ReplacementPlan =
 
 /** Whole new contents per module, so the writer never re-derives an edit it did not check. */
 export type MoveEditsOutcome =
-	| { ok: true; files: Array<{ module: string; text: string }>; issues: RefactorIssue[] }
+	| {
+			ok: true;
+			files: Array<{ module: string; text: string }>;
+			/** Each module's hash as its edits were cut, null where absent. */
+			bases: Array<{ module: string; hash: string | null }>;
+			issues: RefactorIssue[];
+	  }
 	| { ok: false; issues: RefactorIssue[]; reason: Refusal };
 
 export interface InsertArgs {
@@ -207,14 +214,13 @@ interface SplicePoint {
 ////////////////////////////////
 //  Class
 
-/** Takes readFile too: a provider needs a file's whole text, not one symbol's span. */
+/** Reads a module it will write through `SourceWorkspace.writable`. */
 export class RefactorPlanner {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly imports: ImportResolver,
 		private readonly source: SourceWorkspace,
 		private readonly probe: ProviderProbe,
-		private readonly readFile: (module: string) => string | null,
 	) {}
 
 	/**
@@ -232,6 +238,8 @@ export class RefactorPlanner {
 		const read = this.source.symbolSourceRead(address);
 		if (!read.found) return { ok: false, reason: read.reason };
 		const { fileText: before, ...source } = read;
+		const unwritable = writableText(source.module, newText);
+		if (unwritable !== null) return { ok: false, reason: unwritable };
 
 		const guard = this.replacementGuard(address, source);
 		if (guard) return { ok: false, reason: guard };
@@ -282,6 +290,8 @@ export class RefactorPlanner {
 
 		const point = args.after !== undefined ? this.afterPoint(args.after) : this.endPoint(args.module as string);
 		if ("refused" in point) return { state: "refused", reason: point.refused };
+		const unwritable = writableText(point.module, args.text);
+		if (unwritable !== null) return { state: "refused", reason: unwritable };
 
 		const block = flush
 			.split("\n")
@@ -320,7 +330,9 @@ export class RefactorPlanner {
 		const anchor = this.store.declaration(after);
 		if (!anchor) return { refused: subjectRefused(after, this.store) };
 		const module = anchor.module;
-		const before = this.readFile(module);
+		const current = this.source.writable(module);
+		if ("refused" in current) return current;
+		const before = current.text;
 		if (before === null) return { refused: moduleNotOnDisk(module) };
 
 		// The stored ranges address ONE version of the file; a moved file makes them wrong lines.
@@ -389,11 +401,12 @@ export class RefactorPlanner {
 		const target = workspaceModule(rawModule);
 		if ("refused" in target) return target;
 		const module = target.module;
-		const before = this.readFile(module);
+		const current = this.source.writable(module);
+		if ("refused" in current) return current;
 		return {
 			module,
-			before: before ?? "",
-			created: before === null,
+			before: current.text ?? "",
+			created: current.text === null,
 			line: null,
 			indent: "",
 			trailingBlank: false,
@@ -505,7 +518,7 @@ export class RefactorPlanner {
 		if (!declaration) return { ok: false, reason: subjectRefused(symbolId, this.store) };
 		if (declaration.module === toModule) return { ok: false, reason: alreadyInModule(symbolId, toModule) };
 
-		const source = this.source.symbolSource({ symbolId });
+		const source = this.source.symbolSourceRead({ symbolId });
 		if (!source.found) return { ok: false, reason: source.reason };
 
 		const closure = this.store.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
@@ -549,11 +562,23 @@ export class RefactorPlanner {
 	async moveEdits(plan: Extract<PlannedMove, { ok: true }>): Promise<MoveEditsOutcome> {
 		const requests = this.moveRequests(plan);
 		const files: Array<{ module: string; text: string }> = [];
+		const bases: Array<{ module: string; hash: string | null }> = [];
 		const blocked: RefactorIssue[] = [];
 
 		for (const request of requests) {
-			const before = request.exists ? (this.readFile(request.module) ?? "") : "";
-			const answer = await this.probe.moveEdits(request.module, { ...request, text: before });
+			const current = this.source.writable(request.module);
+			if ("refused" in current) return { ok: false, issues: [], reason: current.refused };
+			// Only the target may be absent, and is created.
+			if (current.text === null && request.module !== plan.toModule) {
+				return { ok: false, issues: [], reason: moduleNotOnDisk(request.module) };
+			}
+			bases.push({ module: request.module, hash: current.text === null ? null : hashContent(current.text) });
+			const before = current.text ?? "";
+			const answer = await this.probe.moveEdits(request.module, {
+				...request,
+				text: before,
+				exists: current.text !== null,
+			});
 
 			if (answer.status === "refused") {
 				return { ok: false, issues: [], reason: providerRefused(request.module, answer.reason, answer.detail) };
@@ -577,11 +602,11 @@ export class RefactorPlanner {
 		if (blocked.length > 0) {
 			return { ok: false, issues: blocked, reason: occurrencesBlocked() };
 		}
-		return { ok: true, files, issues: this.importersUnfound([plan.fromModule, ...plan.referencing]) };
+		return { ok: true, files, bases, issues: this.importersUnfound([plan.fromModule, ...plan.referencing]) };
 	}
 
-	/** One request per involved module, each describing only that module's part. */
-	private moveRequests(plan: Extract<PlannedMove, { ok: true }>): MoveEditsRequest[] {
+	/** One request per involved module, each describing only that module's part; the read fills its text. */
+	private moveRequests(plan: Extract<PlannedMove, { ok: true }>): Array<Omit<MoveEditsRequest, "text" | "exists">> {
 		const shared = {
 			symbolId: plan.symbolId,
 			name: plan.name,
@@ -589,12 +614,10 @@ export class RefactorPlanner {
 			toModule: plan.toModule,
 		};
 
-		const requests: MoveEditsRequest[] = [
+		const requests: Array<Omit<MoveEditsRequest, "text" | "exists">> = [
 			{
 				...shared,
 				module: plan.fromModule,
-				text: "",
-				exists: true,
 				role: { removal: plan.removal },
 				importSites: [],
 				// The source keeps needing the symbol when something left behind still calls it.
@@ -611,8 +634,6 @@ export class RefactorPlanner {
 			{
 				...shared,
 				module: plan.toModule,
-				text: "",
-				exists: this.readFile(plan.toModule) !== null,
 				role: { insertion: { text: plan.text } },
 				importSites: [],
 				dependencies: plan.dependencies,
@@ -624,8 +645,6 @@ export class RefactorPlanner {
 			requests.push({
 				...shared,
 				module,
-				text: "",
-				exists: true,
 				role: {},
 				importSites: this.imports.importSitesForMove(module, plan.name),
 				dependencies: [],
@@ -1113,7 +1132,9 @@ export class RefactorPlanner {
 		const blocked: RenameBlocker[] = [];
 
 		for (const file of plan.files) {
-			const text = this.readFile(file.module);
+			const current = this.source.writable(file.module);
+			if ("refused" in current) return { ok: false, plan, reason: current.refused };
+			const text = current.text;
 			if (text === null) return { ok: false, plan, reason: moduleUnreadable(file.module) };
 
 			const answer = await this.probe.renameEdits(file.module, {

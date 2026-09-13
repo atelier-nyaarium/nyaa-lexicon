@@ -97,13 +97,9 @@ function plannerFor(world: World) {
 		moveEdits: () => Promise.reject(new Error("not asked")),
 	};
 
-	return new RefactorPlanner(
-		store,
-		{} as unknown as ImportResolver,
-		{} as unknown as SourceWorkspace,
-		probe,
-		(module) => (module === MODULE ? world.text : null),
-	);
+	const source = { writable: (module: string) => ({ text: module === MODULE ? world.text : null }) };
+
+	return new RefactorPlanner(store, {} as unknown as ImportResolver, source as unknown as SourceWorkspace, probe);
 }
 
 async function plan(world: World, args: InsertArgs) {

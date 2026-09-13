@@ -301,6 +301,22 @@ none is open and commits it before answering, so nobody holds it after a crash: 
 committed when its step finalized and reverted otherwise. A standalone step that finds one open joins
 it and closes nothing, and its answer says which it did.
 
+### What a writer reads
+
+A writer splices decoded text and writes it back as UTF-8, so it reads through `writableSource` in
+`core/src/sourceRead.ts`. That answers the text only when the decode was lossless: the text
+re-encoded as UTF-8 equals the bytes read. A BOM decodes to U+FEFF and round-trips, so it is kept.
+A module that is not valid UTF-8 is refused by name, since its U+FFFD would replace bytes nobody
+edited. A binary or oversized module is refused too, rather than overwritten as though absent.
+Text bound for a module passes `writableText` beside it: a lone surrogate encodes as U+FFFD, so
+new text holding one is refused before a replace or an insert plans, and again at the write.
+
+The planner reads this way for replace, the span replace, insert, move and rename edits. `writeAll`
+reads every file this way before writing any, so one lossy file refuses a whole rename, and
+`SourceWorkspace.writeModule` reads again at the write. A residue pins `writeSourceFile` to those two
+and the journal's byte restore. Reads stay lenient: indexing, outlines and `symbolSource` answer the
+decoded text.
+
 ### Replacing a symbol
 
 `LexiconService.planReplacement` does everything expensive and touches nothing: it splices the new
@@ -309,7 +325,7 @@ the index. The write happens separately, under the gate, and rechecks that the f
 what the splice was cut from. Planning outside the gate keeps a parse off the critical section;
 rechecking inside it is what stops a plan being applied to a file that moved underneath it.
 
-The splice uses the same read `symbolSource` sliced (`SourceWorkspace.symbolSourceRead`), never a
+The splice uses the one read its span was sliced from (`SourceWorkspace.symbolSourceRead`), never a
 second one, so the range and the text it describes cannot come from two versions of the file.
 
 `refactorReplaceSpan` adds the caller's expectation. `symbolSource` answers `spanHash`, the hash of
@@ -343,7 +359,9 @@ needs, and each importer re-points its specifier. A blocked site anywhere fails 
 because a relocated declaration whose importers still point at the old module does not build.
 
 The target is created when absent, journaled as having not existed, so undo deletes it rather than
-leaving an empty file behind. Reindexing puts the target first, so everything else rebinds against
+leaving an empty file behind. `moveEdits` records the hash of every module it read, null for an
+absent target, and the gate refuses when any no longer matches, so a target that changed or appeared
+after planning is never overwritten. Reindexing puts the target first, so everything else rebinds against
 a declaration that already exists in its new home. Recorded knowledge follows the same way a
 rename's does: the address map is journaled with the step and applied once the files are written.
 

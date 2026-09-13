@@ -192,6 +192,9 @@ export {
 	type SourceReader,
 	sourceReader,
 	textOf,
+	type WritableSource,
+	writableSource,
+	writableText,
 } from "./sourceRead.js";
 export { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 export {

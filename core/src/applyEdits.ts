@@ -6,7 +6,7 @@
 import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
 import type { WriteOutcome } from "./refusalSlots.js";
 import { editsRefused, moduleUnreadable, writeThrew } from "./refusals.js";
-import { insideWorkspace } from "./sourceRead.js";
+import { insideWorkspace, type SourceReader, writableSource, writableText } from "./sourceRead.js";
 import { writeSourceFile } from "./sourceWriter.js";
 
 export type { FileEdits } from "@nyaa-lexicon/protocol";
@@ -24,25 +24,25 @@ export type ApplyOutcome = WriteOutcome;
  *
  * Both halves are checked before anything is written, because a rename that succeeds in three
  * files and fails in the fourth leaves a codebase that does not compile and no record of how far
- * it got. Each write is then a temp file plus a rename, so a crash mid-write cannot truncate a
- * source file.
+ * it got. Files are read through `writableSource` and results checked by `writableText`, so one
+ * lossy file refuses the set. Each write is then a temp file plus a rename, so a crash mid-write
+ * cannot truncate a source file.
  *
  * This is not atomic ACROSS files: a crash between two renames leaves some applied. Making that
  * impossible needs a journal, and the pre-check removes every failure this code can actually see.
  */
-export function writeAll(
-	workspaceRoot: string,
-	files: FileEdits[],
-	readFile: (module: string) => string | null,
-): ApplyOutcome {
+export function writeAll(workspaceRoot: string, files: FileEdits[], readSource: SourceReader): ApplyOutcome {
 	const staged: Array<{ module: string; text: string }> = [];
 
 	for (const file of files) {
-		const before = readFile(file.module);
-		if (before === null) return { applied: false, reason: moduleUnreadable(file.module), module: file.module };
+		const before = writableSource(file.module, readSource(file.module));
+		if ("refused" in before) return { applied: false, reason: before.refused, module: file.module };
+		if (before.text === null) return { applied: false, reason: moduleUnreadable(file.module), module: file.module };
 
-		const result = applyEdits(before, file.edits);
+		const result = applyEdits(before.text, file.edits);
 		if ("problem" in result) return { applied: false, reason: editsRefused(result.problem), module: file.module };
+		const unwritable = writableText(file.module, result.text);
+		if (unwritable !== null) return { applied: false, reason: unwritable, module: file.module };
 		staged.push({ module: file.module, text: result.text });
 	}
 

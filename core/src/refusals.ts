@@ -287,6 +287,23 @@ export function moduleUnreadable(module: string): Refusal {
 	return mint(`${module} could not be read. Check it exists and is readable, then try again`);
 }
 
+export function moduleNotUtf8(module: string): Refusal {
+	return mint(
+		`${module} is not valid UTF-8, so rewriting it would replace its undecodable bytes with U+FFFD. Convert it to UTF-8 and re-index, or edit it by hand`,
+	);
+}
+
+export function textNotEncodable(module: string): Refusal {
+	return mint(
+		`the text for ${module} holds a lone surrogate, which UTF-8 cannot encode, so it would be written as U+FFFD. Send well-formed text`,
+	);
+}
+
+/** Binary or too large. */
+export function moduleNotText(module: string, why: string): Refusal {
+	return mint(`${module} is not text a writer can splice (${why}). Edit it by hand`);
+}
+
 export function rangeOutsideModule(module: string): Refusal {
 	return mint(`the stored range falls outside ${module}. Re-index it and ask again`);
 }

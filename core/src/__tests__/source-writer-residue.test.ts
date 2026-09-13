@@ -45,6 +45,13 @@ const OWNERS = new Set(["sourceWriter.ts", "daemon.ts", "projectRegistry.ts", "d
 
 const SKIP = ["__tests__", "dist", "node_modules"];
 
+const WRITER_MODULE = new Set(["./sourceWriter.js", "./sourceWriter"]);
+
+const WRITE = new Set(["writeSourceFile"]);
+
+/** Text writers that check `writableSource` and `writableText`, and the journal's byte restore. */
+const CALLERS = new Set(["sourceWorkspace.ts", "applyEdits.ts", "transactions.ts"]);
+
 ////////////////////////////////
 //  Tests
 
@@ -80,6 +87,28 @@ describe("one module writes source files", () => {
 		expect(
 			offenders,
 			"a source file is written through writeSourceFile in sourceWriter.ts, which owns the temp-file dance recovery depends on.",
+		).toEqual([]);
+	});
+
+	// Any other caller skips the lossless check.
+	it("is called only by writers that refuse what writableSource refuses", () => {
+		const offenders: string[] = [];
+		const reached = new Set<string>();
+
+		for (const file of sourceFiles(CORE_SRC, SKIP)) {
+			const text = readSwept(file);
+			if (text === null) continue;
+			const parsed = parseSource(file, text);
+			for (const { call } of reachedCalls(parsed.source, WRITER_MODULE, WRITE)) {
+				if (CALLERS.has(basename(file))) reached.add(basename(file));
+				else offenders.push(`${basename(file)}:${lineOf(parsed, call)}`);
+			}
+		}
+
+		expect([...reached].sort(), "every named caller is found by the check").toEqual([...CALLERS].sort());
+		expect(
+			offenders,
+			"write a module through SourceWorkspace.writeModule or writeAll, which read it through writableSource first.",
 		).toEqual([]);
 	});
 

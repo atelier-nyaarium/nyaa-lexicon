@@ -12,6 +12,10 @@ const MODULE = join(import.meta.dirname, "..", "refactorPlanner.ts");
 const FORBIDDEN = [
 	{ pattern: /\bfrom "\.\/supervisor\.js"/, why: "providers are reached through ProviderProbe" },
 	{ pattern: /\bfrom "\.\/sourceWriter\.js"/, why: "planning does not write source" },
+	{
+		pattern: /\b(?:readSource|sourceReader|textOf|fromText)\b/,
+		why: "a module a plan writes is read through SourceWorkspace.writable",
+	},
 	{ pattern: /\bwriteAll\s*\(/, why: "planning does not write source" },
 	{ pattern: /\bwriteModule\s*\(/, why: "planning does not write source" },
 	{ pattern: /\bindexFile\s*\(/, why: "planning does not reindex" },

@@ -13,7 +13,7 @@ const FORBIDDEN = [
 	{ pattern: /\bfrom "\.\/supervisor\.js"/, why: "reading the workspace must not be able to ask a provider" },
 	{ pattern: /\bfrom "\.\/service\.js"/, why: "the source workspace is upstream of the service" },
 	{ pattern: /\bstore\.(?:replaceFile|forgetFile)/, why: "the indexer owns what the index holds" },
-	{ pattern: /\bfrom "node:fs"/, why: "reads go through the injected readFile, writes through sourceWriter" },
+	{ pattern: /\bfrom "node:fs"/, why: "reads go through the injected reader, writes through sourceWriter" },
 ];
 
 ////////////////////////////////
@@ -45,7 +45,7 @@ describe("the source workspace is the disk side and only that", () => {
 
 		expect(named).toEqual([
 			"private readonly store: IndexStore,",
-			"private readonly readFile: (module: string) => string | null,",
+			"private readonly readSource: SourceReader,",
 			"private readonly workspaceRoot: string,",
 		]);
 	});

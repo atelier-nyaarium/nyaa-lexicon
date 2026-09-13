@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RefactorUndoResult } from "@nyaa-lexicon/protocol";
-import { createDispatch } from "../dispatch";
+import { createDispatch, daemonHandlers, type Gate } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
@@ -27,6 +27,7 @@ let root: string;
 let store: IndexStore;
 let supervisor: ProviderSupervisor;
 let service: LexiconService;
+let transactions: TransactionManager;
 let dispatch: ReturnType<typeof createDispatch>;
 
 function put(module: string, text: string): void {
@@ -52,16 +53,25 @@ function statusOf(symbolId: string) {
 	return store.subjects.stateOf(symbolId, () => null);
 }
 
+/** A gate that runs `between` after planning and before the step's hold. */
+function gateAfter(between: () => void): Gate {
+	return {
+		read: async (work) => work(),
+		write: async (work) => {
+			between();
+			return work();
+		},
+	};
+}
+
 beforeEach(async () => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-fixture-refactor-"));
 	store = IndexStore.open(path.join(root, "index.sqlite")).store;
 	supervisor = new ProviderSupervisor();
 	await supervisor.start({ command: [process.execPath, "run", FIXTURE], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	dispatch = createDispatch(service, {
-		gate: new WorkspaceGate(),
-		transactions: new TransactionManager(store, root),
-	});
+	transactions = new TransactionManager(store, root);
+	dispatch = createDispatch(service, { gate: new WorkspaceGate(), transactions });
 	put("a.ref", "export class Cart {}\n");
 	await service.indexFile("a.ref");
 	await record(CART, "A shopping cart.");
@@ -142,6 +152,36 @@ describe("a move through the daemon's handlers", () => {
 		});
 		expect(statusOf(MOVED)).toMatchObject({ state: "none", forwardedTo: null });
 		expect(journaledRebinds()).toBe(0);
+	});
+
+	it("is refused inside the gate when the target changed after planning, and the target keeps its bytes", async () => {
+		put("b.ref", "export class Other {}\n");
+		await service.indexFile("b.ref");
+		const handlers = daemonHandlers(service, { gate: new WorkspaceGate(), transactions });
+		const late = "export class Other {}\nexport const late = 1\n";
+
+		const outcome = await handlers.refactorMove.run(
+			{ symbolId: CART, toModule: "b.ref" },
+			gateAfter(() => put("b.ref", late)),
+		);
+
+		expect(outcome).toMatchObject({ moved: false, reason: expect.stringContaining("b.ref") });
+		expect(read("b.ref")).toBe(late);
+		expect(read("a.ref")).toBe("export class Cart {}\n");
+	});
+
+	it("is refused inside the gate when a target planned as absent appeared", async () => {
+		const handlers = daemonHandlers(service, { gate: new WorkspaceGate(), transactions });
+		const late = "export const late = 1\n";
+
+		const outcome = await handlers.refactorMove.run(
+			{ symbolId: CART, toModule: "b.ref" },
+			gateAfter(() => put("b.ref", late)),
+		);
+
+		expect(outcome).toMatchObject({ moved: false, reason: expect.stringContaining("b.ref") });
+		expect(read("b.ref")).toBe(late);
+		expect(read("a.ref")).toBe("export class Cart {}\n");
 	});
 
 	it("is refused by the provider when the destination already declares the name, and both subjects stand", async () => {

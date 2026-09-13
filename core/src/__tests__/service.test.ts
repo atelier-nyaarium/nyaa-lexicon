@@ -1537,6 +1537,36 @@ describe("performing a rename", () => {
 		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe("export function add() {}\n");
 	});
 
+	it("writes no file when one it would rewrite is not valid UTF-8", async () => {
+		plant();
+		const call = { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } };
+		const lossy = Buffer.from([...Buffer.from("add();\n// "), 0xc3, 0x28, 0x0a]);
+		writeFileSync(path.join(dir, "use.ts"), lossy);
+		store.replaceFile({
+			module: "use.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [
+				{
+					name: "add",
+					range: call,
+					role: "call",
+					binding: { status: "bound", symbolId: target, provenance: "bound" },
+				},
+			],
+		});
+		const reply = (module: string) =>
+			module === "use.ts"
+				? { status: "ready", edits: [{ range: call, newText: "append" }], blocked: [] }
+				: rewriteTheName;
+
+		const outcome = await serviceThat(reply).renameSymbol(target, "append");
+
+		expect(outcome).toMatchObject({ renamed: false, reason: expect.stringContaining("use.ts") });
+		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe("export function add() {}\n");
+		expect(readFileSync(path.join(dir, "use.ts")).equals(lossy)).toBe(true);
+	});
+
 	it("refuses before asking any provider when the plan itself is blocked", async () => {
 		plant();
 		let asked = 0;

@@ -78,13 +78,10 @@ export class LexiconService {
 	constructor(
 		private readonly store: IndexStore,
 		private readonly supervisor: ProviderPort,
-		readSource: SourceReader,
+		private readonly readSource: SourceReader,
 		private readonly workspaceRoot = ".",
 		private readonly clock: Clock = systemClock,
 	) {
-		// The indexer wants the reason a file is unreadable; everything else wants text or nothing.
-		this.readFile = (module) => textOf(readSource(module));
-		const readFile = this.readFile;
 		this.reads = new IndexReadModel(store);
 		// Caching and surface globs are workspace decisions, so they are answered here.
 		this.imports = new ImportResolver(store, (fromModule, specifier) => {
@@ -109,17 +106,15 @@ export class LexiconService {
 			(from, specifier) => this.imports.resolveImport(from, specifier),
 			this.clock,
 		);
-		this.source = new SourceWorkspace(store, readFile, workspaceRoot);
-		this.probe = liveProbe(supervisor, readFile);
-		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe, readFile);
+		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
+		this.probe = liveProbe(supervisor, (module) => textOf(readSource(module)));
+		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe);
 	}
 
 	private readonly caches: IndexCaches = {
 		facts: new ResultCache(),
 		resolutions: new ResultCache(RESOLUTION_CAPACITY),
 	};
-
-	private readonly readFile: (module: string) => string | null;
 
 	/** The only writer of the index. */
 	readonly indexer: WorkspaceIndexer;
@@ -602,7 +597,7 @@ export class LexiconService {
 		if (!planned.ok) return { renamed: false, plan: planned.plan, reason: planned.reason };
 		const { plan, files } = planned;
 
-		const written = writeAll(this.workspaceRoot, files, this.readFile);
+		const written = writeAll(this.workspaceRoot, files, this.readSource);
 		if (!written.applied) {
 			return { renamed: false, plan, reason: writeFailed(written.module, written.reason) };
 		}
@@ -610,7 +605,7 @@ export class LexiconService {
 		// Re-indexed immediately, since every edited file's facts are now wrong and a rename is
 		// usually followed by another question about the same symbols.
 		for (const module of written.modules) {
-			if (this.readFile(module) !== null) await this.indexFile(module);
+			if (textOf(this.readSource(module)) !== null) await this.indexFile(module);
 		}
 		return { renamed: true, plan, modules: written.modules };
 	}
