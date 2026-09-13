@@ -88,7 +88,8 @@ inside a transaction: `refactor_start`, then `refactor_replace`, `refactor_inser
 `refactor_rename`, `refactor_move` and `refactor_track`, ending in `refactor_commit` or
 `refactor_revert`, with `refactor_undo` for the newest step and `refactor_status` for what is open.
 Text that does not parse never reaches disk, a single blocked site writes nothing at all, and what a
-change broke is reported rather than assumed away.
+change broke is reported rather than assumed away. `refactor_replace` given the `spanHash` from
+`symbol_source` refuses a span that changed since it was read.
 
 **Knowledge.** `record_answer` stores prose about a symbol, but only prose that cites the facts it
 was drawn from. `symbol_facts` hands out those ids, `recall_answer` reads what is stored along with

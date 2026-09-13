@@ -295,6 +295,12 @@ Recovery runs at startup before the daemon answers anything, and judges each fil
 rather than by the phase alone. A file matching neither its before nor its after image belongs to
 someone else and is reported as a conflict, never overwritten.
 
+A transaction records its origin. `refactor_start` opens an `explicit` one, which recovery leaves open
+because a session may still be holding it. A standalone step opens an `own` one inside the gate when
+none is open and commits it before answering, so nobody holds it after a crash: recovery closes it,
+committed when its step finalized and reverted otherwise. A standalone step that finds one open joins
+it and closes nothing, and its answer says which it did.
+
 ### Replacing a symbol
 
 `LexiconService.planReplacement` does everything expensive and touches nothing: it splices the new
@@ -302,6 +308,16 @@ text into the file it read, asks the owning provider to parse the result, and co
 the index. The write happens separately, under the gate, and rechecks that the file still hashes to
 what the splice was cut from. Planning outside the gate keeps a parse off the critical section;
 rechecking inside it is what stops a plan being applied to a file that moved underneath it.
+
+The splice uses the same read `symbolSource` sliced (`SourceWorkspace.symbolSourceRead`), never a
+second one, so the range and the text it describes cannot come from two versions of the file.
+
+`refactorReplaceSpan` adds the caller's expectation. `symbolSource` answers `spanHash`, the hash of
+the text it returns, and the span replace refuses with `stale` when the span no longer hashes to it.
+The plan checks the span on one exact read and the gate re-verifies that read, so an unchanged file
+proves an unchanged span without re-resolving inside the gate. An edit elsewhere in the file before
+the call does not refuse. It is a method rather than a field on `refactorReplace` because a daemon
+strips unknown fields, and an older one would write unchecked.
 
 Two answers are refused rather than reported. Text that does not parse never reaches disk. A
 replacement that renames its own declaration is sent to rename instead, since only rename rewrites
