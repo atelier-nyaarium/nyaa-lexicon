@@ -169,6 +169,8 @@ export {
 	RenameStepOutcomeSchema,
 	type ReplaceOutcome,
 	ReplaceOutcomeSchema,
+	type ReplaceSpanOutcome,
+	ReplaceSpanOutcomeSchema,
 	type ResolveFactsResult,
 	ResolveFactsResultSchema,
 	type ScanCounts,

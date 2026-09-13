@@ -342,6 +342,18 @@ export const CASES: Record<string, unknown[][]> = {
 				text: "const a = 1;",
 			},
 		],
+		[
+			{
+				found: true,
+				name: "add",
+				kind: "function",
+				module: "src/a.ts",
+				range: SPAN,
+				text: "const a = 1;",
+				contentHash: "c0ffee",
+				spanHash: "5ba0",
+			},
+		],
 	],
 	renderOverview: [
 		[

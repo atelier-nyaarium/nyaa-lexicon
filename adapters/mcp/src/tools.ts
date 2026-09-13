@@ -46,6 +46,7 @@ import type {
 	RefactorUndoResult,
 	RenameStepOutcome,
 	ReplaceOutcome,
+	ReplaceSpanOutcome,
 	SearchSymbolsResult,
 	StoredDeclaration,
 	SubjectDiagnosis,
@@ -111,6 +112,11 @@ export interface ToolBackend {
 		factId?: string | undefined;
 		newText: string;
 	}) => Promise<ReplaceOutcome>;
+	refactorReplaceSpan: (args: {
+		symbolId: string;
+		expectedSpanHash: string;
+		newText: string;
+	}) => Promise<ReplaceSpanOutcome>;
 	refactorInsert: (args: {
 		after?: string | undefined;
 		module?: string | undefined;
@@ -251,6 +257,7 @@ export const RefactorReplaceInput = {
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	factId: z.string().min(1).optional().describe(`A literal's \`factId\` from \`find_literals\`.`),
 	newText: z.string().min(1).describe(`Replacement for the whole span \`symbol_source\` returned.`),
+	expectedSpanHash: z.string().min(1).optional().describe(`\`spanHash\` from \`symbol_source\`. Needs \`symbolId\`.`),
 };
 
 export const RefactorInsertInput = {
@@ -547,6 +554,8 @@ Replace one symbol's whole span with new text, checked before it is written.
 Text that does not parse is refused before touching disk. Text that parses is applied, then what it
 broke is reported: symbols that vanished while other files still use them, and names that stopped
 resolving. Read the span with \`symbol_source\` first and send back the edited whole.
+
+Pass its \`spanHash\` as \`expectedSpanHash\` to refuse a span that changed since.
 
 Renaming the declaration itself is refused; use \`refactor_rename\`.
 `.trim();
@@ -1050,9 +1059,22 @@ export async function refactorCommit(backend: ToolBackend, args: { force?: boole
 
 export async function refactorReplace(
 	backend: ToolBackend,
-	args: { symbolId?: string | undefined; factId?: string | undefined; newText: string },
+	args: {
+		symbolId?: string | undefined;
+		factId?: string | undefined;
+		newText: string;
+		expectedSpanHash?: string | undefined;
+	},
 ): Promise<ToolResult> {
-	const outcome = await backend.refactorReplace(args).catch((error: unknown) => ({
+	const { expectedSpanHash, ...address } = args;
+	if (expectedSpanHash !== undefined && args.symbolId === undefined) {
+		return text(`\`expectedSpanHash\` guards a symbol's span, so it needs \`symbolId\`.`, true);
+	}
+	const replaced =
+		expectedSpanHash === undefined || args.symbolId === undefined
+			? backend.refactorReplace(address)
+			: backend.refactorReplaceSpan({ symbolId: args.symbolId, expectedSpanHash, newText: args.newText });
+	const outcome = await replaced.catch((error: unknown) => ({
 		replaced: false,
 		issues: [] as RefactorIssue[],
 		reason: error instanceof Error ? error.message : String(error),

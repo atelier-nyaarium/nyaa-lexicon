@@ -5,7 +5,7 @@
 // index afterwards. An operation now DECLARES its parts; the policy cannot be re-implemented
 // wrongly, and a fifth operation is one declaration.
 
-import { noTransactionOpen, type Refusal, stepNotWritten, stepRefused } from "./refusals.js";
+import { noTransactionOpen, type Refusal, stepAbandoned, stepNotWritten, stepRefused } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
 import type { RefactorIssue, StepKind, TransactionManager } from "./transactions.js";
@@ -55,14 +55,19 @@ export interface StepDeps {
 	write: <T>(work: () => Promise<T> | T) => Promise<T>;
 }
 
+/** Joined the open transaction, or opened and committed its own. */
+export type StepHold = "joined" | "own";
+
 export interface StepShape<Outcome> {
 	kind: StepKind;
+	/** Opens and commits its own transaction when none is open. */
+	standalone?: boolean;
 	/** Read-side planning, after the transaction guard and the upgrade drain, outside the gate.
 	 * Owns its refusal ordering; the executor reorders nothing. */
 	plan: () => Promise<PlanAnswer<Outcome>>;
 	/** Refusal strings pass through verbatim; the executor authors only the write-failure frame. */
 	refuse: (reason: Refusal, issues: RefactorIssue[]) => Outcome;
-	succeed: (issues: RefactorIssue[]) => Outcome;
+	succeed: (issues: RefactorIssue[], hold: StepHold) => Outcome;
 }
 
 ////////////////////////////////
@@ -74,7 +79,7 @@ function describeError(error: unknown): string {
 
 export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Promise<Outcome> {
 	const { service, transactions, write } = deps;
-	if (!transactions.openTransaction()) {
+	if (shape.standalone !== true && !transactions.openTransaction()) {
 		return shape.refuse(noTransactionOpen(), []);
 	}
 
@@ -86,9 +91,20 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 	const planned = answer.planned;
 
 	return write(async () => {
+		// Inside the gate, or another writer opens one in between.
+		const hold: StepHold = shape.standalone === true && !transactions.openTransaction() ? "own" : "joined";
+		if (hold === "own") {
+			const started = transactions.start("own");
+			if (!started.started) return shape.refuse(started.reason ?? noTransactionOpen(), []);
+		}
+		const refuse = (reason: Refusal): Outcome => {
+			if (hold === "own") transactions.revert();
+			return shape.refuse(reason, []);
+		};
+
 		// The plan was made outside the gate; the world it described must still hold inside it.
 		const stale = planned.stale();
-		if (stale !== null) return shape.refuse(stale, []);
+		if (stale !== null) return refuse(stale);
 		planned.begin?.();
 
 		// Journaled with the plan, so recovery of an unfinished step can rebind the addresses back.
@@ -98,7 +114,7 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 				? planned.planRecord
 				: { ...(planned.planRecord as Record<string, unknown> | undefined), rebind };
 		const begun = transactions.beginStep(shape.kind, planned.modules, record, planned.plannedText);
-		if (!begun.ok) return shape.refuse(begun.reason, []);
+		if (!begun.ok) return refuse(begun.reason);
 
 		try {
 			await planned.apply();
@@ -112,11 +128,16 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 			// A file matching neither image cannot be safely restored; the step stays for a human
 			// decision rather than being silently stranded.
 			const stranded = undone.undone ? null : (undone.reason ?? "it could not be undone");
-			const reason =
+			const failed = (left: string | null) =>
 				error instanceof StepRefusal
-					? stepRefused(error.message, stranded)
-					: stepNotWritten(shape.kind, describeError(error), stranded);
-			return shape.refuse(reason, []);
+					? stepRefused(error.message, left)
+					: stepNotWritten(shape.kind, describeError(error), left);
+			if (stranded === null) return refuse(failed(null));
+			if (hold === "joined") return shape.refuse(failed(stranded), []);
+			// Nobody else holds it: settle as recovery would.
+			const settled = transactions.recover();
+			for (const module of settled.restored) await service.indexFile(module).catch(() => undefined);
+			return shape.refuse(stepAbandoned(failed(null), settled.conflicts), []);
 		}
 
 		transactions.completeStep(begun.stepNo, "written");
@@ -157,6 +178,8 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 
 		transactions.recordIssues(begun.stepNo, issues);
 		transactions.completeStep(begun.stepNo, "finalized");
-		return shape.succeed(issues);
+		// Issues are reported, never left open.
+		if (hold === "own") transactions.commit({ force: true });
+		return shape.succeed(issues, hold);
 	});
 }

@@ -99,6 +99,7 @@ function backendOver(ask: Asker): ToolBackend {
 		refactorRevert: () => ask("refactorRevert", {}),
 		refactorCommit: (force) => ask("refactorCommit", { force }),
 		refactorReplace: (args) => ask("refactorReplace", args),
+		refactorReplaceSpan: (args) => ask("refactorReplaceSpan", args),
 		refactorInsert: (args) => ask("refactorInsert", args),
 		refactorRename: (symbolId, newName) => ask("refactorRename", { symbolId, newName }),
 		refactorMove: (symbolId, toModule) => ask("refactorMove", { symbolId, toModule }),

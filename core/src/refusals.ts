@@ -429,6 +429,19 @@ export function changedWhilePlanned(module: string, kind: string): Refusal {
 	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);
 }
 
+/** A standalone step's failed write, settled as recovery would. */
+export function stepAbandoned(problem: Refusal, conflicts: string[]): Refusal {
+	const left = conflicts.length === 0 ? "" : `; ${conflicts.join(", ")} matched neither image and was left as found`;
+	return mint(`${problem}${left}`);
+}
+
+/** The span changed since the caller read it. */
+export function spanChanged(module: string, name: string): Refusal {
+	return mint(
+		`${name} in ${module} no longer holds the text the new text was written against. Read it again with symbol_source and edit what it holds now`,
+	);
+}
+
 export function staleSincePlanned(modules: string[], kind: string): Refusal {
 	return mint(
 		`${modules.join(", ")} changed since being indexed, so the ${kind} would rewrite stale positions. Re-index and plan again`,

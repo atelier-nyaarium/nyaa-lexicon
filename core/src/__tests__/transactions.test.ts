@@ -300,6 +300,55 @@ describe("recovering after a crash", () => {
 		manager.recover();
 		expect(read("a.ts.lexicon-tmp")).toBeNull();
 	});
+
+	it("keeps a transaction refactor_start opened, since someone may still be holding it", () => {
+		manager.beginStep("replace", ["a.ts"]);
+
+		const outcome = manager.recover();
+		expect(outcome.closed).toBeUndefined();
+		expect(manager.start().started).toBe(false);
+	});
+});
+
+// Otherwise it blocks every later session.
+describe("recovering a standalone step's transaction", () => {
+	beforeEach(() => {
+		write("a.ts", "original\n");
+		manager.start("own");
+	});
+
+	it("puts back an unfinished step and closes the transaction", () => {
+		const begun = manager.beginStep("replace", ["a.ts"]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "half applied\n");
+		manager.completeStep(begun.stepNo, "written");
+
+		const outcome = new TransactionManager(store, root).recover();
+
+		expect(outcome).toMatchObject({ restored: ["a.ts"], closed: "reverted" });
+		expect(read("a.ts")).toBe("original\n");
+		expect(manager.start().started).toBe(true);
+	});
+
+	it("keeps a finalized step that died before its commit, and closes the transaction", () => {
+		step("replace", { "a.ts": "saved\n" });
+
+		const outcome = new TransactionManager(store, root).recover();
+
+		expect(outcome).toMatchObject({ restored: [], closed: "committed" });
+		expect(read("a.ts")).toBe("saved\n");
+		expect(manager.start().started).toBe(true);
+	});
+
+	it("keeps a transaction from a store older than the origin column open, as refactor_start's", () => {
+		store.journalWrite((db) => db.exec("ALTER TABLE refactor_transactions DROP COLUMN origin"));
+		store.close();
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		const reopened = new TransactionManager(store, root);
+
+		expect(reopened.recover().closed).toBeUndefined();
+		expect(reopened.start().started).toBe(false);
+	});
 });
 
 // Insert knows its final text before writing, so the outcome rides in the journal from begin. A

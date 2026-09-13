@@ -43,6 +43,7 @@ import {
 	RenamePlanSchema,
 	RenameStepOutcomeSchema,
 	ReplaceOutcomeSchema,
+	ReplaceSpanOutcomeSchema,
 	ResolveFactsResultSchema,
 	SearchSymbolsResultSchema,
 	SharedLiteralsResultSchema,
@@ -204,6 +205,16 @@ const Commit = z.object({ force: z.boolean().optional() }).meta({ id: "CommitReq
 const Replace = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional(), newText: z.string() })
 	.meta({ id: "ReplaceRequest" });
+const ReplaceSpan = z
+	.object({
+		symbolId: z.string().min(1),
+		/** `spanHash` from the `symbolSource` read. */
+		expectedSpanHash: z.string().min(1),
+		newText: z.string(),
+		/** Opens and commits its own transaction when none is open. */
+		standalone: z.boolean().optional(),
+	})
+	.meta({ id: "ReplaceSpanRequest" });
 const Insert = z
 	.object({ after: z.string().min(1).optional(), module: ModulePath.optional(), text: z.string().min(1) })
 	.refine((args) => (args.after === undefined) !== (args.module === undefined), "Set exactly one of after or module.")
@@ -310,6 +321,8 @@ export const DAEMON_METHODS = {
 	refactorCommit: { request: Commit, response: RefactorCommitResultSchema, mutates: true },
 	/** Replace one symbol's whole span with new text, checked before it is written. */
 	refactorReplace: { request: Replace, response: ReplaceOutcomeSchema, mutates: true },
+	/** Replace one symbol's span only if it is unchanged since read. */
+	refactorReplaceSpan: { request: ReplaceSpan, response: ReplaceSpanOutcomeSchema, mutates: true },
 	/** Author a declaration after a sibling or at the end of a module. */
 	refactorInsert: { request: Insert, response: InsertOutcomeSchema, mutates: true },
 	/** Rename a symbol across declarations, uses, imports and re-exports. */

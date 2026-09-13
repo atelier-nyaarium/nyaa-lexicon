@@ -9,6 +9,7 @@ import {
 	refactorMove,
 	refactorPreview,
 	refactorRename,
+	refactorReplace,
 	resolveImport,
 	searchDocs,
 	searchSymbols,
@@ -161,6 +162,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		refactorRevert: async () => ({ reverted: true, modules: [] }),
 		refactorCommit: async () => ({ committed: true, issues: [] }),
 		refactorReplace: async () => ({ replaced: true, module: "src/a.ts", issues: [] }),
+		refactorReplaceSpan: async () => ({ replaced: true, module: "src/a.ts", issues: [], transaction: "joined" }),
 		refactorInsert: async () => ({ inserted: true, module: "src/a.ts", symbolIds: [], issues: [] }),
 		refactorRename: async () => ({ renamed: true, modules: ["src/a.ts"], issues: [] }),
 		refactorMove: async () => ({ moved: true, modules: ["src/a.ts", "src/b.ts"], issues: [] }),
@@ -251,6 +253,48 @@ describe("resolving what the caller gave", () => {
 		expect((await symbolSource(counting, { symbolId: "x", factId: "y" })).isError).toBe(true);
 		expect((await symbolSource(counting, {})).isError).toBe(true);
 		expect(asked).toBe(0);
+	});
+
+	it("shows the span hash a guarded replace needs, and nothing when an older daemon sent none", async () => {
+		const found = {
+			found: true as const,
+			name: "add",
+			kind: "function",
+			module: "src/a.ts",
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+			text: "code",
+			contentHash: "file",
+		};
+		const withHash = await symbolSource(backend({ symbolSource: async () => ({ ...found, spanHash: "5ba0" }) }), {
+			symbolId: "x",
+		});
+		const without = await symbolSource(backend({ symbolSource: async () => found }), { symbolId: "x" });
+
+		expect(JSON.stringify(withHash)).toContain("Span hash: `5ba0`");
+		expect(JSON.stringify(without)).not.toContain("Span hash");
+	});
+
+	// Older daemons strip unknown fields.
+	it("sends a replace carrying a span hash to the checked method, and refuses one naming no symbol", async () => {
+		const asked: string[] = [];
+		const routed = backend({
+			refactorReplace: async () => {
+				asked.push("refactorReplace");
+				return { replaced: true, module: "src/a.ts", issues: [] };
+			},
+			refactorReplaceSpan: async (args) => {
+				asked.push(`refactorReplaceSpan ${args.expectedSpanHash}`);
+				return { replaced: false, issues: [], reason: "changed", stale: true };
+			},
+		});
+
+		const stale = await refactorReplace(routed, { symbolId: "x", newText: "t", expectedSpanHash: "h" });
+		expect(stale.isError).toBe(true);
+		expect((await refactorReplace(routed, { symbolId: "x", newText: "t" })).isError).toBeFalsy();
+		expect((await refactorReplace(routed, { factId: "f", newText: "t", expectedSpanHash: "h" })).isError).toBe(
+			true,
+		);
+		expect(asked).toEqual(["refactorReplaceSpan h", "refactorReplace"]);
 	});
 
 	it("resolves a unique name", async () => {

@@ -396,7 +396,9 @@ ${KNOWLEDGE_SCHEMA}
 CREATE TABLE refactor_transactions (
   id        TEXT PRIMARY KEY,
   state     TEXT NOT NULL,
-  startedAt INTEGER NOT NULL
+  startedAt INTEGER NOT NULL,
+  -- 'own': recovery closes it. Null reads as 'explicit'.
+  origin    TEXT
 );
 CREATE UNIQUE INDEX refactor_one_open ON refactor_transactions(state) WHERE state = 'open';
 
@@ -958,6 +960,9 @@ export class IndexStore {
 			db.exec("ALTER TABLE symbols ADD COLUMN synthesizedName INTEGER");
 		}
 		if (!columnExists(db, "symbols", "patternDigest")) db.exec("ALTER TABLE symbols ADD COLUMN patternDigest TEXT");
+		if (!columnExists(db, "refactor_transactions", "origin")) {
+			db.exec("ALTER TABLE refactor_transactions ADD COLUMN origin TEXT");
+		}
 		if (!columnExists(db, "symbols", "patternCoverage")) {
 			db.exec("ALTER TABLE symbols ADD COLUMN patternCoverage TEXT");
 		}

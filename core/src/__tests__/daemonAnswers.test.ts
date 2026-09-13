@@ -361,6 +361,19 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		const outcome = await ask("refactorReplace", { symbolId: cart, newText: "export class Cart extends Bag" });
 		expect(outcome.replaced).toBe(true);
 	},
+	refactorReplaceSpan: async () => {
+		const seen = await ask("symbolSource", { symbolId: cart });
+		if (!seen.found || seen.spanHash === undefined) throw new Error("symbolSource answered no span hash");
+		const request = { symbolId: cart, newText: seen.text };
+		expect(await ask("refactorReplaceSpan", { ...request, expectedSpanHash: "0".repeat(32) })).toMatchObject({
+			replaced: false,
+			stale: true,
+		});
+		expect(await ask("refactorReplaceSpan", { ...request, expectedSpanHash: seen.spanHash })).toMatchObject({
+			replaced: true,
+			transaction: "joined",
+		});
+	},
 	refactorUndo: async () => {
 		expect(await ask("refactorUndo", {})).toMatchObject({ undone: true, modules: ["cart.ref"] });
 	},
@@ -403,6 +416,7 @@ const REFACTOR = [
 	"refactorStatus",
 	"refactorTrack",
 	"refactorReplace",
+	"refactorReplaceSpan",
 	"refactorUndo",
 	"refactorInsert",
 	"refactorRename",

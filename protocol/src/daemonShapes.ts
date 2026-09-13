@@ -939,6 +939,8 @@ export const SymbolSourceSchema = z
 			text: z.string(),
 			/** Of the same read the text came from, so a later write can prove nothing moved. */
 			contentHash: z.string(),
+			/** Of `text`, for `refactorReplaceSpan`. */
+			spanHash: z.string().optional(),
 		}),
 		z.object({ found: z.literal(false), reason: z.string(), stale: z.boolean().optional() }),
 	])
@@ -1171,6 +1173,16 @@ export const ReplaceOutcomeSchema = z
 	.meta({ id: "ReplaceOutcome" });
 
 export type ReplaceOutcome = z.infer<typeof ReplaceOutcomeSchema>;
+
+/** A span-guarded replacement. */
+export const ReplaceSpanOutcomeSchema = ReplaceOutcomeSchema.extend({
+	/** Span changed since read. Read again, never retry. */
+	stale: z.boolean().optional(),
+	/** On success: `own` committed its own transaction, `joined` wrote into the open one. */
+	transaction: z.enum(["joined", "own"]).optional(),
+}).meta({ id: "ReplaceSpanOutcome" });
+
+export type ReplaceSpanOutcome = z.infer<typeof ReplaceSpanOutcomeSchema>;
 
 const migrated = z.object({ answers: z.number(), gaps: z.number() });
 

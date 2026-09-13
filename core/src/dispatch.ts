@@ -11,7 +11,7 @@ import {
 	isDaemonMethod,
 	type MoveOutcome,
 	type RenameStepOutcome,
-	type ReplaceOutcome,
+	type ReplaceSpanOutcome,
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
@@ -252,18 +252,29 @@ function refactorReplace(
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId?: string | undefined; factId?: string | undefined; newText: string },
-): Promise<ReplaceOutcome> {
+	span?: { expectedSpanHash: string; standalone: boolean },
+): Promise<ReplaceSpanOutcome> {
 	let module = "";
+	let stale = false;
 
-	return journaledStep<ReplaceOutcome>(
+	return journaledStep<ReplaceSpanOutcome>(
 		{ service, transactions, write },
 		{
 			kind: "replace",
-			refuse: (reason, issues) => ({ replaced: false, issues, reason }),
-			succeed: (issues) => ({ replaced: true, module, issues }),
+			standalone: span?.standalone === true,
+			refuse: (reason, issues) => ({ replaced: false, issues, reason, ...(stale ? { stale } : {}) }),
+			succeed: (issues, transaction) => ({
+				replaced: true,
+				module,
+				issues,
+				...(span === undefined ? {} : { transaction }),
+			}),
 			plan: async () => {
-				const plan = await service.planReplacement(args, args.newText);
-				if (!plan.ok) return { refused: plan.reason };
+				const plan = await service.planReplacement(args, args.newText, span?.expectedSpanHash);
+				if (!plan.ok) {
+					stale = plan.stale === true;
+					return { refused: plan.reason };
+				}
 				module = plan.module;
 
 				return {
@@ -271,8 +282,7 @@ function refactorReplace(
 						modules: [plan.module],
 						planRecord: { range: plan.range },
 						plannedText: [{ module: plan.module, text: plan.text }],
-						// The plan was spliced from one exact version of the file; anything that
-						// changed it since invalidates the splice.
+						// The plan was spliced from, and its span checked on, one exact version of the file.
 						stale: () =>
 							service.currentHashOf(plan.module) !== plan.baseHash
 								? changedWhilePlanned(plan.module, "replacement")
@@ -498,6 +508,12 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		refactorCommit: write((params) => transactions().commit(params)),
 		// A journaled step plans outside the gate and writes inside it, through the gate it is handed.
 		refactorReplace: staged((params, gate) => refactorReplace(service, transactions(), gate.write, params)),
+		refactorReplaceSpan: staged((params, gate) =>
+			refactorReplace(service, transactions(), gate.write, params, {
+				expectedSpanHash: params.expectedSpanHash,
+				standalone: params.standalone === true,
+			}),
+		),
 		refactorInsert: staged((params, gate) => refactorInsert(service, transactions(), gate.write, params)),
 		refactorRename: staged((params, gate) => refactorRename(service, transactions(), gate.write, params)),
 		refactorMove: staged((params, gate) => refactorMove(service, transactions(), gate.write, params)),

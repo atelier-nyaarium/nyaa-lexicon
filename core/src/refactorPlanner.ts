@@ -38,6 +38,7 @@ import {
 	alreadyInModule,
 	alreadyNamed,
 	candidateDoesNotParse,
+	changedWhilePlanned,
 	editsRefused,
 	moduleChangedReindex,
 	moduleNotOnDisk,
@@ -57,6 +58,7 @@ import {
 	sharesId,
 	sharesSpan,
 	siteBlocked,
+	spanChanged,
 	subjectRefused,
 	unrepresentableModule,
 } from "./refusals.js";
@@ -158,7 +160,7 @@ export type ReplacementPlan =
 			baseHash: string;
 			issues: RefactorIssue[];
 	  }
-	| { ok: false; reason: Refusal };
+	| { ok: false; reason: Refusal; stale?: true };
 
 /** Whole new contents per module, so the writer never re-derives an edit it did not check. */
 export type MoveEditsOutcome =
@@ -226,15 +228,23 @@ export class RefactorPlanner {
 	async planReplacement(
 		address: { symbolId?: string | undefined; factId?: string | undefined },
 		newText: string,
+		expectedSpanHash?: string,
 	): Promise<ReplacementPlan> {
 		const source = this.source.symbolSource(address);
 		if (!source.found) return { ok: false, reason: source.reason };
 
 		const guard = this.replacementGuard(address, source);
 		if (guard) return { ok: false, reason: guard };
+		if (expectedSpanHash !== undefined && source.spanHash !== expectedSpanHash) {
+			return { ok: false, reason: spanChanged(source.module, source.name), stale: true };
+		}
 
 		const before = this.readFile(source.module);
 		if (before === null) return { ok: false, reason: moduleNotOnDisk(source.module) };
+		// Splice only the bytes whose span was checked.
+		if (hashContent(before) !== source.contentHash) {
+			return { ok: false, reason: changedWhilePlanned(source.module, "replacement") };
+		}
 
 		const spliced = applyEdits(before, [{ range: source.range, newText }]);
 		if ("problem" in spliced) return { ok: false, reason: editsRefused(spliced.problem) };

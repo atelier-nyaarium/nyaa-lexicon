@@ -19,7 +19,14 @@ const TREE_ENTRY = /^\t\t(\w+): treeFirst\(/gm;
 const UPGRADED_ENTRY = /^\t\t(\w+): upgradedRead\(/gm;
 
 /** Reads under the gate, writes under it, or steps the work itself. */
-const STAGED = ["recallAnswer", "refactorReplace", "refactorInsert", "refactorRename", "refactorMove"];
+const STAGED = [
+	"recallAnswer",
+	"refactorReplace",
+	"refactorReplaceSpan",
+	"refactorInsert",
+	"refactorRename",
+	"refactorMove",
+];
 
 /** A tree upgrade alone, then the answer shared. */
 const TREE_FIRST = ["describe", "typeHierarchy", "callHierarchy", "findReferences", "factsFor", "typeOf"];

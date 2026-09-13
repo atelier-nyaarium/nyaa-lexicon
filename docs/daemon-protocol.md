@@ -106,8 +106,8 @@ method the table marks `mutates` may already have landed, so its loss is reporte
 ## The method table
 
 `DAEMON_METHODS`, in the protocol package, is the one owner of what the daemon answers:
-fifty entries, each a method name with a `request` schema and a `response` schema, in
-dispatch order, with a doc line on every entry. The twelve whose repetition is not harmless, the
+one entry per method, each a method name with a `request` schema and a `response` schema, in
+dispatch order, with a doc line on every entry. Those whose repetition is not harmless, the
 knowledge writes and the refactor steps, carry `mutates: true`, read through `methodMutates`;
 `indexFile` writes the store too, but asked twice it answers `current` the second time, so it is
 not marked. Nothing else in the table is optional. `hubs` is its own entry aliasing `mostReferenced`,

@@ -1379,6 +1379,7 @@ export function renderSymbolSource(source: SymbolSource): string {
 		`# ${code(source.name)}`,
 		"",
 		`${source.kind} in ${code(source.module)}, lines ${start.line + 1} to ${end.line + 1}.`,
+		...(source.spanHash === undefined ? [] : [`Span hash: ${code(source.spanHash)}`]),
 		"",
 		"```",
 		source.text,

@@ -58,6 +58,19 @@ export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: Re
 
 type RecoveryIntent = { operation: "undo" | "revert"; stepNo: number | null };
 
+/** `explicit` from `refactor_start`, `own` from a standalone step. */
+export type TransactionOrigin = "explicit" | "own";
+
+export interface Recovered {
+	recovered: boolean;
+	transactionId?: string;
+	restored: string[];
+	conflicts: string[];
+	unreversed: KeptRebind[];
+	/** How recovery closed an `own` transaction. */
+	closed?: "committed" | "reverted";
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -87,27 +100,33 @@ export class TransactionManager {
 	////////////////////////////////
 	//  Lifecycle
 
-	/** Refuses a second transaction rather than nesting: one workspace, one stack of undo. */
-	start(): StartedTransaction {
+	/**
+	 * Refuses a second transaction rather than nesting: one workspace, one stack of undo.
+	 *
+	 * Nobody holds an `own` transaction after a crash, so recovery closes it.
+	 */
+	start(origin: TransactionOrigin = "explicit"): StartedTransaction {
 		const open = this.openTransaction();
 		if (open) return { started: false, id: open.id, reason: transactionAlreadyOpen() };
 
 		const id = `rt-${this.now().toString(36)}-${Math.trunc(Math.random() * 0xfffff).toString(36)}`;
 		this.store.journalWrite((db) => {
-			db.prepare("INSERT INTO refactor_transactions (id, state, startedAt) VALUES (?, ?, ?)").run(
+			db.prepare("INSERT INTO refactor_transactions (id, state, startedAt, origin) VALUES (?, ?, ?, ?)").run(
 				id,
 				"open",
 				this.now(),
+				origin,
 			);
 		});
 		return { started: true, id };
 	}
 
-	openTransaction(): { id: string; startedAt: number } | null {
+	openTransaction(): { id: string; startedAt: number; origin: TransactionOrigin } | null {
 		const row = this.store.journalRead((db) =>
-			db.prepare("SELECT id, startedAt FROM refactor_transactions WHERE state = 'open'").get(),
-		) as { id: string; startedAt: number } | undefined;
-		return row ?? null;
+			db.prepare("SELECT id, startedAt, origin FROM refactor_transactions WHERE state = 'open'").get(),
+		) as { id: string; startedAt: number; origin: TransactionOrigin | null } | undefined;
+		// Pre-column rows are `explicit`.
+		return row === undefined ? null : { id: row.id, startedAt: row.startedAt, origin: row.origin ?? "explicit" };
 	}
 
 	/**
@@ -395,17 +414,20 @@ export class TransactionManager {
 	 * never overwritten: reporting a conflict is recoverable, and silently reverting a stranger's
 	 * work is not.
 	 */
-	recover(): {
-		recovered: boolean;
-		transactionId?: string;
-		restored: string[];
-		conflicts: string[];
-		unreversed: KeptRebind[];
-	} {
+	recover(): Recovered {
 		this.sweepTemporaries();
 
 		const open = this.openTransaction();
 		if (!open) return { recovered: false, restored: [], conflicts: [], unreversed: [] };
+		const outcome = this.putBack(open);
+		if (open.origin !== "own" || this.openTransaction()?.id !== open.id) return outcome;
+
+		const closed = this.stepCount(open.id) > 0 ? "committed" : "reverted";
+		this.close(open.id, closed);
+		return { ...outcome, closed };
+	}
+
+	private putBack(open: { id: string }): Recovered {
 		const intent = this.recoveryIntent(open.id);
 		if (intent?.operation === "undo" && intent.stepNo !== null) {
 			const images = this.imagesOf(open.id, "step", intent.stepNo);
@@ -603,6 +625,13 @@ export class TransactionManager {
 
 	////////////////////////////////
 	//  Journal rows
+
+	private stepCount(transactionId: string): number {
+		const row = this.store.journalRead((db) =>
+			db.prepare("SELECT COUNT(*) AS steps FROM refactor_steps WHERE transactionId = ?").get(transactionId),
+		) as { steps: number };
+		return row.steps;
+	}
 
 	private nextStepNo(transactionId: string): number {
 		const row = this.store.journalRead((db) =>

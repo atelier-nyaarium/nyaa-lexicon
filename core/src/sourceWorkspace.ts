@@ -58,7 +58,16 @@ export class SourceWorkspace {
 		const sliced = sliceRange(text, range);
 		if (sliced === null) return { found: false, reason: refusal.rangeOutsideModule(module) };
 
-		return { found: true, module, name, kind, range, text: sliced, contentHash: hashContent(text) };
+		return {
+			found: true,
+			module,
+			name,
+			kind,
+			range,
+			text: sliced,
+			contentHash: hashContent(text),
+			spanHash: hashContent(sliced),
+		};
 	}
 
 	/**

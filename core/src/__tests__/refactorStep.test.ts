@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { journaledStep, type PlannedStep, StepRefusal } from "../refactorStep";
+import { journaledStep, type PlannedStep, type StepHold, StepRefusal } from "../refactorStep";
 import { changedWhilePlanned } from "../refusals";
 import type { LexiconService } from "../service";
 import { IndexStore } from "../store";
@@ -21,6 +21,7 @@ interface Outcome {
 	ok: boolean;
 	issues: RefactorIssue[];
 	reason?: string;
+	hold?: StepHold;
 }
 
 function write(module: string, text: string) {
@@ -47,13 +48,14 @@ const service = {
 	},
 } as unknown as LexiconService;
 
-function run(parts: Partial<PlannedStep> & Pick<PlannedStep, "apply">): Promise<Outcome> {
+function run(parts: Partial<PlannedStep> & Pick<PlannedStep, "apply">, standalone = false): Promise<Outcome> {
 	return journaledStep<Outcome>(
 		{ service, transactions, write: (work) => Promise.resolve(work()) },
 		{
 			kind: "replace",
+			standalone,
 			refuse: (reason, issues) => ({ ok: false, issues, reason }),
-			succeed: (issues) => ({ ok: true, issues }),
+			succeed: (issues, hold) => ({ ok: true, issues, hold }),
 			plan: async () => ({
 				planned: {
 					modules: ["src/a.ts"],
@@ -231,5 +233,65 @@ describe("the one failure policy every operation now shares", () => {
 		expect(outcome.reason).toMatch(/could not be written: boom/);
 		expect(outcome.reason).toMatch(/journaled step remains/);
 		expect(transactions.status().steps).toHaveLength(1);
+	});
+});
+
+describe("a standalone step", () => {
+	it("opens a transaction of its own when none is open, and leaves none open once written", async () => {
+		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, true);
+
+		expect(outcome).toMatchObject({ ok: true, hold: "own" });
+		expect(read("src/a.ts")).toBe("after\n");
+		expect(transactions.start().started).toBe(true);
+	});
+
+	it("writes into a transaction someone else opened, and leaves it theirs to undo or close", async () => {
+		transactions.start();
+		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, true);
+
+		expect(outcome).toMatchObject({ ok: true, hold: "joined" });
+		expect(transactions.start().started).toBe(false);
+		expect(transactions.undo().undone).toBe(true);
+		expect(read("src/a.ts")).toBe("before\n");
+	});
+
+	it("closes its own transaction when refused inside the gate, and after a failed apply it undid", async () => {
+		const stale = await run(
+			{ stale: () => changedWhilePlanned("src/a.ts", "step"), apply: () => write("src/a.ts", "after\n") },
+			true,
+		);
+		expect(stale.ok).toBe(false);
+		expect(transactions.start().started).toBe(true);
+		transactions.revert();
+
+		const failed = await run(
+			{
+				apply: () => {
+					write("src/a.ts", "half-written\n");
+					throw new StepRefusal("the provider said no");
+				},
+			},
+			true,
+		);
+		expect(failed.ok).toBe(false);
+		expect(read("src/a.ts")).toBe("before\n");
+		expect(transactions.start().started).toBe(true);
+	});
+
+	it("closes its own transaction when a failed apply cannot be undone, leaving the file as found", async () => {
+		const outcome = await run(
+			{
+				plannedText: [{ module: "src/a.ts", text: "after\n" }],
+				apply: () => {
+					write("src/a.ts", "junk that matches neither image\n");
+					throw new Error("boom");
+				},
+			},
+			true,
+		);
+
+		expect(outcome.reason).toMatch(/could not be written: boom; src\/a\.ts matched neither image/);
+		expect(read("src/a.ts")).toBe("junk that matches neither image\n");
+		expect(transactions.start().started).toBe(true);
 	});
 });
