@@ -8,15 +8,8 @@ import {
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { type HeaderFacts, type ImportInfo, LANGUAGE, type TypeFact, type TypePath } from "./facts.js";
-import {
-	childOfType,
-	childrenOfType,
-	type LineTable,
-	nameText,
-	render,
-	type SyntaxNode,
-	type SyntaxTree,
-} from "./syntax.js";
+import { render } from "./render.js";
+import { childOfType, childrenOfType, type LineTable, nameText, type SyntaxNode, type SyntaxTree } from "./tree.js";
 
 type Context = "module" | "class" | "function";
 
@@ -239,6 +232,8 @@ class DeclarationWalker {
 	private readonly nameCounts = new Map<string, number>();
 	private readonly supertypes = new Map<string, TypePath[]>();
 	private readonly receiverTypes = new Map<string, TypePath>();
+	/** Properties, keyed by id. */
+	private readonly valueHolders = new Map<string, Declaration>();
 	private packageName: string | undefined;
 
 	constructor(
@@ -371,13 +366,13 @@ class DeclarationWalker {
 		signature?: string;
 		owner: boolean;
 		metrics?: Omit<Metrics, "lines">;
-	}): { symbolId: string; descriptors: Descriptor[] } {
+	}): { symbolId: string; descriptors: Descriptor[]; declaration: Declaration } {
 		const method = input.descriptorKind === "method";
 		const descriptor = this.descriptor(input.descriptorKind, input.name, input.scope.descriptors, method);
 		const descriptors = [...input.scope.descriptors, descriptor];
 		const symbolId = composeSymbolId({ language: LANGUAGE, module: this.module, descriptors });
 		const range = this.lines.range(input.start ?? input.node.start, input.end ?? input.node.end);
-		this.declarations.push({
+		const declaration: Declaration = {
 			symbolId,
 			kind: input.kind,
 			...defined({ languageKind: input.languageKind }),
@@ -387,11 +382,16 @@ class DeclarationWalker {
 			...input.access,
 			...defined({ signature: input.signature, containerId: input.scope.containerId }),
 			metrics: { lines: range.end.line - range.start.line + 1, ...input.metrics },
-		});
+		};
+		this.declarations.push(declaration);
+		// Type params: signature only.
+		const holder =
+			input.scope.containerId === undefined ? undefined : this.valueHolders.get(input.scope.containerId);
+		if (holder !== undefined && input.descriptorKind !== "typeParameter") holder.contains = "locals";
 		input.node.declared = symbolId;
 		if (input.owner) input.node.owner = symbolId;
 		if (input.nameNode.type === "identifier") input.nameNode.declaresName = true;
-		return { symbolId, descriptors };
+		return { symbolId, descriptors, declaration };
 	}
 
 	private declaredType(symbolId: string, type: SyntaxNode | undefined): void {
@@ -831,6 +831,7 @@ class DeclarationWalker {
 		else this.inferredType(added.symbolId, this.initializer(node));
 		// A local's initializer binds into its function, as a block does.
 		if (context === "function") return scope;
+		this.valueHolders.set(added.symbolId, added.declaration);
 		return { ...scope, descriptors: added.descriptors, containerId: added.symbolId };
 	}
 

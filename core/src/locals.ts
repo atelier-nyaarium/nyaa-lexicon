@@ -1,16 +1,16 @@
 // One module's containment: what groups, what is local, and who owns a local's evidence.
 
-import { GROUPING_KINDS, parseSymbolId, type Range } from "@nyaa-lexicon/protocol";
+import { GROUPING_KINDS, parseSymbolId, type Range, RUNNING_KINDS } from "@nyaa-lexicon/protocol";
 import type { StoredDeclaration } from "./store.js";
 
 ////////////////////////////////
-//  Constants
-
-/** Bodies that declare members rather than run. */
-const HOLDER_KINDS: ReadonlySet<string> = new Set(["class", "interface", "enum", "struct", "heading"]);
-
-////////////////////////////////
 //  Functions & Helpers
+
+/** Explicit contains, else kind. */
+function containsLocals(declaration: StoredDeclaration): boolean {
+	if (declaration.contains !== undefined) return declaration.contains === "locals";
+	return RUNNING_KINDS.has(declaration.kind);
+}
 
 function bySource(a: StoredDeclaration, b: StoredDeclaration): number {
 	return a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character;
@@ -70,15 +70,11 @@ export class Containment {
 		return { ancestors, cyclic: false };
 	}
 
-	/** A parameter, or anything under a container that is neither a type nor a grouping. */
+	/** Parameter or local-holding ancestor. */
 	isLocal(declaration: StoredDeclaration): boolean {
 		const known = this.locality.get(declaration.symbolId);
 		if (known !== undefined) return known;
-		const local =
-			isParameter(declaration) ||
-			this.ancestry(declaration).ancestors.some(
-				(ancestor) => !HOLDER_KINDS.has(ancestor.kind) && !GROUPING_KINDS.has(ancestor.kind),
-			);
+		const local = isParameter(declaration) || this.ancestry(declaration).ancestors.some(containsLocals);
 		this.locality.set(declaration.symbolId, local);
 		return local;
 	}

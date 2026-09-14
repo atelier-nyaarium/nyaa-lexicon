@@ -219,9 +219,9 @@ export class LspServer {
 		if (recalled !== undefined) {
 			const health = answerHealth(recalled);
 			const mark =
-				health.doubted || health.doubtedUpstream
+				health.doubted || health.upstreamDoubted
 					? " *(doubted)*"
-					: health.stale || health.shaky
+					: health.stale || health.upstreamStale
 						? " *(stale)*"
 						: "";
 			lines.push(`${recalled.answer.prose}${mark}`);

@@ -72,13 +72,17 @@ read from the original text. The repairs that follow have the same shape:
 - **A `$$"` prefix** is blanked, since multi-dollar literals postdate the grammar.
 - **A nested body's `}` after a member on one line** gets a newline ahead of it inside an ERROR
   region.
-- **`I by d {`**, whose body the grammar reads as a trailing lambda on `d`, is reparsed with `by d`
-  blanked and the body grafted back.
+- **`I by d {`**, whose body the grammar reads as a trailing lambda on `d`, has its owner reparsed
+  alone with `by d` blanked and the body grafted back. Never the whole file: the grammar reads a
+  file of one-line class bodies in quadratic time.
 - **Text ending in an annotation with no newline** stalls the grammar's scanner, so every parse
   sees a newline past the end.
 - **A block comment opening a line of code** hides the line break from the scanner's automatic
   semicolon, so `/* c */ fun f()` joins the statement before it. Such a comment is parsed as a newline
   and blanks of its length, and its span is grafted back.
+
+One runner, `parseSource` in `repairs.ts`, owns the order. A repair rereads a masked copy only through the
+repairs listed before it, so no repair calls another, and diagnostics read the final artifact's damage.
 
 On the two corpora, the 29 files whose first parse has errors take 185 ms between them. What
 the repairs do not reach is a `warning` naming its region, never an error: an annotated statement

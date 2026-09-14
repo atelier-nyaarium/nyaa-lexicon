@@ -175,6 +175,15 @@ reopening a name means is semantic and the provider's to say. A provider that kn
 mint occurrences itself; one that does not still cannot hand the store two rows under one id, which
 the core refuses as a parse failure.
 
+A declaration's `contains` says what the declarations inside it are: `members`, or `locals` of a
+body that runs. Absent reads from the kind, where `function`, `method`, `constructor` and
+`operator` (the protocol's `RUNNING_KINDS`) hold locals and every other kind holds members. Core
+cannot tell a data value from a function value by kind, so a provider sets `locals` on a value
+whose body runs and declares something: TypeScript marks an arrow or function-expression constant
+or property, and a getter or setter. A data format sets nothing, so a nested key is a member of the
+key above it. A parameter, or a declaration with `local` visibility, is local wherever it sits. The
+field is part of the declaration's fact id only when set, so an unmarked declaration keeps its id.
+
 Every id a parse hands over is read once, at the boundary, for what its field says it means. A
 declaration's id names the file being parsed. A `containerId`, a reference's `fromId` and a
 literal's `containerId` name a declaration in the same parse, since enclosure is lexical. A
@@ -354,9 +363,11 @@ Unknowns everywhere and pass.
 A binding case may name `bindsToModule` as well as `bindsTo`. The runner parses only the subject
 file, so a case holding several files proves a use binds into a file the provider never parsed.
 
-A reference expectation matches by name, and passes when any same-named row satisfies it. `at`
-narrows it to the row whose range starts there (zero-based `line`, optional `character`). A position
-is one fixture's syntax, so only a case with a single fixture states one.
+A reference expectation matches same-named rows: only rows of its `role` when it states one, and
+never an import or export row when it does not. `at` narrows it to rows whose range starts there
+(zero-based `line`, optional `character`). Every matching row must satisfy it, so rows that disagree
+fail even at one position, and a failure reports the first row in source order. A position is one
+fixture's syntax, so only a case with a single fixture states one.
 
 ## Binding across files
 
@@ -385,7 +396,8 @@ decides. Several candidates answer `ambiguous`, sorted.
 4. **The package**, this file's own top-level declarations included. Kotlin's overload resolution
    ranks explicit imports above the same package, which holds the file itself; classifiers follow
    the same order.
-5. **Star imports**, pooled.
+5. **Star imports**, pooled, admitted where the import is written: a protected member stays out
+   even inside a subclass.
 
 An extension declaration is a candidate for a bare name only where an implicit receiver whose type
 has the extension's receiver name is in scope. Calling a local value or a property stops the walk as

@@ -72,6 +72,17 @@ export const ExpectedReferenceSchema = z
 			.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative().optional() })
 			.optional(),
 	})
+	.superRefine((expected, context) => {
+		const binds = expected.bindsTo !== undefined || expected.bindsToModule !== undefined;
+		const implied = binds ? "bound" : expected.reason !== undefined ? "unbound" : undefined;
+		const status = expected.status ?? implied;
+		if ((binds && status !== "bound") || (expected.reason !== undefined && status !== "unbound")) {
+			context.addIssue({
+				code: "custom",
+				message: `reference ${expected.name}: bindsTo and bindsToModule state bound, reason states unbound; one expectation cannot say both`,
+			});
+		}
+	})
 	.meta({ id: "ExpectedReference" });
 
 export const ExpectedImportSchema = z
@@ -276,6 +287,15 @@ export const ConformanceCaseSchema = z
 		parseErrors: z.enum(["required", "forbidden"]).optional(),
 		/** Whether reading this fixture must leave a `warning` or `info` diagnostic behind. */
 		notes: z.enum(["required", "forbidden"]).optional(),
+	})
+	.superRefine((testCase, context) => {
+		const positioned = (testCase.references ?? []).some((reference) => reference.at !== undefined);
+		if (positioned && Object.keys(testCase.fixtures).length > 1) {
+			context.addIssue({
+				code: "custom",
+				message: `case ${testCase.id}: a reference states \`at\`, which is one fixture's syntax, in a case with several fixtures`,
+			});
+		}
 	})
 	.meta({ id: "ConformanceCase" });
 

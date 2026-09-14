@@ -36,11 +36,6 @@ export function cleanSpecifier(specifier: string): string {
 	return specifier.endsWith(".*") ? specifier.slice(0, -2) : specifier;
 }
 
-/** A declaration another file may name: not private, or in the naming file itself. */
-export function visibleFrom(module: string, entry: IndexedDeclaration): boolean {
-	return entry.declaration.exported !== false || entry.module === module;
-}
-
 export function isClassifier(declaration: Declaration): boolean {
 	return CLASSIFIER_KINDS.has(declaration.kind);
 }
@@ -72,7 +67,7 @@ function isStatic(declaration: Declaration): boolean {
 
 export type Accept = (declaration: Declaration) => boolean;
 
-/** Where a use sits, for member visibility. */
+/** Where a use sits. */
 export interface UseSite {
 	module: string;
 	/** Classes whose bodies hold the use. */
@@ -81,7 +76,27 @@ export interface UseSite {
 	subclasses: readonly string[];
 }
 
-/** Every workspace declaration by package and name, by container, and each module's headers. */
+/** An import's use site. */
+export function fileSite(module: string): UseSite {
+	return { module, lexical: [], subclasses: [] };
+}
+
+/** Who may name declarations. */
+type Access =
+	| { mode: "public" }
+	/** Private top-level: its file. */
+	| { mode: "topLevel"; module: string }
+	/** Private member: its class. */
+	| { mode: "member"; classId: string }
+	/** Companion-private: companion or class. */
+	| { mode: "companion"; companionId: string; classId: string }
+	/** Owners or their subclasses. */
+	| { mode: "protected"; owners: readonly string[] };
+
+/**
+ * Every workspace declaration by package and name, by container, and each module's headers. The only
+ * admitter of a candidate: every lookup takes the use site and answers only what it may name.
+ */
 export class PackageIndex {
 	private readonly topLevel = new Map<string, Map<string, IndexedDeclaration[]>>();
 	private readonly children = new Map<string, IndexedDeclaration[]>();
@@ -212,8 +227,59 @@ export class PackageIndex {
 		return [...(this.modulesByPackage.get(packageKey) ?? [])];
 	}
 
-	topLevelNamed(packageKey: string, name: string): IndexedDeclaration[] {
+	topLevelNamed(site: UseSite, packageKey: string, name: string): IndexedDeclaration[] {
+		return this.admitted(site, this.declaredTopLevel(packageKey, name));
+	}
+
+	private declaredTopLevel(packageKey: string, name: string): IndexedDeclaration[] {
 		return this.topLevel.get(packageKey)?.get(name) ?? [];
+	}
+
+	/** A header's site: enclosing containers. */
+	declarationSite(module: string, containerId: string | undefined): UseSite {
+		const enclosing: string[] = [];
+		for (
+			let current = containerId;
+			current !== undefined;
+			current = this.byId.get(current)?.declaration.containerId
+		)
+			enclosing.push(current);
+		return { module, lexical: enclosing, subclasses: enclosing };
+	}
+
+	private admitted(site: UseSite, entries: IndexedDeclaration[]): IndexedDeclaration[] {
+		return entries.filter((entry) => this.admits(site, entry));
+	}
+
+	private admits(site: UseSite, entry: IndexedDeclaration): boolean {
+		const access = this.accessOf(entry);
+		switch (access.mode) {
+			case "public":
+				return true;
+			case "topLevel":
+				return site.module === access.module;
+			case "member":
+				return site.lexical.includes(access.classId);
+			case "companion":
+				return site.lexical.includes(access.companionId) || site.lexical.includes(access.classId);
+			case "protected":
+				return site.subclasses.some((id) => access.owners.some((owner) => this.inherits(id, owner)));
+		}
+	}
+
+	private accessOf(entry: IndexedDeclaration): Access {
+		const { declaration } = entry;
+		const containerId = declaration.containerId;
+		if (containerId === undefined)
+			return declaration.exported === false ? { mode: "topLevel", module: entry.module } : { mode: "public" };
+		if (declaration.visibility !== "private" && declaration.visibility !== "protected") return { mode: "public" };
+		const container = this.byId.get(containerId)?.declaration;
+		const classId = container !== undefined && isCompanion(container) ? container.containerId : undefined;
+		if (declaration.visibility === "protected")
+			return { mode: "protected", owners: classId === undefined ? [containerId] : [containerId, classId] };
+		return classId === undefined
+			? { mode: "member", classId: containerId }
+			: { mode: "companion", companionId: containerId, classId };
 	}
 
 	packageOf(module: string): string | undefined {
@@ -225,8 +291,8 @@ export class PackageIndex {
 		return entry === undefined ? undefined : this.modules.get(entry.module)?.receiverTypes.get(symbolId);
 	}
 
-	/** An import path: the longest package prefix, then containers by name, visibility checked at each step. */
-	resolvePath(fromModule: string, specifier: string): PathResolution {
+	/** A dotted path: the longest package prefix, then containers by name, each step admitted. */
+	resolvePath(site: UseSite, specifier: string): PathResolution {
 		const segments = specifier.split(".").filter((segment) => segment !== "");
 		let packageMatched = false;
 		for (let length = segments.length - 1; length > 0; length--) {
@@ -234,13 +300,9 @@ export class PackageIndex {
 			if (!this.hasPackage(packageKey)) continue;
 			packageMatched = true;
 			const [first, ...rest] = segments.slice(length);
-			let entries = this.topLevelNamed(packageKey, first as string).filter((entry) =>
-				visibleFrom(fromModule, entry),
-			);
+			let entries = this.topLevelNamed(site, packageKey, first as string);
 			for (const name of rest)
-				entries = entries.flatMap((entry) =>
-					this.staticMembers(entry.declaration, name).filter((child) => visibleFrom(fromModule, child)),
-				);
+				entries = entries.flatMap((entry) => this.staticMembers(site, entry.declaration, name));
 			if (entries.length > 0) return { status: "found", entries };
 		}
 		if (packageMatched)
@@ -257,26 +319,36 @@ export class PackageIndex {
 		};
 	}
 
-	/** What `import specifier.*` provides for a name; undefined when the index holds no such package or type. */
-	starredNamed(fromModule: string, specifier: string, name: string): IndexedDeclaration[] | undefined {
-		if (this.hasPackage(specifier)) return this.topLevelNamed(specifier, name);
-		const containers = this.resolvePath(fromModule, specifier);
+	/**
+	 * What `import specifier.*` in a module provides for a name; undefined when the index holds no such
+	 * package or type. Admitted where the import is written, never at a use.
+	 */
+	starredNamed(module: string, specifier: string, name: string): IndexedDeclaration[] | undefined {
+		const site = fileSite(module);
+		if (this.hasPackage(specifier)) return this.topLevelNamed(site, specifier, name);
+		const containers = this.resolvePath(site, specifier);
 		if (containers.status !== "found") return undefined;
-		return containers.entries.flatMap((entry) => this.staticMembers(entry.declaration, name));
+		return containers.entries.flatMap((entry) => this.staticMembers(site, entry.declaration, name));
 	}
 
 	/** `Type.member`: nested classifiers and enum entries, an object's members, then companion members. */
-	staticMembers(container: Declaration, name: string): IndexedDeclaration[] {
+	staticMembers(site: UseSite, container: Declaration, name: string): IndexedDeclaration[] {
 		const children = this.children.get(container.symbolId) ?? [];
 		const object = isObject(container);
-		const direct = children.filter(
-			(entry) =>
-				entry.declaration.name === name &&
-				isMember(entry.declaration) &&
-				(object || isStatic(entry.declaration)),
+		const direct = this.admitted(
+			site,
+			children.filter(
+				(entry) =>
+					entry.declaration.name === name &&
+					isMember(entry.declaration) &&
+					(object || isStatic(entry.declaration)),
+			),
 		);
 		if (direct.length > 0) return direct;
-		return this.companionMembers(container.symbolId, name, () => true);
+		return this.admitted(
+			site,
+			this.companionMembers(container.symbolId, name, () => true),
+		);
 	}
 
 	private companionMembers(containerId: string, name: string, accept: Accept): IndexedDeclaration[] {
@@ -289,21 +361,6 @@ export class PackageIndex {
 		return (this.children.get(containerId) ?? []).filter(
 			(entry) => entry.declaration.name === name && isMember(entry.declaration) && accept(entry.declaration),
 		);
-	}
-
-	/** Private within its class, protected within it or a subclass; a companion shares its class's. */
-	reachableFrom(site: UseSite, entry: IndexedDeclaration): boolean {
-		const { declaration } = entry;
-		const containerId = declaration.containerId;
-		if (containerId === undefined) return visibleFrom(site.module, entry);
-		if (declaration.visibility !== "private" && declaration.visibility !== "protected") return true;
-		const container = this.byId.get(containerId)?.declaration;
-		const owners =
-			container !== undefined && isCompanion(container) && container.containerId !== undefined
-				? [containerId, container.containerId]
-				: [containerId];
-		if (declaration.visibility === "private") return site.lexical.some((id) => owners.includes(id));
-		return site.subclasses.some((id) => owners.some((owner) => this.inherits(id, owner)));
 	}
 
 	/** Whether a class is the other or extends it. */
@@ -325,17 +382,17 @@ export class PackageIndex {
 	 * companion's, then each supertype depth pooled, each only where the use may see it.
 	 */
 	receiverMembers(
+		site: UseSite,
 		classId: string,
 		name: string,
 		accept: Accept,
-		options: { site: UseSite; staticOnly?: boolean; supertypesOnly?: boolean },
+		options: { staticOnly?: boolean; supertypesOnly?: boolean } = {},
 	): IndexedDeclaration[] {
 		const own = this.byId.get(classId);
 		if (own === undefined) return [];
 		const staticOnly = options.staticOnly === true && !isObject(own.declaration);
 		const admit: Accept = staticOnly ? (declaration) => isStatic(declaration) && accept(declaration) : accept;
-		const reachable = (entries: IndexedDeclaration[]): IndexedDeclaration[] =>
-			entries.filter((entry) => this.reachableFrom(options.site, entry));
+		const reachable = (entries: IndexedDeclaration[]): IndexedDeclaration[] => this.admitted(site, entries);
 		if (options.supertypesOnly !== true) {
 			const direct = reachable(this.named(classId, name, admit));
 			if (direct.length > 0) return direct;
@@ -386,7 +443,9 @@ export class PackageIndex {
 		const ids: string[] = [];
 		if (entry !== undefined)
 			for (const path of paths) {
-				const resolved = this.resolveType(entry.module, entry.declaration.containerId, path);
+				const { module, declaration } = entry;
+				const site = this.declarationSite(module, declaration.containerId);
+				const resolved = this.resolveType(site, declaration.containerId, path);
 				if (resolved !== undefined && resolved.declaration.symbolId !== classId)
 					ids.push(resolved.declaration.symbolId);
 			}
@@ -394,39 +453,42 @@ export class PackageIndex {
 		return ids;
 	}
 
-	/** A type written in a module: enclosing containers, imports, package, stars, then a package path. */
-	resolveType(module: string, containerId: string | undefined, path: TypePath): IndexedDeclaration | undefined {
-		const context = this.modules.get(module);
+	/** A type written at a site: enclosing containers, imports, package, stars, then a package path. */
+	resolveType(site: UseSite, containerId: string | undefined, path: TypePath): IndexedDeclaration | undefined {
+		const context = this.modules.get(site.module);
 		const [first, ...rest] = path;
 		if (context === undefined || first === undefined) return undefined;
 		const classifiers = (entries: IndexedDeclaration[]): IndexedDeclaration[] =>
-			entries.filter((entry) => isClassifier(entry.declaration) && visibleFrom(module, entry));
+			entries.filter((entry) => isClassifier(entry.declaration));
 		let found: IndexedDeclaration[] = [];
 		for (let current = containerId; current !== undefined && found.length === 0; ) {
-			found = classifiers((this.children.get(current) ?? []).filter((entry) => entry.declaration.name === first));
+			const named = (this.children.get(current) ?? []).filter((entry) => entry.declaration.name === first);
+			found = classifiers(this.admitted(site, named));
 			current = this.byId.get(current)?.declaration.containerId;
 		}
 		if (found.length === 0)
 			for (const item of context.imports)
 				if (!item.star && item.localName === first) {
-					const resolution = this.resolvePath(module, cleanSpecifier(item.specifier));
+					const resolution = this.resolvePath(fileSite(site.module), cleanSpecifier(item.specifier));
 					if (resolution.status === "found") found.push(...classifiers(resolution.entries));
 				}
-		if (found.length === 0) found = classifiers(this.topLevelNamed(context.packageKey, first));
+		if (found.length === 0) found = classifiers(this.topLevelNamed(site, context.packageKey, first));
 		if (found.length === 0)
 			for (const item of context.imports)
 				if (item.star)
-					found.push(...classifiers(this.starredNamed(module, cleanSpecifier(item.specifier), first) ?? []));
+					found.push(
+						...classifiers(this.starredNamed(site.module, cleanSpecifier(item.specifier), first) ?? []),
+					);
 		let segments = rest;
 		if (found.length === 0)
 			for (let length = path.length - 1; length > 0 && found.length === 0; length--) {
 				const packageKey = path.slice(0, length).join(".");
 				if (!this.hasPackage(packageKey)) continue;
-				found = classifiers(this.topLevelNamed(packageKey, path[length] as string));
+				found = classifiers(this.topLevelNamed(site, packageKey, path[length] as string));
 				segments = path.slice(length + 1);
 			}
 		for (const name of segments)
-			found = found.flatMap((entry) => classifiers(this.staticMembers(entry.declaration, name)));
+			found = found.flatMap((entry) => classifiers(this.staticMembers(site, entry.declaration, name)));
 		return found.length === 1 ? found[0] : undefined;
 	}
 }

@@ -1,5 +1,6 @@
 import { type Binding, type CommentSpan, type Declaration, defined, type Literal } from "@nyaa-lexicon/protocol";
 import { literalShape, supertypePaths } from "./declarations.js";
+import { unclosedComment } from "./diagnostics.js";
 import type { Frame, ImportInfo, Receiver, ReferenceInfo, ReferenceRole } from "./facts.js";
 import {
 	COMMENT_TYPES,
@@ -9,8 +10,7 @@ import {
 	nameText,
 	type SyntaxNode,
 	type SyntaxTree,
-	unclosedComment,
-} from "./syntax.js";
+} from "./tree.js";
 
 export interface UseFacts {
 	references: ReferenceInfo[];

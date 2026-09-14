@@ -38,7 +38,7 @@ import type { ImportResolver } from "./imports.js";
 import { toSummary } from "./indexReads.js";
 import { Containment, inSourceOrder } from "./locals.js";
 import * as refusal from "./refusals.js";
-import { type IndexStore, isUse, type SeedCandidate, type StoredDeclaration, type StoredFact } from "./store.js";
+import type { IndexStore, SeedCandidate, StoredDeclaration, StoredFact } from "./store.js";
 import type { Subject } from "./subjects.js";
 
 export type {
@@ -667,7 +667,7 @@ export class KnowledgeLedger {
 				truncated = true;
 				return;
 			}
-			for (const reference of this.store.referencesFrom(symbolId).filter(isUse)) {
+			for (const reference of this.store.usesFrom(symbolId)) {
 				const target = reference.targetId as string;
 				if (this.store.declaration(target) === null) {
 					external++;
@@ -753,7 +753,7 @@ export class KnowledgeLedger {
 					createdAt: found.answer.createdAt,
 					...(found.answer.thin ? { thin: true } : {}),
 					...(health.stale ? { stale: true } : {}),
-					...(health.shaky || health.doubtedUpstream ? { shaky: true } : {}),
+					...(health.shaky ? { shaky: true } : {}),
 					...(health.doubted ? { doubted: true } : {}),
 				};
 			}),
@@ -831,7 +831,7 @@ export class KnowledgeLedger {
 		const health = answerHealth(this.staleness(answer, null));
 		if (health.doubted) return "doubted";
 		if (health.stale) return "stale";
-		return health.shaky || health.doubtedUpstream ? "shaky" : null;
+		return health.shaky ? "shaky" : null;
 	}
 
 	/** Reserved hubs, then one candidate per language in turn: cross-language calls never bind, so a global rank buries a language called over a wire. */
@@ -900,7 +900,7 @@ export class KnowledgeLedger {
 			why,
 			askCount,
 			...(recordedAs === undefined || recordedAs === symbolId ? {} : { recordedAs }),
-			fanIn: this.store.referencesTo(symbolId).filter(isUse).length,
+			fanIn: this.store.usesTo(symbolId).length,
 			...(declaration === null
 				? {}
 				: { name: declaration.name, kind: declaration.kind, module: declaration.module }),

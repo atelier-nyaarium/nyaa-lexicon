@@ -252,14 +252,18 @@ as `factsFor` does; a module the index does not hold answers an empty scope.
 
 - **Groupings hold nothing:** a `file`, `module`, `namespace` or `package` is not listed, and what
   it groups sits a level up, so a namespace's classes are a module's top level.
-- **Locals:** a parameter, or anything under a container that is neither a type (`class`,
-  `interface`, `enum`, `struct`, `heading`) nor a grouping, is left out unless asked for and counted
-  with its subtree as `localsExcluded`. An arrow constant, an arrow property and a getter hold
-  locals as a function does. `core/src/locals.ts` owns the rule.
+- **Locals:** a parameter, or anything under a container that holds locals, is left out unless
+  asked for and counted with its subtree as `localsExcluded`. A container holds locals when its
+  `contains` says `locals`, or it says nothing and its kind runs (`function`, `method`,
+  `constructor`, `operator`). Core cannot tell a data value from a function value by kind, so the
+  provider marks a value that runs: a TypeScript arrow constant, arrow property or getter says
+  `locals`, and a nested JSON or YAML key under its parent key stays a member. `core/src/locals.ts`
+  owns the rule.
 - **Live declarations only:** a scope lists what the index holds, so it carries no stranded state.
 - **State:** `stale` and `doubted` are the answer's own, as `knowledgeGaps` reads them; `shaky` says
   an answer it cites is stale or doubted beneath it, as `recall_answer` reports SHAKY. One function,
-  `answerHealth`, reads all four for recall, gaps, demand and the scope.
+  `answerHealth`, reads them for recall, gaps, demand and the scope: `upstreamStale` and
+  `upstreamDoubted` apart, and `shaky` as either, which every caller asking "shaky" reads.
 
 It walks containment. `knowledgeGaps` under a root walks what the root uses, which answers a class
 alone, since a class's references belong to its methods. The two stay separate reads.

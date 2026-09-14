@@ -1,14 +1,14 @@
 import type { Binding, Declaration, Reference, UnknownReason } from "@nyaa-lexicon/protocol";
-import type { Frame, FrameReceiver, ImportInfo, KotlinFile, ReferenceInfo, TypePath } from "./facts.js";
+import type { Frame, FrameReceiver, ImportInfo, KotlinFile, ReferenceInfo } from "./facts.js";
 import {
 	type Accept,
 	cleanSpecifier,
 	externalSpecifier,
+	fileSite,
 	type IndexedDeclaration,
 	isClassifier,
 	type PackageIndex,
 	type UseSite,
-	visibleFrom,
 } from "./packageIndex.js";
 
 /** A binding, and the package a still-unbound qualifier chain spells. */
@@ -63,6 +63,13 @@ function decided(found: Declaration[], role: Reference["role"]): Resolved {
 	};
 }
 
+/** A receiver, and its frame. */
+interface HeldReceiver {
+	receiver: FrameReceiver;
+	staticOnly: boolean;
+	holder: Frame;
+}
+
 function declarations(entries: IndexedDeclaration[]): Declaration[] {
 	return entries.map((entry) => entry.declaration);
 }
@@ -113,7 +120,7 @@ export class ReferenceBinder {
 				const members =
 					target === undefined
 						? undefined
-						: this.receiverMembers(target.receiver, name, accept, false, info.frame);
+						: this.receiverMembers({ ...target, staticOnly: false }, name, accept, info.frame);
 				if (members === undefined) return unbound("NotIndexed", `this receiver's type is not indexed`);
 				return members.length > 0 ? decided(members, role) : unbound("NotIndexed", `no member ${name} on this`);
 			}
@@ -122,15 +129,14 @@ export class ReferenceBinder {
 					({ receiver: candidate }) => candidate.kind !== "extension",
 				);
 				if (target === undefined) return unbound("NotIndexed", "super has no enclosing class");
+				const site = this.siteOf(info.frame);
+				const supertypesOnly = { supertypesOnly: true };
 				const members =
 					target.receiver.kind === "class"
 						? declarations(
-								this.index.receiverMembers(target.receiver.classId, name, accept, {
-									site: this.siteOf(info.frame),
-									supertypesOnly: true,
-								}),
+								this.index.receiverMembers(site, target.receiver.classId, name, accept, supertypesOnly),
 							)
-						: this.receiverMembers(target.receiver, name, accept, false, info.frame);
+						: this.receiverMembers({ ...target, staticOnly: false }, name, accept, info.frame);
 				return members !== undefined && members.length > 0
 					? decided(members, role)
 					: unbound("NotIndexed", `no supertype member ${name}`);
@@ -143,11 +149,12 @@ export class ReferenceBinder {
 	private qualified(info: ReferenceInfo, qualifierIndex: number, callable: boolean, accept: Accept): Resolved {
 		const { name } = info.reference;
 		const qualifier = this.memo.get(qualifierIndex);
+		const site = this.siteOf(info.frame);
 		if (qualifier?.packagePath !== undefined) {
 			const packageKey = qualifier.packagePath;
 			const entries = this.index
-				.topLevelNamed(packageKey, name)
-				.filter((entry) => visibleFrom(this.facts.module, entry) && accept(entry.declaration));
+				.topLevelNamed(site, packageKey, name)
+				.filter((entry) => accept(entry.declaration));
 			if (entries.length > 0) return decided(declarations(entries), info.reference.role);
 			const path = `${packageKey}.${name}`;
 			if (this.index.isPackagePrefix(path))
@@ -160,12 +167,9 @@ export class ReferenceBinder {
 		const qualifierRole = this.facts.references[qualifierIndex]?.reference.role;
 		if (container === undefined || !isClassifier(container) || qualifierRole === "call")
 			return unbound("NotIndexed", `the type left of ${name} is not known`);
-		const site = this.siteOf(info.frame);
-		const members = (
-			callable
-				? this.index.receiverMembers(container.symbolId, name, accept, { site })
-				: this.index.staticMembers(container, name)
-		).filter((entry) => this.index.reachableFrom(site, entry) && accept(entry.declaration));
+		const members = callable
+			? this.index.receiverMembers(site, container.symbolId, name, accept)
+			: this.index.staticMembers(site, container, name).filter((entry) => accept(entry.declaration));
 		return members.length > 0
 			? decided(declarations(members), info.reference.role)
 			: unbound("NotIndexed", `${container.name} declares no reachable ${name}`);
@@ -198,8 +202,8 @@ export class ReferenceBinder {
 			if (frame.member === true) crossed = true;
 		}
 
-		for (const { receiver, staticOnly } of this.receivers(info.frame)) {
-			const members = this.receiverMembers(receiver, name, accept, staticOnly, info.frame);
+		for (const held of this.receivers(info.frame)) {
+			const members = this.receiverMembers(held, name, accept, info.frame);
 			const answer = members === undefined ? undefined : tier(members);
 			if (answer !== undefined) return answer;
 		}
@@ -207,9 +211,8 @@ export class ReferenceBinder {
 		const imports = this.facts.imports.filter((item) => !item.star && item.localName === name);
 		if (imports.length > 0) return this.throughImports(imports, name, tier);
 
-		const packaged = this.index
-			.topLevelNamed(this.facts.packageName ?? "", name)
-			.filter((entry) => visibleFrom(this.facts.module, entry));
+		const site = this.siteOf(info.frame);
+		const packaged = this.index.topLevelNamed(site, this.facts.packageName ?? "", name);
 		const packageAnswer = tier(declarations(packaged));
 		if (packageAnswer !== undefined) return packageAnswer;
 
@@ -217,13 +220,13 @@ export class ReferenceBinder {
 	}
 
 	/** Enclosing receivers, innermost first; past a nested class only static members remain. */
-	private receivers(frame: Frame | undefined): Array<{ receiver: FrameReceiver; staticOnly: boolean }> {
-		const found: Array<{ receiver: FrameReceiver; staticOnly: boolean }> = [];
+	private receivers(frame: Frame | undefined): HeldReceiver[] {
+		const found: HeldReceiver[] = [];
 		let staticOnly = false;
 		for (let current = frame; current !== undefined; current = current.parent) {
 			const receiver = current.receiver;
 			if (receiver === undefined) continue;
-			found.push({ receiver, staticOnly: staticOnly && receiver.kind === "class" });
+			found.push({ receiver, staticOnly: staticOnly && receiver.kind === "class", holder: current });
 			if (receiver.kind === "class" && receiver.nested) staticOnly = true;
 		}
 		return found;
@@ -231,29 +234,30 @@ export class ReferenceBinder {
 
 	/** Undefined when the index cannot resolve the receiver, which is skipped rather than a stop. */
 	private receiverMembers(
-		receiver: FrameReceiver,
+		held: HeldReceiver,
 		name: string,
 		accept: Accept,
-		staticOnly: boolean,
 		frame: Frame | undefined,
 	): Declaration[] | undefined {
 		const site = this.siteOf(frame);
+		const { receiver, staticOnly } = held;
 		if (receiver.kind === "class")
-			return declarations(this.index.receiverMembers(receiver.classId, name, accept, { site, staticOnly }));
+			return declarations(this.index.receiverMembers(site, receiver.classId, name, accept, { staticOnly }));
 		if (receiver.kind === "extension") {
 			const type = this.extensionReceiver(receiver.declarationId);
-			return type === undefined
-				? undefined
-				: declarations(this.index.receiverMembers(type, name, accept, { site }));
+			return type === undefined ? undefined : declarations(this.index.receiverMembers(site, type, name, accept));
 		}
-		const types = this.anonymousSupertypes(receiver.supertypes);
+		const types = this.anonymousSupertypes(held);
 		if (types.length === 0) return undefined;
-		return types.flatMap((type) => declarations(this.index.receiverMembers(type, name, accept, { site })));
+		return types.flatMap((type) => declarations(this.index.receiverMembers(site, type, name, accept)));
 	}
 
-	private anonymousSupertypes(paths: TypePath[]): string[] {
-		return paths.flatMap(
-			(path) => this.index.resolveType(this.facts.module, undefined, path)?.declaration.symbolId ?? [],
+	/** Resolved outside its body. */
+	private anonymousSupertypes(held: HeldReceiver): string[] {
+		if (held.receiver.kind !== "anonymous") return [];
+		const site = this.lexicalSiteOf(held.holder.parent);
+		return held.receiver.supertypes.flatMap(
+			(path) => this.index.resolveType(site, undefined, path)?.declaration.symbolId ?? [],
 		);
 	}
 
@@ -261,24 +265,31 @@ export class ReferenceBinder {
 	private siteOf(frame: Frame | undefined): UseSite {
 		const cached = frame === undefined ? undefined : this.sites.get(frame);
 		if (cached !== undefined) return cached;
-		const lexical: string[] = [];
-		const subclasses: string[] = [];
-		for (const { receiver } of this.receivers(frame)) {
-			if (receiver.kind === "class") {
-				lexical.push(receiver.classId);
-				subclasses.push(receiver.classId);
-			} else if (receiver.kind === "anonymous") subclasses.push(...this.anonymousSupertypes(receiver.supertypes));
-		}
-		const site = { module: this.facts.module, lexical, subclasses };
+		const lexical = this.lexicalSiteOf(frame);
+		const subclasses = [
+			...lexical.subclasses,
+			...this.receivers(frame).flatMap((held) => this.anonymousSupertypes(held)),
+		];
+		const site = { ...lexical, subclasses };
 		if (frame !== undefined) this.sites.set(frame, site);
 		return site;
+	}
+
+	/** Enclosing classes only. */
+	private lexicalSiteOf(frame: Frame | undefined): UseSite {
+		const classes = this.receivers(frame).flatMap(({ receiver }) =>
+			receiver.kind === "class" ? [receiver.classId] : [],
+		);
+		return { module: this.facts.module, lexical: classes, subclasses: classes };
 	}
 
 	private extensionReceiver(declarationId: string): string | undefined {
 		const path = this.index.receiverTypeOf(declarationId);
 		const entry = this.index.declaration(declarationId);
 		if (path === undefined || entry === undefined) return undefined;
-		return this.index.resolveType(entry.module, entry.declaration.containerId, path)?.declaration.symbolId;
+		const { module, declaration } = entry;
+		const site = this.index.declarationSite(module, declaration.containerId);
+		return this.index.resolveType(site, declaration.containerId, path)?.declaration.symbolId;
 	}
 
 	/** An extension answers a bare name only under a receiver its type names. */
@@ -292,19 +303,18 @@ export class ReferenceBinder {
 		const cached = this.receiverNames.get(frame);
 		if (cached !== undefined) return cached;
 		const names = new Set<string>();
-		for (const { receiver } of this.receivers(frame)) {
+		for (const held of this.receivers(frame)) {
+			const { receiver } = held;
 			if (receiver.kind === "class") this.index.typeNames(receiver.classId, names);
 			else if (receiver.kind === "extension") {
 				const written = this.index.receiverTypeOf(receiver.declarationId);
 				if (written !== undefined) names.add(written.at(-1) as string);
 				const type = this.extensionReceiver(receiver.declarationId);
 				if (type !== undefined) this.index.typeNames(type, names);
-			} else
-				for (const path of receiver.supertypes) {
-					names.add(path.at(-1) as string);
-					const type = this.index.resolveType(this.facts.module, undefined, path);
-					if (type !== undefined) this.index.typeNames(type.declaration.symbolId, names);
-				}
+			} else {
+				for (const path of receiver.supertypes) names.add(path.at(-1) as string);
+				for (const type of this.anonymousSupertypes(held)) this.index.typeNames(type, names);
+			}
 		}
 		this.receiverNames.set(frame, names);
 		return names;
@@ -312,7 +322,7 @@ export class ReferenceBinder {
 
 	/** The import directive's own name. */
 	private importDirective(importInfo: ImportInfo): Resolved {
-		const resolution = this.index.resolvePath(this.facts.module, cleanSpecifier(importInfo.specifier));
+		const resolution = this.index.resolvePath(fileSite(this.facts.module), cleanSpecifier(importInfo.specifier));
 		if (resolution.status === "external")
 			return unbound("ExternalDependency", `import ${importInfo.specifier} is outside the workspace`);
 		if (resolution.status === "unresolved") return unbound(resolution.reason, resolution.detail);
@@ -327,7 +337,10 @@ export class ReferenceBinder {
 		const pooled: Declaration[] = [];
 		let refusal: Resolved | undefined;
 		for (const importInfo of imports) {
-			const resolution = this.index.resolvePath(this.facts.module, cleanSpecifier(importInfo.specifier));
+			const resolution = this.index.resolvePath(
+				fileSite(this.facts.module),
+				cleanSpecifier(importInfo.specifier),
+			);
 			if (resolution.status === "found") pooled.push(...declarations(resolution.entries));
 			else if (resolution.status === "external")
 				refusal ??= unbound("ExternalDependency", `import ${importInfo.specifier} is outside the workspace`);
@@ -346,7 +359,7 @@ export class ReferenceBinder {
 				external ||= externalSpecifier(specifier);
 				continue;
 			}
-			pooled.push(...declarations(entries.filter((entry) => visibleFrom(this.facts.module, entry))));
+			pooled.push(...declarations(entries));
 		}
 		const answer = tier(pooled);
 		if (answer !== undefined) return answer;

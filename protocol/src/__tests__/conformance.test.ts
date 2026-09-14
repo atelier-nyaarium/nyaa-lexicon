@@ -15,7 +15,7 @@ import { coordinatesOf } from "../coordinates";
 import type { MoveEditsRequest } from "../move";
 import type { FileFacts } from "../project";
 import { composeSymbolId } from "../symbolId";
-import type { Range } from "../symbols";
+import type { Range, Reference } from "../symbols";
 
 ////////////////////////////////
 //  Helpers
@@ -231,13 +231,19 @@ describe("corpus", () => {
 		}
 	});
 
-	it("states an occurrence position only in a case with one fixture", () => {
-		const positioned = loadCorpus().filter((testCase) =>
-			(testCase.references ?? []).some((reference) => reference.at !== undefined),
-		);
+	it("refuses a reference expectation that contradicts itself, or a position shared across fixtures", () => {
+		const fixture = { files: { "a.ts": "" }, subject: "a.ts" };
+		const load = (references: unknown[], fixtures: Record<string, unknown> = { typescript: fixture }) =>
+			ConformanceCaseSchema.safeParse({ id: "c", tier: "declarations", about: "c", fixtures, references })
+				.success;
 
-		expect(positioned).not.toHaveLength(0);
-		for (const testCase of positioned) expect(Object.keys(testCase.fixtures), testCase.id).toHaveLength(1);
+		expect(load([{ name: "x", status: "bound", bindsTo: "x" }])).toBe(true);
+		expect(load([{ name: "x", status: "unbound", bindsTo: "x" }])).toBe(false);
+		expect(load([{ name: "x", status: "ambiguous", bindsToModule: "a.ts" }])).toBe(false);
+		expect(load([{ name: "x", status: "bound", reason: "NotIndexed" }])).toBe(false);
+		expect(load([{ name: "x", bindsTo: "x", reason: "NotIndexed" }])).toBe(false);
+		expect(load([{ name: "x", at: { line: 1 } }])).toBe(true);
+		expect(load([{ name: "x", at: { line: 1 } }], { typescript: fixture, python: fixture })).toBe(false);
 	});
 
 	it("gives every case a fixture in at least one language", () => {
@@ -805,6 +811,58 @@ describe("checking answers", () => {
 			).toEqual([]);
 		});
 
+		it("matches only rows of a stated role, whatever the role", () => {
+			const on = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 3 } });
+			const given = facts({
+				declarations: [decl("add")],
+				references: [
+					{
+						...bound(idFor("add"), { role: "read", range: on(1) }),
+						binding: { status: "unbound" as const, reason: "NotIndexed" as const },
+					},
+					bound(idFor("add"), { range: on(2) }),
+				],
+			});
+			const role = (wanted: "call" | "read" | "write") =>
+				checkFacts({ references: [{ name: "add", role: wanted, bindsTo: "add" }] } as ConformanceCase, given);
+
+			expect(role("call")).toEqual([]);
+			expect(role("read")).toEqual(["reference add: binding is unbound, expected bound"]);
+			expect(role("write")).toHaveLength(1);
+		});
+
+		it("fails disagreeing rows at a stated position, and reports the first row in source order", () => {
+			const on = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 3 } });
+			const unbound = (line: number) => ({
+				...bound(idFor("add"), { range: on(line) }),
+				binding: { status: "unbound" as const, reason: "NotIndexed" as const },
+			});
+			const ambiguous = (line: number) => ({
+				...bound(idFor("add"), { range: on(line) }),
+				binding: { status: "ambiguous" as const, candidates: [], provenance: "nameMatched" as const },
+			});
+			const check = (at: { line: number; character?: number } | undefined, references: Reference[]) =>
+				checkFacts(
+					{
+						references: [{ name: "add", bindsTo: "add", ...(at === undefined ? {} : { at }) }],
+					} as ConformanceCase,
+					facts({ declarations: [decl("add")], references }),
+				);
+
+			for (const at of [{ line: 1, character: 0 }, { line: 1 }]) {
+				expect(check(at, [bound(idFor("add"), { range: on(1) }), unbound(1)])).toHaveLength(1);
+				expect(check(at, [unbound(1), bound(idFor("add"), { range: on(1) })])).toHaveLength(1);
+			}
+			const emitted = [
+				check(undefined, [unbound(2), ambiguous(1)]),
+				check(undefined, [ambiguous(1), unbound(2)]),
+			];
+			expect(emitted).toEqual([
+				["reference add: binding is ambiguous, expected bound"],
+				["reference add: binding is ambiguous, expected bound"],
+			]);
+		});
+
 		it("compares the declaration a use is written in by name, or none", () => {
 			const given = facts({
 				declarations: [decl("add"), decl("run")],
@@ -842,9 +900,14 @@ describe("checking answers", () => {
 					given,
 				);
 
-			expect(
-				checkFacts({ references: [{ name: "add", from: "run", bindsTo: "add" }] } as ConformanceCase, given),
-			).toEqual([]);
+			const unpositioned = checkFacts(
+				{ references: [{ name: "add", from: "run", bindsTo: "add" }] } as ConformanceCase,
+				given,
+			);
+			expect(unpositioned).toHaveLength(1);
+			expect(unpositioned[0]).toContain("5:8");
+			expect(unpositioned[0]).toContain("2:4");
+			expect(checkFacts({ references: [{ name: "add", bindsTo: "add" }] } as ConformanceCase, given)).toEqual([]);
 			expect(check({ line: 5, character: 8 })).toEqual([]);
 			expect(check({ line: 5 })).toEqual([]);
 			expect(check({ line: 2, character: 4 })).toEqual(["reference add at 2:4: written in go, expected run"]);

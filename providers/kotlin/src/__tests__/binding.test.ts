@@ -320,6 +320,97 @@ describe("Kotlin member visibility", () => {
 	});
 });
 
+describe("Kotlin accessibility on every lookup path", () => {
+	const A = [
+		"package p",
+		"import p.A.Hidden",
+		"import p.A.*",
+		"open class A {",
+		"    private open class Hidden { val deep = 1 }",
+		"    protected open class Prot { val deep = 2 }",
+		"    open class Open { val deep = 3 }",
+		"    companion object { private open class Kept { val deep = 4 } }",
+		"    class In : Hidden() { fun f() = deep }",
+		"    class Own : Companion.Kept() { fun f() = deep }",
+		"}",
+		"class Out : A.Hidden() { fun f() = deep; fun g(h: Hidden, o: Open) = h }",
+		"class Far : A.Companion.Kept() { fun f() = deep }",
+		"private fun secret() = 1",
+		"fun near() = p.secret() + secret()",
+		"",
+	].join("\n");
+	const USE = [
+		"package q",
+		"import p.A.Hidden",
+		"import p.secret",
+		"import p.A",
+		"class Sub : A() {",
+		"    class Inner : A.Prot() { fun f() = deep }",
+		"}",
+		"class Stranger : A.Prot() { fun f() = deep }",
+		"fun far() = p.secret()",
+		"",
+	].join("\n");
+
+	test("an import, a star import and a package path admit only what the file may name", () => {
+		expectTargets(bindings({ "p/A.kt": A, "q/Use.kt": USE }, "p/A.kt"), {
+			"1:Hidden:import": null,
+			"11:Hidden:typeUse": null,
+			"11:Open:typeUse": "p/A.kt A#Open#",
+			"14:secret:call": each("p/A.kt secret().", "p/A.kt secret()."),
+		});
+		expectTargets(bindings({ "p/A.kt": A, "q/Use.kt": USE }, "q/Use.kt"), {
+			"1:Hidden:import": null,
+			"2:secret:import": null,
+			"8:secret:call": null,
+		});
+	});
+
+	test("a star import admits its members where it is written, not at a use inside a subclass", () => {
+		const base =
+			"package p\nopen class Base { companion object { protected const val CP = 3; const val OPEN = 4 } }\n";
+		const use = [
+			"package q",
+			"import p.Base.*",
+			"class Sub : p.Base() {",
+			"    class Nested { fun f() = CP + OPEN }",
+			"    fun g() = CP",
+			"}",
+			"",
+		].join("\n");
+		expectTargets(bindings({ "p/Base.kt": base, "q/Use.kt": use }, "q/Use.kt"), {
+			"3:CP:read": null,
+			"3:OPEN:read": "p/Base.kt Base#Companion#OPEN.",
+			"4:CP:read": "p/Base.kt Base#Companion#CP.",
+		});
+	});
+
+	test("a written type admits private, companion-private and protected classifiers only where Kotlin does", () => {
+		expectTargets(bindings({ "p/A.kt": A, "q/Use.kt": USE }, "p/A.kt"), {
+			"8:deep:read": "p/A.kt A#Hidden#deep.",
+			"9:deep:read": "p/A.kt A#Companion#Kept#deep.",
+			"11:deep:read": null,
+			"12:deep:read": null,
+		});
+		expectTargets(bindings({ "p/A.kt": A, "q/Use.kt": USE }, "q/Use.kt"), {
+			"5:deep:read": "p/A.kt A#Prot#deep.",
+			"7:deep:read": null,
+		});
+	});
+
+	test("resolveImport refuses a private nested class from its own file and from another", () => {
+		const provider = new KotlinProvider();
+		provider.initialize(workspace({ "p/A.kt": A, "q/Use.kt": USE }));
+		const resolve = (fromModule: string, specifier: string) => provider.resolveImport({ fromModule, specifier });
+
+		expect([resolve("p/A.kt", "p.A.Hidden"), resolve("q/Use.kt", "p.A.Hidden")]).toMatchObject([
+			{ status: "unresolved", reason: "NotIndexed" },
+			{ status: "unresolved", reason: "NotIndexed" },
+		]);
+		expect(resolve("q/Use.kt", "p.A.Open")).toEqual({ status: "resolved", module: "p/A.kt" });
+	});
+});
+
 describe("Kotlin top-level tiers", () => {
 	test("explicit imports, then the package including this file, then star imports pooled", () => {
 		const found = bindings(

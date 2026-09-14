@@ -7,7 +7,7 @@ import type { z } from "zod";
 import { comparePositions, coordinatesOf } from "../coordinates.js";
 import type { CommentSpan, DocRegion, FileFacts, ImportResolution, Literal } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
-import type { Declaration, Reference } from "../symbols.js";
+import type { Declaration, Range, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
 import type {
 	ConformanceCase,
@@ -101,10 +101,6 @@ function checkReference(
 	const problems: string[] = [];
 	const at = referenceLabel(expected);
 
-	if (expected.role !== undefined && actual.role !== expected.role) {
-		problems.push(`${at}: role is ${actual.role}, expected ${expected.role}`);
-	}
-
 	if (expected.from !== undefined) {
 		const owner = actual.fromId === undefined ? null : (byId.get(actual.fromId)?.name ?? actual.fromId);
 		if (owner !== expected.from)
@@ -149,20 +145,50 @@ function checkReference(
 	return problems;
 }
 
-/** An import or export line matches only a same-role expectation; `at` narrows to one occurrence. */
-function comparable(expected: ExpectedReference, actual: Reference): boolean {
-	const declarative = actual.role === "import" || actual.role === "export";
-	if (declarative && expected.role !== actual.role) return false;
+/** At the stated occurrence, or anywhere. */
+function placed(expected: ExpectedReference, actual: Reference): boolean {
 	const { at } = expected;
 	if (at === undefined) return true;
 	const start = actual.range.start;
 	return start.line === at.line && (at.character === undefined || start.character === at.character);
 }
 
+/** A stated role selects its rows; import and export rows answer only their own. */
+function selected(expected: ExpectedReference, actual: Reference): boolean {
+	if (expected.role !== undefined) return actual.role === expected.role;
+	return actual.role !== "import" && actual.role !== "export";
+}
+
 function referenceLabel(expected: ExpectedReference): string {
 	const { at } = expected;
 	if (at === undefined) return `reference ${expected.name}`;
 	return `reference ${expected.name} at ${at.line}${at.character === undefined ? "" : `:${at.character}`}`;
+}
+
+/** What a case could state to split two rows. */
+function narrowing(expected: ExpectedReference, left: Reference, right: Reference): string {
+	if (comparePositions(left.range.start, right.range.start) !== 0) {
+		if (expected.at === undefined) return "; state `at`";
+		if (expected.at.character === undefined) return "; state `at` with a character";
+	}
+	return left.role !== right.role && expected.role === undefined ? "; state `role`" : "";
+}
+
+/** Never emission order: range, then role, then first problem. */
+function checkedInSourceOrder<Row extends { range: Range; role?: string }>(
+	rows: Row[],
+	check: (row: Row) => string[],
+): Array<{ row: Row; problems: string[] }> {
+	const byText = (left = "", right = ""): number => (left < right ? -1 : left > right ? 1 : 0);
+	return rows
+		.map((row) => ({ row, problems: check(row) }))
+		.sort(
+			(left, right) =>
+				comparePositions(left.row.range.start, right.row.range.start) ||
+				comparePositions(left.row.range.end, right.row.range.end) ||
+				byText(left.row.role, right.row.role) ||
+				byText(left.problems[0], right.problems[0]),
+		);
 }
 
 ////////////////////////////////
@@ -193,8 +219,8 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 		}
 		// Several same-named declarations pass if ANY satisfies the expectation, since a case
 		// naming only a name cannot say which overload it meant.
-		const perMatch = matches.map((m) => checkDeclaration(expected, m, byId));
-		if (perMatch.every((p) => p.length > 0)) problems.push(...(perMatch[0] as string[]));
+		const checked = checkedInSourceOrder(matches, (match) => checkDeclaration(expected, match, byId));
+		if (checked.every((entry) => entry.problems.length > 0)) problems.push(...(checked[0]?.problems ?? []));
 	}
 
 	const wantedNames = fixture?.declarationNames ?? testCase.declarationNames;
@@ -209,13 +235,30 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	}
 
 	for (const expected of testCase.references ?? []) {
-		const matches = facts.references.filter((r) => r.name === expected.name && comparable(expected, r));
-		if (matches.length === 0) {
-			problems.push(`${referenceLabel(expected)}: not reported`);
+		const label = referenceLabel(expected);
+		const named = facts.references.filter((r) => r.name === expected.name && placed(expected, r));
+		const checked = checkedInSourceOrder(
+			named.filter((r) => selected(expected, r)),
+			(match) => checkReference(expected, match, byId, facts.module),
+		);
+		if (checked.length === 0) {
+			const roles = [...new Set(named.map((r) => r.role))].sort();
+			problems.push(
+				`${label}: not reported${roles.length === 0 ? "" : ` as ${expected.role ?? "a use"}, only as ${roles.join(", ")}`}`,
+			);
 			continue;
 		}
-		const perMatch = matches.map((m) => checkReference(expected, m, byId, facts.module));
-		if (perMatch.every((p) => p.length > 0)) problems.push(...(perMatch[0] as string[]));
+		const passing = checked.find((entry) => entry.problems.length === 0);
+		const failing = checked.find((entry) => entry.problems.length > 0);
+		if (passing === undefined) problems.push(...(failing?.problems ?? []));
+		else if (failing !== undefined) {
+			// Disagreeing rows fail.
+			const where = ({ row }: { row: Reference }) =>
+				`${row.role} at ${row.range.start.line}:${row.range.start.character}`;
+			problems.push(
+				`${label}: rows disagree, ${where(passing)} passes and ${where(failing)} fails (${failing.problems[0]})${narrowing(expected, passing.row, failing.row)}`,
+			);
+		}
 	}
 
 	const wantedComments = fixture?.comments ?? testCase.comments;

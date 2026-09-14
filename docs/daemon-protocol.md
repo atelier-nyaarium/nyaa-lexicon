@@ -174,9 +174,10 @@ Four reads let a client draw what surrounds one symbol without walking the store
 
 - **Uses, not mentions:** `findReferences`, `usesFrom`, `mostReferenced`, the knowledge gap
   `fanIn`, and `describe`'s `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents`
-  and `graph.cycle` leave out `import` and `export` rows. One predicate decides it, `isUse` in
-  `core/src/store.ts`, read by the store's SQL and the read model alike. `symbol_facts` keeps
-  those rows, and rename planning reads the store's rows whole.
+  and `graph.cycle` leave out `import` and `export` rows. One closed role table in
+  `core/src/store.ts` decides it, and every such read goes through the store's use surfaces
+  (`usesTo`, `usesFrom`, `usesIn`, `useEdges`). `symbol_facts` keeps those rows, and rename planning
+  reads the store's rows whole; a residue names every raw reader.
 - **`findReferences` rows** carry `topLevel` and `language`, both computed at read time, so neither
   is part of a reference's fact id and no citation moves. `topLevel` is the outermost declaration
   on the `fromId` chain whose kind is not a grouping (`file`, `module`, `namespace`, `package`, the
@@ -193,7 +194,8 @@ Four reads let a client draw what surrounds one symbol without walking the store
   `graph.fanOut` counts bound targets of the symbol and its direct declared members only, each with
   the locals it owns.
 - **`describe`'s `members`** and `graph.viaMembers` are declared members: direct children, a
-  function's parameters and locals excluded by `core/src/locals.ts`.
+  function's parameters and locals excluded by `core/src/locals.ts`, which reads a container's
+  `contains` and otherwise its kind.
 - **`describe`'s `graph.dependents`** counts the distinct top-level declarations holding a use; a
   use at module level counts its file.
 - **`knowledgeScope`** is the knowledge layer's containment read; `knowledge-layer.md` holds it.

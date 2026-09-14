@@ -672,12 +672,12 @@ ${
 			`**STALE:** ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed. Re-check \`symbol_facts\`, then call \`reaffirm_answer\` or \`record_answer\`.`,
 		);
 	}
-	if (health.shaky) {
+	if (health.upstreamStale) {
 		status.push(
 			`**SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose supporting facts changed. Re-affirm those first.`,
 		);
 	}
-	if (health.doubtedUpstream) {
+	if (health.upstreamDoubted) {
 		status.push(
 			`**SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Address those first.`,
 		);

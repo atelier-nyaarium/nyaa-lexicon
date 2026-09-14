@@ -1026,8 +1026,9 @@ export class CsharpParser {
 		const open = this.findCallParen(start, boundary.index);
 		if (open >= 0)
 			return this.parseMethod(start, modifiers.start, boundary, open, end, parent, doc, modifiers.modifiers);
-		if (boundary.kind === "body" || this.hasTopLevelArrow(start, boundary.index)) {
-			const nameIndex = this.propertyName(start, boundary.index);
+		const arrow = this.expressionBodyArrow(start, boundary.index);
+		if (boundary.kind === "body" || arrow >= 0) {
+			const nameIndex = this.propertyName(start, arrow >= 0 ? arrow : boundary.index);
 			if (nameIndex >= 0)
 				return this.parseProperty(
 					start,
@@ -1535,8 +1536,10 @@ export class CsharpParser {
 		return this.lastIdentifier(start, end);
 	}
 
-	private hasTopLevelArrow(start: number, end: number): boolean {
-		return this.findTopLevelValue(start, end, "=>") >= 0;
+	/** Arrow after `=` is a lambda, not a body. */
+	private expressionBodyArrow(start: number, end: number): number {
+		const arrow = this.findTopLevelValue(start, end, "=>");
+		return arrow >= 0 && this.findTopLevelValue(start, arrow, "=") < 0 ? arrow : -1;
 	}
 
 	private findTopLevelValue(start: number, end: number, value: string): number {
@@ -1610,9 +1613,11 @@ export class CsharpParser {
 
 	private findDeclaratorName(start: number, end: number): number {
 		let current = this.nextSignificant(start, end);
+		let angles = 0;
 		while (current >= 0 && current < end) {
 			const item = this.token(current);
-			if (item?.kind === "identifier") {
+			angles += angleDelta(this.value(current) ?? "");
+			if (item?.kind === "identifier" && angles === 0) {
 				const next = this.nextSignificant(current + 1, end);
 				const nextValue = this.value(next);
 				if (next < 0 || next >= end || nextValue === "=" || nextValue === "[" || nextValue === ",")

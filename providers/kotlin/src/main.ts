@@ -30,7 +30,7 @@ import {
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { ReferenceBinder } from "./binding.js";
 import { type KotlinFile, LANGUAGE, REFERENCE_ROLES, type TypeFact } from "./facts.js";
-import { cleanSpecifier, type ModuleHeaders, PackageIndex } from "./packageIndex.js";
+import { cleanSpecifier, fileSite, type ModuleHeaders, PackageIndex } from "./packageIndex.js";
 import { parseKotlin } from "./parse.js";
 
 export const TIERS = {
@@ -176,7 +176,7 @@ export class KotlinProvider {
 						detail: `package ${specifier} spans ${modules.length} workspace files`,
 					};
 		}
-		const resolution = index.resolvePath(params.fromModule, specifier);
+		const resolution = index.resolvePath(fileSite(params.fromModule), specifier);
 		if (resolution.status === "external") return { status: "external", packageName: specifier };
 		if (resolution.status === "unresolved") return resolution;
 		const modules = [...new Set(resolution.entries.map((entry) => entry.module))];

@@ -426,6 +426,8 @@ export {
 	spellsName,
 } from "./symbolId.js";
 export {
+	type Contains,
+	ContainsSchema,
 	type Declaration,
 	DeclarationSchema,
 	type Diagnostic,
@@ -438,8 +440,10 @@ export {
 	type Range,
 	RangeSchema,
 	type Reference,
+	type ReferenceRole,
 	ReferenceRoleSchema,
 	ReferenceSchema,
+	RUNNING_KINDS,
 	type SymbolKind,
 	SymbolKindSchema,
 	VisibilitySchema,

@@ -29,6 +29,8 @@ const DECL: Declaration = {
 	selectionRange: { start: { line: 1, character: 9 }, end: { line: 1, character: 12 } },
 };
 
+const UNMARKED_DECL_ID = "lexfact declaration src/a.ts 24aeac4f952446af";
+
 const REF: Reference = {
 	name: "add",
 	role: "call",
@@ -91,6 +93,13 @@ describe("identity is content", () => {
 		const after = declarationFactId("src/a.ts", { ...DECL, signature: "(a: number) => number" });
 
 		expect(after).not.toBe(before);
+	});
+
+	it("keeps an unmarked declaration's id and changes a marked one's", () => {
+		expect(declarationFactId("src/a.ts", DECL)).toBe(UNMARKED_DECL_ID);
+		expect(declarationFactId("src/a.ts", { ...DECL, kind: "constant", contains: "locals" })).not.toBe(
+			declarationFactId("src/a.ts", { ...DECL, kind: "constant" }),
+		);
 	});
 
 	it("gives a moved fact a different id, which is the trade this design makes", () => {

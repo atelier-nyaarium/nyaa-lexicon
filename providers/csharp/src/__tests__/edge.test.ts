@@ -207,6 +207,27 @@ describe("C# declaration structure", () => {
 		expect(facts.declarations.some((item) => item.name === "get" || item.name === "set")).toBe(false);
 	});
 
+	it("reads a lambda initializer as a field, and an arrow body as a property", () => {
+		const text = [
+			"public class C {",
+			"public Func<int, int> Tax = amount =>",
+			"{",
+			"\tvar taxed = amount * 2;",
+			"\treturn taxed;",
+			"};",
+			"public Func<int, int> Half = x => x / 2;",
+			"public int Total => Tax(1) + Half(2);",
+			"}",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(facts.declarations.map((item) => [item.kind, item.name])).toEqual([
+			["class", "C"],
+			["field", "Tax"],
+			["field", "Half"],
+			["property", "Total"],
+		]);
+	});
+
 	it("maps default, explicit, protected, file, and local visibility", () => {
 		const text = [
 			"public class PublicType {}",

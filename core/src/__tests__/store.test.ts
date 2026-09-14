@@ -392,6 +392,45 @@ describe("reverse lookup", () => {
 		expect(store.referencesTo(target)).toEqual([]);
 	});
 
+	it("reads a symbol's fan-out through an index in source order, on a store written before the index", () => {
+		const file = path.join(dir, "fanout.sqlite");
+		const caller = idOf("caller");
+		const at = (character: number) => ({
+			start: { line: 1, character },
+			end: { line: 1, character: character + 1 },
+		});
+		const first = IndexStore.open(file);
+		first.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("caller"), declaration("left"), declaration("right")],
+			references: [
+				{ ...reference("right", idOf("right")), range: at(30), fromId: caller },
+				{ ...reference("left", idOf("left")), range: at(10), fromId: caller },
+			],
+		});
+		first.store.close();
+		const raw = new DatabaseSync(file);
+		raw.exec("DROP INDEX refs_from");
+		raw.close();
+
+		const second = IndexStore.open(file);
+		const plan = second.store.journal(
+			(db) =>
+				db
+					.prepare(
+						"EXPLAIN QUERY PLAN SELECT * FROM refs WHERE fromId = ? ORDER BY module, startLine, startChar",
+					)
+					.all(caller) as Array<{ detail: string }>,
+		);
+		expect({
+			rebuilt: second.rebuilt,
+			uses: second.store.usesFrom(caller).map((row) => row.name),
+			indexed: plan.some((step) => step.detail.includes("USING INDEX refs_from")),
+		}).toEqual({ rebuilt: false, uses: ["left", "right"], indexed: true });
+		second.store.close();
+	});
+
 	it("reports a symbol nothing references", () => {
 		store.replaceFile({
 			module: "src/a.ts",

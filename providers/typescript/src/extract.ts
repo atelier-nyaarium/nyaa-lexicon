@@ -12,6 +12,7 @@ import {
 	type Literal,
 	type Metrics,
 	type Reference,
+	RUNNING_KINDS,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 
@@ -41,6 +42,8 @@ type ReferenceNode = ts.Identifier | ts.PrivateIdentifier | ts.StringLiteral | t
 interface Scope {
 	descriptors: Descriptor[];
 	containerId: string | undefined;
+	/** Inside a running body. */
+	runs?: true;
 }
 
 interface MetricsFunctionLike {
@@ -485,6 +488,20 @@ function anonymousDefaultExportOf(
 	return undefined;
 }
 
+/** Excludes bodyless signatures and function types. */
+function isRunningBody(node: ts.Node): boolean {
+	return (
+		(ts.isArrowFunction(node) ||
+			ts.isFunctionExpression(node) ||
+			ts.isFunctionDeclaration(node) ||
+			ts.isMethodDeclaration(node) ||
+			ts.isConstructorDeclaration(node) ||
+			ts.isGetAccessorDeclaration(node) ||
+			ts.isSetAccessorDeclaration(node)) &&
+		node.body !== undefined
+	);
+}
+
 function hasDefaultModifier(node: ts.Node): boolean {
 	return ts.canHaveModifiers(node)
 		? (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
@@ -552,6 +569,12 @@ export function extractFileWithNodes(
 	const declarationScopes = new Map<ts.Node, Scope>();
 	const occurrences = new Map<string, number>();
 	const referenceRoles = new Map<ts.Node, ReferenceRole[]>();
+	/** Containers with something declared while running. */
+	const running = new Set<string>();
+
+	function noteDeclaredIn(scope: Scope): void {
+		if (scope.runs === true && scope.containerId !== undefined) running.add(scope.containerId);
+	}
 
 	function markReference(node: ts.Node, role: ReferenceRole): void {
 		if (!isReferenceNode(node)) return;
@@ -669,6 +692,7 @@ export function extractFileWithNodes(
 			const signature = signatureOf(node, source);
 			const defaultSpan = defaultSelectionRange(node, source);
 
+			noteDeclaredIn(scope);
 			declarations.push({
 				symbolId,
 				kind: anonymousDefault.kind,
@@ -698,6 +722,7 @@ export function extractFileWithNodes(
 		declarationNodes.set(node, symbolId);
 		const range = declarationRangeOf(node, source);
 
+		noteDeclaredIn(scope);
 		declarations.push({
 			symbolId,
 			kind: classified.kind,
@@ -732,6 +757,7 @@ export function extractFileWithNodes(
 			const range = declarationRangeOf(statement, source);
 			const signature = signatureOf(declaration, source);
 
+			noteDeclaredIn(scope);
 			declarations.push({
 				symbolId,
 				kind: isConst ? "constant" : "variable",
@@ -825,10 +851,17 @@ export function extractFileWithNodes(
 		const inner = declarationScopes.get(node) ?? recorded;
 		// A member of an exported container is reachable, so its own lack of `export` is not privacy.
 		const childrenExported = inner !== scope && (exportedByParent || isExported(node));
-		ts.forEachChild(node, (child) => walk(child, inner, childrenExported));
+		// Parameters keep the owner's running flag.
+		const runs = isRunningBody(node) || (ts.isParameter(node) && scope.runs === true);
+		const childScope: Scope = runs ? { ...inner, runs: true } : inner;
+		ts.forEachChild(node, (child) => walk(child, childScope, childrenExported));
 	}
 
 	classifyReferenceTree(source, false);
 	walk(source, { descriptors: [], containerId: undefined }, false);
+	// Kind already implies it.
+	for (const declaration of declarations) {
+		if (running.has(declaration.symbolId) && !RUNNING_KINDS.has(declaration.kind)) declaration.contains = "locals";
+	}
 	return { declarations, references, imports, literals, declarationNodes };
 }

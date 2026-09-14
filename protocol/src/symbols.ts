@@ -59,6 +59,19 @@ export type SymbolKind = z.infer<typeof SymbolKindSchema>;
 /** Kinds that group declarations rather than hold them. */
 export const GROUPING_KINDS: ReadonlySet<string> = new Set<SymbolKind>(["file", "module", "namespace", "package"]);
 
+/** Kinds whose body runs. */
+export const RUNNING_KINDS: ReadonlySet<string> = new Set<SymbolKind>([
+	"function",
+	"method",
+	"constructor",
+	"operator",
+]);
+
+/** Members, or body's locals. */
+export const ContainsSchema = z.enum(["members", "locals"]).meta({ id: "Contains" });
+
+export type Contains = z.infer<typeof ContainsSchema>;
+
 /**
  * Reach, not a keyword. `local` means function-scoped; `fileLocal` means module-private.
  *
@@ -115,6 +128,8 @@ export const DeclarationSchema = z
 		signature: z.string().optional(),
 		/** Enclosing declaration, absent at module top level. */
 		containerId: z.string().min(1).optional(),
+		/** Absent, this reads from the kind; an arrow constant must say `locals`. */
+		contains: ContainsSchema.optional(),
 		/** Absent when the provider does not measure, which is not the same as measuring zero. */
 		metrics: MetricsSchema.optional(),
 	})
@@ -126,6 +141,8 @@ export type Declaration = z.infer<typeof DeclarationSchema>;
 export const ReferenceRoleSchema = z
 	.enum(["call", "read", "write", "import", "export", "extends", "implements", "instantiate", "typeUse"])
 	.meta({ id: "ReferenceRole" });
+
+export type ReferenceRole = z.infer<typeof ReferenceRoleSchema>;
 
 /**
  * A reference is a candidate plus a `Binding`, not a resolved edge.

@@ -137,6 +137,8 @@ export function declarationFactId(module: string, d: Declaration): string {
 		d.metrics?.parameters,
 		d.metrics?.nesting,
 		d.metrics?.branches,
+		// Absent keeps old ids.
+		...(d.contains === undefined ? [] : [d.contains]),
 	]);
 }
 

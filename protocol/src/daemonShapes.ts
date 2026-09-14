@@ -300,27 +300,32 @@ export type RecalledAnswer = z.infer<typeof RecalledAnswerSchema>;
 export interface AnswerHealth {
 	/** Its own cited facts moved. */
 	stale: boolean;
-	/** A cited answer is stale beneath it. */
-	shaky: boolean;
 	/** Doubted itself. */
 	doubted: boolean;
+	/** Cited answer stale. */
+	upstreamStale: boolean;
 	/** A cited answer is doubted beneath it. */
-	doubtedUpstream: boolean;
+	upstreamDoubted: boolean;
+	/** Either upstream state. */
+	shaky: boolean;
 }
 
 /** The one reading of a recalled answer's state. */
 export function answerHealth(recalled: RecalledAnswer): AnswerHealth {
+	const upstreamStale = recalled.inheritedStale.length > 0;
+	const upstreamDoubted = recalled.doubtedUpstream.length > 0;
 	return {
 		stale: recalled.stale.length > 0,
-		shaky: recalled.inheritedStale.length > 0,
 		doubted: recalled.answer.doubt !== undefined,
-		doubtedUpstream: recalled.doubtedUpstream.length > 0,
+		upstreamStale,
+		upstreamDoubted,
+		shaky: upstreamStale || upstreamDoubted,
 	};
 }
 
 /** Healthy when nothing about it or beneath it moved or was doubted. */
 export function isSound(health: AnswerHealth): boolean {
-	return !health.stale && !health.shaky && !health.doubted && !health.doubtedUpstream;
+	return !health.stale && !health.doubted && !health.shaky;
 }
 
 /** Why an id names no declaration: a closed kind, the sentence, and what a reader might mean instead. */

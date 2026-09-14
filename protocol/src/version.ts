@@ -36,7 +36,7 @@ export type Compatibility =
 // The `forgetModule` provider notification, which an older provider ignores.
 // `describe.members` no longer lists parameters and locals. `referenceCount`, `findReferences`,
 // `mostReferenced`, `graph.fanIn`, `graph.fanOut`, `graph.cycle` and gap `fanIn` no longer count
-// import and export lines.
+// import and export lines. `Declaration.contains`, an older core ignores.
 export const PROTOCOL_VERSION = "3.3.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;

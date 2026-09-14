@@ -28,6 +28,7 @@ import {
 	type Metrics,
 	parseFactId,
 	type Reference,
+	type ReferenceRole,
 	referenceFactId,
 	type ScanCounts,
 	type StoredComment,
@@ -264,7 +265,9 @@ CREATE TABLE symbols (
   mBranches   INTEGER,
   -- Evidence that a vanished declaration reappeared elsewhere; null before a full parse.
   patternDigest   TEXT,
-  patternCoverage TEXT
+  patternCoverage TEXT,
+  -- Null reads the kind.
+  contains        TEXT CHECK (contains IN ('members', 'locals'))
 );
 CREATE INDEX symbols_module ON symbols(module);
 CREATE INDEX symbols_name ON symbols(name);
@@ -286,6 +289,7 @@ CREATE TABLE refs (
 CREATE INDEX refs_module ON refs(module);
 -- The whole reason for a database: this turns reverse lookup into an indexed read.
 CREATE INDEX refs_target ON refs(targetId);
+CREATE INDEX refs_from ON refs(fromId);
 CREATE INDEX refs_name ON refs(name);
 -- Not unique, here or on any fact table. Two identical statements in one file are the same fact
 -- written twice, so one id for both is the right answer rather than a collision to design around.
@@ -464,17 +468,23 @@ CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
  */
 const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments", "docs", "notes"] as const;
 
-/** Roles that name, not use. */
-const NOT_USE_ROLES: readonly string[] = ["import", "export"];
+/** Classifies use vs mention. */
+const ROLE_CLASS: Readonly<Record<ReferenceRole, "use" | "mention">> = {
+	call: "use",
+	read: "use",
+	write: "use",
+	extends: "use",
+	implements: "use",
+	instantiate: "use",
+	typeUse: "use",
+	import: "mention",
+	export: "mention",
+};
 
-/** The one "is a use" rule. Rename planning reads raw rows. */
-export function isUse(reference: Pick<StoredReference, "role">): boolean {
-	return !NOT_USE_ROLES.includes(reference.role);
-}
-
-/** `isUse` over a refs row alias. */
+/** SQL form of ROLE_CLASS. */
 function useSql(alias: string): string {
-	return `${alias}.role NOT IN (${NOT_USE_ROLES.map((role) => `'${role}'`).join(", ")})`;
+	const uses = Object.entries(ROLE_CLASS).filter(([, kind]) => kind === "use");
+	return `${alias}.role IN (${uses.map(([role]) => `'${role}'`).join(", ")})`;
 }
 
 /** Meta key for store compatibility. */
@@ -964,6 +974,7 @@ export class IndexStore {
 
 		// Index additions are safe to apply in place, so existing stores get this lookup without a rebuild.
 		db.exec("CREATE INDEX IF NOT EXISTS files_indexed_at ON files(indexedAt)");
+		db.exec("CREATE INDEX IF NOT EXISTS refs_from ON refs(fromId)");
 		// Nullable, so the add is one atomic statement and an old row reads as not yet recorded.
 		if (!columnExists(db, "files", "content")) db.exec("ALTER TABLE files ADD COLUMN content TEXT");
 		// Each column checked on its own, so a crash between the two adds is finished on the next open.
@@ -978,6 +989,9 @@ export class IndexStore {
 		}
 		if (!columnExists(db, "symbols", "patternCoverage")) {
 			db.exec("ALTER TABLE symbols ADD COLUMN patternCoverage TEXT");
+		}
+		if (!columnExists(db, "symbols", "contains")) {
+			db.exec("ALTER TABLE symbols ADD COLUMN contains TEXT CHECK (contains IN ('members', 'locals'))");
 		}
 		// Once, in place, preserving every row.
 		if (!columnExists(db, "answers", "subjectId")) {
@@ -1072,8 +1086,8 @@ export class IndexStore {
 				`INSERT OR REPLACE INTO symbols
 				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
-				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage, contains)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
 				// The name columns are NOT NULL from before names could be absent; the flag says which.
@@ -1105,6 +1119,7 @@ export class IndexStore {
 					d.metrics?.branches ?? null,
 					digest?.patternDigest ?? null,
 					digest?.patternCoverage ?? null,
+					d.contains ?? null,
 				);
 			}
 			this.subjects.restoreResolving(module, this.clock.now());
@@ -1707,7 +1722,7 @@ export class IndexStore {
 		return rows.map(rowToDeclaration);
 	}
 
-	/** Reverse lookup: the indexed read the whole storage choice exists for. */
+	/** Mentions included; see usesTo. */
 	referencesTo(symbolId: string): StoredReference[] {
 		const rows = this.db
 			.prepare("SELECT * FROM refs WHERE targetId = ? ORDER BY module, startLine, startChar")
@@ -1715,8 +1730,27 @@ export class IndexStore {
 		return rows.map(rowToReference);
 	}
 
+	/** Why the storage exists. */
+	usesTo(symbolId: string): StoredReference[] {
+		const rows = this.db
+			.prepare(
+				`SELECT * FROM refs r WHERE r.targetId = ? AND ${useSql("r")} ORDER BY module, startLine, startChar`,
+			)
+			.all(symbolId);
+		return rows.map(rowToReference);
+	}
+
+	/** Mentions included; see usesIn. */
 	referencesIn(module: string): StoredReference[] {
 		const rows = this.db.prepare("SELECT * FROM refs WHERE module = ? ORDER BY startLine, startChar").all(module);
+		return rows.map(rowToReference);
+	}
+
+	/** Includes unbound rows too. */
+	usesIn(module: string): StoredReference[] {
+		const rows = this.db
+			.prepare(`SELECT * FROM refs r WHERE r.module = ? AND ${useSql("r")} ORDER BY startLine, startChar`)
+			.all(module);
 		return rows.map(rowToReference);
 	}
 
@@ -2097,16 +2131,18 @@ export class IndexStore {
 	////////////////////////////////
 	//  Graph
 
-	/** What this symbol uses, as distinct targets. Fan-out to reverse lookup's fan-in. */
-	referencesFrom(symbolId: string): StoredReference[] {
+	/** Bound rows only; fan-out. */
+	usesFrom(symbolId: string): StoredReference[] {
 		const rows = this.db
-			.prepare("SELECT * FROM refs WHERE fromId = ? AND targetId IS NOT NULL ORDER BY module, startLine")
+			.prepare(
+				`SELECT * FROM refs r WHERE r.fromId = ? AND r.targetId IS NOT NULL AND ${useSql("r")} ORDER BY module, startLine, startChar`,
+			)
 			.all(symbolId);
 		return rows.map(rowToReference);
 	}
 
 	/** Every bound use edge, for a traversal that needs the whole graph rather than one neighbourhood. */
-	allEdges(): Array<{ from: string; to: string }> {
+	useEdges(): Array<{ from: string; to: string }> {
 		return this.db
 			.prepare(
 				`SELECT DISTINCT fromId AS 'from', targetId AS 'to' FROM refs r
@@ -2256,6 +2292,7 @@ interface SymbolRow {
 	mParameters: number | null;
 	mNesting: number | null;
 	mBranches: number | null;
+	contains: string | null;
 }
 
 /** Absent stays absent through the round trip, so "not measured" never arrives looking like zero. */
@@ -2310,6 +2347,7 @@ function rowToDeclaration(raw: unknown): StoredDeclaration {
 		...(row.exported === null ? {} : { exported: row.exported === 1 }),
 		...(row.containerId === null ? {} : { containerId: row.containerId }),
 		...(row.signature === null ? {} : { signature: row.signature }),
+		...(row.contains === null ? {} : { contains: row.contains as StoredDeclaration["contains"] }),
 	};
 }
 

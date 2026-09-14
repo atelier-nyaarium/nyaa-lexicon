@@ -35,15 +35,14 @@ import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging
 import { proseHit } from "./proseText.js";
 import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
-import {
-	type FileNotes,
-	type IndexStore,
-	isUse,
-	type StoredComment,
-	type StoredDeclaration,
-	type StoredDoc,
-	type StoredLiteral,
-	type StoredReference,
+import type {
+	FileNotes,
+	IndexStore,
+	StoredComment,
+	StoredDeclaration,
+	StoredDoc,
+	StoredLiteral,
+	StoredReference,
 } from "./store.js";
 
 export type {
@@ -252,7 +251,7 @@ export class IndexReadModel {
 			members,
 			...(prose.length === 0 ? {} : { prose }),
 			...(regions.length > prose.length ? { moreProse: regions.length - prose.length } : {}),
-			referenceCount: this.store.referencesTo(symbolId).filter(isUse).length,
+			referenceCount: this.store.usesTo(symbolId).length,
 			graph: this.graphSummary(symbolId),
 			hierarchy: this.typeHierarchy(symbolId),
 			...(comments.length === 0 ? {} : { comments }),
@@ -346,7 +345,7 @@ export class IndexReadModel {
 	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
 		const scope = within === undefined ? undefined : resolveScope(this.store, within);
 		// A use at module level sits inside no symbol, so no scope holds it.
-		const all = this.store.referencesTo(symbolId).filter(isUse);
+		const all = this.store.usesTo(symbolId);
 		const filtered =
 			scope === undefined
 				? all
@@ -367,8 +366,8 @@ export class IndexReadModel {
 		if (declaration === null) return { symbolId, references: [], total: 0, truncated: false, tier: "bound" };
 		const inside = new Containment(this.store.declarationsIn(declaration.module)).descendantIds(symbolId);
 		const written = this.store
-			.referencesIn(declaration.module)
-			.filter((reference) => reference.fromId !== null && inside.has(reference.fromId) && isUse(reference));
+			.usesIn(declaration.module)
+			.filter((reference) => reference.fromId !== null && inside.has(reference.fromId));
 		const context = new UseContext(this.store);
 		return {
 			symbolId,
@@ -681,7 +680,7 @@ export class IndexReadModel {
 	 * may only mean "barely resolved".
 	 */
 	private graphSummary(symbolId: string): GraphSummary {
-		const cycle = findCycles(this.store.allEdges()).find((found) => found.members.includes(symbolId));
+		const cycle = findCycles(this.store.useEdges()).find((found) => found.members.includes(symbolId));
 
 		// Members counted too, because a reference inside a method belongs to the METHOD. Asking a
 		// class for its own fan-out returned zero however much it used, since nothing is written
@@ -696,12 +695,12 @@ export class IndexReadModel {
 		]);
 		const uses = new Set<string>();
 		for (const owner of owners) {
-			for (const reference of this.store.referencesFrom(owner)) {
-				if (reference.targetId !== null && isUse(reference)) uses.add(reference.targetId);
+			for (const reference of this.store.usesFrom(owner)) {
+				if (reference.targetId !== null) uses.add(reference.targetId);
 			}
 		}
 
-		const incoming = this.store.referencesTo(symbolId).filter(isUse);
+		const incoming = this.store.usesTo(symbolId);
 		const context = new UseContext(this.store);
 		const dependents = new Set(
 			incoming.map((reference) => context.topLevel(reference)?.symbolId ?? `module ${reference.module}`),
@@ -719,7 +718,7 @@ export class IndexReadModel {
 
 	/** Every cycle in the workspace, largest first. */
 	cycles(limit = 20) {
-		return findCycles(this.store.allEdges())
+		return findCycles(this.store.useEdges())
 			.sort((a, b) => b.members.length - a.members.length)
 			.slice(0, limit);
 	}
@@ -740,7 +739,7 @@ export class IndexReadModel {
 
 		const supertypeIdsOf = (id: string) =>
 			this.store
-				.referencesFrom(id)
+				.usesFrom(id)
 				.filter((reference) => isHeritage(reference.role))
 				.map((reference) => reference.targetId)
 				.filter((target): target is string => target !== null);
@@ -754,7 +753,7 @@ export class IndexReadModel {
 		const supertypes = summariesOf(supertypeIdsOf(symbolId));
 		const subtypes = summariesOf(
 			this.store
-				.referencesTo(symbolId)
+				.usesTo(symbolId)
 				.filter((reference) => isHeritage(reference.role) && reference.fromId !== null)
 				.map((reference) => reference.fromId as string),
 		);
@@ -775,18 +774,13 @@ export class IndexReadModel {
 			frontier = next;
 		}
 
-		const unboundSupertypes = this.store
-			.referencesFrom(symbolId)
-			.filter((reference) => isHeritage(reference.role) && reference.targetId === null)
-			.map((reference) => reference.name);
-		// referencesFrom already drops unbound rows, so the unresolved ones come from the file's own
-		// reference list instead.
+		// usesFrom excludes unbound rows.
 		const declaration = this.store.declaration(symbolId);
 		const unresolved =
 			declaration === null
 				? []
 				: this.store
-						.referencesIn(declaration.module)
+						.usesIn(declaration.module)
 						.filter(
 							(reference) =>
 								isHeritage(reference.role) &&
@@ -800,7 +794,7 @@ export class IndexReadModel {
 			supertypes,
 			subtypes,
 			ancestors: summariesOf(ancestors),
-			unboundSupertypes: [...new Set([...unboundSupertypes, ...unresolved])],
+			unboundSupertypes: [...new Set(unresolved)],
 		};
 	}
 
@@ -839,8 +833,8 @@ export class IndexReadModel {
 
 		return {
 			symbolId,
-			incoming: group(this.store.referencesTo(symbolId), (reference) => reference.fromId),
-			outgoing: group(this.store.referencesFrom(symbolId), (reference) => reference.targetId),
+			incoming: group(this.store.usesTo(symbolId), (reference) => reference.fromId),
+			outgoing: group(this.store.usesFrom(symbolId), (reference) => reference.targetId),
 		};
 	}
 
