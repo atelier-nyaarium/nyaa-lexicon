@@ -92,17 +92,32 @@ function checkDeclaration(
 	return problems;
 }
 
-function checkReference(expected: ExpectedReference, actual: Reference, byId: Map<string, Declaration>): string[] {
+function checkReference(
+	expected: ExpectedReference,
+	actual: Reference,
+	byId: Map<string, Declaration>,
+	module: string,
+): string[] {
 	const problems: string[] = [];
-	const at = `reference ${expected.name}`;
+	const at = referenceLabel(expected);
 
 	if (expected.role !== undefined && actual.role !== expected.role) {
 		problems.push(`${at}: role is ${actual.role}, expected ${expected.role}`);
 	}
 
+	if (expected.from !== undefined) {
+		const owner = actual.fromId === undefined ? null : (byId.get(actual.fromId)?.name ?? actual.fromId);
+		if (owner !== expected.from)
+			problems.push(`${at}: written in ${owner ?? "no declaration"}, expected ${expected.from}`);
+	}
+
 	const wanted =
 		expected.status ??
-		(expected.bindsTo !== undefined ? "bound" : expected.reason !== undefined ? "unbound" : undefined);
+		(expected.bindsTo !== undefined || expected.bindsToModule !== undefined
+			? "bound"
+			: expected.reason !== undefined
+				? "unbound"
+				: undefined);
 	if (wanted !== undefined && actual.binding.status !== wanted) {
 		problems.push(`${at}: binding is ${actual.binding.status}, expected ${wanted}`);
 		return problems;
@@ -115,14 +130,39 @@ function checkReference(expected: ExpectedReference, actual: Reference, byId: Ma
 		}
 	}
 
+	if (actual.binding.status !== "bound") return problems;
+	const parsed = parseSymbolId(actual.binding.symbolId);
+	const elsewhere = parsed !== null && parsed.module !== module;
+	if (expected.bindsToModule !== undefined && parsed?.module !== expected.bindsToModule) {
+		problems.push(`${at}: binds in ${parsed?.module ?? "an unknown module"}, expected ${expected.bindsToModule}`);
+	}
 	if (expected.bindsTo !== undefined) {
-		if (actual.binding.status !== "bound") return problems;
-		const target = byId.get(actual.binding.symbolId)?.name;
+		// Cross-file id trusted by name only when the case names the file.
+		const target =
+			elsewhere && expected.bindsToModule !== undefined
+				? parsed.descriptors.at(-1)?.name
+				: byId.get(actual.binding.symbolId)?.name;
 		if (target !== expected.bindsTo) {
 			problems.push(`${at}: binds to ${target ?? "an unknown symbol"}, expected ${expected.bindsTo}`);
 		}
 	}
 	return problems;
+}
+
+/** An import or export line matches only a same-role expectation; `at` narrows to one occurrence. */
+function comparable(expected: ExpectedReference, actual: Reference): boolean {
+	const declarative = actual.role === "import" || actual.role === "export";
+	if (declarative && expected.role !== actual.role) return false;
+	const { at } = expected;
+	if (at === undefined) return true;
+	const start = actual.range.start;
+	return start.line === at.line && (at.character === undefined || start.character === at.character);
+}
+
+function referenceLabel(expected: ExpectedReference): string {
+	const { at } = expected;
+	if (at === undefined) return `reference ${expected.name}`;
+	return `reference ${expected.name} at ${at.line}${at.character === undefined ? "" : `:${at.character}`}`;
 }
 
 ////////////////////////////////
@@ -169,12 +209,12 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	}
 
 	for (const expected of testCase.references ?? []) {
-		const matches = facts.references.filter((r) => r.name === expected.name);
+		const matches = facts.references.filter((r) => r.name === expected.name && comparable(expected, r));
 		if (matches.length === 0) {
-			problems.push(`reference ${expected.name}: not reported`);
+			problems.push(`${referenceLabel(expected)}: not reported`);
 			continue;
 		}
-		const perMatch = matches.map((m) => checkReference(expected, m, byId));
+		const perMatch = matches.map((m) => checkReference(expected, m, byId, facts.module));
 		if (perMatch.every((p) => p.length > 0)) problems.push(...(perMatch[0] as string[]));
 	}
 

@@ -26,6 +26,20 @@ moveEdits(request)           -> MoveEditsResponse
 shutdown()
 ```
 
+One notification travels the other way without an answer:
+
+```
+forgetModule(module)         the index no longer holds this module
+```
+
+The core sends `forgetModule` to every running provider whenever it lets a module go: the file was
+deleted, grew past the size limit, turned binary, or left the scope. It rides each provider's
+request queue, so it lands after any parse already asked. A provider that keeps workspace state of
+its own (a declaration index, a parse cache) drops the module and does not read it back until a
+`parseFile` names it again. A provider that holds nothing ignores it, and `handlersFor` wires it only
+when the provider object has a `forgetModule` method. Unlike a method it is optional, which is what
+lets an older provider keep working.
+
 `parseFile` is one call returning everything from one parse. There is no `describe`: narrative is
 the core's job, and a provider writing prose means the boundary leaked. `discoverProject` is the
 underestimated one, since config discovery and specifier resolution rules are the largest
@@ -336,6 +350,109 @@ suite says when a provider is finished, not the team writing it.
 
 The suite asserts the shape of Unknowns too. Without that, a provider can return reasonless
 Unknowns everywhere and pass.
+
+A binding case may name `bindsToModule` as well as `bindsTo`. The runner parses only the subject
+file, so a case holding several files proves a use binds into a file the provider never parsed.
+
+A reference expectation matches by name, and passes when any same-named row satisfies it. `at`
+narrows it to the row whose range starts there (zero-based `line`, optional `character`). A position
+is one fixture's syntax, so only a case with a single fixture states one.
+
+## Binding across files
+
+Binding into another file is each provider's claim, not a protocol guarantee. A provider that makes
+it reads the other file on demand rather than depending on scan order, since the runner and the
+core may parse only the using file. The C# provider binds members of a partial type and names a
+`using` directive imports across files, and leaves a same-namespace name declared in another file
+unbound. The Kotlin provider binds across the whole workspace through a package index.
+
+### Kotlin lookup
+
+A bare name is looked up in tiers, and the first tier holding a candidate whose kind fits the role
+decides. Several candidates answer `ambiguous`, sorted.
+
+1. **Locals and parameters**, innermost scope first. A `val` is visible after its declaration; a
+   lambda, `for`, `catch` or destructured variable, a parameter and a type parameter throughout its
+   scope. A primary constructor's parameters reach property initializers, `init` blocks, supertype
+   arguments and `by` delegates, never a member body. An arrowless lambda binds `it` and an accessor
+   binds `field`; both answer unbound rather than reaching a package name.
+2. **Implicit receivers**, innermost first: the class's own members, its companion's, then each
+   supertype depth the index can resolve, across files and cycle-guarded. Past a nested (not
+   `inner`) class, an outer class offers only nested classifiers, enum entries and companion
+   members. An extension function or property adds its receiver
+   type's members. A receiver the index cannot resolve is skipped, not a stop.
+3. **Explicit imports and aliases.** An import that resolves to nothing stops here.
+4. **The package**, this file's own top-level declarations included. Kotlin's overload resolution
+   ranks explicit imports above the same package, which holds the file itself; classifiers follow
+   the same order.
+5. **Star imports**, pooled.
+
+An extension declaration is a candidate for a bare name only where an implicit receiver whose type
+has the extension's receiver name is in scope. Calling a local value or a property stops the walk as
+unbound instead of reaching a same-named function further out. A read prefers a value to a function
+of the same name.
+
+A name after a dot binds by what stands left of it:
+
+- **A type** (`Type.member`, `import pkg.Type.member`, `import pkg.Type.*`): nested classifiers,
+  enum entries, and object and companion members, never instance members. `Type::member` reaches
+  instance members.
+- **`this`, `this@Label`, `super`**: the class and its supertypes; `super` skips the class.
+- **A qualifier chain spelling an indexed package** (`p.Base` in a supertype list): through the
+  package.
+- **An expression of unknown type** (`other.name`): unbound, never a same-file guess.
+
+Qualifiers resolve iteratively, so a long chain cannot exhaust the stack. A read and a write on one
+token (`x += 1`) bind independently. A `private` top-level declaration binds only in its own file;
+`internal` binds workspace-wide.
+
+### Kotlin stated limits
+
+What no syntax tree can answer, so a use stays unbound or binds by the tiers above:
+
+- **Receiver lambdas** (`with`, `apply`, `run`, `buildString`, Compose scopes): the receiver type is
+  written in the called function's declaration, usually outside the workspace, not at the call. A
+  bare name inside falls to the later tiers, so `with(b) { limit }` binds a package `limit`, and
+  `this` binds the enclosing class.
+- **A receiver outside the workspace** (a supertype such as `ViewModel()`, an extension on an
+  external type): its members are not indexed. A name it provides falls to the later tiers.
+- **Value receivers** (`b.limit` with `b: Box`): the type of an expression needs inference, which
+  this provider does not do.
+- **Overloads**: choosing one needs argument types, so a call naming several answers `ambiguous`.
+- **Gradle modules**: `internal` binds across the workspace because module boundaries live in build
+  scripts, not in the source.
+
+What the provider simplifies, which only differs from the compiler in rare or non-compiling code:
+
+- **A local class's member** loses to a same-named local of the enclosing function, since every
+  local tier ranks above every receiver. Kotlin interleaves the two by scope level.
+- **A typealias** is not followed as a qualifier or a receiver type.
+- **An import naming no indexed declaration** stops the lookup rather than falling through.
+- **Shadowing only non-compiling code sees**: an outer class's type parameter stays visible in a
+  nested class, and a class's own members are visible in its supertype arguments.
+
+### The index lifecycle
+
+The index must hold what the core holds, or a binding names a symbol the store does not have:
+
+- **Built from outline parses** of the discovered files the index lacks, on the first lookup. A
+  file is read through `readSourceFile`, the same size bound and binary guard the core reads with,
+  so a file the core refuses to read is never indexed.
+- **Only admitted facts.** A parse carrying an `error` diagnostic, which the core refuses, leaves
+  the module's last admitted declarations in place, whether it came through `parseFile` or from
+  disk.
+- **Forgotten on `forgetModule`,** and kept out of any later fill until `parseFile` names it again.
+- **A file that could not be read is retried** on each later lookup. A missing one is not.
+- **A rediscovery reads every module again.** One whose text is now refused or unreadable keeps
+  what was admitted; one whose file is gone, too large or binary leaves.
+- **`typeOf` takes a declared type's symbol from the binding** of the type as written, so it never
+  names a declaration the binding would not.
+
+Two gaps remain. A store refusal after the parse (`FactAdmissionError`) never reaches the provider,
+so the index keeps a parse the core refused. The core forgets a file it cannot read, so a file made
+readable again with no watcher event stays out of the index until it is parsed again.
+
+The C# provider handles `forgetModule` the same way for its parse cache.
 
 ## Versioning
 

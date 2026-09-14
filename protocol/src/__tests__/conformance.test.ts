@@ -231,6 +231,15 @@ describe("corpus", () => {
 		}
 	});
 
+	it("states an occurrence position only in a case with one fixture", () => {
+		const positioned = loadCorpus().filter((testCase) =>
+			(testCase.references ?? []).some((reference) => reference.at !== undefined),
+		);
+
+		expect(positioned).not.toHaveLength(0);
+		for (const testCase of positioned) expect(Object.keys(testCase.fixtures), testCase.id).toHaveLength(1);
+	});
+
 	it("gives every case a fixture in at least one language", () => {
 		for (const testCase of loadCorpus()) {
 			expect(Object.keys(testCase.fixtures), testCase.id).not.toHaveLength(0);
@@ -726,6 +735,121 @@ describe("checking answers", () => {
 		};
 		const testCase = { references: [{ name: "add", bindsTo: "add" }] } as ConformanceCase;
 		expect(checkFacts(testCase, facts({ declarations: [target], references: [reference] }))).toEqual([]);
+	});
+
+	describe("a binding's target, owner and role", () => {
+		const at = { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } };
+		const bound = (symbolId: string, extra: Record<string, unknown> = {}) => ({
+			name: "add",
+			range: at,
+			role: "call" as const,
+			binding: { status: "bound" as const, symbolId, provenance: "bound" as const },
+			...extra,
+		});
+		const elsewhere = composeSymbolId({
+			language: "x",
+			module: "src/other.ts",
+			descriptors: [{ kind: "term", name: "add" }],
+		});
+
+		it("trusts another file's id by name only when the case names that file", () => {
+			const given = facts({ references: [bound(elsewhere)] });
+
+			expect(
+				checkFacts({ references: [{ name: "add", bindsTo: "add" }] } as ConformanceCase, given),
+			).toHaveLength(1);
+			expect(
+				checkFacts(
+					{ references: [{ name: "add", bindsTo: "add", bindsToModule: "src/other.ts" }] } as ConformanceCase,
+					given,
+				),
+			).toEqual([]);
+			expect(
+				checkFacts(
+					{ references: [{ name: "add", bindsTo: "add", bindsToModule: "src/a.ts" }] } as ConformanceCase,
+					given,
+				),
+			).toHaveLength(1);
+		});
+
+		it("fails a same-file id the file never declared, whatever its last name", () => {
+			const undeclared = composeSymbolId({
+				language: "x",
+				module: "src/a.ts",
+				descriptors: [
+					{ kind: "type", name: "run" },
+					{ kind: "term", name: "add" },
+				],
+			});
+			const given = facts({ declarations: [decl("add")], references: [bound(undeclared)] });
+
+			expect(
+				checkFacts({ references: [{ name: "add", bindsTo: "add" }] } as ConformanceCase, given),
+			).toHaveLength(1);
+		});
+
+		it("lets an import line satisfy only a case asking for its role", () => {
+			const given = facts({
+				declarations: [decl("add")],
+				references: [
+					bound(idFor("add"), { role: "import" }),
+					{ ...bound(idFor("add")), binding: { status: "unbound" as const, reason: "NotIndexed" as const } },
+				],
+			});
+
+			expect(
+				checkFacts({ references: [{ name: "add", bindsTo: "add" }] } as ConformanceCase, given),
+			).toHaveLength(1);
+			expect(
+				checkFacts({ references: [{ name: "add", role: "import", bindsTo: "add" }] } as ConformanceCase, given),
+			).toEqual([]);
+		});
+
+		it("compares the declaration a use is written in by name, or none", () => {
+			const given = facts({
+				declarations: [decl("add"), decl("run")],
+				references: [bound(idFor("add"), { fromId: idFor("run") })],
+			});
+			const from = (owner: string | null) =>
+				checkFacts({ references: [{ name: "add", from: owner }] } as ConformanceCase, given);
+
+			expect(from("run")).toEqual([]);
+			expect(from("add")).toHaveLength(1);
+			expect(from(null)).toHaveLength(1);
+			expect(
+				checkFacts(
+					{ references: [{ name: "add", from: null }] } as ConformanceCase,
+					facts({ declarations: [decl("add")], references: [bound(idFor("add"))] }),
+				),
+			).toEqual([]);
+		});
+
+		it("holds an occurrence selector to that row, so another right row cannot pass it", () => {
+			const on = (line: number, character: number) => ({
+				start: { line, character },
+				end: { line, character: character + 3 },
+			});
+			const given = facts({
+				declarations: [decl("add"), decl("run"), decl("go")],
+				references: [
+					bound(idFor("add"), { range: on(2, 4), fromId: idFor("go") }),
+					bound(idFor("add"), { range: on(5, 8), fromId: idFor("run") }),
+				],
+			});
+			const check = (at: { line: number; character?: number }) =>
+				checkFacts(
+					{ references: [{ name: "add", from: "run", bindsTo: "add", at }] } as ConformanceCase,
+					given,
+				);
+
+			expect(
+				checkFacts({ references: [{ name: "add", from: "run", bindsTo: "add" }] } as ConformanceCase, given),
+			).toEqual([]);
+			expect(check({ line: 5, character: 8 })).toEqual([]);
+			expect(check({ line: 5 })).toEqual([]);
+			expect(check({ line: 2, character: 4 })).toEqual(["reference add at 2:4: written in go, expected run"]);
+			expect(check({ line: 5, character: 9 })).toEqual(["reference add at 5:9: not reported"]);
+		});
 	});
 
 	it("fails a name-matched binding where the case asked for a bound one", () => {

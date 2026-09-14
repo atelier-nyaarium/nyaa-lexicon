@@ -155,10 +155,10 @@ export class WorkspaceIndexer {
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
 		const claim = this.claimOf(module);
-		if (!claim.claimed) return this.outcome(module, "unclaimed", claim.unclaimedReason);
+		if (!claim.claimed) return this.unadmitted(module, claim.unclaimedReason);
 		// The claim above came from this route; the guard only narrows the type.
 		const route = this.supervisor.route(module);
-		if (!route.owned) return this.outcome(module, "unclaimed");
+		if (!route.owned) return this.unadmitted(module, "unclaimed");
 
 		const read = this.readSource(module);
 		if (read.kind === "missing") {
@@ -484,10 +484,14 @@ export class WorkspaceIndexer {
 		depth = this.depths.get(module) ?? this.rootDepth(module),
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
-		if (this.currentScope().denies(module)) {
-			return this.outcome(module, "unclaimed", "denied by scope");
-		}
+		if (this.currentScope().denies(module)) return this.unadmitted(module, "denied by scope");
 		return this.indexFile(module, depth, skipIfCurrent);
+	}
+
+	/** A module nothing may index keeps no facts. */
+	private unadmitted(module: string, reason: string): IndexOutcome {
+		const held = this.store.contentHashOf(module) !== null || this.store.parseFailureOf(module) !== null;
+		return this.outcome(module, "unclaimed", reason, held && this.forgetFile(module));
 	}
 
 	/** Exclude failures from the retryable background backlog. */
@@ -675,6 +679,8 @@ export class WorkspaceIndexer {
 
 	private forgetFile(module: string): boolean {
 		const removed = this.store.forgetFile(module);
+		// Told regardless: a provider may still hold the file.
+		this.supervisor.forget(module);
 		this.caches.facts.invalidate();
 		return removed;
 	}

@@ -168,6 +168,40 @@ holds this version), `providerDown` or `fault` (the indexer failed while handlin
 A provider's parse failure is an answer, not an error frame, so a caller reindexing a restored
 file is not failed by it; only a provider outage is the daemon's own trouble.
 
+### Reading around a symbol
+
+Four reads let a client draw what surrounds one symbol without walking the store itself.
+
+- **Uses, not mentions:** `findReferences`, `usesFrom`, `mostReferenced`, the knowledge gap
+  `fanIn`, and `describe`'s `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents`
+  and `graph.cycle` leave out `import` and `export` rows. One predicate decides it, `isUse` in
+  `core/src/store.ts`, read by the store's SQL and the read model alike. `symbol_facts` keeps
+  those rows, and rename planning reads the store's rows whole.
+- **`findReferences` rows** carry `topLevel` and `language`, both computed at read time, so neither
+  is part of a reference's fact id and no citation moves. `topLevel` is the outermost declaration
+  on the `fromId` chain whose kind is not a grouping (`file`, `module`, `namespace`, `package`, the
+  protocol's `GROUPING_KINDS`), so a class inside a namespace is top level. `language` is the id
+  head of the use's own file, read from the `fromId` head, or from the target's for a module-level
+  use. The store records no language per module, so the second read rests on a provider rule: a
+  provider mints every id under its one head and binds only to ids it minted, which makes a bound
+  target's head its file's. A cross-language use never binds, so it is never a row here. Rows are
+  ordered by module, line, then character.
+- **`usesFrom`** answers every reference written in a symbol and everything declared inside it, at
+  any depth, unbound ones included, in source order. Each row carries its `target` when bound and
+  its `status`: `bound`, `ambiguous`, or `unbound` with a `reason`. The status is read from the
+  stored row, where an ambiguous binding keeps a provenance and loses its candidates.
+  `graph.fanOut` counts bound targets of the symbol and its direct declared members only, each with
+  the locals it owns.
+- **`describe`'s `members`** and `graph.viaMembers` are declared members: direct children, a
+  function's parameters and locals excluded by `core/src/locals.ts`.
+- **`describe`'s `graph.dependents`** counts the distinct top-level declarations holding a use; a
+  use at module level counts its file.
+- **`knowledgeScope`** is the knowledge layer's containment read; `knowledge-layer.md` holds it.
+
+Protocol 3.3.0 changed two answers an older client may count on. `describe.members` no longer lists
+parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn`,
+`graph.fanOut`, `graph.cycle` and a gap row's `fanIn` no longer count import and export lines.
+
 ## Validation, both directions
 
 `createDispatch` is the one place a request meets the table, and it does three things in order. A

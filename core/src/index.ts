@@ -88,8 +88,10 @@ export {
 	type LiteralsResult,
 	REGEX_SCAN_LIMIT,
 	type ReferencesResult,
+	type ReferenceUse,
 	type SymbolSummary,
 	type TypeHierarchy,
+	type UsesFromResult,
 } from "./indexReads.js";
 export {
 	coalesce,
@@ -108,6 +110,7 @@ export {
 	type InvalidateOutcome,
 	type KnowledgeGaps,
 	KnowledgeLedger,
+	type KnowledgeScope,
 } from "./knowledge.js";
 export { DEFAULT_LINGER_MS, type Linger, type LingerOptions, lingerWhileEmpty } from "./lifetime.js";
 export { ownSource } from "./ownSource.js";

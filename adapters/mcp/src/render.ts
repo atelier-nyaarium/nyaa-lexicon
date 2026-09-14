@@ -24,6 +24,7 @@ import type {
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
 import {
+	answerHealth,
 	FACT_KINDS,
 	type FactKind,
 	type InsertOutcome,
@@ -638,6 +639,7 @@ export function renderKnowledge(recalled: RecalledAnswer | null, question = `kno
 		lines.push(`
 **THIN:** Only the declaration was cited.`);
 	const status: string[] = [];
+	const health = answerHealth(recalled);
 	if (recalled.answer.doubt !== undefined) {
 		const by = recalled.answer.doubt.by === undefined ? "" : ` (${recalled.answer.doubt.by})`;
 		lines.push(`
@@ -665,17 +667,17 @@ ${
 		status.push(
 			`**STRANDED:** This address no longer resolves${hold}. Record the prose again where a reader will find it${candidates === "" ? "" : `: ${candidates}`}.`,
 		);
-	} else if (recalled.stale.length > 0) {
+	} else if (health.stale) {
 		status.push(
 			`**STALE:** ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed. Re-check \`symbol_facts\`, then call \`reaffirm_answer\` or \`record_answer\`.`,
 		);
 	}
-	if (recalled.inheritedStale.length > 0) {
+	if (health.shaky) {
 		status.push(
 			`**SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose supporting facts changed. Re-affirm those first.`,
 		);
 	}
-	if (recalled.doubtedUpstream.length > 0) {
+	if (health.doubtedUpstream) {
 		status.push(
 			`**SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Address those first.`,
 		);
@@ -869,7 +871,7 @@ ${lead}: no ${asked}gaps.`,
 	for (const row of actionable) {
 		const tail = row.symbolId.split(" ").slice(3).join(" ");
 		const symbol = row.name === undefined ? code(tail) : `**${row.kind ?? "symbol"}** ${code(tail)}`;
-		const state = row.why === "stale" ? `**STALE**` : row.why === "doubted" ? `**DOUBTED**` : `MISSING`;
+		const state = row.why === "missing" ? `MISSING` : `**${row.shaky === true ? "SHAKY" : row.why.toUpperCase()}**`;
 		const question = row.question === gaps.question ? "" : ` (${row.question})`;
 		const askedAt =
 			row.recordedAs === undefined || row.recordedAs === row.symbolId

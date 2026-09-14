@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { PassThrough } from "node:stream";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
-import { exitWhenClosed, type ProviderHandlers, serveProvider } from "../serve";
+import { exitWhenClosed, type ProviderHandlers, type ProviderNotificationHandlers, serveProvider } from "../serve";
 
 describe("the shared server, before any handler", () => {
 	it("refuses a module no symbol id can name, and lets a workspace-relative one through", async () => {
@@ -40,6 +40,44 @@ describe("the shared server, before any handler", () => {
 
 		provider.dispose();
 		daemon.dispose();
+	});
+});
+
+describe("a notification", () => {
+	function pair(handlers: ProviderHandlers & ProviderNotificationHandlers) {
+		const toProvider = new PassThrough();
+		const toDaemon = new PassThrough();
+		const provider = createMessageConnection(
+			new StreamMessageReader(toProvider),
+			new StreamMessageWriter(toDaemon),
+		);
+		const daemon = createMessageConnection(new StreamMessageReader(toDaemon), new StreamMessageWriter(toProvider));
+		serveProvider(provider, handlers);
+		provider.listen();
+		daemon.listen();
+		return { provider, daemon };
+	}
+
+	it("reaches a provider that handles it, and a provider without a handler still answers requests", async () => {
+		const forgotten: string[] = [];
+		const answering = { parseFile: () => ({ declarations: [] }) } as unknown as ProviderHandlers;
+		const handled = pair({ ...answering, forgetModule: ({ module }) => forgotten.push(module) });
+		const ignoring = pair(answering);
+
+		await handled.daemon.sendNotification("forgetModule", { module: "src/a.kt" });
+		await handled.daemon.sendNotification("forgetModule", { module: "../out.kt" });
+		await ignoring.daemon.sendNotification("forgetModule", { module: "src/a.kt" });
+		// A request after the notifications settles only once they were read.
+		await handled.daemon.sendRequest("parseFile", { module: "src/a.kt", contentHash: "h", text: "" });
+		await expect(
+			ignoring.daemon.sendRequest("parseFile", { module: "src/a.kt", contentHash: "h", text: "" }),
+		).resolves.toMatchObject({ declarations: [] });
+
+		expect(forgotten).toEqual(["src/a.kt"]);
+		for (const { provider, daemon } of [handled, ignoring]) {
+			provider.dispose();
+			daemon.dispose();
+		}
 	});
 });
 

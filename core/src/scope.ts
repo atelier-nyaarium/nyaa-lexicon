@@ -1,11 +1,11 @@
 import {
 	ANONYMOUS_NAMESPACE,
 	composeSymbolId,
+	GROUPING_KINDS,
 	isSymbolId,
 	isWithin,
 	moduleOf,
 	parseSymbolId,
-	type SymbolId,
 } from "@nyaa-lexicon/protocol";
 import type { IndexStore, StoredDeclaration } from "./store.js";
 
@@ -16,6 +16,8 @@ import type { IndexStore, StoredDeclaration } from "./store.js";
 export interface Scope {
 	id: string;
 	declaration: StoredDeclaration;
+	/** Held by a grouping, so the same path reopened in another file is the same scope. */
+	spans: boolean;
 }
 
 /** A SQL prefilter, over-inclusive by design; `contains` is the check that counts. */
@@ -52,9 +54,16 @@ function samePath(left: StoredDeclaration, right: StoredDeclaration): boolean {
 	return JSON.stringify(a?.descriptors) === JSON.stringify(b?.descriptors);
 }
 
-/** A namespace-qualified path names one thing wherever it is reopened; a bare one is per file. */
-function spansModules(id: SymbolId): boolean {
-	return id.descriptors.some((descriptor) => descriptor.kind === "namespace");
+/** A grouping or anything inside one names one thing wherever it is reopened; a bare path is per file. */
+function spansModules(store: IndexStore, declaration: StoredDeclaration): boolean {
+	const seen = new Set<string>();
+	let current: StoredDeclaration | null = declaration;
+	while (current !== null && !seen.has(current.symbolId)) {
+		if (GROUPING_KINDS.has(current.kind)) return true;
+		seen.add(current.symbolId);
+		current = current.containerId === undefined ? null : store.declaration(current.containerId);
+	}
+	return false;
 }
 
 function ambiguous(within: string, matches: StoredDeclaration[]): Error {
@@ -71,7 +80,7 @@ export function resolveScope(store: IndexStore, within: string): Scope {
 		const declaration = store.declaration(within);
 		if (declaration === null) throw new Error("no declaration has this id");
 		if (parseSymbolId(within)?.local !== undefined) throw new Error("a local names no scope");
-		return { id: within, declaration };
+		return { id: within, declaration, spans: spansModules(store, declaration) };
 	}
 
 	const named = store.declarationsNamed(within);
@@ -87,16 +96,15 @@ export function resolveScope(store: IndexStore, within: string): Scope {
 	if (matches.length === 1) {
 		const declaration = matches[0] as StoredDeclaration;
 		if (parseSymbolId(declaration.symbolId)?.local !== undefined) throw new Error("a local names no scope");
-		return { id: declaration.symbolId, declaration };
+		return { id: declaration.symbolId, declaration, spans: spansModules(store, declaration) };
 	}
 
 	const first = matches[0] as StoredDeclaration;
-	const parsed = parseSymbolId(first.symbolId);
 	const mergeable =
-		parsed !== null &&
-		spansModules(parsed) &&
+		parseSymbolId(first.symbolId) !== null &&
+		spansModules(store, first) &&
 		matches.every((candidate) => candidate.visibility === "public" && samePath(first, candidate));
-	if (mergeable) return { id: first.symbolId, declaration: first };
+	if (mergeable) return { id: first.symbolId, declaration: first, spans: true };
 	throw ambiguous(within, matches);
 }
 
@@ -104,7 +112,7 @@ export function resolveScope(store: IndexStore, within: string): Scope {
 export function contains(scope: Scope, candidateId: string): boolean {
 	const parsed = parseSymbolId(scope.id);
 	const candidateModule = moduleOf(candidateId);
-	if (parsed !== null && spansModules(parsed) && candidateModule !== null) {
+	if (parsed !== null && scope.spans && candidateModule !== null) {
 		return isWithin(candidateId, composeSymbolId({ ...parsed, module: candidateModule }));
 	}
 	return isWithin(candidateId, scope.id);
@@ -123,7 +131,7 @@ const MODULE_MARKER = "m";
 export function filterFor(scope: Scope): ScopeFilter {
 	const parsed = parseSymbolId(scope.id);
 	if (parsed === null) return {};
-	if (spansModules(parsed)) {
+	if (scope.spans) {
 		const marked = composeSymbolId({ ...parsed, module: MODULE_MARKER });
 		const at = marked.indexOf(` ${MODULE_MARKER} `);
 		return { head: marked.slice(0, at + 1), like: marked.slice(at + MODULE_MARKER.length + 2) };

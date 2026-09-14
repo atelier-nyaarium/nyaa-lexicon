@@ -11,6 +11,7 @@ import { MoveDependencySchema } from "./move.js";
 import { IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import { DeclarationSchema, RangeSchema, ReferenceRoleSchema, SymbolKindSchema, VisibilitySchema } from "./symbols.js";
+import { UnknownReasonSchema } from "./values.js";
 
 ////////////////////////////////
 //  Vocabularies
@@ -295,6 +296,33 @@ export const RecalledAnswerSchema = z
 
 export type RecalledAnswer = z.infer<typeof RecalledAnswerSchema>;
 
+/** A recalled answer's state: its own citations and doubt, and what it inherits from answers it cites. */
+export interface AnswerHealth {
+	/** Its own cited facts moved. */
+	stale: boolean;
+	/** A cited answer is stale beneath it. */
+	shaky: boolean;
+	/** Doubted itself. */
+	doubted: boolean;
+	/** A cited answer is doubted beneath it. */
+	doubtedUpstream: boolean;
+}
+
+/** The one reading of a recalled answer's state. */
+export function answerHealth(recalled: RecalledAnswer): AnswerHealth {
+	return {
+		stale: recalled.stale.length > 0,
+		shaky: recalled.inheritedStale.length > 0,
+		doubted: recalled.answer.doubt !== undefined,
+		doubtedUpstream: recalled.doubtedUpstream.length > 0,
+	};
+}
+
+/** Healthy when nothing about it or beneath it moved or was doubted. */
+export function isSound(health: AnswerHealth): boolean {
+	return !health.stale && !health.shaky && !health.doubted && !health.doubtedUpstream;
+}
+
 /** Why an id names no declaration: a closed kind, the sentence, and what a reader might mean instead. */
 const diagnosed = { reason: z.string(), candidates: z.array(z.string()) };
 
@@ -335,6 +363,8 @@ export const GapRowSchema = z
 		symbolId: z.string(),
 		question: z.string(),
 		why: z.enum(["missing", "stale", "doubted"]),
+		/** Stale only through what it cites; demand rows only. */
+		shaky: z.boolean().optional(),
 		/** Asks that found nothing, the measured demand. */
 		askCount: z.number(),
 		/** The address first asked at, when the subject has since been rebound. */
@@ -416,6 +446,8 @@ export const GraphSummarySchema = z
 		fanIn: z.number(),
 		/** How many members contributed, so a container's number is readable as one. */
 		viaMembers: z.number().optional(),
+		/** Distinct top-level declarations holding a use; a use at module level counts its file. */
+		dependents: z.number().optional(),
 		/** Present only when this symbol sits in a cycle. */
 		cycle: z.array(z.string()).optional(),
 	})
@@ -459,11 +491,21 @@ export const DescribeResultSchema = z
 
 export type DescribeResult = z.infer<typeof DescribeResultSchema>;
 
+/** A reference as a list shows it. Both additions are read-time, so neither touches the row's fact id. */
+export const ReferenceUseSchema = StoredReferenceSchema.extend({
+	/** The outermost declaration holding the use. Absent at module level. */
+	topLevel: SymbolSummarySchema.optional(),
+	/** The language of the file the use is written in, when the index can tell. */
+	language: z.string().optional(),
+}).meta({ id: "ReferenceUse" });
+
+export type ReferenceUse = z.infer<typeof ReferenceUseSchema>;
+
 export const ReferencesResultSchema = z
 	.object({
 		symbolId: z.string(),
 		/** Capped, because an agent pays for every row and a hub symbol has thousands. */
-		references: z.array(StoredReferenceSchema),
+		references: z.array(ReferenceUseSchema),
 		total: z.number(),
 		truncated: z.boolean(),
 		tier: AnswerTierSchema,
@@ -471,6 +513,72 @@ export const ReferencesResultSchema = z
 	.meta({ id: "ReferencesResult" });
 
 export type ReferencesResult = z.infer<typeof ReferencesResultSchema>;
+
+export const UseFromSchema = ReferenceUseSchema.extend({
+	/** Absent when the reference did not bind, or its target left the index. */
+	target: SymbolSummarySchema.optional(),
+	/** Read from the stored row: an ambiguous binding keeps a provenance and no target. */
+	status: z.enum(["bound", "ambiguous", "unbound"]),
+	/** Why an unbound use did not bind. */
+	reason: UnknownReasonSchema.optional(),
+}).meta({ id: "UseFrom" });
+
+export type UseFrom = z.infer<typeof UseFromSchema>;
+
+/** What a symbol and everything declared inside it reference, bound or not. */
+export const UsesFromResultSchema = z
+	.object({
+		symbolId: z.string(),
+		/** In source order. */
+		references: z.array(UseFromSchema),
+		total: z.number(),
+		truncated: z.boolean(),
+		tier: AnswerTierSchema,
+	})
+	.meta({ id: "UsesFromResult" });
+
+export type UsesFromResult = z.infer<typeof UsesFromResultSchema>;
+
+/** One question about one symbol in a scope. `createdAt` is absent when nothing is recorded. */
+export const ScopeQuestionSchema = z
+	.object({
+		question: QuestionClassSchema,
+		createdAt: z.number().optional(),
+		thin: z.boolean().optional(),
+		/** Its own citations moved. */
+		stale: z.boolean().optional(),
+		/** An answer it cites is stale or doubted beneath it. */
+		shaky: z.boolean().optional(),
+		/** Doubted itself. */
+		doubted: z.boolean().optional(),
+		askCount: z.number(),
+	})
+	.meta({ id: "ScopeQuestion" });
+
+export type ScopeQuestion = z.infer<typeof ScopeQuestionSchema>;
+
+export const ScopeSymbolSchema = z
+	.object({
+		symbol: SymbolSummarySchema,
+		/** Containment depth below the scope: 0 for the named symbol or a module's top level. */
+		depth: z.number(),
+		/** Every question class, in `QUESTION_CLASSES` order. */
+		questions: z.array(ScopeQuestionSchema),
+	})
+	.meta({ id: "ScopeSymbol" });
+
+export type ScopeSymbol = z.infer<typeof ScopeSymbolSchema>;
+
+/** A scope's declarations with their knowledge, members before the declaration holding them. */
+export const KnowledgeScopeSchema = z
+	.object({
+		symbols: z.array(ScopeSymbolSchema),
+		/** Parameters and locals left out. */
+		localsExcluded: z.number(),
+	})
+	.meta({ id: "KnowledgeScope" });
+
+export type KnowledgeScope = z.infer<typeof KnowledgeScopeSchema>;
 
 /** How a literal search was expressed. Carried back so an answer says what it answered. */
 export const LiteralQuerySchema = z

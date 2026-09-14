@@ -39,6 +39,61 @@ know: parse-xml recurses and overflows the stack at ten thousand nested elements
 parse5 survives a hundred thousand but spends thirty-five seconds on them, so `markupTooDeep` in
 `formats/src/depth.ts` counts tag depth before either runs and refuses past the shared limit.
 
+Kotlin is read through `web-tree-sitter` and the vendored `tree-sitter-kotlin` grammar
+(`providers/kotlin/src/tree-sitter-kotlin.wasm`, from `@tree-sitter-grammars/tree-sitter-kotlin`
+1.1.0, sha256 `7009d69453bc8735e438b2818a633efb21c88f99782769abba60dffedfab73f7`), and answers all
+three:
+
+- **Positions:** a node's index over a JavaScript string is a UTF-16 offset, which is what a range
+  counts. The tree is copied into plain nodes with a cursor, so nesting costs heap, not stack: fifty
+  thousand nested parentheses parse in 125 ms.
+- **Shipping runtime:** both wasm files load once at module scope with a top-level `await`. The build
+  copies `web-tree-sitter.wasm` beside the bundle through the provider's `lexiconAssets` list, and
+  the grammar rides the provider's own `src/` assets.
+- **Scale:** Switchboard's `android/` (522 files, 2.9 MB) takes 590 ms for the bare parse, 920 ms
+  with the copy and the repairs below, 1.40 s for full facts and 1.14 s for an outline. The outline
+  saves little because the parse dominates. kotlinx-coroutines (1,039 files, 3.8 MB) takes 1.54 s
+  full. The cost to know is damage: tree-sitter's own recovery grows faster than the text, 100 ms
+  for 500 damaged statements in 23 KB and 1.3 s for 2,000 in 93 KB, where the provider's parse with
+  its repairs takes 380 ms and 2.5 s.
+
+The grammar reads a modifier or soft keyword as the keyword wherever it can, so `val open`,
+`open(...)` and `sealed.names` break the parse, and three such files in Switchboard became one root
+ERROR each. The provider repairs by error rather than by rule. Each round respells every such word
+standing where only a name can (after `.`, `val` or `class`, or not followed by a name, a modifier
+or a declaration keyword) with its first letter upper-cased, which keeps every offset, reparses,
+and keeps the least damaged tree, over at most eight rounds. Names, ranges and literals are always
+read from the original text. The repairs that follow have the same shape:
+
+- **A damaged top-level statement** is reparsed alone, with 4,096 blanked characters of what
+  follows it, since error recovery reads past the statement's end and a bare slice recovers
+  differently.
+- **`@A annotation class B`** is parsed without its annotations, which are attached back.
+- **A `$$"` prefix** is blanked, since multi-dollar literals postdate the grammar.
+- **A nested body's `}` after a member on one line** gets a newline ahead of it inside an ERROR
+  region.
+- **`I by d {`**, whose body the grammar reads as a trailing lambda on `d`, is reparsed with `by d`
+  blanked and the body grafted back.
+- **Text ending in an annotation with no newline** stalls the grammar's scanner, so every parse
+  sees a newline past the end.
+- **A block comment opening a line of code** hides the line break from the scanner's automatic
+  semicolon, so `/* c */ fun f()` joins the statement before it. Such a comment is parsed as a newline
+  and blanks of its length, and its span is grafted back.
+
+On the two corpora, the 29 files whose first parse has errors take 185 ms between them. What
+the repairs do not reach is a `warning` naming its region, never an error: an annotated statement
+inside a body (`@Suppress("x") while (...)`) reads as a call and yields no reference; a misread
+member inside a class body is not reparsed alone; and a lone `$` inside a multi-dollar literal still
+reads as a template. kotlinx-coroutines has eleven files carrying such warnings; Switchboard has
+none.
+
+An `error` refuses the file, so it is kept for text no valid source produces: an unterminated
+literal or block comment, an `import` or `package` naming nothing, damage running to the end of
+the file with no declaration inside, and an opener the text never closes. The last needs one
+distinction, since a grammar gap in valid source also leaves openers without a closer leaf: the gap
+skips its closers into unread text at the end of the file, where truncation has none. Neither corpus
+has a refused file.
+
 ## 2. One cursor owns character access
 
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes

@@ -15,9 +15,12 @@ makes "never answer cold" a property of the store rather than a slogan: an answe
 cannot be written down at all.
 
 What counts as a fact ABOUT a subject is its declaration, the references to it, the literals and
-comments inside it, the imports that reach it, the answers already recorded on it, and, for a
-heading, the prose under it. An answer is never ABOUT prose, but prose is evidence, so a section's
-own text is what an explanation of that section cites.
+comments inside it, the literals and comments on its parameters and locals, the imports that reach
+it, the answers already recorded on it, and, for a heading, the prose under it. A local's literals
+and comments belong to its nearest enclosing declaration that is not itself local, and to no
+declaration further out; `describe`'s notes read the same set. Stored anchors and fact ids do not
+move. An answer is never ABOUT prose, but prose is evidence, so a section's own text is what an
+explanation of that section cites.
 
 Four citation refusals, each closing a different way of recording something ungrounded:
 
@@ -220,11 +223,12 @@ The seeded fallback, which runs when the ledger holds no demand, ranks per langu
 across the workspace, since cross-language calls never bind and a global fan-in rank buries every
 language called over a wire. A candidate is a declaration the store's `seedCandidates` admits: not
 `exported: false`, not in a file git calls generated, and carrying a comment, prose under it, a
-reference from outside itself, or in a code file a literal, since a data field's value is the field
+use from outside itself, or in a code file a literal, since a data field's value is the field
 itself; an unknown export or generated status keeps it eligible and is counted
 on the page as `seededUnknown`, which the renderer says under the header. `RESERVED_HUBS` hubs by
 global fan-in lead, then the languages take turns, ordered by their declaration count, each
-offering its next candidate by fan-in and then id, so two runs agree. Git's word on a file is a
+offering its next candidate by fan-in and then id, so two runs agree. A use and a fan-in leave out
+import and export lines, by the store's `isUse`. Git's word on a file is a
 three-valued verdict persisted on its `files` row, written by the pass that read the file and
 refreshed by every later admission, so a file a pass left unread never keeps a stale one.
 
@@ -232,6 +236,33 @@ The gap list says whether it filtered by the asked question: `filtered` is set b
 return, `false` from the workspace demand sweep, which carries every question with rechecks first,
 and `true` from the seeded fallback, the module scope and the subtree walk. The MCP renderer names
 the question only when the core says so, and reads an omitted flag as unfiltered.
+
+A row's `why` reads `answerHealth`. The module scope, the subtree walk and the unasked sweep list an
+answer's own doubt or staleness only, since a shaky answer's cause is its own row. A demand row for a
+shaky answer reads `why: "stale"` with `shaky: true`, so a client that predates the flag still parses
+it, and drops out once its answer is sound again.
+
+## A scope, members first
+
+`knowledgeScope` answers a symbol, a symbol with its declared members, or a whole module: each
+declaration with every question's state, the recorded answer's `createdAt`, and the ask count.
+Members come before the declaration holding them, siblings by line then character, so answering in
+order lets a container cite its members' answers. A symbol id the index does not hold answers null,
+as `factsFor` does; a module the index does not hold answers an empty scope.
+
+- **Groupings hold nothing:** a `file`, `module`, `namespace` or `package` is not listed, and what
+  it groups sits a level up, so a namespace's classes are a module's top level.
+- **Locals:** a parameter, or anything under a container that is neither a type (`class`,
+  `interface`, `enum`, `struct`, `heading`) nor a grouping, is left out unless asked for and counted
+  with its subtree as `localsExcluded`. An arrow constant, an arrow property and a getter hold
+  locals as a function does. `core/src/locals.ts` owns the rule.
+- **Live declarations only:** a scope lists what the index holds, so it carries no stranded state.
+- **State:** `stale` and `doubted` are the answer's own, as `knowledgeGaps` reads them; `shaky` says
+  an answer it cites is stale or doubted beneath it, as `recall_answer` reports SHAKY. One function,
+  `answerHealth`, reads all four for recall, gaps, demand and the scope.
+
+It walks containment. `knowledgeGaps` under a root walks what the root uses, which answers a class
+alone, since a class's references belong to its methods. The two stay separate reads.
 
 ## Rules
 

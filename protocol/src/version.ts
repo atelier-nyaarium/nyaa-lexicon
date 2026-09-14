@@ -31,7 +31,13 @@ export type Compatibility =
 // 3.1.0: `shebangs` claims an extensionless file by the interpreter its first line names.
 // 3.2.0: `refactorReplaceSpan` and `symbolSource.spanHash`. A method, not a field, since an older
 // daemon strips an unknown field and would skip the check.
-export const PROTOCOL_VERSION = "3.2.0" as const;
+// 3.3.0: `usesFrom` and `knowledgeScope`, and read-time fields on reference rows and the graph.
+// A gap row gains `shaky`, beside a `why` of `stale` an older client still reads.
+// The `forgetModule` provider notification, which an older provider ignores.
+// `describe.members` no longer lists parameters and locals. `referenceCount`, `findReferences`,
+// `mostReferenced`, `graph.fanIn`, `graph.fanOut`, `graph.cycle` and gap `fanIn` no longer count
+// import and export lines.
+export const PROTOCOL_VERSION = "3.3.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

@@ -1,9 +1,9 @@
 // The one reading of a workspace file, for indexing and for a writer. Routing is the caller's; the
 // bound and the text check are here, so no second read site can decode a binary or stall on a giant.
 
-import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { firstLineOfFile, workspaceFile } from "@nyaa-lexicon/protocol";
+import { firstLineOfFile, MAX_SOURCE_BYTES, readSourceFile, workspaceFile } from "@nyaa-lexicon/protocol";
 import { moduleNotText, moduleNotUtf8, type Refusal, textNotEncodable } from "./refusals.js";
 
 ////////////////////////////////
@@ -25,17 +25,7 @@ export type SourceReader = (module: string) => SourceRead;
 /** Lossless text, null when absent, or why a writer may not splice it. */
 export type WritableSource = { text: string | null } | { refused: Refusal };
 
-////////////////////////////////
-//  Constants
-
-/** Past this a file is generated or data, and the yaml reader is quadratic in keys. */
-export const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
-
-/** Git's own heuristic: a NUL in the head means binary. */
-const BINARY_PROBE_BYTES = 8 * 1024;
-
-/** What a decode puts in place of dropped bytes. */
-const REPLACEMENT_CHARACTER = String.fromCodePoint(0xfffd);
+export { MAX_SOURCE_BYTES };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -71,34 +61,9 @@ export function readSource(root: string, module: string): SourceRead {
 	// Outside the root there is nothing of this workspace to read.
 	const file = workspaceFile(root, module);
 	if (file === null) return { kind: "missing" };
-	let fd: number;
-	try {
-		// Before open: opening a FIFO blocks until someone writes it.
-		if (!statSync(file).isFile()) return { kind: "missing" };
-		fd = openSync(file, "r");
-	} catch {
-		// Gone between the event and the read: nothing to index.
-		return { kind: "missing" };
-	}
-	try {
-		const size = fstatSync(fd).size;
-		if (size > MAX_SOURCE_BYTES) return { kind: "tooLarge", bytes: size };
-		// Bounded by the size seen, so a file growing under the read cannot outrun the limit.
-		const buffer = Buffer.allocUnsafe(size);
-		const bytes = buffer.subarray(0, readSync(fd, buffer, 0, size, 0));
-		if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { kind: "binary" };
-		const text = bytes.toString("utf8");
-		return { kind: "text", text, lossless: roundTrips(text, bytes) };
-	} catch {
-		return { kind: "missing" };
-	} finally {
-		closeSync(fd);
-	}
-}
-
-/** No replacement character, nothing dropped. */
-function roundTrips(text: string, bytes: Buffer): boolean {
-	return !text.includes(REPLACEMENT_CHARACTER) || Buffer.from(text, "utf8").equals(bytes);
+	const read = readSourceFile(file);
+	// Unreadable indexes as missing, like a gone file.
+	return read.kind === "unreadable" ? { kind: "missing" } : read;
 }
 
 /** False for a lone surrogate, which encodes as U+FFFD. */

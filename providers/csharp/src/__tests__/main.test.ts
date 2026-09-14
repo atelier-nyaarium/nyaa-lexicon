@@ -9,6 +9,7 @@ import {
 	FileFactsSchema,
 	handlersFor,
 	PROVIDER_METHODS,
+	PROVIDER_NOTIFICATIONS,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
@@ -248,6 +249,22 @@ describe("C# workspace resolution", () => {
 		expect(itemUse.binding.status).toBe("bound");
 	});
 
+	it("stops resolving into a file the index let go of, until it is parsed again", () => {
+		const item = "namespace Demo.Items { public class Item {} }\n";
+		const root = workspace({ "src/item.cs": item, "src/copy.cs": item });
+		const provider = new CsharpProvider();
+		provider.initialize(root);
+		provider.discoverProject(root);
+		const resolve = () => provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Demo.Items" });
+		expect(resolve()).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+
+		provider.forgetModule({ module: "src/copy.cs" });
+		expect(resolve()).toEqual({ status: "resolved", module: "src/item.cs" });
+
+		provider.parseFile({ module: "src/copy.cs", contentHash: "back", text: item });
+		expect(resolve()).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+	});
+
 	it("classifies standard library namespaces as external and missing namespaces as unresolved", () => {
 		const provider = new CsharpProvider();
 		provider.initialize("/workspace");
@@ -358,7 +375,9 @@ describe("C# protocol behavior", () => {
 	it("answers every protocol method and refuses unsupported edits", () => {
 		const provider = new CsharpProvider();
 		provider.initialize("/workspace");
-		expect(Object.keys(handlersFor(provider)).sort()).toEqual([...PROVIDER_METHODS].sort());
+		expect(Object.keys(handlersFor(provider)).sort()).toEqual(
+			[...PROVIDER_METHODS, ...PROVIDER_NOTIFICATIONS].sort(),
+		);
 		expect(TIERS).toMatchObject({ projectModel: true, declarations: true, syntaxDiagnostics: true });
 		expect(REFERENCE_ROLES).toEqual([
 			"call",

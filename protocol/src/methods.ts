@@ -130,6 +130,11 @@ export const TypeOfRequestSchema = z
 	.union([z.object({ symbolId: z.string().min(1) }), z.object({ module: z.string().min(1), range: RangeSchema })])
 	.meta({ id: "TypeOfRequest" });
 
+/** The core no longer holds this module: it was deleted, refused or left the scope. */
+export const ForgetModuleNotificationSchema = z
+	.object({ module: z.string().min(1) })
+	.meta({ id: "ForgetModuleNotification" });
+
 /** A provider-level failure, distinct from an Unknown answer. The request could not be served. */
 export const ProviderErrorSchema = z
 	.object({ reason: UnknownReasonSchema, detail: z.string().min(1) })
@@ -168,6 +173,18 @@ export const METHOD_SCHEMAS = {
 	moveEdits: { request: MoveEditsRequestSchema, response: MoveEditsResponseSchema },
 	shutdown: { request: z.object({}), response: z.object({}) },
 } as const satisfies Record<ProviderMethod, { request: z.ZodType; response: z.ZodType }>;
+
+/**
+ * Told, never asked: no answer, so an older provider that ignores one keeps working. A provider
+ * holding workspace state beyond one parse handles them; any other ignores them.
+ */
+export const PROVIDER_NOTIFICATIONS = ["forgetModule"] as const;
+
+export type ProviderNotification = (typeof PROVIDER_NOTIFICATIONS)[number];
+
+export const NOTIFICATION_SCHEMAS = {
+	forgetModule: ForgetModuleNotificationSchema,
+} as const satisfies Record<ProviderNotification, z.ZodType>;
 
 ////////////////////////////////
 //  Functions & Helpers

@@ -390,6 +390,28 @@ describe("workspace roots", () => {
 		expect(service.findByName("Before")).toEqual([]);
 		expect(service.findByName("After")).toHaveLength(1);
 	});
+
+	// A provider indexing its own workspace would otherwise bind to the file the index let go of.
+	it("tells providers each module it lets go of, deleted or grown past the limit", async () => {
+		initGit();
+		put("gone.fake", "export class Gone {}\n");
+		put("big.fake", "export class Big {}\n");
+		put("kept.fake", "export class Kept {}\n");
+		const forgotten: string[] = [];
+		service = new LexiconService(store, sharedFake({ claims: [claims], forgotten }), sourceReader(root), root);
+		await service.indexWorkspace();
+		expect(forgotten).toEqual([]);
+
+		rmSync(path.join(root, "gone.fake"));
+		writeFileSync(path.join(root, "big.fake"), Buffer.alloc(MAX_SOURCE_BYTES + 1, 0x61));
+		await service.applyBatch([
+			{ kind: "deleted", module: "gone.fake" },
+			{ kind: "changed", module: "big.fake", contentHash: "big-2" },
+		]);
+
+		expect(forgotten.sort()).toEqual(["big.fake", "gone.fake"]);
+		expect(service.findByName("Kept")).toHaveLength(1);
+	});
 });
 
 describe("a shared extension claim", () => {
@@ -462,6 +484,30 @@ describe("root exclusions and includes", () => {
 			reason: "denied by scope",
 		});
 		expect(requests).toEqual([]);
+	});
+
+	it("forgets a held module a direct index no longer admits", async () => {
+		initGit();
+		put("reference.fake", "export class Reference {}\n");
+		put("b.fake", "export class Source {}\n");
+		put("b.fakeh", "export class Header {}\n");
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+		await service.indexWorkspace();
+		expect(service.findByName("Reference")).toHaveLength(1);
+		expect(service.findByName("Header")).toHaveLength(1);
+
+		put("lexicon.json", JSON.stringify({ deny: ["reference.fake"] }));
+		rmSync(path.join(root, "b.fake"));
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+
+		await expect(service.indexFile("reference.fake")).resolves.toMatchObject({
+			action: "forgotten",
+			reason: "denied by scope",
+		});
+		await expect(service.indexFile("b.fakeh")).resolves.toMatchObject({ action: "forgotten", reason: "unclaimed" });
+		expect(service.findByName("Reference")).toEqual([]);
+		expect(service.findByName("Header")).toEqual([]);
+		await expect(service.indexFile("b.fakeh")).resolves.toMatchObject({ action: "skipped", reason: "unclaimed" });
 	});
 
 	it("excludes generated roots until an explicit include names them", async () => {

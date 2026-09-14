@@ -12,7 +12,7 @@
 // here rather than discovered later in a file full of emoji.
 
 import type { StoredDeclaration, SymbolKind } from "@nyaa-lexicon/core";
-import { defined, workspaceModule } from "@nyaa-lexicon/protocol";
+import { answerHealth, defined, workspaceModule } from "@nyaa-lexicon/protocol";
 import type { LexiconReads } from "./reads.js";
 
 ////////////////////////////////
@@ -217,12 +217,13 @@ export class LspServer {
 			(r) => r.answer.question === "describe",
 		);
 		if (recalled !== undefined) {
-			const doubted = recalled.answer.doubt !== undefined || recalled.doubtedUpstream.length > 0;
-			const mark = doubted
-				? " *(doubted)*"
-				: recalled.stale.length > 0 || recalled.inheritedStale.length > 0
-					? " *(stale)*"
-					: "";
+			const health = answerHealth(recalled);
+			const mark =
+				health.doubted || health.doubtedUpstream
+					? " *(doubted)*"
+					: health.stale || health.shaky
+						? " *(stale)*"
+						: "";
 			lines.push(`${recalled.answer.prose}${mark}`);
 		}
 

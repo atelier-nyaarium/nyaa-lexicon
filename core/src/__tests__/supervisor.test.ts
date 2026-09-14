@@ -43,6 +43,8 @@ const HEADER = path.join(import.meta.dirname, "fixtures", "headerProvider.ts");
 
 const UNDECLARED = path.join(import.meta.dirname, "fixtures", "undeclaredCommentsProvider.ts");
 
+const FORGETTING = path.join(import.meta.dirname, "fixtures", "forgettingProvider.ts");
+
 function start(script = REFERENCE) {
 	supervisor = new ProviderSupervisor();
 	// A real directory: the workspace root is the provider's cwd, and spawn refuses a missing one.
@@ -214,6 +216,26 @@ describe("asking through the supervisor", () => {
 	}, 30_000);
 });
 
+describe("forgetting a module", () => {
+	it("reaches a provider in order with its asks, and a provider without a handler still answers", async () => {
+		await start(FORGETTING);
+		await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000 }, tmpdir());
+		const point = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+
+		supervisor.forget("src/gone.forget");
+		supervisor.forget("src/moved.ref");
+		const told = await supervisor.askProvider("forgetting-provider", "bind", {
+			module: "src/a.forget",
+			name: "x",
+			range: point,
+		});
+		const reference = await supervisor.ask("a.ref", "parseFile", { module: "a.ref", contentHash: "h", text: "" });
+
+		expect(told).toMatchObject({ detail: "forgotten: src/gone.forget,src/moved.ref" });
+		expect(reference.module).toBe("a.ref");
+	}, 30_000);
+});
+
 describe("when a provider dies", () => {
 	it("rejects further asks rather than hanging every caller until its own timeout", async () => {
 		await start();
@@ -268,6 +290,19 @@ describe("when a provider dies", () => {
 		supervisor.stop("reference-provider");
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		expect(exits).toHaveLength(1);
+	}, 30_000);
+
+	it("lets forget reach a stopped or killed provider without throwing or leaking a rejection", async () => {
+		await start();
+		supervisor.stop("reference-provider");
+		expect(() => supervisor.forget("a.ref")).not.toThrow();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		await start();
+		const pid = supervisor.pidOf("reference-provider") as number;
+		process.kill(pid, "SIGKILL");
+		expect(() => supervisor.forget("a.ref")).not.toThrow();
+		await new Promise((resolve) => setTimeout(resolve, 700));
 	}, 30_000);
 });
 

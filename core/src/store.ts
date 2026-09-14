@@ -464,6 +464,19 @@ CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
  */
 const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments", "docs", "notes"] as const;
 
+/** Roles that name, not use. */
+const NOT_USE_ROLES: readonly string[] = ["import", "export"];
+
+/** The one "is a use" rule. Rename planning reads raw rows. */
+export function isUse(reference: Pick<StoredReference, "role">): boolean {
+	return !NOT_USE_ROLES.includes(reference.role);
+}
+
+/** `isUse` over a refs row alias. */
+function useSql(alias: string): string {
+	return `${alias}.role NOT IN (${NOT_USE_ROLES.map((role) => `'${role}'`).join(", ")})`;
+}
+
 /** Meta key for store compatibility. */
 const COMPATIBILITY_KEY = "storeCompatibility";
 
@@ -1696,12 +1709,14 @@ export class IndexStore {
 
 	/** Reverse lookup: the indexed read the whole storage choice exists for. */
 	referencesTo(symbolId: string): StoredReference[] {
-		const rows = this.db.prepare("SELECT * FROM refs WHERE targetId = ? ORDER BY module, startLine").all(symbolId);
+		const rows = this.db
+			.prepare("SELECT * FROM refs WHERE targetId = ? ORDER BY module, startLine, startChar")
+			.all(symbolId);
 		return rows.map(rowToReference);
 	}
 
 	referencesIn(module: string): StoredReference[] {
-		const rows = this.db.prepare("SELECT * FROM refs WHERE module = ? ORDER BY startLine").all(module);
+		const rows = this.db.prepare("SELECT * FROM refs WHERE module = ? ORDER BY startLine, startChar").all(module);
 		return rows.map(rowToReference);
 	}
 
@@ -2090,21 +2105,22 @@ export class IndexStore {
 		return rows.map(rowToReference);
 	}
 
-	/** Every bound edge, for a traversal that needs the whole graph rather than one neighbourhood. */
+	/** Every bound use edge, for a traversal that needs the whole graph rather than one neighbourhood. */
 	allEdges(): Array<{ from: string; to: string }> {
 		return this.db
 			.prepare(
-				"SELECT DISTINCT fromId AS 'from', targetId AS 'to' FROM refs WHERE fromId IS NOT NULL AND targetId IS NOT NULL",
+				`SELECT DISTINCT fromId AS 'from', targetId AS 'to' FROM refs r
+				 WHERE fromId IS NOT NULL AND targetId IS NOT NULL AND ${useSql("r")}`,
 			)
 			.all() as Array<{ from: string; to: string }>;
 	}
 
-	/** Most-referenced symbols first. Hub rank, which is fan-in sorted, ties by id so two runs agree. */
+	/** Most-used symbols first. Hub rank, which is fan-in sorted, ties by id so two runs agree. */
 	mostReferenced(limit: number): Array<{ symbolId: string; count: number }> {
 		return this.db
 			.prepare(
-				`SELECT targetId AS symbolId, COUNT(*) AS count FROM refs
-				 WHERE targetId IS NOT NULL GROUP BY targetId ORDER BY count DESC, targetId LIMIT ?`,
+				`SELECT targetId AS symbolId, COUNT(*) AS count FROM refs r
+				 WHERE targetId IS NOT NULL AND ${useSql("r")} GROUP BY targetId ORDER BY count DESC, targetId LIMIT ?`,
 			)
 			.all(limit) as Array<{ symbolId: string; count: number }>;
 	}
@@ -2125,14 +2141,14 @@ export class IndexStore {
 		const rows = this.db
 			.prepare(
 				`SELECT s.symbolId AS symbolId,
-				        (SELECT COUNT(*) FROM refs r WHERE r.targetId = s.symbolId) AS fanIn,
+				        (SELECT COUNT(*) FROM refs r WHERE r.targetId = s.symbolId AND ${useSql("r")}) AS fanIn,
 				        (s.exported IS NULL) AS exportedUnknown,
 				        (NOT (f.generated IS 'no' AND f.generatedReason IS NULL)) AS generatedUnknown
 				 FROM symbols s JOIN files f ON f.module = s.module
 				 WHERE (s.exported IS NULL OR s.exported = 1)
 				   AND NOT (f.generated IS 'yes' AND f.generatedReason IS NULL)
 				   AND (EXISTS (SELECT 1 FROM comments c WHERE c.anchorId = s.symbolId) OR EXISTS (SELECT 1 FROM docs d WHERE d.anchorId = s.symbolId)
-				     OR EXISTS (SELECT 1 FROM refs r WHERE r.targetId = s.symbolId AND (r.fromId IS NULL OR r.fromId <> s.symbolId))
+				     OR EXISTS (SELECT 1 FROM refs r WHERE r.targetId = s.symbolId AND ${useSql("r")} AND (r.fromId IS NULL OR r.fromId <> s.symbolId))
 				     OR ((f.content IS NULL OR f.content = 'code') AND EXISTS (SELECT 1 FROM literals l WHERE l.containerId = s.symbolId)))
 				 ORDER BY fanIn DESC, s.symbolId`,
 			)

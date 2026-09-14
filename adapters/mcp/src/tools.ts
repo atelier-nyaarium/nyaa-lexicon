@@ -726,7 +726,7 @@ Use \`resolvesDoubt\` to clear a doubt.
 export const KNOWLEDGE_GAPS_DESCRIPTION = `
 # Knowledge Gaps
 
-List missing, stale, or doubted answers. Three scopes, by what you pass:
+List missing, stale, shaky, or doubted answers. Three scopes, by what you pass:
 
 - nothing: the workspace, ranked by demand
 - \`module\`: that file's declarations

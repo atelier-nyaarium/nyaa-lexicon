@@ -122,11 +122,14 @@ export class CsharpProvider {
 	private workspaceRoot = process.cwd();
 	private parsedFacts = new Map<string, CsharpFacts>();
 	private discoveredFiles: string[] | null = null;
+	/** Modules the core forgot; unread until parsed again. */
+	private readonly forgotten = new Set<string>();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		this.parsedFacts.clear();
 		this.discoveredFiles = null;
+		this.forgotten.clear();
 		return {
 			providerId: "csharp-provider",
 			language: LANGUAGE,
@@ -166,6 +169,7 @@ export class CsharpProvider {
 		const outline = params.depth === "outline";
 		const facts = new CsharpParser(params.module, params.text, outline).parse();
 		this.parsedFacts.set(params.module, facts);
+		this.forgotten.delete(params.module);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -259,6 +263,11 @@ export class CsharpProvider {
 		return this.typeForMetadata(module, facts, metadata[0] as DeclarationMeta);
 	}
 
+	forgetModule(params: { module: string }): void {
+		this.parsedFacts.delete(params.module);
+		this.forgotten.add(params.module);
+	}
+
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "C# rename edits are not implemented" };
 	}
@@ -268,22 +277,26 @@ export class CsharpProvider {
 	}
 
 	private filesForLookup(): string[] {
-		if (this.discoveredFiles !== null) return this.discoveredFiles;
-		try {
-			this.discoveredFiles = discoverByWalk(this.workspaceRoot, {
-				extensions: EXTENSIONS,
-				configExtensions: [".csproj", ".sln"],
-				excludedDirectories: EXCLUDED_DIRECTORIES,
-			}).files;
-			return this.discoveredFiles;
-		} catch {
-			return [];
+		if (this.discoveredFiles === null) {
+			try {
+				this.discoveredFiles = discoverByWalk(this.workspaceRoot, {
+					extensions: EXTENSIONS,
+					configExtensions: [".csproj", ".sln"],
+					excludedDirectories: EXCLUDED_DIRECTORIES,
+				}).files;
+			} catch {
+				return [];
+			}
 		}
+		return this.forgotten.size === 0
+			? this.discoveredFiles
+			: this.discoveredFiles.filter((module) => !this.forgotten.has(module));
 	}
 
 	private factsForModule(module: string): CsharpFacts | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
+		if (this.forgotten.has(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {

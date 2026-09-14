@@ -23,6 +23,7 @@ import {
 	InsertOutcomeSchema,
 	InvalidateOutcomeSchema,
 	KnowledgeGapsSchema,
+	KnowledgeScopeSchema,
 	LiteralsResultSchema,
 	ModuleDeclarationsSchema,
 	ModuleStatusSchema,
@@ -53,6 +54,7 @@ import {
 	SymbolSummarySchema,
 	TransactionStatusSchema,
 	TypeHierarchySchema,
+	UsesFromResultSchema,
 } from "./daemonShapes.js";
 import { ImportResolutionSchema } from "./project.js";
 import { normalizeModulePath } from "./symbolId.js";
@@ -94,6 +96,22 @@ const References = z
 		within: z.string().min(1).optional(),
 	})
 	.meta({ id: "ReferencesRequest" });
+const UsesFrom = z
+	.object({ symbolId: z.string().min(1), limit: z.number().int().positive().optional() })
+	.meta({ id: "UsesFromRequest" });
+const KnowledgeScopeRequest = z
+	.object({
+		symbolId: z.string().min(1).optional(),
+		module: ModulePath.optional(),
+		/** With a symbol: its declared members too. A module always takes everything in it. */
+		members: z.boolean().optional(),
+		includeLocals: z.boolean().optional(),
+	})
+	.refine(
+		(args) => (args.symbolId === undefined) !== (args.module === undefined),
+		"Set exactly one of symbolId or module.",
+	)
+	.meta({ id: "KnowledgeScopeRequest" });
 const Resolve = z.object({ fromModule: ModulePath, specifier: z.string().min(1) }).meta({ id: "ResolveRequest" });
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) }).meta({ id: "RenameRequest" });
 const Move = z.object({ symbolId: z.string().min(1), toModule: ModulePath }).meta({ id: "MoveRequest" });
@@ -239,6 +257,8 @@ export const DAEMON_METHODS = {
 	callHierarchy: { request: BySymbol, response: CallHierarchySchema },
 	/** Who uses a symbol, capped, optionally within a scope. */
 	findReferences: { request: References, response: ReferencesResultSchema },
+	/** What a symbol and everything inside it references, bound or not. */
+	usesFrom: { request: UsesFrom, response: UsesFromResultSchema },
 	/** Where an import specifier lands. */
 	resolveImport: { request: Resolve, response: ImportResolutionSchema },
 	/** How complete the index is, and whether one file failed. */
@@ -291,8 +311,10 @@ export const DAEMON_METHODS = {
 	reaffirmAnswer: { request: ReaffirmAnswer, response: RecordOutcomeSchema, mutates: true },
 	/** Recorded answers and their health: one when a question is named, all otherwise. */
 	recallAnswer: { request: RecallAnswer, response: RecallAnswerResultSchema },
-	/** Missing, stale or doubted answers, ranked by demand. */
+	/** Missing, stale, shaky or doubted answers, ranked by demand. */
 	knowledgeGaps: { request: Gaps, response: KnowledgeGapsSchema },
+	/** A scope's declarations with each question's state, members first. Null for an unknown symbol. */
+	knowledgeScope: { request: KnowledgeScopeRequest, response: KnowledgeScopeSchema.nullable() },
 	/** Why an id names no declaration, as every tool answers it. */
 	diagnoseSubject: { request: BySymbol, response: SubjectDiagnosisSchema },
 	/** A symbol's resolved type. */

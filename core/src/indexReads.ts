@@ -16,26 +16,34 @@ import {
 	type GraphSummary,
 	type LiteralQuery,
 	type LiteralsResult,
+	languageOf,
 	type MostReferencedResult,
+	ProvenanceSchema,
 	type Range,
 	type ReferencesResult,
+	type ReferenceUse,
 	type SearchSymbolsResult,
 	type SymbolSummary,
 	type TypeHierarchy,
+	UnknownReasonSchema,
+	type UseFrom,
+	type UsesFromResult,
 } from "@nyaa-lexicon/protocol";
 import { findCycles } from "./graph.js";
+import { Containment, inSourceOrder } from "./locals.js";
 import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
 import { proseHit } from "./proseText.js";
 import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
-import type {
-	FileNotes,
-	IndexStore,
-	StoredComment,
-	StoredDeclaration,
-	StoredDoc,
-	StoredLiteral,
-	StoredReference,
+import {
+	type FileNotes,
+	type IndexStore,
+	isUse,
+	type StoredComment,
+	type StoredDeclaration,
+	type StoredDoc,
+	type StoredLiteral,
+	type StoredReference,
 } from "./store.js";
 
 export type {
@@ -55,8 +63,10 @@ export type {
 	LiteralQuery,
 	LiteralsResult,
 	ReferencesResult,
+	ReferenceUse,
 	SymbolSummary,
 	TypeHierarchy,
+	UsesFromResult,
 } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
@@ -136,6 +146,52 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 	};
 }
 
+/** A provenance when bound or ambiguous; a reason when not. */
+function bindingOf(reference: StoredReference): Pick<UseFrom, "status" | "reason"> {
+	if (reference.targetId !== null) return { status: "bound" };
+	if (ProvenanceSchema.safeParse(reference.provenance).success) return { status: "ambiguous" };
+	const reason = UnknownReasonSchema.safeParse(reference.provenance);
+	return { status: "unbound", ...(reason.success ? { reason: reason.data } : {}) };
+}
+
+/** Each module's declarations, read once per list. */
+class UseContext {
+	private readonly modules = new Map<string, Containment>();
+	private readonly targets = new Map<string, StoredDeclaration | null>();
+
+	constructor(private readonly store: IndexStore) {}
+
+	private containment(module: string): Containment {
+		let found = this.modules.get(module);
+		if (found === undefined) {
+			found = new Containment(this.store.declarationsIn(module));
+			this.modules.set(module, found);
+		}
+		return found;
+	}
+
+	target(symbolId: string): StoredDeclaration | null {
+		if (!this.targets.has(symbolId)) this.targets.set(symbolId, this.store.declaration(symbolId));
+		return this.targets.get(symbolId) ?? null;
+	}
+
+	/** A use's owner and containers stay in its own file. */
+	topLevel(reference: StoredReference): StoredDeclaration | null {
+		return reference.fromId === null ? null : this.containment(reference.module).topLevel(reference.fromId);
+	}
+
+	use(reference: StoredReference): ReferenceUse {
+		const top = this.topLevel(reference);
+		// Target head is file head; daemon-protocol.md holds why.
+		const language = languageOf(reference.fromId ?? reference.targetId ?? "");
+		return {
+			...reference,
+			...(top === null ? {} : { topLevel: toSummary(top) }),
+			...(language === null ? {} : { language }),
+		};
+	}
+}
+
 ////////////////////////////////
 //  Class
 
@@ -164,16 +220,18 @@ export class IndexReadModel {
 
 		// Members render as one line each and carry no prose, so deriving their documentation would
 		// be one query per member for text nothing prints.
-		const members = this.store
-			.declarationsIn(declaration.module)
-			.filter((d) => d.containerId === symbolId)
-			.map(toSummary);
+		const inModule = this.store.declarationsIn(declaration.module);
+		const containment = new Containment(inModule);
+		const members = containment.declaredChildren(symbolId).map(toSummary);
 
 		// Leading is excluded because it IS the documentation printed above. What is left is the
 		// prose a reader would only find by opening the file: a note beside the code, or one written
 		// inside the body. Capped, because a long function's body notes would otherwise crowd out
 		// everything else describe exists to say.
-		const attached = this.store.commentsAnchoredTo(symbolId).filter((comment) => comment.form !== "leading");
+		const locals = containment.localsOwnedBy(symbolId);
+		const attached = inSourceOrder([symbolId, ...locals], (id) =>
+			this.store.commentsAnchoredTo(id).filter((comment) => id !== symbolId || comment.form !== "leading"),
+		);
 		const comments = attached.slice(0, DESCRIBE_NOTE_LIMIT).map((comment) => ({
 			form: comment.form,
 			placement: comment.placement,
@@ -194,7 +252,7 @@ export class IndexReadModel {
 			members,
 			...(prose.length === 0 ? {} : { prose }),
 			...(regions.length > prose.length ? { moreProse: regions.length - prose.length } : {}),
-			referenceCount: this.store.referencesTo(symbolId).length,
+			referenceCount: this.store.referencesTo(symbolId).filter(isUse).length,
 			graph: this.graphSummary(symbolId),
 			hierarchy: this.typeHierarchy(symbolId),
 			...(comments.length === 0 ? {} : { comments }),
@@ -284,20 +342,46 @@ export class IndexReadModel {
 		};
 	}
 
-	/** Who uses a symbol. Capped, and the caller is told when it was. */
+	/** Who uses a symbol, import and export lines left out. Capped, and the caller is told when it was. */
 	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
 		const scope = within === undefined ? undefined : resolveScope(this.store, within);
 		// A use at module level sits inside no symbol, so no scope holds it.
-		const all = this.store.referencesTo(symbolId);
+		const all = this.store.referencesTo(symbolId).filter(isUse);
 		const filtered =
 			scope === undefined
 				? all
 				: all.filter((reference) => reference.fromId !== null && contains(scope, reference.fromId));
+		const context = new UseContext(this.store);
 		return {
 			symbolId,
-			references: filtered.slice(0, limit),
+			references: filtered.slice(0, limit).map((reference) => context.use(reference)),
 			total: filtered.length,
 			truncated: filtered.length > limit,
+			tier: "bound",
+		};
+	}
+
+	/** What a symbol and everything declared inside it reference, bound or not, in source order. */
+	usesFrom(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT): UsesFromResult {
+		const declaration = this.store.declaration(symbolId);
+		if (declaration === null) return { symbolId, references: [], total: 0, truncated: false, tier: "bound" };
+		const inside = new Containment(this.store.declarationsIn(declaration.module)).descendantIds(symbolId);
+		const written = this.store
+			.referencesIn(declaration.module)
+			.filter((reference) => reference.fromId !== null && inside.has(reference.fromId) && isUse(reference));
+		const context = new UseContext(this.store);
+		return {
+			symbolId,
+			references: written.slice(0, limit).map((reference): UseFrom => {
+				const target = reference.targetId === null ? null : context.target(reference.targetId);
+				return {
+					...context.use(reference),
+					...(target === null ? {} : { target: toSummary(target) }),
+					...bindingOf(reference),
+				};
+			}),
+			total: written.length,
+			truncated: written.length > limit,
 			tier: "bound",
 		};
 	}
@@ -603,21 +687,32 @@ export class IndexReadModel {
 		// class for its own fan-out returned zero however much it used, since nothing is written
 		// directly in a class body, and a reader takes zero as "depends on nothing".
 		const declaration = this.store.declaration(symbolId);
-		const members = declaration
-			? this.store.declarationsIn(declaration.module).filter((d) => d.containerId === symbolId)
-			: [];
+		const containment = declaration ? new Containment(this.store.declarationsIn(declaration.module)) : null;
+		const members = containment?.declaredChildren(symbolId) ?? [];
+		// A local's references belong to its owner.
+		const owners = [symbolId, ...members.map((m) => m.symbolId)].flatMap((id) => [
+			id,
+			...(containment?.localsOwnedBy(id) ?? []),
+		]);
 		const uses = new Set<string>();
-		for (const owner of [symbolId, ...members.map((m) => m.symbolId)]) {
+		for (const owner of owners) {
 			for (const reference of this.store.referencesFrom(owner)) {
-				if (reference.targetId !== null) uses.add(reference.targetId);
+				if (reference.targetId !== null && isUse(reference)) uses.add(reference.targetId);
 			}
 		}
+
+		const incoming = this.store.referencesTo(symbolId).filter(isUse);
+		const context = new UseContext(this.store);
+		const dependents = new Set(
+			incoming.map((reference) => context.topLevel(reference)?.symbolId ?? `module ${reference.module}`),
+		);
 
 		return {
 			symbolId,
 			fanOut: uses.size,
-			fanIn: this.store.referencesTo(symbolId).length,
+			fanIn: incoming.length,
 			...(members.length === 0 ? {} : { viaMembers: members.length }),
+			dependents: dependents.size,
 			...(cycle === undefined ? {} : { cycle: cycle.members }),
 		};
 	}

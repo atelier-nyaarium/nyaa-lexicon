@@ -5,8 +5,8 @@
 
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
-import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
-import { PROVIDER_METHODS } from "./methods.js";
+import type { METHOD_SCHEMAS, ProviderMethod, ProviderNotification } from "./methods.js";
+import { NOTIFICATION_SCHEMAS, PROVIDER_METHODS, PROVIDER_NOTIFICATIONS } from "./methods.js";
 import type { MoveEditsResponse } from "./move.js";
 import { withOccurrences } from "./occurrences.js";
 import type { FileFacts, ImportResolution } from "./project.js";
@@ -30,6 +30,11 @@ export type ProviderHandlers = {
 	) => z.infer<(typeof METHOD_SCHEMAS)[M]["response"]>;
 };
 
+/** Optional, unlike methods: a notification a provider does not handle is ignored. */
+export type ProviderNotificationHandlers = {
+	[N in ProviderNotification]?: (params: z.infer<(typeof NOTIFICATION_SCHEMAS)[N]>) => void;
+};
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -47,7 +52,21 @@ function refuseUnrepresentable(params: unknown): void {
 	}
 }
 
-export function serveProvider(connection: Connection, handlers: ProviderHandlers): void {
+export function serveProvider(connection: Connection, handlers: ProviderHandlers & ProviderNotificationHandlers): void {
+	for (const notification of PROVIDER_NOTIFICATIONS) {
+		const handler = handlers[notification];
+		// Registered either way, so an unhandled one is a decision rather than a library log line.
+		connection.onNotification(notification, (params: unknown) => {
+			if (handler === undefined) return;
+			try {
+				refuseUnrepresentable(params);
+				handler(NOTIFICATION_SCHEMAS[notification].parse(params));
+			} catch (error) {
+				// No reply carries a refusal.
+				console.error(`${notification} refused: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		});
+	}
 	for (const method of PROVIDER_METHODS) {
 		// The handler map is keyed per method, so the loop erases the pairing the caller already
 		// satisfied. Each response is still validated against its schema by whoever reads it.
@@ -61,7 +80,7 @@ export function serveProvider(connection: Connection, handlers: ProviderHandlers
 	}
 }
 
-export function runProviderOnStdio(handlers: ProviderHandlers): void {
+export function runProviderOnStdio(handlers: ProviderHandlers & ProviderNotificationHandlers): void {
 	const connection = createMessageConnection(
 		new StreamMessageReader(process.stdin),
 		new StreamMessageWriter(process.stdout),

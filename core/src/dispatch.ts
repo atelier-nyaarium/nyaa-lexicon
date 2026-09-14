@@ -428,6 +428,10 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			(params) => params.symbolId,
 			(params) => service.findReferences(params.symbolId, params.limit, params.within),
 		),
+		usesFrom: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.usesFrom(params.symbolId, params.limit),
+		),
 		resolveImport: read((params) => service.resolveImport(params.fromModule, params.specifier)),
 		indexStatus: read((params) => service.indexStatus(params.concerning)),
 		findLiterals: read(({ limit, ...query }) => service.findLiterals(query, limit)),
@@ -481,6 +485,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		knowledgeGaps: read((params) =>
 			service.knowledgeGaps(params.root, params.question, params.limit, params.module),
 		),
+		knowledgeScope: read((params) => service.knowledgeScope(params)),
 		diagnoseSubject: read((params) => service.diagnoseSubject(params.symbolId)),
 		typeOf: treeFirst(
 			(params) => params.symbolId,

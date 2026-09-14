@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import { readSwept } from "@nyaa-lexicon/protocol";
+import { TREE_FIRST } from "./dispatchTiers";
 
 /**
  * Only the three constructors mint a daemon handler, and the methods that take the gate in parts are
@@ -27,9 +28,6 @@ const STAGED = [
 	"refactorRename",
 	"refactorMove",
 ];
-
-/** A tree upgrade alone, then the answer shared. */
-const TREE_FIRST = ["describe", "typeHierarchy", "callHierarchy", "findReferences", "factsFor", "typeOf"];
 
 /** The background upgrade ungated, then the answer shared. */
 const UPGRADED = ["prepareRename", "renameEdits", "planMove"];

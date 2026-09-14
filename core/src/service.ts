@@ -346,6 +346,10 @@ export class LexiconService {
 		return this.reads.findReferences(symbolId, limit, within);
 	}
 
+	usesFrom(...args: Parameters<IndexReadModel["usesFrom"]>): ReturnType<IndexReadModel["usesFrom"]> {
+		return this.reads.usesFrom(...args);
+	}
+
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
 		return this.reads.findLiterals(query, limit);
 	}
@@ -439,6 +443,12 @@ export class LexiconService {
 
 	knowledgeGaps(...args: Parameters<KnowledgeLedger["knowledgeGaps"]>): ReturnType<KnowledgeLedger["knowledgeGaps"]> {
 		return this.knowledge.knowledgeGaps(...args);
+	}
+
+	knowledgeScope(
+		...args: Parameters<KnowledgeLedger["knowledgeScope"]>
+	): ReturnType<KnowledgeLedger["knowledgeScope"]> {
+		return this.knowledge.knowledgeScope(...args);
 	}
 
 	////////////////////////////////

@@ -30,6 +30,8 @@ interface Planted {
 	literal?: boolean;
 	/** A reference from inside the declaration itself, which is no evidence of use. */
 	selfRef?: boolean;
+	/** Import lines naming it, which are not uses. */
+	imported?: number;
 	/** Null plants a declaration whose provider gave no verdict. */
 	exported?: boolean | null;
 }
@@ -65,15 +67,16 @@ function plant(
 			}),
 		),
 	];
-	const refs: Reference[] = declarations.flatMap((d, index) =>
-		Array.from({ length: (d.fanIn ?? 0) + (d.selfRef ? 1 : 0) }, (_, n) => ({
+	const refs: Reference[] = declarations.flatMap((d, index) => {
+		const uses = (d.fanIn ?? 0) + (d.selfRef ? 1 : 0);
+		return Array.from({ length: uses + (d.imported ?? 0) }, (_, n) => ({
 			name: d.name,
-			role: "call" as const,
+			role: n < uses ? ("call" as const) : ("import" as const),
 			range: at(100 + index * 50 + n),
 			binding: { status: "bound" as const, symbolId: ids[index] as string, provenance: "bound" as const },
 			fromId: d.selfRef && n === (d.fanIn ?? 0) ? (ids[index] as string) : caller,
-		})),
-	);
+		}));
+	});
 	const comments: AttachedComment[] = declarations.flatMap((d, index) =>
 		d.comment
 			? [
@@ -275,6 +278,18 @@ describe("the seeded fallback interleaves languages", () => {
 		);
 		expect(store.generatedOf("core.ts")).toEqual({ status: "unknown", reason: "gitFailed" });
 		expect(seededIds()).toEqual(ids);
+	});
+
+	it("ranks and seeds by uses, never by import lines", () => {
+		const [imported, called] = plant("typescript", "core.ts", [
+			{ name: "Imported", imported: 5 },
+			{ name: "Called", fanIn: 1, imported: 1 },
+		]);
+
+		expect(seededIds()).toEqual([called as string]);
+		expect(store.mostReferenced(4)).toEqual([{ symbolId: called as string, count: 1 }]);
+		expect(gaps().rows.find((row) => row.symbolId === called)?.fanIn).toBe(1);
+		expect(store.seedCandidates().some((candidate) => candidate.symbolId === imported)).toBe(false);
 	});
 
 	it("orders equal fan-in by id, the same on two runs", () => {

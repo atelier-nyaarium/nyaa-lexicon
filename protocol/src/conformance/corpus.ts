@@ -1578,6 +1578,531 @@ const CASES: ConformanceCase[] = [
 		references: [{ name: "add", status: "bound", bindsTo: "add" }],
 	},
 	{
+		id: "binding-across-a-package",
+		tier: "binding",
+		about: "A name declared in another file of the same package binds to it, with only the using file parsed.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Cart.kt": "package cart\nclass Cart\n",
+					"src/cart/Run.kt": "package cart\nfun run() { Cart() }\n",
+				},
+				subject: "src/cart/Run.kt",
+			},
+		},
+		references: [{ name: "Cart", bindsTo: "Cart", bindsToModule: "src/cart/Cart.kt" }],
+	},
+	{
+		id: "binding-through-an-explicit-import",
+		tier: "binding",
+		about: "An imported name binds to its declaration when the imported package spans several files.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Cart.kt": "package cart\nclass Cart\n",
+					"src/cart/Item.kt": "package cart\nclass Item\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.Cart\nfun open() { Cart() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [{ name: "Cart", bindsTo: "Cart", bindsToModule: "src/cart/Cart.kt" }],
+	},
+	{
+		id: "binding-through-a-star-import",
+		tier: "binding",
+		about: "A name a star import provides binds to its declaration.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Cart.kt": "package cart\nclass Cart\n",
+					"src/cart/Item.kt": "package cart\nclass Item\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.*\nfun open() { Cart() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [{ name: "Cart", bindsTo: "Cart", bindsToModule: "src/cart/Cart.kt" }],
+	},
+	{
+		id: "star-imports-colliding-are-ambiguous",
+		tier: "binding",
+		about: "Two star imports providing one name leave the use ambiguous rather than picking one.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Cart.kt": "package cart\nclass Cart\n",
+					"src/store/Cart.kt": "package store\nclass Cart\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.*\nimport store.*\nfun open() { Cart() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [{ name: "Cart", status: "ambiguous" }],
+	},
+	{
+		id: "explicit-import-outranks-the-package",
+		tier: "binding",
+		about: "An explicitly imported name wins over a same-named declaration in the importing package.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Cart.kt": "package cart\nclass Cart\n",
+					"src/shop/Cart.kt": "package shop\nclass Cart\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.Cart\nfun open() { Cart() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [{ name: "Cart", bindsTo: "Cart", bindsToModule: "src/cart/Cart.kt" }],
+	},
+	{
+		id: "binding-through-an-import-alias",
+		tier: "binding",
+		about: "A use of an import alias binds to the declaration the alias names.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Cart.kt": "package cart\nclass Cart\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.Cart as Basket\nfun open() { Basket() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [{ name: "Basket", bindsTo: "Cart", bindsToModule: "src/cart/Cart.kt" }],
+	},
+	{
+		id: "binding-a-nested-member-import",
+		tier: "binding",
+		about: "An import naming a member of a declaration walks into it.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Outer.kt": "package cart\nclass Outer {\n    class Inner\n}\n",
+					"src/cart/Store.kt":
+						"package cart\nclass Store {\n    companion object {\n        fun stock() {}\n    }\n}\n",
+					"src/shop/Shop.kt":
+						"package shop\nimport cart.Outer.Inner\nimport cart.Store.Companion.stock\nfun open() { Inner(); stock() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [
+			{ name: "Inner", bindsTo: "Inner", bindsToModule: "src/cart/Outer.kt" },
+			{ name: "stock", bindsTo: "stock", bindsToModule: "src/cart/Store.kt" },
+		],
+	},
+	{
+		id: "nested-member-import-resolves-to-its-file",
+		tier: "imports",
+		about: "An import naming a member of a declaration resolves to the file declaring it.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Outer.kt": "package cart\nclass Outer {\n    class Inner\n}\n",
+					"src/cart/Item.kt": "package cart\nclass Item\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.Outer.Inner\nfun open() { Inner() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+				imports: [{ specifier: "cart.Outer.Inner", status: "resolved", module: "src/cart/Outer.kt" }],
+			},
+		},
+	},
+	{
+		id: "binding-through-a-container-star-import",
+		tier: "binding",
+		about: "A star import of a declaration's members binds a member by name.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Outer.kt": "package cart\nclass Outer {\n    class Inner\n}\n",
+					"src/shop/Shop.kt": "package shop\nimport cart.Outer.*\nfun open() { Inner() }\n",
+				},
+				subject: "src/shop/Shop.kt",
+			},
+		},
+		references: [{ name: "Inner", bindsTo: "Inner", bindsToModule: "src/cart/Outer.kt" }],
+	},
+	{
+		id: "private-declaration-stays-in-its-file",
+		tier: "binding",
+		about: "A private top-level declaration does not bind from another file of its package.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Helper.kt": "package cart\nprivate fun helper() {}\n",
+					"src/cart/Run.kt": "package cart\nfun run() { helper() }\n",
+				},
+				subject: "src/cart/Run.kt",
+			},
+		},
+		references: [{ name: "helper", reason: "NotIndexed" }],
+	},
+	{
+		id: "internal-declaration-binds-across-files",
+		tier: "binding",
+		about: "An internal top-level declaration binds from another file of its package.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Helper.kt": "package cart\ninternal fun helper() {}\n",
+					"src/cart/Run.kt": "package cart\nfun run() { helper() }\n",
+				},
+				subject: "src/cart/Run.kt",
+			},
+		},
+		references: [{ name: "helper", bindsTo: "helper", bindsToModule: "src/cart/Helper.kt" }],
+	},
+	{
+		id: "overloads-across-a-package-are-ambiguous",
+		tier: "binding",
+		about: "A call naming overloads in another file lists every overload as a candidate.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Add.kt": "package cart\nfun add(value: Int) {}\nfun add(value: String) {}\n",
+					"src/cart/Run.kt": "package cart\nfun run() { add(1) }\n",
+				},
+				subject: "src/cart/Run.kt",
+			},
+		},
+		references: [{ name: "add", status: "ambiguous" }],
+	},
+	{
+		id: "every-binder-shadows-a-package-name",
+		tier: "binding",
+		about: "Each Kotlin binder answers a use in its scope before a same-named package declaration in another file.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Names.kt": [
+						"package cart",
+						"val item = 0",
+						"val left = 0",
+						"val index = 0",
+						"val first = 0",
+						"val error = 0",
+						"val size = 0",
+						"val next = 0",
+						"val it = 0",
+						"val tag = 0",
+						"val value = 0",
+						"val field = 0",
+						"class Model",
+						"class Row",
+						"",
+					].join("\n"),
+					"src/cart/Use.kt": [
+						"package cart",
+						"fun use(items: List<Int>, pairs: Map<Int, Int>) {",
+						"    items.forEach { item -> println(item) }",
+						"    pairs.forEach { (left, right) -> println(left + right) }",
+						"    for (index in items) println(index)",
+						"    for ((first, second) in pairs) println(first + second)",
+						"    try { } catch (error: Exception) { println(error) }",
+						"    val (size, count) = Pair(1, 2)",
+						"    println(size + count)",
+						"    when (val next = items) { else -> println(next) }",
+						"    items.map { it }",
+						"}",
+						"class Box<Model>(val model: Model) {",
+						"    var stored: Int = 0",
+						"        set(value) { field = value }",
+						"}",
+						"fun <Row> pick(row: Row): Row = row",
+						"val holder = object { val tag = 1; fun show() = tag }",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Use.kt",
+			},
+		},
+		references: [
+			{ name: "item", bindsTo: "item" },
+			{ name: "left", bindsTo: "left" },
+			{ name: "index", bindsTo: "index" },
+			{ name: "first", bindsTo: "first" },
+			{ name: "error", bindsTo: "error" },
+			{ name: "size", bindsTo: "size" },
+			{ name: "next", bindsTo: "next" },
+			{ name: "it", status: "unbound" },
+			{ name: "Model", role: "typeUse", bindsTo: "Model" },
+			{ name: "value", bindsTo: "value" },
+			{ name: "field", status: "unbound" },
+			{ name: "Row", bindsTo: "Row" },
+			{ name: "tag", bindsTo: "tag" },
+		],
+	},
+	{
+		id: "receiver-members-outrank-the-package",
+		tier: "binding",
+		about: "An inherited member from another file and a companion member bind before a package declaration.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Names.kt": "package cart\nval limit = 0\nfun make() = 0\n",
+					"src/cart/Base.kt": "package cart\nopen class Base {\n    val limit = 1\n}\n",
+					"src/cart/Sub.kt": [
+						"package cart",
+						"class Sub : Base() {",
+						"    companion object {",
+						"        fun make() = 1",
+						"    }",
+						"    fun read() = limit",
+						"    fun build() = make()",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Sub.kt",
+			},
+		},
+		references: [
+			{ name: "limit", bindsTo: "limit", bindsToModule: "src/cart/Base.kt" },
+			{ name: "make", bindsTo: "make" },
+			{ name: "Base", role: "extends", from: "Sub", bindsToModule: "src/cart/Base.kt" },
+		],
+	},
+	{
+		id: "a-multi-line-expression-body-owns-its-locals",
+		tier: "declarations",
+		about: "Locals of an expression body continued on later lines belong to the function, not the package.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Show.kt": [
+						"package cart",
+						"fun show(files: List<Int>): List<Int> =",
+						"    files.map { f ->",
+						"        val doubled = f * 2",
+						"        doubled",
+						"    }",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Show.kt",
+			},
+		},
+		declarations: [{ name: "doubled", container: "show" }],
+		references: [{ name: "doubled", from: "show", bindsTo: "doubled" }],
+	},
+	{
+		id: "a-multi-line-class-header-keeps-its-body",
+		tier: "declarations",
+		about: "A supertype list starting on the next line leaves the class body's members inside the class.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Store.kt": [
+						"package cart",
+						"class Store(val x: Int) :",
+						"    Runnable {",
+						"    fun save() = 1",
+						"    override fun run() {}",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Store.kt",
+			},
+		},
+		declarations: [
+			{ name: "save", container: "Store" },
+			{ name: "run", container: "Store" },
+		],
+		references: [{ name: "Runnable", role: "extends", from: "Store" }],
+	},
+	{
+		id: "accessor-and-init-bodies-own-their-locals",
+		tier: "declarations",
+		about: "A getter's locals belong to its property and an init block's to the block, never to the class as members.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Gauge.kt": [
+						"package cart",
+						"class Gauge {",
+						"    val size: Int",
+						"        get() {",
+						"            val stored = 3",
+						"            return stored",
+						"        }",
+						"    init {",
+						"        val seed = 1",
+						"    }",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Gauge.kt",
+			},
+		},
+		declarations: [
+			{ name: "stored", container: "size", descriptors: ["type:Gauge", "term:size", "term:stored"] },
+			{ name: "seed", descriptors: ["type:Gauge", "meta:init", "term:seed"] },
+		],
+		references: [{ name: "stored", from: "size", bindsTo: "stored" }],
+	},
+	{
+		id: "nested-generics-closing-together-end-a-supertype",
+		tier: "binding",
+		about: "A supertype whose type arguments close with `>>>` still ends there, so the next entry is a supertype.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Deep.kt": [
+						"package cart",
+						"interface Iface",
+						"class Foo",
+						"open class Base<T>(value: Int)",
+						"class Deep : Base<List<Set<Foo>>>(1), Iface",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Deep.kt",
+			},
+		},
+		references: [
+			{ name: "Base", role: "extends", from: "Deep" },
+			{ name: "Foo", role: "typeUse", from: "Deep" },
+			{ name: "Iface", role: "extends", from: "Deep", bindsTo: "Iface" },
+		],
+	},
+	{
+		id: "a-where-clause-names-no-supertype",
+		tier: "binding",
+		about: "Bounds in a `where` clause are type uses of the class, not supertypes.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Bound.kt":
+						"package cart\ninterface Iface\nclass Foo\nclass Bound<T> where T : Foo, T : Iface\n",
+				},
+				subject: "src/cart/Bound.kt",
+			},
+		},
+		references: [
+			{ name: "Foo", role: "typeUse", from: "Bound" },
+			{ name: "Iface", role: "typeUse", from: "Bound" },
+		],
+	},
+	{
+		id: "a-use-site-annotation-target-leaves-the-constructor",
+		tier: "declarations",
+		about: "An annotation with a use-site target before `constructor` neither hides the primary constructor nor reads as a supertype.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Injected.kt": [
+						"package cart",
+						"annotation class Inject",
+						"open class Base",
+						"class Injected @param:Inject constructor(val amount: Int) : Base()",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Injected.kt",
+			},
+		},
+		declarations: [{ name: "amount", kind: "property", container: "Injected" }],
+		references: [
+			{ name: "Inject", role: "typeUse", from: "Injected" },
+			{ name: "Base", role: "extends", from: "Injected" },
+		],
+	},
+	{
+		id: "an-unnamed-companion-with-supertypes-is-companion",
+		tier: "declarations",
+		about: "A companion object with no name is named Companion even when a supertype list follows.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Holder.kt":
+						"package cart\ninterface Iface\nclass Holder {\n    companion object : Iface\n}\n",
+				},
+				subject: "src/cart/Holder.kt",
+			},
+		},
+		declarations: [{ name: "Companion", container: "Holder", descriptors: ["type:Holder", "type:Companion"] }],
+		references: [{ name: "Iface", role: "extends", from: "Companion" }],
+	},
+	{
+		id: "soft-keywords-are-names",
+		tier: "binding",
+		about: "Modifier and soft keywords spelled as names declare and bind like any name, with nothing to note.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Soft.kt": [
+						"package cart",
+						"val open = 1",
+						"val data = listOf(1)",
+						"val sealed = data",
+						"fun open(value: Int) = value",
+						"fun use() = open + data.size + sealed.size + open(2)",
+						"class Final(val final: Int, val inner: Int)",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Soft.kt",
+			},
+		},
+		declarations: [
+			{ name: "open", kind: "property" },
+			{ name: "open", kind: "function" },
+			{ name: "sealed", kind: "property" },
+			{ name: "final", kind: "property", container: "Final" },
+			{ name: "inner", kind: "property", container: "Final" },
+		],
+		references: [
+			{ name: "open", role: "read", bindsTo: "open", at: { line: 5, character: 12 } },
+			{ name: "open", role: "call", bindsTo: "open", at: { line: 5, character: 45 } },
+			{ name: "sealed", role: "read", bindsTo: "sealed" },
+		],
+		parseErrors: "forbidden",
+		notes: "forbidden",
+	},
+	{
+		id: "header-and-signature-uses-belong-to-their-declaration",
+		tier: "binding",
+		about: "A use in a type parameter bound, a parameter type, a default value, a return type or a supertype is written in that declaration.",
+		fixtures: {
+			[KOTLIN]: {
+				files: {
+					"src/cart/Owners.kt": [
+						"package cart",
+						"import other.Imported",
+						"class Typed<T : Bound>",
+						"fun sign(x: Param, y: Int = limit): Result? = null",
+						"class Deep : Base()",
+						"",
+					].join("\n"),
+				},
+				subject: "src/cart/Owners.kt",
+			},
+		},
+		references: [
+			{ name: "Imported", role: "import", from: null },
+			{ name: "Bound", from: "Typed" },
+			{ name: "Param", from: "sign" },
+			{ name: "limit", from: "sign" },
+			{ name: "Result", from: "sign" },
+			{ name: "Base", role: "extends", from: "Deep" },
+		],
+	},
+	{
+		id: "text-cut-off-mid-edit-is-an-error-diagnostic",
+		tier: "syntaxDiagnostics",
+		about: "A body left open at end of file is an error even though the text before it declares something.",
+		fixtures: {
+			[KOTLIN]: {
+				files: { "src/cart/Cut.kt": "package cart\nclass Cut {\n    val kept = 1\n    fun open() {\n" },
+				subject: "src/cart/Cut.kt",
+			},
+		},
+		parseErrors: "required",
+	},
+	{
 		id: "type-of-annotated-constant",
 		tier: "types",
 		about: "An explicitly annotated declaration reports that type.",

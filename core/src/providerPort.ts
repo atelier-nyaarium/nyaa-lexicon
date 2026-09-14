@@ -25,6 +25,8 @@ export interface ProviderPort {
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
 	ask<K extends ProviderMethod>(module: string, method: K, params: unknown): Promise<MethodResponse<K>>;
 	askProvider<K extends ProviderMethod>(providerId: string, method: K, params: unknown): Promise<MethodResponse<K>>;
+	/** Tells every provider a module is gone. Not awaited. */
+	forget(module: string): void;
 }
 
 /** What starts a provider, for the one caller that does. */

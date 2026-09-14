@@ -49,9 +49,18 @@ describe("scope resolution", () => {
 		expect(resolveScope(store(rows), "api").id).toBe(first.symbolId);
 	});
 
-	it("merges a namespace-qualified type reopened across modules", () => {
-		const part = (module: string): StoredDeclaration =>
-			({
+	it("merges a type held by a grouping and reopened across modules, and not a bare one", () => {
+		const namespace = (module: string) =>
+			composeSymbolId({ language: "csharp", module, descriptors: [{ kind: "namespace", name: "Api" }] });
+		const part = (module: string, held: boolean): StoredDeclaration[] => [
+			{
+				symbolId: namespace(module),
+				module,
+				name: "Api",
+				kind: "namespace",
+				visibility: "public",
+			} as StoredDeclaration,
+			{
 				symbolId: composeSymbolId({
 					language: "csharp",
 					module,
@@ -64,16 +73,16 @@ describe("scope resolution", () => {
 				name: "Writer",
 				kind: "class",
 				visibility: "public",
-			}) as StoredDeclaration;
-		const rows = [part("Writer.cs"), part("Writer.Async.cs")];
-		const first = rows[0];
-		if (first === undefined) throw new Error("type declaration missing");
-		expect(resolveScope(store(rows), "Writer").id).toBe(first.symbolId);
-	});
+				...(held ? { containerId: namespace(module) } : {}),
+			} as StoredDeclaration,
+		];
+		const held = [...part("Writer.cs", true), ...part("Writer.Async.cs", true)];
+		expect(resolveScope(store(held), "Writer").id).toBe(held[1]?.symbolId as string);
 
-	it("does not merge a bare type name across modules", () => {
-		const rows = [declaration("a.cpp", "Writer", "type"), declaration("b.cpp", "Writer", "type")];
-		expect(() => resolveScope(store(rows), "Writer")).toThrow("ambiguous");
+		const bare = [declaration("a.cpp", "Writer", "type"), declaration("b.cpp", "Writer", "type")];
+		expect(() => resolveScope(store(bare), "Writer")).toThrow("ambiguous");
+		const unheld = [...part("Writer.cs", false), ...part("Writer.Async.cs", false)];
+		expect(() => resolveScope(store(unheld), "Writer")).toThrow("ambiguous");
 	});
 
 	it("collapses a constructor onto the class it sits in", () => {

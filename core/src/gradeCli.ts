@@ -43,7 +43,32 @@ interface Check {
 ////////////////////////////////
 //  Constants
 
+const KOTLIN_ROOT = "android/app/src/main/java/com/atelier_nyaarium/switchboard";
+const CONTENT_SEALING = `${KOTLIN_ROOT}/crypto/ContentSealing.kt`;
+const BOARD_SEALING = `${KOTLIN_ROOT}/board/BoardSealing.kt`;
+const VAULT_SEALING = `${KOTLIN_ROOT}/vault/VaultSealing.kt`;
+
 const CHECKS: Check[] = [
+	{
+		name: "binds a Kotlin base class to subclasses in other packages",
+		names: [CONTENT_SEALING, BOARD_SEALING, VAULT_SEALING],
+		run: async (service) => {
+			const target = service
+				.findByName("ContentSealing")
+				.find((found) => found.module === CONTENT_SEALING && found.kind === "class");
+			if (target === undefined) return { ok: false, detail: "ContentSealing was not indexed" };
+			const subtypes = (service.describe(target.symbolId)?.hierarchy.subtypes ?? []).map((s) => s.name).sort();
+			const modules = new Set(service.findReferences(target.symbolId).references.map((r) => r.module));
+			return {
+				ok:
+					subtypes.includes("BoardSealing") &&
+					subtypes.includes("VaultSealing") &&
+					modules.has(BOARD_SEALING) &&
+					modules.has(VAULT_SEALING),
+				detail: `subtypes [${subtypes.join(", ")}], referenced from ${modules.size} files`,
+			};
+		},
+	},
 	{
 		name: "finds a function in the file its own map names",
 		names: ["src/shared/board-authority.ts"],

@@ -36,6 +36,8 @@ export interface FakeOptions {
 	fail?: { providerDown?: boolean; timeoutMs?: number; queue?: number };
 	/** Whether the indexer's registered source feeds routing before a scan observed anything. */
 	lazyEvidence?: boolean;
+	/** Each module the index told providers to forget. */
+	forgotten?: string[];
 }
 
 ////////////////////////////////
@@ -197,6 +199,9 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 				throw new Error(`provider ${providerId} is not running`);
 			}
 			return pending(answer(providerId, method, params));
+		},
+		forget: (module) => {
+			options.forgotten?.push(module);
 		},
 	};
 	return port;

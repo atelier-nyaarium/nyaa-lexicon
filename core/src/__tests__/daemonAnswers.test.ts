@@ -192,6 +192,7 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	typeHierarchy: () => ask("typeHierarchy", { symbolId: cart }),
 	callHierarchy: () => ask("callHierarchy", { symbolId: cart }),
 	findReferences: () => ask("findReferences", { symbolId: cart, limit: 5, within: cart }),
+	usesFrom: () => ask("usesFrom", { symbolId: cart, limit: 5 }),
 	resolveImport: async () => {
 		expect((await ask("resolveImport", { fromModule: "cart.ref", specifier: "./item" })).status).toBe("unresolved");
 	},
@@ -282,6 +283,14 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect(workspace.filtered).toBe(workspace.seeded === true);
 		const scoped = await ask("knowledgeGaps", { module: "cart.ref", question: "why", limit: 5 });
 		expect(scoped).toMatchObject({ filtered: true, scope: { module: "cart.ref" } });
+	},
+	knowledgeScope: async () => {
+		const file = await ask("knowledgeScope", { module: "cart.ref" });
+		expect(file?.symbols.map((entry) => entry.symbol.name)).toEqual(["Cart", "add"]);
+		expect(file?.symbols.every((entry) => entry.questions.length === 6)).toBe(true);
+		const one = await ask("knowledgeScope", { symbolId: cart, members: true });
+		expect(one?.symbols.map((entry) => entry.symbol.name)).toEqual(["Cart"]);
+		expect(await ask("knowledgeScope", { symbolId: `${cart}Gone#` })).toBeNull();
 	},
 	typeOf: async () => {
 		expect((await ask("typeOf", { symbolId: cart })).status).toBe("unknown");
@@ -473,6 +482,15 @@ describe("every daemon answer parses back to itself", () => {
 		);
 		expect(failure).toBeInstanceOf(Error);
 		expect((failure as Error).message).toBe(`unknown method: noSuchMethod (this daemon runs ${BUILD_VERSION})`);
+	});
+});
+
+describe("the knowledgeScope request schema", () => {
+	it("refuses both symbolId and module together, and refuses neither", () => {
+		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({ symbolId: "a", module: "a.ts" }).success).toBe(false);
+		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({}).success).toBe(false);
+		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({ symbolId: "a" }).success).toBe(true);
+		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({ module: "a.ts" }).success).toBe(true);
 	});
 });
 

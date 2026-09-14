@@ -5,17 +5,23 @@
 
 import {
 	answerFactId,
+	answerHealth,
 	type CitedFact,
 	defined,
 	doubtFactId,
 	type FactKind,
 	type FactSet,
 	type GapRow,
+	GROUPING_KINDS,
 	type InvalidateOutcome,
+	isSound,
 	type KnowledgeGaps,
+	type KnowledgeScope,
 	languageOf,
 	moduleOf,
+	QUESTION_CLASSES,
 	type ResolveFactsResult,
+	type ScopeSymbol,
 } from "@nyaa-lexicon/protocol";
 import {
 	type Answer,
@@ -29,11 +35,20 @@ import {
 import { candidatesFor } from "./candidates.js";
 import { type Clock, systemClock } from "./clock.js";
 import type { ImportResolver } from "./imports.js";
+import { toSummary } from "./indexReads.js";
+import { Containment, inSourceOrder } from "./locals.js";
 import * as refusal from "./refusals.js";
-import type { IndexStore, SeedCandidate, StoredFact } from "./store.js";
+import { type IndexStore, isUse, type SeedCandidate, type StoredDeclaration, type StoredFact } from "./store.js";
 import type { Subject } from "./subjects.js";
 
-export type { CitedFact, FactSet, GapRow, InvalidateOutcome, KnowledgeGaps } from "@nyaa-lexicon/protocol";
+export type {
+	CitedFact,
+	FactSet,
+	GapRow,
+	InvalidateOutcome,
+	KnowledgeGaps,
+	KnowledgeScope,
+} from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Types
@@ -84,6 +99,9 @@ export const RESERVED_HUBS = 5;
 
 /** Per kind, not overall, so a symbol with a thousand references does not crowd out its literals. */
 export const DEFAULT_FACT_LIMIT = 40;
+
+/** A citation's subject never depends on page size. */
+const EVERY_FACT = Number.MAX_SAFE_INTEGER - 1;
 
 /**
  * Below this many gaps, the invitation is to close them NOW, in a subagent where one is available,
@@ -159,13 +177,19 @@ export class KnowledgeLedger {
 		}
 		if (references.length > limit) truncated.push("reference");
 
-		const literals = this.store.literalsContainedBy(symbolId, limit + 1);
+		// A local's evidence belongs to its owner.
+		const own = [
+			symbolId,
+			...new Containment(this.store.declarationsIn(declaration.module)).localsOwnedBy(symbolId),
+		];
+
+		const literals = inSourceOrder(own, (id) => this.store.literalsContainedBy(id, limit + 1));
 		for (const literal of literals.slice(0, limit)) {
 			add(literal.factId, "literal", literal.module, `${literal.kind} ${JSON.stringify(literal.value)}`);
 		}
 		if (literals.length > limit) truncated.push("literal");
 
-		const comments = this.store.commentsAnchoredTo(symbolId);
+		const comments = inSourceOrder(own, (id) => this.store.commentsAnchoredTo(id));
 		for (const comment of comments.slice(0, limit)) {
 			const text = comment.normalized.length > 80 ? `${comment.normalized.slice(0, 80)}...` : comment.normalized;
 			add(comment.factId, "comment", comment.module, `${comment.form} ${text}`);
@@ -237,7 +261,7 @@ export class KnowledgeLedger {
 			}
 		}
 
-		const subject = await this.factsFor(symbolId);
+		const subject = await this.factsFor(symbolId, EVERY_FACT);
 		const subjectFacts = new Set((subject?.facts ?? []).map((fact) => fact.factId));
 		const check = checkCitations(symbolId, citations, (factId) => this.store.factById(factId), subjectFacts);
 		if (!check.ok) {
@@ -425,16 +449,7 @@ export class KnowledgeLedger {
 	 * The ledger measures what is missing, not what is popular.
 	 */
 	demandOf(symbolId: string, question: QuestionClass, recalled: RecalledAnswer | null): Demand | null {
-		if (
-			recalled === null ||
-			recalled.stale.length > 0 ||
-			recalled.inheritedStale.length > 0 ||
-			recalled.doubtedUpstream.length > 0 ||
-			recalled.answer.doubt !== undefined
-		) {
-			return { symbolId, question };
-		}
-		return null;
+		return recalled === null || !isSound(answerHealth(recalled)) ? { symbolId, question } : null;
 	}
 
 	/** Counts one ask under the subject the address claims, which is nothing for a typo. */
@@ -553,8 +568,8 @@ export class KnowledgeLedger {
 	): KnowledgeGaps {
 		if (root === undefined && module !== undefined) return this.moduleGaps(module, question, limit);
 		if (root === undefined) {
-			// A gap row with a recorded answer means the answer went stale or doubted after being
-			// asked for again. Those lead the list: the prose exists and most are re-affirmations.
+			// A gap row with a recorded answer means the answer went unhealthy after being asked for
+			// again. Those lead the list: the prose exists and most are re-affirmations.
 			const all = this.store.liveGaps(limit * 4);
 			const recheck: GapRow[] = [];
 			const missing: GapRow[] = [];
@@ -564,17 +579,19 @@ export class KnowledgeLedger {
 				const answer = this.store.answer(gap.symbolId, gap.question);
 				if (answer === null) {
 					missing.push(this.gapRow(gap.symbolId, gap.question, gap.askCount, "missing", gap.recordedAs));
-				} else {
-					recheck.push(
-						this.gapRow(
-							gap.symbolId,
-							gap.question,
-							gap.askCount,
-							answer.doubt === undefined ? "stale" : "doubted",
-							gap.recordedAs,
-						),
-					);
+					continue;
 				}
+				// Healed since asked.
+				const why = this.healthWhy(answer);
+				if (why === null) continue;
+				const row = this.gapRow(
+					gap.symbolId,
+					gap.question,
+					gap.askCount,
+					why === "shaky" ? "stale" : why,
+					gap.recordedAs,
+				);
+				recheck.push(why === "shaky" ? { ...row, shaky: true } : row);
 			}
 
 			// The ledger only measures demand, so an answer that went unhealthy since anyone last
@@ -587,12 +604,7 @@ export class KnowledgeLedger {
 			if (this.store.liveAnswerCount() <= STALE_SCAN_CAP) {
 				for (const answer of this.store.liveAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
-					const why =
-						answer.doubt !== undefined
-							? "doubted"
-							: answer.citations.some((factId) => this.store.factById(factId) === null)
-								? "stale"
-								: null;
+					const why = this.recheckWhy(answer);
 					if (why === null) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, why, answer.recordedAs));
 				}
@@ -655,7 +667,7 @@ export class KnowledgeLedger {
 				truncated = true;
 				return;
 			}
-			for (const reference of this.store.referencesFrom(symbolId)) {
+			for (const reference of this.store.referencesFrom(symbolId).filter(isUse)) {
 				const target = reference.targetId as string;
 				if (this.store.declaration(target) === null) {
 					external++;
@@ -681,6 +693,71 @@ export class KnowledgeLedger {
 			}
 		}
 		return { question, rows, total, external, truncated, filtered: true };
+	}
+
+	/**
+	 * Members before the declaration holding them, so a container can cite its members' answers.
+	 * Containment, since `knowledgeGaps`' dependency walk answers a class alone.
+	 */
+	knowledgeScope(scope: {
+		symbolId?: string | undefined;
+		module?: string | undefined;
+		members?: boolean | undefined;
+		includeLocals?: boolean | undefined;
+	}): KnowledgeScope | null {
+		const root = scope.symbolId === undefined ? null : this.store.declaration(scope.symbolId);
+		if (scope.symbolId !== undefined && root === null) return null;
+		const module = root?.module ?? scope.module;
+		if (module === undefined) return { symbols: [], localsExcluded: 0 };
+
+		const containment = new Containment(this.store.declarationsIn(module));
+		const symbols: ScopeSymbol[] = [];
+		let localsExcluded = 0;
+		const visited = new Set<string>();
+		const visitMembers = (holder: string | undefined, depth: number) => {
+			for (const member of containment.membersOf(holder)) {
+				if (scope.includeLocals !== true && containment.isLocal(member)) {
+					localsExcluded += containment.descendantIds(member.symbolId).size;
+					continue;
+				}
+				visit(member, depth, true);
+			}
+		};
+		const visit = (declaration: StoredDeclaration, depth: number, withMembers: boolean) => {
+			if (visited.has(declaration.symbolId)) return;
+			visited.add(declaration.symbolId);
+			if (withMembers) visitMembers(declaration.symbolId, depth + 1);
+			symbols.push(this.scopeSymbol(declaration, depth));
+		};
+		if (root === null) visitMembers(undefined, 0);
+		else if (!GROUPING_KINDS.has(root.kind)) visit(root, 0, scope.members === true);
+		else if (scope.members === true) visitMembers(root.symbolId, 0);
+		return { symbols, localsExcluded };
+	}
+
+	private scopeSymbol(declaration: StoredDeclaration, depth: number): ScopeSymbol {
+		const recalled = new Map(
+			this.recallAnswers(declaration.symbolId).map((found) => [found.answer.question, found]),
+		);
+		return {
+			symbol: toSummary(declaration),
+			depth,
+			questions: QUESTION_CLASSES.map((question) => {
+				const askCount = this.store.askCount(declaration.symbolId, question);
+				const found = recalled.get(question);
+				if (found === undefined) return { question, askCount };
+				const health = answerHealth(found);
+				return {
+					question,
+					askCount,
+					createdAt: found.answer.createdAt,
+					...(found.answer.thin ? { thin: true } : {}),
+					...(health.stale ? { stale: true } : {}),
+					...(health.shaky || health.doubtedUpstream ? { shaky: true } : {}),
+					...(health.doubted ? { doubted: true } : {}),
+				};
+			}),
+		};
 	}
 
 	/**
@@ -739,10 +816,22 @@ export class KnowledgeLedger {
 	/** Missing, doubted, stale on its own citations, or null for healthy. */
 	private gapWhy(symbolId: string, question: QuestionClass): GapRow["why"] | null {
 		const answer = this.store.answer(symbolId, question);
-		if (answer === null) return "missing";
-		if (answer.doubt !== undefined) return "doubted";
-		if (answer.citations.some((factId) => this.store.factById(factId) === null)) return "stale";
-		return null;
+		return answer === null ? "missing" : this.recheckWhy(answer);
+	}
+
+	/** Its own doubt or citations; inherited trouble is the cited answer's own row. */
+	private recheckWhy(answer: Answer): "doubted" | "stale" | null {
+		const why = this.healthWhy(answer);
+		return why === "shaky" ? null : why;
+	}
+
+	/** Own doubt, own staleness, then inherited trouble; null when sound. */
+	private healthWhy(answer: Answer): "doubted" | "stale" | "shaky" | null {
+		// Health reads no subject.
+		const health = answerHealth(this.staleness(answer, null));
+		if (health.doubted) return "doubted";
+		if (health.stale) return "stale";
+		return health.shaky || health.doubtedUpstream ? "shaky" : null;
 	}
 
 	/** Reserved hubs, then one candidate per language in turn: cross-language calls never bind, so a global rank buries a language called over a wire. */
@@ -811,7 +900,7 @@ export class KnowledgeLedger {
 			why,
 			askCount,
 			...(recordedAs === undefined || recordedAs === symbolId ? {} : { recordedAs }),
-			fanIn: this.store.referencesTo(symbolId).length,
+			fanIn: this.store.referencesTo(symbolId).filter(isUse).length,
 			...(declaration === null
 				? {}
 				: { name: declaration.name, kind: declaration.kind, module: declaration.module }),

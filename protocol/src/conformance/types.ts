@@ -51,6 +51,10 @@ export const ExpectedReferenceSchema = z
 		status: z.enum(["bound", "ambiguous", "unbound"]).optional(),
 		/** Declaration name the binding must land on. Implies status bound. */
 		bindsTo: z.string().optional(),
+		/** Module the binding must land in, for a use bound across files. Implies status bound. */
+		bindsToModule: z.string().optional(),
+		/** Name of the declaration the use is written in; `null` for none. */
+		from: z.string().nullable().optional(),
 		/**
 		 * Which reason an unbound answer must carry. Implies status unbound.
 		 *
@@ -58,6 +62,15 @@ export const ExpectedReferenceSchema = z
 		 * unbound for any reason at all, including one that misdescribes what happened.
 		 */
 		reason: UnknownReasonSchema.optional(),
+		/**
+		 * The occurrence meant, by its range start, zero-based; `character` omitted matches the line.
+		 *
+		 * Without it a name written twice passes when either row satisfies the expectation. A position
+		 * is one fixture's syntax, so only a case with a single fixture may state it.
+		 */
+		at: z
+			.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative().optional() })
+			.optional(),
 	})
 	.meta({ id: "ExpectedReference" });
 

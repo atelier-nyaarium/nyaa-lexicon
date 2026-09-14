@@ -56,6 +56,9 @@ export const SymbolKindSchema = z
 
 export type SymbolKind = z.infer<typeof SymbolKindSchema>;
 
+/** Kinds that group declarations rather than hold them. */
+export const GROUPING_KINDS: ReadonlySet<string> = new Set<SymbolKind>(["file", "module", "namespace", "package"]);
+
 /**
  * Reach, not a keyword. `local` means function-scoped; `fileLocal` means module-private.
  *

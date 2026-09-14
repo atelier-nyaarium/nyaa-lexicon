@@ -3,9 +3,9 @@
 import { closeSync, type Dirent, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
-import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
+import type { METHOD_SCHEMAS, NOTIFICATION_SCHEMAS, ProviderMethod } from "./methods.js";
 import type { ProjectModel } from "./project.js";
-import type { ProviderHandlers } from "./serve.js";
+import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
 import { firstLineOf, shebangInterpreter } from "./shebang.js";
 import type { Descriptor } from "./symbolId.js";
 import { normalizeModulePath } from "./symbolId.js";
@@ -27,6 +27,7 @@ export interface ProviderMethods {
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
 	moveEdits(params: Request<"moveEdits">): Response<"moveEdits">;
 	shutdown?(): void;
+	forgetModule?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["forgetModule"]>): void;
 }
 
 export interface WalkOptions {
@@ -68,8 +69,9 @@ const SHEBANG_PROBE_BYTES = 256;
 ////////////////////////////////
 //  Functions & Helpers
 
-export function handlersFor(provider: ProviderMethods): ProviderHandlers {
+export function handlersFor(provider: ProviderMethods): ProviderHandlers & ProviderNotificationHandlers {
 	return {
+		...(provider.forgetModule === undefined ? {} : { forgetModule: (params) => provider.forgetModule?.(params) }),
 		initialize: (params) => provider.initialize(params.workspaceRoot),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
 		parseFile: (params) => provider.parseFile(params),

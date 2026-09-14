@@ -22,6 +22,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { codeOnly } from "../protocol/src/residue.js";
 import { PROTOCOL_VERSION } from "../protocol/src/version.js";
@@ -169,17 +170,30 @@ function smokeProviders(root: string, providers: Array<{ out: string }>): void {
 	}
 }
 
-/** Non-TypeScript files a provider reads at runtime, resolved next to its own bundle. */
+/**
+ * Non-TypeScript files a provider reads at runtime, resolved next to its own bundle: the top-level
+ * files of its `src`, and each dependency subpath its manifest names under `lexiconAssets`.
+ */
 function copyProviderAssets(root: string, from: string, into: string): string[] {
 	const source = path.join(root, from);
 	if (!existsSync(source)) return [];
 
+	const files: string[] = readdirSync(source, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && !entry.name.endsWith(".ts"))
+		.map((entry) => path.join(source, entry.name));
+	const manifest = path.join(source, "..", "package.json");
+	if (existsSync(manifest)) {
+		const declared =
+			(JSON.parse(readFileSync(manifest, "utf8")) as { lexiconAssets?: string[] }).lexiconAssets ?? [];
+		const resolve = createRequire(manifest).resolve;
+		for (const subpath of declared) files.push(resolve(subpath));
+	}
+
 	const copied: string[] = [];
 	mkdirSync(path.join(root, into), { recursive: true });
-	for (const entry of readdirSync(source, { withFileTypes: true })) {
-		if (!entry.isFile() || entry.name.endsWith(".ts")) continue;
-		copyFileSync(path.join(source, entry.name), path.join(root, into, entry.name));
-		copied.push(path.join(into, entry.name));
+	for (const file of files) {
+		copyFileSync(file, path.join(root, into, path.basename(file)));
+		copied.push(path.join(into, path.basename(file)));
 	}
 	return copied;
 }

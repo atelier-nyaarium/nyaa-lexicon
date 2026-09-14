@@ -4,6 +4,7 @@ import type { CommentQuery, LiteralQuery } from "../indexReads";
 import type { LexiconService } from "../service";
 import type { TransactionManager } from "../transactions";
 import { WorkspaceGate } from "../workspaceGate";
+import { TREE_FIRST } from "./dispatchTiers";
 
 ////////////////////////////////
 //  Helpers
@@ -93,10 +94,6 @@ describe("gating daemon mutations", () => {
 });
 
 describe("the tree-first tier", () => {
-	// One list. A method added to the shortcut without extending this test, or removed from it
-	// without shrinking this test, fails here rather than drifting silently.
-	const TIER_ONE = ["describe", "typeHierarchy", "callHierarchy", "findReferences", "typeOf", "factsFor"] as const;
-
 	function treeTracingService(log: string[]) {
 		const traced =
 			<T>(name: string, value: T) =>
@@ -118,13 +115,15 @@ describe("the tree-first tier", () => {
 			}),
 			callHierarchy: traced("callHierarchy", { symbolId: SYMBOL, incoming: [], outgoing: [] }),
 			findReferences: traced("findReferences", NO_REFERENCES),
+			usesFrom: traced("usesFrom", NO_REFERENCES),
 			typeOf: traced("typeOf", { status: "unknown", reason: "NotImplemented" }),
 			factsFor: traced("factsFor", null),
 			symbolSource: traced("symbolSource", { found: false, reason: "stub" }),
 		} as unknown as LexiconService;
 	}
 
-	it.each([...TIER_ONE])("full-parses the symbol's tree before answering %s", async (method) => {
+	// The residue pins this list against `dispatch.ts`.
+	it.each([...TREE_FIRST])("full-parses the symbol's tree before answering %s", async (method) => {
 		if (typeof method !== "string") throw new Error("method name missing");
 		const log: string[] = [];
 		const dispatch = createDispatch(treeTracingService(log));

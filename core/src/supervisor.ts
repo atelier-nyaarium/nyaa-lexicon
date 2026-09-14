@@ -10,8 +10,10 @@ import {
 	defined,
 	isCompatibleProtocol,
 	METHOD_SCHEMAS,
+	type NOTIFICATION_SCHEMAS,
 	PROTOCOL_VERSION,
 	type ProviderMethod,
+	type ProviderNotification,
 	type ProviderTiers,
 } from "@nyaa-lexicon/protocol";
 import {
@@ -459,6 +461,20 @@ export class ProviderSupervisor implements ProviderPort {
 			}
 			return parsed;
 		});
+	}
+
+	/**
+	 * Every provider, not only the route's owner: a module that stopped being owned may still be
+	 * held by the provider that owned it. Queued, so it lands after a parse already asked.
+	 */
+	forget(module: string): void {
+		const params: z.infer<(typeof NOTIFICATION_SCHEMAS)["forgetModule"]> = { module };
+		for (const provider of this.providers.values()) {
+			provider.queue
+				.run(() => provider.connection.sendNotification("forgetModule" satisfies ProviderNotification, params))
+				// Dead providers forget everything.
+				.catch(() => {});
+		}
 	}
 
 	////////////////////////////////
