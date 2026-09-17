@@ -15,6 +15,6 @@
 		"mdast-util-frontmatter": "2.0.1",
 		"mdast-util-to-string": "4.0.0",
 		"micromark-extension-frontmatter": "2.0.0",
-		"vscode-jsonrpc": "9.0.1"
+		"vscode-jsonrpc": "9.0.2"
 	}
 }

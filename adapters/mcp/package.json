@@ -12,7 +12,7 @@
 		"@nyaa-lexicon/client": "workspace:*",
 		"@nyaa-lexicon/core": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
-		"zod": "4.4.3"
+		"zod": "4.6.1"
 	},
 	"devDependencies": {
 		"mdast-util-from-markdown": "2.0.3",

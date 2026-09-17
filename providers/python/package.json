@@ -6,6 +6,6 @@
 	"description": "Python provider using ast through a standard-library helper",
 	"dependencies": {
 		"@nyaa-lexicon/protocol": "workspace:*",
-		"vscode-jsonrpc": "9.0.1"
+		"vscode-jsonrpc": "9.0.2"
 	}
 }

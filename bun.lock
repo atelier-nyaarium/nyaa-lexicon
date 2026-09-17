@@ -5,14 +5,14 @@
     "": {
       "name": "nyaa-lexicon",
       "devDependencies": {
-        "@biomejs/biome": "2.5.1",
-        "bun-types": "1.4.0",
+        "@biomejs/biome": "2.5.12",
+        "bun-types": "1.4.2",
         "typescript": "6.0.3",
       },
     },
     "adapters/lsp": {
       "name": "@nyaa-lexicon/adapter-lsp",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/core": "workspace:*",
@@ -21,13 +21,13 @@
     },
     "adapters/mcp": {
       "name": "@nyaa-lexicon/adapter-mcp",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/core": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
-        "zod": "4.4.3",
+        "zod": "4.6.1",
       },
       "devDependencies": {
         "mdast-util-from-markdown": "2.0.3",
@@ -36,28 +36,28 @@
     },
     "client": {
       "name": "@nyaa-lexicon/client",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
       },
     },
     "core": {
       "name": "@nyaa-lexicon/core",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "re2js": "2.8.6",
-        "vscode-jsonrpc": "9.0.1",
-        "zod": "4.4.3",
+        "vscode-jsonrpc": "9.0.2",
+        "zod": "4.6.1",
       },
     },
     "formats": {
       "name": "@nyaa-lexicon/formats",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "@rgrove/parse-xml": "4.2.3",
+        "@rgrove/parse-xml": "5.0.0",
         "jsonc-parser": "3.3.1",
         "parse5": "8.0.1",
         "yaml": "2.9.0",
@@ -65,10 +65,10 @@
     },
     "protocol": {
       "name": "@nyaa-lexicon/protocol",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
-        "vscode-jsonrpc": "9.0.1",
-        "zod": "4.4.3",
+        "vscode-jsonrpc": "9.0.2",
+        "zod": "4.6.1",
       },
       "devDependencies": {
         "typescript": "6.0.3",
@@ -76,75 +76,75 @@
     },
     "providers/bash": {
       "name": "@nyaa-lexicon/provider-bash",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "unbash": "4.0.10",
-        "vscode-jsonrpc": "9.0.1",
+        "unbash": "4.0.11",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/c": {
       "name": "@nyaa-lexicon/provider-c",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/cpp": {
       "name": "@nyaa-lexicon/provider-cpp",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/csharp": {
       "name": "@nyaa-lexicon/provider-csharp",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/gdscript": {
       "name": "@nyaa-lexicon/provider-gdscript",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/html": {
       "name": "@nyaa-lexicon/provider-html",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/json": {
       "name": "@nyaa-lexicon/provider-json",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/kotlin": {
       "name": "@nyaa-lexicon/provider-kotlin",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
         "web-tree-sitter": "0.27.0",
       },
     },
     "providers/markdown": {
       "name": "@nyaa-lexicon/provider-markdown",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -153,84 +153,85 @@
         "mdast-util-frontmatter": "2.0.1",
         "mdast-util-to-string": "4.0.0",
         "micromark-extension-frontmatter": "2.0.0",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/python": {
       "name": "@nyaa-lexicon/provider-python",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/rust": {
       "name": "@nyaa-lexicon/provider-rust",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/text": {
       "name": "@nyaa-lexicon/provider-text",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/typescript": {
       "name": "@nyaa-lexicon/provider-typescript",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "typescript": "6.0.3",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/xml": {
       "name": "@nyaa-lexicon/provider-xml",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/yaml": {
       "name": "@nyaa-lexicon/provider-yaml",
-      "version": "3.9.1",
+      "version": "5.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
-        "vscode-jsonrpc": "9.0.1",
+        "vscode-jsonrpc": "9.0.2",
       },
     },
   },
   "overrides": {
-    "fast-uri": "3.1.6",
+    "fast-uri": "3.1.7",
+    "hono": "4.13.7",
     "qs": "6.16.0",
   },
   "packages": {
-    "@biomejs/biome": ["@biomejs/biome@2.5.1", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.1", "@biomejs/cli-darwin-x64": "2.5.1", "@biomejs/cli-linux-arm64": "2.5.1", "@biomejs/cli-linux-arm64-musl": "2.5.1", "@biomejs/cli-linux-x64": "2.5.1", "@biomejs/cli-linux-x64-musl": "2.5.1", "@biomejs/cli-win32-arm64": "2.5.1", "@biomejs/cli-win32-x64": "2.5.1" }, "bin": { "biome": "bin/biome" } }, "sha512-IXWLCxKmae+rI7LOHS1B3EbVisQ6GRAWbhN9msa6KjNCyFWrvKZWR4oUdinaNssrV852OrSHuSPa95h1GPJc7Q=="],
+    "@biomejs/biome": ["@biomejs/biome@2.5.12", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.12", "@biomejs/cli-darwin-x64": "2.5.12", "@biomejs/cli-linux-arm64": "2.5.12", "@biomejs/cli-linux-arm64-musl": "2.5.12", "@biomejs/cli-linux-x64": "2.5.12", "@biomejs/cli-linux-x64-musl": "2.5.12", "@biomejs/cli-win32-arm64": "2.5.12", "@biomejs/cli-win32-x64": "2.5.12" }, "bin": { "biome": "bin/biome" } }, "sha512-Lw4VHZRebrReBBnlHa12JQjnIBm3JJAA55PDB9LbBVBF0q4RYphm6KfmIjqtPhf61MxZ5Q9KoK8R8x+7per5Aw=="],
 
-    "@biomejs/cli-darwin-arm64": ["@biomejs/cli-darwin-arm64@2.5.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-npqDzvqv7vFaWRiNN1Te71siRgPaqS9MpqgYCdP/CrUbkJ7ApezaeaKjueKHRN/JH/6lRjJQAHi8acQDCAz22w=="],
+    "@biomejs/cli-darwin-arm64": ["@biomejs/cli-darwin-arm64@2.5.12", "", { "os": "darwin", "cpu": "arm64" }, "sha512-lCRY1rwgNeWNgTr4DI/u6ZwXTRwRLHAvbaio1YLLGS+4r1nhvB2ssyPqIpfUSmRveNfv0fn/N58C7CAdK2XVrg=="],
 
-    "@biomejs/cli-darwin-x64": ["@biomejs/cli-darwin-x64@2.5.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-RgwTqPAM8g2tn1j+b5oRjF/DbSBX8a4gwojtuG9XuhfK7GgomvZ9+T+tqjXiVbjLEeGJOoL6VEk8mvRTVeSybw=="],
+    "@biomejs/cli-darwin-x64": ["@biomejs/cli-darwin-x64@2.5.12", "", { "os": "darwin", "cpu": "x64" }, "sha512-vhPgwnh+6tN3ArdAXuET99xaNbFt7CG82Bqn+omHVLC5xdVx45JsYjGPmUIGNzjDek5XdNCP1HKksK7fn8+3bQ=="],
 
-    "@biomejs/cli-linux-arm64": ["@biomejs/cli-linux-arm64@2.5.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-yhV35CzZh38VyMvTEXi3JTjxZBs++oCKK9KG8vB6VI5+uvQvZNR3BFWEKKzuOmx9DJJj7sQpZ4LQJcmbGTs3+Q=="],
+    "@biomejs/cli-linux-arm64": ["@biomejs/cli-linux-arm64@2.5.12", "", { "os": "linux", "cpu": "arm64" }, "sha512-2gp8aVwXYKdAtmBfRFCUuyDMcfN1ahHqUkGfLYrZlNRFmryMATLVvJgWKvyA8wu4Rwn5OSxM1UcUmOuOFNGeBQ=="],
 
-    "@biomejs/cli-linux-arm64-musl": ["@biomejs/cli-linux-arm64-musl@2.5.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-WMcvMLgByyTqVxGlq918NBBYliq9FRR9GAQVETHb+VjGVqXCZFfHlZHC1FX4ibuYY/Hg6TJE3rHU0xVrdJXNRw=="],
+    "@biomejs/cli-linux-arm64-musl": ["@biomejs/cli-linux-arm64-musl@2.5.12", "", { "os": "linux", "cpu": "arm64" }, "sha512-couHYjFLL5uuI8ne6zhT7KwEsXo5YP7ry/2xmEqah7qanu0YmfDi3mwJg47YXSuv/NpZj22CZzcRH/5c4gjPSQ=="],
 
-    "@biomejs/cli-linux-x64": ["@biomejs/cli-linux-x64@2.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-J/7uHSX7NfoYDI7HijAkd8lnQIOrRb2W7j3X+tw4R+N5ExvXGsyXFiGdQcfcxfOmNQmZVSQOCDk757fwpzqQcg=="],
+    "@biomejs/cli-linux-x64": ["@biomejs/cli-linux-x64@2.5.12", "", { "os": "linux", "cpu": "x64" }, "sha512-SnvOs3TSTiuia4SQOUNe1aWC9RT4+YkjcKnOhL/nsKOV0k5ycgBkDzF0lUxKn1V7Q8CLTRq6iV23ZAivHomRoA=="],
 
-    "@biomejs/cli-linux-x64-musl": ["@biomejs/cli-linux-x64-musl@2.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-ANTowtlLmPYm5yeMckWY8Xzb9Ix+JJP3tgHR/n6xRj1VWyIzzWtfRfih9hv9VmClwadpBvZduISZIbBsIlYG3A=="],
+    "@biomejs/cli-linux-x64-musl": ["@biomejs/cli-linux-x64-musl@2.5.12", "", { "os": "linux", "cpu": "x64" }, "sha512-8A0oDW58/w9f/PQNYuq0sGUZtGtGrkNF4Z6n0PUoXpLCshi85vtKTv1XSznQawhdE4MXJ8ufpzHXyLFe87M/+w=="],
 
-    "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.5.1", "", { "os": "win32", "cpu": "arm64" }, "sha512-zgXnKNgWPC4iPF7Y1lR3STUeCUuZRpD6IiOrC7TZTlh0Lx6FiVUT05myuMQHQ9D+1cc7uyMldi4forE6lp0ivQ=="],
+    "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.5.12", "", { "os": "win32", "cpu": "arm64" }, "sha512-b9vtoZFsuZt1pdjNwJvXl0f+BpayRzV008uS2+JpmwIKdSE2qdu4A/l04FESwLoou5g2E/Qlec0xwJydZplH+A=="],
 
-    "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.1", "", { "os": "win32", "cpu": "x64" }, "sha512-6uxpR9hvaglANkZemeSiN/FhYgkGasrEGn267eXIWvjrjJ2LhDlk251IhjVJq6MXzkV2/bcXwLwSroLyPtqRZg=="],
+    "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.12", "", { "os": "win32", "cpu": "x64" }, "sha512-B1R/l+CwEpKFSuqiwePzPNRk1EiJN8kc0UhdafNz6MZN9v5OFP9HYP1irptvWzHrwVI4blVNGMbxc5zt70m3IA=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.0", "", { "peerDependencies": { "hono": "^4" } }, "sha512-XovyyCCnBzW+zKu+z/zq8hwNs4KOR5rEMAOxo2f40Q5xoOI37IMm6MIg2COOUtUApo0i6850MTBKH2u4QLGIqg=="],
 
@@ -278,7 +279,7 @@
 
     "@nyaa-lexicon/provider-yaml": ["@nyaa-lexicon/provider-yaml@workspace:providers/yaml"],
 
-    "@rgrove/parse-xml": ["@rgrove/parse-xml@4.2.3", "", {}, "sha512-Jhlb+0zYez1T1yXUQs3F1qAtFuJljBVNdy9TKmLDauAXkxsOXopKYOyQ5Wm6SvP3fycav0GviX4Y15WWhGetMw=="],
+    "@rgrove/parse-xml": ["@rgrove/parse-xml@5.0.0", "", {}, "sha512-SgHFyisNAkS2ZbM8SCriUm1N0bxLiz0POKvpDeAtrnLrXaYG1PawNwu1rSjmE/vcVHbZzYWNgVP6xkep6R4uXg=="],
 
     "@types/debug": ["@types/debug@4.1.13", "", { "dependencies": { "@types/ms": "*" } }, "sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw=="],
 
@@ -298,7 +299,7 @@
 
     "body-parser": ["body-parser@2.3.0", "", { "dependencies": { "bytes": "^3.1.2", "content-type": "^2.0.0", "debug": "^4.4.3", "http-errors": "^2.0.1", "iconv-lite": "^0.7.2", "on-finished": "^2.4.1", "qs": "^6.15.2", "raw-body": "^3.0.2", "type-is": "^2.1.0" } }, "sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw=="],
 
-    "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+    "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
     "bytes": ["bytes@3.1.2", "", {}, "sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg=="],
 
@@ -360,7 +361,7 @@
 
     "fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
 
-    "fast-uri": ["fast-uri@3.1.6", "", {}, "sha512-7Ical1vFEMr0onbVzEDIreM22I4khW+fzyQPwvAFWBp1iwdshSZRsL4jjRvPG9JP1uiqMHRto+YU6R2/CzDz5Q=="],
+    "fast-uri": ["fast-uri@3.1.7", "", {}, "sha512-dOvZVzjdZdz7phd9v6jCbwxrBW3fK6n8Rc0CtdmM4bumzMnxywBYhuph6J819RRw/ku+rLbelwfMunktuzVVHg=="],
 
     "fault": ["fault@2.0.1", "", { "dependencies": { "format": "^0.2.0" } }, "sha512-WtySTkS4OKev5JtpHXnib4Gxiurzh5NCGvWrFaZ34m6JehfTUhKZvn9njTfw48t6JumVQOmrKqpmGcdwxnhqBQ=="],
 
@@ -384,7 +385,7 @@
 
     "hasown": ["hasown@2.0.4", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A=="],
 
-    "hono": ["hono@4.13.1", "", {}, "sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw=="],
+    "hono": ["hono@4.13.7", "", {}, "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="],
 
     "http-errors": ["http-errors@2.0.1", "", { "dependencies": { "depd": "~2.0.0", "inherits": "~2.0.4", "setprototypeof": "~1.2.0", "statuses": "~2.0.2", "toidentifier": "~1.0.1" } }, "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ=="],
 
@@ -538,7 +539,7 @@
 
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
-    "unbash": ["unbash@4.0.10", "", {}, "sha512-b7zoBQvpWp0vuN5q2vK2RRBR2SvuruQAs50DApdDveBSn3eSYd84IaHodFqQIMlvY9K2VnyBUEXgwOBuGU9GBg=="],
+    "unbash": ["unbash@4.0.11", "", {}, "sha512-FoSOKV7NEofQSkAefMVHam4ZPKYMxjAydxiV72UFEDNV/YofxjGfiZ2A9pZjdL/lRJzTjcu4PABo1JYJX8N5iQ=="],
 
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
 
@@ -554,7 +555,7 @@
 
     "vary": ["vary@1.1.2", "", {}, "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="],
 
-    "vscode-jsonrpc": ["vscode-jsonrpc@9.0.1", "", {}, "sha512-rfuA6T75H6m5EkbhtEPzre9pT0HPcDI2MMy4+nPFIBks5J8JBAUHD4tRYSgaBOijIEC7SRkC1kKyXTLqbmh9jw=="],
+    "vscode-jsonrpc": ["vscode-jsonrpc@9.0.2", "", {}, "sha512-SbQSV9yRemARxeXw6LU5sS6Zq0e9/DgCCX5yelH263ZQWukbTk8EF8fjTrr1dziasf4GwlJbvTwFnTrnQFWZXQ=="],
 
     "web-tree-sitter": ["web-tree-sitter@0.27.0", "", {}, "sha512-XK08gj6RwTMQatAG7uVRP8MunqotL/XC19vHgkSPKmELgbGPBj4ECvB8haHOUnyj6ls2B8t42UTro14zxGgAHg=="],
 
@@ -564,7 +565,7 @@
 
     "yaml": ["yaml@2.9.0", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA=="],
 
-    "zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
+    "zod": ["zod@4.6.1", "", {}, "sha512-341aRWQsve0rvronKNTqZpjmzdbUDlFuzHaI/XLg/Ej82qffDJRRfBTCuv7+9q/rMjB6LSLyEBnW4InJeMtt/Q=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
 

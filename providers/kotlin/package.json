@@ -12,7 +12,7 @@
 	],
 	"dependencies": {
 		"@nyaa-lexicon/protocol": "workspace:*",
-		"vscode-jsonrpc": "9.0.1",
+		"vscode-jsonrpc": "9.0.2",
 		"web-tree-sitter": "0.27.0"
 	}
 }
