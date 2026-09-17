@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyEdits, composeSymbolId, coordinatesOf } from "@nyaa-lexicon/protocol";
+import {
+	applyEdits,
+	comparePositions,
+	composeSymbolId,
+	coordinatesOf,
+	parseSymbolId,
+	type Reference,
+} from "@nyaa-lexicon/protocol";
 import { PythonProvider } from "../main";
 import { Python3Dispatch } from "../python3";
 
@@ -29,6 +36,18 @@ function spanAt(text: string, index: number, value: string) {
 	const range = coordinatesOf(text).rangeAt(index, index + value.length);
 	if (range === undefined) throw new Error(`invalid test range for ${value}`);
 	return range;
+}
+
+function ownerOf(reference: Reference | undefined): string {
+	if (reference?.fromId === undefined) return "module";
+	const parsed = parseSymbolId(reference.fromId);
+	return parsed === null ? reference.fromId : parsed.descriptors.map((descriptor) => descriptor.name).join(".");
+}
+
+function writtenIn(facts: { references: Reference[] }): string[] {
+	return [...facts.references]
+		.sort((left, right) => comparePositions(left.range.start, right.range.start))
+		.map((reference) => `${reference.name} in ${ownerOf(reference)}`);
 }
 
 afterEach(() => {
@@ -1037,6 +1056,100 @@ describe("Python provider project behavior", () => {
 			status: "unbound",
 			reason: "Ambiguous",
 		});
+	});
+
+	it("writes every signature use in the declaration it heads", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const facts = provider.parseFile({
+			module: "main.py",
+			contentHash: "hash",
+			text: [
+				"LIMIT = 1",
+				"class Base:",
+				"    pass",
+				"def deco(f):",
+				"    return f",
+				"@deco",
+				"class Holder(Base):",
+				"    @deco",
+				"    def method(self, x: Base = LIMIT) -> Base:",
+				"        return x",
+				"@deco",
+				"def free(y: Base = LIMIT) -> Base:",
+				"    return y",
+			].join("\n"),
+		});
+
+		expect(writtenIn(facts)).toEqual([
+			"LIMIT in module",
+			"f in deco",
+			"deco in Holder",
+			"Base in Holder",
+			"deco in Holder.method",
+			"Base in Holder.method",
+			"LIMIT in Holder.method",
+			"Base in Holder.method",
+			"x in Holder.method",
+			"deco in free",
+			"Base in free",
+			"LIMIT in free",
+			"Base in free",
+			"y in free",
+		]);
+	});
+
+	it("resolves a signature use outside the declaration it is written in", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const facts = provider.parseFile({
+			module: "main.py",
+			contentHash: "hash",
+			text: ["value = 3", "def g(value=value):", "    return value"].join("\n"),
+		});
+
+		const dflt = facts.references.find(
+			(reference) => reference.name === "value" && reference.range.start.line === 1,
+		);
+
+		expect(dflt?.binding).toEqual({
+			status: "bound",
+			symbolId: composeSymbolId({
+				language: "python",
+				module: "main.py",
+				descriptors: [{ kind: "term", name: "value" }],
+			}),
+			provenance: "bound",
+		});
+		expect(ownerOf(dflt)).toBe("g");
+	});
+
+	it("keeps a nested header in its own declaration and a lambda default in the header around it", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const facts = provider.parseFile({
+			module: "main.py",
+			contentHash: "hash",
+			text: [
+				"LIMIT = 1",
+				"class Outer:",
+				"    class Inner:",
+				"        def method(self, cb=lambda v=LIMIT: v):",
+				"            return cb",
+				"def outer():",
+				"    def inner(x=LIMIT):",
+				"        return x",
+			].join("\n"),
+		});
+
+		expect(writtenIn(facts).filter((entry) => entry.startsWith("LIMIT"))).toEqual([
+			"LIMIT in module",
+			"LIMIT in Outer.Inner.method",
+			"LIMIT in outer.inner",
+		]);
 	});
 
 	it("reports explicit annotation text and infers simple initializers", () => {

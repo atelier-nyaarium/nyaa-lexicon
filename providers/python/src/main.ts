@@ -173,7 +173,10 @@ interface RawReference {
 	name: string;
 	range: Range;
 	role: Reference["role"];
+	/** Where the name resolves, which a header takes from outside its declaration. */
 	scopePath: RawDescriptor[];
+	/** Declaration the use is written in, header included. */
+	ownerPath: RawDescriptor[];
 	binding: RawBinding;
 }
 
@@ -345,7 +348,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 							provenance: "bound",
 						}
 					: reference.binding,
-			...(reference.scopePath.length === 0 ? {} : { fromId: idFor(module, reference.scopePath) }),
+			...(reference.ownerPath.length === 0 ? {} : { fromId: idFor(module, reference.ownerPath) }),
 		};
 		referenceScopes.set(mapped, reference.scopePath);
 		return mapped;

@@ -110,6 +110,12 @@ number keeps its written form in `value` and its arithmetic value in `number`, b
 `1000` are one number and two literals. Report the spelling and a caller has to know which language
 wrote a literal before it can search for one, which returns a short answer rather than an empty one.
 
+A `Reference`'s `fromId` names the declaration a use is WRITTEN in, and a header use a provider
+emits belongs to the declaration whose header it sits in rather than to the scope around it.
+Binding is a separate question and still resolves in the enclosing scope, so Python's
+`def g(value=value)` binds the module's `value` while belonging to `g`. C# emits no reference for an
+attribute at all, because its parser discards every identifier inside an attribute list.
+
 ## Declaring what you cover
 
 A tier boolean may not be an unqualified claim over a vocabulary. Declaring the `references` tier
