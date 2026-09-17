@@ -65,3 +65,8 @@ export function accessOf(modifiers: string[], context: Context): Pick<Declaratio
 	if (modifiers.includes("internal")) return { visibility: "internal", exported: true };
 	return { visibility: "public", exported: true };
 }
+
+export function initializerOf(node: SyntaxNode): SyntaxNode | undefined {
+	const equals = node.children.findIndex((child) => child.type === "=");
+	return equals < 0 ? undefined : node.children.slice(equals + 1).find((child) => child.named);
+}

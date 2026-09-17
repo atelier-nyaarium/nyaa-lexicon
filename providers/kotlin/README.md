@@ -15,6 +15,9 @@ Where each concept lives, and the rules that hold it. Kotlin's grammar and its r
 Steps 2 to 4 are three walks over one tree. An outline parse stops after step 2, since it answers
 no uses, and builds no environment.
 
+Step 2 dispatches on the node type. Each declaration family's handlers sit in their own module, as
+free functions over the one sink and the scope they were handed.
+
 `binding.ts` runs later, per query, resolving a use against `packageIndex.ts` in Kotlin's lookup
 order. `main.ts` decides when.
 
@@ -54,9 +57,13 @@ residue's job is to keep the interface from growing a field under a new spelling
 | `tree.ts` | The parse into plain nodes, the line table, and node helpers. |
 | `repairs.ts` | The repair order, and every reread of a masked copy. |
 | `parse.ts` | The pipeline, and the outline cut. |
-| `declarations.ts` | Which Kotlin nodes declare what, and the scope handed to their children. |
+| `declarations.ts` | The walk, and which handler each Kotlin node takes. |
+| `declarationScope.ts` | The scope handed to a declaration's children, and what every handler reads. |
+| `declarationTypes.ts` | Classes, objects, companions, type aliases and enum entries. |
+| `declarationCallables.ts` | Constructors, functions, parameters and type parameters. |
+| `declarationValues.ts` | Properties, destructuring, loop and when binders, and catch parameters. |
 | `declarationSink.ts` | The one minter of symbol ids, and every fact a declaration answers with. |
-| `declarationShape.ts` | Context, visibility, modifiers, and the signature spans. |
+| `declarationShape.ts` | Context, visibility, modifiers, the signature spans, and the initializer. |
 | `headers.ts` | The package header and the import directives. |
 | `typePaths.ts` | A written type's segments, and a class's supertypes. |
 | `literals.ts` | Decoding a literal to its value and its Kotlin type. |
