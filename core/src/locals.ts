@@ -62,7 +62,7 @@ export function ancestryOf(
 export class Containment {
 	private readonly byId: Map<string, StoredDeclaration>;
 	private readonly ordered: StoredDeclaration[];
-	private readonly children = new Map<string, StoredDeclaration[]>();
+	private readonly children = new Map<string | undefined, StoredDeclaration[]>();
 	private readonly locality = new Map<string, boolean>();
 	private members: Map<string | undefined, StoredDeclaration[]> | undefined;
 	private owned: Map<string, string[]> | undefined;
@@ -71,7 +71,6 @@ export class Containment {
 		this.byId = new Map(declarations.map((declaration) => [declaration.symbolId, declaration]));
 		this.ordered = [...declarations].sort(bySource);
 		for (const declaration of this.ordered) {
-			if (declaration.containerId === undefined) continue;
 			const siblings = this.children.get(declaration.containerId);
 			if (siblings === undefined) this.children.set(declaration.containerId, [declaration]);
 			else siblings.push(declaration);
@@ -152,6 +151,20 @@ export class Containment {
 			this.members = members;
 		}
 		return this.members.get(symbolId) ?? [];
+	}
+
+	/** Every declaration, in source order. */
+	held(): StoredDeclaration[] {
+		return this.ordered;
+	}
+
+	holds(symbolId: string): boolean {
+		return this.byId.has(symbolId);
+	}
+
+	/** Direct children in source order, locals included; undefined asks the module level. */
+	heldBy(containerId: string | undefined): StoredDeclaration[] {
+		return this.children.get(containerId) ?? [];
 	}
 
 	/** Direct children that are not local, in source order. */

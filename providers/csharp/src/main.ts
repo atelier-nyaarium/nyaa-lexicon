@@ -28,7 +28,7 @@ import {
 	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { type CsharpFacts, CsharpParser, type DeclarationMeta, LANGUAGE } from "./parser.js";
+import { type CsharpFacts, CsharpParser, type DeclarationMeta, LANGUAGE, positionKey } from "./parser.js";
 
 export const TIERS = {
 	projectModel: true,
@@ -370,7 +370,16 @@ export class CsharpProvider {
 		return candidates.size === 1 ? candidates.values().next().value?.symbolId : undefined;
 	}
 
+	/** `[Marker]` names `MarkerAttribute` too. */
 	private bindingForReference(module: string, facts: CsharpFacts, reference: Reference): Binding {
+		const written = this.bindingOf(module, facts, reference);
+		if (written.status !== "unbound" || !facts.attributeNames.has(positionKey(reference.range.start)))
+			return written;
+		const suffixed = this.bindingOf(module, facts, { ...reference, name: `${reference.name}Attribute` });
+		return suffixed.status === "unbound" ? written : suffixed;
+	}
+
+	private bindingOf(module: string, facts: CsharpFacts, reference: Reference): Binding {
 		const metadata = facts.metadata;
 		const from = reference.fromId === undefined ? undefined : metadata.get(reference.fromId);
 		const candidates = this.sameFileCandidates(facts, reference, from);

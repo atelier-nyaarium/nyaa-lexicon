@@ -33,6 +33,7 @@ import {
 import type { FileEdits } from "./applyEdits.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
+import { ReadContext } from "./readContext.js";
 import type { PlannedMove, PlannedRename, PlannedRenameEdits, RenameBlocker } from "./refusalSlots.js";
 import {
 	alreadyInModule,
@@ -241,7 +242,8 @@ export class RefactorPlanner {
 		const unwritable = writableText(source.module, newText);
 		if (unwritable !== null) return { ok: false, reason: unwritable };
 
-		const guard = this.replacementGuard(address, source);
+		const context = new ReadContext(this.store);
+		const guard = this.replacementGuard(context, address, source);
 		if (guard) return { ok: false, reason: guard };
 		if (expectedSpanHash !== undefined && source.spanHash !== expectedSpanHash) {
 			return { ok: false, reason: spanChanged(source.module, source.name), stale: true };
@@ -258,10 +260,10 @@ export class RefactorPlanner {
 		const candidate = await this.probe.parseCandidate(source.module, spliced.text);
 		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("replacement", candidate.reason) };
 
-		const renamed = this.renamedDeclaration(address, candidate.facts, source);
+		const renamed = this.renamedDeclaration(context, address, candidate.facts, source);
 		if (renamed) return { ok: false, reason: renamed };
 
-		const issues = this.impactOf(source.module, candidate.facts);
+		const issues = this.impactWithin(context, source.module, candidate.facts);
 		const unchecked = this.syntaxUnchecked(owner.providerId, source.module);
 		if (unchecked !== null) issues.push(unchecked);
 
@@ -288,7 +290,9 @@ export class RefactorPlanner {
 			return { state: "refused", reason: oneAnchorOnly() };
 		}
 
-		const point = args.after !== undefined ? this.afterPoint(args.after) : this.endPoint(args.module as string);
+		const context = new ReadContext(this.store);
+		const point =
+			args.after !== undefined ? this.afterPoint(context, args.after) : this.endPoint(args.module as string);
 		if ("refused" in point) return { state: "refused", reason: point.refused };
 		const unwritable = writableText(point.module, args.text);
 		if (unwritable !== null) return { state: "refused", reason: unwritable };
@@ -309,10 +313,10 @@ export class RefactorPlanner {
 		const parsed = await this.probe.parseCandidate(point.module, candidate);
 		if (!parsed.parsed) return { state: "refused", reason: candidateDoesNotParse("insert", parsed.reason) };
 
-		const issues = this.impactOf(point.module, parsed.facts);
+		const issues = this.impactWithin(context, point.module, parsed.facts);
 		const unchecked = this.syntaxUnchecked(owner.providerId, point.module);
 		if (unchecked !== null) issues.push(unchecked);
-		issues.push(...this.collisionWarnings(point.module, parsed.facts));
+		issues.push(...this.collisionWarnings(context, point.module, parsed.facts));
 
 		return {
 			state: "planned",
@@ -326,8 +330,8 @@ export class RefactorPlanner {
 	}
 
 	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
-	private afterPoint(after: string): SplicePoint | { refused: Refusal } {
-		const anchor = this.store.declaration(after);
+	private afterPoint(context: ReadContext, after: string): SplicePoint | { refused: Refusal } {
+		const anchor = context.declaration(after);
 		if (!anchor) return { refused: subjectRefused(after, this.store) };
 		const module = anchor.module;
 		const current = this.source.writable(module);
@@ -354,15 +358,11 @@ export class RefactorPlanner {
 		if (nameLine === undefined) return { refused: moduleChangedReindex(module) };
 		const indent = /^[ \t]*/.exec(nameLine)?.[0] ?? "";
 
-		// SAME SCOPE only: without the container filter, a member anchor's "next sibling" was the
-		// next top-level declaration, splicing member-indented text OUTSIDE the container.
-		// Declarator and overload groups share ranges; nested declarations of a later sibling have
-		// their own containerId and never compete.
-		const scope = anchor.containerId ?? null;
+		// Siblings only: a member's follower is never the next top-level declaration. Declarator
+		// and overload groups share ranges and never compete.
 		let next: StoredDeclaration | null = null;
-		for (const candidate of this.store.declarationsIn(module)) {
+		for (const candidate of context.heldBy(module, anchor.containerId)) {
 			if (candidate.symbolId === anchor.symbolId) continue;
-			if ((candidate.containerId ?? null) !== scope) continue;
 			if (isWithin(candidate.symbolId, anchor.symbolId)) continue;
 			if (sameRange(candidate.range, anchor.range)) continue;
 			if (comparePositions(candidate.range.start, anchor.range.end) < 0) continue;
@@ -379,7 +379,7 @@ export class RefactorPlanner {
 		if (anchor.containerId === undefined) {
 			return { module, before, created: false, line: null, indent, trailingBlank: false };
 		}
-		const container = this.store.declaration(anchor.containerId);
+		const container = context.declaration(anchor.containerId);
 		if (!container) return { refused: subjectRefused(anchor.containerId, this.store) };
 		const endPos = container.range.end;
 		const endLine = coords.lineText(endPos.line);
@@ -478,20 +478,19 @@ export class RefactorPlanner {
 
 	/** Insert is rename's mirror: a new binder lands among existing uses. Whether that captures
 	 * them is a language question core must not answer, so it is a warning, never a blocker. */
-	private collisionWarnings(module: string, candidate: FileFacts): RefactorIssue[] {
-		const stored = this.store.declarationsIn(module);
-		const storedIds = new Set(stored.map((declaration) => declaration.symbolId));
+	private collisionWarnings(context: ReadContext, module: string, candidate: FileFacts): RefactorIssue[] {
 		const warnings: RefactorIssue[] = [];
 
 		for (const minted of candidate.declarations) {
-			if (storedIds.has(minted.symbolId)) continue;
-			const scope = minted.containerId ?? null;
-			const declared = stored.filter(
-				(existing) => existing.name === minted.name && (existing.containerId ?? null) === scope,
-			);
+			if (context.holds(module, minted.symbolId)) continue;
+			const declared = context
+				.heldBy(module, minted.containerId)
+				.filter((existing) => existing.name === minted.name);
 			// Imports are module-level, provably not inside a member container.
 			const imported =
-				scope === null ? this.store.importsBinding(minted.name).filter((entry) => entry.module === module) : [];
+				minted.containerId === undefined
+					? this.store.importsBinding(minted.name).filter((entry) => entry.module === module)
+					: [];
 			if (declared.length === 0 && imported.length === 0) continue;
 			warnings.push({
 				kind: "NameAlreadyBound",
@@ -814,21 +813,21 @@ export class RefactorPlanner {
 
 	/** Reasons a replacement is refused before it is even parsed. */
 	private replacementGuard(
+		context: ReadContext,
 		address: { symbolId?: string | undefined },
 		source: Extract<SymbolSource, { found: true }>,
 	): Refusal | null {
 		if (address.symbolId === undefined) return null;
+		const held = context.heldIn(source.module);
 
 		// Two declarations sharing an id means the store kept one and discarded the other, so the
 		// address names something the index cannot tell apart.
-		const sharing = this.store
-			.declarationsIn(source.module)
-			.filter((declaration) => declaration.symbolId === address.symbolId);
+		const sharing = held.filter((declaration) => declaration.symbolId === address.symbolId);
 		if (sharing.length > 1) return sharesId(address.symbolId, source.module);
 
 		// One statement can declare several names, giving each the same span. Replacing that span
 		// would rewrite siblings the caller never addressed.
-		const overlapping = this.store.declarationsIn(source.module).filter((declaration) => {
+		const overlapping = held.filter((declaration) => {
 			if (declaration.symbolId === address.symbolId) return false;
 			if (isWithin(declaration.symbolId, address.symbolId as string)) return false;
 			if (isWithin(address.symbolId as string, declaration.symbolId)) return false;
@@ -849,6 +848,7 @@ export class RefactorPlanner {
 	 * what rename exists to do.
 	 */
 	private renamedDeclaration(
+		context: ReadContext,
 		address: { symbolId?: string | undefined },
 		candidate: FileFacts,
 		source: Extract<SymbolSource, { found: true }>,
@@ -859,11 +859,10 @@ export class RefactorPlanner {
 		// The id is gone, which is either a rename or a deletion. Deleting is a real refactor and is
 		// allowed; the orphan check reports what still points at it. A rename is refused, because
 		// only rename rewrites the callers and carries the knowledge across.
-		const before = new Set(this.store.declarationsIn(source.module).map((declaration) => declaration.symbolId));
-		const old = this.store.declaration(address.symbolId);
+		const old = context.declaration(address.symbolId);
 		const replacement = candidate.declarations.find(
 			(declaration) =>
-				!before.has(declaration.symbolId) &&
+				!context.holds(source.module, declaration.symbolId) &&
 				declaration.kind === old?.kind &&
 				declaration.containerId === old?.containerId,
 		);
@@ -879,9 +878,14 @@ export class RefactorPlanner {
 	 * range: any edit above an untouched problem would otherwise make it look newly introduced.
 	 */
 	impactOf(module: string, candidate: FileFacts): RefactorIssue[] {
+		return this.impactWithin(new ReadContext(this.store), module, candidate);
+	}
+
+	/** The same, over the context a plan already holds. */
+	private impactWithin(context: ReadContext, module: string, candidate: FileFacts): RefactorIssue[] {
 		const issues: RefactorIssue[] = [];
 
-		const before = this.store.declarationsIn(module);
+		const before = context.heldIn(module);
 		const after = new Set(candidate.declarations.map((declaration) => declaration.symbolId));
 		for (const declaration of before) {
 			if (after.has(declaration.symbolId)) continue;

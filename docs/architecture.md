@@ -133,8 +133,10 @@ already orders, each summarized at most once, so a context would add an unused m
 
 `core/src/locals.ts` holds the per-module `Containment` and `ancestryOf`, the one container walk
 that a module's own rows and a store-resolved chain both take. `read-context-residue.test.ts` fails
-the build where another module names a containment, calls that walk, declares a second summary, or
-reads `containerId` to answer a nesting question by hand.
+the build where another module names a containment, calls that walk, declares a second summary,
+reads `containerId` to answer a nesting question by hand, or reads `declarationsIn` outside the
+readers it names as asking nothing about nesting. The refactor planner is not one of those: its
+sibling, collision and impact questions go through a context minted per plan.
 
 ## Diagnostics
 
@@ -200,7 +202,9 @@ walked once in `headingPath` so no renderer rebuilds it.
 Two provider conventions are supported rather than corrected: a declaration's range either already
 covers its doc comment or begins on the line after it. A shared conformance case pins that there is
 no third answer, because a range starting anywhere else loses every doc comment in that language
-while nothing else goes red.
+while nothing else goes red. A range may begin at the declaration's attached attributes, decorators
+or annotations, with a doc comment ahead of them still covered; they stay outside the signature and
+the selection range.
 
 A code symbol's documentation is DERIVED from its leading-attached comment rather than stored beside
 the declaration. Two copies of one sentence can disagree with the file, and this one is the file.

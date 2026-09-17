@@ -83,6 +83,9 @@ describe("a read context reads each module once", () => {
 		context.declaredChildren(IDS.shop);
 		context.localsOwnedBy(IDS.open);
 		context.descendantIds(IDS.shop);
+		context.heldIn(SHOP);
+		context.heldBy(SHOP, undefined);
+		context.holds(SHOP, IDS.open);
 
 		expect(source.modules).toEqual([SHOP]);
 	});
@@ -131,6 +134,35 @@ describe("a read context answers what a declaration owns", () => {
 
 		expect(context.ownedIds(IDS.open)).toEqual([IDS.open, IDS.amount, IDS.total]);
 		expect(context.ownedIds(IDS.helper)).toEqual([IDS.helper]);
+	});
+});
+
+describe("a read context answers what a module holds", () => {
+	it("lists every row in source order, and says which ids are its own", () => {
+		const context = new ReadContext(reads());
+
+		expect(context.heldIn(SHOP).map((row) => row.name)).toEqual(["Shop", "open", "amount", "total", "helper"]);
+		expect(context.holds(SHOP, IDS.open)).toBe(true);
+		expect(context.holds(SHOP, IDS.twin)).toBe(false);
+	});
+
+	it("answers direct children by container, locals included and grandchildren excluded", () => {
+		const context = new ReadContext(reads());
+
+		expect(context.heldBy(SHOP, IDS.shop).map((row) => row.name)).toEqual(["open"]);
+		expect(context.heldBy(SHOP, IDS.open).map((row) => row.name)).toEqual(["amount", "total"]);
+		expect(context.heldBy(SHOP, undefined).map((row) => row.name)).toEqual(["Shop", "helper"]);
+		expect(context.heldBy(SHOP, ABSENT)).toEqual([]);
+	});
+
+	it("keeps a grouping at the level it is declared, where members see through it", () => {
+		const namespace = declare(IDS.api, SHOP, "namespace", "Api", 0);
+		const writer = declare(IDS.writer, SHOP, "class", "Writer", 1, { containerId: IDS.api });
+		const context = new ReadContext(reads([namespace, writer]));
+
+		expect(context.heldBy(SHOP, undefined).map((row) => row.name)).toEqual(["Api"]);
+		expect(context.heldBy(SHOP, IDS.api).map((row) => row.name)).toEqual(["Writer"]);
+		expect(context.membersOf(SHOP, undefined).map((row) => row.name)).toEqual(["Writer"]);
 	});
 });
 

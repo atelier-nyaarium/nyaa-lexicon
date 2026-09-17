@@ -1152,6 +1152,136 @@ describe("Python provider project behavior", () => {
 		]);
 	});
 
+	it("writes a type parameter's bound and constraints in the declaration it heads", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const facts = provider.parseFile({
+			module: "main.py",
+			contentHash: "hash",
+			text: [
+				"class Bound:",
+				"    pass",
+				"class Other:",
+				"    pass",
+				"class Typed[T: Bound]:",
+				"    def method[M: Other](self, value: M) -> M:",
+				"        return value",
+				"def sign[U: (Bound, Other)](value: U) -> U:",
+				"    return value",
+				"type Alias[A: Bound] = list[A]",
+			].join("\n"),
+		});
+		const ordered = [...facts.references].sort((left, right) =>
+			comparePositions(left.range.start, right.range.start),
+		);
+
+		const bounds = ordered.filter((reference) => reference.name === "Bound" || reference.name === "Other");
+		expect(
+			bounds.map(
+				(reference) =>
+					`${reference.role} ${reference.name} in ${ownerOf(reference)} -> ${reference.binding.status}`,
+			),
+		).toEqual([
+			"typeUse Bound in Typed -> bound",
+			"typeUse Other in Typed.method -> bound",
+			"typeUse Bound in sign -> bound",
+			"typeUse Other in sign -> bound",
+			"typeUse Bound in module -> bound",
+		]);
+		const alias = ordered.filter((reference) => reference.range.start.line === 9);
+		expect(alias.map((reference) => `${reference.role} ${reference.name}`)).toEqual([
+			"write Alias",
+			"typeUse Bound",
+			"typeUse list",
+			"typeUse A",
+		]);
+	});
+
+	// Defaults need Python 3.13.
+	const pythonVersion = new Python3Dispatch().runJson<number[]>([
+		"-c",
+		"import json, sys; print(json.dumps(list(sys.version_info[:2])))",
+	]) ?? [0, 0];
+	const major = pythonVersion[0] ?? 0;
+	const minor = pythonVersion[1] ?? 0;
+	const typeParameterDefaults = major > 3 || (major === 3 && minor >= 13);
+
+	it.skipIf(!typeParameterDefaults)("writes a type parameter's default in the declaration it heads", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const facts = provider.parseFile({
+			module: "main.py",
+			contentHash: "hash",
+			text: [
+				"class Bound:",
+				"    pass",
+				"class Default(Bound):",
+				"    pass",
+				"class Box[T: Bound = Default]:",
+				"    pass",
+				"def wrap[U = Default](value: U) -> U:",
+				"    return value",
+				"type Named[**P = [Default]] = tuple[Default]",
+			].join("\n"),
+		});
+		const defaults = [...facts.references]
+			.sort((left, right) => comparePositions(left.range.start, right.range.start))
+			.filter((reference) => reference.name === "Default");
+
+		expect(
+			defaults.map((reference) => `${reference.role} in ${ownerOf(reference)} -> ${reference.binding.status}`),
+		).toEqual([
+			"typeUse in Box -> bound",
+			"typeUse in wrap -> bound",
+			"typeUse in module -> bound",
+			"typeUse in module -> bound",
+		]);
+	});
+
+	it("renames a class named in a type parameter bound", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"class Old:",
+			"    pass",
+			"class Typed[T: Old]:",
+			"    pass",
+			"def sign[U: (Old, int)](value: U) -> U:",
+			"    return value",
+			"",
+		].join("\n");
+		const sites = [...text.matchAll(/Old/g)].map((match) => ({ range: spanAt(text, match.index, "Old") }));
+		const response = provider.renameEdits({ module: "main.py", text, oldName: "Old", newName: "New", sites });
+
+		expect(sites).toHaveLength(3);
+		expect(response).toEqual({
+			status: "ready",
+			edits: sites.map((site) => ({ range: site.range, newText: "New" })),
+			blocked: [],
+		});
+	});
+
+	it("reports a string literal inside a type parameter bound", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = 'class Typed[T: "Later"]:\n    pass\nclass Later:\n    pass\n';
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typed = facts.declarations.find((declaration) => declaration.name === "Typed");
+
+		expect(facts.literals).toEqual([
+			{
+				kind: "string",
+				value: "Later",
+				range: spanAt(text, text.indexOf('"Later"'), '"Later"'),
+				containerId: typed?.symbolId,
+			},
+		]);
+	});
+
 	it("reports explicit annotation text and infers simple initializers", () => {
 		const text = [
 			"from typing import Final, Optional",

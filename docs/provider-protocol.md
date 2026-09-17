@@ -113,8 +113,11 @@ wrote a literal before it can search for one, which returns a short answer rathe
 A `Reference`'s `fromId` names the declaration a use is WRITTEN in, and a header use a provider
 emits belongs to the declaration whose header it sits in rather than to the scope around it.
 Binding is a separate question and still resolves in the enclosing scope, so Python's
-`def g(value=value)` binds the module's `value` while belonging to `g`. C# emits no reference for an
-attribute at all, because its parser discards every identifier inside an attribute list.
+`def g(value=value)` binds the module's `value` while belonging to `g`. An attribute, a decorator or
+an annotation is a header use of the declaration it sits on: a C# attribute name is a type use owned
+by the attributed declaration, a parameter's attribute, type and default belong to its method, and an
+`assembly:` or `module:` attribute belongs to nothing. A type parameter's bound, constraint or default
+belongs to the declaration it parameterizes.
 
 ## Declaring what you cover
 

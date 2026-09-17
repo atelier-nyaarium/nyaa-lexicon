@@ -57,10 +57,24 @@ export interface CsharpFacts {
 	diagnostics: Diagnostic[];
 	metadata: Map<string, DeclarationMeta>;
 	namespaceNames: string[];
+	/** Attribute name positions, as `positionKey`. */
+	attributeNames: Set<string>;
 }
 
-interface Documentation {
+export function positionKey(position: Range["start"]): string {
+	return `${position.line}:${position.character}`;
+}
+
+/** Doc comment or attribute start. */
+interface Leading {
 	start: Token;
+}
+
+interface AttributeSection {
+	open: number;
+	close: number;
+	/** Assembly and module targets attach to nothing. */
+	attached: boolean;
 }
 
 interface RawDeclaration {
@@ -369,6 +383,12 @@ function uniqueStrings(values: string[]): string[] {
 	return [...new Set(values)];
 }
 
+function earliest(left: Token | undefined, right: Token | undefined): Token | undefined {
+	if (left === undefined) return right;
+	if (right === undefined) return left;
+	return left.startOffset <= right.startOffset ? left : right;
+}
+
 export class CsharpParser {
 	private readonly cursor: Cursor;
 	private readonly lexed: LexedSource;
@@ -379,6 +399,7 @@ export class CsharpParser {
 	private readonly roleByOffset = new Map<number, Reference["role"]>();
 	private readonly ignoredOffsets = new Set<number>();
 	private readonly namespaceNames = new Set<string>();
+	private readonly attributeNames = new Set<string>();
 	private readonly diagnostics: Diagnostic[];
 	private readonly reportedDiagnostics = new Set<string>();
 	private readonly scopeCounts = new Map<RawDeclaration | undefined, Map<string, number>>();
@@ -422,6 +443,7 @@ export class CsharpParser {
 			diagnostics,
 			metadata: finalized.metadata,
 			namespaceNames: [...this.namespaceNames].sort(),
+			attributeNames: this.attributeNames,
 		};
 	}
 
@@ -510,6 +532,7 @@ export class CsharpParser {
 	private parseScope(start: number, end: number, parent: RawDeclaration | undefined): void {
 		let index = start;
 		let documentationStart: Token | undefined;
+		let attributesStart: Token | undefined;
 		let lastDocumentationLine = -2;
 		while (index < end) {
 			const current = this.token(index);
@@ -536,36 +559,93 @@ export class CsharpParser {
 				index++;
 				continue;
 			}
-			const afterAttributes = this.skipAttributes(index, end);
-			if (afterAttributes !== index) {
-				index = afterAttributes;
+			const section = this.attributeSectionAt(index, end);
+			if (section !== undefined) {
+				if (section.close < 0) return;
+				if (section.attached) attributesStart ??= this.token(section.open);
+				index = section.close + 1;
 				continue;
 			}
-			const doc = documentationStart === undefined ? undefined : { start: documentationStart };
-			const parsed = this.parseAt(index, end, parent, doc);
+			const leadingStart = earliest(documentationStart, attributesStart);
+			const parsed = this.parseAt(
+				index,
+				end,
+				parent,
+				leadingStart === undefined ? undefined : { start: leadingStart },
+			);
 			if (parsed <= index) {
 				index = this.skipUnknown(index, end);
 			} else {
 				index = parsed;
 			}
 			documentationStart = undefined;
+			attributesStart = undefined;
 			lastDocumentationLine = -2;
 		}
 	}
 
-	private skipAttributes(index: number, end: number): number {
-		const start = this.nextSignificant(index, end);
-		if (start < 0 || this.value(start) !== "[") return index;
-		const close = this.matching(start, "[", "]", end);
+	/** One `[...]` section at `index`; `close` is -1 when it never closes. */
+	private attributeSectionAt(index: number, end: number): AttributeSection | undefined {
+		const open = this.nextSignificant(index, end);
+		if (open < 0 || this.value(open) !== "[") return undefined;
+		const close = this.matching(open, "[", "]", end);
 		if (close < 0) {
-			this.report("Attribute list is not closed.", this.token(start));
-			return end;
+			this.report("Attribute list is not closed.", this.token(open));
+			return { open, close, attached: false };
 		}
-		for (let current = start; current <= close; current++) {
-			const item = this.token(current);
-			if (item?.kind === "identifier") this.ignoredOffsets.add(item.startOffset);
+		let cursor = this.nextSignificant(open + 1, close);
+		let attached = true;
+		const target = this.token(cursor);
+		if (isIdentifier(target)) {
+			const colon = this.nextSignificant(cursor + 1, close);
+			if (this.value(colon) === ":") {
+				this.ignoredOffsets.add(target.startOffset);
+				attached = target.value !== "assembly" && target.value !== "module";
+				cursor = this.nextSignificant(colon + 1, close);
+			}
 		}
-		return close + 1;
+		while (cursor >= 0 && cursor < close) {
+			const name = this.attributeName(cursor, close);
+			this.addTypeReference(cursor, name.end - 1, "typeUse");
+			if (name.token !== undefined) this.attributeNames.add(positionKey(name.token.start));
+			let next = name.end;
+			if (this.value(next) === "(") {
+				const argumentsClose = this.matching(next, "(", ")", close);
+				next = argumentsClose < 0 ? close : argumentsClose + 1;
+			}
+			if (this.value(next) === ",") next++;
+			cursor = this.nextSignificant(Math.max(next, cursor + 1), close);
+		}
+		return { open, close, attached };
+	}
+
+	/** Where the name span ends, and its type identifier. */
+	private attributeName(start: number, close: number): { end: number; token: Token | undefined } {
+		let cursor = start;
+		let token: Token | undefined;
+		while (cursor >= 0 && cursor < close) {
+			const item = this.token(cursor);
+			const value = syntaxValue(item);
+			if (value === "<") {
+				const angleClose = this.matchingAngle(cursor, close);
+				cursor = angleClose < 0 ? close : angleClose + 1;
+				break;
+			}
+			if (isIdentifier(item)) token = item;
+			else if (value !== "." && value !== "::") break;
+			cursor = this.nextSignificant(cursor + 1, close);
+		}
+		return { end: cursor < 0 ? close : cursor, token };
+	}
+
+	/** Marks every section at `index`; answers where the last ends. */
+	private afterAttributeSections(index: number, end: number): number {
+		let current = index;
+		for (;;) {
+			const section = this.attributeSectionAt(current, end);
+			if (section === undefined || section.close < 0) return current;
+			current = section.close + 1;
+		}
 	}
 
 	private modifiersAt(index: number, end: number): ModifierInfo {
@@ -585,7 +665,7 @@ export class CsharpParser {
 		index: number,
 		end: number,
 		parent: RawDeclaration | undefined,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 	): number {
 		const first = this.nextSignificant(index, end);
 		if (first < 0) return end;
@@ -595,17 +675,17 @@ export class CsharpParser {
 			return this.parseUsing(first + 1, end, true);
 		}
 		if (syntaxValue(item) === "using") return this.parseUsing(first, end, false);
-		if (syntaxValue(item) === "namespace") return this.parseNamespace(first, first, end, parent, doc);
+		if (syntaxValue(item) === "namespace") return this.parseNamespace(first, first, end, parent, leading);
 		const modifiers = this.modifiersAt(first, end);
 		const keyword = this.value(modifiers.index);
-		if (keyword === "namespace") return this.parseNamespace(modifiers.index, modifiers.start, end, parent, doc);
+		if (keyword === "namespace") return this.parseNamespace(modifiers.index, modifiers.start, end, parent, leading);
 		if (keyword !== undefined && isTypeDeclarationWord(keyword)) {
-			return this.parseType(modifiers.index, modifiers.start, end, parent, doc, modifiers.modifiers);
+			return this.parseType(modifiers.index, modifiers.start, end, parent, leading, modifiers.modifiers);
 		}
 		if (keyword === "delegate")
-			return this.parseDelegate(modifiers.index, modifiers.start, end, parent, doc, modifiers.modifiers);
+			return this.parseDelegate(modifiers.index, modifiers.start, end, parent, leading, modifiers.modifiers);
 		if (parent?.kind === "class" || parent?.kind === "struct" || parent?.kind === "interface") {
-			return this.parseMember(first, modifiers, end, parent, doc);
+			return this.parseMember(first, modifiers, end, parent, leading);
 		}
 		return -1;
 	}
@@ -685,7 +765,7 @@ export class CsharpParser {
 		codeStartIndex: number,
 		end: number,
 		parent: RawDeclaration | undefined,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 	): number {
 		const keyword = this.token(keywordIndex);
 		if (keyword === undefined) return -1;
@@ -721,7 +801,7 @@ export class CsharpParser {
 				languageKind: "fileScopedNamespace",
 				name: namespaceName,
 				parent,
-				startToken: doc?.start ?? this.token(codeStartIndex) ?? keyword,
+				startToken: leading?.start ?? this.token(codeStartIndex) ?? keyword,
 				endToken: this.tokens[this.tokens.length - 1] as Token,
 				selectionStart: nameStart,
 				selectionEnd: nameEnd,
@@ -747,7 +827,7 @@ export class CsharpParser {
 			languageKind: "blockNamespace",
 			name: namespaceName,
 			parent,
-			startToken: doc?.start ?? this.token(codeStartIndex) ?? keyword,
+			startToken: leading?.start ?? this.token(codeStartIndex) ?? keyword,
 			endToken: this.token(close >= 0 ? close : bodyEnd - 1) ?? keyword,
 			selectionStart: nameStart,
 			selectionEnd: nameEnd,
@@ -767,7 +847,7 @@ export class CsharpParser {
 		codeStartIndex: number,
 		end: number,
 		parent: RawDeclaration | undefined,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 		modifiers: Set<string>,
 	): number {
 		const firstKeyword = this.token(keywordIndex);
@@ -822,7 +902,7 @@ export class CsharpParser {
 			languageKind: typeLanguageKind,
 			name: nameToken.value,
 			parent,
-			startToken: doc?.start ?? this.token(codeStartIndex) ?? firstKeyword,
+			startToken: leading?.start ?? this.token(codeStartIndex) ?? firstKeyword,
 			endToken,
 			selectionStart: nameToken,
 			selectionEnd: nameToken,
@@ -852,6 +932,11 @@ export class CsharpParser {
 		if (start < 0 || close < 0) return;
 		let current = this.nextSignificant(start + 1, close);
 		while (current >= 0 && current < close) {
+			const section = this.attributeSectionAt(current, close);
+			if (section !== undefined) {
+				current = section.close < 0 ? -1 : this.nextSignificant(section.close + 1, close);
+				continue;
+			}
 			const item = this.token(current);
 			if (isIdentifier(item) && item.value !== "in" && item.value !== "out") {
 				this.ignoredOffsets.add(item.startOffset);
@@ -921,12 +1006,23 @@ export class CsharpParser {
 
 	private parseEnumMembers(start: number, end: number, parent: RawDeclaration): void {
 		let current = start;
-		let pendingDoc: Documentation | undefined;
+		let pendingLeading: Leading | undefined;
 		while (current < end) {
 			const item = this.token(current);
 			if (item?.kind === "doc") {
-				pendingDoc = { start: item };
+				pendingLeading = { start: earliest(pendingLeading?.start, item) as Token };
 				current++;
+				continue;
+			}
+			if (isTrivia(item)) {
+				current++;
+				continue;
+			}
+			const section = this.attributeSectionAt(current, end);
+			if (section !== undefined) {
+				if (section.close < 0) return;
+				pendingLeading = { start: earliest(pendingLeading?.start, this.token(section.open)) as Token };
+				current = section.close + 1;
 				continue;
 			}
 			const nameIndex = this.nextSignificant(current, end);
@@ -950,7 +1046,7 @@ export class CsharpParser {
 				languageKind: "enumMember",
 				name: name.value,
 				parent,
-				startToken: pendingDoc?.start ?? name,
+				startToken: pendingLeading?.start ?? name,
 				endToken,
 				selectionStart: name,
 				selectionEnd: name,
@@ -959,7 +1055,7 @@ export class CsharpParser {
 				exported: parent.exported,
 				nameTokenOffsets: [name.startOffset],
 			});
-			pendingDoc = undefined;
+			pendingLeading = undefined;
 			current = this.value(finish) === "," ? finish + 1 : finish;
 		}
 	}
@@ -969,7 +1065,7 @@ export class CsharpParser {
 		codeStartIndex: number,
 		end: number,
 		parent: RawDeclaration | undefined,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 		modifiers: Set<string>,
 	): number {
 		const keyword = this.token(keywordIndex);
@@ -991,7 +1087,7 @@ export class CsharpParser {
 			languageKind: "delegate",
 			name: name.value,
 			parent,
-			startToken: doc?.start ?? this.token(codeStartIndex) ?? keyword,
+			startToken: leading?.start ?? this.token(codeStartIndex) ?? keyword,
 			endToken: this.token(boundary >= 0 ? boundary : finish - 1) ?? name,
 			selectionStart: name,
 			selectionEnd: name,
@@ -1013,11 +1109,11 @@ export class CsharpParser {
 		modifiers: ModifierInfo,
 		end: number,
 		parent: RawDeclaration,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 	): number {
 		const start = modifiers.index < end ? modifiers.index : index;
 		if (this.value(start) === "event")
-			return this.parseEvent(start, modifiers.start, end, parent, doc, modifiers.modifiers);
+			return this.parseEvent(start, modifiers.start, end, parent, leading, modifiers.modifiers);
 		const boundary = this.findMemberBoundary(start, end);
 		if (boundary === undefined) {
 			this.report("Member declaration needs a terminating delimiter.", this.token(start));
@@ -1025,7 +1121,7 @@ export class CsharpParser {
 		}
 		const open = this.findCallParen(start, boundary.index);
 		if (open >= 0)
-			return this.parseMethod(start, modifiers.start, boundary, open, end, parent, doc, modifiers.modifiers);
+			return this.parseMethod(start, modifiers.start, boundary, open, end, parent, leading, modifiers.modifiers);
 		const arrow = this.expressionBodyArrow(start, boundary.index);
 		if (boundary.kind === "body" || arrow >= 0) {
 			const nameIndex = this.propertyName(start, arrow >= 0 ? arrow : boundary.index);
@@ -1037,11 +1133,11 @@ export class CsharpParser {
 					nameIndex,
 					end,
 					parent,
-					doc,
+					leading,
 					modifiers.modifiers,
 				);
 		}
-		return this.parseField(start, modifiers.start, boundary, end, parent, doc, modifiers.modifiers);
+		return this.parseField(start, modifiers.start, boundary, end, parent, leading, modifiers.modifiers);
 	}
 
 	private parseMethod(
@@ -1051,7 +1147,7 @@ export class CsharpParser {
 		open: number,
 		end: number,
 		parent: RawDeclaration,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 		modifiers: Set<string>,
 	): number {
 		const operator = this.operatorName(start, open);
@@ -1088,7 +1184,7 @@ export class CsharpParser {
 			languageKind: operator === undefined ? (isConstructor ? "constructor" : "method") : "conversionOperator",
 			name: declarationName,
 			parent,
-			startToken: doc?.start ?? this.token(codeStartIndex) ?? selectionStart,
+			startToken: leading?.start ?? this.token(codeStartIndex) ?? selectionStart,
 			endToken: this.token(endIndex) ?? selectionEnd,
 			selectionStart,
 			selectionEnd,
@@ -1149,11 +1245,13 @@ export class CsharpParser {
 	private findParameterName(start: number, end: number): number {
 		let current = this.nextSignificant(start, end);
 		let equals = end;
-		let angle = 0;
+		let depth = 0;
 		while (current >= 0 && current < end) {
 			const value = this.value(current);
-			angle += angleDelta(value ?? "");
-			if (value === "=" && angle === 0) {
+			if (value === "(" || value === "[") depth++;
+			else if (value === ")" || value === "]") depth--;
+			else depth += angleDelta(value ?? "");
+			if (value === "=" && depth === 0) {
 				equals = current;
 				break;
 			}
@@ -1186,7 +1284,7 @@ export class CsharpParser {
 			exported: false,
 			nameTokenOffsets: [name.startOffset],
 		});
-		const typeSpan = this.spanBeforeName(start, nameIndex);
+		const typeSpan = this.spanBeforeName(this.afterAttributeSections(start, nameIndex), nameIndex);
 		this.recordTypeSpan(typeSpan, parameter);
 	}
 
@@ -1260,7 +1358,7 @@ export class CsharpParser {
 		nameIndex: number,
 		end: number,
 		parent: RawDeclaration,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 		modifiers: Set<string>,
 	): number {
 		const name = this.token(nameIndex);
@@ -1276,7 +1374,7 @@ export class CsharpParser {
 			languageKind: "property",
 			name: name.value,
 			parent,
-			startToken: doc?.start ?? this.token(codeStartIndex) ?? name,
+			startToken: leading?.start ?? this.token(codeStartIndex) ?? name,
 			endToken: this.token(close >= 0 ? close : boundary.index) ?? name,
 			selectionStart: name,
 			selectionEnd: name,
@@ -1303,7 +1401,7 @@ export class CsharpParser {
 		codeStartIndex: number,
 		end: number,
 		parent: RawDeclaration,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 		modifiers: Set<string>,
 	): number {
 		const boundary = this.findMemberBoundary(start, end);
@@ -1337,7 +1435,7 @@ export class CsharpParser {
 				languageKind: "event",
 				name: name.value,
 				parent,
-				startToken: doc?.start ?? this.token(codeStartIndex) ?? name,
+				startToken: leading?.start ?? this.token(codeStartIndex) ?? name,
 				endToken: this.token(close >= 0 ? close : boundary.index) ?? name,
 				selectionStart: name,
 				selectionEnd: name,
@@ -1359,7 +1457,7 @@ export class CsharpParser {
 		boundary: Boundary,
 		end: number,
 		parent: RawDeclaration,
-		doc: Documentation | undefined,
+		leading: Leading | undefined,
 		modifiers: Set<string>,
 	): number {
 		const finish = boundary.kind === "semicolon" ? boundary.index : this.advanceBoundary(boundary, end);
@@ -1393,7 +1491,7 @@ export class CsharpParser {
 				languageKind: kind === "constant" ? "const" : "field",
 				name: name.value,
 				parent,
-				startToken: doc?.start ?? this.token(codeStartIndex) ?? name,
+				startToken: leading?.start ?? this.token(codeStartIndex) ?? name,
 				endToken: this.token(boundary.index) ?? name,
 				selectionStart: name,
 				selectionEnd: name,
@@ -1919,6 +2017,11 @@ export class CsharpParser {
 				continue;
 			const next = this.nextSignificant(index + 1);
 			const nextValue = this.value(next);
+			if (item.value === "typeof" && nextValue === "(") {
+				const close = this.matching(next, "(", ")");
+				if (close > next) this.addTypeReference(next + 1, close - 1, "typeUse");
+				continue;
+			}
 			if (SKIPPED_WORDS.has(item.value) && !(nextValue === "(" && ["add", "remove"].includes(item.value)))
 				continue;
 			if (BUILTIN_TYPES.has(item.value)) continue;
@@ -1967,6 +2070,8 @@ export class CsharpParser {
 	private containerAt(offset: number, metadata: Map<string, DeclarationMeta>): DeclarationMeta | undefined {
 		let selected: DeclarationMeta | undefined;
 		for (const item of metadata.values()) {
+			// A parameter's header is its declaration's.
+			if (item.declaration.languageKind === "parameter") continue;
 			if (item.startOffset <= offset && offset <= item.endOffset) {
 				if (
 					selected === undefined ||

@@ -3,7 +3,8 @@
 //
 // Built once per read and handed down, so a read asking three things about one module loads it
 // once. Every reader asks here rather than deriving containment a second way; a residue test holds
-// the containment, the container walk and the summary to this file and `locals.ts`.
+// the containment, the container walk and the summary to this file and `locals.ts`, and a module's
+// rows to the readers it names.
 
 import { defined, GROUPING_KINDS, type SymbolSummary } from "@nyaa-lexicon/protocol";
 import { ancestryOf, Containment } from "./locals.js";
@@ -91,6 +92,21 @@ export class ReadContext {
 	/** A declaration and everything whose container chain reaches it. */
 	descendantIds(symbolId: string): Set<string> {
 		return this.topologyOf(symbolId)?.descendantIds(symbolId) ?? new Set([symbolId]);
+	}
+
+	/** Every declaration a module holds, in source order. */
+	heldIn(module: string): StoredDeclaration[] {
+		return this.topology(module).held();
+	}
+
+	/** Direct children in source order, locals included; undefined asks the module level. */
+	heldBy(module: string, containerId: string | undefined): StoredDeclaration[] {
+		return this.topology(module).heldBy(containerId);
+	}
+
+	/** Whether the module's rows carry this id. */
+	holds(module: string, symbolId: string): boolean {
+		return this.topology(module).holds(symbolId);
 	}
 
 	/** Parameter or local-holding ancestor, read in the declaration's own module. */

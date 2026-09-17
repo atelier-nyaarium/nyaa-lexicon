@@ -455,6 +455,48 @@ describe("warning about a name already bound", () => {
 		expect(outcome.issues.map((issue) => issue.kind)).toContain("SyntaxUnchecked");
 	});
 
+	it("keys the warning to the direct container, so a member and a top-level name never collide", async () => {
+		const world: World = {
+			text: ["class C {", "\tother() {}", "}", "", "function run() {}", ""].join("\n"),
+			declarations: [
+				declarationOf({ name: "C", range: range(0, 0, 2, 1) }),
+				member({ name: "other", container: "C", range: range(1, 1, 1, 11), selection: range(1, 1, 1, 6) }),
+				declarationOf({ name: "run", range: range(4, 0, 4, 17), selection: range(4, 9, 4, 12) }),
+			],
+			parse: () => ({ parsed: true, facts: minted("run", "C") }),
+		};
+		const typeRun = composeSymbolId({
+			language: "test",
+			module: MODULE,
+			descriptors: [{ kind: "type", name: "run" }],
+		});
+		const sameLevel: World = {
+			...world,
+			parse: () => ({
+				parsed: true,
+				facts: facts([
+					{
+						symbolId: typeRun,
+						kind: "class",
+						name: "run",
+						range: range(90, 0, 90, 10),
+						visibility: "public",
+					},
+				]),
+			}),
+		};
+
+		const member_ = await plan(world, { after: id("other", "C"), text: "run() {}" });
+		const topLevel = await plan(sameLevel, { after: id("run"), text: "class run {}" });
+
+		expect(member_.state).toBe("planned");
+		if (member_.state !== "planned") return;
+		expect(member_.issues.map((issue) => issue.kind)).not.toContain("NameAlreadyBound");
+		expect(topLevel.state).toBe("planned");
+		if (topLevel.state !== "planned") return;
+		expect(topLevel.issues.map((issue) => issue.kind)).toContain("NameAlreadyBound");
+	});
+
 	it("says nothing when a member shares its name with a top-level symbol", async () => {
 		const world: World = {
 			text: ["class C {", "\trun() {}", "", "\tother() {}", "}", "", "function run() {}", ""].join("\n"),

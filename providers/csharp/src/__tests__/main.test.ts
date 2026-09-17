@@ -388,7 +388,7 @@ describe("a using directive resolves to what the index holds", () => {
 });
 
 describe("C# protocol behavior", () => {
-	it("reports syntax errors and ignores attributes without losing declarations", () => {
+	it("reports syntax errors and keeps the declarations under attributes", () => {
 		const provider = new CsharpProvider();
 		provider.initialize("/workspace");
 		const valid = provider.parseFile({
