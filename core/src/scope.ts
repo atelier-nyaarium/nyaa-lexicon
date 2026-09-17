@@ -1,13 +1,13 @@
 import {
 	ANONYMOUS_NAMESPACE,
 	composeSymbolId,
-	GROUPING_KINDS,
 	isSymbolId,
 	isWithin,
 	moduleOf,
 	parseSymbolId,
 } from "@nyaa-lexicon/protocol";
-import type { IndexStore, StoredDeclaration } from "./store.js";
+import type { ReadContext } from "./readContext.js";
+import type { StoredDeclaration } from "./store.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -54,18 +54,6 @@ function samePath(left: StoredDeclaration, right: StoredDeclaration): boolean {
 	return JSON.stringify(a?.descriptors) === JSON.stringify(b?.descriptors);
 }
 
-/** A grouping or anything inside one names one thing wherever it is reopened; a bare path is per file. */
-function spansModules(store: IndexStore, declaration: StoredDeclaration): boolean {
-	const seen = new Set<string>();
-	let current: StoredDeclaration | null = declaration;
-	while (current !== null && !seen.has(current.symbolId)) {
-		if (GROUPING_KINDS.has(current.kind)) return true;
-		seen.add(current.symbolId);
-		current = current.containerId === undefined ? null : store.declaration(current.containerId);
-	}
-	return false;
-}
-
 function ambiguous(within: string, matches: StoredDeclaration[]): Error {
 	const candidates = matches
 		.slice(0, 5)
@@ -75,15 +63,15 @@ function ambiguous(within: string, matches: StoredDeclaration[]): Error {
 }
 
 /** A symbol id, or a name that resolves to one declaration; a named public namespace spans files. */
-export function resolveScope(store: IndexStore, within: string): Scope {
+export function resolveScope(context: ReadContext, within: string): Scope {
 	if (isSymbolId(within)) {
-		const declaration = store.declaration(within);
+		const declaration = context.declaration(within);
 		if (declaration === null) throw new Error("no declaration has this id");
 		if (parseSymbolId(within)?.local !== undefined) throw new Error("a local names no scope");
-		return { id: within, declaration, spans: spansModules(store, declaration) };
+		return { id: within, declaration, spans: context.spansModules(declaration) };
 	}
 
-	const named = store.declarationsNamed(within);
+	const named = context.declarationsNamed(within);
 	if (named.length === 0) throw new Error(`no declaration named ${within}`);
 	if (within === ANONYMOUS_NAMESPACE) throw ambiguous(within, named);
 	// A constructor carries its class's name and sits inside it; the class is the scope meant.
@@ -96,13 +84,13 @@ export function resolveScope(store: IndexStore, within: string): Scope {
 	if (matches.length === 1) {
 		const declaration = matches[0] as StoredDeclaration;
 		if (parseSymbolId(declaration.symbolId)?.local !== undefined) throw new Error("a local names no scope");
-		return { id: declaration.symbolId, declaration, spans: spansModules(store, declaration) };
+		return { id: declaration.symbolId, declaration, spans: context.spansModules(declaration) };
 	}
 
 	const first = matches[0] as StoredDeclaration;
 	const mergeable =
 		parseSymbolId(first.symbolId) !== null &&
-		spansModules(store, first) &&
+		context.spansModules(first) &&
 		matches.every((candidate) => candidate.visibility === "public" && samePath(first, candidate));
 	if (mergeable) return { id: first.symbolId, declaration: first, spans: true };
 	throw ambiguous(within, matches);

@@ -32,6 +32,30 @@ export function inSourceOrder<T extends { range: Range }>(
 		.sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character);
 }
 
+/**
+ * Containers above a declaration, nearest first, and whether the chain loops.
+ *
+ * The one container walk. A module snapshot resolves from its own rows; a walk that may leave the
+ * module resolves through the store, and neither writes a second guard.
+ */
+export function ancestryOf(
+	declaration: StoredDeclaration,
+	resolve: (symbolId: string) => StoredDeclaration | null,
+): { ancestors: StoredDeclaration[]; cyclic: boolean } {
+	const ancestors: StoredDeclaration[] = [];
+	const seen = new Set([declaration.symbolId]);
+	let next = declaration.containerId;
+	while (next !== undefined) {
+		if (seen.has(next)) return { ancestors, cyclic: true };
+		const container = resolve(next);
+		if (container === null) break;
+		seen.add(next);
+		ancestors.push(container);
+		next = container.containerId;
+	}
+	return { ancestors, cyclic: false };
+}
+
 ////////////////////////////////
 //  Class
 
@@ -54,20 +78,9 @@ export class Containment {
 		}
 	}
 
-	/** Containers above a declaration, nearest first, and whether the chain loops. */
+	/** Containers above a declaration, resolved from this module's rows alone. */
 	private ancestry(declaration: StoredDeclaration): { ancestors: StoredDeclaration[]; cyclic: boolean } {
-		const ancestors: StoredDeclaration[] = [];
-		const seen = new Set([declaration.symbolId]);
-		let next = declaration.containerId;
-		while (next !== undefined) {
-			if (seen.has(next)) return { ancestors, cyclic: true };
-			const container = this.byId.get(next);
-			if (container === undefined) break;
-			seen.add(next);
-			ancestors.push(container);
-			next = container.containerId;
-		}
-		return { ancestors, cyclic: false };
+		return ancestryOf(declaration, (symbolId) => this.byId.get(symbolId) ?? null);
 	}
 
 	/** Parameter or local-holding ancestor. */

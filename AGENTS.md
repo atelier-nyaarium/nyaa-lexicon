@@ -227,6 +227,12 @@ Ordered by how much they prove:
   only by rebinding the address. A refactor step journals what its rebind moved, with the state it
   replaced, in the same transaction as the move, and every reversal restores exactly that, never a
   state inferred from the subject as it stands.
+- **A read derives its declaration topology once, through `core/src/readContext.ts`.** Which
+  declarations a module holds, how they nest, which are local, which grouping stands above one, and
+  the summary a declaration answers as: one derivation, built per read and handed down, so no two
+  readers disagree about the same file. `core/src/locals.ts` holds the per-module containment and
+  the one container walk beneath it, and a residue forbids every other module naming either or
+  reading `containerId` to answer a nesting question. `docs/architecture.md` holds the whole of it.
 - **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
   store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there.
   Recall, doubt and diagnosis read raw rows on purpose, since a stranded subject must still be seen.

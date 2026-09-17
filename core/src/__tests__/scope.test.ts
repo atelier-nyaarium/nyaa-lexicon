@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ANONYMOUS_NAMESPACE, composeSymbolId } from "@nyaa-lexicon/protocol";
+import { ReadContext } from "../readContext.js";
 import { resolveScope, successor } from "../scope.js";
 import type { IndexStore, StoredDeclaration } from "../store.js";
 
@@ -17,11 +18,11 @@ function declaration(module: string, name: string, kind = "function", visibility
 	} as StoredDeclaration;
 }
 
-function store(rows: StoredDeclaration[]): IndexStore {
-	return {
+function store(rows: StoredDeclaration[]): ReadContext {
+	return new ReadContext({
 		declaration: (id: string) => rows.find((row) => row.symbolId === id) ?? null,
 		declarationsNamed: (name: string) => rows.filter((row) => row.name === name),
-	} as unknown as IndexStore;
+	} as unknown as IndexStore);
 }
 
 describe("scope resolution", () => {

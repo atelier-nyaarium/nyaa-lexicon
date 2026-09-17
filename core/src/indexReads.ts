@@ -30,9 +30,10 @@ import {
 	type UsesFromResult,
 } from "@nyaa-lexicon/protocol";
 import { findCycles } from "./graph.js";
-import { Containment, inSourceOrder } from "./locals.js";
+import { inSourceOrder } from "./locals.js";
 import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
 import { proseHit } from "./proseText.js";
+import { ReadContext, toSummary } from "./readContext.js";
 import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
 import type {
@@ -127,24 +128,6 @@ function page(query: LiteralQuery, paged: Paged<StoredLiteral>): LiteralsResult 
 	return { query, literals: paged.items, ...wire(paged) };
 }
 
-export function toSummary(declaration: StoredDeclaration): SymbolSummary {
-	return {
-		symbolId: declaration.symbolId,
-		name: declaration.name,
-		kind: declaration.kind,
-		module: declaration.module,
-		visibility: declaration.visibility,
-		...defined({
-			containerId: declaration.containerId,
-			exported: declaration.exported,
-			signature: declaration.signature,
-		}),
-		...(declaration.range === undefined
-			? {}
-			: { lines: { start: declaration.range.start.line, end: declaration.range.end.line } }),
-	};
-}
-
 /** A provenance when bound or ambiguous; a reason when not. */
 function bindingOf(reference: StoredReference): Pick<UseFrom, "status" | "reason"> {
 	if (reference.targetId !== null) return { status: "bound" };
@@ -153,42 +136,32 @@ function bindingOf(reference: StoredReference): Pick<UseFrom, "status" | "reason
 	return { status: "unbound", ...(reason.success ? { reason: reason.data } : {}) };
 }
 
-/** Each module's declarations, read once per list. */
-class UseContext {
-	private readonly modules = new Map<string, Containment>();
-	private readonly targets = new Map<string, StoredDeclaration | null>();
+/** A use's owner is read in the use's own file. */
+function topLevelOf(context: ReadContext, reference: StoredReference): StoredDeclaration | null {
+	return reference.fromId === null ? null : context.topLevelIn(reference.module, reference.fromId);
+}
 
-	constructor(private readonly store: IndexStore) {}
+function anchorOf(context: ReadContext, symbolId: string): CommentAnchor | null {
+	const declaration = context.declaration(symbolId);
+	if (declaration === null) return null;
+	return {
+		symbolId,
+		name: declaration.name,
+		kind: declaration.kind,
+		...defined({ signature: declaration.signature }),
+		line: declaration.range.start.line,
+	};
+}
 
-	private containment(module: string): Containment {
-		let found = this.modules.get(module);
-		if (found === undefined) {
-			found = new Containment(this.store.declarationsIn(module));
-			this.modules.set(module, found);
-		}
-		return found;
-	}
-
-	target(symbolId: string): StoredDeclaration | null {
-		if (!this.targets.has(symbolId)) this.targets.set(symbolId, this.store.declaration(symbolId));
-		return this.targets.get(symbolId) ?? null;
-	}
-
-	/** A use's owner and containers stay in its own file. */
-	topLevel(reference: StoredReference): StoredDeclaration | null {
-		return reference.fromId === null ? null : this.containment(reference.module).topLevel(reference.fromId);
-	}
-
-	use(reference: StoredReference): ReferenceUse {
-		const top = this.topLevel(reference);
-		// Target head is file head; daemon-protocol.md holds why.
-		const language = languageOf(reference.fromId ?? reference.targetId ?? "");
-		return {
-			...reference,
-			...(top === null ? {} : { topLevel: toSummary(top) }),
-			...(language === null ? {} : { language }),
-		};
-	}
+function useOf(context: ReadContext, reference: StoredReference): ReferenceUse {
+	const top = topLevelOf(context, reference);
+	// Target head is file head; daemon-protocol.md holds why.
+	const language = languageOf(reference.fromId ?? reference.targetId ?? "");
+	return {
+		...reference,
+		...(top === null ? {} : { topLevel: toSummary(top) }),
+		...(language === null ? {} : { language }),
+	};
 }
 
 ////////////////////////////////
@@ -214,21 +187,19 @@ export class IndexReadModel {
 	 * surface, which is the thing that beats reading the file.
 	 */
 	describe(symbolId: string): DescribeResult | null {
-		const declaration = this.store.declaration(symbolId);
+		const context = new ReadContext(this.store);
+		const declaration = context.declaration(symbolId);
 		if (!declaration) return null;
 
 		// Members render as one line each and carry no prose, so deriving their documentation would
 		// be one query per member for text nothing prints.
-		const inModule = this.store.declarationsIn(declaration.module);
-		const containment = new Containment(inModule);
-		const members = containment.declaredChildren(symbolId).map(toSummary);
+		const members = context.declaredChildren(symbolId).map(toSummary);
 
 		// Leading is excluded because it IS the documentation printed above. What is left is the
 		// prose a reader would only find by opening the file: a note beside the code, or one written
 		// inside the body. Capped, because a long function's body notes would otherwise crowd out
 		// everything else describe exists to say.
-		const locals = containment.localsOwnedBy(symbolId);
-		const attached = inSourceOrder([symbolId, ...locals], (id) =>
+		const attached = inSourceOrder(context.ownedIds(symbolId), (id) =>
 			this.store.commentsAnchoredTo(id).filter((comment) => id !== symbolId || comment.form !== "leading"),
 		);
 		const comments = attached.slice(0, DESCRIBE_NOTE_LIMIT).map((comment) => ({
@@ -252,8 +223,8 @@ export class IndexReadModel {
 			...(prose.length === 0 ? {} : { prose }),
 			...(regions.length > prose.length ? { moreProse: regions.length - prose.length } : {}),
 			referenceCount: this.store.usesTo(symbolId).length,
-			graph: this.graphSummary(symbolId),
-			hierarchy: this.typeHierarchy(symbolId),
+			graph: this.graphSummary(context, symbolId),
+			hierarchy: this.hierarchyOf(context, symbolId),
 			...(comments.length === 0 ? {} : { comments }),
 			...(attached.length > comments.length ? { moreComments: attached.length - comments.length } : {}),
 			tier: "bound",
@@ -316,7 +287,8 @@ export class IndexReadModel {
 		if ((text === undefined) === (options.regex === undefined)) {
 			throw new Error(`Set exactly one of text or regex.`);
 		}
-		const scope = options.within === undefined ? undefined : resolveScope(this.store, options.within);
+		const scope =
+			options.within === undefined ? undefined : resolveScope(new ReadContext(this.store), options.within);
 		const scoped = scope === undefined ? undefined : filterFor(scope);
 		const found = this.store.searchSymbols(text, {
 			...defined({ regex: options.regex, kind: options.kind, module: options.module, scope: scoped }),
@@ -343,17 +315,17 @@ export class IndexReadModel {
 
 	/** Who uses a symbol, import and export lines left out. Capped, and the caller is told when it was. */
 	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
-		const scope = within === undefined ? undefined : resolveScope(this.store, within);
+		const context = new ReadContext(this.store);
+		const scope = within === undefined ? undefined : resolveScope(context, within);
 		// A use at module level sits inside no symbol, so no scope holds it.
 		const all = this.store.usesTo(symbolId);
 		const filtered =
 			scope === undefined
 				? all
 				: all.filter((reference) => reference.fromId !== null && contains(scope, reference.fromId));
-		const context = new UseContext(this.store);
 		return {
 			symbolId,
-			references: filtered.slice(0, limit).map((reference) => context.use(reference)),
+			references: filtered.slice(0, limit).map((reference) => useOf(context, reference)),
 			total: filtered.length,
 			truncated: filtered.length > limit,
 			tier: "bound",
@@ -362,20 +334,20 @@ export class IndexReadModel {
 
 	/** What a symbol and everything declared inside it reference, bound or not, in source order. */
 	usesFrom(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT): UsesFromResult {
-		const declaration = this.store.declaration(symbolId);
+		const context = new ReadContext(this.store);
+		const declaration = context.declaration(symbolId);
 		if (declaration === null) return { symbolId, references: [], total: 0, truncated: false, tier: "bound" };
-		const inside = new Containment(this.store.declarationsIn(declaration.module)).descendantIds(symbolId);
+		const inside = context.descendantIds(symbolId);
 		const written = this.store
 			.usesIn(declaration.module)
 			.filter((reference) => reference.fromId !== null && inside.has(reference.fromId));
-		const context = new UseContext(this.store);
 		return {
 			symbolId,
 			references: written.slice(0, limit).map((reference): UseFrom => {
-				const target = reference.targetId === null ? null : context.target(reference.targetId);
+				const target = reference.targetId === null ? null : context.summaryOf(reference.targetId);
 				return {
-					...context.use(reference),
-					...(target === null ? {} : { target: toSummary(target) }),
+					...useOf(context, reference),
+					...(target === null ? {} : { target }),
 					...bindingOf(reference),
 				};
 			}),
@@ -396,7 +368,8 @@ export class IndexReadModel {
 	 * REGEXP here, so it reads a bounded page and says when it stopped early.
 	 */
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
-		const scope = query.within === undefined ? undefined : resolveScope(this.store, query.within);
+		const context = new ReadContext(this.store);
+		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
 		const scoped = scope === undefined ? undefined : filterFor(scope);
 		const base = { kind: query.kind, key: query.key, scope: scoped };
 		if (query.value !== undefined) {
@@ -405,9 +378,7 @@ export class IndexReadModel {
 				scope === undefined ? limit : REGEX_SCAN_LIMIT,
 			);
 			const matched =
-				scope === undefined
-					? found
-					: found.filter((literal) => literal.containerId !== null && contains(scope, literal.containerId));
+				scope === undefined ? found : found.filter((literal) => context.literalWithin(scope, literal));
 			return page(
 				query,
 				scope === undefined
@@ -424,9 +395,7 @@ export class IndexReadModel {
 				scope === undefined ? limit : REGEX_SCAN_LIMIT,
 			);
 			const matched =
-				scope === undefined
-					? found
-					: found.filter((literal) => literal.containerId !== null && contains(scope, literal.containerId));
+				scope === undefined ? found : found.filter((literal) => context.literalWithin(scope, literal));
 			return page(
 				query,
 				scope === undefined
@@ -440,8 +409,7 @@ export class IndexReadModel {
 			const scanned = this.store.literalsWhere({ ...base, kind: query.kind ?? "string" }, REGEX_SCAN_LIMIT);
 			const matched = scanned.filter(
 				(literal) =>
-					expression.test(literal.value) &&
-					(scope === undefined || (literal.containerId !== null && contains(scope, literal.containerId))),
+					expression.test(literal.value) && (scope === undefined || context.literalWithin(scope, literal)),
 			);
 			return page(query, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
 		}
@@ -476,7 +444,8 @@ export class IndexReadModel {
 		const filter = {
 			...defined({ form: query.form, module: query.module }),
 		};
-		const scope = query.within === undefined ? undefined : resolveScope(this.store, query.within);
+		const context = new ReadContext(this.store);
+		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
 
 		if (query.text !== undefined) {
 			// The same substring match as the unscoped read, so a scope never changes what text means.
@@ -486,13 +455,14 @@ export class IndexReadModel {
 					(comment) => comment.anchorId !== null && contains(scope, comment.anchorId),
 				);
 				return this.pageComments(
+					context,
 					query,
 					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 				);
 			}
 			const found = this.store.commentsContaining(query.text, limit, filter);
 			const total = this.store.countCommentsContaining(query.text, filter);
-			return this.pageComments(query, pageCounted(found, limit, total));
+			return this.pageComments(context, query, pageCounted(found, limit, total));
 		}
 
 		if (query.regex !== undefined) {
@@ -504,6 +474,7 @@ export class IndexReadModel {
 					(scope === undefined || (comment.anchorId !== null && contains(scope, comment.anchorId))),
 			);
 			return this.pageComments(
+				context,
 				query,
 				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 			);
@@ -517,33 +488,28 @@ export class IndexReadModel {
 					(comment) => comment.anchorId !== null && contains(scope, comment.anchorId),
 				);
 				return this.pageComments(
+					context,
 					query,
 					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 				);
 			}
 			const found = this.store.commentsToScan(limit, filter);
-			return this.pageComments(query, pageCounted(found, limit, this.store.countComments(filter)));
+			return this.pageComments(context, query, pageCounted(found, limit, this.store.countComments(filter)));
 		}
 
 		throw new Error('give a text or a regex, e.g. { text: "refuses rather than" } or { regex: "/TODO|FIXME/" }');
 	}
 
-	private pageComments(query: CommentQuery, paged: Paged<StoredComment>): CommentsResult {
-		const anchors = new Map<string, CommentAnchor | null>();
-		const shown = paged.items.map((comment) => {
-			if (comment.anchorId !== null && !anchors.has(comment.anchorId)) {
-				anchors.set(comment.anchorId, this.anchorOf(comment.anchorId));
-			}
-			return {
-				factId: comment.factId,
-				module: comment.module,
-				range: comment.range,
-				form: comment.form,
-				placement: comment.placement,
-				raw: preview(comment.raw),
-				anchor: comment.anchorId === null ? null : (anchors.get(comment.anchorId) ?? null),
-			};
-		});
+	private pageComments(context: ReadContext, query: CommentQuery, paged: Paged<StoredComment>): CommentsResult {
+		const shown = paged.items.map((comment) => ({
+			factId: comment.factId,
+			module: comment.module,
+			range: comment.range,
+			form: comment.form,
+			placement: comment.placement,
+			raw: preview(comment.raw),
+			anchor: comment.anchorId === null ? null : anchorOf(context, comment.anchorId),
+		}));
 		return { query, comments: shown, ...wire(paged) };
 	}
 
@@ -595,10 +561,11 @@ export class IndexReadModel {
 		paged: Paged<StoredDoc>,
 		pattern?: { find(text: string): string | null },
 	): DocsResult {
+		const context = new ReadContext(this.store);
 		const paths = new Map<string, string[]>();
 		const shown = paged.items.map((region) => {
 			const anchor = region.anchorId;
-			if (anchor !== null && !paths.has(anchor)) paths.set(anchor, this.headingPath(anchor));
+			if (anchor !== null && !paths.has(anchor)) paths.set(anchor, this.headingPathIn(context, anchor));
 			const match = query.text ?? pattern?.find(region.normalized) ?? undefined;
 			const relative = match === undefined ? undefined : proseHit(region.raw, match);
 			const hit =
@@ -631,40 +598,25 @@ export class IndexReadModel {
 	 * naming a function, or a container in another file, would otherwise put either inside something
 	 * called a heading path: the answer being wrong rather than absent. Stopping keeps what is real.
 	 *
-	 * Bounded rather than trusting the chain to be acyclic: an id containing itself would hang.
+	 * The context's walk is bounded, so an id containing itself stops rather than hanging.
 	 */
 	headingPath(symbolId: string): string[] {
-		const names: string[] = [];
-		const seen = new Set<string>();
-		let current: string | undefined = symbolId;
-		let module: string | undefined;
-		while (current !== undefined && !seen.has(current)) {
-			seen.add(current);
-			const declaration = this.store.declaration(current);
-			if (declaration === null || declaration.kind !== "heading") break;
-			if (module !== undefined && declaration.module !== module) break;
-			module = declaration.module;
-			names.push(declaration.name);
-			current = declaration.containerId;
-		}
-		return names.reverse();
+		return this.headingPathIn(new ReadContext(this.store), symbolId);
+	}
+
+	private headingPathIn(context: ReadContext, symbolId: string): string[] {
+		const start = context.declaration(symbolId);
+		if (start === null || start.kind !== "heading") return [];
+		const above = context.ancestorsOf(
+			start,
+			(container) => container.kind === "heading" && container.module === start.module,
+		);
+		return [start, ...above].map((heading) => heading.name).reverse();
 	}
 
 	/** The prose of one section, which is how describe answers about a heading. */
 	docsFor(symbolId: string): StoredDoc[] {
 		return this.store.docsAnchoredTo(symbolId);
-	}
-
-	private anchorOf(symbolId: string): CommentAnchor | null {
-		const declaration = this.store.declaration(symbolId);
-		if (declaration === null) return null;
-		return {
-			symbolId,
-			name: declaration.name,
-			kind: declaration.kind,
-			...defined({ signature: declaration.signature }),
-			line: declaration.range.start.line,
-		};
 	}
 
 	/** Values written in more than one file, which is the strongest textual signal of a relationship. */
@@ -679,20 +631,15 @@ export class IndexReadModel {
 	 * than about the code. A caller told otherwise would read a low fan-in as "barely used" when it
 	 * may only mean "barely resolved".
 	 */
-	private graphSummary(symbolId: string): GraphSummary {
+	private graphSummary(context: ReadContext, symbolId: string): GraphSummary {
 		const cycle = findCycles(this.store.useEdges()).find((found) => found.members.includes(symbolId));
 
 		// Members counted too, because a reference inside a method belongs to the METHOD. Asking a
 		// class for its own fan-out returned zero however much it used, since nothing is written
 		// directly in a class body, and a reader takes zero as "depends on nothing".
-		const declaration = this.store.declaration(symbolId);
-		const containment = declaration ? new Containment(this.store.declarationsIn(declaration.module)) : null;
-		const members = containment?.declaredChildren(symbolId) ?? [];
+		const members = context.declaredChildren(symbolId);
 		// A local's references belong to its owner.
-		const owners = [symbolId, ...members.map((m) => m.symbolId)].flatMap((id) => [
-			id,
-			...(containment?.localsOwnedBy(id) ?? []),
-		]);
+		const owners = [symbolId, ...members.map((m) => m.symbolId)].flatMap((id) => context.ownedIds(id));
 		const uses = new Set<string>();
 		for (const owner of owners) {
 			for (const reference of this.store.usesFrom(owner)) {
@@ -701,9 +648,8 @@ export class IndexReadModel {
 		}
 
 		const incoming = this.store.usesTo(symbolId);
-		const context = new UseContext(this.store);
 		const dependents = new Set(
-			incoming.map((reference) => context.topLevel(reference)?.symbolId ?? `module ${reference.module}`),
+			incoming.map((reference) => topLevelOf(context, reference)?.symbolId ?? `module ${reference.module}`),
 		);
 
 		return {
@@ -735,6 +681,10 @@ export class IndexReadModel {
 	 * it would read as "this extends nothing".
 	 */
 	typeHierarchy(symbolId: string, maxDepth = 16): TypeHierarchy {
+		return this.hierarchyOf(new ReadContext(this.store), symbolId, maxDepth);
+	}
+
+	private hierarchyOf(context: ReadContext, symbolId: string, maxDepth = 16): TypeHierarchy {
 		const isHeritage = (role: string) => role === "extends" || role === "implements";
 
 		const supertypeIdsOf = (id: string) =>
@@ -746,9 +696,8 @@ export class IndexReadModel {
 
 		const summariesOf = (ids: string[]) =>
 			[...new Set(ids)]
-				.map((id) => this.store.declaration(id))
-				.filter((found): found is StoredDeclaration => found !== null)
-				.map(toSummary);
+				.map((id) => context.summaryOf(id))
+				.filter((found): found is SymbolSummary => found !== null);
 
 		const supertypes = summariesOf(supertypeIdsOf(symbolId));
 		const subtypes = summariesOf(
@@ -775,7 +724,7 @@ export class IndexReadModel {
 		}
 
 		// usesFrom excludes unbound rows.
-		const declaration = this.store.declaration(symbolId);
+		const declaration = context.declaration(symbolId);
 		const unresolved =
 			declaration === null
 				? []
@@ -806,6 +755,7 @@ export class IndexReadModel {
 	 * times that caller calls it, and the individual spans are what it highlights inside that row.
 	 */
 	callHierarchy(symbolId: string): CallHierarchy {
+		const context = new ReadContext(this.store);
 		const group = (
 			rows: StoredReference[],
 			endOf: (reference: StoredReference) => string | null,
@@ -825,8 +775,8 @@ export class IndexReadModel {
 
 			const edges: CallHierarchyEdge[] = [];
 			for (const [peer, ranges] of byPeer) {
-				const declaration = this.store.declaration(peer);
-				if (declaration !== null) edges.push({ symbol: toSummary(declaration), ranges });
+				const symbol = context.summaryOf(peer);
+				if (symbol !== null) edges.push({ symbol, ranges });
 			}
 			return edges;
 		};
@@ -840,9 +790,9 @@ export class IndexReadModel {
 
 	/** The most-referenced symbols, which is hub rank. */
 	mostReferenced(limit = 20): MostReferencedResult {
-		return this.store.mostReferenced(limit).map((row) => {
-			const declaration = this.store.declaration(row.symbolId);
-			return { ...row, declaration: declaration === null ? null : toSummary(declaration) };
-		});
+		const context = new ReadContext(this.store);
+		return this.store
+			.mostReferenced(limit)
+			.map((row) => ({ ...row, declaration: context.summaryOf(row.symbolId) }));
 	}
 }

@@ -91,6 +91,32 @@ with the file's facts, and refreshes every stored row from the map before it pru
 pass left unread carries the attributes as they stand. Reachability reads only a clean `yes`; the
 knowledge layer's seeded fallback reads the rest (`docs/knowledge-layer.md`).
 
+## Reads
+
+**A read derives its topology once.** `core/src/readContext.ts` builds a `ReadContext` from the
+store at the top of a query and hands it down. It owns which declarations a module holds, how they
+nest, which of them are local, which grouping stands above one, and the summary a declaration
+answers as. Deriving one of those a second way is how two readers come to disagree about the same
+file, so there is one derivation and every reader asks it.
+
+**The context is a per-read memo, not a store snapshot.** It reads the store once per module and
+once per id, and its first answer for each stands for the rest of that read. What keeps a read on
+one generation of the index is the daemon's gate: `core/src/dispatch.ts` runs a query's answer
+under the shared gate, alongside other readers and never inside a write, whether the handler is
+tagged `read` or reaches the answer through `treeFirst` or `upgradedRead`.
+
+**A reader that derives topology takes a context; one that does not reads the store.** `describe`,
+`usesFrom`, `findReferences`, the two hierarchies, `mostReferenced`, `headingPath`, the scoped
+searches, `factsFor` and `knowledgeScope` all ask about nesting, locality, containment or a
+summary, so each mints one context and hands it down. `findByName`, `outline`, `declarationsIn`,
+`fileNotes`, `commentsFor` and `docsFor` ask nothing about nesting: they answer rows the store
+already orders, each summarized at most once, so a context would add an unused memo.
+
+`core/src/locals.ts` holds the per-module `Containment` and `ancestryOf`, the one container walk
+that a module's own rows and a store-resolved chain both take. `read-context-residue.test.ts` fails
+the build where another module names a containment, calls that walk, declares a second summary, or
+reads `containerId` to answer a nesting question by hand.
+
 ## Diagnostics
 
 A daemon that dies of its heap leaves nothing to read on its own. Two owners change that.

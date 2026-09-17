@@ -35,8 +35,8 @@ import {
 import { candidatesFor } from "./candidates.js";
 import { type Clock, systemClock } from "./clock.js";
 import type { ImportResolver } from "./imports.js";
-import { toSummary } from "./indexReads.js";
-import { Containment, inSourceOrder } from "./locals.js";
+import { inSourceOrder } from "./locals.js";
+import { ReadContext, toSummary } from "./readContext.js";
 import * as refusal from "./refusals.js";
 import type { IndexStore, SeedCandidate, StoredDeclaration, StoredFact } from "./store.js";
 import type { Subject } from "./subjects.js";
@@ -146,7 +146,8 @@ export class KnowledgeLedger {
 	 * which is worse than citing fewer facts.
 	 */
 	async factsFor(symbolId: string, limit = DEFAULT_FACT_LIMIT): Promise<FactSet | null> {
-		const declaration = this.store.declaration(symbolId);
+		const context = new ReadContext(this.store);
+		const declaration = context.declaration(symbolId);
 		if (declaration === null) return null;
 
 		const facts: CitedFact[] = [];
@@ -178,10 +179,7 @@ export class KnowledgeLedger {
 		if (references.length > limit) truncated.push("reference");
 
 		// A local's evidence belongs to its owner.
-		const own = [
-			symbolId,
-			...new Containment(this.store.declarationsIn(declaration.module)).localsOwnedBy(symbolId),
-		];
+		const own = context.ownedIds(symbolId);
 
 		const literals = inSourceOrder(own, (id) => this.store.literalsContainedBy(id, limit + 1));
 		for (const literal of literals.slice(0, limit)) {
@@ -705,19 +703,19 @@ export class KnowledgeLedger {
 		members?: boolean | undefined;
 		includeLocals?: boolean | undefined;
 	}): KnowledgeScope | null {
-		const root = scope.symbolId === undefined ? null : this.store.declaration(scope.symbolId);
+		const context = new ReadContext(this.store);
+		const root = scope.symbolId === undefined ? null : context.declaration(scope.symbolId);
 		if (scope.symbolId !== undefined && root === null) return null;
 		const module = root?.module ?? scope.module;
 		if (module === undefined) return { symbols: [], localsExcluded: 0 };
 
-		const containment = new Containment(this.store.declarationsIn(module));
 		const symbols: ScopeSymbol[] = [];
 		let localsExcluded = 0;
 		const visited = new Set<string>();
 		const visitMembers = (holder: string | undefined, depth: number) => {
-			for (const member of containment.membersOf(holder)) {
-				if (scope.includeLocals !== true && containment.isLocal(member)) {
-					localsExcluded += containment.descendantIds(member.symbolId).size;
+			for (const member of context.membersOf(module, holder)) {
+				if (scope.includeLocals !== true && context.isLocal(member)) {
+					localsExcluded += context.descendantIds(member.symbolId).size;
 					continue;
 				}
 				visit(member, depth, true);
