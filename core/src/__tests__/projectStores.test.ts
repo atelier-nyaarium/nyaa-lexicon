@@ -2,17 +2,23 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspacePaths } from "@nyaa-lexicon/client";
+import type { Clock } from "../clock";
 import { registerProject } from "../projectRegistry";
 import {
 	deleteProjectStore,
 	findProjectStore,
 	type HolderAlive,
 	listProjectStores,
+	PRUNE_AFTER_MS,
 	type ProjectStore,
+	pruneProjectStores,
+	stampProjectStores,
 	storeKeyFor,
 } from "../projectStores";
 import { IndexStore } from "../store";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -25,12 +31,43 @@ const NOBODY_ALIVE = () => false;
 const EVERYBODY_ALIVE = () => true;
 const admitAll = () => ({ admitted: true });
 
-/** A real index for `workspaceRoot`, written the way the daemon writes one. */
-function seedStore(workspaceRoot: string): string {
+const DAY = 86_400_000;
+const NOW = 1_800_000_000_000;
+
+/** A real index for `workspaceRoot`, written the way the daemon writes one, at the clock's time. */
+function seedStore(workspaceRoot: string, clock?: Clock): string {
 	const paths = workspacePaths(host, workspaceRoot);
 	mkdirSync(paths.dir, { recursive: true });
-	IndexStore.open(paths.index, null, workspaceRoot).store.close();
+	IndexStore.open(paths.index, null, workspaceRoot, clock).store.close();
 	return path.basename(paths.dir);
+}
+
+/** A workspace under `workDir`, indexed at `seenAt`, then removed from disk. */
+function seedOrphan(name: string, seenAt: number): string {
+	const root = path.join(workDir, name);
+	mkdirSync(root);
+	const key = seedStore(root, fakeClock(seenAt));
+	rmSync(root, { recursive: true });
+	return key;
+}
+
+/** One file indexed at the clock's time. */
+function indexFileAt(workspaceRoot: string, clock: Clock): void {
+	const paths = workspacePaths(host, workspaceRoot);
+	const indexed = IndexStore.open(paths.index, null, workspaceRoot, clock).store;
+	indexed.replaceFile({ module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
+	indexed.close();
+}
+
+/** As a store written before the stamp existed. */
+function unstamp(workspaceRoot: string): void {
+	const db = new DatabaseSync(workspacePaths(host, workspaceRoot).index);
+	db.exec("DELETE FROM meta WHERE key = 'lastSeenAt'");
+	db.close();
+}
+
+function seenOf(key: string, stores = listProjectStores(NOBODY_ALIVE, host)): number | null | undefined {
+	return stores.find((store) => store.key === key)?.lastSeenAt;
 }
 
 /** The same, in a directory the project chose: registered, so the listing knows to look there.
@@ -124,8 +161,7 @@ describe("listing what this machine has indexed", () => {
 		expect(store?.workspace).toBe("missing");
 	});
 
-	// The defect a live probe found: an index written before the path was recorded looked exactly
-	// like an abandoned one, so nine live repositories were listed as orphaned.
+	// An index written before the path was recorded is unknown, never abandoned.
 	it("says unknown, not missing, for an index that never recorded its workspace", () => {
 		const paths = workspacePaths(host, workDir);
 		mkdirSync(paths.dir, { recursive: true });
@@ -152,6 +188,154 @@ describe("listing what this machine has indexed", () => {
 		seedStore(other);
 
 		expect(listProjectStores(NOBODY_ALIVE, host)).toHaveLength(2);
+	});
+});
+
+describe("when a workspace was last seen", () => {
+	it("reads a store with no stamp as its newest indexing, or as undated", () => {
+		const key = seedStore(workDir, fakeClock(NOW));
+		indexFileAt(workDir, fakeClock(NOW + DAY));
+		unstamp(workDir);
+		const empty = path.join(workDir, "empty");
+		mkdirSync(empty);
+		const emptyKey = seedStore(empty, fakeClock(NOW));
+		unstamp(empty);
+
+		const stores = listProjectStores(NOBODY_ALIVE, host);
+
+		expect(seenOf(key, stores)).toBe(NOW + DAY);
+		expect(seenOf(emptyKey, stores)).toBeNull();
+	});
+
+	// A daemon opening on its root has seen it, and a clock behind what is held changes nothing.
+	it("is stamped forward when a daemon opens on its root, never backward", () => {
+		const key = seedStore(workDir, fakeClock(NOW));
+		expect(seenOf(key)).toBe(NOW);
+
+		seedStore(workDir, fakeClock(NOW + DAY));
+		expect(seenOf(key)).toBe(NOW + DAY);
+
+		seedStore(workDir, fakeClock(NOW - DAY));
+		expect(seenOf(key)).toBe(NOW + DAY);
+	});
+
+	// Indexing a file is seeing the workspace, and a daemon stamps only when it opens.
+	it("reads the later of the stamp and the newest indexing", () => {
+		const clock = fakeClock(NOW);
+		const key = seedStore(workDir, clock);
+		const indexed = IndexStore.open(workspacePaths(host, workDir).index, null, workDir, clock).store;
+		clock.advance(2 * DAY);
+		indexed.replaceFile({ module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
+		indexed.close();
+
+		const [store] = listProjectStores(NOBODY_ALIVE, host);
+		expect(store?.key).toBe(key);
+		expect(store?.lastSeenAt).toBe(NOW + 2 * DAY);
+		expect(store?.lastIndexedAt).toBe(NOW + 2 * DAY);
+	});
+
+	// A clock behind the newest indexing still writes the row, so the seed outlives the file rows.
+	it("keeps a value seeded from the newest indexing once those file rows are gone", () => {
+		const key = seedStore(workDir, fakeClock(NOW));
+		indexFileAt(workDir, fakeClock(NOW + DAY));
+		unstamp(workDir);
+
+		const stamped = stampProjectStores(NOBODY_ALIVE, NOW, host);
+		expect(seenOf(key, stamped)).toBe(NOW + DAY);
+
+		const db = new DatabaseSync(workspacePaths(host, workDir).index);
+		db.exec("DELETE FROM files");
+		db.close();
+		expect(seenOf(key)).toBe(NOW + DAY);
+	});
+
+	it("stamps a present workspace forward only, and leaves a missing or unrecorded one alone", () => {
+		const present = seedStore(workDir, fakeClock(NOW));
+		const missing = seedOrphan("gone", NOW);
+		const unrecorded = path.join(workDir, "unrecorded");
+		mkdirSync(unrecorded);
+		const paths = workspacePaths(host, unrecorded);
+		mkdirSync(paths.dir, { recursive: true });
+		IndexStore.open(paths.index).store.close();
+		const unrecordedKey = path.basename(paths.dir);
+
+		const behind = stampProjectStores(NOBODY_ALIVE, NOW - DAY, host);
+		expect(seenOf(present, behind)).toBe(NOW);
+
+		const ahead = stampProjectStores(NOBODY_ALIVE, NOW + 7 * DAY, host);
+		expect(seenOf(present, ahead)).toBe(NOW + 7 * DAY);
+		expect(seenOf(present)).toBe(NOW + 7 * DAY);
+		expect(seenOf(missing, ahead)).toBe(NOW);
+		expect(seenOf(unrecordedKey, ahead)).toBeNull();
+	});
+});
+
+describe("pruning orphans", () => {
+	// The three that must survive: a present workspace however stale its stamp, an index that never
+	// recorded its root, and one a daemon is serving.
+	it("deletes an orphan unseen past the horizon and nothing else", () => {
+		const stale = seedOrphan("stale", NOW - PRUNE_AFTER_MS - DAY);
+		const recent = seedOrphan("recent", NOW - PRUNE_AFTER_MS + DAY);
+		const boundary = seedOrphan("boundary", NOW - PRUNE_AFTER_MS);
+		const undated = seedOrphan("undated", NOW);
+		unstamp(path.join(workDir, "undated"));
+		const present = seedStore(workDir, fakeClock(NOW - PRUNE_AFTER_MS - DAY));
+		const unrecordedPaths = workspacePaths(host, path.join(workDir, "unrecorded"));
+		mkdirSync(unrecordedPaths.dir, { recursive: true });
+		const unrecorded = IndexStore.open(
+			unrecordedPaths.index,
+			null,
+			undefined,
+			fakeClock(NOW - PRUNE_AFTER_MS - DAY),
+		);
+		unrecorded.store.replaceFile({ module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
+		unrecorded.store.close();
+		const served = path.join(workDir, "served");
+		mkdirSync(served);
+		const servedKey = seedStore(served, fakeClock(NOW - PRUNE_AFTER_MS - DAY));
+		rmSync(served, { recursive: true });
+		seedLock(served, 4242);
+
+		const pruned = pruneProjectStores(EVERYBODY_ALIVE, NOW, host);
+
+		expect(pruned.map(({ store, outcome }) => [store.key, outcome.deleted])).toEqual([[stale, true]]);
+		expect(existsSync(path.join(stateRoot(host), stale))).toBe(false);
+		const kept = listProjectStores(EVERYBODY_ALIVE, host).map((store) => store.key);
+		expect(kept.sort()).toEqual(
+			[recent, boundary, undated, present, path.basename(unrecordedPaths.dir), servedKey].sort(),
+		);
+	});
+
+	it("reads an unstamped orphan's age from its newest indexing", () => {
+		const root = path.join(workDir, "old");
+		mkdirSync(root);
+		const key = seedStore(root, fakeClock(NOW - PRUNE_AFTER_MS - DAY));
+		indexFileAt(root, fakeClock(NOW - PRUNE_AFTER_MS - DAY));
+		unstamp(root);
+		rmSync(root, { recursive: true });
+
+		expect(pruneProjectStores(NOBODY_ALIVE, NOW, host)).toMatchObject([
+			{ store: { key }, outcome: { deleted: true } },
+		]);
+		expect(listProjectStores(NOBODY_ALIVE, host)).toEqual([]);
+	});
+
+	// The delete road, so a custom directory keeps the owner's files as a delete would.
+	it("takes the delete road, leaving what a delete leaves", () => {
+		const root = path.join(workDir, "custom");
+		const custom = path.join(workDir, "refs-store");
+		mkdirSync(root);
+		seedCustom(root, custom);
+		const db = new DatabaseSync(storePaths(custom).index);
+		db.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('lastSeenAt', '${NOW - PRUNE_AFTER_MS - DAY}')`);
+		db.close();
+		writeFileSync(path.join(custom, "notes.txt"), "mine");
+		rmSync(root, { recursive: true });
+
+		const pruned = pruneProjectStores(NOBODY_ALIVE, NOW, host);
+
+		expect(pruned).toMatchObject([{ store: { directory: custom, custom: true }, outcome: { deleted: true } }]);
+		expect(readdirSync(custom)).toEqual(["notes.txt"]);
 	});
 });
 

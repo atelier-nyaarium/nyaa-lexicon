@@ -23,11 +23,17 @@ interface ToolResult {
 	isError?: boolean;
 }
 
+/** What a store says about its workspace, as `list_projects` shows it. */
+export interface StoreTimes {
+	lastIndexedAt: number | null;
+	lastSeenAt: number | null;
+}
+
 /** Injected so tests drive the registry without touching a real state directory. */
 export interface BindingDeps {
 	list: () => SessionProject[];
 	/** Keyed by store: a default store by its key, a custom one by its directory. */
-	indexTimes?: () => ReadonlyMap<string, number | null>;
+	storeTimes?: () => ReadonlyMap<string, StoreTimes>;
 	register: (
 		root: string,
 		stateDir?: string,
@@ -49,7 +55,7 @@ export interface BindingDeps {
 export const LIST_PROJECTS_DESCRIPTION = `
 # \`list_projects\`
 
-List registered projects with their last indexed time and workspace path.
+List registered projects with their last indexed time, when their workspace was last seen, and workspace path.
 
 A \`●\` marks projects bound in this session.
 `.trim();
@@ -101,20 +107,24 @@ function text(body: string, isError = false): ToolResult {
 	};
 }
 
-/** How a project's row finds its store in `indexTimes`. */
+/** How a project's row finds its store in `storeTimes`. */
 function storeOf(project: SessionProject): string {
 	return project.stateDir ?? project.key;
+}
+
+function stamp(at: number | null): string {
+	return at === null ? `never` : new Date(at).toISOString().slice(0, 19).replace("T", " ");
 }
 
 /** Live deps, for production call sites. Binds come from the session, registration from disk. */
 export function liveBindingDeps(binds: SessionBinds): BindingDeps {
 	return {
 		list: () => binds.all(),
-		indexTimes: () =>
+		storeTimes: () =>
 			new Map(
 				listProjectStores(lockHolderAlive).map((store) => [
 					store.custom ? store.directory : store.key,
-					store.lastIndexedAt,
+					{ lastIndexedAt: store.lastIndexedAt, lastSeenAt: store.lastSeenAt },
 				]),
 			),
 		register: (root, stateDir) => {
@@ -149,26 +159,27 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 		);
 	}
 
-	const indexTimes = deps.indexTimes?.() ?? new Map<string, number | null>();
+	const storeTimes = deps.storeTimes?.() ?? new Map<string, StoreTimes>();
 	const rows = projects
 		.map((project) => ({
 			project,
-			lastIndexedAt: indexTimes.get(storeOf(project)) ?? null,
+			times: storeTimes.get(storeOf(project)) ?? { lastIndexedAt: null, lastSeenAt: null },
 		}))
 		.sort((left, right) => {
-			const byTime = (right.lastIndexedAt ?? -Infinity) - (left.lastIndexedAt ?? -Infinity);
+			const byTime = (right.times.lastIndexedAt ?? -Infinity) - (left.times.lastIndexedAt ?? -Infinity);
 			return byTime || left.project.name.localeCompare(right.project.name);
 		});
 	// The store column appears only once some project chose a directory; the default needs no row.
 	const anyCustom = projects.some((project) => project.stateDir !== undefined);
-	const cells = rows.map(({ project, lastIndexedAt }) => [
+	const cells = rows.map(({ project, times }) => [
 		project.bound ? `●` : "",
 		project.name,
-		lastIndexedAt === null ? `never` : new Date(lastIndexedAt).toISOString().slice(0, 19).replace("T", " "),
+		stamp(times.lastIndexedAt),
+		stamp(times.lastSeenAt),
 		project.root,
 		...(anyCustom ? [project.stateDir ?? ""] : []),
 	]);
-	const headers = ["", `Project`, `Last Indexed`, `Workspace`, ...(anyCustom ? [`Store`] : [])];
+	const headers = ["", `Project`, `Last Indexed`, `Last Seen`, `Workspace`, ...(anyCustom ? [`Store`] : [])];
 	const widths = headers.map((header, column) =>
 		Math.max(header.length, ...cells.map((row) => row[column]?.length ?? 0)),
 	);

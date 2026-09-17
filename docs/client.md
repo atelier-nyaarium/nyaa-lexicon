@@ -156,6 +156,17 @@ default store or an absolute directory for any store, matched against that listi
 joined from input. Deleting a custom directory removes lexicon's files and then the directory only
 if nothing else is left in it.
 
+Beside the workspace root, the index records when that root was last seen on disk: a daemon
+stamps it when it opens on the root, and `list_project_stores` stamps every store whose recorded
+root is present. It reads as the later of the stamp and the newest indexing, so an index written
+before the stamp existed reads as its last indexed time, and a write never moves it backwards.
+`list_projects` shows it as Last Seen beside Last Indexed, and an orphaned row in
+`list_project_stores` says when its workspace was last seen. An orphan unseen for more than 30
+days is deleted, recorded answers included, through the same road as `delete_project_store`, by
+`list_project_stores` and by any daemon once it is serving; the listing reports what it pruned. A store
+that never recorded its root, one whose root is present, one nothing dates, and one a daemon is
+serving are never pruned. The registry entry stays, as it does after a delete.
+
 ## The helpers
 
 Two hand-written members sit beside the facade, each a composition a consumer would otherwise

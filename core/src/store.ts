@@ -44,6 +44,7 @@ import { type Clock, systemClock } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
 import type { GeneratedReason, GeneratedVerdict } from "./fileScope.js";
+import { stampSeen } from "./lastSeen.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
@@ -1024,7 +1025,11 @@ export class IndexStore {
 
 		// Persist the key on every open.
 		if (compatibility != null) writeMeta(db, COMPATIBILITY_KEY, compatibility);
-		if (workspaceRoot !== undefined) writeMeta(db, WORKSPACE_KEY, workspaceRoot);
+		if (workspaceRoot !== undefined) {
+			writeMeta(db, WORKSPACE_KEY, workspaceRoot);
+			// A daemon opening on its root has seen the root.
+			stampSeen(db, clock.now());
+		}
 
 		return {
 			store: new IndexStore(db, clock),
@@ -1718,7 +1723,9 @@ export class IndexStore {
 	}
 
 	declarationsIn(module: string): StoredDeclaration[] {
-		const rows = this.db.prepare("SELECT * FROM symbols WHERE module = ? ORDER BY startLine").all(module);
+		const rows = this.db
+			.prepare("SELECT * FROM symbols WHERE module = ? ORDER BY startLine, startChar")
+			.all(module);
 		return rows.map(rowToDeclaration);
 	}
 

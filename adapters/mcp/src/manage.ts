@@ -24,11 +24,15 @@ import {
 	listProjectStores,
 	listReports,
 	ownSource,
+	PRUNE_AFTER_MS,
 	type ProjectStore,
+	type PrunedStore,
+	pruneProjectStores,
 	type ReadDiagnostics,
 	type ReportSummary,
 	readDiagnostics,
 	type SampleContext,
+	stampProjectStores,
 } from "@nyaa-lexicon/core";
 import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
@@ -44,6 +48,10 @@ interface ToolResult {
 /** Injected so a test drives real directories without real daemons. */
 export interface ManageDeps {
 	list: () => ProjectStore[];
+	/** The listing after stamping every present workspace as seen `now`. */
+	stamp: (now: number) => ProjectStore[];
+	/** Deletes every orphan unseen past the horizon, through `remove`'s road. */
+	prune: (now: number) => PrunedStore[];
 	remove: (store: ProjectStore) => DeleteOutcome;
 	lock: (store: ProjectStore) => DaemonLock | null;
 	/** Asks the daemon behind `lock` to stop and returns once the store's lock no longer names it. */
@@ -66,6 +74,8 @@ export const LIST_STORES_DESCRIPTION = `
 # \`list_project_stores\`
 
 List local indexes with directory, size, write time, daemon state, and workspace state.
+
+Marks each present workspace as seen. Deletes an orphaned index unseen for more than 30 days, and reports it.
 
 Use a row's key or directory with \`project_diagnostics\`, \`delete_project_store\` or \`stop_project_daemon\`.
 `.trim();
@@ -113,6 +123,7 @@ const REPORTS_SHOWN = 20;
 /** What `workspaceKey` mints. Anything else is a directory name, not a key. */
 const STORE_KEY_RE = /^[A-Za-z0-9._-]+$/;
 const STOP_TIMEOUT_MS = 5_000;
+const PRUNE_AFTER_DAYS = Math.round(PRUNE_AFTER_MS / 86_400_000);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -148,6 +159,8 @@ function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
 export function liveDeps(): ManageDeps {
 	return {
 		list: () => listProjectStores(lockHolderAlive),
+		stamp: (now) => stampProjectStores(lockHolderAlive, now),
+		prune: (now) => pruneProjectStores(lockHolderAlive, now),
 		remove: (store) => deleteProjectStore(store, lockHolderAlive),
 		lock: (store) => {
 			if (store.workspaceRoot === null) return legacyDaemonLock(store);
@@ -263,10 +276,28 @@ function describeAge(modifiedAt: number | null, now: number): string {
 	return `${days} days ago`;
 }
 
-/** An index that never recorded its workspace reads as UNVERIFIED, never orphaned: folding the two
- * once offered nine live projects for deletion. */
-export function renderStores(stores: ProjectStore[], now: number): string {
-	if (stores.length === 0) return `# Project indexes\n\nThis machine holds no indexes.`;
+/** How long an orphan's workspace has been gone: since it was last seen, or unknown. */
+function describeGone(lastSeenAt: number | null, now: number): string {
+	return lastSeenAt === null
+		? `its workspace is gone, and nothing dates when it was last there`
+		: `its workspace is gone, last seen ${describeAge(lastSeenAt, now)}`;
+}
+
+function renderPruned(pruned: PrunedStore[], now: number): string[] {
+	if (pruned.length === 0) return [];
+	const lines = pruned.map(({ store, outcome }) =>
+		outcome.deleted
+			? `- Deleted \`${storeLabel(store)}\` (${store.directory}), freeing ${describeSize(outcome.bytes)}; ${describeGone(store.lastSeenAt, now)}.`
+			: `- Kept \`${storeLabel(store)}\` (${store.directory}): ${outcome.reason}`,
+	);
+	return [`## Pruned`, "", ...lines, ""];
+}
+
+/** An index that never recorded its workspace reads as UNVERIFIED, never orphaned. */
+export function renderStores(stores: ProjectStore[], now: number, pruned: PrunedStore[] = []): string {
+	if (stores.length === 0) {
+		return [`# Project indexes`, "", ...renderPruned(pruned, now), `This machine holds no indexes.`].join("\n");
+	}
 
 	const lines = stores.map((store) => {
 		const where = store.workspaceRoot ?? `(this index predates recording its workspace)`;
@@ -276,7 +307,7 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 				: store.workspace === "present"
 					? `idle`
 					: store.workspace === "missing"
-						? `ORPHANED, its workspace is gone`
+						? `ORPHANED, ${describeGone(store.lastSeenAt, now)}`
 						: `UNVERIFIED, it does not say what it indexed`;
 		return [
 			store.custom ? `## \`${store.key}\` (custom directory)` : `## \`${store.key}\``,
@@ -299,7 +330,7 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 	}
 	if (orphaned.length > 0) {
 		notes.push(
-			`${orphaned.length} index a workspace that no longer exists, holding ${describeSize(reclaimable)}. Nothing can rebuild those, though deleting one still destroys any recorded answers about that project.`,
+			`${orphaned.length} index a workspace that no longer exists, holding ${describeSize(reclaimable)}. Nothing can rebuild those, though deleting one still destroys any recorded answers about that project. Each is deleted here once its workspace has been unseen for more than ${PRUNE_AFTER_DAYS} days.`,
 		);
 	}
 	if (unverified.length > 0) {
@@ -311,6 +342,7 @@ export function renderStores(stores: ProjectStore[], now: number): string {
 	return [
 		`# ${stores.length} indexed ${stores.length === 1 ? `project` : `projects`}`,
 		"",
+		...renderPruned(pruned, now),
 		lines.join("\n\n"),
 		"",
 		`## Notes`,
@@ -429,8 +461,10 @@ export function renderDiagnostics(
 ////////////////////////////////
 //  Tools
 
+/** Prunes before it lists, so a row shown is a row still there. */
 export function listProjectStoresTool(deps: ManageDeps, now = Date.now()): ToolResult {
-	return text(renderStores(deps.list(), now));
+	const pruned = deps.prune(now);
+	return text(renderStores(deps.stamp(now), now, pruned));
 }
 
 export function projectDiagnosticsTool(deps: ManageDeps, args: { store: string }, now = Date.now()): ToolResult {

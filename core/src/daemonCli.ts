@@ -14,6 +14,7 @@ import {
 	currentHost,
 	DaemonStartingError,
 	daemonCommand,
+	lockHolderAlive,
 	refuseRuntime,
 	spawnDaemonProcess,
 	workspacePaths,
@@ -30,6 +31,7 @@ import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
 import { ownSource } from "./ownSource.js";
+import { pruneProjectStores } from "./projectStores.js";
 import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
@@ -474,6 +476,18 @@ async function main(argv: string[]): Promise<void> {
 
 		if (openStore.totals().files > 0 || warmRequested) warm();
 		else log("cold: nothing indexed here before, so nothing is scanned until something asks");
+
+		// Off the startup path, as the warm scan is. Our own store is held, so it is never a candidate.
+		clock.setTimer(() => {
+			try {
+				for (const { store: gone, outcome } of pruneProjectStores(lockHolderAlive, clock.now(), host)) {
+					const label = gone.custom ? gone.directory : gone.key;
+					log(outcome.deleted ? `pruned ${label}: workspace gone` : `not pruned ${label}: ${outcome.reason}`);
+				}
+			} catch (error) {
+				log(`pruning skipped: ${describeError(error)}`);
+			}
+		}, 0);
 
 		linger = lingerWhileEmpty({
 			afterMs: DEFAULT_LINGER_MS,

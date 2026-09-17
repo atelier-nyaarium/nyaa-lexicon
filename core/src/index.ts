@@ -139,7 +139,11 @@ export {
 	deleteProjectStore,
 	findProjectStore,
 	listProjectStores,
+	PRUNE_AFTER_MS,
 	type ProjectStore,
+	type PrunedStore,
+	pruneProjectStores,
+	stampProjectStores,
 	storeKeyFor,
 } from "./projectStores.js";
 export type { MethodRequest, MethodResponse, ProviderPort, ProviderStarter } from "./providerPort.js";

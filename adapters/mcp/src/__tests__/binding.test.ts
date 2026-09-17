@@ -91,14 +91,15 @@ describe("listing", () => {
 		expect(mixed).toContain("/x/refs");
 	});
 
-	it("reads a custom store's index time by its directory", () => {
+	it("reads a custom store's times by its directory, last indexed beside last seen", () => {
 		const custom = project({ stateDir: "/x/refs", name: "alpha:refs" });
+		const times = { lastIndexedAt: Date.UTC(2026, 0, 2, 3, 4, 5), lastSeenAt: Date.UTC(2026, 0, 9, 3, 4, 5) };
 		const body =
-			listProjectsTool(
-				deps([custom], { indexTimes: () => new Map([["/x/refs", Date.UTC(2026, 0, 2, 3, 4, 5)]]) }),
-			).content[0]?.text ?? "";
+			listProjectsTool(deps([custom], { storeTimes: () => new Map([["/x/refs", times]]) })).content[0]?.text ??
+			"";
 
-		expect(body).toContain("2026-01-02 03:04:05");
+		expect(body).toMatch(/Last Indexed\s+Last Seen/);
+		expect(body).toMatch(/2026-01-02 03:04:05\s+2026-01-09 03:04:05/);
 	});
 });
 

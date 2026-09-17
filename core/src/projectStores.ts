@@ -18,6 +18,7 @@ import {
 	workspaceKey,
 } from "@nyaa-lexicon/client";
 import { DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { lastSeenOf, newestIndexedAt, readSeenStamp, stampSeen } from "./lastSeen.js";
 import { readRegistry } from "./projectRegistry.js";
 
 ////////////////////////////////
@@ -44,6 +45,9 @@ export interface ProjectStore {
 	modifiedAt: number | null;
 	/** Newest per-file indexing time, epoch millis, or null when no file has been indexed. */
 	lastIndexedAt: number | null;
+	/** When the workspace was last confirmed on disk, epoch millis; the later of the daemon's stamp
+	 * and `lastIndexedAt`, or null when neither exists. */
+	lastSeenAt: number | null;
 	/** The pid serving it right now, or null. A live daemon blocks deletion. */
 	livePid: number | null;
 }
@@ -51,6 +55,18 @@ export interface ProjectStore {
 export type DeleteOutcome =
 	| { deleted: true; key: string; directory: string; bytes: number }
 	| { deleted: false; reason: string };
+
+/** A store the prune took to the delete road, and what the road answered. */
+export interface PrunedStore {
+	store: ProjectStore;
+	outcome: DeleteOutcome;
+}
+
+////////////////////////////////
+//  Constants
+
+/** An orphan unseen this long is deleted unasked. */
+export const PRUNE_AFTER_MS = 30 * 86_400_000;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -77,9 +93,17 @@ function pidOf(dir: string, isAlive: HolderAlive): number | null {
 	return isAlive(lock.data) ? lock.data.pid : null;
 }
 
+interface IndexMetadata {
+	workspaceRoot: string | null;
+	lastIndexedAt: number | null;
+	lastSeenAt: number | null;
+}
+
+const NO_METADATA: IndexMetadata = { workspaceRoot: null, lastIndexedAt: null, lastSeenAt: null };
+
 /** The workspace an index was built from. Null when it is too old to carry the key, never a guess. */
-function indexMetadata(indexFile: string): { workspaceRoot: string | null; lastIndexedAt: number | null } {
-	if (!existsSync(indexFile)) return { workspaceRoot: null, lastIndexedAt: null };
+function indexMetadata(indexFile: string): IndexMetadata {
+	if (!existsSync(indexFile)) return NO_METADATA;
 	let db: DatabaseSync | null = null;
 	try {
 		db = new DatabaseSync(indexFile, { readOnly: true });
@@ -92,18 +116,24 @@ function indexMetadata(indexFile: string): { workspaceRoot: string | null; lastI
 		} catch {
 			// Older stores may not have a meta table yet.
 		}
-		let lastIndexedAt: number | null = null;
-		try {
-			const row = db.prepare("SELECT indexedAt FROM files ORDER BY indexedAt DESC LIMIT 1").get() as
-				| { indexedAt: number }
-				| undefined;
-			lastIndexedAt = row?.indexedAt ?? null;
-		} catch {
-			// Older stores may not have per-file timestamps yet.
-		}
-		return { workspaceRoot, lastIndexedAt };
+		const lastIndexedAt = newestIndexedAt(db);
+		return { workspaceRoot, lastIndexedAt, lastSeenAt: lastSeenOf(readSeenStamp(db), lastIndexedAt) };
 	} catch {
-		return { workspaceRoot: null, lastIndexedAt: null };
+		return NO_METADATA;
+	} finally {
+		db?.close();
+	}
+}
+
+/** What the store holds afterwards, or null when it could not be written: a daemon mid-write, or
+ * a store too old to carry the key. The listing then shows what it read. */
+function stampIndex(indexFile: string, now: number): number | null {
+	let db: DatabaseSync | null = null;
+	try {
+		db = new DatabaseSync(indexFile);
+		return stampSeen(db, now);
+	} catch {
+		return null;
 	} finally {
 		db?.close();
 	}
@@ -120,7 +150,7 @@ function sizeOf(indexFile: string): { bytes: number; modifiedAt: number | null }
 
 function describeStore(key: string, directory: string, custom: boolean, isAlive: HolderAlive): ProjectStore {
 	const indexFile = storePaths(directory).index;
-	const { workspaceRoot, lastIndexedAt } = indexMetadata(indexFile);
+	const { workspaceRoot, lastIndexedAt, lastSeenAt } = indexMetadata(indexFile);
 	const { bytes, modifiedAt } = sizeOf(indexFile);
 	return {
 		key,
@@ -131,6 +161,7 @@ function describeStore(key: string, directory: string, custom: boolean, isAlive:
 		bytes,
 		modifiedAt,
 		lastIndexedAt,
+		lastSeenAt,
 		livePid: pidOf(directory, isAlive),
 	};
 }
@@ -173,6 +204,49 @@ export function listProjectStores(isAlive: HolderAlive, host: PlatformEnv = curr
 	}
 
 	return stores.sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
+}
+
+/** The listing, with every store whose recorded workspace is on disk stamped as seen `now`. A
+ * stamp never moves backwards, so a clock behind what is held changes nothing. */
+export function stampProjectStores(
+	isAlive: HolderAlive,
+	now: number,
+	host: PlatformEnv = currentHost(),
+): ProjectStore[] {
+	return listProjectStores(isAlive, host).map((store) => {
+		if (store.workspace !== "present") return store;
+		const lastSeenAt = stampIndex(storePaths(store.directory).index, now);
+		return lastSeenAt === null ? store : { ...store, lastSeenAt };
+	});
+}
+
+/** Whether a store may go unasked: its recorded workspace is missing, nothing serves it, and it
+ * was last seen past the horizon. One that never recorded a root, or that nothing dates, stays. */
+function prunable(store: ProjectStore, now: number): boolean {
+	return (
+		store.workspace === "missing" &&
+		store.livePid === null &&
+		store.lastSeenAt !== null &&
+		now - store.lastSeenAt > PRUNE_AFTER_MS
+	);
+}
+
+/** Every prunable store taken down the delete road, with what it answered for each. */
+export function pruneProjectStores(
+	isAlive: HolderAlive,
+	now: number,
+	host: PlatformEnv = currentHost(),
+): PrunedStore[] {
+	return listProjectStores(isAlive, host)
+		.filter((store) => prunable(store, now))
+		.map((store) => {
+			try {
+				return { store, outcome: deleteProjectStore(store, isAlive, host) };
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				return { store, outcome: { deleted: false, reason } };
+			}
+		});
 }
 
 /** The store a reference names: a default store by its key, any store by its directory, both as

@@ -99,8 +99,10 @@ its health, `knowledge_gaps` lists what is missing or stale, and `invalidate_ans
 [docs/knowledge-layer.md](docs/knowledge-layer.md) for why it refuses what it refuses.
 
 **Housekeeping.** `list_project_stores`, `stop_project_daemon` and `delete_project_store` manage the
-indexes this machine holds, across every project. `project_diagnostics` reads a store's memory
-record and crash reports from disk, so it answers for a daemon that has died.
+indexes this machine holds, across every project. An index whose workspace has been gone for more
+than 30 days is deleted by the listing or by the next daemon start, and the listing says so.
+`project_diagnostics` reads a store's memory record and crash reports from disk, so it answers for
+a daemon that has died.
 
 ## Project selection
 

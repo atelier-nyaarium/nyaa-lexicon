@@ -36,10 +36,13 @@ function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 		bytes: 5 * 1024 * 1024,
 		modifiedAt: NOW,
 		lastIndexedAt: NOW,
+		lastSeenAt: NOW,
 		livePid: null,
 		...overrides,
 	};
 }
+
+const DAY = 86_400_000;
 
 /** The same workspace's store in a directory it chose. */
 function customStore(overrides: Partial<ProjectStore> = {}): ProjectStore {
@@ -51,6 +54,8 @@ const FILE = "/state/proj-abc123/diagnostics.json";
 function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: Partial<ManageDeps> = {}): ManageDeps {
 	return {
 		list: () => stores,
+		stamp: () => stores,
+		prune: () => [],
 		remove: remove ?? (() => ({ deleted: false, reason: "not wired" })),
 		lock: () => LOCK,
 		stop: async () => {},
@@ -161,6 +166,50 @@ describe("listing stores", () => {
 		expect(body).toContain(`- Directory: ${DIRECTORY}`);
 		expect(body).toContain(`- Directory: ${CUSTOM}`);
 		expect(body.match(/custom/g)).toHaveLength(1);
+	});
+
+	it("says how long an orphan's workspace has been gone, or that nothing dates it", () => {
+		const rows = [
+			store({ key: "dated", directory: "/state/dated", workspace: "missing", lastSeenAt: NOW - 12 * DAY }),
+			store({ key: "undated", directory: "/state/undated", workspace: "missing", lastSeenAt: null }),
+		];
+		const body = listProjectStoresTool(deps(rows), NOW).content[0]?.text ?? "";
+
+		expect(body).toMatch(/`dated`\n\n(.*\n)*- State: ORPHANED, .*last seen 12 days ago/);
+		expect(body).toMatch(/`undated`\n\n(.*\n)*- State: ORPHANED, .*nothing dates/);
+	});
+
+	// Pruned before listed, so no row names a store the same call deleted.
+	it("prunes before it lists, reporting what went and what was kept", () => {
+		const calls: string[] = [];
+		const gone = store({ key: "gone", directory: "/state/gone", workspace: "missing", lastSeenAt: NOW - 45 * DAY });
+		const held = store({ key: "held", directory: "/state/held", workspace: "missing", lastSeenAt: NOW - 45 * DAY });
+		const body =
+			listProjectStoresTool(
+				deps([store()], undefined, {
+					prune: () => {
+						calls.push("prune");
+						return [
+							{
+								store: gone,
+								outcome: { deleted: true, key: "gone", directory: "/state/gone", bytes: 2048 },
+							},
+							{ store: held, outcome: { deleted: false, reason: "/state/held vanished" } },
+						];
+					},
+					stamp: () => {
+						calls.push("stamp");
+						return [store()];
+					},
+				}),
+				NOW,
+			).content[0]?.text ?? "";
+
+		expect(calls).toEqual(["prune", "stamp"]);
+		expect(body).toMatch(/## Pruned\n\n- Deleted `gone` .*2KB.*45 days ago/);
+		expect(body).toContain("- Kept `held` (/state/held): /state/held vanished");
+		expect(body).not.toContain("## `gone`");
+		expect(body).toContain("## `proj-abc123`");
 	});
 });
 
