@@ -92,6 +92,14 @@ def assignment_targets(node):
     return []
 
 
+def type_param_expressions(node):
+    # default_value is 3.13+.
+    for parameter in getattr(node, "type_params", []):
+        for expression in (getattr(parameter, "bound", None), getattr(parameter, "default_value", None)):
+            if expression is not None:
+                yield expression
+
+
 def source_line(lines, line_number):
     if line_number < 1 or line_number > len(lines):
         return ""
@@ -1067,6 +1075,8 @@ class LiteralVisitor(ast.NodeVisitor):
         self.scope_path = path
         for decorator in node.decorator_list:
             self.visit(decorator)
+        for expression in type_param_expressions(node):
+            self.visit(expression)
         if isinstance(node, ast.ClassDef):
             for base in node.bases:
                 self.visit(base)
@@ -1568,6 +1578,7 @@ class ReferenceVisitor(ast.NodeVisitor):
     def visit_decorators_and_bases(self, node):
         for decorator in node.decorator_list:
             self.visit(decorator)
+        self.visit_type_params(node)
         for base in node.bases:
             self.visit_class_base(base)
         for keyword in node.keywords:
@@ -1588,6 +1599,7 @@ class ReferenceVisitor(ast.NodeVisitor):
     def visit_function_header(self, node):
         for decorator in node.decorator_list:
             self.visit(decorator)
+        self.visit_type_params(node)
         arguments = node.args
         for default in [*arguments.defaults, *arguments.kw_defaults]:
             if default is not None:
@@ -1607,6 +1619,15 @@ class ReferenceVisitor(ast.NodeVisitor):
         if node.returns is not None:
             self.visit_type_expression(node.returns)
         self.visit_type_comment(getattr(node, "type_comment", None), node)
+
+    def visit_type_params(self, node):
+        for expression in type_param_expressions(node):
+            self.visit_type_expression(expression)
+
+    def visit_TypeAlias(self, node):
+        self.visit(node.name)
+        self.visit_type_params(node)
+        self.visit_type_expression(node.value)
 
     def visit_type_comment(self, text, anchor):
         for expression in type_comment_expressions(text):
@@ -1909,6 +1930,7 @@ class RenameVisitor(ast.NodeVisitor):
         self.add_candidate(node.name, self.definition_range(node, prefix), "declaration", True)
         for decorator in node.decorator_list:
             self.visit(decorator)
+        self.visit_type_params(node)
         arguments = node.args
         for default in [*arguments.defaults, *arguments.kw_defaults]:
             if default is not None:
@@ -1945,6 +1967,7 @@ class RenameVisitor(ast.NodeVisitor):
         self.add_candidate(node.name, self.definition_range(node, "class "), "declaration", True)
         for decorator in node.decorator_list:
             self.visit(decorator)
+        self.visit_type_params(node)
         for base in node.bases:
             self.visit(base)
         for keyword_node in node.keywords:
@@ -1954,6 +1977,10 @@ class RenameVisitor(ast.NodeVisitor):
         for child in node.body:
             self.visit(child)
         self.scope_path = old_path
+
+    def visit_type_params(self, node):
+        for expression in type_param_expressions(node):
+            self.visit(expression)
 
     def visit_arg(self, node):
         self.add_candidate(node.arg, self.argument_range(node), "parameter", True)
