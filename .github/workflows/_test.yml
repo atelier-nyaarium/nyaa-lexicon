@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Setup Python
+        # The Python provider's PEP 696 default test skips below 3.13, which the runner's own python3 is.
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Test
         # bun test, including the residue tests that enforce the structural rules.
         run: bun run test
