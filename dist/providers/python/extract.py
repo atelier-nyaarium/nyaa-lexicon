@@ -1509,6 +1509,8 @@ class ReferenceVisitor(ast.NodeVisitor):
     def __init__(self, analyzer):
         self.analyzer = analyzer
         self.scope_path = []
+        # A header is written in its declaration, but resolves in the enclosing scope.
+        self.owner_path = []
         self.scope_kind = "module"
         self.binding_blocked = None
 
@@ -1522,6 +1524,7 @@ class ReferenceVisitor(ast.NodeVisitor):
                 "range": reference_range,
                 "role": role,
                 "scopePath": list(self.scope_path),
+                "ownerPath": list(self.owner_path),
                 "binding": self.analyzer.binding_for(
                     name, role, self.scope_path, reference_range["start"], bindable, self.binding_blocked
                 ),
@@ -1532,26 +1535,32 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.add_reference(node, role, name=name, range_value=self.analyzer.selection_of(node, name))
 
     def visit_ClassDef(self, node):
-        self.visit_decorators_and_bases(node)
         old_path = self.scope_path
         old_kind = self.scope_kind
+        old_owner = self.owner_path
+        self.owner_path = self.analyzer.declaration_paths.get(id(node), old_owner)
+        self.visit_decorators_and_bases(node)
         self.scope_path = self.analyzer.declaration_path(node, old_path, "type")
         self.scope_kind = "class"
         for child in node.body:
             self.visit(child)
         self.scope_path = old_path
         self.scope_kind = old_kind
+        self.owner_path = old_owner
 
     def visit_FunctionDef(self, node):
-        self.visit_function_header(node)
         old_path = self.scope_path
         old_kind = self.scope_kind
+        old_owner = self.owner_path
+        self.owner_path = self.analyzer.declaration_paths.get(id(node), old_owner)
+        self.visit_function_header(node)
         self.scope_path = self.analyzer.declaration_path(node, old_path, "method")
         self.scope_kind = "function"
         for child in node.body:
             self.visit(child)
         self.scope_path = old_path
         self.scope_kind = old_kind
+        self.owner_path = old_owner
 
     def visit_AsyncFunctionDef(self, node):
         self.visit_FunctionDef(node)
