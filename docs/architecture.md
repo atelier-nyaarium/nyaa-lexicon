@@ -308,6 +308,26 @@ found is counted afterwards as the daemon's own write.
 Nothing acquires the gate twice. Whatever a held operation calls runs already held, which is why
 the service methods do not take it defensively.
 
+Every indexing road takes it, one of two ways. A caller-held road, `indexFile` and `applyBatch`,
+runs inside a hold its caller took around a unit larger than one file: a watcher batch, a refactor
+step's reindex, a restore. A self-driven road, the warm scan, the full scan and the upgrade walk,
+takes the gate itself, once per file, around the read, the parse and the commit together. Around
+the read as well as the commit, because a parse of bytes read before another road committed newer
+ones puts the file back when it lands, and nothing stored can order two parses after the fact: a
+content hash is unordered and `indexedAt` stamps the commit rather than the read. Once per file
+rather than once per road, because a scan re-reads a populated store while requests are served, and
+one hold for a walk would starve every reader for its length. The gate is not re-entrant, so a
+self-driven road reached from inside a hold deadlocks on its first file, which is why a symbol
+answer upgrades its tree before taking the gate rather than inside it.
+
+`LexiconService` builds the gate and exposes it. The dispatcher and the live index read
+`service.gate` rather than being handed one, and neither takes an option for it, so a second gate is
+unspellable: two of them order nothing against each other, and the one that ordered nothing was the
+one a caller supplied while the service kept its own. `index-gate-residue.test.ts` holds all of it:
+a self-gating road called from inside a hold, a parse in the indexer that belongs to neither class,
+a caller-held road called with no hold around it, and a `WorkspaceGate` built anywhere in core but
+the service.
+
 The live index applies watcher batches one at a time on one promise tail, and the hourly knowledge
 sweep is queued on the same tail under the same gate, so a sweep never runs beside a batch mid-parse
 and a sweep queued when the live index stops never starts. The daemon holds one `Clock` and hands

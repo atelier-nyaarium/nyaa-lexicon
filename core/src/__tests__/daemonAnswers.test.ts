@@ -19,7 +19,6 @@ import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
 import { BUILD_VERSION } from "../version";
-import { WorkspaceGate } from "../workspaceGate";
 
 ////////////////////////////////
 //  Harness
@@ -68,13 +67,13 @@ async function openWorkspace(files: Record<string, string>, providers: string[],
 		),
 	);
 	const service = new LexiconService(store, supervisor, sourceReader(workspace), workspace);
-	const refactor = { gate: new WorkspaceGate(), transactions: new TransactionManager(store, workspace) };
+	const refactor = { transactions: new TransactionManager(store, workspace) };
 	await service.indexWorkspace();
 
 	return {
 		service,
 		handlers: daemonHandlers(service, refactor),
-		gate: gateOf(refactor),
+		gate: gateOf(service.gate),
 		dispatch: createDispatch(service, refactor),
 		symbol: (name, module) => {
 			const found = service.findByName(name, module)[0];

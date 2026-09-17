@@ -52,6 +52,7 @@ import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
 import { type SourceReader, textOf } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredComment, StoredDeclaration } from "./store.js";
+import { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
 //  Constants
@@ -105,6 +106,7 @@ export class LexiconService {
 			this.caches,
 			(from, specifier) => this.imports.resolveImport(from, specifier),
 			this.clock,
+			this.gate,
 		);
 		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
 		this.probe = liveProbe(supervisor, (module) => textOf(readSource(module)));
@@ -115,6 +117,14 @@ export class LexiconService {
 		facts: new ResultCache(),
 		resolutions: new ResultCache(RESOLUTION_CAPACITY),
 	};
+
+	/**
+	 * The one gate over this workspace, built here so nothing can hand a second one in.
+	 *
+	 * The indexer's own roads take it per file; the dispatcher and the live index read it from
+	 * here rather than being given one, since two gates order nothing.
+	 */
+	readonly gate = new WorkspaceGate();
 
 	/** The only writer of the index. */
 	readonly indexer: WorkspaceIndexer;
@@ -147,6 +157,10 @@ export class LexiconService {
 
 	////////////////////////////////
 	//  Indexing, answered by WorkspaceIndexer
+	//
+	//  Two classes, and a caller has to know which it is holding. `indexFile` and `applyBatch` are
+	//  caller-held. The scan, the upgrade and the tree-first shortcut drive their own loops and take
+	//  the gate per file, so calling one from inside a hold deadlocks.
 
 	indexFile(...args: Parameters<WorkspaceIndexer["indexFile"]>): ReturnType<WorkspaceIndexer["indexFile"]> {
 		return this.indexer.indexFile(...args);

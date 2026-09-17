@@ -37,6 +37,7 @@ import type { FileNote, IndexStore } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
 import type { WatchScope } from "./watcher.js";
+import type { WorkspaceGate } from "./workspaceGate.js";
 
 export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
 
@@ -96,6 +97,26 @@ interface Admitted {
 	reachable: string[];
 }
 
+/**
+ * How one file's read, parse and commit is held.
+ *
+ * `alone` for a road this indexer drives itself, identity for one a caller already holds the gate
+ * for. Named at every reachable call site, so a new road has to answer the question.
+ */
+type Step = <T>(work: () => Promise<T>) => Promise<T>;
+
+/** Already exclusive: the caller took the gate around a unit larger than one file. */
+const held: Step = (work) => work();
+
+/** What `followImports` needs beyond the frontier, so no positional default decides the gate. */
+interface ImportWalk {
+	/** False skips a reached module whose stored facts already sit at the depth this walk wants. */
+	indexExisting: boolean;
+	previousDepths?: ReadonlyMap<string, IndexDepth>;
+	floor?: "full" | "outline";
+	step: Step;
+}
+
 ////////////////////////////////
 //  Class
 
@@ -110,6 +131,8 @@ export class WorkspaceIndexer {
 		/** Resolution belongs to the import resolver; the indexer only follows where it points. */
 		private readonly resolve: (fromModule: string, specifier: string) => Promise<ImportResolution>,
 		private readonly clock: Clock,
+		/** The service's one gate. Every road this indexer drives itself takes it, one file at a time. */
+		private readonly gate: WorkspaceGate,
 	) {
 		// A route asked before the first scan still sees the workspace.
 		supervisor.evidenceFrom(() => this.admitted().reachable);
@@ -142,6 +165,20 @@ export class WorkspaceIndexer {
 	private pumping: Promise<void> | null = null;
 	private upgradeWanted = false;
 
+	/**
+	 * One step of a self-driven road, alone.
+	 *
+	 * The read, the parse and the commit are one hold, because a parse of bytes read before another
+	 * road committed newer ones regresses the file when it lands. Per step rather than per road: a
+	 * scan or an upgrade holding the gate for its whole walk starves every reader for minutes.
+	 *
+	 * Never reached from inside a hold. The gate is not re-entrant, so that deadlocks;
+	 * `index-gate-residue.test.ts` refuses a caller that would.
+	 */
+	private alone<T>(work: () => Promise<T>): Promise<T> {
+		return this.gate.exclusive(work);
+	}
+
 	/** Refreshed at the start of every scan. Public for the resolver's surface globs. */
 	currentScope(): FileScope {
 		this.scope ??= fileScopeFor(this.workspaceRoot);
@@ -164,6 +201,9 @@ export class WorkspaceIndexer {
 	 *
 	 * Deliberately takes no caller-claimed hash: this reads the file itself and hashes that read,
 	 * so facts are never filed under the hash of a different version.
+	 *
+	 * Caller-held: a refactor step, a restore, a recovery or the daemon's own request reaches this,
+	 * and each already holds the gate across a unit larger than this file.
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
 		const claim = this.claimOf(module);
@@ -361,16 +401,20 @@ export class WorkspaceIndexer {
 				for (const module of project.configFiles) this.configFiles.add(module);
 			}
 
-			this.roots = this.rootModules();
-			this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
-			// Roots with no row at any depth; a failed root has none and is attempted again here.
-			const pending = new Set([...this.roots].filter((module) => this.store.depthOf(module) === null));
+			// One hold: the summary must not describe a root set another road has already moved past.
+			const pending = await this.alone(async () => {
+				this.roots = this.rootModules();
+				this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
+				// Roots with no row at any depth; a failed root has none and is attempted again here.
+				const missing = new Set([...this.roots].filter((module) => this.store.depthOf(module) === null));
+				// A completed mark survives a rescan only while nothing is missing.
+				this.writeScanSummary(missing.size === 0 && this.store.readScanSummary()?.outlined === true);
+				return missing;
+			});
 			if (floor === "outline") {
 				this.coverage =
 					pending.size === 0 ? { state: "covered" } : { state: "outlining", pending, attempting: new Set() };
 			}
-			// A completed mark survives a rescan only while nothing is missing.
-			this.writeScanSummary(pending.size === 0 && this.store.readScanSummary()?.outlined === true);
 			const modules = [...this.roots];
 
 			const outcomes: IndexOutcome[] = [];
@@ -382,12 +426,13 @@ export class WorkspaceIndexer {
 					this.coverage.pending.delete(module);
 					this.coverage.attempting.add(module);
 				}
-				let outcome: IndexOutcome;
-				try {
-					outcome = await this.indexOne(module, undefined, floor === "outline");
-				} catch (error) {
-					outcome = this.faultOutcome(module, error);
-				}
+				const outcome = await this.alone(async () => {
+					try {
+						return await this.indexOne(module, undefined, floor === "outline");
+					} catch (error) {
+						return this.faultOutcome(module, error);
+					}
+				});
 				if (floor === "outline" && this.coverage.state === "outlining") this.coverage.attempting.delete(module);
 				outcomes.push(outcome);
 				if (outcome.action === "forgotten") this.roots.delete(module);
@@ -396,14 +441,26 @@ export class WorkspaceIndexer {
 				onProgress?.(done + 1, modules.length);
 			}
 
-			outcomes.push(...(await this.followImports(seen, true, new Map(), floor)));
-			this.store.syncGenerated(this.generated);
-			outcomes.push(...this.prune(seen));
-			this.sweepAfterPrune(seen);
-			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
+			outcomes.push(
+				...(await this.followImports(seen, {
+					indexExisting: true,
+					floor,
+					step: (work) => this.alone(work),
+				})),
+			);
 			// An outage is a file value, not a workspace refusal, but the summary cannot claim a full outline.
-			const outages = outcomes.filter((outcome) => outcome.cause === "providerDown");
-			this.writeScanSummary(outages.length === 0);
+			const outaged = outcomes.some((outcome) => outcome.cause === "providerDown");
+			// One hold: nothing may read an index half pruned of what this pass no longer reaches.
+			outcomes.push(
+				...(await this.alone(async () => {
+					this.store.syncGenerated(this.generated);
+					const pruned = this.prune(seen);
+					this.sweepAfterPrune(seen);
+					this.writeScanSummary(!outaged);
+					return pruned;
+				})),
+			);
+			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
 			this.coverage = { state: "covered" };
 			return outcomes;
 		} catch (error) {
@@ -448,6 +505,7 @@ export class WorkspaceIndexer {
 			if (order !== undefined) {
 				try {
 					for (const module of order.modules) {
+						// Cheap skip before the hold; `upgradeOne` re-reads it inside.
 						if (this.store.depthOf(module) !== "outline") continue;
 						await this.upgradeOne(module);
 					}
@@ -477,15 +535,20 @@ export class WorkspaceIndexer {
 
 	/** Attempts one outline module without discarding stored facts on failure. */
 	private async upgradeOne(module: string): Promise<void> {
-		this.depths.set(module, "full");
-		try {
-			const outcome = await this.indexOne(module, "full");
-			// A row skipped for scope or ownership stays outline in the store, so it must leave the
-			// backlog or the pump spins on it forever.
-			if (outcome.action === "skipped") this.upgradeFailed.add(module);
-		} catch (error) {
-			this.faultOutcome(module, error);
-		}
+		await this.alone(async () => {
+			// Read inside the hold: a batch waiting on it may have upgraded or forgotten the module,
+			// and the backlog was listed before this road's turn came around.
+			if (this.store.depthOf(module) !== "outline") return;
+			this.depths.set(module, "full");
+			try {
+				const outcome = await this.indexOne(module, "full");
+				// A row skipped for scope or ownership stays outline in the store, so it must leave the
+				// backlog or the pump spins on it forever.
+				if (outcome.action === "skipped") this.upgradeFailed.add(module);
+			} catch (error) {
+				this.faultOutcome(module, error);
+			}
+		});
 	}
 
 	/** The mark is carried forward unless a caller says otherwise. */
@@ -601,12 +664,8 @@ export class WorkspaceIndexer {
 	 * Workspace-resolved specifiers follow their implementation. An external one may contribute a
 	 * bounded surface, never the package implementation tree.
 	 */
-	private async followImports(
-		seen: Set<string>,
-		indexExisting = true,
-		previousDepths: ReadonlyMap<string, IndexDepth> = new Map(),
-		floor: "full" | "outline" = "full",
-	): Promise<IndexOutcome[]> {
+	private async followImports(seen: Set<string>, walk: ImportWalk): Promise<IndexOutcome[]> {
+		const { indexExisting, step, previousDepths = new Map(), floor = "full" } = walk;
 		const outcomes: IndexOutcome[] = [];
 		// Each round walks only what the last one indexed. A module already walked had its imports
 		// read then, and nothing in this loop rewrites them, so re-walking the whole set every round
@@ -641,13 +700,17 @@ export class WorkspaceIndexer {
 					previousDepths.get(module) === this.depths.get(module)
 				)
 					continue;
-				try {
-					// Same restart guard as the root loop: an unchanged imported file holding full
-					// facts must not be demoted by an outline-floor rescan.
-					outcomes.push(await this.indexOne(module, undefined, floor === "outline"));
-				} catch (error) {
-					outcomes.push(this.faultOutcome(module, error));
-				}
+				outcomes.push(
+					await step(async () => {
+						try {
+							// Same restart guard as the root loop: an unchanged imported file holding
+							// full facts must not be demoted by an outline-floor rescan.
+							return await this.indexOne(module, undefined, floor === "outline");
+						} catch (error) {
+							return this.faultOutcome(module, error);
+						}
+					}),
+				);
 			}
 			// What this round indexed, including what it skipped as current: their imports are what
 			// the next round has not read yet.
@@ -787,7 +850,12 @@ export class WorkspaceIndexer {
 		return this.coverage.state === "failed" ? this.coverage.reason : null;
 	}
 
-	/** Applies a watcher batch, one decision per file. */
+	/**
+	 * Applies a watcher batch, one decision per file.
+	 *
+	 * Caller-held: the live index takes the gate around the whole batch, since a reindex landing
+	 * between the files of one batch is what a batch exists to prevent.
+	 */
 	async applyBatch(events: FileEvent[]): Promise<IndexOutcome[]> {
 		// A batch under a running outline pass would race its loop over the same roots.
 		if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
@@ -885,7 +953,7 @@ export class WorkspaceIndexer {
 		}
 
 		const seen = new Set(roots);
-		outcomes.push(...(await this.followImports(seen, false, previousDepths)));
+		outcomes.push(...(await this.followImports(seen, { indexExisting: false, previousDepths, step: held })));
 		// A file the batch left unread takes the verdict its admission reached, a .gitattributes edit included.
 		this.store.syncGenerated(this.generated);
 		outcomes.push(...this.prune(seen));

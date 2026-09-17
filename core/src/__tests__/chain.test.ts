@@ -11,7 +11,6 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
-import { WorkspaceGate } from "../workspaceGate";
 
 ////////////////////////////////
 //  Harness
@@ -131,7 +130,7 @@ whenBuilt("resolveChain and awaitIndexed over a real daemon", () => {
 			),
 		);
 		const service = new LexiconService(store, supervisor, sourceReader(workspace), workspace);
-		const refactor = { gate: new WorkspaceGate(), transactions: new TransactionManager(store, workspace) };
+		const refactor = { transactions: new TransactionManager(store, workspace) };
 		await service.indexWorkspace();
 
 		const outcome = await startDaemon({

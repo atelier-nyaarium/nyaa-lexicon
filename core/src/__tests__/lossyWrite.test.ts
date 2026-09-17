@@ -12,7 +12,6 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
-import { WorkspaceGate } from "../workspaceGate";
 
 ////////////////////////////////
 //  Helpers
@@ -54,10 +53,7 @@ beforeEach(async () => {
 	supervisor = new ProviderSupervisor();
 	await supervisor.start({ command: [process.execPath, "run", FIXTURE], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	dispatch = createDispatch(service, {
-		gate: new WorkspaceGate(),
-		transactions: new TransactionManager(store, root),
-	});
+	dispatch = createDispatch(service, { transactions: new TransactionManager(store, root) });
 	await indexed("a.ref", LOSSY);
 	await dispatch("refactorStart", {});
 });

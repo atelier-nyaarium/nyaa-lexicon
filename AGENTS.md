@@ -214,6 +214,15 @@ Ordered by how much they prove:
   by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore
   it; a residue pins those methods by name, and adding one is a reviewed edit. A read never
   counts demand: the recall handler counts it afterwards as the daemon's own write.
+- **Every indexing road takes the workspace gate, and says which way.** A caller-held road,
+  `indexFile` and `applyBatch`, runs inside a hold its caller took around a larger unit. A
+  self-driven road, the scans and the upgrade walk, takes the gate itself once per file, around the
+  read, the parse and the commit together: a parse of bytes read before another road committed
+  newer ones puts the file back, and nothing stored orders two parses after the fact. The gate is
+  not re-entrant, so a self-driven road reached from inside a hold deadlocks on its first file. The
+  service builds the gate and the dispatcher and the live index read `service.gate`, so a second one
+  cannot be handed in. `index-gate-residue.test.ts` refuses every mistake here;
+  `docs/architecture.md` holds the whole of it.
 - **A test asserting current behavior is not a test.** After a fix, tests that encoded the bug will
   fail; that is the fix working.
 - **A conformance `STALL` is the machine or the run, never the provider.** A timeout or a dead

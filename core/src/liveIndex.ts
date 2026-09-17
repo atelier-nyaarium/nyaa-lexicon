@@ -16,15 +16,9 @@ import { watchWorkspace } from "./watcher.js";
 //  Interfaces & Types
 
 export interface LiveIndexOptions {
+	/** Its gate is held for the whole batch, so a reindex cannot land between one step's files. */
 	service: LexiconService;
 	workspaceRoot: string;
-	/**
-	 * Held for the whole batch, so a reindex cannot land between the files of one refactor step.
-	 *
-	 * Absent in tests that drive the watcher alone. In the daemon it is the same gate every
-	 * mutation takes, which is what makes the two orderable at all.
-	 */
-	gate?: { exclusive: <T>(work: () => Promise<T>) => Promise<T> };
 	debounceMs?: number;
 	maxWaitMs?: number;
 	/** The one time source, shared with the store and the service, so the sweep timer and the debounce agree. */
@@ -60,9 +54,7 @@ export interface LiveIndex {
  */
 export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 	const apply = (events: Parameters<LexiconService["applyBatch"]>[0]) =>
-		options.gate
-			? options.gate.exclusive(() => options.service.applyBatch(events))
-			: options.service.applyBatch(events);
+		options.service.gate.exclusive(() => options.service.applyBatch(events));
 
 	const queue = serializeBatches(apply, options.onApplied, options.onError);
 
@@ -75,19 +67,15 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 		clock: options.clock,
 	});
 
-	// Queued behind any batch in flight and under the same gate, so a sweep never overlaps a batch,
-	// gate or not; re-armed after each run, so it never overlaps itself.
-	const sweep = () =>
-		options.gate
-			? options.gate.exclusive(async () => options.service.sweepKnowledge())
-			: Promise.resolve(options.service.sweepKnowledge());
+	// Queued behind any batch in flight and under the same gate, so a sweep never overlaps a batch;
+	// re-armed after each run, so it never overlaps itself.
+	const sweep = () => options.service.gate.exclusive(async () => options.service.sweepKnowledge());
 	let stopped = false;
 	let timer: TimerHandle | null = null;
 	const arm = () => {
 		timer = options.clock.setTimer(() => {
 			queue
 				.run(async () => {
-					// Queued behind a batch when stop() landed: never started.
 					// Queued behind a batch when stop() landed: never started.
 					if (stopped) return;
 					const report = await sweep();

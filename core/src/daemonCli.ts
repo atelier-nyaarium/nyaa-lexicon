@@ -38,7 +38,7 @@ import { ProviderSupervisor } from "./supervisor.js";
 import { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
 import { admitStateDir, admitWorkspace } from "./workspaceAdmission.js";
-import { WorkspaceGate } from "./workspaceGate.js";
+import type { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
 //  Constants
@@ -163,7 +163,8 @@ async function main(argv: string[]): Promise<void> {
 	let live: { stop: () => void } | null = null;
 	let linger: ReturnType<typeof lingerWhileEmpty> | null = null;
 	let collector: Collector | null = null;
-	const gate = new WorkspaceGate();
+	// The service's own gate, once there is a service. Before that nothing else is running.
+	let gate: WorkspaceGate | null = null;
 
 	// Requests being answered right now. What shutdown waits out and the linger refuses to orphan.
 	let inFlight = 0;
@@ -196,7 +197,7 @@ async function main(argv: string[]): Promise<void> {
 			if (transactions?.status().open) {
 				log("a refactor transaction stays open in the journal; the next daemon recovers it");
 			}
-			await gate.exclusive(() => releaseEverything());
+			await (gate === null ? releaseEverything() : gate.exclusive(() => releaseEverything()));
 			log(`stopped (exit ${code})`);
 		} finally {
 			process.exit(code);
@@ -291,13 +292,14 @@ async function main(argv: string[]): Promise<void> {
 
 		const openStore = store;
 		const service = new LexiconService(openStore, supervisor, sourceReader(root), root, clock);
+		gate = service.gate;
 
 		transactions = new TransactionManager(openStore, root, () => clock.now());
 		const journal = transactions;
 
 		// Before the handler is published, so nothing can ask about a workspace still holding a
 		// half-applied step. The lock is already claimed, so no other daemon is writing here.
-		const recovered = await gate.exclusive(async () => {
+		const recovered = await service.gate.exclusive(async () => {
 			const outcome = journal.recover();
 			// Restoring puts back text the index does not describe, so the facts for those files are of
 			// a version that no longer exists. Reindexed here rather than left to the warm scan, which
@@ -320,7 +322,7 @@ async function main(argv: string[]): Promise<void> {
 			}
 		}
 
-		const dispatch = createDispatch(service, { gate, transactions: journal });
+		const dispatch = createDispatch(service, { transactions: journal });
 
 		collector = startDiagnostics({
 			file: paths.diagnosticsFile,
@@ -374,7 +376,6 @@ async function main(argv: string[]): Promise<void> {
 				live = startLiveIndex({
 					service,
 					workspaceRoot: root,
-					gate,
 					clock,
 					onSwept: (report) => {
 						if (report.examined > 0)
@@ -411,7 +412,7 @@ async function main(argv: string[]): Promise<void> {
 			// The whole teardown runs INSIDE the exclusive gate: a queued watcher batch acquiring it
 			// between approval and teardown would mutate a store being closed. The gate is never
 			// released; the process exit is what ends it.
-			await gate.exclusive(async () => {
+			await service.gate.exclusive(async () => {
 				if (stopping || inFlight > 0 || journal.status().open) return;
 				stopping = true;
 				log(`handing over: ${target.why}`);

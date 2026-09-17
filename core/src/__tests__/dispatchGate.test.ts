@@ -18,6 +18,11 @@ const EMPTY_PAGE = { count: { kind: "exact", count: 0 }, total: 0, truncated: fa
 
 const NO_REFERENCES = { symbolId: SYMBOL, references: [], total: 0, truncated: false, tier: "bound" } as const;
 
+/** A service owns its gate, and dispatch reads it from there, so every stub carries a real one. */
+function asService(stub: object): LexiconService {
+	return { gate: new WorkspaceGate(), ...stub } as unknown as LexiconService;
+}
+
 /** Records when each call starts and ends, so overlap is visible rather than inferred. */
 function tracingService(log: string[]) {
 	const traced = async (name: string) => {
@@ -27,10 +32,10 @@ function tracingService(log: string[]) {
 		return { module: name, action: "indexed" };
 	};
 
-	return {
+	return asService({
 		indexFile: () => traced("indexFile"),
 		symbolSource: () => ({ found: false, reason: "stub" }),
-	} as unknown as LexiconService;
+	});
 }
 
 function stubTransactions(log: string[]): TransactionManager {
@@ -53,10 +58,7 @@ describe("gating daemon mutations", () => {
 	// inside the same file.
 	it("never overlaps two mutations, whatever order they arrive in", async () => {
 		const log: string[] = [];
-		const dispatch = createDispatch(tracingService(log), {
-			gate: new WorkspaceGate(),
-			transactions: stubTransactions(log),
-		});
+		const dispatch = createDispatch(tracingService(log), { transactions: stubTransactions(log) });
 
 		await Promise.all([
 			dispatch("refactorTrack", { module: "a.ts" }),
@@ -66,7 +68,7 @@ describe("gating daemon mutations", () => {
 		expect(log).toEqual(["track:start", "track:end", "indexFile:start", "indexFile:end"]);
 	});
 
-	// Without a gate the service is driven directly, which is what a test harness does.
+	// No journal to guard, and the gate is the service's either way.
 	it("still answers when built without refactor support", async () => {
 		const log: string[] = [];
 		const dispatch = createDispatch(tracingService(log));
@@ -87,8 +89,7 @@ describe("gating daemon mutations", () => {
 
 	// The answer side of the table: a malformed answer is an error to the caller, never a result.
 	it("refuses a malformed answer instead of shipping it", async () => {
-		const service = { cacheStats: () => ({ hits: "many", misses: 0, entries: 0 }) } as unknown as LexiconService;
-		const dispatch = createDispatch(service);
+		const dispatch = createDispatch(asService({ cacheStats: () => ({ hits: "many", misses: 0, entries: 0 }) }));
 		await expect(dispatch("cacheStats", {})).rejects.toThrow(/hits/);
 	});
 });
@@ -101,7 +102,7 @@ describe("the tree-first tier", () => {
 				log.push(name);
 				return value;
 			};
-		return {
+		return asService({
 			ensureTreeFor: async (symbolId: string) => {
 				log.push(`tree:${symbolId}`);
 			},
@@ -119,7 +120,7 @@ describe("the tree-first tier", () => {
 			typeOf: traced("typeOf", { status: "unknown", reason: "NotImplemented" }),
 			factsFor: traced("factsFor", null),
 			symbolSource: traced("symbolSource", { found: false, reason: "stub" }),
-		} as unknown as LexiconService;
+		});
 	}
 
 	// The residue pins this list against `dispatch.ts`.
@@ -146,7 +147,7 @@ describe("the tree-first tier", () => {
 	// reference or symbol answer has no query field, so the scope is recorded as the service saw it.
 	it("accepts scope fields on the four search methods", async () => {
 		const seen: { findReferences?: string | undefined; searchSymbols?: string | undefined } = {};
-		const service = {
+		const service = asService({
 			ensureTreeFor: async () => {},
 			findReferences: (_symbolId: string, _limit: number | undefined, within: string | undefined) => {
 				seen.findReferences = within;
@@ -158,7 +159,7 @@ describe("the tree-first tier", () => {
 				seen.searchSymbols = options.within;
 				return { text, symbols: [], ...EMPTY_PAGE };
 			},
-		} as unknown as LexiconService;
+		});
 		const dispatch = createDispatch(service);
 
 		await dispatch("findReferences", { symbolId: SYMBOL, within: "X" });

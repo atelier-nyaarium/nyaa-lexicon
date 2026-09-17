@@ -27,17 +27,12 @@ export type { InsertOutcome, MoveOutcome, RenameStepOutcome, ReplaceOutcome } fr
 ////////////////////////////////
 //  Interfaces & Types
 
-/**
- * Absent for a caller with no workspace to protect, such as a test driving the service directly.
- *
- * Present, every mutation runs alone and every read runs without seeing a half-written step.
- */
+/** Absent for a daemon built without refactor support; the gate is the service's either way. */
 export interface RefactorDeps {
-	gate: WorkspaceGate;
 	transactions: TransactionManager;
 }
 
-/** The workspace gate as a handler sees it. Without a workspace to protect, both run the work as is. */
+/** The workspace gate as a handler sees it, in the two halves a handler may take. */
 export interface Gate {
 	read<T>(work: () => Promise<T> | T): Promise<T>;
 	write<T>(work: () => Promise<T> | T): Promise<T>;
@@ -70,13 +65,11 @@ const write = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("write",
 /** Takes the gate itself, in parts, through the one it is handed: for work that plans outside and writes inside. */
 const staged = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("staged", run);
 
-/** Mutations take the gate; a caller with no gate is a test driving the service directly. */
-export function gateOf(refactor: RefactorDeps | undefined): Gate {
+/** The service's gate in the two halves a handler takes, so no caller can supply a second one. */
+export function gateOf(gate: WorkspaceGate): Gate {
 	return {
-		read: <T>(work: () => Promise<T> | T): Promise<T> =>
-			refactor ? refactor.gate.shared(async () => work()) : Promise.resolve(work()),
-		write: <T>(work: () => Promise<T> | T): Promise<T> =>
-			refactor ? refactor.gate.exclusive(async () => work()) : Promise.resolve(work()),
+		read: <T>(work: () => Promise<T> | T): Promise<T> => gate.shared(async () => work()),
+		write: <T>(work: () => Promise<T> | T): Promise<T> => gate.exclusive(async () => work()),
 	};
 }
 
@@ -385,19 +378,20 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 	 * Tier 1: a symbol answer full-parses its tree ahead of the background upgrade, then answers.
 	 *
 	 * The one spelling of the shortcut. A handler that wires the tree by hand instead of through
-	 * here is the drift the tier test fails on. The upgrade writes, so it runs alone before the read.
+	 * here is the drift the tier test fails on. The upgrade takes the gate per file itself, as the
+	 * background pass does, so taking it here too would deadlock against its first file.
 	 */
 	const treeFirst = <M extends DaemonMethod>(
 		symbolOf: (params: RequestOf<M>) => string,
 		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
 	): Handler<M> =>
 		staged(async (params, gate) => {
-			await gate.write(() => service.ensureTreeFor(symbolOf(params)));
+			await service.ensureTreeFor(symbolOf(params));
 			return gate.read(() => answer(params));
 		});
 
-	/** Complete reference facts first: the upgrade is the background pass's own work and runs
-	 * ungated as it does there; only the answer takes the gate. */
+	/** Complete reference facts first: the upgrade holds the gate per file as the background pass
+	 * does, so nothing is taken around it here; only the answer takes the gate. */
 	const upgradedRead = <M extends DaemonMethod>(
 		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
 	): Handler<M> =>
@@ -536,7 +530,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
  */
 export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
 	const handlers = daemonHandlers(service, refactor);
-	const gate = gateOf(refactor);
+	const gate = gateOf(service.gate);
 	return async (method: string, params: unknown): Promise<unknown> => {
 		if (!isDaemonMethod(method)) {
 			// Names the build, since the likeliest cause is a client and daemon on different ones.

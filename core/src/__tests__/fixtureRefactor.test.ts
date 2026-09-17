@@ -12,7 +12,6 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
-import { WorkspaceGate } from "../workspaceGate";
 
 ////////////////////////////////
 //  Helpers
@@ -71,7 +70,7 @@ beforeEach(async () => {
 	await supervisor.start({ command: [process.execPath, "run", FIXTURE], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
 	transactions = new TransactionManager(store, root);
-	dispatch = createDispatch(service, { gate: new WorkspaceGate(), transactions });
+	dispatch = createDispatch(service, { transactions });
 	put("a.ref", "export class Cart {}\n");
 	await service.indexFile("a.ref");
 	await record(CART, "A shopping cart.");
@@ -157,7 +156,7 @@ describe("a move through the daemon's handlers", () => {
 	it("is refused inside the gate when the target changed after planning, and the target keeps its bytes", async () => {
 		put("b.ref", "export class Other {}\n");
 		await service.indexFile("b.ref");
-		const handlers = daemonHandlers(service, { gate: new WorkspaceGate(), transactions });
+		const handlers = daemonHandlers(service, { transactions });
 		const late = "export class Other {}\nexport const late = 1\n";
 
 		const outcome = await handlers.refactorMove.run(
@@ -171,7 +170,7 @@ describe("a move through the daemon's handlers", () => {
 	});
 
 	it("is refused inside the gate when a target planned as absent appeared", async () => {
-		const handlers = daemonHandlers(service, { gate: new WorkspaceGate(), transactions });
+		const handlers = daemonHandlers(service, { transactions });
 		const late = "export const late = 1\n";
 
 		const outcome = await handlers.refactorMove.run(
