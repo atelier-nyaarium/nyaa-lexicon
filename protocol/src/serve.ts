@@ -54,7 +54,8 @@ function refuseUnrepresentable(params: unknown): void {
 
 export function serveProvider(connection: Connection, handlers: ProviderHandlers & ProviderNotificationHandlers): void {
 	for (const notification of PROVIDER_NOTIFICATIONS) {
-		const handler = handlers[notification];
+		// The loop erases the pairing the caller's own type satisfied; the schema below restores it.
+		const handler = handlers[notification] as ((params: unknown) => void) | undefined;
 		// Registered either way, so an unhandled one is a decision rather than a library log line.
 		connection.onNotification(notification, (params: unknown) => {
 			if (handler === undefined) return;

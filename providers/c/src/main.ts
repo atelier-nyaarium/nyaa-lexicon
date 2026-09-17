@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	AdmissionLedger,
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
@@ -10,6 +11,7 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -195,11 +197,14 @@ export class CProvider {
 	private workspaceRoot = process.cwd();
 	private readonly facts = new Map<string, StoredFacts>();
 	private readonly includeKinds = new Map<string, "quoted" | "angle">();
+	/** What the index took, so an included header's facts are what it holds and not what was emitted. */
+	private readonly admission = new AdmissionLedger<StoredFacts>();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		this.facts.clear();
 		this.includeKinds.clear();
+		this.admission.reset();
 		return {
 			providerId: "c-provider",
 			language: LANGUAGE,
@@ -237,6 +242,7 @@ export class CProvider {
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+		this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
 		const stored = this.parseAndStore(params.module, params.contentHash, params.text);
 		const bindingCache = new Map<string, Binding>();
 		return {
@@ -262,16 +268,47 @@ export class CProvider {
 
 	private parseAndStore(module: string, contentHash: string, text: string): StoredFacts {
 		const parsed = parseC(module, text);
+		// Dropped first: an include this parse no longer writes must not keep answering from the last.
+		this.dropModule(module);
 		const stored = { contentHash, parsed };
 		this.facts.set(module, stored);
-		for (const imported of parsed.imports)
-			this.includeKinds.set(importKey(module, imported.specifier), imported.kind);
+		this.recordIncludes(module, parsed.imports);
 		return stored;
+	}
+
+	/** An include's kind decides external against workspace, so it is stated by its own parse. */
+	private recordIncludes(module: string, imports: ParsedCFile["imports"]): void {
+		for (const imported of imports) this.includeKinds.set(importKey(module, imported.specifier), imported.kind);
+	}
+
+	/** The index let this module go, or refused the parse it holds nothing from. */
+	forgetModule(params: { module: string }): void {
+		this.dropModule(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so an included name resolves to what the index holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		this.dropModule(restore.module);
+		if (restore.facts === undefined) return;
+		this.facts.set(restore.module, restore.facts);
+		this.recordIncludes(restore.module, restore.facts.parsed.imports);
+	}
+
+	/** An include kind is stated by the facts holding it, so it goes when they do. */
+	private dropModule(module: string): void {
+		this.facts.delete(module);
+		const prefix = importKey(module, "");
+		for (const key of this.includeKinds.keys()) if (key.startsWith(prefix)) this.includeKinds.delete(key);
 	}
 
 	private factsForModule(module: string): StoredFacts | null {
 		const cached = this.facts.get(module);
 		if (cached !== undefined) return cached;
+		// A file the index does not hold must not come back through a read of its own bytes.
+		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
 		try {

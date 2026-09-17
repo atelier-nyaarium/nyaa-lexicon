@@ -318,6 +318,75 @@ describe("C# workspace resolution", () => {
 	});
 });
 
+describe("a using directive resolves to what the index holds", () => {
+	const ITEM = "namespace Demo.Items { public class Item {} }\n";
+	const RENAMED = "namespace Demo.Renamed { public class Item {} }\n";
+	const OTHER = "namespace Demo.Other { public class Other {} }\n";
+
+	function admitted(root: string): CsharpProvider {
+		const provider = new CsharpProvider();
+		provider.initialize(root);
+		provider.discoverProject(root);
+		provider.parseFile({ module: "src/item.cs", contentHash: "v1", text: ITEM });
+		provider.moduleAdmission({ module: "src/item.cs", contentHash: "v1", outcome: { status: "admitted" } });
+		return provider;
+	}
+
+	function resolves(provider: CsharpProvider, specifier: string) {
+		return provider.resolveImport({ fromModule: "src/use.cs", specifier });
+	}
+
+	it("restores the admitted facts a refused parse displaced, and still fans out to them", () => {
+		const root = workspace({ "src/item.cs": ITEM, "src/other.cs": OTHER });
+		const provider = admitted(root);
+		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
+
+		provider.parseFile({ module: "src/item.cs", contentHash: "v2", text: RENAMED });
+		expect(resolves(provider, "Demo.Renamed")).toEqual({ status: "resolved", module: "src/item.cs" });
+
+		provider.moduleAdmission({
+			module: "src/item.cs",
+			contentHash: "v2",
+			outcome: { status: "refused", reason: "the index refused these facts" },
+		});
+		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Demo.Renamed")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
+	});
+
+	it("ignores a verdict naming bytes a later parse replaced", () => {
+		const root = workspace({ "src/item.cs": ITEM, "src/other.cs": OTHER });
+		const provider = new CsharpProvider();
+		provider.initialize(root);
+		provider.discoverProject(root);
+		provider.parseFile({ module: "src/item.cs", contentHash: "v1", text: ITEM });
+		provider.parseFile({ module: "src/item.cs", contentHash: "v2", text: RENAMED });
+
+		provider.moduleAdmission({
+			module: "src/item.cs",
+			contentHash: "v1",
+			outcome: { status: "refused", reason: "a verdict about replaced bytes" },
+		});
+		expect(resolves(provider, "Demo.Renamed")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
+	});
+
+	it("keeps a forgotten module withheld across a re-scan, and drops that only on initialize", () => {
+		const root = workspace({ "src/item.cs": ITEM, "src/copy.cs": ITEM });
+		const provider = new CsharpProvider();
+		provider.initialize(root);
+		provider.discoverProject(root);
+		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+
+		provider.forgetModule({ module: "src/copy.cs" });
+		provider.discoverProject(root);
+		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
+
+		provider.initialize(root);
+		provider.discoverProject(root);
+		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+	});
+});
+
 describe("C# protocol behavior", () => {
 	it("reports syntax errors and ignores attributes without losing declarations", () => {
 		const provider = new CsharpProvider();

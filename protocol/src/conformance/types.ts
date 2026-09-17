@@ -330,6 +330,56 @@ export const MoveCaseSchema = z
 
 export type MoveCase = z.infer<typeof MoveCaseSchema>;
 
+/**
+ * One module that declares, one that uses it, and text for the parse the index refuses.
+ *
+ * A fixture in a language is the claim that this provider binds across files. Without that claim
+ * the case has nothing to observe, so a language with no fixture skips rather than passing while
+ * asserting nothing.
+ */
+export const LifecycleFixtureSchema = z
+	.object({
+		files: z.record(z.string().min(1), z.string()),
+		/** The module whose facts the index refuses. Its disk text declares `name`. */
+		target: z.string().min(1),
+		/** The module whose use of `name` must follow what the index holds. */
+		user: z.string().min(1),
+		/** The declaration in `target` that the use names. */
+		name: z.string().min(1),
+		/** The target parsed again, declaring anything but `name`; the index refuses these facts. */
+		refusedText: z.string().min(1),
+	})
+	.superRefine((fixture, context) => {
+		for (const module of [fixture.target, fixture.user]) {
+			if (fixture.files[module] === undefined) {
+				context.addIssue({ code: "custom", message: `${module} is not among the fixture's files` });
+			}
+		}
+	})
+	.meta({ id: "LifecycleFixture" });
+
+export type LifecycleFixture = z.infer<typeof LifecycleFixtureSchema>;
+
+export const LifecycleCaseSchema = z
+	.object({
+		id: z.string().min(1),
+		/** Prose for the failure report, so a red case explains itself. */
+		about: z.string().min(1),
+		/**
+		 * Which half of the rule this case walks.
+		 *
+		 * `notHeld`: the index holds nothing for the target, so the use must not bind into it.
+		 * `keepsAdmitted`: the index still holds the target's earlier facts, so the use must bind.
+		 *
+		 * Data rather than the case's id, so the runner dispatches on what a case IS.
+		 */
+		expect: z.enum(["notHeld", "keepsAdmitted"]),
+		fixtures: z.record(z.string().min(1), LifecycleFixtureSchema),
+	})
+	.meta({ id: "LifecycleCase" });
+
+export type LifecycleCase = z.infer<typeof LifecycleCaseSchema>;
+
 ////////////////////////////////
 //  Interfaces & Types
 

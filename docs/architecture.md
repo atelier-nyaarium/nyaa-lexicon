@@ -84,6 +84,25 @@ Two rules hold the design together:
   identity owner's one placement method; a row it cannot read or place is a count in the daemon
   log, never a merge. A store written before subjects is re-keyed in place on first open.
 
+**What the index admitted is published, after it is written.** Once the core has asked for a parse,
+any failure but a provider outage refuses it: a thrown request, an `error` diagnostic, `admitFacts`
+reading an id the store cannot spell, or a store fault under the commit. Each leaves the file's
+previous facts standing, so a provider filling its cross-file state from its own answer holds facts
+the store does not, and binds names to symbols the store has never had. `core/src/indexer.ts` is the one publisher, through
+`ProviderPort.admission`, and it publishes after `store.replaceFile` returns on the commit road and
+after the failure is recorded on each refusal road, so a provider is never told a decision the index
+has not taken. `admission-publish-residue.test.ts` holds the single owner and every ordering.
+
+The verdict is whole-file because admission is: `admitFacts` throws on the first id it cannot read
+and the store writes nothing, so there is no surviving subset to name. It names the provider that
+ANSWERED the parse rather than whoever owns the module when it is published, unlike a forget, which
+every provider hears: ownership can move between the two, and a newcomer has nothing staged to
+settle. A provider outage publishes nothing, since the index keeps what it had and there is nobody
+to tell. A parse the core never asked for publishes nothing either, which is why a file made
+readable again with no watcher event stays out until something parses it.
+`protocol/src/admission.ts` is the provider's half. `docs/provider-protocol.md` has the rules a
+provider author reads.
+
 A `files` row also carries git's word on whether the file is generated, three-valued: `yes`, `no`,
 or `unknown` with the reason git could not say. The indexer asks git once per admission for every
 candidate and once per import-closure round for what it reached past admission, writes the verdict

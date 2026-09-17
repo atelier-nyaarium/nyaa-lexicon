@@ -22,6 +22,13 @@ export interface GDScriptLoaderBinding {
 	specifier: string;
 }
 
+/** One module's binding state, each field absent where the index holds none. */
+export interface GDScriptBindingSnapshot {
+	declarations: Declaration[] | undefined;
+	references: Reference[] | undefined;
+	source: string | undefined;
+}
+
 //////// Helpers
 
 function positionInRange(range: Range, position: Range["start"]): boolean {
@@ -99,13 +106,44 @@ export class GDScriptBindingIndex {
 	private readonly autoloadModulesByScope = new Map<string, Map<string, string>>();
 	private workspaceIndexed = false;
 
-	constructor(private readonly workspaceRoot: string) {}
+	constructor(
+		private readonly workspaceRoot: string,
+		private readonly fillable: (module: string) => boolean,
+	) {}
 
 	registerFile(module: string, declarations: Declaration[], references: Reference[], text: string): void {
 		this.ensureWorkspaceIndex();
 		this.replaceDeclarations(module, declarations);
 		this.referencesByModule.set(module, references);
 		this.sourceByModule.set(module, text);
+	}
+
+	snapshot(module: string): GDScriptBindingSnapshot | undefined {
+		const declarations = this.declarationsByModule.get(module);
+		const references = this.referencesByModule.get(module);
+		const source = this.sourceByModule.get(module);
+		if (declarations === undefined && references === undefined && source === undefined) return undefined;
+		return { declarations, references, source };
+	}
+
+	restore(module: string, snapshot: GDScriptBindingSnapshot | undefined): void {
+		if (snapshot === undefined) {
+			this.forget(module);
+			return;
+		}
+		if (snapshot.declarations === undefined) this.removeDeclarations(module);
+		else this.replaceDeclarations(module, snapshot.declarations);
+		if (snapshot.references === undefined) this.referencesByModule.delete(module);
+		else this.referencesByModule.set(module, snapshot.references);
+		if (snapshot.source === undefined) this.sourceByModule.delete(module);
+		else this.sourceByModule.set(module, snapshot.source);
+	}
+
+	/** Drops the module, its `class_name` registration included. */
+	forget(module: string): void {
+		this.removeDeclarations(module);
+		this.referencesByModule.delete(module);
+		this.sourceByModule.delete(module);
 	}
 
 	bindReference(module: string, reference: Reference): Binding {
@@ -377,6 +415,8 @@ export class GDScriptBindingIndex {
 		const declarations = this.declarationsByModule.get(module);
 		if (references !== undefined && declarations !== undefined) return { declarations, references };
 
+		// A module the index does not hold must not return through a read of its own bytes.
+		if (!this.fillable(module)) return null;
 		const absolute = absoluteModule(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {
@@ -395,6 +435,7 @@ export class GDScriptBindingIndex {
 		if (!existsSync(this.workspaceRoot)) return;
 		try {
 			for (const module of discoverProject(this.workspaceRoot).files) {
+				if (!this.fillable(module)) continue;
 				const absolute = absoluteModule(this.workspaceRoot, module);
 				if (absolute === null || !existsSync(absolute)) continue;
 				try {

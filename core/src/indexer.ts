@@ -9,6 +9,7 @@ import type {
 	IndexDepth,
 	IndexOutcome,
 	IndexStatus,
+	ModuleAdmission,
 	ModuleDeclarations,
 	ModuleStatus,
 } from "@nyaa-lexicon/protocol";
@@ -58,6 +59,11 @@ type WarmCoverage =
 	| { state: "covered" }
 	| { state: "failed"; reason: string };
 
+/** The indexer's own failure, in one wording, so the record and the verdict read alike. */
+function indexerFault(error: unknown): string {
+	return `the indexer failed on this file: ${error instanceof Error ? error.message : String(error)}`;
+}
+
 /** How many failed files an answer names; `overview` lists every one. */
 export const NAMED_FAILURES = 3;
 
@@ -75,6 +81,12 @@ export const ORPHAN_SWEEP_CAP = 200;
 export interface IndexCaches {
 	facts: ResultCache;
 	resolutions: ResultCache;
+}
+
+/** The process that answered a parse: its id, and which spawn of it. */
+interface Parser {
+	providerId: string;
+	incarnation: number | null;
 }
 
 /** The scope's verdict on the tracked set, each a subset of the one before. */
@@ -156,9 +168,6 @@ export class WorkspaceIndexer {
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
 		const claim = this.claimOf(module);
 		if (!claim.claimed) return this.unadmitted(module, claim.unclaimedReason);
-		// The claim above came from this route; the guard only narrows the type.
-		const route = this.supervisor.route(module);
-		if (!route.owned) return this.unadmitted(module, "unclaimed");
 
 		const read = this.readSource(module);
 		if (read.kind === "missing") {
@@ -176,6 +185,18 @@ export class WorkspaceIndexer {
 		// Read, so it exists: evidence for a shared claim that no scan has seen.
 		this.supervisor.observeModule(module);
 
+		// One resolution for the parse and its verdict. Routing moves on the evidence above, and a
+		// verdict reaching a provider that did not answer settles nothing while the one that did
+		// keeps the parse.
+		const parser = this.supervisor.route(module);
+		if (!parser.owned) return this.unadmitted(module, "unclaimed");
+		// Read before the parse: a provider that dies and restarts under this id holds a fresh ledger,
+		// and the verdict for the parse below belongs to the process that answered it.
+		const answered: Parser = {
+			providerId: parser.providerId,
+			incarnation: this.supervisor.incarnationOf(parser.providerId),
+		};
+
 		// Of the text actually read, never the caller's. A watcher hashes at event time and this
 		// reads later, so trusting the argument would store facts from one version of a file under
 		// the hash of another, and every staleness check downstream would compare the wrong pair.
@@ -189,14 +210,14 @@ export class WorkspaceIndexer {
 				// Final facts outrank a failure row.
 				if (held !== "outline") this.store.clearFailure(module);
 				// A row from before content was recorded learns it without a parse.
-				this.store.recordContent(module, route.content);
+				this.store.recordContent(module, parser.content);
 				return this.outcome(module, "current");
 			}
 		}
 
 		let facts: MethodResponse<"parseFile">;
 		try {
-			facts = await this.supervisor.ask(module, "parseFile", {
+			facts = await this.supervisor.askProvider(parser.providerId, "parseFile", {
 				module,
 				contentHash: readHash,
 				text,
@@ -205,21 +226,17 @@ export class WorkspaceIndexer {
 		} catch (error) {
 			const failure = error instanceof Error ? error.message : String(error);
 			if (error instanceof ProviderUnavailableError) {
+				// An outage, not a refusal: the index keeps what it had and nobody is there to tell.
 				this.providerFailures.set(module, failure);
 				return this.outcome(module, "providerDown", failure);
 			}
-			this.store.recordFailure(module, failure);
-			this.upgradeFailed.add(module);
-			return this.outcome(module, "parseFailed", failure);
+			return this.refuseParse(answered, module, readHash, failure);
 		}
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 		if (errors.length > 0) {
 			// An answer, not a throw: the file is the reason, and a caller reindexing a restored file
 			// must not fail on it. Recorded here so every caller's failure reaches coverage.
-			const failure = errors.map((diagnostic) => diagnostic.message).join("; ");
-			this.store.recordFailure(module, failure);
-			this.upgradeFailed.add(module);
-			return this.outcome(module, "parseFailed", failure);
+			return this.refuseParse(answered, module, readHash, errors.map((d) => d.message).join("; "));
 		}
 		// Below error, kept with the facts.
 		const notes: FileNote[] = facts.diagnostics.flatMap((diagnostic) =>
@@ -251,7 +268,7 @@ export class WorkspaceIndexer {
 				comments: attachComments(facts.declarations, facts.comments ?? [], text),
 				docs: facts.docs ?? [],
 				notes,
-				content: route.content,
+				content: parser.content,
 				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
 				// supervisor drops a comments field from a provider that never declared the tier.
 				digests: storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
@@ -259,18 +276,51 @@ export class WorkspaceIndexer {
 			});
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
-			if (!(error instanceof FactAdmissionError)) throw error;
-			const failure = `the provider's answer was refused: ${error.message}`;
-			this.store.recordFailure(module, failure);
-			this.upgradeFailed.add(module);
-			return this.outcome(module, "parseFailed", failure);
+			if (error instanceof FactAdmissionError) {
+				return this.refuseParse(
+					answered,
+					module,
+					readHash,
+					`the provider's answer was refused: ${error.message}`,
+				);
+			}
+			// Any other store failure committed nothing either, and the provider is holding this parse.
+			// Answered rather than rethrown, so the fault is recorded before the provider is told.
+			const outcome = this.faultOutcome(module, error);
+			this.publish(answered, {
+				module,
+				contentHash: readHash,
+				outcome: { status: "refused", reason: indexerFault(error) },
+			});
+			return outcome;
 		}
+		// Committed, so the provider is told what the index holds rather than what it is about to.
+		this.publish(answered, { module, contentHash: readHash, outcome: { status: "admitted" } });
 		if (fresh) this.newInPass.add(module);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
 		this.caches.facts.invalidate();
 		return { module, action: "indexed", declarations: facts.declarations.length };
+	}
+
+	/**
+	 * The index takes none of this parse and keeps the file's previous facts.
+	 *
+	 * Recorded before it is published, so a provider is never told a verdict the index has not
+	 * taken. The provider is told because the refusal happens after it answered: its own cross-file
+	 * state holds the facts this just declined, and nothing else would ever say so.
+	 */
+	private refuseParse(answered: Parser, module: string, contentHash: string, failure: string): IndexOutcome {
+		this.store.recordFailure(module, failure);
+		this.upgradeFailed.add(module);
+		this.publish(answered, { module, contentHash, outcome: { status: "refused", reason: failure } });
+		return this.outcome(module, "parseFailed", failure);
+	}
+
+	/** Tells the process that answered. Called only after the index has written the verdict. */
+	private publish(answered: Parser, verdict: ModuleAdmission): void {
+		this.supervisor.admission(answered.providerId, answered.incarnation, verdict);
 	}
 
 	/**
@@ -525,7 +575,7 @@ export class WorkspaceIndexer {
 	private faultOutcome(module: string, error: unknown): IndexOutcome {
 		const failure = error instanceof Error ? error.message : String(error);
 		// Recorded under its own wording, so the file shows among the failures without being blamed.
-		this.store.recordFailure(module, `the indexer failed on this file: ${failure}`);
+		this.store.recordFailure(module, indexerFault(error));
 		this.upgradeFailed.add(module);
 		return this.outcome(module, "fault", failure);
 	}

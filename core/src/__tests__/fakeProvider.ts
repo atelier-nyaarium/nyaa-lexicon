@@ -3,6 +3,8 @@ import {
 	type Declaration,
 	type Import,
 	METHOD_SCHEMAS,
+	type ModuleAdmission,
+	NOTIFICATION_SCHEMAS,
 	type ProviderMethod,
 	type ProviderTiers,
 } from "@nyaa-lexicon/protocol";
@@ -38,6 +40,10 @@ export interface FakeOptions {
 	lazyEvidence?: boolean;
 	/** Each module the index told providers to forget. */
 	forgotten?: string[];
+	/** Each verdict DELIVERED, with the provider it named, in order. */
+	admissions?: Array<{ providerId: string; verdict: ModuleAdmission }>;
+	/** Which spawn answers now. A test advances it to restart a provider under the same id. */
+	incarnation?: { current: number };
 }
 
 ////////////////////////////////
@@ -126,6 +132,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 	const tiers = options.tiers ?? {};
 	const answers = options.answers ?? {};
 	const failure = options.fail ?? {};
+	const incarnation = options.incarnation ?? { current: 1 };
 	const lazyEvidence = options.lazyEvidence ?? true;
 	let evidence: () => Iterable<string> = () => [];
 	let head: HeadReader | undefined;
@@ -202,6 +209,13 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		},
 		forget: (module) => {
 			options.forgotten?.push(module);
+		},
+		incarnationOf: () => incarnation.current,
+		admission: (providerId, given, verdict) => {
+			// Dropped as the supervisor drops it: a verdict for a process that has been replaced.
+			if (given !== incarnation.current) return;
+			// Parsed as the wire parses it, so no suite asserts on a verdict a provider cannot receive.
+			options.admissions?.push({ providerId, verdict: NOTIFICATION_SCHEMAS.moduleAdmission.parse(verdict) });
 		},
 	};
 	return port;

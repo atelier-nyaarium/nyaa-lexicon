@@ -22,7 +22,7 @@ import {
 
 type Range = Declaration["range"];
 
-interface TypeFacts {
+export interface TypeFacts {
 	module: string;
 	declarations: Declaration[];
 	annotations: TypeAnnotationFact[];
@@ -993,6 +993,7 @@ export class GDScriptTypeIndex {
 	constructor(
 		private readonly workspaceRoot: string,
 		private readonly resolver: TypeResolver,
+		private readonly fillable: (module: string) => boolean,
 	) {}
 
 	registerFile(module: string, text: string, declarations: Declaration[]): void {
@@ -1003,6 +1004,19 @@ export class GDScriptTypeIndex {
 			annotations,
 			inferred: inferFile(module, declarations, annotations, text, this.resolver),
 		});
+	}
+
+	snapshot(module: string): TypeFacts | undefined {
+		return this.factsByModule.get(module);
+	}
+
+	restore(module: string, snapshot: TypeFacts | undefined): void {
+		if (snapshot === undefined) this.factsByModule.delete(module);
+		else this.factsByModule.set(module, snapshot);
+	}
+
+	forget(module: string): void {
+		this.factsByModule.delete(module);
 	}
 
 	typeOf(params: { symbolId: string } | { module: string; range: Range }): TypeInfo {
@@ -1049,6 +1063,8 @@ export class GDScriptTypeIndex {
 	private factsForModule(module: string): TypeFacts | null {
 		const cached = this.factsByModule.get(module);
 		if (cached !== undefined) return cached;
+		// A module the index does not hold must not return through a read of its own bytes.
+		if (!this.fillable(module)) return null;
 		const absolute = absoluteModule(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	AdmissionLedger,
 	type Binding,
 	type CommentSpan,
 	comparePositions,
@@ -15,6 +16,7 @@ import {
 	type ImportedName,
 	type ImportResolution,
 	type Literal,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedImport,
@@ -475,13 +477,16 @@ function unboundBinding(reason: UnknownReason, detail: string): Binding {
 
 export class PythonProvider {
 	private workspaceRoot = process.cwd();
-	private parsedFacts = new Map<string, ReturnType<typeof mapFacts>>();
+	private parsedFacts = new Map<string, MappedFacts>();
+	/** What the index took, so an imported name resolves to what it holds. */
+	private readonly admission = new AdmissionLedger<MappedFacts>();
 
 	constructor(private readonly python3 = new Python3Dispatch()) {}
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		this.parsedFacts.clear();
+		this.admission.reset();
 		return {
 			providerId: "python-provider",
 			language: LANGUAGE,
@@ -521,6 +526,7 @@ export class PythonProvider {
 
 	parseFile(params: { module: string; contentHash: string; text: string }) {
 		const facts = mapFacts(params.module, extractFacts(this.python3, params.module, params.text));
+		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
@@ -534,9 +540,25 @@ export class PythonProvider {
 		};
 	}
 
-	private factsForModule(module: string): ReturnType<typeof mapFacts> | null {
+	/** The index let this module go, or refused the parse it holds nothing from. */
+	forgetModule(params: { module: string }): void {
+		this.parsedFacts.delete(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so an import resolves to what the index holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
+		else this.parsedFacts.set(restore.module, restore.facts);
+	}
+
+	private factsForModule(module: string): MappedFacts | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
+		// A file the index does not hold must not come back through a read of its own bytes.
+		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
 		const facts = mapFacts(module, extractFacts(this.python3, module, readFileSync(absolute, "utf8")));

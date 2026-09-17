@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -9,6 +10,7 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -122,14 +124,14 @@ export class CsharpProvider {
 	private workspaceRoot = process.cwd();
 	private parsedFacts = new Map<string, CsharpFacts>();
 	private discoveredFiles: string[] | null = null;
-	/** Modules the core forgot; unread until parsed again. */
-	private readonly forgotten = new Set<string>();
+	/** What the index took, so a cross-file answer reads what it holds. */
+	private readonly admission = new AdmissionLedger<CsharpFacts>();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		this.parsedFacts.clear();
 		this.discoveredFiles = null;
-		this.forgotten.clear();
+		this.admission.reset();
 		return {
 			providerId: "csharp-provider",
 			language: LANGUAGE,
@@ -168,8 +170,8 @@ export class CsharpProvider {
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const outline = params.depth === "outline";
 		const facts = new CsharpParser(params.module, params.text, outline).parse();
+		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
-		this.forgotten.delete(params.module);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -265,7 +267,15 @@ export class CsharpProvider {
 
 	forgetModule(params: { module: string }): void {
 		this.parsedFacts.delete(params.module);
-		this.forgotten.add(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so cross-file answers match the index. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
+		else this.parsedFacts.set(restore.module, restore.facts);
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
@@ -288,15 +298,15 @@ export class CsharpProvider {
 				return [];
 			}
 		}
-		return this.forgotten.size === 0
-			? this.discoveredFiles
-			: this.discoveredFiles.filter((module) => !this.forgotten.has(module));
+		// Withholding is factsForModule's gate; a withheld module may still hold admitted facts.
+		return this.discoveredFiles;
 	}
 
 	private factsForModule(module: string): CsharpFacts | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		if (this.forgotten.has(module)) return null;
+		// A module the index does not hold must not return through its own bytes.
+		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {

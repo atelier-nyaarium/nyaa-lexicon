@@ -179,6 +179,13 @@ Ordered by how much they prove:
   token already has instances on disk, run the check against ALL of them before trusting it.
 - **Never branch on a language in `core/` or `formats/`.** A residue test fails the build on the
   quoted name itself; the fix is a new field on the provider contract.
+- **A provider learns what the index ADMITTED, never what it emitted.** `core/src/indexer.ts` is the
+  one publisher of a `moduleAdmission` verdict and publishes it after the write it describes: after
+  `store.replaceFile` returns, or after `recordFailure` on a refusal. `protocol/src/admission.ts`
+  owns the provider's half, so the staging, the tombstone and the rule that a verdict for replaced
+  bytes settles nothing are written once rather than in nine providers. A provider answering one of
+  the two notifications answers both, since a forget says the index holds nothing and a refusal says
+  it holds the previous facts. Two residues and a lifecycle conformance case pair hold it.
 - **Core asks providers through `ProviderPort`, and tests double it through `fakeSupervisor`.**
   The port is declared where its callers live, so a member core starts calling fails the type check
   rather than a suite at runtime. A residue forbids casting a double to the supervisor class. The

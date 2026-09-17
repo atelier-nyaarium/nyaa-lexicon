@@ -73,7 +73,9 @@ describe("C provider protocol", () => {
 		expect(Object.keys(handlers).sort()).toEqual([
 			"bind",
 			"discoverProject",
+			"forgetModule",
 			"initialize",
+			"moduleAdmission",
 			"moveEdits",
 			"parseFile",
 			"renameEdits",
@@ -82,6 +84,66 @@ describe("C provider protocol", () => {
 			"typeOf",
 		]);
 		expect(handlers.shutdown({})).toEqual({});
+	});
+
+	test("a refusal leaves only the include kinds the admitted parse stated", () => {
+		const root = workspace({
+			"src/local.h": "int shared;\n",
+			"src/extra.h": "int spare;\n",
+			"src/use.c": '#include "local.h"\n',
+		});
+		const provider = new CProvider();
+		provider.initialize(root);
+		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/use.c", specifier });
+
+		provider.parseFile({ module: "src/use.c", contentHash: "quoted", text: '#include "local.h"\n' });
+		provider.moduleAdmission({ module: "src/use.c", contentHash: "quoted", outcome: { status: "admitted" } });
+		provider.parseFile({
+			module: "src/use.c",
+			contentHash: "angle",
+			text: "#include <local.h>\n#include <extra.h>\n",
+		});
+
+		expect(resolve("local.h")).toEqual({ status: "external", packageName: "local.h" });
+
+		provider.moduleAdmission({
+			module: "src/use.c",
+			contentHash: "angle",
+			outcome: { status: "refused", reason: "the index refused these facts" },
+		});
+
+		expect(resolve("local.h")).toEqual({ status: "resolved", module: "src/local.h" });
+		expect(resolve("extra.h")).toEqual({ status: "resolved", module: "src/extra.h" });
+	});
+
+	test("an admitted reparse drops an include kind the file no longer states", () => {
+		const root = workspace({ "src/extra.h": "int spare;\n", "src/use.c": "#include <extra.h>\n" });
+		const provider = new CProvider();
+		provider.initialize(root);
+		const resolve = () => provider.resolveImport({ fromModule: "src/use.c", specifier: "extra.h" });
+
+		provider.parseFile({ module: "src/use.c", contentHash: "angle", text: "#include <extra.h>\n" });
+		provider.moduleAdmission({ module: "src/use.c", contentHash: "angle", outcome: { status: "admitted" } });
+		expect(resolve()).toEqual({ status: "external", packageName: "extra.h" });
+
+		provider.parseFile({ module: "src/use.c", contentHash: "none", text: "int run(void) { return 0; }\n" });
+		provider.moduleAdmission({ module: "src/use.c", contentHash: "none", outcome: { status: "admitted" } });
+
+		expect(resolve()).toEqual({ status: "resolved", module: "src/extra.h" });
+	});
+
+	test("a forgotten module does not come back through a read of its own bytes", () => {
+		const root = workspace({ "src/cart.h": "int add(int left, int right);\n" });
+		const provider = new CProvider();
+		provider.initialize(root);
+		const user = '#include "cart.h"\n\nint run(void) { return add(1, 2); }\n';
+		const bound = () => facts(provider, "src/use.c", user).references.find((reference) => reference.name === "add");
+
+		expect(bound()?.binding.status).toBe("bound");
+
+		provider.forgetModule({ module: "src/cart.h" });
+
+		expect(bound()?.binding.status).toBe("unbound");
 	});
 
 	test("walks C and header files while excluding build and cache directories", () => {

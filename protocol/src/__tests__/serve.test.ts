@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { PassThrough } from "node:stream";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
+import { handlersFor, type ProviderMethods } from "../providerKit";
 import { exitWhenClosed, type ProviderHandlers, type ProviderNotificationHandlers, serveProvider } from "../serve";
 
 describe("the shared server, before any handler", () => {
@@ -78,6 +79,53 @@ describe("a notification", () => {
 			provider.dispose();
 			daemon.dispose();
 		}
+	});
+
+	// The seam is additive or it is not shippable: a provider written before it must not change.
+	it("leaves a provider predating it wired to nothing, and still answering", async () => {
+		const answering = { parseFile: () => ({ declarations: [] }) } as unknown as ProviderMethods;
+		const wired = handlersFor(answering);
+		expect(Object.keys(wired)).not.toContain("moduleAdmission");
+		expect(Object.keys(wired)).not.toContain("forgetModule");
+
+		const ignoring = pair(wired);
+		await ignoring.daemon.sendNotification("moduleAdmission", {
+			module: "src/a.kt",
+			contentHash: "h",
+			outcome: { status: "refused", reason: "the provider's answer was refused" },
+		});
+		await expect(
+			ignoring.daemon.sendRequest("parseFile", { module: "src/a.kt", contentHash: "h", text: "" }),
+		).resolves.toMatchObject({ declarations: [] });
+
+		ignoring.provider.dispose();
+		ignoring.daemon.dispose();
+	});
+
+	it("reaches a provider that answers it, and refuses a verdict its schema does not admit", async () => {
+		const settled: string[] = [];
+		const answering = { parseFile: () => ({ declarations: [] }) } as unknown as ProviderHandlers;
+		const handled = pair({
+			...answering,
+			moduleAdmission: ({ module, outcome }) => settled.push(`${module}:${outcome.status}`),
+		});
+
+		await handled.daemon.sendNotification("moduleAdmission", {
+			module: "src/a.kt",
+			contentHash: "h",
+			outcome: { status: "admitted" },
+		});
+		// Refused with no reason: the schema refuses it rather than the handler reading a blank one.
+		await handled.daemon.sendNotification("moduleAdmission", {
+			module: "src/b.kt",
+			contentHash: "h",
+			outcome: { status: "refused" },
+		});
+		await handled.daemon.sendRequest("parseFile", { module: "src/a.kt", contentHash: "h", text: "" });
+
+		expect(settled).toEqual(["src/a.kt:admitted"]);
+		handled.provider.dispose();
+		handled.daemon.dispose();
 	});
 });
 

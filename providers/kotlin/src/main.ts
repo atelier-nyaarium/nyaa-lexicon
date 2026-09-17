@@ -1,12 +1,14 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	type Declaration,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -104,8 +106,8 @@ export class KotlinProvider {
 	private filled = false;
 	/** Present but unreadable at the last read; retried on a lookup. */
 	private readonly unread = new Set<string>();
-	/** Let go of by the core; no fill or direct read touches its file until it is admitted again. */
-	private readonly forgotten = new Set<string>();
+	/** The core's word on each parse, and what the index must hold when one is refused. */
+	private readonly admission = new AdmissionLedger<ModuleHeaders>();
 
 	initialize(workspaceRoot: string) {
 		this.reset(workspaceRoot);
@@ -143,11 +145,9 @@ export class KotlinProvider {
 		if (outline) this.parsedFacts.delete(params.module);
 		else this.parsedFacts.set(params.module, facts);
 		this.unread.delete(params.module);
-		// A refused parse leaves the core's rows, so the index keeps what matched them.
-		if (admitted(facts)) {
-			this.forgotten.delete(params.module);
-			this.index.add(facts);
-		}
+		// The core decides; `moduleAdmission` puts back what a refusal displaced.
+		this.admission.staged(params.module, params.contentHash, this.index.headersOf(params.module));
+		this.index.add(facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -234,7 +234,17 @@ export class KotlinProvider {
 		this.index.remove(params.module);
 		this.previous?.remove(params.module);
 		this.unread.delete(params.module);
-		this.forgotten.add(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refusal puts back what the parse displaced, so the index holds what the core holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		// Drop the refused full parse.
+		this.parsedFacts.delete(restore.module);
+		this.index.remove(restore.module);
+		if (restore.facts !== undefined) this.index.add(restore.facts);
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
@@ -253,7 +263,7 @@ export class KotlinProvider {
 		this.previous = undefined;
 		this.filled = false;
 		this.unread.clear();
-		this.forgotten.clear();
+		this.admission.reset();
 	}
 
 	/** Every module is read again, and the old index answers only for text that cannot be admitted. */
@@ -287,7 +297,7 @@ export class KotlinProvider {
 	private factsForModule(module: string): KotlinFile | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
-		if (this.forgotten.has(module)) return null;
+		if (!this.admission.fillable(module)) return null;
 		const read = this.read(module);
 		if (read.kind !== "text") return null;
 		const facts = parseKotlin(module, read.text);
@@ -306,7 +316,7 @@ export class KotlinProvider {
 		this.previous = undefined;
 		const modules = new Set([...this.filesInWorkspace(), ...(previous?.heldModules() ?? [])]);
 		for (const module of [...modules].sort())
-			if (!this.index.holds(module) && !this.forgotten.has(module)) this.indexFromDisk(module, previous);
+			if (!this.index.holds(module) && this.admission.fillable(module)) this.indexFromDisk(module, previous);
 		return this.index;
 	}
 
@@ -315,6 +325,7 @@ export class KotlinProvider {
 		this.unread.delete(module);
 		const read = this.read(module);
 		const facts = read.kind === "text" ? parseKotlin(module, read.text, true) : undefined;
+		// A disk read gets no core verdict, so the provider judges.
 		if (facts !== undefined && admitted(facts)) {
 			this.index.add(facts);
 			return;

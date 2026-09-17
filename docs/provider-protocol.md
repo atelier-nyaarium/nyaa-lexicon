@@ -26,10 +26,12 @@ moveEdits(request)           -> MoveEditsResponse
 shutdown()
 ```
 
-One notification travels the other way without an answer:
+Two notifications travel the other way without an answer:
 
 ```
 forgetModule(module)         the index no longer holds this module
+moduleAdmission(module, contentHash, outcome)
+                             what the index did with the parse you just answered
 ```
 
 The core sends `forgetModule` to every running provider whenever it lets a module go: the file was
@@ -39,6 +41,51 @@ its own (a declaration index, a parse cache) drops the module and does not read 
 `parseFile` names it again. A provider that holds nothing ignores it, and `handlersFor` wires it only
 when the provider object has a `forgetModule` method. Unlike a method it is optional, which is what
 lets an older provider keep working.
+
+## What the index admitted
+
+**Answering a parse is not the same as having it stored.** The core decides afterwards, and once it
+has asked for a parse any failure but its own outage refuses it: a thrown request, an `error`
+diagnostic, an id the store cannot read, or a store fault under the commit. In each case the file's
+PREVIOUS facts stand and none of the answer is in the index. A provider that fills a declaration index, a package
+index or a parse cache from its own answer then holds facts the core does not, and a cross-file
+binding drawn from them names a symbol the store has never had.
+
+`moduleAdmission` closes that. It carries the module, the `contentHash` the core parsed, and an
+outcome that is `admitted` or `refused` with the sentence the index recorded against the file. It is
+published after the index has written its decision, never before, so what it says is what the store
+already holds. It is whole-file, because admission is: the store refuses on the first id it cannot
+read and writes nothing, so there is no surviving subset to name.
+
+It is NOT `forgetModule`. A forget says the index holds nothing for the module. A refusal says the
+index holds the module's earlier facts and took none of these. A provider that answers a refusal by
+dropping the module disagrees with the core in the other direction.
+
+**`AdmissionLedger` from `@nyaa-lexicon/protocol` owns this bookkeeping.** Five calls:
+
+- `staged(module, contentHash, replaced)` in `parseFile`, BEFORE the cache write, where `replaced`
+  is whatever that module held. Stage only on the parse road: staging inside a helper your disk fill
+  also calls stamps a pending entry nothing ever settles.
+- `settle(verdict)` in `moduleAdmission`. It answers what the module must hold, or null when what
+  you have stands.
+- `forgotten(module)` in `forgetModule`, beside dropping the module from every cache.
+- `fillable(module)` at the top of every read off disk, after the cache hit. Without it a module the
+  index does not hold comes straight back through a read of its own bytes, and the correction undoes
+  itself.
+- `reset()` in `initialize`. A tombstone and an outstanding parse both name a module of the
+  workspace being left, and neither means anything in the next one.
+
+**Verdicts for one module arrive in the order you staged them.** The core serializes a module's
+parses and publishes each one's verdict on the queue that parse rode, so the ledger settles the
+OLDEST outstanding parse and ignores a verdict that is not for it. That is what lets a second parse
+land before the first verdict does without either being lost.
+
+**A provider answering either notification answers both.** A forget and a refusal are the two halves
+of one lifecycle, and a provider correcting for one still disagrees with the index on the other. A
+residue holds it.
+
+A provider predating the seam ignores the notification and is unchanged; `handlersFor` wires one
+only when the provider object declares the method.
 
 `parseFile` is one call returning everything from one parse. There is no `describe`: narrative is
 the core's job, and a provider writing prose means the boundary leaked. `discoverProject` is the
@@ -363,6 +410,26 @@ Unknowns everywhere and pass.
 A binding case may name `bindsToModule` as well as `bindsTo`. The runner parses only the subject
 file, so a case holding several files proves a use binds into a file the provider never parsed.
 
+### Lifecycle cases
+
+Two cases drive a SCRIPT rather than one parse, because the rule is about what a verdict does
+BETWEEN two parses. Both are gated on the `binding` tier and on a fixture in the language, and both
+prove the provider binds across files at all before asserting anything, so neither can pass while
+observing nothing.
+
+- `refused-facts-are-not-held`: the index forgets the target and then refuses the parse that
+  follows, so it holds nothing for it. The use must not bind into it, and must bind again once a
+  later parse is admitted. The refused parse is the target's own text, so it DECLARES the name:
+  refusing text that dropped the name would let a provider holding the refused facts pass, since the
+  use would be unbound either way.
+- `a-refusal-keeps-what-was-admitted`: the index still holds the target's earlier facts, so the use
+  must still bind. A provider that replaced them with the refused parse loses it.
+
+A fixture in a language is the claim that the provider binds across files. A language with no
+fixture skips, and adding one is the corpus's work rather than the provider's. The first case does
+not distinguish a provider that restored what the parse displaced from one that re-read the same
+bytes off disk, because for that module both agree with the index.
+
 A reference expectation matches same-named rows: only rows of its `role` when it states one, and
 never an import or export row when it does not. `at` narrows it to rows whose range starts there
 (zero-based `line`, optional `character`). Every matching row must satisfy it, so rows that disagree
@@ -460,11 +527,11 @@ The index must hold what the core holds, or a binding names a symbol the store d
 - **`typeOf` takes a declared type's symbol from the binding** of the type as written, so it never
   names a declaration the binding would not.
 
-Two gaps remain. A store refusal after the parse (`FactAdmissionError`) never reaches the provider,
-so the index keeps a parse the core refused. The core forgets a file it cannot read, so a file made
-readable again with no watcher event stays out of the index until it is parsed again.
+One gap remains. The core forgets a file it cannot read, so a file made readable again with no
+watcher event stays out of the index until it is parsed again.
 
-The C# provider handles `forgetModule` the same way for its parse cache.
+Every provider holding cross-file state follows these rules now, through `AdmissionLedger` and the
+verdict the core publishes; "What the index admitted" above has the whole of it.
 
 ## Versioning
 

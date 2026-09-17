@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	AdmissionLedger,
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
@@ -11,6 +12,7 @@ import {
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	type Position,
@@ -117,10 +119,13 @@ function emptyFacts(module: string, diagnostic: Diagnostic): ParsedBashFile {
 export class BashProvider {
 	private workspaceRoot = process.cwd();
 	private readonly facts = new Map<string, ParsedBashFile>();
+	/** What the index took, so a sourced file's facts are what it holds and not what was emitted. */
+	private readonly admission = new AdmissionLedger<ParsedBashFile>();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		this.facts.clear();
+		this.admission.reset();
 		return {
 			providerId: "bash-provider",
 			language: LANGUAGE,
@@ -160,6 +165,7 @@ export class BashProvider {
 
 	parseFile(params: { module: string; contentHash: string; text: string }) {
 		const parsed = parseBash(params.module, params.text);
+		this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
 		this.facts.set(params.module, parsed);
 		const references: Reference[] = [];
 		for (const reference of parsed.references) {
@@ -255,9 +261,25 @@ export class BashProvider {
 		return absolute !== null && existsSync(absolute) && statSync(absolute).isFile();
 	}
 
+	/** The index let this module go, or refused the parse it holds nothing from. */
+	forgetModule(params: { module: string }): void {
+		this.facts.delete(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so a sourced name resolves to what the index holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		if (restore.facts === undefined) this.facts.delete(restore.module);
+		else this.facts.set(restore.module, restore.facts);
+	}
+
 	private factsFor(module: string): ParsedBashFile | null {
 		const cached = this.facts.get(module);
 		if (cached !== undefined) return cached;
+		// A file the index does not hold must not come back through a read of its own bytes.
+		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !this.hasFile(module)) return null;
 		let parsed: ParsedBashFile;

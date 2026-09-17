@@ -15,7 +15,7 @@ test("initialize declares identity, every tier but docs, and the roles the provi
 	expect(Object.entries(TIERS).filter(([, claimed]) => !claimed)).toEqual([["docs", false]]);
 });
 
-test("every handler answers, forgetModule included, and write operations refuse with a closed reason", () => {
+test("every handler answers, both notifications included, and write operations refuse with a closed reason", () => {
 	const provider = new KotlinProvider();
 	provider.initialize(process.cwd());
 	const handlers = handlersFor(provider);
@@ -25,6 +25,7 @@ test("every handler answers, forgetModule included, and write operations refuse 
 		"discoverProject",
 		"forgetModule",
 		"initialize",
+		"moduleAdmission",
 		"moveEdits",
 		"parseFile",
 		"renameEdits",

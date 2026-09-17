@@ -1,6 +1,7 @@
 // The provider protocol's public surface. Importers take named symbols from here, never from the
 // domain files, so a split or rename inside stays invisible to core and providers.
 
+export { AdmissionLedger, type ModuleAdmission, type RestoredFacts } from "./admission.js";
 export {
 	comparePositions,
 	coordinatesOf,
@@ -298,6 +299,7 @@ export {
 	InitializeResponseSchema,
 	isProviderMethod,
 	METHOD_SCHEMAS,
+	ModuleAdmissionNotificationSchema,
 	NOTIFICATION_SCHEMAS,
 	ParseFileRequestSchema,
 	PROVIDER_METHODS,

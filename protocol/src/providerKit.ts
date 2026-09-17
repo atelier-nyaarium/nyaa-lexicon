@@ -3,7 +3,8 @@
 import { closeSync, type Dirent, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
-import type { METHOD_SCHEMAS, NOTIFICATION_SCHEMAS, ProviderMethod } from "./methods.js";
+import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
+import { PROVIDER_NOTIFICATIONS } from "./methods.js";
 import type { ProjectModel } from "./project.js";
 import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
 import { firstLineOf, shebangInterpreter } from "./shebang.js";
@@ -16,8 +17,8 @@ import { normalizeModulePath } from "./symbolId.js";
 type Request<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["request"]>;
 type Response<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["response"]>;
 
-/** A provider as a plain object; `handlersFor` wires it to the method table. */
-export interface ProviderMethods {
+/** Every method, and `shutdown`, which answers nothing. */
+interface ProviderRequestMethods {
 	initialize(workspaceRoot: string): Response<"initialize">;
 	discoverProject(workspaceRoot: string): Response<"discoverProject">;
 	parseFile(params: Request<"parseFile">): Response<"parseFile">;
@@ -27,8 +28,15 @@ export interface ProviderMethods {
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
 	moveEdits(params: Request<"moveEdits">): Response<"moveEdits">;
 	shutdown?(): void;
-	forgetModule?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["forgetModule"]>): void;
 }
+
+/**
+ * A provider as a plain object; `handlersFor` wires it to the method table.
+ *
+ * Notifications are taken from the frozen list rather than written out, so one added there is an
+ * optional member of every provider without anyone remembering to add it twice.
+ */
+export type ProviderMethods = ProviderRequestMethods & ProviderNotificationHandlers;
 
 export interface WalkOptions {
 	/** With the dot; a file is claimed when its name ends with one. */
@@ -69,9 +77,26 @@ const SHEBANG_PROBE_BYTES = 256;
 ////////////////////////////////
 //  Functions & Helpers
 
+/**
+ * Only what the provider declares, bound to it.
+ *
+ * The loop erases the pairing between a name and its params, which the caller's own type already
+ * satisfied; `serveProvider` parses each one by its schema before the handler sees it.
+ */
+function notificationsOf(provider: ProviderMethods): ProviderNotificationHandlers {
+	const handlers: ProviderNotificationHandlers = {};
+	for (const notification of PROVIDER_NOTIFICATIONS) {
+		const handler = provider[notification] as ((params: unknown) => void) | undefined;
+		if (handler === undefined) continue;
+		(handlers as Record<string, (params: unknown) => void>)[notification] = (params) =>
+			handler.call(provider, params);
+	}
+	return handlers;
+}
+
 export function handlersFor(provider: ProviderMethods): ProviderHandlers & ProviderNotificationHandlers {
 	return {
-		...(provider.forgetModule === undefined ? {} : { forgetModule: (params) => provider.forgetModule?.(params) }),
+		...notificationsOf(provider),
 		initialize: (params) => provider.initialize(params.workspaceRoot),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
 		parseFile: (params) => provider.parseFile(params),

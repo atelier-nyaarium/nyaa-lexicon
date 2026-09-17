@@ -109,7 +109,14 @@ export class RustProjectResolver {
 	/** Top-level declaration names per module, with the text they were parsed from. */
 	private readonly topLevelNames = new Map<string, { text: string; names: Set<string> }>();
 
-	constructor(workspaceRoot: string) {
+	/**
+	 * `holdsNothing` is the index's word, not the disk's: a module it holds nothing for declares
+	 * nothing here either, however readable its bytes still are.
+	 */
+	constructor(
+		workspaceRoot: string,
+		private readonly holdsNothing: (module: string) => boolean = () => false,
+	) {
 		this.state = discoverRustProject(workspaceRoot).state;
 	}
 
@@ -237,6 +244,7 @@ export class RustProjectResolver {
 
 	/** Asked per reference; unchanged text parses once. */
 	private moduleHasDeclaration(module: string, name: string): boolean {
+		if (this.holdsNothing(module)) return false;
 		const absolute = path.join(this.state.root, ...module.split("/"));
 		if (!existsSync(absolute) || !statSync(absolute).isFile()) return false;
 		try {

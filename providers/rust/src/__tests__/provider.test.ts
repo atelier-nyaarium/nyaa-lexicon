@@ -699,3 +699,90 @@ test("returns a parse error for an empty import specifier and refuses edits by r
 		}),
 	).toMatchObject({ status: "refused", reason: "NotImplemented" });
 });
+
+const CART = "pub fn add(left: i32, right: i32) -> i32 { left + right }\n";
+const LIB = "mod cart;\nuse crate::cart::add;\n\npub fn run() -> i32 { add(1, 2) }\n";
+
+/** Where `add` lands in `run`, reparsing the user each time. */
+function callsAdd(provider: RustProvider): string | undefined {
+	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text: LIB });
+	const call = facts.references.find((candidate) => candidate.name === "add" && candidate.role === "call");
+	return call?.binding.status === "bound" ? call.binding.symbolId : undefined;
+}
+
+function cartWorkspace(): RustProvider {
+	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
+	const provider = new RustProvider();
+	provider.initialize(root);
+	return provider;
+}
+
+function admit(provider: RustProvider, contentHash: string): void {
+	provider.parseFile({ module: "src/cart.rs", contentHash, text: CART });
+	provider.moduleAdmission({ module: "src/cart.rs", contentHash, outcome: { status: "admitted" } });
+}
+
+test("stops binding into a module the index forgot, and binds again once a parse is admitted", () => {
+	const provider = cartWorkspace();
+	admit(provider, "cart");
+	expect(callsAdd(provider)).toBe("lexicon rust src/cart.rs add().");
+
+	provider.forgetModule({ module: "src/cart.rs" });
+	expect(callsAdd(provider)).toBeUndefined();
+
+	admit(provider, "cart-2");
+	expect(callsAdd(provider)).toBe("lexicon rust src/cart.rs add().");
+});
+
+test("holds nothing for a module whose first parse the index refused", () => {
+	const provider = cartWorkspace();
+	provider.parseFile({ module: "src/cart.rs", contentHash: "cart", text: CART });
+	provider.moduleAdmission({
+		module: "src/cart.rs",
+		contentHash: "cart",
+		outcome: { status: "refused", reason: "an id the index could not read" },
+	});
+
+	expect(callsAdd(provider)).toBeUndefined();
+});
+
+test("lets a new workspace fill a module the previous one withheld", () => {
+	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
+	const provider = new RustProvider();
+	provider.initialize(root);
+	provider.forgetModule({ module: "src/cart.rs" });
+	expect(callsAdd(provider)).toBeUndefined();
+
+	provider.initialize(root);
+
+	expect(callsAdd(provider)).toBe("lexicon rust src/cart.rs add().");
+});
+
+test("resolves a base-module symbol import against what the index holds, not the disk", () => {
+	const root = workspace({
+		"src/lib.rs": "pub enum Token { Literal }\n",
+		"src/glob.rs": "use super::Token;\n",
+	});
+	const provider = new RustProvider();
+	provider.initialize(root);
+	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
+	const parseLib = (contentHash: string) =>
+		provider.parseFile({ module: "src/lib.rs", contentHash, text: "pub enum Token { Literal }\n" });
+
+	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+
+	provider.forgetModule({ module: "src/lib.rs" });
+	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
+
+	parseLib("lib");
+	provider.moduleAdmission({ module: "src/lib.rs", contentHash: "lib", outcome: { status: "admitted" } });
+	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+
+	parseLib("lib-2");
+	provider.moduleAdmission({
+		module: "src/lib.rs",
+		contentHash: "lib-2",
+		outcome: { status: "refused", reason: "an id the index could not read" },
+	});
+	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+});

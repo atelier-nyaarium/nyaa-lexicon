@@ -35,6 +35,27 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+const ITEM = "class Item:\n    pass\n";
+const CART = "from .item import Item\ndef make():\n    return Item()\n";
+
+function itemWorkspace(): PythonProvider {
+	const root = workspace({ "src/item.py": ITEM });
+	const provider = new PythonProvider();
+	provider.initialize(root);
+	return provider;
+}
+
+function admitItem(provider: PythonProvider, contentHash: string): void {
+	provider.parseFile({ module: "src/item.py", contentHash, text: ITEM });
+	provider.moduleAdmission({ module: "src/item.py", contentHash, outcome: { status: "admitted" } });
+}
+
+/** Where the `Item()` call lands, reparsing the user each time. */
+function makesItem(provider: PythonProvider): string | undefined {
+	const facts = provider.parseFile({ module: "src/cart.py", contentHash: "cart", text: CART });
+	return facts.references.find((candidate) => candidate.name === "Item" && candidate.role === "call")?.binding.status;
+}
+
 describe("Python provider project behavior", () => {
 	it("declares extracted roles and binds a certain module call", () => {
 		const root = workspace({});
@@ -943,6 +964,42 @@ describe("Python provider project behavior", () => {
 			status: "unbound",
 			reason: "NotIndexed",
 		});
+	});
+
+	it("stops binding into a module the index forgot, and binds again once a parse is admitted", () => {
+		const provider = itemWorkspace();
+		admitItem(provider, "item");
+		expect(makesItem(provider)).toBe("bound");
+
+		provider.forgetModule({ module: "src/item.py" });
+		expect(makesItem(provider)).toBe("unbound");
+
+		admitItem(provider, "item-2");
+		expect(makesItem(provider)).toBe("bound");
+	});
+
+	it("holds nothing for a module whose first parse the index refused", () => {
+		const provider = itemWorkspace();
+		provider.parseFile({ module: "src/item.py", contentHash: "item", text: ITEM });
+		provider.moduleAdmission({
+			module: "src/item.py",
+			contentHash: "item",
+			outcome: { status: "refused", reason: "an id the index could not read" },
+		});
+
+		expect(makesItem(provider)).toBe("unbound");
+	});
+
+	it("lets a new workspace fill a module the previous one withheld", () => {
+		const root = workspace({ "src/item.py": ITEM });
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		provider.forgetModule({ module: "src/item.py" });
+		expect(makesItem(provider)).toBe("unbound");
+
+		provider.initialize(root);
+
+		expect(makesItem(provider)).toBe("bound");
 	});
 
 	it("binds direct bases and annotation names but refuses receiver lookup", () => {

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Binding, MAX_SOURCE_BYTES } from "@nyaa-lexicon/protocol";
+import { type Binding, MAX_SOURCE_BYTES, type ModuleAdmission } from "@nyaa-lexicon/protocol";
 import { KotlinProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -40,6 +40,18 @@ const USE = "package p\n\nfun use(): Foo = Foo()\n";
 const FOO = "package p\n\nclass Foo\n";
 /** A brace left open at the end of the file is refused. */
 const REFUSED = "package p\n\nclass Foo\nclass Extra {\n";
+/** Parses cleanly, so only the core's word can refuse it. */
+const RENAMED = "package p\n\nclass Bar\n";
+const BAR_USE = "package p\n\nval b = Bar()\n";
+
+/** The core's word on a parse. */
+function verdict(module: string, contentHash: string, reason?: string): ModuleAdmission {
+	return {
+		module,
+		contentHash,
+		outcome: reason === undefined ? { status: "admitted" } : { status: "refused", reason },
+	};
+}
 
 /** Every binding of `name` in a full parse of `text`, one per use. */
 function bindings(provider: KotlinProvider, module: string, text: string, name = "Foo"): Binding[] {
@@ -210,19 +222,59 @@ describe("a module the core lets go of", () => {
 });
 
 describe("the index takes only what the core admits", () => {
-	test("keeps a module's last admitted declarations through a refused parse, on disk or in memory", () => {
+	test("keeps a module's last admitted declarations when the core refuses the parse", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 
-		const refused = provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: REFUSED });
-		expect(refused.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
-		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
-		expect(targets(bindings(provider, "a/Use.kt", "package p\n\nval e = Extra()\n", "Extra"))).toEqual(["unbound"]);
+		// Clean facts, so only the verdict can turn them away.
+		const parsed = provider.parseFile({ module: "a/Foo.kt", contentHash: "renamed", text: RENAMED });
+		expect(parsed.diagnostics).toEqual([]);
+		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["lexicon kotlin a/Foo.kt Bar#"]);
 
-		// Rediscovered, the refused text on disk does not replace what was admitted.
+		provider.moduleAdmission(verdict("a/Foo.kt", "renamed", "the store refused an id"));
+
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["unbound"]);
+	});
+
+	test("keeps what was admitted when a rediscovery reads refused text off disk", () => {
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const provider = started(root);
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+
 		put(root, "a/Foo.kt", REFUSED);
 		provider.discoverProject(root);
+
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+		expect(targets(bindings(provider, "a/Use.kt", "package p\n\nval e = Extra()\n", "Extra"))).toEqual(["unbound"]);
+	});
+
+	test("holds nothing for a refused parse, and no later fill or read brings it back", () => {
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const provider = started(root);
+		const facts = provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO });
+		const foo = facts.declarations.find((item) => item.name === "Foo");
+		provider.moduleAdmission(verdict("a/Foo.kt", "h", "the store refused an id"));
+
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
+		expect(provider.typeOf({ symbolId: foo?.symbolId ?? "" })).toMatchObject({ reason: "NotIndexed" });
+
+		provider.discoverProject(root);
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
+
+		provider.parseFile({ module: "a/Foo.kt", contentHash: "again", text: FOO });
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+	});
+
+	test("ignores a verdict naming bytes a later parse replaced", () => {
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const provider = started(root);
+		provider.parseFile({ module: "a/Foo.kt", contentHash: "first", text: RENAMED });
+		provider.parseFile({ module: "a/Foo.kt", contentHash: "second", text: FOO });
+
+		provider.moduleAdmission(verdict("a/Foo.kt", "first", "the store refused an id"));
+
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 	});
 

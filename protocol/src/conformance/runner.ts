@@ -7,9 +7,10 @@ import { cpus, loadavg, tmpdir } from "node:os";
 import path from "node:path";
 import { createMessageConnection, ErrorCodes, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
+import type { ModuleAdmission } from "../admission.js";
 import { applyEdits } from "../edits.js";
-import { METHOD_SCHEMAS, type ProviderMethod, type ProviderTiers } from "../methods.js";
-import { composeSymbolId } from "../symbolId.js";
+import { METHOD_SCHEMAS, type ProviderMethod, type ProviderNotification, type ProviderTiers } from "../methods.js";
+import { composeSymbolId, moduleOf } from "../symbolId.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import { checkFacts, checkImport, checkType } from "./check.js";
 import {
@@ -17,6 +18,8 @@ import {
 	type CaseResult,
 	type ConformanceCase,
 	type ConformanceFixtureSchema,
+	type LifecycleCase,
+	type LifecycleFixture,
 	type MoveCase,
 	type MoveFixture,
 	type SuiteReport,
@@ -36,6 +39,7 @@ export interface RunOptions {
 	command: string[];
 	cases: ConformanceCase[];
 	moveCases?: MoveCase[];
+	lifecycleCases?: LifecycleCase[];
 	/** Milliseconds any single request may take before the case is failed. */
 	timeoutMs?: number;
 }
@@ -172,6 +176,15 @@ class ProviderSession {
 			throw error;
 		}
 		return METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
+	}
+
+	/**
+	 * Told, not asked. Awaiting the write is what orders it before the next request, since a
+	 * provider that never declared the notification answers nothing to wait on.
+	 */
+	async notify(notification: ProviderNotification, params: unknown): Promise<void> {
+		if (this.gone !== null) throw new Stall("exit", `provider process ${this.gone} before ${notification}`);
+		await withTimeout(this.connection.sendNotification(notification, params), this.timeoutMs, notification);
 	}
 
 	/** Resolves once the process is gone, so a retry never overlaps it. */
@@ -434,6 +447,99 @@ async function runMoveCase(session: ProviderSession, testCase: MoveCase, fixture
 	}
 }
 
+////////////////////////////////
+//  Lifecycle
+
+/** Which modules a use of `name` binds into. A specifier names a module, so import rows are out. */
+function boundModules(facts: MethodResponse<"parseFile">, name: string): string[] {
+	const found = new Set<string>();
+	for (const reference of facts.references) {
+		if (reference.name !== name || reference.role === "import" || reference.role === "export") continue;
+		if (reference.binding.status !== "bound") continue;
+		const module = moduleOf(reference.binding.symbolId);
+		if (module !== null) found.add(module);
+	}
+	return [...found];
+}
+
+/** The control step first: a provider binding nothing across files must not pass while silent. */
+async function runLifecycleCase(
+	session: ProviderSession,
+	testCase: LifecycleCase,
+	fixture: LifecycleFixture,
+): Promise<CaseResult> {
+	const targetText = fixture.files[fixture.target] as string;
+	const userText = fixture.files[fixture.user] as string;
+	const problems: string[] = [];
+
+	/** Parses the target and settles the index's verdict on it. */
+	const settle = async (text: string, reason?: string): Promise<void> => {
+		const contentHash = hashOf(text);
+		await session.call("parseFile", { module: fixture.target, contentHash, text });
+		const verdict: ModuleAdmission = {
+			module: fixture.target,
+			contentHash,
+			outcome: reason === undefined ? { status: "admitted" } : { status: "refused", reason },
+		};
+		await session.notify("moduleAdmission", verdict);
+	};
+
+	/** Where the use lands now. */
+	const uses = async (): Promise<string[]> => {
+		const facts = await session.call("parseFile", {
+			module: fixture.user,
+			contentHash: hashOf(userText),
+			text: userText,
+		});
+		return boundModules(facts, fixture.name);
+	};
+
+	await settle(targetText);
+	if (!(await uses()).includes(fixture.target)) {
+		return {
+			caseId: testCase.id,
+			tier: "binding",
+			outcome: "skipped",
+			problems: [
+				`${fixture.user} does not bind ${fixture.name} into ${fixture.target}, so this provider holds no cross-file state for the case to correct`,
+			],
+		};
+	}
+
+	if (testCase.expect === "keepsAdmitted") {
+		await settle(fixture.refusedText, "the index refused these facts");
+		if (!(await uses()).includes(fixture.target)) {
+			problems.push(
+				`after a refused parse of ${fixture.target}, ${fixture.name} no longer binds into it: the refused facts replaced what the index still holds`,
+			);
+		}
+		return { caseId: testCase.id, tier: "binding", outcome: problems.length === 0 ? "passed" : "failed", problems };
+	}
+
+	// The index holds nothing for the target: it let the module go, then refused the parse that
+	// followed. A provider that kept the refused facts, or read them back off disk, binds anyway.
+	//
+	// The refused parse is the target's own text, so it DECLARES the name. Refusing text that
+	// dropped the name would let a provider holding the refused facts pass, since the use would be
+	// unbound either way.
+	await session.notify("forgetModule", { module: fixture.target });
+	await settle(targetText, "the index refused these facts");
+	if ((await uses()).includes(fixture.target)) {
+		problems.push(
+			`${fixture.name} binds into ${fixture.target} after the index forgot it and refused the parse that followed, so the provider holds facts the index does not`,
+		);
+	}
+
+	await settle(targetText);
+	if (!(await uses()).includes(fixture.target)) {
+		problems.push(
+			`${fixture.name} no longer binds into ${fixture.target} after an admitted parse, so the refusal withheld it for good`,
+		);
+	}
+
+	return { caseId: testCase.id, tier: "binding", outcome: problems.length === 0 ? "passed" : "failed", problems };
+}
+
 /**
  * A tier the provider CLAIMS and this run never actually asked it about.
  *
@@ -588,6 +694,39 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				results.push({
 					caseId: testCase.id,
 					tier: "protocol",
+					outcome: "failed",
+					problems: [error instanceof Error ? error.message : String(error)],
+				});
+			}
+		}
+
+		for (const testCase of options.lifecycleCases ?? []) {
+			const fixture = testCase.fixtures[info.language];
+			if (!info.tiers.binding || !fixture) {
+				results.push({
+					caseId: testCase.id,
+					tier: "binding",
+					outcome: "skipped",
+					problems: [info.tiers.binding ? `no ${info.language} fixture` : "tier binding not declared"],
+				});
+				continue;
+			}
+
+			// Its own project, because the case rewrites the target and asks where a use lands.
+			const lifecycleRoot = path.join(root, `lifecycle-${testCase.id}`);
+			writeFixture(lifecycleRoot, fixture.files);
+			try {
+				await session.call("initialize", { workspaceRoot: lifecycleRoot, protocolVersion: PROTOCOL_VERSION });
+				await session.call("discoverProject", { workspaceRoot: lifecycleRoot });
+				results.push(await runLifecycleCase(session, testCase, fixture));
+			} catch (error) {
+				if (error instanceof Stall) {
+					results.push(stalled(testCase.id, "binding", error, startedAt, timeoutMs));
+					continue;
+				}
+				results.push({
+					caseId: testCase.id,
+					tier: "binding",
 					outcome: "failed",
 					problems: [error instanceof Error ? error.message : String(error)],
 				});

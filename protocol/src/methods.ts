@@ -135,6 +135,29 @@ export const ForgetModuleNotificationSchema = z
 	.object({ module: z.string().min(1) })
 	.meta({ id: "ForgetModuleNotification" });
 
+/**
+ * What the index did with a parse, after it decided, never before.
+ *
+ * Distinct from `forgetModule`, which says the index holds nothing. A refusal says the index kept
+ * the module's PREVIOUS facts and took none of these, so a provider that dropped the module
+ * outright would disagree with the core in the other direction.
+ *
+ * Whole-file, because admission is: the store refuses on the first id it cannot read and writes
+ * nothing, so there is no surviving subset to name.
+ */
+export const ModuleAdmissionNotificationSchema = z
+	.object({
+		module: z.string().min(1),
+		/** The bytes parsed, so a verdict cannot settle a parse the provider has moved past. */
+		contentHash: z.string().min(1),
+		outcome: z.discriminatedUnion("status", [
+			z.object({ status: z.literal("admitted") }),
+			/** The sentence the index recorded against the file. */
+			z.object({ status: z.literal("refused"), reason: z.string().min(1) }),
+		]),
+	})
+	.meta({ id: "ModuleAdmissionNotification" });
+
 /** A provider-level failure, distinct from an Unknown answer. The request could not be served. */
 export const ProviderErrorSchema = z
 	.object({ reason: UnknownReasonSchema, detail: z.string().min(1) })
@@ -178,12 +201,13 @@ export const METHOD_SCHEMAS = {
  * Told, never asked: no answer, so an older provider that ignores one keeps working. A provider
  * holding workspace state beyond one parse handles them; any other ignores them.
  */
-export const PROVIDER_NOTIFICATIONS = ["forgetModule"] as const;
+export const PROVIDER_NOTIFICATIONS = ["forgetModule", "moduleAdmission"] as const;
 
 export type ProviderNotification = (typeof PROVIDER_NOTIFICATIONS)[number];
 
 export const NOTIFICATION_SCHEMAS = {
 	forgetModule: ForgetModuleNotificationSchema,
+	moduleAdmission: ModuleAdmissionNotificationSchema,
 } as const satisfies Record<ProviderNotification, z.ZodType>;
 
 ////////////////////////////////

@@ -51,9 +51,14 @@ interface SourceFailure {
 
 type SourceContextResult = SourceContext | SourceFailure;
 
+/**
+ * `withheld` is not `external`: the file sits in the workspace and its bytes are readable, but the
+ * index holds nothing for it, so it names no workspace symbol.
+ */
 interface MappedDeclaration {
 	id: string | undefined;
 	external: boolean;
+	withheld: boolean;
 	node: ts.Declaration;
 }
 
@@ -65,6 +70,8 @@ export class TypeScriptAnalyzer {
 	private readonly projectOptions: ts.CompilerOptions;
 	private readonly scripts = new Set<string>();
 	private readonly overlays = new Map<string, Overlay>();
+	/** The highest overlay version issued per key, so a dropped overlay cannot reuse one. */
+	private readonly versions = new Map<string, number>();
 	private readonly extracted = new Map<string, { version: number; contentHash: string; value: Extracted }>();
 	private readonly service: ts.LanguageService;
 	private projectVersion = 0;
@@ -73,7 +80,15 @@ export class TypeScriptAnalyzer {
 	private firstProgramReadyAt: number | undefined;
 	private firstProgramWorkspaceFiles = 0;
 
-	constructor(root: string, project: LoadedProject) {
+	/**
+	 * `holdsNothing` is the index's word, not the disk's. The Program reads any file it can resolve,
+	 * so without it a use binds into a module the index refused or let go.
+	 */
+	constructor(
+		root: string,
+		project: LoadedProject,
+		private readonly holdsNothing: (module: string) => boolean = () => false,
+	) {
 		this.root = path.resolve(root);
 		this.projectOptions = project.options;
 		for (const file of project.files) this.scripts.add(path.resolve(file));
@@ -109,14 +124,42 @@ export class TypeScriptAnalyzer {
 		const previous = this.overlays.get(key);
 		if (previous === undefined) {
 			const diskText = ts.sys.readFile(fileName);
-			this.overlays.set(key, { text, version: diskText === text ? 0 : 1 });
-			if (diskText !== text) this.invalidateProgram();
+			// Version 0 is the disk's own text, and only until this key has been versioned.
+			if (diskText === text && !this.versions.has(key)) this.overlays.set(key, { text, version: 0 });
+			else this.setOverlay(key, text);
 		} else if (previous.text !== text) {
-			this.overlays.set(key, { text, version: previous.version + 1 });
-			this.invalidateProgram();
+			this.setOverlay(key, text);
 		}
 		const context = this.sourceContext(module);
 		return isSourceFailure(context) ? undefined : context.source;
+	}
+
+	/** The text held for this module, or nothing when only the disk answers for it. */
+	overlayText(module: string): string | undefined {
+		return this.overlays.get(this.key(this.fileName(module)))?.text;
+	}
+
+	/** Puts back the text a refused parse displaced, or drops the module when it displaced none. */
+	restoreFile(module: string, text: string | undefined): void {
+		const key = this.key(this.fileName(module));
+		const previous = this.overlays.get(key);
+		if (text === undefined) {
+			if (!this.dropOverlay(key)) return;
+			this.invalidateProgram();
+			return;
+		}
+		if (previous?.text === text) return;
+		this.setOverlay(key, text);
+	}
+
+	/** The index holds nothing for this module, so neither the text nor the root is ours to keep. */
+	forgetModule(module: string): void {
+		const fileName = this.fileName(module);
+		const key = this.key(fileName);
+		const hadOverlay = this.dropOverlay(key);
+		const hadExtract = this.extracted.delete(key);
+		const wasRooted = this.scripts.delete(fileName);
+		if (hadOverlay || hadExtract || wasRooted) this.invalidateProgram();
 	}
 
 	extract(module: string, source: ts.SourceFile, contentHash?: string): Extracted {
@@ -240,6 +283,7 @@ export class TypeScriptAnalyzer {
 		this.service.dispose();
 		this.extracted.clear();
 		this.overlays.clear();
+		this.versions.clear();
 	}
 
 	private typeOfSymbolId(symbolId: string): TypeInfo {
@@ -368,6 +412,9 @@ export class TypeScriptAnalyzer {
 		if (candidates.length === 1) return { status: "bound", symbolId: candidates[0] as string, provenance: "bound" };
 		if (mapped.some((item) => item.external)) {
 			return unknownBinding("ExternalDependency", "the declaration is outside the workspace");
+		}
+		if (mapped.some((item) => item.withheld)) {
+			return unknownBinding("NotIndexed", "the declaring module is not in the symbol index");
 		}
 		return unknownBinding("NotIndexed", "the declaration is not in the symbol index");
 	}
@@ -500,6 +547,24 @@ export class TypeScriptAnalyzer {
 		return undefined;
 	}
 
+	/**
+	 * A version never comes back around, since the document registry keys a cached source file by it.
+	 * Reusing one after a dropped overlay hands back the text the dropped overlay held.
+	 */
+	/** A dropped overlay leaves its key versioned, so its next text cannot land back on version 0. */
+	private dropOverlay(key: string): boolean {
+		if (!this.overlays.delete(key)) return false;
+		this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
+		return true;
+	}
+
+	private setOverlay(key: string, text: string): void {
+		const version = (this.versions.get(key) ?? 0) + 1;
+		this.versions.set(key, version);
+		this.overlays.set(key, { text, version });
+		this.invalidateProgram();
+	}
+
 	private invalidateProgram(): void {
 		this.projectVersion += 1;
 		this.extracted.clear();
@@ -527,9 +592,10 @@ export class TypeScriptAnalyzer {
 		const idsByFile = new Map<string, Map<string, string[]>>();
 		return nodes.map((node) => {
 			const source = node.getSourceFile();
-			if (this.isExternal(source.fileName)) return { id: undefined, external: true, node };
+			if (this.isExternal(source.fileName)) return { id: undefined, external: true, withheld: false, node };
 			const module = this.toModule(source.fileName);
-			if (module === null) return { id: undefined, external: true, node };
+			if (module === null) return { id: undefined, external: true, withheld: false, node };
+			if (this.holdsNothing(module)) return { id: undefined, external: false, withheld: true, node };
 			let ids = idsByFile.get(source.fileName);
 			if (ids === undefined) {
 				ids = new Map<string, string[]>();
@@ -541,7 +607,7 @@ export class TypeScriptAnalyzer {
 				idsByFile.set(source.fileName, ids);
 			}
 			const matches = ids.get(selectionKeyOf(node, source));
-			return { id: matches?.length === 1 ? matches[0] : undefined, external: false, node };
+			return { id: matches?.length === 1 ? matches[0] : undefined, external: false, withheld: false, node };
 		});
 	}
 

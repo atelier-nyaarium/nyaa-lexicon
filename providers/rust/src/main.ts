@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -8,6 +9,7 @@ import {
 	defined,
 	handlersFor,
 	type IndexDepth,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -100,13 +102,16 @@ function parseFailure(module: string, detail: string): ParsedFile {
 
 export class RustProvider {
 	private workspaceRoot = process.cwd();
-	private resolver = new RustProjectResolver(this.workspaceRoot);
 	private readonly parsedFacts = new Map<string, ParsedFile>();
+	/** What the index took, so an imported name resolves to what it holds. */
+	private readonly admission = new AdmissionLedger<ParsedFile>();
+	private resolver = this.newResolver();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.resolver = new RustProjectResolver(this.workspaceRoot);
+		this.resolver = this.newResolver();
 		this.parsedFacts.clear();
+		this.admission.reset();
 		return {
 			providerId: "rust-provider",
 			language: LANGUAGE,
@@ -131,6 +136,7 @@ export class RustProvider {
 		} catch (error) {
 			facts = parseFailure(params.module, error instanceof Error ? error.message : String(error));
 		}
+		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		const references = outline ? [] : this.wireReferences(facts);
 		facts.references = references;
@@ -196,9 +202,34 @@ export class RustProvider {
 		return notImplementedMove("Rust move edits are not implemented");
 	}
 
+	/** The index let this module go, or refused the parse it holds nothing from. */
+	forgetModule(params: { module: string }): void {
+		this.parsedFacts.delete(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so an import resolves to what the index holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
+		else this.parsedFacts.set(restore.module, restore.facts);
+	}
+
+	private newResolver(): RustProjectResolver {
+		return new RustProjectResolver(this.workspaceRoot, (module) => this.holdsNothing(module));
+	}
+
+	/** Nothing held and no fill allowed: the index holds this module not at all. */
+	private holdsNothing(module: string): boolean {
+		return !this.parsedFacts.has(module) && !this.admission.fillable(module);
+	}
+
 	private factsForModule(module: string): ParsedFile | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
+		// A file the index does not hold must not come back through a read of its own bytes.
+		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
 		try {

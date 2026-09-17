@@ -1,8 +1,11 @@
 // The TypeScript provider and its wire handlers.
 
 import {
+	AdmissionLedger,
 	handlersFor,
+	type ImportResolution,
 	type IndexDepth,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -56,6 +59,8 @@ export class TypeScriptProvider {
 	private project: LoadedProject | null = null;
 	private analyzer: TypeScriptAnalyzer | null = null;
 	private readonly runtimeSurfaces = new Set<string>();
+	/** What the index took, so a use binds into what it holds and not into the Program's disk read. */
+	private readonly admission = new AdmissionLedger<string>();
 
 	initialize(workspaceRoot: string) {
 		this.analyzer?.dispose();
@@ -63,6 +68,7 @@ export class TypeScriptProvider {
 		this.project = null;
 		this.analyzer = null;
 		this.runtimeSurfaces.clear();
+		this.admission.reset();
 		return {
 			providerId: "typescript-provider",
 			language: LANGUAGE,
@@ -79,8 +85,15 @@ export class TypeScriptProvider {
 	}
 
 	private analyzed(): TypeScriptAnalyzer {
-		this.analyzer ??= new TypeScriptAnalyzer(this.workspaceRoot, this.loaded());
+		this.analyzer ??= new TypeScriptAnalyzer(this.workspaceRoot, this.loaded(), (module) =>
+			this.holdsNothing(module),
+		);
 		return this.analyzer;
+	}
+
+	/** No text of ours and no disk read the index allows: it holds this module not at all. */
+	private holdsNothing(module: string): boolean {
+		return !this.admission.fillable(module) && this.analyzer?.overlayText(module) === undefined;
 	}
 
 	discoverProject() {
@@ -104,6 +117,9 @@ export class TypeScriptProvider {
 	 * a caller asks about the open one is a whole class of wrong-but-plausible answers.
 	 */
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+		// Staged before the overlay moves, so a refusal knows what this parse displaced.
+		this.admission.staged(params.module, params.contentHash, this.analyzer?.overlayText(params.module));
+
 		if (this.isSurface(params)) {
 			const extracted = extractSurfaceFile(params.module, params.text);
 			if (!isDeclarationModule(params.module)) this.runtimeSurfaces.add(params.module);
@@ -170,14 +186,26 @@ export class TypeScriptProvider {
 		};
 	}
 
-	resolveImport(params: { fromModule: string; specifier: string; surfaceGlobs?: string[] | undefined }) {
-		return resolveSpecifier(
+	resolveImport(params: {
+		fromModule: string;
+		specifier: string;
+		surfaceGlobs?: string[] | undefined;
+	}): ImportResolution {
+		const resolution = resolveSpecifier(
 			this.workspaceRoot,
 			params.fromModule,
 			params.specifier,
 			this.loaded().options,
 			params.surfaceGlobs,
 		);
+		if (resolution.status === "resolved" && this.holdsNothing(resolution.module)) {
+			return {
+				status: "unresolved",
+				reason: "NotIndexed",
+				detail: `the index holds nothing for ${resolution.module}`,
+			};
+		}
+		return resolution;
 	}
 
 	bind(params: {
@@ -230,6 +258,20 @@ export class TypeScriptProvider {
 		return this.analyzed().moveEdits(params, (fromModule, targetModule, preferredSpecifier) =>
 			renderSpecifier(this.workspaceRoot, fromModule, targetModule, options, preferredSpecifier),
 		);
+	}
+
+	/** The index let this module go, or refused the parse it holds nothing from. */
+	forgetModule(params: { module: string }): void {
+		this.analyzer?.forgetModule(params.module);
+		this.runtimeSurfaces.delete(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so a use binds into what the index kept. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		this.analyzer?.restoreFile(restore.module, restore.facts);
 	}
 
 	programStats() {

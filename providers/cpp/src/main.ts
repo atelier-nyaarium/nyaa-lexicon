@@ -1,12 +1,14 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -79,10 +81,13 @@ function unknown(reason: UnknownReason, detail: string): TypeInfo {
 export class CppProvider {
 	private workspaceRoot = process.cwd();
 	private parsedFacts = new Map<string, CppFacts>();
+	/** What the index took, so an included header's facts are what it holds and not what was emitted. */
+	private readonly admission = new AdmissionLedger<CppFacts>();
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
 		this.parsedFacts.clear();
+		this.admission.reset();
 		return {
 			providerId: "cpp-provider",
 			language: LANGUAGE,
@@ -117,6 +122,7 @@ export class CppProvider {
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const facts = parseCppFile(params.module, params.text);
+		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
@@ -217,9 +223,25 @@ export class CppProvider {
 		return notImplementedMove("C++ move rendering is not implemented");
 	}
 
+	/** The index let this module go, or refused the parse it holds nothing from. */
+	forgetModule(params: { module: string }): void {
+		this.parsedFacts.delete(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so an included name resolves to what the index holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
+		else this.parsedFacts.set(restore.module, restore.facts);
+	}
+
 	private factsForModule(module: string): CppFacts | null {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
+		// A file the index does not hold must not come back through a read of its own bytes.
+		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute)) return null;
 		try {

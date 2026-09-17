@@ -1,9 +1,11 @@
 // The GDScript provider. It reports project structure, declarations, and reference candidates.
 
 import {
+	AdmissionLedger,
 	type Declaration,
 	handlersFor,
 	type ImportResolution,
+	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -13,12 +15,20 @@ import {
 	serveProvider,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { GDScriptBindingIndex } from "./binding.js";
+import { GDScriptBindingIndex, type GDScriptBindingSnapshot } from "./binding.js";
 import { extractFile, LANGUAGE } from "./extract.js";
 import { makeMoveEdits } from "./move.js";
 import { discoverProject } from "./project.js";
 import { renameGdscript } from "./rename.js";
-import { GDScriptTypeIndex } from "./types.js";
+import { GDScriptTypeIndex, type TypeFacts } from "./types.js";
+
+//////// Types
+
+/** Both indexes' state for one module, so one verdict settles them together. */
+interface ModuleFacts {
+	binding: GDScriptBindingSnapshot | undefined;
+	types: TypeFacts | undefined;
+}
 
 //////// Constants
 
@@ -45,13 +55,14 @@ const FILENAMES = ["project.godot"];
 
 export class GDScriptProvider {
 	private workspaceRoot = process.cwd();
-	private bindingIndex = new GDScriptBindingIndex(this.workspaceRoot);
-	private typeIndex = new GDScriptTypeIndex(this.workspaceRoot, this.bindingIndex);
+	/** What the index took, so cross-file answers match what it holds. */
+	private readonly admission = new AdmissionLedger<ModuleFacts>();
+	private readonly fillable = (module: string): boolean => this.admission.fillable(module);
+	private bindingIndex = new GDScriptBindingIndex(this.workspaceRoot, this.fillable);
+	private typeIndex = new GDScriptTypeIndex(this.workspaceRoot, this.bindingIndex, this.fillable);
 
 	initialize(workspaceRoot: string) {
-		this.workspaceRoot = workspaceRoot;
-		this.bindingIndex = new GDScriptBindingIndex(workspaceRoot);
-		this.typeIndex = new GDScriptTypeIndex(workspaceRoot, this.bindingIndex);
+		this.rebuild(workspaceRoot);
 		return {
 			providerId: "gdscript-provider",
 			language: LANGUAGE,
@@ -64,14 +75,13 @@ export class GDScriptProvider {
 	}
 
 	discoverProject(workspaceRoot = this.workspaceRoot) {
-		this.workspaceRoot = workspaceRoot;
-		this.bindingIndex = new GDScriptBindingIndex(workspaceRoot);
-		this.typeIndex = new GDScriptTypeIndex(workspaceRoot, this.bindingIndex);
+		this.rebuild(workspaceRoot);
 		return discoverProject(workspaceRoot);
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string }) {
 		const extracted = extractFile(params.module, params.text);
+		this.admission.staged(params.module, params.contentHash, this.heldFacts(params.module));
 		this.bindingIndex.registerFile(params.module, extracted.declarations, extracted.references, params.text);
 		this.typeIndex.registerFile(params.module, params.text, extracted.declarations);
 		const references = extracted.references.map((reference) => ({
@@ -124,6 +134,34 @@ export class GDScriptProvider {
 
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
 		return makeMoveEdits(params, this.bindingIndex);
+	}
+
+	forgetModule(params: { module: string }): void {
+		this.bindingIndex.forget(params.module);
+		this.typeIndex.forget(params.module);
+		this.admission.forgotten(params.module);
+	}
+
+	/** A refused parse is put back, so a `class_name` resolves to what the index holds. */
+	moduleAdmission(params: ModuleAdmission): void {
+		const restore = this.admission.settle(params);
+		if (restore === null) return;
+		this.bindingIndex.restore(restore.module, restore.facts?.binding);
+		this.typeIndex.restore(restore.module, restore.facts?.types);
+	}
+
+	private rebuild(workspaceRoot: string): void {
+		this.workspaceRoot = workspaceRoot;
+		this.admission.reset();
+		this.bindingIndex = new GDScriptBindingIndex(workspaceRoot, this.fillable);
+		this.typeIndex = new GDScriptTypeIndex(workspaceRoot, this.bindingIndex, this.fillable);
+	}
+
+	private heldFacts(module: string): ModuleFacts | undefined {
+		const binding = this.bindingIndex.snapshot(module);
+		const types = this.typeIndex.snapshot(module);
+		if (binding === undefined && types === undefined) return undefined;
+		return { binding, types };
 	}
 }
 

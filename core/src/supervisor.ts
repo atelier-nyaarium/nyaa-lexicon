@@ -10,6 +10,7 @@ import {
 	defined,
 	isCompatibleProtocol,
 	METHOD_SCHEMAS,
+	type ModuleAdmission,
 	type NOTIFICATION_SCHEMAS,
 	PROTOCOL_VERSION,
 	type ProviderMethod,
@@ -64,6 +65,8 @@ interface RunningProvider {
 	queue: RequestQueue;
 	spec: ProviderSpec;
 	workspaceRoot: string;
+	/** This PROCESS, not this provider: a restart under the same id mints a new one. */
+	incarnation: number;
 	/** Unexpected deaths so far. At the cap the provider stays dead rather than crash-looping. */
 	deaths: number;
 	/** Set by stop(), so a deliberate teardown is never mistaken for a crash to respawn from. */
@@ -119,6 +122,8 @@ export class ProviderSupervisor implements ProviderPort {
 	constructor(private readonly clock: Clock = systemClock) {}
 
 	private readonly providers = new Map<string, RunningProvider>();
+	/** Minted per spawn, so a verdict for a dead process never reaches its replacement. */
+	private incarnations = 1;
 	/** What stopAll would otherwise miss. */
 	private readonly starting = new Set<StartingProcess>();
 	private readonly exitListeners: Array<(exit: ProviderExit) => void> = [];
@@ -230,6 +235,7 @@ export class ProviderSupervisor implements ProviderPort {
 			tiers: parsed.tiers,
 			spec,
 			workspaceRoot,
+			incarnation: this.incarnations++,
 			deaths: 0,
 			stopping: false,
 		};
@@ -332,7 +338,7 @@ export class ProviderSupervisor implements ProviderPort {
 			this.stopProcess(running);
 			return;
 		}
-		const entry: RunningProvider = { ...previous, ...running };
+		const entry: RunningProvider = { ...previous, ...running, incarnation: this.incarnations++ };
 		this.providers.set(previous.claims.providerId, entry);
 		this.watchForExit(entry);
 		console.log(`provider ${previous.claims.providerId} respawned`);
@@ -475,6 +481,28 @@ export class ProviderSupervisor implements ProviderPort {
 				// Dead providers forget everything.
 				.catch(() => {});
 		}
+	}
+
+	/** Which process answers for this provider now; null when none does. */
+	incarnationOf(providerId: string): number | null {
+		return this.providers.get(providerId)?.incarnation ?? null;
+	}
+
+	/**
+	 * The process that ANSWERED alone, unlike a forget, which every provider hears.
+	 *
+	 * Named by the caller rather than routed again here, since ownership can move between the parse
+	 * and the verdict. The incarnation is the second half of that identity: a provider that died and
+	 * restarted under the same id holds a fresh ledger, and a verdict for the dead process would
+	 * settle a staging that was never its own.
+	 */
+	admission(providerId: string, incarnation: number | null, verdict: ModuleAdmission): void {
+		const provider = this.providers.get(providerId);
+		if (provider === undefined || provider.incarnation !== incarnation) return;
+		provider.queue
+			.run(() => provider.connection.sendNotification("moduleAdmission" satisfies ProviderNotification, verdict))
+			// A dead provider keeps nothing to correct.
+			.catch(() => {});
 	}
 
 	////////////////////////////////
