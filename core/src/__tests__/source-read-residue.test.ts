@@ -19,14 +19,13 @@ const ADAPTERS_SRC = join(import.meta.dirname, "..", "..", "..", "adapters");
  */
 const OWNERS = new Set([
 	"sourceRead.ts",
-	"daemon.ts",
+	"daemonLock.ts",
 	"diagnostics.ts",
 	"drift.ts",
 	"fileScope.ts",
 	"fingerprint.ts",
 	"manage.ts",
 	"projectRegistry.ts",
-	"projectStores.ts",
 	"transactions.ts",
 ]);
 

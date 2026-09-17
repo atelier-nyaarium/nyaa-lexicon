@@ -52,7 +52,7 @@ export interface ManageDeps {
 	stamp: (now: number) => ProjectStore[];
 	/** Deletes every orphan unseen past the horizon, through `remove`'s road. */
 	prune: (now: number) => PrunedStore[];
-	remove: (store: ProjectStore) => DeleteOutcome;
+	remove: (store: ProjectStore, now: number) => DeleteOutcome;
 	lock: (store: ProjectStore) => DaemonLock | null;
 	/** Asks the daemon behind `lock` to stop and returns once the store's lock no longer names it. */
 	stop: (store: ProjectStore, lock: DaemonLock) => Promise<void>;
@@ -161,7 +161,7 @@ export function liveDeps(): ManageDeps {
 		list: () => listProjectStores(lockHolderAlive),
 		stamp: (now) => stampProjectStores(lockHolderAlive, now),
 		prune: (now) => pruneProjectStores(lockHolderAlive, now),
-		remove: (store) => deleteProjectStore(store, lockHolderAlive),
+		remove: (store, now) => deleteProjectStore(store, lockHolderAlive, now),
 		lock: (store) => {
 			if (store.workspaceRoot === null) return legacyDaemonLock(store);
 			// The listing's directory, never one re-derived from the workspace: a store renamed by
@@ -484,11 +484,11 @@ export function projectDiagnosticsTool(deps: ManageDeps, args: { store: string }
 	return text(renderDiagnostics(label, read.file, read.data, deps.reports(store.directory), now));
 }
 
-export function deleteProjectStoreTool(deps: ManageDeps, args: { store: string }): ToolResult {
+export function deleteProjectStoreTool(deps: ManageDeps, args: { store: string }, now = Date.now()): ToolResult {
 	const store = resolveStore(deps, args.store);
 	if (isToolResult(store)) return store;
 
-	const outcome = deps.remove(store);
+	const outcome = deps.remove(store, now);
 	if (!outcome.deleted) return text(outcome.reason, true);
 	const label = store.custom ? outcome.directory : outcome.key;
 	return text(

@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspacePaths } from "@nyaa-lexicon/client";
+import type { DaemonLock } from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
+import { claimLock, type HolderAlive, readLock } from "../daemonLock";
 import { registerProject } from "../projectRegistry";
 import {
 	deleteProjectStore,
 	findProjectStore,
-	type HolderAlive,
 	listProjectStores,
 	PRUNE_AFTER_MS,
 	type ProjectStore,
@@ -79,19 +80,13 @@ function seedCustom(workspaceRoot: string, directory: string): void {
 	IndexStore.open(storePaths(directory).index, null, workspaceRoot).store.close();
 }
 
+function lockFor(workspaceRoot: string, pid: number): DaemonLock {
+	return { port: 1234, token: "t".repeat(48), pid, protocolVersion: "1.0.0", workspaceRoot, startedAt: 0 };
+}
+
 function seedLock(workspaceRoot: string, pid: number, directory = workspacePaths(host, workspaceRoot).dir): void {
 	mkdirSync(directory, { recursive: true });
-	writeFileSync(
-		storePaths(directory).lockFile,
-		JSON.stringify({
-			port: 1234,
-			token: "t".repeat(48),
-			pid,
-			protocolVersion: "1.0.0",
-			workspaceRoot,
-			startedAt: 0,
-		}),
-	);
+	writeFileSync(storePaths(directory).lockFile, JSON.stringify(lockFor(workspaceRoot, pid)));
 }
 
 /** As a caller resolves what was typed: against the listing, or not at all. */
@@ -188,6 +183,14 @@ describe("listing what this machine has indexed", () => {
 		seedStore(other);
 
 		expect(listProjectStores(NOBODY_ALIVE, host)).toHaveLength(2);
+	});
+
+	// A delete moves a default directory aside before removing it; what sits there is not a store.
+	it("never lists a directory a delete moved aside", () => {
+		const key = seedStore(workDir);
+		mkdirSync(path.join(stateRoot(host), `${key}.4242.removing`));
+
+		expect(listProjectStores(NOBODY_ALIVE, host).map((store) => store.key)).toEqual([key]);
 	});
 });
 
@@ -345,7 +348,7 @@ describe("deleting a project's index", () => {
 		const directory = path.join(stateRoot(host), key);
 		writeFileSync(`${storePaths(directory).logFile}.old`, "rotated");
 
-		const outcome = deleteProjectStore(resolve(key), NOBODY_ALIVE, host);
+		const outcome = deleteProjectStore(resolve(key), NOBODY_ALIVE, NOW, host);
 
 		expect(outcome).toMatchObject({ deleted: true, key, directory });
 		expect(existsSync(directory)).toBe(false);
@@ -358,12 +361,54 @@ describe("deleting a project's index", () => {
 		const key = seedStore(workDir);
 		seedLock(workDir, 4242);
 
-		const outcome = deleteProjectStore(resolve(key, EVERYBODY_ALIVE), EVERYBODY_ALIVE, host);
+		const outcome = deleteProjectStore(resolve(key, EVERYBODY_ALIVE), EVERYBODY_ALIVE, NOW, host);
 
 		expect(outcome).toMatchObject({ deleted: false });
 		expect((outcome as { reason: string }).reason).toContain("4242");
 		expect((outcome as { reason: string }).reason).toContain("shut it down first");
 		expect(existsSync(path.join(stateRoot(host), key))).toBe(true);
+	});
+
+	// A lock claimed after the check still refuses the delete.
+	it("refuses a daemon that claims the lock after the check and before the removal", () => {
+		const key = seedStore(workDir);
+		const directory = path.join(stateRoot(host), key);
+		const lockFile = storePaths(directory).lockFile;
+		seedLock(workDir, 1111);
+		let raced = false;
+		const racing: HolderAlive = (holder) => {
+			if (holder.pid === 2222) return true;
+			if (!raced) {
+				raced = true;
+				expect(claimLock(lockFile, lockFor(workDir, 2222), NOBODY_ALIVE)).toEqual({ claimed: true });
+			}
+			return false;
+		};
+
+		const outcome = deleteProjectStore(resolve(key), racing, NOW, host);
+
+		expect(outcome).toMatchObject({ deleted: false, reason: expect.stringContaining("2222") });
+		expect(existsSync(storePaths(directory).index)).toBe(true);
+		expect(readLock(lockFile)?.pid).toBe(2222);
+		expect(readdirSync(directory).filter((entry) => /\.(claim|stale)$/.test(entry))).toEqual([]);
+	});
+
+	// Nothing named may remain behind a deleted answer.
+	it("answers not deleted, with nothing removed and the lock released, when the directory cannot be moved aside", () => {
+		const key = seedStore(workDir);
+		const directory = path.join(stateRoot(host), key);
+		chmodSync(stateRoot(host), 0o555);
+
+		try {
+			const outcome = deleteProjectStore(resolve(key), NOBODY_ALIVE, NOW, host);
+
+			expect(outcome).toMatchObject({ deleted: false, reason: expect.stringContaining(key) });
+			expect(existsSync(storePaths(directory).index)).toBe(true);
+			expect(existsSync(storePaths(directory).lockFile)).toBe(false);
+			expect(listProjectStores(NOBODY_ALIVE, host)).toMatchObject([{ key, livePid: null }]);
+		} finally {
+			chmodSync(stateRoot(host), 0o755);
+		}
 	});
 
 	// A store is deleted as the listing showed it, never as a path built from what was typed: a
@@ -376,10 +421,10 @@ describe("deleting a project's index", () => {
 		for (const reference of ["not-a-real-store", "..", "../..", "a/b", "a\\b", "", stateRoot(host)]) {
 			expect(findProjectStore(reference, stores)).toBeNull();
 		}
-		expect(deleteProjectStore({ directory: stateRoot(host) }, NOBODY_ALIVE, host)).toMatchObject({
+		expect(deleteProjectStore({ directory: stateRoot(host) }, NOBODY_ALIVE, NOW, host)).toMatchObject({
 			deleted: false,
 		});
-		expect(deleteProjectStore({ directory: stateDir }, NOBODY_ALIVE, host)).toMatchObject({ deleted: false });
+		expect(deleteProjectStore({ directory: stateDir }, NOBODY_ALIVE, NOW, host)).toMatchObject({ deleted: false });
 		expect(listProjectStores(NOBODY_ALIVE, host)).toHaveLength(1);
 		expect(existsSync(stateDir)).toBe(true);
 	});
@@ -441,7 +486,7 @@ describe("a store in a directory the project chose", () => {
 		writeFileSync(path.join(paths.reportsDir, "report.1.json"), "{}");
 		writeFileSync(path.join(custom, "notes.txt"), "mine");
 
-		const outcome = deleteProjectStore(resolve(custom), NOBODY_ALIVE, host);
+		const outcome = deleteProjectStore(resolve(custom), NOBODY_ALIVE, NOW, host);
 
 		expect(outcome).toMatchObject({ deleted: true, directory: custom, key: storeKeyFor(workDir) });
 		expect(readdirSync(custom)).toEqual(["notes.txt"]);
@@ -452,11 +497,11 @@ describe("a store in a directory the project chose", () => {
 		seedCustom(workDir, custom);
 		seedLock(workDir, 4242, custom);
 
-		const refused = deleteProjectStore(resolve(custom, EVERYBODY_ALIVE), EVERYBODY_ALIVE, host);
+		const refused = deleteProjectStore(resolve(custom, EVERYBODY_ALIVE), EVERYBODY_ALIVE, NOW, host);
 		expect(refused).toMatchObject({ deleted: false, reason: expect.stringContaining("4242") });
 		expect(existsSync(storePaths(custom).index)).toBe(true);
 
-		expect(deleteProjectStore(resolve(custom), NOBODY_ALIVE, host)).toMatchObject({ deleted: true });
+		expect(deleteProjectStore(resolve(custom), NOBODY_ALIVE, NOW, host)).toMatchObject({ deleted: true });
 		expect(existsSync(custom)).toBe(false);
 	});
 });

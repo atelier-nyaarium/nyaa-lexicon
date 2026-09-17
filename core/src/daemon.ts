@@ -4,22 +4,19 @@
 // The lock claim decides which of two racing daemons serves the workspace: the loser exits before
 // ever opening the store, which is what holds the single-writer invariant DURING the race.
 //
-// Transport lives in socketTransport.ts; this file owns the claim and never touches a socket.
+// Transport lives in socketTransport.ts and the claim in daemonLock.ts; this file never touches a socket.
 
-import { randomBytes } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import {
 	canonicalRoot,
 	currentHost,
 	DaemonStartingError,
 	lockHolderAlive,
 	type PlatformEnv,
-	processIdentity,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
 import { type DaemonLock, DaemonLockSchema, defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
+import { claimLock, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
 import { ownSource } from "./ownSource.js";
 import { type FrameServer, serveFrames } from "./socketTransport.js";
 
@@ -66,67 +63,8 @@ export type StartOutcome = { claimed: true; daemon: RunningDaemon } | { claimed:
 ////////////////////////////////
 //  Constants
 
-const TOKEN_BYTES = 24;
-const CLAIM_ATTEMPTS = 4;
-
 /** Patience given when no startingNote offers a real countdown. */
 const DEFAULT_STARTING_ALLOWANCE_MS = 15_000;
-
-////////////////////////////////
-//  Functions & Helpers
-
-/** The lock parsed if it resolves, or null when absent, unreadable, or not a lock at all. */
-function readLock(lockFile: string): DaemonLock | null {
-	let raw: string;
-	try {
-		raw = readFileSync(lockFile, "utf8");
-	} catch {
-		return null;
-	}
-	try {
-		const parsed = DaemonLockSchema.safeParse(JSON.parse(raw));
-		return parsed.success ? parsed.data : null;
-	} catch {
-		return null;
-	}
-}
-
-/** Linked from a fully-written staging file, since a `wx` write has a create-then-fill gap where a
- * reader sees half a JSON and steals a live daemon's lock. A stale lock is stolen by rename. */
-function claimLock(lockFile: string, lock: DaemonLock): { claimed: true } | { claimed: false; holder: DaemonLock } {
-	mkdirSync(path.dirname(lockFile), { recursive: true });
-	const staging = `${lockFile}.${process.pid}.claim`;
-	writeFileSync(staging, JSON.stringify(lock, null, 2));
-
-	try {
-		for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
-			try {
-				linkSync(staging, lockFile);
-				return { claimed: true };
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			}
-
-			const holder = readLock(lockFile);
-			if (holder !== null && lockHolderAlive(holder)) return { claimed: false, holder };
-
-			const grave = `${lockFile}.${process.pid}.stale`;
-			try {
-				renameSync(lockFile, grave);
-				rmSync(grave, { force: true });
-			} catch {
-				// Another contender stole it first; loop and contend on the link.
-			}
-		}
-	} finally {
-		rmSync(staging, { force: true });
-	}
-
-	// Losing every round means live contention each time; whoever kept winning holds the file now.
-	const holder = readLock(lockFile);
-	if (holder !== null) return { claimed: false, holder };
-	throw new Error(`could not claim ${lockFile} after ${CLAIM_ATTEMPTS} attempts`);
-}
 
 ////////////////////////////////
 //  Starting
@@ -137,7 +75,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 	const host = options.host ?? currentHost();
 	// The one derivation: the claim, the loss check and the release all read this lock file.
 	const paths = workspacePaths(host, options.workspaceRoot, options.stateDir);
-	const token = randomBytes(TOKEN_BYTES).toString("hex");
+	const token = mintToken();
 	const clock = options.clock ?? systemClock;
 	const startedAt = clock.now();
 	let handle = options.handle ?? null;
@@ -185,13 +123,11 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		clock,
 	});
 
-	const identity = processIdentity(process.pid);
 	const source = ownSource();
 	const lock = DaemonLockSchema.parse({
 		port: server.port,
 		token,
-		pid: process.pid,
-		...(identity === null ? {} : { pidStart: identity.startTicks }),
+		...holderIdentity(),
 		protocolVersion: PROTOCOL_VERSION,
 		buildVersion: source.buildVersion,
 		...(source.bundleStamp === null ? {} : { bundleStamp: source.bundleStamp }),
@@ -199,7 +135,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		startedAt: clock.now(),
 	});
 
-	const claim = claimLock(paths.lockFile, lock);
+	const claim = claimLock(paths.lockFile, lock, lockHolderAlive);
 	if (!claim.claimed) {
 		await server.close();
 		return {
@@ -211,10 +147,8 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 	async function stop(): Promise<void> {
 		if (stopped) return;
 		stopped = true;
-		// Removed before the socket closes, so a client cannot read a lock naming a dead port. Only
-		// OUR lock: a successor who stole a stale claim must not lose its file to the corpse it
-		// replaced.
-		if (readLock(paths.lockFile)?.token === token) rmSync(paths.lockFile, { force: true });
+		// Removed before the socket closes, so a client cannot read a lock naming a dead port.
+		releaseLock(paths.lockFile, token);
 		await server.close();
 	}
 

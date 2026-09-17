@@ -209,6 +209,10 @@ Ordered by how much they prove:
   module. A promise that outlives the call, a provider's lifetime for one, keeps a reaction per
   race until it settles, which for a living provider is never; the supervisor's request queue
   fails in-flight callers on death instead.
+- **A store's lock is claimed through `core/src/daemonLock.ts`, before the store is opened and
+  before it is removed.** The daemon and the delete road take the same link, so neither can open
+  or remove a store the other holds; `lock-residue.test.ts` forbids a second claim or a second
+  read of the lock in core.
 - **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
   mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
   by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore

@@ -6,7 +6,7 @@
 // Reads never open a store, because opening one REBUILDS an index whose schema has moved on, so
 // inspecting would rewrite the thing being inspected.
 
-import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -17,7 +17,8 @@ import {
 	storePaths,
 	workspaceKey,
 } from "@nyaa-lexicon/client";
-import { DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { claimLock, type HolderAlive, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
 import { lastSeenOf, newestIndexedAt, readSeenStamp, stampSeen } from "./lastSeen.js";
 import { readRegistry } from "./projectRegistry.js";
 
@@ -68,29 +69,23 @@ export interface PrunedStore {
 /** An orphan unseen this long is deleted unasked. */
 export const PRUNE_AFTER_MS = 30 * 86_400_000;
 
+/** A delete listens on nothing; the lock schema still wants a port. */
+const NO_PORT = 1;
+
+/** A default directory moved aside for removal; the listing never shows one. */
+const REMOVING_SUFFIX = ".removing";
+
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Who may hold a store's lock: pid plus the identity that tells reuse from residence. */
-export type HolderAlive = (holder: { pid: number; pidStart?: string | undefined }) => boolean;
+function reasonOf(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 /** The pid of the daemon serving this directory, or null when the lock is absent, junk, or dead. */
 function pidOf(dir: string, isAlive: HolderAlive): number | null {
-	let raw: string;
-	try {
-		raw = readFileSync(storePaths(dir).lockFile, "utf8");
-	} catch {
-		return null;
-	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return null;
-	}
-	const lock = DaemonLockSchema.safeParse(parsed);
-	if (!lock.success) return null;
-	return isAlive(lock.data) ? lock.data.pid : null;
+	const lock = readLock(storePaths(dir).lockFile);
+	return lock !== null && isAlive(lock) ? lock.pid : null;
 }
 
 interface IndexMetadata {
@@ -181,7 +176,7 @@ export function listProjectStores(isAlive: HolderAlive, host: PlatformEnv = curr
 	let entries: string[] = [];
 	try {
 		entries = readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory())
+			.filter((entry) => entry.isDirectory() && !entry.name.endsWith(REMOVING_SUFFIX))
 			.map((entry) => entry.name);
 	} catch {
 		// No state root yet; the registry may still name directories elsewhere.
@@ -241,10 +236,9 @@ export function pruneProjectStores(
 		.filter((store) => prunable(store, now))
 		.map((store) => {
 			try {
-				return { store, outcome: deleteProjectStore(store, isAlive, host) };
+				return { store, outcome: deleteProjectStore(store, isAlive, now, host) };
 			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				return { store, outcome: { deleted: false, reason } };
+				return { store, outcome: { deleted: false, reason: reasonOf(error) } };
 			}
 		});
 }
@@ -259,12 +253,11 @@ export function findProjectStore(reference: string, stores: ProjectStore[]): Pro
 	);
 }
 
-/** What the daemon writes into a store directory, and nothing else: a custom directory may hold
- * the owner's own files beside these. */
+/** What the daemon writes into a store directory beside its lock, and nothing else: a custom
+ * directory may hold the owner's own files beside these. */
 function storeFiles(directory: string): string[] {
 	const paths = storePaths(directory);
 	return [
-		paths.lockFile,
 		paths.index,
 		`${paths.index}-wal`,
 		`${paths.index}-shm`,
@@ -277,25 +270,59 @@ function storeFiles(directory: string): string[] {
 	];
 }
 
+/** A default directory is lexicon's alone, so it goes whole: moved aside under the lock, which
+ * frees its name for a fresh store before a byte is removed, then removed where nothing lists it.
+ * The reason it stays, or null. */
+function removeDefault(directory: string, token: string): string | null {
+	const grave = `${directory}.${process.pid}${REMOVING_SUFFIX}`;
+	try {
+		renameSync(directory, grave);
+	} catch (error) {
+		releaseLock(storePaths(directory).lockFile, token);
+		return `${directory} could not be moved aside: ${reasonOf(error)}`;
+	}
+	releaseLock(storePaths(grave).lockFile, token);
+	try {
+		rmSync(grave, { recursive: true, force: true });
+	} catch (error) {
+		return `${directory} was moved to ${grave} but not removed: ${reasonOf(error)}`;
+	}
+	return null;
+}
+
+/** A custom directory keeps the owner's files, so lexicon's go one by one under the lock, and the
+ * directory only once that emptied it. The reason the index stays, or null. */
+function removeCustom(directory: string, token: string): string | null {
+	const lockFile = storePaths(directory).lockFile;
+	try {
+		for (const file of storeFiles(directory)) rmSync(file, { recursive: true, force: true });
+	} catch (error) {
+		releaseLock(lockFile, token);
+		return `${directory} could not be emptied: ${reasonOf(error)}`;
+	}
+	releaseLock(lockFile, token);
+	try {
+		rmdirSync(directory);
+	} catch {
+		// The owner's files, or a daemon that claimed the freed name.
+	}
+	return null;
+}
+
 /**
- * Irreversible, so the store is re-read at the moment of deletion and a live daemon is refused
- * (deleting under its own writer corrupts it mid-write). Takes a store as the listing showed it,
- * so the directory removed is one the listing named, never one built from input.
+ * Claimed as a daemon claims, and removed only while held: a daemon starting meanwhile loses the
+ * claim or refuses this delete, never opens a store being removed. Takes a store as the listing
+ * showed it, so the directory removed is one the listing named, never one built from input.
  */
 export function deleteProjectStore(
 	store: Pick<ProjectStore, "directory">,
 	isAlive: HolderAlive,
+	now: number,
 	host: PlatformEnv = currentHost(),
 ): DeleteOutcome {
 	const current = listProjectStores(isAlive, host).find((candidate) => candidate.directory === store.directory);
 	if (current === undefined) return { deleted: false, reason: `no store at ${store.directory}` };
 	const label = current.custom ? current.directory : current.key;
-	if (current.livePid !== null) {
-		return {
-			deleted: false,
-			reason: `pid ${current.livePid} is serving ${label} right now; shut it down first, then delete`,
-		};
-	}
 
 	// A directory swapped for a link since it was admitted would have every removal land where the
 	// link points; the listing followed it to read, deletion does not.
@@ -307,18 +334,28 @@ export function deleteProjectStore(
 		return { deleted: false, reason: `${current.directory} vanished before it could be removed` };
 	}
 
-	for (const file of storeFiles(current.directory)) rmSync(file, { recursive: true, force: true });
-	if (current.custom) {
-		// The owner chose this directory; whatever else it holds stays, and so then does it.
-		try {
-			rmdirSync(current.directory);
-		} catch {
-			// Not empty.
-		}
-	} else {
-		// A default directory is lexicon's alone, rotated logs and claim leftovers included.
-		rmSync(current.directory, { recursive: true, force: true });
+	const lockFile = storePaths(current.directory).lockFile;
+	const lock: DaemonLock = {
+		port: NO_PORT,
+		token: mintToken(),
+		...holderIdentity(),
+		protocolVersion: PROTOCOL_VERSION,
+		// The directory, not the workspace: a client backs off rather than retiring the holder.
+		workspaceRoot: current.directory,
+		startedAt: now,
+	};
+	const claim = claimLock(lockFile, lock, isAlive);
+	if (!claim.claimed) {
+		return {
+			deleted: false,
+			reason: `pid ${claim.holder.pid} is serving ${label} right now; shut it down first, then delete`,
+		};
 	}
+
+	const remains = current.custom
+		? removeCustom(current.directory, lock.token)
+		: removeDefault(current.directory, lock.token);
+	if (remains !== null) return { deleted: false, reason: remains };
 	return { deleted: true, key: current.key, directory: current.directory, bytes: current.bytes };
 }
 

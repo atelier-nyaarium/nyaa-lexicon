@@ -44,6 +44,16 @@ the single-writer rule while two daemons exist. On stop, the daemon removes the 
 still carries its own token, and removes it before closing the socket, so a client cannot read a
 lock naming a dead port.
 
+A delete takes the same claim. `delete_project_store` and the prune link their own lock into the
+store before touching it, so a daemon starting meanwhile either loses the claim or refuses the
+delete with the holder's pid. A default directory is then moved aside whole, lock included, to a
+sibling ending in `.removing` that the listing never shows, and removed there; a daemon starting
+after the move finds no store and creates a fresh one. A custom directory is emptied file by file
+under the lock. A delete that could not move or empty the store answers as not deleted with the
+reason. Its lock names the store directory as its root and no real port, so a client reading it
+backs off instead of retiring the holder; a contender whose staging file moved with the directory
+stages again and claims the fresh one.
+
 ## The socket
 
 One JSON object per line, UTF-8, newline-terminated, both directions, over that localhost port.
