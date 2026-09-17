@@ -1,12 +1,13 @@
 import { defined } from "@nyaa-lexicon/protocol";
 import { walkDeclarations } from "./declarations.js";
 import { syntaxDiagnostics } from "./diagnostics.js";
+import { buildEnvironment } from "./environment.js";
 import type { KotlinFile } from "./facts.js";
 import { walkUses } from "./references.js";
 import { parseSource } from "./repairs.js";
 import { LineTable } from "./tree.js";
 
-/** Outline skips uses, literals, comments and types. */
+/** An outline answers declarations alone, so it builds no environment. */
 export function parseKotlin(module: string, text: string, outline = false): KotlinFile {
 	const parsed = parseSource(text);
 	const { tree } = parsed;
@@ -14,7 +15,7 @@ export function parseKotlin(module: string, text: string, outline = false): Kotl
 	const facts = walkDeclarations(module, text, tree, lines, outline);
 	const uses = outline
 		? { references: [], literals: [], comments: [] }
-		: walkUses(text, tree, lines, facts.declarations, facts.importNames);
+		: walkUses(text, tree, lines, buildEnvironment(text, tree, facts));
 	return {
 		module,
 		...defined({ packageName: facts.packageName }),

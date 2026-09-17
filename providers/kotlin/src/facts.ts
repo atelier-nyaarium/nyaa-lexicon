@@ -8,6 +8,7 @@ import type {
 	Reference,
 	TypeInfo,
 } from "@nyaa-lexicon/protocol";
+import type { SyntaxNode } from "./tree.js";
 
 export const LANGUAGE = "kotlin";
 
@@ -56,6 +57,13 @@ export type FrameReceiver =
 	| { kind: "class"; classId: string; label: string; nested: boolean }
 	| { kind: "extension"; declarationId: string; label: string }
 	| { kind: "anonymous"; supertypes: TypePath[] };
+
+/** Per node: what it declares, whether it owns the uses inside, and which identifiers name one. */
+export interface DeclaredNodes {
+	declarations: ReadonlyMap<SyntaxNode, Declaration>;
+	owners: ReadonlySet<SyntaxNode>;
+	names: ReadonlySet<SyntaxNode>;
+}
 
 /** One lexical scope; a use walks `parent` outward. */
 export interface Frame {

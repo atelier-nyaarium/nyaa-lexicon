@@ -175,6 +175,44 @@ describe("Kotlin locals", () => {
 			"8:value:read": "a/Use.kt K#v.(value)",
 		});
 	});
+
+	// A binder and its identifier can span the same characters, so the environment keys by node.
+	test("a binder sharing its identifier's range declares once and never uses itself", () => {
+		const source = ["package a", "val x = 1", "fun f() = x", "fun g() = listOf(1).map { v -> v }", ""].join("\n");
+		const provider = new KotlinProvider();
+		provider.initialize(workspace({ "a/Pkg.kt": PACKAGE, "a/Use.kt": source }));
+		const facts = provider.parseFile({ module: "a/Use.kt", contentHash: "h", text: source });
+		const named = (name: string): number =>
+			facts.declarations.filter((declaration) => declaration.name === name).length;
+		expect({ x: named("x"), v: named("v") }).toEqual({ x: 1, v: 1 });
+		expect(
+			facts.references.map(
+				(reference) => `${reference.range.start.line}:${reference.name}:${target(reference.binding)}`,
+			),
+		).toEqual(["2:x:a/Use.kt x.", "3:listOf:null", "3:map:null", "3:v:a/Use.kt g().(v)"]);
+	});
+
+	test("an object literal's members see each other, and its supertype arguments see none of them", () => {
+		const found = bindings(
+			{
+				"a/Pkg.kt": `${PACKAGE}open class Base(v: Int)\n`,
+				"a/Use.kt": [
+					"package a",
+					"val o = object : Base(seed) {",
+					"    val first = second",
+					"    val second = 1",
+					"    val seed = 9",
+					"}",
+					"",
+				].join("\n"),
+			},
+			"a/Use.kt",
+		);
+		expectTargets(found, {
+			"1:seed:read": "a/Pkg.kt seed.",
+			"2:second:read": "a/Use.kt o.second.",
+		});
+	});
 });
 
 describe("Kotlin implicit receivers", () => {

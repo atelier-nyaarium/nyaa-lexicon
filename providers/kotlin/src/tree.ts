@@ -16,6 +16,7 @@ const KOTLIN = await Language.load(readFileSync(fileURLToPath(new URL("./tree-si
 const parser = new Parser();
 parser.setLanguage(KOTLIN);
 
+/** Syntax only. Derived facts live in `environment.ts`. */
 export interface SyntaxNode {
 	type: string;
 	named: boolean;
@@ -25,12 +26,6 @@ export interface SyntaxNode {
 	end: number;
 	parent: SyntaxNode | null;
 	children: SyntaxNode[];
-	/** Declaration owning uses inside. */
-	owner?: string;
-	/** Declaration this node spells. */
-	declared?: string;
-	/** Identifier naming a declaration. */
-	declaresName?: boolean;
 }
 
 export interface SyntaxTree {
