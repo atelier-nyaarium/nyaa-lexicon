@@ -75,6 +75,7 @@ export class TypeScriptAnalyzer {
 	private readonly extracted = new Map<string, { version: number; contentHash: string; value: Extracted }>();
 	private readonly service: ts.LanguageService;
 	private projectVersion = 0;
+	private lastProgram: ts.Program | undefined;
 	private countedProgramVersion: number | undefined;
 	private programGenerations = 0;
 	private firstProgramReadyAt: number | undefined;
@@ -123,9 +124,8 @@ export class TypeScriptAnalyzer {
 		const key = this.key(fileName);
 		const previous = this.overlays.get(key);
 		if (previous === undefined) {
-			const diskText = ts.sys.readFile(fileName);
-			// Version 0 is the disk's own text, and only until this key has been versioned.
-			if (diskText === text && !this.versions.has(key)) this.overlays.set(key, { text, version: 0 });
+			// Version 0 names what the registry holds, never the disk.
+			if (this.heldText(fileName) === text) this.overlays.set(key, { text, version: 0 });
 			else this.setOverlay(key, text);
 		} else if (previous.text !== text) {
 			this.setOverlay(key, text);
@@ -281,6 +281,7 @@ export class TypeScriptAnalyzer {
 
 	dispose(): void {
 		this.service.dispose();
+		this.lastProgram = undefined;
 		this.extracted.clear();
 		this.overlays.clear();
 		this.versions.clear();
@@ -548,10 +549,17 @@ export class TypeScriptAnalyzer {
 	}
 
 	/**
+	 * The text the last-built Program holds for this file, which is what the registry holds. Read
+	 * without building, since a versioned overlay would invalidate a build made here.
+	 */
+	private heldText(fileName: string): string | undefined {
+		return this.lastProgram?.getSourceFile(fileName)?.text;
+	}
+
+	/**
 	 * A version never comes back around, since the document registry keys a cached source file by it.
 	 * Reusing one after a dropped overlay hands back the text the dropped overlay held.
 	 */
-	/** A dropped overlay leaves its key versioned, so its next text cannot land back on version 0. */
 	private dropOverlay(key: string): boolean {
 		if (!this.overlays.delete(key)) return false;
 		this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
@@ -573,6 +581,7 @@ export class TypeScriptAnalyzer {
 	private program(): ts.Program | undefined {
 		const started = Date.now();
 		const program = this.service.getProgram();
+		this.lastProgram = program;
 		if (program !== undefined && this.countedProgramVersion !== this.projectVersion) {
 			this.countedProgramVersion = this.projectVersion;
 			this.programGenerations += 1;

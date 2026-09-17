@@ -120,3 +120,64 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 		expect(facts.declarations.map((declaration) => declaration.name)).toContain("renamed");
 	});
 });
+
+describe("a parse answers for the bytes it carries", () => {
+	it("parses the bytes it is handed after the Program read the file from disk and the file then changed", () => {
+		const root = workspace(CART);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+		// Builds the Program, which reads cart.ts off the disk as it stands now.
+		provider.parseFile({ module: "src/use.ts", contentHash: "use", text: CART["src/use.ts"] });
+
+		const grown = `${CART["src/cart.ts"]}export class Marker {}\n`;
+		writeFileSync(path.join(root, "src/cart.ts"), grown);
+		const facts = provider.parseFile({ module: "src/cart.ts", contentHash: "cart-grown", text: grown });
+		expect(facts.declarations.map((declaration) => declaration.name)).toContain("Marker");
+	});
+
+	it("parses the bytes it is handed rather than the newer bytes on disk", () => {
+		const root = workspace(CART);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+		provider.parseFile({ module: "src/use.ts", contentHash: "use", text: CART["src/use.ts"] });
+
+		writeFileSync(path.join(root, "src/cart.ts"), `${CART["src/cart.ts"]}export class Newer {}\n`);
+		const handed = `${CART["src/cart.ts"]}export class Handed {}\n`;
+		const facts = provider.parseFile({ module: "src/cart.ts", contentHash: "cart-handed", text: handed });
+		const names = facts.declarations.map((declaration) => declaration.name);
+		expect(names).toContain("Handed");
+		expect(names).not.toContain("Newer");
+	});
+
+	it("parses new disk text after a refused overlay was dropped and the Program read the disk again", () => {
+		const root = workspace(CART);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+		// A refused first parse has no text to put back, so the module drops to the disk.
+		settle(provider, "src/cart.ts", `${CART["src/cart.ts"]}export class Refused {}\n`, "cart-refused", "refused");
+
+		const grown = `${CART["src/cart.ts"]}export class Grown {}\n`;
+		writeFileSync(path.join(root, "src/cart.ts"), grown);
+		// Reads the Program back while only the disk answers for the dropped module.
+		provider.parseFile({ module: "src/use.ts", contentHash: "use", text: CART["src/use.ts"] });
+
+		const facts = provider.parseFile({ module: "src/cart.ts", contentHash: "cart-grown", text: grown });
+		const names = facts.declarations.map((declaration) => declaration.name);
+		expect(names).toContain("Grown");
+		expect(names).not.toContain("Refused");
+	});
+
+	it("builds the Program once for a parse of changed text after an invalidation left none built", () => {
+		const root = workspace(CART);
+		const provider = new TypeScriptProvider();
+		provider.initialize(root);
+		// The refused parse builds once; the refusal drops the overlay and invalidates without building.
+		settle(provider, "src/cart.ts", `${CART["src/cart.ts"]}export class Refused {}\n`, "cart-refused", "refused");
+
+		const grown = `${CART["src/cart.ts"]}export class Grown {}\n`;
+		writeFileSync(path.join(root, "src/cart.ts"), grown);
+		provider.parseFile({ module: "src/cart.ts", contentHash: "cart-grown", text: grown });
+		// Read after the parse, since reading the stats builds whatever is invalidated.
+		expect(provider.programStats().programGenerations).toBe(2);
+	});
+});
