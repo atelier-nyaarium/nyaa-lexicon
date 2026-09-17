@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/client",
-	"version": "3.9.1",
+	"version": "4.0.0",
 	"private": true,
 	"type": "module",
 	"description": "The client half of the daemon socket: find, spawn, connect. Protocol and node built-ins only",
