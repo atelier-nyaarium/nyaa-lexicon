@@ -21,11 +21,14 @@ import {
 } from "node:fs";
 import path from "node:path";
 import {
+	DAEMON_STOPPING_MESSAGE,
 	type DaemonLock,
 	PROTOCOL_VERSION,
 	TransactionStatusSchema,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
+import { beforeDeadline } from "./deadline.js";
+import { DaemonError } from "./errors.js";
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { processIdentity } from "./procfs.js";
@@ -57,6 +60,9 @@ export interface RetireOptions {
 	alive: (holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	/** Waits for the lock to stop naming the daemon; false when it still does. */
 	released: () => Promise<boolean>;
+	/** The one budget an ask and the wait behind it share: what an ask spends, the wait does not get. */
+	deadline: number;
+	sleep: (ms: number) => Promise<void>;
 }
 
 ////////////////////////////////
@@ -296,17 +302,32 @@ function errorText(error: unknown): string {
  * Asked before signalled: `shutdown` lets it settle in-flight answers and release its own lock.
  * The signal is for a daemon that does not know the method, or one that holds on past the wait.
  */
+/** Whether a caught refusal is the daemon's own "already stopping": the coded frame first, an exact
+ * text match otherwise, so a longer message (the lock-lost case) never matches by accident. */
+export function stoppingRefusal(error: unknown): boolean {
+	if (error instanceof DaemonError && error.code === "stopping") return true;
+	return error instanceof Error && error.message === DAEMON_STOPPING_MESSAGE;
+}
+
 export async function retire(
 	lock: DaemonLock,
 	options: RetireOptions,
-): Promise<{ retired: true } | { retired: false; reason: string }> {
+): Promise<{ retired: true } | { retired: false; reason: string; cause?: "timeout" }> {
+	const ask = (method: string) => beforeDeadline(options.ask(lock, method), options.deadline, options.sleep, method);
+
 	let status: unknown;
 	try {
-		status = await options.ask(lock, "refactorStatus");
+		status = await ask("refactorStatus");
 	} catch (error) {
+		// Already asked to stop by someone else: nothing left to ask, so its lock is the whole answer.
+		if (stoppingRefusal(error)) {
+			if (await options.released()) return { retired: true };
+			return { retired: false, reason: "it is still stopping", cause: "timeout" };
+		}
+		const message = errorText(error);
 		// A daemon whose warmup failed refuses the question, and could not have opened a transaction.
-		if (!(error instanceof Error && error.message.startsWith(WARMUP_FAILED_PREFIX)))
-			return { retired: false, reason: `it would not say whether a refactor is open: ${errorText(error)}` };
+		if (!(error instanceof Error && message.startsWith(WARMUP_FAILED_PREFIX)))
+			return { retired: false, reason: `it would not say whether a refactor is open: ${message}` };
 		status = { open: false };
 	}
 
@@ -322,7 +343,7 @@ export async function retire(
 	}
 
 	try {
-		await options.ask(lock, "shutdown");
+		await ask("shutdown");
 	} catch {
 		// Too old to know the method, or already on its way out; the lock wait tells which.
 	}

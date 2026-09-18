@@ -902,3 +902,62 @@ describe("reachability and failures", () => {
 		expect(service.findByName("GoodUpdated")).toHaveLength(1);
 	});
 });
+
+describe("abandoning a batch mid-flight", () => {
+	// A daemon asked to stop mid-batch cuts it short at a file boundary rather than running it to
+	// the end, so every file already written above stays whole and the rest is left for next time.
+	it("ends the batch at a file boundary once asked to abandon, leaving later files untouched", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		put("c.fake", "export class C {}\n");
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+		await service.indexWorkspace();
+
+		put("a.fake", "export class AUpdated {}\n");
+		put("b.fake", "export class BUpdated {}\n");
+		put("c.fake", "export class CUpdated {}\n");
+		let checks = 0;
+		const outcomes = await service.applyBatch(
+			[
+				{ kind: "changed", module: "a.fake", contentHash: null },
+				{ kind: "changed", module: "b.fake", contentHash: null },
+				{ kind: "changed", module: "c.fake", contentHash: null },
+			],
+			() => ++checks > 1,
+		);
+
+		// Only the file already in progress when the check first passed was written.
+		expect(outcomes).toHaveLength(1);
+		expect(outcomes[0]).toMatchObject({ action: "indexed", module: "a.fake" });
+		expect(service.findByName("AUpdated")).toHaveLength(1);
+		// b and c are untouched, not half-written: their pre-batch declarations still stand.
+		expect(service.findByName("B")).toHaveLength(1);
+		expect(service.findByName("BUpdated")).toHaveLength(0);
+		expect(service.findByName("C")).toHaveLength(1);
+		expect(service.findByName("CUpdated")).toHaveLength(0);
+
+		// The next scan re-reads what the abandoned batch left, since their stored hash no longer
+		// matches disk.
+		await service.indexWorkspace();
+		expect(service.findByName("BUpdated")).toHaveLength(1);
+		expect(service.findByName("CUpdated")).toHaveLength(1);
+	});
+
+	// A check before the first file means nothing in the batch was ever attempted.
+	it("attempts nothing when already asked to abandon before the batch starts", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+		await service.indexWorkspace();
+
+		put("a.fake", "export class AUpdated {}\n");
+		const outcomes = await service.applyBatch(
+			[{ kind: "changed", module: "a.fake", contentHash: null }],
+			() => true,
+		);
+
+		expect(outcomes).toHaveLength(0);
+		expect(service.findByName("AUpdated")).toHaveLength(0);
+	});
+});

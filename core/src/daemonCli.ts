@@ -13,6 +13,7 @@ import {
 	canonicalRoot,
 	currentHost,
 	DaemonStartingError,
+	DaemonStoppingError,
 	daemonCommand,
 	lockHolderAlive,
 	refuseRuntime,
@@ -20,7 +21,13 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
-import { defined, killLiveGroups, type LockRole, WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
+import {
+	DAEMON_STOPPING_MESSAGE,
+	defined,
+	killLiveGroups,
+	type LockRole,
+	WARMUP_FAILED_PREFIX,
+} from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
@@ -434,6 +441,7 @@ async function main(argv: string[]): Promise<void> {
 						workspaceRoot: root,
 						clock,
 						warm: pass,
+						stopping: () => stopping,
 						onSwept: (report) => {
 							if (report.examined > 0)
 								log(
@@ -515,7 +523,7 @@ async function main(argv: string[]): Promise<void> {
 		// in the service's table. It answers BEFORE stopping, or the caller reads its own success as
 		// a dropped connection.
 		async function handle(method: string, params: unknown): Promise<unknown> {
-			if (stopping) throw new Error("the daemon is stopping");
+			if (stopping) throw new DaemonStoppingError(DAEMON_STOPPING_MESSAGE);
 			if (method === "shutdown") {
 				clock.setTimer(() => void shutdown("asked to shut down"), 0);
 				return { stopping: true };

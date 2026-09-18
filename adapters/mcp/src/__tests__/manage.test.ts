@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { DaemonError, type DaemonLock } from "@nyaa-lexicon/client";
+import type { DaemonLock } from "@nyaa-lexicon/client";
 import type { Diagnostics, ProjectStore, ReportSummary } from "@nyaa-lexicon/core";
 import {
 	deleteProjectStoreTool,
@@ -59,7 +59,7 @@ function deps(stores: ProjectStore[], remove?: ManageDeps["remove"], overrides: 
 		prune: () => [],
 		remove: remove ?? (() => ({ deleted: false, reason: "not wired" })),
 		lock: () => LOCK,
-		stop: async () => {},
+		stop: async () => ({ outcome: "stopped" }),
 		gone: () => true,
 		diagnostics: () => ({ state: "absent", file: FILE }),
 		reports: () => [],
@@ -464,6 +464,7 @@ describe("stopping a project daemon", () => {
 		const live = deps([store({ livePid: 4242 }), customStore({ livePid: 4343 })], undefined, {
 			stop: async () => {
 				called = true;
+				return { outcome: "stopped" };
 			},
 		});
 
@@ -489,6 +490,7 @@ describe("stopping a project daemon", () => {
 			deps([live], undefined, {
 				stop: async (target, lock) => {
 					asked.push([target, lock]);
+					return { outcome: "stopped" };
 				},
 			}),
 			() => [],
@@ -499,19 +501,77 @@ describe("stopping a project daemon", () => {
 		expect(asked).toEqual([[live, LOCK]]);
 	});
 
-	// A lock still naming the daemon after the wait is the one failure the ask cannot hide.
-	it("reports a daemon that would not stop, in the client's words", async () => {
+	// A lock the ask never reached at all is the one failure this tool still reports as one.
+	it("reports a daemon that refused the ask outright, in the client's words", async () => {
 		const result = await stopProjectDaemonTool(
 			deps([store({ livePid: 4242 })], undefined, {
-				stop: async () => {
-					throw new DaemonError("pid 4242 was asked to stop but still holds /state/proj-abc123/daemon.json");
-				},
+				stop: async () => ({
+					outcome: "refused",
+					detail: "pid 4242 could not be asked to stop (connection refused) and still holds /state/proj-abc123/daemon.json",
+				}),
 			}),
 			() => [],
 			{ store: "proj-abc123" },
 		);
 
 		expect(result.isError).toBe(true);
-		expect(result.content[0]?.text).toContain("still holds");
+		expect(result.content[0]?.text).toContain("could not be asked");
+	});
+
+	// A daemon finishing a large batch acknowledges the ask and just has not settled yet: not a
+	// failure, and a later call re-reads the live listing rather than trusting this answer.
+	it("reports an acknowledged daemon still finishing its batch as stopping, not a failure", async () => {
+		const stores = [store({ livePid: 4242 })];
+		const result = await stopProjectDaemonTool(
+			deps(stores, undefined, {
+				stop: async () => ({
+					outcome: "stopping",
+					detail: "pid 4242 was asked to stop but still holds /state/proj-abc123/daemon.json after 5000ms",
+				}),
+			}),
+			() => [],
+			{ store: "proj-abc123" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("exits once its current batch settles");
+	});
+
+	// Its own token is gone, but a fresh daemon already claimed the lock: never implied as nothing
+	// serving the project.
+	it("names who replaced it when a fresh daemon already claims the lock", async () => {
+		const result = await stopProjectDaemonTool(
+			deps([store({ livePid: 4242 })], undefined, {
+				stop: async () => ({ outcome: "stopped", detail: "pid 9999 now serves it" }),
+			}),
+			() => [],
+			{ store: "proj-abc123" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("pid 9999 now serves it");
+	});
+
+	it("answers already stopped on a later call once the daemon has cleared its lock", async () => {
+		const live = deps([store({ livePid: 4242 })], undefined, {
+			stop: async () => ({
+				outcome: "stopping",
+				detail: "pid 4242 was asked to stop but still holds /state/proj-abc123/daemon.json after 5000ms",
+			}),
+		});
+		const stopping = await stopProjectDaemonTool(live, () => [], { store: "proj-abc123" });
+		expect(stopping.isError).toBeUndefined();
+		expect(stopping.content[0]?.text).toContain("stopping");
+
+		// The daemon settled between calls: the next listing shows no live pid at all.
+		const gone = deps([store({ livePid: null })], undefined, {
+			stop: async () => {
+				throw new Error("must not be asked again once it already reads as gone");
+			},
+		});
+		const result = await stopProjectDaemonTool(gone, () => [], { store: "proj-abc123" });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("already stopped");
 	});
 });

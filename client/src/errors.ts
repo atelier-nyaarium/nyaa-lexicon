@@ -34,11 +34,14 @@ export class Incompatible extends Error {
 export class DaemonError extends Error {
 	readonly waitingFor: string | undefined;
 	override readonly cause: "unknownMethod" | "refusedModule" | "spawnFailed" | "connectionLost" | "daemon";
+	/** The frame's own `code`, when the daemon sent one, read structurally instead of by prose. */
+	readonly code: "stopping" | undefined;
 
-	constructor(message: string, cause: DaemonError["cause"] = "daemon", waitingFor?: string) {
+	constructor(message: string, cause: DaemonError["cause"] = "daemon", waitingFor?: string, code?: "stopping") {
 		super(message);
 		this.name = "DaemonError";
 		this.waitingFor = waitingFor;
 		this.cause = cause;
+		this.code = code;
 	}
 }

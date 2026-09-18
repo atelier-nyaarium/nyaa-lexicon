@@ -29,6 +29,9 @@ export interface LiveIndexOptions {
 	onSwept?: (report: SweepReport) => void;
 	/** Called instead of throwing, since the watcher callback has no caller to catch anything. */
 	onError?: (error: unknown) => void;
+	/** Read before every batch, and inside one at each file boundary. A daemon on its way out takes
+	 * no new batch and abandons the one it holds rather than holding the gate for its whole run. */
+	stopping?: () => boolean;
 }
 
 ////////////////////////////////
@@ -63,8 +66,12 @@ export interface HeldBatches {
  * watcher callback would take the whole daemon down over one unreadable file.
  */
 export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
-	const apply = (events: Parameters<LexiconService["applyBatch"]>[0]) =>
-		options.service.gate.exclusive(() => options.service.applyBatch(events));
+	// Skipped before the gate is even asked for, so a batch that arrives after the daemon was asked
+	// to stop never queues behind its teardown.
+	const apply = (events: Parameters<LexiconService["applyBatch"]>[0]) => {
+		if (options.stopping?.() === true) return Promise.resolve<IndexOutcome[]>([]);
+		return options.service.gate.exclusive(() => options.service.applyBatch(events, options.stopping));
+	};
 
 	const queue = serializeBatches(apply, options.onApplied, options.onError);
 

@@ -907,8 +907,13 @@ export class WorkspaceIndexer {
 	 *
 	 * Caller-held: the live index takes the gate around the whole batch, since a reindex landing
 	 * between the files of one batch is what a batch exists to prevent.
+	 *
+	 * `shouldAbandon`, checked before each file, lets a daemon on its way out cut the batch short at
+	 * a file boundary rather than holding the gate for its whole remainder: every file already
+	 * indexed above stays fully written, and what is left is re-read by the next daemon's warm scan,
+	 * since its stored hash no longer matches.
 	 */
-	async applyBatch(events: FileEvent[]): Promise<IndexOutcome[]> {
+	async applyBatch(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
 		// A batch under a running outline pass would race its loop over the same roots.
 		if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
 			throw new Error("live indexing cannot run under the warmup pass");
@@ -952,7 +957,12 @@ export class WorkspaceIndexer {
 			[...roots].filter((module) => !previousRoots.has(module) && this.store.depthOf(module) === null),
 		);
 
+		let abandoned = false;
 		for (const decision of decisions) {
+			if (shouldAbandon?.() === true) {
+				abandoned = true;
+				break;
+			}
 			if (decision.action === "forget") {
 				pending.delete(decision.module);
 				outcomes.push(this.outcome(decision.module, "missing", undefined, this.forgetFile(decision.module)));
@@ -983,26 +993,36 @@ export class WorkspaceIndexer {
 			}
 		}
 
-		for (const module of roots) {
-			// A parse failure is about the file's own bytes, so only its own event can mean they moved.
-			const refused = previousRoots.has(module) && this.store.parseFailureOf(module) !== null;
-			if (
-				attempted.has(module) ||
-				refused ||
-				(this.store.contentHashOf(module) !== null &&
-					previousRoots.has(module) &&
-					previousDepths.get(module) === this.depths.get(module))
-			)
-				continue;
-			try {
-				pending.delete(module);
-				const outcome = await this.indexOne(module);
-				outcomes.push(outcome);
-				if (outcome.action === "forgotten") roots.delete(module);
-			} catch (error) {
-				outcomes.push(this.faultOutcome(module, error));
+		if (!abandoned) {
+			for (const module of roots) {
+				if (shouldAbandon?.() === true) {
+					abandoned = true;
+					break;
+				}
+				// A parse failure is about the file's own bytes, so only its own event can mean they moved.
+				const refused = previousRoots.has(module) && this.store.parseFailureOf(module) !== null;
+				if (
+					attempted.has(module) ||
+					refused ||
+					(this.store.contentHashOf(module) !== null &&
+						previousRoots.has(module) &&
+						previousDepths.get(module) === this.depths.get(module))
+				)
+					continue;
+				try {
+					pending.delete(module);
+					const outcome = await this.indexOne(module);
+					outcomes.push(outcome);
+					if (outcome.action === "forgotten") roots.delete(module);
+				} catch (error) {
+					outcomes.push(this.faultOutcome(module, error));
+				}
 			}
 		}
+
+		// Cut short at a file boundary: nothing further here runs against a batch that stopped
+		// partway, and the abandoned roots stay pending for the next daemon's warm scan to pick up.
+		if (abandoned) return outcomes;
 
 		const seen = new Set(roots);
 		outcomes.push(...(await this.followImports(seen, { indexExisting: false, previousDepths, step: held })));

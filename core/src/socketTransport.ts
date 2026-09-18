@@ -8,7 +8,7 @@
 // Close events cover every way a local process can die; the heartbeat covers alive-but-hung.
 
 import { createServer as createNetServer, type Server, type Socket } from "node:net";
-import { DaemonStartingError, lineSplitter, writeFrame } from "@nyaa-lexicon/client";
+import { DaemonStartingError, DaemonStoppingError, lineSplitter, writeFrame } from "@nyaa-lexicon/client";
 import {
 	ClientFrameSchema,
 	HEARTBEAT_MISSED_LIMIT,
@@ -156,7 +156,8 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 								waitingFor: error.waitingFor,
 							}
 						: {};
-				writeFrame(socket, { kind: "response", id: frame.id, ok: false, error: message, ...starting });
+				const code = error instanceof DaemonStoppingError ? { code: "stopping" as const } : {};
+				writeFrame(socket, { kind: "response", id: frame.id, ok: false, error: message, ...starting, ...code });
 			}
 		}
 

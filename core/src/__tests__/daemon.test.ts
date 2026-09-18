@@ -7,11 +7,13 @@ import {
 	ConnectionLostError,
 	callDaemon,
 	connectFrames,
+	DaemonStoppingError,
 	findDaemon,
 	type PlatformEnv,
 	storePaths,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
+import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { resumeAbandonedDelete } from "../daemonCli";
 import { ownSource } from "../ownSource";
@@ -505,5 +507,35 @@ describe("staying up", () => {
 
 		expect(source).not.toMatch(/setTimeout|setInterval/);
 		expect(source.toLowerCase()).not.toMatch(/linger|idle/);
+	});
+});
+
+describe("a stopping refusal", () => {
+	// Caught by hand, as "answering" does above: bun's `rejects` fails the test on the handler's
+	// own throw before the reply lands.
+	it("carries code: stopping over the wire, so a client reads it structurally", async () => {
+		daemon = await launch({
+			handle: async () => {
+				throw new DaemonStoppingError(DAEMON_STOPPING_MESSAGE);
+			},
+		});
+		const failed = await callDaemon(daemon.lock, "describe").then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(failed).toMatchObject({ message: DAEMON_STOPPING_MESSAGE, code: "stopping" });
+	});
+
+	it("carries no code for an ordinary refusal", async () => {
+		daemon = await launch({
+			handle: async () => {
+				throw new Error("unknown method: describe");
+			},
+		});
+		const failed = await callDaemon(daemon.lock, "describe").then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(failed).toMatchObject({ code: undefined });
 	});
 });

@@ -62,6 +62,15 @@ export class DaemonStartingError extends Error {
 	}
 }
 
+/** The daemon has begun stopping and refuses every request until its lock is gone. Answered with
+ * `code: "stopping"`, so a retiring client waits on it rather than reading the refusal as final. */
+export class DaemonStoppingError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "DaemonStoppingError";
+	}
+}
+
 /** The socket died with requests in flight. The caller's cue to reconnect, not to report failure. */
 export class ConnectionLostError extends Error {
 	constructor(
@@ -270,7 +279,8 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 				for (;;) {
 					const frame = await sendRequest(method, params);
 					if (frame.ok) return frame.result;
-					if (!frame.starting) throw new DaemonError(frame.error, daemonCause(frame.error));
+					if (!frame.starting)
+						throw new DaemonError(frame.error, daemonCause(frame.error), undefined, frame.code);
 					const remaining = ceiling - Date.now();
 					const waitingFor = frame.waitingFor ?? "startup";
 					if (notified !== waitingFor) {

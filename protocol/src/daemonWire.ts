@@ -59,6 +59,8 @@ export const ResponseFrameSchema = z
 			retryInMs: z.number().int().nonnegative().optional(),
 			/** What it waits for, so a stall names itself instead of needing a bug report. */
 			waitingFor: z.string().optional(),
+			/** A closed reason a client reads structurally, never by matching the message's prose. */
+			code: z.literal("stopping").optional(),
 		}),
 	])
 	.meta({ id: "ResponseFrame" });
@@ -79,6 +81,9 @@ export const ServerFrameSchema = z.union([WelcomeFrameSchema, RejectFrameSchema,
 
 /** How a daemon whose warmup failed refuses a request; a client retiring it reads the prefix. */
 export const WARMUP_FAILED_PREFIX = "warmup failed:";
+
+/** How a daemon already stopping refuses a request; a client retiring it reads this as wait, not fail. */
+export const DAEMON_STOPPING_MESSAGE = "the daemon is stopping";
 
 ////////////////////////////////
 //  Interfaces & Types

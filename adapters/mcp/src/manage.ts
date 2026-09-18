@@ -10,10 +10,10 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
 	currentHost,
-	DaemonError,
 	findDaemon,
 	lockHolderAlive,
-	shutdownDaemon,
+	requestShutdown,
+	type ShutdownOutcome,
 	storePaths,
 } from "@nyaa-lexicon/client";
 import {
@@ -54,8 +54,8 @@ export interface ManageDeps {
 	prune: (now: number) => PrunedStore[];
 	remove: (store: ProjectStore, now: number) => DeleteOutcome;
 	lock: (store: ProjectStore) => DaemonLock | null;
-	/** Asks the daemon behind `lock` to stop and returns once the store's lock no longer names it. */
-	stop: (store: ProjectStore, lock: DaemonLock) => Promise<void>;
+	/** Asks the daemon behind `lock` to stop: the lock cleared, is still clearing, or was refused. */
+	stop: (store: ProjectStore, lock: DaemonLock) => Promise<ShutdownOutcome>;
 	gone: (store: ProjectStore, holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	diagnostics: (directory: string) => ReadDiagnostics;
 	reports: (directory: string) => ReportSummary[];
@@ -102,6 +102,8 @@ export const STOP_DAEMON_DESCRIPTION = `
 # \`stop_project_daemon\`
 
 Stop the daemon serving an index. Already stopped succeeds.
+
+A daemon still finishing a batch answers stopping, not a failure. Call again once it clears.
 
 Refused while the project is bound. Call \`unbind_project\` first. Use before \`delete_project_store\` for a live daemon.
 `.trim();
@@ -170,7 +172,7 @@ export function liveDeps(): ManageDeps {
 			}
 			return null;
 		},
-		stop: (store, lock) => shutdownDaemon(lock, daemonLockFile(store), { timeoutMs: STOP_TIMEOUT_MS }),
+		stop: (store, lock) => requestShutdown(lock, daemonLockFile(store), { timeoutMs: STOP_TIMEOUT_MS }),
 		gone: (store, holder) => {
 			// Identity, not bare liveness: a reused pid must read as gone, not as a refusal to stop.
 			if (!lockHolderAlive(holder)) return true;
@@ -528,12 +530,16 @@ export async function stopProjectDaemonTool(
 		);
 	}
 
-	try {
-		await deps.stop(store, lock);
-	} catch (error) {
-		if (!(error instanceof DaemonError)) throw error;
-		return text(`# Daemon not stopped\n\n${error.message}`, true);
+	const outcome = await deps.stop(store, lock);
+	if (outcome.outcome === "refused") {
+		return text(`# Daemon not stopped\n\n${outcome.detail}`, true);
+	}
+	if (outcome.outcome === "stopping") {
+		return text(
+			`# Daemon stopping\n\nAsked pid ${pid} serving \`${label}\` to stop; it exits once its current batch settles. Call again to check.`,
+		);
 	}
 
-	return text(`# Daemon stopped\n\nStopped daemon pid ${pid} serving \`${label}\`.`);
+	const replaced = outcome.detail === undefined ? "" : `; ${outcome.detail}`;
+	return text(`# Daemon stopped\n\nStopped daemon pid ${pid} serving \`${label}\`${replaced}.`);
 }

@@ -41,7 +41,9 @@ export type Compatibility =
 // of a store's lock a claim represents. Absent reads as `"daemon"`, an older lock's only meaning.
 // 3.5.0: `moduleFacts` and `parseFacts`, two reads that answer a module's declarations, references,
 // literals, comments and language words as paint facts, for a client that colors code itself.
-export const PROTOCOL_VERSION = "3.5.0" as const;
+// 3.6.0: an error response may carry `code`, closed to `"stopping"`, so a client retiring a daemon
+// reads why it refused structurally rather than matching its prose.
+export const PROTOCOL_VERSION = "3.6.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

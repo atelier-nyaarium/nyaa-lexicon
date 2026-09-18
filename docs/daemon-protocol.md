@@ -115,11 +115,18 @@ outage during the pass fails it, since a restart heals an outage; a fault on one
 against that file and the pass serves.
 
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
-with `...; this daemon is stopping`, closes its server, and every client lands on its reconnect
+with `...; the daemon is stopping`, closes its server, and every client lands on its reconnect
 path. `daemonChannel` reconnects once on a lost connection, through `ensureDaemon` again, and gives
 up if the connection is lost twice. Only a read is asked again after its request was sent; a
 method the table marks `mutates` may already have landed, so its loss is reported as
 `connectionLost` with the outcome unknown rather than repeated.
+
+Asked to stop, a daemon refuses every further request with the daemon's own `the daemon is
+stopping`, carrying `code: "stopping"` on the error frame (protocol 3.6.0), so a client retiring it
+waits on that lock the same way it waits on a delete's, rather than reading the refusal as final; a
+client meeting an older daemon with no `code` falls back to matching the message exactly. A live
+watcher batch under way when this happens is abandoned at its next file boundary rather than run to
+completion, so the wait is bounded by one file, not by the whole remainder of the batch.
 
 ## The method table
 

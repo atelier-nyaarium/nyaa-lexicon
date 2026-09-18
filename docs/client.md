@@ -48,6 +48,15 @@ its retirement: `ensureDaemon` asks it `refactorStatus` and `shutdown`, which ev
 answers, before spawning the install's own, since a daemon that cannot be asked to stop would
 hold its workspace until it lingered out.
 
+A daemon already asked to stop by someone else answers `refactorStatus` with its own `the daemon
+is stopping` rather than a transaction verdict, `code: "stopping"` on the frame from protocol
+3.6.0 on; `retire` reads the code first, falling back to the message matching that text exactly
+(never as a substring, so the longer lock-lost refusal below never reads the same way) for a
+daemon too old to send one. Either way this is the same bounded wait `ensureDaemon` gives a
+clearing lock, never a refusal to retire; a delete that claims the slot while it waits is waited
+out too, never spawned over. The ask itself and the wait behind it share one deadline: what an ask
+spends the poll does not get back, so a daemon that never answers cannot double the wait.
+
 ## Three versions
 
 Three versions stay apart, and each pair has one rule. The client's own `PROTOCOL_VERSION` comes
@@ -110,7 +119,8 @@ message.
 - `Incompatible`, with `client` and `installed`: the two protocol majors cannot meet, the
   install's before any lock, the daemon's at welcome.
 - `DaemonError`, with a closed `cause` of `unknownMethod`, `refusedModule`, `spawnFailed`,
-  `connectionLost` or `daemon`, plus `waitingFor` when a wait ran out.
+  `connectionLost` or `daemon`, plus `waitingFor` when a wait ran out and `code` when the frame
+  named one structurally (today only `"stopping"`), separate from `cause` and from matching prose.
 
 An unbuilt install or missing Bun runtime has cause `spawnFailed`. An unsuitable workspace or a
 startup timeout has cause `daemon`.

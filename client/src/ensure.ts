@@ -94,14 +94,17 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}, { acceptOlder: true }));
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const startedAt = Date.now();
+	// One shared budget: an ask spent inside `retire` and every poll below all draw against it, so
+	// a slow ask leaves the poll less time rather than each getting a fresh `timeoutMs`.
+	const deadline = startedAt + timeoutMs;
 	let waitingNotified = false;
 
-	/** Looks until the outgoing daemon's lock stops naming it, or the budget ends. */
+	/** Looks until the outgoing daemon's lock stops naming it, or the shared deadline passes. */
 	async function awaitRelease(): Promise<LockDecision> {
-		for (let waited = 0; ; waited += POLL_MS) {
+		for (;;) {
 			const next = look();
-			if (next.action !== "replace" || waited >= timeoutMs) return next;
-			await wait(POLL_MS);
+			if (next.action !== "replace" || Date.now() >= deadline) return next;
+			await wait(Math.min(POLL_MS, Math.max(0, deadline - Date.now())));
 		}
 	}
 
@@ -139,15 +142,31 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 			stop,
 			alive,
 			released: async () => (await awaitRelease()).action !== "replace",
+			deadline,
+			sleep: wait,
 		});
-		if (!retired.retired)
-			return { connected: false, reason: "spawnFailed", detail: `${decision.reason}, and ${retired.reason}` };
+		if (!retired.retired) {
+			return {
+				connected: false,
+				reason: retired.cause === "timeout" ? "timeout" : "spawnFailed",
+				detail: `${decision.reason}, and ${retired.reason}`,
+			};
+		}
 
 		// Its lock goes on the way out, so the wait below is for OUR daemon rather than a race against
 		// the corpse of the one just stopped.
-		const next = await awaitRelease();
+		let next = await awaitRelease();
+		// A delete may have claimed the slot while we waited; that is never a daemon to spawn over.
+		if (next.action === "awaitDelete") next = await awaitDeleteClear();
 		// Someone else already replaced it with a daemon we can use.
 		if (next.action === "connect") return { connected: true, lock: next.lock };
+		if (next.action === "awaitDelete") {
+			return {
+				connected: false,
+				reason: "timeout",
+				detail: `${next.reason}, and it still holds the lock after ${timeoutMs}ms`,
+			};
+		}
 		// Spawning over an unreleased lock hands the newcomer a claim it must lose, then reports
 		// the resulting confusion as ours. Refusing names the actual holdout.
 		if (next.action === "replace") {

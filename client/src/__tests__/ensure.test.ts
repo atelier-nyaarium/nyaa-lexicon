@@ -2,8 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
 import type { DaemonSource } from "../discover";
 import { ensureDaemon } from "../ensure";
+import { DaemonError } from "../errors";
 import type { LockDecision } from "../lock";
 import { fakeDaemon } from "./fakeDaemon";
 
@@ -46,6 +48,10 @@ const options = {
 	timeoutMs: 500,
 	alive: () => true,
 };
+
+/** A real socket's round trip takes real time; racing it against an instant fake sleep would
+ * always call it a timeout. Only the "over the wire" test, which asks a real fakeDaemon, needs this. */
+const realSleeper = { sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) };
 
 ////////////////////////////////
 //  Tests
@@ -256,6 +262,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		try {
 			const result = await ensureDaemon({
 				...options,
+				clock: realSleeper,
 				look: looking([
 					{
 						action: "replace",
@@ -312,6 +319,174 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		expect(result).toEqual({ connected: true, lock: LOCK });
 	});
 
+	// It already told us it is on its way out, so there is nothing left to ask and nothing to signal.
+	it("waits for a daemon that already answers it is stopping, then starts ours", async () => {
+		const events: string[] = [];
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			look: looking([
+				stale,
+				{ action: "spawn", reason: "gone" },
+				{ action: "spawn", reason: "gone" },
+				{ action: "connect", lock: LOCK },
+			]),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				throw new Error(DAEMON_STOPPING_MESSAGE);
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(events).toEqual(["ask:refactorStatus"]);
+		expect(started).toBe(1);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	// The code is read first, so a build that changed its own prose is still recognized.
+	it("waits on a typed stopping code even when the message itself does not match", async () => {
+		const result = await ensureDaemon({
+			...options,
+			look: looking([
+				stale,
+				{ action: "spawn", reason: "gone" },
+				{ action: "spawn", reason: "gone" },
+				{ action: "connect", lock: LOCK },
+			]),
+			ask: async () => {
+				throw new DaemonError("refused", "daemon", undefined, "stopping");
+			},
+			stop: () => {
+				throw new Error("must not signal a daemon already on its way out");
+			},
+			start: () => {},
+		});
+
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	// The lock-lost refusal is a longer sentence that happens to end the same way; only an exact
+	// match may read as "already stopping", or this case would wrongly wait instead of reconnecting.
+	it("does not read the lock-lost refusal as a stopping daemon", async () => {
+		let stopped = 0;
+		const result = await ensureDaemon({
+			...options,
+			timeoutMs: 20,
+			look: looking([stale]),
+			ask: async () => {
+				throw new Error("the workspace lock now names pid 4242; the daemon is stopping");
+			},
+			stop: () => {
+				stopped++;
+			},
+			start: () => {},
+		});
+
+		expect(stopped).toBe(0);
+		expect(result).toMatchObject({ connected: false, reason: "spawnFailed" });
+	});
+
+	it("refuses with a timeout, never spawnFailed, when a stopping daemon outlives the wait", async () => {
+		const result = await ensureDaemon({
+			...options,
+			timeoutMs: 50,
+			look: looking([stale]),
+			ask: async () => {
+				throw new Error(DAEMON_STOPPING_MESSAGE);
+			},
+			stop: () => {
+				throw new Error("must not signal a daemon already on its way out");
+			},
+			start: () => {
+				throw new Error("must not spawn while it still holds the lock");
+			},
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "timeout" });
+		expect(result.connected === false && result.detail).toContain("stopping");
+	});
+
+	// An ask that never answers must not eat the poll's share of the wait on top of its own.
+	it("cuts an ask off inside the one budget instead of hanging on it", async () => {
+		const result = await ensureDaemon({
+			...options,
+			timeoutMs: 20,
+			look: looking([stale]),
+			ask: () => new Promise(() => {}),
+			stop: () => {},
+			start: () => {},
+		});
+
+		expect(result).toMatchObject({ connected: false });
+	});
+
+	// A delete may claim the slot in the window between the old daemon clearing and this session
+	// looking again; that is never a daemon to spawn over.
+	it("waits out a delete that claims the lock once a stopping daemon clears, never spawning over it", async () => {
+		const events: string[] = [];
+		let started = 0;
+		const deleting: LockDecision = {
+			action: "awaitDelete",
+			lock: { ...LOCK, port: 1 },
+			reason: "pid 9999 is deleting /w right now",
+		};
+		const result = await ensureDaemon({
+			...options,
+			look: looking([
+				stale,
+				deleting,
+				deleting,
+				{ action: "spawn", reason: "gone" },
+				{ action: "connect", lock: LOCK },
+			]),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				throw new Error(DAEMON_STOPPING_MESSAGE);
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(events).toEqual(["ask:refactorStatus"]);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+		expect(started).toBe(1);
+	});
+
+	it("refuses rather than spawning over a delete that outlives the wait", async () => {
+		let started = 0;
+		const deleting: LockDecision = {
+			action: "awaitDelete",
+			lock: { ...LOCK, port: 1 },
+			reason: "pid 9999 is deleting /w right now",
+		};
+		const result = await ensureDaemon({
+			...options,
+			timeoutMs: 20,
+			look: looking([stale, deleting]),
+			ask: async () => {
+				throw new Error(DAEMON_STOPPING_MESSAGE);
+			},
+			stop: () => {},
+			start: () => {
+				started++;
+				throw new Error("must not spawn over a delete in flight");
+			},
+		});
+
+		expect(started).toBe(0);
+		expect(result).toMatchObject({ connected: false, reason: "timeout" });
+		expect(result.connected === false && result.detail).toContain("deleting");
+	});
+
 	it("falls back to the signal only once the lock has outlived the ask, and only after asking", async () => {
 		const events: string[] = [];
 		const afterSignal = looking([
@@ -320,6 +495,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		]);
 		const result = await ensureDaemon({
 			...options,
+			timeoutMs: 20,
 			// Held until the signal lands, however long the graceful wait looks.
 			look: () => (events.includes(`stop:${LOCK.pid}`) ? afterSignal() : stale),
 			ask: async (_lock, method) => {
@@ -344,6 +520,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		]);
 		const result = await ensureDaemon({
 			...options,
+			timeoutMs: 20,
 			// The refused ask proves nothing about the lock; only the wait does, so it is held here.
 			look: () => (events.includes(`stop:${LOCK.pid}`) ? afterSignal() : stale),
 			ask: async (_lock, method) => {
@@ -439,6 +616,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		const stopped: number[] = [];
 		await ensureDaemon({
 			...options,
+			timeoutMs: 20,
 			look: looking([stale]),
 			ask: async () => ({ open: false }),
 			alive: () => false,
@@ -457,6 +635,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		let started = 0;
 		const result = await ensureDaemon({
 			...options,
+			timeoutMs: 20,
 			look: looking([stale]),
 			ask: async () => ({ open: false }),
 			stop: () => {},

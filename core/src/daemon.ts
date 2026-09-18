@@ -14,7 +14,14 @@ import {
 	type PlatformEnv,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
-import { type DaemonLock, DaemonLockSchema, defined, type LockRole, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import {
+	DAEMON_STOPPING_MESSAGE,
+	type DaemonLock,
+	DaemonLockSchema,
+	defined,
+	type LockRole,
+	PROTOCOL_VERSION,
+} from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
 import { claimLock, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
 import { ownSource } from "./ownSource.js";
@@ -114,7 +121,9 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 				announceLoss?.(lockLost);
 				announceLoss = undefined;
 				void server.close();
-				throw new Error(`${lockLost}; this daemon is stopping`);
+				// Longer than DAEMON_STOPPING_MESSAGE on purpose: a client must never read this as the
+				// same wait a retiring daemon's refusal gets, only an exact match may.
+				throw new Error(`${lockLost}; ${DAEMON_STOPPING_MESSAGE}`);
 			}
 			return handle(method, params);
 		},
