@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { readSwept } from "../residue";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Enforces the two character rules that were prose with nothing behind them.
@@ -44,8 +47,8 @@ const BANNED_CODES = new Set([0x2014, 0x2018, 0x2019, 0x201c, 0x201d, 0x200b, 0x
 //  Functions & Helpers
 
 /** Asked of git, so an ignored file and a build artefact are excluded the way they are everywhere else. */
-function trackedFiles(): string[] {
-	const stdout = execFileSync("git", ["ls-files", "-z"], {
+async function trackedFiles(): Promise<string[]> {
+	const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
 		cwd: REPO_ROOT,
 		maxBuffer: 64 * 1024 * 1024,
 		encoding: "utf8",
@@ -62,9 +65,9 @@ function isRawControl(code: number): boolean {
 }
 
 /** Reports the line and the code point, since a character this invisible is not findable otherwise. */
-function offendersIn(offends: (code: number) => boolean): string[] {
+async function offendersIn(offends: (code: number) => boolean): Promise<string[]> {
 	const found: string[] = [];
-	for (const path of trackedFiles()) {
+	for (const path of await trackedFiles()) {
 		// Tracked but gone is an ordinary state mid-delete or mid-rename, and checking before reading
 		// leaves the window open. A vanished file reads as null; anything else still throws.
 		const source = readSwept(join(REPO_ROOT, path));
@@ -86,20 +89,20 @@ function offendersIn(offends: (code: number) => boolean): string[] {
 //  Tests
 
 describe("what bytes a source file may contain", () => {
-	it("finds files to check, so a passing run is never vacuous", () => {
-		expect(trackedFiles().length).toBeGreaterThan(50);
+	it("finds files to check, so a passing run is never vacuous", async () => {
+		expect((await trackedFiles()).length).toBeGreaterThan(50);
 	});
 
-	it("has no raw control byte in any tracked source file", () => {
+	it("has no raw control byte in any tracked source file", async () => {
 		expect(
-			offendersIn(isRawControl),
+			await offendersIn(isRawControl),
 			"write a control character as an escape, which is byte-identical at runtime and keeps the file readable to git and grep. See AGENTS.md > Development.",
 		).toEqual([]);
 	});
 
-	it("has no em dash, smart quote or zero-width character", () => {
+	it("has no em dash, smart quote or zero-width character", async () => {
 		expect(
-			offendersIn((code) => BANNED_CODES.has(code)),
+			await offendersIn((code) => BANNED_CODES.has(code)),
 			"reword rather than substitute: these are banned in every file, markdown included.",
 		).toEqual([]);
 	});

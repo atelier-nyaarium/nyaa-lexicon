@@ -42,6 +42,7 @@ export {
 	parseMeminfo,
 	parseProcStat,
 	parseProcStatus,
+	processesMatching,
 	processIdentity,
 	processMemory,
 } from "./procfs.js";

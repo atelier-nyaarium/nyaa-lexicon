@@ -6,8 +6,8 @@ import { Python3Dispatch } from "../python3";
 const EXTRACTOR = fileURLToPath(new URL("../extract.py", import.meta.url));
 const python3 = new Python3Dispatch();
 
-function extract(module: string, text: string) {
-	const facts = python3.runJson<{
+async function extract(module: string, text: string) {
+	const facts = await python3.runJson<{
 		declarations: { name: string; kind: string; exported: boolean; visibility: string }[];
 		imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
 		literals: { kind: string; value: string; range: { start: { line: number; character: number } } }[];
@@ -18,8 +18,8 @@ function extract(module: string, text: string) {
 	return facts;
 }
 
-test("extracts public declarations, explicit exports, and final reassignments", () => {
-	const facts = extract(
+test("extracts public declarations, explicit exports, and final reassignments", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		['__all__ = ["Public", "_listed"]', "Public = 1", "Public = 2", "_hidden = 3", "_listed = 4", ""].join("\n"),
 	);
@@ -40,8 +40,8 @@ test("extracts public declarations, explicit exports, and final reassignments", 
 	});
 });
 
-test("classifies imported Final annotations as constants", () => {
-	const facts = extract(
+test("classifies imported Final annotations as constants", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		[
 			"from typing import Final",
@@ -76,8 +76,8 @@ test("classifies imported Final annotations as constants", () => {
 	]);
 });
 
-test("leaves conflicting Final bindings as variables", () => {
-	const facts = extract(
+test("leaves conflicting Final bindings as variables", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		["from typing import Final", "Final = object()", "limit: Final = 1"].join("\n"),
 	);
@@ -85,8 +85,8 @@ test("leaves conflicting Final bindings as variables", () => {
 	expect(facts.declarations.find((declaration) => declaration.name === "limit")).toMatchObject({ kind: "variable" });
 });
 
-test("leaves conditionally shadowed Final bindings as variables", () => {
-	const facts = extract(
+test("leaves conditionally shadowed Final bindings as variables", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		["from typing import Final", "if enabled:", "    Final = object()", "limit: Final = 1"].join("\n"),
 	);
@@ -94,8 +94,8 @@ test("leaves conditionally shadowed Final bindings as variables", () => {
 	expect(facts.declarations.find((declaration) => declaration.name === "limit")).toMatchObject({ kind: "variable" });
 });
 
-test("extracts decorators, nested declarations, relative imports, and call candidates", () => {
-	const facts = extract(
+test("extracts decorators, nested declarations, relative imports, and call candidates", async () => {
+	const facts = await extract(
 		"pkg/sub/mod.py",
 		[
 			"from . import sibling",
@@ -153,8 +153,8 @@ test("extracts decorators, nested declarations, relative imports, and call candi
 	]);
 });
 
-test("classifies calls, receiver reads, writes, bases, and annotations", () => {
-	const facts = extract(
+test("classifies calls, receiver reads, writes, bases, and annotations", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		[
 			"class Base:",
@@ -183,8 +183,8 @@ test("classifies calls, receiver reads, writes, bases, and annotations", () => {
 	expect(facts.references.some((reference) => reference.role === "implements")).toBe(false);
 });
 
-test("classifies explicit type comments without inferring types", () => {
-	const facts = extract(
+test("classifies explicit type comments without inferring types", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		["def run(value):  # type: (Input) -> Output", "    result = value  # type: Result", "    return result"].join(
 			"\n",
@@ -196,8 +196,8 @@ test("classifies explicit type comments without inferring types", () => {
 	).toEqual(["Input", "Output", "Result"]);
 });
 
-test("classifies exception and pattern captures as writes", () => {
-	const facts = extract(
+test("classifies exception and pattern captures as writes", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		[
 			"try:",
@@ -215,8 +215,8 @@ test("classifies exception and pattern captures as writes", () => {
 	).toEqual(["failure", "x", "y", "point"]);
 });
 
-test("keeps imports and exports in import facts rather than duplicate references", () => {
-	const facts = extract(
+test("keeps imports and exports in import facts rather than duplicate references", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		['__all__ = ["thing"]', "from .other import thing", "import sibling"].join("\n"),
 	);
@@ -240,12 +240,12 @@ test("keeps imports and exports in import facts rather than duplicate references
 	expect(facts.references).toEqual([]);
 });
 
-test("marks only deliberate imports as re-exports", () => {
-	const leaf = extract(
+test("marks only deliberate imports as re-exports", async () => {
+	const leaf = await extract(
 		"pkg/leaf.py",
 		["import os", "from .item import Item", "from .other import Public", '__all__ = ["Public"]'].join("\n"),
 	);
-	const packageInit = extract("pkg/__init__.py", "from .item import Item\nimport os\n");
+	const packageInit = await extract("pkg/__init__.py", "from .item import Item\nimport os\n");
 
 	expect(leaf.imports.map((item) => [item.specifier, item.reExport])).toEqual([
 		["os", false],
@@ -258,8 +258,8 @@ test("marks only deliberate imports as re-exports", () => {
 	]);
 });
 
-test("emits exact import name ranges for aliases and multiline lists", () => {
-	const facts = extract(
+test("emits exact import name ranges for aliases and multiline lists", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		["from .item import helper as h", "from .item import (", "    Item,", "    other as alias,", ")"].join("\n"),
 	);
@@ -293,8 +293,8 @@ test("emits exact import name ranges for aliases and multiline lists", () => {
 	]);
 });
 
-test("keeps star imports empty and preserves local import bindings", () => {
-	const facts = extract("pkg/mod.py", "from .item import *\nimport os.path as p\nimport os\n");
+test("keeps star imports empty and preserves local import bindings", async () => {
+	const facts = await extract("pkg/mod.py", "from .item import *\nimport os.path as p\nimport os\n");
 
 	expect(facts.imports).toEqual([
 		{ specifier: ".item", imported: [], reExport: false },
@@ -315,8 +315,8 @@ test("keeps star imports empty and preserves local import bindings", () => {
 	]);
 });
 
-test("keeps import specifiers out of literals while indexing string arguments", () => {
-	const facts = extract(
+test("keeps import specifiers out of literals while indexing string arguments", async () => {
+	const facts = await extract(
 		"pkg/mod.py",
 		[
 			"import os",
@@ -333,8 +333,8 @@ test("keeps import specifiers out of literals while indexing string arguments", 
 	).toEqual([2, 3, 4]);
 });
 
-test("records imports at every relative depth and nested scope", () => {
-	const facts = extract(
+test("records imports at every relative depth and nested scope", async () => {
+	const facts = await extract(
 		"pkg/sub/mod.py",
 		[
 			"from . import sibling",
@@ -360,8 +360,8 @@ test("records imports at every relative depth and nested scope", () => {
 	]);
 });
 
-test("keeps exact ranges for imports in conditional blocks", () => {
-	const facts = extract("pkg/mod.py", "try:\n    import optional\nexcept ImportError:\n    pass\n");
+test("keeps exact ranges for imports in conditional blocks", async () => {
+	const facts = await extract("pkg/mod.py", "try:\n    import optional\nexcept ImportError:\n    pass\n");
 
 	expect(facts.imports).toEqual([
 		{
@@ -377,8 +377,8 @@ test("keeps exact ranges for imports in conditional blocks", () => {
 	]);
 });
 
-test("accumulates literal __all__ additions", () => {
-	const facts = extract("pkg/mod.py", '__all__ = ["a"]\n__all__ += ["b"]\na = 1\nb = 2\n');
+test("accumulates literal __all__ additions", async () => {
+	const facts = await extract("pkg/mod.py", '__all__ = ["a"]\n__all__ += ["b"]\na = 1\nb = 2\n');
 
 	expect(facts.declarations.filter((declaration) => declaration.name === "a" || declaration.name === "b")).toEqual([
 		expect.objectContaining({ name: "a", exported: true, visibility: "public" }),
@@ -386,8 +386,8 @@ test("accumulates literal __all__ additions", () => {
 	]);
 });
 
-test("reports syntax errors without inventing facts", () => {
-	const facts = extract("broken.py", "def broken(:\n    pass\n");
+test("reports syntax errors without inventing facts", async () => {
+	const facts = await extract("broken.py", "def broken(:\n    pass\n");
 
 	expect(facts.declarations).toEqual([]);
 	expect(facts.imports).toEqual([]);

@@ -20,7 +20,7 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
-import { defined, type LockRole, WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
+import { defined, killLiveGroups, type LockRole, WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
@@ -79,6 +79,28 @@ export function warmRefusal(
 	if (failure !== null) return new Error(`${WARMUP_FAILED_PREFIX} ${failure}; restart the daemon`);
 	const hold = service.warmHold();
 	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
+}
+
+/**
+ * Runs `work` unless a previous call through the same `guard` is still running, and a rejection is
+ * handed to `onError` rather than left to reach the process as an unhandled one. One in flight at a
+ * time; a failed or skipped call leaves the next one free to try again.
+ */
+export function runGuarded(
+	guard: { busy: boolean },
+	work: () => Promise<void>,
+	onError: (error: unknown) => void,
+): void {
+	if (guard.busy) return;
+	guard.busy = true;
+	// work invoked inside the chain: a synchronous throw from it is a rejection here too, not an
+	// exception out of runGuarded that would skip both onError and freeing the guard.
+	Promise.resolve()
+		.then(work)
+		.catch(onError)
+		.finally(() => {
+			guard.busy = false;
+		});
 }
 
 /** The daemon's one time source: every stamp, timer and allowance in this process reads it. */
@@ -225,6 +247,9 @@ async function main(argv: string[]): Promise<void> {
 			["watcher", () => live?.stop()],
 			["providers", () => supervisor?.stopAll()],
 			["store", () => store?.close()],
+			// A git call this daemon killed but whose grandchild is still draining a pipe otherwise
+			// outlives this process, since `detached` severs it from the normal child lifecycle.
+			["child processes", () => killLiveGroups()],
 		];
 		for (const [name, step] of steps) {
 			try {
@@ -377,7 +402,7 @@ async function main(argv: string[]): Promise<void> {
 				const indexed = outcomes.filter((o) => o.action === "indexed");
 				const failures = outcomes.filter((o) => o.failure !== undefined);
 				const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
-				log(`scope: ${service.scopeReport()}`);
+				log(`scope: ${await service.scopeReport()}`);
 				log(`warmed ${indexed.length} files, ${symbols} declarations, ${clock.now() - started}ms`);
 				if (failures.length > 0)
 					log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
@@ -390,41 +415,53 @@ async function main(argv: string[]): Promise<void> {
 				);
 			};
 
-			// Watching starts with warming: a watcher over an unasked-for workspace would index it
-			// on the next file change anyway. The live index watches before the pass reads, and
-			// holds what arrives under it.
-			let warming: Promise<void>;
-			try {
-				const index = startLiveIndex({
-					service,
-					workspaceRoot: root,
-					clock,
-					warm: pass,
-					onSwept: (report) => {
-						if (report.examined > 0)
-							log(
-								`knowledge sweep: ${report.examined} examined, ${report.rebound} rebound, ${report.orphaned} orphaned, ${report.deleted} deleted${report.stoppedEarly ? ", stopped at the cap" : ""}`,
-							);
-					},
-					onApplied: (applied) => {
-						const touched = applied.filter((o) => o.action !== "skipped");
-						const failures = applied.filter((o) => o.failure !== undefined);
-						if (touched.length > 0) log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
-						if (failures.length > 0)
-							log(`reindex failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
-					},
-					onError: (error) => log(`reindex failed: ${error instanceof Error ? error.message : error}`),
-				});
-				live = index;
-				warming = index.warmed;
-			} catch (error) {
-				// A platform that cannot watch still gets its index; an edit then waits for a restart.
-				log(`watching failed: ${describeError(error)}`);
-				warming = pass();
-			}
-			scan = warming.catch((error) => {
-				log(`warmup failed: ${error instanceof Error ? error.message : error}`);
-			});
+			// Watching starts with warming, and the scope is computed first: watchScope() reads it synchronously.
+			scan = (async () => {
+				try {
+					await service.currentScope();
+				} catch (error) {
+					// A transient failure, unlike a failed pass: nothing else here ran, so the next
+					// request's warm() retries rather than leaving the daemon permanently unable to.
+					log(`warmup failed: ${error instanceof Error ? error.message : error}`);
+					scan = null;
+					return;
+				}
+
+				let warming: Promise<void>;
+				try {
+					const index = startLiveIndex({
+						service,
+						workspaceRoot: root,
+						clock,
+						warm: pass,
+						onSwept: (report) => {
+							if (report.examined > 0)
+								log(
+									`knowledge sweep: ${report.examined} examined, ${report.rebound} rebound, ${report.orphaned} orphaned, ${report.deleted} deleted${report.stoppedEarly ? ", stopped at the cap" : ""}`,
+								);
+						},
+						onApplied: (applied) => {
+							const touched = applied.filter((o) => o.action !== "skipped");
+							const failures = applied.filter((o) => o.failure !== undefined);
+							if (touched.length > 0) log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
+							if (failures.length > 0)
+								log(`reindex failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
+						},
+						onError: (error) => log(`reindex failed: ${error instanceof Error ? error.message : error}`),
+					});
+					live = index;
+					warming = index.warmed;
+				} catch (error) {
+					// A platform that cannot watch still gets its index; an edit then waits for a restart.
+					log(`watching failed: ${describeError(error)}`);
+					warming = pass();
+				}
+				try {
+					await warming;
+				} catch (error) {
+					log(`warmup failed: ${error instanceof Error ? error.message : error}`);
+				}
+			})();
 		}
 
 		// The owner's rule for staying current: notice a newer build only between answered requests,
@@ -432,7 +469,7 @@ async function main(argv: string[]): Promise<void> {
 		const stampAtStart = daemon.lock.bundleStamp ?? null;
 		let lastDriftAsk = 0;
 		async function handOverIfDrifted(): Promise<void> {
-			const target = driftedTo({
+			const target = await driftedTo({
 				workspaceRoot: root,
 				root: source.root,
 				version: source.buildVersion,
@@ -451,7 +488,7 @@ async function main(argv: string[]): Promise<void> {
 					await releaseEverything();
 					// Lock released above, so the successor's claim cannot lose to a corpse. It inherits the
 					// store directory, or it would claim a different store and leave this one orphaned.
-					const command = daemonCommand(target.root, root, stateDir);
+					const command = await daemonCommand(target.root, root, stateDir);
 					if (command.kind !== "command")
 						log(`no runnable bundle under ${target.root}; the next client starts one`);
 					else spawnDaemonProcess([...command.command, "--warm"], paths.logFile);
@@ -461,11 +498,17 @@ async function main(argv: string[]): Promise<void> {
 				}
 			});
 		}
+		const driftGuard = { busy: false };
 		function considerHandover(): void {
 			if (stopping || clock.now() - lastDriftAsk < DRIFT_CHECK_EVERY_MS) return;
 			lastDriftAsk = clock.now();
-			// After the answer is on the wire, never under it.
-			clock.setTimer(() => void handOverIfDrifted(), 0);
+			// After the answer is on the wire, never under it. A slow driftedTo can still be running
+			// when the next tick would otherwise start another; runGuarded keeps one in flight.
+			clock.setTimer(() => {
+				runGuarded(driftGuard, handOverIfDrifted, (error) =>
+					log(`drift check failed: ${error instanceof Error ? error.message : error}`),
+				);
+			}, 0);
 		}
 
 		// `shutdown` is a daemon method rather than a service one, so it is answered here instead of

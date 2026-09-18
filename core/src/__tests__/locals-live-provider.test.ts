@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +7,7 @@ import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
+import { gitAdd, gitInit } from "./gitFixture";
 
 /** Uses source, not build. */
 function sourceProvider(name: string) {
@@ -117,8 +117,8 @@ async function indexed(files: Record<string, string>, providers: string[]): Prom
 		mkdirSync(path.dirname(path.join(root, module)), { recursive: true });
 		writeFileSync(path.join(root, module), text);
 	}
-	execFileSync("git", ["init", "-q"], { cwd: root });
-	execFileSync("git", ["add", "-A"], { cwd: root });
+	await gitInit(root);
+	await gitAdd(root, "-A");
 	await startProviders(supervisor, root, { commands: providers.flatMap(sourceProvider) });
 	const service = new LexiconService(store, supervisor, sourceReader(root), root);
 	await service.indexWorkspace();

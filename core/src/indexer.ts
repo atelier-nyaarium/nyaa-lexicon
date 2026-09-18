@@ -65,6 +65,13 @@ function indexerFault(error: unknown): string {
 	return `the indexer failed on this file: ${error instanceof Error ? error.message : String(error)}`;
 }
 
+/** A synchronous scope read reached before any admission ever ran. A caller ordering bug, not a user's. */
+export class ScopeNotComputedError extends Error {
+	constructor() {
+		super("the workspace scope has not been computed yet; call currentScope() before reading it synchronously");
+	}
+}
+
 /** How many failed files an answer names; `overview` lists every one. */
 export const NAMED_FAILURES = 3;
 
@@ -134,8 +141,9 @@ export class WorkspaceIndexer {
 		/** The service's one gate. Every road this indexer drives itself takes it, one file at a time. */
 		private readonly gate: WorkspaceGate,
 	) {
-		// A route asked before the first scan still sees the workspace.
-		supervisor.evidenceFrom(() => this.admitted().reachable);
+		// A route asked before the first scan still sees the workspace, from whatever admission last
+		// completed: evidenceFrom is synchronous, and admission now asks git asynchronously.
+		supervisor.evidenceFrom(() => this.lastAdmitted?.reachable ?? []);
 		supervisor.headFrom((module) => readHead(this.workspaceRoot, module));
 	}
 
@@ -148,6 +156,8 @@ export class WorkspaceIndexer {
 	/** Scan progress is process-local; stored counts come from the database. */
 	private status: Pick<IndexStatus, "state" | "done" | "total"> = { state: "unstarted", done: 0, total: 0 };
 	private scope: FileScope | null = null;
+	/** For the synchronous evidence callback alone: as fresh as the last admission, which every create or delete renews. */
+	private lastAdmitted: Admitted | null = null;
 	private discovered = new Set<string>();
 	private roots = new Set<string>();
 	private depths = new Map<string, IndexDepth>();
@@ -179,17 +189,49 @@ export class WorkspaceIndexer {
 		return this.gate.exclusive(work);
 	}
 
+	/**
+	 * Asks git for the scope. Only a first computation, with no prior scope to fall back on, records
+	 * the failure the way a failed warmup pass does, so a request refuses with the reason instead of
+	 * a caller meeting a bare rejection. A later refresh failing keeps serving the scope already held;
+	 * its caller's own error handling logs it, and the next batch or warm retries. Never caches a
+	 * rejection: the field this writes to stays untouched on failure, so the next call retries.
+	 */
+	private async computeScope(): Promise<FileScope> {
+		try {
+			return await fileScopeFor(this.workspaceRoot, undefined, this.clock);
+		} catch (error) {
+			if (this.scope === null) {
+				this.coverage = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
+			}
+			throw error;
+		}
+	}
+
 	/** Refreshed at the start of every scan. Public for the resolver's surface globs. */
-	currentScope(): FileScope {
-		this.scope ??= fileScopeFor(this.workspaceRoot);
+	async currentScope(): Promise<FileScope> {
+		this.scope ??= await this.computeScope();
 		return this.scope;
 	}
 
-	/** What the watcher may read unasked: admitted by the scope as it stands, or held by the index. */
+	/**
+	 * The scope as a synchronous road may read it: already computed by an earlier `currentScope()`
+	 * or a scan, never git asked fresh. Every caller here runs only after that has happened.
+	 */
+	private scopeOrThrow(): FileScope {
+		if (this.scope === null) throw new ScopeNotComputedError();
+		return this.scope;
+	}
+
+	/**
+	 * What the watcher may read unasked: admitted by the scope as it stands, or held by the index.
+	 *
+	 * Synchronous over a scope already computed: the caller starts the live index before the warm
+	 * pass has run, so nothing here may lazily ask git for the first time.
+	 */
 	watchScope(): WatchScope {
 		return {
-			admits: (module) => this.currentScope().allows(module) || this.store.contentHashOf(module) !== null,
-			ignored: (modules) => gitIgnored(this.workspaceRoot, modules),
+			admits: (module) => this.scopeOrThrow().allows(module) || this.store.contentHashOf(module) !== null,
+			ignored: (modules) => gitIgnored(this.workspaceRoot, modules, this.clock),
 		};
 	}
 
@@ -206,6 +248,12 @@ export class WorkspaceIndexer {
 	 * and each already holds the gate across a unit larger than this file.
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
+		// Self-sufficient: recovery, and a standalone call on a fresh service, both reach here before
+		// any scan has run. The synchronous scope reads below (claimOf, rootDepth's default) must not
+		// be the first to ask for it, and a shared claim's routing needs the evidence callback seeded
+		// once, or it reads as nothing until a real scan runs.
+		if (this.lastAdmitted === null) await this.admitted();
+		else await this.currentScope();
 		const claim = this.claimOf(module);
 		if (!claim.claimed) return this.unadmitted(module, claim.unclaimedReason);
 
@@ -296,6 +344,7 @@ export class WorkspaceIndexer {
 		const fresh = this.store.depthOf(module) === null;
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
 		// question only the source text answers, and this is the last place holding it.
+		const generatedVerdict = await this.verdictFor(module);
 		try {
 			this.store.replaceFile({
 				module,
@@ -312,7 +361,7 @@ export class WorkspaceIndexer {
 				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
 				// supervisor drops a comments field from a provider that never declared the tier.
 				digests: storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
-				generated: this.verdictFor(module),
+				generated: generatedVerdict,
 			});
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
@@ -403,7 +452,7 @@ export class WorkspaceIndexer {
 
 			// One hold: the summary must not describe a root set another road has already moved past.
 			const pending = await this.alone(async () => {
-				this.roots = this.rootModules();
+				this.roots = await this.rootModules();
 				this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
 				// Roots with no row at any depth; a failed root has none and is attempted again here.
 				const missing = new Set([...this.roots].filter((module) => this.store.depthOf(module) === null));
@@ -597,7 +646,7 @@ export class WorkspaceIndexer {
 		depth = this.depths.get(module) ?? this.rootDepth(module),
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
-		if (this.currentScope().denies(module)) return this.unadmitted(module, "denied by scope");
+		if (this.scopeOrThrow().denies(module)) return this.unadmitted(module, "denied by scope");
 		return this.indexFile(module, depth, skipIfCurrent);
 	}
 
@@ -645,7 +694,7 @@ export class WorkspaceIndexer {
 
 	/** Whether anything will index a module: the scope's word, then the routing's. */
 	claimOf(module: string): ModuleClaim {
-		if (this.currentScope().denies(module)) return { claimed: false, unclaimedReason: "denied by scope" };
+		if (this.scopeOrThrow().denies(module)) return { claimed: false, unclaimedReason: "denied by scope" };
 		const route = this.supervisor.route(module);
 		if (route.owned) return { claimed: true, provider: route.providerId };
 		return {
@@ -678,8 +727,8 @@ export class WorkspaceIndexer {
 				for (const statement of this.store.importsIn(module)) {
 					const landed = await this.resolve(module, statement.specifier).catch(() => null);
 					const target = landed === null ? null : importTarget(landed);
-					if (target === null || this.currentScope().denies(target.module)) continue;
-					const depth = this.currentScope().surface(target.module)
+					if (target === null || this.scopeOrThrow().denies(target.module)) continue;
+					const depth = this.scopeOrThrow().surface(target.module)
 						? "surface"
 						: floor === "outline" && target.depth === "full"
 							? "outline"
@@ -692,7 +741,7 @@ export class WorkspaceIndexer {
 				}
 			}
 			if (found.length === 0) break;
-			this.rememberVerdicts(found);
+			await this.rememberVerdicts(found);
 			for (const module of found) {
 				if (
 					!indexExisting &&
@@ -732,9 +781,9 @@ export class WorkspaceIndexer {
 		return outcomes;
 	}
 
-	/** Every module the scope admits, owned by a provider or not. */
-	private admitted(extra: Iterable<string> = [], gone: Iterable<string> = []): Admitted {
-		this.scope = fileScopeFor(this.workspaceRoot);
+	/** Every module the scope admits, owned by a provider or not. Rebuilds the scope from git each time. */
+	private async admitted(extra: Iterable<string> = [], gone: Iterable<string> = []): Promise<Admitted> {
+		this.scope = await this.computeScope();
 		const named = includedFiles(this.workspaceRoot, this.scope.include);
 		const namedSet = new Set(named);
 		const goneSet = new Set(gone);
@@ -742,29 +791,32 @@ export class WorkspaceIndexer {
 			(module) => !goneSet.has(module),
 		);
 		const candidates = everything.filter((module) => this.scope?.allows(module) ?? true);
-		this.generated = generatedVerdicts(this.workspaceRoot, candidates);
+		this.generated = await generatedVerdicts(this.workspaceRoot, candidates, this.clock);
 		const reachable = candidates.filter(
 			(module) => namedSet.has(module) || this.generated.get(module)?.status !== "yes",
 		);
-		return { everything, candidates, reachable };
+		const result: Admitted = { everything, candidates, reachable };
+		// The one snapshot the synchronous evidence callback may read; nothing else reads it.
+		this.lastAdmitted = result;
+		return result;
 	}
 
 	/** One git call for what a round reached past admission, so an import closure never asks per file. */
-	private rememberVerdicts(modules: string[]): void {
+	private async rememberVerdicts(modules: string[]): Promise<void> {
 		const missing = modules.filter((module) => !this.generated.has(module));
 		if (missing.length === 0) return;
-		for (const [module, verdict] of generatedVerdicts(this.workspaceRoot, missing))
+		for (const [module, verdict] of await generatedVerdicts(this.workspaceRoot, missing, this.clock))
 			this.generated.set(module, verdict);
 	}
 
 	/** Admission's verdict, or git asked for a module written outside any pass. */
-	private verdictFor(module: string): GeneratedVerdict {
-		this.rememberVerdicts([module]);
+	private async verdictFor(module: string): Promise<GeneratedVerdict> {
+		await this.rememberVerdicts([module]);
 		return this.generated.get(module) as GeneratedVerdict;
 	}
 
-	private rootModules(extra: Iterable<string> = [], gone: Iterable<string> = []): Set<string> {
-		const { everything, candidates, reachable } = this.admitted(extra, gone);
+	private async rootModules(extra: Iterable<string> = [], gone: Iterable<string> = []): Promise<Set<string>> {
+		const { everything, candidates, reachable } = await this.admitted(extra, gone);
 		// Evidence before ownership: a shared claim is decided by what the scope admits.
 		this.supervisor.observeWorkspace(reachable);
 		const roots = new Set(reachable.filter((module) => this.supervisor.route(module).owned));
@@ -781,7 +833,7 @@ export class WorkspaceIndexer {
 	}
 
 	private rootDepth(module: string): IndexDepth {
-		return this.currentScope().surface(module) ? "surface" : "full";
+		return this.scopeOrThrow().surface(module) ? "surface" : "full";
 	}
 
 	/** Surface is a ceiling, not a starting depth. */
@@ -878,7 +930,7 @@ export class WorkspaceIndexer {
 		const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
 		const deleted = events.filter((event) => event.kind === "deleted").map((event) => event.module);
 		for (const module of deleted) this.discovered.delete(module);
-		const roots = this.rootModules(changed, deleted);
+		const roots = await this.rootModules(changed, deleted);
 		this.roots = roots;
 		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
 		// A provider resolves against the files on DISK, not against what this index holds, so only a
@@ -960,6 +1012,13 @@ export class WorkspaceIndexer {
 		this.sweepAfterPrune(seen);
 		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
 		if (this.coverage.state !== "failed") this.coverage = { state: "covered" };
+		// A module created or deleted by this batch renews the evidence snapshot with what the batch
+		// actually settled on, not the admission taken before its per-file forgets and import closure ran.
+		if (this.lastAdmitted !== null) {
+			const created = [...seen].some((module) => !previousRoots.has(module));
+			const removed = [...previousRoots].some((module) => !seen.has(module));
+			if (created || removed) this.lastAdmitted = { ...this.lastAdmitted, reachable: [...seen] };
+		}
 		return outcomes;
 	}
 }

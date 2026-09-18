@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +9,7 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import type { WorkspaceGate } from "../workspaceGate";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
+import { gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -34,9 +34,15 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 	return { promise, release };
 }
 
-/** Bounded, so a state that never arrives fails the test instead of hanging it. */
-async function settle(until: () => boolean): Promise<void> {
-	for (let turn = 0; turn < 1_000; turn++) {
+/**
+ * Bounded by real time, so a state that never arrives fails the test instead of hanging it.
+ *
+ * Admission now spawns git asynchronously rather than blocking the thread, so what settles here can
+ * take real wall-clock milliseconds under load; a fixed tick count would flake for that reason alone.
+ */
+async function settle(until: () => boolean, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
 		if (until()) return;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
@@ -86,10 +92,10 @@ function serviceOver(supervisor: ProviderPort): LexiconService {
 	return new LexiconService(store, supervisor, sourceReader(root), root);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-index-gate-"));
 	store = IndexStore.open(path.join(root, "index.sqlite")).store;
-	execFileSync("git", ["init", "-q"], { cwd: root });
+	await gitInit(root);
 });
 
 afterEach(() => {

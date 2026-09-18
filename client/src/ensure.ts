@@ -159,7 +159,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		}
 	}
 
-	const command = daemonCommand(source().root, options.workspaceRoot, options.stateDir);
+	const command = await daemonCommand(source().root, options.workspaceRoot, options.stateDir);
 	if (command.kind === "unbuilt")
 		return { connected: false, reason: "unbuilt", detail: "no built daemon to start; run the build first" };
 	if (command.kind === "noBunRuntime")

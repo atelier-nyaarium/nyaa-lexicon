@@ -304,8 +304,8 @@ function idFor(module: string, descriptors: RawDescriptor[]): string {
 	return composeSymbolId({ language: LANGUAGE, module, descriptors });
 }
 
-function runExtractor(python3: Python3Dispatch, module: string, text: string): RawFacts {
-	const facts = python3.runJson<RawFacts>([HELPER_PATH], {
+async function runExtractor(python3: Python3Dispatch, module: string, text: string): Promise<RawFacts> {
+	const facts = await python3.runJson<RawFacts>([HELPER_PATH], {
 		input: JSON.stringify({ module, text }),
 		maxBuffer: 32 * 1024 * 1024,
 	});
@@ -313,9 +313,9 @@ function runExtractor(python3: Python3Dispatch, module: string, text: string): R
 	return facts;
 }
 
-function extractFacts(python3: Python3Dispatch, module: string, text: string): RawFacts {
+async function extractFacts(python3: Python3Dispatch, module: string, text: string): Promise<RawFacts> {
 	try {
-		return runExtractor(python3, module, text);
+		return await runExtractor(python3, module, text);
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		return {
@@ -466,8 +466,8 @@ interface PythonModuleResponse {
 	found: boolean;
 }
 
-function pythonStdlibModuleNames(python3: Python3Dispatch): Set<string> | null {
-	const parsed = python3.runJson<PythonStdlibResponse>(
+async function pythonStdlibModuleNames(python3: Python3Dispatch): Promise<Set<string> | null> {
+	const parsed = await python3.runJson<PythonStdlibResponse>(
 		[
 			"-c",
 			"import json, sys; print(json.dumps({'available': hasattr(sys, 'stdlib_module_names'), 'names': sorted(getattr(sys, 'stdlib_module_names', ())) }))",
@@ -485,8 +485,8 @@ function pythonStdlibModuleNames(python3: Python3Dispatch): Set<string> | null {
 	return new Set(parsed.names as string[]);
 }
 
-function pythonModuleAvailable(python3: Python3Dispatch, moduleName: string): boolean | null {
-	const parsed = python3.runJson<PythonModuleResponse>(
+async function pythonModuleAvailable(python3: Python3Dispatch, moduleName: string): Promise<boolean | null> {
+	const parsed = await python3.runJson<PythonModuleResponse>(
 		[
 			"-c",
 			"import importlib.util, json, sys; name = sys.argv[1];\ntry:\n    found = importlib.util.find_spec(name) is not None\nexcept (ImportError, ModuleNotFoundError, ValueError):\n    found = False\nprint(json.dumps({'available': True, 'found': found}))",
@@ -589,15 +589,16 @@ export class PythonProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
-		const facts = mapFacts(params.module, extractFacts(this.python3, params.module, params.text));
+	async parseFile(params: { module: string; contentHash: string; text: string }) {
+		const raw = await extractFacts(this.python3, params.module, params.text);
+		const facts = mapFacts(params.module, raw);
 		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
 			declarations: facts.declarations,
-			references: this.wireReferences(params.module, facts),
+			references: await this.wireReferences(params.module, facts),
 			imports: facts.imports,
 			literals: facts.literals,
 			comments: facts.comments,
@@ -619,30 +620,33 @@ export class PythonProvider {
 		else this.parsedFacts.set(restore.module, restore.facts);
 	}
 
-	private factsForModule(module: string): MappedFacts | null {
+	private async factsForModule(module: string): Promise<MappedFacts | null> {
 		const cached = this.parsedFacts.get(module);
 		if (cached !== undefined) return cached;
 		// A file the index does not hold must not come back through a read of its own bytes.
 		if (!this.admission.fillable(module)) return null;
 		const absolute = workspaceFile(this.workspaceRoot, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
-		const facts = mapFacts(module, extractFacts(this.python3, module, readFileSync(absolute, "utf8")));
+		const raw = await extractFacts(this.python3, module, readFileSync(absolute, "utf8"));
+		const facts = mapFacts(module, raw);
 		this.parsedFacts.set(module, facts);
 		return facts;
 	}
 
-	private wireReferences(module: string, facts: ReturnType<typeof mapFacts>): Reference[] {
-		return facts.references.map((reference) => ({
-			...reference,
-			binding: this.bindingForReference(module, facts, reference),
-		}));
+	private async wireReferences(module: string, facts: ReturnType<typeof mapFacts>): Promise<Reference[]> {
+		return Promise.all(
+			facts.references.map(async (reference) => ({
+				...reference,
+				binding: await this.bindingForReference(module, facts, reference),
+			})),
+		);
 	}
 
-	private typeSymbolForReference(
+	private async typeSymbolForReference(
 		module: string,
 		facts: ReturnType<typeof mapFacts>,
 		target: RawTypeReference,
-	): string | undefined {
+	): Promise<string | undefined> {
 		const matches = facts.references.filter(
 			(reference) =>
 				reference.name === target.name &&
@@ -652,19 +656,27 @@ export class PythonProvider {
 		if (matches.length !== 1) return undefined;
 		const reference = matches[0];
 		if (reference === undefined) return undefined;
-		const binding = this.bindingForReference(module, facts, reference);
+		const binding = await this.bindingForReference(module, facts, reference);
 		return binding.status === "bound" ? binding.symbolId : undefined;
 	}
 
-	private bindingForReference(module: string, facts: ReturnType<typeof mapFacts>, reference: Reference): Binding {
+	private async bindingForReference(
+		module: string,
+		facts: ReturnType<typeof mapFacts>,
+		reference: Reference,
+	): Promise<Binding> {
 		if (reference.binding.status !== "unbound") return reference.binding;
 		if (reference.binding.reason === "Ambiguous" || reference.binding.reason === "RuntimeConstructed") {
 			return reference.binding;
 		}
-		return this.crossFileBinding(module, facts, reference) ?? reference.binding;
+		return (await this.crossFileBinding(module, facts, reference)) ?? reference.binding;
 	}
 
-	private crossFileBinding(module: string, facts: ReturnType<typeof mapFacts>, reference: Reference): Binding | null {
+	private async crossFileBinding(
+		module: string,
+		facts: ReturnType<typeof mapFacts>,
+		reference: Reference,
+	): Promise<Binding | null> {
 		const referencePath = facts.referenceScopes.get(reference) ?? [];
 		const visible = facts.importBindings.filter((importBinding) =>
 			this.importVisible(facts, importBinding, reference.name, referencePath),
@@ -690,14 +702,14 @@ export class PythonProvider {
 			return unboundBinding("Ambiguous", "module imports require receiver lookup");
 		}
 
-		const resolution = this.resolveImport({ fromModule: module, specifier: imported.specifier });
+		const resolution = await this.resolveImport({ fromModule: module, specifier: imported.specifier });
 		if (resolution.status === "external") {
 			return unboundBinding("ExternalDependency", "the imported declaration is outside the workspace");
 		}
 		if (resolution.status === "unresolved") {
 			return unboundBinding(resolution.reason, resolution.detail ?? "the import target is unresolved");
 		}
-		const targetFacts = this.factsForModule(resolution.module);
+		const targetFacts = await this.factsForModule(resolution.module);
 		if (targetFacts === null) return unboundBinding("NotIndexed", "the imported module is not indexed");
 		const declarations = targetFacts.declarations.filter(
 			(declaration) =>
@@ -752,7 +764,7 @@ export class PythonProvider {
 		);
 	}
 
-	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
+	async resolveImport(params: { fromModule: string; specifier: string }): Promise<ImportResolution> {
 		const parts = importParts(params.fromModule, params.specifier);
 		const candidates = fileCandidates(this.workspaceRoot, parts);
 		const firstCandidate = candidates[0];
@@ -762,14 +774,14 @@ export class PythonProvider {
 		}
 		if (!params.specifier.startsWith(".")) {
 			const packageName = packageNameOf(params.specifier);
-			const stdlibModuleNames = pythonStdlibModuleNames(this.python3);
+			const stdlibModuleNames = await pythonStdlibModuleNames(this.python3);
 			if (stdlibModuleNames === null) {
 				return notImplementedImport(this.python3.unavailableDetail);
 			}
 			if (stdlibModuleNames.has(packageName) || externalPackageExists(this.workspaceRoot, params.specifier)) {
 				return { status: "external" as const, packageName };
 			}
-			const moduleAvailable = pythonModuleAvailable(this.python3, packageName);
+			const moduleAvailable = await pythonModuleAvailable(this.python3, packageName);
 			if (moduleAvailable === null) return notImplementedImport(this.python3.unavailableDetail);
 			if (moduleAvailable) return { status: "external" as const, packageName };
 		}
@@ -783,8 +795,8 @@ export class PythonProvider {
 		};
 	}
 
-	bind(params: { module: string; name: string; range: Range }) {
-		const facts = this.factsForModule(params.module);
+	async bind(params: { module: string; name: string; range: Range }) {
+		const facts = await this.factsForModule(params.module);
 		if (facts === null) {
 			return { status: "unbound" as const, reason: "NotIndexed" as const, detail: "module is not indexed" };
 		}
@@ -808,7 +820,7 @@ export class PythonProvider {
 		};
 	}
 
-	typeOf(params: { symbolId: string } | { module: string; range: Range }): TypeInfo {
+	async typeOf(params: { symbolId: string } | { module: string; range: Range }): Promise<TypeInfo> {
 		if ("symbolId" in params) {
 			const parsed = parseSymbolId(params.symbolId);
 			if (parsed === null || parsed.language !== LANGUAGE) {
@@ -818,15 +830,17 @@ export class PythonProvider {
 					detail: "the symbol id is not a Python workspace id",
 				};
 			}
-			const facts = this.factsForModule(parsed.module);
+			const facts = await this.factsForModule(parsed.module);
 			if (facts === null) return unknownType("NotIndexed", "module is not indexed");
 			const answer = facts.typeAnswers.get(params.symbolId);
 			return answer === undefined
 				? unknownAnnotationType()
-				: typeOfAnswer(answer, (reference) => this.typeSymbolForReference(parsed.module, facts, reference));
+				: await typeOfAnswer(answer, (reference) =>
+						this.typeSymbolForReference(parsed.module, facts, reference),
+					);
 		}
 
-		const facts = this.factsForModule(params.module);
+		const facts = await this.factsForModule(params.module);
 		if (facts === null) return unknownType("NotIndexed", "module is not indexed");
 		const matches = facts.typeAnnotations.filter(
 			(annotation) =>
@@ -837,10 +851,12 @@ export class PythonProvider {
 		const annotation = matches[0];
 		return annotation === undefined
 			? unknownAnnotationType()
-			: typeOfAnnotation(annotation, (reference) => this.typeSymbolForReference(params.module, facts, reference));
+			: await typeOfAnnotation(annotation, (reference) =>
+					this.typeSymbolForReference(params.module, facts, reference),
+				);
 	}
 
-	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
+	async moveEdits(params: MoveEditsRequest): Promise<MoveEditsResponse> {
 		if (!isValidTargetModule(params.toModule)) {
 			return {
 				status: "refused",
@@ -848,12 +864,12 @@ export class PythonProvider {
 				detail: `the target is not a Python module: ${params.toModule}`,
 			};
 		}
-		return makeMoveEdits(params, extractFacts(this.python3, params.module, params.text));
+		return makeMoveEdits(params, await extractFacts(this.python3, params.module, params.text));
 	}
 
-	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
+	async renameEdits(params: RenameEditsRequest): Promise<RenameEditsResponse> {
 		try {
-			const response = this.python3.runJson<RenameEditsResponse>([HELPER_PATH], {
+			const response = await this.python3.runJson<RenameEditsResponse>([HELPER_PATH], {
 				input: JSON.stringify({ mode: "rename", ...params }),
 				maxBuffer: 32 * 1024 * 1024,
 			});
@@ -869,19 +885,19 @@ function unknownAnnotationType(): TypeInfo {
 	return unknownType("NotImplemented", "no annotation or inferable initializer");
 }
 
-function typeOfAnnotation(
+async function typeOfAnnotation(
 	annotation: Pick<
 		Extract<TypeAnswer, { kind: "declared" }>,
 		"text" | "forwardReference" | "symbolId" | "typeReference"
 	>,
-	resolveSymbolId?: (reference: RawTypeReference) => string | undefined,
-): TypeInfo {
+	resolveSymbolId?: (reference: RawTypeReference) => Promise<string | undefined>,
+): Promise<TypeInfo> {
 	if (annotation.forwardReference) {
 		return { status: "unknown", reason: "NotImplemented", detail: "string forward references are not resolved" };
 	}
 	const symbolId =
 		annotation.symbolId ??
-		(annotation.typeReference === undefined ? undefined : resolveSymbolId?.(annotation.typeReference));
+		(annotation.typeReference === undefined ? undefined : await resolveSymbolId?.(annotation.typeReference));
 	return {
 		status: "known",
 		display: annotation.text,
@@ -890,15 +906,15 @@ function typeOfAnnotation(
 	};
 }
 
-function typeOfAnswer(
+async function typeOfAnswer(
 	answer: TypeAnswer,
-	resolveSymbolId?: (reference: RawTypeReference) => string | undefined,
-): TypeInfo {
+	resolveSymbolId?: (reference: RawTypeReference) => Promise<string | undefined>,
+): Promise<TypeInfo> {
 	if (answer.kind === "declared") return typeOfAnnotation(answer, resolveSymbolId);
 	if (answer.kind === "inferred") {
 		const symbolId =
 			answer.symbolId ??
-			(answer.typeReference === undefined ? undefined : resolveSymbolId?.(answer.typeReference));
+			(answer.typeReference === undefined ? undefined : await resolveSymbolId?.(answer.typeReference));
 		return {
 			status: "inferred",
 			display: answer.display,
@@ -915,8 +931,15 @@ function unknownType(reason: UnknownReason, detail: string): TypeInfo {
 
 //////// Main
 
-export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new PythonProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+// PythonProvider answers six methods asynchronously (it spawns python3); the shared provider
+// contract is written sync-only for every other language, and the wire dispatch loop awaits
+// whatever a handler returns regardless of this declared type.
+function wireHandlers(provider: PythonProvider): ReturnType<typeof handlersFor> {
+	return handlersFor(provider as unknown as Parameters<typeof handlersFor>[0]);
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new PythonProvider()));
+export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new PythonProvider()): void {
+	serveProvider(connection, wireHandlers(provider));
+}
+
+if (import.meta.main) runProviderOnStdio(wireHandlers(new PythonProvider()));

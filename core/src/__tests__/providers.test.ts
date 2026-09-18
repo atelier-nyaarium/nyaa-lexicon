@@ -56,10 +56,12 @@ afterEach(() => {
 //  Tests
 
 describe("finding providers", () => {
-	it("refuses to discover providers without a usable bun", () => {
+	it("refuses to discover providers without a usable bun", async () => {
 		const root = tree(["alpha"]);
 		const runtime: BunExecutable = { kind: "belowFloor", executable: "/x/bun", version: "1.3.9", floor: "1.4.0" };
-		expect(() => discoverProviders(root, runtime)).toThrow("providers cannot start: belowFloor /x/bun 1.3.9");
+		await expect(discoverProviders(root, runtime)).rejects.toThrow(
+			"providers cannot start: belowFloor /x/bun 1.3.9",
+		);
 	});
 
 	it("refuses to start providers without a usable bun", async () => {
@@ -68,23 +70,23 @@ describe("finding providers", () => {
 			"providers cannot start: missing /x/bun unknown",
 		);
 	});
-	it("finds every provider on disk without being told any of their names", () => {
-		const found = discoverProviders(tree(["alpha", "beta", "gamma"]));
+	it("finds every provider on disk without being told any of their names", async () => {
+		const found = await discoverProviders(tree(["alpha", "beta", "gamma"]));
 		expect(found.map((p) => p.directory)).toEqual(["alpha", "beta", "gamma"]);
 	});
 
-	it("ignores a directory with no entrypoint, rather than starting something that is not there", () => {
-		expect(discoverProviders(tree(["alpha"])).map((p) => p.directory)).toEqual(["alpha"]);
+	it("ignores a directory with no entrypoint, rather than starting something that is not there", async () => {
+		expect((await discoverProviders(tree(["alpha"]))).map((p) => p.directory)).toEqual(["alpha"]);
 	});
 
-	it("answers empty for a tree with no providers directory at all", () => {
+	it("answers empty for a tree with no providers directory at all", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "lexicon-bare-"));
 		roots.push(root);
-		expect(discoverProviders(root)).toEqual([]);
+		expect(await discoverProviders(root)).toEqual([]);
 	});
 
-	it("prefers a bundle over the source, and starts both on the executable this process runs on", () => {
-		const found = discoverProviders(tree(["alpha"], ["beta"]));
+	it("prefers a bundle over the source, and starts both on the executable this process runs on", async () => {
+		const found = await discoverProviders(tree(["alpha"], ["beta"]));
 
 		expect(found.map((p) => p.directory)).toEqual(["alpha", "beta"]);
 		expect(found[0]?.command.slice(0, 2)).toEqual([process.execPath, "run"]);
@@ -95,14 +97,14 @@ describe("finding providers", () => {
 
 	// The walk-up is the part that differs between running from source and running from dist/, so
 	// a wrong marker fails everywhere at once and is worth pinning.
-	it("locates this repository from wherever the caller was bundled", () => {
-		expect(discoverProviders(lexiconRoot()).length).toBeGreaterThan(0);
+	it("locates this repository from wherever the caller was bundled", async () => {
+		expect((await discoverProviders(lexiconRoot())).length).toBeGreaterThan(0);
 	});
 });
 
 describe("starting providers", () => {
 	it("starts each one and reports what it claimed", async () => {
-		const commands = discoverProviders(tree(["alpha", "beta"]));
+		const commands = await discoverProviders(tree(["alpha", "beta"]));
 		const report = await startProviders(supervisor(), "/w", { commands });
 
 		expect(report.started.map((s) => s.directory)).toEqual(["alpha", "beta"]);
@@ -112,7 +114,7 @@ describe("starting providers", () => {
 	// One broken tree used to be able to take down answering for every other language, which is the
 	// opposite of what running providers as separate processes is for.
 	it("keeps the others working when one refuses to start", async () => {
-		const commands = discoverProviders(tree(["alpha", "beta", "gamma"]));
+		const commands = await discoverProviders(tree(["alpha", "beta", "gamma"]));
 		const report = await startProviders(supervisor(["beta"]), "/w", { commands });
 
 		expect(report.started.map((s) => s.directory)).toEqual(["alpha", "gamma"]);
@@ -120,7 +122,7 @@ describe("starting providers", () => {
 	});
 
 	it("says which provider failed rather than reporting a silent short list", async () => {
-		const commands = discoverProviders(tree(["alpha", "beta"]));
+		const commands = await discoverProviders(tree(["alpha", "beta"]));
 		const report = await startProviders(supervisor(["beta"]), "/w", { commands });
 		expect(describeStart(report)).toContain("beta: did not start");
 	});
@@ -128,7 +130,7 @@ describe("starting providers", () => {
 	// No flags and no signal handlers: a provider is never asked for a report.
 	it("starts every provider with its discovered command and nothing added", async () => {
 		const started: ProviderSpec[] = [];
-		const commands = discoverProviders(tree(["alpha"], ["beta"]));
+		const commands = await discoverProviders(tree(["alpha"], ["beta"]));
 		await startProviders(supervisor([], started), "/w", { commands });
 
 		expect(started.map((spec) => spec.command)).toEqual(commands.map((entry) => entry.command));

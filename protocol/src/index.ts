@@ -3,6 +3,14 @@
 
 export { AdmissionLedger, type ModuleAdmission, type RestoredFacts } from "./admission.js";
 export {
+	type BoundedChildOptions,
+	type BoundedResult,
+	type BoundedTimer,
+	killLiveGroups,
+	runBounded,
+	systemTimer,
+} from "./boundedChild.js";
+export {
 	comparePositions,
 	coordinatesOf,
 	type OffsetRange,

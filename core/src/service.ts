@@ -24,7 +24,14 @@ import { writeAll } from "./applyEdits.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
-import { coChangesFor, commitsMentioning, DEFAULT_MENTION_LIMIT, fileHistoryFor, readHistory } from "./history.js";
+import {
+	coChangesFor,
+	commitsMentioning,
+	DEFAULT_DEPTH,
+	DEFAULT_MENTION_LIMIT,
+	fileHistoryFor,
+	readHistory,
+} from "./history.js";
 import { ImportResolver } from "./imports.js";
 import { type IndexCaches, WorkspaceIndexer } from "./indexer.js";
 import {
@@ -89,8 +96,8 @@ export class LexiconService {
 	) {
 		this.reads = new IndexReadModel(store);
 		// Caching and surface globs are workspace decisions, so they are answered here.
-		this.imports = new ImportResolver(store, (fromModule, specifier) => {
-			const surfaceGlobs = this.currentScope().bundles;
+		this.imports = new ImportResolver(store, async (fromModule, specifier) => {
+			const surfaceGlobs = (await this.currentScope()).bundles;
 			const configKey = surfaceGlobs.join("\u0000");
 			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
 				this.supervisor.ask(fromModule, "resolveImport", {
@@ -333,7 +340,8 @@ export class LexiconService {
 		return this.planner.impactOf(...args);
 	}
 
-	private currentScope(): FileScope {
+	/** Computes the scope if nothing has yet, so a caller that must precede the live index can await it. */
+	currentScope(): Promise<FileScope> {
 		return this.indexer.currentScope();
 	}
 
@@ -497,8 +505,8 @@ export class LexiconService {
 	//  Indexing
 
 	/** How the file set was decided, so a caller never confuses 350 files with 136,000. */
-	scopeReport(): string {
-		return describeScope(this.indexer.currentScope());
+	async scopeReport(): Promise<string> {
+		return describeScope(await this.indexer.currentScope());
 	}
 
 	/** Totals per attachment form, so a verifying run can see the tier landed rather than assume it. */
@@ -517,7 +525,7 @@ export class LexiconService {
 	//  Answering
 
 	/** Files, symbols and the biggest modules. The first question about a repository you do not know. */
-	overview(topModules = 15, topData = 5): OverviewResult {
+	async overview(topModules = 15, topData = 5): Promise<OverviewResult> {
 		const includeModule = (module: string) => !isExternalModule(this.workspaceRoot, module);
 		const modules = this.store.moduleSummary().filter(({ module }) => includeModule(module));
 		const totals = this.store.totalsForModules(includeModule);
@@ -551,7 +559,7 @@ export class LexiconService {
 			...totals,
 			content,
 			symbolsByKind: byKind,
-			scope: this.scopeReport(),
+			scope: await this.scopeReport(),
 			index: this.indexStatus(),
 			...(scan === null ? {} : { scan }),
 			parseFailures: this.store.parseFailures(),
@@ -592,7 +600,7 @@ export class LexiconService {
 	 */
 	async coChangedWith(module: string, limit = 20): Promise<CoChangedWithResult> {
 		return this.caches.facts.through(`coChange ${module} ${limit}`, async () => {
-			const commits = await readHistory(this.workspaceRoot);
+			const commits = await readHistory(this.workspaceRoot, DEFAULT_DEPTH, this.clock);
 			const { partners, report } = coChangesFor(module, commits);
 			return { module, partners: partners.slice(0, limit), total: partners.length, ...report };
 		});
@@ -605,7 +613,7 @@ export class LexiconService {
 	 */
 	async fileHistory(module: string): Promise<FileHistory> {
 		return this.caches.facts.through(`fileHistory ${module}`, async () =>
-			fileHistoryFor(module, await readHistory(this.workspaceRoot)),
+			fileHistoryFor(module, await readHistory(this.workspaceRoot, DEFAULT_DEPTH, this.clock)),
 		);
 	}
 
@@ -617,7 +625,7 @@ export class LexiconService {
 	 */
 	async commitsMentioning(name: string, limit = DEFAULT_MENTION_LIMIT): Promise<CommitsMentioningResult> {
 		return this.caches.facts.through(`mentions ${name} ${limit}`, async () => {
-			const commits = await readHistory(this.workspaceRoot);
+			const commits = await readHistory(this.workspaceRoot, DEFAULT_DEPTH, this.clock);
 			const mentions = commitsMentioning(name, commits, limit);
 			return { name, mentions, commits: commits.length };
 		});

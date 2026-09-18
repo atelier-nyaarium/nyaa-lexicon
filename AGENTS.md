@@ -209,6 +209,11 @@ Ordered by how much they prove:
   module. A promise that outlives the call, a provider's lifetime for one, keeps a reaction per
   race until it settles, which for a living provider is never; the supervisor's request queue
   fails in-flight callers on death instead.
+- **A bounded, one-shot child process is spawned through `protocol/src/boundedChild.ts`'s
+  `runBounded`, never `spawn` or `execFile` by hand.** It is the one owner of the reap and
+  process-group-kill machinery a git call, the runtime probe and the python helper each used to
+  hand-copy; `bounded-child-owner-residue.test.ts` forbids a new copy, with a named exception for a
+  long-lived process (the provider supervisor) that never fits a bounded run.
 - **A store's lock is claimed through `core/src/daemonLock.ts`, before the store is opened and
   before it is removed.** The daemon and the delete road take the same link, so neither can open
   or remove a store the other holds; `lock-residue.test.ts` forbids a second claim through

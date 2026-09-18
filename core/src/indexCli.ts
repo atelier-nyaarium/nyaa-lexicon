@@ -46,7 +46,7 @@ async function main(argv: string[]): Promise<void> {
 	const indexed = outcomes.filter((o) => o.action === "indexed");
 	const failures = outcomes.filter((o) => o.failure !== undefined);
 	const symbols = indexed.reduce((total, o) => total + (o.declarations ?? 0), 0);
-	console.log(`scope: ${service.scopeReport()}`);
+	console.log(`scope: ${await service.scopeReport()}`);
 	console.log(`${indexed.length} files, ${symbols} symbols, ${elapsed}ms`);
 	if (failures.length > 0)
 		console.log(`index failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);

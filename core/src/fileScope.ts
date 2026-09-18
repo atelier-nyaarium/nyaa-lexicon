@@ -11,10 +11,11 @@
 // followed, even into ignored territory, because a generated file you import is part of your
 // program while a `.env` nobody imports never becomes reachable.
 
-import { execFileSync } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { type Dirent, existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { normalizeModulePath, workspaceFile } from "@nyaa-lexicon/protocol";
+import { type BoundedTimer, normalizeModulePath, runBounded, workspaceFile } from "@nyaa-lexicon/protocol";
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -55,6 +56,12 @@ export const CONFIG_FILE = "lexicon.json";
 
 /** Stops an include glob from walking a deep tree forever. Deeper than any real source layout. */
 const MAX_INCLUDE_DEPTH = 12;
+
+/** Bounds every git call, so a wedged process is killed rather than waited on forever. */
+const GIT_TIMEOUT_MS = 30_000;
+
+/** Matches the previous execFileSync cap; stdout past this is killed and read as a failure. */
+const GIT_MAX_STDOUT_BYTES = 128 * 1024 * 1024;
 
 /** Whether a workspace-relative module is outside the workspace or under a dependency directory. */
 export function isExternalModule(workspaceRoot: string, module: string): boolean {
@@ -107,6 +114,43 @@ export function globToRegExp(glob: string): RegExp {
 	return new RegExp(`^${out}$`);
 }
 
+/** What one git run answers, or how to run it in a test that proves the timeout kills a wedged one. */
+export interface GitRunOptions {
+	input?: string;
+	/** The executable to spawn. Only ever "git" outside a test standing in a process that hangs. */
+	command?: string;
+	/** Handed the spawned child, so a test can assert the reap without a second process listing. */
+	onSpawn?: (child: ChildProcess) => void;
+	/** Overrides `GIT_MAX_STDOUT_BYTES`, for a test proving the cap kills without a real 128MB run. */
+	maxStdoutBytes?: number;
+}
+
+/** A `BoundedTimer` over the injected clock, so a fake clock in a test drives the same timeout road. */
+function clockTimer(clock: Clock): BoundedTimer {
+	return {
+		set: (fn, ms) => clock.setTimer(fn, ms),
+		clear: (handle) => clock.clearTimer(handle as TimerHandle),
+	};
+}
+
+/** Runs one command asynchronously, bounded by `GIT_TIMEOUT_MS`, killing and reaping a wedged child rather than waiting on it; null only when nothing answered: a spawn failure, a timeout, or stdout past the cap. */
+export async function runGit(
+	clock: Clock,
+	cwd: string,
+	args: string[],
+	options: GitRunOptions = {},
+): Promise<{ code: number | null; stdout: string } | null> {
+	const result = await runBounded(options.command ?? "git", args, {
+		cwd,
+		input: options.input,
+		maxBytes: options.maxStdoutBytes ?? GIT_MAX_STDOUT_BYTES,
+		timeoutMs: GIT_TIMEOUT_MS,
+		timer: clockTimer(clock),
+		onSpawn: options.onSpawn,
+	});
+	return result.kind === "exited" ? { code: result.code, stdout: result.stdout.toString("utf8") } : null;
+}
+
 /** Explicit includes and excludes from `lexicon.json`, or none. */
 export function readScopeConfig(workspaceRoot: string): ScopeConfig {
 	const file = path.join(workspaceRoot, CONFIG_FILE);
@@ -139,29 +183,84 @@ export function readScopeConfig(workspaceRoot: string): ScopeConfig {
  *
  * Null when this is not a git repository, which is a different answer from an empty project.
  */
-export function gitFiles(workspaceRoot: string): Set<string> | null {
+export async function gitFiles(workspaceRoot: string, clock: Clock = systemClock): Promise<Set<string> | null> {
 	if (!existsSync(path.join(workspaceRoot, ".git"))) return null;
-	try {
-		const stdout = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-			cwd: workspaceRoot,
-			maxBuffer: 128 * 1024 * 1024,
-			encoding: "utf8",
-		});
-		// The id grammar's key, or out of scope: a name it cannot spell would index under one key and
-		// be asked about under another.
-		return new Set(
-			stdout.split("\0").flatMap((line) => {
-				if (line.length === 0) return [];
-				try {
-					return [normalizeModulePath(line)];
-				} catch {
-					return [];
-				}
-			}),
-		);
-	} catch {
-		return null;
+	const result = await runGit(clock, workspaceRoot, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+	if (result === null || result.code !== 0) return null;
+	// The id grammar's key, or out of scope: a name it cannot spell would index under one key and
+	// be asked about under another.
+	return new Set(
+		result.stdout.split("\0").flatMap((line) => {
+			if (line.length === 0) return [];
+			try {
+				return [normalizeModulePath(line)];
+			} catch {
+				return [];
+			}
+		}),
+	);
+}
+
+/**
+ * This repository's submodule roots, workspace-relative.
+ *
+ * Read from each gitlink's own stage entry (mode `160000`) in `git ls-files --stage`, the same
+ * authority `gitFiles` already asks, rather than parsing `.gitmodules`: a registration there can
+ * lag or outlive the actual index, and the mode is exactly what `check-ignore` and `check-attr`
+ * refuse to cross. Null when git cannot say.
+ */
+export async function submoduleRoots(workspaceRoot: string, clock: Clock = systemClock): Promise<Set<string> | null> {
+	if (!existsSync(path.join(workspaceRoot, ".git"))) return null;
+	const result = await runGit(clock, workspaceRoot, ["ls-files", "--stage", "-z"]);
+	if (result === null || result.code !== 0) return null;
+	const roots = new Set<string>();
+	for (const line of result.stdout.split("\0")) {
+		if (line.length === 0) continue;
+		const tab = line.indexOf("\t");
+		if (tab === -1) continue;
+		if (line.slice(0, tab).split(" ")[0] !== "160000") continue;
+		try {
+			roots.add(normalizeModulePath(line.slice(tab + 1)));
+		} catch {
+			// Unspeakable name: out of scope like every other one the id grammar cannot hold.
+		}
 	}
+	return roots;
+}
+
+/** The submodule root `module` lies under, or itself if it names one directly; undefined outside every submodule. */
+function submoduleOf(module: string, roots: ReadonlySet<string>): string | undefined {
+	// Roots come from normalizeModulePath already; a caller's own module must match on the same terms.
+	let normalized: string;
+	try {
+		normalized = normalizeModulePath(module);
+	} catch {
+		return undefined;
+	}
+	for (const root of roots) {
+		if (normalized === root || normalized.startsWith(`${root}/`)) return root;
+	}
+	return undefined;
+}
+
+/**
+ * Splits `modules` into what git may be asked about and what lies under a submodule.
+ *
+ * `check-ignore` and `check-attr` refuse a pathspec that reaches INTO a submodule, and refuse the
+ * WHOLE batch for it, so one such path would otherwise flip the answer for every other path asked
+ * alongside it. Null when git cannot say which paths those are.
+ */
+async function splitBySubmodule(
+	workspaceRoot: string,
+	clock: Clock,
+	modules: readonly string[],
+): Promise<{ askable: string[]; underSubmodule: string[] } | null> {
+	const roots = await submoduleRoots(workspaceRoot, clock);
+	if (roots === null) return null;
+	const askable: string[] = [];
+	const underSubmodule: string[] = [];
+	for (const module of modules) (submoduleOf(module, roots) === undefined ? askable : underSubmodule).push(module);
+	return { askable, underSubmodule };
 }
 
 /**
@@ -169,28 +268,37 @@ export function gitFiles(workspaceRoot: string): Set<string> | null {
  *
  * Null when git cannot say, so a caller reads rather than drops. Asked only of paths the scope
  * does not already hold, so a churning ignored directory costs one call per burst and no read.
+ *
+ * A path under a submodule answers not ignored without asking: it belongs to a different
+ * repository's rules, and the pathspec would otherwise take the whole call down with it.
  */
-export function gitIgnored(workspaceRoot: string, modules: Iterable<string>): Set<string> | null {
+export async function gitIgnored(
+	workspaceRoot: string,
+	modules: Iterable<string>,
+	clock: Clock = systemClock,
+): Promise<Set<string> | null> {
 	const paths = [...new Set(modules)];
 	if (paths.length === 0) return new Set();
 	if (!existsSync(path.join(workspaceRoot, ".git"))) return null;
-	try {
-		const stdout = execFileSync("git", ["check-ignore", "--stdin", "-z"], {
-			cwd: workspaceRoot,
-			input: `${paths.join("\0")}\0`,
-			maxBuffer: 128 * 1024 * 1024,
-			encoding: "utf8",
-		});
-		return new Set(stdout.split("\0").filter((line) => line.length > 0));
-	} catch (error) {
-		// Exit 1 is git's word that none are ignored; anything else is git unable to say.
-		return (error as { status?: unknown }).status === 1 ? new Set() : null;
-	}
+	const split = await splitBySubmodule(workspaceRoot, clock, paths);
+	if (split === null) return null;
+	if (split.askable.length === 0) return new Set();
+	const result = await runGit(clock, workspaceRoot, ["check-ignore", "--stdin", "-z"], {
+		input: `${split.askable.join("\0")}\0`,
+	});
+	if (result === null) return null;
+	// Exit 1 is git's word that none are ignored; anything else is git unable to say.
+	if (result.code === 0) return new Set(result.stdout.split("\0").filter((line) => line.length > 0));
+	return result.code === 1 ? new Set() : null;
 }
 
 /** What auto-discovery is allowed to index, and how that was decided. */
-export function fileScopeFor(workspaceRoot: string, config = readScopeConfig(workspaceRoot)): FileScope {
-	const known = gitFiles(workspaceRoot);
+export async function fileScopeFor(
+	workspaceRoot: string,
+	config = readScopeConfig(workspaceRoot),
+	clock: Clock = systemClock,
+): Promise<FileScope> {
+	const known = await gitFiles(workspaceRoot, clock);
 	const include = config.include ?? [];
 	const exclude = config.exclude ?? [];
 	const deny = config.deny ?? [];
@@ -228,43 +336,56 @@ export type GeneratedReason = "noGit" | "gitFailed";
 /** Git's word on a file, three-valued: "could not tell" is never stored as "no". */
 export type GeneratedVerdict = { status: "yes" } | { status: "no" } | { status: "unknown"; reason: GeneratedReason };
 
-/** Every module's generated verdict from the repository's Git attributes, in one git call. */
-export function generatedVerdicts(workspaceRoot: string, modules: Iterable<string>): Map<string, GeneratedVerdict> {
+/**
+ * Every module's generated verdict from the repository's Git attributes, in one git call.
+ *
+ * A path under a submodule answers not generated without asking: it belongs to a different
+ * repository's rules, and `check-attr` refuses a pathspec that reaches into one.
+ */
+export async function generatedVerdicts(
+	workspaceRoot: string,
+	modules: Iterable<string>,
+	clock: Clock = systemClock,
+): Promise<Map<string, GeneratedVerdict>> {
 	const paths = [...new Set(modules)];
 	const verdicts = new Map<string, GeneratedVerdict>();
-	const every = (verdict: GeneratedVerdict) => {
-		for (const module of paths) verdicts.set(module, verdict);
-		return verdicts;
-	};
 	if (paths.length === 0) return verdicts;
-	if (!existsSync(path.join(workspaceRoot, ".git"))) return every({ status: "unknown", reason: "noGit" });
-	try {
-		const stdout = execFileSync("git", ["check-attr", "--stdin", "-z", "linguist-generated"], {
-			cwd: workspaceRoot,
-			input: `${paths.join("\0")}\0`,
-			maxBuffer: 128 * 1024 * 1024,
-			encoding: "utf8",
-		});
-		const fields = stdout.split("\0");
-		const generated = new Set<string>();
-		for (let index = 0; index + 2 < fields.length; index += 3) {
-			const module = fields[index];
-			const value = fields[index + 2];
-			// Linguist reads `=false` as not generated, so it is one more way of saying no.
-			if (
-				module !== undefined &&
-				value !== undefined &&
-				value !== "unspecified" &&
-				value !== "unset" &&
-				value !== "false"
-			)
-				generated.add(module);
-		}
-		for (const module of paths) verdicts.set(module, generated.has(module) ? { status: "yes" } : { status: "no" });
+	if (!existsSync(path.join(workspaceRoot, ".git"))) {
+		for (const module of paths) verdicts.set(module, { status: "unknown", reason: "noGit" });
 		return verdicts;
-	} catch {
-		return every({ status: "unknown", reason: "gitFailed" });
 	}
+	const split = await splitBySubmodule(workspaceRoot, clock, paths);
+	if (split === null) {
+		for (const module of paths) verdicts.set(module, { status: "unknown", reason: "gitFailed" });
+		return verdicts;
+	}
+	for (const module of split.underSubmodule) verdicts.set(module, { status: "no" });
+	if (split.askable.length === 0) return verdicts;
+	const result = await runGit(clock, workspaceRoot, ["check-attr", "--stdin", "-z", "linguist-generated"], {
+		input: `${split.askable.join("\0")}\0`,
+	});
+	if (result === null || result.code !== 0) {
+		for (const module of split.askable) verdicts.set(module, { status: "unknown", reason: "gitFailed" });
+		return verdicts;
+	}
+	const fields = result.stdout.split("\0");
+	const generated = new Set<string>();
+	for (let index = 0; index + 2 < fields.length; index += 3) {
+		const module = fields[index];
+		const value = fields[index + 2];
+		// Linguist reads `=false` as not generated, so it is one more way of saying no.
+		if (
+			module !== undefined &&
+			value !== undefined &&
+			value !== "unspecified" &&
+			value !== "unset" &&
+			value !== "false"
+		)
+			generated.add(module);
+	}
+	for (const module of split.askable)
+		verdicts.set(module, generated.has(module) ? { status: "yes" } : { status: "no" });
+	return verdicts;
 }
 
 /**

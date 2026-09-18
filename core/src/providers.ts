@@ -69,8 +69,9 @@ export function lexiconRoot(): string {
  * installs dependencies and one that does not otherwise behave completely differently. Both run on
  * the executable this process runs on.
  */
-export function discoverProviders(root = lexiconRoot(), runtime = bunExecutable(currentHost())): ProviderCommand[] {
-	assertRuntime(runtime);
+export async function discoverProviders(root = lexiconRoot(), runtime?: BunExecutable): Promise<ProviderCommand[]> {
+	const resolved = runtime ?? (await bunExecutable(currentHost()));
+	assertRuntime(resolved);
 	const directory = path.join(root, "providers");
 	if (!existsSync(directory)) return [];
 
@@ -80,12 +81,12 @@ export function discoverProviders(root = lexiconRoot(), runtime = bunExecutable(
 
 		const bundled = path.join(root, "dist", "providers", entry.name, "main.js");
 		if (existsSync(bundled)) {
-			found.push({ directory: entry.name, command: [runtime.executable, bundled] });
+			found.push({ directory: entry.name, command: [resolved.executable, bundled] });
 			continue;
 		}
 
 		const source = path.join(directory, entry.name, "src", "main.ts");
-		if (existsSync(source)) found.push({ directory: entry.name, command: [runtime.executable, "run", source] });
+		if (existsSync(source)) found.push({ directory: entry.name, command: [resolved.executable, "run", source] });
 	}
 	return found.sort((a, b) => a.directory.localeCompare(b.directory));
 }
@@ -113,9 +114,9 @@ export async function startProviders(
 	workspaceRoot: string,
 	options: StartOptions = {},
 ): Promise<StartReport> {
-	const runtime = options.runtime ?? bunExecutable(currentHost());
+	const runtime = options.runtime ?? (await bunExecutable(currentHost()));
 	assertRuntime(runtime);
-	const commands = options.commands ?? discoverProviders(undefined, runtime);
+	const commands = options.commands ?? (await discoverProviders(undefined, runtime));
 	const report: StartReport = { started: [], failed: [] };
 
 	// Concurrent: sequential made the worst case the SUM of every provider's timeout.

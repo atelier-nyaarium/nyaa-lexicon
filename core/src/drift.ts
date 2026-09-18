@@ -64,7 +64,7 @@ function manifestVersion(root: string): string | null {
 }
 
 /** Versioned-install layout only: the newest sibling that can actually serve. */
-function newerInstallRoot(options: DriftOptions): DriftSight | null {
+async function newerInstallRoot(options: DriftOptions): Promise<DriftSight | null> {
 	// The layout's tell: the root directory is named exactly the running version.
 	if (path.basename(options.root) !== options.version) return null;
 	const parent = path.dirname(options.root);
@@ -81,7 +81,7 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
 		if (!newerBuild(entry, best?.version ?? options.version)) continue;
 		const sibling = path.join(parent, entry);
 		// Only a root with a runnable, settled bundle is a target.
-		if (daemonCommand(sibling, options.workspaceRoot).kind !== "command") continue;
+		if ((await daemonCommand(sibling, options.workspaceRoot)).kind !== "command") continue;
 		if (!settled(sibling, options)) continue;
 		// The manifest must agree with the directory name. A bundle compiled as some OTHER version
 		// writes that version into its lock, which clients then replace, which respawns the daemon
@@ -98,8 +98,8 @@ function newerInstallRoot(options: DriftOptions): DriftSight | null {
  * The sibling scan wins over the stamp: a rebuilt own bundle is the same version, a sibling is a
  * newer one.
  */
-export function driftedTo(options: DriftOptions): DriftSight | null {
-	const sibling = newerInstallRoot(options);
+export async function driftedTo(options: DriftOptions): Promise<DriftSight | null> {
+	const sibling = await newerInstallRoot(options);
 	if (sibling !== null) return sibling;
 
 	const now = bundleStamp(options.root);

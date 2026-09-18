@@ -16,8 +16,15 @@ import { readSource } from "./sourceRead.js";
 export interface WatchScope {
 	/** True for a module the scope admits or the index holds. Read without asking git. */
 	admits: (module: string) => boolean;
-	/** Which of the rest git ignores. Null when git cannot say, and every one is then read. */
-	ignored: (modules: string[]) => Set<string> | null;
+	/** Which of the rest git ignores. Null when git cannot say, so none here are ignored yet. */
+	ignored: (modules: string[]) => Promise<Set<string> | null>;
+}
+
+/** A flush's outcome: what may be read now, and what a failed git call left unresolved. */
+export interface Admission {
+	admitted: string[];
+	/** Dropped by a failed git call rather than genuinely ignored; worth asking again. */
+	retry: string[];
 }
 
 export interface WatchOptions {
@@ -64,13 +71,30 @@ export function isIgnored(module: string, ignore: string[]): boolean {
 	return module.split("/").some((segment) => ignore.includes(segment));
 }
 
-/** The paths of a burst that may be read, in arrival order: git is asked once, for what the scope does not hold. */
-export function admitted(modules: string[], scope: WatchScope | undefined): string[] {
-	if (scope === undefined) return modules;
+/**
+ * The paths of a burst that may be read, in arrival order: git is asked once, for what the scope
+ * does not hold.
+ *
+ * Synchronous whenever nothing needs asking: no scope, or the scope already knows every path. Only
+ * a genuine git call returns a promise, so a burst that never touches git never yields.
+ *
+ * A failed git call leaves the previous verdicts standing rather than re-scoping: only what the
+ * scope already admits is kept, and a module git could not say anything new about is answered as
+ * `retry` rather than being granted admission by the failure; the caller keeps it for a later flush.
+ */
+export function admitted(modules: string[], scope: WatchScope | undefined): Admission | Promise<Admission> {
+	if (scope === undefined) return { admitted: modules, retry: [] };
 	const unknown = modules.filter((module) => !scope.admits(module));
-	const ignored = unknown.length === 0 ? new Set<string>() : scope.ignored(unknown);
-	if (ignored === null) return modules;
-	return modules.filter((module) => !ignored.has(module));
+	if (unknown.length === 0) return { admitted: modules, retry: [] };
+	return scope.ignored(unknown).then((ignored) => {
+		if (ignored === null) {
+			return {
+				admitted: modules.filter((module) => scope.admits(module)),
+				retry: modules.filter((module) => !scope.admits(module)),
+			};
+		}
+		return { admitted: modules.filter((module) => !ignored.has(module)), retry: [] };
+	});
 }
 
 /** The protocol's, re-exported: the index and a consumer's own read must hash alike. */
@@ -105,25 +129,70 @@ export function watchWorkspace(options: WatchOptions): RunningWatcher {
 	const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 	const clock = options.clock ?? systemClock;
 
-	// Paths only. A file is read once per burst, at flush, after the scope has spoken.
+	// Paths only. A file is read once per burst, at flush, after the scope has spoken. A module a
+	// failed git call dropped rides back in here too, so the next flush, whatever triggers it, asks
+	// for it again rather than losing it.
 	const pending = new Set<string>();
 	let timer: TimerHandle | null = null;
 	let deadline: TimerHandle | null = null;
+	let retryTimer: TimerHandle | null = null;
 	let stopped = false;
 
 	function disarm(): void {
 		if (timer !== null) clock.clearTimer(timer);
 		if (deadline !== null) clock.clearTimer(deadline);
+		if (retryTimer !== null) clock.clearTimer(retryTimer);
 		timer = null;
 		deadline = null;
+		retryTimer = null;
 	}
+
+	function deliver(admittedModules: string[]): void {
+		if (stopped) return;
+		const batch = admittedModules.map((module) => readEvent(options.workspaceRoot, module));
+		if (batch.length > 0) options.onBatch(batch);
+	}
+
+	/** Keeps a dropped module pending, and bounds how long it waits when no new event revives it. */
+	function retry(modules: string[]): void {
+		if (stopped || modules.length === 0) return;
+		for (const module of modules) pending.add(module);
+		retryTimer ??= clock.setTimer(flush, maxWaitMs);
+	}
+
+	// A flush that never asks git delivers at once, same as before. One that does is queued on this
+	// tail, so a burst whose git call answers fast can never overtake one still waiting: delivery
+	// stays in the order flushes were triggered, not the order their git calls happen to settle.
+	let tail: Promise<void> = Promise.resolve();
+	let queued = 0;
 
 	function flush(): void {
 		disarm();
 		const modules = [...pending];
 		pending.clear();
-		const batch = admitted(modules, options.scope).map((module) => readEvent(options.workspaceRoot, module));
-		if (batch.length > 0) options.onBatch(batch);
+		if (modules.length === 0) return;
+		const result = admitted(modules, options.scope);
+		if (!(result instanceof Promise) && queued === 0) {
+			retry(result.retry);
+			deliver(result.admitted);
+			return;
+		}
+		queued += 1;
+		const settled = result instanceof Promise ? result : Promise.resolve(result);
+		tail = tail
+			.then(() => settled)
+			.then(
+				(admission) => {
+					queued -= 1;
+					retry(admission.retry);
+					deliver(admission.admitted);
+				},
+				// The call itself rejected, not merely answered null: read the whole burst rather than drop it.
+				() => {
+					queued -= 1;
+					deliver(modules);
+				},
+			);
 	}
 
 	function record(module: string): void {

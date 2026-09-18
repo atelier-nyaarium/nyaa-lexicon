@@ -3,7 +3,17 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { storePaths } from "@nyaa-lexicon/client";
-import { resumeAbandonedDelete } from "../daemonCli";
+import { resumeAbandonedDelete, runGuarded } from "../daemonCli";
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+	let resolve: (value: T) => void = () => {};
+	let reject: (error: unknown) => void = () => {};
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
 
 ////////////////////////////////
 //  Helpers
@@ -66,5 +76,98 @@ describe("resuming a claim that stole a delete's lock", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("running at most one at a time", () => {
+	it("skips a call while the previous one is still running", async () => {
+		const started: number[] = [];
+		const first = deferred();
+		const guard = { busy: false };
+
+		runGuarded(
+			guard,
+			async () => {
+				started.push(1);
+				await first.promise;
+			},
+			() => {},
+		);
+		runGuarded(
+			guard,
+			async () => {
+				started.push(2);
+			},
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(started).toEqual([1]);
+
+		first.resolve();
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(guard.busy).toBe(false);
+	});
+
+	it("logs a rejection through onError rather than leaving it unhandled, and frees the guard", async () => {
+		const errors: unknown[] = [];
+		const guard = { busy: false };
+
+		runGuarded(
+			guard,
+			async () => {
+				throw new Error("drift check broke");
+			},
+			(error) => errors.push(error),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(errors).toHaveLength(1);
+		expect((errors[0] as Error).message).toBe("drift check broke");
+		expect(guard.busy).toBe(false);
+	});
+
+	// work need not be async: a plain function throwing before returning any promise must still
+	// reach onError and free the guard, not escape runGuarded itself and wedge it busy forever.
+	it("frees the guard and reports the error when work throws synchronously, not asynchronously", async () => {
+		const errors: unknown[] = [];
+		const guard = { busy: false };
+
+		runGuarded(
+			guard,
+			(() => {
+				throw new Error("synchronous break");
+			}) as unknown as () => Promise<void>,
+			(error) => errors.push(error),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(errors).toHaveLength(1);
+		expect((errors[0] as Error).message).toBe("synchronous break");
+		expect(guard.busy).toBe(false);
+	});
+
+	it("tries again on the next call once the previous one has settled", async () => {
+		const started: number[] = [];
+		const guard = { busy: false };
+
+		runGuarded(
+			guard,
+			async () => {
+				started.push(1);
+			},
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(guard.busy).toBe(false);
+
+		runGuarded(
+			guard,
+			async () => {
+				started.push(2);
+			},
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(started).toEqual([1, 2]);
 	});
 });

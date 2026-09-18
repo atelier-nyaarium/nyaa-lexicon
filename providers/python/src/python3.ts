@@ -1,6 +1,15 @@
-import { type SpawnSyncOptionsWithStringEncoding, spawnSync } from "node:child_process";
+import { runBounded, systemTimer } from "@nyaa-lexicon/protocol";
 
-type Python3Options = Pick<SpawnSyncOptionsWithStringEncoding, "input" | "maxBuffer">;
+export interface Python3Options {
+	input?: string;
+	maxBuffer?: number;
+}
+
+/** A python3 run that never answers is killed rather than waited on forever. */
+const PYTHON3_TIMEOUT_MS = 30_000;
+
+/** Matches the previous spawnSync default; stdout past this is killed and read as a failure. */
+const PYTHON3_MAX_BUFFER_BYTES = 200 * 1024 * 1024;
 
 export class Python3Dispatch {
 	private readonly cache = new Map<string, unknown | null>();
@@ -14,25 +23,39 @@ export class Python3Dispatch {
 		return this.absentDetail;
 	}
 
-	runJson<T>(args: string[], options: Python3Options = {}, cacheKey?: string): T | null {
+	async runJson<T>(args: string[], options: Python3Options = {}, cacheKey?: string): Promise<T | null> {
 		if (cacheKey !== undefined && this.cache.has(cacheKey)) {
 			return this.cache.get(cacheKey) as T | null;
 		}
 
-		const result = spawnSync(this.executable, args, { ...options, encoding: "utf8" });
-		let value: T | null;
-		if (result.error) {
-			const error = result.error as NodeJS.ErrnoException;
-			if (error.code !== "ENOENT") throw error;
-			value = null;
-		} else if (result.status !== 0) {
-			const detail = result.stderr.trim();
-			throw new Error(detail === "" ? `${this.executable} exited with ${result.status}` : detail);
-		} else {
-			value = JSON.parse(result.stdout) as T;
-		}
-
+		const value = await this.run<T>(args, options);
 		if (cacheKey !== undefined) this.cache.set(cacheKey, value);
 		return value;
+	}
+
+	private async run<T>(args: string[], options: Python3Options): Promise<T | null> {
+		const result = await runBounded(this.executable, args, {
+			input: options.input,
+			maxBytes: options.maxBuffer ?? PYTHON3_MAX_BUFFER_BYTES,
+			timeoutMs: PYTHON3_TIMEOUT_MS,
+			timer: systemTimer,
+		});
+
+		switch (result.kind) {
+			case "spawnFailed":
+				// ENOENT reads as "not found", the same as the synchronous form always answered.
+				if (result.error.code === "ENOENT") return null;
+				throw result.error;
+			case "timedOut":
+				throw new Error(`${this.executable} timed out after ${PYTHON3_TIMEOUT_MS}ms`);
+			case "overflowed":
+				throw new Error(`${this.executable} produced more output than the buffer allows`);
+			case "exited":
+				if (result.code !== 0) {
+					const detail = result.stderr.toString("utf8").trim();
+					throw new Error(detail === "" ? `${this.executable} exited with ${result.code}` : detail);
+				}
+				return JSON.parse(result.stdout.toString("utf8")) as T;
+		}
 	}
 }

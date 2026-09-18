@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +10,7 @@ import { IndexStore } from "../store";
 import { ORPHAN_TTL_MS, type SweepPass } from "../subjects";
 import { type FakeClock, fakeClock } from "./fakeClock";
 import { fakeSupervisor } from "./fakeProvider";
+import { gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -56,10 +56,10 @@ async function record(symbolId: string, prose = "Holds items until checkout."): 
 
 const subject = (symbolId: string) => store.subjects.forAddress(symbolId);
 
-beforeEach(() => {
+beforeEach(async () => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-sweep-"));
 	storeDir = mkdtempSync(path.join(tmpdir(), "lexicon-sweep-store-"));
-	execFileSync("git", ["init", "-q"], { cwd: root });
+	await gitInit(root);
 	clock = fakeClock(1_700_000_000_000);
 	open();
 });
@@ -269,7 +269,7 @@ describe("the sweep after a scan", () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
 
-		expect(service.overview().scan?.knowledgeSweep).toEqual({
+		expect((await service.overview()).scan?.knowledgeSweep).toEqual({
 			examined: 0,
 			rebound: 0,
 			orphaned: 0,

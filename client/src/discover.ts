@@ -154,12 +154,12 @@ export type DaemonCommand =
 	| { kind: "unbuilt" }
 	| { kind: "noBunRuntime"; runtime: BunExecutable };
 
-export function daemonCommand(
+export async function daemonCommand(
 	root: string,
 	workspaceRoot: string,
 	stateDir?: string,
 	host: PlatformEnv = currentHost(),
-): DaemonCommand {
+): Promise<DaemonCommand> {
 	const bundle = path.join(root, "dist", "daemon.js");
 	try {
 		// A directory or dangling symlink wearing the name is not a program.
@@ -167,7 +167,7 @@ export function daemonCommand(
 	} catch {
 		return { kind: "unbuilt" };
 	}
-	const runtime = bunExecutable(host);
+	const runtime = await bunExecutable(host);
 	if (runtime.kind !== "bun") return { kind: "noBunRuntime", runtime };
 	const command = [runtime.executable, bundle, workspaceRoot];
 	if (stateDir !== undefined) command.push("--state-dir", stateDir);

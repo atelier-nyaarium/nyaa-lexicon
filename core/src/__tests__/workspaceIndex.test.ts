@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +10,7 @@ import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
+import { gitAdd, gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -48,8 +48,8 @@ function put(module: string, text: string): void {
 	writeFileSync(full, text);
 }
 
-function initGit(): void {
-	execFileSync("git", ["init", "-q"], { cwd: root });
+async function initGit(): Promise<void> {
+	await gitInit(root);
 }
 
 function declaration(module: string, name: string): Declaration {
@@ -136,7 +136,7 @@ describe("a batch that changes nothing", () => {
 	// Admission is git and routing evidence; the tail is every root's imports through the providers.
 	// Neither belongs to a save that moved no bytes.
 	it("admits nothing and asks no provider when every file is unchanged", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", 'export class Root {}\nimport "./leaf.fake";\n');
 		put("leaf.fake", "export class Leaf {}\n");
 		let parses = 0;
@@ -185,8 +185,8 @@ describe("where a specifier lands", () => {
 	 * One root importing a chain of ignored files, so each link is reachable only through the one
 	 * above it and the closure takes a round per link.
 	 */
-	function chain(depth: number): void {
-		initGit();
+	async function chain(depth: number): Promise<void> {
+		await initGit();
 		put("root.fake", `export class Root {}\nimport "./link1.fake";\n`);
 		const links = Array.from({ length: depth }, (_, step) => `link${step + 1}.fake`);
 		put(".gitignore", `${links.join("\n")}\n`);
@@ -213,7 +213,7 @@ describe("where a specifier lands", () => {
 	// Every round used to re-walk everything seen so far, so a chain asked its head's imports once
 	// per link. The reachability answer is the thing that must not change.
 	it("asks each importer once per scan, and still reaches the whole chain", async () => {
-		chain(4);
+		await chain(4);
 		const asked: string[] = [];
 		service = countingService(asked);
 
@@ -230,7 +230,7 @@ describe("where a specifier lands", () => {
 
 	// A body edit moves no file and no rule, so where every specifier lands is what it was.
 	it("is not asked again by a batch that only edits a body", async () => {
-		chain(3);
+		await chain(3);
 		const asked: string[] = [];
 		service = countingService(asked);
 		await service.indexWorkspace();
@@ -245,7 +245,7 @@ describe("where a specifier lands", () => {
 
 	// A file that did not exist can be where a specifier lands, so the answers have to be asked again.
 	it("is asked again once a module appears", async () => {
-		chain(2);
+		await chain(2);
 		const asked: string[] = [];
 		service = countingService(asked);
 		await service.indexWorkspace();
@@ -260,7 +260,7 @@ describe("where a specifier lands", () => {
 
 	// The provider names its config files; an edit to one restates where everything lands.
 	it("is asked again once a config the provider named is edited", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", 'export class Root {}\nimport "./leaf.fake";\n');
 		put("leaf.fake", "export class Leaf {}\n");
 		put("fake.config", "rules\n");
@@ -294,7 +294,7 @@ describe("where a specifier lands", () => {
 describe("a refused file", () => {
 	// Its bytes are the reason it holds nothing, so only a change to them earns another read.
 	it("is not re-read by a batch that does not name it", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", "export class Root {}\n");
 		writeFileSync(path.join(root, "blob.bin"), Buffer.from([0x50, 0x4b, 0x00, 0x01]));
 		const reads: string[] = [];
@@ -320,7 +320,7 @@ describe("a refused file", () => {
 
 describe("workspace roots", () => {
 	it("routes admitted unowned files to fallback and records guarded failures", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", "export class Root {}\n");
 		put("Dockerfile", "FROM base\n\nRUN app\n");
 		writeFileSync(path.join(root, "binary"), Buffer.from([0, 1, 2]));
@@ -337,11 +337,11 @@ describe("workspace roots", () => {
 				failure: expect.stringContaining("NUL"),
 			}),
 		);
-		expect(service.overview().content?.files.text).toBe(1);
+		expect((await service.overview()).content?.files.text).toBe(1);
 	});
 
 	it("adds git-visible claimed files to provider discovery", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", "export class Root {}\n");
 		put("extra.fake", "export class Extra {}\n");
 		service = new LexiconService(store, fakeSupervisor(["root.fake"]), sourceReader(root), root);
@@ -356,9 +356,9 @@ describe("workspace roots", () => {
 	});
 
 	it("forgets a root that vanishes before the next scan", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", "export class Root {}\n");
-		execFileSync("git", ["add", "root.fake"], { cwd: root });
+		await gitAdd(root, "root.fake");
 		service = new LexiconService(store, fakeSupervisor(["root.fake"]), sourceReader(root), root);
 
 		await service.indexWorkspace();
@@ -375,7 +375,7 @@ describe("workspace roots", () => {
 	});
 
 	it("moves indexed facts with a live rename batch", async () => {
-		initGit();
+		await initGit();
 		put("before.fake", "export class Before {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
@@ -393,7 +393,7 @@ describe("workspace roots", () => {
 
 	// A provider indexing its own workspace would otherwise bind to the file the index let go of.
 	it("tells providers each module it lets go of, deleted or grown past the limit", async () => {
-		initGit();
+		await initGit();
 		put("gone.fake", "export class Gone {}\n");
 		put("big.fake", "export class Big {}\n");
 		put("kept.fake", "export class Kept {}\n");
@@ -416,7 +416,7 @@ describe("workspace roots", () => {
 
 describe("a shared extension claim", () => {
 	it("routes a header beside a source on the first scan, since evidence is read before ownership", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class Source {}\n");
 		put("a.fakeh", "export class Header {}\n");
 		service = new LexiconService(store, fakeSupervisor([], [], { lazyEvidence: false }), sourceReader(root), root);
@@ -431,7 +431,7 @@ describe("a shared extension claim", () => {
 	});
 
 	it("routes a header on a fresh service, before any scan has run", async () => {
-		initGit();
+		await initGit();
 		put("b.fake", "export class Source {}\n");
 		put("b.fakeh", "export class Header {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
@@ -440,7 +440,7 @@ describe("a shared extension claim", () => {
 	});
 
 	it("takes a source indexed outside a scan as evidence", async () => {
-		initGit();
+		await initGit();
 		put("b.fakeh", "export class Header {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
@@ -452,7 +452,7 @@ describe("a shared extension claim", () => {
 	});
 
 	it("drops the claim with the last source a batch deletes", async () => {
-		initGit();
+		await initGit();
 		put("c.fake", "export class Source {}\n");
 		put("c.fakeh", "export class Header {}\n");
 		service = new LexiconService(store, fakeSupervisor(["c.fake", "c.fakeh"]), sourceReader(root), root);
@@ -467,11 +467,26 @@ describe("a shared extension claim", () => {
 		expect(outcomes).toContainEqual(expect.objectContaining({ module: "c.fakeh", reason: "unclaimed" }));
 		await expect(service.indexFile("c.fakeh")).resolves.toMatchObject({ action: "skipped", reason: "unclaimed" });
 	});
+
+	it("gains a shared claim once a batch creates the sibling source", async () => {
+		await initGit();
+		put("d.fakeh", "export class Header {}\n");
+		service = new LexiconService(store, fakeSupervisor(["d.fakeh"]), sourceReader(root), root);
+
+		await service.indexWorkspace();
+		await expect(service.indexFile("d.fakeh")).resolves.toMatchObject({ action: "skipped", reason: "unclaimed" });
+
+		put("d.fake", "export class Source {}\n");
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "d.fake", contentHash: "d-1" }]);
+		expect(outcomes).toContainEqual(expect.objectContaining({ module: "d.fake", action: "indexed" }));
+
+		await expect(service.indexFile("d.fakeh")).resolves.toMatchObject({ action: "indexed" });
+	});
 });
 
 describe("root exclusions and includes", () => {
 	it("does not parse a denied direct index request", async () => {
-		initGit();
+		await initGit();
 		put("lexicon.json", JSON.stringify({ deny: ["reference.fake"] }));
 		put("reference.fake", "export class Reference {}\n");
 		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
@@ -487,7 +502,7 @@ describe("root exclusions and includes", () => {
 	});
 
 	it("forgets a held module a direct index no longer admits", async () => {
-		initGit();
+		await initGit();
 		put("reference.fake", "export class Reference {}\n");
 		put("b.fake", "export class Source {}\n");
 		put("b.fakeh", "export class Header {}\n");
@@ -511,7 +526,7 @@ describe("root exclusions and includes", () => {
 	});
 
 	it("excludes generated roots until an explicit include names them", async () => {
-		initGit();
+		await initGit();
 		put(".gitattributes", "generated.fake linguist-generated\n");
 		put("generated.fake", "export class Generated {}\n");
 		put("ordinary.fake", "export class Ordinary {}\n");
@@ -538,7 +553,7 @@ describe("root exclusions and includes", () => {
 	});
 
 	it("passes configured bundle roots and reachable files to providers at surface depth", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "opaque/\n");
 		put("root.fake", 'export class Root {}\nimport "./opaque/runtime.fake";\n');
 		put("opaque/runtime.fake", "export class Runtime {}\n");
@@ -558,7 +573,7 @@ describe("root exclusions and includes", () => {
 
 describe("reachability and failures", () => {
 	it("indexes an external surface without treating the package as a workspace module", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "external.fake\n");
 		put("root.fake", 'export class Root {}\nimport "external:external.fake";\n');
 		put("external.fake", "export class External {}\n");
@@ -575,7 +590,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("omits dependency modules from the overview", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "node_modules/\n");
 		put("root.fake", 'export class Root {}\nimport "external:node_modules/fixture/index.fake";\n');
 		put("node_modules/fixture/index.fake", "export class External {}\n");
@@ -583,7 +598,7 @@ describe("reachability and failures", () => {
 
 		await service.indexWorkspace();
 
-		expect(service.overview()).toMatchObject({
+		expect(await service.overview()).toMatchObject({
 			files: 1,
 			symbols: 1,
 			references: 0,
@@ -595,14 +610,14 @@ describe("reachability and failures", () => {
 	});
 
 	it("counts and ranks data files apart from code", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", "export class Root {}\n");
 		put("fixtures/specs.fdata", "export class A {}\nexport class B {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
 
 		await service.indexWorkspace();
 
-		expect(service.overview()).toMatchObject({
+		expect(await service.overview()).toMatchObject({
 			content: {
 				files: { code: 1, data: 1, document: 0, text: 0, unknown: 0 },
 				symbols: { code: 1, data: 2, document: 0, text: 0, unknown: 0 },
@@ -613,7 +628,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("classes a file kept by an earlier release on the next scan, without re-reading it", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", "export class Root {}\n");
 		put("specs.fdata", "export class A {}\n");
 		const parsed: Array<{ module: string }> = [];
@@ -627,18 +642,30 @@ describe("reachability and failures", () => {
 		raw.close();
 		store = IndexStore.open(file).store;
 		service = new LexiconService(store, fakeSupervisor([], parsed), sourceReader(root), root);
-		expect(service.overview().content.files).toEqual({ code: 0, data: 0, document: 0, text: 0, unknown: 2 });
+		expect((await service.overview()).content.files).toEqual({
+			code: 0,
+			data: 0,
+			document: 0,
+			text: 0,
+			unknown: 2,
+		});
 
 		// The daemon's start-up scan.
 		parsed.length = 0;
 		await service.warmupWorkspace();
 
 		expect(parsed).toEqual([]);
-		expect(service.overview().content.files).toEqual({ code: 1, data: 1, document: 0, text: 0, unknown: 0 });
+		expect((await service.overview()).content.files).toEqual({
+			code: 1,
+			data: 1,
+			document: 0,
+			text: 0,
+			unknown: 0,
+		});
 	});
 
 	it("keeps an out-of-scope import tree while referenced and prunes it after a live refactor", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "reachable.fake\nleaf.fake\n");
 		put("root.fake", "export class Root {}\n");
 		put("reachable.fake", 'export class Reachable {}\nimport "./leaf.fake";\n');
@@ -674,7 +701,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("denies imported files and prunes their prior facts after a config change", async () => {
-		initGit();
+		await initGit();
 		put("root.fake", 'export class Root {}\nimport "./reference/entry.fake";\n');
 		put("reference/entry.fake", "export class Reference {}\n");
 		const requests: Array<{ module: string; depth?: "full" | "surface" }> = [];
@@ -700,7 +727,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("prunes an imported tree when its only root is deleted", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "reachable.fake\nleaf.fake\n");
 		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
 		put("reachable.fake", 'export class Reachable {}\nimport "./leaf.fake";\n');
@@ -717,7 +744,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("indexes an import tree to its fixpoint", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "hidden/\n");
 		put("root.fake", 'export class Root {}\nimport "./hidden/0.fake";\n');
 		for (let depth = 0; depth < 12; depth++) {
@@ -732,7 +759,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("keeps prior facts and continues after a poisoned workspace file", async () => {
-		initGit();
+		await initGit();
 		put("bad.fake", "export class Bad {}\n");
 		put("good.fake", "export class Good {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
@@ -752,11 +779,11 @@ describe("reachability and failures", () => {
 		expect(service.findByName("Bad")).toHaveLength(1);
 		expect(service.findByName("GoodUpdated")).toHaveLength(1);
 		expect(service.indexStatus()).toMatchObject({ state: "ready", failures: 1 });
-		expect(service.overview().index).toMatchObject({ failures: 1 });
+		expect((await service.overview()).index).toMatchObject({ failures: 1 });
 	});
 
 	it("keeps a warning beside the file's facts rather than failing the file", async () => {
-		initGit();
+		await initGit();
 		put("noted.fake", "export class Noted {} // WARN\n");
 		put("clean.fake", "export class Clean {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
@@ -771,11 +798,11 @@ describe("reachability and failures", () => {
 			notes: [{ severity: "warning", message: "duplicate key" }],
 		});
 		expect(service.fileNotes("clean.fake")).toEqual({ module: "clean.fake", known: true, notes: [] });
-		expect(service.overview().notes).toEqual({ noted: 1, unknown: 0 });
+		expect((await service.overview()).notes).toEqual({ noted: 1, unknown: 0 });
 	});
 
 	it("records a binary and an oversized file as failures with the reason, holding no facts", async () => {
-		initGit();
+		await initGit();
 		put("ok.fake", "export class Ok {}\n");
 		writeFileSync(path.join(root, "blob.fake"), Buffer.from([0x65, 0x00, 0x66]));
 		writeFileSync(path.join(root, "big.fake"), Buffer.alloc(MAX_SOURCE_BYTES + 1, 0x61));
@@ -806,7 +833,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("keeps prior facts while a live file has syntax errors", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "reachable.fake\n");
 		put("root.fake", 'export class Before {}\nimport "./reachable.fake";\n');
 		put("reachable.fake", "export class Reachable {}\n");
@@ -835,7 +862,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("isolates a poisoned closure target", async () => {
-		initGit();
+		await initGit();
 		put(".gitignore", "reachable.fake\n");
 		put("root.fake", 'export class Root {}\nimport "./reachable.fake";\n');
 		put("reachable.fake", "export class Reachable {}\n");
@@ -856,7 +883,7 @@ describe("reachability and failures", () => {
 	});
 
 	it("isolates a poisoned watcher event from later events", async () => {
-		initGit();
+		await initGit();
 		put("bad.fake", "export class Bad {}\n");
 		put("good.fake", "export class Good {}\n");
 		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);

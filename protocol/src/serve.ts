@@ -72,9 +72,9 @@ export function serveProvider(connection: Connection, handlers: ProviderHandlers
 		// The handler map is keyed per method, so the loop erases the pairing the caller already
 		// satisfied. Each response is still validated against its schema by whoever reads it.
 		const handler = handlers[method] as (params: unknown) => unknown;
-		connection.onRequest(method, (params: unknown) => {
+		connection.onRequest(method, async (params: unknown) => {
 			refuseUnrepresentable(params);
-			const answer = handler(params);
+			const answer = await handler(params);
 			// One id per declaration, settled at the wire for every provider.
 			return method === "parseFile" && hasDeclarations(answer) ? withOccurrences(answer) : answer;
 		});

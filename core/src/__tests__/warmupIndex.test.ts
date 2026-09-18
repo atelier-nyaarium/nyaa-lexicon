@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
 import { warmRefusal } from "../daemonCli";
+import * as realFileScope from "../fileScope";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
@@ -15,6 +15,7 @@ import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
 import { fakeClock } from "./fakeClock";
 import { fakeSupervisor, resolveFake } from "./fakeProvider";
+import { gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -32,8 +33,8 @@ function put(module: string, text: string): void {
 	writeFileSync(full, text);
 }
 
-function initGit(): void {
-	execFileSync("git", ["init", "-q"], { cwd: root });
+async function initGit(): Promise<void> {
+	await gitInit(root);
 }
 
 function declaration(module: string, name: string): Declaration {
@@ -120,9 +121,15 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 	return { promise, release };
 }
 
-/** Bounded, so a state that never arrives fails the test instead of hanging it. */
-async function settle(until: () => boolean): Promise<void> {
-	for (let turn = 0; turn < 1_000; turn++) {
+/**
+ * Bounded by real time, so a state that never arrives fails the test instead of hanging it.
+ *
+ * Admission now spawns git asynchronously rather than blocking the thread, so what settles here can
+ * take real wall-clock milliseconds under load; a fixed tick count would flake for that reason alone.
+ */
+async function settle(until: () => boolean, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
 		if (until()) return;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
@@ -152,7 +159,7 @@ afterEach(() => {
 
 describe("warmup pass", () => {
 	it("holds a partial store until each missing root is attempted", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		put("b.fake", "export class B {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
@@ -179,7 +186,7 @@ describe("warmup pass", () => {
 	});
 
 	it("allows a completed store to answer while discovery runs", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
 		await service.warmupWorkspace();
@@ -194,7 +201,7 @@ describe("warmup pass", () => {
 	});
 
 	it("holds an older completed store through discovery", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
 		await service.warmupWorkspace();
@@ -216,7 +223,7 @@ describe("warmup pass", () => {
 	});
 
 	it("holds a cold store through outline parsing", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		const parse = deferred();
 		service = serviceOver(depthSupervisor(["a.fake"], true, [], { parse: parse.promise }));
@@ -230,7 +237,7 @@ describe("warmup pass", () => {
 	});
 
 	it("holds a grown root until the restarted scan attempts it", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
 		await service.warmupWorkspace();
@@ -249,7 +256,7 @@ describe("warmup pass", () => {
 	});
 
 	it("removes a root that vanishes before its attempt from coverage", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		put("b.fake", "export class B {}\n");
 		const parse = deferred();
@@ -264,7 +271,7 @@ describe("warmup pass", () => {
 	});
 
 	it("removes a failed root from coverage", async () => {
-		initGit();
+		await initGit();
 		put("bad.fake", "POISON\n");
 		service = serviceOver(depthSupervisor(["bad.fake"], true, []));
 		const outcomes = await service.warmupWorkspace();
@@ -273,7 +280,7 @@ describe("warmup pass", () => {
 	});
 
 	it("does not hold while upgrades run", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		const fullParse = deferred();
 		service = serviceOver(depthSupervisor(["a.fake"], true, [], { fullParse: fullParse.promise }));
@@ -287,7 +294,7 @@ describe("warmup pass", () => {
 	});
 
 	it("reports a failed scan as a plain admission error", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(
 			depthSupervisor(["a.fake"], true, [], { discovery: Promise.reject(new Error("discovery broke")) }),
@@ -299,8 +306,82 @@ describe("warmup pass", () => {
 		expect(refusal?.message).toContain("discovery broke");
 	});
 
+	// A git that fails once must not wedge the field it never wrote to: warmFailure reports the
+	// reason meanwhile, and the very next ask re-asks git rather than replaying the rejection.
+	it("refuses with the reason after a scope computation fails, then serves once a retry answers", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		const original = realFileScope.fileScopeFor;
+		let calls = 0;
+		mock.module("../fileScope", () => ({
+			...realFileScope,
+			fileScopeFor: (...args: Parameters<typeof original>) => {
+				calls++;
+				return calls === 1 ? Promise.reject(new Error("git unreachable")) : original(...args);
+			},
+		}));
+		try {
+			service = serviceOver(depthSupervisor(["a.fake"], true, []));
+			await expect(service.currentScope()).rejects.toThrow("git unreachable");
+			expect(calls).toBe(1);
+
+			const refusal = warmRefusal(service);
+			expect(refusal).toBeInstanceOf(Error);
+			expect(refusal?.message).toContain("git unreachable");
+			expect(refusal?.message).toContain("restart the daemon");
+
+			// The retry: the field the failed call never wrote to is still empty, so this asks again.
+			await service.currentScope();
+			expect(calls).toBe(2);
+
+			// Serving resumes once a real scan completes, the way any fresh one resets coverage.
+			await service.warmupWorkspace();
+			expect(warmRefusal(service)).toBeNull();
+			expect(service.findByName("A")).toHaveLength(1);
+		} finally {
+			mock.restore();
+		}
+	});
+
+	// A scope already held is not the same as none: a refresh's own git failure is not the first
+	// computation's, so it must not wedge every later request behind a restart.
+	it("keeps serving the scope already held when a later refresh's git call fails", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, []));
+
+		// The first computation succeeds: a real scope and healthy coverage.
+		await service.warmupWorkspace();
+		expect(warmRefusal(service)).toBeNull();
+		expect(service.findByName("A")).toHaveLength(1);
+
+		// Only the refresh call fails: every other call, including one that outlives a leaked
+		// restore, falls through to the real answer rather than wedging every test after this one.
+		const original = realFileScope.fileScopeFor;
+		let calls = 0;
+		mock.module("../fileScope", () => ({
+			...realFileScope,
+			fileScopeFor: (...args: Parameters<typeof original>) => {
+				calls++;
+				return calls === 1 ? Promise.reject(new Error("git unreachable")) : original(...args);
+			},
+		}));
+		try {
+			put("b.fake", "export class B {}\n");
+			await expect(
+				service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b-1" }]),
+			).rejects.toThrow("git unreachable");
+
+			// The scope held from the first computation still serves; nothing here demands a restart.
+			expect(warmRefusal(service)).toBeNull();
+			expect(service.findByName("A")).toHaveLength(1);
+		} finally {
+			mock.restore();
+		}
+	});
+
 	it("bounds tree-first preparation across import resolution", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", 'import "./b.fake"\nexport class A {}\n');
 		put("b.fake", "export class B {}\n");
 		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, []));
@@ -313,7 +394,7 @@ describe("warmup pass", () => {
 	});
 
 	it("covers each admission branch", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		const parse = deferred();
 		service = serviceOver(depthSupervisor(["a.fake"], true, [], { parse: parse.promise }));
@@ -327,7 +408,7 @@ describe("warmup pass", () => {
 		expect(warmRefusal(service)).toBeNull();
 	});
 	it("stores honored outline facts as outline, then upgrades them to full", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		put("b.fake", "export class B {}\n");
 		const seen: ParseSeen[] = [];
@@ -347,7 +428,7 @@ describe("warmup pass", () => {
 	});
 
 	it("records full when a provider ignores the outline request, owing no upgrade", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		const seen: ParseSeen[] = [];
 		service = serviceOver(depthSupervisor(["a.fake"], false, seen));
@@ -361,7 +442,7 @@ describe("warmup pass", () => {
 	});
 
 	it("does not demote a full store on a warm restart, and skips unchanged files entirely", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		const seen: ParseSeen[] = [];
 		service = serviceOver(depthSupervisor(["a.fake"], true, seen));
@@ -376,7 +457,7 @@ describe("warmup pass", () => {
 	});
 
 	it("serves a requestFull order before the background backlog", async () => {
-		initGit();
+		await initGit();
 		const modules = ["a.fake", "b.fake", "c.fake", "d.fake", "z.fake"];
 		for (const module of modules) put(module, `export class C${module[0]?.toUpperCase()} {}\n`);
 		service = serviceOver(depthSupervisor(modules, true, []));
@@ -395,7 +476,7 @@ describe("warmup pass", () => {
 	});
 
 	it("pulls a symbol's direct imports into the ordered tree", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", 'import "./b.fake"\nexport class A {}\n');
 		put("b.fake", "export class B {}\n");
 		put("c.fake", "export class C {}\n");
@@ -411,7 +492,7 @@ describe("warmup pass", () => {
 	});
 
 	it("persists a parse failure, skips it in the upgrade, and clears it on recovery", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		put("bad.fake", "POISON\n");
 		service = serviceOver(depthSupervisor(["a.fake", "bad.fake"], true, []));
@@ -433,7 +514,7 @@ describe("warmup pass", () => {
 	});
 
 	it("drops a failure row once the stored facts are found current", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
 		await service.warmupWorkspace();
@@ -447,7 +528,7 @@ describe("warmup pass", () => {
 	});
 
 	it("classifies a dead provider as unavailable, blaming no file", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		put("gone.fake", "DEAD\n");
 		service = serviceOver(depthSupervisor(["a.fake", "gone.fake"], true, []));
@@ -469,7 +550,7 @@ describe("warmup pass", () => {
 	});
 
 	it("records a plain provider error as a parse failure for that file", async () => {
-		initGit();
+		await initGit();
 		put("bad.fake", "POISON\n");
 		service = serviceOver(depthSupervisor(["bad.fake"], true, []));
 
@@ -486,7 +567,7 @@ describe("warmup pass", () => {
 	});
 
 	it("classifies an escaped indexer fault, records it in its own words, and keeps the pass covered", async () => {
-		initGit();
+		await initGit();
 		put("bad.fake", "export class Bad {}\n");
 		put("good.fake", "export class Good {}\n");
 		const replaceFile = store.replaceFile.bind(store);
@@ -513,7 +594,7 @@ describe("warmup pass", () => {
 	});
 
 	it("records an answer the store refuses as that file's parse failure", async () => {
-		initGit();
+		await initGit();
 		put("orphan.fake", "BADCONTAINER export class Child {}\n");
 		service = serviceOver(depthSupervisor(["orphan.fake"], true, []));
 
@@ -530,7 +611,7 @@ describe("warmup pass", () => {
 describe("accounting for every file the scan saw", () => {
 	// The parts must sum, or a reader cannot tell a defect from a readme.
 	it("splits tracked files into disjoint parts that add up", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		put("b.fake", "export class B {}\n");
 		put("README.md", "# readme\n");
@@ -551,7 +632,7 @@ describe("accounting for every file the scan saw", () => {
 
 	// A watcher batch recomputed the counts and then never stored them.
 	it("refreshes the stored summary after a watcher batch", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
 		await service.warmupWorkspace();
@@ -564,7 +645,7 @@ describe("accounting for every file the scan saw", () => {
 	});
 
 	it("settles coverage when a watcher adds or removes a root", async () => {
-		initGit();
+		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
 		await service.warmupWorkspace();
@@ -585,7 +666,7 @@ describe("accounting for every file the scan saw", () => {
 
 	// A failed root holds no row, and it is not the watcher's to attempt again.
 	it("keeps the watcher running after a root that failed to parse", async () => {
-		initGit();
+		await initGit();
 		put("bad.fake", "POISON\n");
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["bad.fake", "a.fake"], true, []));

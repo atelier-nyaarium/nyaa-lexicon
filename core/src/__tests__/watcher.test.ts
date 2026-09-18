@@ -231,7 +231,7 @@ describe("asking the scope before reading", () => {
 			debounceMs: 20,
 			scope: scopeOf(
 				(module) => module === "a.ts",
-				() => {
+				async () => {
 					asked++;
 					return new Set();
 				},
@@ -256,7 +256,7 @@ describe("asking the scope before reading", () => {
 			debounceMs: 20,
 			scope: scopeOf(
 				() => false,
-				(modules) => {
+				async (modules) => {
 					asked.push(modules);
 					return new Set(["volumes/state.json"]);
 				},
@@ -281,7 +281,7 @@ describe("asking the scope before reading", () => {
 			debounceMs: 20,
 			scope: scopeOf(
 				() => false,
-				(modules) => new Set(modules),
+				async (modules) => new Set(modules),
 			),
 		});
 
@@ -291,15 +291,72 @@ describe("asking the scope before reading", () => {
 		expect(batches).toEqual([]);
 	});
 
-	it("reads everything when git cannot say", () => {
-		expect(
+	it("keeps delivery in trigger order when a later burst's git call answers first", async () => {
+		const batches: FileEvent[][] = [];
+		write("a.ts", "1");
+		write("b.ts", "2");
+		const resolvers: Array<(value: Set<string>) => void> = [];
+		watcher = watchWorkspace({
+			workspaceRoot: root,
+			onBatch: (b) => batches.push(b),
+			debounceMs: 5,
+			scope: scopeOf(
+				() => false,
+				() => new Promise<Set<string>>((resolve) => resolvers.push(resolve)),
+			),
+		});
+
+		watcher.inject("a.ts");
+		await settle(20);
+		watcher.inject("b.ts");
+		await settle(20);
+		expect(resolvers).toHaveLength(2);
+
+		// The second burst's git call answers first; delivery still waits for the first burst.
+		resolvers[1]?.(new Set());
+		await settle(20);
+		expect(batches).toEqual([]);
+
+		resolvers[0]?.(new Set());
+		await settle(20);
+		expect(batches.map((b) => b.map((e) => e.module))).toEqual([["a.ts"], ["b.ts"]]);
+	});
+
+	it("leaves the previous verdicts standing when git cannot say: kept if already admitted, retried otherwise", async () => {
+		await expect(
 			admitted(
-				["a.ts", "b.ts"],
+				["a.ts", "b.ts", "c.ts"],
 				scopeOf(
-					() => false,
-					() => null,
+					(module) => module === "a.ts",
+					async () => null,
 				),
 			),
-		).toEqual(["a.ts", "b.ts"]);
+		).resolves.toEqual({ admitted: ["a.ts"], retry: ["b.ts", "c.ts"] });
+	});
+
+	it("keeps a new file pending through a failed git call and admits it without a further edit", async () => {
+		const batches: FileEvent[][] = [];
+		write("new.ts", "1");
+		let calls = 0;
+		watcher = watchWorkspace({
+			workspaceRoot: root,
+			onBatch: (b) => batches.push(b),
+			debounceMs: 10,
+			maxWaitMs: 30,
+			scope: scopeOf(
+				() => false,
+				async () => {
+					calls += 1;
+					// The first ask fails outright; the retry it leaves behind gets a real answer.
+					return calls === 1 ? null : new Set();
+				},
+			),
+		});
+
+		watcher.inject("new.ts");
+		await settle(200);
+
+		expect(calls).toBe(2);
+		expect(batches.map((b) => b.map((e) => e.module))).toEqual([["new.ts"]]);
 	});
 });

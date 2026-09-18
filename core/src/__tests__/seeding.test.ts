@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,6 +12,7 @@ import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { fakeSupervisor } from "./fakeProvider";
+import { gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -420,7 +420,7 @@ describe("the indexer records git's verdict on every file it writes", () => {
 	});
 
 	it("persists yes on a generated file reached only through an import, and no on its importer, on a scan and on a batch", async () => {
-		execFileSync("git", ["init", "-q"], { cwd: root });
+		await gitInit(root);
 		put(".gitignore", "dist/\n");
 		put(".gitattributes", "dist/** linguist-generated\n");
 		put("dist/proto.fake", "export class Proto {}\n");
@@ -446,7 +446,7 @@ describe("the indexer records git's verdict on every file it writes", () => {
 	});
 
 	it("gives a file whose parse failed the verdict of the scan that failed it", async () => {
-		execFileSync("git", ["init", "-q"], { cwd: root });
+		await gitInit(root);
 		put(".gitignore", "dist/\n");
 		put("dist/lib.fake", "export class Lib {}\n");
 		put("src/app.fake", 'import "../dist/lib.fake"\nexport class App {}\n');

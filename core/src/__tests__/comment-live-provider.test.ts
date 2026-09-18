@@ -6,7 +6,6 @@
 // exactly the kind of proof that stops happening once the person who wrote it moves on.
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,6 +14,7 @@ import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
+import { gitAdd, gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -24,7 +24,9 @@ let store: IndexStore;
 let supervisor: ProviderSupervisor;
 
 /** Only TypeScript: this proves the seam, and every other provider would add a startup for it. */
-const TYPESCRIPT_ONLY = discoverProviders(lexiconRoot()).filter((command) => command.directory === "typescript");
+const TYPESCRIPT_ONLY = (await discoverProviders(lexiconRoot())).filter(
+	(command) => command.directory === "typescript",
+);
 
 const SOURCE = [
 	"// A run of two lines,",
@@ -62,8 +64,8 @@ describe("a real provider's comments, attached by core", () => {
 			mkdirSync(path.join(root, "src"), { recursive: true });
 			writeFileSync(path.join(root, "src", "work.ts"), SOURCE);
 			// File discovery is git-scoped, so an unversioned directory indexes nothing at all.
-			execFileSync("git", ["init", "-q"], { cwd: root });
-			execFileSync("git", ["add", "-A"], { cwd: root });
+			await gitInit(root);
+			await gitAdd(root, "-A");
 
 			await startProviders(supervisor, root, { commands: TYPESCRIPT_ONLY });
 			const service = new LexiconService(store, supervisor, sourceReader(root), root);

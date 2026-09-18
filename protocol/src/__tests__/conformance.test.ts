@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -29,16 +28,30 @@ const PROVIDER = path.join(import.meta.dirname, "..", "conformance", "referenceP
 // Absolute: tmpdir cannot resolve the bare name.
 const RPC = createRequire(import.meta.url).resolve("vscode-jsonrpc/node");
 
-/** Live pids whose command line names this script. */
+/**
+ * Live pids whose command line names this script, walking /proc rather than spawning a search of
+ * our own: a search that must itself wait on a child is the same defect it would be checking for.
+ *
+ * Protocol depends on nothing else in this repo, so this reads /proc directly rather than reaching
+ * for client's procfs.ts, which owns the read everywhere else.
+ */
 function processesMatching(script: string): string[] {
+	let entries: string[];
 	try {
-		return execFileSync("pgrep", ["-f", script], { encoding: "utf8" })
-			.split("\n")
-			.filter((line) => line.trim() !== "");
+		entries = readdirSync("/proc");
 	} catch {
-		// pgrep exits 1 on no match.
 		return [];
 	}
+	const found: string[] = [];
+	for (const entry of entries) {
+		if (!/^\d+$/.test(entry)) continue;
+		try {
+			if (readFileSync(`/proc/${entry}/cmdline`, "utf8").includes(script)) found.push(entry);
+		} catch {
+			// Gone between the listing and the read: ordinary process churn, not a match.
+		}
+	}
+	return found;
 }
 
 /** A provider script written under tmpdir, with `initialize` handled by the body given. */

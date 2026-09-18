@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
+import { processesMatching } from "@nyaa-lexicon/client";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
 import { absorbingWrites, type ProviderExit, ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
@@ -27,18 +27,6 @@ const REFERENCE = path.join(
 const RPC = createRequire(import.meta.url).resolve("vscode-jsonrpc/node");
 
 let supervisor: ProviderSupervisor;
-
-/** Live pids whose command line names this script, so an orphan is visible. */
-function processesMatching(script: string): string[] {
-	try {
-		return execFileSync("pgrep", ["-f", script], { encoding: "utf8" })
-			.split("\n")
-			.filter((line) => line.trim().length > 0);
-	} catch {
-		// pgrep exits 1 when nothing matches, which is the answer this asks for.
-		return [];
-	}
-}
 
 const HEADER = path.join(import.meta.dirname, "fixtures", "headerProvider.ts");
 

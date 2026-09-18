@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,11 +12,19 @@ import { BUN_FLOOR, bunExecutable } from "../runtime";
 ////////////////////////////////
 //  Helpers
 
-/** A pid that certainly ran and certainly exited, for dead-holder cases. */
-function deadPid(): number {
-	const child = spawnSync("true");
-	if (child.pid === undefined) throw new Error("could not spawn a child to die");
-	return child.pid;
+/** A pid that certainly ran and certainly exited, for dead-holder cases. Its own exit is awaited,
+ * so the pid is already gone by the time a caller uses it. */
+async function deadPid(): Promise<number> {
+	const child = spawn("true");
+	const pid = await new Promise<number>((resolve, reject) => {
+		child.once("error", reject);
+		child.once("spawn", () => {
+			if (child.pid === undefined) reject(new Error("could not spawn a child to die"));
+			else resolve(child.pid);
+		});
+	});
+	await new Promise<void>((resolve) => child.once("close", () => resolve()));
+	return pid;
 }
 
 const onLinux = process.platform === "linux" ? it : it.skip;
@@ -66,8 +74,8 @@ describe("judging a lock holder", () => {
 		expect(lockHolderAlive({ pid: process.pid, pidStart: "1" })).toBe(false);
 	});
 
-	it("rejects a dead pid outright", () => {
-		expect(lockHolderAlive({ pid: deadPid() })).toBe(false);
+	it("rejects a dead pid outright", async () => {
+		expect(lockHolderAlive({ pid: await deadPid() })).toBe(false);
 	});
 
 	it("still accepts a lock too old to carry an identity", () => {
@@ -135,51 +143,54 @@ describe("finding a daemon on disk", () => {
 });
 
 describe("the bundle under a root", () => {
-	it("selects bun and probes one executable once", () => {
+	it("selects bun and probes one executable once", async () => {
 		const calls: string[] = [];
 		const host: PlatformEnv = { platform: "linux", env: {}, home: "/home/me", execPath: "/opt/node" };
-		const probe = (executable: string) => {
+		const probe = async (executable: string) => {
 			calls.push(executable);
 			return "1.4.2";
 		};
 
-		expect(bunExecutable(host, probe)).toEqual({ kind: "bun", executable: "bun", version: "1.4.2" });
-		expect(bunExecutable(host, probe)).toEqual({ kind: "bun", executable: "bun", version: "1.4.2" });
+		expect(await bunExecutable(host, probe)).toEqual({ kind: "bun", executable: "bun", version: "1.4.2" });
+		expect(await bunExecutable(host, probe)).toEqual({ kind: "bun", executable: "bun", version: "1.4.2" });
 		expect(calls).toEqual(["bun"]);
 	});
 
-	it("names missing, malformed and below-floor runtimes", () => {
+	it("names missing, malformed and below-floor runtimes", async () => {
 		const makeHost = (execPath: string, platform: NodeJS.Platform = "linux"): PlatformEnv => ({
 			platform,
 			env: {},
 			home: "/home/me",
 			execPath,
 		});
-		expect(bunExecutable(makeHost("/opt/test-missing", "win32"), () => null).kind).toBe("missing");
-		expect(bunExecutable(makeHost("/tmp/test-malformed/bun"), () => "not-a-version")).toMatchObject({
+		expect((await bunExecutable(makeHost("/opt/test-missing", "win32"), async () => null)).kind).toBe("missing");
+		expect(await bunExecutable(makeHost("/tmp/test-malformed/bun"), async () => "not-a-version")).toMatchObject({
 			kind: "malformed",
 		});
-		expect(bunExecutable(makeHost("/tmp/test-old/bun"), () => "1.3.9")).toMatchObject({
+		expect(await bunExecutable(makeHost("/tmp/test-old/bun"), async () => "1.3.9")).toMatchObject({
 			kind: "belowFloor",
 			floor: BUN_FLOOR,
 		});
 	});
 
-	it("stamps and commands nothing when the root was never built", () => {
+	it("stamps and commands nothing when the root was never built", async () => {
 		const root = scratch("lexicon-root-");
 
 		expect(bundleStamp(root)).toBeNull();
-		expect(daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
+		expect(await daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
 	});
 
-	it("runs the bundle on this runtime against the workspace it is given", () => {
+	it("runs the bundle on this runtime against the workspace it is given", async () => {
 		const root = scratch("lexicon-root-");
 		const bundle = path.join(root, "dist", "daemon.js");
 		mkdirSync(path.dirname(bundle), { recursive: true });
 		writeFileSync(bundle, "// bundle\n");
 
 		expect(bundleStamp(root)).toMatch(/^1:[0-9a-f]{16}$/);
-		expect(daemonCommand(root, "/w")).toMatchObject({ kind: "command", command: [process.execPath, bundle, "/w"] });
+		expect(await daemonCommand(root, "/w")).toMatchObject({
+			kind: "command",
+			command: [process.execPath, bundle, "/w"],
+		});
 	});
 
 	// A provider rebuilt alone must retire a daemon still serving its old copy.
@@ -215,10 +226,10 @@ describe("the bundle under a root", () => {
 	});
 
 	// A directory or dangling symlink wearing the name is not a program.
-	it("refuses a directory wearing the bundle's name", () => {
+	it("refuses a directory wearing the bundle's name", async () => {
 		const root = scratch("lexicon-root-");
 		mkdirSync(path.join(root, "dist", "daemon.js"), { recursive: true });
 
-		expect(daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
+		expect(await daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
 	});
 });

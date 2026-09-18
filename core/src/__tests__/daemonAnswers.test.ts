@@ -7,10 +7,11 @@
 // fails this file rather than vanishing on the wire.
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
@@ -46,12 +47,14 @@ interface Harness {
 	close: () => void;
 }
 
+const execFileAsync = promisify(execFile);
+
 /** Throws with git's own stderr, so a machine without git fails here rather than answering emptily. */
-function git(cwd: string, ...args: string[]): void {
-	execFileSync(
+async function git(cwd: string, ...args: string[]): Promise<void> {
+	await execFileAsync(
 		"git",
 		["-c", "user.name=lexicon", "-c", "user.email=lexicon@example.invalid", "-c", "commit.gpgsign=false", ...args],
-		{ cwd, stdio: "pipe" },
+		{ cwd },
 	);
 }
 
@@ -61,9 +64,9 @@ async function openWorkspace(files: Record<string, string>, providers: string[],
 	const workspace = path.join(root, "workspace");
 	mkdirSync(workspace);
 	for (const [name, text] of Object.entries(files)) writeFileSync(path.join(workspace, name), text);
-	git(workspace, "init", "-q");
-	git(workspace, "add", "-A");
-	git(workspace, "commit", "-q", "-m", commit);
+	await git(workspace, "init", "-q");
+	await git(workspace, "add", "-A");
+	await git(workspace, "commit", "-q", "-m", commit);
 
 	const store = IndexStore.open(path.join(root, "index.sqlite")).store;
 	const supervisor = new ProviderSupervisor();

@@ -1,6 +1,6 @@
 // The SOLE reader of /proc. Null where there is no procfs, never a guess.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -80,6 +80,31 @@ export function processIdentity(pid: number): ProcessIdentity | null {
 export function processMemory(pid: number): ProcessMemory | null {
 	const status = readProc(`${pid}/status`);
 	return status === null ? null : parseProcStatus(status);
+}
+
+/**
+ * Live pids whose command line contains `pattern`, found by walking /proc rather than spawning a
+ * search of our own; a search that must itself wait on a child is the same defect it would be
+ * checking for.
+ *
+ * Empty where there is no procfs, the same as any other reader here answering null: nothing to see
+ * rather than a guess. A pid whose /proc entry vanished between the listing and the read is absent,
+ * not an error, since that race is ordinary process churn.
+ */
+export function processesMatching(pattern: string): string[] {
+	let entries: string[];
+	try {
+		entries = readdirSync("/proc");
+	} catch {
+		return [];
+	}
+	const found: string[] = [];
+	for (const entry of entries) {
+		if (!/^\d+$/.test(entry)) continue;
+		const cmdline = readProc(`${entry}/cmdline`);
+		if (cmdline !== null && cmdline.includes(pattern)) found.push(entry);
+	}
+	return found;
 }
 
 export function hostMemory(): HostMemory | null {

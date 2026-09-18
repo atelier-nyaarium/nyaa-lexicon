@@ -7,15 +7,13 @@
 // two constants that must never diverge. No graph edge connects any of those, and every one of
 // them gets fixed in the same commit.
 
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { CoChange, FileHistory, FileHistoryCommit, Mention } from "@nyaa-lexicon/protocol";
+import { type Clock, systemClock } from "./clock.js";
+import { runGit } from "./fileScope.js";
 
 export type { CoChange, FileHistory, FileHistoryCommit, Mention } from "@nyaa-lexicon/protocol";
-
-const run = promisify(execFile);
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -87,18 +85,27 @@ const MIN_MENTION_LENGTH = 3;
  * have git rewrite paths inline in the numstat line, and a path that arrives spelled two ways is
  * worse than one that arrives as two facts.
  */
-export async function readHistory(workspaceRoot: string, depth = DEFAULT_DEPTH): Promise<Commit[]> {
+export async function readHistory(
+	workspaceRoot: string,
+	depth = DEFAULT_DEPTH,
+	clock: Clock = systemClock,
+): Promise<Commit[]> {
 	// Asked before running git, since git answers a non-repository by writing `fatal:` to our own
 	// stderr, which reads as the daemon dying.
 	if (!existsSync(path.join(workspaceRoot, ".git"))) return [];
 
 	// The message is free-form and multi-line, so it needs its own terminator before the numstat rows
 	// rather than a line count nobody can rely on.
-	const { stdout } = await run(
-		"git",
+	const result = await runGit(
+		clock,
+		workspaceRoot,
 		["log", "--no-merges", "--no-renames", "--numstat", `--format=%x00%H %at%n%B${MESSAGE_END}`, `-n${depth}`],
-		{ cwd: workspaceRoot, maxBuffer: 64 * 1024 * 1024 },
+		{ maxStdoutBytes: 64 * 1024 * 1024 },
 	);
+	// A wedged or failing git answers no history rather than throwing: the same "could not tell"
+	// this file already gives a non-repository, never a crash over one read.
+	if (result === null || result.code !== 0) return [];
+	const { stdout } = result;
 
 	const commits: Commit[] = [];
 	for (const block of stdout.split("\0")) {

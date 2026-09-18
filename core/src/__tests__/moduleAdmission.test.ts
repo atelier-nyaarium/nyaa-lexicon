@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +9,7 @@ import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
+import { gitInit } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -75,9 +75,9 @@ function serviceOn(port: ProviderPort): LexiconService {
 	return new LexiconService(store, port, sourceReader(root), root);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-admission-"));
-	execFileSync("git", ["init", "-q"], { cwd: root });
+	await gitInit(root);
 	store = IndexStore.open(path.join(root, "index.sqlite")).store;
 });
 

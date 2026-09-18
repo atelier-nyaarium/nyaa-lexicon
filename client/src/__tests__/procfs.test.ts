@@ -1,15 +1,23 @@
 import { describe, expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { hostMemory, parseMeminfo, parseProcStat, parseProcStatus, processIdentity, processMemory } from "../procfs";
 
 ////////////////////////////////
 //  Helpers
 
-/** A pid that certainly ran and certainly exited. */
-function deadPid(): number {
-	const child = spawnSync("true");
-	if (child.pid === undefined) throw new Error("could not spawn a child to die");
-	return child.pid;
+/** A pid that certainly ran and certainly exited. Its own exit is awaited, so the pid is already
+ * gone by the time a caller uses it. */
+async function deadPid(): Promise<number> {
+	const child = spawn("true");
+	const pid = await new Promise<number>((resolve, reject) => {
+		child.once("error", reject);
+		child.once("spawn", () => {
+			if (child.pid === undefined) reject(new Error("could not spawn a child to die"));
+			else resolve(child.pid);
+		});
+	});
+	await new Promise<void>((resolve) => child.once("close", () => resolve()));
+	return pid;
 }
 
 const onLinux = process.platform === "linux" ? it : it.skip;
@@ -94,8 +102,8 @@ describe("asking the live mount", () => {
 		expect(host?.memAvailable).toBeLessThanOrEqual(host?.memTotal ?? 0);
 	});
 
-	it("answers null for a pid with no process behind it", () => {
-		const gone = deadPid();
+	it("answers null for a pid with no process behind it", async () => {
+		const gone = await deadPid();
 		expect(processIdentity(gone)).toBeNull();
 		expect(processMemory(gone)).toBeNull();
 	});

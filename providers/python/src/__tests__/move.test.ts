@@ -36,8 +36,8 @@ function rangeAt(text: string, start: number, length: number): Range {
 	return range;
 }
 
-function apply(text: string, request: MoveEditsRequest, files: Record<string, string>) {
-	const response = provider(files).moveEdits(request);
+async function apply(text: string, request: MoveEditsRequest, files: Record<string, string>) {
+	const response = await provider(files).moveEdits(request);
 	if (response.status !== "ready") throw new Error(`move refused with ${response.reason}`);
 	if (response.blocked.length > 0) throw new Error(`move blocked with ${response.blocked[0]?.reason}`);
 	const result = applyEdits(text, response.edits);
@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe("Python move edits", () => {
-	it("refuses insertion positions that do not address content", () => {
+	it("refuses insertion positions that do not address content", async () => {
 		const cases = [
 			{ text: "value = 1\n", position: { line: 0, character: 99 } },
 			{ text: "value = 1\n", position: { line: 0, character: -1 } },
@@ -91,7 +91,7 @@ describe("Python move edits", () => {
 		];
 
 		for (const { text, position } of cases) {
-			const response = provider({ "target.py": text }).moveEdits({
+			const response = await provider({ "target.py": text }).moveEdits({
 				module: "target.py",
 				text,
 				exists: true,
@@ -119,12 +119,12 @@ describe("Python move edits", () => {
 		}
 	});
 
-	it("splits a multi-name import and keeps the moved alias", () => {
+	it("splits a multi-name import and keeps the moved alias", async () => {
 		const text = "from .cart import keep, add as total\nvalue = total(1, 2)\n";
 		const request = namedImportRequest(text, "add", "src/cart.py", "src/items.py");
 
 		expect(
-			apply(text, request, {
+			await apply(text, request, {
 				"src/__init__.py": "",
 				"src/cart.py": "def add(left, right):\n    return left + right\n",
 				"src/items.py": "",
@@ -133,12 +133,12 @@ describe("Python move edits", () => {
 		).toBe("from .cart import keep\nfrom .items import add as total\nvalue = total(1, 2)\n");
 	});
 
-	it("preserves an alias in a single named import", () => {
+	it("preserves an alias in a single named import", async () => {
 		const text = "from cart import add as total\nvalue = total(1, 2)\n";
 		const request = namedImportRequest(text, "add");
 
 		expect(
-			apply(text, request, {
+			await apply(text, request, {
 				"cart.py": "def add(left, right):\n    return left + right\n",
 				"items.py": "",
 				"use.py": text,
@@ -146,7 +146,7 @@ describe("Python move edits", () => {
 		).toBe("from items import add as total\nvalue = total(1, 2)\n");
 	});
 
-	it("rerenders a relative dependency for a deeper target", () => {
+	it("rerenders a relative dependency for a deeper target", async () => {
 		const text = "\n";
 		const request: MoveEditsRequest = {
 			module: "src/nested/items.py",
@@ -179,7 +179,7 @@ describe("Python move edits", () => {
 		};
 
 		expect(
-			apply(text, request, {
+			await apply(text, request, {
 				"src/__init__.py": "",
 				"src/cart.py": "def add(value):\n    return helper(value)\n",
 				"src/util.py": "def helper(value):\n    return value\n",
@@ -191,7 +191,7 @@ describe("Python move edits", () => {
 		).toBe("from ..util import helper\n\ndef add(value):\n    return helper(value)\n");
 	});
 
-	it("rerenders a relative dependency for a shallower target", () => {
+	it("rerenders a relative dependency for a shallower target", async () => {
 		const text = "";
 		const request: MoveEditsRequest = {
 			module: "src/items.py",
@@ -224,7 +224,7 @@ describe("Python move edits", () => {
 		};
 
 		expect(
-			apply(text, request, {
+			await apply(text, request, {
 				"src/__init__.py": "",
 				"src/nested/cart.py": "def add(value):\n    return helper(value)\n",
 				"src/nested/util.py": "def helper(value):\n    return value\n",
@@ -233,9 +233,9 @@ describe("Python move edits", () => {
 		).toBe("from .nested.util import helper\ndef add(value):\n    return helper(value)\n");
 	});
 
-	it("blocks namespace and wildcard imports", () => {
+	it("blocks namespace and wildcard imports", async () => {
 		const namespaceText = "import cart\nvalue = cart.add(1, 2)\n";
-		const namespaceResponse = provider({
+		const namespaceResponse = await provider({
 			"src/cart.py": "def add(left, right):\n    return left + right\n",
 			"src/items.py": "",
 			"src/use.py": namespaceText,
@@ -268,7 +268,7 @@ describe("Python move edits", () => {
 		for (const site of namespaceResponse.blocked) expect(site.reason).toBe("NotImplemented");
 
 		const starText = "from .cart import *\n";
-		const starResponse = provider({
+		const starResponse = await provider({
 			"src/__init__.py": "",
 			"src/cart.py": "def add(left, right):\n    return left + right\n",
 			"src/items.py": "",
@@ -296,9 +296,9 @@ describe("Python move edits", () => {
 		expect(starResponse).toMatchObject({ status: "ready", blocked: [{ reason: "NotImplemented" }] });
 	});
 
-	it("blocks a moved name inside __all__", () => {
+	it("blocks a moved name inside __all__", async () => {
 		const text = '__all__ = ["add"]\ndef add():\n    pass\n';
-		const response = provider({
+		const response = await provider({
 			"src/__init__.py": "",
 			"src/cart.py": "def add():\n    pass\n",
 			"src/items.py": "",
@@ -320,9 +320,9 @@ describe("Python move edits", () => {
 		expect(response).toMatchObject({ status: "ready", edits: [], blocked: [{ reason: "StringLiteral" }] });
 	});
 
-	it("refuses a target collision", () => {
+	it("refuses a target collision", async () => {
 		const text = "add = 1\n";
-		const response = provider({
+		const response = await provider({
 			"src/cart.py": "def add():\n    pass\n",
 			"src/items.py": text,
 		}).moveEdits({
@@ -342,7 +342,7 @@ describe("Python move edits", () => {
 		expect(response).toMatchObject({ status: "refused", reason: "TargetCollision" });
 	});
 
-	it("creates a new target file from the supplied insertion", () => {
+	it("creates a new target file from the supplied insertion", async () => {
 		const text = "";
 		const request: MoveEditsRequest = {
 			module: "src/items.py",
@@ -358,10 +358,10 @@ describe("Python move edits", () => {
 			sites: [],
 		};
 
-		expect(apply(text, request, { "src/cart.py": "def add():\n    pass\n" })).toBe("def add():\n    pass\n");
+		expect(await apply(text, request, { "src/cart.py": "def add():\n    pass\n" })).toBe("def add():\n    pass\n");
 	});
 
-	it("inserts dependencies after a module docstring and future imports", () => {
+	it("inserts dependencies after a module docstring and future imports", async () => {
 		const text = '"""docs"""\nfrom __future__ import annotations\nvalue = 1\n';
 		const request: MoveEditsRequest = {
 			module: "src/items.py",
@@ -388,7 +388,7 @@ describe("Python move edits", () => {
 		};
 
 		expect(
-			apply(text, request, {
+			await apply(text, request, {
 				"src/__init__.py": "",
 				"src/cart.py": "def helper(value):\n    return value\n",
 				"src/items.py": text,

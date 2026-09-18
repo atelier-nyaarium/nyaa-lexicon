@@ -57,92 +57,92 @@ afterEach(() => {
 // The plugin cache installs each version into its own frozen directory, so a running daemon's own
 // files never change; the news of an update is a newer sibling.
 describe("noticing a newer sibling install", () => {
-	it("finds the newest runnable sibling, skipping ones without a bundle", () => {
+	it("finds the newest runnable sibling, skipping ones without a bundle", async () => {
 		const parent = installDir();
 		const root = install(parent, "1.13.0");
 		install(parent, "1.14.0");
 		install(parent, "1.15.0");
 		install(parent, "1.16.0", { bundle: false });
 
-		expect(sight(root)?.root).toBe(path.join(parent, "1.15.0"));
-		expect(sight(root)?.why).toContain("1.15.0");
+		expect((await sight(root))?.root).toBe(path.join(parent, "1.15.0"));
+		expect((await sight(root))?.why).toContain("1.15.0");
 	});
 
-	it("ignores older siblings and non-version directories", () => {
+	it("ignores older siblings and non-version directories", async () => {
 		const parent = installDir();
 		const root = install(parent, "1.13.0");
 		install(parent, "1.12.0");
 		install(parent, "1.14.0garbage");
 		mkdirSync(path.join(parent, "not-a-version", "dist"), { recursive: true });
 
-		expect(sight(root)).toBeNull();
+		expect(await sight(root)).toBeNull();
 	});
 
 	// A bundle compiled as some OTHER version writes that version into its lock, which clients then
 	// replace, which respawns the daemon that hands over here again: a loop.
-	it("refuses a sibling whose manifest disagrees with its directory name", () => {
+	it("refuses a sibling whose manifest disagrees with its directory name", async () => {
 		const parent = installDir();
 		const root = install(parent, "1.13.0");
 		install(parent, "1.14.0", { manifest: "1.13.0" });
 
-		expect(sight(root)).toBeNull();
+		expect(await sight(root)).toBeNull();
 	});
 
 	// Handing over to a bundle mid-write spawns half a program.
-	it("waits out a sibling whose bundle is still being written", () => {
+	it("waits out a sibling whose bundle is still being written", async () => {
 		const parent = installDir();
 		const root = install(parent, "1.13.0");
 		const fresh = install(parent, "1.14.0");
 		const now = new Date();
 		utimesSync(path.join(fresh, "dist", "daemon.js"), now, now);
 
-		expect(sight(root)).toBeNull();
+		expect(await sight(root)).toBeNull();
 	});
 
 	// A source checkout's root is not named by version, so the sibling scan must stay out of it: a
 	// sibling checkout of something newer is not an install of this build.
-	it("never scans siblings when the root is not a versioned directory", () => {
+	it("never scans siblings when the root is not a versioned directory", async () => {
 		const parent = installDir();
 		const root = checkout(parent, "my-checkout");
 		install(parent, "9.9.9");
 
-		expect(sight(root)).toBeNull();
+		expect(await sight(root)).toBeNull();
 	});
 });
 
 // A source checkout rebuilds dist/ in place, so the stamp recorded at start is the tell.
 describe("noticing a rebuild under the running daemon", () => {
-	it("points at its own root once the bundle changes and settles", () => {
+	it("points at its own root once the bundle changes and settles", async () => {
 		const parent = installDir();
 		const root = checkout(parent, "checkout");
 		const stampAtStart = bundleStamp(root);
 		writeFileSync(path.join(root, "dist", "daemon.js"), "// v2, longer\n");
 		backdate(path.join(root, "dist", "daemon.js"));
 
-		expect(sight(root, stampAtStart)?.root).toBe(root);
+		expect((await sight(root, stampAtStart))?.root).toBe(root);
 	});
 
-	it("waits while the rebuilt bundle is still fresh enough to be mid-write", () => {
+	it("waits while the rebuilt bundle is still fresh enough to be mid-write", async () => {
 		const parent = installDir();
 		const root = checkout(parent, "checkout");
 		const stampAtStart = bundleStamp(root);
 		writeFileSync(path.join(root, "dist", "daemon.js"), "// v2, still being written\n");
 
-		expect(sight(root, stampAtStart)).toBeNull();
+		expect(await sight(root, stampAtStart)).toBeNull();
 	});
 
-	it("stays put while the bundle is the one it started on", () => {
+	it("stays put while the bundle is the one it started on", async () => {
 		const parent = installDir();
 		const root = checkout(parent, "checkout");
 
-		expect(sight(root)).toBeNull();
+		expect(await sight(root)).toBeNull();
 	});
 
 	// Nothing recorded means nothing to compare, never a restart on a guess.
-	it("stays put with no stamp recorded at start", () => {
+	it("stays put with no stamp recorded at start", async () => {
 		const parent = installDir();
 		const root = checkout(parent, "checkout");
 
-		expect(sight(root, null)).toBeNull();
+		expect(await sight(root, null)).toBeNull();
 	});
 });

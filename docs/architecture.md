@@ -202,6 +202,16 @@ against a promise that lives as long as the provider keeps one reaction per requ
 provider dies, and `core/src/deadline.ts` is the one module that races at all, minting its own
 second arm so nothing raced outlives the call.
 
+A git call, the python provider's own helper and the runtime version probe all run through
+`protocol/src/boundedChild.ts`'s `runBounded`, the one owner of a bounded, reaped child process:
+spawned `detached`, bounded by a timeout that kills the whole process group and reaps it, since a
+shell script's own forked helper can inherit the child's stdout pipe and outlive a plain
+`child.kill`. The owner tracks every process group its own process spawned and kills what remains
+on `process.on("exit", ...)`, registered once in the module, plus the daemon's own explicit
+shutdown step for ordered cleanup; a SIGKILL of the owning process itself cannot be covered. The
+provider supervisor (`core/src/supervisor.ts`) spawns long-lived providers instead of a single
+bounded run, and is the one exception left outside the owner.
+
 ## Where a comment gets its meaning
 
 Providers report comments as raw spans and say nothing about ownership. Deciding which symbol a
@@ -256,7 +266,14 @@ read once at the end of the burst; the rest are put to `git check-ignore` togeth
 and what git ignores is never read. A service flushing its state into an ignored directory every
 few seconds therefore costs one git call per burst and no batch. A batch whose every file hashes to
 what the index holds returns before admission: no git, no provider, no sweep. A burst that never
-settles is delivered at a ceiling rather than held until it does.
+settles is delivered at a ceiling rather than held until it does. A failed git call leaves the
+previous verdicts standing: what the scope already admits stays admitted, and a path git could not
+say anything new about is dropped from the batch rather than granted admission by the failure.
+
+`check-ignore` and `check-attr` refuse a pathspec reaching into a submodule, and refuse the WHOLE
+batch for it, so `core/src/fileScope.ts`'s `gitIgnored` and `generatedVerdicts` ask git about a
+submodule's own root (found from its gitlink stage entry, mode `160000`) rather than a path
+beneath it, fanning the root's verdict back out to every path the batch asked about under it.
 
 A file whose last read failed is not retried by a batch that does not name it. The failure is about
 that file's own bytes, so only its own event can mean they moved, and retrying it every batch reads
