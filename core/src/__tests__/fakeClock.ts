@@ -33,7 +33,8 @@ export function fakeClock(start = 1_000_000): FakeClock {
 				.sort((a, b) => a[1].at - b[1].at)[0];
 			if (due === undefined) break;
 			// A callback re-arming inside the window would spin here forever, past any test timeout.
-			if (++fired > FIRING_CAP) throw new Error(`fakeClock: ${FIRING_CAP} timers fired before ${until}; one re-arms at ${due[1].at}`);
+			if (++fired > FIRING_CAP)
+				throw new Error(`fakeClock: ${FIRING_CAP} timers fired before ${until}; one re-arms at ${due[1].at}`);
 			timers.delete(due[0]);
 			now = due[1].at;
 			due[1].fn();
