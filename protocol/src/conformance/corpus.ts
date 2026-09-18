@@ -2206,6 +2206,229 @@ const CASES: ConformanceCase[] = [
 		parseErrors: "forbidden",
 	},
 	{
+		id: "an-accessor-attribute-belongs-to-its-property-or-event",
+		tier: "binding",
+		about: "An attribute on a get, set, init, add or remove accessor is a type use owned by the property, indexer or event it accesses.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/accessors.cs": [
+						"using System;",
+						"public class MarkerAttribute : Attribute { }",
+						"public class Holder {",
+						"    public int Value { [Marker] get; [Marker] set; }",
+						"    public int Init { get; [Marker] init; }",
+						"    public int this[int i] { [Marker] get => i; }",
+						"    public event Action Changed { [Marker] add { } [Marker] remove { } }",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/accessors.cs",
+			},
+		},
+		references: [
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 3, character: 24 },
+				from: "Value",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 3, character: 38 },
+				from: "Value",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 4, character: 28 },
+				from: "Init",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 5, character: 30 },
+				from: "this",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 6, character: 35 },
+				from: "Changed",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 6, character: 52 },
+				from: "Changed",
+				bindsTo: "MarkerAttribute",
+			},
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "attributes-on-an-indexer-parameter-a-local-function-or-a-lambda-are-walked",
+		tier: "binding",
+		about: "An attribute on an indexer parameter, a local function or a lambda is a type use, owned by the declaration it sits in.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/nested.cs": [
+						"using System;",
+						"public class MarkerAttribute : Attribute { }",
+						"public class Holder {",
+						"    public int this[[Marker] int i] => i;",
+						"    public void Method() {",
+						"        [Marker]",
+						"        void Local() { }",
+						"        Action<int> a = [Marker] x => { };",
+						"    }",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/nested.cs",
+			},
+		},
+		references: [
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 3, character: 21 },
+				from: "this",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 5, character: 9 },
+				from: "Method",
+				bindsTo: "MarkerAttribute",
+			},
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 7, character: 25 },
+				from: "Method",
+				bindsTo: "MarkerAttribute",
+			},
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "nameof-is-a-type-use-only-for-a-generic-operand",
+		tier: "binding",
+		about: "nameof(Type) stays a read, ambiguous between a type and a member or a variable, but a generic operand can only name a type.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/named.cs": [
+						"using System.Collections.Generic;",
+						"public class Bound { }",
+						"public class Holder {",
+						"    public string A = nameof(Bound);",
+						"    public string B = nameof(List<Bound>);",
+						"    public string C(int value) => nameof(value);",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/named.cs",
+			},
+		},
+		references: [
+			{ name: "Bound", role: "read", at: { line: 3, character: 29 }, from: "A", status: "unbound" },
+			{ name: "List", role: "typeUse", at: { line: 4, character: 29 }, from: "B", status: "unbound" },
+			{ name: "Bound", role: "typeUse", at: { line: 4, character: 34 }, from: "B", bindsTo: "Bound" },
+			{ name: "value", role: "read", at: { line: 5, character: 41 }, from: "C", bindsTo: "value" },
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "a-generic-constraint-names-the-parameter-and-its-bound-a-type-use",
+		tier: "binding",
+		about: "In `where T : Bound`, both T and its bound are type uses, the role Kotlin and Python use for a type parameter bound.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/bounds.cs": [
+						"public class Bound { }",
+						"public class Holder<T> where T : Bound {",
+						"    public void Method<U>(U value) where U : Bound { }",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/bounds.cs",
+			},
+		},
+		references: [
+			{ name: "T", role: "typeUse", at: { line: 1, character: 29 }, from: "Holder", bindsTo: "T" },
+			{ name: "Bound", role: "typeUse", at: { line: 1, character: 33 }, from: "Holder", bindsTo: "Bound" },
+			{ name: "U", role: "typeUse", at: { line: 2, character: 41 }, from: "Method", bindsTo: "U" },
+			{ name: "Bound", role: "typeUse", at: { line: 2, character: 45 }, from: "Method", bindsTo: "Bound" },
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "a-constraint-keyword-names-no-type-and-a-nested-generic-bound-is-fully-marked",
+		tier: "binding",
+		about: "class, struct, notnull and unmanaged in a where clause name no type; a nested generic bound like IEnumerable<T> is a type use through its own type argument.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/constraint-keyword.cs": [
+						"public class Bound { }",
+						"public class Holder<T, U, V> where T : Bound, notnull where U : unmanaged where V : IEnumerable<T> {",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/constraint-keyword.cs",
+			},
+		},
+		references: [
+			{ name: "T", role: "typeUse", at: { line: 1, character: 35 }, from: "Holder", bindsTo: "T" },
+			{ name: "Bound", role: "typeUse", at: { line: 1, character: 39 }, from: "Holder", bindsTo: "Bound" },
+			{ name: "U", role: "typeUse", at: { line: 1, character: 60 }, from: "Holder", bindsTo: "U" },
+			{ name: "V", role: "typeUse", at: { line: 1, character: 80 }, from: "Holder", bindsTo: "V" },
+			{ name: "IEnumerable", role: "typeUse", at: { line: 1, character: 84 }, from: "Holder", status: "unbound" },
+			{ name: "T", role: "typeUse", at: { line: 1, character: 96 }, from: "Holder", bindsTo: "T" },
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "a-member-after-a-nameof-generic-instantiation-stays-a-read",
+		tier: "binding",
+		about: "Only the segments up to and including a nameof operand's generic instantiation are a type use; a member accessed after it is still a read.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/nameof-generic.cs": [
+						"public class A<T> { public static int B; }",
+						"public class Holder {",
+						"    public string S = nameof(A<int>.B);",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/nameof-generic.cs",
+			},
+		},
+		references: [
+			{ name: "A", role: "typeUse", at: { line: 2, character: 29 }, from: "S", bindsTo: "A" },
+			{ name: "B", role: "read", at: { line: 2, character: 36 }, from: "S" },
+		],
+		parseErrors: "forbidden",
+	},
+	{
 		id: "a-nested-header-belongs-to-the-nested-declaration",
 		tier: "binding",
 		about: "A use in a nested declaration's header is written in that declaration, not in the one around it.",

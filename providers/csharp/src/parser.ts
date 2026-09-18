@@ -291,6 +291,14 @@ const BUILTIN_TYPES = new Set([
 
 const ASSIGNMENT_WORDS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "??="]);
 
+const ACCESSOR_KEYWORDS = new Set(["get", "set", "init", "add", "remove"]);
+
+const STATEMENT_BOUNDARY = new Set([";", "{", "}"]);
+
+const LAMBDA_ATTRIBUTE_CONTEXT = new Set(["(", ",", "=>", "return", ...ASSIGNMENT_WORDS]);
+
+const CONSTRAINT_KEYWORDS = new Set(["class", "struct", "notnull", "unmanaged", "default", "new"]);
+
 function isTrivia(token: Token | undefined): boolean {
 	return (
 		token === undefined ||
@@ -400,6 +408,7 @@ export class CsharpParser {
 	private readonly ignoredOffsets = new Set<number>();
 	private readonly namespaceNames = new Set<string>();
 	private readonly attributeNames = new Set<string>();
+	private readonly accessorBodyRanges: Array<{ start: number; end: number }> = [];
 	private readonly diagnostics: Diagnostic[];
 	private readonly reportedDiagnostics = new Set<string>();
 	private readonly scopeCounts = new Map<RawDeclaration | undefined, Map<string, number>>();
@@ -422,6 +431,7 @@ export class CsharpParser {
 			this.parseScope(0, this.tokens.length - 1, undefined);
 		}
 		const finalized = this.finalizeDeclarations();
+		if (!this.outline) this.scanNestedAttributes(finalized.metadata);
 		const references = this.outline ? [] : this.extractReferences(finalized.metadata);
 		const literals = this.outline ? [] : this.extractLiterals(finalized.metadata);
 		const comments = this.outline ? [] : this.extractComments();
@@ -645,6 +655,55 @@ export class CsharpParser {
 			const section = this.attributeSectionAt(current, end);
 			if (section === undefined || section.close < 0) return current;
 			current = section.close + 1;
+		}
+	}
+
+	/** Marks every `[...]` section without declaring anything. */
+	private walkAttributeSections(start: number, end: number): void {
+		let current = this.nextSignificant(start, end);
+		while (current >= 0 && current < end) {
+			const section = this.attributeSectionAt(current, end);
+			if (section !== undefined) {
+				current = section.close < 0 ? end : this.nextSignificant(section.close + 1, end);
+				continue;
+			}
+			current = this.nextSignificant(current + 1, end);
+		}
+	}
+
+	/** An accessor's attribute belongs to its property, indexer or event; its own body is skipped. */
+	private parseAccessorAttributes(start: number, end: number): void {
+		let current = this.nextSignificant(start, end);
+		while (current >= 0 && current < end) {
+			const section = this.attributeSectionAt(current, end);
+			if (section !== undefined) {
+				current = section.close < 0 ? end : this.nextSignificant(section.close + 1, end);
+				continue;
+			}
+			const item = this.token(current);
+			if (isIdentifier(item) && MODIFIERS.has(item.value)) {
+				current = this.nextSignificant(current + 1, end);
+				continue;
+			}
+			if (isIdentifier(item) && ACCESSOR_KEYWORDS.has(item.value)) {
+				const next = this.nextSignificant(current + 1, end);
+				const nextValue = this.value(next);
+				if (nextValue === "{") {
+					const close = this.matching(next, "{", "}", end);
+					const openToken = this.token(next);
+					const closeToken = close < 0 ? undefined : this.token(close);
+					if (openToken !== undefined && closeToken !== undefined)
+						this.accessorBodyRanges.push({ start: openToken.endOffset, end: closeToken.startOffset });
+					current = this.nextSignificant(close < 0 ? end : close + 1, end);
+				} else if (nextValue === "=>") {
+					const semicolon = this.findSemicolon(next + 1, end);
+					current = this.nextSignificant(semicolon < 0 ? end : semicolon + 1, end);
+				} else {
+					current = this.nextSignificant(next, end);
+				}
+				continue;
+			}
+			current = this.nextSignificant(current + 1, end);
 		}
 	}
 
@@ -919,7 +978,11 @@ export class CsharpParser {
 		const primaryOpen = this.value(afterName) === "(" ? afterName : -1;
 		const primaryClose = primaryOpen < 0 ? -1 : this.matching(primaryOpen, "(", ")", end);
 		if (primaryClose >= 0) type.parameterCount = this.parseParameters(primaryOpen, primaryClose, type);
-		if (!this.outline) this.markBaseTypes(nameIndex, bodyOpen >= 0 ? bodyOpen : codeEnd, type);
+		if (!this.outline) {
+			const headerEnd = bodyOpen >= 0 ? bodyOpen : codeEnd;
+			this.markBaseTypes(nameIndex, headerEnd, type);
+			this.parseTypeConstraints(nameIndex, headerEnd);
+		}
 		if (bodyOpen >= 0) {
 			if (kind === "enum") this.parseEnumMembers(bodyOpen + 1, bodyClose < 0 ? end : bodyClose, type);
 			else this.parseScope(bodyOpen + 1, bodyClose < 0 ? end : bodyClose, type);
@@ -961,36 +1024,98 @@ export class CsharpParser {
 	}
 
 	private markBaseTypes(start: number, end: number, parent: RawDeclaration): void {
+		const whereIndex = this.topLevelKeyword(start + 1, end, "where");
+		const bound = whereIndex < 0 ? end : whereIndex;
 		let colon = -1;
-		let current = this.nextSignificant(start + 1, end);
-		while (current >= 0 && current < end) {
+		let current = this.nextSignificant(start + 1, bound);
+		while (current >= 0 && current < bound) {
 			const value = this.value(current);
 			if (value === ":") {
 				colon = current;
 				break;
 			}
-			current = this.nextSignificant(current + 1, end);
+			current = this.nextSignificant(current + 1, bound);
 		}
 		if (colon < 0) return;
-		let segmentStart = this.nextSignificant(colon + 1, end);
+		let segmentStart = this.nextSignificant(colon + 1, bound);
 		const role: Reference["role"] = "extends";
 		let segmentRole: Reference["role"] = parent.kind === "struct" ? "implements" : role;
 		let depth = 0;
-		for (let cursor = segmentStart; cursor <= end; cursor++) {
+		for (let cursor = segmentStart; cursor <= bound; cursor++) {
 			const value = this.value(cursor);
 			if (value === "[" || value === "(") depth++;
 			else if (value === "]" || value === ")") depth--;
 			else depth += angleDelta(value ?? "");
-			if ((value === "," && depth === 0) || cursor === end) {
-				const segmentEnd = value === "," ? cursor : end;
+			if ((value === "," && depth === 0) || cursor === bound) {
+				const segmentEnd = value === "," ? cursor : bound;
 				this.addTypeReference(segmentStart, segmentEnd - 1, "typeUse");
 				const first = this.nextSignificant(segmentStart, segmentEnd);
 				const firstToken = this.token(first);
 				if (firstToken?.kind === "identifier") this.roleByOffset.set(firstToken.startOffset, segmentRole);
 				segmentRole = parent.kind === "interface" ? "extends" : "implements";
+				segmentStart = this.nextSignificant(cursor + 1, bound);
+			}
+		}
+	}
+
+	/** First top-level occurrence of `keyword`. */
+	private topLevelKeyword(start: number, end: number, keyword: string): number {
+		let depth = 0;
+		for (let current = start; current < end; current++) {
+			const value = this.value(current);
+			if (value === "(" || value === "[") depth++;
+			else if (value === ")" || value === "]") depth--;
+			else depth += angleDelta(value ?? "");
+			if (value === keyword && depth === 0) return current;
+		}
+		return -1;
+	}
+
+	/** A `where` clause's constrained parameter and its bounds are a type use. */
+	private parseTypeConstraints(start: number, end: number): void {
+		let clauseStart = this.topLevelKeyword(start, end, "where");
+		while (clauseStart >= 0 && clauseStart < end) {
+			const nameIndex = this.nextSignificant(clauseStart + 1, end);
+			const colon = this.nextSignificant(nameIndex + 1, end);
+			const nextWhere = this.topLevelKeyword(colon + 1, end, "where");
+			const clauseEnd = nextWhere < 0 ? end : nextWhere;
+			if (this.value(colon) === ":" && isIdentifier(this.token(nameIndex))) {
+				this.addTypeReference(nameIndex, nameIndex, "typeUse");
+				this.markConstraintSegments(colon + 1, clauseEnd);
+			}
+			clauseStart = nextWhere;
+		}
+	}
+
+	private markConstraintSegments(start: number, end: number): void {
+		let segmentStart = this.nextSignificant(start, end);
+		if (segmentStart < 0) return;
+		let depth = 0;
+		for (let cursor = segmentStart; cursor <= end; cursor++) {
+			const value = this.value(cursor);
+			if (value === "(" || value === "[") depth++;
+			else if (value === ")" || value === "]") depth--;
+			else depth += angleDelta(value ?? "");
+			if ((value === "," && depth === 0) || cursor === end) {
+				const segmentEnd = value === "," ? cursor : end;
+				if (segmentEnd > segmentStart && !this.isConstraintKeyword(segmentStart, segmentEnd))
+					this.addTypeReference(segmentStart, segmentEnd - 1, "typeUse");
 				segmentStart = this.nextSignificant(cursor + 1, end);
 			}
 		}
+	}
+
+	/** A bare constraint keyword names no type. */
+	private isConstraintKeyword(start: number, end: number): boolean {
+		const first = this.nextSignificant(start, end);
+		const token = this.token(first);
+		if (token === undefined || !CONSTRAINT_KEYWORDS.has(token.value)) return false;
+		const next = this.nextSignificant(first + 1, end);
+		const bareWord = next < 0;
+		const newCall = token.value === "new" && this.value(next) === "(";
+		if (!bareWord && !newCall) return false;
+		this.ignoredOffsets.add(token.startOffset);
+		return true;
 	}
 
 	private addTypeReference(start: number, end: number, role: Reference["role"]): void {
@@ -1001,6 +1126,150 @@ export class CsharpParser {
 				this.typeTokenIndices.add(current);
 				this.roleByOffset.set(item.startOffset, role);
 			}
+		}
+	}
+
+	/** Where a `nameof` operand's type portion ends, through its first generic instantiation. */
+	private genericOperandEnd(start: number, end: number): number | undefined {
+		let current = this.nextSignificant(start, end);
+		while (current >= 0 && current < end) {
+			const value = this.value(current);
+			if (value === "<") {
+				const close = this.matchingAngle(current, end);
+				return close < 0 ? undefined : close;
+			}
+			if (value === "." || value === "::" || this.token(current)?.kind === "identifier") {
+				current = this.nextSignificant(current + 1, end);
+				continue;
+			}
+			return undefined;
+		}
+		return undefined;
+	}
+
+	/** A statement-boundary run is an attribute only inside a method-shaped body; an expression-start run is one only before a lambda, an anonymous method, or its parameter list. */
+	private scanNestedAttributes(metadata: Map<string, DeclarationMeta>): void {
+		const end = this.tokens.length;
+		const bodies = this.runningBodyRanges(metadata);
+		for (let current = 0; current < end; current++) {
+			if (this.value(current) !== "[") continue;
+			const previous = this.previousSignificant(current);
+			const previousValue = this.value(previous);
+			if (previousValue === undefined) continue;
+			const token = this.token(current) as Token;
+			const boundary = STATEMENT_BOUNDARY.has(previousValue) && this.insideAny(bodies, token.startOffset);
+			const anonymousMethodParameter = previousValue === "(" && this.precededByDelegateKeyword(previous);
+			if (!boundary && !anonymousMethodParameter && !LAMBDA_ATTRIBUTE_CONTEXT.has(previousValue)) continue;
+			const after = this.bracketedSectionsEnd(current, end);
+			if (after === current) continue;
+			const verified = anonymousMethodParameter
+				? true
+				: boundary
+					? this.looksLikeLocalFunctionSignature(after, end)
+					: this.looksLikeLambdaSignature(after, end);
+			if (!verified) continue;
+			let mark = current;
+			while (mark < after) {
+				const section = this.attributeSectionAt(mark, end);
+				if (section === undefined || section.close < 0) break;
+				mark = section.close + 1;
+			}
+		}
+	}
+
+	/** Body spans a local function could sit among. */
+	private runningBodyRanges(metadata: Map<string, DeclarationMeta>): Array<{ start: number; end: number }> {
+		const ranges: Array<{ start: number; end: number }> = [...this.accessorBodyRanges];
+		for (const item of metadata.values()) {
+			if (item.bodyStartOffset === undefined || item.bodyEndOffset === undefined) continue;
+			const kind = item.declaration.kind;
+			if (kind !== "method" && kind !== "constructor" && kind !== "operator" && kind !== "function") continue;
+			ranges.push({ start: item.bodyStartOffset, end: item.bodyEndOffset });
+		}
+		return ranges;
+	}
+
+	private insideAny(ranges: Array<{ start: number; end: number }>, offset: number): boolean {
+		return ranges.some((range) => range.start <= offset && offset < range.end);
+	}
+
+	/** Where a run of `[...]` sections ends, without marking them. */
+	private bracketedSectionsEnd(index: number, end: number): number {
+		let current = index;
+		for (;;) {
+			const open = this.nextSignificant(current, end);
+			if (open < 0 || this.value(open) !== "[") return current;
+			const close = this.matching(open, "[", "]", end);
+			if (close < 0) return current;
+			current = close + 1;
+		}
+	}
+
+	private looksLikeLambdaSignature(index: number, end: number): boolean {
+		let current = this.nextSignificant(index, end);
+		while (this.value(current) === "static" || this.value(current) === "async") {
+			current = this.nextSignificant(current + 1, end);
+		}
+		if (this.value(current) === "delegate") {
+			const afterKeyword = this.nextSignificant(current + 1, end);
+			if (this.value(afterKeyword) !== "(") return this.value(afterKeyword) === "{";
+			const close = this.matching(afterKeyword, "(", ")", end);
+			return close >= 0 && this.value(this.nextSignificant(close + 1, end)) === "{";
+		}
+		if (this.value(current) === "(") {
+			const close = this.matching(current, "(", ")", end);
+			return close >= 0 && this.value(this.nextSignificant(close + 1, end)) === "=>";
+		}
+		return isIdentifier(this.token(current)) && this.value(this.nextSignificant(current + 1, end)) === "=>";
+	}
+
+	/** Whether `(` opens an anonymous method's own parameter list. */
+	private precededByDelegateKeyword(parenIndex: number): boolean {
+		let current = this.previousSignificant(parenIndex);
+		while (this.value(current) === "static" || this.value(current) === "async") {
+			current = this.previousSignificant(current);
+		}
+		return this.value(current) === "delegate";
+	}
+
+	/** Whether a local function signature follows, never a bare call. */
+	private looksLikeLocalFunctionSignature(index: number, end: number): boolean {
+		let current = this.nextSignificant(index, end);
+		while (isIdentifier(this.token(current)) && MODIFIERS.has(this.value(current) ?? "")) {
+			current = this.nextSignificant(current + 1, end);
+		}
+		let sawType = false;
+		for (;;) {
+			if (!isIdentifier(this.token(current))) return false;
+			current = this.nextSignificant(current + 1, end);
+			while (current >= 0 && current < end) {
+				const value = this.value(current);
+				if (value === "<") {
+					const close = this.matchingAngle(current, end);
+					if (close < 0) return false;
+					current = this.nextSignificant(close + 1, end);
+					continue;
+				}
+				if (value === "[") {
+					const close = this.matching(current, "[", "]", end);
+					if (close < 0) return false;
+					current = this.nextSignificant(close + 1, end);
+					continue;
+				}
+				if (value === "?" || value === "." || value === "::") {
+					current = this.nextSignificant(current + 1, end);
+					continue;
+				}
+				break;
+			}
+			if (this.value(current) === "(") {
+				if (!sawType) return false;
+				const close = this.matching(current, "(", ")", end);
+				if (close < 0) return false;
+				const after = this.value(this.nextSignificant(close + 1, end));
+				return after === "{" || after === "=>";
+			}
+			sawType = true;
 		}
 	}
 
@@ -1099,6 +1368,7 @@ export class CsharpParser {
 		});
 		const close = open < 0 ? -1 : this.matching(open, "(", ")", finish);
 		delegate.parameterCount = close < 0 ? 0 : this.parseParameters(open, close, delegate);
+		if (!this.outline && close >= 0) this.parseTypeConstraints(close + 1, finish);
 		const typeSpan = this.spanBeforeName(keywordIndex + 1, nameIndex);
 		this.recordTypeSpan(typeSpan, delegate);
 		return boundary < 0 ? end : boundary + 1;
@@ -1209,6 +1479,7 @@ export class CsharpParser {
 			if (genericClose >= 0) this.markTypeParameters(genericOpen, genericClose, method);
 		}
 		method.parameterCount = close < 0 ? 0 : this.parseParameters(open, close, method);
+		if (!this.outline && close >= 0) this.parseTypeConstraints(close + 1, boundary.index);
 		if (boundary.kind === "body")
 			this.parseLocalDeclarations(boundary.index + 1, bodyClose < 0 ? end : bodyClose, method);
 		return this.advanceBoundary(boundary, end, bodyClose);
@@ -1363,6 +1634,13 @@ export class CsharpParser {
 	): number {
 		const name = this.token(nameIndex);
 		if (!isIdentifier(name)) return this.advanceBoundary(boundary, end);
+		if (name.value === "this") {
+			const bracketOpen = this.nextSignificant(nameIndex + 1, end);
+			if (this.value(bracketOpen) === "[") {
+				const bracketClose = this.matching(bracketOpen, "[", "]", end);
+				if (bracketClose >= 0) this.walkAttributeSections(bracketOpen + 1, bracketClose);
+			}
+		}
 		const close = boundary.kind === "body" ? this.matching(boundary.index, "{", "}", end) : -1;
 		if (boundary.kind === "body" && close < 0)
 			this.report("Property body is not closed.", this.token(boundary.index));
@@ -1387,6 +1665,7 @@ export class CsharpParser {
 		});
 		this.recordTypeSpan(this.spanBeforeName(start, nameIndex), property);
 		if (close >= 0) {
+			this.parseAccessorAttributes(boundary.index + 1, close);
 			const afterBody = this.nextSignificant(close + 1, end);
 			if (this.value(afterBody) === "=") {
 				const semicolon = this.findSemicolon(afterBody + 1, end);
@@ -1420,6 +1699,7 @@ export class CsharpParser {
 			return this.advanceBoundary(boundary, end);
 		}
 		const close = boundary.kind === "body" ? this.matching(boundary.index, "{", "}", end) : -1;
+		if (close >= 0) this.parseAccessorAttributes(boundary.index + 1, close);
 		const visibility = visibilityFor(modifiers, parent, "event");
 		const typeText = this.outline ? undefined : this.typeTextBeforeName(start + 1, firstNameIndex);
 		const qualifier = this.explicitInterfaceQualifier(start + 1, firstNameIndex);
@@ -2020,6 +2300,15 @@ export class CsharpParser {
 			if (item.value === "typeof" && nextValue === "(") {
 				const close = this.matching(next, "(", ")");
 				if (close > next) this.addTypeReference(next + 1, close - 1, "typeUse");
+				continue;
+			}
+			if (item.value === "nameof" && nextValue === "(") {
+				const close = this.matching(next, "(", ")");
+				// A generic operand names a type; the rest is a read.
+				if (close > next) {
+					const typeEnd = this.genericOperandEnd(next + 1, close);
+					if (typeEnd !== undefined) this.addTypeReference(next + 1, typeEnd, "typeUse");
+				}
 				continue;
 			}
 			if (SKIPPED_WORDS.has(item.value) && !(nextValue === "(" && ["add", "remove"].includes(item.value)))
