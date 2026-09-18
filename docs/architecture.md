@@ -124,6 +124,19 @@ one generation of the index is the daemon's gate: `core/src/dispatch.ts` runs a 
 under the shared gate, alongside other readers and never inside a write, whether the handler is
 tagged `read` or reaches the answer through `treeFirst` or `upgradedRead`.
 
+**A replace or insert plan's context is read outside the gate, so it stamps what it read.** At the
+first touch of a module, by id or by its rows, the context records the store's `stampOf` for it:
+the depth the rows hold and the `indexedAt` their commit took. The stamp and the rows are read in
+one synchronous span, and a commit is synchronous, so the stamp describes those rows. The plan
+carries `context.seen()`, and the step's stale check inside the gate asks `factsMovedSince` beside
+the hash check: a pump upgrade from outline to full facts, or a batch re-parsing unchanged bytes,
+replaces every row of a module while its hash stays equal, and the hash check alone let a plan land
+over a sibling set, a collision or an impact it never saw. Every commit's stamp is distinct:
+`replaceFile` stamps the later of the clock and one past the newest stamp the store has written,
+seeded at open from the rows it holds, so two commits of one module inside one millisecond still
+read as two. A stamp a few milliseconds ahead of the clock reads as a later time to last-seen, the
+prune and the ages.
+
 **A reader that derives topology takes a context; one that does not reads the store.** `describe`,
 `usesFrom`, `findReferences`, the two hierarchies, `mostReferenced`, `headingPath`, the scoped
 searches, `factsFor` and `knowledgeScope` all ask about nesting, locality, containment or a
@@ -135,8 +148,10 @@ already orders, each summarized at most once, so a context would add an unused m
 that a module's own rows and a store-resolved chain both take. `read-context-residue.test.ts` fails
 the build where another module names a containment, calls that walk, declares a second summary,
 reads `containerId` to answer a nesting question by hand, or reads `declarationsIn` outside the
-readers it names as asking nothing about nesting. The refactor planner is not one of those: its
-sibling, collision and impact questions go through a context minted per plan.
+readers it names as asking nothing about nesting, or compares a module's stamp by hand. The
+refactor planner is not one of those: replace and insert ask their sibling, collision and impact
+questions of a context minted per plan, and the plan carries what that context stamped. Rename and
+move mint none; they plan from the store's rows directly and recheck hashes alone inside the gate.
 
 ## Diagnostics
 
@@ -403,8 +418,10 @@ decoded text.
 `LexiconService.planReplacement` does everything expensive and touches nothing: it splices the new
 text into the file it read, asks the owning provider to parse the result, and compares that against
 the index. The write happens separately, under the gate, and rechecks that the file still hashes to
-what the splice was cut from. Planning outside the gate keeps a parse off the critical section;
-rechecking inside it is what stops a plan being applied to a file that moved underneath it.
+what the splice was cut from and that the rows the plan read still carry the stamp they were read
+at. Planning outside the gate keeps a parse off the critical section; rechecking inside it is what
+stops a plan being applied to a file that moved underneath it, or over facts the index committed
+again while it planned. Insert rechecks the same two things.
 
 The splice uses the one read its span was sliced from (`SourceWorkspace.symbolSourceRead`), never a
 second one, so the range and the text it describes cannot come from two versions of the file.

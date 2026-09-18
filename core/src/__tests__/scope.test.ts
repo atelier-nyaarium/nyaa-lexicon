@@ -22,6 +22,7 @@ function store(rows: StoredDeclaration[]): ReadContext {
 	return new ReadContext({
 		declaration: (id: string) => rows.find((row) => row.symbolId === id) ?? null,
 		declarationsNamed: (name: string) => rows.filter((row) => row.name === name),
+		stampOf: () => null,
 	} as unknown as IndexStore);
 }
 

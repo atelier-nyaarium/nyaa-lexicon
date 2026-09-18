@@ -113,6 +113,12 @@ export interface ReplaceFileInput {
 	generated?: GeneratedVerdict | null;
 }
 
+/** One commit of a module's rows: the depth they hold and the clock stamp the commit took. */
+export interface FactsStamp {
+	depth: IndexDepth;
+	indexedAt: number;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -873,11 +879,21 @@ export class IndexStore {
 	/** The one owner of knowledge identity. */
 	readonly subjects: KnowledgeSubjects;
 
+	/** The newest stamp written or held, so no two commits share one. */
+	private newestStamp: number;
+
 	private constructor(
 		private readonly db: DatabaseSync,
 		private readonly clock: Clock,
 	) {
 		this.subjects = new KnowledgeSubjects(db);
+		this.newestStamp = this.newestIndexedAt() ?? 0;
+	}
+
+	/** The later of the clock and one past the newest: two commits in one millisecond stay ordered. */
+	private nextStamp(): number {
+		this.newestStamp = Math.max(this.clock.now(), this.newestStamp + 1);
+		return this.newestStamp;
 	}
 
 	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. */
@@ -1078,7 +1094,7 @@ export class IndexStore {
 				.run(
 					module,
 					contentHash,
-					this.clock.now(),
+					this.nextStamp(),
 					depth,
 					content,
 					generated?.status ?? null,
@@ -1317,6 +1333,14 @@ export class IndexStore {
 			| { depth: IndexDepth }
 			| undefined;
 		return row?.depth ?? null;
+	}
+
+	/** What a module's rows were committed as, or null when it is not indexed. */
+	stampOf(module: string): FactsStamp | null {
+		const row = this.db.prepare("SELECT depth, indexedAt FROM files WHERE module = ?").get(module) as
+			| FactsStamp
+			| undefined;
+		return row ?? null;
 	}
 
 	/** Modules still owing a full pass, in module order for deterministic upgrades. */

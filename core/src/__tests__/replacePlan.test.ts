@@ -4,13 +4,16 @@ import type { ImportResolver } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { RefactorPlanner } from "../refactorPlanner";
 import type { SourceWorkspace } from "../sourceWorkspace";
-import type { IndexStore, StoredDeclaration } from "../store";
+import type { FactsStamp, IndexStore, StoredDeclaration } from "../store";
+import { stepWith } from "./steppedPlan";
 
 ////////////////////////////////
 //  Helpers
 
 const MODULE = "src/mod.ts";
 const OTHER = "src/other.ts";
+
+const INDEXED: FactsStamp = { depth: "full", indexedAt: 1 };
 
 function id(name: string, container?: string): string {
 	return composeSymbolId({
@@ -90,6 +93,8 @@ interface World {
 	/** Modules holding a reference to each id. */
 	users?: Record<string, string[]>;
 	parse: (candidate: string) => CandidateParse;
+	/** What the module's rows stand committed as; defaults to full facts. */
+	stamp?: FactsStamp | null;
 }
 
 function plannerFor(world: World): RefactorPlanner {
@@ -101,6 +106,7 @@ function plannerFor(world: World): RefactorPlanner {
 		referencesTo: (symbolId: string) => (world.users?.[symbolId] ?? []).map((module) => ({ module })),
 		referencesIn: () => [],
 		contentHashOf: () => null,
+		stampOf: () => (world.stamp === undefined ? INDEXED : world.stamp),
 	} as unknown as IndexStore;
 
 	const probe: ProviderProbe = {
@@ -226,5 +232,62 @@ describe("reading a candidate against what the module holds", () => {
 		expect(plan.issues).toEqual([
 			{ kind: "OrphanedReference", detail: expect.stringMatching(/first .*src\/other\.ts/), module: MODULE },
 		]);
+	});
+});
+
+// The step writes inside the gate what it planned outside it, so the rows the plan read have to
+// stand as read: a commit of the same bytes keeps the hash and still replaces every row.
+describe("writing only over the rows the plan read", () => {
+	const text = ["class C {", "\tfirst() {}", "\tsecond() {}", "}", ""].join("\n");
+	const first = { name: "first", container: "C", range: range(1, 1, 1, 11) };
+	const second = { name: "second", container: "C", range: range(2, 1, 2, 12) };
+	const holder = { name: "C", kind: "class" as const, range: range(0, 0, 3, 1) };
+
+	function worldFor(): World {
+		return {
+			text,
+			declarations: [declarationOf(holder), declarationOf(first), declarationOf(second)],
+			stamp: { depth: "outline", indexedAt: 1 },
+			parse: () =>
+				({
+					parsed: true,
+					facts: facts(holder, { ...first, range: range(1, 1, 1, 22) }, second),
+				}) as CandidateParse,
+		};
+	}
+
+	const stepOver = (world: World, between: () => void) =>
+		stepWith(
+			{
+				planner: plannerFor(world),
+				currentHashOf: (module) => (module === MODULE ? hashContent(world.text) : null),
+				declarationsIn: () => world.declarations,
+			},
+			"refactorReplace",
+			{ symbolId: id("first", "C"), newText: "first() { return 1; }" },
+			between,
+		);
+
+	it("lands when the rows stand as the plan read them", async () => {
+		const world = worldFor();
+
+		const { outcome, written } = await stepOver(world, () => {});
+
+		expect(outcome).toMatchObject({ replaced: true, module: MODULE });
+		expect(written).toEqual([{ module: MODULE, text: text.replace("first() {}", "first() { return 1; }") }]);
+	});
+
+	// The bytes never changed, so the hash still matches; the upgrade added a member the impact
+	// and rename checks never saw.
+	it("refuses when an upgrade committed the module again between the plan and the write", async () => {
+		const world = worldFor();
+
+		const { outcome, written } = await stepOver(world, () => {
+			world.declarations.push(declarationOf({ name: "third", container: "C", range: range(2, 1, 2, 12) }));
+			world.stamp = { depth: "full", indexedAt: 1 };
+		});
+
+		expect(outcome).toMatchObject({ replaced: false, reason: expect.stringMatching(/indexed again/) });
+		expect(written).toEqual([]);
 	});
 });

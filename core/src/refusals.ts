@@ -446,6 +446,11 @@ export function changedWhilePlanned(module: string, kind: string): Refusal {
 	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);
 }
 
+/** The index committed the rows again, so the plan read facts that are gone. */
+export function factsMovedWhilePlanned(modules: string[], kind: string): Refusal {
+	return mint(`indexed again while the ${kind} was planned: ${modules.join(", ")}. Plan again`);
+}
+
 /** A standalone step's failed write, settled as recovery would. */
 export function stepAbandoned(problem: Refusal, conflicts: string[]): Refusal {
 	const left = conflicts.length === 0 ? "" : `; ${conflicts.join(", ")} matched neither image and was left as found`;

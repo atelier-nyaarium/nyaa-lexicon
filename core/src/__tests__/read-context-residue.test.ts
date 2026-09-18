@@ -21,6 +21,12 @@ const PLANNER = "refactorPlanner.ts";
 /** The store's read of a module's rows. Read by hand, it is a second topology. */
 const ROWS = "declarationsIn";
 
+/** The store's stamp of a module's rows. Compared by hand, it is a second staleness rule. */
+const STAMP = "stampOf";
+
+/** Declares the stamp read. */
+const STORE = "store.ts";
+
 /** Readers of the rows that ask nothing about nesting, each with why the rows suffice. */
 const ROW_READERS: Record<string, string> = {
 	"store.ts": "declares the read",
@@ -79,6 +85,13 @@ describe("one owner derives a read's declaration topology", () => {
 
 		const offenders = codeHolders(ROWS, [OWNER, ...Object.keys(ROW_READERS)]);
 		expect(offenders, "a reader deriving nesting from the rows asks the context").toEqual([]);
+	});
+
+	it("stamps a module's rows only where the owner records and compares them", () => {
+		expect(codeOf(OWNER).includes(STAMP), "the owner no longer stamps what it reads").toBe(true);
+
+		const offenders = codeHolders(STAMP, [OWNER, STORE]);
+		expect(offenders, "a writer proving its rows still stand asks the context's stamps").toEqual([]);
 	});
 
 	it("names a containment nowhere else", () => {

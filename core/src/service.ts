@@ -251,6 +251,10 @@ export class LexiconService {
 		return this.source.staleModules(modules);
 	}
 
+	factsMoved(...args: Parameters<RefactorPlanner["factsMoved"]>): ReturnType<RefactorPlanner["factsMoved"]> {
+		return this.planner.factsMoved(...args);
+	}
+
 	rebaseIntoModule(
 		...args: Parameters<RefactorPlanner["rebaseIntoModule"]>
 	): ReturnType<RefactorPlanner["rebaseIntoModule"]> {

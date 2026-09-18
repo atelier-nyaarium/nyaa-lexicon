@@ -5,11 +5,14 @@
 // once. Every reader asks here rather than deriving containment a second way; a residue test holds
 // the containment, the container walk and the summary to this file and `locals.ts`, and a module's
 // rows to the readers it names.
+//
+// Each module is stamped at its first touch, in the same synchronous span as the rows, so a writer
+// planning from this context can prove those rows were not committed again before it wrote.
 
 import { defined, GROUPING_KINDS, type SymbolSummary } from "@nyaa-lexicon/protocol";
 import { ancestryOf, Containment } from "./locals.js";
 import { contains, type Scope } from "./scope.js";
-import type { StoredDeclaration, StoredLiteral } from "./store.js";
+import type { FactsStamp, StoredDeclaration, StoredLiteral } from "./store.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -19,10 +22,29 @@ export interface DeclarationReads {
 	declaration(symbolId: string): StoredDeclaration | null;
 	declarationsIn(module: string): StoredDeclaration[];
 	declarationsNamed(name: string): StoredDeclaration[];
+	stampOf(module: string): FactsStamp | null;
+}
+
+/** A module as a context first touched it; null where the index held nothing. */
+export interface FactsSeen {
+	module: string;
+	stamp: FactsStamp | null;
 }
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** Modules whose rows were committed again since a context saw them: a re-parse of unchanged bytes
+ * or a depth upgrade, neither of which a content hash can see. */
+export function factsMovedSince(seen: FactsSeen[], reads: Pick<DeclarationReads, "stampOf">): string[] {
+	return seen
+		.filter(({ module, stamp }) => {
+			const now = reads.stampOf(module);
+			if (stamp === null || now === null) return stamp !== now;
+			return now.depth !== stamp.depth || now.indexedAt !== stamp.indexedAt;
+		})
+		.map(({ module }) => module);
+}
 
 export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 	return {
@@ -48,6 +70,7 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 export class ReadContext {
 	private readonly modules = new Map<string, Containment>();
 	private readonly declarations = new Map<string, StoredDeclaration | null>();
+	private readonly stamps = new Map<string, FactsStamp | null>();
 
 	constructor(private readonly store: DeclarationReads) {}
 
@@ -56,8 +79,14 @@ export class ReadContext {
 		const known = this.declarations.get(symbolId);
 		if (known !== undefined) return known;
 		const found = this.store.declaration(symbolId);
+		if (found !== null) this.touch(found.module);
 		this.declarations.set(symbolId, found);
 		return found;
+	}
+
+	/** Every module this context read, stamped as it stood at the first touch. */
+	seen(): FactsSeen[] {
+		return [...this.stamps].map(([module, stamp]) => ({ module, stamp }));
 	}
 
 	declarationsNamed(name: string): StoredDeclaration[] {
@@ -146,12 +175,18 @@ export class ReadContext {
 	private topology(module: string): Containment {
 		const known = this.modules.get(module);
 		if (known !== undefined) return known;
+		this.touch(module);
 		const rows = this.store.declarationsIn(module);
 		// First answer for an id stands.
 		for (const row of rows) if (!this.declarations.has(row.symbolId)) this.declarations.set(row.symbolId, row);
 		const built = new Containment(rows);
 		this.modules.set(module, built);
 		return built;
+	}
+
+	/** First stamp stands, as the first row does. */
+	private touch(module: string): void {
+		if (!this.stamps.has(module)) this.stamps.set(module, this.store.stampOf(module));
 	}
 
 	/** The topology of the module holding this id, or null where the index does not hold it. */

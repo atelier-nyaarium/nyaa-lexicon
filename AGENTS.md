@@ -256,7 +256,10 @@ Ordered by how much they prove:
   readers disagree about the same file. `core/src/locals.ts` holds the per-module containment and
   the one container walk beneath it, and a residue forbids every other module naming either,
   reading `containerId` to answer a nesting question, or reading `declarationsIn` outside the
-  readers it names as asking nothing about nesting. `docs/architecture.md` holds the whole of it.
+  readers it names as asking nothing about nesting. A plan's context is read outside the gate,
+  so it stamps each module at its first touch and the step refuses inside the gate when a stamp
+  moved; a hash cannot see a re-parse or an upgrade, and `stampOf` is compared nowhere else.
+  `docs/architecture.md` holds the whole of it.
 - **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
   store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there.
   Recall, doubt and diagnosis read raw rows on purpose, since a stranded subject must still be seen.

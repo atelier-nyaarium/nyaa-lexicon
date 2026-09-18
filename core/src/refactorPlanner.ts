@@ -7,7 +7,6 @@ import type {
 	FileFacts,
 	MoveDependency,
 	MoveEditsRequest,
-	MovePlan,
 	Range,
 	RenameConcern,
 	RenameEditPlan,
@@ -33,7 +32,7 @@ import {
 import type { FileEdits } from "./applyEdits.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
-import { ReadContext } from "./readContext.js";
+import { type FactsSeen, factsMovedSince, ReadContext } from "./readContext.js";
 import type { PlannedMove, PlannedRename, PlannedRenameEdits, RenameBlocker } from "./refusalSlots.js";
 import {
 	alreadyInModule,
@@ -159,6 +158,8 @@ export type ReplacementPlan =
 			range: Range;
 			/** Of the text the splice was cut from, so the writer can prove nothing moved since. */
 			baseHash: string;
+			/** The rows the plan read, stamped, so the writer can prove they were not committed again. */
+			facts: FactsSeen[];
 			issues: RefactorIssue[];
 	  }
 	| { ok: false; reason: Refusal; stale?: true };
@@ -196,6 +197,8 @@ export type InsertPlan =
 			block: string;
 			/** Null when the module is being created. */
 			baseHash: string | null;
+			/** The rows the plan read, stamped, so the writer can prove they were not committed again. */
+			facts: FactsSeen[];
 			issues: RefactorIssue[];
 	  }
 	| { state: "present"; module: string }
@@ -273,8 +276,14 @@ export class RefactorPlanner {
 			text: spliced.text,
 			range: source.range,
 			baseHash: source.contentHash,
+			facts: context.seen(),
 			issues,
 		};
+	}
+
+	/** Modules whose rows a plan read and the index has committed again since. */
+	factsMoved(seen: FactsSeen[]): string[] {
+		return factsMovedSince(seen, this.store);
 	}
 
 	/**
@@ -325,6 +334,7 @@ export class RefactorPlanner {
 			candidate,
 			block,
 			baseHash: point.created ? null : hashContent(point.before),
+			facts: context.seen(),
 			issues,
 		};
 	}

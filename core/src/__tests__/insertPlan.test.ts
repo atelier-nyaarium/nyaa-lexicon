@@ -1,15 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { composeSymbolId, type FileFacts, type Range } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, type FileFacts, hashContent, type Range } from "@nyaa-lexicon/protocol";
 import type { ImportResolver } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { type InsertArgs, RefactorPlanner } from "../refactorPlanner";
 import type { SourceWorkspace } from "../sourceWorkspace";
-import type { IndexStore, StoredDeclaration } from "../store";
+import type { FactsStamp, IndexStore, StoredDeclaration } from "../store";
+import { stepWith } from "./steppedPlan";
 
 ////////////////////////////////
 //  Helpers
 
 const MODULE = "src/mod.ts";
+
+const INDEXED: FactsStamp = { depth: "full", indexedAt: 1 };
 
 function id(name: string, container?: string): string {
 	return composeSymbolId({
@@ -76,6 +79,8 @@ interface World {
 	/** Overrides the stored content hash; default matches the text on disk. */
 	indexedHash?: string | null;
 	syntaxDiagnostics?: boolean;
+	/** What the module's rows stand committed as; defaults to full facts. */
+	stamp?: FactsStamp | null;
 }
 
 function plannerFor(world: World) {
@@ -87,6 +92,7 @@ function plannerFor(world: World) {
 		referencesTo: () => [],
 		referencesIn: () => [],
 		contentHashOf: () => (world.indexedHash === undefined ? null : world.indexedHash),
+		stampOf: () => (world.stamp === undefined ? INDEXED : world.stamp),
 	} as unknown as IndexStore;
 
 	const probe: ProviderProbe = {
@@ -350,6 +356,61 @@ describe("answering already-inserted on a retry", () => {
 		const outcome = await plan(world, { after: id("alpha"), text: "function added() {}" });
 
 		expect(outcome.state).toBe("planned");
+	});
+});
+
+// The splice point was chosen from the sibling rows outside the gate; the write lands inside it.
+describe("writing only over the rows the plan read", () => {
+	const text = ["function alpha() {}", "", "function beta() {}", ""].join("\n");
+
+	function worldFor(): World {
+		return {
+			text,
+			declarations: [
+				declarationOf({ name: "alpha", range: range(0, 0, 0, 19) }),
+				declarationOf({ name: "beta", range: range(2, 0, 2, 18) }),
+			],
+		};
+	}
+
+	const stepOver = (world: World, between: () => void) =>
+		stepWith(
+			{
+				planner: plannerFor(world),
+				currentHashOf: (module) => (module === MODULE ? hashContent(world.text) : null),
+				declarationsIn: () => world.declarations,
+			},
+			"refactorInsert",
+			{ after: id("alpha"), text: "function added() {}" },
+			between,
+		);
+
+	it("lands when the rows stand as the plan read them", async () => {
+		const world = worldFor();
+
+		const { outcome, written } = await stepOver(world, () => {});
+
+		expect(outcome).toMatchObject({ inserted: true, module: MODULE });
+		expect(written).toEqual([
+			{
+				module: MODULE,
+				text: ["function alpha() {}", "", "function added() {}", "", "function beta() {}", ""].join("\n"),
+			},
+		]);
+	});
+
+	// A re-parse of unchanged bytes keeps the hash and replaces the rows; the sibling the block
+	// was placed above is no longer among them.
+	it("refuses when a re-parse committed the module again between the plan and the write", async () => {
+		const world = worldFor();
+
+		const { outcome, written } = await stepOver(world, () => {
+			world.declarations = world.declarations.filter((declaration) => declaration.name !== "beta");
+			world.stamp = { depth: "full", indexedAt: 2 };
+		});
+
+		expect(outcome).toMatchObject({ inserted: false, reason: expect.stringMatching(/indexed again/) });
+		expect(written).toEqual([]);
 	});
 });
 

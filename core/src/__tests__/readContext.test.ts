@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { ancestryOf } from "../locals.js";
-import { type DeclarationReads, ReadContext } from "../readContext.js";
-import type { StoredDeclaration } from "../store.js";
+import { type DeclarationReads, factsMovedSince, ReadContext } from "../readContext.js";
+import { type FactsStamp, IndexStore, type StoredDeclaration } from "../store.js";
+import { fakeClock } from "./fakeClock";
 
 const SHOP = "shop.ref";
 const OTHER = "other.ref";
@@ -55,14 +59,18 @@ const inShop = ROWS.filter((row) => row.module === SHOP);
 interface Counting extends DeclarationReads {
 	modules: string[];
 	ids: string[];
+	/** What each module's rows stand committed as; absent means not indexed. */
+	stamps: Map<string, FactsStamp>;
 }
 
 function reads(rows: readonly StoredDeclaration[] = ROWS): Counting {
 	const modules: string[] = [];
 	const ids: string[] = [];
+	const stamps = new Map<string, FactsStamp>();
 	return {
 		modules,
 		ids,
+		stamps,
 		declaration: (symbolId) => {
 			ids.push(symbolId);
 			return rows.find((row) => row.symbolId === symbolId) ?? null;
@@ -72,6 +80,7 @@ function reads(rows: readonly StoredDeclaration[] = ROWS): Counting {
 			return rows.filter((row) => row.module === module);
 		},
 		declarationsNamed: (name) => rows.filter((row) => row.name === name),
+		stampOf: (module) => stamps.get(module) ?? null,
 	};
 }
 
@@ -108,6 +117,63 @@ describe("a read context reads each module once", () => {
 		expect(context.summaryOf(IDS.open)?.name).toBe("open");
 
 		expect(source.ids).toEqual([]);
+	});
+});
+
+describe("a read context stamps what it read", () => {
+	it("stamps a module once, at its first touch by id or by module", () => {
+		const source = reads();
+		source.stamps.set(SHOP, { depth: "outline", indexedAt: 1 });
+		const context = new ReadContext(source);
+
+		context.declaration(IDS.open);
+		source.stamps.set(SHOP, { depth: "full", indexedAt: 2 });
+		context.heldIn(SHOP);
+		context.declaration(IDS.load);
+		context.declaration(ABSENT);
+
+		expect(context.seen()).toEqual([
+			{ module: SHOP, stamp: { depth: "outline", indexedAt: 1 } },
+			{ module: OTHER, stamp: null },
+		]);
+	});
+
+	// A hash cannot see any of these: the bytes never changed.
+	it("names the modules committed again since: upgraded, re-parsed, indexed, or forgotten", () => {
+		const source = reads();
+		source.stamps.set(SHOP, { depth: "outline", indexedAt: 1 });
+		source.stamps.set(OTHER, { depth: "full", indexedAt: 1 });
+		source.stamps.set("gone.ref", { depth: "full", indexedAt: 1 });
+		const context = new ReadContext(source);
+		for (const module of [SHOP, OTHER, "gone.ref", "fresh.ref"]) context.heldIn(module);
+
+		expect(factsMovedSince(context.seen(), source)).toEqual([]);
+
+		source.stamps.set(SHOP, { depth: "full", indexedAt: 1 });
+		source.stamps.set(OTHER, { depth: "full", indexedAt: 2 });
+		source.stamps.delete("gone.ref");
+		source.stamps.set("fresh.ref", { depth: "full", indexedAt: 3 });
+
+		expect(factsMovedSince(context.seen(), source)).toEqual([SHOP, OTHER, "gone.ref", "fresh.ref"]);
+	});
+
+	// The clock is the stamp's other source, and a frozen one would read two commits as one.
+	it("names a module committed twice in one instant with the read between, against the real store", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "lexicon-stamp-"));
+		const store = IndexStore.open(path.join(dir, "index.sqlite"), undefined, undefined, fakeClock()).store;
+		const commit = (rows: StoredDeclaration[]) =>
+			store.replaceFile({ module: SHOP, contentHash: "same-bytes", declarations: rows, references: [] });
+		try {
+			commit([inShop[0] as StoredDeclaration]);
+			const context = new ReadContext(store);
+			context.heldIn(SHOP);
+			commit([inShop[0] as StoredDeclaration, inShop[4] as StoredDeclaration]);
+
+			expect(factsMovedSince(context.seen(), store)).toEqual([SHOP]);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

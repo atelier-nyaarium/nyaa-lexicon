@@ -16,7 +16,7 @@ import {
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import { journaledStep, StepRefusal } from "./refactorStep.js";
-import { changedWhilePlanned, renameBlocked, staleSincePlanned } from "./refusals.js";
+import { changedWhilePlanned, factsMovedWhilePlanned, renameBlocked, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
@@ -240,8 +240,9 @@ function refactorRename(
  *
  * Planning parses a candidate and asks the index what would break, which is the slow half and
  * needs no exclusivity. The gate is held only across journal, write and reindex, and the file's
- * hash is rechecked once held: anything that changed it in between invalidates the plan that was
- * just made, and applying anyway would overwrite whatever changed it.
+ * hash and the stamps of the rows the plan read are rechecked once held: anything that changed
+ * either in between invalidates the plan that was just made, and applying anyway would overwrite
+ * whatever changed it, or land over facts the plan never saw.
  */
 function refactorReplace(
 	service: LexiconService,
@@ -279,10 +280,14 @@ function refactorReplace(
 						planRecord: { range: plan.range },
 						plannedText: [{ module: plan.module, text: plan.text }],
 						// The plan was spliced from, and its span checked on, one exact version of the file.
-						stale: () =>
-							service.currentHashOf(plan.module) !== plan.baseHash
-								? changedWhilePlanned(plan.module, "replacement")
-								: null,
+						stale: () => {
+							if (service.currentHashOf(plan.module) !== plan.baseHash) {
+								return changedWhilePlanned(plan.module, "replacement");
+							}
+							// Rows re-committed under an equal hash: a re-parse or an upgrade.
+							const moved = service.factsMoved(plan.facts);
+							return moved.length > 0 ? factsMovedWhilePlanned(moved, "replacement") : null;
+						},
 						apply: () => service.writeModule(plan.module, plan.text),
 						reindex: [plan.module],
 						issues: plan.issues,
@@ -338,7 +343,10 @@ function refactorInsert(
 							const fresh = plan.created
 								? service.currentHashOf(plan.module) === null
 								: service.currentHashOf(plan.module) === plan.baseHash;
-							return fresh ? null : changedWhilePlanned(plan.module, "insert");
+							if (!fresh) return changedWhilePlanned(plan.module, "insert");
+							// The sibling set and the collision check were read from these rows.
+							const moved = service.factsMoved(plan.facts);
+							return moved.length > 0 ? factsMovedWhilePlanned(moved, "insert") : null;
 						},
 						begin: () => {
 							held = new Set(service.declarationsIn(plan.module).map((d) => d.symbolId));
