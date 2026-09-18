@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ancestryOf } from "../locals.js";
 import { type DeclarationReads, factsMovedSince, ReadContext } from "../readContext.js";
-import { type FactsStamp, IndexStore, type StoredDeclaration } from "../store.js";
+import {
+	type FactsStamp,
+	IndexStore,
+	type StoredDeclaration,
+	type StoredImport,
+	type StoredReference,
+} from "../store.js";
 import { fakeClock } from "./fakeClock";
 
 const SHOP = "shop.ref";
@@ -56,6 +62,47 @@ const ROWS: StoredDeclaration[] = [
 
 const inShop = ROWS.filter((row) => row.module === SHOP);
 
+/** A bound edge from `other.ref` into a `shop.ref` declaration, so a per-row stamp can be told
+ * apart from the module the id it targets is declared in. */
+const REF_FROM_OTHER: StoredReference = {
+	factId: "lexicon reference other.ref use().",
+	module: OTHER,
+	name: "Shop",
+	role: "read",
+	targetId: IDS.shop,
+	fromId: null,
+	provenance: "bound",
+	startLine: 3,
+	startCharacter: 0,
+	endLine: 3,
+	endCharacter: 4,
+};
+
+/** Spelled like the shop class but never bound to it. */
+const UNBOUND_SPELLING: StoredReference = {
+	factId: "lexicon reference other.ref stray().",
+	module: OTHER,
+	name: "Shop",
+	role: "read",
+	targetId: null,
+	fromId: null,
+	provenance: "NotIndexed",
+	startLine: 5,
+	startCharacter: 0,
+	endLine: 5,
+	endCharacter: 4,
+};
+
+/** An import in `other.ref` binding the shop's own name. */
+const IMPORT_IN_OTHER: StoredImport = {
+	factId: "lexicon import other.ref Shop",
+	module: OTHER,
+	specifier: "./shop.ref",
+	reExport: false,
+	name: "Shop",
+	local: "Shop",
+};
+
 interface Counting extends DeclarationReads {
 	modules: string[];
 	ids: string[];
@@ -63,10 +110,15 @@ interface Counting extends DeclarationReads {
 	stamps: Map<string, FactsStamp>;
 }
 
-function reads(rows: readonly StoredDeclaration[] = ROWS): Counting {
+function reads(
+	rows: readonly StoredDeclaration[] = ROWS,
+	facts: { references?: StoredReference[]; imports?: StoredImport[] } = {},
+): Counting {
 	const modules: string[] = [];
 	const ids: string[] = [];
 	const stamps = new Map<string, FactsStamp>();
+	const references = facts.references ?? [];
+	const imports = facts.imports ?? [];
 	return {
 		modules,
 		ids,
@@ -80,6 +132,14 @@ function reads(rows: readonly StoredDeclaration[] = ROWS): Counting {
 			return rows.filter((row) => row.module === module);
 		},
 		declarationsNamed: (name) => rows.filter((row) => row.name === name),
+		referencesTo: (symbolId) => references.filter((row) => row.targetId === symbolId),
+		referencesIn: (module) => references.filter((row) => row.module === module),
+		referencesSpelled: (name, excludingTarget) =>
+			references.filter((row) => row.name === name && row.targetId !== excludingTarget),
+		importsBinding: (localName) => imports.filter((row) => (row.local ?? row.name) === localName),
+		importsNamed: (name) => imports.filter((row) => row.name === name),
+		importsIn: (module) => imports.filter((row) => row.module === module),
+		symbolIdsIn: (module) => rows.filter((row) => row.module === module).map((row) => row.symbolId),
 		stampOf: (module) => stamps.get(module) ?? null,
 	};
 }
@@ -174,6 +234,76 @@ describe("a read context stamps what it read", () => {
 			store.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("a rename or move plan's reads stamp their own module, not the one asked about", () => {
+	it("stamps a reference's own module, so a use recorded in another file is told apart", () => {
+		const source = reads(ROWS, { references: [REF_FROM_OTHER] });
+		const context = new ReadContext(source);
+
+		expect(context.referencesTo(IDS.shop).map((row) => row.module)).toEqual([OTHER]);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps the module asked once for every reference written in it", () => {
+		const source = reads(ROWS, { references: [REF_FROM_OTHER, UNBOUND_SPELLING] });
+		const context = new ReadContext(source);
+
+		expect(context.referencesIn(OTHER)).toHaveLength(2);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps an unbound occurrence's own module", () => {
+		const source = reads(ROWS, { references: [REF_FROM_OTHER, UNBOUND_SPELLING] });
+		const context = new ReadContext(source);
+
+		expect(context.referencesSpelled("Shop", IDS.shop).map((row) => row.module)).toEqual([OTHER]);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps a binding import's own module", () => {
+		const source = reads(ROWS, { imports: [IMPORT_IN_OTHER] });
+		const context = new ReadContext(source);
+
+		expect(context.importsBinding("Shop").map((row) => row.module)).toEqual([OTHER]);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps a rename's import site by its own module, wherever the search finds it", () => {
+		const source = reads(ROWS, { imports: [IMPORT_IN_OTHER] });
+		const context = new ReadContext(source);
+
+		expect(context.importsNamed("Shop").map((row) => row.module)).toEqual([OTHER]);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps the module asked once for a move's importer, whatever its imports hold", () => {
+		const source = reads(ROWS, { imports: [IMPORT_IN_OTHER] });
+		const context = new ReadContext(source);
+
+		expect(context.importsIn(OTHER)).toEqual([IMPORT_IN_OTHER]);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps the module a rename or move walks by the id grammar, once, whatever it holds", () => {
+		const source = reads();
+		const context = new ReadContext(source);
+
+		expect(context.symbolIdsIn(SHOP)).toEqual(inShop.map((row) => row.symbolId));
+		expect(context.seen()).toEqual([{ module: SHOP, stamp: null }]);
+	});
+
+	it("stamps a name collision's own module, wherever the search finds it", () => {
+		const namesake = declare(IDS.twin, OTHER, "class", "Shop", 0);
+		const source = reads([...ROWS.filter((row) => row.symbolId !== IDS.twin), namesake]);
+		const context = new ReadContext(source);
+
+		expect(context.declarationsNamed("Shop").map((row) => row.module)).toEqual([SHOP, OTHER]);
+		expect(context.seen()).toEqual([
+			{ module: SHOP, stamp: null },
+			{ module: OTHER, stamp: null },
+		]);
 	});
 });
 

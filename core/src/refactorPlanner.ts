@@ -9,8 +9,6 @@ import type {
 	MoveEditsRequest,
 	Range,
 	RenameConcern,
-	RenameEditPlan,
-	RenamePlan,
 	RenameSite,
 	UnknownReason,
 } from "@nyaa-lexicon/protocol";
@@ -499,7 +497,7 @@ export class RefactorPlanner {
 			// Imports are module-level, provably not inside a member container.
 			const imported =
 				minted.containerId === undefined
-					? this.store.importsBinding(minted.name).filter((entry) => entry.module === module)
+					? context.importsBinding(minted.name).filter((entry) => entry.module === module)
 					: [];
 			if (declared.length === 0 && imported.length === 0) continue;
 			warnings.push({
@@ -518,31 +516,33 @@ export class RefactorPlanner {
 	 * which come out of the index. Rendering the text is the provider's, so this stops at handing
 	 * each module a request.
 	 */
-	planMove(symbolId: string, rawTarget: string): PlannedMove {
+	planMove(symbolId: string, rawTarget: string, context: ReadContext): PlannedMove {
 		const target = workspaceModule(rawTarget);
 		if ("refused" in target) return { ok: false, reason: target.refused };
 		const toModule = target.module;
 
-		const declaration = this.store.declaration(symbolId);
+		const declaration = context.declaration(symbolId);
 		if (!declaration) return { ok: false, reason: subjectRefused(symbolId, this.store) };
 		if (declaration.module === toModule) return { ok: false, reason: alreadyInModule(symbolId, toModule) };
 
 		const source = this.source.symbolSourceRead({ symbolId });
 		if (!source.found) return { ok: false, reason: source.reason };
 
-		const closure = this.store.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
+		// The id grammar's own subtree, not the container walk: `isWithin` and `rebaseSymbolId`
+		// read the id string, never a stored containerId.
+		const closure = context.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
 
-		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId);
+		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId, context);
 
 		// Modules whose imports name the moved symbol, plus the source itself when something left
 		// behind still uses it.
 		const referencing = new Set(
-			this.store
+			context
 				.referencesTo(symbolId)
 				.map((reference) => reference.module)
 				.filter((module) => module !== declaration.module),
 		);
-		const usedAtSource = this.store
+		const usedAtSource = context
 			.referencesTo(symbolId)
 			.some((reference) => reference.module === declaration.module && !this.inRange(reference, source.range));
 
@@ -568,8 +568,8 @@ export class RefactorPlanner {
 	 * One blocked site anywhere fails the whole move. A relocated declaration whose importers still
 	 * point at the old module is code that does not build, which is worse than not starting.
 	 */
-	async moveEdits(plan: Extract<PlannedMove, { ok: true }>): Promise<MoveEditsOutcome> {
-		const requests = this.moveRequests(plan);
+	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
+		const requests = this.moveRequests(plan, context);
 		const files: Array<{ module: string; text: string }> = [];
 		const bases: Array<{ module: string; hash: string | null }> = [];
 		const blocked: RefactorIssue[] = [];
@@ -615,7 +615,10 @@ export class RefactorPlanner {
 	}
 
 	/** One request per involved module, each describing only that module's part; the read fills its text. */
-	private moveRequests(plan: Extract<PlannedMove, { ok: true }>): Array<Omit<MoveEditsRequest, "text" | "exists">> {
+	private moveRequests(
+		plan: Extract<PlannedMove, { ok: true }>,
+		context: ReadContext,
+	): Array<Omit<MoveEditsRequest, "text" | "exists">> {
 		const shared = {
 			symbolId: plan.symbolId,
 			name: plan.name,
@@ -655,7 +658,7 @@ export class RefactorPlanner {
 				...shared,
 				module,
 				role: {},
-				importSites: this.imports.importSitesForMove(module, plan.name),
+				importSites: this.imports.importSitesForMove(module, plan.name, context),
 				dependencies: [],
 				sites: [],
 			});
@@ -714,7 +717,7 @@ export class RefactorPlanner {
 	 * a moved class's body references belong to its METHODS and a top-level initializer may be
 	 * owned by nothing at all.
 	 */
-	dependenciesOf(module: string, closure: string[], symbolId: string): MoveDependency[] {
+	dependenciesOf(module: string, closure: string[], symbolId: string, context: ReadContext): MoveDependency[] {
 		const inside = new Set(closure);
 		const source = this.source.symbolSource({ symbolId });
 		if (!source.found) return [];
@@ -722,7 +725,7 @@ export class RefactorPlanner {
 		const seen = new Set<string>();
 		const dependencies: MoveDependency[] = [];
 
-		for (const reference of this.store.referencesIn(module)) {
+		for (const reference of context.referencesIn(module)) {
 			if (!this.inRange(reference, source.range)) continue;
 			if (seen.has(reference.name)) continue;
 			seen.add(reference.name);
@@ -734,7 +737,7 @@ export class RefactorPlanner {
 			}
 
 			if (target !== null) {
-				const declaration = this.store.declaration(target);
+				const declaration = context.declaration(target);
 				if (declaration?.module === module) {
 					dependencies.push({
 						name: reference.name,
@@ -756,7 +759,7 @@ export class RefactorPlanner {
 				}
 			}
 
-			const via = this.imports.importOriginFor(module, reference.name);
+			const via = this.imports.importOriginFor(module, reference.name, context);
 			if (via !== null) {
 				dependencies.push({ name: reference.name, origin: { kind: "external", via } });
 				continue;
@@ -784,8 +787,8 @@ export class RefactorPlanner {
 	 * and their parameters too. Migrating only the class itself would strand everything written
 	 * about them under ids nothing resolves.
 	 */
-	renameIdMap(symbolId: string, newName: string): Map<string, string> {
-		const declaration = this.store.declaration(symbolId);
+	renameIdMap(symbolId: string, newName: string, context: ReadContext): Map<string, string> {
+		const declaration = context.declaration(symbolId);
 		const map = new Map<string, string>();
 		if (!declaration) return map;
 
@@ -799,7 +802,8 @@ export class RefactorPlanner {
 			descriptors: [...parsed.descriptors.slice(0, -1), { ...last, name: newName }],
 		});
 
-		for (const candidate of this.store.symbolIdsIn(declaration.module)) {
+		// The id grammar's own subtree, not the container walk: rebasing reads the id string.
+		for (const candidate of context.symbolIdsIn(declaration.module)) {
 			const rebased = rebaseSymbolId(candidate, symbolId, renamed);
 			if (rebased !== null) map.set(candidate, rebased);
 		}
@@ -813,10 +817,10 @@ export class RefactorPlanner {
 	 * no edit, yet its reference rows point at ids that are about to stop existing. Left alone it
 	 * would keep answering with them.
 	 */
-	modulesBoundTo(ids: Iterable<string>): string[] {
+	modulesBoundTo(ids: Iterable<string>, context: ReadContext): string[] {
 		const modules = new Set<string>();
 		for (const id of ids) {
-			for (const reference of this.store.referencesTo(id)) modules.add(reference.module);
+			for (const reference of context.referencesTo(id)) modules.add(reference.module);
 		}
 		return [...modules];
 	}
@@ -899,7 +903,7 @@ export class RefactorPlanner {
 		const after = new Set(candidate.declarations.map((declaration) => declaration.symbolId));
 		for (const declaration of before) {
 			if (after.has(declaration.symbolId)) continue;
-			const users = this.store.referencesTo(declaration.symbolId).filter((row) => row.module !== module);
+			const users = context.referencesTo(declaration.symbolId).filter((row) => row.module !== module);
 			if (users.length === 0) continue;
 
 			issues.push({
@@ -910,7 +914,7 @@ export class RefactorPlanner {
 		}
 
 		const wasUnbound = countUnbound(
-			this.store
+			context
 				.referencesIn(module)
 				.filter((row) => row.targetId === null && isDangling(row.provenance))
 				.map((row) => ({ name: row.name, role: row.role, reason: row.provenance })),
@@ -945,8 +949,8 @@ export class RefactorPlanner {
 	 * The occurrences come from bound edges alone, because a name match is a guess and a guess is
 	 * acceptable in a reading tool and disqualifying in a writing one.
 	 */
-	async prepareRename(symbolId: string, newName: string): Promise<PlannedRename> {
-		const declaration = this.store.declaration(symbolId);
+	async prepareRename(symbolId: string, newName: string, context: ReadContext): Promise<PlannedRename> {
+		const declaration = context.declaration(symbolId);
 		if (!declaration) {
 			return {
 				symbolId,
@@ -977,7 +981,7 @@ export class RefactorPlanner {
 		// to point at a definition that still has the old name.
 		byModule.set(declaration.module, [{ range: declaration.selectionRange }]);
 
-		for (const reference of this.store.referencesTo(symbolId)) {
+		for (const reference of context.referencesTo(symbolId)) {
 			const sites = byModule.get(reference.module) ?? [];
 			sites.push({
 				range: {
@@ -989,7 +993,7 @@ export class RefactorPlanner {
 			byModule.set(reference.module, sites);
 		}
 
-		for (const site of await this.imports.importSitesFor(declaration.module, oldName)) {
+		for (const site of await this.imports.importSitesFor(declaration.module, oldName, context)) {
 			const sites = byModule.get(site.module) ?? [];
 			sites.push({ range: site.range, role: "import" });
 			byModule.set(site.module, sites);
@@ -998,7 +1002,7 @@ export class RefactorPlanner {
 		// Renaming an owned symbol reaches its owner's CALLERS: a Python keyword argument names the
 		// parameter at a site that spells the function's name, so nothing searching for the old name
 		// can find it. Gathered here because who calls what is the index's question, not a provider's.
-		const ownerCalls = this.ownerCallsFor(symbolId);
+		const ownerCalls = this.ownerCallsFor(symbolId, context);
 		// A file holding only owner calls still has to be visited, so it needs an entry even with no
 		// occurrence of the old name in it.
 		for (const module of ownerCalls.keys()) if (!byModule.has(module)) byModule.set(module, []);
@@ -1017,7 +1021,7 @@ export class RefactorPlanner {
 		const blockers =
 			newName === oldName
 				? [{ kind: "SameName", detail: alreadyNamed(oldName) }]
-				: this.renameCollisions(symbolId, newName, new Set(byModule.keys()));
+				: this.renameCollisions(symbolId, newName, new Set(byModule.keys()), context);
 
 		return {
 			symbolId,
@@ -1026,7 +1030,10 @@ export class RefactorPlanner {
 			files,
 			occurrences: files.reduce((total, file) => total + file.sites.length, 0),
 			blockers,
-			warnings: [...this.renameWarnings(declaration, oldName, symbolId), ...this.ownerCallConcerns(symbolId)],
+			warnings: [
+				...this.renameWarnings(declaration, oldName, symbolId, context),
+				...this.ownerCallConcerns(symbolId, context),
+			],
 		};
 	}
 
@@ -1037,14 +1044,14 @@ export class RefactorPlanner {
 	 * set of call sites whose named arguments have to move with it, and the id grammar alone says
 	 * which declaration that is, so no language knowledge enters here.
 	 */
-	private ownerCallsFor(symbolId: string): Map<string, Range[]> {
+	private ownerCallsFor(symbolId: string, context: ReadContext): Map<string, Range[]> {
 		const byModule = new Map<string, Range[]>();
 		if (!isParameterSymbol(symbolId)) return byModule;
 
 		const owner = ownerOf(symbolId);
 		if (owner === null) return byModule;
 
-		for (const reference of this.store.referencesTo(owner)) {
+		for (const reference of context.referencesTo(owner)) {
 			if (reference.role !== "call") continue;
 			const ranges = byModule.get(reference.module) ?? [];
 			ranges.push({
@@ -1063,11 +1070,11 @@ export class RefactorPlanner {
 	 * genuinely different function from one binding could not follow. Reported rather than guessed,
 	 * which is the same rule the same-spelling warning already follows.
 	 */
-	private ownerCallConcerns(symbolId: string): RenameConcern[] {
+	private ownerCallConcerns(symbolId: string, context: ReadContext): RenameConcern[] {
 		if (!isParameterSymbol(symbolId)) return [];
 
 		const owner = ownerOf(symbolId);
-		const declaration = owner === null ? null : this.store.declaration(owner);
+		const declaration = owner === null ? null : context.declaration(owner);
 		if (declaration === null) {
 			return [
 				{
@@ -1077,7 +1084,7 @@ export class RefactorPlanner {
 			];
 		}
 
-		const unbound = this.store.referencesSpelled(declaration.name, declaration.symbolId);
+		const unbound = context.referencesSpelled(declaration.name, declaration.symbolId);
 		if (unbound.length === 0) return [];
 		return [
 			{
@@ -1100,12 +1107,17 @@ export class RefactorPlanner {
 	 * far enough. Each one names the conflicting site and both ways out, since a refusal that does
 	 * not say what to do next just moves the search to the caller.
 	 */
-	private renameCollisions(symbolId: string, newName: string, touched: Set<string>): RenameBlocker[] {
-		const declared = this.store
+	private renameCollisions(
+		symbolId: string,
+		newName: string,
+		touched: Set<string>,
+		context: ReadContext,
+	): RenameBlocker[] {
+		const declared = context
 			.declarationsNamed(newName)
 			.filter((other) => other.symbolId !== symbolId && touched.has(other.module));
 
-		const bound = this.store.importsBinding(newName).filter((entry) => touched.has(entry.module));
+		const bound = context.importsBinding(newName).filter((entry) => touched.has(entry.module));
 
 		const concerns: RenameBlocker[] = [];
 		if (declared.length > 0) {
@@ -1138,7 +1150,7 @@ export class RefactorPlanner {
 	 * so applying the rest leaves code that no longer builds.
 	 */
 	async renameEdits(symbolId: string, newName: string): Promise<PlannedRenameEdits> {
-		const plan = await this.prepareRename(symbolId, newName);
+		const plan = await this.prepareRename(symbolId, newName, new ReadContext(this.store));
 		const blocker = plan.blockers[0];
 		if (blocker !== undefined) return { ok: false, plan, reason: blocker.detail };
 
@@ -1186,10 +1198,15 @@ export class RefactorPlanner {
 	 * Refusing on either would refuse most real renames; hiding them would claim a completeness the
 	 * index does not have.
 	 */
-	private renameWarnings(declaration: StoredDeclaration, oldName: string, symbolId: string): RenameConcern[] {
+	private renameWarnings(
+		declaration: StoredDeclaration,
+		oldName: string,
+		symbolId: string,
+		context: ReadContext,
+	): RenameConcern[] {
 		const warnings: RenameConcern[] = [];
 
-		const unbound = this.store.referencesSpelled(oldName, symbolId);
+		const unbound = context.referencesSpelled(oldName, symbolId);
 		if (unbound.length > 0) {
 			warnings.push({
 				kind: "SameSpellingUnbound",

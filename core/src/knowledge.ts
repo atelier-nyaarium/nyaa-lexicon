@@ -203,7 +203,7 @@ export class KnowledgeLedger {
 		}
 		if (docs.length > limit) truncated.push("doc");
 
-		for (const site of await this.imports.importSitesFor(declaration.module, declaration.name)) {
+		for (const site of await this.imports.importSitesFor(declaration.module, declaration.name, this.store)) {
 			add(site.factId, "import", site.module, `imported by ${site.module}`);
 		}
 

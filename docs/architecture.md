@@ -149,9 +149,26 @@ that a module's own rows and a store-resolved chain both take. `read-context-res
 the build where another module names a containment, calls that walk, declares a second summary,
 reads `containerId` to answer a nesting question by hand, or reads `declarationsIn` outside the
 readers it names as asking nothing about nesting, or compares a module's stamp by hand. The
-refactor planner is not one of those: replace and insert ask their sibling, collision and impact
-questions of a context minted per plan, and the plan carries what that context stamped. Rename and
-move mint none; they plan from the store's rows directly and recheck hashes alone inside the gate.
+refactor planner is not one of those: replace, insert, rename and move all ask their sibling,
+collision, occurrence and dependency questions of a context, either minted per plan or, for rename
+and move, minted once by the step in `dispatch.ts` and threaded through every planning read so one
+context stamps the whole plan phase. `symbolIdsIn` is the one exception the context still answers:
+a rename's id map and a move's closure walk the ID GRAMMAR (`isWithin`, `rebaseSymbolId`), never the
+container walk, so the context stamps the module asked and hands the ids back unprocessed;
+`read-context-residue.test.ts` names every reader of that token, and refuses one straight off the
+store inside the planner.
+
+The import rows a rename's edits or a move's dependency walk depend on are `ImportResolver`'s, not
+the planner's own: `core/src/imports.ts` reads `importsNamed` and `importsIn` behind
+`importSitesFor`, `importSitesForMove` and `importOriginFor`, each taking a `reads: ImportReads`
+parameter that defaults to the raw store for a read-only caller (`knowledge.ts`'s own
+`importSitesFor` call, unstamped, since it answers a fact set rather than a plan) and takes the
+step's context for a rename or a move. `read-context-residue.test.ts` names every direct reader of
+those two store methods, refuses either read straight off the store inside `imports.ts`, and pins
+that every planning call in `refactorPlanner.ts` hands the resolver the context. A move's importer
+is usually stamped twice over: once through `referencesTo` for the bound edge that put it in
+`plan.referencing`, and again through `importsIn` for its import row, so the route exists to close
+the class rather than an observed gap.
 
 ## Diagnostics
 
@@ -473,6 +490,11 @@ file with nothing to repair.
 TypeScript, Python and GDScript implement `moveEdits`. The other twelve providers refuse
 `NotImplemented`, so a move in those languages is declined rather than half-done.
 
+`refactorMove` in `dispatch.ts` mints one `ReadContext` and hands it into `planMove` and
+`moveEdits`, so the declaration, the closure, the dependency walk and the referencing modules all
+stamp through the same context, and the step's stale check inside the gate asks the context's
+`seen()` beside the hash checks.
+
 ### Renaming
 
 A rename is one step of a transaction, journaled like any other, and it carries two things a plain
@@ -492,3 +514,10 @@ occurrence of the class name, so it gets no edit, yet its stored references poin
 about to stop existing. `modulesBoundTo` finds them and they are reindexed alongside the edited
 ones, declaring module first so dependents rebind against declarations that already carry the new
 ids.
+
+`refactorRename` in `dispatch.ts` mints one `ReadContext` before `prepareRename` and threads it
+through `renameIdMap` and `modulesBoundTo` too, so the occurrence sites, the id map and the
+stale-binding modules all stamp through the same context. The step's stale check asks the context's
+`seen()` beside the hash check, refusing when the index committed the rows again under an unchanged
+hash: a rewrite chosen from sites a re-parse has since moved would otherwise hit some occurrences
+and miss others.

@@ -14,6 +14,8 @@ const MENTION_READERS: Record<string, number> = {
 	"core/src/refactorPlanner.ts": 9,
 	// Mention is citable evidence.
 	"core/src/knowledge.ts": 1,
+	// Stamps the row's own module.
+	"core/src/readContext.ts": 2,
 };
 
 ////////////////////////////////

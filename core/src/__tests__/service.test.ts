@@ -55,6 +55,11 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
+/** A fresh planning context off the current `service`; a plan's context is required, never defaulted. */
+function ctx() {
+	return service.newReadContext();
+}
+
 ////////////////////////////////
 //  Tests
 
@@ -578,7 +583,7 @@ describe("planning a move", () => {
 	it("names both ends and the text that travels", async () => {
 		const cart = await plant();
 
-		const plan = service.planMove(cart, "basket.ref");
+		const plan = service.planMove(cart, "basket.ref", ctx());
 
 		expect(plan.ok).toBe(true);
 		if (!plan.ok) throw new Error("expected a plan");
@@ -590,15 +595,15 @@ describe("planning a move", () => {
 
 	it("refuses a move to where it already is", async () => {
 		const cart = await plant();
-		expect(service.planMove(cart, "cart.ref")).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "cart.ref", ctx())).toMatchObject({ ok: false });
 	});
 
 	it("refuses a target outside the workspace, and spells an inside one canonically", async () => {
 		const cart = await plant();
-		expect(service.planMove(cart, "../escape.ref")).toMatchObject({ ok: false });
-		expect(service.planMove(cart, "/abs/escape.ref")).toMatchObject({ ok: false });
-		expect(service.planMove(cart, "./sub/../cart.ref")).toMatchObject({ ok: false });
-		expect(service.planMove(cart, "./basket.ref")).toMatchObject({ ok: true, toModule: "basket.ref" });
+		expect(service.planMove(cart, "../escape.ref", ctx())).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "/abs/escape.ref", ctx())).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "./sub/../cart.ref", ctx())).toMatchObject({ ok: false });
+		expect(service.planMove(cart, "./basket.ref", ctx())).toMatchObject({ ok: true, toModule: "basket.ref" });
 	});
 
 	// The inventory never lists what the index cannot claim to place. Builtins and externals bind
@@ -639,7 +644,7 @@ describe("planning a move", () => {
 			],
 		});
 
-		const plan = built.planMove(move.symbolId, "b.ref");
+		const plan = built.planMove(move.symbolId, "b.ref", built.newReadContext());
 
 		expect(plan.ok).toBe(true);
 		if (!plan.ok) throw new Error("expected a plan");
@@ -648,17 +653,17 @@ describe("planning a move", () => {
 
 	it("says so when the symbol is not indexed", async () => {
 		await boot();
-		expect(service.planMove("lexicon reference a.ref Ghost#", "b.ref")).toMatchObject({ ok: false });
+		expect(service.planMove("lexicon reference a.ref Ghost#", "b.ref", ctx())).toMatchObject({ ok: false });
 	});
 
 	// A provider that cannot move must refuse rather than answer with no edits, or the core would
 	// relocate the declaration and leave every importer pointing at the old module.
 	it("reports a provider's refusal rather than writing nothing and calling it done", async () => {
 		const cart = await plant();
-		const plan = service.planMove(cart, "basket.ref");
+		const plan = service.planMove(cart, "basket.ref", ctx());
 		if (!plan.ok) throw new Error("expected a plan");
 
-		const outcome = await service.moveEdits(plan);
+		const outcome = await service.moveEdits(plan, ctx());
 
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) throw new Error("expected a refusal");
@@ -676,7 +681,7 @@ describe("carrying knowledge across a rename", () => {
 		const cart = service.findByName("Cart")[0]?.symbolId;
 		if (!cart) throw new Error("expected Cart");
 
-		const map = service.renameIdMap(cart, "Basket");
+		const map = service.renameIdMap(cart, "Basket", ctx());
 
 		expect(map.get(cart)).toContain("Basket");
 		for (const [from, to] of map) {
@@ -698,7 +703,7 @@ describe("carrying knowledge across a rename", () => {
 		const wrote = await service.recordAnswer(cart, "describe", "A shopping cart.", [citation]);
 		if (!wrote.recorded) throw new Error(`answer not recorded: ${wrote.reason}`);
 
-		const map = service.renameIdMap(cart, "Basket");
+		const map = service.renameIdMap(cart, "Basket", ctx());
 		const rebound = store.subjects.rebind(
 			[...map].map(([from, to]) => ({ from, to })),
 			"journalRename",
@@ -853,7 +858,7 @@ describe("planning a rename", () => {
 	}
 
 	it("includes the declaration's own name, which a plan built from references alone would miss", async () => {
-		const plan = await service.prepareRename(plant(), "append");
+		const plan = await service.prepareRename(plant(), "append", ctx());
 
 		const declaring = plan.files.find((f) => f.module === "src/cart.ts");
 		expect(declaring?.sites).toEqual([
@@ -863,7 +868,7 @@ describe("planning a rename", () => {
 	});
 
 	it("groups occurrences by file, since that is the unit a provider rewrites", async () => {
-		const plan = await service.prepareRename(plant(), "append");
+		const plan = await service.prepareRename(plant(), "append", ctx());
 		expect(plan.files.map((f) => f.module).sort()).toEqual(["src/cart.ts", "src/uses.ts"]);
 	});
 
@@ -885,7 +890,7 @@ describe("planning a rename", () => {
 			],
 		});
 
-		const plan = await service.prepareRename(target, "append");
+		const plan = await service.prepareRename(target, "append", ctx());
 
 		expect(plan.blockers).toEqual([]);
 		expect(plan.warnings.map((w) => w.kind)).toContain("SameSpellingUnbound");
@@ -898,19 +903,19 @@ describe("planning a rename", () => {
 	});
 
 	it("says an exported symbol reaches past what the index can see", async () => {
-		const plan = await service.prepareRename(plant(), "append");
+		const plan = await service.prepareRename(plant(), "append", ctx());
 		expect(plan.warnings.map((w) => w.kind)).toContain("ExportedBeyondIndex");
 	});
 
 	it("blocks a symbol it does not have, rather than planning an empty rename", async () => {
-		const plan = await service.prepareRename("lexicon ts src/gone.ts ghost().", "other");
+		const plan = await service.prepareRename("lexicon ts src/gone.ts ghost().", "other", ctx());
 
 		expect(plan.blockers.map((b) => b.kind)).toEqual(["NotIndexed"]);
 		expect(plan.files).toEqual([]);
 	});
 
 	it("blocks renaming something to the name it already has", async () => {
-		const plan = await service.prepareRename(plant(), "add");
+		const plan = await service.prepareRename(plant(), "add", ctx());
 		expect(plan.blockers.map((b) => b.kind)).toEqual(["SameName"]);
 	});
 
@@ -976,7 +981,8 @@ describe("planning a rename", () => {
 		}
 
 		it("hands the provider every bound call to the owning function", async () => {
-			const plan = await plantParameter().prepareRename(parameter, "amount");
+			const built = plantParameter();
+			const plan = await built.prepareRename(parameter, "amount", built.newReadContext());
 			const uses = plan.files.find((f) => f.module === "src/uses.py");
 
 			expect(uses?.ownerCalls).toEqual([span(3, 0, 3)]);
@@ -985,12 +991,14 @@ describe("planning a rename", () => {
 		// The file has no occurrence of the parameter's name at all, so a plan built from occurrences
 		// alone would never visit it.
 		it("visits a file that holds only owner calls", async () => {
-			const plan = await plantParameter().prepareRename(parameter, "amount");
+			const built = plantParameter();
+			const plan = await built.prepareRename(parameter, "amount", built.newReadContext());
 			expect(plan.files.map((f) => f.module)).toContain("src/uses.py");
 		});
 
 		it("leaves an ordinary rename alone, since most symbols own themselves", async () => {
-			const plan = await plantParameter().prepareRename(owner, "insert");
+			const built = plantParameter();
+			const plan = await built.prepareRename(owner, "insert", built.newReadContext());
 			expect(plan.files.every((f) => f.ownerCalls === undefined)).toBe(true);
 		});
 
@@ -1002,7 +1010,8 @@ describe("planning a rename", () => {
 		 * that must refuse without owner calls would refuse the declaration forever.
 		 */
 		it("says empty rather than nothing for a file with no owner call in it", async () => {
-			const plan = await plantParameter().prepareRename(parameter, "amount");
+			const built = plantParameter();
+			const plan = await built.prepareRename(parameter, "amount", built.newReadContext());
 			const declaring = plan.files.find((f) => f.module === "src/cart.py");
 
 			expect(declaring?.ownerCalls).toEqual([]);
@@ -1027,7 +1036,7 @@ describe("planning a rename", () => {
 				],
 			});
 
-			const warning = (await built.prepareRename(parameter, "amount")).warnings.find(
+			const warning = (await built.prepareRename(parameter, "amount", built.newReadContext())).warnings.find(
 				(w) => w.kind === "OwnerCallsUnresolved",
 			);
 
@@ -1067,7 +1076,7 @@ describe("planning a rename", () => {
 				],
 			});
 
-			const plan = await service.prepareRename(target, "append");
+			const plan = await service.prepareRename(target, "append", ctx());
 			const blocker = plan.blockers.find((b) => b.kind === "NameTaken");
 
 			expect(blocker?.sites).toEqual([{ module: "src/uses.ts", line: 20 }]);
@@ -1102,7 +1111,7 @@ describe("planning a rename", () => {
 				],
 			});
 
-			const blocker = (await service.prepareRename(target, "append")).blockers.find(
+			const blocker = (await service.prepareRename(target, "append", ctx())).blockers.find(
 				(b) => b.kind === "NameImported",
 			);
 
@@ -1142,10 +1151,10 @@ describe("planning a rename", () => {
 				],
 			});
 
-			expect((await service.prepareRename(target, "append")).blockers.map((b) => b.kind)).toEqual([
+			expect((await service.prepareRename(target, "append", ctx())).blockers.map((b) => b.kind)).toEqual([
 				"NameImported",
 			]);
-			expect((await service.prepareRename(target, "push")).blockers).toEqual([]);
+			expect((await service.prepareRename(target, "push", ctx())).blockers).toEqual([]);
 		});
 
 		// Another module owning the name is ordinary. Only a clash inside a file being edited is one.
@@ -1158,7 +1167,7 @@ describe("planning a rename", () => {
 				references: [],
 			});
 
-			expect((await service.prepareRename(target, "append")).blockers).toEqual([]);
+			expect((await service.prepareRename(target, "append", ctx())).blockers).toEqual([]);
 		});
 	});
 });
@@ -1219,7 +1228,7 @@ describe("renaming a symbol that other files import", () => {
 			fromText(() => null),
 		);
 
-		const plan = await service.prepareRename(target, "append");
+		const plan = await service.prepareRename(target, "append", ctx());
 		const importing = plan.files.find((f) => f.module === "src/uses.ts");
 
 		expect(importing?.sites).toEqual([
@@ -1257,7 +1266,7 @@ describe("renaming a symbol that other files import", () => {
 			fromText(() => null),
 		);
 
-		const sites = (await service.prepareRename(target, "append")).files.find(
+		const sites = (await service.prepareRename(target, "append", ctx())).files.find(
 			(f) => f.module === "src/aliased.ts",
 		)?.sites;
 
@@ -1303,7 +1312,7 @@ describe("renaming a symbol that other files import", () => {
 			fromText(() => null),
 		);
 
-		const touched = (await service.prepareRename(target, "append")).files.map((f) => f.module);
+		const touched = (await service.prepareRename(target, "append", ctx())).files.map((f) => f.module);
 
 		expect(touched).toContain("src/index.ts");
 		expect(touched).toContain("src/far.ts");
@@ -1332,7 +1341,7 @@ describe("renaming a symbol that other files import", () => {
 			fromText(() => null),
 		);
 
-		const plan = await service.prepareRename(target, "append");
+		const plan = await service.prepareRename(target, "append", ctx());
 		expect(plan.files.map((f) => f.module)).not.toContain("src/elsewhere.ts");
 	});
 });

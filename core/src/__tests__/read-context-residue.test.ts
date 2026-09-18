@@ -38,6 +38,38 @@ const ROW_READERS: Record<string, string> = {
 	"knowledge.ts": "walks a file's declarations for gaps",
 };
 
+/** The store's every id for a module: the id grammar's own subtree, never the container walk. */
+const IDS = "symbolIdsIn";
+
+/** Readers of the ids, each with why a raw or a context-stamped read is right there. */
+const ID_READERS: Record<string, string> = {
+	"store.ts": "declares the read",
+	"readContext.ts": "stamps the module asked; the walk is the id grammar's own, not a containment question",
+	"refactorPlanner.ts": "walks the id grammar for a rename's map or a move's closure, through the context",
+};
+
+/** The store's import rows behind a rename's import edits or a move's dependency walk. */
+const IMPORTS_NAMED = "importsNamed";
+
+/** Readers of importsNamed, each with why a raw or a context-stamped read is right there. */
+const IMPORTS_NAMED_READERS: Record<string, string> = {
+	"store.ts": "declares the read",
+	"readContext.ts": "stamps each answered row's own module",
+	"imports.ts": "the resolver; `reads` is required, named explicitly by every caller",
+};
+
+/** The store's read of one module's import statements. */
+const IMPORTS_IN = "importsIn";
+
+/** Readers of importsIn, each with why a raw or a context-stamped read is right there. */
+const IMPORTS_IN_READERS: Record<string, string> = {
+	"store.ts": "declares the read",
+	"readContext.ts": "stamps the module asked",
+	"imports.ts": "the resolver; `reads` is required, named explicitly by every caller",
+	"indexer.ts": "walks the import closure while indexing, not a plan",
+	"service.ts": "warms a symbol's tree before answering, not a plan",
+};
+
 const ROOT = path.resolve(import.meta.dirname, "..");
 
 function sourceFiles(directory: string): string[] {
@@ -113,5 +145,83 @@ describe("one owner derives a read's declaration topology", () => {
 		);
 
 		expect(offenders, "a nesting question answered by hand belongs on the context").toEqual([]);
+	});
+});
+
+describe("a rename or move plan walks the id grammar, never the store, unstamped", () => {
+	it("reads every module's ids only where a reason is named", () => {
+		const stale = Object.keys(ID_READERS).filter((name) => !codeOf(name).includes(IDS));
+		expect(stale, "a reader listed here no longer reads the ids").toEqual([]);
+
+		const offenders = codeHolders(IDS, Object.keys(ID_READERS));
+		expect(offenders, "a reader of every module's ids is not named here with why").toEqual([]);
+	});
+
+	it("never walks the ids straight off the store inside the planner", () => {
+		const offender = codeOf(PLANNER).includes(`store.${IDS}`);
+		expect(offender, "a rename or move plan must stamp the ids it walks through the context").toBe(false);
+	});
+});
+
+describe("a rename or move plan reads its import rows through the context, never the store", () => {
+	it("reads every import-by-name lookup only where a reason is named", () => {
+		const stale = Object.keys(IMPORTS_NAMED_READERS).filter((name) => !codeOf(name).includes(IMPORTS_NAMED));
+		expect(stale, "a reader listed here no longer reads importsNamed").toEqual([]);
+
+		const offenders = codeHolders(IMPORTS_NAMED, Object.keys(IMPORTS_NAMED_READERS));
+		expect(offenders, "a reader of importsNamed is not named here with why").toEqual([]);
+	});
+
+	it("reads every module's import statements only where a reason is named", () => {
+		const stale = Object.keys(IMPORTS_IN_READERS).filter((name) => !codeOf(name).includes(IMPORTS_IN));
+		expect(stale, "a reader listed here no longer reads importsIn").toEqual([]);
+
+		const offenders = codeHolders(IMPORTS_IN, Object.keys(IMPORTS_IN_READERS));
+		expect(offenders, "a reader of importsIn is not named here with why").toEqual([]);
+	});
+
+	it("never reads an import row straight off the store inside the resolver's planning methods", () => {
+		const needles = [`this.store.${IMPORTS_NAMED}(`, `this.store.${IMPORTS_IN}(`];
+		const offenders = needles.filter((needle) => codeOf("imports.ts").includes(needle));
+		expect(
+			offenders,
+			"importSitesFor, importSitesForMove and importOriginFor must ask `reads`, so a plan can stamp what they answer",
+		).toEqual([]);
+	});
+
+	// `reads` and `context` are required parameters; tsc is the check.
+});
+
+/** Every row a plan might read, by the store method that answers it. */
+const ROW_READ_METHODS = [
+	"declaration",
+	"declarationsNamed",
+	"referencesTo",
+	"referencesIn",
+	"referencesSpelled",
+	"importsBinding",
+	"importsNamed",
+	"importsIn",
+	"symbolIdsIn",
+];
+
+/** A raw store call, the receiver and the method dot-chained over any whitespace or newline. */
+function rawStoreCall(method: string): RegExp {
+	return new RegExp(`this\\s*\\.\\s*store\\s*\\.\\s*${method}\\s*\\(`, "g");
+}
+
+describe("the planner reads every row through the context, never the store", () => {
+	it("finds no store row read in the planner but checkMoveLanded's own", () => {
+		const code = codeOf(PLANNER);
+		const offenders = ROW_READ_METHODS.filter((method) => method !== "referencesIn").filter((method) =>
+			rawStoreCall(method).test(code),
+		);
+		expect(offenders, "a plan-phase read must ask the context, never the store").toEqual([]);
+	});
+
+	// checkMoveLanded's own read, after the reindex, stays raw.
+	it("keeps exactly one raw read: checkMoveLanded's own, after the reindex", () => {
+		const matches = codeOf(PLANNER).match(rawStoreCall("referencesIn")) ?? [];
+		expect(matches.length, "checkMoveLanded is the one read that must see fresh rows, not the plan's").toBe(1);
 	});
 });

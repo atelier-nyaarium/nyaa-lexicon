@@ -266,7 +266,11 @@ Ordered by how much they prove:
   reading `containerId` to answer a nesting question, or reading `declarationsIn` outside the
   readers it names as asking nothing about nesting. A plan's context is read outside the gate,
   so it stamps each module at its first touch and the step refuses inside the gate when a stamp
-  moved; a hash cannot see a re-parse or an upgrade, and `stampOf` is compared nowhere else.
+  moved; a hash cannot see a re-parse or an upgrade, and `stampOf` is compared nowhere else. A
+  rename or a move takes one context across every planning read (`prepareRename`, `renameIdMap`
+  and `modulesBoundTo`; `planMove` and its dependency walk), minted by the step in `dispatch.ts`
+  rather than per call. `symbolIdsIn` stamps the module asked but answers the id grammar's own
+  subtree, never the container walk, and the residue names every reader of it by why.
   `docs/architecture.md` holds the whole of it.
 - **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
   store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there.

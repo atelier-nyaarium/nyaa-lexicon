@@ -12,7 +12,7 @@
 import { defined, GROUPING_KINDS, type SymbolSummary } from "@nyaa-lexicon/protocol";
 import { ancestryOf, Containment } from "./locals.js";
 import { contains, type Scope } from "./scope.js";
-import type { FactsStamp, StoredDeclaration, StoredLiteral } from "./store.js";
+import type { FactsStamp, StoredDeclaration, StoredImport, StoredLiteral, StoredReference } from "./store.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -22,6 +22,14 @@ export interface DeclarationReads {
 	declaration(symbolId: string): StoredDeclaration | null;
 	declarationsIn(module: string): StoredDeclaration[];
 	declarationsNamed(name: string): StoredDeclaration[];
+	referencesTo(symbolId: string): StoredReference[];
+	referencesIn(module: string): StoredReference[];
+	referencesSpelled(name: string, excludingTarget: string): StoredReference[];
+	importsBinding(localName: string): StoredImport[];
+	importsNamed(name: string): StoredImport[];
+	importsIn(module: string): StoredImport[];
+	/** Every stored id for a module: the id grammar's own subtree, not this file's containment. */
+	symbolIdsIn(module: string): string[];
 	stampOf(module: string): FactsStamp | null;
 }
 
@@ -89,8 +97,58 @@ export class ReadContext {
 		return [...this.stamps].map(([module, stamp]) => ({ module, stamp }));
 	}
 
+	/** Every row's own module stamped, wherever it falls. */
 	declarationsNamed(name: string): StoredDeclaration[] {
-		return this.store.declarationsNamed(name);
+		const rows = this.store.declarationsNamed(name);
+		for (const row of rows) this.touch(row.module);
+		return rows;
+	}
+
+	/** Bound edges into this id, each row's own module stamped. */
+	referencesTo(symbolId: string): StoredReference[] {
+		const rows = this.store.referencesTo(symbolId);
+		for (const row of rows) this.touch(row.module);
+		return rows;
+	}
+
+	/** Every reference written in a module, the module stamped once. */
+	referencesIn(module: string): StoredReference[] {
+		this.touch(module);
+		return this.store.referencesIn(module);
+	}
+
+	/** Occurrences spelled like a name that did not bind to it, each row's own module stamped. */
+	referencesSpelled(name: string, excludingTarget: string): StoredReference[] {
+		const rows = this.store.referencesSpelled(name, excludingTarget);
+		for (const row of rows) this.touch(row.module);
+		return rows;
+	}
+
+	/** Imports binding a name, each row's own module stamped. */
+	importsBinding(localName: string): StoredImport[] {
+		const rows = this.store.importsBinding(localName);
+		for (const row of rows) this.touch(row.module);
+		return rows;
+	}
+
+	/** Every import writing a name, wherever it falls, each row's own module stamped. */
+	importsNamed(name: string): StoredImport[] {
+		const rows = this.store.importsNamed(name);
+		for (const row of rows) this.touch(row.module);
+		return rows;
+	}
+
+	/** Every import statement in a module, the module stamped once. */
+	importsIn(module: string): StoredImport[] {
+		this.touch(module);
+		return this.store.importsIn(module);
+	}
+
+	/** Every id the module holds, for a rename's own id-grammar walk; asks nothing about
+	 * containment, so the module asked is stamped and nothing else. */
+	symbolIdsIn(module: string): string[] {
+		this.touch(module);
+		return this.store.symbolIdsIn(module);
 	}
 
 	summaryOf(symbolId: string): SymbolSummary | null {

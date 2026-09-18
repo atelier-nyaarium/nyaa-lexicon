@@ -40,6 +40,12 @@ export function importTarget(resolution: ImportResolution): { module: string; de
 /** The one provider capability this needs. Its supplier owns caching and surface globs. */
 export type ResolveSpecifier = (fromModule: string, specifier: string) => Promise<ImportResolution>;
 
+/** Only the import rows a resolver takes for planning; a store or a stamping context both satisfy it. */
+export interface ImportReads {
+	importsNamed(name: string): StoredImport[];
+	importsIn(module: string): StoredImport[];
+}
+
 ////////////////////////////////
 //  Class
 
@@ -50,10 +56,11 @@ export class ImportResolver {
 		private readonly resolve: ResolveSpecifier,
 	) {}
 
-	/** Import statements in one module naming the moved symbol, which must now address its target. */
-	importSitesForMove(module: string, name: string): MoveImportSite[] {
+	/** Import statements in one module naming the moved symbol, which must now address its target.
+	 * A move plans through the context, so `reads` stamps what it answers. */
+	importSitesForMove(module: string, name: string, reads: ImportReads): MoveImportSite[] {
 		const sites: MoveImportSite[] = [];
-		for (const statement of this.store.importsIn(module)) {
+		for (const statement of reads.importsIn(module)) {
 			if (statement.name !== name && statement.local !== name) continue;
 			if (statement.range === undefined) continue;
 			sites.push({
@@ -67,9 +74,10 @@ export class ImportResolver {
 		return sites;
 	}
 
-	/** The import statement that brought a name into a module, when one did. */
-	importOriginFor(module: string, name: string): ImportOrigin | null {
-		for (const statement of this.store.importsIn(module)) {
+	/** The import statement that brought a name into a module, when one did. Stamped through `reads`
+	 * for a move's dependency walk. */
+	importOriginFor(module: string, name: string, reads: ImportReads): ImportOrigin | null {
+		for (const statement of reads.importsIn(module)) {
 			if (statement.name !== name && statement.local !== name) continue;
 			return {
 				specifier: statement.specifier,
@@ -162,12 +170,16 @@ export class ImportResolver {
 	 * Specifiers are resolved here rather than at index time. Resolving all of them while indexing
 	 * costs a provider round trip per import across the whole workspace, to answer a question only
 	 * the handful sharing a name with a rename target ever ask.
+	 *
+	 * A rename plans through the context, so `reads` stamps what it answers; a read-only caller
+	 * names its own unstamped source explicitly, never by an omitted argument.
 	 */
 	async importSitesFor(
 		declaringModule: string,
 		name: string,
+		reads: ImportReads,
 	): Promise<Array<{ module: string; range: Range; factId: string }>> {
-		const statements = this.store.importsNamed(name);
+		const statements = reads.importsNamed(name);
 		const resolve = this.resolutionCache();
 		const exposing = await this.modulesExposing(declaringModule, statements, resolve);
 

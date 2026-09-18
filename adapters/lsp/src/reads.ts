@@ -106,7 +106,7 @@ export function localReads(service: LexiconService): LexiconReads {
 		typeHierarchy: async (symbolId) => service.typeHierarchy(symbolId),
 		callHierarchy: async (symbolId) => service.callHierarchy(symbolId),
 		recallAnswers: async (symbolId) => service.recallAnswers(symbolId),
-		prepareRename: (symbolId, newName) => service.prepareRename(symbolId, newName),
+		prepareRename: (symbolId, newName) => service.prepareRename(symbolId, newName, service.newReadContext()),
 		renameEdits: (symbolId, newName) => service.renameEdits(symbolId, newName),
 		// No daemon, no journal to conflict with.
 		transactionOpen: async () => false,

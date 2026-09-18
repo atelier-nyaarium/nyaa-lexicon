@@ -45,6 +45,7 @@ import {
 import { KnowledgeLedger } from "./knowledge.js";
 import type { ProviderPort } from "./providerPort.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
+import { ReadContext } from "./readContext.js";
 import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
 import type { UnknownType } from "./refusalSlots.js";
 import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
@@ -267,6 +268,11 @@ export class LexiconService {
 
 	////////////////////////////////
 	//  Refactor plans, answered by RefactorPlanner
+
+	/** One context, so a rename or move step's several planning reads share what it stamped. */
+	newReadContext(): ReadContext {
+		return new ReadContext(this.store);
+	}
 
 	planReplacement(
 		...args: Parameters<RefactorPlanner["planReplacement"]>

@@ -107,10 +107,12 @@ function refactorMove(
 				issues,
 			}),
 			plan: async () => {
-				const plan = service.planMove(args.symbolId, args.toModule);
+				// Held past the call, so the stale check below asks what it stamped.
+				const context = service.newReadContext();
+				const plan = service.planMove(args.symbolId, args.toModule, context);
 				if (!plan.ok) return { refused: plan.reason };
 				target = plan.toModule;
-				const edits = await service.moveEdits(plan);
+				const edits = await service.moveEdits(plan, context);
 				if (!edits.ok) return { refused: edits.reason, issues: edits.issues };
 				touched = edits.files.map((file) => file.module);
 
@@ -127,7 +129,10 @@ function refactorMove(
 							if (moved !== undefined) return changedWhilePlanned(moved.module, "move");
 							// Import sites were chosen from stored ranges; the same rule applies.
 							const stale = service.staleModules(plan.referencing);
-							return stale.length > 0 ? staleSincePlanned(stale, "move") : null;
+							if (stale.length > 0) return staleSincePlanned(stale, "move");
+							// Rows re-committed under an equal hash: a re-parse or an upgrade.
+							const movedFacts = service.factsMoved(context.seen());
+							return movedFacts.length > 0 ? factsMovedWhilePlanned(movedFacts, "move") : null;
 						},
 						begin: () => {
 							for (const id of plan.closure) {
@@ -186,7 +191,9 @@ function refactorRename(
 				issues,
 			}),
 			plan: async () => {
-				const plan = await service.prepareRename(args.symbolId, args.newName);
+				// One context, so the plan and the two follow-up reads below stamp and share one set.
+				const context = service.newReadContext();
+				const plan = await service.prepareRename(args.symbolId, args.newName, context);
 				if (plan.blockers.length > 0) {
 					return {
 						refused: plan.blockers[0]?.detail ?? renameBlocked(),
@@ -194,11 +201,13 @@ function refactorRename(
 					};
 				}
 
-				const idMap = service.renameIdMap(args.symbolId, args.newName);
+				const idMap = service.renameIdMap(args.symbolId, args.newName, context);
 				const edited = plan.files.map((file) => file.module);
 				// Worked out before the write, since afterwards these ids resolve to nothing and the
 				// modules holding stale bindings would be unfindable.
-				const alsoBound = service.modulesBoundTo(idMap.keys()).filter((module) => !edited.includes(module));
+				const alsoBound = service
+					.modulesBoundTo(idMap.keys(), context)
+					.filter((module) => !edited.includes(module));
 
 				return {
 					planned: {
@@ -208,7 +217,10 @@ function refactorRename(
 							// Every site was chosen from stored ranges; a changed module has moved
 							// them, so rewriting would hit some occurrences and miss others.
 							const stale = service.staleModules(edited);
-							return stale.length > 0 ? staleSincePlanned(stale, "rename") : null;
+							if (stale.length > 0) return staleSincePlanned(stale, "rename");
+							// Rows re-committed under an equal hash: a re-parse or an upgrade.
+							const moved = service.factsMoved(context.seen());
+							return moved.length > 0 ? factsMovedWhilePlanned(moved, "rename") : null;
 						},
 						rebind: () => ({
 							entries: [...idMap].map(([from, to]) => ({ from, to })),
@@ -494,10 +506,14 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			(params) => service.typeOf(params.symbolId),
 		),
 		// Read-only, and kept because the editor asks it to decide whether to offer a rename.
-		prepareRename: upgradedRead((params) => service.prepareRename(params.symbolId, params.newName)),
+		prepareRename: upgradedRead((params) =>
+			service.prepareRename(params.symbolId, params.newName, service.newReadContext()),
+		),
 		// The edits a rename would make, for a caller that applies them itself.
 		renameEdits: upgradedRead((params) => service.renameEdits(params.symbolId, params.newName)),
-		planMove: upgradedRead((params) => service.planMove(params.symbolId, params.toModule)),
+		planMove: upgradedRead((params) =>
+			service.planMove(params.symbolId, params.toModule, service.newReadContext()),
+		),
 		indexFile: write((params) => service.indexFile(params.module)),
 		symbolSource: read((params) => service.symbolSource(params)),
 		refactorStart: write(() => transactions().start()),
