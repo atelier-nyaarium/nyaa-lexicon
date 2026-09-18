@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Declaration, Reference } from "@nyaa-lexicon/protocol";
+import { QUESTION_CLASSES } from "@nyaa-lexicon/protocol";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -349,14 +350,31 @@ describe("a knowledge scope", () => {
 
 		expect(byQuestion.get("describe")).toMatchObject({ createdAt: recorded.answer.createdAt, thin: true });
 		expect(byQuestion.get("why")).toEqual({ question: "why", askCount: 1 });
+		// IDS.line is a class: no `effects`, per questionsFor.
 		expect(line?.questions.map((entry) => entry.question)).toEqual([
 			"describe",
 			"why",
 			"relate",
 			"contract",
-			"effects",
 			"usage",
 		]);
+	});
+
+	it("gates each member's questions by kind, and a local's by visibility", () => {
+		const scope = service.knowledgeScope({ module: "shop.ref", includeLocals: true });
+		const byName = new Map(
+			scope?.symbols.map((entry): [string, string[]] => [
+				entry.symbol.name,
+				entry.questions.map((q) => q.question),
+			]),
+		);
+
+		expect(byName.get("amount")).toEqual([]); // local variable: none
+		expect(byName.get("total")).toEqual(["describe", "why", "contract", "usage"]); // fileLocal variable
+		expect(byName.get("open")).toEqual([...QUESTION_CLASSES]); // method
+		expect(byName.get("price")).toEqual(["describe", "contract"]); // property
+		expect(byName.get("Line")).toEqual(["describe", "why", "relate", "contract", "usage"]); // class
+		expect(byName.get("helper")).toEqual([...QUESTION_CLASSES]); // function
 	});
 
 	it("keeps an answer's own trouble apart from what it leans on, as gaps and recall do", async () => {

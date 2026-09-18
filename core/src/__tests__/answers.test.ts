@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseSymbolIdResult } from "@nyaa-lexicon/protocol";
+import { answerFactId, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
 import { createDispatch } from "../dispatch";
 import * as refusal from "../refusals";
@@ -483,7 +483,8 @@ describe("writing an answer down", () => {
 		const region = plantWithDocRegion();
 
 		const facts = await service.factsFor(HEADING);
-		const outcome = await service.recordAnswer(HEADING, "why", "Workarounds cost more later.", [region]);
+		// A heading only takes `describe`, per questionsFor.
+		const outcome = await service.recordAnswer(HEADING, "describe", "Workarounds cost more later.", [region]);
 
 		expect(facts?.facts.map((fact) => fact.kind)).toContain("doc");
 		expect(outcome.recorded).toBe(true);
@@ -752,6 +753,155 @@ describe("answers citing answers", () => {
 		await service.recordAnswer(CHILD, "describe", "Sends one frame, buffering under pressure.", [childFact]);
 
 		expect(service.recallAnswer(SYMBOL, "describe")?.stale).toEqual([childAnswerId]);
+	});
+});
+
+/**
+ * A question class applies by the subject's kind and visibility (`questionsFor`). Gaps must never
+ * surface an inapplicable pair; record_answer must refuse writing a fresh one.
+ */
+describe("questions gated by kind and visibility", () => {
+	const WIDGET = "lexicon reference gate.ref Widget#";
+	const PRICE = "lexicon reference gate.ref Widget#price.";
+	const RUN = "lexicon reference gate.ref run().";
+	const ARG = "lexicon reference gate.ref run().(arg)";
+
+	/** A class with a property (fields take only describe/contract), a function, and its local parameter. */
+	function plantGated(): void {
+		store.replaceFile({
+			module: "gate.ref",
+			contentHash: "h1",
+			depth: "full",
+			declarations: [
+				{
+					symbolId: WIDGET,
+					kind: "class",
+					name: "Widget",
+					range: at(0),
+					selectionRange: at(0),
+					visibility: "public",
+				},
+				{
+					symbolId: PRICE,
+					kind: "property",
+					name: "price",
+					range: at(1),
+					selectionRange: at(1),
+					visibility: "public",
+					containerId: WIDGET,
+				},
+				{
+					symbolId: RUN,
+					kind: "function",
+					name: "run",
+					range: at(2),
+					selectionRange: at(2),
+					visibility: "public",
+				},
+				{
+					symbolId: ARG,
+					kind: "variable",
+					name: "arg",
+					range: at(3),
+					selectionRange: at(3),
+					visibility: "local",
+					containerId: RUN,
+				},
+			],
+			references: [],
+			comments: [
+				{
+					range: at(1),
+					raw: "// In cents.",
+					normalized: "In cents.",
+					form: "leading",
+					placement: "above",
+					anchorId: PRICE,
+				} satisfies AttachedComment,
+			],
+		});
+	}
+
+	it("refuses an inapplicable question on a property, naming what it does take", async () => {
+		plantGated();
+		const declaration = store.declaration(PRICE)?.factId as string;
+		const outcome = await service.recordAnswer(PRICE, "effects", "Mutates nothing.", [declaration]);
+		expect(reasonOf(outcome)).toBe(refusal.questionNotApplicable("effects", "property", ["describe", "contract"]));
+		expect(service.recallAnswer(PRICE, "effects")).toBeNull();
+	});
+
+	it("still records an applicable question on a property", async () => {
+		plantGated();
+		const declaration = store.declaration(PRICE)?.factId as string;
+		const outcome = await service.recordAnswer(PRICE, "contract", "Never negative.", [declaration]);
+		expect(outcome.recorded).toBe(true);
+	});
+
+	it("refuses every question on a function-scoped local", async () => {
+		plantGated();
+		const declaration = store.declaration(ARG)?.factId as string;
+		const outcome = await service.recordAnswer(ARG, "describe", "The frame to send.", [declaration]);
+		expect(reasonOf(outcome)).toBe(refusal.questionNotApplicable("describe", "variable", []));
+	});
+
+	it("keeps an inapplicable pair out of the workspace ledger, a module scope and a tree, counting only what applies", () => {
+		plantGated();
+		ask(PRICE, "effects");
+		ask(PRICE, "usage");
+		ask(ARG, "describe");
+		ask(RUN, "effects");
+		ask(PRICE, "contract");
+
+		const workspace = service.knowledgeGaps();
+		expect(workspace.rows.map((row) => `${row.symbolId}:${row.question}`).sort()).toEqual([
+			`${PRICE}:contract`,
+			`${RUN}:effects`,
+		]);
+		expect(workspace.total).toBe(2);
+
+		const module = service.knowledgeGaps(undefined, "effects", 60, "gate.ref");
+		expect(module.rows.map((row) => row.symbolId)).toEqual([RUN]);
+
+		const tree = service.knowledgeGaps(PRICE, "effects");
+		expect(tree.rows).toEqual([]);
+		expect(tree.total).toBe(0);
+	});
+
+	it("keeps an inapplicable question out of the seeded fallback too", () => {
+		plantGated();
+		// describe applies everywhere, so it proves price is otherwise seed-eligible.
+		expect(service.knowledgeGaps(undefined, "describe").rows.map((row) => row.symbolId)).toContain(PRICE);
+		expect(service.knowledgeGaps(undefined, "effects").rows.map((row) => row.symbolId)).not.toContain(PRICE);
+	});
+
+	it("keeps invalidate, reaffirm and recall working on a legacy answer whose question no longer applies, out of gaps", async () => {
+		plantGated();
+		const declaration = store.declaration(PRICE)?.factId as string;
+		const subject = store.subjects.claim(PRICE, Date.now());
+		if (subject === null) throw new Error("could not claim a subject for price");
+		const prose = "Mutates nothing outside itself.";
+		store.saveAnswer(subject.subjectId, {
+			symbolId: PRICE,
+			recordedAs: PRICE,
+			question: "effects",
+			factId: answerFactId(subject.subjectId, PRICE, "effects", prose, [declaration]),
+			prose,
+			citations: [declaration],
+			thin: false,
+			createdAt: Date.now(),
+		});
+
+		const doubted = service.invalidateAnswer(PRICE, "prose predates the schema", "effects");
+		expect(doubted.doubted).toHaveLength(1);
+		expect(service.recallAnswer(PRICE, "effects")?.answer.doubt).toBeDefined();
+		// Named explicitly: an unfiltered call would fall through to the seeded fallback for
+		// `describe`, where price legitimately qualifies, and prove nothing about this pair.
+		expect(service.knowledgeGaps(undefined, "effects").rows.map((row) => row.symbolId)).not.toContain(PRICE);
+
+		const doubtId = doubted.doubted[0]?.doubt.factId as string;
+		const reaffirmed = await service.reaffirmAnswer(PRICE, "effects", { resolvesDoubt: doubtId });
+		expect(reaffirmed.recorded).toBe(true);
+		expect(service.recallAnswer(PRICE, "effects")?.answer.doubt).toBeUndefined();
 	});
 });
 

@@ -19,7 +19,7 @@ import {
 	type KnowledgeScope,
 	languageOf,
 	moduleOf,
-	QUESTION_CLASSES,
+	questionsFor,
 	type ResolveFactsResult,
 	type ScopeSymbol,
 } from "@nyaa-lexicon/protocol";
@@ -237,8 +237,13 @@ export class KnowledgeLedger {
 		options: { model?: string; resolvesDoubt?: string; omitting?: string } = {},
 	): Promise<LedgerRecordOutcome> {
 		const { model, resolvesDoubt, omitting } = options;
-		if (this.store.declaration(symbolId) === null) {
+		const declaration = this.store.declaration(symbolId);
+		if (declaration === null) {
 			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
+		}
+		const applicable = questionsFor(declaration);
+		if (!applicable.includes(question)) {
+			return { recorded: false, reason: refusal.questionNotApplicable(question, declaration.kind, applicable) };
 		}
 		if (prose.trim() === "") return { recorded: false, reason: refusal.needsProse() };
 		if (prose.length > MAX_PROSE) {
@@ -573,6 +578,7 @@ export class KnowledgeLedger {
 			const missing: GapRow[] = [];
 			const known = new Set<string>();
 			for (const gap of all) {
+				if (!this.questionApplies(gap.symbolId, gap.question)) continue;
 				known.add(`${gap.symbolId}\0${gap.question}`);
 				const answer = this.store.answer(gap.symbolId, gap.question);
 				if (answer === null) {
@@ -602,6 +608,7 @@ export class KnowledgeLedger {
 			if (this.store.liveAnswerCount() <= STALE_SCAN_CAP) {
 				for (const answer of this.store.liveAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
+					if (!this.questionApplies(answer.symbolId, answer.question)) continue;
 					const why = this.recheckWhy(answer);
 					if (why === null) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, why, answer.recordedAs));
@@ -610,6 +617,7 @@ export class KnowledgeLedger {
 				staleScanSkipped = true;
 				for (const answer of this.store.liveDoubtedAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
+					if (!this.questionApplies(answer.symbolId, answer.question)) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, "doubted", answer.recordedAs));
 				}
 			}
@@ -740,7 +748,7 @@ export class KnowledgeLedger {
 		return {
 			symbol: toSummary(declaration),
 			depth,
-			questions: QUESTION_CLASSES.map((question) => {
+			questions: questionsFor(declaration).map((question) => {
 				const askCount = this.store.askCount(declaration.symbolId, question);
 				const found = recalled.get(question);
 				if (found === undefined) return { question, askCount };
@@ -811,10 +819,18 @@ export class KnowledgeLedger {
 		return { ...result, rows: [...result.rows, ...stranded], stranded: count };
 	}
 
-	/** Missing, doubted, stale on its own citations, or null for healthy. */
+	/** Missing, doubted, stale on its own citations, or null when healthy or not applicable to the kind. */
 	private gapWhy(symbolId: string, question: QuestionClass): GapRow["why"] | null {
+		if (!this.questionApplies(symbolId, question)) return null;
 		const answer = this.store.answer(symbolId, question);
 		return answer === null ? "missing" : this.recheckWhy(answer);
+	}
+
+	/** Whether the kind at this address asks `question` at all. Unresolvable defaults applicable. */
+	private questionApplies(symbolId: string, question: string): boolean {
+		const declaration = this.store.declaration(symbolId);
+		if (declaration === null) return true;
+		return (questionsFor(declaration) as readonly string[]).includes(question);
 	}
 
 	/** Its own doubt or citations; inherited trouble is the cited answer's own row. */
@@ -839,6 +855,7 @@ export class KnowledgeLedger {
 	): { rows: GapRow[]; unknown: { generated: number; exported: number } } {
 		const pool = this.store
 			.seedCandidates()
+			.filter((candidate) => this.questionApplies(candidate.symbolId, question))
 			.filter((candidate) => this.store.answer(candidate.symbolId, question) === null);
 		const languages = [...this.store.declarationsByLanguage().entries()]
 			.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))

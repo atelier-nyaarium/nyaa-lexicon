@@ -30,7 +30,7 @@ import type {
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
-import { compileSearchRegex, searchTerm } from "@nyaa-lexicon/core";
+import { compileSearchRegex, QUESTION_CLASSES, searchTerm } from "@nyaa-lexicon/core";
 import type {
 	CoChangedWithResult,
 	CommitsMentioningResult,
@@ -355,12 +355,12 @@ export const SymbolHistoryInput = {
 	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
-const QUESTIONS = ["describe", "why", "relate", "contract", "effects", "usage"] as const;
-
 export const RecordAnswerInput = {
 	// Both id kinds appear in one `symbol_facts` answer, and this tool takes one of each.
 	symbolId: z.string().min(1).describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
-	question: z.enum(QUESTIONS).describe(`Answer category for \`prose\`.`),
+	question: z
+		.enum(QUESTION_CLASSES)
+		.describe(`Answer category for \`prose\`. Not every kind takes every category; a refusal names which do.`),
 	prose: z
 		.string()
 		.min(1)
@@ -377,7 +377,7 @@ export const RecallAnswerInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
-	question: z.enum(QUESTIONS).optional().describe(`Answer category. Omit to show every answer.`),
+	question: z.enum(QUESTION_CLASSES).optional().describe(`Answer category. Omit to show every answer.`),
 };
 
 export const InvalidateAnswerInput = {
@@ -385,7 +385,7 @@ export const InvalidateAnswerInput = {
 	symbolId: z.string().min(1).optional().describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
 	reason: z.string().min(1).describe(`Reason for the doubt.`),
-	question: z.enum(QUESTIONS).optional().describe(`Answer category. Omit to doubt every recorded answer.`),
+	question: z.enum(QUESTION_CLASSES).optional().describe(`Answer category. Omit to doubt every recorded answer.`),
 	by: z.string().min(1).optional().describe(`Author declaring the doubt.`),
 };
 
@@ -393,7 +393,7 @@ export const ReaffirmAnswerInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
-	question: z.enum(QUESTIONS).describe(`Answer category to refresh.`),
+	question: z.enum(QUESTION_CLASSES).describe(`Answer category to refresh.`),
 	citations: z
 		.array(z.string().min(1))
 		.optional()
@@ -410,7 +410,7 @@ export const KnowledgeGapsInput = {
 		.min(1)
 		.optional()
 		.describe(`Workspace-relative module path. Alone: that file's declarations. With \`name\`: which \`name\`.`),
-	question: z.enum(QUESTIONS).optional().describe(`Answer category. Defaults to \`describe\`.`),
+	question: z.enum(QUESTION_CLASSES).optional().describe(`Answer category. Defaults to \`describe\`.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum gaps. Default: \`60\`.`),
 };
 

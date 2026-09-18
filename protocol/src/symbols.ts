@@ -81,6 +81,8 @@ export const VisibilitySchema = z
 	.enum(["public", "protected", "private", "internal", "fileLocal", "local"])
 	.meta({ id: "Visibility" });
 
+export type Visibility = z.infer<typeof VisibilitySchema>;
+
 /**
  * Size and shape of one declaration.
  *

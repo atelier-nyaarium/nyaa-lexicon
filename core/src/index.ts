@@ -10,6 +10,8 @@ export {
 	MAX_PROSE,
 	QUESTION_CLASSES,
 	type QuestionClass,
+	type QuestionSubject,
+	questionsFor,
 	type RecalledAnswer,
 	type RecordOutcome,
 } from "./answers.js";

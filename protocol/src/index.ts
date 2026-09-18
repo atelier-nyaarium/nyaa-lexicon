@@ -158,6 +158,8 @@ export {
 	QUESTION_CLASSES,
 	type QuestionClass,
 	QuestionClassSchema,
+	type QuestionSubject,
+	questionsFor,
 	type RecallAnswerResult,
 	RecallAnswerResultSchema,
 	type RecalledAnswer,
@@ -467,6 +469,7 @@ export {
 	RUNNING_KINDS,
 	type SymbolKind,
 	SymbolKindSchema,
+	type Visibility,
 	VisibilitySchema,
 } from "./symbols.js";
 export {

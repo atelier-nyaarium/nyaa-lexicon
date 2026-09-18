@@ -18,6 +18,8 @@ export {
 	type Doubt,
 	QUESTION_CLASSES,
 	type QuestionClass,
+	type QuestionSubject,
+	questionsFor,
 	type RecalledAnswer,
 	type RecordOutcome,
 } from "@nyaa-lexicon/protocol";

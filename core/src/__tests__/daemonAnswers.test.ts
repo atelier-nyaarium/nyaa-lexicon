@@ -328,7 +328,8 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	knowledgeScope: async () => {
 		const file = await ask("knowledgeScope", { module: "cart.ref" });
 		expect(file?.symbols.map((entry) => entry.symbol.name)).toEqual(["Cart", "add"]);
-		expect(file?.symbols.every((entry) => entry.questions.length === 6)).toBe(true);
+		// Cart is a class (no `effects`); add is a function (all six).
+		expect(file?.symbols.map((entry) => entry.questions.length)).toEqual([5, 6]);
 		const one = await ask("knowledgeScope", { symbolId: cart, members: true });
 		expect(one?.symbols.map((entry) => entry.symbol.name)).toEqual(["Cart"]);
 		expect(await ask("knowledgeScope", { symbolId: `${cart}Gone#` })).toBeNull();

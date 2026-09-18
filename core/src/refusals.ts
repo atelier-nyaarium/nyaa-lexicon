@@ -70,6 +70,11 @@ export function replacesSoundAnswer(): Refusal {
 	);
 }
 
+export function questionNotApplicable(question: string, kind: string, applicable: readonly string[]): Refusal {
+	if (applicable.length === 0) return mint(`${kind} is function-scoped; no question class applies to it`);
+	return mint(`${kind} takes ${applicable.join(", ")}, not ${question}`);
+}
+
 ////////////////////////////////
 //  Doubting
 

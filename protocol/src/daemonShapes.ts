@@ -11,7 +11,15 @@ import { MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
 import { IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
-import { DeclarationSchema, RangeSchema, ReferenceRoleSchema, SymbolKindSchema, VisibilitySchema } from "./symbols.js";
+import {
+	DeclarationSchema,
+	RangeSchema,
+	ReferenceRoleSchema,
+	type SymbolKind,
+	SymbolKindSchema,
+	type Visibility,
+	VisibilitySchema,
+} from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
 
 ////////////////////////////////
@@ -23,6 +31,49 @@ export const QUESTION_CLASSES = ["describe", "why", "relate", "contract", "effec
 export const QuestionClassSchema = z.enum(QUESTION_CLASSES).meta({ id: "QuestionClass" });
 
 export type QuestionClass = z.infer<typeof QuestionClassSchema>;
+
+/** Kind and visibility decide a symbol's applicable questions. */
+export interface QuestionSubject {
+	kind: SymbolKind;
+	visibility: Visibility;
+}
+
+const RUNNING_QUESTIONS: readonly QuestionClass[] = QUESTION_CLASSES;
+const CLASS_QUESTIONS: readonly QuestionClass[] = ["describe", "why", "relate", "contract", "usage"];
+const SHAPE_QUESTIONS: readonly QuestionClass[] = ["describe", "why", "relate", "contract"];
+const FIELD_QUESTIONS: readonly QuestionClass[] = ["describe", "contract"];
+const VALUE_QUESTIONS: readonly QuestionClass[] = ["describe", "why", "contract", "usage"];
+const NAME_QUESTIONS: readonly QuestionClass[] = ["describe"];
+const GROUP_QUESTIONS: readonly QuestionClass[] = ["describe", "why"];
+
+/** Applicable questions per kind. A Record over SymbolKind so a new kind fails to compile here. */
+const QUESTIONS_BY_KIND: Record<SymbolKind, readonly QuestionClass[]> = {
+	function: RUNNING_QUESTIONS,
+	method: RUNNING_QUESTIONS,
+	constructor: RUNNING_QUESTIONS,
+	operator: RUNNING_QUESTIONS,
+	class: CLASS_QUESTIONS,
+	struct: CLASS_QUESTIONS,
+	interface: SHAPE_QUESTIONS,
+	enum: SHAPE_QUESTIONS,
+	property: FIELD_QUESTIONS,
+	field: FIELD_QUESTIONS,
+	event: FIELD_QUESTIONS,
+	constant: VALUE_QUESTIONS,
+	variable: VALUE_QUESTIONS,
+	typeParameter: NAME_QUESTIONS,
+	heading: NAME_QUESTIONS,
+	file: GROUP_QUESTIONS,
+	module: GROUP_QUESTIONS,
+	namespace: GROUP_QUESTIONS,
+	package: GROUP_QUESTIONS,
+};
+
+/** Questions applicable to a symbol, in `QUESTION_CLASSES` order. A `local` symbol has none. */
+export function questionsFor(subject: QuestionSubject): readonly QuestionClass[] {
+	if (subject.visibility === "local") return [];
+	return QUESTIONS_BY_KIND[subject.kind];
+}
 
 /** How a fact was obtained, carried on every answer so a consumer can weigh it. */
 export const AnswerTierSchema = z.enum(["bound", "nameMatched", "unknown"]).meta({ id: "AnswerTier" });
@@ -568,7 +619,7 @@ export const ScopeSymbolSchema = z
 		symbol: SymbolSummarySchema,
 		/** Containment depth below the scope: 0 for the named symbol or a module's top level. */
 		depth: z.number(),
-		/** Every question class, in `QUESTION_CLASSES` order. */
+		/** Only the kind's applicable questions (`questionsFor`), in `QUESTION_CLASSES` order. */
 		questions: z.array(ScopeQuestionSchema),
 	})
 	.meta({ id: "ScopeSymbol" });
