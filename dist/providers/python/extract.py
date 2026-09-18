@@ -1234,8 +1234,13 @@ class LiteralVisitor(ast.NodeVisitor):
         if all(isinstance(value, ast.Constant) and isinstance(value.value, str) for value in node.values):
             self.add_literal("string", "".join(value.value for value in node.values), node)
             return
+        # An f-string with a substitution: each text run is its own literal, at its own
+        # position, since one range for the whole node would cover the substitutions too.
         for value in node.values:
-            if isinstance(value, ast.FormattedValue):
+            # An empty run (a format spec opening straight on `{`) has no span to report.
+            if isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value != "":
+                self.add_literal("string", value.value, value)
+            elif isinstance(value, ast.FormattedValue):
                 self.visit(value.value)
                 if value.format_spec is not None:
                     self.visit(value.format_spec)
