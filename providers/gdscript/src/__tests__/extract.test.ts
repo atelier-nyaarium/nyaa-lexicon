@@ -1001,6 +1001,17 @@ func use():
 	expect(facts.literals.find((literal) => literal.value === "inside")?.containerId).toBe(use?.symbolId);
 });
 
+// GDScript has no string-interpolation syntax: `%` and `.format()` read an ordinary string at run
+// time, so its placeholder text is already reported verbatim, with nothing to fix.
+test("reports a % format string as one literal, its placeholders left verbatim", () => {
+	const provider = new GDScriptProvider();
+	provider.initialize("/workspace");
+	const text = 'var cmd = "install %s@%s now" % [name, marketplace]\n';
+	const facts = provider.parseFile({ module: "fmt.gd", contentHash: "fmt", text });
+
+	expect(facts.literals.map((literal) => literal.value)).toEqual(["install %s@%s now"]);
+});
+
 // One lexer, so no second reading.
 test("reads literals through the same scan that masks strings and comments", () => {
 	const provider = new GDScriptProvider();

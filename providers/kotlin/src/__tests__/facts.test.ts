@@ -239,6 +239,16 @@ describe("literals", () => {
 		]);
 		expect(facts.literals.every((item) => item.containerId !== undefined)).toBe(true);
 	});
+
+	test("an interpolated string is one literal, its value carrying the interpolation's raw source", () => {
+		const text = ['val name = "world"', `val greeting = "hello ${D}{name}!"`, `val short = "hi ${D}name"`].join(
+			"\n",
+		);
+		const facts = parseKotlin("Interpolate.kt", text);
+
+		expect(facts.literals.map((item) => item.value)).toEqual(["world", "hello ${name}!", "hi $name"]);
+		for (const literal of facts.literals) expect(coordinatesOf(text).sliceRange(literal.range)).toBeDefined();
+	});
 });
 
 describe("comments", () => {

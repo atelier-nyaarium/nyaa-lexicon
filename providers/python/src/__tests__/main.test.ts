@@ -451,6 +451,11 @@ describe("Python provider project behavior", () => {
 				range: spanAt(text, text.indexOf('f"plain"'), 'f"plain"'),
 			},
 			{
+				kind: "string",
+				value: "value ",
+				range: spanAt(text, text.indexOf('f"value {add}"') + 2, "value "),
+			},
+			{
 				kind: "number",
 				value: "0xFF",
 				number: 255,
@@ -466,9 +471,39 @@ describe("Python provider project behavior", () => {
 		expect(facts.literals.some((literal) => literal.value === "module docs")).toBe(false);
 		expect(facts.literals.some((literal) => literal.value === "function docs")).toBe(false);
 		expect(facts.literals.some((literal) => literal.value === "bytes")).toBe(false);
-		expect(facts.literals.some((literal) => literal.value === "value ")).toBe(false);
 		expect(facts.literals.some((literal) => literal.value === "None")).toBe(false);
 		expect(facts.literals.some((literal) => literal.value === "1j")).toBe(false);
+	});
+
+	it("reports a multi-substitution f-string's text runs as literals, each slicing its own text", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = 'cmd = f"install {name}@{marketplace} now"\n';
+		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(facts.literals.map((literal) => [literal.kind, literal.value])).toEqual([
+			["string", "install "],
+			["string", "@"],
+			["string", " now"],
+		]);
+		for (const literal of facts.literals) {
+			expect(coordinatesOf(text).sliceRange(literal.range)).toBe(literal.value);
+		}
+	});
+
+	it("skips the empty text run a nested format spec opens with, and still reports the rest", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = 'width = 10\nx = 1\ny = f"{x:{width}} done"\n';
+		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+
+		expect(facts.literals.map((literal) => [literal.kind, literal.value])).toEqual([
+			["number", "10"],
+			["number", "1"],
+			["string", " done"],
+		]);
 	});
 
 	it("reports UTF-16 ranges for declarations, references, imports, attributes, and literals", async () => {

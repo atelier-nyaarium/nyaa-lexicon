@@ -449,7 +449,9 @@ export enum Color { Red }
 		expect(found.literals.map((literal) => [literal.kind, literal.value, literal.number])).toEqual([
 			["string", "a\nb", undefined],
 			["string", "a\nb", undefined],
+			["string", "prefix ", undefined],
 			["string", "inner", undefined],
+			["string", "", undefined],
 			["number", "0xFF", 255],
 			["number", "1_000", 1000],
 			["boolean", "true", undefined],
@@ -462,7 +464,9 @@ export enum Color { Red }
 		expect(found.literals.map((literal) => textAt(source, literal.range))).toEqual([
 			'"a\\nb"',
 			"`a\\nb`",
+			"`prefix ${",
 			'"inner"',
+			"}`",
 			"0xFF",
 			"1_000",
 			"true",
@@ -481,6 +485,30 @@ export enum Color { Red }
 		expect(found.literals.find((literal) => textAt(source, literal.range) === '"ready"')?.containerId).toBe(
 			ready?.symbolId,
 		);
+	});
+
+	it("reports a multi-substitution template's text parts as literals, delimiters and all", () => {
+		const source = "const cmd = `install ${p.name}@${p.marketplace}`;";
+		const found = extract(source);
+
+		expect(found.literals.map((literal) => [literal.kind, literal.value])).toEqual([
+			["string", "install "],
+			["string", "@"],
+			["string", ""],
+		]);
+		expect(found.literals.map((literal) => textAt(source, literal.range))).toEqual(["`install ${", "}@${", "}`"]);
+	});
+
+	it("reports a tagged template's text parts the same as an untagged one", () => {
+		const source = "const out = tag`a${1}b`;";
+		const found = extract(source);
+
+		expect(found.literals.map((literal) => [literal.kind, literal.value])).toEqual([
+			["string", "a"],
+			["number", "1"],
+			["string", "b"],
+		]);
+		expect(found.literals.map((literal) => textAt(source, literal.range))).toEqual(["`a${", "1", "}b`"]);
 	});
 
 	it("measures declaration lines and executable shape without inventing fields", () => {

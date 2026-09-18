@@ -113,15 +113,30 @@ describe("references and literals", () => {
 		const reads = parsed.references.filter((reference) => reference.role === "read");
 		expect(reads.map((reference) => reference.name)).toEqual(["NAME", "GREETING", "HOME", "NAME"]);
 		for (const reference of reads) expect(sliceOf(text, reference.range)).toBe(reference.name);
-		expect(parsed.literals.map((literal) => literal.value)).toEqual(["# not $NAME", "tab\there", "world", "42"]);
+		expect(parsed.literals.map((literal) => literal.value)).toEqual([
+			"hello ",
+			"# not $NAME",
+			"tab\there",
+			"world",
+			"42",
+		]);
 		expect(parsed.literals.find((literal) => literal.value === "42")).toMatchObject({ kind: "number", number: 42 });
-		// A quoted literal's range spans its quotes, so the slice is the spelling and the value is the text.
+		// A whole-quote literal's range spans its quotes; a text run beside an expansion is only the run.
 		expect(parsed.literals.map((literal) => sliceOf(text, literal.range))).toEqual([
+			"hello ",
 			"'# not $NAME'",
 			"$'tab\\there'",
 			"world",
 			"42",
 		]);
+	});
+
+	test("a double-quoted string with several expansions reports each text run as its own literal", () => {
+		const line = 'CMD="install ${NAME}@${NAME} now"';
+		const parsed = parseBash("cmd.sh", line);
+
+		expect(parsed.literals.map((literal) => literal.value)).toEqual(["install ", "@", " now"]);
+		for (const literal of parsed.literals) expect(sliceOf(line, literal.range)).toBe(literal.value);
 	});
 
 	test("a call names a function of the file and a program is not a reference", () => {
@@ -277,6 +292,9 @@ describe("diagnostics, types, and positions", () => {
 		const parsed = parseBash("h.sh", text);
 		expect(parsed.references.filter((reference) => reference.role === "read").map((r) => r.name)).toEqual(["NAME"]);
 		expect(parsed.literals.map((literal) => [literal.value, sliceOf(text, literal.range)])).toEqual([
+			// An expanding body reports its own text runs too, around the $NAME the read above counts.
+			["hello ", "hello "],
+			["\n", "\n"],
 			["kept $NAME\n", "kept $NAME\n"],
 			["one\ntwo\n", "\tone\n\t\ttwo\n"],
 		]);

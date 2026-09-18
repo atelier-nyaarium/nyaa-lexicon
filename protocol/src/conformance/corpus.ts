@@ -3235,6 +3235,135 @@ const CASES: ConformanceCase[] = [
 		},
 		references: [{ name: "T", role: "read", bindsTo: "T" }],
 	},
+	{
+		id: "a-leading-byte-order-mark-does-not-swallow-the-rest-of-the-file",
+		tier: "binding",
+		about: "A leading byte order mark is trivia; it must not desync the top-level walk into treating the whole file as one unrecognized member, blanking every declaration and misclassifying every attribute as a call.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/bom.cs": `\uFEFF${[
+						"namespace N {",
+						"    public class MarkerAttribute : Attribute { }",
+						"    public class Holder {",
+						"        [Marker]",
+						"        public void Method() { }",
+						"    }",
+						"}",
+						"",
+					].join("\n")}`,
+				},
+				subject: "src/bom.cs",
+			},
+		},
+		references: [
+			{
+				name: "Marker",
+				role: "typeUse",
+				at: { line: 3, character: 9 },
+				from: "Method",
+				bindsTo: "MarkerAttribute",
+			},
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "a-qualified-new-expression-marks-only-its-last-segment-as-instantiate",
+		tier: "binding",
+		about: "new N.Simple() marks Simple as instantiate; the qualifier N is left to read as it already did, since it names no type by itself. An object initializer or an array creation after the chain answers the same way.",
+		fixtures: {
+			[CSHARP]: {
+				files: {
+					"src/qualified-new.cs": [
+						"namespace N {",
+						"    public class Simple { public int X; }",
+						"    public class Holder {",
+						"        public void Run() {",
+						"            var a = new N.Simple();",
+						"            var b = new N.Simple { X = 1 };",
+						"            var c = new N.Simple[5];",
+						"        }",
+						"    }",
+						"}",
+						"",
+					].join("\n"),
+				},
+				subject: "src/qualified-new.cs",
+			},
+		},
+		references: [
+			{ name: "N", role: "read", at: { line: 4, character: 24 } },
+			{ name: "Simple", role: "instantiate", at: { line: 4, character: 26 }, bindsTo: "Simple" },
+			{ name: "N", role: "read", at: { line: 5, character: 24 } },
+			{ name: "Simple", role: "instantiate", at: { line: 5, character: 26 }, bindsTo: "Simple" },
+			{ name: "N", role: "read", at: { line: 6, character: 24 } },
+			{ name: "Simple", role: "instantiate", at: { line: 6, character: 26 }, bindsTo: "Simple" },
+		],
+		parseErrors: "forbidden",
+	},
+	{
+		id: "a-templated-strings-hole-is-never-dropped",
+		tier: "literals",
+		about:
+			"A string with an embedded expression still reports its literal text: either as the text " +
+			"runs around the hole, or as one literal whose value carries the hole's own source.",
+		// No shared `literals` here: a language reports this as several text-run literals or as one
+		// whole-string literal, so every fixture states its own shape.
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: { "src/cmd.ts": "export const cmd = `install ${name} now`;\n" },
+				subject: "src/cmd.ts",
+				literals: [
+					{ value: "install ", kind: "string" },
+					{ value: " now", kind: "string" },
+				],
+			},
+			[PYTHON]: {
+				files: { "src/cmd.py": 'cmd = f"install {name} now"\n' },
+				subject: "src/cmd.py",
+				literals: [
+					{ value: "install ", kind: "string" },
+					{ value: " now", kind: "string" },
+				],
+			},
+			[BASH]: {
+				files: { "src/cmd.sh": 'CMD="install $name now"\n' },
+				subject: "src/cmd.sh",
+				literals: [
+					{ value: "install ", kind: "string" },
+					{ value: " now", kind: "string" },
+				],
+			},
+			// A hole is code, not text: what it renders to is not known here, so the one literal
+			// carries the hole's own source, braces included, rather than dropping it.
+			[CSHARP]: {
+				files: {
+					"src/cmd.cs": 'class Cmd { string Value = $"install {name} now"; }\n',
+				},
+				subject: "src/cmd.cs",
+				literals: [{ value: "install {name} now", kind: "string" }],
+			},
+			[KOTLIN]: {
+				files: { "src/cmd.kt": 'val cmd = "install ${name} now"\n' },
+				subject: "src/cmd.kt",
+				literals: [{ value: "install ${name} now", kind: "string" }],
+			},
+			// Rust has no string-interpolation syntax: `{name}` is plain text the `format!` macro
+			// reads later, so the whole string is one ordinary literal.
+			[RUST]: {
+				files: { "src/cmd.rs": 'fn cmd() -> String { format!("install {name} now") }\n' },
+				subject: "src/cmd.rs",
+				literals: [{ value: "install {name} now", kind: "string" }],
+			},
+			// GDScript has no string-interpolation syntax either: `%s` is read by the `%` operator
+			// at run time, so the whole string is one ordinary literal.
+			[GDSCRIPT]: {
+				files: { "src/cmd.gd": 'var cmd := "install %s now" % name\n' },
+				subject: "src/cmd.gd",
+				literals: [{ value: "install %s now", kind: "string" }],
+			},
+		},
+	},
 ];
 
 ////////////////////////////////

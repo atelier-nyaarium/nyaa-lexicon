@@ -158,12 +158,15 @@ function isStatic(part: WordPart): boolean {
 }
 
 export function pushLiteral(w: Walk, scope: Scope, value: string, start: number, end: number): void {
+	const range = rangeAt(w, start, end);
+	// A lone `\r` right before the line's `\n` clamps away to nothing: no span left to report.
+	if (range.start.line === range.end.line && range.start.character === range.end.character) return;
 	const number = NUMBER_RE.test(value) ? Number(value) : undefined;
 	w.out.literals.push({
 		kind: number === undefined ? "string" : "number",
 		value,
 		...defined({ number }),
-		range: rangeAt(w, start, end),
+		range,
 		...defined({ containerId: scope.fromId }),
 	});
 }

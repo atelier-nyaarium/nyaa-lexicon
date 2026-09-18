@@ -53,10 +53,30 @@ describe("C# lexical facts", () => {
 			["string", 'a "quote"'],
 			["string", 'b "quote"'],
 			["string", "raw { value }"],
-			// A hole is code, not text: what it renders to is not known here.
-			["string", "value "],
+			// A hole is code, not text: what it renders to is not known here, so the literal carries
+			// the hole's own source, braces included, rather than dropping it.
+			["string", "value {Name}"],
 			["string", "name"],
 		]);
+	});
+
+	it("carries a multi-hole interpolated string's holes verbatim in the one literal", () => {
+		const { facts } = parse('public class Values {\n\tstring Cmd = $"install {p.Name}@{p.Marketplace}";\n}\n');
+
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.literals.map((item) => [item.kind, item.value])).toEqual([
+			["string", "install {p.Name}@{p.Marketplace}"],
+		]);
+	});
+
+	it("carries a hole verbatim for a verbatim-interpolated and a raw-interpolated string too", () => {
+		const { facts: reversed } = parse('public class C { string X = $@"a ""q"" {p.Name} b"; }\n');
+		expect(reversed.diagnostics).toEqual([]);
+		expect(reversed.literals.map((item) => item.value)).toEqual(['a "q" {p.Name} b']);
+
+		const { facts: raw } = parse('public class C {\n\tstring X = $"""install {p.Name}""";\n}\n');
+		expect(raw.diagnostics).toEqual([]);
+		expect(raw.literals.map((item) => item.value)).toEqual(["install {p.Name}"]);
 	});
 
 	it("does not end an interpolated string at a quote inside a hole", () => {
@@ -450,6 +470,71 @@ describe("C# references and diagnostics", () => {
 		for (const reference of facts.references) BindingSchema.parse(reference.binding);
 	});
 
+	it("marks only the last segment of a qualified new expression as instantiate", () => {
+		const text = [
+			"namespace N {",
+			"    public class Simple { }",
+			"    public class Generic<T> { }",
+			"    public class Holder {",
+			"        public void Run() {",
+			"            var a = new N.Simple();",
+			"            var b = new global::N.Simple();",
+			"            var c = new N.Generic<N.Simple>();",
+			"        }",
+			"    }",
+			"}",
+			"",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		const roleOf = (name: string, line: number): string | undefined =>
+			facts.references.find((item) => item.name === name && item.range.start.line === line)?.role;
+		// `new N.Simple()`: N is the qualifier, Simple is the instantiated type.
+		expect(roleOf("N", 5)).toBe("read");
+		expect(roleOf("Simple", 5)).toBe("instantiate");
+		// `new global::N.Simple()`: global is never reported, N is still the qualifier.
+		expect(facts.references.some((item) => item.name === "global")).toBe(false);
+		expect(roleOf("N", 6)).toBe("read");
+		expect(roleOf("Simple", 6)).toBe("instantiate");
+		// `new N.Generic<N.Simple>()`: Generic is instantiated; the generic argument reads as it already did.
+		expect(roleOf("N", 7)).toBe("read");
+		expect(roleOf("Generic", 7)).toBe("instantiate");
+		const line7 = facts.references
+			.filter((item) => item.range.start.line === 7)
+			.map((item) => [item.name, item.role]);
+		expect(line7).toEqual([
+			["N", "read"],
+			["Generic", "instantiate"],
+			["N", "read"],
+			["Simple", "read"],
+		]);
+	});
+
+	it("marks a qualified new's last segment instantiate before an initializer or an array creation too", () => {
+		const text = [
+			"namespace N {",
+			"    public class Simple { public int X; }",
+			"    public class Holder {",
+			"        public void Run() {",
+			"            var a = new N.Simple { X = 1 };",
+			"            var b = new N.Simple[5];",
+			"        }",
+			"    }",
+			"}",
+			"",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		const roleOf = (name: string, line: number): string | undefined =>
+			facts.references.find((item) => item.name === name && item.range.start.line === line)?.role;
+		// `new N.Simple { X = 1 }`: an object initializer, no parentheses.
+		expect(roleOf("N", 4)).toBe("read");
+		expect(roleOf("Simple", 4)).toBe("instantiate");
+		// `new N.Simple[5]`: an array creation.
+		expect(roleOf("N", 5)).toBe("read");
+		expect(roleOf("Simple", 5)).toBe("instantiate");
+	});
+
 	it("reports unclosed strings and delimiters as errors", () => {
 		const { facts: stringFacts } = parse('public class C { string Value = "broken; }', "broken-string.cs");
 		const { facts: delimiterFacts } = parse("public class C { public void Run( { }", "broken-delimiter.cs");
@@ -475,6 +560,29 @@ describe("C# references and diagnostics", () => {
 		const { facts } = parse(text);
 		expect(facts.diagnostics).toEqual([]);
 		expect(facts.declarations.map((item) => item.name)).toEqual(["C", "Value"]);
+	});
+
+	it("treats a leading byte order mark as trivia, not an unrecognized member", () => {
+		const text = `\uFEFF${["namespace N {", "public class C {", "[Marker()]", "public C() { }", "}", "}", ""].join(
+			"\n",
+		)}`;
+		const { facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.declarations.map((item) => [item.kind, item.name])).toEqual([
+			["namespace", "N"],
+			["class", "C"],
+			["constructor", "C"],
+		]);
+		const ctor = one(
+			facts.declarations.filter((item) => item.kind === "constructor"),
+			"constructor is not declared",
+		);
+		const marker = one(
+			facts.references.filter((item) => item.name === "Marker"),
+			"Marker is not referenced",
+		);
+		expect(marker.role).toBe("typeUse");
+		expect(marker.fromId).toBe(ctor.symbolId);
 	});
 
 	it("rejects an invalid workspace root through the project model", () => {

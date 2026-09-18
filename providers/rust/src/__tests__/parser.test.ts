@@ -155,6 +155,18 @@ const HEX = 0xff_u32;
 	});
 });
 
+test("reports a format! string as one literal, its captured-identifier braces left verbatim", () => {
+	// Rust has no string-interpolation syntax at the lexer level: `{name}` is plain text the
+	// `format!` macro reads later, so the literal carries it unchanged and at its own range.
+	const text = 'fn main() {\n    let cmd = format!("install {name}@{marketplace}");\n}\n';
+	const { facts } = parse(text);
+
+	expect(facts.literals.map((literal) => literal.value)).toEqual(["install {name}@{marketplace}"]);
+	const literal = facts.literals[0];
+	if (literal === undefined) throw new Error("missing literal");
+	expect(coordinatesOf(text).sliceRange(literal.range)).toBe('"install {name}@{marketplace}"');
+});
+
 test("decodes hexadecimal f digits and typed decimal literals", () => {
 	const { facts } = parse(`
 const hex = 0xff;

@@ -1147,6 +1147,35 @@ export class CsharpParser {
 		return undefined;
 	}
 
+	/** `new [global::] A.B<T>` before `(`, `{` or `[` marks B as instantiate; A, T and global stay as they already read. */
+	private markNewInstantiation(newIndex: number): void {
+		let cursor = this.nextSignificant(newIndex + 1);
+		if (this.value(cursor) === "global") {
+			const afterGlobal = this.nextSignificant(cursor + 1);
+			if (this.value(afterGlobal) !== "::") return;
+			cursor = this.nextSignificant(afterGlobal + 1);
+		}
+		let lastIdent = -1;
+		for (;;) {
+			if (!isIdentifier(this.token(cursor))) return;
+			lastIdent = cursor;
+			const after = this.nextSignificant(cursor + 1);
+			if (this.value(after) !== ".") break;
+			cursor = this.nextSignificant(after + 1);
+		}
+		let afterLast = this.nextSignificant(lastIdent + 1);
+		if (this.value(afterLast) === "<") {
+			const angleClose = this.matchingAngle(afterLast);
+			if (angleClose < 0) return;
+			afterLast = this.nextSignificant(angleClose + 1);
+		}
+		// A constructor call, an object or collection initializer, or an array creation.
+		const afterLastValue = this.value(afterLast);
+		if (afterLastValue !== "(" && afterLastValue !== "{" && afterLastValue !== "[") return;
+		const target = this.token(lastIdent);
+		if (target !== undefined) this.roleByOffset.set(target.startOffset, "instantiate");
+	}
+
 	/** A statement-boundary run is an attribute only inside a method-shaped body; an expression-start run is one only before a lambda, an anonymous method, or its parameter list. */
 	private scanNestedAttributes(metadata: Map<string, DeclarationMeta>): void {
 		const end = this.tokens.length;
@@ -2311,6 +2340,10 @@ export class CsharpParser {
 				}
 				continue;
 			}
+			if (item.value === "new") {
+				this.markNewInstantiation(index);
+				continue;
+			}
 			if (SKIPPED_WORDS.has(item.value) && !(nextValue === "(" && ["add", "remove"].includes(item.value)))
 				continue;
 			if (BUILTIN_TYPES.has(item.value)) continue;
@@ -2322,7 +2355,8 @@ export class CsharpParser {
 			const previous = this.previousSignificant(index);
 			const previousValue = this.value(previous);
 			if (item.value === "this" || item.value === "base") continue;
-			if (previousValue === "new") {
+			// A qualifier head (`new A.B()`) is not the instantiated type; markNewInstantiation names B.
+			if (previousValue === "new" && nextValue !== ".") {
 				add(item, "instantiate");
 				continue;
 			}

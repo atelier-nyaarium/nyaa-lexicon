@@ -88,6 +88,12 @@ function walkParts(w: Walk, scope: Scope, parts: WordPart[], start: number): voi
 	for (const part of parts) {
 		const end = at + part.text.length;
 		switch (part.type) {
+			// A text run beside an expansion in the same word: its own literal, since the word as a
+			// whole is not one value.
+			case "Literal":
+				pushLiteral(w, scope, part.value, at, end);
+				pushOpaque(w, at, end);
+				break;
 			case "SingleQuoted":
 			case "AnsiCQuoted":
 				pushLiteral(w, scope, part.value, at, end);
@@ -97,7 +103,10 @@ function walkParts(w: Walk, scope: Scope, parts: WordPart[], start: number): voi
 			case "LocaleString": {
 				const opening = part.type === "DoubleQuoted" ? 1 : 2;
 				if (part.parts.every((child) => child.type === "Literal")) {
+					// One literal for the whole quoted text; walking the children too would report it twice.
 					pushLiteral(w, scope, part.parts.map((child) => child.value).join(""), at, end);
+					pushOpaque(w, at, end);
+					break;
 				}
 				walkParts(w, scope, part.parts, at + opening);
 				break;

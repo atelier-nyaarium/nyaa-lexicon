@@ -14,8 +14,13 @@ function escapeRegExp(text: string): string {
 // unbash places only an expanding here-document body; a quoted or unclosed one is found by this scan.
 // Stand-in for upstream body positions; remove by 2026-09-19.
 export function walkRedirect(w: Walk, scope: Scope, redirect: Redirect): void {
-	walkWord(w, scope, redirect.target, false);
-	if (redirect.operator !== "<<" && redirect.operator !== "<<-") return;
+	if (redirect.operator !== "<<" && redirect.operator !== "<<-") {
+		walkWord(w, scope, redirect.target, false);
+		return;
+	}
+	// The delimiter is quote-removed but never expanded: a name bash matches, not program text.
+	const target = redirect.target;
+	if (target !== undefined) pushOpaque(w, target.pos, target.end);
 	const content = redirect.content;
 	if (content === undefined) return;
 	const body = redirect.body;
@@ -24,9 +29,12 @@ export function walkRedirect(w: Walk, scope: Scope, redirect: Redirect): void {
 	if (start <= 0) return;
 	// `<<-` strips leading tabs from every body line.
 	const value = redirect.operator === "<<-" ? content.replace(/^\t+/gm, "") : content;
-	if (body === undefined || staticValue(body) !== undefined) pushLiteral(w, scope, value, start, end);
+	const staticBody = body === undefined || staticValue(body) !== undefined;
+	if (staticBody) pushLiteral(w, scope, value, start, end);
 	pushOpaque(w, start, end);
-	walkWord(w, scope, body, false);
+	// A static body holds no expansion to read and no part worth walking again; walking it anyway
+	// would report its literal text runs a second time, once here and once per part.
+	if (!staticBody) walkWord(w, scope, body, false);
 	const delimiter = redirect.target?.value ?? "";
 	const closing =
 		delimiter === "" ? null : new RegExp(`^\\t*${escapeRegExp(delimiter)}(?:\\r?\\n|$)`).exec(w.text.slice(end));

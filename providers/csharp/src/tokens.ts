@@ -65,6 +65,9 @@ const OPERATORS = [
 // Only these take a trailing comment; elsewhere slashes are the directive's own text.
 const TOKENIZED_DIRECTIVES = new Set(["define", "elif", "else", "endif", "if", "line", "nullable", "pragma", "undef"]);
 
+/** Escaped, since a raw zero-width character is forbidden in this repo's sources. */
+const BYTE_ORDER_MARK = "\uFEFF";
+
 const SIMPLE_ESCAPES: Record<string, string> = {
 	"0": "\0",
 	a: "\x07",
@@ -154,8 +157,14 @@ function readNumber(cursor: Cursor): string {
 	return value + cursor.readWhile((character) => /[fFdDmMuUlL]$/u.test(character));
 }
 
-/** A hole is code: it nests braces, holds strings of its own, and its comments are comments. */
-function skipInterpolationHole(cursor: Cursor, found: Token[]): void {
+/**
+ * A hole is code: it nests braces, holds strings of its own, and its comments are comments.
+ *
+ * Returns its raw source, opening and closing brace included, since what it renders to is not
+ * known here; the literal's decoded value carries the hole verbatim rather than dropping it.
+ */
+function skipInterpolationHole(cursor: Cursor, found: Token[]): string {
+	const holeStart = cursor.offset;
 	let depth = 1;
 	cursor.next();
 	while (cursor.good() && depth > 0) {
@@ -187,6 +196,7 @@ function skipInterpolationHole(cursor: Cursor, found: Token[]): void {
 		cursor.next();
 		if (cursor.offset <= before) throw new Error("interpolation scan failed to advance");
 	}
+	return cursor.textBetween(holeStart, cursor.offset);
 }
 
 function readString(
@@ -244,7 +254,7 @@ function readString(
 				value += "{";
 				continue;
 			}
-			skipInterpolationHole(cursor, holeComments);
+			value += skipInterpolationHole(cursor, holeComments);
 			continue;
 		}
 		if (interpolated && cursor.peek() === "}" && cursor.peek(1) === "}") {
@@ -477,7 +487,10 @@ export function tokenize(
 	while (cursor.good()) {
 		const before = cursor.offset;
 		const character = cursor.peek();
-		if (isWhitespace(character)) {
+		if (before === 0 && character === BYTE_ORDER_MARK) {
+			// A leading byte order mark is not source text; drop it like whitespace.
+			cursor.next();
+		} else if (isWhitespace(character)) {
 			cursor.next();
 		} else if (isNewline(character)) {
 			const start = cursor.mark();

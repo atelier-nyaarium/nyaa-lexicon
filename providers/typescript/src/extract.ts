@@ -241,6 +241,9 @@ function literalOf(node: ts.Node, source: ts.SourceFile, declarationNodes: Map<t
 	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
 		if (isImportSpecifier(node)) return undefined;
 		literal = { kind: "string", value: node.text, range: rangeOf(node, source) };
+	} else if (ts.isTemplateHead(node) || ts.isTemplateMiddleOrTemplateTail(node)) {
+		// A template's text parts, one literal each; the substitutions between them are not text.
+		literal = { kind: "string", value: node.text, range: rangeOf(node, source) };
 	} else if (ts.isNumericLiteral(node)) {
 		const value = node.getText(source);
 		literal = { kind: "number", value, number: Number(value.replaceAll("_", "")), range: rangeOf(node, source) };
