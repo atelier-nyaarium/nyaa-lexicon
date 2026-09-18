@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/formats",
-	"version": "6.0.2",
+	"version": "7.0.0",
 	"private": true,
 	"type": "module",
 	"description": "Structured-data readers shared by the providers that read them",
