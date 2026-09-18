@@ -154,9 +154,13 @@ management tools see it by directory: `list_project_stores` lists it as a custom
 `project_diagnostics`, `stop_project_daemon` and `delete_project_store` take `store`, a key for a
 default store or an absolute directory for any store, matched against that listing and never
 joined from input. Deleting a custom directory removes lexicon's files and then the directory only
-if nothing else is left in it. A delete claims the store's lock as a daemon does, moves a default
-directory aside under it and removes it there, and empties a custom one file by file; a store a
-daemon holds is refused with its pid.
+if nothing else is left in it. A delete claims the store's lock the way a daemon does but names its
+own `role: "delete"` on it, moves a default directory aside under it and removes it there, and
+empties a custom one file by file; a store a daemon holds is refused with its pid, and one another
+delete already claims is refused as a delete in flight rather than as a daemon to shut down first.
+The listing reads the same role: `livePid` stays null while a delete's own claim holds the lock, so
+`list_project_stores` never shows the deleting process as though it were serving the store, and
+`stop_project_daemon` reports it as already stopped rather than trying to stop it.
 
 Beside the workspace root, the index records when that root was last seen on disk: a daemon
 stamps it when it opens on the root, and `list_project_stores` stamps every store whose recorded

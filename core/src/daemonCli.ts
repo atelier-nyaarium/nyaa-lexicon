@@ -20,7 +20,7 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
-import { defined, WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
+import { defined, type LockRole, WARMUP_FAILED_PREFIX } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
 import { type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
@@ -31,7 +31,7 @@ import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
 import { ownSource } from "./ownSource.js";
-import { pruneProjectStores } from "./projectStores.js";
+import { finishAbandonedDelete, pruneProjectStores } from "./projectStores.js";
 import { describeStart, lexiconRoot, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
@@ -59,6 +59,17 @@ const DRIFT_CHECK_EVERY_MS = 30_000;
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** Finishes an inherited delete before the store opens; true only when it did. */
+export function resumeAbandonedDelete(
+	outcome: { stolenRole?: LockRole },
+	directory: string,
+	defaultStore: boolean,
+): boolean {
+	if (outcome.stolenRole !== "delete") return false;
+	finishAbandonedDelete(directory, defaultStore);
+	return true;
+}
 
 /** Whether a request may be answered: a retryable hold while roots are unread, a plain error after a failed pass. */
 export function warmRefusal(
@@ -271,6 +282,11 @@ async function main(argv: string[]): Promise<void> {
 	// Everything below runs with the lock held, so failing without releasing it would leave every
 	// future client reading a live pid that serves nothing.
 	try {
+		// A dead delete is resumed, never abandoned, before the store opens.
+		if (resumeAbandonedDelete(outcome, paths.dir, stateDir === undefined)) {
+			log(`a delete of ${paths.dir} was left unfinished; removed what it left behind`);
+		}
+
 		const source = ownSource();
 		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root, clock);
 		store = opened.store;

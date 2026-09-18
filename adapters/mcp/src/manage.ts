@@ -34,7 +34,7 @@ import {
 	type SampleContext,
 	stampProjectStores,
 } from "@nyaa-lexicon/core";
-import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 
 ////////////////////////////////
@@ -147,12 +147,9 @@ function legacyDaemonLock(store: ProjectStore): DaemonLock | null {
 		return null;
 	}
 
-	try {
-		const parsed = DaemonLockSchema.safeParse(JSON.parse(raw));
-		return parsed.success && lockHolderAlive(parsed.data) ? parsed.data : null;
-	} catch {
-		return null;
-	}
+	const lock = parseDaemonLock(raw);
+	if (lock === null || lock.role === "delete" || !lockHolderAlive(lock)) return null;
+	return lock;
 }
 
 /** Live deps, for production call sites. */
@@ -300,9 +297,12 @@ export function renderStores(stores: ProjectStore[], now: number, pruned: Pruned
 	}
 
 	const lines = stores.map((store) => {
-		const where = store.workspaceRoot ?? `(this index predates recording its workspace)`;
-		const state =
-			store.livePid !== null
+		const where = store.deleting
+			? `(hidden while a delete removes it)`
+			: (store.workspaceRoot ?? `(this index predates recording its workspace)`);
+		const state = store.deleting
+			? `DELETING`
+			: store.livePid !== null
 				? `in use by pid ${store.livePid}`
 				: store.workspace === "present"
 					? `idle`
@@ -320,8 +320,8 @@ export function renderStores(stores: ProjectStore[], now: number, pruned: Pruned
 		].join("\n");
 	});
 
-	const orphaned = stores.filter((store) => store.workspace === "missing");
-	const unverified = stores.filter((store) => store.workspace === "unknown");
+	const orphaned = stores.filter((store) => !store.deleting && store.workspace === "missing");
+	const unverified = stores.filter((store) => !store.deleting && store.workspace === "unknown");
 	const reclaimable = orphaned.reduce((total, store) => total + store.bytes, 0);
 
 	const notes: string[] = [];

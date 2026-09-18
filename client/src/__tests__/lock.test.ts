@@ -94,6 +94,30 @@ describe("finding a daemon", () => {
 	});
 });
 
+describe("waiting out a delete", () => {
+	it("waits rather than replacing, since a delete's lock is not a daemon", () => {
+		const decision = decide({ lock: { role: "delete", port: 1 } });
+		expect(decision.action).toBe("awaitDelete");
+		expect(decision.action === "awaitDelete" && decision.reason).toMatch(/deleting/);
+	});
+
+	// The role check runs before the workspaceRoot and buildVersion comparisons.
+	it("still waits when the delete's own root equals ours and it carries no buildVersion", () => {
+		const decision = decide({
+			lock: { role: "delete", port: 1, workspaceRoot: "/home/me/proj", buildVersion: undefined },
+		});
+		expect(decision.action).toBe("awaitDelete");
+	});
+
+	it("spawns rather than waits once the deleting pid is gone, since there is nothing left to wait on", () => {
+		expect(decide({ lock: { role: "delete" }, alive: false })).toMatchObject({ action: "spawn" });
+	});
+
+	it("reads a lock naming the daemon role exactly as one naming none at all", () => {
+		expect(decide({ lock: { role: "daemon" } })).toMatchObject({ action: "connect" });
+	});
+});
+
 // A real incident, not a hypothetical: a 1.9.0 daemon kept serving this workspace after the
 // checkout moved to 1.10.2, and every call to a method added in between answered `unknown method`.
 describe("the build comparison is ordered, because method tables only grow", () => {

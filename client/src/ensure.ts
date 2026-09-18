@@ -105,8 +105,30 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		}
 	}
 
-	const decision = look();
+	/** Looks until a delete in flight clears, or the elapsed budget ends; nothing is asked or signalled. */
+	async function awaitDeleteClear(): Promise<LockDecision> {
+		let elapsed = 0;
+		for (;;) {
+			const next = look();
+			if (next.action !== "awaitDelete" || elapsed >= timeoutMs) return next;
+			const step = Math.min(POLL_MS, timeoutMs - elapsed);
+			await wait(step);
+			elapsed += step;
+		}
+	}
+
+	let decision = look();
+	if (decision.action === "awaitDelete") decision = await awaitDeleteClear();
+
 	if (decision.action === "connect") return { connected: true, lock: decision.lock };
+
+	if (decision.action === "awaitDelete") {
+		return {
+			connected: false,
+			reason: "timeout",
+			detail: `${decision.reason}, and it still holds the lock after ${timeoutMs}ms`,
+		};
+	}
 
 	if (decision.action === "replace") {
 		if (decision.cause === "otherWorkspace")

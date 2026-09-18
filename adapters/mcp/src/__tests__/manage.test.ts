@@ -38,6 +38,7 @@ function store(overrides: Partial<ProjectStore> = {}): ProjectStore {
 		lastIndexedAt: NOW,
 		lastSeenAt: NOW,
 		livePid: null,
+		deleting: false,
 		...overrides,
 	};
 }
@@ -166,6 +167,24 @@ describe("listing stores", () => {
 		expect(body).toContain(`- Directory: ${DIRECTORY}`);
 		expect(body).toContain(`- Directory: ${CUSTOM}`);
 		expect(body.match(/custom/g)).toHaveLength(1);
+	});
+
+	it("renders a store a delete is claiming as deleting, not idle or unverified", () => {
+		const rows = [
+			store({
+				key: "going",
+				directory: "/state/going",
+				deleting: true,
+				workspaceRoot: null,
+				workspace: "unknown",
+			}),
+		];
+		const body = listProjectStoresTool(deps(rows), NOW).content[0]?.text ?? "";
+
+		expect(body).toContain("- State: DELETING");
+		expect(body).toContain("- Workspace: (hidden while a delete removes it)");
+		expect(body).not.toContain("UNVERIFIED");
+		expect(body).toContain("Every index here belongs to a project still on disk.");
 	});
 
 	it("says how long an orphan's workspace has been gone, or that nothing dates it", () => {

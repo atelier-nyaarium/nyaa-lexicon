@@ -11,10 +11,12 @@ import { registerProject } from "../projectRegistry";
 import {
 	deleteProjectStore,
 	findProjectStore,
+	finishAbandonedDelete,
 	listProjectStores,
 	PRUNE_AFTER_MS,
 	type ProjectStore,
 	pruneProjectStores,
+	stampIndex,
 	stampProjectStores,
 	storeKeyFor,
 } from "../projectStores";
@@ -65,6 +67,20 @@ function unstamp(workspaceRoot: string): void {
 	const db = new DatabaseSync(workspacePaths(host, workspaceRoot).index);
 	db.exec("DELETE FROM meta WHERE key = 'lastSeenAt'");
 	db.close();
+}
+
+/** The raw seen stamp on disk, read outside the listing, so a stamp attempt leaves a trace here
+ * even when the listing's own answer says nothing changed. */
+function seenValue(directory: string): string | undefined {
+	const db = new DatabaseSync(storePaths(directory).index, { readOnly: true });
+	try {
+		const row = db.prepare("SELECT value FROM meta WHERE key = 'lastSeenAt'").get() as
+			| { value: string }
+			| undefined;
+		return row?.value;
+	} finally {
+		db.close();
+	}
 }
 
 function seenOf(key: string, stores = listProjectStores(NOBODY_ALIVE, host)): number | null | undefined {
@@ -176,6 +192,37 @@ describe("listing what this machine has indexed", () => {
 		expect(listProjectStores(NOBODY_ALIVE, host)[0]?.livePid).toBeNull();
 	});
 
+	// A delete's own claim on the store's lock is not a daemon serving it.
+	it("names no daemon at all while a delete is claiming the store's lock", () => {
+		seedStore(workDir);
+		const directory = workspacePaths(host, workDir).dir;
+		writeFileSync(storePaths(directory).lockFile, JSON.stringify({ ...lockFor(workDir, 4242), role: "delete" }));
+
+		expect(listProjectStores(EVERYBODY_ALIVE, host)[0]?.livePid).toBeNull();
+	});
+
+	// The lock's role is read before the index is.
+	it("answers deleting without reading or stamping the index while a delete claims it", () => {
+		const key = seedStore(workDir);
+		const directory = workspacePaths(host, workDir).dir;
+		writeFileSync(storePaths(directory).lockFile, JSON.stringify({ ...lockFor(workDir, 4242), role: "delete" }));
+
+		const [listed] = listProjectStores(EVERYBODY_ALIVE, host);
+		expect(listed).toMatchObject({
+			key,
+			deleting: true,
+			livePid: null,
+			workspaceRoot: null,
+			lastIndexedAt: null,
+			lastSeenAt: null,
+		});
+
+		const before = seenValue(directory);
+		const [stamped] = stampProjectStores(EVERYBODY_ALIVE, NOW, host);
+		expect(stamped?.lastSeenAt).toBeNull();
+		expect(seenValue(directory)).toBe(before);
+	});
+
 	it("lists every project, not just the one asked about", () => {
 		const other = path.join(workDir, "second");
 		mkdirSync(other);
@@ -273,6 +320,35 @@ describe("when a workspace was last seen", () => {
 	});
 });
 
+// The stamp reads the lock and the file fresh, immediately before it opens either.
+describe("the stamp's own re-check right before it writes", () => {
+	it("refuses a store a live delete claims, read fresh rather than trusted from a prior look", () => {
+		const directory = workspacePaths(host, workDir).dir;
+		seedStore(workDir);
+		const before = seenValue(directory);
+		writeFileSync(storePaths(directory).lockFile, JSON.stringify({ ...lockFor(workDir, 4242), role: "delete" }));
+
+		expect(stampIndex(directory, EVERYBODY_ALIVE, NOW)).toBeNull();
+		expect(seenValue(directory)).toBe(before);
+	});
+
+	it("refuses without creating a ghost index when the file is not there to open", () => {
+		const directory = path.join(workDir, "renamed-away");
+		mkdirSync(directory, { recursive: true });
+		const index = storePaths(directory).index;
+
+		expect(stampIndex(directory, NOBODY_ALIVE, NOW)).toBeNull();
+		expect(existsSync(index)).toBe(false);
+	});
+
+	it("still stamps a present store with no delete claiming it", () => {
+		seedStore(workDir);
+		const directory = workspacePaths(host, workDir).dir;
+
+		expect(stampIndex(directory, NOBODY_ALIVE, NOW)).toBe(NOW);
+	});
+});
+
 describe("pruning orphans", () => {
 	// The three that must survive: a present workspace however stale its stamp, an index that never
 	// recorded its root, and one a daemon is serving.
@@ -340,6 +416,37 @@ describe("pruning orphans", () => {
 		expect(pruned).toMatchObject([{ store: { directory: custom, custom: true }, outcome: { deleted: true } }]);
 		expect(readdirSync(custom)).toEqual(["notes.txt"]);
 	});
+
+	// Nothing else ever revisits a `.removing` name, so the prune road is the one place that must.
+	describe("sweeping abandoned graves", () => {
+		function grave(): string {
+			const path_ = `${workspacePaths(host, workDir).dir}.9999999.removing`;
+			mkdirSync(path_, { recursive: true });
+			return path_;
+		}
+
+		it("removes a grave whose delete died, and answers it in the outcomes", () => {
+			const dir = grave();
+			writeFileSync(storePaths(dir).lockFile, JSON.stringify({ ...lockFor(workDir, 2 ** 30), role: "delete" }));
+			writeFileSync(storePaths(dir).index, "leftover");
+
+			const pruned = pruneProjectStores(NOBODY_ALIVE, NOW, host);
+
+			expect(pruned).toHaveLength(1);
+			expect(pruned[0]).toMatchObject({ outcome: { deleted: true } });
+			expect(existsSync(dir)).toBe(false);
+		});
+
+		it("leaves a grave alone while its delete is still alive", () => {
+			const dir = grave();
+			writeFileSync(storePaths(dir).lockFile, JSON.stringify({ ...lockFor(workDir, 4242), role: "delete" }));
+
+			const pruned = pruneProjectStores(EVERYBODY_ALIVE, NOW, host);
+
+			expect(pruned).toEqual([]);
+			expect(existsSync(dir)).toBe(true);
+		});
+	});
 });
 
 describe("deleting a project's index", () => {
@@ -369,6 +476,20 @@ describe("deleting a project's index", () => {
 		expect(existsSync(path.join(stateRoot(host), key))).toBe(true);
 	});
 
+	// The holder is another delete, not a daemon: there is nothing to shut down, only a race to lose.
+	it("refuses while another delete already claims it, without telling the caller to shut anything down", () => {
+		const key = seedStore(workDir);
+		const directory = workspacePaths(host, workDir).dir;
+		writeFileSync(storePaths(directory).lockFile, JSON.stringify({ ...lockFor(workDir, 4242), role: "delete" }));
+
+		const outcome = deleteProjectStore(resolve(key, EVERYBODY_ALIVE), EVERYBODY_ALIVE, NOW, host);
+
+		expect(outcome).toMatchObject({ deleted: false });
+		expect((outcome as { reason: string }).reason).toContain("4242");
+		expect((outcome as { reason: string }).reason).toContain("already deleting");
+		expect((outcome as { reason: string }).reason).not.toContain("shut it down");
+	});
+
 	// A lock claimed after the check still refuses the delete.
 	it("refuses a daemon that claims the lock after the check and before the removal", () => {
 		const key = seedStore(workDir);
@@ -380,7 +501,10 @@ describe("deleting a project's index", () => {
 			if (holder.pid === 2222) return true;
 			if (!raced) {
 				raced = true;
-				expect(claimLock(lockFile, lockFor(workDir, 2222), NOBODY_ALIVE)).toEqual({ claimed: true });
+				expect(claimLock(lockFile, lockFor(workDir, 2222), NOBODY_ALIVE)).toEqual({
+					claimed: true,
+					stolenRole: "daemon",
+				});
 			}
 			return false;
 		};
@@ -503,5 +627,52 @@ describe("a store in a directory the project chose", () => {
 
 		expect(deleteProjectStore(resolve(custom), NOBODY_ALIVE, NOW, host)).toMatchObject({ deleted: true });
 		expect(existsSync(custom)).toBe(false);
+	});
+});
+
+// Shares its removal with the delete road: one definition of what goes.
+describe("finishing a delete a dead process left unfinished", () => {
+	it("removes what a delete would, keeps the owner's other files, and keeps the directory itself", () => {
+		const directory = path.join(workDir, "abandoned");
+		mkdirSync(directory, { recursive: true });
+		const paths = storePaths(directory);
+		writeFileSync(paths.index, "stale index");
+		writeFileSync(paths.logFile, "stale log");
+		writeFileSync(paths.diagnosticsFile, "{}");
+		writeFileSync(path.join(directory, "notes.txt"), "mine");
+
+		finishAbandonedDelete(directory, false);
+
+		expect(existsSync(paths.index)).toBe(false);
+		expect(existsSync(paths.logFile)).toBe(false);
+		expect(existsSync(paths.diagnosticsFile)).toBe(false);
+		expect(existsSync(directory)).toBe(true);
+		expect(readdirSync(directory)).toEqual(["notes.txt"]);
+	});
+
+	it("does nothing to a custom directory that never held a lexicon file", () => {
+		const directory = path.join(workDir, "empty");
+		mkdirSync(directory, { recursive: true });
+		writeFileSync(path.join(directory, "notes.txt"), "mine");
+
+		finishAbandonedDelete(directory, false);
+
+		expect(readdirSync(directory)).toEqual(["notes.txt"]);
+	});
+
+	// A default directory is lexicon's alone: everything but its own lock goes.
+	it("clears a default directory whole but for its lock, list or no list", () => {
+		const directory = path.join(workDir, "abandoned-default");
+		mkdirSync(directory, { recursive: true });
+		const paths = storePaths(directory);
+		writeFileSync(paths.index, "stale index");
+		writeFileSync(paths.lockFile, JSON.stringify(lockFor(directory, process.pid)));
+		writeFileSync(path.join(directory, "stray.txt"), "not in the list");
+
+		finishAbandonedDelete(directory, true);
+
+		expect(existsSync(paths.index)).toBe(false);
+		expect(existsSync(path.join(directory, "stray.txt"))).toBe(false);
+		expect(existsSync(paths.lockFile)).toBe(true);
 	});
 });

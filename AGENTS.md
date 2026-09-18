@@ -211,8 +211,16 @@ Ordered by how much they prove:
   fails in-flight callers on death instead.
 - **A store's lock is claimed through `core/src/daemonLock.ts`, before the store is opened and
   before it is removed.** The daemon and the delete road take the same link, so neither can open
-  or remove a store the other holds; `lock-residue.test.ts` forbids a second claim or a second
-  read of the lock in core.
+  or remove a store the other holds; `lock-residue.test.ts` forbids a second claim through
+  `linkSync` in core.
+- **A lock's raw text is parsed through one function, `parseDaemonLock` in
+  `protocol/src/daemonRecords.ts`, from every package that reads one.** core's `daemonLock.ts`,
+  client's `decideFromLock` and `shutdownDaemon`, and the MCP adapter's machine-wide tools all call
+  it rather than parsing by hand; `lock-residue.test.ts` forbids a second `DaemonLockSchema.safeParse`
+  anywhere in core, client or adapters. The lock's `role`, `"daemon"` or absent for one, `"delete"`
+  for the other, is read before anything else a lock says, since a delete's own claim carries the
+  store's directory as its `workspaceRoot` and no real port. A client reading `role: "delete"` waits
+  the claim out instead, asking and signalling nothing, since nothing behind it is a daemon.
 - **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
   mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
   by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore

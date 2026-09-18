@@ -507,3 +507,82 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 		expect(asked).toEqual(["refactorStatus", "shutdown"]);
 	});
 });
+
+// A delete's lock is never a daemon: no port to dial, no transaction to protect.
+describe("waiting out a delete instead of touching its placeholder lock", () => {
+	const deleting: LockDecision = {
+		action: "awaitDelete",
+		lock: { ...LOCK, port: 1 },
+		reason: "pid 9999 is deleting /w right now",
+	};
+
+	it("waits for the delete to clear, then spawns, with nothing asked or signalled", async () => {
+		const events: string[] = [];
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			look: looking([deleting, deleting, { action: "spawn", reason: "gone" }, { action: "connect", lock: LOCK }]),
+			ask: async (_lock, method) => {
+				events.push(`ask:${method}`);
+				return { open: false };
+			},
+			stop: (pid) => {
+				events.push(`stop:${pid}`);
+			},
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(events).toEqual([]);
+		expect(started).toBe(1);
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	it("connects straight away when someone else's daemon already answers by the next look", async () => {
+		const result = await ensureDaemon({
+			...options,
+			look: looking([deleting, { action: "connect", lock: LOCK }]),
+			start: () => {
+				throw new Error("must not spawn while a daemon already answers");
+			},
+		});
+
+		expect(result).toEqual({ connected: true, lock: LOCK });
+	});
+
+	it("refuses with a timeout, never spawnFailed, when the delete outlives the wait", async () => {
+		const result = await ensureDaemon({
+			...options,
+			timeoutMs: 50,
+			look: looking([deleting]),
+			start: () => {
+				throw new Error("must not spawn over a delete still in flight");
+			},
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "timeout" });
+		expect(result.connected === false && result.detail).toContain("deleting");
+	});
+
+	// A poll that does not divide the timeout evenly must never push the real wait past it.
+	it("never waits past the timeout, even when the poll does not divide it evenly", async () => {
+		const waits: number[] = [];
+		const result = await ensureDaemon({
+			...options,
+			timeoutMs: 250,
+			clock: {
+				sleep: async (ms) => {
+					waits.push(ms);
+				},
+			},
+			look: looking([deleting]),
+			start: () => {
+				throw new Error("must not spawn over a delete still in flight");
+			},
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "timeout" });
+		expect(waits.reduce((total, ms) => total + ms, 0)).toBe(250);
+	});
+});

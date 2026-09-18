@@ -37,7 +37,9 @@ export type Compatibility =
 // `describe.members` no longer lists parameters and locals. `referenceCount`, `findReferences`,
 // `mostReferenced`, `graph.fanIn`, `graph.fanOut`, `graph.cycle` and gap `fanIn` no longer count
 // import and export lines. `Declaration.contains`, an older core ignores.
-export const PROTOCOL_VERSION = "3.3.0" as const;
+// 3.4.0: `DaemonLockSchema` gains an optional `role`, `"daemon"` or `"delete"`, naming which side
+// of a store's lock a claim represents. Absent reads as `"daemon"`, an older lock's only meaning.
+export const PROTOCOL_VERSION = "3.4.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

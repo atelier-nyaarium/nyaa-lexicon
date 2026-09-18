@@ -4,7 +4,7 @@
 // "stopped", shared by the session and the management tool.
 
 import { readFileSync } from "node:fs";
-import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
 import { callDaemon } from "./discover.js";
 import type { Sleeper } from "./ensure.js";
 import { DaemonError } from "./errors.js";
@@ -31,12 +31,13 @@ const POLL_MS = 100;
 
 /** Whether the file still names this daemon. Absent, unreadable and another's all read as gone. */
 function stillHeld(lockFile: string, token: string): boolean {
+	let raw: string;
 	try {
-		const parsed = DaemonLockSchema.safeParse(JSON.parse(readFileSync(lockFile, "utf8")));
-		return parsed.success && parsed.data.token === token;
+		raw = readFileSync(lockFile, "utf8");
 	} catch {
 		return false;
 	}
+	return parseDaemonLock(raw)?.token === token;
 }
 
 /**

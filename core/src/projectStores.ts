@@ -5,6 +5,9 @@
 //
 // Reads never open a store, because opening one REBUILDS an index whose schema has moved on, so
 // inspecting would rewrite the thing being inspected.
+//
+// The listing is a lock-free reader, so only the stamp's own open, re-checked immediately before
+// it, carries a residual race.
 
 import { existsSync, lstatSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
@@ -51,6 +54,9 @@ export interface ProjectStore {
 	lastSeenAt: number | null;
 	/** The pid serving it right now, or null. A live daemon blocks deletion. */
 	livePid: number | null;
+	/** Whether a live delete claims this store's lock right now. True skips reading and stamping
+	 * the index entirely, since a delete is free to remove it out from under either. */
+	deleting: boolean;
 }
 
 export type DeleteOutcome =
@@ -82,10 +88,10 @@ function reasonOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/** The pid of the daemon serving this directory, or null when the lock is absent, junk, or dead. */
-function pidOf(dir: string, isAlive: HolderAlive): number | null {
-	const lock = readLock(storePaths(dir).lockFile);
-	return lock !== null && isAlive(lock) ? lock.pid : null;
+/** The pid of the daemon holding this lock, or null when it is absent, junk, dead, or a delete's
+ * own claim: nothing is serving the store while one is removing it. */
+function pidOf(lock: DaemonLock | null, isAlive: HolderAlive): number | null {
+	return lock !== null && lock.role !== "delete" && isAlive(lock) ? lock.pid : null;
 }
 
 interface IndexMetadata {
@@ -120,9 +126,13 @@ function indexMetadata(indexFile: string): IndexMetadata {
 	}
 }
 
-/** What the store holds afterwards, or null when it could not be written: a daemon mid-write, or
- * a store too old to carry the key. The listing then shows what it read. */
-function stampIndex(indexFile: string, now: number): number | null {
+/** What the store holds afterwards, or null when a live delete claims it, its index is not there,
+ * or it is too old to carry the key. Re-reads the lock and the file fresh before opening either. */
+export function stampIndex(directory: string, isAlive: HolderAlive, now: number): number | null {
+	const lock = readLock(storePaths(directory).lockFile);
+	if (lock !== null && lock.role === "delete" && isAlive(lock)) return null;
+	const indexFile = storePaths(directory).index;
+	if (!existsSync(indexFile)) return null;
 	let db: DatabaseSync | null = null;
 	try {
 		db = new DatabaseSync(indexFile);
@@ -144,8 +154,12 @@ function sizeOf(indexFile: string): { bytes: number; modifiedAt: number | null }
 }
 
 function describeStore(key: string, directory: string, custom: boolean, isAlive: HolderAlive): ProjectStore {
+	// The lock's role decides everything below: a live delete may remove the index at any moment,
+	// so nothing here opens it, reads it or writes a stamp into it while one claims it.
+	const lock = readLock(storePaths(directory).lockFile);
+	const deleting = lock !== null && lock.role === "delete" && isAlive(lock);
 	const indexFile = storePaths(directory).index;
-	const { workspaceRoot, lastIndexedAt, lastSeenAt } = indexMetadata(indexFile);
+	const { workspaceRoot, lastIndexedAt, lastSeenAt } = deleting ? NO_METADATA : indexMetadata(indexFile);
 	const { bytes, modifiedAt } = sizeOf(indexFile);
 	return {
 		key,
@@ -157,7 +171,8 @@ function describeStore(key: string, directory: string, custom: boolean, isAlive:
 		modifiedAt,
 		lastIndexedAt,
 		lastSeenAt,
-		livePid: pidOf(directory, isAlive),
+		livePid: pidOf(lock, isAlive),
+		deleting,
 	};
 }
 
@@ -209,8 +224,8 @@ export function stampProjectStores(
 	host: PlatformEnv = currentHost(),
 ): ProjectStore[] {
 	return listProjectStores(isAlive, host).map((store) => {
-		if (store.workspace !== "present") return store;
-		const lastSeenAt = stampIndex(storePaths(store.directory).index, now);
+		if (store.deleting || store.workspace !== "present") return store;
+		const lastSeenAt = stampIndex(store.directory, isAlive, now);
 		return lastSeenAt === null ? store : { ...store, lastSeenAt };
 	});
 }
@@ -219,6 +234,7 @@ export function stampProjectStores(
  * was last seen past the horizon. One that never recorded a root, or that nothing dates, stays. */
 function prunable(store: ProjectStore, now: number): boolean {
 	return (
+		!store.deleting &&
 		store.workspace === "missing" &&
 		store.livePid === null &&
 		store.lastSeenAt !== null &&
@@ -226,13 +242,45 @@ function prunable(store: ProjectStore, now: number): boolean {
 	);
 }
 
-/** Every prunable store taken down the delete road, with what it answered for each. */
+/** Every grave under the state root: a default store's directory moved aside by a delete, still
+ * there because nothing has removed it yet. */
+function graveDirectories(root: string): string[] {
+	try {
+		return readdirSync(root, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory() && entry.name.endsWith(REMOVING_SUFFIX))
+			.map((entry) => path.join(root, entry.name));
+	} catch {
+		return [];
+	}
+}
+
+/** Every grave whose delete died before finishing it, removed whole through the one removal rule;
+ * a grave whose holder still lives is left for it to finish. */
+function sweepGraves(isAlive: HolderAlive, host: PlatformEnv): PrunedStore[] {
+	const results: PrunedStore[] = [];
+	for (const grave of graveDirectories(stateRoot(host))) {
+		const lock = readLock(storePaths(grave).lockFile);
+		if (lock !== null && isAlive(lock)) continue;
+		const store = describeStore(path.basename(grave), grave, false, isAlive);
+		try {
+			removeDefaultDirectory(grave);
+			results.push({ store, outcome: { deleted: true, key: store.key, directory: grave, bytes: store.bytes } });
+		} catch (error) {
+			results.push({ store, outcome: { deleted: false, reason: reasonOf(error) } });
+		}
+	}
+	return results;
+}
+
+/** Every grave a dead delete abandoned, plus every prunable store taken down the delete road, with
+ * what it answered for each. */
 export function pruneProjectStores(
 	isAlive: HolderAlive,
 	now: number,
 	host: PlatformEnv = currentHost(),
 ): PrunedStore[] {
-	return listProjectStores(isAlive, host)
+	const graves = sweepGraves(isAlive, host);
+	const pruned: PrunedStore[] = listProjectStores(isAlive, host)
 		.filter((store) => prunable(store, now))
 		.map((store) => {
 			try {
@@ -241,6 +289,7 @@ export function pruneProjectStores(
 				return { store, outcome: { deleted: false, reason: reasonOf(error) } };
 			}
 		});
+	return [...graves, ...pruned];
 }
 
 /** The store a reference names: a default store by its key, any store by its directory, both as
@@ -253,8 +302,8 @@ export function findProjectStore(reference: string, stores: ProjectStore[]): Pro
 	);
 }
 
-/** What the daemon writes into a store directory beside its lock, and nothing else: a custom
- * directory may hold the owner's own files beside these. */
+/** What the daemon writes into a custom store directory beside its lock, and nothing else: a
+ * custom directory may hold the owner's own files beside these. */
 function storeFiles(directory: string): string[] {
 	const paths = storePaths(directory);
 	return [
@@ -270,6 +319,39 @@ function storeFiles(directory: string): string[] {
 	];
 }
 
+/**
+ * What a delete removes from a store directory: everything, for a default one; the enumerated
+ * list, for a custom one. `keepLockFile`, when given, is spared from a default removal.
+ */
+function removeStoreContents(directory: string, defaultStore: boolean, keepLockFile?: string): void {
+	if (!defaultStore) {
+		for (const file of storeFiles(directory)) rmSync(file, { recursive: true, force: true });
+		return;
+	}
+	let entries: string[];
+	try {
+		entries = readdirSync(directory);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const full = path.join(directory, entry);
+		if (full !== keepLockFile) rmSync(full, { recursive: true, force: true });
+	}
+}
+
+/** Empties then removes a default directory or its grave, lock included, tolerant of another
+ * sweep having already finished the same job first. */
+function removeDefaultDirectory(directory: string): void {
+	removeStoreContents(directory, true);
+	try {
+		rmdirSync(directory);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+}
+
 /** A default directory is lexicon's alone, so it goes whole: moved aside under the lock, which
  * frees its name for a fresh store before a byte is removed, then removed where nothing lists it.
  * The reason it stays, or null. */
@@ -283,7 +365,7 @@ function removeDefault(directory: string, token: string): string | null {
 	}
 	releaseLock(storePaths(grave).lockFile, token);
 	try {
-		rmSync(grave, { recursive: true, force: true });
+		removeDefaultDirectory(grave);
 	} catch (error) {
 		return `${directory} was moved to ${grave} but not removed: ${reasonOf(error)}`;
 	}
@@ -295,7 +377,7 @@ function removeDefault(directory: string, token: string): string | null {
 function removeCustom(directory: string, token: string): string | null {
 	const lockFile = storePaths(directory).lockFile;
 	try {
-		for (const file of storeFiles(directory)) rmSync(file, { recursive: true, force: true });
+		removeStoreContents(directory, false);
 	} catch (error) {
 		releaseLock(lockFile, token);
 		return `${directory} could not be emptied: ${reasonOf(error)}`;
@@ -307,6 +389,11 @@ function removeCustom(directory: string, token: string): string | null {
 		// The owner's files, or a daemon that claimed the freed name.
 	}
 	return null;
+}
+
+/** Finishes a delete the claim inherited, so the daemon that stole its lock opens an empty store. */
+export function finishAbandonedDelete(directory: string, defaultStore: boolean): void {
+	removeStoreContents(directory, defaultStore, defaultStore ? storePaths(directory).lockFile : undefined);
 }
 
 /**
@@ -343,12 +430,16 @@ export function deleteProjectStore(
 		// The directory, not the workspace: a client backs off rather than retiring the holder.
 		workspaceRoot: current.directory,
 		startedAt: now,
+		role: "delete",
 	};
 	const claim = claimLock(lockFile, lock, isAlive);
 	if (!claim.claimed) {
 		return {
 			deleted: false,
-			reason: `pid ${claim.holder.pid} is serving ${label} right now; shut it down first, then delete`,
+			reason:
+				claim.holder.role === "delete"
+					? `pid ${claim.holder.pid} is already deleting ${label}`
+					: `pid ${claim.holder.pid} is serving ${label} right now; shut it down first, then delete`,
 		};
 	}
 

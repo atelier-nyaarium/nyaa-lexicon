@@ -51,8 +51,45 @@ describe("the claim", () => {
 
 		const outcome = claimLock(lockFile, lockFor(2222), stale);
 
+		// Not a resume: what is claimed at the fresh name is not the vanished holder's.
 		expect(outcome).toEqual({ claimed: true });
 		expect(readLock(lockFile)?.token).toBe(lockFor(2222).token);
 		expect(readdirSync(directory)).toEqual([path.basename(lockFile)]);
+	});
+
+	it("claims cleanly with no stolen role when nothing was there to steal", () => {
+		const directory = path.join(root, "store");
+		const lockFile = storePaths(directory).lockFile;
+
+		expect(claimLock(lockFile, lockFor(2222), () => true)).toEqual({ claimed: true });
+	});
+
+	it("names the stolen role when it steals a dead daemon's lock", () => {
+		const directory = path.join(root, "store");
+		const lockFile = storePaths(directory).lockFile;
+		mkdirSync(directory);
+		writeFileSync(lockFile, JSON.stringify(lockFor(1111)));
+
+		expect(claimLock(lockFile, lockFor(2222), () => false)).toEqual({ claimed: true, stolenRole: "daemon" });
+	});
+
+	// A dead delete's own claim is stolen too, and its role rides along with it.
+	it("names the stolen role when it steals a dead delete's lock", () => {
+		const directory = path.join(root, "store");
+		const lockFile = storePaths(directory).lockFile;
+		mkdirSync(directory);
+		writeFileSync(lockFile, JSON.stringify({ ...lockFor(1111), role: "delete" }));
+
+		expect(claimLock(lockFile, lockFor(2222), () => false)).toEqual({ claimed: true, stolenRole: "delete" });
+	});
+
+	// An unreadable lock carries no role to trust, so stealing it never reads as a delete.
+	it("reads an unparseable lock's stolen role as a daemon's, never a delete's", () => {
+		const directory = path.join(root, "store");
+		const lockFile = storePaths(directory).lockFile;
+		mkdirSync(directory);
+		writeFileSync(lockFile, "{ not a lock");
+
+		expect(claimLock(lockFile, lockFor(2222), () => false)).toEqual({ claimed: true, stolenRole: "daemon" });
 	});
 });

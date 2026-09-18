@@ -7,6 +7,10 @@ import { z } from "zod";
 ////////////////////////////////
 //  Schemas
 
+/** Which side of a store's lock a claim represents. Absent reads as `"daemon"`, so a lock minted
+ * before this field existed keeps its old meaning. */
+export const LockRoleSchema = z.enum(["daemon", "delete"]);
+
 export const DaemonLockSchema = z
 	.object({
 		/** Localhost port. Chosen by the OS at bind, never fixed, so two workspaces cannot collide. */
@@ -25,6 +29,7 @@ export const DaemonLockSchema = z
 		bundleStamp: z.string().min(1).optional(),
 		workspaceRoot: z.string().min(1),
 		startedAt: z.number().int().nonnegative(),
+		role: LockRoleSchema.optional(),
 	})
 	.meta({ id: "DaemonLock" });
 
@@ -51,6 +56,25 @@ export const InstallVersionSchema = z
 ////////////////////////////////
 //  Interfaces & Types
 
+export type LockRole = z.infer<typeof LockRoleSchema>;
 export type DaemonLock = z.infer<typeof DaemonLockSchema>;
 export type InstallRecord = z.infer<typeof InstallRecordSchema>;
 export type InstallVersion = z.infer<typeof InstallVersionSchema>;
+
+////////////////////////////////
+//  Functions & Helpers
+
+/**
+ * The one reader of a raw lock file's bytes: valid JSON matching the schema, or null. Every
+ * package with lock text to interpret calls this rather than parsing one by hand.
+ */
+export function parseDaemonLock(raw: string): DaemonLock | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	const result = DaemonLockSchema.safeParse(parsed);
+	return result.success ? result.data : null;
+}

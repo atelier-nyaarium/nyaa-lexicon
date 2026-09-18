@@ -14,7 +14,7 @@ import {
 	type PlatformEnv,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
-import { type DaemonLock, DaemonLockSchema, defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, DaemonLockSchema, defined, type LockRole, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
 import { claimLock, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
 import { ownSource } from "./ownSource.js";
@@ -57,8 +57,11 @@ export interface RunningDaemon {
 	stop: () => Promise<void>;
 }
 
-/** Winning the claim is the only way to get a daemon; the loser exits without touching the store. */
-export type StartOutcome = { claimed: true; daemon: RunningDaemon } | { claimed: false; reason: string };
+/** Winning the claim is the only way to get a daemon; the loser exits without touching the store.
+ * `stolenRole` is `"delete"` only when the claim stole a dead delete's lock. */
+export type StartOutcome =
+	| { claimed: true; daemon: RunningDaemon; stolenRole?: LockRole }
+	| { claimed: false; reason: string };
 
 ////////////////////////////////
 //  Constants
@@ -133,6 +136,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		...(source.bundleStamp === null ? {} : { bundleStamp: source.bundleStamp }),
 		workspaceRoot: canonicalRoot(options.workspaceRoot),
 		startedAt: clock.now(),
+		role: "daemon",
 	});
 
 	const claim = claimLock(paths.lockFile, lock, lockHolderAlive);
@@ -140,7 +144,10 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		await server.close();
 		return {
 			claimed: false,
-			reason: `pid ${claim.holder.pid} already serves ${claim.holder.workspaceRoot} on port ${claim.holder.port}`,
+			reason:
+				claim.holder.role === "delete"
+					? `pid ${claim.holder.pid} is deleting ${claim.holder.workspaceRoot} right now`
+					: `pid ${claim.holder.pid} already serves ${claim.holder.workspaceRoot} on port ${claim.holder.port}`,
 		};
 	}
 
@@ -154,6 +161,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 
 	return {
 		claimed: true,
+		...(claim.stolenRole === undefined ? {} : { stolenRole: claim.stolenRole }),
 		daemon: {
 			lock,
 			setHandle: (next) => {

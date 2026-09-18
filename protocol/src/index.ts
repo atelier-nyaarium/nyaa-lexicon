@@ -26,6 +26,9 @@ export {
 	InstallRecordSchema,
 	type InstallVersion,
 	InstallVersionSchema,
+	type LockRole,
+	LockRoleSchema,
+	parseDaemonLock,
 } from "./daemonRecords.js";
 export {
 	type Answer,

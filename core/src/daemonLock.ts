@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { processIdentity } from "@nyaa-lexicon/client";
-import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, type LockRole, parseDaemonLock } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -15,7 +15,9 @@ import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
 /** Whether a lock's holder is alive as itself. Injected, since asking is a syscall. */
 export type HolderAlive = (holder: { pid: number; pidStart?: string | undefined }) => boolean;
 
-export type ClaimOutcome = { claimed: true } | { claimed: false; holder: DaemonLock };
+/** `stolenRole` names the dead holder's role only when the claim had to steal one, so a caller
+ * knows whether it just inherited a delete a dead process left unfinished. */
+export type ClaimOutcome = { claimed: true; stolenRole?: LockRole } | { claimed: false; holder: DaemonLock };
 
 ////////////////////////////////
 //  Constants
@@ -34,12 +36,7 @@ export function readLock(lockFile: string): DaemonLock | null {
 	} catch {
 		return null;
 	}
-	try {
-		const parsed = DaemonLockSchema.safeParse(JSON.parse(raw));
-		return parsed.success ? parsed.data : null;
-	} catch {
-		return null;
-	}
+	return parseDaemonLock(raw);
 }
 
 export function mintToken(): string {
@@ -63,15 +60,19 @@ export function claimLock(lockFile: string, lock: DaemonLock, isAlive: HolderAli
 	};
 	stage();
 
+	// The last stolen holder's role, carried into a later success.
+	let stolenRole: LockRole | undefined;
+
 	try {
 		for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
 			try {
 				linkSync(staging, lockFile);
-				return { claimed: true };
+				return stolenRole === undefined ? { claimed: true } : { claimed: true, stolenRole };
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
-				// A delete moved the directory aside, staging file included.
+				// A delete moved the directory aside, staging file included: nothing here is a resume.
 				if (code === "ENOENT") {
+					stolenRole = undefined;
 					stage();
 					continue;
 				}
@@ -80,6 +81,8 @@ export function claimLock(lockFile: string, lock: DaemonLock, isAlive: HolderAli
 
 			const holder = readLock(lockFile);
 			if (holder !== null && isAlive(holder)) return { claimed: false, holder };
+			// Unreadable reads as "daemon": with no role to trust, resuming nothing is the safe default.
+			stolenRole = holder?.role ?? "daemon";
 
 			const grave = `${lockFile}.${process.pid}.stale`;
 			try {

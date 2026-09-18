@@ -111,6 +111,27 @@ describe("finding a daemon on disk", () => {
 		expect(findDaemon(workspace, source, host, custom)).toMatchObject({ action: "connect" });
 		expect(findDaemon(workspace, source, host)).toMatchObject({ action: "spawn" });
 	});
+
+	// A delete's lock reads as one even when its workspaceRoot matches the caller's own root.
+	it("waits out a delete rather than reading its lock as a daemon, even at its own root", () => {
+		const state = scratch("lexicon-find-");
+		const custom = scratch("lexicon-custom-");
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: state }, home: state };
+		writeFileSync(
+			path.join(custom, "daemon.json"),
+			JSON.stringify({
+				port: 1,
+				token: "t".repeat(32),
+				pid: process.pid,
+				protocolVersion: PROTOCOL_VERSION,
+				workspaceRoot: canonicalRoot(custom),
+				startedAt: 1,
+				role: "delete",
+			}),
+		);
+
+		expect(findDaemon(custom, source, host, custom)).toMatchObject({ action: "awaitDelete" });
+	});
 });
 
 describe("the bundle under a root", () => {

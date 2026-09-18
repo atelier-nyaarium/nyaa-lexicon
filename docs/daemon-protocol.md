@@ -29,6 +29,7 @@ buildVersion     which release it runs, which decides its method table
 bundleStamp      a digest of every bundle's bytes under dist/, so a rebuild inside one version is noticed and two copies of one release agree
 workspaceRoot    the canonical root it serves
 startedAt        epoch milliseconds
+role             "daemon" or "delete"; absent reads as "daemon"
 ```
 
 `pidStart` is what stops a reused pid from reading as a live daemon: `lockHolderAlive` requires
@@ -44,15 +45,22 @@ the single-writer rule while two daemons exist. On stop, the daemon removes the 
 still carries its own token, and removes it before closing the socket, so a client cannot read a
 lock naming a dead port.
 
-A delete takes the same claim. `delete_project_store` and the prune link their own lock into the
-store before touching it, so a daemon starting meanwhile either loses the claim or refuses the
-delete with the holder's pid. A default directory is then moved aside whole, lock included, to a
-sibling ending in `.removing` that the listing never shows, and removed there; a daemon starting
-after the move finds no store and creates a fresh one. A custom directory is emptied file by file
-under the lock. A delete that could not move or empty the store answers as not deleted with the
-reason. Its lock names the store directory as its root and no real port, so a client reading it
-backs off instead of retiring the holder; a contender whose staging file moved with the directory
-stages again and claims the fresh one.
+A delete takes the same claim, writing `role: "delete"`. `delete_project_store` and the prune link
+their own lock into the store before touching it, so a daemon starting meanwhile either loses the
+claim or refuses the delete, naming the holder as a delete in flight rather than a daemon on a port
+when it is one. A default directory is then moved aside whole, lock included, to a sibling ending in
+`.removing` that the listing never shows, and removed there; a daemon starting after the move finds
+no store and creates a fresh one. A custom directory is emptied file by file under the lock. A
+delete that could not move or empty the store answers as not deleted with the reason.
+
+Its lock names the store directory as its own `workspaceRoot` and carries no real port, which is not
+comparable to any real workspace. `decideFromLock` reads `role` before it reads anything else the
+lock says, so a client never treats one as a daemon to retire, whatever `workspaceRoot`, `port` or
+`buildVersion` it happens to carry, including the case where a caller's custom `stateDir` is its own
+workspace root and the two collide: `ensureDaemon` polls until the lock clears or its own timeout
+elapses, asking and signalling nothing, then spawns as if the lock had never been there. A delete
+that outlives that wait is reported as a refusal naming it, never as a failed spawn. A contender
+whose staging file moved with the directory mid-claim stages again and claims the fresh one.
 
 ## The socket
 

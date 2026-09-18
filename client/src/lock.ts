@@ -1,10 +1,8 @@
 // How a thin client finds a running daemon, or learns there is none worth talking to.
 //
-// The decision this file owns: given what is on disk, connect, replace, or spawn. Answered as a
-// value so a caller cannot invent a fourth outcome, and so the rules are testable without a
-// process or a socket.
+// The decision this file owns: given what is on disk, connect, replace, spawn, or wait out a delete.
 
-import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -14,11 +12,14 @@ import { type DaemonLock, DaemonLockSchema } from "@nyaa-lexicon/protocol";
  *
  * `replace` is separate from `spawn` because they differ in one step: replacing has a process to
  * stop first. Collapsing them leaves an orphan holding the port.
+ *
+ * `awaitDelete` is separate from both: nothing here is a daemon to retire or connect to.
  */
 export type LockDecision =
 	| { action: "connect"; lock: DaemonLock }
 	| { action: "spawn"; reason: string }
-	| { action: "replace"; lock: DaemonLock; reason: string; cause: ReplaceCause };
+	| { action: "replace"; lock: DaemonLock; reason: string; cause: ReplaceCause }
+	| { action: "awaitDelete"; lock: DaemonLock; reason: string };
 
 /**
  * Why a daemon has to go, which decides whether a client may retire it on its own.
@@ -76,18 +77,15 @@ export function newerBuild(candidate: string, current: string): boolean {
 export function decideFromLock(context: LockContext): LockDecision {
 	if (context.raw === null) return { action: "spawn", reason: "no daemon is registered" };
 
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(context.raw);
-	} catch {
-		return { action: "spawn", reason: "the lock file is not readable JSON" };
-	}
-
-	const result = DaemonLockSchema.safeParse(parsed);
-	if (!result.success) return { action: "spawn", reason: "the lock file does not match its schema" };
-	const lock = result.data;
+	const lock = parseDaemonLock(context.raw);
+	if (lock === null) return { action: "spawn", reason: "the lock file does not parse as a lock" };
 
 	if (!context.isAlive(lock)) return { action: "spawn", reason: `pid ${lock.pid} is gone` };
+
+	// A delete's `workspaceRoot` names the directory it is removing, never a daemon to retire.
+	if (lock.role === "delete") {
+		return { action: "awaitDelete", lock, reason: `pid ${lock.pid} is deleting ${lock.workspaceRoot} right now` };
+	}
 
 	// A lock naming another workspace means this one's file was overwritten, and connecting would
 	// serve a different repo's index under our path.

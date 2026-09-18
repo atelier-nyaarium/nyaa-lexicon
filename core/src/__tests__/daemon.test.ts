@@ -9,9 +9,11 @@ import {
 	connectFrames,
 	findDaemon,
 	type PlatformEnv,
+	storePaths,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
+import { resumeAbandonedDelete } from "../daemonCli";
 import { ownSource } from "../ownSource";
 import { fakeClock } from "./fakeClock";
 
@@ -204,6 +206,32 @@ describe("the claim", () => {
 		await expect(callDaemon(daemon.lock, "describe")).resolves.toBeDefined();
 	});
 
+	// A delete's own claim is not a daemon "serving" anything.
+	it("names a delete in flight, not a daemon on a port, when a delete already claims the lock", async () => {
+		const paths = workspacePaths(host, WORKSPACE);
+		mkdirSync(paths.dir, { recursive: true });
+		writeFileSync(
+			paths.lockFile,
+			JSON.stringify({
+				port: 1,
+				token: "d".repeat(48),
+				pid: process.pid,
+				protocolVersion: "1.0.0",
+				workspaceRoot: paths.dir,
+				startedAt: 0,
+				role: "delete",
+			}),
+		);
+
+		const outcome = await startDaemon({ workspaceRoot: WORKSPACE, handle: async () => ({}), host });
+
+		expect(outcome.claimed).toBe(false);
+		if (outcome.claimed) return;
+		expect(outcome.reason).toContain("deleting");
+		expect(outcome.reason).toContain(String(process.pid));
+		expect(outcome.reason).not.toContain("port");
+	});
+
 	// The hard link decides a race two clients start at once; neither side opens a store before it.
 	it("settles two simultaneous claims on one workspace: one holds the lock, the other names it", async () => {
 		const start = () => startDaemon({ workspaceRoot: WORKSPACE, handle: async () => ({}), host });
@@ -240,6 +268,46 @@ describe("the claim", () => {
 		daemon = await launch();
 
 		expect(findDaemon(WORKSPACE, ownSource(), host)).toMatchObject({ action: "connect", lock: daemon.lock });
+	});
+
+	// A dead delete is resumed, never abandoned: the claim names the stolen role.
+	it("steals a dead delete's lock over a custom store, and resuming it empties what it left behind", async () => {
+		const custom = mkdtempSync(path.join(tmpdir(), "lexicon-store-resume-"));
+		try {
+			const paths = storePaths(custom);
+			writeFileSync(
+				paths.lockFile,
+				JSON.stringify({
+					port: 1,
+					token: "d".repeat(48),
+					pid: 2 ** 30,
+					protocolVersion: "1.0.0",
+					workspaceRoot: custom,
+					startedAt: 0,
+					role: "delete",
+				}),
+			);
+			writeFileSync(paths.index, "stale index bytes");
+			writeFileSync(path.join(custom, "notes.txt"), "mine");
+
+			const outcome = await startDaemon({
+				workspaceRoot: WORKSPACE,
+				stateDir: custom,
+				handle: async () => ({}),
+				host,
+			});
+			if (outcome.claimed) daemon = outcome.daemon;
+
+			expect(outcome.claimed).toBe(true);
+			if (!outcome.claimed) return;
+			expect(outcome.stolenRole).toBe("delete");
+
+			expect(resumeAbandonedDelete(outcome, custom, false)).toBe(true);
+			expect(existsSync(paths.index)).toBe(false);
+			expect(readFileSync(path.join(custom, "notes.txt"), "utf8")).toBe("mine");
+		} finally {
+			rmSync(custom, { recursive: true, force: true });
+		}
 	});
 
 	it("steals a corrupt lock, since half a JSON cannot name a live daemon", async () => {
