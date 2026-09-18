@@ -9,7 +9,7 @@
 // Each module is stamped at its first touch, in the same synchronous span as the rows, so a writer
 // planning from this context can prove those rows were not committed again before it wrote.
 
-import { defined, GROUPING_KINDS, type SymbolSummary } from "@nyaa-lexicon/protocol";
+import { defined, GROUPING_KINDS, type QuestionClass, questionsFor, type SymbolSummary } from "@nyaa-lexicon/protocol";
 import { ancestryOf, Containment } from "./locals.js";
 import { contains, type Scope } from "./scope.js";
 import type { FactsStamp, StoredDeclaration, StoredImport, StoredLiteral, StoredReference } from "./store.js";
@@ -199,6 +199,11 @@ export class ReadContext {
 	/** Parameter or local-holding ancestor, read in the declaration's own module. */
 	isLocal(declaration: StoredDeclaration): boolean {
 		return this.topology(declaration.module).isLocal(declaration);
+	}
+
+	/** The knowledge questions its kind takes; none when local. */
+	questionsOf(declaration: StoredDeclaration): readonly QuestionClass[] {
+		return questionsFor({ kind: declaration.kind, local: this.isLocal(declaration) });
 	}
 
 	/** The outermost holder below the grouping kinds. A use's containers stay in its own file. */

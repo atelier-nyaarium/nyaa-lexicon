@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { answerFactId } from "@nyaa-lexicon/protocol";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -169,7 +170,22 @@ describe("a subject whose address stopped resolving", () => {
 	it("lists no candidates for a local and says why", async () => {
 		const local = "lexicon reference a.ref local0";
 		plant("a.ref", local, "x");
-		await record(local, "A counter.");
+		// record_answer now refuses every question on a local (questionsFor), so the row is written
+		// directly, as an answer predating that gate would already sit in the store.
+		const declared = store.declaration(local)?.factId as string;
+		const subject = store.subjects.claim(local, Date.now());
+		if (subject === null) throw new Error("could not claim a subject for local");
+		const prose = "A counter.";
+		store.saveAnswer(subject.subjectId, {
+			symbolId: local,
+			recordedAs: local,
+			question: "describe",
+			factId: answerFactId(subject.subjectId, local, "describe", prose, [declared]),
+			prose,
+			citations: [declared],
+			thin: false,
+			createdAt: Date.now(),
+		});
 		plant("b.ref", "lexicon reference b.ref local0", "x");
 		strand();
 

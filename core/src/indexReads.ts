@@ -225,6 +225,7 @@ export class IndexReadModel {
 			referenceCount: this.store.usesTo(symbolId).length,
 			graph: this.graphSummary(context, symbolId),
 			hierarchy: this.hierarchyOf(context, symbolId),
+			questions: [...context.questionsOf(declaration)],
 			...(comments.length === 0 ? {} : { comments }),
 			...(attached.length > comments.length ? { moreComments: attached.length - comments.length } : {}),
 			tier: "bound",

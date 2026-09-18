@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { answerFactId, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
+import { answerFactId, parseSymbolIdResult, QUESTION_CLASSES } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
 import { createDispatch } from "../dispatch";
 import * as refusal from "../refusals";
@@ -757,16 +757,24 @@ describe("answers citing answers", () => {
 });
 
 /**
- * A question class applies by the subject's kind and visibility (`questionsFor`). Gaps must never
+ * A question class applies by the subject's kind and structural locality (`questionsFor`, gated
+ * through `ReadContext.isLocal`, never a provider's own `visibility` field). Gaps must never
  * surface an inapplicable pair; record_answer must refuse writing a fresh one.
  */
-describe("questions gated by kind and visibility", () => {
+describe("questions gated by kind and locality", () => {
 	const WIDGET = "lexicon reference gate.ref Widget#";
 	const PRICE = "lexicon reference gate.ref Widget#price.";
 	const RUN = "lexicon reference gate.ref run().";
 	const ARG = "lexicon reference gate.ref run().(arg)";
+	const CHUNK = "lexicon reference gate.ref run().chunk.";
+	const CONFIG = "lexicon reference gate.ref config.";
+	const LOCALCLASS = "lexicon reference gate.ref run().Local#";
+	const LOCALMEMBER = "lexicon reference gate.ref run().Local#val.";
 
-	/** A class with a property (fields take only describe/contract), a function, and its local parameter. */
+	/**
+	 * A class with a property, a function with a parameter and a body-scoped constant, a
+	 * module-level constant, and a class (with its own member) declared inside the function body.
+	 */
 	function plantGated(): void {
 		store.replaceFile({
 			module: "gate.ref",
@@ -807,6 +815,43 @@ describe("questions gated by kind and visibility", () => {
 					visibility: "local",
 					containerId: RUN,
 				},
+				{
+					// The live defect: visibility says "public", never "local"; only its container
+					// running makes it structurally local.
+					symbolId: CHUNK,
+					kind: "variable",
+					name: "chunk",
+					range: at(4),
+					selectionRange: at(4),
+					visibility: "public",
+					containerId: RUN,
+				},
+				{
+					symbolId: CONFIG,
+					kind: "constant",
+					name: "config",
+					range: at(5),
+					selectionRange: at(5),
+					visibility: "public",
+				},
+				{
+					symbolId: LOCALCLASS,
+					kind: "class",
+					name: "Local",
+					range: at(6),
+					selectionRange: at(6),
+					visibility: "public",
+					containerId: RUN,
+				},
+				{
+					symbolId: LOCALMEMBER,
+					kind: "property",
+					name: "val",
+					range: at(7),
+					selectionRange: at(7),
+					visibility: "public",
+					containerId: LOCALCLASS,
+				},
 			],
 			references: [],
 			comments: [
@@ -817,6 +862,16 @@ describe("questions gated by kind and visibility", () => {
 					form: "leading",
 					placement: "above",
 					anchorId: PRICE,
+				} satisfies AttachedComment,
+				// Gives chunk a seed-candidate signal of its own, so its absence from the seeded
+				// pool is proven by the locality gate, not by having nothing else to recommend it.
+				{
+					range: at(4),
+					raw: "// One decoded piece.",
+					normalized: "One decoded piece.",
+					form: "leading",
+					placement: "above",
+					anchorId: CHUNK,
 				} satisfies AttachedComment,
 			],
 		});
@@ -842,6 +897,50 @@ describe("questions gated by kind and visibility", () => {
 		const declaration = store.declaration(ARG)?.factId as string;
 		const outcome = await service.recordAnswer(ARG, "describe", "The frame to send.", [declaration]);
 		expect(reasonOf(outcome)).toBe(refusal.questionNotApplicable("describe", "variable", []));
+	});
+
+	it("refuses a body-scoped constant by containment, whatever the provider's own visibility says", async () => {
+		plantGated();
+		const declaration = store.declaration(CHUNK)?.factId as string;
+		const outcome = await service.recordAnswer(CHUNK, "describe", "One decoded piece.", [declaration]);
+		expect(reasonOf(outcome)).toBe(refusal.questionNotApplicable("describe", "variable", []));
+	});
+
+	it("still records a module-level constant's applicable questions", async () => {
+		plantGated();
+		const declaration = store.declaration(CONFIG)?.factId as string;
+		const outcome = await service.recordAnswer(CONFIG, "usage", "Read once at startup.", [declaration]);
+		expect(outcome.recorded).toBe(true);
+	});
+
+	it("counts a class declared inside a function body, and its own members, as local too", async () => {
+		plantGated();
+		const classDeclaration = store.declaration(LOCALCLASS)?.factId as string;
+		const classOutcome = await service.recordAnswer(LOCALCLASS, "describe", "A nested helper.", [classDeclaration]);
+		expect(reasonOf(classOutcome)).toBe(refusal.questionNotApplicable("describe", "class", []));
+
+		const memberDeclaration = store.declaration(LOCALMEMBER)?.factId as string;
+		const memberOutcome = await service.recordAnswer(LOCALMEMBER, "describe", "Its own field.", [
+			memberDeclaration,
+		]);
+		expect(reasonOf(memberOutcome)).toBe(refusal.questionNotApplicable("describe", "property", []));
+	});
+
+	it("carries every applicable question on describe, empty for a body-scoped constant", () => {
+		plantGated();
+		expect(service.describe(RUN)?.questions).toEqual([...QUESTION_CLASSES]);
+		expect(service.describe(CHUNK)?.questions).toEqual([]);
+	});
+
+	it("keeps a body-scoped constant out of module gaps and the seeded pool", () => {
+		plantGated();
+		const module = service.knowledgeGaps(undefined, "describe", 60, "gate.ref");
+		expect(module.rows.map((row) => row.symbolId)).not.toContain(CHUNK);
+
+		// Nobody has asked yet, so this is the cold-start seeded fallback, not the ledger.
+		const seeded = service.knowledgeGaps(undefined, "describe");
+		expect(seeded.seeded).toBe(true);
+		expect(seeded.rows.map((row) => row.symbolId)).not.toContain(CHUNK);
 	});
 
 	it("keeps an inapplicable pair out of the workspace ledger, a module scope and a tree, counting only what applies", () => {

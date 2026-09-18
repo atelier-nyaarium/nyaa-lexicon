@@ -19,7 +19,6 @@ import {
 	type KnowledgeScope,
 	languageOf,
 	moduleOf,
-	questionsFor,
 	type ResolveFactsResult,
 	type ScopeSymbol,
 } from "@nyaa-lexicon/protocol";
@@ -241,7 +240,8 @@ export class KnowledgeLedger {
 		if (declaration === null) {
 			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
 		}
-		const applicable = questionsFor(declaration);
+		const context = new ReadContext(this.store);
+		const applicable = context.questionsOf(declaration);
 		if (!applicable.includes(question)) {
 			return { recorded: false, reason: refusal.questionNotApplicable(question, declaration.kind, applicable) };
 		}
@@ -569,7 +569,8 @@ export class KnowledgeLedger {
 		limit = DEFAULT_GAP_LIMIT,
 		module?: string,
 	): KnowledgeGaps {
-		if (root === undefined && module !== undefined) return this.moduleGaps(module, question, limit);
+		const context = new ReadContext(this.store);
+		if (root === undefined && module !== undefined) return this.moduleGaps(context, module, question, limit);
 		if (root === undefined) {
 			// A gap row with a recorded answer means the answer went unhealthy after being asked for
 			// again. Those lead the list: the prose exists and most are re-affirmations.
@@ -578,7 +579,7 @@ export class KnowledgeLedger {
 			const missing: GapRow[] = [];
 			const known = new Set<string>();
 			for (const gap of all) {
-				if (!this.questionApplies(gap.symbolId, gap.question)) continue;
+				if (!this.questionApplies(context, gap.symbolId, gap.question)) continue;
 				known.add(`${gap.symbolId}\0${gap.question}`);
 				const answer = this.store.answer(gap.symbolId, gap.question);
 				if (answer === null) {
@@ -608,7 +609,7 @@ export class KnowledgeLedger {
 			if (this.store.liveAnswerCount() <= STALE_SCAN_CAP) {
 				for (const answer of this.store.liveAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
-					if (!this.questionApplies(answer.symbolId, answer.question)) continue;
+					if (!this.questionApplies(context, answer.symbolId, answer.question)) continue;
 					const why = this.recheckWhy(answer);
 					if (why === null) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, why, answer.recordedAs));
@@ -617,7 +618,7 @@ export class KnowledgeLedger {
 				staleScanSkipped = true;
 				for (const answer of this.store.liveDoubtedAnswers()) {
 					if (known.has(`${answer.symbolId}\0${answer.question}`)) continue;
-					if (!this.questionApplies(answer.symbolId, answer.question)) continue;
+					if (!this.questionApplies(context, answer.symbolId, answer.question)) continue;
 					recheck.push(this.gapRow(answer.symbolId, answer.question, 0, "doubted", answer.recordedAs));
 				}
 			}
@@ -643,7 +644,7 @@ export class KnowledgeLedger {
 			// worth writing, and answering "no gaps" on a workspace with no knowledge at all would
 			// read as completion. Fan-in is the only demand signal that exists before any asks, which
 			// is the doc's "pre-warm only high fan-in symbols" made queryable.
-			const seeded = this.seedCandidates(question, limit);
+			const seeded = this.seedCandidates(context, question, limit);
 			return this.withStranded(
 				{
 					question,
@@ -691,7 +692,7 @@ export class KnowledgeLedger {
 		const rows: GapRow[] = [];
 		let total = 0;
 		for (const symbolId of ordered) {
-			const why = this.gapWhy(symbolId, question);
+			const why = this.gapWhy(context, symbolId, question);
 			if (why === null) continue;
 			total++;
 			if (rows.length < limit) {
@@ -733,7 +734,7 @@ export class KnowledgeLedger {
 			if (visited.has(declaration.symbolId)) return;
 			visited.add(declaration.symbolId);
 			if (withMembers) visitMembers(declaration.symbolId, depth + 1);
-			symbols.push(this.scopeSymbol(declaration, depth));
+			symbols.push(this.scopeSymbol(context, declaration, depth));
 		};
 		if (root === null) visitMembers(undefined, 0);
 		else if (!GROUPING_KINDS.has(root.kind)) visit(root, 0, scope.members === true);
@@ -741,14 +742,14 @@ export class KnowledgeLedger {
 		return { symbols, localsExcluded };
 	}
 
-	private scopeSymbol(declaration: StoredDeclaration, depth: number): ScopeSymbol {
+	private scopeSymbol(context: ReadContext, declaration: StoredDeclaration, depth: number): ScopeSymbol {
 		const recalled = new Map(
 			this.recallAnswers(declaration.symbolId).map((found) => [found.answer.question, found]),
 		);
 		return {
 			symbol: toSummary(declaration),
 			depth,
-			questions: questionsFor(declaration).map((question) => {
+			questions: context.questionsOf(declaration).map((question) => {
 				const askCount = this.store.askCount(declaration.symbolId, question);
 				const found = recalled.get(question);
 				if (found === undefined) return { question, askCount };
@@ -773,12 +774,12 @@ export class KnowledgeLedger {
 	 * unanswered here" means exactly that, and a file nobody has asked about would otherwise read
 	 * as clean. Rechecks lead, then the missing by fan-in.
 	 */
-	private moduleGaps(module: string, question: QuestionClass, limit: number): KnowledgeGaps {
+	private moduleGaps(context: ReadContext, module: string, question: QuestionClass, limit: number): KnowledgeGaps {
 		const declarations = this.store.declarationsIn(module);
 		const recheck: GapRow[] = [];
 		const missing: GapRow[] = [];
 		for (const declaration of declarations) {
-			const why = this.gapWhy(declaration.symbolId, question);
+			const why = this.gapWhy(context, declaration.symbolId, question);
 			if (why === null) continue;
 			const askCount = this.store.askCount(declaration.symbolId, question);
 			(why === "missing" ? missing : recheck).push(this.gapRow(declaration.symbolId, question, askCount, why));
@@ -820,17 +821,17 @@ export class KnowledgeLedger {
 	}
 
 	/** Missing, doubted, stale on its own citations, or null when healthy or not applicable to the kind. */
-	private gapWhy(symbolId: string, question: QuestionClass): GapRow["why"] | null {
-		if (!this.questionApplies(symbolId, question)) return null;
+	private gapWhy(context: ReadContext, symbolId: string, question: QuestionClass): GapRow["why"] | null {
+		if (!this.questionApplies(context, symbolId, question)) return null;
 		const answer = this.store.answer(symbolId, question);
 		return answer === null ? "missing" : this.recheckWhy(answer);
 	}
 
 	/** Whether the kind at this address asks `question` at all. Unresolvable defaults applicable. */
-	private questionApplies(symbolId: string, question: string): boolean {
-		const declaration = this.store.declaration(symbolId);
+	private questionApplies(context: ReadContext, symbolId: string, question: string): boolean {
+		const declaration = context.declaration(symbolId);
 		if (declaration === null) return true;
-		return (questionsFor(declaration) as readonly string[]).includes(question);
+		return (context.questionsOf(declaration) as readonly string[]).includes(question);
 	}
 
 	/** Its own doubt or citations; inherited trouble is the cited answer's own row. */
@@ -850,12 +851,13 @@ export class KnowledgeLedger {
 
 	/** Reserved hubs, then one candidate per language in turn: cross-language calls never bind, so a global rank buries a language called over a wire. */
 	private seedCandidates(
+		context: ReadContext,
 		question: QuestionClass,
 		limit: number,
 	): { rows: GapRow[]; unknown: { generated: number; exported: number } } {
 		const pool = this.store
 			.seedCandidates()
-			.filter((candidate) => this.questionApplies(candidate.symbolId, question))
+			.filter((candidate) => this.questionApplies(context, candidate.symbolId, question))
 			.filter((candidate) => this.store.answer(candidate.symbolId, question) === null);
 		const languages = [...this.store.declarationsByLanguage().entries()]
 			.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))

@@ -17,7 +17,6 @@ import {
 	ReferenceRoleSchema,
 	type SymbolKind,
 	SymbolKindSchema,
-	type Visibility,
 	VisibilitySchema,
 } from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
@@ -32,10 +31,11 @@ export const QuestionClassSchema = z.enum(QUESTION_CLASSES).meta({ id: "Question
 
 export type QuestionClass = z.infer<typeof QuestionClassSchema>;
 
-/** Kind and visibility decide a symbol's applicable questions. */
+/** Kind and structural locality decide a symbol's applicable questions. */
 export interface QuestionSubject {
 	kind: SymbolKind;
-	visibility: Visibility;
+	/** A parameter, or nested inside a declaration that runs, per `core/src/locals.ts`'s `isLocal`. */
+	local: boolean;
 }
 
 const RUNNING_QUESTIONS: readonly QuestionClass[] = QUESTION_CLASSES;
@@ -69,9 +69,9 @@ const QUESTIONS_BY_KIND: Record<SymbolKind, readonly QuestionClass[]> = {
 	package: GROUP_QUESTIONS,
 };
 
-/** Questions applicable to a symbol, in `QUESTION_CLASSES` order. A `local` symbol has none. */
+/** Questions applicable to a symbol, in `QUESTION_CLASSES` order. A local symbol has none. */
 export function questionsFor(subject: QuestionSubject): readonly QuestionClass[] {
-	if (subject.visibility === "local") return [];
+	if (subject.local) return [];
 	return QUESTIONS_BY_KIND[subject.kind];
 }
 
@@ -542,6 +542,8 @@ export const DescribeResultSchema = z
 		referenceCount: z.number(),
 		graph: GraphSummarySchema,
 		hierarchy: TypeHierarchySchema,
+		/** Questions applicable to this symbol (`questionsFor`), in `QUESTION_CLASSES` order. */
+		questions: z.array(QuestionClassSchema).optional(),
 		tier: AnswerTierSchema,
 	})
 	.meta({ id: "DescribeResult" });

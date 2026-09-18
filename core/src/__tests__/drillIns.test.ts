@@ -360,7 +360,7 @@ describe("a knowledge scope", () => {
 		]);
 	});
 
-	it("gates each member's questions by kind, and a local's by visibility", () => {
+	it("gates each member's questions by kind, and excludes a local structurally", () => {
 		const scope = service.knowledgeScope({ module: "shop.ref", includeLocals: true });
 		const byName = new Map(
 			scope?.symbols.map((entry): [string, string[]] => [
@@ -370,7 +370,7 @@ describe("a knowledge scope", () => {
 		);
 
 		expect(byName.get("amount")).toEqual([]); // local variable: none
-		expect(byName.get("total")).toEqual(["describe", "why", "contract", "usage"]); // fileLocal variable
+		expect(byName.get("total")).toEqual([]); // fileLocal, but nested in a method: local structurally
 		expect(byName.get("open")).toEqual([...QUESTION_CLASSES]); // method
 		expect(byName.get("price")).toEqual(["describe", "contract"]); // property
 		expect(byName.get("Line")).toEqual(["describe", "why", "relate", "contract", "usage"]); // class

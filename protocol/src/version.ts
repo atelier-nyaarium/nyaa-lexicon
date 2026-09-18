@@ -43,7 +43,8 @@ export type Compatibility =
 // literals, comments and language words as paint facts, for a client that colors code itself.
 // 3.6.0: an error response may carry `code`, closed to `"stopping"`, so a client retiring a daemon
 // reads why it refused structurally rather than matching its prose.
-export const PROTOCOL_VERSION = "3.6.0" as const;
+// 3.7.0: `describe.questions`, the knowledge questions the symbol's kind takes, computed by the core.
+export const PROTOCOL_VERSION = "3.7.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 
