@@ -1250,8 +1250,8 @@ describe("Python provider project behavior", () => {
 		).toEqual([
 			"typeUse in Box -> bound",
 			"typeUse in wrap -> bound",
-			"typeUse in module -> bound",
-			"typeUse in module -> bound",
+			"typeUse in Named -> bound",
+			"typeUse in Named -> bound",
 		]);
 	});
 
