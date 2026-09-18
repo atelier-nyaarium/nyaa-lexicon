@@ -10,6 +10,12 @@ export interface FakeClock extends Clock {
 }
 
 ////////////////////////////////
+//  Constants
+
+/** Far above any honest advance; a spin fails the test instead of hanging the worker. */
+const FIRING_CAP = 100_000;
+
+////////////////////////////////
 //  Functions & Helpers
 
 /** The one test clock. `sleep` advances, so nothing awaited here waits on the wall. */
@@ -20,11 +26,14 @@ export function fakeClock(start = 1_000_000): FakeClock {
 
 	function advance(ms: number): void {
 		const until = now + ms;
+		let fired = 0;
 		for (;;) {
 			const due = [...timers.entries()]
 				.filter(([, timer]) => timer.at <= until)
 				.sort((a, b) => a[1].at - b[1].at)[0];
 			if (due === undefined) break;
+			// A callback re-arming inside the window would spin here forever, past any test timeout.
+			if (++fired > FIRING_CAP) throw new Error(`fakeClock: ${FIRING_CAP} timers fired before ${until}; one re-arms at ${due[1].at}`);
 			timers.delete(due[0]);
 			now = due[1].at;
 			due[1].fn();
