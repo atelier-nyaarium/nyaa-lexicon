@@ -95,7 +95,7 @@ Permanently delete an index and its recorded answers. **Irreversible.**
 
 Confirm the store row with the user first. Refused while its daemon serves it.
 
-Call \`stop_project_daemon\` first. Existing workspaces reindex on use.
+Call \`stop_project_daemon\` first. Drops the project's registration too; \`register_project\` again to reindex.
 `.trim();
 
 export const STOP_DAEMON_DESCRIPTION = `
@@ -494,7 +494,7 @@ export function deleteProjectStoreTool(deps: ManageDeps, args: { store: string }
 	if (!outcome.deleted) return text(outcome.reason, true);
 	const label = store.custom ? outcome.directory : outcome.key;
 	return text(
-		`# Project index deleted\n\nDeleted \`${label}\`, freeing ${describeSize(outcome.bytes)}. It rebuilds on next use if its workspace still exists.`,
+		`# Project index deleted\n\nDeleted \`${label}\`, freeing ${describeSize(outcome.bytes)}, and dropped its registration. Register the workspace again to reindex it.`,
 	);
 }
 

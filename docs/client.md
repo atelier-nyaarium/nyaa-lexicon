@@ -188,7 +188,9 @@ before the stamp existed reads as its last indexed time, and a write never moves
 days is deleted, recorded answers included, through the same road as `delete_project_store`, by
 `list_project_stores` and by any daemon once it is serving; the listing reports what it pruned. A store
 that never recorded its root, one whose root is present, one nothing dates, and one a daemon is
-serving are never pruned. The registry entry stays, as it does after a delete.
+serving are never pruned. A delete, and so a prune, drops the store's registry entry with it, so
+`list_projects` never shows a project that has nothing behind it; registering the workspace again
+reindexes it.
 
 ## The helpers
 

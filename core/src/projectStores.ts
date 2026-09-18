@@ -23,7 +23,7 @@ import {
 import { type DaemonLock, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { claimLock, type HolderAlive, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
 import { lastSeenOf, newestIndexedAt, readSeenStamp, stampSeen } from "./lastSeen.js";
-import { readRegistry } from "./projectRegistry.js";
+import { forgetProject, readRegistry } from "./projectRegistry.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -447,6 +447,8 @@ export function deleteProjectStore(
 		? removeCustom(current.directory, lock.token)
 		: removeDefault(current.directory, lock.token);
 	if (remains !== null) return { deleted: false, reason: remains };
+	// A key names the default store's registration, a directory a custom one's.
+	forgetProject(label, host);
 	return { deleted: true, key: current.key, directory: current.directory, bytes: current.bytes };
 }
 

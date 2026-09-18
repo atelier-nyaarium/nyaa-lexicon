@@ -7,7 +7,7 @@ import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspacePaths 
 import type { DaemonLock } from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
 import { claimLock, type HolderAlive, readLock } from "../daemonLock";
-import { registerProject } from "../projectRegistry";
+import { readRegistry, registerProject } from "../projectRegistry";
 import {
 	deleteProjectStore,
 	findProjectStore,
@@ -385,6 +385,18 @@ describe("pruning orphans", () => {
 		);
 	});
 
+	it("drops a pruned orphan's registration with it", () => {
+		const root = path.join(workDir, "gone");
+		mkdirSync(root);
+		registerProject(root, admitAll, host);
+		seedStore(root, fakeClock(NOW - PRUNE_AFTER_MS - DAY));
+		rmSync(root, { recursive: true });
+
+		expect(pruneProjectStores(NOBODY_ALIVE, NOW, host)).toMatchObject([{ outcome: { deleted: true } }]);
+
+		expect(readRegistry(host)).toEqual([]);
+	});
+
 	it("reads an unstamped orphan's age from its newest indexing", () => {
 		const root = path.join(workDir, "old");
 		mkdirSync(root);
@@ -460,6 +472,30 @@ describe("deleting a project's index", () => {
 		expect(outcome).toMatchObject({ deleted: true, key, directory });
 		expect(existsSync(directory)).toBe(false);
 		expect(listProjectStores(NOBODY_ALIVE, host)).toEqual([]);
+	});
+
+	it("drops the project's registration with its index, and leaves another project's", () => {
+		const other = path.join(workDir, "other");
+		mkdirSync(other);
+		registerProject(workDir, admitAll, host);
+		registerProject(other, admitAll, host);
+		const key = seedStore(workDir);
+
+		expect(deleteProjectStore(resolve(key), NOBODY_ALIVE, NOW, host)).toMatchObject({ deleted: true });
+
+		expect(readRegistry(host).map((project) => project.root)).toEqual([canonicalRoot(other)]);
+	});
+
+	it("keeps the registration when the delete is refused", () => {
+		registerProject(workDir, admitAll, host);
+		const key = seedStore(workDir);
+		seedLock(workDir, 4242);
+
+		expect(deleteProjectStore(resolve(key, EVERYBODY_ALIVE), EVERYBODY_ALIVE, NOW, host)).toMatchObject({
+			deleted: false,
+		});
+
+		expect(readRegistry(host).map((project) => project.root)).toEqual([canonicalRoot(workDir)]);
 	});
 
 	// Deleting a file under its own live writer corrupts what it is mid-write, so the refusal
@@ -614,6 +650,7 @@ describe("a store in a directory the project chose", () => {
 
 		expect(outcome).toMatchObject({ deleted: true, directory: custom, key: storeKeyFor(workDir) });
 		expect(readdirSync(custom)).toEqual(["notes.txt"]);
+		expect(readRegistry(host)).toEqual([]);
 	});
 
 	it("takes an emptied directory with it, and refuses one a daemon is serving", () => {
