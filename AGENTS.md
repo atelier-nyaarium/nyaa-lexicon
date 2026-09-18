@@ -225,7 +225,10 @@ Ordered by how much they prove:
   newer ones puts the file back, and nothing stored orders two parses after the fact. The gate is
   not re-entrant, so a self-driven road reached from inside a hold deadlocks on its first file. The
   service builds the gate and the dispatcher and the live index read `service.gate`, so a second one
-  cannot be handed in. `index-gate-residue.test.ts` refuses every mistake here;
+  cannot be handed in. The live index watches before the warm scan reads and holds what arrives,
+  coalesced, until the scan settles, since `applyBatch` refuses a batch under the outline pass and
+  a full module edited before a later watcher start would stay stale; a failed scan releases nothing
+  and stops the watcher. `index-gate-residue.test.ts` refuses every mistake here;
   `docs/architecture.md` holds the whole of it.
 - **A test asserting current behavior is not a test.** After a fix, tests that encoded the bug will
   fail; that is the fix working.

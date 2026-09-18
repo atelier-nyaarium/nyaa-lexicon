@@ -7,7 +7,7 @@
 import { defined } from "@nyaa-lexicon/protocol";
 import type { Clock, TimerHandle } from "./clock.js";
 import type { IndexOutcome } from "./indexer.js";
-import type { FileEvent } from "./invalidation.js";
+import { coalesce, type FileEvent } from "./invalidation.js";
 import type { LexiconService } from "./service.js";
 import type { SweepReport } from "./subjects.js";
 import { watchWorkspace } from "./watcher.js";
@@ -23,6 +23,8 @@ export interface LiveIndexOptions {
 	maxWaitMs?: number;
 	/** The one time source, shared with the store and the service, so the sweep timer and the debounce agree. */
 	clock: Clock;
+	/** Runs once the watcher is up. Batches wait for it; a rejection stops the watcher. */
+	warm?: () => Promise<void>;
 	onApplied?: (outcomes: IndexOutcome[]) => void;
 	onSwept?: (report: SweepReport) => void;
 	/** Called instead of throwing, since the watcher callback has no caller to catch anything. */
@@ -39,8 +41,16 @@ export interface LiveIndex {
 	stop: () => void;
 	/** Feeds an event as if the filesystem reported it. The seam the tests drive. */
 	inject: (relative: string) => void;
-	/** Resolves once every batch queued so far has been applied. */
+	/** Resolves once every batch queued so far has been applied. A held batch is queued by `warmed`. */
 	settled: () => Promise<void>;
+	/** Settles as `warm` did, once what it held is queued. The caller that hands a `warm` in awaits this. */
+	warmed: Promise<void>;
+}
+
+export interface HeldBatches {
+	push: (events: FileEvent[]) => void;
+	/** Releases what is held as one batch once `scan` settles; at once with none. Settles as `scan` did. */
+	until: (scan: Promise<void> | undefined) => Promise<void>;
 }
 
 ////////////////////////////////
@@ -58,20 +68,31 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 
 	const queue = serializeBatches(apply, options.onApplied, options.onError);
 
+	let stopped = false;
+	let timer: TimerHandle | null = null;
+	const stop = () => {
+		if (stopped) return;
+		stopped = true;
+		if (timer !== null) options.clock.clearTimer(timer);
+		watcher.stop();
+	};
+
+	// Held from birth, and only the watcher pushes, so nothing reaches the scan's loop.
+	const held = holdBatches(queue.push, stop);
 	const watcher = watchWorkspace({
 		workspaceRoot: options.workspaceRoot,
-		onBatch: queue.push,
+		onBatch: held.push,
 		// The index's own scope, so an ignored directory's churn is never read.
 		scope: options.service.watchScope(),
 		...defined({ debounceMs: options.debounceMs, maxWaitMs: options.maxWaitMs }),
 		clock: options.clock,
 	});
+	// Watching first, then the scan, so its every read is under the watcher.
+	const warmed = held.until(options.warm?.());
 
 	// Queued behind any batch in flight and under the same gate, so a sweep never overlaps a batch;
 	// re-armed after each run, so it never overlaps itself.
 	const sweep = () => options.service.gate.exclusive(async () => options.service.sweepKnowledge());
-	let stopped = false;
-	let timer: TimerHandle | null = null;
 	const arm = () => {
 		timer = options.clock.setTimer(() => {
 			queue
@@ -89,13 +110,43 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 	arm();
 
 	return {
-		stop: () => {
-			stopped = true;
-			if (timer !== null) options.clock.clearTimer(timer);
-			watcher.stop();
-		},
+		stop,
 		inject: watcher.inject,
 		settled: queue.settled,
+		warmed,
+	};
+}
+
+/** Holds batches until the scan settles, coalesced per module, then releases them as one. A rejection drops what follows. */
+export function holdBatches(push: (events: FileEvent[]) => void, onRefused: () => void): HeldBatches {
+	let state: { kind: "holding"; events: FileEvent[] } | { kind: "released" } | { kind: "refused" } = {
+		kind: "holding",
+		events: [],
+	};
+
+	const release = () => {
+		if (state.kind !== "holding") return;
+		const { events } = state;
+		state = { kind: "released" };
+		if (events.length > 0) push(events);
+	};
+
+	return {
+		push: (events) => {
+			if (state.kind === "released") push(events);
+			else if (state.kind === "holding") state.events = coalesce([...state.events, ...events]);
+		},
+		until: (scan) => {
+			if (scan === undefined) {
+				release();
+				return Promise.resolve();
+			}
+			return scan.then(release, (error) => {
+				state = { kind: "refused" };
+				onRefused();
+				throw error;
+			});
+		},
 	};
 }
 

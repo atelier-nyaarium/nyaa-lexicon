@@ -332,9 +332,21 @@ a self-gating road called from inside a hold, a parse in the indexer that belong
 a caller-held road called with no hold around it, and a `WorkspaceGate` built anywhere in core but
 the service.
 
-The live index applies watcher batches one at a time on one promise tail, and the hourly knowledge
-sweep is queued on the same tail under the same gate, so a sweep never runs beside a batch mid-parse
-and a sweep queued when the live index stops never starts. The daemon holds one `Clock` and hands
+The live index watches before the warm scan reads. `startLiveIndex` registers the watcher, then
+starts the scan it is handed, so an edit under the scan is a batch rather than a fact nothing reads
+again: the outline pass skips a full module whose hash is current, and the upgrade walk re-reads
+only outline modules, so a full module edited between the pass's read and a later watcher start
+stayed stale until its next edit. `applyBatch` refuses a batch under the outline pass, since one
+would race the pass's loop over the same roots, so the live index holds what arrives until the scan
+settles and releases it as one batch, coalesced to the last event per module in first-appearance
+order, which bounds what a scan of any length leaves waiting. The hold is taken outside the gate,
+or it would deadlock the scan's per-file holds. A scan that fails releases nothing and stops the
+watcher: a batch would prune against roots a failed discovery never filled, and that index waits for
+a restart.
+
+Batches are applied one at a time on one promise tail, and the hourly knowledge sweep is queued on
+the same tail under the same gate, so a sweep never runs beside a batch mid-parse and a sweep
+queued when the live index stops never starts. The daemon holds one `Clock` and hands
 the same instance to the store at open, the service and the live index, so every stamp, the
 watcher debounce and the sweep timer read one time source, along with the ledger's stamps, the
 transaction manager, the provider supervisor's timeouts and the transport's heartbeat; a residue

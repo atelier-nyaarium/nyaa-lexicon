@@ -354,9 +354,9 @@ async function main(argv: string[]): Promise<void> {
 		let scan: Promise<void> | null = null;
 		function warm(): void {
 			if (scan !== null) return;
-			scan = (async () => {
-				const started = clock.now();
-				// The first pass stores declarations and imports for immediate answers.
+			const started = clock.now();
+			// The first pass stores declarations and imports for immediate answers.
+			const pass = async () => {
 				const outcomes = await service.warmupWorkspace();
 				const indexed = outcomes.filter((o) => o.action === "indexed");
 				const failures = outcomes.filter((o) => o.failure !== undefined);
@@ -372,13 +372,18 @@ async function main(argv: string[]): Promise<void> {
 					},
 					(error) => log(`upgrade failed: ${error instanceof Error ? error.message : error}`),
 				);
+			};
 
-				// Watching starts with warming: a watcher over an unasked-for workspace would index it
-				// on the next file change anyway.
-				live = startLiveIndex({
+			// Watching starts with warming: a watcher over an unasked-for workspace would index it
+			// on the next file change anyway. The live index watches before the pass reads, and
+			// holds what arrives under it.
+			let warming: Promise<void>;
+			try {
+				const index = startLiveIndex({
 					service,
 					workspaceRoot: root,
 					clock,
+					warm: pass,
 					onSwept: (report) => {
 						if (report.examined > 0)
 							log(
@@ -394,7 +399,14 @@ async function main(argv: string[]): Promise<void> {
 					},
 					onError: (error) => log(`reindex failed: ${error instanceof Error ? error.message : error}`),
 				});
-			})().catch((error) => {
+				live = index;
+				warming = index.warmed;
+			} catch (error) {
+				// A platform that cannot watch still gets its index; an edit then waits for a restart.
+				log(`watching failed: ${describeError(error)}`);
+				warming = pass();
+			}
+			scan = warming.catch((error) => {
 				log(`warmup failed: ${error instanceof Error ? error.message : error}`);
 			});
 		}
