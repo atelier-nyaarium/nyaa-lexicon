@@ -39,7 +39,9 @@ export type Compatibility =
 // import and export lines. `Declaration.contains`, an older core ignores.
 // 3.4.0: `DaemonLockSchema` gains an optional `role`, `"daemon"` or `"delete"`, naming which side
 // of a store's lock a claim represents. Absent reads as `"daemon"`, an older lock's only meaning.
-export const PROTOCOL_VERSION = "3.4.0" as const;
+// 3.5.0: `moduleFacts` and `parseFacts`, two reads that answer a module's declarations, references,
+// literals, comments and language words as paint facts, for a client that colors code itself.
+export const PROTOCOL_VERSION = "3.5.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

@@ -297,6 +297,24 @@ async function runCase(
 	return problems;
 }
 
+/**
+ * A code provider's own vocabulary is not visible in facts, so it must state it: a highlighter has
+ * nowhere else to learn a language's keywords. A data format ships none, honestly.
+ */
+function checkWordsDeclared(info: Pick<MethodResponse<"initialize">, "content" | "words">): CaseResult {
+	const problems: string[] = [];
+	const isDataFormat = info.content !== undefined && info.content !== "code";
+	if (!isDataFormat && info.words.keywords.length === 0) {
+		problems.push("a code provider announced no keywords at initialize");
+	}
+	return {
+		caseId: "code-provider-declares-keywords",
+		tier: "protocol",
+		outcome: problems.length === 0 ? "passed" : "failed",
+		problems,
+	};
+}
+
 /** Bad request, never a diagnostic. */
 async function checkBadModuleIsRefused(session: ProviderSession): Promise<CaseResult> {
 	const problems: string[] = [];
@@ -732,6 +750,9 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				});
 			}
 		}
+
+		// Pure, so it runs even when the session died answering an earlier case.
+		results.push(checkWordsDeclared(info));
 
 		// Last, so the provider has been through discovery. A provider that really moves needs its
 		// project model, and probing it cold would test a state nothing else puts it in.

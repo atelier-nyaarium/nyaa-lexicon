@@ -12,6 +12,7 @@ import {
 	extractDeclarations,
 	makeReferenceMoveEdits,
 	REFERENCE_TIERS,
+	REFERENCE_WORDS,
 	referenceHandlers,
 } from "./referenceProvider.js";
 
@@ -96,6 +97,7 @@ export const fixtureHandlers: ProviderHandlers = {
 		extensions: [".ref"],
 		protocolVersion: PROTOCOL_VERSION,
 		tiers: REFERENCE_TIERS,
+		words: REFERENCE_WORDS,
 	}),
 	renameEdits: makeFixtureRenameEdits,
 	moveEdits: makeFixtureMoveEdits,

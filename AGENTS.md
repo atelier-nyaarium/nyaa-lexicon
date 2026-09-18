@@ -272,6 +272,10 @@ Ordered by how much they prove:
   rather than per call. `symbolIdsIn` stamps the module asked but answers the id grammar's own
   subtree, never the container walk, and the residue names every reader of it by why.
   `docs/architecture.md` holds the whole of it.
+- **Paint facts are a projection, never a second parser.** `moduleFacts` and `parseFacts`
+  (`docs/daemon-protocol.md`'s Painting section) shape stored rows or a freshly parsed candidate into
+  ranges and kinds for a client to color; `core/src/paintFacts.ts` reads the store's rows or the
+  probe's `parseCandidate` exactly as the refactor planner does, and mints no fact of its own.
 - **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
   store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there.
   Recall, doubt and diagnosis read raw rows on purpose, since a stranded subject must still be seen.

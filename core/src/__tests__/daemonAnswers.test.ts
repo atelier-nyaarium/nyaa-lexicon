@@ -11,7 +11,13 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DAEMON_METHODS, type DaemonMethod, type RequestOf, type ResponseOf } from "@nyaa-lexicon/protocol";
+import {
+	DAEMON_METHODS,
+	type DaemonMethod,
+	hashContent,
+	type RequestOf,
+	type ResponseOf,
+} from "@nyaa-lexicon/protocol";
 import { createDispatch, daemonHandlers, type Gate, gateOf } from "../dispatch";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
@@ -259,6 +265,39 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			diskHash: null,
 			declarations: [],
 		});
+	},
+	moduleFacts: async () => {
+		const known = await ask("moduleFacts", { module: "cart.ref" });
+		if (!known.known) throw new Error("cart.ref should be known");
+		expect(known.depth).toBe("full");
+		expect(known.declarations.map((declaration) => declaration.kind)).toEqual(["class", "function"]);
+		expect(known.references).toEqual([]);
+		expect(known.literals).toEqual([]);
+		expect(known.comments).toHaveLength(2);
+		expect(known.words).toEqual({ keywords: ["class", "const", "export", "function"], builtins: [], literals: [] });
+		const declared = await ask("moduleDeclarations", { module: "cart.ref" });
+		expect(known.contentHash).toBe(declared.contentHash);
+
+		expect(await ask("moduleFacts", { module: "ghost.ref" })).toEqual({
+			module: "ghost.ref",
+			known: false,
+			reason: "notIndexed",
+		});
+	},
+	parseFacts: async () => {
+		const text = "export class Cart {}\nexport class Basket {}\n";
+		const parsed = await ask("parseFacts", { module: "cart.ref", text });
+		if (!parsed.ok) throw new Error(parsed.reason);
+		expect(parsed.depth).toBe("full");
+		expect(parsed.declarations.map((declaration) => declaration.kind)).toEqual(["class", "class"]);
+		expect(parsed.contentHash).toBe(hashContent(text));
+
+		// Nothing was written: the store still answers the rows it held before the candidate.
+		const stillOld = await ask("moduleDeclarations", { module: "cart.ref" });
+		expect(stillOld.declarations.map((declaration) => declaration.name)).toEqual(["Cart", "add"]);
+
+		const refused = await ask("parseFacts", { module: "notes.txt", text: "hi" });
+		expect(refused.ok).toBe(false);
 	},
 	findImports: () => ask("findImports", { specifier: "./item", limit: 5 }),
 	overview: async () => {

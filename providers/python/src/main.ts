@@ -71,6 +71,64 @@ export const TIERS = {
 	syntaxDiagnostics: true,
 } as const;
 
+/** Python 3.12 hard and soft keywords (`keyword.kwlist` and `keyword.softkwlist`), merged. */
+export const WORDS = {
+	keywords: [
+		"_",
+		"and",
+		"as",
+		"assert",
+		"async",
+		"await",
+		"break",
+		"case",
+		"class",
+		"continue",
+		"def",
+		"del",
+		"elif",
+		"else",
+		"except",
+		"finally",
+		"for",
+		"from",
+		"global",
+		"if",
+		"import",
+		"in",
+		"is",
+		"lambda",
+		"match",
+		"nonlocal",
+		"not",
+		"or",
+		"pass",
+		"raise",
+		"return",
+		"try",
+		"type",
+		"while",
+		"with",
+		"yield",
+	],
+	builtins: [
+		"bool",
+		"bytearray",
+		"bytes",
+		"complex",
+		"dict",
+		"float",
+		"frozenset",
+		"int",
+		"list",
+		"object",
+		"set",
+		"str",
+		"tuple",
+	],
+	literals: ["False", "None", "True"],
+};
+
 export const REFERENCE_ROLES = ["call", "read", "write", "extends", "typeUse"] as const;
 
 /** Kinds a typeUse reference may bind to. */
@@ -500,6 +558,7 @@ export class PythonProvider {
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],
+			words: WORDS,
 		};
 	}
 

@@ -53,6 +53,23 @@ export const FileContentSchema = z.enum(["code", "data", "document", "text"]).me
 
 export type FileContent = z.infer<typeof FileContentSchema>;
 
+/**
+ * The language's own vocabulary, which facts cannot give: reserved words, shipped type and value
+ * names, and literal words. A highlighter paints these from the provider, everything else from facts.
+ */
+export const ProviderWordsSchema = z
+	.object({
+		/** Reserved and contextual keywords as written, e.g. "fun", "suspend", "async", "def". */
+		keywords: z.array(z.string().min(1)),
+		/** Types or values the language ships, not declared in user code, e.g. "string", "Int". */
+		builtins: z.array(z.string().min(1)),
+		/** The literal words, e.g. "true", "false", "null", "None". */
+		literals: z.array(z.string().min(1)),
+	})
+	.meta({ id: "ProviderWords" });
+
+export type ProviderWords = z.infer<typeof ProviderWordsSchema>;
+
 export const InitializeRequestSchema = z
 	.object({ workspaceRoot: z.string().min(1), protocolVersion: z.string().min(1) })
 	.meta({ id: "InitializeRequest" });
@@ -85,6 +102,12 @@ export const InitializeResponseSchema = z
 		referenceRoles: z.array(ReferenceRoleSchema).optional(),
 		/** What every claimed file is. Absent means code. */
 		content: FileContentSchema.optional(),
+		/**
+		 * The language's keywords, builtins and literal words. A data format ships empty keywords
+		 * and builtins. Absent means every list empty, so an older provider still parses; conformance
+		 * is what actually requires a code provider to state its keywords.
+		 */
+		words: ProviderWordsSchema.default({ keywords: [], builtins: [], literals: [] }),
 	})
 	// Required the moment the tier is claimed, so the boolean can no longer be an unqualified claim
 	// over a nine-role vocabulary. A provider that emits calls only must say `["call"]` and is then

@@ -31,6 +31,7 @@ const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 			docs: false,
 			metrics: false,
 		},
+		words: { keywords: [], builtins: [], literals: [] },
 	}),
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
 	parseFile: (params) => ({

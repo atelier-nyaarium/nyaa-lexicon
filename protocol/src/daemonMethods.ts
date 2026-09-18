@@ -26,11 +26,13 @@ import {
 	KnowledgeScopeSchema,
 	LiteralsResultSchema,
 	ModuleDeclarationsSchema,
+	ModuleFactsResultSchema,
 	ModuleStatusSchema,
 	MostReferencedResultSchema,
 	MoveOutcomeSchema,
 	MovePlanSchema,
 	OverviewResultSchema,
+	ParseFactsResultSchema,
 	QuestionClassSchema,
 	RecallAnswerResultSchema,
 	RecordOutcomeSchema,
@@ -237,6 +239,7 @@ const Insert = z
 	.object({ after: z.string().min(1).optional(), module: ModulePath.optional(), text: z.string().min(1) })
 	.refine((args) => (args.after === undefined) !== (args.module === undefined), "Set exactly one of after or module.")
 	.meta({ id: "InsertRequest" });
+const ParseFacts = z.object({ module: ModulePath, text: z.string() }).meta({ id: "ParseFactsRequest" });
 
 ////////////////////////////////
 //  The table
@@ -289,6 +292,10 @@ export const DAEMON_METHODS = {
 	moduleStatus: { request: ByModule, response: ModuleStatusSchema },
 	/** One file's status, the hash on disk, the hash indexed and its declarations, from one read. */
 	moduleDeclarations: { request: ByModule, response: ModuleDeclarationsSchema },
+	/** One module's paint facts, stored: declarations, references, literals, comments and words. */
+	moduleFacts: { request: ByModule, response: ModuleFactsResultSchema },
+	/** Paint facts for text not yet written, parsed by the owning provider; nothing is stored. */
+	parseFacts: { request: ParseFacts, response: ParseFactsResultSchema },
 	/** Importers by written specifier or resolved module. */
 	findImports: { request: FindImports, response: FindImportsResultSchema },
 	/** Files, symbols, coverage and the biggest modules. */

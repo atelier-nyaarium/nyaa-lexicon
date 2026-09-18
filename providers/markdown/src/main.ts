@@ -43,6 +43,13 @@ export const TIERS = {
 	syntaxDiagnostics: true,
 } as const;
 
+/** A data format: no keywords, builtins or literal words. */
+export const WORDS = {
+	keywords: [],
+	builtins: [],
+	literals: [],
+};
+
 export class MarkdownProvider {
 	private workspaceRoot = process.cwd();
 
@@ -55,6 +62,7 @@ export class MarkdownProvider {
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			content: "document" as const,
+			words: WORDS,
 		};
 	}
 

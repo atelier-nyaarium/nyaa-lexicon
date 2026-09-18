@@ -2069,6 +2069,14 @@ export class IndexStore {
 		return rows.map(rowToLiteral);
 	}
 
+	/** Every literal in one module, matching declarationsIn and referencesIn. */
+	literalsIn(module: string): StoredLiteral[] {
+		const rows = this.db
+			.prepare("SELECT * FROM literals WHERE module = ? ORDER BY startLine, startChar")
+			.all(module);
+		return rows.map(rowToLiteral);
+	}
+
 	////////////////////////////////
 	//  Comments
 
@@ -2104,6 +2112,14 @@ export class IndexStore {
 		const rows = this.db
 			.prepare("SELECT * FROM comments WHERE anchorId = ? ORDER BY startLine, startChar")
 			.all(symbolId);
+		return rows.map(rowToComment);
+	}
+
+	/** Every comment in one module, matching declarationsIn and referencesIn. */
+	commentsIn(module: string): StoredComment[] {
+		const rows = this.db
+			.prepare("SELECT * FROM comments WHERE module = ? ORDER BY startLine, startChar")
+			.all(module);
 		return rows.map(rowToComment);
 	}
 

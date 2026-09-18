@@ -55,6 +55,13 @@ export const TIERS = {
 	syntaxDiagnostics: true,
 } as const;
 
+/** A data format: no keywords, builtins or literal words. */
+export const WORDS = {
+	keywords: [],
+	builtins: [],
+	literals: [],
+};
+
 export class XmlProvider {
 	private workspaceRoot = process.cwd();
 	initialize(workspaceRoot: string) {
@@ -66,6 +73,7 @@ export class XmlProvider {
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			content: "data" as const,
+			words: WORDS,
 		};
 	}
 	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {

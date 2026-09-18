@@ -131,6 +131,8 @@ export {
 	MentionSchema,
 	type ModuleDeclarations,
 	ModuleDeclarationsSchema,
+	type ModuleFactsResult,
+	ModuleFactsResultSchema,
 	type ModuleStatus,
 	ModuleStatusSchema,
 	type MostReferencedEntry,
@@ -143,6 +145,8 @@ export {
 	MovePlanSchema,
 	type OverviewResult,
 	OverviewResultSchema,
+	type ParseFactsResult,
+	ParseFactsResultSchema,
 	QUESTION_CLASSES,
 	type QuestionClass,
 	QuestionClassSchema,
@@ -312,6 +316,8 @@ export {
 	type ProviderNotification,
 	type ProviderTiers,
 	ProviderTiersSchema,
+	type ProviderWords,
+	ProviderWordsSchema,
 	ResolveImportRequestSchema,
 	TypeOfRequestSchema,
 } from "./methods.js";
@@ -339,6 +345,7 @@ export {
 	MoveRefusalSchema,
 } from "./move.js";
 export { withOccurrences } from "./occurrences.js";
+export { type PaintFacts, PaintFactsSchema } from "./paint.js";
 export {
 	type CommentSpan,
 	CommentSpanSchema,

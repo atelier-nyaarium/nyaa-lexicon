@@ -59,8 +59,36 @@ describe("method table", () => {
 				metrics: false,
 			},
 			referenceRoles: ["call", "read", "write"],
+			words: { keywords: ["function"], builtins: ["string"], literals: ["true", "false"] },
 		};
-		expect(METHOD_SCHEMAS.initialize.response.parse(response)).toMatchObject({ language: "typescript" });
+		expect(METHOD_SCHEMAS.initialize.response.parse(response)).toMatchObject({
+			language: "typescript",
+			words: { keywords: ["function"], builtins: ["string"], literals: ["true", "false"] },
+		});
+	});
+
+	it("defaults words to every list empty, so an older provider still parses", () => {
+		const missing = {
+			providerId: "p",
+			language: "toy",
+			extensions: [".t"],
+			protocolVersion: PROTOCOL_VERSION,
+			tiers: {
+				projectModel: false,
+				declarations: false,
+				references: false,
+				imports: false,
+				binding: false,
+				types: false,
+				literals: false,
+				comments: false,
+				docs: false,
+				metrics: false,
+			},
+		};
+		expect(METHOD_SCHEMAS.initialize.response.parse(missing)).toMatchObject({
+			words: { keywords: [], builtins: [], literals: [] },
+		});
 	});
 
 	it("takes a content class from the closed set only, and none means code by omission", () => {
@@ -81,6 +109,7 @@ describe("method table", () => {
 				docs: false,
 				metrics: false,
 			},
+			words: { keywords: [], builtins: [], literals: ["false", "null", "true"] },
 		};
 		expect(METHOD_SCHEMAS.initialize.response.parse({ ...base, content: "data" })).toMatchObject({
 			content: "data",
@@ -110,7 +139,13 @@ describe("method table", () => {
 			docs: false,
 			metrics: false,
 		};
-		const base = { providerId: "p", language: "toy", extensions: [".t"], protocolVersion: PROTOCOL_VERSION };
+		const base = {
+			providerId: "p",
+			language: "toy",
+			extensions: [".t"],
+			protocolVersion: PROTOCOL_VERSION,
+			words: { keywords: [], builtins: [], literals: [] },
+		};
 
 		expect(METHOD_SCHEMAS.initialize.response.safeParse({ ...base, tiers }).success).toBe(false);
 		// Every tier is a required claim: a provider silent about one is not a provider claiming false.
@@ -149,6 +184,7 @@ describe("method table", () => {
 				docs: false,
 				metrics: false,
 			},
+			words: { keywords: [], builtins: [], literals: [] },
 		};
 		expect(METHOD_SCHEMAS.initialize.response.safeParse(response).success).toBe(true);
 	});

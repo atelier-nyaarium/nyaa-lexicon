@@ -341,7 +341,7 @@ export function providerRefused(module: string, reason: string, detail?: string)
 	return mint(`${module}: ${reason}${detail === undefined ? "" : `: ${detail}`}`);
 }
 
-export function candidateDoesNotParse(what: "replacement" | "insert", reason: string): Refusal {
+export function candidateDoesNotParse(what: "replacement" | "insert" | "candidate", reason: string): Refusal {
 	return mint(`the ${what} does not parse: ${reason}`);
 }
 
@@ -501,6 +501,13 @@ export function nameAlreadyImported(newName: string, files: number): Refusal {
 	return mint(
 		`${newName} is already imported in ${files === 1 ? "a file" : `${files} files`} this rename rewrites, so the rewritten uses would bind to that import instead. Rename or alias that import first, or pick another name.`,
 	);
+}
+
+////////////////////////////////
+//  Paint
+
+export function noProviderOwnsForPaint(module: string, detail?: string): Refusal {
+	return mint(`no provider owns ${module}${detail === undefined ? "" : `: ${detail}`}, so it cannot be painted`);
 }
 
 /** The module an unparseable id still names in its third field, decoded as the grammar would. */

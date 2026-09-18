@@ -40,6 +40,13 @@ export const TIERS = {
 	syntaxDiagnostics: false,
 } as const;
 
+/** A data format: no keywords, builtins or literal words. */
+export const WORDS = {
+	keywords: [],
+	builtins: [],
+	literals: [],
+};
+
 export class TextProvider implements ProviderMethods {
 	private workspaceRoot = process.cwd();
 
@@ -53,6 +60,7 @@ export class TextProvider implements ProviderMethods {
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			content: "text" as const,
+			words: WORDS,
 		};
 	}
 

@@ -7,6 +7,7 @@ import {
 	NOTIFICATION_SCHEMAS,
 	type ProviderMethod,
 	type ProviderTiers,
+	type ProviderWords,
 } from "@nyaa-lexicon/protocol";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
 import { type HeadReader, type ProviderClaims, routeModule, routingContextOf } from "../routing";
@@ -33,6 +34,8 @@ export interface FakeOptions {
 	discover?: () => string[];
 	/** What `declares` answers; an omitted tier is undeclared. */
 	tiers?: Partial<ProviderTiers>;
+	/** What `words` answers; defaults to every list empty. */
+	words?: ProviderWords;
 	answers?: FakeAnswers;
 	/** Failures the live supervisor can expose while a request is pending. */
 	fail?: { providerDown?: boolean; timeoutMs?: number; queue?: number };
@@ -130,6 +133,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 	const claims = options.claims ?? [FAKE_CLAIMS];
 	const discover = options.discover ?? (() => []);
 	const tiers = options.tiers ?? {};
+	const words = options.words ?? { keywords: [], builtins: [], literals: [] };
 	const answers = options.answers ?? {};
 	const failure = options.fail ?? {};
 	const incarnation = options.incarnation ?? { current: 1 };
@@ -191,6 +195,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		},
 		observeModule: (module) => context().observe(module),
 		declares: (_providerId, tier) => tiers[tier] === true,
+		words: (providerId) => (claims.some((claim) => claim.providerId === providerId) ? words : undefined),
 		ask: async (module, method, params) => {
 			// Unowned refuses here as it does live, so no suite proves a path the daemon cannot reach.
 			const route = port.route(module);

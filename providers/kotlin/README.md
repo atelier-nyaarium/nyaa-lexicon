@@ -74,4 +74,4 @@ residue's job is to keep the interface from growing a field under a new spelling
 | `packageIndex.ts` | Cross-file lookup, accessibility, and import resolution. |
 | `diagnostics.ts` | What damage refuses a file and what merely warns. |
 | `render.ts` | Signature text from a span of nodes. |
-| `main.ts` | The provider surface and the module lifecycle. |
+| `main.ts` | The provider surface, the module lifecycle, and the `WORDS` vocabulary. |

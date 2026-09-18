@@ -12,8 +12,10 @@ import {
 	defined,
 	type FileHistory,
 	type ImportResolution,
+	type ModuleFactsResult,
 	type MostReferencedResult,
 	type OverviewResult,
+	type ParseFactsResult,
 	parseSymbolId,
 	type SharedLiteralsResult,
 	type TypeInfo,
@@ -43,6 +45,7 @@ import {
 	type TypeHierarchy,
 } from "./indexReads.js";
 import { KnowledgeLedger } from "./knowledge.js";
+import { PaintReads } from "./paintFacts.js";
 import type { ProviderPort } from "./providerPort.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { ReadContext } from "./readContext.js";
@@ -112,6 +115,7 @@ export class LexiconService {
 		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
 		this.probe = liveProbe(supervisor, (module) => textOf(readSource(module)));
 		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe);
+		this.paint = new PaintReads(store, this.probe);
 	}
 
 	private readonly caches: IndexCaches = {
@@ -138,6 +142,9 @@ export class LexiconService {
 
 	/** Plans only. renameSymbol below is what writes. */
 	readonly planner: RefactorPlanner;
+
+	/** Paint facts, stored or freshly parsed. */
+	readonly paint: PaintReads;
 
 	/** Public so a read-only caller can take this and reach nothing else. */
 	readonly reads: IndexReadModel;
@@ -328,6 +335,17 @@ export class LexiconService {
 
 	private currentScope(): FileScope {
 		return this.indexer.currentScope();
+	}
+
+	////////////////////////////////
+	//  Paint, answered by PaintReads
+
+	moduleFacts(module: string): ModuleFactsResult {
+		return this.paint.moduleFacts(module);
+	}
+
+	parseFacts(module: string, text: string): Promise<ParseFactsResult> {
+		return this.paint.parseFacts(module, text);
 	}
 
 	////////////////////////////////

@@ -8,6 +8,7 @@ import type {
 	MoveEditsRequest,
 	MoveEditsResponse,
 	ProviderTiers,
+	ProviderWords,
 	RenameEditsRequest,
 	RenameEditsResponse,
 } from "@nyaa-lexicon/protocol";
@@ -24,6 +25,8 @@ export interface ProviderProbe {
 	owner(module: string): { owned: true; providerId: string } | { owned: false; reason: string };
 	/** Silence from a provider is never approval. */
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
+	/** The owning provider's keywords, builtins and literal words; null when the module is unowned. */
+	words(module: string): ProviderWords | null;
 	/** Restores the provider's view before returning. Never rejects: a provider that THROWS on a
 	 * malformed candidate answers parsed:false, so every planner refuses instead of leaking. */
 	parseCandidate(module: string, text: string): Promise<CandidateParse>;
@@ -58,6 +61,12 @@ export function liveProbe(supervisor: ProviderPort, readFile: (module: string) =
 		},
 
 		declares: (providerId, tier) => supervisor.declares(providerId, tier),
+
+		words(module) {
+			const route = supervisor.route(module);
+			if (!route.owned) return null;
+			return supervisor.words(route.providerId) ?? null;
+		},
 
 		renameEdits: (module, request) => supervisor.ask(module, "renameEdits", request),
 

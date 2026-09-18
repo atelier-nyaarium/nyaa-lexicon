@@ -222,6 +222,35 @@ Protocol 3.3.0 changed two answers an older client may count on. `describe.membe
 parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn`,
 `graph.fanOut`, `graph.cycle` and a gap row's `fanIn` no longer count import and export lines.
 
+### Painting
+
+Two reads answer `PaintFacts` (protocol 3.5.0): a module's declarations, references, literals and
+comments, shaped for a client that colors code itself rather than running a second parser. A
+declaration's range is its `selectionRange`, the name, never its body. A reference carries `bound`,
+`true` when it resolved to a target. `words` is the owning provider's own vocabulary (keywords,
+builtins, literal words), which facts alone cannot give.
+
+- **`moduleFacts`** (`{ module }`) answers the STORE's rows: `{ module, known: true, depth,
+  contentHash, words, declarations, references, literals, comments }`, or `{ module, known: false,
+  reason }` with `reason` `notIndexed` (the existing per-module reads' answer for a module the store
+  holds no rows for) or `unowned` (indexed, but no running provider currently claims it, so there is
+  no vocabulary to paint with). `contentHash` is the index's own stored hash, null when the store
+  has none. `depth` is the module's own extraction depth.
+- **`parseFacts`** (`{ module, text }`) answers facts for text NOT on disk, parsed by the owning
+  provider exactly as a refactor plan parses a candidate: the probe restores the provider's own view
+  before returning, on every path, and nothing is written. `{ ok: true, depth, contentHash, words,
+  declarations, references, literals, comments }` or `{ ok: false, reason }` with a prose reason,
+  when no provider owns the module or the candidate does not parse. `contentHash` is the hash of the
+  HANDED text, so a caller can tell the answer apart from one describing the file on disk. `depth`
+  is always `full`, since a candidate parse asks `parseFile` with no depth.
+
+`depth` says whether an empty `references`, `literals` or `comments` means none or means not parsed
+that deep yet: a module can sit at `outline` after warmup, whose rows hold neither, so a painter
+that needs references asks `parseFacts` when `moduleFacts`'s `depth` is `outline`.
+
+`parseFacts` takes the gate in no part at all: it is a plain caller-driven ask, like planning a
+replacement, since it changes nothing the gate orders.
+
 ## Validation, both directions
 
 `createDispatch` is the one place a request meets the table, and it does three things in order. A

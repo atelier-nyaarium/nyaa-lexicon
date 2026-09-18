@@ -112,6 +112,7 @@ function plannerFor(world: World): RefactorPlanner {
 	const probe: ProviderProbe = {
 		owner: () => ({ owned: true, providerId: "test" }),
 		declares: () => true,
+		words: () => ({ keywords: [], builtins: [], literals: [] }),
 		parseCandidate: async (_module, candidate) => world.parse(candidate),
 		renameEdits: () => Promise.reject(new Error("not asked")),
 		moveEdits: () => Promise.reject(new Error("not asked")),

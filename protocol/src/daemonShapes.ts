@@ -8,6 +8,7 @@ import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS } from "./factId.js";
 import { MoveDependencySchema } from "./move.js";
+import { PaintFactsSchema } from "./paint.js";
 import { IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import { DeclarationSchema, RangeSchema, ReferenceRoleSchema, SymbolKindSchema, VisibilitySchema } from "./symbols.js";
@@ -789,6 +790,26 @@ export const FindImportsResultSchema = z
 	.meta({ id: "FindImportsResult" });
 
 export type FindImportsResult = z.infer<typeof FindImportsResultSchema>;
+
+/** One module's paint facts from the store, or why it has none. */
+export const ModuleFactsResultSchema = z
+	.discriminatedUnion("known", [
+		PaintFactsSchema.extend({ module: z.string(), known: z.literal(true) }),
+		z.object({ module: z.string(), known: z.literal(false), reason: z.enum(["notIndexed", "unowned"]) }),
+	])
+	.meta({ id: "ModuleFactsResult" });
+
+export type ModuleFactsResult = z.infer<typeof ModuleFactsResultSchema>;
+
+/** Paint facts for handed text, parsed by the owning provider without touching the store. */
+export const ParseFactsResultSchema = z
+	.discriminatedUnion("ok", [
+		PaintFactsSchema.extend({ ok: z.literal(true) }),
+		z.object({ ok: z.literal(false), reason: z.string() }),
+	])
+	.meta({ id: "ParseFactsResult" });
+
+export type ParseFactsResult = z.infer<typeof ParseFactsResultSchema>;
 
 ////////////////////////////////
 //  Index state

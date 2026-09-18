@@ -1,7 +1,13 @@
 // What core asks of the provider set, owned here by the callers: a member the indexer starts
 // calling is a type error in every fake before it can be a runtime one.
 
-import type { METHOD_SCHEMAS, ModuleAdmission, ProviderMethod, ProviderTiers } from "@nyaa-lexicon/protocol";
+import type {
+	METHOD_SCHEMAS,
+	ModuleAdmission,
+	ProviderMethod,
+	ProviderTiers,
+	ProviderWords,
+} from "@nyaa-lexicon/protocol";
 import type { z } from "zod";
 import type { HeadReader, ProviderClaims, Route } from "./routing.js";
 import type { ProviderSupervisor } from "./supervisor.js";
@@ -23,6 +29,8 @@ export interface ProviderPort {
 	observeWorkspace(modules: Iterable<string>): void;
 	observeModule(module: string): void;
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
+	/** The vocabulary the provider announced at initialize; undefined when it is not running. */
+	words(providerId: string): ProviderWords | undefined;
 	ask<K extends ProviderMethod>(module: string, method: K, params: unknown): Promise<MethodResponse<K>>;
 	askProvider<K extends ProviderMethod>(providerId: string, method: K, params: unknown): Promise<MethodResponse<K>>;
 	/** Tells every provider a module is gone. Not awaited. */

@@ -98,6 +98,7 @@ function plannerFor(world: World) {
 	const probe: ProviderProbe = {
 		owner: () => ({ owned: true, providerId: "test" }),
 		declares: () => world.syntaxDiagnostics ?? true,
+		words: () => ({ keywords: [], builtins: [], literals: [] }),
 		parseCandidate: async (_module, candidate) => world.parse?.(candidate) ?? { parsed: true, facts: facts([]) },
 		renameEdits: () => Promise.reject(new Error("not asked")),
 		moveEdits: () => Promise.reject(new Error("not asked")),

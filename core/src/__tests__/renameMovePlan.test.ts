@@ -97,6 +97,7 @@ function plannerFor(world: World): RefactorPlanner {
 	const probe: ProviderProbe = {
 		owner: () => ({ owned: true, providerId: "test" }),
 		declares: () => true,
+		words: () => ({ keywords: [], builtins: [], literals: [] }),
 		parseCandidate: (): Promise<CandidateParse> => Promise.reject(new Error("not asked")),
 		renameEdits: async (_module, request) => ({
 			status: "ready",
@@ -340,6 +341,7 @@ function multiPlannerFor(world: ImportWorld, resolve: ResolveSpecifier): Refacto
 	const probe: ProviderProbe = {
 		owner: () => ({ owned: true, providerId: "test" }),
 		declares: () => true,
+		words: () => ({ keywords: [], builtins: [], literals: [] }),
 		parseCandidate: (): Promise<CandidateParse> => Promise.reject(new Error("not asked")),
 		renameEdits: async (_module, request) => ({
 			status: "ready",

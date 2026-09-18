@@ -36,6 +36,7 @@ const ROW_READERS: Record<string, string> = {
 	"moduleDeclarations.ts": "snapshots the rows beside the module's hashes",
 	"refusals.ts": "names an unminted id's neighbours",
 	"knowledge.ts": "walks a file's declarations for gaps",
+	"paintFacts.ts": "renders a module's rows as paint spans, no nesting asked",
 };
 
 /** The store's every id for a module: the id grammar's own subtree, never the container walk. */

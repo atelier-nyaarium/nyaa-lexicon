@@ -7,7 +7,12 @@ import path from "node:path";
 import { checkFacts, checkImport, checkType, describeIdParts } from "../conformance/check";
 import { casesForTier, corpusLanguages, loadCorpus } from "../conformance/corpus";
 import { loadMoveCases } from "../conformance/moveCorpus";
-import { extractComments, extractDeclarations, REFERENCE_TIERS } from "../conformance/referenceProvider";
+import {
+	extractComments,
+	extractDeclarations,
+	REFERENCE_TIERS,
+	REFERENCE_WORDS,
+} from "../conformance/referenceProvider";
 import { CASE_METADATA, formatReport, runSuite } from "../conformance/runner";
 import type { ConformanceCase, MoveCase } from "../conformance/types";
 import { ConformanceCaseSchema, ConformanceFixtureSchema } from "../conformance/types";
@@ -1068,9 +1073,10 @@ describe("running the suite against a real process", () => {
 
 	it("calls a provider that dies mid-suite stalled on what it never answered, not failed", async () => {
 		const tiers = JSON.stringify({ ...REFERENCE_TIERS, declarations: true });
+		const words = JSON.stringify(REFERENCE_WORDS);
 		const { root, script } = scriptedProvider(
 			"dies",
-			`return { providerId: "dies", language: "reference", extensions: [".ref"], protocolVersion: ${JSON.stringify("2.0.0")}, tiers: ${tiers} };`,
+			`return { providerId: "dies", language: "reference", extensions: [".ref"], protocolVersion: ${JSON.stringify("2.0.0")}, tiers: ${tiers}, words: ${words} };`,
 			[
 				`connection.onRequest("discoverProject", () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }));`,
 				`connection.onRequest("parseFile", () => process.exit(3));`,

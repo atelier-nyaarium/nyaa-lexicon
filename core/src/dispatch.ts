@@ -461,6 +461,10 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		fileNotes: read((params) => service.fileNotes(params.module)),
 		moduleStatus: read((params) => service.moduleStatus(params.module)),
 		moduleDeclarations: read((params) => service.moduleDeclarations(params.module)),
+		moduleFacts: read((params) => service.moduleFacts(params.module)),
+		// No gate at all: parseCandidate restores the provider's own view before returning, on every
+		// path, and nothing here touches the store or the disk.
+		parseFacts: staged((params) => service.parseFacts(params.module, params.text)),
 		findImports: read((params) => service.findImports(params)),
 		overview: read(() => service.overview()),
 		coChangedWith: read((params) => service.coChangedWith(params.module, params.limit)),

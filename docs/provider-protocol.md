@@ -142,6 +142,14 @@ without ranking them, since they hold no symbols. It is one declaration for ever
 claims: a code provider that also claims a data file, as GDScript does `project.godot`, reports it
 as code, which is honest about who answers for it.
 
+`words` is the vocabulary facts cannot give: `keywords` (reserved and contextual, as written),
+`builtins` (types or values the language ships, never declared in user code, e.g. `string`, `Int`),
+and `literals` (the literal words, e.g. `true`, `null`, `None`). A highlighter paints these from the
+provider and everything else from facts. A data format declares empty `keywords` and `builtins`, and
+only the literal words it actually has (JSON: `true`, `false`, `null`). Absent means every list
+empty, so an older provider still parses; conformance is what actually fails a provider whose
+`content` is `code` (or absent) and whose `keywords` is empty.
+
 `sharedExtensions` claims an extension only when the workspace contains a file with one of its
 `beside` extensions. The evidence is every file the scope admits, owned by a provider or not, read
 before any ownership is decided; a file indexed outside a scan adds itself to it. It outranks a plain claim on that extension, while two holding shared claims

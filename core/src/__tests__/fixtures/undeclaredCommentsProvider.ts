@@ -29,6 +29,7 @@ const handlers: ProviderHandlers = {
 			docs: false,
 			metrics: false,
 		},
+		words: { keywords: [], builtins: [], literals: [] },
 	}),
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
 	parseFile: (params) => ({

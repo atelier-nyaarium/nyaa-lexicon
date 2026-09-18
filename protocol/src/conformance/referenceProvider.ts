@@ -44,6 +44,13 @@ export const REFERENCE_TIERS = {
 	syntaxDiagnostics: false,
 } as const;
 
+/** The toy grammar's own reserved words, so the suite's own words check has something honest to pass. */
+export const REFERENCE_WORDS = {
+	keywords: ["class", "const", "export", "function"],
+	builtins: [],
+	literals: [],
+};
+
 /** `export class Foo` / `export function foo` / `export const foo`, and nothing cleverer. */
 const DECLARATION_RE = /^export\s+(class|function|const)\s+([A-Za-z_$][\w$]*)/gm;
 
@@ -225,6 +232,7 @@ export const referenceHandlers: ProviderHandlers = {
 		extensions: [".ref"],
 		protocolVersion: PROTOCOL_VERSION,
 		tiers: REFERENCE_TIERS,
+		words: REFERENCE_WORDS,
 	}),
 
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),

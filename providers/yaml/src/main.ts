@@ -47,6 +47,13 @@ export const TIERS = {
 	syntaxDiagnostics: true,
 } as const;
 
+/** A data format: no keywords or builtins, only the core schema's literal words. */
+export const WORDS = {
+	keywords: [],
+	builtins: [],
+	literals: ["false", "null", "true"],
+};
+
 export class YamlProvider {
 	private workspaceRoot = process.cwd();
 
@@ -59,6 +66,7 @@ export class YamlProvider {
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			content: "data" as const,
+			words: WORDS,
 		};
 	}
 

@@ -50,6 +50,13 @@ export const TIERS = {
 	syntaxDiagnostics: true,
 } as const;
 
+/** A data format: no keywords or builtins, only the literal words JSON itself defines. */
+export const WORDS = {
+	keywords: [],
+	builtins: [],
+	literals: ["false", "null", "true"],
+};
+
 function empty(): JsonFacts {
 	return { declarations: [], literals: [], comments: [], diagnostics: [] };
 }
@@ -93,6 +100,7 @@ export class JsonProvider {
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			content: "data" as const,
+			words: WORDS,
 		};
 	}
 

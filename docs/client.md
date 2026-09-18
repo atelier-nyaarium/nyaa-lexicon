@@ -93,6 +93,13 @@ request was already sent is not repeated, since the daemon may have applied it: 
 `DaemonError` with cause `connectionLost` and an unknown outcome. The table's `mutates` flag is what
 tells the two apart. A connection lost twice is a `DaemonError`.
 
+`session.moduleFacts({ module })` and `session.parseFacts({ module, text })` answer `PaintFacts`
+(`docs/daemon-protocol.md`'s Painting section): a module's declarations, references, literals,
+comments and the owning provider's own words, shaped for a client that paints code from facts
+instead of running a second parser. `moduleFacts` answers the store's rows for a module already
+indexed; `parseFacts` answers the same shape for text an editor holds but has not written, parsed by
+the owning provider without touching the store.
+
 ## Errors
 
 Every failure a session raises is one of three classes, so a consumer matches a class and never a

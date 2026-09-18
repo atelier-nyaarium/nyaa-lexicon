@@ -16,6 +16,8 @@ const MENTION_READERS: Record<string, number> = {
 	"core/src/knowledge.ts": 1,
 	// Stamps the row's own module.
 	"core/src/readContext.ts": 2,
+	// Painting shows every reference span, imports and exports included.
+	"core/src/paintFacts.ts": 1,
 };
 
 ////////////////////////////////

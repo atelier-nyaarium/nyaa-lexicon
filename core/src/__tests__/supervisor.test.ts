@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
+import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
 import { absorbingWrites, type ProviderExit, ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
 
@@ -70,6 +71,16 @@ describe("starting a provider", () => {
 		expect(supervisor.declares("reference-provider", "declarations")).toBe(true);
 		expect(supervisor.declares("reference-provider", "types")).toBe(false);
 		expect(supervisor.declares("nobody", "declarations")).toBe(false);
+	}, 30_000);
+
+	it("records the words it announced, undefined for a provider never started", async () => {
+		await start();
+		expect(supervisor.words("reference-provider")).toEqual({
+			keywords: ["class", "const", "export", "function"],
+			builtins: [],
+			literals: [],
+		});
+		expect(supervisor.words("nobody")).toBeUndefined();
 	}, 30_000);
 
 	it("fails a provider that cannot spawn, rather than crashing the daemon", async () => {
@@ -272,6 +283,75 @@ describe("when a provider dies", () => {
 		// The pid moving is the proof a NEW process answered, not a survivor.
 		expect(supervisor.pidOf("reference-provider")).not.toBe(firstPid);
 		expect(supervisor.running()).toHaveLength(1);
+	}, 30_000);
+
+	// A provider that answers different words on its second handshake, so a stale entry surviving
+	// the restart is visible: the wrong answer is the OLD list, not a thrown error.
+	it("answers the respawned process's own words, undefined while the old one is dead", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-words-flip-"));
+		const script = path.join(root, "flip.ts");
+		const marker = path.join(root, "respawned");
+		writeFileSync(
+			script,
+			[
+				`import { existsSync, writeFileSync } from "node:fs";`,
+				`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from ${JSON.stringify(RPC)};`,
+				`const connection = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));`,
+				`connection.onRequest("initialize", () => {`,
+				`	const respawned = existsSync(${JSON.stringify(marker)});`,
+				`	if (!respawned) writeFileSync(${JSON.stringify(marker)}, "1");`,
+				`	return {`,
+				`		providerId: "flip-provider",`,
+				`		language: "flip",`,
+				`		extensions: [".flip"],`,
+				`		protocolVersion: ${JSON.stringify(PROTOCOL_VERSION)},`,
+				`		tiers: { projectModel: false, declarations: false, references: false, imports: false, binding: false, types: false, literals: false, comments: false, docs: false, metrics: false },`,
+				`		words: respawned`,
+				`			? { keywords: ["beta"], builtins: [], literals: [] }`,
+				`			: { keywords: ["alpha"], builtins: [], literals: [] },`,
+				`	};`,
+				`});`,
+				`connection.onRequest("discoverProject", () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }));`,
+				`connection.onRequest("parseFile", (params) => ({ module: params.module, contentHash: params.contentHash, declarations: [], references: [], imports: [], literals: [], diagnostics: [] }));`,
+				`connection.listen();`,
+			].join("\n"),
+		);
+
+		supervisor = new ProviderSupervisor();
+		await supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 15_000 }, root);
+		expect(supervisor.words("flip-provider")).toEqual({ keywords: ["alpha"], builtins: [], literals: [] });
+
+		const firstPid = supervisor.pidOf("flip-provider");
+		process.kill(firstPid as number, "SIGKILL");
+
+		// The dead entry must not keep serving while the respawn is still in flight.
+		let sawUndefinedWhileDead = false;
+		const undefinedDeadline = Date.now() + 5_000;
+		while (!sawUndefinedWhileDead && Date.now() < undefinedDeadline) {
+			if (supervisor.words("flip-provider") === undefined) sawUndefinedWhileDead = true;
+			else await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		expect(sawUndefinedWhileDead).toBe(true);
+
+		const deadline = Date.now() + 20_000;
+		let pid = supervisor.pidOf("flip-provider");
+		while (pid === firstPid && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			pid = supervisor.pidOf("flip-provider");
+		}
+
+		expect(pid).not.toBe(firstPid);
+		expect(supervisor.words("flip-provider")).toEqual({ keywords: ["beta"], builtins: [], literals: [] });
+
+		// A respawned provider's queue must serve, not stay closed from the process that died on it.
+		const answered = await supervisor.ask("a.flip", "parseFile", {
+			module: "a.flip",
+			contentHash: "h",
+			text: "",
+		});
+		expect(answered.module).toBe("a.flip");
+
+		rmSync(root, { recursive: true, force: true });
 	}, 30_000);
 
 	// An OOM leaves a signal and no code; a listener told only "code null" cannot tell it from a

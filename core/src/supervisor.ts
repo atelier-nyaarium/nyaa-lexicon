@@ -16,6 +16,7 @@ import {
 	type ProviderMethod,
 	type ProviderNotification,
 	type ProviderTiers,
+	type ProviderWords,
 } from "@nyaa-lexicon/protocol";
 import {
 	createMessageConnection,
@@ -60,6 +61,7 @@ export interface ProviderExit {
 interface RunningProvider {
 	claims: ProviderClaims;
 	tiers: ProviderTiers;
+	words: ProviderWords;
 	child: ChildProcess;
 	connection: MessageConnection;
 	queue: RequestQueue;
@@ -233,6 +235,7 @@ export class ProviderSupervisor implements ProviderPort {
 			...running,
 			claims,
 			tiers: parsed.tiers,
+			words: parsed.words,
 			spec,
 			workspaceRoot,
 			incarnation: this.incarnations++,
@@ -293,6 +296,7 @@ export class ProviderSupervisor implements ProviderPort {
 	private async respawn(previous: RunningProvider): Promise<void> {
 		if (!this.stillWanted(previous)) return;
 		let running: StartingProcess | undefined;
+		let words: ProviderWords;
 		try {
 			running = this.spawnProcess(previous.spec, previous.workspaceRoot);
 			this.starting.add(running);
@@ -306,7 +310,7 @@ export class ProviderSupervisor implements ProviderPort {
 				timeout,
 				"initialize",
 			);
-			METHOD_SCHEMAS.initialize.response.parse(info);
+			words = METHOD_SCHEMAS.initialize.response.parse(info).words;
 		} catch (error) {
 			// The half-started child is reaped, and the failed attempt costs a death so retries
 			// stay bounded by the same cap as crashes.
@@ -338,7 +342,7 @@ export class ProviderSupervisor implements ProviderPort {
 			this.stopProcess(running);
 			return;
 		}
-		const entry: RunningProvider = { ...previous, ...running, incarnation: this.incarnations++ };
+		const entry: RunningProvider = { ...previous, ...running, words, incarnation: this.incarnations++ };
 		this.providers.set(previous.claims.providerId, entry);
 		this.watchForExit(entry);
 		console.log(`provider ${previous.claims.providerId} respawned`);
@@ -411,6 +415,18 @@ export class ProviderSupervisor implements ProviderPort {
 	/** Whether a provider declared a tier, so a bulk pass can skip what it would refuse. */
 	declares(providerId: string, tier: keyof ProviderTiers): boolean {
 		return this.providers.get(providerId)?.tiers[tier] === true;
+	}
+
+	/** The vocabulary a provider announced at initialize; undefined when it is not running. */
+	words(providerId: string): ProviderWords | undefined {
+		const provider = this.providers.get(providerId);
+		if (provider === undefined) return undefined;
+		// A crashed or respawning provider still holds its last entry, dead child included, so
+		// serving its words would answer for a process that is not currently running.
+		// Accepted: for one event-loop turn between the OS death and node's exit event, this still
+		// answers the dead words; nothing in userland can see the death any earlier than that.
+		if (provider.child.exitCode !== null || provider.child.signalCode !== null) return undefined;
+		return provider.words;
 	}
 
 	/**
