@@ -7,6 +7,7 @@ import {
 	comparePositions,
 	composeSymbolId,
 	coordinatesOf,
+	type Declaration,
 	parseSymbolId,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
@@ -42,6 +43,21 @@ function ownerOf(reference: Reference | undefined): string {
 	if (reference?.fromId === undefined) return "module";
 	const parsed = parseSymbolId(reference.fromId);
 	return parsed === null ? reference.fromId : parsed.descriptors.map((descriptor) => descriptor.name).join(".");
+}
+
+function declarationNamed(facts: { declarations: Declaration[] }, name: string): Declaration {
+	const found = facts.declarations.find((declaration) => declaration.name === name);
+	if (found === undefined) throw new Error(`${name} declaration missing`);
+	return found;
+}
+
+function declarationWhere(
+	facts: { declarations: Declaration[] },
+	predicate: (declaration: Declaration) => boolean,
+): Declaration {
+	const found = facts.declarations.find(predicate);
+	if (found === undefined) throw new Error("matching declaration missing");
+	return found;
 }
 
 function writtenIn(facts: { references: Reference[] }): string[] {
@@ -1187,11 +1203,10 @@ describe("Python provider project behavior", () => {
 			"typeUse Other in Typed.method -> bound",
 			"typeUse Bound in sign -> bound",
 			"typeUse Other in sign -> bound",
-			"typeUse Bound in module -> bound",
+			"typeUse Bound in Alias -> bound",
 		]);
 		const alias = ordered.filter((reference) => reference.range.start.line === 9);
 		expect(alias.map((reference) => `${reference.role} ${reference.name}`)).toEqual([
-			"write Alias",
 			"typeUse Bound",
 			"typeUse list",
 			"typeUse A",
@@ -1280,6 +1295,625 @@ describe("Python provider project behavior", () => {
 				containerId: typed?.symbolId,
 			},
 		]);
+	});
+
+	it("declares a type parameter owned by the declaration it heads", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"def wrap[T](value: T) -> T:",
+			"    return value",
+			"",
+			"class Box[U]:",
+			"    pass",
+			"",
+			"def variadic[**P, *Ts](fn):",
+			"    pass",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const declaration = (name: string) => facts.declarations.find((candidate) => candidate.name === name);
+		const wrap = declaration("wrap");
+		const box = declaration("Box");
+		const t = declaration("T");
+		const u = declaration("U");
+		const paramSpec = declaration("P");
+		const typeVarTuple = declaration("Ts");
+
+		expect(t).toMatchObject({ kind: "typeParameter", visibility: "local", containerId: wrap?.symbolId });
+		expect(u).toMatchObject({ kind: "typeParameter", visibility: "local", containerId: box?.symbolId });
+		// A ParamSpec/TypeVarTuple selectionRange excludes the **/* sigil.
+		expect(paramSpec?.selectionRange).toEqual(spanAt(text, text.indexOf("P,"), "P"));
+		expect(typeVarTuple?.selectionRange).toEqual(spanAt(text, text.indexOf("Ts]"), "Ts"));
+	});
+
+	it("declares a type alias as its own symbol instead of writing its name", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class Item:", "    pass", "", "type Alias[T] = list[T]", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const alias = facts.declarations.find((declaration) => declaration.name === "Alias");
+		const typeParameter = facts.declarations.find((declaration) => declaration.name === "T");
+
+		expect(alias).toMatchObject({ kind: "interface", visibility: "public" });
+		expect(typeParameter).toMatchObject({ kind: "typeParameter", containerId: alias?.symbolId });
+		expect(facts.references.some((reference) => reference.name === "Alias")).toBe(false);
+	});
+
+	it("binds a typeUse reference to a variable, a function, or an alias, not only a class", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"def factory():",
+			"    return None",
+			"",
+			"Number = int",
+			"",
+			"type FromFunction = factory",
+			"type FromVariable = Number",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const declaration = (name: string) => {
+			const found = facts.declarations.find((candidate) => candidate.name === name);
+			if (found === undefined) throw new Error(`${name} declaration missing`);
+			return found;
+		};
+		const typeUses = facts.references.filter((reference) => reference.role === "typeUse");
+
+		expect(typeUses.find((reference) => reference.name === "factory")?.binding).toEqual({
+			status: "bound",
+			symbolId: declaration("factory").symbolId,
+			provenance: "bound",
+		});
+		expect(typeUses.find((reference) => reference.name === "Number")?.binding).toEqual({
+			status: "bound",
+			symbolId: declaration("Number").symbolId,
+			provenance: "bound",
+		});
+	});
+
+	it("renames a type parameter across its bound and every annotation", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def wrap[T](value: T) -> T:", "    return value", ""].join("\n");
+		const sites = [...text.matchAll(/\bT\b/g)].map((match) => ({ range: spanAt(text, match.index, "T") }));
+		const response = provider.renameEdits({ module: "main.py", text, oldName: "T", newName: "TRenamed", sites });
+
+		expect(sites).toHaveLength(3);
+		expect(response).toEqual({
+			status: "ready",
+			edits: sites.map((site) => ({ range: site.range, newText: "TRenamed" })),
+			blocked: [],
+		});
+	});
+
+	it("renames a type alias's own name", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = "type Alias = int\n";
+		const range = spanAt(text, text.indexOf("Alias"), "Alias");
+		const sites = [{ range }];
+		const response = provider.renameEdits({
+			module: "main.py",
+			text,
+			oldName: "Alias",
+			newName: "Renamed",
+			sites,
+		});
+
+		expect(response).toEqual({
+			status: "ready",
+			edits: [{ range, newText: "Renamed" }],
+			blocked: [],
+		});
+	});
+
+	it("keeps a call's arguments inside a type expression as ordinary reads", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"def StringProperty(update=None):",
+			"    return None",
+			"",
+			"",
+			"def update_export_path():",
+			"    pass",
+			"",
+			"",
+			"class C:",
+			"    path: StringProperty(update=update_export_path)",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const callback = declarationNamed(facts, "update_export_path");
+		const argument = facts.references.find((reference) => reference.name === "update_export_path");
+
+		expect(argument?.role).toBe("read");
+		expect(argument?.binding).toEqual({ status: "bound", symbolId: callback.symbolId, provenance: "bound" });
+	});
+
+	it("binds a class base's subscript operand to the class's own type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = "class Box[T](list[T]):\n    pass\n";
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const operand = facts.references.find((reference) => reference.role === "typeUse" && reference.name === "T");
+		const head = facts.references.find((reference) => reference.role === "extends");
+
+		expect(head?.name).toBe("list");
+		expect(operand?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("reads an enclosing class's type parameter from a method body", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    def m(self):", "        return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a class-body local over the class's own type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    T = 1", "    x = T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const local = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.kind !== "typeParameter",
+		);
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: local.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a method-local over the enclosing class's type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    def m(self):", "        T = 2", "        return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const use = facts.references.find(
+			(reference) => reference.name === "T" && reference.role === "read" && reference.range.start.line === 3,
+		);
+
+		expect(use?.binding).toEqual({
+			status: "unbound",
+			reason: "NotIndexed",
+			detail: "local, parameter, or imported binding is not indexed",
+		});
+	});
+
+	it("resolves a parameter over the enclosing class's type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    def m(self, T):", "        return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const parameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.kind === "variable",
+		);
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: parameter.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a method's own type parameter over the enclosing class's", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    def m[T](self):", "        return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const method = declarationNamed(facts, "m");
+		const methodTypeParameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.containerId === method.symbolId,
+		);
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: methodTypeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("reads an outer generic class's type parameter through a nested generic class", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"class Outer[T]:",
+			"    class Inner[U]:",
+			"        def m(self):",
+			"            return T",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const outer = declarationNamed(facts, "Outer");
+		const outerTypeParameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.containerId === outer.symbolId,
+		);
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: outerTypeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("reads a generic function's type parameter from inside a comprehension", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    return [T for _ in range(1)]", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("reads a generic function's type parameter from inside a lambda", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    return (lambda: T)()", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a comprehension's own target over the enclosing method's type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    def m(self, xs):", "        return [T for T in xs]", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({
+			status: "unbound",
+			reason: "NotIndexed",
+			detail: "comprehension scope is not indexed",
+		});
+	});
+
+	it("reads the enclosing method's type parameter from a comprehension that does not bind it", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["class C[T]:", "    def m(self, xs):", "        return [T for x in xs]", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a lambda's own parameter over the enclosing function's type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    return (lambda T: T)(1)", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({
+			status: "unbound",
+			reason: "NotIndexed",
+			detail: "lambda scope is not indexed",
+		});
+	});
+
+	it("reads the enclosing function's type parameter from a lambda that does not bind it", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    return (lambda x: T)(1)", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("reads a generic method's own class parameter from both a comprehension and a lambda", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"class C[T]:",
+			"    def m(self, xs):",
+			"        comp = [T for x in xs]",
+			"        fn = (lambda: T)()",
+			"        return comp, fn",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const uses = facts.references.filter((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(uses).toHaveLength(2);
+		for (const use of uses) {
+			expect(use.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+		}
+	});
+
+	it("refuses a nonlocal name access to an enclosing declaration's type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    def g():", "        nonlocal T", "        return T", "    return g", ""].join(
+			"\n",
+		);
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({
+			status: "unbound",
+			reason: "NotIndexed",
+			detail: "the nonlocal target is not indexed",
+		});
+	});
+
+	it("resolves a class's own type parameter over a module-level global of the same name", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["T = 'module value'", "", "", "class C[T]:", "    def m(self):", "        return T", ""].join(
+			"\n",
+		);
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const classTypeParameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.kind === "typeParameter",
+		);
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: classTypeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a function's own type parameter over a module-level global of the same name", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["T = 'module value'", "", "", "def f[T]():", "    return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const functionTypeParameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.kind === "typeParameter",
+		);
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({
+			status: "bound",
+			symbolId: functionTypeParameter.symbolId,
+			provenance: "bound",
+		});
+	});
+
+	it("reads both a nested generic class's own type parameter and the outer class's", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"class Outer[T]:",
+			"    class Inner[U]:",
+			"        def m(self):",
+			"            return T, U",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const outer = declarationNamed(facts, "Outer");
+		const inner = declarationNamed(facts, "Inner");
+		const outerTypeParameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "T" && declaration.containerId === outer.symbolId,
+		);
+		const innerTypeParameter = declarationWhere(
+			facts,
+			(declaration) => declaration.name === "U" && declaration.containerId === inner.symbolId,
+		);
+		const readT = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+		const readU = facts.references.find((reference) => reference.name === "U" && reference.role === "read");
+
+		expect(readT?.binding).toEqual({ status: "bound", symbolId: outerTypeParameter.symbolId, provenance: "bound" });
+		expect(readU?.binding).toEqual({ status: "bound", symbolId: innerTypeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("binds a plain return of a generic function's type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const typeParameter = declarationNamed(facts, "T");
+		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
+
+		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
+	});
+
+	it("resolves a plain assignment over a generic function's own type parameter", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = ["def f[T]():", "    T = 3", "    return T", ""].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const use = facts.references.find(
+			(reference) => reference.name === "T" && reference.role === "read" && reference.range.start.line === 2,
+		);
+
+		expect(use?.binding).toEqual({
+			status: "unbound",
+			reason: "NotIndexed",
+			detail: "local, parameter, or imported binding is not indexed",
+		});
+	});
+
+	it("keeps every name in Callable, Literal, Union, a forward reference, a union, tuple, and a nested generic as typeUse", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"class A:",
+			"    pass",
+			"",
+			"",
+			"class B:",
+			"    pass",
+			"",
+			"",
+			"def f[T](",
+			"    callable_shape: Callable[[int], str],",
+			'    literal_shape: Literal["a"],',
+			"    union_shape: Union[A, B],",
+			'    forward_shape: "A",',
+			"    optional_shape: A | None,",
+			"    tuple_shape: tuple[int, ...],",
+			"    dict_shape: dict[str, list[T]],",
+			"):",
+			"    pass",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const ordered = [...facts.references].sort((left, right) =>
+			comparePositions(left.range.start, right.range.start),
+		);
+
+		expect(ordered.every((reference) => reference.role === "typeUse")).toBe(true);
+		expect(ordered.map((reference) => `${reference.name} ${reference.binding.status}`)).toEqual([
+			"Callable unbound",
+			"int unbound",
+			"str unbound",
+			"Literal unbound",
+			"Union unbound",
+			"A bound",
+			"B bound",
+			"A bound",
+			"tuple unbound",
+			"int unbound",
+			"dict unbound",
+			"str unbound",
+			"list unbound",
+			"T bound",
+		]);
+	});
+
+	it("binds an imported type alias, an imported TypeVar variable, and an imported function as typeUse", () => {
+		const root = workspace({
+			"src/shared.py": [
+				"from typing import TypeVar",
+				"",
+				"",
+				"type Alias = int",
+				'_T = TypeVar("_T")',
+				"",
+				"",
+				"def factory():",
+				"    return None",
+				"",
+			].join("\n"),
+		});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"from .shared import Alias, _T, factory",
+			"",
+			"type FromAlias = Alias",
+			"type FromTypeVar = _T",
+			"type FromFunction = factory",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "src/main.py", contentHash: "hash", text });
+		const typeUses = facts.references.filter((reference) => reference.role === "typeUse");
+
+		expect(typeUses.find((reference) => reference.name === "Alias")?.binding.status).toBe("bound");
+		expect(typeUses.find((reference) => reference.name === "_T")?.binding.status).toBe("bound");
+		expect(typeUses.find((reference) => reference.name === "factory")?.binding.status).toBe("bound");
+	});
+
+	it("refuses to rename a type parameter onto its sibling", () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+
+		const functionText = "def f[T, U](x: T, y: U) -> T:\n    return x\n";
+		const functionSites = [...functionText.matchAll(/\bT\b/g)].map((match) => ({
+			range: spanAt(functionText, match.index, "T"),
+		}));
+		expect(
+			provider.renameEdits({
+				module: "main.py",
+				text: functionText,
+				oldName: "T",
+				newName: "U",
+				sites: functionSites,
+			}),
+		).toMatchObject({ status: "refused", reason: "Collision" });
+
+		const classText = "class C[T, U]:\n    pass\n";
+		const classSites = [{ range: spanAt(classText, classText.indexOf("T"), "T") }];
+		expect(
+			provider.renameEdits({ module: "main.py", text: classText, oldName: "T", newName: "U", sites: classSites }),
+		).toMatchObject({ status: "refused", reason: "Collision" });
+
+		const aliasText = "type A[T, U] = dict[T, U]\n";
+		const aliasSites = [...aliasText.matchAll(/\bT\b/g)].map((match) => ({
+			range: spanAt(aliasText, match.index, "T"),
+		}));
+		expect(
+			provider.renameEdits({ module: "main.py", text: aliasText, oldName: "T", newName: "U", sites: aliasSites }),
+		).toMatchObject({ status: "refused", reason: "Collision" });
+	});
+
+	it("keeps the same-file typeUse kind filter for an imported name", () => {
+		const root = workspace({
+			"src/values.py": [
+				"from typing import Final",
+				"",
+				"",
+				"class Thing:",
+				"    pass",
+				"",
+				"",
+				"LOCKED: Final = int",
+				"",
+			].join("\n"),
+		});
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const text = [
+			"from .values import Thing, LOCKED",
+			"",
+			"type FromClass = Thing",
+			"type FromConstant = LOCKED",
+			"",
+		].join("\n");
+		const facts = provider.parseFile({ module: "src/main.py", contentHash: "hash", text });
+		const thingUse = facts.references.find(
+			(reference) => reference.role === "typeUse" && reference.name === "Thing",
+		);
+		const lockedUse = facts.references.find(
+			(reference) => reference.role === "typeUse" && reference.name === "LOCKED",
+		);
+
+		expect(thingUse?.binding.status).toBe("bound");
+		expect(lockedUse?.binding).toEqual({
+			status: "unbound",
+			reason: "NotIndexed",
+			detail: "the imported declaration is not indexed",
+		});
 	});
 
 	it("reports explicit annotation text and infers simple initializers", () => {

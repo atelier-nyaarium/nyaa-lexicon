@@ -73,6 +73,9 @@ export const TIERS = {
 
 export const REFERENCE_ROLES = ["call", "read", "write", "extends", "typeUse"] as const;
 
+/** Kinds a typeUse reference may bind to. */
+const TYPE_USE_KINDS = new Set<Declaration["kind"]>(["class", "variable", "function", "interface", "typeParameter"]);
+
 //////// Types
 
 type Range = Declaration["range"];
@@ -638,7 +641,10 @@ export class PythonProvider {
 		const targetFacts = this.factsForModule(resolution.module);
 		if (targetFacts === null) return unboundBinding("NotIndexed", "the imported module is not indexed");
 		const declarations = targetFacts.declarations.filter(
-			(declaration) => declaration.name === imported.importedName && declaration.containerId === undefined,
+			(declaration) =>
+				declaration.name === imported.importedName &&
+				declaration.containerId === undefined &&
+				(reference.role !== "typeUse" || TYPE_USE_KINDS.has(declaration.kind)),
 		);
 		if (declarations.length > 1) {
 			return unboundBinding("Ambiguous", "multiple declarations match the imported name");

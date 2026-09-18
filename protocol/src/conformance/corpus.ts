@@ -2498,7 +2498,7 @@ const CASES: ConformanceCase[] = [
 			{ name: "Other", role: "typeUse", at: { line: 7 }, from: "method", bindsTo: "Other" },
 			{ name: "Bound", role: "typeUse", at: { line: 10 }, from: "sign", bindsTo: "Bound" },
 			{ name: "Other", role: "typeUse", at: { line: 10 }, from: "sign", bindsTo: "Other" },
-			{ name: "Bound", role: "typeUse", at: { line: 13 }, from: null, bindsTo: "Bound" },
+			{ name: "Bound", role: "typeUse", at: { line: 13 }, from: "Alias", bindsTo: "Bound" },
 		],
 	},
 	{
@@ -3098,6 +3098,142 @@ const CASES: ConformanceCase[] = [
 		declarations: [{ name: "a", kind: "property" }],
 		parseErrors: "forbidden",
 		notes: "forbidden",
+	},
+	{
+		id: "a-type-parameter-is-declared-owned-by-its-declaration",
+		tier: "declarations",
+		about: "A PEP 695 type parameter is its own declaration, owned by the function or class that parameterizes it.",
+		fixtures: {
+			[PYTHON]: {
+				files: {
+					"src/generic.py": [
+						"class Bound:",
+						"    pass",
+						"",
+						"",
+						"def wrap[T: Bound](value: T) -> T:",
+						"    return value",
+						"",
+						"",
+						"class Box[U]:",
+						"    pass",
+						"",
+					].join("\n"),
+				},
+				subject: "src/generic.py",
+			},
+		},
+		declarations: [
+			{ name: "T", kind: "typeParameter", visibility: "local", container: "wrap" },
+			{ name: "U", kind: "typeParameter", visibility: "local", container: "Box" },
+		],
+	},
+	{
+		id: "a-type-parameter-bound-can-name-a-sibling-type-parameter",
+		tier: "binding",
+		about: "A type parameter's bound may name an earlier type parameter in the same list.",
+		fixtures: {
+			[PYTHON]: {
+				files: { "src/generic.py": "def pair[T, U: T](first: T, second: U) -> T:\n    return first\n" },
+				subject: "src/generic.py",
+			},
+		},
+		references: [{ name: "T", role: "typeUse", at: { line: 0, character: 15 }, bindsTo: "T" }],
+	},
+	{
+		id: "a-type-alias-declares-its-own-symbol",
+		tier: "declarations",
+		about: "PEP 695 `type X = ...` declares X, the kind TypeScript's own type alias uses.",
+		fixtures: {
+			[PYTHON]: { files: { "src/aliases.py": "type Simple = int\n" }, subject: "src/aliases.py" },
+		},
+		declarations: [{ name: "Simple", kind: "interface" }],
+	},
+	{
+		id: "typeUse-binds-to-a-variable-or-a-function-but-not-a-constant",
+		tier: "binding",
+		about: "A same-file typeUse reference binds to a variable or a function, not only a class; a Final-annotated constant stays out of reach.",
+		fixtures: {
+			[PYTHON]: {
+				files: {
+					"src/aliases.py": [
+						"from typing import Final",
+						"",
+						"",
+						"def factory():",
+						"    return None",
+						"",
+						"",
+						"Number = int",
+						"Locked: Final = int",
+						"",
+						"type FromFunction = factory",
+						"type FromVariable = Number",
+						"type FromConstant = Locked",
+						"",
+					].join("\n"),
+				},
+				subject: "src/aliases.py",
+			},
+		},
+		references: [
+			{ name: "factory", role: "typeUse", bindsTo: "factory" },
+			{ name: "Number", role: "typeUse", at: { line: 11 }, bindsTo: "Number" },
+			{ name: "Locked", role: "typeUse", reason: "NotIndexed" },
+		],
+	},
+	{
+		id: "a-callable-keyword-argument-inside-an-annotation-stays-a-read",
+		tier: "binding",
+		about: "A call's arguments inside a type-position expression run at runtime, so they stay ordinary reads rather than typeUse.",
+		fixtures: {
+			[PYTHON]: {
+				files: {
+					"src/props.py": [
+						"def StringProperty(update=None):",
+						"    return None",
+						"",
+						"",
+						"def update_export_path():",
+						"    pass",
+						"",
+						"",
+						"class C:",
+						"    path: StringProperty(update=update_export_path)",
+						"",
+					].join("\n"),
+				},
+				subject: "src/props.py",
+			},
+		},
+		references: [{ name: "update_export_path", role: "read", bindsTo: "update_export_path" }],
+	},
+	{
+		id: "a-generic-base-operand-binds-the-classs-parameter",
+		tier: "binding",
+		about: "A class base's subscript operand is a type expression owned by the class, resolving the class's own type parameter.",
+		fixtures: {
+			[PYTHON]: {
+				files: { "src/generic.py": "class Base:\n    pass\n\n\nclass Box[T](Base[T]):\n    pass\n" },
+				subject: "src/generic.py",
+			},
+		},
+		references: [
+			{ name: "Base", role: "extends", bindsTo: "Base" },
+			{ name: "T", role: "typeUse", bindsTo: "T" },
+		],
+	},
+	{
+		id: "a-method-body-reads-the-classs-parameter",
+		tier: "binding",
+		about: "A type parameter is a closure cell reachable from a method body, unlike an ordinary class-body local.",
+		fixtures: {
+			[PYTHON]: {
+				files: { "src/generic.py": "class C[T]:\n    def m(self):\n        return T\n" },
+				subject: "src/generic.py",
+			},
+		},
+		references: [{ name: "T", role: "read", bindsTo: "T" }],
 	},
 ];
 

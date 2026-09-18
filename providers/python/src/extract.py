@@ -13,6 +13,12 @@ import tokenize
 ASSIGNMENT_NODES = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
 CONTROL_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.Match)
 FINAL_MODULES = {"typing", "typing_extensions"}
+# Kinds a same-file typeUse reference may bind to.
+TYPE_USE_KINDS = {"class", "variable", "function", "interface", "typeParameter"}
+# PEP 695 TypeVar/ParamSpec/TypeVarTuple base; absent before 3.12.
+TYPE_PARAM_NODES = getattr(ast, "type_param", ())
+# PEP 695 `type X = ...` statement; absent before 3.12.
+TYPE_ALIAS_NODES = getattr(ast, "TypeAlias", ())
 
 
 # //////// Helpers
@@ -58,6 +64,24 @@ def names_in_target(target):
     if isinstance(target, ast.Starred):
         return names_in_target(target.value)
     return []
+
+
+def comprehension_target_names(node):
+    names = set()
+    for generator in node.generators:
+        for name in names_in_target(generator.target):
+            names.add(name.id)
+    return names
+
+
+def lambda_parameter_names(node):
+    arguments = node.args
+    names = {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
+    if arguments.vararg:
+        names.add(arguments.vararg.arg)
+    if arguments.kwarg:
+        names.add(arguments.kwarg.arg)
+    return names
 
 
 def pattern_names(pattern):
@@ -468,6 +492,8 @@ class Analyzer:
             "path": list(scope_path),
             "locals": set(),
             "parameters": set(),
+            # Never a shadow-stop for an ordinary read or write.
+            "typeParameters": set(),
             "globals": set(),
             "nonlocals": set(),
             "conditional": set(),
@@ -548,8 +574,10 @@ class Analyzer:
                     "type" if child_kind == "class" else "method",
                 )
                 self.mark_declaration_conditional(scope_path, node.name, conditional)
+                child_info = self.ensure_scope(child_path, child_kind)
+                for parameter in getattr(node, "type_params", []):
+                    child_info["typeParameters"].add(parameter.name)
                 if child_kind == "function":
-                    child_info = self.ensure_scope(child_path, child_kind)
                     arguments = node.args
                     for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
                         self.add_scope_name(child_info, argument.arg, False)
@@ -561,6 +589,14 @@ class Analyzer:
                         self.add_scope_name(child_info, arguments.kwarg.arg, False)
                         child_info["parameters"].add(arguments.kwarg.arg)
                 self.collect_scope(node.body, child_path, child_kind)
+                continue
+            if isinstance(node, TYPE_ALIAS_NODES):
+                self.add_scope_name(info, node.name.id, conditional)
+                alias_path = self.declaration_path(node, scope_path, "type")
+                self.mark_declaration_conditional(scope_path, node.name.id, conditional)
+                alias_info = self.ensure_scope(alias_path, "class")
+                for parameter in getattr(node, "type_params", []):
+                    alias_info["typeParameters"].add(parameter.name)
                 continue
             if isinstance(node, ASSIGNMENT_NODES):
                 for target in assignment_targets(node):
@@ -617,8 +653,13 @@ class Analyzer:
 
     def declaration_candidate(self, scope_key, name, role, reference_position):
         entries = self.declarations_by_scope.get(scope_key, {}).get(name, [])
-        if role in {"extends", "typeUse"}:
+        if role == "extends":
             entries = [entry for entry in entries if entry["kind"] == "class"]
+        elif role == "typeUse":
+            entries = [entry for entry in entries if entry["kind"] in TYPE_USE_KINDS]
+        else:
+            # A type parameter resolves only through the enclosing-scope lookup.
+            entries = [entry for entry in entries if entry["kind"] != "typeParameter"]
         if not entries:
             return None
         if len(entries) != 1:
@@ -635,9 +676,67 @@ class Analyzer:
                 return self.unbound_binding("NotImplemented", "forward base or annotation binding is not supported")
         return {"status": "bound", "descriptorPath": declaration["descriptorPath"]}
 
-    def binding_for(self, name, role, scope_path, reference_position, bindable=True, blocked_reason=None):
-        if blocked_reason is not None:
-            return self.unbound_binding("NotIndexed", blocked_reason)
+    def type_parameter_candidate(self, owner_path, name):
+        entries = [
+            entry
+            for entry in self.declarations_by_scope.get(descriptor_key(owner_path), {}).get(name, [])
+            if entry["kind"] == "typeParameter"
+        ]
+        if not entries:
+            return None
+        if len(entries) != 1:
+            return self.unbound_binding("Ambiguous", "multiple same-file declarations match this name")
+        return {"status": "bound", "descriptorPath": entries[0]["descriptorPath"]}
+
+    def enclosing_type_parameter(self, scope_path, name):
+        # Reaches through every ancestor, class bodies included.
+        path = list(scope_path)
+        while path:
+            candidate = self.type_parameter_candidate(path, name)
+            if candidate is not None:
+                return candidate
+            path = path[:-1]
+        return None
+
+    def resolve_level(self, path, name, role, reference_position, current_key, nonlocal_name):
+        key = descriptor_key(path)
+        info = self.scope_infos.get(key)
+        if info is None:
+            return None
+        if key in self.duplicate_scopes:
+            return self.unbound_binding("Ambiguous", "same-named scopes make this lookup ambiguous")
+        if info["dynamic"]:
+            return self.unbound_binding("RuntimeConstructed", "exec or eval can change this scope")
+        if nonlocal_name and key == current_key:
+            return None
+        if nonlocal_name and info["kind"] != "function":
+            return None
+        if name in info["conditional"]:
+            return self.unbound_binding("Ambiguous", "a conditional definition can shadow this name")
+        candidate = self.declaration_candidate(key, name, role, reference_position)
+        if isinstance(candidate, dict) and candidate.get("status") == "bound":
+            if key == () and info["starImport"]:
+                return self.unbound_binding("Ambiguous", "a star import can shadow module names")
+            return candidate
+        if isinstance(candidate, dict):
+            return candidate
+        if name in info["locals"]:
+            return self.unbound_binding("NotIndexed", "local, parameter, or imported binding is not indexed")
+        if nonlocal_name and info["kind"] == "function":
+            return self.unbound_binding("NotIndexed", "the nonlocal target is not indexed")
+        return None
+
+    def binding_for(
+        self,
+        name,
+        role,
+        scope_path,
+        reference_position,
+        bindable=True,
+        blocked_reason=None,
+        owner_path=None,
+        blocked_local=False,
+    ):
         if not bindable:
             return self.unbound_binding("Ambiguous", "attribute binding requires a resolved receiver")
         if role not in {"call", "read", "write", "extends", "typeUse"}:
@@ -646,13 +745,33 @@ class Analyzer:
         original_path = list(scope_path)
         current_key = descriptor_key(original_path)
         current = self.scope_infos.get(current_key)
+        global_name = current is not None and current["kind"] == "function" and name in current["globals"]
+        nonlocal_name = current is not None and current["kind"] == "function" and name in current["nonlocals"]
+
+        # A closer ordinary binding wins over a type parameter.
+        if blocked_reason is None and not global_name:
+            result = self.resolve_level(original_path, name, role, reference_position, current_key, nonlocal_name)
+            if result is not None:
+                return result
+
+        # Then the type parameters of this declaration and its ancestors.
+        if role in {"typeUse", "read"} and not global_name and not nonlocal_name and not blocked_local:
+            if role == "typeUse" and owner_path:
+                candidate = self.type_parameter_candidate(owner_path, name)
+                if candidate is not None:
+                    return candidate
+            candidate = self.enclosing_type_parameter(scope_path, name)
+            if candidate is not None:
+                return candidate
+
+        if blocked_reason is not None:
+            return self.unbound_binding("NotIndexed", blocked_reason)
         if current is None:
             return self.unbound_binding("NotImplemented", "reference scope is not indexed")
         if current["dynamic"]:
             return self.unbound_binding("RuntimeConstructed", "exec or eval can change this scope")
 
-        global_name = current["kind"] == "function" and name in current["globals"]
-        nonlocal_name = current["kind"] == "function" and name in current["nonlocals"]
+        # Last, the enclosing ordinary scopes, with the usual method skip of class bodies.
         if global_name:
             paths = [[]]
         else:
@@ -664,32 +783,11 @@ class Analyzer:
                 ):
                     parent = parent[:-1]
                 paths.append(parent)
-        for path in paths:
-            key = descriptor_key(path)
-            info = self.scope_infos.get(key)
-            if info is None:
-                continue
-            if key in self.duplicate_scopes:
-                return self.unbound_binding("Ambiguous", "same-named scopes make this lookup ambiguous")
-            if info["dynamic"]:
-                return self.unbound_binding("RuntimeConstructed", "exec or eval can change this scope")
-            if nonlocal_name and key == current_key:
-                continue
-            if nonlocal_name and info["kind"] != "function":
-                continue
-            if name in info["conditional"]:
-                return self.unbound_binding("Ambiguous", "a conditional definition can shadow this name")
-            candidate = self.declaration_candidate(key, name, role, reference_position)
-            if isinstance(candidate, dict) and candidate.get("status") == "bound":
-                if key == () and info["starImport"]:
-                    return self.unbound_binding("Ambiguous", "a star import can shadow module names")
-                return candidate
-            if isinstance(candidate, dict):
-                return candidate
-            if name in info["locals"]:
-                return self.unbound_binding("NotIndexed", "local, parameter, or imported binding is not indexed")
-            if nonlocal_name and info["kind"] == "function":
-                return self.unbound_binding("NotIndexed", "the nonlocal target is not indexed")
+        remaining = paths if global_name else paths[1:]
+        for path in remaining:
+            result = self.resolve_level(path, name, role, reference_position, current_key, nonlocal_name)
+            if result is not None:
+                return result
         return self.unbound_binding("NotImplemented", "no certain same-file declaration; cross-file binding is not implemented")
 
     def is_exported(self, name, module_scope, parent_exported):
@@ -811,7 +909,7 @@ class Analyzer:
             "visibility": self.visibility_of(name, scope_kind, exported),
             "exported": exported,
         }
-        if not isinstance(node, ast.arg):
+        if not isinstance(node, (ast.arg, TYPE_PARAM_NODES)):
             signature = self.signature_of(node)
             if signature is not None:
                 raw["signature"] = signature
@@ -851,6 +949,35 @@ class Analyzer:
                 parent_exported,
             )
 
+    def record_type_params(self, node, descriptor_path):
+        for parameter in getattr(node, "type_params", []):
+            self.add_declaration(
+                parameter,
+                parameter,
+                parameter.name,
+                "typeParameter",
+                descriptor_path + [descriptor("typeParameter", parameter.name)],
+                "function",
+                False,
+                False,
+            )
+
+    def record_type_alias(self, node, scope_path, scope_kind, module_scope, parent_exported):
+        name = node.name.id
+        descriptor_path = scope_path + [descriptor("type", name)]
+        self.declaration_paths[id(node)] = descriptor_path
+        self.add_declaration(
+            node,
+            node.name,
+            name,
+            "interface",
+            descriptor_path,
+            scope_kind,
+            module_scope,
+            parent_exported,
+        )
+        self.record_type_params(node, descriptor_path)
+
     def record_definition(self, node, scope_path, scope_kind, module_scope, parent_exported):
         if isinstance(node, ast.ClassDef):
             declaration_kind = "class"
@@ -885,6 +1012,7 @@ class Analyzer:
             module_scope,
             parent_exported,
         )
+        self.record_type_params(node, descriptor_path)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             arguments = [*node.args.posonlyargs, *node.args.args]
             if node.args.vararg is not None:
@@ -910,6 +1038,9 @@ class Analyzer:
             self.node_scope_paths[id(node)] = list(scope_path)
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.record_definition(node, scope_path, scope_kind, module_scope, parent_exported)
+                continue
+            if isinstance(node, TYPE_ALIAS_NODES):
+                self.record_type_alias(node, scope_path, scope_kind, module_scope, parent_exported)
                 continue
             if isinstance(node, ASSIGNMENT_NODES) or isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
                 if module_scope or scope_kind == "class":
@@ -1320,9 +1451,10 @@ class InferenceAnalyzer:
         if isinstance(node, ast.Tuple):
             return self.type_value("tuple")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            # "extends" keeps this a class-only check.
             class_binding = self.analyzer.binding_for(
                 node.func.id,
-                "typeUse",
+                "extends",
                 scope_path,
                 self.analyzer.range_of(node.func)["start"],
             )
@@ -1523,6 +1655,7 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.owner_path = []
         self.scope_kind = "module"
         self.binding_blocked = None
+        self.blocked_locals = frozenset()
 
     def add_reference(self, node, role, name=None, range_node=None, range_value=None, bindable=True):
         if name is None:
@@ -1536,7 +1669,14 @@ class ReferenceVisitor(ast.NodeVisitor):
                 "scopePath": list(self.scope_path),
                 "ownerPath": list(self.owner_path),
                 "binding": self.analyzer.binding_for(
-                    name, role, self.scope_path, reference_range["start"], bindable, self.binding_blocked
+                    name,
+                    role,
+                    self.scope_path,
+                    reference_range["start"],
+                    bindable,
+                    self.binding_blocked,
+                    self.owner_path,
+                    name in self.blocked_locals,
                 ),
             }
         )
@@ -1592,7 +1732,7 @@ class ReferenceVisitor(ast.NodeVisitor):
             self.add_reference(node, "extends", bindable=False)
         elif isinstance(node, ast.Subscript):
             self.visit_class_base(node.value)
-            self.visit(node.slice)
+            self.visit_type_expression(node.slice)
         else:
             self.visit(node)
 
@@ -1625,9 +1765,11 @@ class ReferenceVisitor(ast.NodeVisitor):
             self.visit_type_expression(expression)
 
     def visit_TypeAlias(self, node):
-        self.visit(node.name)
+        old_owner = self.owner_path
+        self.owner_path = self.analyzer.declaration_paths.get(id(node), old_owner)
         self.visit_type_params(node)
         self.visit_type_expression(node.value)
+        self.owner_path = old_owner
 
     def visit_type_comment(self, text, anchor):
         for expression in type_comment_expressions(text):
@@ -1640,6 +1782,10 @@ class ReferenceVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Attribute):
             self.visit_type_expression(node.value, anchor)
             self.add_reference(node, "typeUse", range_node=anchor or node, bindable=False)
+            return
+        if isinstance(node, ast.Call):
+            # A call's callee and arguments are ordinary, not typeUse.
+            self.visit(node)
             return
         for child in ast.iter_child_nodes(node):
             self.visit_type_expression(child, anchor)
@@ -1714,15 +1860,21 @@ class ReferenceVisitor(ast.NodeVisitor):
 
     def visit_Lambda(self, node):
         old_blocked = self.binding_blocked
+        old_blocked_locals = self.blocked_locals
         self.binding_blocked = "lambda scope is not indexed"
+        self.blocked_locals = old_blocked_locals | lambda_parameter_names(node)
         self.generic_visit(node)
         self.binding_blocked = old_blocked
+        self.blocked_locals = old_blocked_locals
 
     def visit_comprehension_scope(self, node):
         old_blocked = self.binding_blocked
+        old_blocked_locals = self.blocked_locals
         self.binding_blocked = "comprehension scope is not indexed"
+        self.blocked_locals = old_blocked_locals | comprehension_target_names(node)
         self.generic_visit(node)
         self.binding_blocked = old_blocked
+        self.blocked_locals = old_blocked_locals
 
     def visit_ListComp(self, node):
         self.visit_comprehension_scope(node)
@@ -1930,7 +2082,7 @@ class RenameVisitor(ast.NodeVisitor):
         self.add_candidate(node.name, self.definition_range(node, prefix), "declaration", True)
         for decorator in node.decorator_list:
             self.visit(decorator)
-        self.visit_type_params(node)
+        self.visit_type_param_bounds(node)
         arguments = node.args
         for default in [*arguments.defaults, *arguments.kw_defaults]:
             if default is not None:
@@ -1946,6 +2098,7 @@ class RenameVisitor(ast.NodeVisitor):
 
         old_path = self.scope_path
         self.scope_path = self.analyzer.declaration_path(node, old_path, "method")
+        self.declare_type_params(node)
         arguments = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
         for argument in arguments:
             self.add_candidate(argument.arg, self.argument_range(argument), "parameter", True)
@@ -1967,20 +2120,39 @@ class RenameVisitor(ast.NodeVisitor):
         self.add_candidate(node.name, self.definition_range(node, "class "), "declaration", True)
         for decorator in node.decorator_list:
             self.visit(decorator)
-        self.visit_type_params(node)
+        self.visit_type_param_bounds(node)
         for base in node.bases:
             self.visit(base)
         for keyword_node in node.keywords:
             self.visit(keyword_node.value)
         old_path = self.scope_path
         self.scope_path = self.analyzer.declaration_path(node, old_path, "type")
+        self.declare_type_params(node)
         for child in node.body:
             self.visit(child)
         self.scope_path = old_path
 
-    def visit_type_params(self, node):
+    def declare_type_params(self, node):
+        for parameter in getattr(node, "type_params", []):
+            self.add_candidate(
+                parameter.name,
+                self.analyzer.selection_of(parameter, parameter.name),
+                "declaration",
+                True,
+            )
+
+    def visit_type_param_bounds(self, node):
         for expression in type_param_expressions(node):
             self.visit(expression)
+
+    def visit_TypeAlias(self, node):
+        self.add_candidate(node.name.id, self.analyzer.range_of(node.name), "declaration", True)
+        self.visit_type_param_bounds(node)
+        old_path = self.scope_path
+        self.scope_path = self.analyzer.declaration_path(node, old_path, "type")
+        self.declare_type_params(node)
+        self.visit(node.value)
+        self.scope_path = old_path
 
     def visit_arg(self, node):
         self.add_candidate(node.arg, self.argument_range(node), "parameter", True)
@@ -2069,7 +2241,7 @@ def resolve_scope(analyzer, scope_path, name):
         if info is not None:
             if info["kind"] == "function" and name in info["globals"]:
                 return []
-            if name in info["locals"] or name in info["parameters"]:
+            if name in info["locals"] or name in info["parameters"] or name in info["typeParameters"]:
                 return current
             if name in info["nonlocals"]:
                 current = current[:-1]
@@ -2218,7 +2390,7 @@ def rename_edits(module, text, old_name, new_name, sites, owner_calls=None):
         info = analyzer.scope_infos.get(scope_key)
         if info is None:
             continue
-        if new_name in info["locals"] or new_name in info["parameters"]:
+        if new_name in info["locals"] or new_name in info["parameters"] or new_name in info["typeParameters"]:
             return {
                 "status": "refused",
                 "reason": "Collision",
