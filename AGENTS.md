@@ -218,6 +218,11 @@ Ordered by how much they prove:
   before it is removed.** The daemon and the delete road take the same link, so neither can open
   or remove a store the other holds; `lock-residue.test.ts` forbids a second claim through
   `linkSync` in core.
+- **The install record has one publisher: the plugin's MCP server, behind `--publish-install`.**
+  A daemon, a dev checkout or an embedded copy that wrote it would repoint every consumer spawning
+  from the record at itself. `install-publisher-residue.test.ts` refuses a `writeInstallRecord`
+  call anywhere else. Which release beside another is newest has one answer, `newestInstallBeside`
+  in `client/src/install.ts`, for the record's reader and the daemon's drift alike.
 - **A lock's raw text is parsed through one function, `parseDaemonLock` in
   `protocol/src/daemonRecords.ts`, from every package that reads one.** core's `daemonLock.ts`,
   client's `decideFromLock` and `shutdownDaemon`, and the MCP adapter's machine-wide tools all call

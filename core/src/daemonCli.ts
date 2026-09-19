@@ -19,7 +19,6 @@ import {
 	refuseRuntime,
 	spawnDaemonProcess,
 	workspacePaths,
-	writeInstallRecord,
 } from "@nyaa-lexicon/client";
 import {
 	DAEMON_STOPPING_MESSAGE,
@@ -39,7 +38,7 @@ import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
 import { ownSource } from "./ownSource.js";
 import { finishAbandonedDelete, pruneProjectStores } from "./projectStores.js";
-import { describeStart, lexiconRoot, startProviders } from "./providers.js";
+import { describeStart, startProviders } from "./providers.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
@@ -169,14 +168,6 @@ async function main(argv: string[]): Promise<void> {
 	if (!dirAdmission.admitted) {
 		console.error(dirAdmission.reason);
 		process.exit(3);
-	}
-
-	// Where lexicon is, for a consumer's client to find. A daemon runs without an MCP, so it records
-	// too; a failure costs nothing this process needs.
-	try {
-		writeInstallRecord(lexiconRoot());
-	} catch (error) {
-		log(`install record not written: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
 	const paths = workspacePaths(host, root, stateDir);

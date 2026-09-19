@@ -21,13 +21,12 @@ patience       how long a request waits on a starting daemon, in milliseconds; z
 onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and `elapsedMs`
 ```
 
-Four things are read, in this order, and each can refuse before the next is touched:
+Four things are read, in this order:
 
-1. **The record.** An explicit `lexiconRoot` wins; otherwise the root the install record points
-   at. Neither: `NotInstalled`, `no lexicon is installed here`.
+1. **The record.** An explicit `lexiconRoot` wins; otherwise the install record's root, resolved
+   to the newest settled release beside it (below). Neither: no install.
 2. **The version file.** The root must hold both `dist/daemon.js` and `dist/version.json`.
-   Otherwise `NotInstalled` naming the root: `not where lexicon was last seen: <root>` when the
-   record pointed there, `no lexicon install under <root>` when the caller did.
+   Otherwise no install at that root.
 3. **The refusal.** A client whose protocol major is ahead of the install's cannot be served by
    any daemon that install starts, so it fails as `Incompatible` naming both:
    `this client speaks protocol <ours>, the install at <root> speaks <theirs>`. An install ahead
@@ -40,6 +39,15 @@ Four things are read, in this order, and each can refuse before the next is touc
    detached, and waits up to ten seconds for a lock. Whatever leaves this step without a daemon
    is a `DaemonError` carrying the reason: the child's exit code and where its log is, an
    outgoing daemon that would not release its lock, a daemon serving another workspace.
+
+**No install** still reads the lock, judged against this client's own build, `CLIENT_BUILD_VERSION`,
+since a patch can add a method without moving the protocol: a live daemon at or past it is ridden,
+and none is spawned or retired, since there is no build to put in its place.
+Otherwise `NotInstalled`, naming what was missing and what the lock showed: `no lexicon is
+installed here, and no daemon is registered`; `not where lexicon was last seen: <root>, and ...`
+when the record pointed there; `no lexicon install under <root>, and ...` when the caller did. The
+install is located again on every reconnect, so a session whose install was removed under it
+keeps riding its daemon.
 
 The socket opens on the first question, not inside `connect`. Its welcome frame is judged again
 there: a daemon behind the client's protocol major is refused as `Incompatible`, so a direct
@@ -69,13 +77,27 @@ install's. Client against daemon is the welcome check.
 
 The record is `<stateRoot>/install.json`, `InstallRecordSchema`: `{ root, when }`, the checkout's
 canonical path and epoch milliseconds of the write. `writeInstallRecord` stages it beside itself
-and renames it into place, so a half-written record reads as no install at all. Two processes
-write it: the MCP server at process start, before any registration and never fatally, and the
-daemon at start, since a daemon runs without an MCP. `stateRoot` is per environment, so each
-environment remembers its own install. The record only points: its root is trusted no further
-than `dist/version.json`, `InstallVersionSchema`: `{ buildVersion, protocolVersion }`, whole
-semver only, which the release build writes beside the bundles. A checkout that was never built
-has none, which is what turns a moved checkout into `NotInstalled` rather than a spawn that dies.
+and renames it into place, so a half-written record reads as no install at all. One process
+writes it: the MCP server at start, only when launched with `--publish-install`, which the
+plugin's `.mcp.json` passes, before any registration and never fatally. A daemon never writes it,
+and a dev checkout's server or a consumer embedding its own copy writes it only when someone
+passes that flag deliberately, so none repoints the record at itself by merely running;
+`install-publisher-residue.test.ts` refuses any other caller. `stateRoot` is per
+environment, so each environment remembers its own install.
+
+A plugin cache installs each release into a directory named exactly its version, and an older
+session's server can record an older one, or one the cache has since removed. So a record whose
+root is named for a release is read as the newest settled release beside it, the root included
+whether or not it still exists: `newestInstallBeside` accepts a directory whose name, manifest and
+`dist/version.json` agree and whose bundles have sat unmodified for `INSTALL_SETTLE_MS`. An older
+sibling stands in only while the recorded release qualifies for nothing. A root not named for a
+release, a source checkout, and one whose siblings all fail, are read as they stand, judged by the
+version file alone.
+
+The record only points: its root is trusted no further than `dist/version.json`,
+`InstallVersionSchema`: `{ buildVersion, protocolVersion }`, whole semver only, which the release
+build writes beside the bundles. A checkout that was never built has none, which is what turns a
+moved checkout into `NotInstalled` rather than a spawn that dies.
 
 ## The session
 
@@ -253,7 +275,8 @@ identity the lock carries, described under Compatibility in `docs/daemon-protoco
 `classifyWorkspaceRoot(path)` answers before spawning whether the path is the filesystem root or
 the caller's home directory. The install source is a thunk re-derived for each ensure, channel,
 lock and stop invocation, so rebuilds and removed installs are observed immediately. A stale
-install looks like a `DaemonError` or `Incompatible` before a request reaches the daemon.
+install looks like a `DaemonError` or `Incompatible` before a request reaches the daemon, and a
+removed one like `NotInstalled`, or like nothing at all while its daemon still serves.
 
 ## Depending on it from a git submodule
 

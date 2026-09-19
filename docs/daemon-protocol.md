@@ -293,9 +293,10 @@ the client's types say cannot exist.
 
 ## Compatibility
 
-A client reads the lock and asks `decideFromLock` what to do. The answer is one of three values, so
-there is no fourth outcome to invent: `connect`, `spawn` with a reason, or `replace` with the lock,
-a reason and a cause. The rules, in the order they are applied:
+A client reads the lock and asks `decideFromLock` what to do. The answer is one of four values, so
+there is no fifth outcome to invent: `connect`, `spawn` with a reason, `replace` with the lock, a
+reason and a cause, or `awaitDelete` while a delete holds the slot. The rules, in the order they
+are applied:
 
 - No lock, unreadable JSON, or a file that does not match `DaemonLockSchema`: spawn.
 - The holder is dead: spawn. A dead pid is never a replace, since there is nothing to stop, and a
@@ -303,7 +304,9 @@ a reason and a cause. The rules, in the order they are applied:
 - The lock names another workspace: replace, cause `otherWorkspace`. This one is reported and never
   acted on, because that daemon is answering correctly for somebody else.
 - A different protocol major: connect if the daemon's is newer, otherwise replace, cause `protocol`.
-- A different build: connect if the daemon's is newer, otherwise replace, cause `build`. Ordered
+- A different build: connect if the daemon's is newer, otherwise replace, cause `build`. "Ours" is
+  the install's build, or with no install known this client's own `CLIENT_BUILD_VERSION`, never
+  its protocol, since a patch can add a method without moving the protocol. Ordered
   rather than exact, because method tables only grow within a protocol major, so a newer daemon
   serves this client's whole table, and two builds retiring each other would rebuild the index on
   every flip.
@@ -325,7 +328,10 @@ still the holder at the last moment, sends `SIGTERM`, and waits up to ten second
 vanish, refusing to spawn over one that has not, because the newcomer would lose a claim it must
 lose and report the confusion as its own. A spawn runs `bun dist/daemon.js <root>` detached, with
 its stdio in `daemon.log`, and waits up to ten seconds for a lock to appear, reporting the child's
-exit code if it dies first.
+exit code if it dies first. With no install known it carries out neither: there is no build to
+spawn or to put in a retired daemon's place, so a spawn or a replace becomes `notInstalled` with
+the daemon left untouched, while a delete still waits out its slot and another workspace's daemon
+is still reported as that.
 
 The daemon keeps itself current from the other side. Between answered requests it notices a newer
 bundle in the checkout it was started from, and with nothing in flight and no transaction open it

@@ -57,6 +57,11 @@ function releaseTriple(version: string): [number, number, number] | null {
 	return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+/** Whole semver, the only shape a version decision rests on. */
+export function isRelease(version: string): boolean {
+	return releaseTriple(version) !== null;
+}
+
 /** Strictly newer release. Unparseable answers false, so no decision rests on a guess. */
 export function newerBuild(candidate: string, current: string): boolean {
 	const a = releaseTriple(candidate);

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { bundleStamp } from "@nyaa-lexicon/client";
+import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { driftedTo } from "../drift";
 
 ////////////////////////////////
@@ -22,16 +23,22 @@ function backdate(file: string): void {
 	utimesSync(file, past, past);
 }
 
-/** A version directory that can actually serve: bundle plus a manifest agreeing with its name. */
+/** A version directory as a release build leaves it: a bundle, a manifest, and the version file the
+ * build writes from that manifest. */
 function install(parent: string, version: string, options: { bundle?: boolean; manifest?: string } = {}): string {
 	const root = path.join(parent, version);
+	const manifest = options.manifest ?? version;
 	mkdirSync(path.join(root, "dist"), { recursive: true });
 	if (options.bundle !== false) {
 		const bundle = path.join(root, "dist", "daemon.js");
 		writeFileSync(bundle, `// ${version}\n`);
 		backdate(bundle);
 	}
-	writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: options.manifest ?? version }));
+	writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: manifest }));
+	writeFileSync(
+		path.join(root, "dist", "version.json"),
+		JSON.stringify({ buildVersion: manifest, protocolVersion: PROTOCOL_VERSION }),
+	);
 	return root;
 }
 

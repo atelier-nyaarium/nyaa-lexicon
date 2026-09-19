@@ -10,8 +10,7 @@ import {
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
-import type { DaemonSource } from "./discover.js";
-import { ensureDaemon, ensureFailure } from "./ensure.js";
+import { ensureDaemon, ensureFailure, type InstallSource } from "./ensure.js";
 import { DaemonError } from "./errors.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./transport.js";
 
@@ -21,7 +20,7 @@ import { ConnectionLostError, connectFrames, type FrameClient } from "./transpor
 export interface DaemonChannelOptions {
 	workspaceRoot: string;
 	/** Where a daemon is spawned from, and what a found lock is judged against. */
-	source: DaemonSource | (() => DaemonSource);
+	source: InstallSource;
 	/** A store directory of the caller's choosing; the default is derived from the workspace. */
 	stateDir?: string;
 	/** How long a request waits on a starting daemon, in milliseconds. Zero asks once. */

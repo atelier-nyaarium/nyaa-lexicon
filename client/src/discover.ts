@@ -34,6 +34,7 @@ import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./
 import { processIdentity } from "./procfs.js";
 import { type BunExecutable, bunExecutable } from "./runtime.js";
 import { requestOnce } from "./transport.js";
+import { CLIENT_BUILD_VERSION } from "./version.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -106,10 +107,13 @@ export function lockHolderAlive(holder: { pid: number; pidStart?: string | undef
 ////////////////////////////////
 //  Finding
 
-/** Reads the lock file and applies the rules. Absent and unreadable are both "no daemon". */
+/**
+ * Reads the lock file and applies the rules. Absent and unreadable are both "no daemon". A null
+ * source is no install known: this client's own build stands in, with no bundle to compare.
+ */
 export function findDaemon(
 	workspaceRoot: string,
-	source: Pick<DaemonSource, "buildVersion" | "bundleStamp">,
+	source: Pick<DaemonSource, "buildVersion" | "bundleStamp"> | null,
 	host: PlatformEnv = currentHost(),
 	stateDir?: string,
 ): LockDecision {
@@ -125,8 +129,8 @@ export function findDaemon(
 		raw,
 		isAlive: lockHolderAlive,
 		ourProtocolVersion: PROTOCOL_VERSION,
-		ourBuildVersion: source.buildVersion,
-		ourBundleStamp: source.bundleStamp,
+		ourBuildVersion: source?.buildVersion ?? CLIENT_BUILD_VERSION,
+		ourBundleStamp: source?.bundleStamp ?? null,
 		// The lock holds the real path, so a root reached through a link compares as itself.
 		workspaceRoot: canonicalRoot(workspaceRoot),
 	});

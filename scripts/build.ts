@@ -212,6 +212,11 @@ const DERIVED_SITES: DerivedSite[] = [
 		needle: "packageJson.version",
 		what: "the build version a daemon stamps into its lock",
 	},
+	{
+		file: path.join("client", "src", "version.ts"),
+		needle: "packageJson.version",
+		what: "the build a client judges a daemon by when no install is known",
+	},
 ];
 
 ////////////////////////////////

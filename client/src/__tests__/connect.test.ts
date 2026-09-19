@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
@@ -8,13 +8,15 @@ import { bundleStamp } from "../discover";
 import { DaemonError, Incompatible, NotInstalled } from "../errors";
 import { writeInstallRecord } from "../install";
 import { canonicalRoot, type PlatformEnv, workspacePaths } from "../paths";
+import { CLIENT_BUILD_VERSION } from "../version";
 import { type FakeAnswer, type FakeDaemon, fakeDaemon, ownLock } from "./fakeDaemon";
 
 ////////////////////////////////
 //  Helpers
 
 const TOKEN = "t".repeat(32);
-const BUILD = "2.2.0";
+/** A consumer bundles the client of the release it pins, so install, daemon and client agree. */
+const BUILD = CLIENT_BUILD_VERSION;
 const STATS = { hits: 1, misses: 2, entries: 3, generation: 4 };
 
 let state: string;
@@ -36,6 +38,7 @@ function installAt(root: string, protocolVersion: string = PROTOCOL_VERSION): vo
 async function daemonAnswering(
 	answer: (method: string) => FakeAnswer | Promise<FakeAnswer>,
 	protocolVersion: string = PROTOCOL_VERSION,
+	buildVersion: string = BUILD,
 ): Promise<FakeDaemon> {
 	const fake = await fakeDaemon({ token: TOKEN, answer, protocolVersion });
 	fakes.push(fake);
@@ -48,13 +51,37 @@ async function daemonAnswering(
 				port: fake.port,
 				token: TOKEN,
 				workspaceRoot: canonicalRoot(workspace),
-				buildVersion: BUILD,
+				buildVersion,
 				bundleStamp: bundleStamp(install),
 				protocolVersion,
 			}),
 		),
 	);
 	return fake;
+}
+
+/** A release directory as the build leaves it, settled, whose bundle leaves a mark when run. */
+function releaseAt(parent: string, version: string): string {
+	const root = path.join(parent, version);
+	mkdirSync(path.join(root, "dist"), { recursive: true });
+	const bundle = path.join(root, "dist", "daemon.js");
+	writeFileSync(bundle, `require("node:fs").writeFileSync(process.argv[1] + ".ran", "");\n`);
+	const past = new Date(Date.now() - 60_000);
+	utimesSync(bundle, past, past);
+	writeFileSync(path.join(root, "package.json"), JSON.stringify({ version }));
+	writeFileSync(
+		path.join(root, "dist", "version.json"),
+		JSON.stringify({ buildVersion: version, protocolVersion: PROTOCOL_VERSION }),
+	);
+	return root;
+}
+
+async function eventually(check: () => boolean, withinMs = 2_000): Promise<boolean> {
+	for (let waited = 0; waited < withinMs; waited += 25) {
+		if (check()) return true;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	return check();
 }
 
 const serving = (method: string): FakeAnswer => {
@@ -134,6 +161,62 @@ describe("reaching a daemon", () => {
 		installAt(install, "1.0.0");
 
 		expect(() => session.lock()).toThrow(Incompatible);
+	});
+
+	// An older session's server can record an older release, and the cache can remove the one it
+	// names; the release installed beside it is where a daemon now comes from.
+	it("spawns from the newest settled release beside the one the record names", async () => {
+		const cache = mkdtempSync(path.join(tmpdir(), "lexicon-connect-cache-"));
+		try {
+			const older = releaseAt(cache, "2.2.0");
+			const newer = releaseAt(cache, "2.3.0");
+			writeInstallRecord(older, host);
+
+			// The fake bundle exits at once, so the spawn itself fails after running.
+			await expect(connect({ workspaceRoot: workspace })).rejects.toThrow(DaemonError);
+
+			expect(await eventually(() => existsSync(path.join(newer, "dist", "daemon.js.ran")))).toBe(true);
+			expect(existsSync(path.join(older, "dist", "daemon.js.ran"))).toBe(false);
+		} finally {
+			rmSync(cache, { recursive: true, force: true });
+		}
+	});
+});
+
+// A consumer finding no install still reaches a daemon another consumer started, and never spawns
+// or retires one, since it has no build of its own to put there.
+describe("reaching a daemon with no install", () => {
+	it("rides a daemon someone else started when nothing is recorded", async () => {
+		const fake = await daemonAnswering(serving);
+
+		const session = await open({ workspaceRoot: workspace });
+
+		expect(await session.cacheStats({})).toEqual(STATS);
+		expect(session.lock().port).toBe(fake.port);
+	});
+
+	// A patch can add a method without moving the protocol, so the protocol alone cannot vouch for it.
+	it("leaves a daemon older than this client's build alone and reports nothing installed", async () => {
+		const fake = await daemonAnswering(serving, PROTOCOL_VERSION, "0.0.1");
+
+		const refused = connect({ workspaceRoot: workspace });
+
+		await expect(refused).rejects.toThrow(NotInstalled);
+		await expect(refused).rejects.toThrow(`the daemon runs 0.0.1, we run ${CLIENT_BUILD_VERSION}`);
+		expect(fake.asked).toEqual([]);
+		expect(existsSync(workspacePaths(host, workspace).lockFile)).toBe(true);
+	});
+
+	// An app update can delete the versioned folder a running session was given.
+	it("keeps riding its daemon after the install it was given is removed", async () => {
+		await daemonAnswering(serving);
+		const session = await open({ workspaceRoot: workspace, lexiconRoot: install });
+		expect(await session.cacheStats({})).toEqual(STATS);
+
+		rmSync(install, { recursive: true, force: true });
+		session.close();
+
+		expect(await session.cacheStats({})).toEqual(STATS);
 	});
 });
 

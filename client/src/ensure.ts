@@ -16,7 +16,7 @@ import {
 	type SpawnWatch,
 	spawnDaemonProcess,
 } from "./discover.js";
-import { DaemonError } from "./errors.js";
+import { DaemonError, NotInstalled } from "./errors.js";
 import type { LockDecision } from "./lock.js";
 import { currentHost, workspacePaths } from "./paths.js";
 import { notifyWaiting } from "./transport.js";
@@ -29,10 +29,15 @@ export interface Sleeper {
 	sleep(ms: number): Promise<void>;
 }
 
+/**
+ * Where a daemon is spawned from and what a found lock is judged against, or why no install is
+ * known. With none, a daemon serving this client is ridden and none is spawned or retired.
+ */
+export type InstallSource = DaemonSource | NotInstalled | (() => DaemonSource | NotInstalled);
+
 export interface EnsureDaemonOptions {
 	workspaceRoot: string;
-	/** Where a daemon is spawned from, and what a found lock is judged against. */
-	source: DaemonSource | (() => DaemonSource);
+	source: InstallSource;
 	/** A store directory of the caller's choosing; the default is derived from the workspace. */
 	stateDir?: string;
 	/** How long to wait for a spawned daemon to publish its lock. */
@@ -51,13 +56,21 @@ export interface EnsureDaemonOptions {
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
 }
 
-export type EnsureReason = "otherWorkspace" | "noBunRuntime" | "unbuilt" | "spawnFailed" | "timeout";
+export type EnsureReason = "otherWorkspace" | "noBunRuntime" | "unbuilt" | "spawnFailed" | "timeout" | "notInstalled";
 export type EnsureResult =
 	| { connected: true; lock: DaemonLock }
-	| { connected: false; reason: EnsureReason; detail: string };
+	| { connected: false; reason: Exclude<EnsureReason, "notInstalled">; detail: string }
+	| { connected: false; reason: "notInstalled"; detail: string; root: string | undefined };
 
-/** The one reading of a refusal as a session error: nothing to start from is `spawnFailed`, the rest is the daemon's. */
-export function ensureFailure(result: Extract<EnsureResult, { connected: false }>, context = ""): DaemonError {
+/**
+ * The one reading of a refusal as a session error: no install and nothing live to ride is
+ * `NotInstalled`, nothing to start from is `spawnFailed`, the rest is the daemon's.
+ */
+export function ensureFailure(
+	result: Extract<EnsureResult, { connected: false }>,
+	context = "",
+): DaemonError | NotInstalled {
+	if (result.reason === "notInstalled") return new NotInstalled(`${context}${result.detail}`, result.root);
 	const spawn = result.reason === "spawnFailed" || result.reason === "unbuilt" || result.reason === "noBunRuntime";
 	return new DaemonError(`${context}${result.detail}`, spawn ? "spawnFailed" : "daemon");
 }
@@ -80,13 +93,14 @@ const systemSleeper: Sleeper = {
  * Connect to the workspace's daemon, starting one if there is none.
  *
  * A daemon serving ANOTHER workspace is reported rather than touched. One serving ours on a dialect
- * we cannot use is retired instead, since every session reaching it is equally stuck.
+ * we cannot use is retired instead, since every session reaching it is equally stuck. With no
+ * install known, a daemon serving this client is ridden and anything else is `notInstalled`.
  */
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<EnsureResult> {
 	// Once per invocation: the install is judged here and held; every poll below re-reads the LOCK.
 	const install = typeof options.source === "function" ? options.source() : options.source;
-	const source = () => install;
-	const look = options.look ?? (() => findDaemon(options.workspaceRoot, install, currentHost(), options.stateDir));
+	const known = install instanceof NotInstalled ? null : install;
+	const look = options.look ?? (() => findDaemon(options.workspaceRoot, known, currentHost(), options.stateDir));
 	const wait = (ms: number) => (options.clock ?? systemSleeper).sleep(ms);
 	const stop = options.stop ?? ((pid) => process.kill(pid, "SIGTERM"));
 	const alive = options.alive ?? lockHolderAlive;
@@ -130,6 +144,18 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 			connected: false,
 			reason: "timeout",
 			detail: `${decision.reason}, and it still holds the lock after ${timeoutMs}ms`,
+		};
+	}
+
+	// No install means no build to spawn or to put in a retired daemon's place, so only riding is left.
+	if (install instanceof NotInstalled) {
+		if (decision.action === "replace" && decision.cause === "otherWorkspace")
+			return { connected: false, reason: "otherWorkspace", detail: decision.reason };
+		return {
+			connected: false,
+			reason: "notInstalled",
+			detail: `${install.message}, and ${decision.reason}`,
+			root: install.root,
 		};
 	}
 
@@ -178,7 +204,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		}
 	}
 
-	const command = await daemonCommand(source().root, options.workspaceRoot, options.stateDir);
+	const command = await daemonCommand(install.root, options.workspaceRoot, options.stateDir);
 	if (command.kind === "unbuilt")
 		return { connected: false, reason: "unbuilt", detail: "no built daemon to start; run the build first" };
 	if (command.kind === "noBunRuntime")

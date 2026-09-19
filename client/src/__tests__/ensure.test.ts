@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
 import type { DaemonSource } from "../discover";
-import { ensureDaemon } from "../ensure";
-import { DaemonError } from "../errors";
+import { ensureDaemon, ensureFailure } from "../ensure";
+import { DaemonError, NotInstalled } from "../errors";
 import type { LockDecision } from "../lock";
 import { fakeDaemon } from "./fakeDaemon";
 
@@ -763,5 +763,104 @@ describe("waiting out a delete instead of touching its placeholder lock", () => 
 
 		expect(result).toMatchObject({ connected: false, reason: "timeout" });
 		expect(waits.reduce((total, ms) => total + ms, 0)).toBe(250);
+	});
+});
+
+// A consumer with no install rides whatever daemon serves it. It has no build to spawn and none to
+// put in a retired daemon's place, so it never touches one.
+describe("with no install known", () => {
+	const missing = new NotInstalled("no lexicon is installed here");
+
+	it("rides a daemon already running without starting anything", async () => {
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			source: missing,
+			look: looking([{ action: "connect", lock: LOCK }]),
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(result).toEqual({ connected: true, lock: LOCK });
+		expect(started).toBe(0);
+	});
+
+	it("reports nothing installed instead of spawning when no daemon runs", async () => {
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			source: missing,
+			look: looking([{ action: "spawn", reason: "no daemon is registered" }]),
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "notInstalled", root: undefined });
+		expect(result.connected === false && result.detail).toBe(
+			"no lexicon is installed here, and no daemon is registered",
+		);
+		expect(started).toBe(0);
+	});
+
+	it("leaves a daemon it cannot use untouched: nothing asked, signalled or started", async () => {
+		const asked: string[] = [];
+		let signalled = 0;
+		let started = 0;
+		const result = await ensureDaemon({
+			...options,
+			source: missing,
+			look: looking([
+				{
+					action: "replace",
+					lock: LOCK,
+					reason: "the daemon speaks 0.9.0, older than this client's 1.0.0",
+					cause: "protocol",
+				},
+			]),
+			ask: async (_lock, method) => {
+				asked.push(method);
+				return {};
+			},
+			stop: () => {
+				signalled++;
+			},
+			start: () => {
+				started++;
+			},
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "notInstalled" });
+		expect({ asked, signalled, started }).toEqual({ asked: [], signalled: 0, started: 0 });
+	});
+
+	it("still names another workspace's daemon as that, not as nothing installed", async () => {
+		const result = await ensureDaemon({
+			...options,
+			source: missing,
+			look: looking([
+				{ action: "replace", lock: LOCK, reason: "the daemon serves /other", cause: "otherWorkspace" },
+			]),
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "otherWorkspace" });
+	});
+
+	it("becomes NotInstalled carrying the root the install was expected at", async () => {
+		const result = await ensureDaemon({
+			...options,
+			source: () => new NotInstalled("not where lexicon was last seen: /gone", "/gone"),
+			look: looking([{ action: "spawn", reason: "pid 9 is gone" }]),
+		});
+
+		expect(result).toMatchObject({ connected: false, reason: "notInstalled", root: "/gone" });
+		if (result.connected) throw new Error("expected a refusal");
+		const error = ensureFailure(result);
+		expect(error).toBeInstanceOf(NotInstalled);
+		expect(error).toMatchObject({
+			root: "/gone",
+			message: "not where lexicon was last seen: /gone, and pid 9 is gone",
+		});
 	});
 });

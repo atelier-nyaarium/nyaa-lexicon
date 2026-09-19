@@ -58,6 +58,9 @@ import type { ToolBackend, ToolResult } from "./tools.js";
  */
 export const SERVER_INFO = { name: "nyaa-lexicon", version: packageJson.version } as const;
 
+/** Passed by the plugin's `.mcp.json`, the one launch that names the machine's installed lexicon. */
+export const PUBLISH_INSTALL_FLAG = "--publish-install";
+
 /** The typed question a backend asks, whichever side of the wire answers it. */
 type Asker = ReturnType<typeof daemonChannel>["ask"];
 
@@ -220,19 +223,32 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 ////////////////////////////////
 //  Main
 
+/**
+ * Where lexicon is, for a consumer's client to find, recorded only when the launch asks. A dev
+ * checkout's server or an embedded copy leaves the record naming the installed plugin. Never fatal:
+ * this server does not need the record itself.
+ */
+export function publishInstallIfAsked(
+	argv: readonly string[],
+	publish: (root: string) => void = writeInstallRecord,
+): boolean {
+	if (!argv.includes(PUBLISH_INSTALL_FLAG)) return false;
+	try {
+		publish(lexiconRoot());
+		return true;
+	} catch (error) {
+		console.error(`install record not written: ${error instanceof Error ? error.message : String(error)}`);
+		return false;
+	}
+}
+
 export async function main(argv: string[]): Promise<void> {
 	if (argv.includes("--version")) {
 		console.log(SERVER_INFO.version);
 		return;
 	}
 
-	// Where lexicon is, for a consumer's client to find. Before anything is registered, and never
-	// fatal: this server does not need the record itself.
-	try {
-		writeInstallRecord(lexiconRoot());
-	} catch (error) {
-		console.error(`install record not written: ${error instanceof Error ? error.message : String(error)}`);
-	}
+	publishInstallIfAsked(argv);
 
 	// No workspace is guessed from the environment or the working directory. Which codebase to
 	// answer about is the agent's to state, and it states it by binding.

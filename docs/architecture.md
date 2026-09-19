@@ -19,9 +19,9 @@ index cannot live in the stdio process. That process is a thin client to a daemo
 - **Discovery** is a lock file in the per-user state directory, keyed on a hash of the workspace
   path, or in a directory the caller names with `--state-dir`, which makes a store's directory its
   identity. It carries the port, a token, the pid, and the protocol version.
-- **Starting** is a race the daemons run, not the clients. Any client that finds no live daemon
-  spawns one, detached, through the client package's `ensureDaemon`, the one spawner every
-  consumer shares. The daemon claims the lock with a hard link from a fully-written staging
+- **Starting** is a race the daemons run, not the clients. Any client holding an install that
+  finds no live daemon spawns one, detached, through the client package's `ensureDaemon`, the one
+  spawner every consumer shares; one holding none rides a daemon that serves it and starts nothing. The daemon claims the lock with a hard link from a fully-written staging
   file, so the lock appears complete rather than half-written, and it claims BEFORE opening the
   store. A loser exits without ever touching SQLite, which is what holds the single-writer rule
   during the window where two of them exist. A foreign consumer's client changes none of this.
@@ -64,7 +64,9 @@ bundles (every regular `.js` under `dist/`); `bundleStamp` digests their content
 daemon's lock, so two copies of one release agree whatever their mtimes (two plugin hosts install
 the same release side by side) and any rebuild, a provider's alone included, retires the daemon
 serving the old copy. `core/src/drift.ts` asks the same inventory whether the newest bundle has
-settled before the daemon hands over to a rebuild under it.
+settled before the daemon hands over to a rebuild under it. Which release beside another is the
+newest has one owner, `newestInstallBeside` in `client/src/install.ts`: the daemon's drift asks it
+for a sibling to hand over to, and `connect` asks it where the install record's release now is.
 
 ## Storage
 

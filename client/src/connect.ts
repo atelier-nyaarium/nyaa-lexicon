@@ -1,8 +1,9 @@
 // One call to reach lexicon: find the install, judge it, get its daemon, hand back a session.
 //
 // Three versions stay apart here: this client's protocol, the install's, and the running daemon's.
-// The install is judged before any lock is read, and the lock is judged against the INSTALL's
-// identity, never this package's, since a consumer bundles the client and not the daemon.
+// A known install is judged before any lock is read, and the lock is judged against the INSTALL's
+// identity, never this package's, since a consumer bundles the client and not the daemon. With no
+// install known, a live daemon serving this client's protocol is ridden, never spawned or retired.
 
 import {
 	DAEMON_METHODS,
@@ -21,7 +22,7 @@ import { daemonChannel } from "./channel.js";
 import { bundleStamp, type DaemonSource, findDaemon } from "./discover.js";
 import { ensureDaemon, ensureFailure } from "./ensure.js";
 import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
-import { readInstallRecord, readInstallVersion } from "./install.js";
+import { INSTALL_SETTLE_MS, newestInstallBeside, readInstallRecord, readInstallVersion } from "./install.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { shutdownDaemon } from "./stop.js";
 
@@ -66,14 +67,25 @@ function asDaemonError(error: unknown): Error {
 	return new DaemonError(error instanceof Error ? error.message : String(error), "connectionLost");
 }
 
+/** The record's root, or the newest settled install beside it, so an older or removed version the
+ * record still names gives way to the release installed next to it. */
+function recordedRoot(host: PlatformEnv): string | undefined {
+	const recorded = readInstallRecord(host)?.root;
+	if (recorded === undefined) return undefined;
+	return newestInstallBeside(recorded, Date.now() - INSTALL_SETTLE_MS)?.root ?? recorded;
+}
+
 /** An explicit root wins; otherwise the record's. Either is trusted only as far as its version file. */
-function locateInstall(options: ConnectOptions, host: PlatformEnv): { root: string; version: InstallVersion } {
-	const root = options.lexiconRoot ?? readInstallRecord(host)?.root;
-	if (root === undefined) throw new NotInstalled("no lexicon is installed here");
+function locateInstall(
+	options: ConnectOptions,
+	host: PlatformEnv,
+): { root: string; version: InstallVersion } | NotInstalled {
+	const root = options.lexiconRoot ?? recordedRoot(host);
+	if (root === undefined) return new NotInstalled("no lexicon is installed here");
 
 	const version = bundleStamp(root) === null ? null : readInstallVersion(root);
 	if (version === null) {
-		throw new NotInstalled(
+		return new NotInstalled(
 			options.lexiconRoot === undefined
 				? `not where lexicon was last seen: ${root}`
 				: `no lexicon install under ${root}`,
@@ -104,17 +116,21 @@ function refuseAhead(root: string, installed: string): void {
 export async function connect(options: ConnectOptions): Promise<Session> {
 	const { workspaceRoot } = options;
 	const host = currentHost();
-	const install = locateInstall(options, host);
-	refuseAhead(install.root, install.version.protocolVersion);
 
-	const source = (): DaemonSource => {
+	// Resolved on every use, since a handover or an update can move the install under a session.
+	const source = (): DaemonSource | NotInstalled => {
 		const current = locateInstall(options, currentHost());
+		if (current instanceof NotInstalled) return current;
 		refuseAhead(current.root, current.version.protocolVersion);
 		return {
 			root: current.root,
 			buildVersion: current.version.buildVersion,
 			bundleStamp: bundleStamp(current.root),
 		};
+	};
+	const known = (): DaemonSource | null => {
+		const current = source();
+		return current instanceof NotInstalled ? null : current;
 	};
 	const stateDir = options.stateDir === undefined ? {} : { stateDir: options.stateDir };
 	const daemon = await ensureDaemon({
@@ -156,13 +172,13 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		close: () => channel.close(),
 		// Re-read, since a handover replaces the daemon under a session that keeps working.
 		lock: () => {
-			const now = findDaemon(workspaceRoot, source(), host, options.stateDir);
+			const now = findDaemon(workspaceRoot, known(), host, options.stateDir);
 			if (now.action === "connect") lock = now.lock;
 			return lock;
 		},
 		stopDaemon: async () => {
 			// The install is judged before the channel closes, so a refusal leaves the session whole.
-			const current = findDaemon(workspaceRoot, source(), host, options.stateDir);
+			const current = findDaemon(workspaceRoot, known(), host, options.stateDir);
 			if (current.action === "connect") lock = current.lock;
 			// Closed before the stop, or the channel would reconnect to a daemon on its way out.
 			channel.close();

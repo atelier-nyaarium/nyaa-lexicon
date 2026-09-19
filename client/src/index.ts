@@ -23,10 +23,32 @@ export {
 	spawnDaemonProcess,
 	stoppingRefusal,
 } from "./discover.js";
-export { type EnsureDaemonOptions, type EnsureResult, ensureDaemon, type Sleeper } from "./ensure.js";
+export {
+	type EnsureDaemonOptions,
+	type EnsureResult,
+	ensureDaemon,
+	type InstallSource,
+	type Sleeper,
+} from "./ensure.js";
 export { DaemonError, Incompatible, NotInstalled } from "./errors.js";
-export { installRecordFile, readInstallRecord, readInstallVersion, writeInstallRecord } from "./install.js";
-export { decideFromLock, type LockContext, type LockDecision, newerBuild, type ReplaceCause } from "./lock.js";
+export {
+	bundlesSettled,
+	INSTALL_SETTLE_MS,
+	type InstallBeside,
+	installRecordFile,
+	newestInstallBeside,
+	readInstallRecord,
+	readInstallVersion,
+	writeInstallRecord,
+} from "./install.js";
+export {
+	decideFromLock,
+	isRelease,
+	type LockContext,
+	type LockDecision,
+	newerBuild,
+	type ReplaceCause,
+} from "./lock.js";
 export {
 	canonicalRoot,
 	currentHost,
@@ -71,4 +93,5 @@ export {
 	type WaitingEvent,
 	writeFrame,
 } from "./transport.js";
+export { CLIENT_BUILD_VERSION } from "./version.js";
 export { classifyWorkspaceRoot, type WorkspaceAdmission } from "./workspaceAdmission.js";

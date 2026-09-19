@@ -8,6 +8,7 @@ import { bundleStamp, daemonCommand, findDaemon, lockHolderAlive, processIsAlive
 import { canonicalRoot, type PlatformEnv, workspacePaths } from "../paths";
 import { processIdentity } from "../procfs";
 import { BUN_FLOOR, bunExecutable } from "../runtime";
+import { CLIENT_BUILD_VERSION } from "../version";
 
 ////////////////////////////////
 //  Helpers
@@ -139,6 +140,33 @@ describe("finding a daemon on disk", () => {
 		);
 
 		expect(findDaemon(custom, source, host, custom)).toMatchObject({ action: "awaitDelete" });
+	});
+
+	// A patch can add a method without moving the protocol, so a daemon older than this client's
+	// own build may lack one it calls; newer or equal serves its whole table.
+	it("judges by this client's own build when no install is known, and never by a stamp", () => {
+		const state = scratch("lexicon-find-");
+		const workspace = scratch("lexicon-work-");
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: state }, home: state };
+		const paths = workspacePaths(host, workspace);
+		mkdirSync(paths.dir, { recursive: true });
+		const at = (buildVersion: string, bundleStamp?: string) =>
+			writeFileSync(
+				paths.lockFile,
+				JSON.stringify({
+					...ownLock(canonicalRoot(workspace), buildVersion),
+					...(bundleStamp ? { bundleStamp } : {}),
+				}),
+			);
+
+		at(CLIENT_BUILD_VERSION, "some-other-bundle");
+		expect(findDaemon(workspace, null, host)).toMatchObject({ action: "connect" });
+
+		at("999.0.0");
+		expect(findDaemon(workspace, null, host)).toMatchObject({ action: "connect" });
+
+		at("0.0.1");
+		expect(findDaemon(workspace, null, host)).toMatchObject({ action: "replace", cause: "build" });
 	});
 });
 
