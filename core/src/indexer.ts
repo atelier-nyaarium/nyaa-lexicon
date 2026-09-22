@@ -887,6 +887,8 @@ export class WorkspaceIndexer {
 
 	/** Why a request must wait, or null. The one readiness decision; `indexStatus` is diagnostics. */
 	warmHold(): string | null {
+		// Every synchronous scope read sits behind this gate.
+		if (this.scope === null) return "computing the workspace scope";
 		if (this.coverage.state === "discovering") {
 			if (this.store.readScanSummary()?.outlined === true) return null;
 			return "discovering the workspace";

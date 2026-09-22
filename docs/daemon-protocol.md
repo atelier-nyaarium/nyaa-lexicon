@@ -100,8 +100,8 @@ caller that asks once and exits uses `requestOnce`.
 A daemon publishes its lock before it can answer, on purpose. Publishing after the first scan meant
 no client could find the daemon for the length of a scan, so every session paid that scan in its
 own process. Until the handler is installed (`waitingFor` is `opening the index`, then
-`the language providers to start`), and again while the warmup pass has files it has not attempted
-(`the warmup pass`), a request is answered with an error frame carrying `starting: true`,
+`the language providers to start`), and again until the workspace scope is computed and the warmup
+pass has attempted every file (`the warmup pass`), a request is answered with an error frame carrying `starting: true`,
 `retryInMs` and `waitingFor`. The countdown is the DAEMON's own budget, published rather than
 mirrored on the client, since two independently chosen numbers cannot stay in agreement.
 

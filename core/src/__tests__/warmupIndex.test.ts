@@ -167,6 +167,7 @@ describe("warmup pass", () => {
 
 		const parse = deferred();
 		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { parse: parse.promise }));
+		await service.currentScope();
 		const warming = service.warmupWorkspace();
 		// No pass ever completed here, so discovery holds too.
 		expect(service.warmHold()).toBe("discovering the workspace");
@@ -193,6 +194,7 @@ describe("warmup pass", () => {
 
 		const discovery = deferred();
 		service = serviceOver(depthSupervisor(["a.fake"], true, [], { discovery: discovery.promise }));
+		await service.currentScope();
 		const warming = service.warmupWorkspace();
 		await Promise.resolve();
 		expect(service.warmHold()).toBeNull();
@@ -214,6 +216,7 @@ describe("warmup pass", () => {
 		store = IndexStore.open(path.join(root, "index.sqlite")).store;
 		const discovery = deferred();
 		service = serviceOver(depthSupervisor(["a.fake"], true, [], { discovery: discovery.promise }));
+		await service.currentScope();
 		const warming = service.warmupWorkspace();
 		await Promise.resolve();
 		expect(service.warmHold()).toBe("discovering the workspace");
@@ -227,6 +230,7 @@ describe("warmup pass", () => {
 		put("a.fake", "export class A {}\n");
 		const parse = deferred();
 		service = serviceOver(depthSupervisor(["a.fake"], true, [], { parse: parse.promise }));
+		await service.currentScope();
 		const warming = service.warmupWorkspace();
 		expect(service.warmHold()).toBe("discovering the workspace");
 		await settle(unread);
@@ -245,6 +249,7 @@ describe("warmup pass", () => {
 
 		const parse = deferred();
 		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, [], { parse: parse.promise }));
+		await service.currentScope();
 		const warming = service.warmupWorkspace();
 		// The last pass completed, so discovery answers; the new root holds once it is known.
 		expect(service.warmHold()).toBeNull();
@@ -391,6 +396,20 @@ describe("warmup pass", () => {
 		const preparing = service.ensureTreeForModule("a.fake");
 		clock.advance(60_000);
 		await preparing;
+	});
+
+	// A cold daemon's first request starts the scope computation and then asks this gate, so the
+	// synchronous reads behind it must not be reachable until the scope exists.
+	it("holds a request until the scope is computed", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+
+		expect(warmRefusal(service)).toHaveProperty("retryInMs");
+
+		await service.currentScope();
+		expect(warmRefusal(service)).toBeNull();
+		expect(() => service.moduleDeclarations("a.fake")).not.toThrow();
 	});
 
 	it("covers each admission branch", async () => {
