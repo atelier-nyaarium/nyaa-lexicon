@@ -23,7 +23,7 @@ import type { IndexStore } from "./store.js";
 ////////////////////////////////
 //  Constants
 
-/** Candidates kept, so a cursor moving over unchanged text never parses again. */
+/** Candidates kept for cursor moves over unchanged text. */
 const CANDIDATE_CAPACITY = 8;
 
 ////////////////////////////////

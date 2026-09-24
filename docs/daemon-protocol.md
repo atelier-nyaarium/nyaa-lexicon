@@ -279,8 +279,8 @@ that needs references asks `parseFacts` when `moduleFacts`'s `depth` is `outline
 `parseFacts` reads under the gate. A candidate parse and the restore after it are two provider
 requests, and an index parse of another file landing between them would bind against the handed
 text and store what it bound. Both requests are `probe` parses, which a provider never stages for
-admission. The last few candidates are kept by module, text and index generation, so asking again
-about unchanged text parses nothing.
+admission. The last eight candidates are kept by module, text and index generation, so asking
+again about unchanged text parses nothing while its candidate is kept.
 
 **`symbolAt`** (`{ module, position, text? }`, protocol 3.10.0) answers which symbol a cursor
 means, from the same facts: the target of a bound reference under `position`, else the innermost
@@ -291,7 +291,7 @@ that text like `parseFacts`. Both read under the gate. `{ found: true, symbolId,
 `notIndexed`, `unowned` or `unparsed`. `contentHash` names the bytes the answer came from, so a
 caller holding different bytes asks again with them. A stored read of a module the store lacks says
 `unowned` when no provider claims it (protocol 3.11.0) and `notIndexed` otherwise, and carries no
-`contentHash`: handing text for it would only parse a candidate nothing can describe.
+`contentHash`.
 
 `indexStatus.generation` (protocol 3.10.0) changes whenever the stored facts do, and differs across
 daemon restarts, so an answer drawn from facts holds while it stays equal.
