@@ -246,7 +246,7 @@ const SymbolAt = z
 	.object({
 		module: ModulePath,
 		position: PositionSchema,
-		/** The bytes the caller holds; `text`, when sent, must hash to it. */
+		/** The bytes the caller holds. Sent `text` names its own and wins. */
 		contentHash: z.string().min(1).optional(),
 		text: z.string().optional(),
 	})

@@ -98,6 +98,32 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 		}).toEqual({ candidate: ["x"], add: "bound" });
 	});
 
+	it("drops the Program root a probe gave a file outside the project, before and after the analyzer exists", () => {
+		const ambient = "interface GlobalThing { value: string }\n";
+		const use = "export const value: GlobalThing = { value: 'x' };\n";
+		const files = {
+			"tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+			"src/use.ts": use,
+			"loose.d.ts": ambient,
+		};
+		const answers = [false, true].map((warm) => {
+			const provider = new TypeScriptProvider();
+			provider.initialize(workspace(files));
+			if (warm) provider.parseFile({ module: "src/use.ts", contentHash: "use", text: use });
+			const rootsBefore = provider.programStats().rootFiles;
+			handlersFor(provider).probeFile({ module: "loose.d.ts", contentHash: "probe", text: ambient });
+			const bound = provider
+				.parseFile({ module: "src/use.ts", contentHash: "use", text: use })
+				.references.find((reference) => reference.name === "GlobalThing")?.binding.status;
+			return { roots: provider.programStats().rootFiles - rootsBefore, bound };
+		});
+
+		expect(answers).toEqual([
+			{ roots: 0, bound: "unbound" },
+			{ roots: 0, bound: "unbound" },
+		]);
+	});
+
 	it("refuses to resolve an import into a module the index holds nothing for", () => {
 		const provider = new TypeScriptProvider();
 		provider.initialize(workspace(CART));

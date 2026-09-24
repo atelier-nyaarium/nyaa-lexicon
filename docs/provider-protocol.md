@@ -74,7 +74,9 @@ cross-file state declares `readonly admission = null`. Then:
   restoring on every path, including a throw or a rejected promise. The core sends it for a
   candidate the index never rules on, so nothing is staged and no later verdict is consumed. A
   piece of state `snapshot` leaves out survives a probe and a refusal alike; a probe test per
-  stateful provider guards it.
+  stateful provider guards it. The shared server runs handlers one at a time in arrival order, async
+  ones included, so a probe's restore lands before anything sent after it, even once the daemon
+  gave up waiting on it.
 - `forgotten(module)` in `forgetModule`, beside dropping the module from every cache.
 - `fillable(module)` at the top of every read off disk, after the cache hit. Without it a module the
   index does not hold comes straight back through a read of its own bytes, and the correction undoes

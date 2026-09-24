@@ -26,9 +26,11 @@ import { extractSurfaceFile } from "./surface.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-/** What a module holds across parses: its overlay text and whether it is a runtime surface. */
+/** What a module holds across parses: its overlay text, its Program root, whether it is a runtime surface. */
 interface HeldModule {
 	overlay: string | undefined;
+	/** Unknown before the analyzer exists. */
+	rooted: boolean | undefined;
 	surface: boolean;
 }
 
@@ -160,10 +162,11 @@ export class TypeScriptProvider {
 	readonly admission = new AdmissionLedger<HeldModule>({
 		snapshot: (module) => ({
 			overlay: this.analyzer?.overlayText(module),
+			rooted: this.analyzer?.rooted(module),
 			surface: this.runtimeSurfaces.has(module),
 		}),
 		restore: (module, held) => {
-			this.analyzer?.restoreFile(module, held?.overlay);
+			this.analyzer?.restoreFile(module, held?.overlay, held?.rooted);
 			if (held?.surface === true) this.runtimeSurfaces.add(module);
 			else this.runtimeSurfaces.delete(module);
 		},

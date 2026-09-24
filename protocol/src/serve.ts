@@ -52,33 +52,47 @@ function refuseUnrepresentable(params: unknown): void {
 	}
 }
 
+/**
+ * Handlers run one at a time, in arrival order, async ones included. A probe's restore therefore
+ * lands before anything sent after it, even a request the daemon sent once the probe timed out.
+ */
 export function serveProvider(connection: Connection, handlers: ProviderHandlers & ProviderNotificationHandlers): void {
+	let tail: Promise<unknown> = Promise.resolve();
+	const inTurn = <T>(work: () => T | Promise<T>): Promise<T> => {
+		const turn = tail.then(work);
+		tail = turn.catch(() => {});
+		return turn;
+	};
 	for (const notification of PROVIDER_NOTIFICATIONS) {
 		// The loop erases the pairing the caller's own type satisfied; the schema below restores it.
 		const handler = handlers[notification] as ((params: unknown) => void) | undefined;
 		// Registered either way, so an unhandled one is a decision rather than a library log line.
 		connection.onNotification(notification, (params: unknown) => {
 			if (handler === undefined) return;
-			try {
-				refuseUnrepresentable(params);
-				handler(NOTIFICATION_SCHEMAS[notification].parse(params));
-			} catch (error) {
-				// No reply carries a refusal.
-				console.error(`${notification} refused: ${error instanceof Error ? error.message : String(error)}`);
-			}
+			void inTurn(() => {
+				try {
+					refuseUnrepresentable(params);
+					handler(NOTIFICATION_SCHEMAS[notification].parse(params));
+				} catch (error) {
+					// No reply carries a refusal.
+					console.error(`${notification} refused: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			});
 		});
 	}
 	for (const method of PROVIDER_METHODS) {
 		// The handler map is keyed per method, so the loop erases the pairing the caller already
 		// satisfied. Each response is still validated against its schema by whoever reads it.
 		const handler = handlers[method] as (params: unknown) => unknown;
-		connection.onRequest(method, async (params: unknown) => {
-			refuseUnrepresentable(params);
-			const answer = await handler(params);
-			// One id per declaration, settled at the wire for every provider.
-			const parsed = method === "parseFile" || method === "probeFile";
-			return parsed && hasDeclarations(answer) ? withOccurrences(answer) : answer;
-		});
+		connection.onRequest(method, (params: unknown) =>
+			inTurn(async () => {
+				refuseUnrepresentable(params);
+				const answer = await handler(params);
+				// One id per declaration, settled at the wire for every provider.
+				const parsed = method === "parseFile" || method === "probeFile";
+				return parsed && hasDeclarations(answer) ? withOccurrences(answer) : answer;
+			}),
+		);
 	}
 }
 

@@ -176,8 +176,10 @@ interface HeldModule {
 	facts: KotlinFile | undefined;
 	headers: ModuleHeaders | undefined;
 	unread: boolean;
-	/** A fill since then skipped the module. */
+	/** False when a later fill skipped the module. */
 	filled: boolean;
+	/** What that fill would fall back on. */
+	fallback: ModuleHeaders | undefined;
 }
 
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
@@ -216,7 +218,7 @@ export class KotlinProvider {
 	private previous: PackageIndex | undefined;
 	/** Whether discovered files the index lacks have been read. */
 	private filled = false;
-	/** Owed a disk read; retried on a lookup. */
+	/** Present but unreadable at the last read; retried on a lookup. */
 	private readonly unread = new Set<string>();
 	/** The core's word on each parse, and what the module must hold when one is refused or probed. */
 	readonly admission = new AdmissionLedger<HeldModule>({
@@ -225,15 +227,20 @@ export class KotlinProvider {
 			headers: this.index.headersOf(module),
 			unread: this.unread.has(module),
 			filled: this.filled,
+			fallback: this.previous?.headersOf(module),
 		}),
 		restore: (module, held) => {
 			if (held?.facts === undefined) this.parsedFacts.delete(module);
 			else this.parsedFacts.set(module, held.facts);
 			this.index.remove(module);
-			if (held?.headers !== undefined) this.index.add(held.headers);
-			const skipped = held !== undefined && held.headers === undefined && !held.filled && this.filled;
-			if (held?.unread === true || skipped) this.unread.add(module);
+			if (held?.unread === true) this.unread.add(module);
 			else this.unread.delete(module);
+			if (held?.headers !== undefined) this.index.add(held.headers);
+			else if (held !== undefined && !held.filled && this.filled) {
+				// The fill that ran since skipped this module, so its read is owed now.
+				if (this.admission.fillable(module)) this.indexFromDisk(module, held.fallback);
+				else if (held.fallback !== undefined) this.index.add(held.fallback);
+			}
 		},
 	});
 
@@ -433,12 +440,13 @@ export class KotlinProvider {
 		this.previous = undefined;
 		const modules = new Set([...this.filesInWorkspace(), ...(previous?.heldModules() ?? [])]);
 		for (const module of [...modules].sort())
-			if (!this.index.holds(module) && this.admission.fillable(module)) this.indexFromDisk(module, previous);
+			if (!this.index.holds(module) && this.admission.fillable(module))
+				this.indexFromDisk(module, previous?.headersOf(module));
 		return this.index;
 	}
 
 	/** Refused or unreadable text keeps what was admitted; a file the core would not read leaves. */
-	private indexFromDisk(module: string, previous?: PackageIndex): void {
+	private indexFromDisk(module: string, fallback?: ModuleHeaders): void {
 		this.unread.delete(module);
 		const read = this.read(module);
 		const facts = read.kind === "text" ? parseKotlin(module, read.text, true) : undefined;
@@ -452,8 +460,7 @@ export class KotlinProvider {
 			this.index.remove(module);
 			return;
 		}
-		const held = previous?.headersOf(module);
-		if (held !== undefined) this.index.add(held);
+		if (fallback !== undefined) this.index.add(fallback);
 	}
 
 	private binder(facts: KotlinFile): ReferenceBinder {

@@ -318,12 +318,24 @@ describe("the index takes only what the core admits", () => {
 		});
 	});
 
-	test("a probe that runs the first fill leaves its module to a later disk read", () => {
-		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
-		const provider = started(root);
-		handlersFor(provider).probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
+	test("a probe that runs the first fill leaves its module as that fill would, before and after a rediscovery", () => {
+		const fresh = started(workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE }));
+		handlersFor(fresh).probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
 
-		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+		// The disk turns unadmittable, so the fill falls back on the headers held before the rediscovery.
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const rediscovered = started(root);
+		const handlers = handlersFor(rediscovered);
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "old", text: FOO });
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "old"));
+		put(root, "a/Foo.kt", REFUSED);
+		rediscovered.discoverProject(root);
+		handlers.probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
+
+		expect([fresh, rediscovered].map((provider) => targets(bindings(provider, "a/Use.kt", USE)))).toEqual([
+			["lexicon kotlin a/Foo.kt Foo#"],
+			["lexicon kotlin a/Foo.kt Foo#"],
+		]);
 	});
 
 	test("never reads a file the core refuses on disk, too large or unparseable", () => {

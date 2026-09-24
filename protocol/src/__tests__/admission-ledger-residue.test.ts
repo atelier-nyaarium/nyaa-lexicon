@@ -14,6 +14,9 @@ const LEDGER = "AdmissionLedger";
 
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "__tests__"]);
 
+/** A probe driven through the kit's handler, not a method name in a list. */
+const PROBE_CALL = /\.probeFile\s*\(/;
+
 /** A notification handled, as a method of the provider object. */
 const handles = (source: string, notification: string) => new RegExp(`\\b${notification}\\s*\\(`).test(source);
 
@@ -79,7 +82,7 @@ describe("every stateful provider corrects through one primitive", () => {
 			.filter((entry) => entry.code.includes(`new ${LEDGER}`))
 			.filter((entry) => {
 				const tests = sourceFiles(join(PROVIDERS, entry.provider, "src", "__tests__"), new Set());
-				return !tests.some((file) => readSwept(file)?.includes("probeFile") === true);
+				return !tests.some((file) => PROBE_CALL.test(readSwept(file) ?? ""));
 			})
 			.map((entry) => entry.provider);
 

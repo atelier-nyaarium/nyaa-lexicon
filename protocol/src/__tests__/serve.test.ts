@@ -127,6 +127,45 @@ describe("a notification", () => {
 		handled.provider.dispose();
 		handled.daemon.dispose();
 	});
+
+	// A daemon that gave up on a slow probe sends on; the probe's restore must still land first.
+	it("waits its turn behind a slow async request, and so does the next request", async () => {
+		const seen: string[] = [];
+		let release = () => {};
+		const slow = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const handled = pair({
+			parseFile: async ({ module }: { module: string }) => {
+				seen.push(`start ${module}`);
+				if (module === "src/slow.py") await slow;
+				seen.push(`end ${module}`);
+				return { declarations: [] };
+			},
+			moduleAdmission: ({ module }: { module: string }) => seen.push(`verdict ${module}`),
+		} as unknown as ProviderHandlers & ProviderNotificationHandlers);
+
+		const first = handled.daemon.sendRequest("parseFile", { module: "src/slow.py", contentHash: "h", text: "" });
+		await handled.daemon.sendNotification("moduleAdmission", {
+			module: "src/slow.py",
+			contentHash: "h",
+			outcome: { status: "admitted" },
+		});
+		const second = handled.daemon.sendRequest("parseFile", { module: "src/fast.py", contentHash: "h", text: "" });
+		await Bun.sleep(20);
+		release();
+		await Promise.all([first, second]);
+
+		expect(seen).toEqual([
+			"start src/slow.py",
+			"end src/slow.py",
+			"verdict src/slow.py",
+			"start src/fast.py",
+			"end src/fast.py",
+		]);
+		handled.provider.dispose();
+		handled.daemon.dispose();
+	});
 });
 
 ////////////////////////////////

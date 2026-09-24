@@ -68,6 +68,8 @@ interface MappedDeclaration {
 export class TypeScriptAnalyzer {
 	private readonly root: string;
 	private readonly projectOptions: ts.CompilerOptions;
+	/** The tsconfig's files; parsed modules join them as roots. */
+	private readonly projectRoots: ReadonlySet<string>;
 	private readonly scripts = new Set<string>();
 	private readonly overlays = new Map<string, Overlay>();
 	/** The highest overlay version issued per key, so a dropped overlay cannot reuse one. */
@@ -92,7 +94,8 @@ export class TypeScriptAnalyzer {
 	) {
 		this.root = path.resolve(root);
 		this.projectOptions = project.options;
-		for (const file of project.files) this.scripts.add(path.resolve(file));
+		this.projectRoots = new Set(project.files.map((file) => path.resolve(file)));
+		for (const file of this.projectRoots) this.scripts.add(file);
 
 		const host: ts.LanguageServiceHost = {
 			getCompilationSettings: () => project.options,
@@ -139,17 +142,25 @@ export class TypeScriptAnalyzer {
 		return this.overlays.get(this.key(this.fileName(module)))?.text;
 	}
 
-	/** Puts back the text a refused parse displaced, or drops the module when it displaced none. */
-	restoreFile(module: string, text: string | undefined): void {
-		const key = this.key(this.fileName(module));
-		const previous = this.overlays.get(key);
+	/** Whether the Program roots this module. */
+	rooted(module: string): boolean {
+		return this.scripts.has(this.fileName(module));
+	}
+
+	/**
+	 * Puts back the text and root a refused or probed parse displaced. No text drops the module's; an
+	 * unknown root is the project's own.
+	 */
+	restoreFile(module: string, text: string | undefined, rooted?: boolean): void {
+		const fileName = this.fileName(module);
+		const key = this.key(fileName);
+		const unrooted = !(rooted ?? this.projectRoots.has(fileName)) && this.scripts.delete(fileName);
 		if (text === undefined) {
-			if (!this.dropOverlay(key)) return;
-			this.invalidateProgram();
+			if (this.dropOverlay(key) || unrooted) this.invalidateProgram();
 			return;
 		}
-		if (previous?.text === text) return;
-		this.setOverlay(key, text);
+		if (this.overlays.get(key)?.text !== text) this.setOverlay(key, text);
+		if (unrooted) this.invalidateProgram();
 	}
 
 	/** The index holds nothing for this module, so neither the text nor the root is ours to keep. */
