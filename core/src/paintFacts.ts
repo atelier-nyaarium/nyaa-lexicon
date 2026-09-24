@@ -204,6 +204,8 @@ export class PaintReads {
 			return kept;
 		}
 		const parsed = await this.probe.parseCandidate(module, text);
+		// A refusal may be the provider's outage, not the text's.
+		if (!parsed.parsed) return parsed;
 		this.candidates.set(key, parsed);
 		for (const oldest of this.candidates.keys()) {
 			if (this.candidates.size <= CANDIDATE_CAPACITY) break;
