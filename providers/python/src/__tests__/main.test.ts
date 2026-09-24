@@ -11,7 +11,7 @@ import {
 	parseSymbolId,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
-import { PythonProvider } from "../main";
+import { PythonProvider, wireHandlers } from "../main";
 import { Python3Dispatch } from "../python3";
 
 const roots: string[] = [];
@@ -80,15 +80,25 @@ function itemWorkspace(): PythonProvider {
 	return provider;
 }
 
-async function admitItem(provider: PythonProvider, contentHash: string): Promise<void> {
-	await provider.parseFile({ module: "src/item.py", contentHash, text: ITEM });
-	provider.moduleAdmission({ module: "src/item.py", contentHash, outcome: { status: "admitted" } });
+/** The index's verdict on a parse, through the kit as the wire delivers it. */
+function verdict(provider: PythonProvider, contentHash: string, refusal?: string): void {
+	wireHandlers(provider).moduleAdmission?.({
+		module: "src/item.py",
+		contentHash,
+		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
+	});
 }
 
-/** Where the `Item()` call lands, reparsing the user each time. */
-async function makesItem(provider: PythonProvider): Promise<string | undefined> {
-	const facts = await provider.parseFile({ module: "src/cart.py", contentHash: "cart", text: CART });
-	return facts.references.find((candidate) => candidate.name === "Item" && candidate.role === "call")?.binding.status;
+async function admitItem(provider: PythonProvider, contentHash: string): Promise<void> {
+	await wireHandlers(provider).parseFile({ module: "src/item.py", contentHash, text: ITEM });
+	verdict(provider, contentHash);
+}
+
+/** Where the call to `name`, imported from item, lands, reparsing the user each time. */
+async function makesItem(provider: PythonProvider, name = "Item"): Promise<string | undefined> {
+	const text = CART.replaceAll("Item", name);
+	const facts = await provider.parseFile({ module: "src/cart.py", contentHash: "cart", text });
+	return facts.references.find((candidate) => candidate.name === name && candidate.role === "call")?.binding.status;
 }
 
 // Defaults need Python 3.13. Resolved before registration: skipIf needs a plain boolean.
@@ -1068,14 +1078,35 @@ describe("Python provider project behavior", () => {
 
 	it("holds nothing for a module whose first parse the index refused", async () => {
 		const provider = itemWorkspace();
-		await provider.parseFile({ module: "src/item.py", contentHash: "item", text: ITEM });
-		provider.moduleAdmission({
-			module: "src/item.py",
-			contentHash: "item",
-			outcome: { status: "refused", reason: "an id the index could not read" },
-		});
+		await wireHandlers(provider).parseFile({ module: "src/item.py", contentHash: "item", text: ITEM });
+		verdict(provider, "item", "an id the index could not read");
 
 		expect(await makesItem(provider)).toBe("unbound");
+	});
+
+	it("answers a probe from the candidate, then binds as if it never ran", async () => {
+		const root = workspace({ "src/item.py": ITEM });
+		const provider = new PythonProvider();
+		provider.initialize(root);
+		const handlers = wireHandlers(provider);
+		await admitItem(provider, "item");
+		// The file changed on disk and its parse is outstanding across the probe.
+		const disk = "class Renamed:\n    pass\n";
+		writeFileSync(path.join(root, "src/item.py"), disk);
+		await handlers.parseFile({ module: "src/item.py", contentHash: "item-2", text: disk });
+		const probed = await handlers.probeFile({
+			module: "src/item.py",
+			contentHash: "probe",
+			text: "class Candidate:\n    pass\n",
+		});
+		const outstanding = await makesItem(provider, "Renamed");
+		verdict(provider, "item-2", "refused");
+
+		expect({
+			candidate: probed.declarations.map((declaration) => declaration.name),
+			outstanding,
+			held: await makesItem(provider),
+		}).toEqual({ candidate: ["Candidate"], outstanding: "bound", held: "bound" });
 	});
 
 	it("lets a new workspace fill a module the previous one withheld", async () => {

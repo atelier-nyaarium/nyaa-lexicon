@@ -18,6 +18,7 @@ any branch on language, which a residue test enforces.
 initialize(root)             -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
 discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
 parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[], docs[] }
+probeFile(module, hash, text)-> FileFacts, derived by handlersFor; the provider holds what it held before
 resolveImport(from, spec)    -> ImportResolution
 bind(reference)              -> Binding
 typeOf(target)               -> TypeInfo
@@ -61,15 +62,19 @@ It is NOT `forgetModule`. A forget says the index holds nothing for the module. 
 index holds the module's earlier facts and took none of these. A provider that answers a refusal by
 dropping the module disagrees with the core in the other direction.
 
-**`AdmissionLedger` from `@nyaa-lexicon/protocol` owns this bookkeeping.** Five calls:
+**`AdmissionLedger` from `@nyaa-lexicon/protocol` owns this bookkeeping, and `handlersFor` drives
+it.** Declare `readonly admission = new AdmissionLedger<Held>({ snapshot, restore })`, where
+`snapshot(module)` takes everything your cross-file state holds for the module and
+`restore(module, held)` puts exactly that back (`undefined` holds nothing). A provider holding no
+cross-file state declares `readonly admission = null`. Then:
 
-- `staged(module, contentHash, replaced)` in `parseFile`, BEFORE the cache write, where `replaced`
-  is whatever that module held. Stage only on the parse road: staging inside a helper your disk fill
-  also calls stamps a pending entry nothing ever settles. Skip it when the request says `probe:
-  true` (protocol 3.11.0): the core parses a candidate and then restores the file's text, rules on
-  neither, and an entry staged for either blocks every later verdict for the module.
-- `settle(verdict)` in `moduleAdmission`. It answers what the module must hold, or null when what
-  you have stands.
+- The kit stages every `parseFile` before calling yours, and settles every `moduleAdmission`; a
+  refusal restores what the parse displaced. Never stage or settle yourself.
+- The kit answers `probeFile` (protocol 3.12.0) by snapshotting, calling your `parseFile`, and
+  restoring on every path, including a throw or a rejected promise. The core sends it for a
+  candidate the index never rules on, so nothing is staged and no later verdict is consumed. A
+  piece of state `snapshot` leaves out survives a probe and a refusal alike; a probe test per
+  stateful provider guards it.
 - `forgotten(module)` in `forgetModule`, beside dropping the module from every cache.
 - `fillable(module)` at the top of every read off disk, after the cache hit. Without it a module the
   index does not hold comes straight back through a read of its own bytes, and the correction undoes
@@ -82,12 +87,9 @@ parses and publishes each one's verdict on the queue that parse rode, so the led
 OLDEST outstanding parse and ignores a verdict that is not for it. That is what lets a second parse
 land before the first verdict does without either being lost.
 
-**A provider answering either notification answers both.** A forget and a refusal are the two halves
-of one lifecycle, and a provider correcting for one still disagrees with the index on the other. A
-residue holds it.
-
-A provider predating the seam ignores the notification and is unchanged; `handlersFor` wires one
-only when the provider object declares the method.
+**A stateful provider answers `forgetModule` too.** A forget and a refusal are the two halves of one
+lifecycle, and a provider correcting for one still disagrees with the index on the other. A residue
+holds it, along with the rest of this section.
 
 `parseFile` is one call returning everything from one parse. There is no `describe`: narrative is
 the core's job, and a provider writing prose means the boundary leaked. `discoverProject` is the

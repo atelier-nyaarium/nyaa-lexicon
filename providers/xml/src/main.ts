@@ -63,6 +63,8 @@ export const WORDS = {
 };
 
 export class XmlProvider {
+	/** Holds nothing across parses. */
+	readonly admission = null;
 	private workspaceRoot = process.cwd();
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);

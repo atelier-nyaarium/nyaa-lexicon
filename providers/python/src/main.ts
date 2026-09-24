@@ -16,7 +16,6 @@ import {
 	type ImportedName,
 	type ImportResolution,
 	type Literal,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedImport,
@@ -543,7 +542,13 @@ export class PythonProvider {
 	private workspaceRoot = process.cwd();
 	private parsedFacts = new Map<string, MappedFacts>();
 	/** What the index took, so an imported name resolves to what it holds. */
-	private readonly admission = new AdmissionLedger<MappedFacts>();
+	readonly admission = new AdmissionLedger<MappedFacts>({
+		snapshot: (module) => this.parsedFacts.get(module),
+		restore: (module, held) => {
+			if (held === undefined) this.parsedFacts.delete(module);
+			else this.parsedFacts.set(module, held);
+		},
+	});
 
 	constructor(private readonly python3 = new Python3Dispatch()) {}
 
@@ -589,11 +594,9 @@ export class PythonProvider {
 		}
 	}
 
-	async parseFile(params: { module: string; contentHash: string; text: string; probe?: boolean | undefined }) {
+	async parseFile(params: { module: string; contentHash: string; text: string }) {
 		const raw = await extractFacts(this.python3, params.module, params.text);
 		const facts = mapFacts(params.module, raw);
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
@@ -611,14 +614,6 @@ export class PythonProvider {
 	forgetModule(params: { module: string }): void {
 		this.parsedFacts.delete(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so an import resolves to what the index holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
-		else this.parsedFacts.set(restore.module, restore.facts);
 	}
 
 	private async factsForModule(module: string): Promise<MappedFacts | null> {
@@ -935,7 +930,7 @@ function unknownType(reason: UnknownReason, detail: string): TypeInfo {
 // PythonProvider answers six methods asynchronously (it spawns python3); the shared provider
 // contract is written sync-only for every other language, and the wire dispatch loop awaits
 // whatever a handler returns regardless of this declared type.
-function wireHandlers(provider: PythonProvider): ReturnType<typeof handlersFor> {
+export function wireHandlers(provider: PythonProvider): ReturnType<typeof handlersFor> {
 	return handlersFor(provider as unknown as Parameters<typeof handlersFor>[0]);
 }
 

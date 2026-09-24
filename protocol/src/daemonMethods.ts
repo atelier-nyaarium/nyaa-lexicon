@@ -52,7 +52,7 @@ import {
 	SharedLiteralsResultSchema,
 	StoredDeclarationSchema,
 	SubjectDiagnosisSchema,
-	SymbolAtResultSchema,
+	SymbolAtReplySchema,
 	SymbolSourceSchema,
 	SymbolSummarySchema,
 	TransactionStatusSchema,
@@ -243,7 +243,13 @@ const Insert = z
 	.meta({ id: "InsertRequest" });
 const ParseFacts = z.object({ module: ModulePath, text: z.string() }).meta({ id: "ParseFactsRequest" });
 const SymbolAt = z
-	.object({ module: ModulePath, position: PositionSchema, text: z.string().optional() })
+	.object({
+		module: ModulePath,
+		position: PositionSchema,
+		/** The bytes the caller holds; `text`, when sent, must hash to it. */
+		contentHash: z.string().min(1).optional(),
+		text: z.string().optional(),
+	})
 	.meta({ id: "SymbolAtRequest" });
 
 ////////////////////////////////
@@ -346,7 +352,7 @@ export const DAEMON_METHODS = {
 	/** Paint facts for text not yet written, parsed by the owning provider; nothing is stored. */
 	parseFacts: { request: ParseFacts, response: ParseFactsResultSchema, lifecycle: "probe", mutates: false },
 	/** The symbol under a cursor, in stored facts or in handed text: a bound reference's target, else the innermost declaration. */
-	symbolAt: { request: SymbolAt, response: SymbolAtResultSchema, lifecycle: "query", mutates: false },
+	symbolAt: { request: SymbolAt, response: SymbolAtReplySchema, lifecycle: "query", mutates: false },
 	/** Importers by written specifier or resolved module. */
 	findImports: { request: FindImports, response: FindImportsResultSchema, lifecycle: "query", mutates: false },
 	/** Files, symbols, coverage and the biggest modules. */

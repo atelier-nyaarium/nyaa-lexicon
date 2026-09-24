@@ -45,31 +45,45 @@ describe("every stateful provider corrects through one primitive", () => {
 		expect(read.filter((entry) => entry.code.includes(LEDGER)).length).toBeGreaterThanOrEqual(9);
 	});
 
-	it("has every provider that answers one notification answering both", () => {
+	it("has every provider declare its admission, a ledger or null", () => {
 		const offenders = swept()
-			.map((entry) => ({
-				provider: entry.provider,
-				forget: handles(entry.code, "forgetModule"),
-				admission: handles(entry.code, "moduleAdmission"),
-			}))
-			.filter((entry) => entry.forget !== entry.admission)
-			.map((entry) => `${entry.provider} handles only ${entry.forget ? "forgetModule" : "moduleAdmission"}`);
+			.filter((entry) => !/readonly admission\s*=\s*(null|new AdmissionLedger)/.test(entry.code))
+			.map((entry) => entry.provider);
 
 		expect(
 			offenders,
-			"a provider holding cross-file state answers both: forgetModule says the index holds nothing, moduleAdmission says it holds the previous facts",
+			"declare `readonly admission = new AdmissionLedger(...)`, or `= null` when nothing is held",
 		).toEqual([]);
 	});
 
-	it("has every provider answering moduleAdmission reaching the shared ledger", () => {
+	it("leaves staging, settling and probing to the kit", () => {
 		const offenders = swept()
-			.filter((entry) => handles(entry.code, "moduleAdmission") && !entry.code.includes(LEDGER))
-			.map((entry) => `${entry.provider} settles a verdict without AdmissionLedger`);
+			.filter(
+				(entry) => /\.(staged|settle|probe)\s*\(/.test(entry.code) || handles(entry.code, "moduleAdmission"),
+			)
+			.map((entry) => entry.provider);
 
-		expect(
-			offenders,
-			"the staging, the tombstone and the hash rule belong to protocol/src/admission.ts; hold one and call settle",
-		).toEqual([]);
+		expect(offenders, "handlersFor stages each parse, settles each verdict and derives probeFile").toEqual([]);
+	});
+
+	it("has every stateful provider answer forgetModule", () => {
+		const offenders = swept()
+			.filter((entry) => entry.code.includes(`new ${LEDGER}`) && !handles(entry.code, "forgetModule"))
+			.map((entry) => entry.provider);
+
+		expect(offenders, "forgetModule says the index holds nothing; drop the module and call forgotten").toEqual([]);
+	});
+
+	it("has a probe test for every stateful provider", () => {
+		const offenders = swept()
+			.filter((entry) => entry.code.includes(`new ${LEDGER}`))
+			.filter((entry) => {
+				const tests = sourceFiles(join(PROVIDERS, entry.provider, "src", "__tests__"), new Set());
+				return !tests.some((file) => readSwept(file)?.includes("probeFile") === true);
+			})
+			.map((entry) => entry.provider);
+
+		expect(offenders, "a snapshot can leave state out; a probe test is the guard").toEqual([]);
 	});
 
 	it("has no provider declaring a ledger of its own", () => {
@@ -83,19 +97,5 @@ describe("every stateful provider corrects through one primitive", () => {
 		}
 
 		expect(offenders, "AdmissionLedger belongs to protocol/src/admission.ts").toEqual([]);
-	});
-
-	it("has every provider stage only a parse the index rules on", () => {
-		const offenders = swept()
-			.filter((entry) => {
-				const staged = entry.code.match(/\.staged\s*\(/g)?.length ?? 0;
-				const guarded = entry.code.match(
-					/if\s*\(\s*params\.probe\s*!==\s*true\s*\)\s*this\.admission\.staged\s*\(/g,
-				);
-				return staged !== (guarded?.length ?? 0);
-			})
-			.map((entry) => entry.provider);
-
-		expect(offenders, "the core never rules on a probe; stage behind `if (params.probe !== true)`").toEqual([]);
 	});
 });

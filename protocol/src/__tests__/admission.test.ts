@@ -14,76 +14,90 @@ function verdict(module: string, contentHash: string, reason?: string): ModuleAd
 	});
 }
 
+/** A provider holding one string per module, parsing through the ledger as the kit drives it. */
+function provider(initial: Record<string, string> = {}) {
+	const held = new Map(Object.entries(initial));
+	const ledger = new AdmissionLedger<string>({
+		snapshot: (module) => held.get(module),
+		restore: (module, facts) => {
+			if (facts === undefined) held.delete(module);
+			else held.set(module, facts);
+		},
+	});
+	return {
+		ledger,
+		held: (module = "a.fake") => held.get(module),
+		parse: (contentHash: string, facts: string, module = "a.fake") => {
+			ledger.staged(module, contentHash);
+			held.set(module, facts);
+		},
+		install: (facts: string, module = "a.fake") => held.set(module, facts),
+	};
+}
+
 ////////////////////////////////
 //  Tests
 
 describe("a refusal puts back what the index still holds", () => {
 	it("leaves an admitted parse standing", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		expect(ledger.settle(verdict("a.fake", "h1"))).toBeNull();
-		expect(ledger.fillable("a.fake")).toBe(true);
+		const p = provider({ "a.fake": "old" });
+		p.parse("h1", "new");
+		p.ledger.settle(verdict("a.fake", "h1"));
+		expect({ held: p.held(), fillable: p.ledger.fillable("a.fake") }).toEqual({ held: "new", fillable: true });
 	});
 
-	it("puts back what a refused parse displaced", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toEqual({ module: "a.fake", facts: "old" });
-	});
+	it("puts back what a refused parse displaced, and nothing where it displaced nothing", () => {
+		const displaced = provider({ "a.fake": "old" });
+		displaced.parse("h1", "new");
+		displaced.ledger.settle(verdict("a.fake", "h1", "refused"));
+		const fresh = provider();
+		fresh.parse("h1", "new");
+		fresh.ledger.settle(verdict("a.fake", "h1", "refused"));
 
-	// The index holds nothing for a module whose only parse it refused.
-	it("puts back nothing where the parse displaced nothing", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", undefined);
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toEqual({ module: "a.fake", facts: undefined });
+		expect([displaced.held(), fresh.held()]).toEqual(["old", undefined]);
 	});
 
 	it("withholds a refused module from a fill until a parse names it again", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", undefined);
-		ledger.settle(verdict("a.fake", "h1", "refused"));
-		expect(ledger.fillable("a.fake")).toBe(false);
-		ledger.staged("a.fake", "h2", undefined);
-		expect(ledger.fillable("a.fake")).toBe(true);
+		const p = provider();
+		p.parse("h1", "new");
+		p.ledger.settle(verdict("a.fake", "h1", "refused"));
+		const refused = p.ledger.fillable("a.fake");
+		p.parse("h2", "newer");
+		expect([refused, p.ledger.fillable("a.fake")]).toEqual([false, true]);
 	});
 
 	it("withholds a forgotten module, and settles no verdict for it", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		ledger.forgotten("a.fake");
-		expect(ledger.fillable("a.fake")).toBe(false);
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
+		const p = provider({ "a.fake": "old" });
+		p.parse("h1", "new");
+		p.ledger.forgotten("a.fake");
+		p.ledger.settle(verdict("a.fake", "h1", "refused"));
+		expect({ held: p.held(), fillable: p.ledger.fillable("a.fake") }).toEqual({ held: "new", fillable: false });
 	});
 
 	// A verdict about bytes the provider has moved past describes a parse a later one replaced.
-	it("settles nothing for a hash it did not stage", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h2", "old");
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
-		expect(ledger.fillable("a.fake")).toBe(true);
-	});
-
-	it("settles nothing for a module it never staged", () => {
-		const ledger = new AdmissionLedger<string>();
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
-		expect(ledger.fillable("a.fake")).toBe(true);
-	});
-
-	// One verdict per parse: a repeat describes a parse already settled.
-	it("settles one verdict per staged parse", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).not.toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
+	it("settles nothing for a hash it did not stage, a module it never staged, or a repeat", () => {
+		const p = provider({ "a.fake": "old" });
+		p.parse("h2", "new");
+		p.ledger.settle(verdict("a.fake", "h1", "refused"));
+		p.ledger.settle(verdict("b.fake", "h1", "refused"));
+		const afterStrays = p.held();
+		p.ledger.settle(verdict("a.fake", "h2", "refused"));
+		p.install("reparsed");
+		p.ledger.settle(verdict("a.fake", "h2", "refused"));
+		expect({ afterStrays, afterRepeat: p.held(), bFillable: p.ledger.fillable("b.fake") }).toEqual({
+			afterStrays: "new",
+			afterRepeat: "reparsed",
+			bFillable: true,
+		});
 	});
 
 	it("carries nothing across a reset", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		ledger.forgotten("b.fake");
-		ledger.reset();
-		expect(ledger.fillable("b.fake")).toBe(true);
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
+		const p = provider({ "a.fake": "old" });
+		p.parse("h1", "new");
+		p.ledger.forgotten("b.fake");
+		p.ledger.reset();
+		p.ledger.settle(verdict("a.fake", "h1", "refused"));
+		expect({ held: p.held(), bFillable: p.ledger.fillable("b.fake") }).toEqual({ held: "new", bFillable: true });
 	});
 });
 
@@ -93,66 +107,91 @@ describe("a refusal puts back what the index still holds", () => {
  */
 describe("two outstanding parses of one module", () => {
 	/** `old` held, then `h1` producing `facts1`, then `h2` producing `facts2`. */
-	function twoStaged(): AdmissionLedger<string> {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		ledger.staged("a.fake", "h2", "facts1");
-		return ledger;
+	function twoStaged() {
+		const p = provider({ "a.fake": "old" });
+		p.parse("h1", "facts1");
+		p.parse("h2", "facts2");
+		return p;
 	}
 
-	it("holds the first parse when it was admitted and the second refused", () => {
-		const ledger = twoStaged();
-		expect(ledger.settle(verdict("a.fake", "h1"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h2", "refused"))).toEqual({ module: "a.fake", facts: "facts1" });
-	});
+	it("holds what the index last admitted, in every order of verdicts", () => {
+		const outcomes = (
+			[
+				[undefined, "refused"],
+				["refused", undefined],
+				["refused", "refused"],
+				[undefined, undefined],
+			] as const
+		).map(([first, second]) => {
+			const p = twoStaged();
+			p.ledger.settle(verdict("a.fake", "h1", first));
+			p.ledger.settle(verdict("a.fake", "h2", second));
+			return [p.held(), p.ledger.fillable("a.fake")];
+		});
 
-	it("keeps the second parse when the first was refused and the second admitted", () => {
-		const ledger = twoStaged();
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h2"))).toBeNull();
-		// Admitted, so the earlier refusal no longer withholds it from a fill.
-		expect(ledger.fillable("a.fake")).toBe(true);
-	});
-
-	// The defect: keeping one entry per module lost `old`, leaving the provider on facts1.
-	it("goes back to what was held before, when both are refused", () => {
-		const ledger = twoStaged();
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h2", "refused"))).toEqual({ module: "a.fake", facts: "old" });
-		expect(ledger.fillable("a.fake")).toBe(false);
-	});
-
-	it("puts nothing back when both are admitted", () => {
-		const ledger = twoStaged();
-		expect(ledger.settle(verdict("a.fake", "h1"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h2"))).toBeNull();
-		expect(ledger.fillable("a.fake")).toBe(true);
-	});
-
-	it("settles nothing for a hash arriving after its parse was settled", () => {
-		const ledger = twoStaged();
-		ledger.settle(verdict("a.fake", "h1", "refused"));
-		ledger.settle(verdict("a.fake", "h2", "refused"));
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h2"))).toBeNull();
+		expect(outcomes).toEqual([
+			["facts1", false],
+			["facts2", true],
+			["old", false],
+			["facts2", true],
+		]);
 	});
 
 	// Out of order, which the queue does not produce; the oldest outstanding parse is the subject.
 	it("settles nothing for the newer parse while the older is outstanding", () => {
-		const ledger = twoStaged();
-		expect(ledger.settle(verdict("a.fake", "h2", "refused"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
+		const p = twoStaged();
+		p.ledger.settle(verdict("a.fake", "h2", "refused"));
+		expect(p.held()).toBe("facts2");
+	});
+
+	it("drops every outstanding parse when forgotten, so no verdict puts one back", () => {
+		const p = twoStaged();
+		p.ledger.forgotten("a.fake");
+		p.ledger.settle(verdict("a.fake", "h1", "refused"));
+		p.ledger.settle(verdict("a.fake", "h2", "refused"));
+		expect({ held: p.held(), fillable: p.ledger.fillable("a.fake") }).toEqual({ held: "facts2", fillable: false });
 	});
 });
 
-describe("a forgotten module", () => {
-	it("drops every outstanding parse, so no verdict puts one back", () => {
-		const ledger = new AdmissionLedger<string>();
-		ledger.staged("a.fake", "h1", "old");
-		ledger.staged("a.fake", "h2", "facts1");
-		ledger.forgotten("a.fake");
-		expect(ledger.settle(verdict("a.fake", "h1", "refused"))).toBeNull();
-		expect(ledger.settle(verdict("a.fake", "h2", "refused"))).toBeNull();
-		expect(ledger.fillable("a.fake")).toBe(false);
+describe("a probe", () => {
+	it("answers from the candidate, then holds what it held before, on every path", async () => {
+		const p = provider({ "a.fake": "admitted" });
+		const answered = p.ledger.probe("a.fake", () => {
+			p.install("candidate");
+			return p.held();
+		});
+		const afterAnswer = p.held();
+		const thrown = (() => {
+			try {
+				p.ledger.probe("a.fake", () => {
+					p.install("candidate");
+					throw new Error("does not parse");
+				});
+			} catch {
+				return p.held();
+			}
+		})();
+		const rejected = await p.ledger
+			.probe("a.fake", async () => {
+				p.install("candidate");
+				throw new Error("extractor failed");
+			})
+			.catch(() => p.held());
+
+		expect({ answered, afterAnswer, thrown, rejected }).toEqual({
+			answered: "candidate",
+			afterAnswer: "admitted",
+			thrown: "admitted",
+			rejected: "admitted",
+		});
+	});
+
+	it("stages nothing, so the verdict for a parse outstanding across it still settles", () => {
+		const p = provider({ "a.fake": "old" });
+		p.parse("h1", "new");
+		p.ledger.probe("a.fake", () => p.install("candidate"));
+		const afterProbe = p.held();
+		p.ledger.settle(verdict("a.fake", "h1", "refused"));
+		expect([afterProbe, p.held()]).toEqual(["new", "old"]);
 	});
 });

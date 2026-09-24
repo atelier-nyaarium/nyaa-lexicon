@@ -118,6 +118,7 @@ function defaultAnswer<K extends ProviderMethod>(
 ): MethodResponse<K> {
 	switch (method) {
 		case "parseFile":
+		case "probeFile":
 			return parseFake(params as MethodRequest<"parseFile">) as MethodResponse<K>;
 		case "resolveImport":
 			return resolveFake(params as MethodRequest<"resolveImport">) as MethodResponse<K>;
@@ -162,7 +163,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 				? await override(params as MethodRequest<K>, module)
 				: defaultAnswer(method, params, discover);
 		// The declared tier owns the comments field, exactly as the supervisor settles it at the wire.
-		if (method === "parseFile") {
+		if (method === "parseFile" || method === "probeFile") {
 			const facts = answered as MethodResponse<"parseFile">;
 			if (tiers.comments === true) facts.comments ??= [];
 			else delete facts.comments;

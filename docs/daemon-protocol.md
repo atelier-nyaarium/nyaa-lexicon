@@ -276,22 +276,27 @@ builtins, literal words), which facts alone cannot give.
 that deep yet: a module can sit at `outline` after warmup, whose rows hold neither, so a painter
 that needs references asks `parseFacts` when `moduleFacts`'s `depth` is `outline`.
 
-`parseFacts` reads under the gate. A candidate parse and the restore after it are two provider
-requests, and an index parse of another file landing between them would bind against the handed
-text and store what it bound. Both requests are `probe` parses, which a provider never stages for
-admission. The last eight candidates are kept by module, text and index generation, so asking
-again about unchanged text parses nothing while its candidate is kept.
+`parseFacts` reads under the gate. A candidate is one `probeFile` request (protocol 3.12.0): the
+provider parses the handed text, answers, and puts back what the parse displaced, and the index
+rules on none of it. The last eight parsed candidates are kept by module, content hash and index
+generation, so asking again about unchanged text parses nothing while its candidate is kept.
 
-**`symbolAt`** (`{ module, position, text? }`, protocol 3.10.0) answers which symbol a cursor
-means, from the same facts: the target of a bound reference under `position`, else the innermost
-declaration whose range holds it. An unbound or ambiguous reference falls through to the
-declaration; nothing is guessed by name. Without `text` it reads the store; with `text` it parses
-that text like `parseFacts`. Both read under the gate. `{ found: true, symbolId, via, contentHash }`,
-`via` being `reference` or `declaration`, or `{ found: false, reason }` with `reason` `noSymbol`,
-`notIndexed`, `unowned` or `unparsed`. `contentHash` names the bytes the answer came from, so a
-caller holding different bytes asks again with them. A stored read of a module the store lacks says
-`unowned` when no provider claims it (protocol 3.11.0) and `notIndexed` otherwise, and carries no
-`contentHash`.
+**`symbolAt`** (`{ module, position, contentHash?, text? }`, protocol 3.10.0) answers which symbol a
+cursor means: the target of a bound reference under `position`, else the innermost declaration
+whose range holds it. An unbound or ambiguous reference falls through to the declaration; nothing
+is guessed by name. It reads under the gate, and the daemon decides the source (protocol 3.12.0):
+
+- A module the store lacks is final: `unowned` when no provider claims it (protocol 3.11.0),
+  `notIndexed` otherwise. Handed text is not parsed.
+- Without `contentHash` or `text`, or when they name the stored bytes, the stored facts answer.
+- Other bytes answer from a kept candidate, or from `text` parsed like `parseFacts`. Handed `text`
+  names its own bytes.
+- `contentHash` alone, with no kept candidate, answers `{ needsText: true }`; ask again with `text`.
+
+A found answer is `{ found: true, symbolId, via, contentHash }`, `via` being `reference` or
+`declaration`; a miss is `{ found: false, reason }` with `reason` `noSymbol`, `notIndexed`,
+`unowned` or `unparsed`. `contentHash` names the bytes the answer came from; `notIndexed` and
+`unowned` carry none.
 
 `indexStatus.generation` (protocol 3.10.0) changes whenever the stored facts do, and differs across
 daemon restarts, so an answer drawn from facts holds while it stays equal.

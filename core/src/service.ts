@@ -16,10 +16,9 @@ import {
 	type MostReferencedResult,
 	type OverviewResult,
 	type ParseFactsResult,
-	type Position,
 	parseSymbolId,
 	type SharedLiteralsResult,
-	type SymbolAtResult,
+	type SymbolAtReply,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { writeAll } from "./applyEdits.js";
@@ -122,7 +121,7 @@ export class LexiconService {
 			this.gate,
 		);
 		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
-		this.probe = liveProbe(supervisor, (module) => textOf(readSource(module)));
+		this.probe = liveProbe(supervisor);
 		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe);
 		this.paint = new PaintReads(store, this.probe, () => this.caches.facts.stats().generation);
 	}
@@ -362,12 +361,8 @@ export class LexiconService {
 		return this.paint.parseFacts(module, text);
 	}
 
-	storedSymbolAt(module: string, position: Position): SymbolAtResult {
-		return this.paint.storedSymbolAt(module, position);
-	}
-
-	candidateSymbolAt(module: string, position: Position, text: string): Promise<SymbolAtResult> {
-		return this.paint.candidateSymbolAt(module, position, text);
+	symbolAt(request: Parameters<PaintReads["symbolAt"]>[0]): Promise<SymbolAtReply> {
+		return this.paint.symbolAt(request);
 	}
 
 	////////////////////////////////

@@ -476,7 +476,8 @@ export class ProviderSupervisor implements ProviderPort {
 			const parsed = METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
 			// The comments tier the provider declared is the one its answer carries: a field from a
 			// provider without the tier reports nothing stripped, and one with the tier reported spans.
-			if (method === "parseFile" && typeof parsed === "object" && parsed !== null) {
+			const facts = method === "parseFile" || method === "probeFile";
+			if (facts && typeof parsed === "object" && parsed !== null) {
 				const answer = parsed as { comments?: unknown[] };
 				if (provider.tiers.comments === true) answer.comments ??= [];
 				else delete answer.comments;

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Binding, MAX_SOURCE_BYTES, type ModuleAdmission } from "@nyaa-lexicon/protocol";
+import { type Binding, handlersFor, MAX_SOURCE_BYTES, type ModuleAdmission } from "@nyaa-lexicon/protocol";
 import { KotlinProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -43,6 +43,8 @@ const REFUSED = "package p\n\nclass Foo\nclass Extra {\n";
 /** Parses cleanly, so only the core's word can refuse it. */
 const RENAMED = "package p\n\nclass Bar\n";
 const BAR_USE = "package p\n\nval b = Bar()\n";
+const CANDIDATE = "package p\n\nclass Candidate\n";
+const CANDIDATE_USE = "package p\n\nval c = Candidate()\n";
 
 /** The core's word on a parse. */
 function verdict(module: string, contentHash: string, reason?: string): ModuleAdmission {
@@ -184,6 +186,7 @@ describe("a module the core lets go of", () => {
 	test("answers no direct read of its own while its file is still on disk, until it is parsed again", () => {
 		const root = workspace({ "a/Foo.kt": FOO });
 		const provider = started(root);
+		const handlers = handlersFor(provider);
 		const foo = provider
 			.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO })
 			.declarations.find((item) => item.name === "Foo");
@@ -202,7 +205,7 @@ describe("a module the core lets go of", () => {
 			"NotIndexed",
 		]);
 
-		provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO, depth: "outline" });
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO, depth: "outline" });
 		expect(read()[0]).toEqual({ status: "bound", symbolId: "lexicon kotlin a/Foo.kt Foo#", provenance: "bound" });
 	});
 
@@ -225,14 +228,15 @@ describe("the index takes only what the core admits", () => {
 	test("keeps a module's last admitted declarations when the core refuses the parse", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
+		const handlers = handlersFor(provider);
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 
 		// Clean facts, so only the verdict can turn them away.
-		const parsed = provider.parseFile({ module: "a/Foo.kt", contentHash: "renamed", text: RENAMED });
+		const parsed = handlers.parseFile({ module: "a/Foo.kt", contentHash: "renamed", text: RENAMED });
 		expect(parsed.diagnostics).toEqual([]);
 		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["lexicon kotlin a/Foo.kt Bar#"]);
 
-		provider.moduleAdmission(verdict("a/Foo.kt", "renamed", "the store refused an id"));
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "renamed", "the store refused an id"));
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["unbound"]);
@@ -253,9 +257,10 @@ describe("the index takes only what the core admits", () => {
 	test("holds nothing for a refused parse, and no later fill or read brings it back", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		const facts = provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO });
+		const handlers = handlersFor(provider);
+		const facts = handlers.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO });
 		const foo = facts.declarations.find((item) => item.name === "Foo");
-		provider.moduleAdmission(verdict("a/Foo.kt", "h", "the store refused an id"));
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "h", "the store refused an id"));
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
 		expect(provider.typeOf({ symbolId: foo?.symbolId ?? "" })).toMatchObject({ reason: "NotIndexed" });
@@ -270,10 +275,53 @@ describe("the index takes only what the core admits", () => {
 	test("ignores a verdict naming bytes a later parse replaced", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		provider.parseFile({ module: "a/Foo.kt", contentHash: "first", text: RENAMED });
-		provider.parseFile({ module: "a/Foo.kt", contentHash: "second", text: FOO });
+		const handlers = handlersFor(provider);
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "first", text: RENAMED });
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "second", text: FOO });
 
-		provider.moduleAdmission(verdict("a/Foo.kt", "first", "the store refused an id"));
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "first", "the store refused an id"));
+
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+	});
+
+	test("answers a probe from the candidate, then holds what the core admitted, never the candidate or the disk", () => {
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const provider = started(root);
+		const handlers = handlersFor(provider);
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "old", text: FOO });
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "old"));
+		// The file changed on disk and its parse is outstanding across the probe.
+		put(root, "a/Foo.kt", RENAMED);
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "disk", text: RENAMED });
+		const probed = handlers.probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
+		const afterProbe = targets(bindings(provider, "a/Use.kt", CANDIDATE_USE, "Candidate"));
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "disk", "the store refused an id"));
+
+		expect({
+			probed: probed.declarations.map((declaration) => declaration.name),
+			afterProbe,
+			foo: targets(bindings(provider, "a/Use.kt", USE)),
+			disk: targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar")),
+			candidate: targets(bindings(provider, "a/Use.kt", CANDIDATE_USE, "Candidate")),
+			own: provider.bind({
+				module: "a/Foo.kt",
+				name: "Foo",
+				range: { start: { line: 2, character: 6 }, end: { line: 2, character: 9 } },
+			}),
+		}).toEqual({
+			probed: ["p", "Candidate"],
+			afterProbe: ["unbound"],
+			foo: ["lexicon kotlin a/Foo.kt Foo#"],
+			disk: ["unbound"],
+			candidate: ["unbound"],
+			own: { status: "bound", symbolId: "lexicon kotlin a/Foo.kt Foo#", provenance: "bound" },
+		});
+	});
+
+	test("a probe that runs the first fill leaves its module to a later disk read", () => {
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const provider = started(root);
+		handlersFor(provider).probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 	});
@@ -293,15 +341,19 @@ describe("the index takes only what the core admits", () => {
 		]);
 	});
 
-	test("retries a file it could not read on a later lookup", () => {
+	test("retries a file it could not read on a later lookup, unless the core refused a parse of it since", () => {
 		if (process.getuid?.() === 0) return;
-		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
-		chmodSync(path.join(root, "a/Foo.kt"), 0o000);
+		const root = workspace({ "a/Foo.kt": FOO, "a/Bar.kt": RENAMED, "a/Use.kt": USE });
+		for (const module of ["a/Foo.kt", "a/Bar.kt"]) chmodSync(path.join(root, module), 0o000);
 		const provider = started(root);
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
 
-		chmodSync(path.join(root, "a/Foo.kt"), 0o644);
+		for (const module of ["a/Foo.kt", "a/Bar.kt"]) chmodSync(path.join(root, module), 0o644);
+		handlersFor(provider).parseFile({ module: "a/Bar.kt", contentHash: "h", text: RENAMED, depth: "outline" });
+		handlersFor(provider).moduleAdmission?.(verdict("a/Bar.kt", "h", "the store refused an id"));
+
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["unbound"]);
 	});
 });
 

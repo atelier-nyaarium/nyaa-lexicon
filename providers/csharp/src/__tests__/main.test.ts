@@ -323,12 +323,30 @@ describe("a using directive resolves to what the index holds", () => {
 	const RENAMED = "namespace Demo.Renamed { public class Item {} }\n";
 	const OTHER = "namespace Demo.Other { public class Other {} }\n";
 
-	function admitted(root: string): CsharpProvider {
+	function scanned(root: string): CsharpProvider {
 		const provider = new CsharpProvider();
 		provider.initialize(root);
 		provider.discoverProject(root);
-		provider.parseFile({ module: "src/item.cs", contentHash: "v1", text: ITEM });
-		provider.moduleAdmission({ module: "src/item.cs", contentHash: "v1", outcome: { status: "admitted" } });
+		return provider;
+	}
+
+	/** The index's verdict on a parse, through the kit as the wire delivers it. */
+	function verdict(provider: CsharpProvider, hash: string, refusal?: string): void {
+		handlersFor(provider).moduleAdmission?.({
+			module: "src/item.cs",
+			contentHash: hash,
+			outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
+		});
+	}
+
+	function parse(provider: CsharpProvider, hash: string, text: string) {
+		return handlersFor(provider).parseFile({ module: "src/item.cs", contentHash: hash, text });
+	}
+
+	function admitted(root: string): CsharpProvider {
+		const provider = scanned(root);
+		parse(provider, "v1", ITEM);
+		verdict(provider, "v1");
 		return provider;
 	}
 
@@ -336,45 +354,61 @@ describe("a using directive resolves to what the index holds", () => {
 		return provider.resolveImport({ fromModule: "src/use.cs", specifier });
 	}
 
+	/** Which namespace `src/item.cs` answers for, as another module's using directive sees it. */
+	function served(provider: CsharpProvider): string[] {
+		return ["Demo.Items", "Demo.Renamed", "Demo.Probe"].filter(
+			(specifier) => resolves(provider, specifier).status === "resolved",
+		);
+	}
+
 	it("restores the admitted facts a refused parse displaced, and still fans out to them", () => {
 		const root = workspace({ "src/item.cs": ITEM, "src/other.cs": OTHER });
 		const provider = admitted(root);
 		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
 
-		provider.parseFile({ module: "src/item.cs", contentHash: "v2", text: RENAMED });
+		parse(provider, "v2", RENAMED);
 		expect(resolves(provider, "Demo.Renamed")).toEqual({ status: "resolved", module: "src/item.cs" });
 
-		provider.moduleAdmission({
-			module: "src/item.cs",
-			contentHash: "v2",
-			outcome: { status: "refused", reason: "the index refused these facts" },
-		});
+		verdict(provider, "v2", "the index refused these facts");
 		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
 		expect(resolves(provider, "Demo.Renamed")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 	});
 
 	it("ignores a verdict naming bytes a later parse replaced", () => {
 		const root = workspace({ "src/item.cs": ITEM, "src/other.cs": OTHER });
-		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
-		provider.parseFile({ module: "src/item.cs", contentHash: "v1", text: ITEM });
-		provider.parseFile({ module: "src/item.cs", contentHash: "v2", text: RENAMED });
+		const provider = scanned(root);
+		parse(provider, "v1", ITEM);
+		parse(provider, "v2", RENAMED);
 
-		provider.moduleAdmission({
-			module: "src/item.cs",
-			contentHash: "v1",
-			outcome: { status: "refused", reason: "a verdict about replaced bytes" },
-		});
+		verdict(provider, "v1", "a verdict about replaced bytes");
 		expect(resolves(provider, "Demo.Renamed")).toEqual({ status: "resolved", module: "src/item.cs" });
 		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 	});
 
+	it("answers a probe from the candidate, then resolves into what the index holds, never the candidate or the disk", () => {
+		const root = workspace({ "src/item.cs": ITEM, "src/other.cs": OTHER });
+		const provider = admitted(root);
+		// The file changed on disk and its parse is outstanding across the probe.
+		writeFileSync(path.join(root, "src/item.cs"), RENAMED);
+		parse(provider, "v2", RENAMED);
+		const probed = handlersFor(provider).probeFile({
+			module: "src/item.cs",
+			contentHash: "probe",
+			text: "namespace Demo.Probe { public class Probed {} }\n",
+		});
+		const outstanding = served(provider);
+		verdict(provider, "v2", "refused");
+
+		expect({
+			candidate: probed.declarations.map((declaration) => declaration.name),
+			outstanding,
+			settled: served(provider),
+		}).toEqual({ candidate: ["Demo.Probe", "Probed"], outstanding: ["Demo.Renamed"], settled: ["Demo.Items"] });
+	});
+
 	it("keeps a forgotten module withheld across a re-scan, and drops that only on initialize", () => {
 		const root = workspace({ "src/item.cs": ITEM, "src/copy.cs": ITEM });
-		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
+		const provider = scanned(root);
 		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 
 		provider.forgetModule({ module: "src/copy.cs" });

@@ -27,8 +27,8 @@ export interface ProviderProbe {
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
 	/** The owning provider's keywords, builtins and literal words; null when the module is unowned. */
 	words(module: string): ProviderWords | null;
-	/** Restores the provider's view before returning. Never rejects: a provider that THROWS on a
-	 * malformed candidate answers parsed:false, so every planner refuses instead of leaking. */
+	/** One `probeFile`: the provider puts back its own view. Never rejects: a provider that THROWS on
+	 * a malformed candidate answers parsed:false, so every planner refuses instead of leaking. */
 	parseCandidate(module: string, text: string): Promise<CandidateParse>;
 	/** These ASK rather than SET, so no restore is needed. */
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
@@ -39,17 +39,7 @@ export interface ProviderProbe {
 //  Functions & Helpers
 
 /** The live probe over a running provider set. */
-export function liveProbe(supervisor: ProviderPort, readFile: (module: string) => string | null): ProviderProbe {
-	async function restore(module: string): Promise<void> {
-		// An absent file restores to EMPTY, or the provider keeps serving the candidate as the view
-		// of a module that does not exist.
-		const text = readFile(module) ?? "";
-		// Swallowed: a failed repair must not replace the caller's answer.
-		await supervisor
-			.ask(module, "parseFile", { module, contentHash: hashContent(text), text, probe: true })
-			.catch(() => undefined);
-	}
-
+export function liveProbe(supervisor: ProviderPort): ProviderProbe {
 	return {
 		owner(module) {
 			const route = supervisor.route(module);
@@ -74,11 +64,10 @@ export function liveProbe(supervisor: ProviderPort, readFile: (module: string) =
 
 		async parseCandidate(module, text) {
 			try {
-				const facts = await supervisor.ask(module, "parseFile", {
+				const facts = await supervisor.ask(module, "probeFile", {
 					module,
 					contentHash: hashContent(text),
 					text,
-					probe: true,
 				});
 				const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 				if (errors.length > 0) {
@@ -90,8 +79,6 @@ export function liveProbe(supervisor: ProviderPort, readFile: (module: string) =
 					parsed: false,
 					reason: `the provider could not parse the candidate: ${error instanceof Error ? error.message : String(error)}`,
 				};
-			} finally {
-				await restore(module);
 			}
 		},
 	};

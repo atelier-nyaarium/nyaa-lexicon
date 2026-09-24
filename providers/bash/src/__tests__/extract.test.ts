@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { coordinatesOf, type Range } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, handlersFor, type Range } from "@nyaa-lexicon/protocol";
 import { parseBash } from "../extract.js";
 import { BashProvider } from "../main.js";
 
@@ -204,6 +204,39 @@ describe("sourcing", () => {
 			status: "bound",
 			symbolId: "lexicon bash bin/lib.sh SHARED.",
 		});
+	});
+
+	test("a probe answers from the candidate, then a sourced name binds into what the index holds", () => {
+		const main = "source ./lib.sh\nold\ndisk\ncandidate\n";
+		const root = workspace({ "main.sh": main, "lib.sh": "old() { :; }\n" });
+		const bash = new BashProvider();
+		bash.initialize(root);
+		const handlers = handlersFor(bash);
+		/** Names in main.sh that bind; an unbound command is dropped as a program. */
+		const bound = () =>
+			bash
+				.parseFile({ module: "main.sh", contentHash: "main", text: main })
+				.references.filter((reference) => reference.role !== "import")
+				.map((reference) => reference.name);
+
+		handlers.parseFile({ module: "lib.sh", contentHash: "lib-1", text: "old() { :; }\n" });
+		handlers.moduleAdmission?.({ module: "lib.sh", contentHash: "lib-1", outcome: { status: "admitted" } });
+		// The file changed on disk and its parse is outstanding across the probe.
+		writeFileSync(path.join(root, "lib.sh"), "disk() { :; }\n");
+		handlers.parseFile({ module: "lib.sh", contentHash: "lib-2", text: "disk() { :; }\n" });
+		const probed = handlers.probeFile({ module: "lib.sh", contentHash: "probe", text: "candidate() { :; }\n" });
+		const pending = bound();
+		handlers.moduleAdmission?.({
+			module: "lib.sh",
+			contentHash: "lib-2",
+			outcome: { status: "refused", reason: "refused" },
+		});
+
+		expect({
+			candidate: probed.declarations.map((declaration) => declaration.name),
+			pending,
+			held: bound(),
+		}).toEqual({ candidate: ["candidate"], pending: ["disk"], held: ["old"] });
 	});
 });
 

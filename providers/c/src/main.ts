@@ -11,7 +11,6 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -274,7 +273,15 @@ export class CProvider {
 	private readonly facts = new Map<string, StoredFacts>();
 	private readonly includeKinds = new Map<string, "quoted" | "angle">();
 	/** What the index took, so an included header's facts are what it holds and not what was emitted. */
-	private readonly admission = new AdmissionLedger<StoredFacts>();
+	readonly admission = new AdmissionLedger<StoredFacts>({
+		snapshot: (module) => this.facts.get(module),
+		restore: (module, held) => {
+			this.dropModule(module);
+			if (held === undefined) return;
+			this.facts.set(module, held);
+			this.recordIncludes(module, held.parsed.imports);
+		},
+	});
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
@@ -318,15 +325,7 @@ export class CProvider {
 		}
 	}
 
-	parseFile(params: {
-		module: string;
-		contentHash: string;
-		text: string;
-		depth?: IndexDepth | undefined;
-		probe?: boolean | undefined;
-	}) {
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const stored = this.parseAndStore(params.module, params.contentHash, params.text);
 		const bindingCache = new Map<string, Binding>();
 		return {
@@ -369,16 +368,6 @@ export class CProvider {
 	forgetModule(params: { module: string }): void {
 		this.dropModule(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so an included name resolves to what the index holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		this.dropModule(restore.module);
-		if (restore.facts === undefined) return;
-		this.facts.set(restore.module, restore.facts);
-		this.recordIncludes(restore.module, restore.facts.parsed.imports);
 	}
 
 	/** An include kind is stated by the facts holding it, so it goes when they do. */

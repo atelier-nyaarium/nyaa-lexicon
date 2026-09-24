@@ -12,7 +12,6 @@ import {
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	type Position,
@@ -202,7 +201,13 @@ export class BashProvider {
 	private workspaceRoot = process.cwd();
 	private readonly facts = new Map<string, ParsedBashFile>();
 	/** What the index took, so a sourced file's facts are what it holds and not what was emitted. */
-	private readonly admission = new AdmissionLedger<ParsedBashFile>();
+	readonly admission = new AdmissionLedger<ParsedBashFile>({
+		snapshot: (module) => this.facts.get(module),
+		restore: (module, held) => {
+			if (held === undefined) this.facts.delete(module);
+			else this.facts.set(module, held);
+		},
+	});
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
@@ -246,10 +251,8 @@ export class BashProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; probe?: boolean | undefined }) {
+	parseFile(params: { module: string; contentHash: string; text: string }) {
 		const parsed = parseBash(params.module, params.text);
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
 		this.facts.set(params.module, parsed);
 		const references: Reference[] = [];
 		for (const reference of parsed.references) {
@@ -349,14 +352,6 @@ export class BashProvider {
 	forgetModule(params: { module: string }): void {
 		this.facts.delete(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so a sourced name resolves to what the index holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		if (restore.facts === undefined) this.facts.delete(restore.module);
-		else this.facts.set(restore.module, restore.facts);
 	}
 
 	private factsFor(module: string): ParsedBashFile | null {

@@ -710,6 +710,13 @@ function callsAdd(provider: RustProvider): string | undefined {
 	return call?.binding.status === "bound" ? call.binding.symbolId : undefined;
 }
 
+/** The type of what `run`'s call to `add` binds into. */
+function addType(provider: RustProvider): string | undefined {
+	const symbolId = callsAdd(provider);
+	const type = symbolId === undefined ? undefined : provider.typeOf({ symbolId });
+	return type?.status === "known" ? type.display : undefined;
+}
+
 function cartWorkspace(): RustProvider {
 	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
 	const provider = new RustProvider();
@@ -717,33 +724,59 @@ function cartWorkspace(): RustProvider {
 	return provider;
 }
 
-function admit(provider: RustProvider, contentHash: string): void {
-	provider.parseFile({ module: "src/cart.rs", contentHash, text: CART });
-	provider.moduleAdmission({ module: "src/cart.rs", contentHash, outcome: { status: "admitted" } });
+/** The index's verdict on a parse, through the kit as the wire delivers it. */
+function verdict(provider: RustProvider, module: string, contentHash: string, refusal?: string): void {
+	handlersFor(provider).moduleAdmission?.({
+		module,
+		contentHash,
+		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
+	});
+}
+
+/** Parses through the kit and settles the index's verdict on it. */
+function settle(provider: RustProvider, module: string, text: string, contentHash: string, refusal?: string): void {
+	handlersFor(provider).parseFile({ module, contentHash, text });
+	verdict(provider, module, contentHash, refusal);
 }
 
 test("stops binding into a module the index forgot, and binds again once a parse is admitted", () => {
 	const provider = cartWorkspace();
-	admit(provider, "cart");
+	settle(provider, "src/cart.rs", CART, "cart");
 	expect(callsAdd(provider)).toBe("lexicon rust src/cart.rs add().");
 
 	provider.forgetModule({ module: "src/cart.rs" });
 	expect(callsAdd(provider)).toBeUndefined();
 
-	admit(provider, "cart-2");
+	settle(provider, "src/cart.rs", CART, "cart-2");
 	expect(callsAdd(provider)).toBe("lexicon rust src/cart.rs add().");
 });
 
 test("holds nothing for a module whose first parse the index refused", () => {
 	const provider = cartWorkspace();
-	provider.parseFile({ module: "src/cart.rs", contentHash: "cart", text: CART });
-	provider.moduleAdmission({
-		module: "src/cart.rs",
-		contentHash: "cart",
-		outcome: { status: "refused", reason: "an id the index could not read" },
-	});
+	settle(provider, "src/cart.rs", CART, "cart", "an id the index could not read");
 
 	expect(callsAdd(provider)).toBeUndefined();
+});
+
+test("answers a probe from the candidate, then binds into what the index holds, never the candidate or the disk", () => {
+	const disk = "pub fn add() -> u8 { 0 }\n";
+	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
+	const provider = new RustProvider();
+	provider.initialize(root);
+	const handlers = handlersFor(provider);
+	settle(provider, "src/cart.rs", CART, "cart-1");
+	// The file changed on disk and its parse is outstanding across the probe.
+	writeFileSync(path.join(root, "src/cart.rs"), disk);
+	handlers.parseFile({ module: "src/cart.rs", contentHash: "cart-2", text: disk });
+	const probed = handlers.probeFile({ module: "src/cart.rs", contentHash: "probe", text: "pub fn probed() {}\n" });
+	const outstanding = addType(provider);
+	verdict(provider, "src/cart.rs", "cart-2", "refused");
+
+	expect({
+		candidate: probed.declarations.map((declaration) => declaration.name),
+		outstanding,
+		settled: addType(provider),
+	}).toEqual({ candidate: ["probed"], outstanding: "fn() -> u8", settled: "fn(i32, i32) -> i32" });
 });
 
 test("lets a new workspace fill a module the previous one withheld", () => {
@@ -766,23 +799,16 @@ test("resolves a base-module symbol import against what the index holds, not the
 	const provider = new RustProvider();
 	provider.initialize(root);
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
-	const parseLib = (contentHash: string) =>
-		provider.parseFile({ module: "src/lib.rs", contentHash, text: "pub enum Token { Literal }\n" });
+	const token = "pub enum Token { Literal }\n";
 
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
 
 	provider.forgetModule({ module: "src/lib.rs" });
 	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 
-	parseLib("lib");
-	provider.moduleAdmission({ module: "src/lib.rs", contentHash: "lib", outcome: { status: "admitted" } });
+	settle(provider, "src/lib.rs", token, "lib");
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
 
-	parseLib("lib-2");
-	provider.moduleAdmission({
-		module: "src/lib.rs",
-		contentHash: "lib-2",
-		outcome: { status: "refused", reason: "an id the index could not read" },
-	});
+	settle(provider, "src/lib.rs", token, "lib-2", "an id the index could not read");
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
 });

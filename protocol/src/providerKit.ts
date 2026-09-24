@@ -3,6 +3,7 @@
 import { closeSync, type Dirent, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
+import type { ModuleAdmission, ProviderAdmission } from "./admission.js";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { PROVIDER_NOTIFICATIONS } from "./methods.js";
 import type { ProjectModel } from "./project.js";
@@ -34,9 +35,12 @@ interface ProviderRequestMethods {
  * A provider as a plain object; `handlersFor` wires it to the method table.
  *
  * Notifications are taken from the frozen list rather than written out, so one added there is an
- * optional member of every provider without anyone remembering to add it twice.
+ * optional member of every provider without anyone remembering to add it twice. `moduleAdmission`
+ * is the kit's: a provider holding cross-file state hands over its ledger, and one holding none
+ * says `null`.
  */
-export type ProviderMethods = ProviderRequestMethods & ProviderNotificationHandlers;
+export type ProviderMethods = ProviderRequestMethods &
+	Omit<ProviderNotificationHandlers, "moduleAdmission"> & { readonly admission: ProviderAdmission | null };
 
 export interface WalkOptions {
 	/** With the dot; a file is claimed when its name ends with one. */
@@ -86,6 +90,7 @@ const SHEBANG_PROBE_BYTES = 256;
 function notificationsOf(provider: ProviderMethods): ProviderNotificationHandlers {
 	const handlers: ProviderNotificationHandlers = {};
 	for (const notification of PROVIDER_NOTIFICATIONS) {
+		if (notification === "moduleAdmission") continue;
 		const handler = provider[notification] as ((params: unknown) => void) | undefined;
 		if (handler === undefined) continue;
 		(handlers as Record<string, (params: unknown) => void>)[notification] = (params) =>
@@ -95,11 +100,21 @@ function notificationsOf(provider: ProviderMethods): ProviderNotificationHandler
 }
 
 export function handlersFor(provider: ProviderMethods): ProviderHandlers & ProviderNotificationHandlers {
+	// A provider predating the ledger leaves it undefined.
+	const admission = provider.admission ?? null;
 	return {
 		...notificationsOf(provider),
+		...(admission === null ? {} : { moduleAdmission: (verdict: ModuleAdmission) => admission.settle(verdict) }),
 		initialize: (params) => provider.initialize(params.workspaceRoot),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => provider.parseFile(params),
+		parseFile: (params) => {
+			admission?.staged(params.module, params.contentHash);
+			return provider.parseFile(params);
+		},
+		probeFile: (params) =>
+			admission === null
+				? provider.parseFile(params)
+				: admission.probe(params.module, () => provider.parseFile(params)),
 		resolveImport: (params) => provider.resolveImport(params),
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),

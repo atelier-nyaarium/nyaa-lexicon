@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Declaration, moduleOf, type Range } from "@nyaa-lexicon/protocol";
+import { type Declaration, handlersFor, moduleOf, type Range } from "@nyaa-lexicon/protocol";
 import { GDScriptProvider } from "../main.js";
 
 ////////////////////////////////
@@ -11,6 +11,8 @@ import { GDScriptProvider } from "../main.js";
 const PROJECT = 'config_version=5\n\n[application]\nconfig/name="cart"\n';
 const CART = "class_name Cart\nextends Node\n";
 const CART_WITH_COUNT = "class_name Cart\nextends Node\n\nvar count: int = 1\n";
+const CART_WITH_TOTAL = "class_name Cart\nextends Node\n\nvar total: float = 2.0\n";
+const CRATE = "class_name Crate\nextends Node\n";
 const USE = "extends Cart\n\n\nfunc run() -> void:\n\tpass\n";
 const TARGET = "src/cart.gd";
 const REFUSAL = { status: "refused", reason: "the index refused these facts" } as const;
@@ -38,13 +40,18 @@ function started(cartText: string): { provider: GDScriptProvider; root: string }
 	return { provider, root };
 }
 
-function settle(provider: GDScriptProvider, contentHash: string, text: string, refused = false) {
-	const facts = provider.parseFile({ module: TARGET, contentHash, text });
-	provider.moduleAdmission({
+/** The index's verdict on a parse, through the kit as the wire delivers it. */
+function verdict(provider: GDScriptProvider, contentHash: string, refused = false): void {
+	handlersFor(provider).moduleAdmission?.({
 		module: TARGET,
 		contentHash,
 		outcome: refused ? REFUSAL : { status: "admitted" },
 	});
+}
+
+function settle(provider: GDScriptProvider, contentHash: string, text: string, refused = false) {
+	const facts = handlersFor(provider).parseFile({ module: TARGET, contentHash, text });
+	verdict(provider, contentHash, refused);
 	return facts;
 }
 
@@ -113,6 +120,34 @@ test("a refusal puts back the module's type facts, not only its bindings", () =>
 
 	settle(provider, "v2", CART, true);
 	expect(provider.typeOf({ symbolId: count }).status).toBe("known");
+});
+
+test("answers a probe from the candidate, then from what the index holds, never the candidate or the disk", () => {
+	const { provider, root } = started(CART_WITH_COUNT);
+	const handlers = handlersFor(provider);
+	const count = symbolFor(settle(provider, "old", CART_WITH_COUNT), "count");
+	// The file changed on disk and its parse is outstanding across the probe.
+	writeFileSync(path.join(root, TARGET), CRATE);
+	handlers.parseFile({ module: TARGET, contentHash: "disk", text: CRATE });
+	const probed = handlers.probeFile({ module: TARGET, contentHash: "probe", text: CART_WITH_TOTAL });
+	const total = symbolFor(probed, "total");
+	const answers = () => ({
+		cart: cartBindsInto(provider),
+		count: provider.typeOf({ symbolId: count }).status,
+		total: provider.typeOf({ symbolId: total }).status,
+	});
+	const staged = answers();
+	verdict(provider, "disk", true);
+
+	expect({
+		candidate: probed.declarations.map((declaration) => declaration.name),
+		staged,
+		refused: answers(),
+	}).toEqual({
+		candidate: ["Cart", "total"],
+		staged: { cart: null, count: "unknown", total: "unknown" },
+		refused: { cart: TARGET, count: "known", total: "unknown" },
+	});
 });
 
 test("a forgotten module's types do not come back through a read of its own bytes", () => {

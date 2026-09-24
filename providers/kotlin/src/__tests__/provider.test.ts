@@ -28,6 +28,7 @@ test("every handler answers, both notifications included, and write operations r
 		"moduleAdmission",
 		"moveEdits",
 		"parseFile",
+		"probeFile",
 		"renameEdits",
 		"resolveImport",
 		"shutdown",

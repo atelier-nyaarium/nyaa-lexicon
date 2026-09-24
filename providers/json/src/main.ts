@@ -89,6 +89,8 @@ function readRecords(module: string, text: string, coordinates: TextCoordinates,
 }
 
 export class JsonProvider {
+	/** Holds nothing across parses. */
+	readonly admission = null;
 	private workspaceRoot = process.cwd();
 
 	initialize(workspaceRoot: string) {

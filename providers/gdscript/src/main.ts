@@ -5,7 +5,6 @@ import {
 	type Declaration,
 	handlersFor,
 	type ImportResolution,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -24,7 +23,7 @@ import { GDScriptTypeIndex, type TypeFacts } from "./types.js";
 
 //////// Types
 
-/** Both indexes' state for one module, so one verdict settles them together. */
+/** Both indexes' state for one module, taken and put back together. */
 interface ModuleFacts {
 	binding: GDScriptBindingSnapshot | undefined;
 	types: TypeFacts | undefined;
@@ -144,7 +143,13 @@ const FILENAMES = ["project.godot"];
 export class GDScriptProvider {
 	private workspaceRoot = process.cwd();
 	/** What the index took, so cross-file answers match what it holds. */
-	private readonly admission = new AdmissionLedger<ModuleFacts>();
+	readonly admission = new AdmissionLedger<ModuleFacts>({
+		snapshot: (module) => this.heldFacts(module),
+		restore: (module, held) => {
+			this.bindingIndex.restore(module, held?.binding);
+			this.typeIndex.restore(module, held?.types);
+		},
+	});
 	private readonly fillable = (module: string): boolean => this.admission.fillable(module);
 	private bindingIndex = new GDScriptBindingIndex(this.workspaceRoot, this.fillable);
 	private typeIndex = new GDScriptTypeIndex(this.workspaceRoot, this.bindingIndex, this.fillable);
@@ -168,10 +173,8 @@ export class GDScriptProvider {
 		return discoverProject(workspaceRoot);
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; probe?: boolean | undefined }) {
+	parseFile(params: { module: string; contentHash: string; text: string }) {
 		const extracted = extractFile(params.module, params.text);
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.heldFacts(params.module));
 		this.bindingIndex.registerFile(params.module, extracted.declarations, extracted.references, params.text);
 		this.typeIndex.registerFile(params.module, params.text, extracted.declarations);
 		const references = extracted.references.map((reference) => ({
@@ -230,14 +233,6 @@ export class GDScriptProvider {
 		this.bindingIndex.forget(params.module);
 		this.typeIndex.forget(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so a `class_name` resolves to what the index holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		this.bindingIndex.restore(restore.module, restore.facts?.binding);
-		this.typeIndex.restore(restore.module, restore.facts?.types);
 	}
 
 	private rebuild(workspaceRoot: string): void {

@@ -361,6 +361,7 @@ describe("C++ structural coverage", () => {
 			"moduleAdmission",
 			"moveEdits",
 			"parseFile",
+			"probeFile",
 			"renameEdits",
 			"resolveImport",
 			"shutdown",

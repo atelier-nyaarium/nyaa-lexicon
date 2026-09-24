@@ -54,7 +54,10 @@ export type Compatibility =
 // which changes whenever stored facts do. `callHierarchy.incomingFromModules`, top-level callers.
 // 3.11.0: `parseFile.probe`, a parse the core never rules on, so no admission is staged; an older
 // provider stages it anyway. Stored `symbolAt` answers `unowned` for a module no provider claims.
-export const PROTOCOL_VERSION = "3.11.0" as const;
+// 3.12.0: `probeFile` replaces `parseFile.probe`: one request, and the provider puts back what the
+// parse displaced. `symbolAt` takes `contentHash` and answers `needsText` when neither the stored
+// facts nor a kept candidate hold those bytes.
+export const PROTOCOL_VERSION = "3.12.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

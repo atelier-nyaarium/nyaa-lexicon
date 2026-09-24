@@ -9,7 +9,6 @@ import {
 	defined,
 	handlersFor,
 	type IndexDepth,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -183,7 +182,13 @@ export class RustProvider {
 	private workspaceRoot = process.cwd();
 	private readonly parsedFacts = new Map<string, ParsedFile>();
 	/** What the index took, so an imported name resolves to what it holds. */
-	private readonly admission = new AdmissionLedger<ParsedFile>();
+	readonly admission = new AdmissionLedger<ParsedFile>({
+		snapshot: (module) => this.parsedFacts.get(module),
+		restore: (module, held) => {
+			if (held === undefined) this.parsedFacts.delete(module);
+			else this.parsedFacts.set(module, held);
+		},
+	});
 	private resolver = this.newResolver();
 
 	initialize(workspaceRoot: string) {
@@ -208,13 +213,7 @@ export class RustProvider {
 		return this.resolver.reset(this.workspaceRoot);
 	}
 
-	parseFile(params: {
-		module: string;
-		contentHash: string;
-		text: string;
-		depth?: IndexDepth | undefined;
-		probe?: boolean | undefined;
-	}) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const outline = params.depth === "outline";
 		let facts: ParsedFile;
 		try {
@@ -222,8 +221,6 @@ export class RustProvider {
 		} catch (error) {
 			facts = parseFailure(params.module, error instanceof Error ? error.message : String(error));
 		}
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		const references = outline ? [] : this.wireReferences(facts);
 		facts.references = references;
@@ -293,14 +290,6 @@ export class RustProvider {
 	forgetModule(params: { module: string }): void {
 		this.parsedFacts.delete(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so an import resolves to what the index holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
-		else this.parsedFacts.set(restore.module, restore.facts);
 	}
 
 	private newResolver(): RustProjectResolver {

@@ -91,7 +91,7 @@ afterEach(() => {
 describe("moduleFacts", () => {
 	it("answers the store's rows, a declaration's range sliced to its own name", () => {
 		plantModule(store);
-		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }), () => null);
+		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }));
 		const reads = new PaintReads(store, probe, () => 0);
 
 		const facts = reads.moduleFacts("a.fake");
@@ -118,7 +118,7 @@ describe("moduleFacts", () => {
 	});
 
 	it("refuses an unindexed module the way fileNotes refuses one", () => {
-		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }), () => null);
+		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }));
 		const reads = new PaintReads(store, probe, () => 0);
 
 		expect(reads.moduleFacts("ghost.fake")).toEqual({ module: "ghost.fake", known: false, reason: "notIndexed" });
@@ -126,14 +126,14 @@ describe("moduleFacts", () => {
 
 	it("refuses an indexed module no running provider currently owns", () => {
 		plantModule(store);
-		const probe = liveProbe(fakeSupervisor({ claims: [] }), () => null);
+		const probe = liveProbe(fakeSupervisor({ claims: [] }));
 		const reads = new PaintReads(store, probe, () => 0);
 
 		expect(reads.moduleFacts("a.fake")).toEqual({ module: "a.fake", known: false, reason: "unowned" });
 	});
 
 	it("says outline before the upgrade, empty references, and full with rows after it", () => {
-		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }), () => null);
+		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }));
 		const reads = new PaintReads(store, probe, () => 0);
 		const widget = "lexicon fake b.fake Widget#";
 		const declaration = {
@@ -187,7 +187,7 @@ describe("parseFacts", () => {
 		plantModule(store);
 		const candidate = "export class Widget {}\nexport class Basket {}\n";
 		const candidateCoords = coordinatesOf(candidate);
-		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }), () => TEXT);
+		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }));
 		const reads = new PaintReads(store, probe, () => 0);
 
 		const parsed = await reads.parseFacts("a.fake", candidate);
@@ -212,7 +212,7 @@ describe("parseFacts", () => {
 
 	it("refuses when the candidate has a syntax error, naming the reason", async () => {
 		plantModule(store);
-		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }), () => TEXT);
+		const probe = liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS }));
 		const reads = new PaintReads(store, probe, () => 0);
 
 		const parsed = await reads.parseFacts("a.fake", "SYNTAX export class X {}");
@@ -223,7 +223,7 @@ describe("parseFacts", () => {
 	});
 
 	it("refuses a module no provider owns", async () => {
-		const probe = liveProbe(fakeSupervisor({ claims: [] }), () => null);
+		const probe = liveProbe(fakeSupervisor({ claims: [] }));
 		const reads = new PaintReads(store, probe, () => 0);
 
 		const parsed = await reads.parseFacts("a.fake", "export class X {}");
@@ -235,51 +235,79 @@ describe("parseFacts", () => {
 });
 
 describe("symbolAt", () => {
-	it("says an unstored module is not indexed when a provider claims it, and unowned when none does", () => {
-		const reads = (claims: (typeof CLAIMS)[]) =>
-			new PaintReads(
-				store,
-				liveProbe(fakeSupervisor({ claims, words: WORDS }), () => null),
-				() => 0,
-			);
-		const at = { line: 0, character: 0 };
-
-		expect(
-			[reads([CLAIMS]), reads([])].map((paint) => {
-				const answer = paint.storedSymbolAt("ghost.fake", at);
-				return answer.found ? "found" : answer.reason;
-			}),
-		).toEqual(["notIndexed", "unowned"]);
-	});
-
-	it("parses handed text only as probes, once per text and index generation", async () => {
-		const probes: (boolean | undefined)[] = [];
+	/** Counts probes; `refuse` answers every candidate with an error diagnostic. */
+	function probing(options: { claims?: (typeof CLAIMS)[]; refuse?: boolean } = {}) {
 		let generation = 0;
+		const probes: string[] = [];
 		const supervisor = fakeSupervisor({
-			claims: [CLAIMS],
+			claims: options.claims ?? [CLAIMS],
 			words: WORDS,
 			answers: {
-				parseFile: (request) => {
-					probes.push(request.probe);
-					return parseFake(request);
+				probeFile: (request) => {
+					probes.push(request.text);
+					const facts = parseFake(request);
+					return options.refuse === true
+						? { ...facts, diagnostics: [{ severity: "error" as const, message: "syntax error" }] }
+						: facts;
 				},
 			},
 		});
-		const reads = new PaintReads(
-			store,
-			liveProbe(supervisor, () => TEXT),
-			() => generation,
-		);
-		await reads.candidateSymbolAt("a.fake", { line: 0, character: 14 }, TEXT);
-		await reads.candidateSymbolAt("a.fake", { line: 1, character: 0 }, TEXT);
-		const afterMove = probes.length;
-		generation = 1;
-		await reads.candidateSymbolAt("a.fake", { line: 0, character: 14 }, TEXT);
+		const reads = new PaintReads(store, liveProbe(supervisor), () => generation);
+		const ask = async (request: { contentHash?: string; text?: string; line?: number }, module = "a.fake") => {
+			const reply = await reads.symbolAt({
+				module,
+				position: { line: request.line ?? 0, character: 14 },
+				...request,
+			});
+			return "needsText" in reply ? "needsText" : reply.found ? `${reply.via} ${reply.symbolId}` : reply.reason;
+		};
+		return { ask, probes, move: () => generation++ };
+	}
 
-		expect({ afterMove, total: probes.length, allProbes: probes.every((probe) => probe === true) }).toEqual({
-			afterMove: 2,
-			total: 4,
-			allProbes: true,
+	const DIRTY = `${TEXT}\nexport class Extra {}`;
+
+	it("says an unstored module is not indexed or unowned, even handed text, and asks no provider", async () => {
+		const claimed = probing();
+		const unclaimed = probing({ claims: [] });
+
+		expect([
+			await claimed.ask({ text: DIRTY }, "ghost.fake"),
+			await unclaimed.ask({ contentHash: hashContent(DIRTY) }, "ghost.fake"),
+			claimed.probes.length + unclaimed.probes.length,
+		]).toEqual(["notIndexed", "unowned", 0]);
+	});
+
+	it("answers stored bytes from the store, other bytes once handed, then kept by hash until the generation moves", async () => {
+		plantModule(store);
+		const p = probing();
+		const answers = [
+			await p.ask({ contentHash: hashContent(TEXT) }),
+			await p.ask({ contentHash: hashContent(DIRTY) }),
+			await p.ask({ text: DIRTY }),
+			await p.ask({ contentHash: hashContent(DIRTY), line: 4 }),
+		];
+		const probesBeforeMove = p.probes.length;
+		p.move();
+
+		expect({ answers, probesBeforeMove, afterMove: await p.ask({ contentHash: hashContent(DIRTY) }) }).toEqual({
+			answers: [
+				`declaration ${WIDGET}`,
+				"needsText",
+				"declaration lexicon fake a.fake Widget#",
+				"declaration lexicon fake a.fake Extra#",
+			],
+			probesBeforeMove: 1,
+			afterMove: "needsText",
 		});
+	});
+
+	it("keeps no refused candidate, so its bytes are asked for again", async () => {
+		plantModule(store);
+		const p = probing({ refuse: true });
+
+		expect([await p.ask({ text: DIRTY }), await p.ask({ contentHash: hashContent(DIRTY) })]).toEqual([
+			"unparsed",
+			"needsText",
+		]);
 	});
 });

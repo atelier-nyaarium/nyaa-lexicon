@@ -10,7 +10,6 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -248,7 +247,13 @@ export class CsharpProvider {
 	private parsedFacts = new Map<string, CsharpFacts>();
 	private discoveredFiles: string[] | null = null;
 	/** What the index took, so a cross-file answer reads what it holds. */
-	private readonly admission = new AdmissionLedger<CsharpFacts>();
+	readonly admission = new AdmissionLedger<CsharpFacts>({
+		snapshot: (module) => this.parsedFacts.get(module),
+		restore: (module, held) => {
+			if (held === undefined) this.parsedFacts.delete(module);
+			else this.parsedFacts.set(module, held);
+		},
+	});
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
@@ -291,17 +296,9 @@ export class CsharpProvider {
 		}
 	}
 
-	parseFile(params: {
-		module: string;
-		contentHash: string;
-		text: string;
-		depth?: IndexDepth | undefined;
-		probe?: boolean | undefined;
-	}) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const outline = params.depth === "outline";
 		const facts = new CsharpParser(params.module, params.text, outline).parse();
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
@@ -399,14 +396,6 @@ export class CsharpProvider {
 	forgetModule(params: { module: string }): void {
 		this.parsedFacts.delete(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so cross-file answers match the index. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
-		else this.parsedFacts.set(restore.module, restore.facts);
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {

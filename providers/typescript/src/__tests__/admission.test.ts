@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { handlersFor } from "@nyaa-lexicon/protocol";
 import { TypeScriptProvider } from "../main";
 
 ////////////////////////////////
@@ -25,14 +26,19 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-/** Parses the target and settles the index's verdict on it. */
-function settle(provider: TypeScriptProvider, module: string, text: string, hash: string, refusal?: string): void {
-	provider.parseFile({ module, contentHash: hash, text });
-	provider.moduleAdmission({
+/** The index's verdict on a parse, through the kit as the wire delivers it. */
+function verdict(provider: TypeScriptProvider, module: string, hash: string, refusal?: string): void {
+	handlersFor(provider).moduleAdmission?.({
 		module,
 		contentHash: hash,
 		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
 	});
+}
+
+/** Parses the target and settles the index's verdict on it. */
+function settle(provider: TypeScriptProvider, module: string, text: string, hash: string, refusal?: string): void {
+	handlersFor(provider).parseFile({ module, contentHash: hash, text });
+	verdict(provider, module, hash, refusal);
 }
 
 /** Where `add` lands when `src/use.ts` is parsed now. */
@@ -70,16 +76,26 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 		expect(addBinding(provider).status).toBe("bound");
 	});
 
-	it("stages nothing for a probe, so a later refusal still puts back what the index held", () => {
+	it("answers a probe from the candidate, then binds into what the index holds, never the candidate or the disk", () => {
+		const root = workspace(CART);
 		const provider = new TypeScriptProvider();
-		provider.initialize(workspace(CART));
+		provider.initialize(root);
+		const handlers = handlersFor(provider);
 		settle(provider, "src/cart.ts", CART["src/cart.ts"], "cart-1");
-		// A candidate and its restore, as a cursor on unsaved text asks.
-		provider.parseFile({ module: "src/cart.ts", contentHash: "probe", text: "export const x = 1;\n", probe: true });
-		provider.parseFile({ module: "src/cart.ts", contentHash: "cart-1", text: CART["src/cart.ts"], probe: true });
-		settle(provider, "src/cart.ts", "export function renamed() {}\n", "cart-2", "refused");
+		// The file changed on disk and its parse is outstanding across the probe.
+		writeFileSync(path.join(root, "src/cart.ts"), "export function renamed() {}\n");
+		handlers.parseFile({ module: "src/cart.ts", contentHash: "cart-2", text: "export function renamed() {}\n" });
+		const probed = handlers.probeFile({
+			module: "src/cart.ts",
+			contentHash: "probe",
+			text: "export const x = 1;\n",
+		});
+		verdict(provider, "src/cart.ts", "cart-2", "refused");
 
-		expect(addBinding(provider).status).toBe("bound");
+		expect({
+			candidate: probed.declarations.map((declaration) => declaration.name),
+			add: addBinding(provider).status,
+		}).toEqual({ candidate: ["x"], add: "bound" });
 	});
 
 	it("refuses to resolve an import into a module the index holds nothing for", () => {

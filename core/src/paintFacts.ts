@@ -14,6 +14,7 @@ import {
 	type StoredComment,
 	type StoredDeclaration,
 	type StoredReference,
+	type SymbolAtReply,
 	type SymbolAtResult,
 } from "@nyaa-lexicon/protocol";
 import type { CandidateParse, ProviderProbe } from "./providerProbe.js";
@@ -159,60 +160,84 @@ export class PaintReads {
 		return paintFromCandidate(hashContent(text), words, candidate.facts);
 	}
 
-	/** The symbol under `position` in the stored facts. Caller holds the read gate. */
-	storedSymbolAt(module: string, position: Position): SymbolAtResult {
-		const contentHash = this.store.contentHashOf(module);
-		if (this.store.depthOf(module) === null || contentHash === null) {
-			const owner = this.probe.owner(module);
-			return owner.owned
-				? { found: false, reason: "notIndexed" }
-				: { found: false, reason: "unowned", detail: noProviderOwnsForPaint(module, owner.reason) };
+	/**
+	 * The symbol a cursor means: from the stored facts when they hold the caller's bytes, else from a
+	 * kept or freshly parsed candidate, else `needsText`. An unstored module is final. Handed text
+	 * names its own bytes. Caller holds the read gate.
+	 */
+	async symbolAt(request: {
+		module: string;
+		position: Position;
+		contentHash?: string | undefined;
+		text?: string | undefined;
+	}): Promise<SymbolAtReply> {
+		const { module, position, text } = request;
+		const stored = this.store.contentHashOf(module);
+		if (this.store.depthOf(module) === null || stored === null) {
+			return this.probe.owner(module).owned ? { found: false, reason: "notIndexed" } : this.unowned(module);
 		}
-		const references = this.store
-			.referencesIn(module)
-			.map((reference) => ({ range: storedReferenceRange(reference), target: reference.targetId }));
-		const picked = pickSymbol(references, this.store.declarationsIn(module), position);
-		return picked === null
-			? { found: false, reason: "noSymbol", contentHash }
-			: { found: true, ...picked, contentHash };
-	}
-
-	/** The symbol under `position` in `text`, parsed without touching the store. Caller holds the read gate. */
-	async candidateSymbolAt(module: string, position: Position, text: string): Promise<SymbolAtResult> {
-		const owner = this.probe.owner(module);
-		if (!owner.owned)
-			return { found: false, reason: "unowned", detail: noProviderOwnsForPaint(module, owner.reason) };
-		const candidate = await this.candidate(module, text);
-		const contentHash = hashContent(text);
+		const contentHash = text === undefined ? request.contentHash : hashContent(text);
+		if (contentHash === undefined || contentHash === stored) {
+			const references = this.store
+				.referencesIn(module)
+				.map((reference) => ({ range: storedReferenceRange(reference), target: reference.targetId }));
+			return picked(pickSymbol(references, this.store.declarationsIn(module), position), stored);
+		}
+		if (!this.probe.owner(module).owned) return this.unowned(module);
+		const candidate =
+			this.kept(module, contentHash) ?? (text === undefined ? null : await this.parsed(module, text));
+		if (candidate === null) return { needsText: true };
 		if (!candidate.parsed) return { found: false, reason: "unparsed", contentHash, detail: candidate.reason };
 		const references = candidate.facts.references.map((reference) => ({
 			range: reference.range,
 			target: reference.binding.status === "bound" ? reference.binding.symbolId : null,
 		}));
-		const picked = pickSymbol(references, candidate.facts.declarations, position);
-		return picked === null
-			? { found: false, reason: "noSymbol", contentHash }
-			: { found: true, ...picked, contentHash };
+		return picked(pickSymbol(references, candidate.facts.declarations, position), contentHash);
+	}
+
+	private unowned(module: string): SymbolAtResult {
+		const owner = this.probe.owner(module);
+		const reason = owner.owned ? undefined : owner.reason;
+		return { found: false, reason: "unowned", detail: noProviderOwnsForPaint(module, reason) };
 	}
 
 	private async candidate(module: string, text: string): Promise<CandidateParse> {
-		const key = [module, hashContent(text), this.generation()].join("\n");
+		return this.kept(module, hashContent(text)) ?? this.parsed(module, text);
+	}
+
+	private kept(module: string, contentHash: string): CandidateParse | null {
+		const key = candidateKey(module, contentHash, this.generation());
 		const kept = this.candidates.get(key);
-		if (kept !== undefined) {
-			this.candidates.delete(key);
-			this.candidates.set(key, kept);
-			return kept;
-		}
+		if (kept === undefined) return null;
+		this.candidates.delete(key);
+		this.candidates.set(key, kept);
+		return kept;
+	}
+
+	private async parsed(module: string, text: string): Promise<CandidateParse> {
 		const parsed = await this.probe.parseCandidate(module, text);
 		// A refusal may be the provider's outage, not the text's.
 		if (!parsed.parsed) return parsed;
-		this.candidates.set(key, parsed);
+		this.candidates.set(candidateKey(module, hashContent(text), this.generation()), parsed);
 		for (const oldest of this.candidates.keys()) {
 			if (this.candidates.size <= CANDIDATE_CAPACITY) break;
 			this.candidates.delete(oldest);
 		}
 		return parsed;
 	}
+}
+
+function candidateKey(module: string, contentHash: string, generation: number): string {
+	return [module, contentHash, generation].join("\n");
+}
+
+function picked(
+	symbol: { symbolId: string; via: "reference" | "declaration" } | null,
+	contentHash: string,
+): SymbolAtResult {
+	return symbol === null
+		? { found: false, reason: "noSymbol", contentHash }
+		: { found: true, ...symbol, contentHash };
 }
 
 function paintFromCandidate(contentHash: string, words: ProviderWords, facts: FileFacts): ParseFactsResult {

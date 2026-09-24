@@ -8,7 +8,6 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -172,6 +171,15 @@ export { LANGUAGE, REFERENCE_ROLES };
 
 type RangeLike = Declaration["range"];
 
+/** What a parse displaces for its module: the full parse, the index headers, the unread mark. */
+interface HeldModule {
+	facts: KotlinFile | undefined;
+	headers: ModuleHeaders | undefined;
+	unread: boolean;
+	/** A fill since then skipped the module. */
+	filled: boolean;
+}
+
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
@@ -208,10 +216,26 @@ export class KotlinProvider {
 	private previous: PackageIndex | undefined;
 	/** Whether discovered files the index lacks have been read. */
 	private filled = false;
-	/** Present but unreadable at the last read; retried on a lookup. */
+	/** Owed a disk read; retried on a lookup. */
 	private readonly unread = new Set<string>();
-	/** The core's word on each parse, and what the index must hold when one is refused. */
-	private readonly admission = new AdmissionLedger<ModuleHeaders>();
+	/** The core's word on each parse, and what the module must hold when one is refused or probed. */
+	readonly admission = new AdmissionLedger<HeldModule>({
+		snapshot: (module) => ({
+			facts: this.parsedFacts.get(module),
+			headers: this.index.headersOf(module),
+			unread: this.unread.has(module),
+			filled: this.filled,
+		}),
+		restore: (module, held) => {
+			if (held?.facts === undefined) this.parsedFacts.delete(module);
+			else this.parsedFacts.set(module, held.facts);
+			this.index.remove(module);
+			if (held?.headers !== undefined) this.index.add(held.headers);
+			const skipped = held !== undefined && held.headers === undefined && !held.filled && this.filled;
+			if (held?.unread === true || skipped) this.unread.add(module);
+			else this.unread.delete(module);
+		},
+	});
 
 	initialize(workspaceRoot: string) {
 		this.reset(workspaceRoot);
@@ -244,21 +268,12 @@ export class KotlinProvider {
 		}
 	}
 
-	parseFile(params: {
-		module: string;
-		contentHash: string;
-		text: string;
-		depth?: IndexDepth | undefined;
-		probe?: boolean | undefined;
-	}) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const outline = params.depth === "outline";
 		const facts = parseKotlin(params.module, params.text, outline);
 		if (outline) this.parsedFacts.delete(params.module);
 		else this.parsedFacts.set(params.module, facts);
 		this.unread.delete(params.module);
-		// The core decides; `moduleAdmission` puts back what a refusal displaced.
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.index.headersOf(params.module));
 		this.index.add(facts);
 		return {
 			module: params.module,
@@ -349,16 +364,6 @@ export class KotlinProvider {
 		this.admission.forgotten(params.module);
 	}
 
-	/** A refusal puts back what the parse displaced, so the index holds what the core holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		// Drop the refused full parse.
-		this.parsedFacts.delete(restore.module);
-		this.index.remove(restore.module);
-		if (restore.facts !== undefined) this.index.add(restore.facts);
-	}
-
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "Kotlin rename edits are not implemented" };
 	}
@@ -420,7 +425,7 @@ export class KotlinProvider {
 	/** Outline facts of every discovered file on first use, so the first file parsed binds into the rest. */
 	private packageIndex(): PackageIndex {
 		if (this.filled) {
-			for (const module of [...this.unread]) this.indexFromDisk(module);
+			for (const module of [...this.unread]) if (this.admission.fillable(module)) this.indexFromDisk(module);
 			return this.index;
 		}
 		this.filled = true;

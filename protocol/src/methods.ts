@@ -131,8 +131,6 @@ export const ParseFileRequestSchema = z
 		text: z.string(),
 		/** Absent means full for compatibility with providers predating surface indexing. */
 		depth: IndexDepthSchema.optional(),
-		/** The core never rules on a probe, so the provider stages no admission for it. */
-		probe: z.boolean().optional(),
 	})
 	.meta({ id: "ParseFileRequest" });
 
@@ -199,6 +197,7 @@ export const PROVIDER_METHODS = [
 	"initialize",
 	"discoverProject",
 	"parseFile",
+	"probeFile",
 	"resolveImport",
 	"bind",
 	"typeOf",
@@ -214,6 +213,8 @@ export const METHOD_SCHEMAS = {
 	initialize: { request: InitializeRequestSchema, response: InitializeResponseSchema },
 	discoverProject: { request: DiscoverProjectRequestSchema, response: ProjectModelSchema },
 	parseFile: { request: ParseFileRequestSchema, response: FileFactsSchema },
+	/** A parse the index never rules on: the provider answers, then holds what it held before. */
+	probeFile: { request: ParseFileRequestSchema, response: FileFactsSchema },
 	resolveImport: { request: ResolveImportRequestSchema, response: ImportResolutionSchema },
 	bind: { request: BindRequestSchema, response: BindingSchema },
 	typeOf: { request: TypeOfRequestSchema, response: TypeInfoSchema },

@@ -984,6 +984,13 @@ export const SymbolAtResultSchema = z
 
 export type SymbolAtResult = z.infer<typeof SymbolAtResultSchema>;
 
+/** `needsText` answers a `contentHash` that neither the stored facts nor a kept candidate hold. */
+export const SymbolAtReplySchema = z
+	.union([SymbolAtResultSchema, z.object({ needsText: z.literal(true) })])
+	.meta({ id: "SymbolAtReply" });
+
+export type SymbolAtReply = z.infer<typeof SymbolAtReplySchema>;
+
 /** What the last knowledge sweep did; `ambiguous` counts within `orphaned`. */
 export const KnowledgeSweepSchema = z
 	.object({

@@ -46,6 +46,8 @@ export const WORDS = {
 };
 
 export class HtmlProvider {
+	/** Holds nothing across parses. */
+	readonly admission = null;
 	private workspaceRoot = process.cwd();
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);

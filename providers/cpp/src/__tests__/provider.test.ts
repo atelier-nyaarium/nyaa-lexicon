@@ -16,6 +16,7 @@ import {
 	composeSymbolId,
 	coordinatesOf,
 	FileFactsSchema,
+	handlersFor,
 	InitializeResponseSchema,
 	type Range,
 } from "@nyaa-lexicon/protocol";
@@ -232,6 +233,44 @@ describe("C++ provider contract", () => {
 			facts.references.find((reference) => reference.name === "Item" && reference.role === "import")?.binding
 				.status,
 		).toBe("bound");
+	});
+
+	test("answers a probe from the candidate, then binds includes into what the index holds", () => {
+		const use = '#include "cart.hpp"\nint run() { return total() + discount(); }\n';
+		const root = workspace({ "src/cart.hpp": "int total();\n", "src/use.cpp": use });
+		const provider = new CppProvider();
+		provider.initialize(root);
+		const handlers = handlersFor(provider);
+		const included = () =>
+			["total", "discount"].map(
+				(name) => provider.bind({ module: "src/use.cpp", name, range: span(use, name) }).status,
+			);
+		handlers.parseFile({ module: "src/cart.hpp", contentHash: "old", text: "int total();\n" });
+		handlers.moduleAdmission?.({ module: "src/cart.hpp", contentHash: "old", outcome: { status: "admitted" } });
+		// The file changed on disk and its parse is outstanding across the probe.
+		writeFileSync(path.join(root, "src/cart.hpp"), "int renamed();\n");
+		handlers.parseFile({ module: "src/cart.hpp", contentHash: "disk", text: "int renamed();\n" });
+		const probed = handlers.probeFile({
+			module: "src/cart.hpp",
+			contentHash: "candidate",
+			text: "int total();\nint discount();\n",
+		});
+		const pending = included();
+		handlers.moduleAdmission?.({
+			module: "src/cart.hpp",
+			contentHash: "disk",
+			outcome: { status: "refused", reason: "refused" },
+		});
+
+		expect({
+			candidate: probed.declarations.map((declaration) => declaration.name),
+			pending,
+			settled: included(),
+		}).toEqual({
+			candidate: ["total", "discount"],
+			pending: ["unbound", "unbound"],
+			settled: ["bound", "unbound"],
+		});
 	});
 
 	test("returns declared and inferred types and reports syntax errors", () => {

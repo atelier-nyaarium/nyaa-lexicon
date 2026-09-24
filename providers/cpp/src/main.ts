@@ -8,7 +8,6 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedMove,
@@ -196,7 +195,13 @@ export class CppProvider {
 	private workspaceRoot = process.cwd();
 	private parsedFacts = new Map<string, CppFacts>();
 	/** What the index took, so an included header's facts are what it holds and not what was emitted. */
-	private readonly admission = new AdmissionLedger<CppFacts>();
+	readonly admission = new AdmissionLedger<CppFacts>({
+		snapshot: (module) => this.parsedFacts.get(module),
+		restore: (module, held) => {
+			if (held === undefined) this.parsedFacts.delete(module);
+			else this.parsedFacts.set(module, held);
+		},
+	});
 
 	initialize(workspaceRoot: string) {
 		this.workspaceRoot = path.resolve(workspaceRoot);
@@ -235,16 +240,8 @@ export class CppProvider {
 		}
 	}
 
-	parseFile(params: {
-		module: string;
-		contentHash: string;
-		text: string;
-		depth?: IndexDepth | undefined;
-		probe?: boolean | undefined;
-	}) {
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const facts = parseCppFile(params.module, params.text);
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
@@ -349,14 +346,6 @@ export class CppProvider {
 	forgetModule(params: { module: string }): void {
 		this.parsedFacts.delete(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so an included name resolves to what the index holds. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		if (restore.facts === undefined) this.parsedFacts.delete(restore.module);
-		else this.parsedFacts.set(restore.module, restore.facts);
 	}
 
 	private factsForModule(module: string): CppFacts | null {

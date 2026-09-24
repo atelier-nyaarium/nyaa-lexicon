@@ -76,7 +76,8 @@ export function serveProvider(connection: Connection, handlers: ProviderHandlers
 			refuseUnrepresentable(params);
 			const answer = await handler(params);
 			// One id per declaration, settled at the wire for every provider.
-			return method === "parseFile" && hasDeclarations(answer) ? withOccurrences(answer) : answer;
+			const parsed = method === "parseFile" || method === "probeFile";
+			return parsed && hasDeclarations(answer) ? withOccurrences(answer) : answer;
 		});
 	}
 }

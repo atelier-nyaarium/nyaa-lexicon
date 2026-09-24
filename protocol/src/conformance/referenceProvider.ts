@@ -237,6 +237,9 @@ export const referenceHandlers: ProviderHandlers = {
 
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
 
+	// Holds nothing across parses, so a probe is a parse.
+	probeFile: (params) => referenceHandlers.parseFile(params),
+
 	parseFile: (params) => ({
 		module: params.module,
 		contentHash: params.contentHash,

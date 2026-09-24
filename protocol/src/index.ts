@@ -1,7 +1,7 @@
 // The provider protocol's public surface. Importers take named symbols from here, never from the
 // domain files, so a split or rename inside stays invisible to core and providers.
 
-export { AdmissionLedger, type ModuleAdmission, type RestoredFacts } from "./admission.js";
+export { AdmissionLedger, type ModuleAdmission, type ModuleState, type ProviderAdmission } from "./admission.js";
 export {
 	type BoundedChildOptions,
 	type BoundedResult,
@@ -238,6 +238,8 @@ export {
 	StoredReferenceSchema,
 	type SubjectDiagnosis,
 	SubjectDiagnosisSchema,
+	type SymbolAtReply,
+	SymbolAtReplySchema,
 	type SymbolAtResult,
 	SymbolAtResultSchema,
 	type SymbolSource,

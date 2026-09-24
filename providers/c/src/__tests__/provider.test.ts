@@ -45,6 +45,15 @@ function facts(provider: CProvider, module: string, text: string) {
 	return provider.parseFile({ module, contentHash: `${module}:${text.length}`, text });
 }
 
+/** The index's verdict on a parse, through the kit as the wire delivers it. */
+function verdict(provider: CProvider, module: string, contentHash: string, refusal?: string): void {
+	handlersFor(provider).moduleAdmission?.({
+		module,
+		contentHash,
+		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
+	});
+}
+
 function declarationOf(parsed: ReturnType<CProvider["parseFile"]>, name: string, kind?: string) {
 	return parsed.declarations.find(
 		(declaration) => declaration.name === name && (kind === undefined || declaration.kind === kind),
@@ -78,6 +87,7 @@ describe("C provider protocol", () => {
 			"moduleAdmission",
 			"moveEdits",
 			"parseFile",
+			"probeFile",
 			"renameEdits",
 			"resolveImport",
 			"shutdown",
@@ -94,11 +104,12 @@ describe("C provider protocol", () => {
 		});
 		const provider = new CProvider();
 		provider.initialize(root);
+		const handlers = handlersFor(provider);
 		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/use.c", specifier });
 
-		provider.parseFile({ module: "src/use.c", contentHash: "quoted", text: '#include "local.h"\n' });
-		provider.moduleAdmission({ module: "src/use.c", contentHash: "quoted", outcome: { status: "admitted" } });
-		provider.parseFile({
+		handlers.parseFile({ module: "src/use.c", contentHash: "quoted", text: '#include "local.h"\n' });
+		verdict(provider, "src/use.c", "quoted");
+		handlers.parseFile({
 			module: "src/use.c",
 			contentHash: "angle",
 			text: "#include <local.h>\n#include <extra.h>\n",
@@ -106,11 +117,7 @@ describe("C provider protocol", () => {
 
 		expect(resolve("local.h")).toEqual({ status: "external", packageName: "local.h" });
 
-		provider.moduleAdmission({
-			module: "src/use.c",
-			contentHash: "angle",
-			outcome: { status: "refused", reason: "the index refused these facts" },
-		});
+		verdict(provider, "src/use.c", "angle", "the index refused these facts");
 
 		expect(resolve("local.h")).toEqual({ status: "resolved", module: "src/local.h" });
 		expect(resolve("extra.h")).toEqual({ status: "resolved", module: "src/extra.h" });
@@ -120,16 +127,56 @@ describe("C provider protocol", () => {
 		const root = workspace({ "src/extra.h": "int spare;\n", "src/use.c": "#include <extra.h>\n" });
 		const provider = new CProvider();
 		provider.initialize(root);
+		const handlers = handlersFor(provider);
 		const resolve = () => provider.resolveImport({ fromModule: "src/use.c", specifier: "extra.h" });
 
-		provider.parseFile({ module: "src/use.c", contentHash: "angle", text: "#include <extra.h>\n" });
-		provider.moduleAdmission({ module: "src/use.c", contentHash: "angle", outcome: { status: "admitted" } });
+		handlers.parseFile({ module: "src/use.c", contentHash: "angle", text: "#include <extra.h>\n" });
+		verdict(provider, "src/use.c", "angle");
 		expect(resolve()).toEqual({ status: "external", packageName: "extra.h" });
 
-		provider.parseFile({ module: "src/use.c", contentHash: "none", text: "int run(void) { return 0; }\n" });
-		provider.moduleAdmission({ module: "src/use.c", contentHash: "none", outcome: { status: "admitted" } });
+		handlers.parseFile({ module: "src/use.c", contentHash: "none", text: "int run(void) { return 0; }\n" });
+		verdict(provider, "src/use.c", "none");
 
 		expect(resolve()).toEqual({ status: "resolved", module: "src/extra.h" });
+	});
+
+	test("answers a probe from the candidate, then serves what the index holds, never the candidate or the disk", () => {
+		const old = "#include <item.h>\nint add(int left, int right);\n";
+		const disk = '#include "item.h"\nint renamed(void);\n';
+		const user = '#include "cart.h"\n\nint run(void) { return add(1, 2) + renamed() + candidate(); }\n';
+		const root = workspace({ "src/item.h": "int item;\n", "src/cart.h": old, "src/use.c": user });
+		const provider = new CProvider();
+		provider.initialize(root);
+		const handlers = handlersFor(provider);
+		const served = () => ({
+			bound: facts(provider, "src/use.c", user)
+				.references.filter((reference) => reference.binding.status === "bound")
+				.map((reference) => reference.name),
+			item: provider.resolveImport({ fromModule: "src/cart.h", specifier: "item.h" }).status,
+		});
+
+		handlers.parseFile({ module: "src/cart.h", contentHash: "old", text: old });
+		verdict(provider, "src/cart.h", "old");
+		// Disk parse outstanding across the probe.
+		writeFileSync(path.join(root, "src/cart.h"), disk);
+		handlers.parseFile({ module: "src/cart.h", contentHash: "disk", text: disk });
+		const probed = handlers.probeFile({
+			module: "src/cart.h",
+			contentHash: "probe",
+			text: '#include "item.h"\nint candidate(void);\n',
+		});
+		const outstanding = served();
+		verdict(provider, "src/cart.h", "disk", "the index refused these facts");
+
+		expect({
+			candidate: probed.declarations.map((declaration) => declaration.name),
+			outstanding,
+			held: served(),
+		}).toEqual({
+			candidate: ["candidate"],
+			outstanding: { bound: ["renamed"], item: "resolved" },
+			held: { bound: ["add"], item: "external" },
+		});
 	});
 
 	test("a forgotten module does not come back through a read of its own bytes", () => {

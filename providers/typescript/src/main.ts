@@ -5,7 +5,6 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
-	type ModuleAdmission,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -23,6 +22,15 @@ import { EXTENSIONS, scriptKindOf } from "./file-types.js";
 import { isValidTargetModule } from "./move.js";
 import { type LoadedProject, loadProject, renderSpecifier, resolveSpecifier, toModule } from "./project.js";
 import { extractSurfaceFile } from "./surface.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+/** What a module holds across parses: its overlay text and whether it is a runtime surface. */
+interface HeldModule {
+	overlay: string | undefined;
+	surface: boolean;
+}
 
 ////////////////////////////////
 //  Constants
@@ -149,7 +157,17 @@ export class TypeScriptProvider {
 	private analyzer: TypeScriptAnalyzer | null = null;
 	private readonly runtimeSurfaces = new Set<string>();
 	/** What the index took, so a use binds into what it holds and not into the Program's disk read. */
-	private readonly admission = new AdmissionLedger<string>();
+	readonly admission = new AdmissionLedger<HeldModule>({
+		snapshot: (module) => ({
+			overlay: this.analyzer?.overlayText(module),
+			surface: this.runtimeSurfaces.has(module),
+		}),
+		restore: (module, held) => {
+			this.analyzer?.restoreFile(module, held?.overlay);
+			if (held?.surface === true) this.runtimeSurfaces.add(module);
+			else this.runtimeSurfaces.delete(module);
+		},
+	});
 
 	initialize(workspaceRoot: string) {
 		this.analyzer?.dispose();
@@ -206,17 +224,7 @@ export class TypeScriptProvider {
 	 * An editor's buffer differs from disk constantly, and answering about the saved version while
 	 * a caller asks about the open one is a whole class of wrong-but-plausible answers.
 	 */
-	parseFile(params: {
-		module: string;
-		contentHash: string;
-		text: string;
-		depth?: IndexDepth | undefined;
-		probe?: boolean | undefined;
-	}) {
-		// Staged before the overlay moves, so a refusal knows what this parse displaced.
-		if (params.probe !== true)
-			this.admission.staged(params.module, params.contentHash, this.analyzer?.overlayText(params.module));
-
+	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		if (this.isSurface(params)) {
 			const extracted = extractSurfaceFile(params.module, params.text);
 			if (!isDeclarationModule(params.module)) this.runtimeSurfaces.add(params.module);
@@ -362,13 +370,6 @@ export class TypeScriptProvider {
 		this.analyzer?.forgetModule(params.module);
 		this.runtimeSurfaces.delete(params.module);
 		this.admission.forgotten(params.module);
-	}
-
-	/** A refused parse is put back, so a use binds into what the index kept. */
-	moduleAdmission(params: ModuleAdmission): void {
-		const restore = this.admission.settle(params);
-		if (restore === null) return;
-		this.analyzer?.restoreFile(restore.module, restore.facts);
 	}
 
 	programStats() {
