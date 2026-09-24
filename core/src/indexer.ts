@@ -157,7 +157,7 @@ export class WorkspaceIndexer {
 	/** Scan progress is process-local; stored counts come from the database. */
 	private status: Pick<IndexStatus, "state" | "done" | "total"> = { state: "unstarted", done: 0, total: 0 };
 	/** Keeps a restarted daemon's generations apart from this one's. */
-	private readonly epoch = randomUUID().slice(0, 8);
+	private readonly epoch = randomUUID();
 	private scope: FileScope | null = null;
 	/** For the synchronous evidence callback alone: as fresh as the last admission, which every create or delete renews. */
 	private lastAdmitted: Admitted | null = null;
@@ -876,7 +876,7 @@ export class WorkspaceIndexer {
 			...(concerned === null ? {} : { concerning: concerned }),
 			fullFiles: depths.full + depths.surface,
 			outlineFiles: depths.outline,
-			// The facts cache turns over exactly when stored facts move.
+			// The facts cache turns over whenever stored facts move.
 			generation: `${this.epoch}.${this.caches.facts.stats().generation}`,
 		};
 	}
