@@ -443,6 +443,24 @@ describe("the starting window", () => {
 		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/the language providers to start/);
 	});
 
+	it("reports pre-handler methods to the starting note", async () => {
+		const asked: string[] = [];
+		const outcome = await startDaemon({
+			workspaceRoot: WORKSPACE,
+			host,
+			startingNote: (method) => {
+				asked.push(method);
+				return { retryInMs: 0, waitingFor: "the language providers to start" };
+			},
+		});
+		if (!outcome.claimed) throw new Error(outcome.reason);
+		daemon = outcome.daemon;
+
+		await expect(callDaemon(daemon.lock, "indexStatus")).rejects.toThrow();
+		await expect(callDaemon(daemon.lock, "cacheStats")).rejects.toThrow();
+		expect(asked).toEqual(["indexStatus", "cacheStats"]);
+	});
+
 	it("counts the default startup allowance on the clock it was given", async () => {
 		// An hour ahead of the wall: a daemon reading the wall would still owe a long wait here.
 		const epoch = Date.now() + 3_600_000;

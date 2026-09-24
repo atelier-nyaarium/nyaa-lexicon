@@ -107,6 +107,25 @@ describe("getting a daemon", () => {
 		expect(commands).toEqual([[process.execPath, path.join(source.root, "dist", "daemon.js"), "/w"]]);
 	});
 
+	it("uses the bundle when its bun is newer than the running bun", async () => {
+		const bundled = path.join(source.root, "newer-bun");
+		writeFileSync(bundled, "#!/bin/sh\necho 99.0.0\n", { mode: 0o755 });
+		const commands: string[][] = [];
+		await ensureDaemon({
+			...options,
+			bundledBun: bundled,
+			look: looking([
+				{ action: "spawn", reason: "no daemon is registered" },
+				{ action: "connect", lock: LOCK },
+			]),
+			start: (command) => {
+				commands.push(command);
+			},
+		});
+
+		expect(commands.map((command) => command[0])).toEqual([bundled]);
+	});
+
 	it("refuses to start from a source that was never built, and says so", async () => {
 		let started = 0;
 		const result = await ensureDaemon({

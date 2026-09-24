@@ -19,6 +19,7 @@ import {
 import { DaemonError, NotInstalled } from "./errors.js";
 import type { LockDecision } from "./lock.js";
 import { currentHost, workspacePaths } from "./paths.js";
+import { runtimeProblem } from "./runtime.js";
 import { notifyWaiting } from "./transport.js";
 
 ////////////////////////////////
@@ -54,6 +55,8 @@ export interface EnsureDaemonOptions {
 	alive?: (holder: { pid: number; pidStart?: string | undefined }) => boolean;
 	/** Asks the outgoing daemon whether anything is in flight. Injected for the same reason. */
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
+	/** The caller's own bun, for daemons it spawns. */
+	bundledBun?: string;
 }
 
 export type EnsureReason = "otherWorkspace" | "noBunRuntime" | "unbuilt" | "spawnFailed" | "timeout" | "notInstalled";
@@ -204,11 +207,17 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		}
 	}
 
-	const command = await daemonCommand(install.root, options.workspaceRoot, options.stateDir);
+	const command = await daemonCommand(
+		install.root,
+		options.workspaceRoot,
+		options.stateDir,
+		currentHost(),
+		options.bundledBun,
+	);
 	if (command.kind === "unbuilt")
 		return { connected: false, reason: "unbuilt", detail: "no built daemon to start; run the build first" };
 	if (command.kind === "noBunRuntime")
-		return { connected: false, reason: "noBunRuntime", detail: command.runtime.kind };
+		return { connected: false, reason: "noBunRuntime", detail: runtimeProblem(command.runtime) };
 	const logFile = workspacePaths(currentHost(), options.workspaceRoot, options.stateDir).logFile;
 	const watch = (options.start ?? ((argv) => spawnDaemonProcess(argv, logFile)))(command.command);
 

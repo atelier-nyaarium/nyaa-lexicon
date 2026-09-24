@@ -19,7 +19,13 @@ stateDir       a store directory of the caller's choosing; the default is derive
 lexiconRoot    the install to spawn from, instead of the one last recorded
 patience       how long a request waits on a starting daemon, in milliseconds; zero asks once
 onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and `elapsedMs`
+bundledBun     bundled bun; OS bun must meet its version
 ```
+
+Spawn runtime order: running bun, PATH, then `$BUN_INSTALL`.
+`bundledBun` sets the minimum version; prereleases sort below releases.
+Skip an older OS bun; try later candidates, then the bundle.
+A handover keeps the running daemon's bun.
 
 Four things are read, in this order:
 
@@ -111,7 +117,8 @@ hand-written, and the next daemon method costs one schema entry.
 ```
 ask(method, params)  the method by name, for a caller holding the name rather than the call
 close()              drops this session's connection; the daemon stays up for whoever else
-                     holds one, since presence is the connection itself
+                     holds one. In-flight reads and later asks fail as `closed`
+                     without reconnecting; a sent write reports its outcome unknown
 stopDaemon()         closes the connection, asks the daemon to stop, and returns once its lock
                      no longer names it; a lock outliving ten seconds is a DaemonError
 lock()               the lock of the daemon this session reaches, re-read on every call, since a

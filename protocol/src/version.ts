@@ -44,7 +44,9 @@ export type Compatibility =
 // 3.6.0: an error response may carry `code`, closed to `"stopping"`, so a client retiring a daemon
 // reads why it refused structurally rather than matching its prose.
 // 3.7.0: `describe.questions`, the knowledge questions the symbol's kind takes, computed by the core.
-export const PROTOCOL_VERSION = "3.7.0" as const;
+// 3.8.0: `passive` methods (`indexStatus`, `refactorStatus`) neither start indexing nor wait on it;
+// a failed warmup still refuses `indexStatus`. Unknown methods no longer start indexing.
+export const PROTOCOL_VERSION = "3.8.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

@@ -162,13 +162,14 @@ export async function callDaemon(
 export type DaemonCommand =
 	| { kind: "command"; command: string[] }
 	| { kind: "unbuilt" }
-	| { kind: "noBunRuntime"; runtime: BunExecutable };
+	| { kind: "noBunRuntime"; runtime: Exclude<BunExecutable, { kind: "bun" }> };
 
 export async function daemonCommand(
 	root: string,
 	workspaceRoot: string,
 	stateDir?: string,
 	host: PlatformEnv = currentHost(),
+	bundledBun?: string,
 ): Promise<DaemonCommand> {
 	const bundle = path.join(root, "dist", "daemon.js");
 	try {
@@ -177,7 +178,7 @@ export async function daemonCommand(
 	} catch {
 		return { kind: "unbuilt" };
 	}
-	const runtime = await bunExecutable(host);
+	const runtime = await bunExecutable(host, undefined, bundledBun);
 	if (runtime.kind !== "bun") return { kind: "noBunRuntime", runtime };
 	const command = [runtime.executable, bundle, workspaceRoot];
 	if (stateDir !== undefined) command.push("--state-dir", stateDir);

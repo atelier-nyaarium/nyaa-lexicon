@@ -41,8 +41,9 @@ export interface DaemonOptions {
 	host?: PlatformEnv;
 	/** Fires with the connected-client count on every change. The lifetime signal. */
 	onConnections?: (count: number) => void;
-	/** Asked on every request that beats the handler; the client waits on this countdown. */
-	startingNote?: () => { retryInMs: number; waitingFor: string };
+	/** Called before the handler.
+	 * The client waits on this countdown. */
+	startingNote?: (method: string) => { retryInMs: number; waitingFor: string };
 	/** Once, when a request finds the lock gone or taken; the daemon has already refused it. */
 	onLockLost?: (reason: string) => void;
 	/** Test seams for the heartbeat; production uses the transport's defaults. */
@@ -105,7 +106,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		token,
 		handle: async (method, params) => {
 			if (handle === null) {
-				const note = options.startingNote?.() ?? {
+				const note = options.startingNote?.(method) ?? {
 					retryInMs: Math.max(0, startedAt + DEFAULT_STARTING_ALLOWANCE_MS - clock.now()),
 					waitingFor: "startup",
 				};

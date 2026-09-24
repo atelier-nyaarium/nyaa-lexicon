@@ -99,7 +99,7 @@ caller that asks once and exits uses `requestOnce`.
 
 A daemon publishes its lock before it can answer, on purpose. Publishing after the first scan meant
 no client could find the daemon for the length of a scan, so every session paid that scan in its
-own process. Until the handler is installed (`waitingFor` is `opening the index`, then
+own process. Until the handler is installed (`waitingFor` is `the index to open`, then
 `the language providers to start`), and again until the workspace scope is computed and the warmup
 pass has attempted every file (`the warmup pass`), a request is answered with an error frame carrying `starting: true`,
 `retryInMs` and `waitingFor`. The countdown is the DAEMON's own budget, published rather than
@@ -113,6 +113,10 @@ it answers a plain error, `warmup failed: <reason>; restart the daemon`, to ever
 `refactorStatus` and `shutdown`, so a daemon in that state can still be retired. A provider
 outage during the pass fails it, since a restart heals an outage; a fault on one file is recorded
 against that file and the pass serves.
+
+A known method asking about the workspace starts indexing, including during startup. `shutdown`,
+passive methods and unknown methods do not. Passive methods also skip the warmup hold, though
+`indexStatus` still answers a failed pass with its error.
 
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
 with `...; the daemon is stopping`, closes its server, and every client lands on its reconnect

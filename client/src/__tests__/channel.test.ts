@@ -15,12 +15,14 @@ const STATS = { hits: 1, misses: 2, entries: 3, generation: 4 };
 type Answer =
 	| { ok: true; result: unknown }
 	| { ok: false; error: string; starting?: boolean; retryInMs?: number; waitingFor?: string };
-type ScriptAnswer = Answer | "close" | "close-before-welcome" | "close-after-welcome";
+type ScriptAnswer = Answer | "close" | "close-before-welcome" | "close-after-welcome" | "slow-welcome" | "hang";
 
 interface FakeDaemon {
 	port: number;
 	connections: number;
 	requests: number;
+	/** Sockets still open. */
+	open: number;
 	close(): Promise<void>;
 }
 
@@ -46,6 +48,13 @@ function fakeDaemon(script: (connection: number, request: number) => ScriptAnswe
 						if (frame.token !== TOKEN) return socket.destroy();
 						const hello = script(connection, 0);
 						if (hello === "close-before-welcome") return socket.destroy();
+						if (hello === "slow-welcome") {
+							setTimeout(() => {
+								welcomed = true;
+								writeFrame(socket, { kind: "welcome", protocolVersion: PROTOCOL_VERSION });
+							}, 100);
+							return;
+						}
 						welcomed = true;
 						writeFrame(socket, { kind: "welcome", protocolVersion: PROTOCOL_VERSION });
 						if (hello === "close-after-welcome") return socket.destroy();
@@ -53,6 +62,7 @@ function fakeDaemon(script: (connection: number, request: number) => ScriptAnswe
 					}
 					if (!welcomed || frame.kind !== "request") return;
 					const answer = script(connection, ++requests);
+					if (answer === "hang" || answer === "slow-welcome") return;
 					if (answer === "close" || answer === "close-before-welcome" || answer === "close-after-welcome")
 						return socket.destroy();
 					writeFrame(socket, { kind: "response", id: frame.id, ...answer });
@@ -74,6 +84,9 @@ function fakeDaemon(script: (connection: number, request: number) => ScriptAnswe
 				},
 				get requests() {
 					return requests;
+				},
+				get open() {
+					return sockets.size;
 				},
 				close: () =>
 					new Promise<void>((done) => {
@@ -175,6 +188,47 @@ describe("daemon channel reconnects", () => {
 		expect(await session.ask("cacheStats", {})).toEqual(STATS);
 		expect(fake.connections).toBe(2);
 		session.close();
+	});
+
+	it("close stops reconnects; reads fail closed and sent writes report an unknown outcome", async () => {
+		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
+		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
+		fake = await fakeDaemon(() => "hang");
+		writeLock(fake.port);
+
+		const session = channel();
+		const read = session.ask("cacheStats", {});
+		const write = session.ask("refactorStart", {});
+		while (fake.requests < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+		session.close();
+
+		const outcomes = await Promise.allSettled([read, write, session.ask("cacheStats", {})]);
+		expect({
+			causes: outcomes.map((outcome) => (outcome.status === "rejected" ? outcome.reason.cause : "answered")),
+			connections: fake.connections,
+		}).toEqual({ causes: ["closed", "connectionLost", "closed"], connections: 1 });
+	});
+
+	it("close during handshake sends no request and drops the connection", async () => {
+		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
+		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
+		fake = await fakeDaemon((_connection, request) =>
+			request === 0 ? "slow-welcome" : { ok: true, result: STATS },
+		);
+		writeLock(fake.port);
+
+		const session = channel();
+		const connecting = session.ask("cacheStats", {});
+		while (fake.connections === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+		session.close();
+
+		await expect(connecting).rejects.toMatchObject({ cause: "closed" });
+		for (let wait = 0; wait < 100 && fake.open > 0; wait++) await new Promise((resolve) => setTimeout(resolve, 10));
+		expect({ connections: fake.connections, requests: fake.requests, open: fake.open }).toEqual({
+			connections: 1,
+			requests: 0,
+			open: 0,
+		});
 	});
 
 	it("reports connectionLost after two consecutive losses", async () => {

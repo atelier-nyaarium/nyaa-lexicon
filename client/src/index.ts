@@ -76,6 +76,7 @@ export {
 	bunExecutable,
 	type RuntimeVerdict,
 	refuseRuntime,
+	runtimeProblem,
 	runtimeVerdict,
 } from "./runtime.js";
 export { requestShutdown, type ShutdownOutcome, type ShutdownWait, shutdownDaemon } from "./stop.js";

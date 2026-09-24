@@ -4,8 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
+import {
+	DAEMON_METHODS,
+	type DaemonMethod,
+	methodIsPassive,
+	methodMutates,
+	WARMUP_FAILED_PREFIX,
+} from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
-import { warmRefusal } from "../daemonCli";
+import { asksAboutWorkspace, refusalFor, warmRefusal } from "../daemonCli";
 import * as realFileScope from "../fileScope";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
@@ -410,6 +417,53 @@ describe("warmup pass", () => {
 		await service.currentScope();
 		expect(warmRefusal(service)).toBeNull();
 		expect(() => service.moduleDeclarations("a.fake")).not.toThrow();
+	});
+
+	it("only workspace asks start indexing", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+
+		expect(service.indexStatus()).toMatchObject({ state: "unstarted", stored: 0 });
+		expect({
+			indexStatus: asksAboutWorkspace("indexStatus"),
+			refactorStatus: asksAboutWorkspace("refactorStatus"),
+			shutdown: asksAboutWorkspace("shutdown"),
+			moduleDeclarations: asksAboutWorkspace("moduleDeclarations"),
+			unknown: asksAboutWorkspace("notAMethod"),
+		}).toEqual({
+			indexStatus: false,
+			refactorStatus: false,
+			shutdown: false,
+			moduleDeclarations: true,
+			unknown: false,
+		});
+	});
+
+	it("warmup failure refuses all but refactor status; holds wait on workspace asks", () => {
+		const outcome = (refusal: Error | null) => {
+			if (refusal === null) return "answers";
+			if ("retryInMs" in refusal) return "waits";
+			return refusal.message.startsWith(WARMUP_FAILED_PREFIX) ? "failed" : refusal.message;
+		};
+		const methods = ["moduleDeclarations", "indexStatus", "refactorStatus"];
+		const failed = { warmHold: () => null, warmFailure: () => "provider outage" };
+		const holding = { warmHold: () => "roots unread", warmFailure: () => null };
+		expect({
+			failed: methods.map((method) => outcome(refusalFor(method, failed))),
+			holding: methods.map((method) => outcome(refusalFor(method, holding))),
+		}).toEqual({
+			failed: ["failed", "failed", "answers"],
+			holding: ["waits", "answers", "answers"],
+		});
+	});
+
+	it("passive methods never write", () => {
+		const methods = Object.keys(DAEMON_METHODS) as DaemonMethod[];
+		expect({
+			overlap: methods.filter((method) => methodIsPassive(method) && methodMutates(method)),
+			writers: (["recordAnswer", "refactorInsert"] as const).map(methodMutates),
+		}).toEqual({ overlap: [], writers: [true, true] });
 	});
 
 	it("covers each admission branch", async () => {

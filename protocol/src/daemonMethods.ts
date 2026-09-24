@@ -265,7 +265,7 @@ export const DAEMON_METHODS = {
 	/** Where an import specifier lands. */
 	resolveImport: { request: Resolve, response: ImportResolutionSchema },
 	/** How complete the index is, and whether one file failed. */
-	indexStatus: { request: Status, response: IndexStatusSchema },
+	indexStatus: { request: Status, response: IndexStatusSchema, passive: true },
 	/** Literals by value, regex, kind, numeric range, container key or scope. */
 	findLiterals: { request: Literals, response: LiteralsResultSchema },
 	/** Comment prose by substring or regex, with the symbol each is about. */
@@ -339,7 +339,7 @@ export const DAEMON_METHODS = {
 	/** Open the workspace's refactor transaction. */
 	refactorStart: { request: Empty, response: RefactorStartResultSchema, mutates: true },
 	/** The open transaction: steps, tracked files, outstanding issues. */
-	refactorStatus: { request: Empty, response: TransactionStatusSchema },
+	refactorStatus: { request: Empty, response: TransactionStatusSchema, passive: true },
 	/** Snapshot a file before a hand edit. */
 	refactorTrack: { request: ByModule, response: RefactorTrackResultSchema, mutates: true },
 	/** Remove the newest step, restoring the files it wrote. */
@@ -358,11 +358,16 @@ export const DAEMON_METHODS = {
 	refactorRename: { request: Rename, response: RenameStepOutcomeSchema, mutates: true },
 	/** Move a declaration to another module, rewriting the imports that reach it. */
 	refactorMove: { request: Move, response: MoveOutcomeSchema, mutates: true },
-} as const satisfies Record<string, { request: z.ZodType; response: z.ZodType; mutates?: true }>;
+} as const satisfies Record<string, { request: z.ZodType; response: z.ZodType; mutates?: true; passive?: true }>;
 
 /** Asked again after a lost connection only when it changes nothing: a write that may have landed is reported, not repeated. */
 export function methodMutates(name: DaemonMethod): boolean {
 	return "mutates" in DAEMON_METHODS[name];
+}
+
+/** Passive methods bypass warmup. */
+export function methodIsPassive(name: DaemonMethod): boolean {
+	return "passive" in DAEMON_METHODS[name];
 }
 
 export type DaemonMethod = keyof typeof DAEMON_METHODS;

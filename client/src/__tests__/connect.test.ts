@@ -209,12 +209,13 @@ describe("reaching a daemon with no install", () => {
 
 	// An app update can delete the versioned folder a running session was given.
 	it("keeps riding its daemon after the install it was given is removed", async () => {
-		await daemonAnswering(serving);
+		const fake = await daemonAnswering(serving);
 		const session = await open({ workspaceRoot: workspace, lexiconRoot: install });
 		expect(await session.cacheStats({})).toEqual(STATS);
 
 		rmSync(install, { recursive: true, force: true });
-		session.close();
+		fake.dropConnections();
+		while (fake.connections() > 0) await new Promise((resolve) => setTimeout(resolve, 5));
 
 		expect(await session.cacheStats({})).toEqual(STATS);
 	});

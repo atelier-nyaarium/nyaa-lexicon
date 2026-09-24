@@ -23,8 +23,10 @@ import {
 import {
 	DAEMON_STOPPING_MESSAGE,
 	defined,
+	isDaemonMethod,
 	killLiveGroups,
 	type LockRole,
+	methodIsPassive,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
@@ -77,6 +79,12 @@ export function resumeAbandonedDelete(
 	return true;
 }
 
+/** Only known non-passive methods ask for the index.
+ * `shutdown` is not in the table. */
+export function asksAboutWorkspace(method: string): boolean {
+	return isDaemonMethod(method) && !methodIsPassive(method);
+}
+
 /** Whether a request may be answered: a retryable hold while roots are unread, a plain error after a failed pass. */
 export function warmRefusal(
 	service: Pick<LexiconService, "warmHold" | "warmFailure">,
@@ -85,6 +93,17 @@ export function warmRefusal(
 	if (failure !== null) return new Error(`${WARMUP_FAILED_PREFIX} ${failure}; restart the daemon`);
 	const hold = service.warmHold();
 	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
+}
+
+/** Workspace asks wait on holds.
+ * Failure refuses all but `refactorStatus`, which retirement asks. */
+export function refusalFor(
+	method: string,
+	service: Pick<LexiconService, "warmHold" | "warmFailure">,
+): DaemonStartingError | Error | null {
+	if (asksAboutWorkspace(method)) return warmRefusal(service);
+	if (method === "refactorStatus" || service.warmFailure() === null) return null;
+	return warmRefusal(service);
 }
 
 /**
@@ -281,15 +300,20 @@ async function main(argv: string[]): Promise<void> {
 	// What a request arriving before the handler is told, so no client is more impatient than this
 	// process is slow.
 	let startingSince = clock.now();
-	let waitingFor = "opening the index";
+	let waitingFor = "the index to open";
+	// Preserve early indexing requests.
+	let askedEarly = false;
 	const outcome = await startDaemon({
 		workspaceRoot: root,
 		...defined({ stateDir }),
 		onConnections: (n) => observe(n),
-		startingNote: () => ({
-			retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - clock.now()),
-			waitingFor,
-		}),
+		startingNote: (method) => {
+			if (asksAboutWorkspace(method)) askedEarly = true;
+			return {
+				retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - clock.now()),
+				waitingFor,
+			};
+		},
 		clock,
 		// A lost lock means a successor.
 		onLockLost: (reason) => void shutdown(reason),
@@ -519,11 +543,8 @@ async function main(argv: string[]): Promise<void> {
 				clock.setTimer(() => void shutdown("asked to shut down"), 0);
 				return { stopping: true };
 			}
-			// Asking about the workspace IS the request to index it.
-			warm();
-
-			// Retirement asks this of a daemon whose warmup may have failed; the journal, not the index, answers it.
-			const refusal = method === "refactorStatus" ? null : warmRefusal(service);
+			if (asksAboutWorkspace(method)) warm();
+			const refusal = refusalFor(method, service);
 			if (refusal !== null) throw refusal;
 			// Counted so shutdown waits for the answer and the linger cannot fire under it.
 			inFlight += 1;
@@ -544,7 +565,7 @@ async function main(argv: string[]): Promise<void> {
 		// index, which is why the index reports its state rather than letting a caller assume it.
 		daemon.setHandle(handle);
 
-		if (openStore.totals().files > 0 || warmRequested) warm();
+		if (openStore.totals().files > 0 || warmRequested || askedEarly) warm();
 		else log("cold: nothing indexed here before, so nothing is scanned until something asks");
 
 		// Off the startup path, as the warm scan is. Our own store is held, so it is never a candidate.

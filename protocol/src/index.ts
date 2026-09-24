@@ -22,6 +22,7 @@ export {
 	DAEMON_METHODS,
 	type DaemonMethod,
 	isDaemonMethod,
+	methodIsPassive,
 	methodMutates,
 	type ReadMethod,
 	type RequestOf,

@@ -38,6 +38,8 @@ export interface ConnectOptions {
 	/** How long a request waits on a starting daemon, in milliseconds. Zero asks once. */
 	patience?: number;
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
+	/** The caller's own bun. An OS bun spawns a daemon only when at least as new. */
+	bundledBun?: string;
 }
 
 /** Every daemon method as a typed call. Mapped from the table, so its JSDoc reaches hover. */
@@ -46,7 +48,8 @@ export type Facade = { [M in DaemonMethod]: (params: RequestOf<M>) => Promise<Re
 export interface Session extends Facade {
 	/** The method by name, for a caller holding the name rather than the call. */
 	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>;
-	/** Drops this session's connection; the daemon stays up for whoever else holds one. */
+	/** Closes the session; the daemon keeps running.
+	 * Later asks fail closed without reconnect; sent writes report unknown outcomes. */
 	close(): void;
 	/** Asks the daemon to stop and waits for its lock to go. */
 	stopDaemon(): Promise<void>;
@@ -137,7 +140,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		workspaceRoot,
 		source,
 		...stateDir,
-		...defined({ onWaiting: options.onWaiting }),
+		...defined({ onWaiting: options.onWaiting, bundledBun: options.bundledBun }),
 	}).catch((error: unknown) => {
 		throw asDaemonError(error);
 	});
@@ -149,7 +152,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		workspaceRoot,
 		source,
 		...stateDir,
-		...defined({ patience: options.patience, onWaiting: options.onWaiting }),
+		...defined({ patience: options.patience, onWaiting: options.onWaiting, bundledBun: options.bundledBun }),
 	};
 	const channel = daemonChannel(channelOptions);
 

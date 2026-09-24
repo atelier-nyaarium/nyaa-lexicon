@@ -33,7 +33,7 @@ export class Incompatible extends Error {
 /** The daemon refused, failed, or could not be reached; `waitingFor` names a wait that ran out. */
 export class DaemonError extends Error {
 	readonly waitingFor: string | undefined;
-	override readonly cause: "unknownMethod" | "refusedModule" | "spawnFailed" | "connectionLost" | "daemon";
+	override readonly cause: "unknownMethod" | "refusedModule" | "spawnFailed" | "connectionLost" | "closed" | "daemon";
 	/** The frame's own `code`, when the daemon sent one, read structurally instead of by prose. */
 	readonly code: "stopping" | undefined;
 

@@ -26,6 +26,8 @@ export interface FakeDaemon {
 	asked: string[];
 	/** Sockets open right now. */
 	connections(): number;
+	/** Drops clients; keeps listening. */
+	dropConnections(): void;
 	close(): Promise<void>;
 }
 
@@ -80,6 +82,9 @@ export function fakeDaemon(options: FakeDaemonOptions): Promise<FakeDaemon> {
 				port,
 				asked,
 				connections: () => sockets.size,
+				dropConnections: () => {
+					for (const socket of sockets) socket.destroy();
+				},
 				close: () =>
 					new Promise((done) => {
 						for (const socket of sockets) socket.destroy();
