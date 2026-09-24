@@ -176,8 +176,9 @@ catch (error) { if (error instanceof DaemonError && error.waitingFor) retry(); e
 ## The warming wait
 
 A daemon publishes its lock before it can answer. Until its index is open and its providers are
-up, and again until its scope is computed and the warmup pass has attempted every file, a request is answered
-`starting` with the daemon's own countdown and what it is waiting for. The client re-sends every
+up, a request is answered `starting` with the daemon's own countdown and what it is waiting for. A
+query waits again until the scope is computed and the warmup pass has attempted every file; a
+status read, a probe or `indexWorkspace` answers through it. The client re-sends every
 250 ms until the earlier of that countdown and `patience`, five minutes by default, then fails as
 `DaemonError`, `<the daemon's error> (gave up waiting on <waitingFor>; ask again later)`, with
 `waitingFor` set. The countdown is the daemon's budget, published rather than mirrored, so the

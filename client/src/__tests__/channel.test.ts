@@ -158,12 +158,14 @@ describe("daemon channel reconnects", () => {
 		expect({
 			query: await cause(starting.ask("overview", {})),
 			status: await cause(starting.ask("indexStatus", {})),
+			counters: await cause(starting.ask("cacheStats", {})),
 			probe: await cause(starting.ask("fileHistory", { module: "a.ts" })),
 			trigger: await cause(starting.ask("indexWorkspace", {})),
 			attachOnly: await cause(attaching.ask("overview", {})),
 		}).toEqual({
 			query: "spawnFailed",
 			status: "notRunning",
+			counters: "notRunning",
 			probe: "spawnFailed",
 			trigger: "spawnFailed",
 			attachOnly: "notRunning",
