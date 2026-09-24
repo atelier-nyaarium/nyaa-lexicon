@@ -7,7 +7,7 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { type BunExecutable, bunExecutable, currentHost } from "@nyaa-lexicon/client";
+import { type BunExecutable, bunCommand, bunExecutable, currentHost } from "@nyaa-lexicon/client";
 import type { ProviderStarter } from "./providerPort.js";
 import type { ProviderClaims } from "./routing.js";
 import type { ProviderSpec } from "./supervisor.js";
@@ -69,29 +69,34 @@ export function lexiconRoot(): string {
  * installs dependencies and one that does not otherwise behave completely differently. Both run on
  * the executable this process runs on.
  */
-export async function discoverProviders(root = lexiconRoot(), runtime?: BunExecutable): Promise<ProviderCommand[]> {
-	const resolved = runtime ?? (await bunExecutable(currentHost()));
+export async function discoverProviders(
+	root = lexiconRoot(),
+	runtime?: BunExecutable,
+	host = currentHost(),
+): Promise<ProviderCommand[]> {
+	const resolved = runtime ?? (await bunExecutable(host));
 	assertRuntime(resolved);
 	const directory = path.join(root, "providers");
 	if (!existsSync(directory)) return [];
 
+	const launch = bunCommand(resolved, host);
 	const found: ProviderCommand[] = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
 
 		const bundled = path.join(root, "dist", "providers", entry.name, "main.js");
 		if (existsSync(bundled)) {
-			found.push({ directory: entry.name, command: [resolved.executable, bundled] });
+			found.push({ directory: entry.name, command: [...launch, bundled] });
 			continue;
 		}
 
 		const source = path.join(directory, entry.name, "src", "main.ts");
-		if (existsSync(source)) found.push({ directory: entry.name, command: [resolved.executable, "run", source] });
+		if (existsSync(source)) found.push({ directory: entry.name, command: [...launch, "run", source] });
 	}
 	return found.sort((a, b) => a.directory.localeCompare(b.directory));
 }
 
-function assertRuntime(runtime: BunExecutable): void {
+function assertRuntime(runtime: BunExecutable): asserts runtime is Extract<BunExecutable, { kind: "bun" }> {
 	if (runtime.kind !== "bun")
 		throw new Error(
 			`providers cannot start: ${runtime.kind} ${runtime.executable} ${"version" in runtime ? runtime.version : "unknown"}`,

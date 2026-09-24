@@ -279,6 +279,14 @@ it is, and `refuseRuntime(what)`, the sentence lexicon's own entry points print 
 or null when the runtime is accepted. `bundleStamp(root)` and `bundleFiles(root)` are the bundle
 identity the lock carries, described under Compatibility in `docs/daemon-protocol.md`.
 
+Every bun process lexicon starts, daemon and providers alike, begins with `bunCommand(runtime, host)`:
+the executable, `--config` and `--tsconfig-override` naming lexicon's own settings files, then
+`--no-env-file` and `--no-install`. A process often starts inside the indexed repo, and without these
+bun would run that repo's `bunfig.toml` preload and load its `.env`. The two files live directly
+under the state root as `runtime.bunfig.toml` and `runtime.tsconfig.json`, rewritten when they hold
+anything else. `RUNTIME_BUNFIG` and `RUNTIME_TSCONFIG` are their contents; the plugin's own launch
+in `.mcp.json` passes the same flags with committed copies under `launch/`.
+
 `classifyWorkspaceRoot(path)` answers before spawning whether the path is the filesystem root or
 the caller's home directory. The install source is a thunk re-derived for each ensure, channel,
 lock and stop invocation, so rebuilds and removed installs are observed immediately. A stale

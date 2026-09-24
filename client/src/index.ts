@@ -41,6 +41,7 @@ export {
 	readInstallVersion,
 	writeInstallRecord,
 } from "./install.js";
+export { bunCommand, RUNTIME_BUNFIG, RUNTIME_TSCONFIG } from "./launch.js";
 export {
 	decideFromLock,
 	isRelease,

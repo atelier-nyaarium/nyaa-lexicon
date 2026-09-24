@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Python3Dispatch } from "../python3";
 
 ////////////////////////////////
@@ -28,5 +31,26 @@ describe("runJson", () => {
 		const dispatch = new Python3Dispatch("sh");
 
 		expect(await dispatch.runJson<{ ok: boolean }>(["-c", "printf '{\"ok\":true}'"])).toEqual({ ok: true });
+	});
+
+	// A python3 child imports from its cwd first, so starting it in the indexed repo let a root
+	// json.py stand in for the standard library.
+	it("never starts a child in the folder its own process runs in", async () => {
+		const hostile = mkdtempSync(path.join(tmpdir(), "lexicon-python3-cwd-"));
+		const previous = process.cwd();
+		process.chdir(hostile);
+		try {
+			const answer = await new Python3Dispatch("sh").runJson<{ cwd: string }>([
+				"-c",
+				`printf '{"cwd":"%s"}' "$(pwd -P)"`,
+			]);
+			expect({ answered: typeof answer?.cwd, inHostile: answer?.cwd === realpathSync(hostile) }).toEqual({
+				answered: "string",
+				inHostile: false,
+			});
+		} finally {
+			process.chdir(previous);
+			rmSync(hostile, { recursive: true, force: true });
+		}
 	});
 });

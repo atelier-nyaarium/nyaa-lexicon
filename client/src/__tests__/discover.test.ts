@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { bundleStamp, daemonCommand, findDaemon, lockHolderAlive, processIsAlive } from "../discover";
+import { bunCommand } from "../launch";
 import { canonicalRoot, type PlatformEnv, workspacePaths } from "../paths";
 import { processIdentity } from "../procfs";
 import { BUN_FLOOR, bunExecutable } from "../runtime";
@@ -208,16 +209,24 @@ describe("the bundle under a root", () => {
 		expect(await daemonCommand(root, "/w")).toEqual({ kind: "unbuilt" });
 	});
 
-	it("runs the bundle on this runtime against the workspace it is given", async () => {
+	it("runs the bundle through lexicon's launch on this runtime against the workspace it is given", async () => {
 		const root = scratch("lexicon-root-");
+		const state = scratch("lexicon-state-");
+		const host: PlatformEnv = {
+			platform: "linux",
+			env: { XDG_STATE_HOME: state },
+			home: state,
+			execPath: process.execPath,
+		};
 		const bundle = path.join(root, "dist", "daemon.js");
 		mkdirSync(path.dirname(bundle), { recursive: true });
 		writeFileSync(bundle, "// bundle\n");
+		const launch = bunCommand({ kind: "bun", executable: process.execPath, version: Bun.version }, host);
 
 		expect(bundleStamp(root)).toMatch(/^1:[0-9a-f]{16}$/);
-		expect(await daemonCommand(root, "/w")).toMatchObject({
+		expect(await daemonCommand(root, "/w", undefined, host)).toEqual({
 			kind: "command",
-			command: [process.execPath, bundle, "/w"],
+			command: [...launch, bundle, "/w"],
 		});
 	});
 

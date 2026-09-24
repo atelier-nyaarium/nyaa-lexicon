@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -15,7 +15,7 @@ import {
 	submoduleRoots,
 } from "../fileScope";
 import { fakeClock } from "./fakeClock";
-import { gitAdd, gitClone, gitCommit, gitInit, gitSubmoduleAdd } from "./gitFixture";
+import { gitAdd, gitClone, gitCommit, gitConfig, gitInit, gitSubmoduleAdd } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -116,6 +116,18 @@ describe("what git says belongs to the project", () => {
 		expect(known?.has("src/a.ts")).toBe(true);
 		expect(known?.has("volumes/home/plugin.py")).toBe(false);
 		expect(known?.has(".env")).toBe(false);
+	});
+
+	it("never runs the fsmonitor command a repository's own config names", async () => {
+		const root = await repo({ "src/a.ts": "" });
+		const marker = path.join(root, "..", `${path.basename(root)}-fsmonitor-ran`);
+		roots.push(marker);
+		write(root, "fsmonitor.sh", `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+		chmodSync(path.join(root, "fsmonitor.sh"), 0o755);
+		await gitConfig(root, "core.fsmonitor", path.join(root, "fsmonitor.sh"));
+
+		expect((await gitFiles(root))?.has("src/a.ts")).toBe(true);
+		expect(existsSync(marker)).toBe(false);
 	});
 
 	it("answers null outside a repository, which is not the same as an empty project", async () => {

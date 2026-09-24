@@ -6,5 +6,5 @@
 		"noEmit": false
 	},
 	"include": ["**/*.ts"],
-	"references": [{ "path": "../protocol" }]
+	"references": [{ "path": "../protocol" }, { "path": "../client" }]
 }

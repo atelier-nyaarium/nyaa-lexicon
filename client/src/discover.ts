@@ -29,6 +29,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { beforeDeadline } from "./deadline.js";
 import { DaemonError } from "./errors.js";
+import { bunCommand } from "./launch.js";
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import { processIdentity } from "./procfs.js";
@@ -180,7 +181,7 @@ export async function daemonCommand(
 	}
 	const runtime = await bunExecutable(host, undefined, bundledBun);
 	if (runtime.kind !== "bun") return { kind: "noBunRuntime", runtime };
-	const command = [runtime.executable, bundle, workspaceRoot];
+	const command = [...bunCommand(runtime, host), bundle, workspaceRoot];
 	if (stateDir !== undefined) command.push("--state-dir", stateDir);
 	return { kind: "command", command };
 }

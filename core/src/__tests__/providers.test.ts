@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { BunExecutable } from "@nyaa-lexicon/client";
+import { type BunExecutable, bunCommand, currentHost } from "@nyaa-lexicon/client";
 import type { ProviderStarter } from "../providerPort";
 import { describeStart, discoverProviders, lexiconRoot, startProviders } from "../providers";
 import type { ProviderSpec } from "../supervisor";
@@ -48,7 +48,18 @@ function supervisor(failing: string[] = [], started: ProviderSpec[] = []): Provi
 	};
 }
 
+// Discovery writes lexicon's launch settings under the state root, kept out of the real one.
+let previousStateHome: string | undefined;
+beforeEach(() => {
+	previousStateHome = process.env["XDG_STATE_HOME"];
+	const state = mkdtempSync(path.join(tmpdir(), "lexicon-providers-state-"));
+	roots.push(state);
+	process.env["XDG_STATE_HOME"] = state;
+});
+
 afterEach(() => {
+	if (previousStateHome === undefined) delete process.env["XDG_STATE_HOME"];
+	else process.env["XDG_STATE_HOME"] = previousStateHome;
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -85,14 +96,18 @@ describe("finding providers", () => {
 		expect(await discoverProviders(root)).toEqual([]);
 	});
 
-	it("prefers a bundle over the source, and starts both on the executable this process runs on", async () => {
-		const found = await discoverProviders(tree(["alpha"], ["beta"]));
+	it("prefers a bundle over the source, and starts both through lexicon's launch on this process's bun", async () => {
+		const root = tree(["alpha"], ["beta"]);
+		const found = await discoverProviders(root);
+		const launch = bunCommand({ kind: "bun", executable: process.execPath, version: Bun.version }, currentHost());
 
-		expect(found.map((p) => p.directory)).toEqual(["alpha", "beta"]);
-		expect(found[0]?.command.slice(0, 2)).toEqual([process.execPath, "run"]);
-		expect(found[0]?.command[2]).toMatch(/providers\/alpha\/src\/main\.ts$/);
-		expect(found[1]?.command[0]).toBe(process.execPath);
-		expect(found[1]?.command[1]).toMatch(/dist\/providers\/beta\/main\.js$/);
+		expect(found).toEqual([
+			{
+				directory: "alpha",
+				command: [...launch, "run", path.join(root, "providers", "alpha", "src", "main.ts")],
+			},
+			{ directory: "beta", command: [...launch, path.join(root, "dist", "providers", "beta", "main.js")] },
+		]);
 	});
 
 	// The walk-up is the part that differs between running from source and running from dist/, so

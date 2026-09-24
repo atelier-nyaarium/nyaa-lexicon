@@ -6,7 +6,9 @@ import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
 import type { DaemonSource } from "../discover";
 import { ensureDaemon, ensureFailure } from "../ensure";
 import { DaemonError, NotInstalled } from "../errors";
+import { bunCommand } from "../launch";
 import type { LockDecision } from "../lock";
+import { currentHost } from "../paths";
 import { fakeDaemon } from "./fakeDaemon";
 
 ////////////////////////////////
@@ -29,15 +31,26 @@ function looking(sequence: LockDecision[]) {
 
 /** A root holding a bundle, so spawning has a command to hand the injected `start`. */
 let source: DaemonSource;
+/** Spawning writes lexicon's launch settings under the state root, kept out of the real one. */
+let state: string;
+let previousStateHome: string | undefined;
 
 beforeAll(() => {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-ensure-"));
 	mkdirSync(path.join(root, "dist"), { recursive: true });
 	writeFileSync(path.join(root, "dist", "daemon.js"), "// bundle\n");
 	source = { root, buildVersion: "1.10.2", bundleStamp: null };
+	state = mkdtempSync(path.join(tmpdir(), "lexicon-ensure-state-"));
+	previousStateHome = process.env["XDG_STATE_HOME"];
+	process.env["XDG_STATE_HOME"] = state;
 });
 
-afterAll(() => rmSync(source.root, { recursive: true, force: true }));
+afterAll(() => {
+	if (previousStateHome === undefined) delete process.env["XDG_STATE_HOME"];
+	else process.env["XDG_STATE_HOME"] = previousStateHome;
+	rmSync(source.root, { recursive: true, force: true });
+	rmSync(state, { recursive: true, force: true });
+});
 
 const options = {
 	workspaceRoot: "/w",
@@ -104,7 +117,8 @@ describe("getting a daemon", () => {
 			},
 		});
 
-		expect(commands).toEqual([[process.execPath, path.join(source.root, "dist", "daemon.js"), "/w"]]);
+		const launch = bunCommand({ kind: "bun", executable: process.execPath, version: Bun.version }, currentHost());
+		expect(commands).toEqual([[...launch, path.join(source.root, "dist", "daemon.js"), "/w"]]);
 	});
 
 	it("uses the bundle when its bun is newer than the running bun", async () => {

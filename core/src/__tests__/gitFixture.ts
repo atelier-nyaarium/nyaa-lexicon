@@ -11,6 +11,11 @@ export async function gitInit(root: string): Promise<void> {
 	await run("git", ["init", "-q"], { cwd: root });
 }
 
+/** Sets a key in the repository's own `.git/config`. */
+export async function gitConfig(root: string, key: string, value: string): Promise<void> {
+	await run("git", ["config", key, value], { cwd: root });
+}
+
 /** Stages paths at `root`, e.g. `gitAdd(root, "-A")` or `gitAdd(root, "src/a.ts")`. */
 export async function gitAdd(root: string, ...paths: string[]): Promise<void> {
 	await run("git", ["add", ...paths], { cwd: root });

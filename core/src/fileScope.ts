@@ -140,7 +140,9 @@ export async function runGit(
 	args: string[],
 	options: GitRunOptions = {},
 ): Promise<{ code: number | null; stdout: string } | null> {
-	const result = await runBounded(options.command ?? "git", args, {
+	// A repo's own `.git/config` may name an fsmonitor command, which git runs on an index refresh.
+	const argv = options.command === undefined ? ["-c", "core.fsmonitor=false", ...args] : args;
+	const result = await runBounded(options.command ?? "git", argv, {
 		cwd,
 		input: options.input,
 		maxBytes: options.maxStdoutBytes ?? GIT_MAX_STDOUT_BYTES,

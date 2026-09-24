@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runBounded, systemTimer } from "@nyaa-lexicon/protocol";
 
 export interface Python3Options {
@@ -10,6 +12,12 @@ const PYTHON3_TIMEOUT_MS = 30_000;
 
 /** Matches the previous spawnSync default; stdout past this is killed and read as a failure. */
 const PYTHON3_MAX_BUFFER_BYTES = 200 * 1024 * 1024;
+
+/**
+ * This provider's own folder. `python3 -c` imports from its cwd first, so a child started in the
+ * indexed repo would load that repo's `json.py` in place of the standard library's.
+ */
+const PYTHON3_CWD = path.dirname(fileURLToPath(import.meta.url));
 
 export class Python3Dispatch {
 	private readonly cache = new Map<string, unknown | null>();
@@ -35,6 +43,7 @@ export class Python3Dispatch {
 
 	private async run<T>(args: string[], options: Python3Options): Promise<T | null> {
 		const result = await runBounded(this.executable, args, {
+			cwd: PYTHON3_CWD,
 			input: options.input,
 			maxBytes: options.maxBuffer ?? PYTHON3_MAX_BUFFER_BYTES,
 			timeoutMs: PYTHON3_TIMEOUT_MS,

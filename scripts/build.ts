@@ -148,8 +148,7 @@ function checkBundlesAreSelfContained(root: string): number {
 function smokeProviders(root: string, providers: Array<{ out: string }>): void {
 	for (const entry of providers) {
 		const bundle = path.join(root, DIST_DIR, entry.out);
-		// The bun running this script is the owner's own first answer; tsc's rootDir keeps the client
-		// source out of scripts/, so the owner is not imported here.
+		// The bun running this script is the owner's own first answer.
 		// Closed stdin is a clean shutdown, so a healthy provider loads, starts and exits zero.
 		// Import-time death exits nonzero with its reason on stderr, which is the failure hunted here.
 		const probe = spawnSync(process.execPath, [bundle], {
@@ -168,6 +167,17 @@ function smokeProviders(root: string, providers: Array<{ out: string }>): void {
 		}
 		console.log(`smoke ok ${entry.out}`);
 	}
+}
+
+/** The built daemon and providers, started from inside a hostile workspace, run none of its code. */
+function smokeIsolation(root: string): void {
+	const probe = spawnSync(process.execPath, [path.join(root, "scripts", "isolationSmoke.ts")], {
+		cwd: root,
+		stdio: "inherit",
+		timeout: 180_000,
+	});
+	// The smoke prints its own reason.
+	if (probe.status !== 0) throw new Error(`the isolation smoke exited ${probe.status}`);
 }
 
 /**
@@ -494,6 +504,7 @@ function main(argv: string[]): void {
 		console.log(`wrote ${DIST_DIR}/${VERSION_FILE}: ${version}, protocol ${PROTOCOL_VERSION}`);
 		console.log(`self-contained: ${checkBundlesAreSelfContained(ROOT)} bundles`);
 		smokeProviders(ROOT, providers);
+		smokeIsolation(ROOT);
 	} catch (failure) {
 		// bun prints its own compiler errors; only a smoke failure needs this script to speak.
 		const said = failure instanceof Error ? failure.message : "";
