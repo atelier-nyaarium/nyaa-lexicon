@@ -757,10 +757,10 @@ export class IndexReadModel {
 	 */
 	callHierarchy(symbolId: string): CallHierarchy {
 		const context = new ReadContext(this.store);
-		const group = (
+		const spansBy = (
 			rows: StoredReference[],
 			endOf: (reference: StoredReference) => string | null,
-		): CallHierarchyEdge[] => {
+		): Map<string, Range[]> => {
 			const byPeer = new Map<string, Range[]>();
 			for (const reference of rows) {
 				if (reference.role !== "call") continue;
@@ -773,19 +773,25 @@ export class IndexReadModel {
 				});
 				byPeer.set(peer, ranges);
 			}
-
-			const edges: CallHierarchyEdge[] = [];
+			return byPeer;
+		};
+		const edges = (byPeer: Map<string, Range[]>): CallHierarchyEdge[] => {
+			const found: CallHierarchyEdge[] = [];
 			for (const [peer, ranges] of byPeer) {
 				const symbol = context.summaryOf(peer);
-				if (symbol !== null) edges.push({ symbol, ranges });
+				if (symbol !== null) found.push({ symbol, ranges });
 			}
-			return edges;
+			return found;
 		};
 
+		const callers = this.store.usesTo(symbolId);
+		// A top-level call has no calling symbol, so it groups by the module it sits in.
+		const fromModules = spansBy(callers, (reference) => (reference.fromId === null ? reference.module : null));
 		return {
 			symbolId,
-			incoming: group(this.store.usesTo(symbolId), (reference) => reference.fromId),
-			outgoing: group(this.store.usesFrom(symbolId), (reference) => reference.targetId),
+			incoming: edges(spansBy(callers, (reference) => reference.fromId)),
+			outgoing: edges(spansBy(this.store.usesFrom(symbolId), (reference) => reference.targetId)),
+			incomingFromModules: [...fromModules].map(([module, ranges]) => ({ module, ranges })),
 		};
 	}
 

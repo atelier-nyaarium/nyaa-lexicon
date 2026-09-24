@@ -28,6 +28,7 @@ const STAGED = [
 	"refactorRename",
 	"refactorMove",
 	"parseFacts",
+	"symbolAt",
 ];
 
 /** The background upgrade ungated, then the answer shared. */

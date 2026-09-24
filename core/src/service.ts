@@ -16,8 +16,10 @@ import {
 	type MostReferencedResult,
 	type OverviewResult,
 	type ParseFactsResult,
+	type Position,
 	parseSymbolId,
 	type SharedLiteralsResult,
+	type SymbolAtResult,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { writeAll } from "./applyEdits.js";
@@ -358,6 +360,14 @@ export class LexiconService {
 
 	parseFacts(module: string, text: string): Promise<ParseFactsResult> {
 		return this.paint.parseFacts(module, text);
+	}
+
+	storedSymbolAt(module: string, position: Position): SymbolAtResult {
+		return this.paint.storedSymbolAt(module, position);
+	}
+
+	candidateSymbolAt(module: string, position: Position, text: string): Promise<SymbolAtResult> {
+		return this.paint.candidateSymbolAt(module, position, text);
 	}
 
 	////////////////////////////////

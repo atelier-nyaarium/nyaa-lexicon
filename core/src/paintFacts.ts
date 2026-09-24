@@ -7,12 +7,14 @@ import {
 	type ModuleFactsResult,
 	type PaintFacts,
 	type ParseFactsResult,
+	type Position,
 	type ProviderWords,
 	type Range,
 	type Reference,
 	type StoredComment,
 	type StoredDeclaration,
 	type StoredReference,
+	type SymbolAtResult,
 } from "@nyaa-lexicon/protocol";
 import type { ProviderProbe } from "./providerProbe.js";
 import { candidateDoesNotParse, noProviderOwnsForPaint } from "./refusals.js";
@@ -67,6 +69,43 @@ function paintStoredComments(comments: readonly StoredComment[]): PaintFacts["co
 	return comments.map((comment) => ({ range: comment.range }));
 }
 
+function before(a: Position, b: Position): boolean {
+	return a.line < b.line || (a.line === b.line && a.character < b.character);
+}
+
+/** `end` counts, so a cursor just past a name still means it. */
+function covers(range: Range, position: Position, endCounts: boolean): boolean {
+	if (before(position, range.start)) return false;
+	return endCounts ? !before(range.end, position) : before(position, range.end);
+}
+
+function inside(inner: Range, outer: Range): boolean {
+	return !before(inner.start, outer.start) && !before(outer.end, inner.end);
+}
+
+/**
+ * The target a bound reference under `position` names, else the innermost declaration around it.
+ * A reference strictly under the cursor wins over one ending at it.
+ */
+export function pickSymbol(
+	references: readonly { range: Range; target: string | null }[],
+	declarations: readonly { range: Range; symbolId: string }[],
+	position: Position,
+): { symbolId: string; via: "reference" | "declaration" } | null {
+	const bound = references.filter((reference) => reference.target !== null);
+	const under =
+		bound.find((reference) => covers(reference.range, position, false)) ??
+		bound.find((reference) => covers(reference.range, position, true));
+	if (under?.target != null) return { symbolId: under.target, via: "reference" };
+
+	let innermost: { range: Range; symbolId: string } | null = null;
+	for (const declaration of declarations) {
+		if (!covers(declaration.range, position, true)) continue;
+		if (innermost === null || inside(declaration.range, innermost.range)) innermost = declaration;
+	}
+	return innermost === null ? null : { symbolId: innermost.symbolId, via: "declaration" };
+}
+
 ////////////////////////////////
 //  Class
 
@@ -108,6 +147,37 @@ export class PaintReads {
 		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("candidate", candidate.reason) };
 
 		return paintFromCandidate(hashContent(text), words, candidate.facts);
+	}
+
+	/** The symbol under `position` in the stored facts. Caller holds the read gate. */
+	storedSymbolAt(module: string, position: Position): SymbolAtResult {
+		const contentHash = this.store.contentHashOf(module);
+		if (this.store.depthOf(module) === null || contentHash === null) return { found: false, reason: "notIndexed" };
+		const references = this.store
+			.referencesIn(module)
+			.map((reference) => ({ range: storedReferenceRange(reference), target: reference.targetId }));
+		const picked = pickSymbol(references, this.store.declarationsIn(module), position);
+		return picked === null
+			? { found: false, reason: "noSymbol", contentHash }
+			: { found: true, ...picked, contentHash };
+	}
+
+	/** The symbol under `position` in `text`, parsed fresh without touching the store. */
+	async candidateSymbolAt(module: string, position: Position, text: string): Promise<SymbolAtResult> {
+		const owner = this.probe.owner(module);
+		if (!owner.owned)
+			return { found: false, reason: "unowned", detail: noProviderOwnsForPaint(module, owner.reason) };
+		const candidate = await this.probe.parseCandidate(module, text);
+		const contentHash = hashContent(text);
+		if (!candidate.parsed) return { found: false, reason: "unparsed", contentHash, detail: candidate.reason };
+		const references = candidate.facts.references.map((reference) => ({
+			range: reference.range,
+			target: reference.binding.status === "bound" ? reference.binding.symbolId : null,
+		}));
+		const picked = pickSymbol(references, candidate.facts.declarations, position);
+		return picked === null
+			? { found: false, reason: "noSymbol", contentHash }
+			: { found: true, ...picked, contentHash };
 	}
 }
 

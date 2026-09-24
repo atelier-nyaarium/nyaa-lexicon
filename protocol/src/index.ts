@@ -238,6 +238,8 @@ export {
 	StoredReferenceSchema,
 	type SubjectDiagnosis,
 	SubjectDiagnosisSchema,
+	type SymbolAtResult,
+	SymbolAtResultSchema,
 	type SymbolSource,
 	SymbolSourceSchema,
 	type SymbolSummary,

@@ -289,6 +289,39 @@ describe("type hierarchy and citable facts", () => {
 		expect(built.callHierarchy(caller.symbolId).outgoing.map((e) => e.symbol.name)).toEqual(["target"]);
 	});
 
+	it("groups top-level calls by their module, since no symbol makes them", () => {
+		const callee = type("target");
+		const topLevel = (line: number) => ({
+			name: "target",
+			range: { start: { line, character: 0 }, end: { line, character: 6 } },
+			role: "call" as const,
+			binding: { status: "bound", symbolId: callee.symbolId, provenance: "bound" } as const,
+		});
+		store.replaceFile({ module: "a.ref", contentHash: "h1", declarations: [callee], references: [] });
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: "h2",
+			declarations: [],
+			references: [topLevel(3), topLevel(7)],
+		});
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
+
+		const hierarchy = built.callHierarchy(callee.symbolId);
+
+		expect({
+			incoming: hierarchy.incoming,
+			fromModules: hierarchy.incomingFromModules?.map((call) => [
+				call.module,
+				call.ranges.map((r) => r.start.line),
+			]),
+		}).toEqual({ incoming: [], fromModules: [["b.ref", [3, 7]]] });
+	});
+
 	it("ignores a reference that is not a call, so a hierarchy is not a mention list", () => {
 		const callee = type("target");
 		const caller = type("caller", "b.ref");

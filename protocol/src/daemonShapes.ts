@@ -756,6 +756,8 @@ export const CallHierarchySchema = z
 		symbolId: z.string(),
 		incoming: z.array(CallHierarchyEdgeSchema),
 		outgoing: z.array(CallHierarchyEdgeSchema),
+		/** Incoming calls at a module's top level, which have no calling symbol. */
+		incomingFromModules: z.array(z.object({ module: z.string(), ranges: z.array(RangeSchema) })).optional(),
 	})
 	.meta({ id: "CallHierarchy" });
 
@@ -953,10 +955,34 @@ export const IndexStatusSchema = z
 		fullFiles: z.number(),
 		/** Stored files still owing a full pass; reference counts are lower bounds while nonzero. */
 		outlineFiles: z.number(),
+		/** Changes whenever the stored facts do; equal values mean an answer drawn from them still holds. */
+		generation: z.string().optional(),
 	})
 	.meta({ id: "IndexStatus" });
 
 export type IndexStatus = z.infer<typeof IndexStatusSchema>;
+
+/** The symbol a cursor means: the target a bound reference under it names, else the innermost
+ * declaration around it. Never a guess by name. */
+export const SymbolAtResultSchema = z
+	.discriminatedUnion("found", [
+		z.object({
+			found: z.literal(true),
+			symbolId: z.string().min(1),
+			via: z.enum(["reference", "declaration"]),
+			/** The bytes the answer came from, so a caller holding others asks again with them. */
+			contentHash: z.string(),
+		}),
+		z.object({
+			found: z.literal(false),
+			reason: z.enum(["noSymbol", "notIndexed", "unowned", "unparsed"]),
+			contentHash: z.string().optional(),
+			detail: z.string().optional(),
+		}),
+	])
+	.meta({ id: "SymbolAtResult" });
+
+export type SymbolAtResult = z.infer<typeof SymbolAtResultSchema>;
 
 /** What the last knowledge sweep did; `ambiguous` counts within `orphaned`. */
 export const KnowledgeSweepSchema = z

@@ -306,6 +306,22 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		const refused = await ask("parseFacts", { module: "notes.txt", text: "hi" });
 		expect(refused.ok).toBe(false);
 	},
+	symbolAt: async () => {
+		const text = "export class Basket {}\n";
+		expect({
+			stored: await ask("symbolAt", { module: "cart.ref", position: { line: 1, character: 14 } }),
+			handed: await ask("symbolAt", { module: "cart.ref", position: { line: 0, character: 15 }, text }),
+			between: await ask("symbolAt", { module: "cart.ref", position: { line: 2, character: 0 } }),
+			ghost: await ask("symbolAt", { module: "ghost.ref", position: { line: 0, character: 0 } }),
+			unowned: await ask("symbolAt", { module: "notes.txt", position: { line: 0, character: 0 }, text: "hi" }),
+		}).toMatchObject({
+			stored: { found: true, symbolId: cart, via: "declaration" },
+			handed: { found: true, via: "declaration", contentHash: hashContent(text) },
+			between: { found: false, reason: "noSymbol" },
+			ghost: { found: false, reason: "notIndexed" },
+			unowned: { found: false, reason: "unowned" },
+		});
+	},
 	findImports: () => ask("findImports", { specifier: "./item", limit: 5 }),
 	overview: async () => {
 		const overview = await ask("overview", {});

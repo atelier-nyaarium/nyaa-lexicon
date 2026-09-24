@@ -50,7 +50,9 @@ export type Compatibility =
 // `shutdown` is a control. `indexWorkspace` starts indexing and answers at once. An unknown name is
 // refused before the handler lands too. An error's `code` is read as any string, so a newer
 // daemon's code never drops an older client's connection.
-export const PROTOCOL_VERSION = "3.9.0" as const;
+// 3.10.0: `symbolAt`, the symbol a cursor means in stored or handed text. `indexStatus.generation`,
+// which changes whenever stored facts do. `callHierarchy.incomingFromModules`, top-level callers.
+export const PROTOCOL_VERSION = "3.10.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

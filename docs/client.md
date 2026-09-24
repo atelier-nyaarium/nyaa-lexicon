@@ -145,7 +145,8 @@ tells the two apart. A connection lost twice is a `DaemonError`.
 comments and the owning provider's own words, shaped for a client that paints code from facts
 instead of running a second parser. `moduleFacts` answers the store's rows for a module already
 indexed; `parseFacts` answers the same shape for text an editor holds but has not written, parsed by
-the owning provider without touching the store.
+the owning provider without touching the store. `session.symbolAt({ module, position, text? })`
+answers which symbol a cursor means, from either source.
 
 ## Errors
 

@@ -433,6 +433,22 @@ describe("warmup pass", () => {
 		expect(states).toEqual(["unstarted", "discovering", "ready"]);
 	});
 
+	it("moves the generation when stored facts move, and only then", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+		const settled = service.indexStatus().generation;
+		const again = service.indexStatus().generation;
+		put("a.fake", "export class B {}\n");
+		await service.indexFile("a.fake");
+
+		expect({ again: again === settled, afterEdit: service.indexStatus().generation === settled }).toEqual({
+			again: true,
+			afterEdit: false,
+		});
+	});
+
 	it("judges each lifecycle alike before and after the handler lands", () => {
 		const names = [
 			"moduleDeclarations",

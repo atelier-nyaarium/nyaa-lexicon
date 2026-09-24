@@ -279,6 +279,18 @@ that needs references asks `parseFacts` when `moduleFacts`'s `depth` is `outline
 `parseFacts` takes the gate in no part at all: it is a plain caller-driven ask, like planning a
 replacement, since it changes nothing the gate orders.
 
+**`symbolAt`** (`{ module, position, text? }`, protocol 3.10.0) answers which symbol a cursor
+means, from the same facts: the target of a bound reference under `position`, else the innermost
+declaration whose range holds it. An unbound or ambiguous reference falls through to the
+declaration; nothing is guessed by name. Without `text` it reads the store under the gate; with
+`text` it parses that text like `parseFacts`. `{ found: true, symbolId, via, contentHash }`, `via`
+being `reference` or `declaration`, or `{ found: false, reason }` with `reason` `noSymbol`,
+`notIndexed`, `unowned` or `unparsed`. `contentHash` names the bytes the answer came from, so a
+caller holding different bytes asks again with them.
+
+`indexStatus.generation` (protocol 3.10.0) changes whenever the stored facts do, and differs across
+daemon restarts, so an answer drawn from facts holds while it stays equal.
+
 ## Validation, both directions
 
 `createDispatch` is the one place a request meets the table, and it does three things in order. A
