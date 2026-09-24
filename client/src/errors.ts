@@ -33,15 +33,15 @@ export class Incompatible extends Error {
 }
 
 export interface DaemonErrorDetails {
-	/** A wait that ran out. */
+	/** The wait that expired. */
 	waitingFor?: string | undefined;
-	/** The frame's own `code`: any string on the wire, only a known one here. */
+	/** Wire codes are open; this field retains recognized values only. */
 	code?: string | undefined;
-	/** The daemon that answered, for stopping exactly that one. */
+	/** Daemon that answered, for targeted shutdown. */
 	from?: DaemonRef | undefined;
 }
 
-/** The daemon refused, failed, or could not be reached. `notRunning` is an attach that found nothing usable. */
+/** Daemon refusal or connection failure; `notRunning` means attach found no usable daemon. */
 export class DaemonError extends Error {
 	override readonly cause:
 		| "unknownMethod"

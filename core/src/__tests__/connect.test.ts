@@ -138,10 +138,15 @@ describe("a session that may not start a daemon", () => {
 				(error: unknown) => (error as DaemonError).cause,
 			);
 
+		const midway = new AbortController();
+		const abortedMidway = connect({ workspaceRoot: workspace, start: false, signal: midway.signal });
+		midway.abort();
+
 		expect({
 			attach: await causeOf(connect({ workspaceRoot: workspace, start: false })),
 			aborted: await causeOf(connect({ workspaceRoot: workspace, signal: AbortSignal.abort() })),
+			abortedMidway: await causeOf(abortedMidway),
 			spawned: existsSync(lockFile),
-		}).toEqual({ attach: "notRunning", aborted: "closed", spawned: false });
+		}).toEqual({ attach: "notRunning", aborted: "closed", abortedMidway: "closed", spawned: false });
 	});
 });

@@ -244,34 +244,34 @@ const ParseFacts = z.object({ module: ModulePath, text: z.string() }).meta({ id:
 ////////////////////////////////
 //  The table
 
-/** How a request meets the index's warmup. Every method and control declares one. */
+/** How each request interacts with index warmup. */
 export type Lifecycle = "query" | "status" | "probe" | "trigger" | "control";
 
 export interface LifecycleRule {
-	/** Asking starts indexing a cold store, and lets a client start a daemon to ask. */
+	/** A client may start a daemon to ask it. */
+	starts: boolean;
+	/** Starts cold-store indexing. */
 	warms: boolean;
-	/** Answered "starting" until the warmup pass has read every root. */
+	/** Answers "starting" until warmup reads every root. */
 	waits: boolean;
-	/** Refused once the warmup pass failed. */
+	/** Refuses after warmup fails. */
 	refusedAfterFailedWarmup: boolean;
 }
 
-/** The one meaning of each lifecycle. */
+/** Warmup policy by lifecycle. */
 export const LIFECYCLES = {
-	/** A question about the workspace's code. */
-	query: { warms: true, waits: true, refusedAfterFailedWarmup: true },
-	/** How the index stands. */
-	status: { warms: false, waits: false, refusedAfterFailedWarmup: true },
-	/** Answered without the index, even by a daemon whose warmup failed. */
-	probe: { warms: false, waits: false, refusedAfterFailedWarmup: false },
-	/** A request to start indexing, answered at once. */
-	trigger: { warms: true, waits: false, refusedAfterFailedWarmup: true },
-	/** The daemon's own lifetime. */
-	control: { warms: false, waits: false, refusedAfterFailedWarmup: false },
+	query: { starts: true, warms: true, waits: true, refusedAfterFailedWarmup: true },
+	/** Absence is the answer, so never starts a daemon. */
+	status: { starts: false, warms: false, waits: false, refusedAfterFailedWarmup: true },
+	/** Runs without indexing, even after warmup failure. */
+	probe: { starts: true, warms: false, waits: false, refusedAfterFailedWarmup: false },
+	/** Starts indexing without waiting. */
+	trigger: { starts: true, warms: true, waits: false, refusedAfterFailedWarmup: true },
+	/** Controls daemon lifetime. */
+	control: { starts: false, warms: false, waits: false, refusedAfterFailedWarmup: false },
 } as const satisfies Record<Lifecycle, LifecycleRule>;
 
-/** Every method the daemon answers, in dispatch order. The JSDoc line on each is what a facade shows.
- * `mutates` marks a write: a read-only face never asks it, and a lost connection never repeats it. */
+/** Dispatch order and facade docs; `mutates` controls read-only calls and retries. */
 export const DAEMON_METHODS = {
 	/** Declarations named exactly, optionally within one module. */
 	findByName: { request: FindByName, response: z.array(SymbolSummarySchema), lifecycle: "query", mutates: false },
@@ -303,7 +303,7 @@ export const DAEMON_METHODS = {
 	resolveImport: { request: Resolve, response: ImportResolutionSchema, lifecycle: "query", mutates: false },
 	/** How complete the index is, and whether one file failed. */
 	indexStatus: { request: Status, response: IndexStatusSchema, lifecycle: "status", mutates: false },
-	/** Start indexing the workspace, and how the index stands as it starts. */
+	/** Starts workspace indexing and returns its status. */
 	indexWorkspace: { request: Empty, response: IndexStatusSchema, lifecycle: "trigger", mutates: false },
 	/** Literals by value, regex, kind, numeric range, container key or scope. */
 	findLiterals: { request: Literals, response: LiteralsResultSchema, lifecycle: "query", mutates: false },
@@ -397,7 +397,7 @@ export const DAEMON_METHODS = {
 	symbolSource: { request: SymbolSource, response: SymbolSourceSchema, lifecycle: "query", mutates: false },
 	/** Open the workspace's refactor transaction. */
 	refactorStart: { request: Empty, response: RefactorStartResultSchema, lifecycle: "query", mutates: true },
-	/** The open transaction: steps, tracked files, outstanding issues. Retirement asks it of a failed daemon. */
+	/** Steps, tracked files and issues; retirement reads this after warmup failure. */
 	refactorStatus: { request: Empty, response: TransactionStatusSchema, lifecycle: "probe", mutates: false },
 	/** Snapshot a file before a hand edit. */
 	refactorTrack: { request: ByModule, response: RefactorTrackResultSchema, lifecycle: "query", mutates: true },
@@ -427,20 +427,20 @@ export const DAEMON_METHODS = {
 	{ request: z.ZodType; response: z.ZodType; lifecycle: Exclude<Lifecycle, "control">; mutates: boolean }
 >;
 
-/** What the daemon answers about its own lifetime, outside the service's table. */
+/** Daemon controls outside the service method table. */
 export const DAEMON_CONTROLS = {
-	/** Stop, answered before stopping. */
+	/** Stop after replying. */
 	shutdown: { lifecycle: "control" },
 } as const satisfies Record<string, { lifecycle: "control" }>;
 
-/** Asked again after a lost connection only when it changes nothing: a write that may have landed is reported, not repeated. */
+/** Whether a lost request may have changed state. */
 export function methodMutates(name: DaemonMethod): boolean {
 	return DAEMON_METHODS[name].mutates;
 }
 
 export type DaemonControl = keyof typeof DAEMON_CONTROLS;
 
-/** A known name's policy, carrying the name narrowed to the table that holds it. */
+/** Policy with a name narrowed to its owning table. */
 export type RequestRule = LifecycleRule &
 	(
 		| { lifecycle: "control"; control: DaemonControl }
@@ -448,8 +448,7 @@ export type RequestRule = LifecycleRule &
 	);
 
 /**
- * The one reading of a request name's policy, for the daemon before and after its handler lands and
- * for a client deciding whether it may start one. Null for a name neither table holds.
+ * One policy for clients and both daemon paths; null for unknown names.
  */
 export function requestRule(name: string): RequestRule | null {
 	if (isDaemonMethod(name)) {

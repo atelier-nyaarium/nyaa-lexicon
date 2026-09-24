@@ -41,7 +41,7 @@ export interface DaemonOptions {
 	host?: PlatformEnv;
 	/** Fires with the connected-client count on every change. The lifetime signal. */
 	onConnections?: (count: number) => void;
-	/** How a request arriving before the handler is answered. A client waits on a starting countdown. */
+	/** Early answers carry the countdown clients wait on. */
 	early?: (method: string) => EarlyAnswer;
 	/** Once, when a request finds the lock gone or taken; the daemon has already refused it. */
 	onLockLost?: (reason: string) => void;
@@ -78,7 +78,7 @@ export type StartOutcome =
 ////////////////////////////////
 //  Constants
 
-/** Patience given when no `early` answer offers a real countdown. */
+/** Used when no `early` answer gives a countdown. */
 const DEFAULT_STARTING_ALLOWANCE_MS = 15_000;
 
 ////////////////////////////////

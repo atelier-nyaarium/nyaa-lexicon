@@ -21,7 +21,7 @@ patience       how long a request waits on a starting daemon, in milliseconds; z
 onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and `elapsedMs`
 bundledBun     bundled bun; OS bun must meet its version
 start          whether this session may start a daemon, in `connect` and on a later ask whose
-               lifecycle warms; default true
+               lifecycle `starts` (every one but a status read); default true
 signal         aborts the connect; it fails `closed`, and nothing is asked, signalled or spawned
                after. A session already returned is the caller's to close
 ```
@@ -134,8 +134,8 @@ lock()               the lock of the daemon this session reaches, re-read on eve
 
 A session holds one lazy socket. A connection that drops is reopened once, through `ensureDaemon`
 again, including a loss during the handshake, and a read is asked again over it. The reopen starts
-a daemon only for a method whose lifecycle warms, and only when the session may start one. Anything
-else attaches, so a status read after the daemon lingered out fails `notRunning`. A write whose
+a daemon only for a method whose lifecycle `starts`, and only when the session may start one. A
+status read attaches, so after the daemon lingered out it fails `notRunning`. A write whose
 request was already sent is not repeated, since the daemon may have applied it: it is a
 `DaemonError` with cause `connectionLost` and an unknown outcome. The table's `mutates` flag is what
 tells the two apart. A connection lost twice is a `DaemonError`.

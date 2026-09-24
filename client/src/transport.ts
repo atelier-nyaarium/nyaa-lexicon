@@ -36,9 +36,9 @@ export interface ConnectFramesOptions {
 	onWaiting?: WaitingCallback;
 	/** Accept a daemon behind this client's major: retiring one asks `refactorStatus` and `shutdown`, which every major answers. */
 	acceptOlder?: boolean;
-	/** Ends the handshake: no socket opens once aborted, and one still unwelcomed closes. */
+	/** Abort before opening, or close any socket still awaiting welcome. */
 	signal?: AbortSignal;
-	/** Carried by every refusal this connection raises. */
+	/** Tags refusals with the daemon that raised them. */
 	from?: DaemonRef;
 }
 
@@ -334,7 +334,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 	});
 }
 
-/** One question, one connection: for callers that ask and exit. An abort closes it, handshake or not. */
+/** One request per connection; abort closes it during handshake or request. */
 export async function requestOnce(
 	port: number,
 	token: string,

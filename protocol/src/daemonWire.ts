@@ -59,8 +59,7 @@ export const ResponseFrameSchema = z
 			retryInMs: z.number().int().nonnegative().optional(),
 			/** What it waits for, so a stall names itself instead of needing a bug report. */
 			waitingFor: z.string().optional(),
-			/** A reason a client reads structurally, never from the prose. Any string on the wire, so a
-			 * newer daemon's code reaches an older client as unknown rather than as a broken frame. */
+			/** Wire codes stay open; older clients treat unknown codes as unclassified. */
 			code: z.string().optional(),
 		}),
 	])

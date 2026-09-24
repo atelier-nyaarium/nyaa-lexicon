@@ -156,7 +156,6 @@ describe("daemon refusal causes", () => {
 describe("aborting", () => {
 	it("closes a socket still waiting on its welcome, and opens none once aborted", async () => {
 		const sockets: Socket[] = [];
-		// Reads and ignores the hello, so it sees the client's close.
 		const silent = createServer((socket) => {
 			sockets.push(socket);
 			socket.on("error", () => socket.destroy());

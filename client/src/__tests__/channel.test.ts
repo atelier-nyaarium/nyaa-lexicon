@@ -143,7 +143,7 @@ afterEach(async () => {
 });
 
 describe("daemon channel reconnects", () => {
-	it("starts a daemon only for an ask that warms, and only when the session may start", async () => {
+	it("starts a daemon for any ask but a status read, and only when the session may start", async () => {
 		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
 		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
 		const source = { root: path.join(workspaceRoot, "missing-install"), buildVersion: BUILD, bundleStamp: null };
@@ -158,9 +158,16 @@ describe("daemon channel reconnects", () => {
 		expect({
 			query: await cause(starting.ask("overview", {})),
 			status: await cause(starting.ask("indexStatus", {})),
+			probe: await cause(starting.ask("fileHistory", { module: "a.ts" })),
 			trigger: await cause(starting.ask("indexWorkspace", {})),
 			attachOnly: await cause(attaching.ask("overview", {})),
-		}).toEqual({ query: "spawnFailed", status: "notRunning", trigger: "spawnFailed", attachOnly: "notRunning" });
+		}).toEqual({
+			query: "spawnFailed",
+			status: "notRunning",
+			probe: "spawnFailed",
+			trigger: "spawnFailed",
+			attachOnly: "notRunning",
+		});
 	});
 
 	it("reopens and asks a read again when the first connection closes right after its welcome", async () => {

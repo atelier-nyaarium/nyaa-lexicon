@@ -118,13 +118,15 @@ Every request declares a lifecycle. `requestRule` is its one reader: the daemon 
 lands, the handler, and a client deciding whether it may start a daemon.
 
 ```
-lifecycle  warms  waits  after a failed warmup  requests
-query      yes    yes    refused                every read and write not below
-status     no     no     refused                indexStatus, cacheStats
-probe      no     no     answered               refactorStatus, parseFacts, the git history reads
-trigger    yes    no     refused                indexWorkspace
-control    no     no     answered               shutdown, answered even before the handler
+lifecycle  starts  warms  waits  after a failed warmup  requests
+query      yes     yes    yes    refused                every read and write not below
+status     no      no     no     refused                indexStatus, cacheStats
+probe      yes     no     no     answered               refactorStatus, parseFacts, the git history reads
+trigger    yes     yes    no     refused                indexWorkspace
+control    no      no     no     answered               shutdown, answered even before the handler
 ```
+
+`starts` says a client may start a daemon to ask. A status read never does: no daemon is its answer.
 
 A warming request answered `starting` still starts indexing once the handler lands. An unknown
 name is refused as `unknown method` before and after the handler, and starts nothing.
@@ -133,8 +135,8 @@ name is refused as `unknown method` before and after the handler, and starts not
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
 with `...; the daemon is stopping`, closes its server, and every client lands on its reconnect
 path. `daemonChannel` reconnects once on a lost connection, through `ensureDaemon` again, and gives
-up if the connection is lost twice. Only a request whose lifecycle warms may start a daemon on that
-reconnect; anything else attaches, so a status read never starts one. Only a read is asked again after its request was sent; a
+up if the connection is lost twice. Only a request whose lifecycle `starts` may start a daemon on
+that reconnect; anything else attaches. Only a read is asked again after its request was sent; a
 method the table marks `mutates` may already have landed, so its loss is reported as
 `connectionLost` with the outcome unknown rather than repeated.
 

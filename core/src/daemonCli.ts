@@ -90,7 +90,7 @@ export function warmRefusal(
 	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
 }
 
-/** What a request's declared lifecycle says about the warmup: wait it out, refuse after it failed, or answer. */
+/** Applies lifecycle warmup policy to one request. */
 export function refusalFor(
 	rule: LifecycleRule,
 	service: Pick<LexiconService, "warmHold" | "warmFailure">,
@@ -101,8 +101,7 @@ export function refusalFor(
 }
 
 /**
- * A request that beat the handler, judged by the rule `handle` reads: a control answers, an unknown
- * name is refused, the rest wait on the countdown. `warms` says the request asked for the index.
+ * Applies declared request policy before the handler is ready.
  */
 export function earlyAnswer(
 	method: string,
@@ -310,9 +309,9 @@ async function main(argv: string[]): Promise<void> {
 	// process is slow.
 	let startingSince = clock.now();
 	let waitingFor = "the index to open";
-	// A warming request answered "starting" still asked for the index.
+	// Warmup requests count even when answered "starting".
 	let askedEarly = false;
-	// Answered before stopping, or the caller reads its own success as a dropped connection.
+	// Reply before shutdown or the caller sees a dropped connection.
 	const controls: Record<DaemonControl, () => unknown> = {
 		shutdown: () => {
 			clock.setTimer(() => void shutdown("asked to shut down"), 0);
@@ -434,6 +433,8 @@ async function main(argv: string[]): Promise<void> {
 		let scan: Promise<void> | null = null;
 		function warm(): void {
 			if (scan !== null) return;
+			// Before the scope: a trigger answering now must not read `unstarted`.
+			service.markDiscovering();
 			const started = clock.now();
 			// The first pass stores declarations and imports for immediate answers.
 			const pass = async () => {
@@ -551,7 +552,7 @@ async function main(argv: string[]): Promise<void> {
 			}, 0);
 		}
 
-		// The same declared rule the early path reads, so a request is judged alike before and after.
+		// Use the same rule before and after handler setup.
 		async function handle(method: string, params: unknown): Promise<unknown> {
 			if (stopping) throw new DaemonStoppingError(DAEMON_STOPPING_MESSAGE);
 			const rule = requestRule(method);

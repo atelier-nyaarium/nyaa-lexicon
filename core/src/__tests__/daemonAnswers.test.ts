@@ -510,7 +510,7 @@ describe("every daemon answer parses back to itself", () => {
 		expect(INDEPENDENT.length + SEQUENCED.size).toBe(Object.keys(DAEMON_METHODS).length);
 	});
 
-	// `mutates` is what a read-only face and a lost connection's replay both trust.
+	// Read-only access and lost-connection retries trust `mutates`.
 	it("marks every method whose handler writes, and none whose handler only reads", () => {
 		const methods = Object.keys(DAEMON_METHODS) as DaemonMethod[];
 		expect({

@@ -1,7 +1,6 @@
 // One persistent daemon connection, reconnected rather than reported.
 //
-// The open connection is how the daemon counts who is still here. One state owns it, and only the
-// attempt that set the current state moves it on, so nothing an attempt finishes lands after close.
+// The open socket counts as presence; stale attempts cannot advance session state.
 
 import {
 	DAEMON_METHODS,
@@ -31,16 +30,16 @@ export interface DaemonChannelOptions {
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 	/** The caller's own bun, for daemons it spawns. */
 	bundledBun?: string;
-	/** Whether a method whose lifecycle warms may start a daemon. Anything else only attaches. */
+	/** False only attaches. True lets a method whose lifecycle `starts` start a daemon. */
 	start?: boolean;
-	/** Injected so a test holds acquisition open. */
+	/** Acquisition seam for tests. */
 	ensure?: typeof ensureDaemon;
 }
 
 export interface DaemonChannel {
 	/** Reconnects once if the connection died. */
 	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>;
-	/** Aborts any acquisition and drops the connection; later asks fail closed. */
+	/** Cancels acquisition and closes the channel; later asks fail closed. */
 	close(): void;
 }
 
@@ -67,8 +66,8 @@ type State =
 /**
  * Connected lazily, so a handshake never waits on spawning a daemon.
  *
- * One retry, not a loop: retrying forever looks like a hang. An ask that may start joins an attach
- * attempt, and starts its own once that finds nothing; an attach ask never starts one.
+ * One retry only. Start requests share attach attempts, then start if none exists; attach requests
+ * never start.
  */
 export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 	const { workspaceRoot } = options;
@@ -77,7 +76,7 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 	const closedError = () => new DaemonError(`the session for ${workspaceRoot} is closed`, "closed");
 
 	function modeFor(method: DaemonMethod): EnsureMode {
-		return options.start !== false && requestRule(method)?.warms === true ? "start" : "attach";
+		return options.start !== false && requestRule(method)?.starts === true ? "start" : "attach";
 	}
 
 	async function open(mode: EnsureMode, signal: AbortSignal): Promise<Open> {
@@ -115,7 +114,7 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 		return attempt;
 	}
 
-	/** Waits on an attempt; closing during it reads as closed, whatever the attempt died of. */
+	/** Closing makes any pending acquisition settle as `closed`. */
 	async function settle(attempt: Attempt): Promise<Open> {
 		try {
 			return await attempt.done;
@@ -153,7 +152,7 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 		try {
 			answer = await current.client.request(method, params);
 		} catch (error) {
-			// A read asked twice answers the same; a write that may have landed is not repeated.
+			// Reads retry; sent writes report unknown outcomes instead.
 			if (error instanceof ConnectionLostError && error.sent && methodMutates(method))
 				throw new DaemonError(
 					`the daemon connection was lost after ${method} was sent; the outcome is unknown`,
@@ -162,11 +161,10 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 				);
 			throw error;
 		}
-		// Parsed through this client's table: a newer daemon's extra fields are stripped, and a
-		// shape this client cannot read is an error here rather than a typed value that lies.
+		// This client's schema strips extras and rejects unreadable answers.
 		const parsed = DAEMON_METHODS[method].response.safeParse(answer);
 		if (!parsed.success) {
-			// The field, never the issue list: a consumer reads this sentence, not zod's.
+			// Report the field path, not Zod's issue list.
 			const field = parsed.error.issues[0]?.path.join(".") || "the answer";
 			throw new DaemonError(
 				`the daemon answered ${method} with a shape this client cannot read at ${field}`,

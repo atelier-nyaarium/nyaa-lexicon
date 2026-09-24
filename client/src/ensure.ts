@@ -58,9 +58,9 @@ export interface EnsureDaemonOptions {
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
 	/** The caller's own bun, for daemons it spawns. */
 	bundledBun?: string;
-	/** `attach` takes a daemon usable as is, or reports `notRunning`; it never retires, waits or spawns. */
+	/** Attach never retires, waits or spawns; unusable locks yield `notRunning`. */
 	mode?: EnsureMode;
-	/** Ends the attempt with the signal's reason: nothing is asked, signalled or spawned after. */
+	/** Abort with the signal's reason; no later ask, signal or spawn occurs. */
 	signal?: AbortSignal;
 }
 
@@ -81,8 +81,8 @@ export type EnsureResult =
 
 /**
  * The one reading of a refusal as a session error: no install and nothing live to ride is
- * `NotInstalled`, nothing to start from is `spawnFailed`, an attach that found nothing is
- * `notRunning`, the rest is the daemon's.
+ * `NotInstalled`, no daemon to start is `spawnFailed`, and an empty attach is
+ * `notRunning`; other failures remain daemon errors.
  */
 export function ensureFailure(
 	result: Extract<EnsureResult, { connected: false }>,
@@ -94,7 +94,6 @@ export function ensureFailure(
 	return new DaemonError(`${context}${result.detail}`, spawn ? "spawnFailed" : "daemon");
 }
 
-/** What attach makes of a lock: only a daemon usable as is connects. */
 function attached(decision: LockDecision): EnsureResult {
 	if (decision.action === "connect") return { connected: true, lock: decision.lock };
 	if (decision.action === "replace" && decision.cause === "otherWorkspace")
@@ -123,7 +122,7 @@ const systemSleeper: Sleeper = {
  * we cannot use is retired instead, since every session reaching it is equally stuck. With no
  * install known, a daemon serving this client is ridden and anything else is `notInstalled`.
  *
- * An abort cannot recall a `shutdown` already sent or a daemon already spawned; it stops what follows.
+ * Abort stops later work; sent shutdowns and spawned daemons cannot be recalled.
  */
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<EnsureResult> {
 	const { signal } = options;

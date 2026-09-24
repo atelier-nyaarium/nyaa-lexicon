@@ -100,8 +100,7 @@ export interface ToolBackend {
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
 	refactorStart: () => Promise<RefactorStartResult>;
-	/** Null when no daemon runs: a status read never starts one. */
-	refactorStatus: () => Promise<TransactionStatus | null>;
+	refactorStatus: () => Promise<TransactionStatus>;
 	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
 	planMove: (symbolId: string, toModule: string) => Promise<MovePlan>;
 	refactorTrack: (module: string) => Promise<RefactorTrackResult>;
@@ -774,7 +773,9 @@ function text(body: string, isError = false): ToolResult {
  * common answer of all during a cold scan, and the first version of this missed it.
  */
 async function withIndexState(backend: ToolBackend, body: string, concerning?: string): Promise<string> {
-	const status = await backend.indexStatus(concerning);
+	// The notes are optional; a status read that fails never costs the answer.
+	const status = await backend.indexStatus(concerning).catch(() => null);
+	if (status === null) return body;
 	const notes: string[] = [];
 
 	// Concerning file first.

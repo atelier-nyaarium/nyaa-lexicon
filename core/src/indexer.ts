@@ -422,6 +422,11 @@ export class WorkspaceIndexer {
 		return this.scanWorkspace("full", onProgress);
 	}
 
+	/** A warm was asked for: `discovering` from now, not once its scope is computed. */
+	markDiscovering(): void {
+		if (this.status.state === "unstarted") this.status = { state: "discovering", done: 0, total: 0 };
+	}
+
 	/** Stores declarations and imports before full facts. */
 	async warmupWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
 		return this.scanWorkspace("outline", onProgress);

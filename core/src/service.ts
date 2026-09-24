@@ -191,6 +191,10 @@ export class LexiconService {
 		return this.indexer.applyBatch(...args);
 	}
 
+	markDiscovering(): void {
+		this.indexer.markDiscovering();
+	}
+
 	watchScope(): ReturnType<WorkspaceIndexer["watchScope"]> {
 		return this.indexer.watchScope();
 	}

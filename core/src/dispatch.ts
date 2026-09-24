@@ -448,7 +448,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		resolveImport: read((params) => service.resolveImport(params.fromModule, params.specifier)),
 		indexStatus: read((params) => service.indexStatus(params.concerning)),
-		// The trigger lifecycle has already started warming by the time this answers.
+		// Trigger lifecycle starts warming before this status answer.
 		indexWorkspace: read(() => service.indexStatus()),
 		findLiterals: read(({ limit, ...query }) => service.findLiterals(query, limit)),
 		findComments: read(({ limit, ...query }) => service.findComments(query, limit)),
@@ -552,7 +552,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 	} satisfies { [M in DaemonMethod]: Handler<M> };
 }
 
-/** A name no table holds. Names the build, since the likeliest cause is a client and daemon on different ones. */
+/** Includes this build to diagnose client and daemon table mismatches. */
 export function unknownMethod(method: string): Error {
 	return new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
 }

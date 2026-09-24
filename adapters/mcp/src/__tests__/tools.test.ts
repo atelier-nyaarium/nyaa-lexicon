@@ -10,7 +10,6 @@ import {
 	refactorPreview,
 	refactorRename,
 	refactorReplace,
-	refactorStatus,
 	resolveImport,
 	searchDocs,
 	searchSymbols,
@@ -683,11 +682,21 @@ describe("index-state honesty notes", () => {
 		expect(text).toContain("7 of 10");
 	});
 
-	it("says nothing extra once every file is full and ready", async () => {
-		const result = await findReferences(backend(), { symbolId: "x" });
-		const text = (result.content[0] as { text: string }).text;
-		expect(text).not.toContain("lower bounds");
-		expect(text).not.toContain("Still indexing");
+	it("says nothing extra once every file is full and ready, or when the status read fails", async () => {
+		const failing = backend({
+			indexStatus: async () => {
+				throw new Error("no daemon is registered");
+			},
+		});
+		for (const result of [
+			await findReferences(backend(), { symbolId: "x" }),
+			await findReferences(failing, { symbolId: "x" }),
+		]) {
+			const text = (result.content[0] as { text: string }).text;
+			expect(result.isError).toBeUndefined();
+			expect(text).not.toContain("lower bounds");
+			expect(text).not.toContain("Still indexing");
+		}
 	});
 
 	it("names each failed file with its reason, and says where the full list is", async () => {
@@ -866,13 +875,6 @@ describe("refusing a search term the store cannot match as written", () => {
 });
 
 describe("previewing a refactor without a transaction", () => {
-	it("answers refactor status with no daemon running as an answer, not a failure", async () => {
-		const result = await refactorStatus(backend({ refactorStatus: async () => null }));
-
-		expect(result.isError).toBeUndefined();
-		expect(result.content[0]?.text).toContain("refactor_start");
-	});
-
 	it("previews a rename by name, reading the plan and opening nothing", async () => {
 		const asked: Array<[string, string]> = [];
 		const result = await refactorPreview(

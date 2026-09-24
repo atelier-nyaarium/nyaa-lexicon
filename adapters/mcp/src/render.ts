@@ -1450,10 +1450,7 @@ export function renderRefactorStart(outcome: RefactorStartResult): string {
 	].join("\n");
 }
 
-export function renderRefactorStatus(status: TransactionStatus | null): string {
-	if (status === null) {
-		return `# Refactor status\n\nNo daemon runs for this workspace, so no journal was read. Any other lexicon tool starts it; \`refactor_start\` also names a transaction already open.`;
-	}
+export function renderRefactorStatus(status: TransactionStatus): string {
 	if (!status.open) {
 		return `# Refactor status\n\nNo transaction is open. Call \`refactor_start\` to begin one.`;
 	}

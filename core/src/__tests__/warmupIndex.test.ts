@@ -419,6 +419,20 @@ describe("warmup pass", () => {
 		expect(() => service.moduleDeclarations("a.fake")).not.toThrow();
 	});
 
+	it("reads discovering once a warm is asked for, before its scope, and never moves a later state back", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		const states = [service.indexStatus().state];
+		service.markDiscovering();
+		states.push(service.indexStatus().state);
+		await service.warmupWorkspace();
+		service.markDiscovering();
+		states.push(service.indexStatus().state);
+
+		expect(states).toEqual(["unstarted", "discovering", "ready"]);
+	});
+
 	it("judges each lifecycle alike before and after the handler lands", () => {
 		const names = [
 			"moduleDeclarations",

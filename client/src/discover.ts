@@ -65,7 +65,7 @@ export interface RetireOptions {
 	/** The one budget an ask and the wait behind it share: what an ask spends, the wait does not get. */
 	deadline: number;
 	sleep: (ms: number) => Promise<void>;
-	/** Checked before each ask and before the signal: a `shutdown` already sent stays sent. */
+	/** Check before each ask and signal; sent shutdowns cannot be recalled. */
 	signal?: AbortSignal;
 }
 
@@ -301,14 +301,13 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/** Whether a caught refusal is the daemon's own "already stopping": the coded frame first, an exact
- * text match otherwise, so a longer message (the lock-lost case) never matches by accident. */
+/** A refusal saying the daemon is already stopping: the code first, else the exact text, so the
+ * longer lock-lost message never matches. */
 export function stoppingRefusal(error: unknown): boolean {
 	if (error instanceof DaemonError && error.code === "stopping") return true;
 	return error instanceof Error && error.message === DAEMON_STOPPING_MESSAGE;
 }
 
-/** Whether a caught refusal is a failed warmup, which lasts as long as the daemon that failed. */
 export function warmupFailed(error: unknown): boolean {
 	return error instanceof Error && error.message.startsWith(WARMUP_FAILED_PREFIX);
 }

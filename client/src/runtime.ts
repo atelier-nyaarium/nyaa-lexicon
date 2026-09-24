@@ -130,8 +130,7 @@ export function runtimeProblem(runtime: Exclude<BunExecutable, { kind: "bun" }>)
 	}
 }
 
-/** A bun caller keeps its own bun; others try PATH, `$BUN_INSTALL`, then the bundle.
- * An OS bun older than the bundle is skipped. */
+/** Reuse the caller's Bun; otherwise try PATH, `$BUN_INSTALL`, then bundle. Skip older OS Bun. */
 export async function bunExecutable(
 	host: { platform: NodeJS.Platform; env: Record<string, string | undefined>; execPath?: string },
 	probe: RuntimeProbe = defaultProbe,

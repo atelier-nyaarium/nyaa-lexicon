@@ -45,7 +45,6 @@ const POLL_MS = 100;
 ////////////////////////////////
 //  Functions & Helpers
 
-/** The lock on disk, or null when absent or unreadable. */
 function lockOnDisk(lockFile: string): DaemonLock | null {
 	try {
 		return parseDaemonLock(readFileSync(lockFile, "utf8"));
@@ -122,7 +121,7 @@ export async function shutdownDaemon(lock: DaemonLock, lockFile: string, wait: S
 	if (result.outcome !== "stopped") throw new DaemonError(result.detail, "daemon");
 }
 
-/** As `shutdownDaemon`, for the daemon `from` names only: one already gone or replaced is never asked. */
+/** Stops only `from`; absent or replaced daemons are left alone. */
 export async function shutdownRef(from: DaemonRef, lockFile: string, wait: ShutdownWait = {}): Promise<void> {
 	const current = lockOnDisk(lockFile);
 	if (current === null || !refersTo(from, current)) return;

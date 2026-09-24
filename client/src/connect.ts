@@ -41,10 +41,9 @@ export interface ConnectOptions {
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 	/** The caller's own bun. An OS bun spawns a daemon only when at least as new. */
 	bundledBun?: string;
-	/** Whether this session may start a daemon: in the connect, and on a later ask whose lifecycle
-	 * warms. False takes only a daemon usable as is, and fails `notRunning` otherwise. Default true. */
+	/** False only attaches. True lets the connect and any ask but a status read start one. */
 	start?: boolean;
-	/** Aborts the connect: it fails `closed`, and nothing is retired, signalled or spawned after. */
+	/** Aborts with `closed`; prevents later retirement, signalling or spawning. */
 	signal?: AbortSignal;
 }
 
@@ -57,8 +56,7 @@ export interface Session extends Facade {
 	/** Closes the session; the daemon keeps running.
 	 * Later asks fail closed without reconnect; sent writes report unknown outcomes. */
 	close(): void;
-	/** Closes the session, asks the daemon to stop and waits for its lock to go. With `from`, only
-	 * that daemon: one already gone or replaced resolves without being asked. */
+	/** Closes the session and waits for shutdown. `from` skips daemons gone or replaced. */
 	stopDaemon(from?: DaemonRef): Promise<void>;
 	/** The lock of the daemon this session reaches. */
 	lock: () => DaemonLock;
@@ -118,11 +116,10 @@ function refuseAhead(root: string, installed: string): void {
 }
 
 /**
- * Reach the workspace's daemon, starting the install's if there is none and `start` allows.
+ * Reach the workspace's daemon, starting the install's only if needed and `start` allows.
  *
  * Every failure is `NotInstalled`, `Incompatible` or `DaemonError`. The socket itself opens on the
- * first question, and reopens once if it drops. Only an ask whose lifecycle warms may start a
- * daemon on that reopen, so a status read never does.
+ * first question, then reopens once after a drop. A status read never starts a daemon on reconnect.
  */
 export async function connect(options: ConnectOptions): Promise<Session> {
 	const { workspaceRoot } = options;
@@ -144,6 +141,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		return current instanceof NotInstalled ? null : current;
 	};
 	const stateDir = options.stateDir === undefined ? {} : { stateDir: options.stateDir };
+	const aborted = () => new DaemonError(`connecting to ${workspaceRoot} was aborted`, "closed");
 	const daemon = await ensureDaemon({
 		workspaceRoot,
 		source,
@@ -151,9 +149,11 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		...stateDir,
 		...defined({ onWaiting: options.onWaiting, bundledBun: options.bundledBun, signal: options.signal }),
 	}).catch((error: unknown) => {
-		if (options.signal?.aborted) throw new DaemonError(`connecting to ${workspaceRoot} was aborted`, "closed");
+		if (options.signal?.aborted) throw aborted();
 		throw asDaemonError(error);
 	});
+	// An abort that landed while the lock was read still wins.
+	if (options.signal?.aborted) throw aborted();
 	if (!daemon.connected) throw ensureFailure(daemon);
 
 	let lock = daemon.lock;
