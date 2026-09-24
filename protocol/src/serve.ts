@@ -65,14 +65,15 @@ export function serveProvider(connection: Connection, handlers: ProviderHandlers
 	};
 	for (const notification of PROVIDER_NOTIFICATIONS) {
 		// The loop erases the pairing the caller's own type satisfied; the schema below restores it.
-		const handler = handlers[notification] as ((params: unknown) => void) | undefined;
+		// An async handler still answers a promise, awaited in turn.
+		const handler = handlers[notification] as ((params: unknown) => unknown) | undefined;
 		// Registered either way, so an unhandled one is a decision rather than a library log line.
 		connection.onNotification(notification, (params: unknown) => {
 			if (handler === undefined) return;
-			void inTurn(() => {
+			void inTurn(async () => {
 				try {
 					refuseUnrepresentable(params);
-					handler(NOTIFICATION_SCHEMAS[notification].parse(params));
+					await handler(NOTIFICATION_SCHEMAS[notification].parse(params));
 				} catch (error) {
 					// No reply carries a refusal.
 					console.error(`${notification} refused: ${error instanceof Error ? error.message : String(error)}`);

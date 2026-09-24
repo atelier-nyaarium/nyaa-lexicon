@@ -338,6 +338,20 @@ describe("the index takes only what the core admits", () => {
 		]);
 	});
 
+	test("a refusal keeps the admitted headers across a rediscovery that lands before its verdict", () => {
+		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const provider = started(root);
+		const handlers = handlersFor(provider);
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "old", text: FOO });
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "old"));
+		provider.discoverProject(root);
+		handlers.parseFile({ module: "a/Foo.kt", contentHash: "candidate", text: CANDIDATE });
+		provider.discoverProject(root);
+		handlers.moduleAdmission?.(verdict("a/Foo.kt", "candidate", "the store refused an id"));
+
+		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+	});
+
 	test("never reads a file the core refuses on disk, too large or unparseable", () => {
 		const padding = Buffer.alloc(MAX_SOURCE_BYTES, 0x20);
 		const root = workspace({

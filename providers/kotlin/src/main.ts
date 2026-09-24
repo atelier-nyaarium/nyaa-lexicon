@@ -176,9 +176,9 @@ interface HeldModule {
 	facts: KotlinFile | undefined;
 	headers: ModuleHeaders | undefined;
 	unread: boolean;
-	/** False when a later fill skipped the module. */
+	/** Whether the index had been filled. */
 	filled: boolean;
-	/** What that fill would fall back on. */
+	/** What a fill would fall back on. */
 	fallback: ModuleHeaders | undefined;
 }
 
@@ -235,11 +235,14 @@ export class KotlinProvider {
 			this.index.remove(module);
 			if (held?.unread === true) this.unread.add(module);
 			else this.unread.delete(module);
-			if (held?.headers !== undefined) this.index.add(held.headers);
-			else if (held !== undefined && !held.filled && this.filled) {
+			if (held === undefined) return;
+			if (held.headers !== undefined) this.index.add(held.headers);
+			else if (!this.admission.fillable(module)) {
+				// Refused: the core keeps what it held before, whatever a rediscovery did since.
+				if (held.fallback !== undefined) this.index.add(held.fallback);
+			} else if (!held.filled && this.filled) {
 				// The fill that ran since skipped this module, so its read is owed now.
-				if (this.admission.fillable(module)) this.indexFromDisk(module, held.fallback);
-				else if (held.fallback !== undefined) this.index.add(held.fallback);
+				this.indexFromDisk(module, held.fallback);
 			}
 		},
 	});

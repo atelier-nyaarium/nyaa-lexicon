@@ -383,6 +383,7 @@ export class TypeScriptProvider {
 		this.analyzer?.dispose();
 		this.analyzer = null;
 		this.runtimeSurfaces.clear();
+		this.admission.reset();
 		return {};
 	}
 
