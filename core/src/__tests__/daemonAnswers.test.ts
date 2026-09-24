@@ -16,6 +16,7 @@ import {
 	DAEMON_METHODS,
 	type DaemonMethod,
 	hashContent,
+	methodMutates,
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
@@ -207,6 +208,9 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	indexStatus: async () => {
 		expect((await ask("indexStatus", {})).state).toBe("ready");
 		await ask("indexStatus", { concerning: "cart.ref" });
+	},
+	indexWorkspace: async () => {
+		expect((await ask("indexWorkspace", {})).state).toBe("ready");
 	},
 	findLiterals: async () => {
 		expect((await ask("findLiterals", { value: "warning" })).total).toBe(2);
@@ -504,6 +508,19 @@ describe("every daemon answer parses back to itself", () => {
 	it("holds one sample per method in the table, and nothing else", () => {
 		expect(Object.keys(SAMPLES).sort()).toEqual(Object.keys(DAEMON_METHODS).sort());
 		expect(INDEPENDENT.length + SEQUENCED.size).toBe(Object.keys(DAEMON_METHODS).length);
+	});
+
+	// `mutates` is what a read-only face and a lost connection's replay both trust.
+	it("marks every method whose handler writes, and none whose handler only reads", () => {
+		const methods = Object.keys(DAEMON_METHODS) as DaemonMethod[];
+		expect({
+			writesUnmarked: methods.filter(
+				(method) => harness.handlers[method].effect === "write" && !methodMutates(method),
+			),
+			readsMarked: methods.filter(
+				(method) => harness.handlers[method].effect === "read" && methodMutates(method),
+			),
+		}).toEqual({ writesUnmarked: [], readsMarked: [] });
 	});
 
 	it.each(INDEPENDENT)("%s", (method) => run(method), 30_000);

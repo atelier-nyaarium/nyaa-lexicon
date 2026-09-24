@@ -79,7 +79,9 @@ describe("a session over a daemon this process started", () => {
 
 	whenBuilt("gives up on a starting daemon at zero patience, naming what it waited on", async () => {
 		writeInstallRecord(INSTALL, host);
-		await launch({ startingNote: () => ({ retryInMs: 60_000, waitingFor: "the language providers to start" }) });
+		await launch({
+			early: () => ({ kind: "starting", retryInMs: 60_000, waitingFor: "the language providers to start" }),
+		});
 		const session = await open({ workspaceRoot: workspace, patience: 0 });
 
 		const failed = session.cacheStats({});
@@ -106,5 +108,40 @@ describe("a session over a daemon this process started", () => {
 		await session.stopDaemon();
 
 		expect(existsSync(lockFile)).toBe(false);
+	});
+
+	whenBuilt("stops only the daemon that refused, never the one that replaced it", async () => {
+		writeInstallRecord(INSTALL, host);
+		await launch({ handle: async () => Promise.reject(new Error("warmup failed: provider outage")) });
+		const session = await open({ workspaceRoot: workspace });
+		const refused: unknown = await session.indexStatus({}).catch((error: unknown) => error);
+		if (!(refused instanceof DaemonError) || refused.from === undefined) throw new Error("no daemon named");
+
+		await daemon?.stop();
+		const replacement = await launch({ handle: async () => STATS });
+		await session.stopDaemon(refused.from);
+
+		expect(replacement.holdsLock()).toBe(true);
+	});
+});
+
+describe("a session that may not start a daemon", () => {
+	whenBuilt("fails notRunning with no daemon, and an aborted connect fails closed; neither spawns", async () => {
+		writeInstallRecord(INSTALL, host);
+		const lockFile = workspacePaths(host, workspace).lockFile;
+		const causeOf = (connecting: Promise<Session>) =>
+			connecting.then(
+				(session) => {
+					sessions.push(session);
+					return "connected";
+				},
+				(error: unknown) => (error as DaemonError).cause,
+			);
+
+		expect({
+			attach: await causeOf(connect({ workspaceRoot: workspace, start: false })),
+			aborted: await causeOf(connect({ workspaceRoot: workspace, signal: AbortSignal.abort() })),
+			spawned: existsSync(lockFile),
+		}).toEqual({ attach: "notRunning", aborted: "closed", spawned: false });
 	});
 });

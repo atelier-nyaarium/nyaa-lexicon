@@ -63,7 +63,7 @@ async function main(): Promise<void> {
 	let session: Session | null = null;
 	try {
 		session = await connect({ workspaceRoot: workspace, lexiconRoot: ROOT, stateDir: path.join(scratch, "state") });
-		await session.cacheStats({}).catch(() => {});
+		await session.indexWorkspace({}).catch(() => {});
 		await waitReady(session);
 		// Runs the Python provider's `python3 -c` probes, which import json.
 		await session.resolveImport({ fromModule: "main.py", specifier: ABSENT_PACKAGE });

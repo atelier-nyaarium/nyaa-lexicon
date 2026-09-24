@@ -176,8 +176,13 @@ function smokeIsolation(root: string): void {
 		stdio: "inherit",
 		timeout: 180_000,
 	});
-	// The smoke prints its own reason.
-	if (probe.status !== 0) throw new Error(`the isolation smoke exited ${probe.status}`);
+	// A smoke that ran prints its own reason; one that could not run or timed out cannot.
+	if (probe.status !== 0) {
+		const why =
+			probe.error?.message ?? (probe.signal === null ? `exit ${probe.status}` : `killed by ${probe.signal}`);
+		console.error(`\nthe isolation smoke failed: ${why}`);
+		throw new Error(`the isolation smoke failed: ${why}`);
+	}
 }
 
 /**

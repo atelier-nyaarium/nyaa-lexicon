@@ -1,5 +1,5 @@
 // One shared race between an ask and the wait behind it, so both spend the same budget instead of
-// each getting a fresh one.
+// each getting a fresh one. An abort ends either race early.
 
 import type { Sleeper } from "./ensure.js";
 
@@ -19,4 +19,25 @@ export function beforeDeadline<T>(
 	});
 	timeout.catch(() => {});
 	return Promise.race([work, timeout]);
+}
+
+/** Settles with `work`, or rejects with the signal's reason once it aborts first. */
+export function unlessAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return work;
+	work.catch(() => {});
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 }

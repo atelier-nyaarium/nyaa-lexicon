@@ -240,6 +240,90 @@ describe("getting a daemon", () => {
 	});
 });
 
+describe("attaching and aborting", () => {
+	const stale: LockDecision = { action: "replace", lock: LOCK, reason: "the daemon runs 1.9.0", cause: "build" };
+
+	it("attaches only to a daemon usable as is, and never asks, signals or spawns", async () => {
+		const touched: string[] = [];
+		const attach = (decision: LockDecision) =>
+			ensureDaemon({
+				...options,
+				mode: "attach",
+				look: looking([decision]),
+				ask: async (_lock, method) => {
+					touched.push(`ask:${method}`);
+					return { open: false };
+				},
+				stop: () => touched.push("stop"),
+				start: () => {
+					touched.push("start");
+				},
+			});
+
+		const results = await Promise.all([
+			attach({ action: "connect", lock: LOCK }),
+			attach({ action: "spawn", reason: "no daemon is registered" }),
+			attach(stale),
+			attach({ action: "awaitDelete", lock: LOCK, reason: "pid 1 is deleting /w right now" }),
+			attach({ action: "replace", lock: LOCK, reason: "the daemon serves /other", cause: "otherWorkspace" }),
+		]);
+
+		expect({
+			verdicts: results.map((result) => (result.connected ? "connected" : result.reason)),
+			touched,
+		}).toEqual({
+			verdicts: ["connected", "notRunning", "notRunning", "notRunning", "otherWorkspace"],
+			touched: [],
+		});
+	});
+
+	it("stops at the abort: no shutdown, signal or spawn after it, and no wait on the clock", async () => {
+		const events: string[] = [];
+		const during = (step: string) => {
+			const abort = new AbortController();
+			return {
+				abort,
+				attempt: ensureDaemon({
+					...options,
+					signal: abort.signal,
+					look: looking(
+						step === "retire" ? [stale] : [{ action: "spawn", reason: "no daemon is registered" }],
+					),
+					ask: async (_lock, method) => {
+						events.push(`${step}:ask:${method}`);
+						abort.abort();
+						return { open: false };
+					},
+					stop: () => events.push(`${step}:stop`),
+					start: () => {
+						events.push(`${step}:start`);
+						abort.abort();
+					},
+				}),
+			};
+		};
+
+		const retiring = during("retire");
+		const spawning = during("spawn");
+
+		expect({
+			retiring: await retiring.attempt.then(
+				() => "settled",
+				() => "aborted",
+			),
+			spawning: await spawning.attempt.then(
+				() => "settled",
+				() => "aborted",
+			),
+			events,
+		}).toEqual({
+			retiring: "aborted",
+			spawning: "aborted",
+			events: ["retire:ask:refactorStatus", "spawn:start"],
+		});
+	});
+});
+
 // A daemon on our own workspace that cannot answer us is not somebody else's to protect: every
 // session reaching it is as stuck as we are. Retiring it is still gated on evidence, since its
 // transaction journal holds the only copy of what an undo would restore.
@@ -392,7 +476,7 @@ describe("retiring a daemon that cannot serve this workspace", () => {
 				{ action: "connect", lock: LOCK },
 			]),
 			ask: async () => {
-				throw new DaemonError("refused", "daemon", undefined, "stopping");
+				throw new DaemonError("refused", "daemon", { code: "stopping" });
 			},
 			stop: () => {
 				throw new Error("must not signal a daemon already on its way out");

@@ -448,6 +448,8 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		resolveImport: read((params) => service.resolveImport(params.fromModule, params.specifier)),
 		indexStatus: read((params) => service.indexStatus(params.concerning)),
+		// The trigger lifecycle has already started warming by the time this answers.
+		indexWorkspace: read(() => service.indexStatus()),
 		findLiterals: read(({ limit, ...query }) => service.findLiterals(query, limit)),
 		findComments: read(({ limit, ...query }) => service.findComments(query, limit)),
 		findDocs: read(({ limit, ...query }) => service.findDocs(query, limit)),
@@ -550,6 +552,11 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 	} satisfies { [M in DaemonMethod]: Handler<M> };
 }
 
+/** A name no table holds. Names the build, since the likeliest cause is a client and daemon on different ones. */
+export function unknownMethod(method: string): Error {
+	return new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
+}
+
 /**
  * Dispatch one call: parse the request through the table, run its handler, parse the answer.
  *
@@ -560,10 +567,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 	const handlers = daemonHandlers(service, refactor);
 	const gate = gateOf(service.gate);
 	return async (method: string, params: unknown): Promise<unknown> => {
-		if (!isDaemonMethod(method)) {
-			// Names the build, since the likeliest cause is a client and daemon on different ones.
-			throw new Error(`unknown method: ${method} (this daemon runs ${BUILD_VERSION})`);
-		}
+		if (!isDaemonMethod(method)) throw unknownMethod(method);
 		let args: unknown;
 		try {
 			args = DAEMON_METHODS[method].request.parse(params ?? {});

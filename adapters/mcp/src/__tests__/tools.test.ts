@@ -10,6 +10,7 @@ import {
 	refactorPreview,
 	refactorRename,
 	refactorReplace,
+	refactorStatus,
 	resolveImport,
 	searchDocs,
 	searchSymbols,
@@ -865,6 +866,13 @@ describe("refusing a search term the store cannot match as written", () => {
 });
 
 describe("previewing a refactor without a transaction", () => {
+	it("answers refactor status with no daemon running as an answer, not a failure", async () => {
+		const result = await refactorStatus(backend({ refactorStatus: async () => null }));
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("refactor_start");
+	});
+
 	it("previews a rename by name, reading the plan and opening nothing", async () => {
 		const asked: Array<[string, string]> = [];
 		const result = await refactorPreview(

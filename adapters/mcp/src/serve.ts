@@ -2,7 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { daemonChannel, writeInstallRecord } from "@nyaa-lexicon/client";
+import { DaemonError, daemonChannel, writeInstallRecord } from "@nyaa-lexicon/client";
 import {
 	createSessionBinds,
 	lexiconRoot,
@@ -94,7 +94,11 @@ function backendOver(ask: Asker): ToolBackend {
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
-		refactorStatus: () => ask("refactorStatus", {}),
+		refactorStatus: () =>
+			ask("refactorStatus", {}).catch((error: unknown) => {
+				if (error instanceof DaemonError && error.cause === "notRunning") return null;
+				throw error;
+			}),
 		prepareRename: (symbolId, newName) => ask("prepareRename", { symbolId, newName }),
 		planMove: (symbolId, toModule) => ask("planMove", { symbolId, toModule }),
 		refactorTrack: (module) => ask("refactorTrack", { module }),

@@ -1,6 +1,7 @@
 // One persistent daemon connection, reconnected rather than reported.
 //
-// The open connection is how the daemon counts who is still here.
+// The open connection is how the daemon counts who is still here. One state owns it, and only the
+// attempt that set the current state moves it on, so nothing an attempt finishes lands after close.
 
 import {
 	DAEMON_METHODS,
@@ -9,8 +10,10 @@ import {
 	methodMutates,
 	type RequestOf,
 	type ResponseOf,
+	requestRule,
 } from "@nyaa-lexicon/protocol";
-import { ensureDaemon, ensureFailure, type InstallSource } from "./ensure.js";
+import { DaemonRef } from "./daemonRef.js";
+import { type EnsureMode, ensureDaemon, ensureFailure, type InstallSource } from "./ensure.js";
 import { DaemonError } from "./errors.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./transport.js";
 
@@ -28,13 +31,35 @@ export interface DaemonChannelOptions {
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 	/** The caller's own bun, for daemons it spawns. */
 	bundledBun?: string;
+	/** Whether a method whose lifecycle warms may start a daemon. Anything else only attaches. */
+	start?: boolean;
+	/** Injected so a test holds acquisition open. */
+	ensure?: typeof ensureDaemon;
 }
 
 export interface DaemonChannel {
 	/** Reconnects once if the connection died. */
 	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>;
+	/** Aborts any acquisition and drops the connection; later asks fail closed. */
 	close(): void;
 }
+
+interface Open {
+	client: FrameClient;
+	from: DaemonRef;
+}
+
+interface Attempt {
+	mode: EnsureMode;
+	abort: AbortController;
+	done: Promise<Open>;
+}
+
+type State =
+	| { kind: "idle" }
+	| { kind: "opening"; attempt: Attempt }
+	| { kind: "open"; open: Open }
+	| { kind: "closed" };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -42,81 +67,128 @@ export interface DaemonChannel {
 /**
  * Connected lazily, so a handshake never waits on spawning a daemon.
  *
- * One retry, not a loop: retrying forever looks like a hang.
+ * One retry, not a loop: retrying forever looks like a hang. An ask that may start joins an attach
+ * attempt, and starts its own once that finds nothing; an attach ask never starts one.
  */
 export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 	const { workspaceRoot } = options;
-	let client: FrameClient | null = null;
-	// Concurrent asks share connection.
-	let connecting: Promise<FrameClient> | null = null;
-	let closed = false;
+	const ensure = options.ensure ?? ensureDaemon;
+	let state: State = { kind: "idle" };
 	const closedError = () => new DaemonError(`the session for ${workspaceRoot} is closed`, "closed");
 
-	async function open(): Promise<FrameClient> {
-		const daemonOptions = {
+	function modeFor(method: DaemonMethod): EnsureMode {
+		return options.start !== false && requestRule(method)?.warms === true ? "start" : "attach";
+	}
+
+	async function open(mode: EnsureMode, signal: AbortSignal): Promise<Open> {
+		const daemon = await ensure({
 			workspaceRoot,
 			source: options.source,
-			...defined({
-				stateDir: options.stateDir,
-				onWaiting: options.onWaiting,
-				bundledBun: options.bundledBun,
-			}),
-		};
-		const daemon = await ensureDaemon(daemonOptions);
-		if (closed) throw closedError();
+			mode,
+			signal,
+			...defined({ stateDir: options.stateDir, onWaiting: options.onWaiting, bundledBun: options.bundledBun }),
+		});
 		if (!daemon.connected) throw ensureFailure(daemon, `no indexer for ${workspaceRoot}: `);
-		const frameOptions = {
+		const from = new DaemonRef(daemon.lock);
+		const client = await connectFrames(daemon.lock.port, daemon.lock.token, {
+			signal,
+			from,
 			...defined({ patience: options.patience, onWaiting: options.onWaiting }),
-		};
-		const opened = await connectFrames(daemon.lock.port, daemon.lock.token, frameOptions);
-		// Connections outliving close()
-		// keep the daemon alive.
-		if (closed) {
-			opened.close();
-			throw closedError();
+		});
+		return { client, from };
+	}
+
+	function begin(mode: EnsureMode): Attempt {
+		const abort = new AbortController();
+		const attempt: Attempt = { mode, abort, done: open(mode, abort.signal) };
+		state = { kind: "opening", attempt };
+		attempt.done.then(
+			(opened) => {
+				if (state.kind === "opening" && state.attempt === attempt) state = { kind: "open", open: opened };
+				// Connections outliving close() keep the daemon alive.
+				else opened.client.close();
+			},
+			() => {
+				if (state.kind === "opening" && state.attempt === attempt) state = { kind: "idle" };
+			},
+		);
+		return attempt;
+	}
+
+	/** Waits on an attempt; closing during it reads as closed, whatever the attempt died of. */
+	async function settle(attempt: Attempt): Promise<Open> {
+		try {
+			return await attempt.done;
+		} catch (error) {
+			if (state.kind === "closed") throw closedError();
+			throw error;
 		}
-		// Publish before waiters resume.
-		client = opened;
-		return opened;
+	}
+
+	async function acquire(mode: EnsureMode): Promise<Open> {
+		for (;;) {
+			if (state.kind === "closed") throw closedError();
+			if (state.kind === "open") {
+				if (!state.open.client.closed) return state.open;
+				state = { kind: "idle" };
+			}
+			if (state.kind === "idle") return settle(begin(mode));
+			const { attempt } = state;
+			if (mode === "attach" || attempt.mode === "start") return settle(attempt);
+			try {
+				return await settle(attempt);
+			} catch (error) {
+				if (!(error instanceof DaemonError && error.cause === "notRunning")) throw error;
+			}
+		}
+	}
+
+	async function request<M extends DaemonMethod>(
+		current: Open,
+		method: M,
+		params: RequestOf<M>,
+	): Promise<ResponseOf<M>> {
+		const { from } = current;
+		let answer: unknown;
+		try {
+			answer = await current.client.request(method, params);
+		} catch (error) {
+			// A read asked twice answers the same; a write that may have landed is not repeated.
+			if (error instanceof ConnectionLostError && error.sent && methodMutates(method))
+				throw new DaemonError(
+					`the daemon connection was lost after ${method} was sent; the outcome is unknown`,
+					"connectionLost",
+					{ from },
+				);
+			throw error;
+		}
+		// Parsed through this client's table: a newer daemon's extra fields are stripped, and a
+		// shape this client cannot read is an error here rather than a typed value that lies.
+		const parsed = DAEMON_METHODS[method].response.safeParse(answer);
+		if (!parsed.success) {
+			// The field, never the issue list: a consumer reads this sentence, not zod's.
+			const field = parsed.error.issues[0]?.path.join(".") || "the answer";
+			throw new DaemonError(
+				`the daemon answered ${method} with a shape this client cannot read at ${field}`,
+				"daemon",
+				{ from },
+			);
+		}
+		return parsed.data as ResponseOf<M>;
 	}
 
 	return {
 		async ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>> {
+			const mode = modeFor(method);
 			for (let attempt = 0; attempt < 2; attempt++) {
-				// Reconnects can spawn daemons.
-				if (closed) throw closedError();
+				let current: Open | null = null;
 				try {
-					let current = client;
-					if (current === null || current.closed) {
-						connecting ??= open().finally(() => {
-							connecting = null;
-						});
-						current = await connecting;
-						if (closed) throw closedError();
-					}
-					const answer = await current.request(method, params);
-					// Parsed through this client's table: a newer daemon's extra fields are stripped, and a
-					// shape this client cannot read is an error here rather than a typed value that lies.
-					const parsed = DAEMON_METHODS[method].response.safeParse(answer);
-					if (!parsed.success) {
-						// The field, never the issue list: a consumer reads this sentence, not zod's.
-						const field = parsed.error.issues[0]?.path.join(".") || "the answer";
-						throw new DaemonError(
-							`the daemon answered ${method} with a shape this client cannot read at ${field}`,
-							"daemon",
-						);
-					}
-					return parsed.data as ResponseOf<M>;
+					current = await acquire(mode);
+					return await request(current, method, params);
 				} catch (error) {
-					// A read asked twice answers the same; a write that may have landed is not repeated.
-					if (error instanceof ConnectionLostError && error.sent && methodMutates(method))
-						throw new DaemonError(
-							`the daemon connection was lost after ${method} was sent; the outcome is unknown`,
-							"connectionLost",
-						);
-					if (closed) throw closedError();
 					if (!(error instanceof ConnectionLostError)) throw error;
-					client = null;
+					if (state.kind === "closed") throw closedError();
+					if (state.kind === "open" && state.open === current) state = { kind: "idle" };
 				}
 			}
 			throw new DaemonError(
@@ -126,9 +198,10 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 		},
 
 		close(): void {
-			closed = true;
-			client?.close();
-			client = null;
+			const previous = state;
+			state = { kind: "closed" };
+			if (previous.kind === "opening") previous.attempt.abort.abort();
+			if (previous.kind === "open") previous.open.client.close();
 		},
 	};
 }

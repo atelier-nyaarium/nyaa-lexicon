@@ -5,7 +5,8 @@
 // (the loser exits before touching the store), and callers ensure one per request, so a client
 // that finds the daemon gone simply starts another.
 
-import type { DaemonLock } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, defined } from "@nyaa-lexicon/protocol";
+import { unlessAborted } from "./deadline.js";
 import {
 	callDaemon,
 	type DaemonSource,
@@ -57,9 +58,22 @@ export interface EnsureDaemonOptions {
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
 	/** The caller's own bun, for daemons it spawns. */
 	bundledBun?: string;
+	/** `attach` takes a daemon usable as is, or reports `notRunning`; it never retires, waits or spawns. */
+	mode?: EnsureMode;
+	/** Ends the attempt with the signal's reason: nothing is asked, signalled or spawned after. */
+	signal?: AbortSignal;
 }
 
-export type EnsureReason = "otherWorkspace" | "noBunRuntime" | "unbuilt" | "spawnFailed" | "timeout" | "notInstalled";
+export type EnsureMode = "attach" | "start";
+
+export type EnsureReason =
+	| "otherWorkspace"
+	| "notRunning"
+	| "noBunRuntime"
+	| "unbuilt"
+	| "spawnFailed"
+	| "timeout"
+	| "notInstalled";
 export type EnsureResult =
 	| { connected: true; lock: DaemonLock }
 	| { connected: false; reason: Exclude<EnsureReason, "notInstalled">; detail: string }
@@ -67,15 +81,25 @@ export type EnsureResult =
 
 /**
  * The one reading of a refusal as a session error: no install and nothing live to ride is
- * `NotInstalled`, nothing to start from is `spawnFailed`, the rest is the daemon's.
+ * `NotInstalled`, nothing to start from is `spawnFailed`, an attach that found nothing is
+ * `notRunning`, the rest is the daemon's.
  */
 export function ensureFailure(
 	result: Extract<EnsureResult, { connected: false }>,
 	context = "",
 ): DaemonError | NotInstalled {
 	if (result.reason === "notInstalled") return new NotInstalled(`${context}${result.detail}`, result.root);
+	if (result.reason === "notRunning") return new DaemonError(`${context}${result.detail}`, "notRunning");
 	const spawn = result.reason === "spawnFailed" || result.reason === "unbuilt" || result.reason === "noBunRuntime";
 	return new DaemonError(`${context}${result.detail}`, spawn ? "spawnFailed" : "daemon");
+}
+
+/** What attach makes of a lock: only a daemon usable as is connects. */
+function attached(decision: LockDecision): EnsureResult {
+	if (decision.action === "connect") return { connected: true, lock: decision.lock };
+	if (decision.action === "replace" && decision.cause === "otherWorkspace")
+		return { connected: false, reason: "otherWorkspace", detail: decision.reason };
+	return { connected: false, reason: "notRunning", detail: decision.reason };
 }
 
 ////////////////////////////////
@@ -98,17 +122,24 @@ const systemSleeper: Sleeper = {
  * A daemon serving ANOTHER workspace is reported rather than touched. One serving ours on a dialect
  * we cannot use is retired instead, since every session reaching it is equally stuck. With no
  * install known, a daemon serving this client is ridden and anything else is `notInstalled`.
+ *
+ * An abort cannot recall a `shutdown` already sent or a daemon already spawned; it stops what follows.
  */
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<EnsureResult> {
+	const { signal } = options;
+	signal?.throwIfAborted();
 	// Once per invocation: the install is judged here and held; every poll below re-reads the LOCK.
 	const install = typeof options.source === "function" ? options.source() : options.source;
 	const known = install instanceof NotInstalled ? null : install;
 	const look = options.look ?? (() => findDaemon(options.workspaceRoot, known, currentHost(), options.stateDir));
-	const wait = (ms: number) => (options.clock ?? systemSleeper).sleep(ms);
+	if (options.mode === "attach") return attached(look());
+
+	const wait = (ms: number) => unlessAborted((options.clock ?? systemSleeper).sleep(ms), signal);
 	const stop = options.stop ?? ((pid) => process.kill(pid, "SIGTERM"));
 	const alive = options.alive ?? lockHolderAlive;
 	// The daemon being retired is behind this major by definition, so the retirement conversation accepts it.
-	const ask = options.ask ?? ((lock, method) => callDaemon(lock, method, {}, { acceptOlder: true }));
+	const ask =
+		options.ask ?? ((lock, method) => callDaemon(lock, method, {}, { acceptOlder: true, ...defined({ signal }) }));
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const startedAt = Date.now();
 	// One shared budget: an ask spent inside `retire` and every poll below all draw against it, so
@@ -173,6 +204,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 			released: async () => (await awaitRelease()).action !== "replace",
 			deadline,
 			sleep: wait,
+			...defined({ signal }),
 		});
 		if (!retired.retired) {
 			return {
@@ -207,18 +239,16 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		}
 	}
 
-	const command = await daemonCommand(
-		install.root,
-		options.workspaceRoot,
-		options.stateDir,
-		currentHost(),
-		options.bundledBun,
+	const command = await unlessAborted(
+		daemonCommand(install.root, options.workspaceRoot, options.stateDir, currentHost(), options.bundledBun),
+		signal,
 	);
 	if (command.kind === "unbuilt")
 		return { connected: false, reason: "unbuilt", detail: "no built daemon to start; run the build first" };
 	if (command.kind === "noBunRuntime")
 		return { connected: false, reason: "noBunRuntime", detail: runtimeProblem(command.runtime) };
 	const logFile = workspacePaths(currentHost(), options.workspaceRoot, options.stateDir).logFile;
+	signal?.throwIfAborted();
 	const watch = (options.start ?? ((argv) => spawnDaemonProcess(argv, logFile)))(command.command);
 
 	for (let waited = 0; waited < timeoutMs; waited += POLL_MS) {

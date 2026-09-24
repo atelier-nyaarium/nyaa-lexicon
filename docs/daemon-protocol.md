@@ -109,19 +109,32 @@ mirrored on the client, since two independently chosen numbers cannot stay in ag
 it re-sends every 250 ms, under a five-minute ceiling that exists only as a backstop against a
 countdown that never reaches zero. When the daemon's countdown runs out, the caller sees
 `<message> (gave up waiting on <waitingFor>; ask again later)`. A warmup that failed is not a hold:
-it answers a plain error, `warmup failed: <reason>; restart the daemon`, to everything but
-`refactorStatus` and `shutdown`, so a daemon in that state can still be retired. A provider
+it answers a plain error, `warmup failed: <reason>; restart the daemon`, to every request but a
+probe or a control (below), so a daemon in that state can still be retired. A provider
 outage during the pass fails it, since a restart heals an outage; a fault on one file is recorded
 against that file and the pass serves.
 
-A known method asking about the workspace starts indexing, including during startup. `shutdown`,
-passive methods and unknown methods do not. Passive methods also skip the warmup hold, though
-`indexStatus` still answers a failed pass with its error.
+Every request declares a lifecycle. `requestRule` is its one reader: the daemon before its handler
+lands, the handler, and a client deciding whether it may start a daemon.
+
+```
+lifecycle  warms  waits  after a failed warmup  requests
+query      yes    yes    refused                every read and write not below
+status     no     no     refused                indexStatus, cacheStats
+probe      no     no     answered               refactorStatus, parseFacts, the git history reads
+trigger    yes    no     refused                indexWorkspace
+control    no     no     answered               shutdown, answered even before the handler
+```
+
+A warming request answered `starting` still starts indexing once the handler lands. An unknown
+name is refused as `unknown method` before and after the handler, and starts nothing.
+`indexWorkspace` (protocol 3.9.0) starts indexing and answers the index status at once.
 
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
 with `...; the daemon is stopping`, closes its server, and every client lands on its reconnect
 path. `daemonChannel` reconnects once on a lost connection, through `ensureDaemon` again, and gives
-up if the connection is lost twice. Only a read is asked again after its request was sent; a
+up if the connection is lost twice. Only a request whose lifecycle warms may start a daemon on that
+reconnect; anything else attaches, so a status read never starts one. Only a read is asked again after its request was sent; a
 method the table marks `mutates` may already have landed, so its loss is reported as
 `connectionLost` with the outcome unknown rather than repeated.
 
@@ -136,10 +149,11 @@ completion, so the wait is bounded by one file, not by the whole remainder of th
 
 `DAEMON_METHODS`, in the protocol package, is the one owner of what the daemon answers:
 one entry per method, each a method name with a `request` schema and a `response` schema, in
-dispatch order, with a doc line on every entry. Those whose repetition is not harmless, the
-knowledge writes and the refactor steps, carry `mutates: true`, read through `methodMutates`;
-`indexFile` writes the store too, but asked twice it answers `current` the second time, so it is
-not marked. Nothing else in the table is optional. `hubs` is its own entry aliasing `mostReferenced`,
+dispatch order, with a doc line on every entry. Every entry declares its `lifecycle` (above) and
+`mutates`. The knowledge writes, the refactor steps and `indexFile` mutate, read through
+`methodMutates`: a read-only face never asks them, and a lost connection never repeats them. A test
+holds `mutates` to the handler's own effect. `shutdown` is no entry here: it is the one control in
+`DAEMON_CONTROLS`, so it never reaches a facade. `hubs` is its own entry aliasing `mostReferenced`,
 so the accepted method set is exactly what older clients ask by. Four types derive from it, and
 nothing else is hand-written:
 

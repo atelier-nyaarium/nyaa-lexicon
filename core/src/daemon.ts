@@ -41,9 +41,8 @@ export interface DaemonOptions {
 	host?: PlatformEnv;
 	/** Fires with the connected-client count on every change. The lifetime signal. */
 	onConnections?: (count: number) => void;
-	/** Called before the handler.
-	 * The client waits on this countdown. */
-	startingNote?: (method: string) => { retryInMs: number; waitingFor: string };
+	/** How a request arriving before the handler is answered. A client waits on a starting countdown. */
+	early?: (method: string) => EarlyAnswer;
 	/** Once, when a request finds the lock gone or taken; the daemon has already refused it. */
 	onLockLost?: (reason: string) => void;
 	/** Test seams for the heartbeat; production uses the transport's defaults. */
@@ -52,6 +51,11 @@ export interface DaemonOptions {
 	/** The daemon's one time source: the startup allowance, the lock stamp and the transport's timers. */
 	clock?: Clock;
 }
+
+export type EarlyAnswer =
+	| { kind: "starting"; retryInMs: number; waitingFor: string }
+	| { kind: "answer"; value: unknown }
+	| { kind: "refuse"; error: Error };
 
 export interface RunningDaemon {
 	lock: DaemonLock;
@@ -74,7 +78,7 @@ export type StartOutcome =
 ////////////////////////////////
 //  Constants
 
-/** Patience given when no startingNote offers a real countdown. */
+/** Patience given when no `early` answer offers a real countdown. */
 const DEFAULT_STARTING_ALLOWANCE_MS = 15_000;
 
 ////////////////////////////////
@@ -106,14 +110,17 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		token,
 		handle: async (method, params) => {
 			if (handle === null) {
-				const note = options.startingNote?.(method) ?? {
+				const answer: EarlyAnswer = options.early?.(method) ?? {
+					kind: "starting",
 					retryInMs: Math.max(0, startedAt + DEFAULT_STARTING_ALLOWANCE_MS - clock.now()),
 					waitingFor: "startup",
 				};
+				if (answer.kind === "answer") return answer.value;
+				if (answer.kind === "refuse") throw answer.error;
 				throw new DaemonStartingError(
-					`the daemon is starting, waiting on ${note.waitingFor}`,
-					note.retryInMs,
-					note.waitingFor,
+					`the daemon is starting, waiting on ${answer.waitingFor}`,
+					answer.retryInMs,
+					answer.waitingFor,
 				);
 			}
 			// Never answer from a lost store. Closing drops every client onto its reconnect path.

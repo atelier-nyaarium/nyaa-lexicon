@@ -214,9 +214,10 @@ Ordered by how much they prove:
   process-group-kill machinery a git call, the runtime probe and the python helper each used to
   hand-copy; `bounded-child-owner-residue.test.ts` forbids a new copy, with a named exception for a
   long-lived process (the provider supervisor) that never fits a bounded run.
-- **Indexing never runs the indexed repo's code.** Every bun argv starts from `bunCommand` in
-  `client/src/launch.ts`, which pins lexicon's own bunfig and tsconfig and turns off `.env` loading
-  and auto-install; `launch.test.ts` forbids an argv built elsewhere. Python children run from the
+- **Indexing never runs the indexed repo's code.** Every daemon and provider argv starts from
+  `bunCommand` in `client/src/launch.ts`, which pins lexicon's own bunfig and tsconfig and turns off
+  `.env` loading and auto-install; `launch.test.ts` forbids one built elsewhere and holds the
+  plugin's `.mcp.json` launch to the same flags. Python children run from the
   provider's own folder, and git reads turn fsmonitor off. `scripts/isolationSmoke.ts` indexes a
   hostile workspace from inside it on every build.
 - **A store's lock is claimed through `core/src/daemonLock.ts`, before the store is opened and

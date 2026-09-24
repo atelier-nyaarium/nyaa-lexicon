@@ -5,6 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
+import { type DaemonRef, refersTo } from "./daemonRef.js";
 import { beforeDeadline } from "./deadline.js";
 import { callDaemon, stoppingRefusal } from "./discover.js";
 import type { Sleeper } from "./ensure.js";
@@ -44,18 +45,21 @@ const POLL_MS = 100;
 ////////////////////////////////
 //  Functions & Helpers
 
+/** The lock on disk, or null when absent or unreadable. */
+function lockOnDisk(lockFile: string): DaemonLock | null {
+	try {
+		return parseDaemonLock(readFileSync(lockFile, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
 /**
  * What the lock file says right now, against the token being retired: still held, or gone with
  * whichever fresh daemon (never a delete's placeholder) may have already claimed it.
  */
 function lockNow(lockFile: string, token: string): { held: boolean; replacedBy: DaemonLock | null } {
-	let raw: string;
-	try {
-		raw = readFileSync(lockFile, "utf8");
-	} catch {
-		return { held: false, replacedBy: null };
-	}
-	const parsed = parseDaemonLock(raw);
+	const parsed = lockOnDisk(lockFile);
 	if (parsed === null) return { held: false, replacedBy: null };
 	if (parsed.token === token) return { held: true, replacedBy: null };
 	return { held: false, replacedBy: parsed.role === "delete" ? null : parsed };
@@ -116,4 +120,11 @@ export async function requestShutdown(
 export async function shutdownDaemon(lock: DaemonLock, lockFile: string, wait: ShutdownWait = {}): Promise<void> {
 	const result = await requestShutdown(lock, lockFile, wait);
 	if (result.outcome !== "stopped") throw new DaemonError(result.detail, "daemon");
+}
+
+/** As `shutdownDaemon`, for the daemon `from` names only: one already gone or replaced is never asked. */
+export async function shutdownRef(from: DaemonRef, lockFile: string, wait: ShutdownWait = {}): Promise<void> {
+	const current = lockOnDisk(lockFile);
+	if (current === null || !refersTo(from, current)) return;
+	await shutdownDaemon(current, lockFile, wait);
 }

@@ -19,14 +19,19 @@ export {
 } from "./coordinates.js";
 export { Cursor, err, formatFailure, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
 export {
+	DAEMON_CONTROLS,
 	DAEMON_METHODS,
+	type DaemonControl,
 	type DaemonMethod,
 	isDaemonMethod,
-	methodIsPassive,
+	LIFECYCLES,
+	type Lifecycle,
+	type LifecycleRule,
 	methodMutates,
 	type ReadMethod,
 	type RequestOf,
 	type ResponseOf,
+	requestRule,
 } from "./daemonMethods.js";
 export {
 	type DaemonLock,

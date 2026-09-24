@@ -16,6 +16,7 @@ import {
 	type ServerFrame,
 	ServerFrameSchema,
 } from "@nyaa-lexicon/protocol";
+import type { DaemonRef } from "./daemonRef.js";
 import { DaemonError, Incompatible } from "./errors.js";
 
 ////////////////////////////////
@@ -35,6 +36,10 @@ export interface ConnectFramesOptions {
 	onWaiting?: WaitingCallback;
 	/** Accept a daemon behind this client's major: retiring one asks `refactorStatus` and `shutdown`, which every major answers. */
 	acceptOlder?: boolean;
+	/** Ends the handshake: no socket opens once aborted, and one still unwelcomed closes. */
+	signal?: AbortSignal;
+	/** Carried by every refusal this connection raises. */
+	from?: DaemonRef;
 }
 
 export type WaitingEvent = { waitingFor: string; retryInMs: number; elapsedMs: number };
@@ -157,8 +162,13 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 	const timeoutMs = options.timeoutMs ?? CONNECT_TIMEOUT_MS;
 	const patience = options.patience ?? STARTING_CEILING_MS;
 	const startedAt = Date.now();
+	const { signal, from } = options;
 	let notified: string | undefined;
 	return new Promise((resolveConnect, rejectConnect) => {
+		if (signal?.aborted) {
+			rejectConnect(signal.reason);
+			return;
+		}
 		const socket = netConnect({ port, host: "127.0.0.1" });
 		socket.setNoDelay(true);
 		socket.unref();
@@ -178,6 +188,16 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 			}
 		}, timeoutMs);
 		connectDeadline.unref?.();
+
+		const onAbort = () => {
+			socket.destroy();
+			rejectConnect(signal?.reason);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		const handshakeOver = () => {
+			clearTimeout(connectDeadline);
+			signal?.removeEventListener("abort", onAbort);
+		};
 
 		function onFrame(line: string): void {
 			let raw: unknown;
@@ -200,7 +220,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 				if (welcomed) return;
 				// Judged here as well as from the lock, so a direct connection cannot bypass the rule.
 				if (behindUs(frame.protocolVersion) && options.acceptOlder !== true) {
-					clearTimeout(connectDeadline);
+					handshakeOver();
 					rejectConnect(
 						new Incompatible(
 							`the daemon speaks protocol ${frame.protocolVersion}, this client speaks ${PROTOCOL_VERSION}`,
@@ -212,13 +232,15 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 					return;
 				}
 				welcomed = true;
-				clearTimeout(connectDeadline);
+				handshakeOver();
 				resolveConnect(client);
 				return;
 			}
 			if (frame.kind === "reject") {
 				socket.destroy();
-				rejectConnect(new DaemonError(`the daemon refused the connection: ${frame.reason}`, "daemon"));
+				rejectConnect(
+					new DaemonError(`the daemon refused the connection: ${frame.reason}`, "daemon", { from }),
+				);
 				return;
 			}
 			if (frame.kind === "ping") {
@@ -242,7 +264,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {
 			closed = true;
-			clearTimeout(connectDeadline);
+			handshakeOver();
 			for (const waiter of pending.values())
 				waiter.reject(new ConnectionLostError("the daemon connection closed", waiter.sent));
 			pending.clear();
@@ -280,7 +302,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 					const frame = await sendRequest(method, params);
 					if (frame.ok) return frame.result;
 					if (!frame.starting)
-						throw new DaemonError(frame.error, daemonCause(frame.error), undefined, frame.code);
+						throw new DaemonError(frame.error, daemonCause(frame.error), { code: frame.code, from });
 					const remaining = ceiling - Date.now();
 					const waitingFor = frame.waitingFor ?? "startup";
 					if (notified !== waitingFor) {
@@ -298,7 +320,10 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 					throw new DaemonError(
 						`${frame.error} (gave up waiting on ${waitingFor}; ask again later)`,
 						"daemon",
-						waitingFor,
+						{
+							waitingFor,
+							from,
+						},
 					);
 				}
 			},
@@ -309,18 +334,21 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 	});
 }
 
-/** One question, one connection: for callers that ask and exit. */
+/** One question, one connection: for callers that ask and exit. An abort closes it, handshake or not. */
 export async function requestOnce(
 	port: number,
 	token: string,
 	method: string,
 	params?: unknown,
-	options: Pick<ConnectFramesOptions, "acceptOlder"> = {},
+	options: Pick<ConnectFramesOptions, "acceptOlder" | "signal"> = {},
 ): Promise<unknown> {
 	const client = await connectFrames(port, token, options);
+	const close = () => client.close();
+	options.signal?.addEventListener("abort", close, { once: true });
 	try {
 		return await client.request(method, params);
 	} finally {
+		options.signal?.removeEventListener("abort", close);
 		client.close();
 	}
 }

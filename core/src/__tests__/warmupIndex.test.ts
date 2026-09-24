@@ -7,12 +7,12 @@ import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
-	methodIsPassive,
 	methodMutates,
+	requestRule,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
-import { asksAboutWorkspace, refusalFor, warmRefusal } from "../daemonCli";
+import { earlyAnswer, refusalFor, warmRefusal } from "../daemonCli";
 import * as realFileScope from "../fileScope";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
@@ -419,51 +419,63 @@ describe("warmup pass", () => {
 		expect(() => service.moduleDeclarations("a.fake")).not.toThrow();
 	});
 
-	it("only workspace asks start indexing", async () => {
-		await initGit();
-		put("a.fake", "export class A {}\n");
-		service = serviceOver(depthSupervisor(["a.fake"], true, []));
-
-		expect(service.indexStatus()).toMatchObject({ state: "unstarted", stored: 0 });
-		expect({
-			indexStatus: asksAboutWorkspace("indexStatus"),
-			refactorStatus: asksAboutWorkspace("refactorStatus"),
-			shutdown: asksAboutWorkspace("shutdown"),
-			moduleDeclarations: asksAboutWorkspace("moduleDeclarations"),
-			unknown: asksAboutWorkspace("notAMethod"),
-		}).toEqual({
-			indexStatus: false,
-			refactorStatus: false,
-			shutdown: false,
-			moduleDeclarations: true,
-			unknown: false,
-		});
-	});
-
-	it("warmup failure refuses all but refactor status; holds wait on workspace asks", () => {
-		const outcome = (refusal: Error | null) => {
+	it("judges each lifecycle alike before and after the handler lands", () => {
+		const names = [
+			"moduleDeclarations",
+			"indexWorkspace",
+			"indexStatus",
+			"refactorStatus",
+			"shutdown",
+			"notAMethod",
+		];
+		const controlled: string[] = [];
+		const before = (name: string) => {
+			const { answer, warms } = earlyAnswer(
+				name,
+				(control) => {
+					controlled.push(control);
+					return { stopping: true };
+				},
+				{ retryInMs: 1, waitingFor: "the providers" },
+			);
+			if (answer.kind === "refuse") return answer.error.message.split(" (")[0];
+			return warms ? `${answer.kind}, warms` : answer.kind;
+		};
+		const after = (name: string, service: Pick<LexiconService, "warmHold" | "warmFailure">) => {
+			const rule = requestRule(name);
+			if (rule === null || rule.lifecycle === "control") return "handled";
+			const refusal = refusalFor(rule, service);
 			if (refusal === null) return "answers";
 			if ("retryInMs" in refusal) return "waits";
 			return refusal.message.startsWith(WARMUP_FAILED_PREFIX) ? "failed" : refusal.message;
 		};
-		const methods = ["moduleDeclarations", "indexStatus", "refactorStatus"];
 		const failed = { warmHold: () => null, warmFailure: () => "provider outage" };
 		const holding = { warmHold: () => "roots unread", warmFailure: () => null };
+
 		expect({
-			failed: methods.map((method) => outcome(refusalFor(method, failed))),
-			holding: methods.map((method) => outcome(refusalFor(method, holding))),
+			before: names.map(before),
+			holding: names.map((name) => after(name, holding)),
+			failed: names.map((name) => after(name, failed)),
 		}).toEqual({
-			failed: ["failed", "failed", "answers"],
-			holding: ["waits", "answers", "answers"],
+			before: [
+				"starting, warms",
+				"starting, warms",
+				"starting",
+				"starting",
+				"answer",
+				"unknown method: notAMethod",
+			],
+			holding: ["waits", "answers", "answers", "answers", "handled", "handled"],
+			failed: ["failed", "failed", "failed", "answers", "handled", "handled"],
 		});
+		expect(controlled).toEqual(["shutdown"]);
 	});
 
-	it("passive methods never write", () => {
+	it("keeps writes behind the warmup: every method that mutates is a query", () => {
 		const methods = Object.keys(DAEMON_METHODS) as DaemonMethod[];
-		expect({
-			overlap: methods.filter((method) => methodIsPassive(method) && methodMutates(method)),
-			writers: (["recordAnswer", "refactorInsert"] as const).map(methodMutates),
-		}).toEqual({ overlap: [], writers: [true, true] });
+		expect(
+			methods.filter((method) => methodMutates(method) && DAEMON_METHODS[method].lifecycle !== "query"),
+		).toEqual([]);
 	});
 
 	it("covers each admission branch", async () => {

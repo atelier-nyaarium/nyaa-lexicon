@@ -420,7 +420,7 @@ describe("the starting window", () => {
 		const outcome = await startDaemon({
 			workspaceRoot: WORKSPACE,
 			host,
-			startingNote: () => ({ retryInMs: 60_000, waitingFor: "the language providers to start" }),
+			early: () => ({ kind: "starting", retryInMs: 60_000, waitingFor: "the language providers to start" }),
 		});
 		if (!outcome.claimed) throw new Error(outcome.reason);
 		daemon = outcome.daemon;
@@ -435,7 +435,7 @@ describe("the starting window", () => {
 		const outcome = await startDaemon({
 			workspaceRoot: WORKSPACE,
 			host,
-			startingNote: () => ({ retryInMs: 0, waitingFor: "the language providers to start" }),
+			early: () => ({ kind: "starting", retryInMs: 0, waitingFor: "the language providers to start" }),
 		});
 		if (!outcome.claimed) throw new Error(outcome.reason);
 		daemon = outcome.daemon;
@@ -443,22 +443,23 @@ describe("the starting window", () => {
 		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/the language providers to start/);
 	});
 
-	it("reports pre-handler methods to the starting note", async () => {
+	it("answers or refuses at once when the early answer says so, and asks it per request", async () => {
 		const asked: string[] = [];
 		const outcome = await startDaemon({
 			workspaceRoot: WORKSPACE,
 			host,
-			startingNote: (method) => {
+			early: (method) => {
 				asked.push(method);
-				return { retryInMs: 0, waitingFor: "the language providers to start" };
+				if (method === "shutdown") return { kind: "answer", value: { stopping: true } };
+				return { kind: "refuse", error: new Error(`unknown method: ${method}`) };
 			},
 		});
 		if (!outcome.claimed) throw new Error(outcome.reason);
 		daemon = outcome.daemon;
 
-		await expect(callDaemon(daemon.lock, "indexStatus")).rejects.toThrow();
-		await expect(callDaemon(daemon.lock, "cacheStats")).rejects.toThrow();
-		expect(asked).toEqual(["indexStatus", "cacheStats"]);
+		await expect(callDaemon(daemon.lock, "shutdown")).resolves.toEqual({ stopping: true });
+		await expect(callDaemon(daemon.lock, "noSuchMethod")).rejects.toThrow(/^unknown method: noSuchMethod$/);
+		expect(asked).toEqual(["shutdown", "noSuchMethod"]);
 	});
 
 	it("counts the default startup allowance on the clock it was given", async () => {

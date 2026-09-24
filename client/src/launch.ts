@@ -1,5 +1,6 @@
-// The SOLE owner of how lexicon starts bun. Its own settings files, no `.env`, no auto-install: the
-// folder a process starts in, often the indexed repo, never runs code inside it.
+// The SOLE owner of how lexicon starts its daemon and providers. Its own settings files, no `.env`,
+// no auto-install: the folder a process starts in, often the indexed repo, never runs code inside it.
+// The plugin's own launch in `.mcp.json` carries the same flags, held equal by launch.test.ts.
 
 import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";

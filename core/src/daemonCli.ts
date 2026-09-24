@@ -22,18 +22,19 @@ import {
 } from "@nyaa-lexicon/client";
 import {
 	DAEMON_STOPPING_MESSAGE,
+	type DaemonControl,
 	defined,
-	isDaemonMethod,
 	killLiveGroups,
+	type LifecycleRule,
 	type LockRole,
-	methodIsPassive,
+	requestRule,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
-import { type RunningDaemon, startDaemon } from "./daemon.js";
+import { type EarlyAnswer, type RunningDaemon, startDaemon } from "./daemon.js";
 import { DAEMON_USAGE, parseDaemonArgs } from "./daemonArgs.js";
 import { type Collector, makeReportsDir, startDiagnostics } from "./diagnostics.js";
-import { createDispatch } from "./dispatch.js";
+import { createDispatch, unknownMethod } from "./dispatch.js";
 import { driftedTo } from "./drift.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
@@ -79,12 +80,6 @@ export function resumeAbandonedDelete(
 	return true;
 }
 
-/** Only known non-passive methods ask for the index.
- * `shutdown` is not in the table. */
-export function asksAboutWorkspace(method: string): boolean {
-	return isDaemonMethod(method) && !methodIsPassive(method);
-}
-
 /** Whether a request may be answered: a retryable hold while roots are unread, a plain error after a failed pass. */
 export function warmRefusal(
 	service: Pick<LexiconService, "warmHold" | "warmFailure">,
@@ -95,15 +90,29 @@ export function warmRefusal(
 	return hold === null ? null : new DaemonStartingError(hold, FIRST_SCAN_PATIENCE_MS, "the warmup pass");
 }
 
-/** Workspace asks wait on holds.
- * Failure refuses all but `refactorStatus`, which retirement asks. */
+/** What a request's declared lifecycle says about the warmup: wait it out, refuse after it failed, or answer. */
 export function refusalFor(
-	method: string,
+	rule: LifecycleRule,
 	service: Pick<LexiconService, "warmHold" | "warmFailure">,
 ): DaemonStartingError | Error | null {
-	if (asksAboutWorkspace(method)) return warmRefusal(service);
-	if (method === "refactorStatus" || service.warmFailure() === null) return null;
+	if (rule.waits) return warmRefusal(service);
+	if (!rule.refusedAfterFailedWarmup || service.warmFailure() === null) return null;
 	return warmRefusal(service);
+}
+
+/**
+ * A request that beat the handler, judged by the rule `handle` reads: a control answers, an unknown
+ * name is refused, the rest wait on the countdown. `warms` says the request asked for the index.
+ */
+export function earlyAnswer(
+	method: string,
+	control: (name: DaemonControl) => unknown,
+	countdown: { retryInMs: number; waitingFor: string },
+): { answer: EarlyAnswer; warms: boolean } {
+	const rule = requestRule(method);
+	if (rule === null) return { answer: { kind: "refuse", error: unknownMethod(method) }, warms: false };
+	if (rule.lifecycle === "control") return { answer: { kind: "answer", value: control(rule.control) }, warms: false };
+	return { answer: { kind: "starting", ...countdown }, warms: rule.warms };
 }
 
 /**
@@ -301,18 +310,26 @@ async function main(argv: string[]): Promise<void> {
 	// process is slow.
 	let startingSince = clock.now();
 	let waitingFor = "the index to open";
-	// Preserve early indexing requests.
+	// A warming request answered "starting" still asked for the index.
 	let askedEarly = false;
+	// Answered before stopping, or the caller reads its own success as a dropped connection.
+	const controls: Record<DaemonControl, () => unknown> = {
+		shutdown: () => {
+			clock.setTimer(() => void shutdown("asked to shut down"), 0);
+			return { stopping: true };
+		},
+	};
 	const outcome = await startDaemon({
 		workspaceRoot: root,
 		...defined({ stateDir }),
 		onConnections: (n) => observe(n),
-		startingNote: (method) => {
-			if (asksAboutWorkspace(method)) askedEarly = true;
-			return {
+		early: (method) => {
+			const { answer, warms } = earlyAnswer(method, (name) => controls[name](), {
 				retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - clock.now()),
 				waitingFor,
-			};
+			});
+			if (warms) askedEarly = true;
+			return answer;
 		},
 		clock,
 		// A lost lock means a successor.
@@ -534,17 +551,14 @@ async function main(argv: string[]): Promise<void> {
 			}, 0);
 		}
 
-		// `shutdown` is a daemon method rather than a service one, so it is answered here instead of
-		// in the service's table. It answers BEFORE stopping, or the caller reads its own success as
-		// a dropped connection.
+		// The same declared rule the early path reads, so a request is judged alike before and after.
 		async function handle(method: string, params: unknown): Promise<unknown> {
 			if (stopping) throw new DaemonStoppingError(DAEMON_STOPPING_MESSAGE);
-			if (method === "shutdown") {
-				clock.setTimer(() => void shutdown("asked to shut down"), 0);
-				return { stopping: true };
-			}
-			if (asksAboutWorkspace(method)) warm();
-			const refusal = refusalFor(method, service);
+			const rule = requestRule(method);
+			if (rule === null) throw unknownMethod(method);
+			if (rule.lifecycle === "control") return controls[rule.control]();
+			if (rule.warms) warm();
+			const refusal = refusalFor(rule, service);
 			if (refusal !== null) throw refusal;
 			// Counted so shutdown waits for the answer and the linger cannot fire under it.
 			inFlight += 1;

@@ -20,12 +20,15 @@ lexiconRoot    the install to spawn from, instead of the one last recorded
 patience       how long a request waits on a starting daemon, in milliseconds; zero asks once
 onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and `elapsedMs`
 bundledBun     bundled bun; OS bun must meet its version
+start          whether this session may start a daemon, in `connect` and on a later ask whose
+               lifecycle warms; default true
+signal         aborts the connect; it fails `closed`, and nothing is asked, signalled or spawned
+               after. A session already returned is the caller's to close
 ```
 
-Spawn runtime order: running bun, PATH, then `$BUN_INSTALL`.
-`bundledBun` sets the minimum version; prereleases sort below releases.
-Skip an older OS bun; try later candidates, then the bundle.
-A handover keeps the running daemon's bun.
+Spawn runtime: a caller already running on bun uses that bun. Any other caller tries PATH, then
+`$BUN_INSTALL`, then the bundled bun. `bundledBun` sets the minimum version, so an older OS bun is
+skipped; prereleases sort below releases. A handover keeps the running daemon's bun.
 
 Four things are read, in this order:
 
@@ -44,7 +47,10 @@ Four things are read, in this order:
    spawn runs `bun dist/daemon.js <workspaceRoot>`, with `--state-dir <dir>` when one was given,
    detached, and waits up to ten seconds for a lock. Whatever leaves this step without a daemon
    is a `DaemonError` carrying the reason: the child's exit code and where its log is, an
-   outgoing daemon that would not release its lock, a daemon serving another workspace.
+   outgoing daemon that would not release its lock, a daemon serving another workspace. With
+   `start: false` the lock is only read: a daemon usable as is connects, and anything else fails
+   `notRunning`, or names the workspace the daemon serves. Nothing is asked, retired, waited on or
+   spawned.
 
 **No install** still reads the lock, judged against this client's own build, `CLIENT_BUILD_VERSION`,
 since a patch can add a method without moving the protocol: a live daemon at or past it is ridden,
@@ -119,14 +125,17 @@ ask(method, params)  the method by name, for a caller holding the name rather th
 close()              drops this session's connection; the daemon stays up for whoever else
                      holds one. In-flight reads and later asks fail as `closed`
                      without reconnecting; a sent write reports its outcome unknown
-stopDaemon()         closes the connection, asks the daemon to stop, and returns once its lock
-                     no longer names it; a lock outliving ten seconds is a DaemonError
+stopDaemon(from?)    closes the connection, asks the daemon to stop, and returns once its lock
+                     no longer names it; a lock outliving ten seconds is a DaemonError. With a
+                     `DaemonError`'s `from`, only that daemon: one gone or replaced is never asked
 lock()               the lock of the daemon this session reaches, re-read on every call, since a
                      handover replaces the daemon under a session that keeps working
 ```
 
 A session holds one lazy socket. A connection that drops is reopened once, through `ensureDaemon`
-again, including a loss during the handshake, and a read is asked again over it. A write whose
+again, including a loss during the handshake, and a read is asked again over it. The reopen starts
+a daemon only for a method whose lifecycle warms, and only when the session may start one. Anything
+else attaches, so a status read after the daemon lingered out fails `notRunning`. A write whose
 request was already sent is not repeated, since the daemon may have applied it: it is a
 `DaemonError` with cause `connectionLost` and an unknown outcome. The table's `mutates` flag is what
 tells the two apart. A connection lost twice is a `DaemonError`.
@@ -148,8 +157,10 @@ message.
 - `Incompatible`, with `client` and `installed`: the two protocol majors cannot meet, the
   install's before any lock, the daemon's at welcome.
 - `DaemonError`, with a closed `cause` of `unknownMethod`, `refusedModule`, `spawnFailed`,
-  `connectionLost` or `daemon`, plus `waitingFor` when a wait ran out and `code` when the frame
-  named one structurally (today only `"stopping"`), separate from `cause` and from matching prose.
+  `connectionLost`, `closed`, `notRunning` or `daemon`, plus `waitingFor` when a wait ran out and
+  `code` when the frame named one structurally (today only `"stopping"`), separate from `cause`
+  and from matching prose. A refusal a daemon answered carries `from`, a `DaemonRef` naming that
+  daemon for `stopDaemon(from)`; its token never leaves the client, so logging one leaks nothing.
 
 An unbuilt install or missing Bun runtime has cause `spawnFailed`. An unsuitable workspace or a
 startup timeout has cause `daemon`.
@@ -271,8 +282,8 @@ only a provider outage, an indexer `fault`, or an outcome without a cause, is a 
 ## The runtime
 
 The package runs under node or bun; the daemon and providers it spawns run under bun 1.4.0 or newer
-only. `bunExecutable(host, probe)` selects the running bun, PATH bun, or `BUN_INSTALL/bin`, probes
-`--version` once per process, and returns a closed missing, malformed or below-floor result.
+only. `bunExecutable(host, probe, bundled?)` selects a bun in the order above, probes `--version`
+once per process, and returns a closed missing, malformed or below-floor result.
 The owner of that floor is exported for a consumer that wants the same judgement: `BUN_FLOOR`,
 `runtimeVerdict(versions?)` answering `bun`, `belowFloor` with the floor, or `notBun` naming what
 it is, and `refuseRuntime(what)`, the sentence lexicon's own entry points print before exiting,

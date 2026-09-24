@@ -4,6 +4,8 @@
 // A daemon's own words travel inside DaemonError; the other two are the client's own verdicts,
 // reached before any daemon is asked.
 
+import type { DaemonRef } from "./daemonRef.js";
+
 ////////////////////////////////
 //  Errors
 
@@ -30,18 +32,35 @@ export class Incompatible extends Error {
 	}
 }
 
-/** The daemon refused, failed, or could not be reached; `waitingFor` names a wait that ran out. */
-export class DaemonError extends Error {
-	readonly waitingFor: string | undefined;
-	override readonly cause: "unknownMethod" | "refusedModule" | "spawnFailed" | "connectionLost" | "closed" | "daemon";
-	/** The frame's own `code`, when the daemon sent one, read structurally instead of by prose. */
-	readonly code: "stopping" | undefined;
+export interface DaemonErrorDetails {
+	/** A wait that ran out. */
+	waitingFor?: string | undefined;
+	/** The frame's own `code`: any string on the wire, only a known one here. */
+	code?: string | undefined;
+	/** The daemon that answered, for stopping exactly that one. */
+	from?: DaemonRef | undefined;
+}
 
-	constructor(message: string, cause: DaemonError["cause"] = "daemon", waitingFor?: string, code?: "stopping") {
+/** The daemon refused, failed, or could not be reached. `notRunning` is an attach that found nothing usable. */
+export class DaemonError extends Error {
+	override readonly cause:
+		| "unknownMethod"
+		| "refusedModule"
+		| "spawnFailed"
+		| "connectionLost"
+		| "closed"
+		| "notRunning"
+		| "daemon";
+	readonly waitingFor: string | undefined;
+	readonly code: "stopping" | undefined;
+	readonly from: DaemonRef | undefined;
+
+	constructor(message: string, cause: DaemonError["cause"] = "daemon", details: DaemonErrorDetails = {}) {
 		super(message);
 		this.name = "DaemonError";
-		this.waitingFor = waitingFor;
 		this.cause = cause;
-		this.code = code;
+		this.waitingFor = details.waitingFor;
+		this.code = details.code === "stopping" ? "stopping" : undefined;
+		this.from = details.from;
 	}
 }

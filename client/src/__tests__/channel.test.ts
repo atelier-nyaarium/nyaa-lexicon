@@ -3,8 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ClientFrameSchema, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
-import { daemonChannel } from "../channel";
+import {
+	ClientFrameSchema,
+	type DaemonLock,
+	DaemonLockSchema,
+	type IndexStatus,
+	PROTOCOL_VERSION,
+} from "@nyaa-lexicon/protocol";
+import { type DaemonChannelOptions, daemonChannel } from "../channel";
+import type { EnsureResult } from "../ensure";
 import { DaemonError } from "../errors";
 import { lineSplitter, writeFrame } from "../transport";
 
@@ -136,15 +143,24 @@ afterEach(async () => {
 });
 
 describe("daemon channel reconnects", () => {
-	it("maps an unbuilt daemon source to spawnFailed", async () => {
+	it("starts a daemon only for an ask that warms, and only when the session may start", async () => {
 		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
 		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
-		const session = daemonChannel({
-			workspaceRoot,
-			stateDir,
-			source: { root: path.join(workspaceRoot, "missing-install"), buildVersion: BUILD, bundleStamp: null },
-		});
-		await expect(session.ask("cacheStats", {})).rejects.toMatchObject({ cause: "spawnFailed" });
+		const source = { root: path.join(workspaceRoot, "missing-install"), buildVersion: BUILD, bundleStamp: null };
+		const starting = daemonChannel({ workspaceRoot, stateDir, source });
+		const attaching = daemonChannel({ workspaceRoot, stateDir, source, start: false });
+		const cause = (asked: Promise<unknown>) =>
+			asked.then(
+				() => "answered",
+				(error: unknown) => (error as DaemonError).cause,
+			);
+
+		expect({
+			query: await cause(starting.ask("overview", {})),
+			status: await cause(starting.ask("indexStatus", {})),
+			trigger: await cause(starting.ask("indexWorkspace", {})),
+			attachOnly: await cause(attaching.ask("overview", {})),
+		}).toEqual({ query: "spawnFailed", status: "notRunning", trigger: "spawnFailed", attachOnly: "notRunning" });
 	});
 
 	it("reopens and asks a read again when the first connection closes right after its welcome", async () => {
@@ -267,6 +283,110 @@ describe("daemon channel reconnects", () => {
 		});
 		expect(await session.ask("cacheStats", {})).toEqual(STATS);
 		expect(waitingFor).toEqual(["index", "providers"]);
+		session.close();
+	});
+});
+
+describe("daemon channel acquisition", () => {
+	const READY: IndexStatus = {
+		state: "ready",
+		done: 0,
+		total: 0,
+		failures: 0,
+		failed: [],
+		stored: 0,
+		fullFiles: 0,
+		outlineFiles: 0,
+	};
+
+	function lockFor(port: number): DaemonLock {
+		return DaemonLockSchema.parse({
+			port,
+			token: TOKEN,
+			pid: process.pid,
+			protocolVersion: PROTOCOL_VERSION,
+			buildVersion: BUILD,
+			workspaceRoot,
+			startedAt: 1,
+		});
+	}
+
+	function held(ensure: DaemonChannelOptions["ensure"]) {
+		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
+		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
+		return daemonChannel({
+			workspaceRoot,
+			stateDir,
+			source: { root: workspaceRoot, buildVersion: BUILD, bundleStamp: null },
+			...(ensure === undefined ? {} : { ensure }),
+		});
+	}
+
+	const causeOf = (asked: Promise<unknown>) =>
+		asked.then(
+			() => "answered",
+			(error: unknown) => (error as DaemonError).cause,
+		);
+
+	it("lets an ask that may start wait out an attach attempt, then start its own; an attach ask never starts one", async () => {
+		fake = await fakeDaemon(() => ({ ok: true, result: READY }));
+		const port = fake.port;
+		const found = Promise.withResolvers<EnsureResult>();
+		const modes: string[] = [];
+		const session = held(async (options) => {
+			modes.push(options.mode ?? "start");
+			return options.mode === "attach" ? found.promise : { connected: true, lock: lockFor(port) };
+		});
+
+		const status = session.ask("indexStatus", {});
+		const trigger = session.ask("indexWorkspace", {});
+		found.resolve({ connected: false, reason: "notRunning", detail: "no daemon is registered" });
+
+		expect({
+			status: await causeOf(status),
+			trigger: await trigger,
+			later: await session.ask("indexStatus", {}),
+			modes,
+			connections: fake.connections,
+		}).toEqual({ status: "notRunning", trigger: READY, later: READY, modes: ["attach", "start"], connections: 1 });
+		session.close();
+	});
+
+	it("close aborts acquisition, and a daemon found anyway is never connected", async () => {
+		fake = await fakeDaemon(() => ({ ok: true, result: READY }));
+		const port = fake.port;
+		const found = Promise.withResolvers<EnsureResult>();
+		const signals: AbortSignal[] = [];
+		const session = held(async (options) => {
+			if (options.signal !== undefined) signals.push(options.signal);
+			return found.promise;
+		});
+
+		const asked = session.ask("overview", {});
+		await Promise.resolve();
+		session.close();
+		found.resolve({ connected: true, lock: lockFor(port) });
+
+		expect({
+			asked: await causeOf(asked),
+			later: await causeOf(session.ask("overview", {})),
+			aborted: signals.map((signal) => signal.aborted),
+			connections: fake.connections,
+		}).toEqual({ asked: "closed", later: "closed", aborted: [true], connections: 0 });
+	});
+
+	it("names the daemon behind every refusal, without its token", async () => {
+		fake = await fakeDaemon(() => ({ ok: false, error: "warmup failed: provider outage; restart the daemon" }));
+		const session = held(undefined);
+		writeLock(fake.port);
+
+		const refused: unknown = await session.ask("indexStatus", {}).catch((error: unknown) => error);
+		if (!(refused instanceof DaemonError)) throw new Error("the refusal should be a DaemonError");
+
+		expect({
+			pid: refused.from?.pid,
+			serialized: JSON.stringify(refused.from).includes(TOKEN),
+		}).toEqual({ pid: process.pid, serialized: false });
 		session.close();
 	});
 });

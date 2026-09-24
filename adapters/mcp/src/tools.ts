@@ -100,7 +100,8 @@ export interface ToolBackend {
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
 	refactorStart: () => Promise<RefactorStartResult>;
-	refactorStatus: () => Promise<TransactionStatus>;
+	/** Null when no daemon runs: a status read never starts one. */
+	refactorStatus: () => Promise<TransactionStatus | null>;
 	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
 	planMove: (symbolId: string, toModule: string) => Promise<MovePlan>;
 	refactorTrack: (module: string) => Promise<RefactorTrackResult>;

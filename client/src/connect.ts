@@ -19,12 +19,13 @@ import {
 import { awaitIndexed, type IndexedAnswer } from "./awaitIndexed.js";
 import { type ChainAnswer, resolveChain } from "./chain.js";
 import { daemonChannel } from "./channel.js";
+import type { DaemonRef } from "./daemonRef.js";
 import { bundleStamp, type DaemonSource, findDaemon } from "./discover.js";
 import { ensureDaemon, ensureFailure } from "./ensure.js";
 import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
 import { INSTALL_SETTLE_MS, newestInstallBeside, readInstallRecord, readInstallVersion } from "./install.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
-import { shutdownDaemon } from "./stop.js";
+import { shutdownDaemon, shutdownRef } from "./stop.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -40,6 +41,11 @@ export interface ConnectOptions {
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 	/** The caller's own bun. An OS bun spawns a daemon only when at least as new. */
 	bundledBun?: string;
+	/** Whether this session may start a daemon: in the connect, and on a later ask whose lifecycle
+	 * warms. False takes only a daemon usable as is, and fails `notRunning` otherwise. Default true. */
+	start?: boolean;
+	/** Aborts the connect: it fails `closed`, and nothing is retired, signalled or spawned after. */
+	signal?: AbortSignal;
 }
 
 /** Every daemon method as a typed call. Mapped from the table, so its JSDoc reaches hover. */
@@ -51,8 +57,9 @@ export interface Session extends Facade {
 	/** Closes the session; the daemon keeps running.
 	 * Later asks fail closed without reconnect; sent writes report unknown outcomes. */
 	close(): void;
-	/** Asks the daemon to stop and waits for its lock to go. */
-	stopDaemon(): Promise<void>;
+	/** Closes the session, asks the daemon to stop and waits for its lock to go. With `from`, only
+	 * that daemon: one already gone or replaced resolves without being asked. */
+	stopDaemon(from?: DaemonRef): Promise<void>;
 	/** The lock of the daemon this session reaches. */
 	lock: () => DaemonLock;
 	/** A name chain inside one module: exact, ambiguous, or none with the reason. */
@@ -111,10 +118,11 @@ function refuseAhead(root: string, installed: string): void {
 }
 
 /**
- * Reach the workspace's daemon, starting the install's if there is none.
+ * Reach the workspace's daemon, starting the install's if there is none and `start` allows.
  *
  * Every failure is `NotInstalled`, `Incompatible` or `DaemonError`. The socket itself opens on the
- * first question, and reopens once if it drops.
+ * first question, and reopens once if it drops. Only an ask whose lifecycle warms may start a
+ * daemon on that reopen, so a status read never does.
  */
 export async function connect(options: ConnectOptions): Promise<Session> {
 	const { workspaceRoot } = options;
@@ -139,9 +147,11 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 	const daemon = await ensureDaemon({
 		workspaceRoot,
 		source,
+		mode: options.start === false ? "attach" : "start",
 		...stateDir,
-		...defined({ onWaiting: options.onWaiting, bundledBun: options.bundledBun }),
+		...defined({ onWaiting: options.onWaiting, bundledBun: options.bundledBun, signal: options.signal }),
 	}).catch((error: unknown) => {
+		if (options.signal?.aborted) throw new DaemonError(`connecting to ${workspaceRoot} was aborted`, "closed");
 		throw asDaemonError(error);
 	});
 	if (!daemon.connected) throw ensureFailure(daemon);
@@ -152,7 +162,12 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 		workspaceRoot,
 		source,
 		...stateDir,
-		...defined({ patience: options.patience, onWaiting: options.onWaiting, bundledBun: options.bundledBun }),
+		...defined({
+			patience: options.patience,
+			onWaiting: options.onWaiting,
+			bundledBun: options.bundledBun,
+			start: options.start,
+		}),
 	};
 	const channel = daemonChannel(channelOptions);
 
@@ -179,7 +194,12 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 			if (now.action === "connect") lock = now.lock;
 			return lock;
 		},
-		stopDaemon: async () => {
+		stopDaemon: async (from?: DaemonRef) => {
+			if (from !== undefined) {
+				channel.close();
+				await shutdownRef(from, lockFile);
+				return;
+			}
 			// The install is judged before the channel closes, so a refusal leaves the session whole.
 			const current = findDaemon(workspaceRoot, known(), host, options.stateDir);
 			if (current.action === "connect") lock = current.lock;

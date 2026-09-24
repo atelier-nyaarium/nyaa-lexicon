@@ -65,6 +65,8 @@ export interface RetireOptions {
 	/** The one budget an ask and the wait behind it share: what an ask spends, the wait does not get. */
 	deadline: number;
 	sleep: (ms: number) => Promise<void>;
+	/** Checked before each ask and before the signal: a `shutdown` already sent stays sent. */
+	signal?: AbortSignal;
 }
 
 ////////////////////////////////
@@ -151,7 +153,7 @@ export async function callDaemon(
 	lock: DaemonLock,
 	method: string,
 	params?: unknown,
-	options: { acceptOlder?: boolean } = {},
+	options: { acceptOlder?: boolean; signal?: AbortSignal } = {},
 ): Promise<unknown> {
 	return requestOnce(lock.port, lock.token, method, params, options);
 }
@@ -299,6 +301,18 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** Whether a caught refusal is the daemon's own "already stopping": the coded frame first, an exact
+ * text match otherwise, so a longer message (the lock-lost case) never matches by accident. */
+export function stoppingRefusal(error: unknown): boolean {
+	if (error instanceof DaemonError && error.code === "stopping") return true;
+	return error instanceof Error && error.message === DAEMON_STOPPING_MESSAGE;
+}
+
+/** Whether a caught refusal is a failed warmup, which lasts as long as the daemon that failed. */
+export function warmupFailed(error: unknown): boolean {
+	return error instanceof Error && error.message.startsWith(WARMUP_FAILED_PREFIX);
+}
+
 /**
  * Retire a daemon that cannot serve us, but only on positive evidence that nothing is in flight.
  *
@@ -308,32 +322,28 @@ function errorText(error: unknown): string {
  * Asked before signalled: `shutdown` lets it settle in-flight answers and release its own lock.
  * The signal is for a daemon that does not know the method, or one that holds on past the wait.
  */
-/** Whether a caught refusal is the daemon's own "already stopping": the coded frame first, an exact
- * text match otherwise, so a longer message (the lock-lost case) never matches by accident. */
-export function stoppingRefusal(error: unknown): boolean {
-	if (error instanceof DaemonError && error.code === "stopping") return true;
-	return error instanceof Error && error.message === DAEMON_STOPPING_MESSAGE;
-}
-
 export async function retire(
 	lock: DaemonLock,
 	options: RetireOptions,
 ): Promise<{ retired: true } | { retired: false; reason: string; cause?: "timeout" }> {
-	const ask = (method: string) => beforeDeadline(options.ask(lock, method), options.deadline, options.sleep, method);
+	const ask = (method: string) => {
+		options.signal?.throwIfAborted();
+		return beforeDeadline(options.ask(lock, method), options.deadline, options.sleep, method);
+	};
 
 	let status: unknown;
 	try {
 		status = await ask("refactorStatus");
 	} catch (error) {
+		options.signal?.throwIfAborted();
 		// Already asked to stop by someone else: nothing left to ask, so its lock is the whole answer.
 		if (stoppingRefusal(error)) {
 			if (await options.released()) return { retired: true };
 			return { retired: false, reason: "it is still stopping", cause: "timeout" };
 		}
-		const message = errorText(error);
 		// A daemon whose warmup failed refuses the question, and could not have opened a transaction.
-		if (!(error instanceof Error && message.startsWith(WARMUP_FAILED_PREFIX)))
-			return { retired: false, reason: `it would not say whether a refactor is open: ${message}` };
+		if (!warmupFailed(error))
+			return { retired: false, reason: `it would not say whether a refactor is open: ${errorText(error)}` };
 		status = { open: false };
 	}
 
@@ -352,11 +362,13 @@ export async function retire(
 		await ask("shutdown");
 	} catch {
 		// Too old to know the method, or already on its way out; the lock wait tells which.
+		options.signal?.throwIfAborted();
 	}
 	if (await options.released()) return { retired: true };
 
 	// Re-judged at the last moment: the pid may have been reused since the lock was read, and a
 	// signal sent on the old number lands on whoever wears it now.
+	options.signal?.throwIfAborted();
 	if (!options.alive(lock)) return { retired: true };
 	try {
 		options.stop(lock.pid);

@@ -46,7 +46,11 @@ export type Compatibility =
 // 3.7.0: `describe.questions`, the knowledge questions the symbol's kind takes, computed by the core.
 // 3.8.0: `passive` methods (`indexStatus`, `refactorStatus`) neither start indexing nor wait on it;
 // a failed warmup still refuses `indexStatus`. Unknown methods no longer start indexing.
-export const PROTOCOL_VERSION = "3.8.0" as const;
+// 3.9.0: every method declares a `lifecycle` (query, status, probe, trigger) and `mutates`;
+// `shutdown` is a control. `indexWorkspace` starts indexing and answers at once. An unknown name is
+// refused before the handler lands too. An error's `code` is read as any string, so a newer
+// daemon's code never drops an older client's connection.
+export const PROTOCOL_VERSION = "3.9.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

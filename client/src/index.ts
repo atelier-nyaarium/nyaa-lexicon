@@ -7,7 +7,8 @@ export { awaitIndexed, type IndexedAnswer } from "./awaitIndexed.js";
 export { type ChainAnswer, type ChainCandidate, resolveChain } from "./chain.js";
 export { type DaemonChannel, type DaemonChannelOptions, daemonChannel } from "./channel.js";
 export { type ConnectOptions, connect, type Facade, type Session } from "./connect.js";
-export { beforeDeadline } from "./deadline.js";
+export type { DaemonRef } from "./daemonRef.js";
+export { beforeDeadline, unlessAborted } from "./deadline.js";
 export {
 	bundleFiles,
 	bundleStamp,
@@ -22,15 +23,17 @@ export {
 	type SpawnWatch,
 	spawnDaemonProcess,
 	stoppingRefusal,
+	warmupFailed,
 } from "./discover.js";
 export {
 	type EnsureDaemonOptions,
+	type EnsureMode,
 	type EnsureResult,
 	ensureDaemon,
 	type InstallSource,
 	type Sleeper,
 } from "./ensure.js";
-export { DaemonError, Incompatible, NotInstalled } from "./errors.js";
+export { DaemonError, type DaemonErrorDetails, Incompatible, NotInstalled } from "./errors.js";
 export {
 	bundlesSettled,
 	INSTALL_SETTLE_MS,
@@ -80,7 +83,13 @@ export {
 	runtimeProblem,
 	runtimeVerdict,
 } from "./runtime.js";
-export { requestShutdown, type ShutdownOutcome, type ShutdownWait, shutdownDaemon } from "./stop.js";
+export {
+	requestShutdown,
+	type ShutdownOutcome,
+	type ShutdownWait,
+	shutdownDaemon,
+	shutdownRef,
+} from "./stop.js";
 export {
 	type ConnectFramesOptions,
 	ConnectionLostError,

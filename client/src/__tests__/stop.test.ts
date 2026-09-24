@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
+import { DaemonRef } from "../daemonRef";
 import { DaemonError } from "../errors";
-import { requestShutdown, shutdownDaemon } from "../stop";
+import { requestShutdown, shutdownDaemon, shutdownRef } from "../stop";
 import { type FakeDaemon, fakeDaemon, ownLock } from "./fakeDaemon";
 
 ////////////////////////////////
@@ -142,5 +143,29 @@ describe("asking a daemon to stop", () => {
 		const result = await requestShutdown(lock, lockFile, { timeoutMs: 300, clock: realSleeper });
 
 		expect(result).toEqual({ outcome: "stopped" });
+	});
+});
+
+describe("stopping the daemon a ref names", () => {
+	it("stops that daemon only: a replacement is never asked, and a lock already gone resolves", async () => {
+		const { fake, lock } = await daemon(() => {
+			rmSync(lockFile, { force: true });
+			return { ok: true, result: { stopping: true } };
+		});
+		const ref = new DaemonRef(lock);
+		const wait = { timeoutMs: 300, clock: realSleeper };
+		const asked: string[][] = [];
+
+		writeFileSync(lockFile, JSON.stringify({ ...lock, token: "r".repeat(32), pid: 9999 }));
+		await shutdownRef(ref, lockFile, wait);
+		asked.push([...fake.asked]);
+		rmSync(lockFile, { force: true });
+		await shutdownRef(ref, lockFile, wait);
+		asked.push([...fake.asked]);
+		writeFileSync(lockFile, JSON.stringify(lock));
+		await shutdownRef(ref, lockFile, wait);
+		asked.push([...fake.asked]);
+
+		expect(asked).toEqual([[], [], ["shutdown"]]);
 	});
 });

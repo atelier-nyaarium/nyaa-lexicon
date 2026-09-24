@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createServer, type Socket } from "node:net";
 import { DaemonError, Incompatible } from "../errors";
-import { connectFrames, notifyWaiting } from "../transport";
+import { connectFrames, notifyWaiting, requestOnce } from "../transport";
 import { type FakeAnswer, type FakeDaemon, fakeDaemon } from "./fakeDaemon";
 
 ////////////////////////////////
@@ -149,5 +150,45 @@ describe("daemon refusal causes", () => {
 
 		await expect(client.request("overview", {})).rejects.toMatchObject({ cause: "daemon" });
 		client.close();
+	});
+});
+
+describe("aborting", () => {
+	it("closes a socket still waiting on its welcome, and opens none once aborted", async () => {
+		const sockets: Socket[] = [];
+		// Reads and ignores the hello, so it sees the client's close.
+		const silent = createServer((socket) => {
+			sockets.push(socket);
+			socket.on("error", () => socket.destroy());
+			socket.resume();
+		});
+		await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+		const { port } = silent.address() as { port: number };
+		try {
+			const abort = new AbortController();
+			const handshake = connectFrames(port, TOKEN, { signal: abort.signal });
+			while (sockets.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+			const closed = new Promise((resolve) => sockets[0]?.once("close", resolve));
+			abort.abort();
+
+			await expect(handshake).rejects.toThrow();
+			await closed;
+			await expect(connectFrames(port, TOKEN, { signal: abort.signal })).rejects.toThrow();
+			expect(sockets).toHaveLength(1);
+		} finally {
+			await new Promise((resolve) => silent.close(resolve));
+		}
+	});
+
+	it("closes a one-shot request mid-answer", async () => {
+		const fake = await daemonAnswering(() => new Promise<never>(() => {}));
+		const abort = new AbortController();
+
+		const asked = requestOnce(fake.port, TOKEN, "overview", {}, { signal: abort.signal });
+		while (fake.asked.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+		abort.abort();
+
+		await expect(asked).rejects.toThrow();
+		expect(await settledAt(fake, 0)).toBe(0);
 	});
 });
