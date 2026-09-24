@@ -208,7 +208,13 @@ export class RustProvider {
 		return this.resolver.reset(this.workspaceRoot);
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(params: {
+		module: string;
+		contentHash: string;
+		text: string;
+		depth?: IndexDepth | undefined;
+		probe?: boolean | undefined;
+	}) {
 		const outline = params.depth === "outline";
 		let facts: ParsedFile;
 		try {
@@ -216,7 +222,8 @@ export class RustProvider {
 		} catch (error) {
 			facts = parseFailure(params.module, error instanceof Error ? error.message : String(error));
 		}
-		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		const references = outline ? [] : this.wireReferences(facts);
 		facts.references = references;

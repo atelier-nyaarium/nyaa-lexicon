@@ -246,9 +246,10 @@ export class BashProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
+	parseFile(params: { module: string; contentHash: string; text: string; probe?: boolean | undefined }) {
 		const parsed = parseBash(params.module, params.text);
-		this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
 		this.facts.set(params.module, parsed);
 		const references: Reference[] = [];
 		for (const reference of parsed.references) {

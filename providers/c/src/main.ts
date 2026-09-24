@@ -318,8 +318,15 @@ export class CProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
-		this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
+	parseFile(params: {
+		module: string;
+		contentHash: string;
+		text: string;
+		depth?: IndexDepth | undefined;
+		probe?: boolean | undefined;
+	}) {
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.facts.get(params.module));
 		const stored = this.parseAndStore(params.module, params.contentHash, params.text);
 		const bindingCache = new Map<string, Binding>();
 		return {

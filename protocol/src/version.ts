@@ -52,7 +52,9 @@ export type Compatibility =
 // daemon's code never drops an older client's connection.
 // 3.10.0: `symbolAt`, the symbol a cursor means in stored or handed text. `indexStatus.generation`,
 // which changes whenever stored facts do. `callHierarchy.incomingFromModules`, top-level callers.
-export const PROTOCOL_VERSION = "3.10.0" as const;
+// 3.11.0: `parseFile.probe`, a parse the core never rules on, so no admission is staged; an older
+// provider stages it anyway. Stored `symbolAt` answers `unowned` for a module no provider claims.
+export const PROTOCOL_VERSION = "3.11.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

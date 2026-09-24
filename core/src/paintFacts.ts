@@ -16,9 +16,15 @@ import {
 	type StoredReference,
 	type SymbolAtResult,
 } from "@nyaa-lexicon/protocol";
-import type { ProviderProbe } from "./providerProbe.js";
+import type { CandidateParse, ProviderProbe } from "./providerProbe.js";
 import { candidateDoesNotParse, noProviderOwnsForPaint } from "./refusals.js";
 import type { IndexStore } from "./store.js";
+
+////////////////////////////////
+//  Constants
+
+/** Candidates kept, so a cursor moving over unchanged text never parses again. */
+const CANDIDATE_CAPACITY = 8;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -111,9 +117,13 @@ export function pickSymbol(
 
 /** One module's paint facts, stored or freshly parsed. The store and the probe are its whole world. */
 export class PaintReads {
+	/** Oldest first; keyed by module, text and index generation, since a candidate binds against the index. */
+	private readonly candidates = new Map<string, CandidateParse>();
+
 	constructor(
 		private readonly store: IndexStore,
 		private readonly probe: ProviderProbe,
+		private readonly generation: () => number,
 	) {}
 
 	/** From the store's rows for one module. Refused the same way `fileNotes` refuses an unindexed one. */
@@ -136,14 +146,14 @@ export class PaintReads {
 		};
 	}
 
-	/** From text not yet written, parsed like a refactor plan's candidate: nothing stored, no gate held. */
+	/** From text not yet written, parsed like a refactor plan's candidate: nothing stored. Caller holds the read gate. */
 	async parseFacts(module: string, text: string): Promise<ParseFactsResult> {
 		const owner = this.probe.owner(module);
 		if (!owner.owned) return { ok: false, reason: noProviderOwnsForPaint(module, owner.reason) };
 		const words = this.probe.words(module);
 		if (words === null) return { ok: false, reason: noProviderOwnsForPaint(module) };
 
-		const candidate = await this.probe.parseCandidate(module, text);
+		const candidate = await this.candidate(module, text);
 		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("candidate", candidate.reason) };
 
 		return paintFromCandidate(hashContent(text), words, candidate.facts);
@@ -152,7 +162,12 @@ export class PaintReads {
 	/** The symbol under `position` in the stored facts. Caller holds the read gate. */
 	storedSymbolAt(module: string, position: Position): SymbolAtResult {
 		const contentHash = this.store.contentHashOf(module);
-		if (this.store.depthOf(module) === null || contentHash === null) return { found: false, reason: "notIndexed" };
+		if (this.store.depthOf(module) === null || contentHash === null) {
+			const owner = this.probe.owner(module);
+			return owner.owned
+				? { found: false, reason: "notIndexed" }
+				: { found: false, reason: "unowned", detail: noProviderOwnsForPaint(module, owner.reason) };
+		}
 		const references = this.store
 			.referencesIn(module)
 			.map((reference) => ({ range: storedReferenceRange(reference), target: reference.targetId }));
@@ -162,12 +177,12 @@ export class PaintReads {
 			: { found: true, ...picked, contentHash };
 	}
 
-	/** The symbol under `position` in `text`, parsed fresh without touching the store. */
+	/** The symbol under `position` in `text`, parsed without touching the store. Caller holds the read gate. */
 	async candidateSymbolAt(module: string, position: Position, text: string): Promise<SymbolAtResult> {
 		const owner = this.probe.owner(module);
 		if (!owner.owned)
 			return { found: false, reason: "unowned", detail: noProviderOwnsForPaint(module, owner.reason) };
-		const candidate = await this.probe.parseCandidate(module, text);
+		const candidate = await this.candidate(module, text);
 		const contentHash = hashContent(text);
 		if (!candidate.parsed) return { found: false, reason: "unparsed", contentHash, detail: candidate.reason };
 		const references = candidate.facts.references.map((reference) => ({
@@ -178,6 +193,23 @@ export class PaintReads {
 		return picked === null
 			? { found: false, reason: "noSymbol", contentHash }
 			: { found: true, ...picked, contentHash };
+	}
+
+	private async candidate(module: string, text: string): Promise<CandidateParse> {
+		const key = [module, hashContent(text), this.generation()].join("\n");
+		const kept = this.candidates.get(key);
+		if (kept !== undefined) {
+			this.candidates.delete(key);
+			this.candidates.set(key, kept);
+			return kept;
+		}
+		const parsed = await this.probe.parseCandidate(module, text);
+		this.candidates.set(key, parsed);
+		for (const oldest of this.candidates.keys()) {
+			if (this.candidates.size <= CANDIDATE_CAPACITY) break;
+			this.candidates.delete(oldest);
+		}
+		return parsed;
 	}
 }
 

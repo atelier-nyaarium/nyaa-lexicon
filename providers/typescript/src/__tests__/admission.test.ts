@@ -70,6 +70,18 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 		expect(addBinding(provider).status).toBe("bound");
 	});
 
+	it("stages nothing for a probe, so a later refusal still puts back what the index held", () => {
+		const provider = new TypeScriptProvider();
+		provider.initialize(workspace(CART));
+		settle(provider, "src/cart.ts", CART["src/cart.ts"], "cart-1");
+		// A candidate and its restore, as a cursor on unsaved text asks.
+		provider.parseFile({ module: "src/cart.ts", contentHash: "probe", text: "export const x = 1;\n", probe: true });
+		provider.parseFile({ module: "src/cart.ts", contentHash: "cart-1", text: CART["src/cart.ts"], probe: true });
+		settle(provider, "src/cart.ts", "export function renamed() {}\n", "cart-2", "refused");
+
+		expect(addBinding(provider).status).toBe("bound");
+	});
+
 	it("refuses to resolve an import into a module the index holds nothing for", () => {
 		const provider = new TypeScriptProvider();
 		provider.initialize(workspace(CART));

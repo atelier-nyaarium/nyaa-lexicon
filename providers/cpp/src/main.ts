@@ -235,9 +235,16 @@ export class CppProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(params: {
+		module: string;
+		contentHash: string;
+		text: string;
+		depth?: IndexDepth | undefined;
+		probe?: boolean | undefined;
+	}) {
 		const facts = parseCppFile(params.module, params.text);
-		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,

@@ -46,7 +46,7 @@ export function liveProbe(supervisor: ProviderPort, readFile: (module: string) =
 		const text = readFile(module) ?? "";
 		// Swallowed: a failed repair must not replace the caller's answer.
 		await supervisor
-			.ask(module, "parseFile", { module, contentHash: hashContent(text), text })
+			.ask(module, "parseFile", { module, contentHash: hashContent(text), text, probe: true })
 			.catch(() => undefined);
 	}
 
@@ -78,6 +78,7 @@ export function liveProbe(supervisor: ProviderPort, readFile: (module: string) =
 					module,
 					contentHash: hashContent(text),
 					text,
+					probe: true,
 				});
 				const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 				if (errors.length > 0) {

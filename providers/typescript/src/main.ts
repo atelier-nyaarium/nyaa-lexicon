@@ -206,9 +206,16 @@ export class TypeScriptProvider {
 	 * An editor's buffer differs from disk constantly, and answering about the saved version while
 	 * a caller asks about the open one is a whole class of wrong-but-plausible answers.
 	 */
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(params: {
+		module: string;
+		contentHash: string;
+		text: string;
+		depth?: IndexDepth | undefined;
+		probe?: boolean | undefined;
+	}) {
 		// Staged before the overlay moves, so a refusal knows what this parse displaced.
-		this.admission.staged(params.module, params.contentHash, this.analyzer?.overlayText(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.analyzer?.overlayText(params.module));
 
 		if (this.isSurface(params)) {
 			const extracted = extractSurfaceFile(params.module, params.text);

@@ -65,7 +65,9 @@ dropping the module disagrees with the core in the other direction.
 
 - `staged(module, contentHash, replaced)` in `parseFile`, BEFORE the cache write, where `replaced`
   is whatever that module held. Stage only on the parse road: staging inside a helper your disk fill
-  also calls stamps a pending entry nothing ever settles.
+  also calls stamps a pending entry nothing ever settles. Skip it when the request says `probe:
+  true` (protocol 3.11.0): the core parses a candidate and then restores the file's text, rules on
+  neither, and an entry staged for either blocks every later verdict for the module.
 - `settle(verdict)` in `moduleAdmission`. It answers what the module must hold, or null when what
   you have stands.
 - `forgotten(module)` in `forgetModule`, beside dropping the module from every cache.

@@ -291,10 +291,17 @@ export class CsharpProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(params: {
+		module: string;
+		contentHash: string;
+		text: string;
+		depth?: IndexDepth | undefined;
+		probe?: boolean | undefined;
+	}) {
 		const outline = params.depth === "outline";
 		const facts = new CsharpParser(params.module, params.text, outline).parse();
-		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,

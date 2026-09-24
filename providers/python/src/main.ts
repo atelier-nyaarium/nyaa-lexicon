@@ -589,10 +589,11 @@ export class PythonProvider {
 		}
 	}
 
-	async parseFile(params: { module: string; contentHash: string; text: string }) {
+	async parseFile(params: { module: string; contentHash: string; text: string; probe?: boolean | undefined }) {
 		const raw = await extractFacts(this.python3, params.module, params.text);
 		const facts = mapFacts(params.module, raw);
-		this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.parsedFacts.get(params.module));
 		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,

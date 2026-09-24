@@ -168,9 +168,10 @@ export class GDScriptProvider {
 		return discoverProject(workspaceRoot);
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
+	parseFile(params: { module: string; contentHash: string; text: string; probe?: boolean | undefined }) {
 		const extracted = extractFile(params.module, params.text);
-		this.admission.staged(params.module, params.contentHash, this.heldFacts(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.heldFacts(params.module));
 		this.bindingIndex.registerFile(params.module, extracted.declarations, extracted.references, params.text);
 		this.typeIndex.registerFile(params.module, params.text, extracted.declarations);
 		const references = extracted.references.map((reference) => ({

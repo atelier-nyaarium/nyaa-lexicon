@@ -244,14 +244,21 @@ export class KotlinProvider {
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(params: {
+		module: string;
+		contentHash: string;
+		text: string;
+		depth?: IndexDepth | undefined;
+		probe?: boolean | undefined;
+	}) {
 		const outline = params.depth === "outline";
 		const facts = parseKotlin(params.module, params.text, outline);
 		if (outline) this.parsedFacts.delete(params.module);
 		else this.parsedFacts.set(params.module, facts);
 		this.unread.delete(params.module);
 		// The core decides; `moduleAdmission` puts back what a refusal displaced.
-		this.admission.staged(params.module, params.contentHash, this.index.headersOf(params.module));
+		if (params.probe !== true)
+			this.admission.staged(params.module, params.contentHash, this.index.headersOf(params.module));
 		this.index.add(facts);
 		return {
 			module: params.module,

@@ -464,13 +464,12 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		moduleStatus: read((params) => service.moduleStatus(params.module)),
 		moduleDeclarations: read((params) => service.moduleDeclarations(params.module)),
 		moduleFacts: read((params) => service.moduleFacts(params.module)),
-		// No gate at all: parseCandidate restores the provider's own view before returning, on every
-		// path, and nothing here touches the store or the disk.
-		parseFacts: staged((params) => service.parseFacts(params.module, params.text)),
-		// Handed text parses outside the gate, as `parseFacts` does; stored facts read under it.
-		symbolAt: staged(({ module, position, text }, gate) =>
+		// Candidate parses read under the gate: an index parse landing between a candidate and its
+		// restore would bind against the unsaved text and store it.
+		parseFacts: read((params) => service.parseFacts(params.module, params.text)),
+		symbolAt: read(({ module, position, text }) =>
 			text === undefined
-				? gate.read(() => service.storedSymbolAt(module, position))
+				? service.storedSymbolAt(module, position)
 				: service.candidateSymbolAt(module, position, text),
 		),
 		findImports: read((params) => service.findImports(params)),

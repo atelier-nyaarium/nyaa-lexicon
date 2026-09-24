@@ -131,6 +131,8 @@ export const ParseFileRequestSchema = z
 		text: z.string(),
 		/** Absent means full for compatibility with providers predating surface indexing. */
 		depth: IndexDepthSchema.optional(),
+		/** The core never rules on a probe, so the provider stages no admission for it. */
+		probe: z.boolean().optional(),
 	})
 	.meta({ id: "ParseFileRequest" });
 

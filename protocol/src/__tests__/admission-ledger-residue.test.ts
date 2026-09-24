@@ -84,4 +84,18 @@ describe("every stateful provider corrects through one primitive", () => {
 
 		expect(offenders, "AdmissionLedger belongs to protocol/src/admission.ts").toEqual([]);
 	});
+
+	it("has every provider stage only a parse the index rules on", () => {
+		const offenders = swept()
+			.filter((entry) => {
+				const staged = entry.code.match(/\.staged\s*\(/g)?.length ?? 0;
+				const guarded = entry.code.match(
+					/if\s*\(\s*params\.probe\s*!==\s*true\s*\)\s*this\.admission\.staged\s*\(/g,
+				);
+				return staged !== (guarded?.length ?? 0);
+			})
+			.map((entry) => entry.provider);
+
+		expect(offenders, "the core never rules on a probe; stage behind `if (params.probe !== true)`").toEqual([]);
+	});
 });

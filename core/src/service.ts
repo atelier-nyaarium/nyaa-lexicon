@@ -124,7 +124,7 @@ export class LexiconService {
 		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
 		this.probe = liveProbe(supervisor, (module) => textOf(readSource(module)));
 		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe);
-		this.paint = new PaintReads(store, this.probe);
+		this.paint = new PaintReads(store, this.probe, () => this.caches.facts.stats().generation);
 	}
 
 	private readonly caches: IndexCaches = {
