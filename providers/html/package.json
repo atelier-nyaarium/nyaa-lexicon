@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-html",
-	"version": "8.9.1",
+	"version": "8.9.2",
 	"private": true,
 	"type": "module",
 	"description": "HTML provider for nyaa-lexicon",
