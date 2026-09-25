@@ -455,7 +455,8 @@ suite says when a provider is finished, not the team writing it.
 The suite checks Unknown shapes, so providers cannot pass with reasonless Unknowns. File-role cases
 name their semantic form and applicable languages. Fixture keys must match those languages. A
 provider declaring `fileRoles` must have a case for its language, and each applicable case needs a
-fixture.
+fixture. A `main` expectation names the declaration and the line it is named on, so a same-named
+decoy fails.
 
 A binding case may name `bindsToModule` as well as `bindsTo`. The runner parses only the subject
 file, so a case holding several files proves a use binds into a file the provider never parsed.
