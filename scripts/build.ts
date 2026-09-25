@@ -26,6 +26,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { codeOnly } from "../protocol/src/residue.js";
 import { PROTOCOL_VERSION } from "../protocol/src/version.js";
+import { git, outliveInterrupts } from "./child";
+import { DIST_DIR } from "./dist";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -62,7 +64,6 @@ const ENTRYPOINTS = [
 	{ source: path.join("core", "src", "daemonCli.ts"), out: "daemon.js" },
 	{ source: path.join("adapters", "lsp", "src", "main.ts"), out: "lsp.js" },
 ];
-const DIST_DIR = "dist";
 
 /** What the install says about itself, so a client learns what a checkout is without running it. */
 const VERSION_FILE = "version.json";
@@ -415,10 +416,6 @@ export function untrackedFiles(porcelainV2: string): string[] {
 		.filter((file) => !isDistPath(file));
 }
 
-function git(args: string[], root: string): string {
-	return execFileSync("git", args, { cwd: root, encoding: "utf8" });
-}
-
 ////////////////////////////////
 //  Main
 
@@ -440,7 +437,7 @@ function main(argv: string[]): void {
 	// A clean tree is what makes the rollback below safe. --build-only writes no tracked file, so
 	// it has nothing to roll back and no reason to care.
 	if (!buildOnly) {
-		const status = git(["status", "--porcelain=v2", "--branch"], ROOT);
+		const status = git(ROOT, ["status", "--porcelain=v2", "--branch"]);
 		const dirty = dirtyTrackedFiles(status);
 		if (dirty.length > 0) {
 			console.error("Commit your work before building. Uncommitted changes to tracked files:");
@@ -459,7 +456,7 @@ function main(argv: string[]): void {
 		// rather than as a git error from reading HEAD.
 		let atHead: string;
 		try {
-			atHead = git(["show", "HEAD:protocol/src/version.ts"], ROOT);
+			atHead = git(ROOT, ["show", "HEAD:protocol/src/version.ts"]);
 		} catch {
 			console.error("Could not read protocol/src/version.ts at HEAD, so the wire check cannot run.");
 			console.error("Commit the protocol package first, or build with --build-only.");
@@ -474,8 +471,7 @@ function main(argv: string[]): void {
 	const providers = providerBundles(ROOT);
 	if (providers.length === 0) throw new Error("no providers found to bundle; the shipped index would find nothing");
 
-	// Ctrl-C stops the child; the parent lives on to run the rollback.
-	process.on("SIGINT", () => {});
+	outliveInterrupts();
 
 	try {
 		if (!buildOnly) {
@@ -529,8 +525,8 @@ function main(argv: string[]): void {
 		smokeProviders(ROOT, providers);
 		smokeIsolation(ROOT);
 		if (!buildOnly) {
-			git(["add", "--", ...targets, DIST_DIR], ROOT);
-			git(["commit", "-m", `Build ${version}`], ROOT);
+			git(ROOT, ["add", "--", ...targets, DIST_DIR]);
+			git(ROOT, ["commit", "-m", `Build ${version}`]);
 		}
 	} catch (failure) {
 		// bun prints its own compiler errors; only a smoke failure needs this script to speak.
@@ -539,9 +535,9 @@ function main(argv: string[]): void {
 		if (!buildOnly) {
 			// dist/ is committed, so a half-written bundle left beside reverted versions is a lie
 			// on disk that a later commit could pick up.
-			git(["reset", "--quiet", "--", ...targets, DIST_DIR], ROOT);
-			git(["checkout", "--", ...targets, DIST_DIR], ROOT);
-			git(["clean", "-fdq", "--", DIST_DIR], ROOT);
+			git(ROOT, ["reset", "--quiet", "--", ...targets, DIST_DIR]);
+			git(ROOT, ["checkout", "--", ...targets, DIST_DIR]);
+			git(ROOT, ["clean", "-fdq", "--", DIST_DIR]);
 			console.error(`\nbuild failed; reverted ${targets.length} version file(s) and ${DIST_DIR}/ to ${current}`);
 		} else {
 			console.error("\nbuild failed");

@@ -9,6 +9,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { git, outliveInterrupts, run } from "./child";
+import { DIST_DIR, withBuiltDist } from "./dist";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -28,29 +30,11 @@ interface Side {
 //  Constants
 
 const ROOT = path.join(import.meta.dirname, "..");
-const DIST_DIR = "dist";
 const THRESHOLD = 0.2;
 const RESULT_LINE = /^(\d+) files, (\d+) symbols, (\d+)ms$/m;
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function git(cwd: string, args: string[]): string {
-	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-}
-
-/** Cleanup keeps going past one failed step. */
-function tryGit(cwd: string, args: string[]): void {
-	try {
-		git(cwd, args);
-	} catch (error) {
-		console.error(`cleanup: git ${args.join(" ")} in ${cwd}: ${error instanceof Error ? error.message : error}`);
-	}
-}
-
-function run(cwd: string, command: string, args: string[]): void {
-	execFileSync(command, args, { cwd, stdio: "inherit" });
-}
 
 function option(argv: string[], name: string): string | undefined {
 	const at = argv.indexOf(name);
@@ -67,28 +51,25 @@ function sample(checkout: string, input: string): Sample {
 	return { files: Number(match[1]), symbols: Number(match[2]), ms: Number(match[3]) };
 }
 
-/** Even runs favor faster. */
+/** Pick the lower median. */
 function median(samples: Sample[]): Sample {
 	return [...samples].sort((a, b) => a.ms - b.ms)[Math.floor((samples.length - 1) / 2)]!;
 }
 
-/** Alternates samples and restores each `dist/`. */
+/** Alternate sides between rounds. */
 function measure(sides: Side[], input: string, runs: number): Sample[] {
-	try {
-		for (const side of sides) run(side.checkout, "bun", ["run", "build", "--build-only"]);
-		const samples = sides.map((): Sample[] => []);
-		for (let round = 0; round < runs; round++) {
-			const order = sides.map((_, at) => at);
-			if (round % 2 === 1) order.reverse();
-			for (const at of order) samples[at]!.push(sample(sides[at]!.checkout, input));
-		}
-		return samples.map(median);
-	} finally {
-		for (const side of sides) {
-			tryGit(side.checkout, ["checkout", "HEAD", "--", DIST_DIR]);
-			tryGit(side.checkout, ["clean", "-fdq", "--", DIST_DIR]);
-		}
-	}
+	return withBuiltDist(
+		sides.map((side) => side.checkout),
+		() => {
+			const samples = sides.map((): Sample[] => []);
+			for (let round = 0; round < runs; round++) {
+				const order = sides.map((_, at) => at);
+				if (round % 2 === 1) order.reverse();
+				for (const at of order) samples[at]!.push(sample(sides[at]!.checkout, input));
+			}
+			return samples.map(median);
+		},
+	);
 }
 
 function describe(label: string, at: Sample): string {
@@ -104,9 +85,13 @@ function withWorktree<T>(ref: string, use: (dir: string) => T): T {
 		added = true;
 		return use(dir);
 	} finally {
-		if (added) tryGit(ROOT, ["worktree", "remove", "--force", dir]);
+		try {
+			if (added) git(ROOT, ["worktree", "remove", "--force", dir]);
+		} catch (error) {
+			console.error(`cleanup: ${error instanceof Error ? error.message : error}`);
+		}
 		rmSync(dir, { recursive: true, force: true });
-		tryGit(ROOT, ["worktree", "prune"]);
+		git(ROOT, ["worktree", "prune"]);
 	}
 }
 
@@ -114,8 +99,7 @@ function withWorktree<T>(ref: string, use: (dir: string) => T): T {
 //  Main
 
 function main(argv: string[]): void {
-	// Ctrl-C stops the child; the parent lives on to clean up.
-	process.on("SIGINT", () => {});
+	outliveInterrupts();
 	const against = option(argv, "--against");
 	const repo = option(argv, "--repo");
 	const runs = Number(option(argv, "--runs") ?? "1");

@@ -4,9 +4,9 @@
 //   bun run corpora            # clone or move to the pins; refuses local edits
 //   bun run corpora --reset    # and discard local edits
 
-import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { git, gitOrNull } from "./child";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -68,41 +68,20 @@ export const CORPORA: Corpus[] = [
 ////////////////////////////////
 //  Functions & Helpers
 
-function git(cwd: string, args: string[]): string {
-	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
-}
-
-function gitOrNull(dir: string, args: string[]): string | null {
-	try {
-		return execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-	} catch {
-		return null;
-	}
-}
-
 function headOf(dir: string): string | null {
 	return gitOrNull(dir, ["rev-parse", "HEAD"]);
 }
 
 function hasCommit(dir: string, commit: string): boolean {
-	try {
-		git(dir, ["cat-file", "-e", `${commit}^{commit}`]);
-		return true;
-	} catch {
-		return false;
-	}
+	return gitOrNull(dir, ["cat-file", "-e", `${commit}^{commit}`]) !== null;
 }
 
-/** Rejects enclosing and linked repositories. */
+/** Require an independent repository. */
 function ownsRepo(dir: string): boolean {
-	try {
-		return git(dir, ["rev-parse", "--show-toplevel"]) === realpathSync(dir);
-	} catch {
-		return false;
-	}
+	return gitOrNull(dir, ["rev-parse", "--show-toplevel"]) === realpathSync(dir);
 }
 
-/** Fetches pins. `reset` discards edits, ignored files included. */
+/** Fetch pins; reset discards ignored files too. */
 function fetchCorpus(corpus: Corpus, reset: boolean): "present" | "restored" | "fetched" {
 	const dir = path.join(ROOT, TEMP_DIR, corpus.dir);
 	if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {

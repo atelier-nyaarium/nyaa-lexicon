@@ -48,23 +48,32 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
 
 ```bash
 bun install
-bun run corpora   # the test corpora, cloned into temp/ at pinned commits; once, and after a pin moves
-bun run lint      # biome ci AND tsc --build, both run, both reported
+bun run check     # the full gate: corpora, lint and tests; all parts run and report
+bun run corpora   # test corpora cloned into temp/ at pinned commits; --reset discards edits
+bun run lint      # run and report biome ci and tsc --build
 bun run test      # bun test, including the residue tests
 bun run lint:fix
 bun run bench     # a timed cold index of Lexicon's own source; --against <ref> compares and gates
+bun run snapshot  # the working tree and a fresh dist/ as a commit, for a project pinning Lexicon
 ```
 
-Run `bun run corpora` before tests. Corpus tests require local checkouts. `CORPORA` in
-`scripts/corpora.ts` pins every corpus tests read.
+Corpus tests require local checkouts, so `check` runs `corpora` first. `CORPORA` in
+`scripts/corpora.ts` pins each test corpus.
 
-`bench` builds `dist/`, indexes a separate checkout of HEAD, then restores `dist/` to its committed
-state. With `--against <ref>`, it builds that ref in a temporary worktree and fails if the working
-tree is over 20% slower. Run it after extraction, provider project-model, or indexer changes. Cold
-indexing takes minutes.
+`bench` indexes Lexicon at `HEAD` in a separate checkout. With `--against <ref>`, it also builds
+that ref in a temporary worktree and fails when the working tree takes over 20% longer or indexes
+fewer files. Run it after extraction, provider project-model or indexer changes. Cold indexing
+takes minutes.
 
-NyaaCode consumes Lexicon as an extension submodule. Its umbrella's `lexicon:dev` builds this
-checkout and snapshots it into the extension without releasing; see its `AGENTS.md`.
+`snapshot` commits the working tree, untracked files and a fresh `dist/` through a scratch index
+to `refs/snapshots/dev`, and prints `{ ref, sha, subject }`. The checkout, index and `dist/` remain
+unchanged. Projects pinning Lexicon as a submodule can fetch that ref to try unreleased work.
+NyaaCode's umbrella does this with `lexicon:dev`.
+
+`withBuiltDist` in `scripts/dist.ts` owns building `dist/`, using the build and restoring the
+committed `dist/`. `bench` and `snapshot` use it. It refuses a `dist/` that differs from HEAD,
+since restoring would discard it, and a failed restore fails the run. The release build commits
+`dist/` and manages its own rollback.
 
 **Read both halves of the gate.** Grepping lint output for `error TS` misses every formatting
 failure. When in doubt, run `bunx biome ci . --reporter=summary` on its own.
@@ -181,8 +190,8 @@ Ordered by how much they prove:
    suite cannot express survives a clean gate and dies to a five-line probe.
 
    Provider discovery prefers the bundle over the source, so `indexCli` and the daemon both spawn
-   what is in `dist/`, not what you just edited. `bench` and NyaaCode's `lexicon:dev` build and
-   restore `dist/` themselves. For an ad hoc probe, run `bun run build --build-only` first and
+   what is in `dist/`, not what you just edited. `bench` and `snapshot` call `withBuiltDist` to
+   build and restore `dist/`. For an ad hoc probe, run `bun run build --build-only` first and
    `git restore dist` after, so a probe's bundle never lands in a commit.
 
 ## Rules
