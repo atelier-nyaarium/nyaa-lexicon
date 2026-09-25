@@ -305,7 +305,8 @@ values mean the indexed facts and knowledge have not changed. Counting demand do
 
 `describe.moduleRole` is present when the module's provider reported a role. `overview.entryPoints`
 is present when any file in scope has one, lists at most 50 entries, and `moreEntryPoints` counts
-the rest.
+the rest. Each `main` entry carries its declaration's `symbolId`; `guardedMain` and `topLevel`
+entries omit it.
 
 ## Validation, both directions
 

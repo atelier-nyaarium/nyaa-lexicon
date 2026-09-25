@@ -168,7 +168,7 @@ const ENTRY_HOW: Record<EntryHow, string> = {
 function roleText(role: FileRole): string {
 	if (role.kind === "library") return "library (no recognized entry pattern)";
 	if (role.kind === "unknown") return `unknown (${role.reason})`;
-	return `entry point: ${ENTRY_HOW[role.how]}${role.symbolId === undefined ? "" : `, ${code(role.symbolId)}`}`;
+	return `entry point: ${ENTRY_HOW[role.how]}${role.how === "main" ? `, ${code(role.symbolId)}` : ""}`;
 }
 
 /** One symbol as its complete surface. */

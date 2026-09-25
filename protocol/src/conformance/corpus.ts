@@ -1,8 +1,8 @@
 // The shared corpus. Data, so a provider team reads it without reading the runner.
 //
 // A case states ONE expectation in language-neutral terms, then carries a fixture per language
-// saying it. The expectations are shared; the syntax never is. A language with no fixture for a
-// case skips it, which is the corpus admitting a gap rather than the provider failing one.
+// saying it. The expectations are shared; the syntax never is. A language with no fixture skips,
+// except a file-role form marked applicable to that language, which is a corpus failure.
 //
 // Adding a language means adding fixtures here, and the provider team is the right author: they
 // know their language's edge cases better than this file does.

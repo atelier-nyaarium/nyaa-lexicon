@@ -20,6 +20,7 @@ import type { MoveEditsRequest } from "../move";
 import type { FileFacts } from "../project";
 import { composeSymbolId } from "../symbolId";
 import type { Range, Reference } from "../symbols";
+import { PROTOCOL_VERSION } from "../version";
 
 ////////////////////////////////
 //  Helpers
@@ -213,7 +214,7 @@ function referenceCollisionMove(): MoveCase {
 //  Tests
 
 /** Case-level fields carrying no expectation. The runner's set adds the fixture-level ones. */
-const CASE_LEVEL_METADATA = new Set(["id", "tier", "about", "fixtures"]);
+const CASE_LEVEL_METADATA = new Set(["id", "tier", "about", "fixtures", "semanticForm", "applicableLanguages"]);
 
 /** Each value is deliberately WRONG against empty facts, so a live checker must complain. */
 const WRONG_VALUES: Record<string, unknown> = {
@@ -286,6 +287,50 @@ describe("corpus", () => {
 				expect(Object.keys(testCase.fixtures), `${tier}/${testCase.id}`).not.toHaveLength(0);
 			}
 		}
+	});
+
+	it("gives every file-role form exactly the fixtures for its applicable languages", () => {
+		const cases = casesForTier("fileRoles");
+		expect(cases).not.toHaveLength(0);
+		for (const testCase of cases) {
+			expect(testCase.semanticForm, testCase.id).toBeTruthy();
+			expect(testCase.applicableLanguages, testCase.id).toBeDefined();
+			expect(Object.keys(testCase.fixtures).sort(), testCase.id).toEqual(
+				[...(testCase.applicableLanguages ?? [])].sort(),
+			);
+			for (const fixture of Object.values(testCase.fixtures)) {
+				const role = fixture.role ?? testCase.role;
+				if (role?.kind === "entry" && role.how === "main") expect(role.main, testCase.id).toBeTruthy();
+			}
+		}
+	});
+
+	// Pinned apart from the cases, so an edited case cannot quietly drop a language's form.
+	it("pins every role form to the languages that express it", () => {
+		const matrix = Object.fromEntries(
+			casesForTier("fileRoles").map((testCase) => [
+				testCase.semanticForm,
+				[...(testCase.applicableLanguages ?? [])].sort(),
+			]),
+		);
+		const all = ["bash", "c", "cpp", "csharp", "kotlin", "python", "rust", "typescript"];
+
+		expect(matrix).toEqual({
+			"declarations-only": all,
+			"header-declarations-only": ["c", "cpp"],
+			"assignment-setup": ["bash", "python", "typescript"],
+			"conditional-setup": ["bash", "python", "typescript"],
+			"sourced-setup": ["bash"],
+			"jvm-static-main-object": ["kotlin"],
+			"jvm-static-main-companion-object": ["kotlin"],
+			"runtime-main": ["c", "cpp", "csharp", "kotlin", "rust"],
+			"run-as-program-guard": ["python", "typescript"],
+			"commonjs-run-as-program-guard": ["typescript"],
+			"run-as-program-guard-nested-in-setup": ["python", "typescript"],
+			"run-as-program-guard-else-runs": ["python", "typescript"],
+			"statements-run-on-load": ["bash", "python", "typescript"],
+			"unplaceable-entry-candidate": ["csharp", "rust"],
+		});
 	});
 
 	it("states an exact declaration list, so a case can assert that something is NOT reported", () => {
@@ -438,6 +483,35 @@ describe("checking answers", () => {
 		expect(checkFacts(testCase, facts({ declarations: [decl("a")] }))[0]).toMatch(
 			/kind is function, expected class/,
 		);
+	});
+
+	describe("file roles", () => {
+		it("checks a main entry against its declared symbol, by name and line", () => {
+			const onLine = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 4 } });
+			const main = decl("main", { range: onLine(2), selectionRange: onLine(2) });
+			const decoy = decl("main", { symbolId: idFor("decoy"), range: onLine(0), selectionRange: onLine(0) });
+			const other = decl("other", { range: onLine(2), selectionRange: onLine(2) });
+			const testCase = {
+				role: { kind: "entry", how: "main", main: { name: "main", line: 2 } },
+			} as ConformanceCase;
+			const naming = (target: ReturnType<typeof decl>) =>
+				checkFacts(
+					testCase,
+					facts({
+						declarations: [main, decoy, other],
+						role: { kind: "entry", how: "main", symbolId: target.symbolId },
+					}),
+				).length;
+
+			expect([naming(main), naming(decoy), naming(other)]).toEqual([0, 1, 1]);
+		});
+
+		it("rejects a main symbol id with no declaration in the file", () => {
+			const testCase = { role: { kind: "entry", how: "main" } } as ConformanceCase;
+			const role = { kind: "entry" as const, how: "main" as const, symbolId: idFor("main") };
+
+			expect(checkFacts(testCase, facts({ role }))).not.toEqual([]);
+		});
 	});
 
 	// No provider claims the docs tier yet, so the corpus cases all skip. These are the only proof
@@ -1090,7 +1164,7 @@ describe("running the suite against a real process", () => {
 		const words = JSON.stringify(REFERENCE_WORDS);
 		const { root, script } = scriptedProvider(
 			"dies",
-			`return { providerId: "dies", language: "reference", extensions: [".ref"], protocolVersion: ${JSON.stringify("2.0.0")}, tiers: ${tiers}, words: ${words} };`,
+			`return { providerId: "dies", language: "reference", extensions: [".ref"], protocolVersion: ${JSON.stringify(PROTOCOL_VERSION)}, tiers: ${tiers}, words: ${words} };`,
 			[
 				`connection.onRequest("discoverProject", () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }));`,
 				`connection.onRequest("parseFile", () => process.exit(3));`,
@@ -1123,6 +1197,42 @@ describe("running the suite against a real process", () => {
 
 		expect(report.failed).toBe(1);
 		expect(report.results.find((result) => result.outcome === "failed")?.problems[0]).toMatch(/not reported/);
+	}, 30_000);
+
+	it("fails an applicable file-role form without a fixture", async () => {
+		const tiers = JSON.stringify({ ...REFERENCE_TIERS, fileRoles: true });
+		const words = JSON.stringify(REFERENCE_WORDS);
+		const { root, script } = scriptedProvider(
+			"role-gap",
+			`return { providerId: "role-gap", language: "typescript", extensions: [".ts"], protocolVersion: ${JSON.stringify(PROTOCOL_VERSION)}, tiers: ${tiers}, words: ${words} };`,
+		);
+		const testCase: ConformanceCase = {
+			id: "role-gap/conditional-setup",
+			tier: "fileRoles",
+			about: "An applicable role form has no fixture.",
+			semanticForm: "conditional-setup",
+			applicableLanguages: ["typescript"],
+			fixtures: {},
+			role: { kind: "library" },
+		};
+		const report = await runSuite({
+			command: [process.execPath, "run", script],
+			cases: [testCase],
+			timeoutMs: 5_000,
+		});
+
+		expect(report.results.find((result) => result.caseId === testCase.id)).toMatchObject({
+			tier: "fileRoles",
+			outcome: "failed",
+		});
+		const uncovered = await runSuite({ command: [process.execPath, "run", script], cases: [], timeoutMs: 5_000 });
+		expect(
+			uncovered.results.find((result) => result.caseId === "claimed-tier-has-no-role-forms/typescript"),
+		).toMatchObject({
+			tier: "fileRoles",
+			outcome: "failed",
+		});
+		rmSync(root, { recursive: true, force: true });
 	}, 30_000);
 
 	it("makes move cases pass, fail, and skip through provider responses", async () => {

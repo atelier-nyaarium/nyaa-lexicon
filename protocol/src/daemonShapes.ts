@@ -9,7 +9,7 @@ import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS } from "./factId.js";
 import { MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
-import { EntryHowSchema, FileRoleSchema, IndexDepthSchema, LiteralSchema } from "./project.js";
+import { EntryRoleSchema, FileRoleSchema, IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import {
 	DeclarationSchema,
@@ -1066,9 +1066,7 @@ export const OverviewResultSchema = z
 			doubted: z.number().optional(),
 		}),
 		/** Reported entry files; absent without role data. */
-		entryPoints: z
-			.array(z.object({ module: z.string(), how: EntryHowSchema, symbolId: z.string().optional() }))
-			.optional(),
+		entryPoints: z.array(z.object({ module: z.string() }).and(EntryRoleSchema)).optional(),
 		/** Entry count beyond the cap. */
 		moreEntryPoints: z.number().optional(),
 	})

@@ -153,7 +153,12 @@ export type ExpectedLiteral = z.infer<typeof ExpectedLiteralSchema>;
 export const ExpectedRoleSchema = z
 	.discriminatedUnion("kind", [
 		z.object({ kind: z.literal("library") }),
-		z.object({ kind: z.literal("entry"), how: EntryHowSchema, main: z.string().min(1).optional() }),
+		z.object({
+			kind: z.literal("entry"),
+			how: EntryHowSchema,
+			/** The main declaration's name and the zero-based line it is named on. */
+			main: z.object({ name: z.string().min(1), line: z.number().int().min(0) }).optional(),
+		}),
 		z.object({ kind: z.literal("unknown"), reason: UnknownReasonSchema.optional() }),
 	])
 	.meta({ id: "ExpectedRole" });
@@ -228,10 +233,14 @@ export const ConformanceCaseSchema = z
 		/**
 		 * Source per language, keyed by the `language` a provider reports at initialize.
 		 *
-		 * Only the fixture varies. The expectations below are the same sentence about every language,
-		 * which is what makes one corpus meaningful across providers that share no syntax.
+		 * Fixtures vary with syntax. Expectations apply to every applicable language, so one corpus
+		 * can cover providers with different syntax.
 		 */
 		fixtures: z.record(z.string().min(1), ConformanceFixtureSchema),
+		/** Source form under test. */
+		semanticForm: z.string().min(1).optional(),
+		/** Languages expressing this form. */
+		applicableLanguages: z.array(z.string().min(1)).min(1).optional(),
 		declarations: z.array(ExpectedDeclarationSchema).optional(),
 		/**
 		 * EXACTLY these declaration names, in order.
@@ -304,6 +313,33 @@ export const ConformanceCaseSchema = z
 		notes: z.enum(["required", "forbidden"]).optional(),
 	})
 	.superRefine((testCase, context) => {
+		if (testCase.tier === "fileRoles") {
+			if (testCase.role === undefined) {
+				context.addIssue({
+					code: "custom",
+					message: `case ${testCase.id}: fileRoles needs a role expectation`,
+				});
+			}
+			if (testCase.semanticForm === undefined) {
+				context.addIssue({ code: "custom", message: `case ${testCase.id}: fileRoles needs a semanticForm` });
+			}
+			if (testCase.applicableLanguages === undefined) {
+				context.addIssue({
+					code: "custom",
+					message: `case ${testCase.id}: fileRoles needs applicableLanguages`,
+				});
+			} else if (new Set(testCase.applicableLanguages).size !== testCase.applicableLanguages.length) {
+				context.addIssue({
+					code: "custom",
+					message: `case ${testCase.id}: applicableLanguages contains duplicates`,
+				});
+			}
+		} else if (testCase.semanticForm !== undefined || testCase.applicableLanguages !== undefined) {
+			context.addIssue({
+				code: "custom",
+				message: `case ${testCase.id}: role applicability belongs to fileRoles`,
+			});
+		}
 		const positioned = (testCase.references ?? []).some((reference) => reference.at !== undefined);
 		if (positioned && Object.keys(testCase.fixtures).length > 1) {
 			context.addIssue({

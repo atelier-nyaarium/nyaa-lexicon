@@ -578,6 +578,22 @@ describe("opening the index", () => {
 });
 
 describe("a file's role", () => {
+	it("reads a stored main role without its declaration id as no role at all", () => {
+		store.replaceFile({
+			module: "src/main.ts",
+			contentHash: "h1",
+			declarations: [declaration("main", "src/main.ts")],
+			references: [],
+			role: { kind: "entry", how: "main", symbolId: idOf("main", "src/main.ts") },
+		});
+		store.journal((db) => db.prepare("UPDATE files SET roleSymbolId = NULL WHERE module = ?").run("src/main.ts"));
+
+		expect({ role: store.roleOf("src/main.ts"), entries: store.entryPoints(() => true, 50) }).toEqual({
+			role: null,
+			entries: null,
+		});
+	});
+
 	it("reads back each role, lists entries by module within scope and cap, and says when none were reported", () => {
 		const all = () => true;
 		const empty = store.entryPoints(all, 50);

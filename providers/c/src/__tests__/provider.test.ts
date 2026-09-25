@@ -114,13 +114,13 @@ describe("C provider protocol", () => {
 		const main = declarationOf(parsed, "main", "function");
 
 		expect(main).toBeDefined();
-		expect(parsed.role).toEqual({ kind: "entry", how: "main", symbolId: main?.symbolId });
+		expect(parsed.role).toEqual(main && { kind: "entry", how: "main", symbolId: main.symbolId });
 
 		const probed = handlers.probeFile({ module: "src/probe.c", contentHash: "probe", text });
 		const probedMain = declarationOf(probed, "main", "function");
 
 		expect(probedMain).toBeDefined();
-		expect(probed.role).toEqual({ kind: "entry", how: "main", symbolId: probedMain?.symbolId });
+		expect(probed.role).toEqual(probedMain && { kind: "entry", how: "main", symbolId: probedMain.symbolId });
 	});
 
 	test("a main prototype does not make a file an entry", () => {

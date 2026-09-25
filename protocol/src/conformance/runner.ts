@@ -56,7 +56,17 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * Exported so one residue can hold it against both schemas: a field in neither this set nor the
  * checker's table is classified by nobody, and silently earns a parse it may not want.
  */
-export const CASE_METADATA = new Set(["id", "tier", "about", "fixtures", "files", "subject", "discovery"]);
+export const CASE_METADATA = new Set([
+	"id",
+	"tier",
+	"about",
+	"fixtures",
+	"semanticForm",
+	"applicableLanguages",
+	"files",
+	"subject",
+	"discovery",
+]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -1067,8 +1077,6 @@ async function runUnseenCase(
 }
 
 /**
- * A tier the provider CLAIMS and this run never actually asked it about.
- *
  * The suite skips a case with no fixture for the language, so a provider can declare a tier, be
  * asked nothing, and report a clean run. That is the tier system's own promise going unchecked.
  *
@@ -1080,6 +1088,7 @@ function untestedClaims(
 	tiers: { [K in Tier]?: boolean | undefined },
 	cases: ConformanceCase[],
 	results: CaseResult[],
+	language: string,
 ): CaseResult[] {
 	const asked = new Set<string>(results.filter((r) => r.outcome !== "skipped").map((r) => r.tier));
 	const offered = new Set<string>(cases.map((testCase) => testCase.tier));
@@ -1087,7 +1096,7 @@ function untestedClaims(
 	const found: CaseResult[] = [];
 	for (const [name, claimed] of Object.entries(tiers)) {
 		// `projectModel` has no cases and is proven by discovery, which every fixture already exercises.
-		if (!claimed || asked.has(name) || name === "projectModel") continue;
+		if (!claimed || asked.has(name) || name === "projectModel" || name === "fileRoles") continue;
 		const corpusHasCases = offered.has(name);
 		found.push({
 			caseId: `claimed-tier-is-tested/${name}`,
@@ -1098,6 +1107,17 @@ function untestedClaims(
 					? `${name} is declared but every case for it was skipped, so the claim went unchecked`
 					: `${name} is declared and the corpus has no cases for it, which is the corpus's gap`,
 			],
+		});
+	}
+	if (
+		tiers.fileRoles === true &&
+		!cases.some((testCase) => testCase.tier === "fileRoles" && testCase.applicableLanguages?.includes(language))
+	) {
+		found.push({
+			caseId: `claimed-tier-has-no-role-forms/${language}`,
+			tier: "fileRoles",
+			outcome: "failed",
+			problems: [`fileRoles is declared for ${language}, but no role form applies to that language`],
 		});
 	}
 	return found;
@@ -1149,15 +1169,24 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				});
 				continue;
 			}
-
-			// A missing fixture is the corpus's gap, so it reads as a skip naming the language rather
-			// than as this provider failing a case it was never given anything to answer.
-			const fixture = testCase.fixtures[info.language];
-			if (!fixture) {
+			const formed = tier === "fileRoles" && testCase.semanticForm !== undefined;
+			if (formed && !testCase.applicableLanguages?.includes(info.language)) {
 				results.push({
 					caseId: testCase.id,
 					tier,
 					outcome: "skipped",
+					problems: [`${testCase.semanticForm} is not applicable to ${info.language}`],
+				});
+				continue;
+			}
+
+			const fixture = testCase.fixtures[info.language];
+			if (!fixture) {
+				// Applicable forms need fixtures.
+				results.push({
+					caseId: testCase.id,
+					tier,
+					outcome: formed ? "failed" : "skipped",
 					problems: [`no ${info.language} fixture`],
 				});
 				continue;
@@ -1283,7 +1312,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			results.push(stalled("protocol-probes", "protocol", error, startedAt, timeoutMs));
 		}
 
-		results.push(...untestedClaims(info.tiers, options.cases, results));
+		results.push(...untestedClaims(info.tiers, options.cases, results, info.language));
 
 		return {
 			providerId: info.providerId,

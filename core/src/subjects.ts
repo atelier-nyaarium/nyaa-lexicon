@@ -500,7 +500,10 @@ export function restoreSubjects(db: DatabaseSync, subjects: readonly SalvagedSub
 
 /** Takes the store's handle: every statement here runs inside whatever transaction the store holds. */
 export class KnowledgeSubjects {
-	constructor(private readonly db: DatabaseSync) {}
+	constructor(
+		private readonly db: DatabaseSync,
+		private readonly recordKnowledgeWrite: (changed: boolean) => void = () => {},
+	) {}
 
 	/** Bound or orphaned alike, since the address is kept. */
 	forAddress(symbolId: string): Subject | null {
@@ -603,21 +606,34 @@ export class KnowledgeSubjects {
 
 	/** An orphan whose address resolves again. */
 	restore(subjectId: string, now: number): Subject {
+		const before = this.byId(subjectId);
 		this.db
 			.prepare(
 				"UPDATE knowledge_subjects SET state = 'bound', boundAt = ?, orphanedAt = NULL, evidence = 'sameLocator' WHERE subjectId = ?",
 			)
 			.run(now, subjectId);
+		this.recordKnowledgeWrite(
+			before !== null &&
+				(before.state !== "bound" ||
+					before.boundAt !== now ||
+					before.orphanedAt !== null ||
+					before.evidence !== "sameLocator"),
+		);
 		return this.byId(subjectId) as Subject;
 	}
 
 	/** The address stopped resolving. The address and the rows stay. */
 	orphan(subjectId: string, now: number, evidence: "ambiguous" | "none"): void {
+		const before = this.byId(subjectId);
 		this.db
 			.prepare(
 				"UPDATE knowledge_subjects SET state = 'orphaned', orphanedAt = ?, evidence = ? WHERE subjectId = ?",
 			)
 			.run(now, evidence, subjectId);
+		this.recordKnowledgeWrite(
+			before !== null &&
+				(before.state !== "orphaned" || before.orphanedAt !== now || before.evidence !== evidence),
+		);
 	}
 
 	/** Moves subjects to new addresses; rows never move. An entry whose `from` holds no subject, or
@@ -649,6 +665,7 @@ export class KnowledgeSubjects {
 			answers += (countAnswers.get(subject.subjectId) as { n: number }).n;
 			gaps += (countGaps.get(subject.subjectId) as { n: number }).n;
 		}
+		this.recordKnowledgeWrite(applied.length > 0);
 		return { subjects: applied.length, answers, gaps, applied };
 	}
 
@@ -692,24 +709,27 @@ export class KnowledgeSubjects {
 			answers += (countAnswers.get(entry.subjectId) as { n: number }).n;
 			gaps += (countGaps.get(entry.subjectId) as { n: number }).n;
 		}
+		this.recordKnowledgeWrite(subjects > 0);
 		return { subjects, answers, gaps, kept };
 	}
 
 	/** The subject and its rows, gone. */
 	delete(subjectId: string): void {
-		this.db.prepare("DELETE FROM answers WHERE subjectId = ?").run(subjectId);
-		this.db.prepare("DELETE FROM gaps WHERE subjectId = ?").run(subjectId);
-		this.db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(subjectId);
+		const answers = this.db.prepare("DELETE FROM answers WHERE subjectId = ?").run(subjectId);
+		const gaps = this.db.prepare("DELETE FROM gaps WHERE subjectId = ?").run(subjectId);
+		const subject = this.db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(subjectId);
+		this.recordKnowledgeWrite(answers.changes > 0 || gaps.changes > 0 || subject.changes > 0);
 	}
 
 	/** Orphans whose kept address the module holds again are bound: the address resolves, so nothing was lost. */
 	restoreResolving(module: string, now: number): void {
-		this.db
+		const result = this.db
 			.prepare(
 				`UPDATE knowledge_subjects SET state = 'bound', orphanedAt = NULL, boundAt = ?, evidence = 'sameLocator'
 				 WHERE state = 'orphaned' AND currentSymbolId IN (SELECT symbolId FROM symbols WHERE module = ?)`,
 			)
 			.run(now, module);
+		this.recordKnowledgeWrite(result.changes > 0);
 	}
 
 	/** Bound subjects in a module take exactly the digest the index holds, null when the write carried none,

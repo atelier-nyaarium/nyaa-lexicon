@@ -201,17 +201,31 @@ export const EntryHowSchema = z
 
 export type EntryHow = z.infer<typeof EntryHowSchema>;
 
+const MAIN_ENTRY_ROLE = { how: z.literal("main"), symbolId: z.string().min(1) };
+const GUARDED_MAIN_ENTRY_ROLE = { how: z.literal("guardedMain") };
+const TOP_LEVEL_ENTRY_ROLE = { how: z.literal("topLevel") };
+
+export const EntryRoleSchema = z
+	.discriminatedUnion("how", [
+		z.object(MAIN_ENTRY_ROLE),
+		z.object(GUARDED_MAIN_ENTRY_ROLE),
+		z.object(TOP_LEVEL_ENTRY_ROLE),
+	])
+	.meta({ id: "EntryRole" });
+
+export type EntryRole = z.infer<typeof EntryRoleSchema>;
+
 /**
  * Source-local entry classification; libraries may still run initializers or decorators on load.
  */
 export const FileRoleSchema = z
-	.discriminatedUnion("kind", [
+	.union([
 		z.object({ kind: z.literal("library") }),
-		z.object({
-			kind: z.literal("entry"),
-			how: EntryHowSchema,
-			symbolId: z.string().min(1).optional(),
-		}),
+		z.discriminatedUnion("how", [
+			z.object({ kind: z.literal("entry"), ...MAIN_ENTRY_ROLE }),
+			z.object({ kind: z.literal("entry"), ...GUARDED_MAIN_ENTRY_ROLE }),
+			z.object({ kind: z.literal("entry"), ...TOP_LEVEL_ENTRY_ROLE }),
+		]),
 		/** Entry candidate the provider cannot classify. */
 		z.object({ kind: z.literal("unknown"), reason: UnknownReasonSchema }),
 	])

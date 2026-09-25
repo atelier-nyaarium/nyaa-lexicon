@@ -867,12 +867,14 @@ export class IndexStore {
 	private newestStamp: number;
 	/** In-process recall changes. */
 	private knowledgeTurns = 0;
+	private transactionDepth = 0;
+	private pendingKnowledgeWrite = false;
 
 	private constructor(
 		private readonly db: DatabaseSync,
 		private readonly clock: Clock,
 	) {
-		this.subjects = new KnowledgeSubjects(db);
+		this.subjects = new KnowledgeSubjects(db, (changed) => this.recordKnowledgeWrite(changed));
 		this.newestStamp = this.newestIndexedAt() ?? 0;
 	}
 
@@ -885,14 +887,31 @@ export class IndexStore {
 	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. */
 	private inTransaction<T>(work: () => T): T {
 		this.db.exec("BEGIN");
+		this.transactionDepth++;
 		try {
 			const result = work();
 			this.db.exec("COMMIT");
+			this.transactionDepth--;
+			if (this.transactionDepth === 0 && this.pendingKnowledgeWrite) {
+				this.knowledgeTurns++;
+				this.pendingKnowledgeWrite = false;
+			}
 			return result;
 		} catch (error) {
 			this.db.exec("ROLLBACK");
+			this.transactionDepth--;
+			if (this.transactionDepth === 0) this.pendingKnowledgeWrite = false;
 			throw error;
 		}
+	}
+
+	private recordKnowledgeWrite(changed: boolean): void {
+		if (!changed) return;
+		if (this.transactionDepth > 0) {
+			this.pendingKnowledgeWrite = true;
+			return;
+		}
+		this.knowledgeTurns++;
 	}
 
 	/**
@@ -1092,7 +1111,7 @@ export class IndexStore {
 					generated?.status === "unknown" ? generated.reason : null,
 					role?.kind ?? null,
 					role?.kind === "entry" ? role.how : null,
-					role?.kind === "entry" ? (role.symbolId ?? null) : null,
+					role?.kind === "entry" && role.how === "main" ? role.symbolId : null,
 					role?.kind === "unknown" ? role.reason : null,
 				);
 			// A successful parse clears its failure record.
@@ -1362,29 +1381,30 @@ export class IndexStore {
 	/**
 	 * Entry files in scope, capped by `limit`. Null means no role was reported.
 	 */
-	entryPoints(
-		include: (module: string) => boolean,
-		limit: number,
-	): { entries: Array<{ module: string; how: EntryHow; symbolId?: string }>; more: number } | null {
+	entryPoints(include: (module: string) => boolean, limit: number): { entries: EntryPoint[]; more: number } | null {
 		const rows = this.db
-			.prepare("SELECT module, role, roleHow, roleSymbolId FROM files WHERE role IS NOT NULL ORDER BY module")
-			.iterate() as Iterable<{ module: string; role: string; roleHow: EntryHow; roleSymbolId: string | null }>;
+			.prepare(
+				"SELECT module, role, roleHow, roleSymbolId, roleReason FROM files WHERE role IS NOT NULL ORDER BY module",
+			)
+			.iterate() as Iterable<RoleRow & { module: string }>;
 		let reported = false;
 		let more = 0;
-		const entries: Array<{ module: string; how: EntryHow; symbolId?: string }> = [];
+		const entries: EntryPoint[] = [];
 		for (const row of rows) {
 			if (!include(row.module)) continue;
+			const role = roleFromRow(row);
+			if (role === null) continue;
 			reported = true;
-			if (row.role !== "entry") continue;
+			if (role.kind !== "entry") continue;
 			if (entries.length === limit) {
 				more++;
 				continue;
 			}
-			entries.push({
-				module: row.module,
-				how: row.roleHow,
-				...(row.roleSymbolId === null ? {} : { symbolId: row.roleSymbolId }),
-			});
+			entries.push(
+				role.how === "main"
+					? { module: row.module, how: role.how, symbolId: role.symbolId }
+					: { module: row.module, how: role.how },
+			);
 		}
 		return reported ? { entries, more } : null;
 	}
@@ -1462,7 +1482,6 @@ export class IndexStore {
 			writeMeta(this.db, SWEEP_CURSOR_KEY, JSON.stringify(cursor));
 			return report;
 		});
-		if (report.rebound + report.orphaned + report.deleted > 0) this.knowledgeTurns++;
 		return report;
 	}
 
@@ -1602,6 +1621,10 @@ export class IndexStore {
 
 	/** Writes or replaces one answer under its subject. Validation happens above this: the store records, it does not judge. */
 	saveAnswer(subjectId: string, answer: Answer): void {
+		this.inTransaction(() => this.writeAnswer(subjectId, answer));
+	}
+
+	private writeAnswer(subjectId: string, answer: Answer): void {
 		this.db
 			.prepare(
 				`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model,
@@ -1627,11 +1650,10 @@ export class IndexStore {
 				answer.doubt?.at ?? null,
 				answer.doubt?.by ?? null,
 			);
-		// A saved answer advances generation immediately.
-		this.knowledgeTurns++;
 		// Answering closes the gap. The ask count served its purpose; keeping the row would make
 		// every later gap query filter it out forever.
 		this.db.prepare("DELETE FROM gaps WHERE subjectId = ? AND question = ?").run(subjectId, answer.question);
+		this.recordKnowledgeWrite(true);
 	}
 
 	/** Recall-changing write count. */
@@ -1652,7 +1674,7 @@ export class IndexStore {
 				 WHERE subjectId = (SELECT subjectId FROM subjects_addressed WHERE symbolId = ?) AND question = ?`,
 			)
 			.run(doubt.factId, doubt.reason, doubt.at, doubt.by ?? null, symbolId, question);
-		if (result.changes > 0) this.knowledgeTurns++;
+		this.recordKnowledgeWrite(result.changes > 0);
 		return result.changes > 0;
 	}
 
@@ -2385,6 +2407,8 @@ interface RoleRow {
 	roleSymbolId: string | null;
 	roleReason: string | null;
 }
+
+type EntryPoint = { module: string } & ({ how: "main"; symbolId: string } | { how: Exclude<EntryHow, "main"> });
 
 function roleFromRow(row: RoleRow): FileRole | null {
 	if (row.role === null) return null;

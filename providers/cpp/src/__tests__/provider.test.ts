@@ -94,8 +94,8 @@ describe("C++ provider contract", () => {
 		const facts = parseCppFile(module, text);
 		const main = facts.declarations.find((declaration) => declaration.name === "main");
 
-		expect(main).toBeDefined();
-		expect(facts.role).toEqual({ kind: "entry", how: "main", symbolId: main?.symbolId });
+		if (main === undefined) throw new Error("no main declaration");
+		expect(facts.role).toEqual({ kind: "entry", how: "main", symbolId: main.symbolId });
 
 		const handlers = wire();
 		const request = { module, contentHash: "main", text };

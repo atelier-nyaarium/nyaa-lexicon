@@ -456,6 +456,22 @@ describe("a store written before subjects", () => {
 });
 
 describe("a rebind a step journaled", () => {
+	it("revises knowledge on rebind and undo, but not for demand counting", async () => {
+		plant();
+		await record(CART);
+		const generation = store.knowledgeGeneration();
+		store.recordGap(CART, "why", 8);
+		expect(store.askCount(CART, "why")).toBe(1);
+		expect(store.knowledgeGeneration()).toBe(generation);
+
+		const moved = "lexicon reference b.ref Cart#";
+		const transactions = journalMove([{ from: CART, to: moved }]);
+		expect(store.knowledgeGeneration()).toBe(generation + 1);
+
+		expect(transactions.undo().undone).toBe(true);
+		expect(store.knowledgeGeneration()).toBe(generation + 2);
+	});
+
 	// Recovery puts the files back to their before-images, so the addresses go back with them.
 	it("is reversed when recovery undoes the unfinished step", async () => {
 		plant();

@@ -297,12 +297,18 @@ function checkRole(expected: ExpectedRole, actual: FileRole | undefined, byId: M
 	if (expected.kind !== "entry" || actual.kind !== "entry") return [];
 	const problems: string[] = [];
 	if (actual.how !== expected.how) problems.push(`role: expected how ${expected.how}, got ${actual.how}`);
-	const main = actual.symbolId === undefined ? undefined : byId.get(actual.symbolId);
-	if (actual.symbolId !== undefined && main === undefined) {
+	const main = actual.how === "main" ? byId.get(actual.symbolId) : undefined;
+	if (actual.how === "main" && main === undefined) {
 		problems.push(`role: symbolId ${actual.symbolId} names no declaration in the file`);
 	}
-	if (expected.main !== undefined && main?.name !== expected.main) {
-		problems.push(`role: expected main ${expected.main}, got ${main?.name ?? "none"}`);
+	if (expected.main !== undefined) {
+		const { name, line } = expected.main;
+		const at = main === undefined ? undefined : (main.selectionRange ?? main.range);
+		// A same-named decoy on another line is not the entry.
+		if (main?.name !== name || at === undefined || line < at.start.line || line > at.end.line) {
+			const got = main === undefined || at === undefined ? "none" : `${main.name} on line ${at.start.line}`;
+			problems.push(`role: expected main ${name} on line ${line}, got ${got}`);
+		}
 	}
 	return problems;
 }

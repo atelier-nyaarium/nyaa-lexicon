@@ -77,7 +77,7 @@ export function admitFacts(module: string, facts: ProviderFacts): void {
 		if (kinds.get(region.anchorId) !== "heading")
 			refuse(module, `document anchor ${region.anchorId} is not a heading`);
 	}
-	if (facts.role?.kind === "entry" && facts.role.symbolId !== undefined) {
+	if (facts.role?.kind === "entry" && facts.role.how === "main" && facts.role.symbolId !== undefined) {
 		declaredHere("entry point", facts.role.symbolId);
 	}
 }

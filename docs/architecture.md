@@ -291,6 +291,9 @@ rather than per-file on purpose: a reverse lookup consults every file, so the pr
 harder to get right and barely narrower, and getting it wrong means serving a confidently stale
 answer.
 
+`IndexStore` owns knowledge generation. Answer saves and doubt updates to existing answers advance it.
+Subject transitions advance it when rows change. Demand counts do not advance it.
+
 Two questions live behind two caches, because they turn over at different rates. `IndexCaches` in
 `core/src/indexer.ts` names them. A stored ANSWER is drawn from facts and dies the moment any fact
 moves. Where a SPECIFIER LANDS is not drawn from facts at all: a provider resolves it against the

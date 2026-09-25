@@ -392,6 +392,8 @@ export {
 	DocRegionSchema,
 	type EntryHow,
 	EntryHowSchema,
+	type EntryRole,
+	EntryRoleSchema,
 	type FileFacts,
 	FileFactsSchema,
 	type FileRole,

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, type Declaration, FileRoleSchema } from "@nyaa-lexicon/protocol";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -64,6 +64,19 @@ afterEach(() => {
 //  Tests
 
 describe("a file's role", () => {
+	it("requires a main declaration id and drops ids from other entry roles", () => {
+		expect(FileRoleSchema.safeParse({ kind: "entry", how: "main" }).success).toBe(false);
+		expect(FileRoleSchema.parse({ kind: "entry", how: "main", symbolId: MAIN })).toEqual({
+			kind: "entry",
+			how: "main",
+			symbolId: MAIN,
+		});
+		expect(FileRoleSchema.parse({ kind: "entry", how: "guardedMain", symbolId: MAIN })).toEqual({
+			kind: "entry",
+			how: "guardedMain",
+		});
+	});
+
 	it("reaches describe and the overview's entry points from a provider declaring the tier", async () => {
 		const service = await index(true);
 		const overview = await service.overview();

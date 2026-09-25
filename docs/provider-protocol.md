@@ -152,9 +152,17 @@ false, and conformance fails a provider that declares it and then stays quiet on
 
 `fileRoles` requires a `role` on each code-file parse. `library` means no entry pattern is
 recognized. Initializers and decorators may still run at load. `entry` carries `how`: `main`,
-`guardedMain` or `topLevel`. A `main` role names its declaration with `symbolId`. `unknown` carries a
-reason when a candidate cannot be classified. Without the tier, the wire drops `role`. Conformance
-fails if a tier-declaring provider omits it.
+`guardedMain` or `topLevel`. `main` requires the `symbolId` of a declaration in the same file;
+the other entry kinds omit it. `unknown` carries a reason when a candidate cannot be classified.
+Without the tier, the wire drops `role`. Conformance fails if a tier-declaring provider omits it.
+
+The role is source-local. Assignments for exports, polyfills and module setup are declarative,
+regardless of value. Conditional setup remains declarative when its branches only declare or
+initialize the module. This includes `if`, `try`, blocks and labeled blocks, Python `TYPE_CHECKING`
+and `ImportError` forms, and Bash `if` and brace groups. Bash `source` and `.` commands also count
+as setup. A run-as-program guard nested in setup remains `guardedMain`. Code in its `else` body
+makes the file `topLevel`. Kotlin `@JvmStatic main` in an object or companion object is a `main`
+entry.
 
 `content` says what the claimed files ARE: `code` declares behavior, `data` declares structure (a
 JSON or YAML key is a `property` declaration, and a fixture has thousands), `document` is prose under
@@ -444,8 +452,10 @@ provider passes when every tier it DECLARES passes; an undeclared tier skips rat
 read the skip list as carefully as the failures. Passing tier N IS being done with tier N: the
 suite says when a provider is finished, not the team writing it.
 
-The suite asserts the shape of Unknowns too. Without that, a provider can return reasonless
-Unknowns everywhere and pass.
+The suite checks Unknown shapes, so providers cannot pass with reasonless Unknowns. File-role cases
+name their semantic form and applicable languages. Fixture keys must match those languages. A
+provider declaring `fileRoles` must have a case for its language, and each applicable case needs a
+fixture.
 
 A binding case may name `bindsToModule` as well as `bindsTo`. The runner parses only the subject
 file, so a case holding several files proves a use binds into a file the provider never parsed.
