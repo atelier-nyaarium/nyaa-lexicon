@@ -262,7 +262,7 @@ describe("a standalone step", () => {
 		);
 		expect(stale.ok).toBe(false);
 		expect(transactions.start().started).toBe(true);
-		transactions.revert();
+		transactions.revert(transactions.status().drifted);
 
 		const failed = await run(
 			{

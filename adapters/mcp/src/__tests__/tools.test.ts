@@ -10,6 +10,8 @@ import {
 	refactorPreview,
 	refactorRename,
 	refactorReplace,
+	refactorRevert,
+	refactorStatus,
 	resolveImport,
 	searchDocs,
 	searchSymbols,
@@ -146,7 +148,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		}),
 		symbolSource: async () => ({ found: false, reason: "not stubbed" }),
 		refactorStart: async () => ({ started: true, id: "rt-test" }),
-		refactorStatus: async () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		refactorStatus: async () => ({ open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [] }),
 		prepareRename: async (symbolId, newName) => ({
 			symbolId,
 			oldName: "Cart",
@@ -993,6 +995,48 @@ describe("previewing a refactor without a transaction", () => {
 	it("refuses neither or both of a new name and a target module", async () => {
 		expect((await refactorPreview(backend(), { symbolId: "x" })).isError).toBe(true);
 		expect((await refactorPreview(backend(), { symbolId: "x", newName: "y", toModule: "z" })).isError).toBe(true);
+	});
+});
+
+describe("reverting a refactor", () => {
+	it("forwards the drift list and transaction expectation", async () => {
+		const expected: Parameters<ToolBackend["refactorRevert"]>[0] = {
+			drifted: [{ module: "src/a.ts", contentHash: "a".repeat(32) }],
+			expect: { id: "rt-test", revision: 3 },
+		};
+		let received: Parameters<ToolBackend["refactorRevert"]>[0] | undefined;
+		const result = await refactorRevert(
+			backend({
+				refactorRevert: async (args) => {
+					received = args;
+					return { reverted: false, modules: [], reason: "stale" };
+				},
+			}),
+			expected,
+		);
+
+		expect(received).toEqual(expected);
+		expect(result.isError).toBeUndefined();
+	});
+
+	it("renders the reviewed disk hash in refactor status", async () => {
+		const hash = "b".repeat(32);
+		const result = await refactorStatus(
+			backend({
+				refactorStatus: async () => ({
+					open: true,
+					id: "rt-test",
+					steps: [],
+					tracked: ["src/a.ts"],
+					drifted: [{ module: "src/a.ts", contentHash: hash }],
+					edited: [],
+					issues: [],
+				}),
+			}),
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("src/a.ts");
+		expect(text).toContain(hash);
 	});
 });
 

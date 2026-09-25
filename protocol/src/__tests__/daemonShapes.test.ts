@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { QUESTION_CLASSES, type QuestionClass, questionsFor } from "../daemonShapes.js";
+import { QUESTION_CLASSES, type QuestionClass, questionsFor, TransactionStatusSchema } from "../daemonShapes.js";
 import { SymbolKindSchema } from "../symbols.js";
 
 ////////////////////////////////
@@ -74,5 +74,22 @@ describe("questionsFor", () => {
 			expect(questions.length).toBeGreaterThan(0);
 			expect(isOrdered(questions)).toBe(true);
 		}
+	});
+});
+
+describe("transaction status", () => {
+	it("requires drift and editor provenance lists", () => {
+		const base = { open: false, steps: [], tracked: [], issues: [] };
+		expect(TransactionStatusSchema.safeParse(base).success).toBe(false);
+		expect(
+			TransactionStatusSchema.parse({
+				...base,
+				drifted: [{ module: "src/file.ts", contentHash: "a".repeat(32) }],
+				edited: [],
+			}),
+		).toMatchObject({
+			drifted: [{ module: "src/file.ts", contentHash: "a".repeat(32) }],
+			edited: [],
+		});
 	});
 });

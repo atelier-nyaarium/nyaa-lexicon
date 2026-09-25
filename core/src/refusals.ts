@@ -428,6 +428,28 @@ export function refactorChangedSinceShown(): Refusal {
 	return mint(`the refactor changed since it was shown. Read refactor_status again and decide on what it holds now`);
 }
 
+export function refactorDriftChangedSinceShown(): Refusal {
+	return mint(
+		`the drifted modules or disk hashes changed since refactor_status. Read it again, review the changed files, then retry refactor_revert with its drifted list`,
+	);
+}
+
+export function refactorPathLeavesWorkspace(module: string): Refusal {
+	return mint(
+		`${module} now resolves outside the workspace through a parent link. Remove or repoint that link, review refactor_status, then retry refactor_revert`,
+	);
+}
+
+export function writeNotTracked(module: string): Refusal {
+	return mint(`${module} is not tracked by this transaction. Call refactor_track before reporting an editor write`);
+}
+
+export function notedWriteDoesNotMatch(module: string): Refusal {
+	return mint(
+		`${module} no longer holds the reported editor state. Read it again and report its current hash or absence only after that write completes`,
+	);
+}
+
 export function recoveryPending(operation: "undo" | "revert"): Refusal {
 	return mint(
 		`a ${operation} is still restoring this transaction. Remove any blocking directory, then call refactor_${operation} again`,

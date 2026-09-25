@@ -207,15 +207,32 @@ If it did, the result includes its `contentHash` and exact `text` or `base64` by
 `{ tracked: false }` when no transaction is open, `id` does not match, or the module has no baseline.
 
 An open `refactorStatus` includes a durable `revision`. Changes to its step, image, issue, rebind or
-recovery-intent rows advance it, including a new step, a finalized or undone step, and a baseline
-added by `refactorTrack`.
-`refactorCommit`, `refactorUndo` and `refactorRevert` accept optional
-`expect: { id, revision }` values from the last `refactorStatus` read. They refuse without changes if
-the open transaction's id or revision differs, or no transaction is open. The revision survives a
-daemon restart, so undoing a step and creating another at the same step number cannot reuse an old
+recovery-intent or known-state rows advance it. `refactorNoteWrite` advances it when the known hash,
+absence or `edited` marker changes. The revision survives
+a daemon restart, so undoing a step and creating another at the same step number cannot reuse an old
 expectation.
 
-`refactorTrack` and refactor steps refuse paths that are not regular files. Snapshots never follow
+Each tracked module has one journaled known state: raw-byte hash or absence. It starts at the
+baseline. Completed steps, undo, recovery restores and accepted `refactorNoteWrite` set it from disk.
+That method accepts `{ module, contentHash }` or `{ module, absent: true }` only when disk matches.
+Otherwise it refuses. An accepted note marks the module `edited`.
+
+`refactorStatus` reports sorted `drifted` and `edited` lists. Each `drifted` entry has a `module` and
+the current disk `contentHash`; the hash is null when the file is absent or has no safe regular-file
+hash. It includes tracked modules whose disk state differs from known state. `edited` lists modules
+whose known state came from an editor note. `refactorStatus` hashes tracked files without storing
+blobs under the shared gate.
+`refactorCommit`, `refactorUndo` and `refactorRevert` accept optional `expect: { id, revision }`
+from status. They refuse if no transaction is open or its id or revision differs.
+`refactorRevert` also accepts the `drifted` list. If omitted, `drifted`
+defaults to `[]`. Under the exclusive gate, it recomputes drift and refuses without changes unless
+the module and hash of every entry match. Order does not matter. Before restoring, Revert journals
+each file's current state. Recovery restores it only while disk still has that state or already has
+the baseline; any other state is a conflict and leaves the transaction open. A tracked path whose
+parent link resolves outside the workspace is reported with a null hash, and Revert refuses with
+that path named until the link is removed or repointed.
+
+`refactorTrack`, `refactorNoteWrite` and refactor steps require regular files. Snapshots never follow
 leaf links, and restore replaces a link rather than writing to its target. Undo and revert refuse
 before restoring if a directory blocks a file path, and report the path.
 

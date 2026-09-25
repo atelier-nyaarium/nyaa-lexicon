@@ -181,7 +181,20 @@ const RECOVERY_INTENTS_TABLE = `
 CREATE TABLE IF NOT EXISTS refactor_recovery_intents (
   transactionId TEXT PRIMARY KEY,
   operation TEXT NOT NULL CHECK (operation IN ('undo', 'revert')),
-  stepNo INTEGER
+  stepNo INTEGER,
+  diskStates TEXT
+);
+`;
+
+const REFACTOR_KNOWN_STATES_TABLE = `
+CREATE TABLE IF NOT EXISTS refactor_known_states (
+  transactionId TEXT NOT NULL,
+  module        TEXT NOT NULL,
+  existed       INTEGER NOT NULL CHECK (existed IN (0, 1)),
+  contentHash   TEXT,
+  edited        INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1)),
+  PRIMARY KEY (transactionId, module),
+  CHECK ((existed = 0 AND contentHash IS NULL) OR (existed = 1 AND contentHash IS NOT NULL))
 );
 `;
 
@@ -199,7 +212,7 @@ BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.tr
 CREATE TRIGGER IF NOT EXISTS refactor_images_revision_update AFTER UPDATE ON refactor_images
 WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.scope IS NOT NEW.scope OR OLD.stepNo IS NOT NEW.stepNo
   OR OLD.module IS NOT NEW.module OR OLD.existedBefore IS NOT NEW.existedBefore OR OLD.beforeHash IS NOT NEW.beforeHash
-  OR OLD.existsAfter IS NOT NEW.existsAfter OR OLD.afterHash IS NOT NEW.afterHash
+  OR OLD.existsAfter IS NOT NEW.existsAfter OR OLD.afterHash IS NOT NEW.afterHash OR OLD.beforeEdited IS NOT NEW.beforeEdited
 BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
 CREATE TRIGGER IF NOT EXISTS refactor_images_revision_delete AFTER DELETE ON refactor_images
 BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
@@ -226,8 +239,17 @@ CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_insert AFTER INS
 BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
 CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_update AFTER UPDATE ON refactor_recovery_intents
 WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.operation IS NOT NEW.operation OR OLD.stepNo IS NOT NEW.stepNo
+  OR OLD.diskStates IS NOT NEW.diskStates
 BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
 CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_delete AFTER DELETE ON refactor_recovery_intents
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_known_states_revision_insert AFTER INSERT ON refactor_known_states
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_known_states_revision_update AFTER UPDATE ON refactor_known_states
+WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.module IS NOT NEW.module
+  OR OLD.existed IS NOT NEW.existed OR OLD.contentHash IS NOT NEW.contentHash OR OLD.edited IS NOT NEW.edited
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_known_states_revision_delete AFTER DELETE ON refactor_known_states
 BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
 `;
 
@@ -458,6 +480,7 @@ CREATE TABLE refactor_steps (
 );
 ${REBINDS_TABLE}
 ${RECOVERY_INTENTS_TABLE}
+${REFACTOR_KNOWN_STATES_TABLE}
 -- Content addressed, so snapshotting every layer of a long transaction stores each distinct file
 -- version once rather than once per layer. Bytes, not text: a file that is not valid UTF-8 still
 -- has to come back byte-identical.
@@ -480,6 +503,7 @@ CREATE TABLE refactor_images (
   beforeHash    TEXT,
   existsAfter   INTEGER,
   afterHash     TEXT,
+  beforeEdited  INTEGER NOT NULL DEFAULT 0 CHECK (beforeEdited IN (0, 1)),
   PRIMARY KEY (transactionId, scope, stepNo, module)
 );
 CREATE INDEX refactor_images_txn ON refactor_images(transactionId);
@@ -1080,6 +1104,46 @@ export class IndexStore {
 		}
 		// Every statement is IF NOT EXISTS, so an index, trigger or view added later lands on an existing store here.
 		db.exec(KNOWLEDGE_SCHEMA);
+		db.exec(REFACTOR_KNOWN_STATES_TABLE);
+		if (!columnExists(db, "refactor_recovery_intents", "diskStates")) {
+			db.exec("ALTER TABLE refactor_recovery_intents ADD COLUMN diskStates TEXT");
+		}
+		if (!columnExists(db, "refactor_images", "beforeEdited")) {
+			db.exec(
+				"ALTER TABLE refactor_images ADD COLUMN beforeEdited INTEGER NOT NULL DEFAULT 0 CHECK (beforeEdited IN (0, 1))",
+			);
+		}
+		db.exec(`
+			INSERT OR IGNORE INTO refactor_known_states (transactionId, module, existed, contentHash, edited)
+			SELECT baseline.transactionId, baseline.module,
+				CASE WHEN latest.existsAfter = 1 THEN 1
+					WHEN latest.existsAfter = 0 THEN 0
+					ELSE baseline.existedBefore END,
+				CASE WHEN latest.existsAfter = 1 THEN latest.afterHash
+					WHEN latest.existsAfter = 0 THEN NULL
+					ELSE baseline.beforeHash END,
+				0
+			FROM refactor_images AS baseline
+			LEFT JOIN refactor_images AS latest
+				ON latest.transactionId = baseline.transactionId
+				AND latest.module = baseline.module
+				AND latest.scope = 'step'
+				AND latest.stepNo = (
+					SELECT MAX(image.stepNo)
+					FROM refactor_images AS image
+					JOIN refactor_steps AS step
+						ON step.transactionId = image.transactionId AND step.stepNo = image.stepNo
+					WHERE image.transactionId = baseline.transactionId
+						AND image.module = baseline.module
+						AND image.scope = 'step'
+						AND step.phase IN ('written', 'reindexed', 'finalized')
+						AND (image.existsAfter = 0 OR (image.existsAfter = 1 AND image.afterHash IS NOT NULL))
+				)
+			WHERE baseline.scope = 'baseline'
+		`);
+		db.exec("DROP TRIGGER IF EXISTS refactor_images_revision_update");
+		db.exec("DROP TRIGGER IF EXISTS refactor_recovery_intents_revision_update");
+		db.exec("DROP TRIGGER IF EXISTS refactor_known_states_revision_update");
 		db.exec(REFACTOR_REVISION_TRIGGERS);
 
 		// Marker and table together, or a crash between them reads as a fresh table.

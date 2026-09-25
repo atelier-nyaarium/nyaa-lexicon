@@ -426,9 +426,17 @@ the baseline.
 The journal survives an index rebuild, because facts are derivable from source and an undo record
 is not. A journal table that cannot be read fails the open rather than being treated as absent:
 opening as though the transaction never existed would strand files already written to disk.
-An open transaction carries a durable revision advanced by changes to its step, image, issue, rebind
-and recovery-intent rows. Status gives that revision to callers, and commit, undo and revert compare
-it before acting, so a removed step or a new baseline cannot make an old view current again.
+An open transaction has a durable revision. Step, image, issue, rebind, recovery-intent and
+known-state changes advance it. Changing only `edited` does not. Status returns the revision;
+commit, undo and revert compare it before acting.
+
+Each tracked module has a journaled known state: raw-byte hash or absence. Tracking records the
+baseline. Completed steps, undo, recovery restores and accepted editor notes set it from disk.
+`refactor_note_write` accepts a hash or absence only when disk matches. Status hashes tracked files
+without storing blobs. `drifted` lists modules whose disk state differs from known state; `edited`
+lists modules last reported by an editor. Revert receives the displayed drift set and recomputes it
+under the exclusive gate. It refuses if the set changed. A recorded recovery intent resumes without
+the comparison.
 
 Recovery runs at startup before the daemon answers anything, and judges each file by what it holds
 rather than by the phase alone. A file matching neither its before nor its after image belongs to
@@ -549,9 +557,7 @@ about to stop existing. `modulesBoundTo` finds them and they are reindexed along
 ones, declaring module first so dependents rebind against declarations that already carry the new
 ids.
 
-`refactorRename` in `dispatch.ts` mints one `ReadContext` before `prepareRename` and threads it
-through `renameIdMap` and `modulesBoundTo` too, so the occurrence sites, the id map and the
-stale-binding modules all stamp through the same context. The step's stale check asks the context's
-`seen()` beside the hash check, refusing when the index committed the rows again under an unchanged
-hash: a rewrite chosen from sites a re-parse has since moved would otherwise hit some occurrences
-and miss others.
+`refactorRename` in `dispatch.ts` creates one `ReadContext` for its initial `prepareRename`,
+`renameIdMap` and `modulesBoundTo` reads. Inside the gate, `renameSymbol` replans with a fresh
+context and writes those sites. The stale check compares the initial context's `seen()` and file
+hash. It refuses if indexed rows changed under an unchanged hash.

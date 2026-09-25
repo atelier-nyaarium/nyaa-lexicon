@@ -617,6 +617,12 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		refactorStart: write(() => transactions().start()),
 		refactorStatus: read(() => transactions().status()),
 		refactorTrack: write((params) => transactions().track(params.module)),
+		refactorNoteWrite: write((params) =>
+			transactions().noteWrite(
+				params.module,
+				"absent" in params ? { absent: true } : { contentHash: params.contentHash },
+			),
+		),
 		refactorBeforeImage: read((params) => transactions().beforeImage(params.module, params.id)),
 		// Restoring puts back text the index does not describe, so the facts for those files are
 		// of a version that no longer exists on disk.
@@ -626,12 +632,11 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			return outcome;
 		}),
 		refactorRevert: write(async (params) => {
-			const outcome = transactions().revert(params.expect);
+			const outcome = transactions().revert(params.drifted, params.expect);
 			for (const module of outcome.modules) await service.indexFile(module);
 			return outcome;
 		}),
 		refactorCommit: write((params) => transactions().commit(params)),
-		// A journaled step plans outside the gate and writes inside it, through the gate it is handed.
 		refactorReplace: staged((params, gate) => refactorReplace(service, transactions(), gate.write, params)),
 		refactorReplaceSpan: staged((params, gate) =>
 			refactorReplace(service, transactions(), gate.write, params, {
@@ -640,6 +645,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			}),
 		),
 		refactorInsert: staged((params, gate) => refactorInsert(service, transactions(), gate.write, params)),
+		// Rename replans edit sites under the gate.
 		refactorRename: staged((params, gate) => refactorRename(service, transactions(), gate.write, params)),
 		refactorMove: staged((params, gate) => refactorMove(service, transactions(), gate.write, params)),
 	} satisfies { [M in DaemonMethod]: Handler<M> };

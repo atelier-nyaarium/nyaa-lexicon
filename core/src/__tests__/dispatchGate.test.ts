@@ -40,7 +40,7 @@ function tracingService(log: string[]) {
 
 function stubTransactions(log: string[]): TransactionManager {
 	return {
-		status: () => ({ open: false, steps: [], tracked: [], issues: [] }),
+		status: () => ({ open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [] }),
 		track: async () => {
 			log.push("track:start");
 			await tick();

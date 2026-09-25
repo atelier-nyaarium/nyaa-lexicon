@@ -235,7 +235,7 @@ describe("a reversal that could not put a move back says so", () => {
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		await holdOldAddress();
 
-		const outcome = transactions.revert();
+		const outcome = transactions.revert(transactions.status().drifted);
 
 		expect(outcome.reverted).toBe(true);
 		expect(outcome.unreversed).toMatchObject([{ from: CART, to: MOVED, reason: "fromHeld" }]);
@@ -359,7 +359,7 @@ describe("a reversal commits with its journal, or not at all", () => {
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		block("refactor_transactions", "UPDATE");
 
-		expect(() => transactions.revert()).toThrow();
+		expect(() => transactions.revert(transactions.status().drifted)).toThrow();
 
 		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
 		expect(rows()).toHaveLength(1);
@@ -393,8 +393,9 @@ describe("a recovery intent survives the filesystem gap", () => {
 			throw new Error("injected after restore");
 		});
 
-		expect(() => failing.revert()).toThrow("injected after restore");
-		expect(new TransactionManager(store, dir).revert().reverted).toBe(true);
+		expect(() => failing.revert(failing.status().drifted)).toThrow("injected after restore");
+		const recovered = new TransactionManager(store, dir);
+		expect(recovered.revert(recovered.status().drifted).reverted).toBe(true);
 		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 	});
@@ -525,7 +526,8 @@ describe("a store from before the table", () => {
 	it("lifts nothing from a closed transaction", async () => {
 		await journalAsJson(() => []);
 		reopen();
-		expect(new TransactionManager(store, dir).revert().reverted).toBe(true);
+		const recovered = new TransactionManager(store, dir);
+		expect(recovered.revert(recovered.status().drifted).reverted).toBe(true);
 		store.close();
 		const raw = new DatabaseSync(file);
 		raw.exec("DROP TABLE refactor_rebinds");

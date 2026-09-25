@@ -98,7 +98,7 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 			if (!started.started) return shape.refuse(started.reason ?? noTransactionOpen(), []);
 		}
 		const refuse = (reason: Refusal): Outcome => {
-			if (hold === "own") transactions.revert();
+			if (hold === "own") transactions.revert(transactions.status().drifted);
 			return shape.refuse(reason, []);
 		};
 

@@ -23,6 +23,7 @@ const JOURNAL_TABLES = [
 	"refactor_steps",
 	"refactor_blobs",
 	"refactor_images",
+	"refactor_known_states",
 	"refactor_issues",
 	"refactor_rebinds",
 ];

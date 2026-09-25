@@ -4,6 +4,7 @@
 import type {
 	MovePlan,
 	RefactorCommitResult,
+	RefactorNoteWriteResult,
 	RefactorRevertResult,
 	RefactorStartResult,
 	RefactorTrackResult,
@@ -48,6 +49,7 @@ export type PlannedRenameEdits =
 /** The journal's own answers; every sentence in them is composed by core, never by a provider. */
 export type StartedTransaction = Refusing<RefactorStartResult>;
 export type TrackedFile = Refusing<RefactorTrackResult>;
+export type NotedFileWrite = Refusing<RefactorNoteWriteResult>;
 export type UndoneStep = Refusing<RefactorUndoResult>;
 export type RevertedTransaction = Refusing<RefactorRevertResult>;
 export type CommittedTransaction = Refusing<RefactorCommitResult>;

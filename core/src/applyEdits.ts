@@ -19,18 +19,7 @@ export type ApplyOutcome = WriteOutcome;
 ////////////////////////////////
 //  Functions & Helpers
 
-/**
- * Write every file, or none of them.
- *
- * Both halves are checked before anything is written, because a rename that succeeds in three
- * files and fails in the fourth leaves a codebase that does not compile and no record of how far
- * it got. Files are read through `writableSource` and results checked by `writableText`, so one
- * lossy file refuses the set. Each write is then a temp file plus a rename, so a crash mid-write
- * cannot truncate a source file.
- *
- * This is not atomic ACROSS files: a crash between two renames leaves some applied. Making that
- * impossible needs a journal, and the pre-check removes every failure this code can actually see.
- */
+/** Preflights every file. Writes can stop partway. */
 export function writeAll(
 	workspaceRoot: string,
 	files: Array<Pick<FileEdits, "module" | "edits">>,

@@ -36,6 +36,10 @@ function read(module: string): string | null {
 	}
 }
 
+function diskDrift(module: string, contents: string | null) {
+	return { module, contentHash: contents === null ? null : hashBytes(Buffer.from(contents)) };
+}
+
 /** A step that actually writes, so undo has something of its own to recognize. */
 function step(kind: "replace" | "rename", edits: Record<string, string | null>) {
 	const modules = Object.keys(edits);
@@ -75,7 +79,7 @@ describe("holding one transaction per workspace", () => {
 	});
 
 	it("reports no transaction as an answer rather than an error", () => {
-		expect(manager.status()).toEqual({ open: false, steps: [], tracked: [], issues: [] });
+		expect(manager.status()).toEqual({ open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [] });
 	});
 
 	it("opens again once the first is committed", () => {
@@ -137,7 +141,7 @@ describe("acting on the transaction that was shown", () => {
 			{ id: "rt-another", revision: current.revision },
 		]) {
 			expect(manager.undo(stale).undone).toBe(false);
-			expect(manager.revert(stale).reverted).toBe(false);
+			expect(manager.revert(current.drifted, stale).reverted).toBe(false);
 			expect(manager.commit({ expect: stale }).committed).toBe(false);
 		}
 		expect(read("a.ts")).toBe("edited\n");
@@ -147,7 +151,7 @@ describe("acting on the transaction that was shown", () => {
 		const afterUndo = manager.status();
 		if (afterUndo.revision === undefined) throw new Error("open transaction has no revision");
 		expect(manager.commit({ expect: { id, revision: afterUndo.revision } }).committed).toBe(true);
-		expect(manager.revert({ id, revision: afterUndo.revision }).reverted).toBe(false);
+		expect(manager.revert(afterUndo.drifted, { id, revision: afterUndo.revision }).reverted).toBe(false);
 	});
 
 	it("does not accept a reused step number after undo", () => {
@@ -166,7 +170,7 @@ describe("acting on the transaction that was shown", () => {
 		expect(current.revision).toBeGreaterThan(shown.revision);
 
 		expect(manager.undo({ id, revision: shown.revision }).undone).toBe(false);
-		expect(manager.revert({ id, revision: shown.revision }).reverted).toBe(false);
+		expect(manager.revert(current.drifted, { id, revision: shown.revision }).reverted).toBe(false);
 		expect(manager.commit({ expect: { id, revision: shown.revision } }).committed).toBe(false);
 		expect(read("a.ts")).toBe("replacement two\n");
 		expect(manager.status().revision).toBe(current.revision);
@@ -186,7 +190,7 @@ describe("acting on the transaction that was shown", () => {
 		expect(manager.status().revision).toBe(tracked.revision);
 		const id = tracked.id as string;
 		expect(manager.undo({ id, revision: shown.revision }).undone).toBe(false);
-		expect(manager.revert({ id, revision: shown.revision }).reverted).toBe(false);
+		expect(manager.revert(tracked.drifted, { id, revision: shown.revision }).reverted).toBe(false);
 		expect(manager.commit({ expect: { id, revision: shown.revision } }).committed).toBe(false);
 		expect(manager.status().tracked).toEqual(["a.ts"]);
 
@@ -194,6 +198,196 @@ describe("acting on the transaction that was shown", () => {
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
 		manager = new TransactionManager(store, root);
 		expect(manager.status().revision).toBe(tracked.revision);
+	});
+});
+
+describe("known file states", () => {
+	it("follows editor writes, steps and undo", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		manager.track("a.ts");
+
+		write("a.ts", "editor\n");
+		const blobsBeforeStatus = store.journalRead((db) =>
+			db.prepare("SELECT COUNT(*) AS n FROM refactor_blobs").get(),
+		);
+		expect(manager.status().drifted).toEqual([diskDrift("a.ts", "editor\n")]);
+		expect(store.journalRead((db) => db.prepare("SELECT COUNT(*) AS n FROM refactor_blobs").get())).toEqual(
+			blobsBeforeStatus,
+		);
+		expect(manager.noteWrite("a.ts", { contentHash: hashBytes(Buffer.from("editor\n")) })).toEqual({ noted: true });
+		const noted = manager.status();
+		expect(noted).toMatchObject({ drifted: [], edited: ["a.ts"] });
+		if (noted.revision === undefined) throw new Error("open transaction has no revision");
+		expect(manager.noteWrite("a.ts", { contentHash: hashBytes(Buffer.from("editor\n")) })).toEqual({ noted: true });
+		expect(manager.status().revision).toBe(noted.revision);
+
+		step("replace", { "a.ts": "refactor\n" });
+		expect(manager.status()).toMatchObject({ drifted: [], edited: [] });
+		expect(manager.undo().undone).toBe(true);
+		expect(read("a.ts")).toBe("editor\n");
+		expect(manager.status()).toMatchObject({ drifted: [], edited: ["a.ts"] });
+	});
+
+	it("refuses a note when disk no longer holds the reported state", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		manager.track("a.ts");
+		const before = manager.status();
+		write("a.ts", "actual\n");
+
+		const refused = manager.noteWrite("a.ts", { contentHash: hashBytes(Buffer.from("reported\n")) });
+		expect(refused.noted).toBe(false);
+		expect(before.revision).toBe(manager.status().revision);
+		expect(manager.status()).toMatchObject({ drifted: [diskDrift("a.ts", "actual\n")], edited: [] });
+	});
+
+	it("records a reported deletion only while the module is absent", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		manager.track("a.ts");
+		rmSync(path.join(root, "a.ts"));
+
+		expect(manager.noteWrite("a.ts", { absent: true })).toEqual({ noted: true });
+		expect(manager.status()).toMatchObject({ drifted: [], edited: ["a.ts"] });
+	});
+
+	it("advances the revision when a note only marks the known state as edited", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		manager.track("a.ts");
+		store.journalWrite((db) => {
+			db.exec("DROP TRIGGER refactor_known_states_revision_update");
+			db.exec(`
+				CREATE TRIGGER refactor_known_states_revision_update AFTER UPDATE ON refactor_known_states
+				WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.module IS NOT NEW.module
+					OR OLD.existed IS NOT NEW.existed OR OLD.contentHash IS NOT NEW.contentHash
+				BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+			`);
+		});
+		store.close();
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		manager = new TransactionManager(store, root);
+		const before = manager.status();
+		if (before.revision === undefined) throw new Error("open transaction has no revision");
+
+		expect(manager.noteWrite("a.ts", { contentHash: hashBytes(Buffer.from("original\n")) })).toEqual({
+			noted: true,
+		});
+		const after = manager.status();
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(after).toMatchObject({ drifted: [], edited: ["a.ts"] });
+	});
+
+	it("reverts only the drift set the caller reviewed", () => {
+		write("a.ts", "a original\n");
+		write("b.ts", "b original\n");
+		manager.start();
+		manager.track("a.ts");
+		manager.track("b.ts");
+		write("a.ts", "a outside\n");
+		const shown = manager.status();
+		write("b.ts", "b outside\n");
+
+		const stale = manager.revert(shown.drifted);
+		expect(stale.reverted).toBe(false);
+		expect(read("a.ts")).toBe("a outside\n");
+		expect(read("b.ts")).toBe("b outside\n");
+		expect(
+			store.journalRead((db) => db.prepare("SELECT COUNT(*) AS n FROM refactor_recovery_intents").get()),
+		).toEqual({ n: 0 });
+
+		const current = manager.status();
+		expect(current.drifted).toEqual([diskDrift("a.ts", "a outside\n"), diskDrift("b.ts", "b outside\n")]);
+		expect(manager.revert([...current.drifted].reverse()).reverted).toBe(true);
+		expect(read("a.ts")).toBe("a original\n");
+		expect(read("b.ts")).toBe("b original\n");
+	});
+
+	it("refuses a reviewed drift path when its disk hash changes", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		manager.track("a.ts");
+		write("a.ts", "first outside edit\n");
+		const shown = manager.status();
+		write("a.ts", "second outside edit\n");
+
+		const stale = manager.revert(shown.drifted);
+		expect(stale.reverted).toBe(false);
+		expect(read("a.ts")).toBe("second outside edit\n");
+		expect(manager.status().drifted).toEqual([diskDrift("a.ts", "second outside edit\n")]);
+	});
+
+	it("keeps an interrupted revert pending when disk changed while the daemon was down", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		step("replace", { "a.ts": "refactor output\n" });
+		write("a.ts", "confirmed outside edit\n");
+		const shown = manager.status();
+		const dying = new TransactionManager(store, root, undefined, () => {
+			throw new Error("daemon stopped during revert");
+		});
+		expect(() => dying.revert(shown.drifted)).toThrow("daemon stopped during revert");
+
+		store.close();
+		write("a.ts", "edit made while stopped\n");
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		manager = new TransactionManager(store, root);
+		expect(manager.recover()).toMatchObject({ recovered: true, restored: [], conflicts: ["a.ts"] });
+		expect(read("a.ts")).toBe("edit made while stopped\n");
+		expect(manager.openTransaction()).not.toBeNull();
+		expect(
+			store.journalRead((db) => db.prepare("SELECT COUNT(*) AS n FROM refactor_recovery_intents").get()),
+		).toEqual({ n: 1 });
+
+		write("a.ts", "confirmed outside edit\n");
+		expect(manager.recover()).toMatchObject({ recovered: true, restored: ["a.ts"], conflicts: [] });
+		expect(read("a.ts")).toBe("original\n");
+		expect(manager.status().open).toBe(false);
+	});
+
+	it("reports and refuses a tracked path whose parent link leaves the workspace", () => {
+		const outside = mkdtempSync(path.join(tmpdir(), "lexicon-outside-"));
+		try {
+			write("linked/a.ts", "original\n");
+			manager.start();
+			manager.track("linked/a.ts");
+			rmSync(path.join(root, "linked"), { recursive: true, force: true });
+			writeFileSync(path.join(outside, "a.ts"), "outside\n");
+			symlinkSync(outside, path.join(root, "linked"), "dir");
+
+			const shown = manager.status();
+			expect(shown.drifted).toEqual([{ module: "linked/a.ts", contentHash: null }]);
+			const refused = manager.revert(shown.drifted);
+			expect(refused.reverted).toBe(false);
+			expect(refused.reason).toContain("linked/a.ts");
+			expect(refused.reason).toContain("parent link");
+			expect(readFileSync(path.join(outside, "a.ts"), "utf8")).toBe("outside\n");
+			expect(
+				store.journalRead((db) => db.prepare("SELECT COUNT(*) AS n FROM refactor_recovery_intents").get()),
+			).toEqual({ n: 0 });
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("persists known state and editor provenance across a restart", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		manager.track("a.ts");
+		write("a.ts", "editor\n");
+		manager.noteWrite("a.ts", { contentHash: hashBytes(Buffer.from("editor\n")) });
+		store.close();
+
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		manager = new TransactionManager(store, root);
+		expect(manager.status()).toMatchObject({ drifted: [], edited: ["a.ts"] });
+		write("a.ts", "outside\n");
+		store.close();
+
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		manager = new TransactionManager(store, root);
+		expect(manager.status()).toMatchObject({ drifted: [diskDrift("a.ts", "outside\n")], edited: ["a.ts"] });
 	});
 });
 
@@ -292,7 +486,7 @@ describe("reverting a transaction", () => {
 		step("replace", { "b.ts": "b one\n" });
 		step("replace", { "a.ts": "a two\n" });
 
-		expect(manager.revert().reverted).toBe(true);
+		expect(manager.revert(manager.status().drifted).reverted).toBe(true);
 		expect(read("a.ts")).toBe("a original\n");
 		expect(read("b.ts")).toBe("b original\n");
 	});
@@ -304,7 +498,7 @@ describe("reverting a transaction", () => {
 		manager.track("a.ts");
 		write("a.ts", "hand written\n");
 
-		manager.revert();
+		manager.revert(manager.status().drifted);
 		expect(read("a.ts")).toBe("original\n");
 	});
 
@@ -316,7 +510,7 @@ describe("reverting a transaction", () => {
 		write("a.ts", "later\n");
 		manager.track("a.ts");
 
-		manager.revert();
+		manager.revert(manager.status().drifted);
 		expect(read("a.ts")).toBe("original\n");
 	});
 
@@ -327,7 +521,7 @@ describe("reverting a transaction", () => {
 		step("replace", { "a.ts": "edited\n" });
 		write("untouched.ts", "still mine\n");
 
-		manager.revert();
+		manager.revert(manager.status().drifted);
 		expect(read("untouched.ts")).toBe("still mine\n");
 	});
 });
@@ -387,7 +581,10 @@ describe("restoring where a directory now stands", () => {
 
 	it("refuses undo and revert before restoring anything, naming the directory", () => {
 		expect(manager.undo()).toMatchObject({ undone: false, reason: expect.stringContaining("b.ts") });
-		expect(manager.revert()).toMatchObject({ reverted: false, reason: expect.stringContaining("b.ts") });
+		expect(manager.revert(manager.status().drifted)).toMatchObject({
+			reverted: false,
+			reason: expect.stringContaining("b.ts"),
+		});
 
 		expect(read("a.ts")).toBe("edited\n");
 		expect(read("b.ts/inner.ts")).toBe("mine\n");
@@ -400,7 +597,7 @@ describe("restoring where a directory now stands", () => {
 	it("reverts once the directory is deleted", () => {
 		rmSync(path.join(root, "b.ts"), { recursive: true });
 
-		expect(manager.revert().reverted).toBe(true);
+		expect(manager.revert(manager.status().drifted).reverted).toBe(true);
 		expect(read("a.ts")).toBe("original\n");
 		expect(read("b.ts")).toBeNull();
 	});
@@ -439,7 +636,7 @@ describe("never reading or writing through a leaf link", () => {
 		manager.track("a.ts");
 		link("a.ts");
 
-		expect(manager.revert().reverted).toBe(true);
+		expect(manager.revert(manager.status().drifted).reverted).toBe(true);
 		expect(lstatSync(path.join(root, "a.ts")).isFile()).toBe(true);
 		expect(read("a.ts")).toBe("original\n");
 		expect(read("elsewhere.txt")).toBe("edited\n");
@@ -462,6 +659,7 @@ describe("recovering after a crash", () => {
 		const outcome = manager.recover();
 		expect(outcome.restored).toEqual(["a.ts"]);
 		expect(read("a.ts")).toBe("original\n");
+		expect(manager.status().drifted).toEqual([]);
 	});
 
 	it("leaves a step alone when its files were never written", () => {
@@ -529,7 +727,9 @@ describe("recovering after a crash", () => {
 				write("b.ts/inner.ts", "mine\n");
 				throw new Error("died after restoring");
 			});
-			expect(() => dying[operation]()).toThrow("died after restoring");
+			expect(() => (operation === "undo" ? dying.undo() : dying.revert(dying.status().drifted))).toThrow(
+				"died after restoring",
+			);
 
 			const recovered = new TransactionManager(store, root);
 			const outcome = recovered.recover();
@@ -549,11 +749,11 @@ describe("recovering after a crash", () => {
 			expect(recovered.openTransaction()).not.toBeNull();
 
 			if (operation === "undo") expect(recovered.undo().undone).toBe(false);
-			else expect(recovered.revert().reverted).toBe(false);
+			else expect(recovered.revert(recovered.status().drifted).reverted).toBe(false);
 
 			rmSync(path.join(root, "b.ts"), { recursive: true, force: true });
 			if (operation === "undo") expect(recovered.undo().undone).toBe(true);
-			else expect(recovered.revert().reverted).toBe(true);
+			else expect(recovered.revert(recovered.status().drifted).reverted).toBe(true);
 
 			expect(read("b.ts")).toBeNull();
 			if (operation === "undo") {

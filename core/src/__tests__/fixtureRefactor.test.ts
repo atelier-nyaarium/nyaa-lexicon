@@ -188,7 +188,7 @@ describe("a move through the daemon's handlers", () => {
 	it("is put back by revert along with every tracked file", async () => {
 		await dispatch("refactorMove", { symbolId: CART, toModule: "b.ref" });
 
-		const reverted = await dispatch("refactorRevert", {});
+		const reverted = await dispatch("refactorRevert", { drifted: transactions.status().drifted });
 
 		expect(reverted).toMatchObject({ reverted: true });
 		expect(read("a.ref")).toBe("export class Cart {}\n");
@@ -332,7 +332,9 @@ describe("acting on the refactor that was shown", () => {
 		await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
 
 		expect(await dispatch("refactorUndo", { expect: { id, revision } })).toMatchObject({ undone: false });
-		expect(await dispatch("refactorRevert", { expect: { id, revision } })).toMatchObject({ reverted: false });
+		expect(await dispatch("refactorRevert", { expect: { id, revision }, drifted: shown.drifted })).toMatchObject({
+			reverted: false,
+		});
 		expect(await dispatch("refactorCommit", { expect: { id: "rt-another", revision } })).toMatchObject({
 			committed: false,
 		});
@@ -385,7 +387,7 @@ describe("a rename through the daemon's handlers", () => {
 	it("is put back by revert", async () => {
 		await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
 
-		const reverted = await dispatch("refactorRevert", {});
+		const reverted = await dispatch("refactorRevert", { drifted: transactions.status().drifted });
 
 		expect(reverted).toMatchObject({ reverted: true, modules: ["a.ref"] });
 		expect(read("a.ref")).toBe("export class Cart {}\n");

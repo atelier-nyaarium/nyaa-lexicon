@@ -583,7 +583,7 @@ describe("a rebind a step journaled", () => {
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = journalMove([{ from: CART, to: moved }]);
 
-		expect(transactions.revert().reverted).toBe(true);
+		expect(transactions.revert(transactions.status().drifted).reverted).toBe(true);
 
 		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(moved)).toBeNull();
@@ -619,7 +619,7 @@ describe("a rebind a step journaled", () => {
 		movedStep(transactions, b, c);
 		expect(store.answer(c, "describe")?.prose).toBe("A shopping cart.");
 
-		expect(transactions.revert().reverted).toBe(true);
+		expect(transactions.revert(transactions.status().drifted).reverted).toBe(true);
 
 		expect(store.subjects.forAddress(CART)).toMatchObject({ evidence: "sameLocator", fromSymbolId: null });
 		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");

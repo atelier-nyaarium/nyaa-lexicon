@@ -64,6 +64,7 @@ import {
 	RefactorPreviewInput,
 	RefactorRenameInput,
 	RefactorReplaceInput,
+	RefactorRevertInput,
 	RefactorTrackInput,
 	ResolveImportInput,
 	reaffirmAnswer,
@@ -294,8 +295,9 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		title: `Refactor Revert`,
 		description: REFACTOR_REVERT_DESCRIPTION,
 		scope: "mutation",
-		input: {},
-		handler: (backend: ToolBackend) => refactorRevert(backend),
+		input: RefactorRevertInput,
+		handler: (backend: ToolBackend, args: Parameters<ToolBackend["refactorRevert"]>[0]) =>
+			refactorRevert(backend, args),
 	},
 	{
 		name: "find_literals",

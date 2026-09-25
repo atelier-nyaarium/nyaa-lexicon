@@ -106,7 +106,10 @@ export interface ToolBackend {
 	planMove: (symbolId: string, toModule: string) => Promise<MovePlan>;
 	refactorTrack: (module: string) => Promise<RefactorTrackResult>;
 	refactorUndo: () => Promise<RefactorUndoResult>;
-	refactorRevert: () => Promise<RefactorRevertResult>;
+	refactorRevert: (args: {
+		drifted: TransactionStatus["drifted"];
+		expect?: { id: string; revision: number };
+	}) => Promise<RefactorRevertResult>;
 	refactorCommit: (force?: boolean) => Promise<RefactorCommitResult>;
 	refactorReplace: (args: {
 		symbolId?: string | undefined;
@@ -254,6 +257,24 @@ export const RefactorTrackInput = {
 
 export const RefactorCommitInput = {
 	force: z.boolean().optional().describe(`Commit despite outstanding issues.`),
+};
+
+export const RefactorRevertInput = {
+	drifted: z
+		.array(
+			z.object({
+				module: z.string().min(1),
+				contentHash: z
+					.string()
+					.regex(/^[0-9a-f]{32}$/)
+					.nullable(),
+			}),
+		)
+		.describe(`Reviewed \`drifted\` list from \`refactor_status\`.`),
+	expect: z
+		.object({ id: z.string().min(1), revision: z.number().int().nonnegative() })
+		.optional()
+		.describe(`Transaction id and revision from status.`),
 };
 
 export const RefactorReplaceInput = {
@@ -520,8 +541,9 @@ What a rename or a move would touch. Read-only, no transaction.
 export const REFACTOR_STATUS_DESCRIPTION = `
 # \`refactor_status\`
 
-Show the open transaction: its steps, tracked files, and outstanding issues.
+Show steps, tracked files, disk drift, editor writes and issues.
 
+Pass \`drifted\`, \`id\` and \`revision\` from this result to \`refactor_revert\`.
 Answers "none open" as a result, not an error. Also how you find what another session already did.
 `.trim();
 
@@ -581,7 +603,9 @@ export const REFACTOR_REVERT_DESCRIPTION = `
 
 Return every tracked file to how the transaction found it, and close it.
 
-Discards manual edits made since, including ones made after a step.
+Pass \`drifted\` and \`expect\` from the reviewed \`refactor_status\`.
+Each drift entry includes its module and current disk content hash, or null when no regular file hash is available.
+Revert rechecks both under the write gate. If refused, review a fresh status.
 `.trim();
 
 export const FIND_LITERALS_DESCRIPTION = `
@@ -1046,9 +1070,12 @@ export async function refactorUndo(backend: ToolBackend): Promise<ToolResult> {
 	});
 }
 
-export async function refactorRevert(backend: ToolBackend): Promise<ToolResult> {
+export async function refactorRevert(
+	backend: ToolBackend,
+	args: { drifted: TransactionStatus["drifted"]; expect?: { id: string; revision: number } },
+): Promise<ToolResult> {
 	return rendered(async () => {
-		const outcome = await backend.refactorRevert();
+		const outcome = await backend.refactorRevert(args);
 		if (!outcome.reverted) return `Nothing was reverted. ${outcome.reason ?? ""}`.trim();
 		const reverted =
 			outcome.modules.length === 0

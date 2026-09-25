@@ -20,7 +20,7 @@ const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 const EFFECTS = new Set(["read", "write", "staged"]);
 
 /** Service calls that touch disk or replace stored facts. Add a method here when you add one. */
-const WRITING_CALLS = ["service.indexFile", "transactions().start", "transactions().track"];
+const WRITING_CALLS = ["service.indexFile", "transactions().start", "transactions().track", "transactions().noteWrite"];
 
 /** Calls that put files back, each of which leaves the index describing the version it replaced. */
 const RESTORING_CALLS = ["transactions().undo", "transactions().revert"];

@@ -36,14 +36,21 @@ export { MAX_SOURCE_BYTES };
  * point outside it and a rename through it would create the file there.
  */
 export function insideWorkspace(root: string, module: string): string {
+	if (workspaceFile(root, module) === null) {
+		throw new Error(`module path must stay inside the workspace, got: ${module}`);
+	}
+	const file = containedWorkspaceFile(root, module);
+	if (file !== null) return file;
+	throw new Error(`module path must not leave the workspace through a link, got: ${module}`);
+}
+
+/** Returns null when an existing parent resolves outside the workspace. */
+export function containedWorkspaceFile(root: string, module: string): string | null {
 	const file = workspaceFile(root, module);
-	if (file === null) throw new Error(`module path must stay inside the workspace, got: ${module}`);
+	if (file === null) return null;
 	const realRoot = realpathSync(root);
 	const parent = realpathSync(nearestExisting(path.dirname(file)));
-	if (parent !== realRoot && !parent.startsWith(realRoot + path.sep)) {
-		throw new Error(`module path must not leave the workspace through a link, got: ${module}`);
-	}
-	return file;
+	return parent === realRoot || parent.startsWith(realRoot + path.sep) ? file : null;
 }
 
 /** The closest ancestor on disk, so a file in a directory not yet created is judged by its future parent. */

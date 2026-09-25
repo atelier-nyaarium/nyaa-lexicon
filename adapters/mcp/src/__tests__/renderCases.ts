@@ -377,13 +377,15 @@ export const CASES: Record<string, unknown[][]> = {
 	],
 	renderRefactorStatus: [
 		[{ open: false }],
-		[{ open: true, id: "tx2", steps: [], tracked: [], issues: [] }],
+		[{ open: true, id: "tx2", steps: [], tracked: [], drifted: [], edited: [], issues: [] }],
 		[
 			{
 				open: true,
 				id: "tx1",
 				steps: [{ stepNo: 1, kind: "rename", phase: "applied", modules: ["src/a.ts"] }],
-				tracked: ["src/a.ts"],
+				tracked: ["src/a.ts", "src/b.ts"],
+				drifted: [{ module: "src/a.ts", contentHash: "a".repeat(32) }],
+				edited: ["src/b.ts"],
 				issues: [ISSUE],
 			},
 		],

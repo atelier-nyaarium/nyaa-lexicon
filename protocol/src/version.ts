@@ -61,7 +61,10 @@ export type Compatibility =
 // and `overview.entryPoints`. `indexStatus.generation` also moves on knowledge writes.
 // 3.14.0: a `main` file role requires the symbol id of its declaration.
 // 3.15.0 defines previews, before-images and transaction expectations.
-export const PROTOCOL_VERSION = "3.15.0" as const;
+// 3.16.0: `refactorStatus` reports drifted module hashes, `refactorNoteWrite` records an editor
+// write, and `refactorRevert` confirms those hashes before restoring. Recovery retains each
+// pre-revert disk state, and known-state edits advance the transaction revision.
+export const PROTOCOL_VERSION = "3.16.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

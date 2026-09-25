@@ -440,6 +440,13 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	refactorTrack: async () => {
 		expect((await ask("refactorTrack", { module: "cart.ref" })).tracked).toBe(true);
 	},
+	refactorNoteWrite: async () => {
+		const image = await ask("refactorBeforeImage", { module: "cart.ref" });
+		if (!image.tracked || !image.existed) throw new Error("before image has no file hash");
+		expect(await ask("refactorNoteWrite", { module: "cart.ref", contentHash: image.contentHash })).toEqual({
+			noted: true,
+		});
+	},
 	refactorBeforeImage: async () => {
 		expect(await ask("refactorBeforeImage", { module: "cart.ref" })).toMatchObject({
 			tracked: true,
@@ -479,7 +486,15 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect((await ask("refactorMove", { symbolId: cart, toModule: "item.ref" })).moved).toBe(false);
 	},
 	refactorRevert: async () => {
-		expect(await ask("refactorRevert", {})).toMatchObject({ reverted: true, modules: ["cart.ref", "item.ref"] });
+		const status = await ask("refactorStatus", {});
+		expect(
+			await ask("refactorRevert", {
+				drifted: status.drifted,
+				...(status.id === undefined || status.revision === undefined
+					? {}
+					: { expect: { id: status.id, revision: status.revision } }),
+			}),
+		).toMatchObject({ reverted: true, modules: ["cart.ref", "item.ref"] });
 	},
 	refactorCommit: async () => {
 		// Reverting closed the transaction, so the plan's order ends on the refusal shape.
@@ -505,6 +520,7 @@ const REFACTOR = [
 	"refactorStart",
 	"refactorStatus",
 	"refactorTrack",
+	"refactorNoteWrite",
 	"refactorBeforeImage",
 	"refactorReplace",
 	"refactorReplaceSpan",

@@ -1510,6 +1510,23 @@ No steps yet.`);
 
 ${status.tracked.map((module) => `- ${code(module)}`).join("\n")}`);
 	}
+	if (status.drifted.length > 0) {
+		lines.push(`
+## Changed on disk
+
+${status.drifted
+	.map(
+		({ module, contentHash }) =>
+			`- ${code(module)} (content hash: ${contentHash === null ? "unavailable" : code(contentHash)})`,
+	)
+	.join("\n")}`);
+	}
+	if (status.edited.length > 0) {
+		lines.push(`
+## Editor writes recorded
+
+${status.edited.map((module) => `- ${code(module)}`).join("\n")}`);
+	}
 
 	const issues = renderIssues(status.issues);
 	if (issues.length > 0) lines.push("", ...issues);

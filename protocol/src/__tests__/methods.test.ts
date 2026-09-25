@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { DAEMON_METHODS } from "../daemonMethods";
 import { isProviderMethod, METHOD_SCHEMAS, PROVIDER_METHODS } from "../methods";
 import { BindingSchema, TypeInfoSchema } from "../values";
 import { checkCompatibility, isCompatibleProtocol, PROTOCOL_VERSION, parseVersion } from "../version";
@@ -7,6 +8,29 @@ import { checkCompatibility, isCompatibleProtocol, PROTOCOL_VERSION, parseVersio
 //  Tests
 
 describe("method table", () => {
+	it("defaults missing revert drift for an older client", () => {
+		expect(DAEMON_METHODS.refactorRevert.request.parse({})).toEqual({ drifted: [] });
+		expect(
+			DAEMON_METHODS.refactorRevert.request.parse({
+				drifted: [{ module: "src/file.ts", contentHash: null }],
+			}),
+		).toEqual({ drifted: [{ module: "src/file.ts", contentHash: null }] });
+		expect(DAEMON_METHODS.refactorRevert.request.safeParse({ drifted: ["src/file.ts"] }).success).toBe(false);
+	});
+
+	it("validates editor write notes", () => {
+		expect(
+			DAEMON_METHODS.refactorNoteWrite.request.parse({ module: "src/file.ts", contentHash: "a".repeat(32) }),
+		).toEqual({ module: "src/file.ts", contentHash: "a".repeat(32) });
+		expect(DAEMON_METHODS.refactorNoteWrite.request.parse({ module: "src/file.ts", absent: true })).toEqual({
+			module: "src/file.ts",
+			absent: true,
+		});
+		expect(
+			DAEMON_METHODS.refactorNoteWrite.request.safeParse({ module: "src/file.ts", contentHash: "bad" }).success,
+		).toBe(false);
+	});
+
 	it("covers every declared method, so a dispatcher cannot silently miss one", () => {
 		for (const name of PROVIDER_METHODS) {
 			expect(METHOD_SCHEMAS[name], name).toBeDefined();

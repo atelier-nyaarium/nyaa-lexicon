@@ -14,6 +14,7 @@ import {
 	CycleSchema,
 	DescribeResultSchema,
 	DocsResultSchema,
+	DriftedModuleSchema,
 	FactSetSchema,
 	FileHistorySchema,
 	FileNotesSchema,
@@ -40,6 +41,7 @@ import {
 	RecordOutcomeSchema,
 	RefactorBeforeImageSchema,
 	RefactorCommitResultSchema,
+	RefactorNoteWriteResultSchema,
 	RefactorRevertResultSchema,
 	RefactorStartResultSchema,
 	RefactorTrackResultSchema,
@@ -234,6 +236,15 @@ const Commit = z
 	.object({ force: z.boolean().optional(), expect: Expectation.optional() })
 	.meta({ id: "CommitRequest" });
 const Unwind = z.object({ expect: Expectation.optional() }).meta({ id: "UnwindRequest" });
+const Revert = z
+	.object({ expect: Expectation.optional(), drifted: z.array(DriftedModuleSchema).default([]) })
+	.meta({ id: "RevertRequest" });
+const NoteWrite = z
+	.union([
+		z.object({ module: ModulePath, contentHash: z.string().regex(/^[0-9a-f]{32}$/) }),
+		z.object({ module: ModulePath, absent: z.literal(true) }),
+	])
+	.meta({ id: "RefactorNoteWriteRequest" });
 const BeforeImage = z
 	.object({ module: ModulePath, id: z.string().min(1).optional() })
 	.meta({ id: "BeforeImageRequest" });
@@ -654,6 +665,14 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "refactor",
 	},
+	/** Records verified editor writes. */
+	refactorNoteWrite: {
+		request: NoteWrite,
+		response: RefactorNoteWriteResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
 	refactorBeforeImage: {
 		request: BeforeImage,
 		response: RefactorBeforeImageSchema,
@@ -671,7 +690,7 @@ export const DAEMON_METHODS = {
 	},
 	/** Restore tracked files and close. */
 	refactorRevert: {
-		request: Unwind,
+		request: Revert,
 		response: RefactorRevertResultSchema,
 		lifecycle: "query",
 		mutates: true,

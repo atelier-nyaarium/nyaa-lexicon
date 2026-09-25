@@ -1395,6 +1395,18 @@ export const TransactionStepSchema = z
 
 export type TransactionStep = z.infer<typeof TransactionStepSchema>;
 
+export const DriftedModuleSchema = z
+	.object({
+		module: z.string(),
+		contentHash: z
+			.string()
+			.regex(/^[0-9a-f]{32}$/)
+			.nullable(),
+	})
+	.meta({ id: "DriftedModule" });
+
+export type DriftedModule = z.infer<typeof DriftedModuleSchema>;
+
 export const TransactionStatusSchema = z
 	.object({
 		open: z.boolean(),
@@ -1403,6 +1415,8 @@ export const TransactionStatusSchema = z
 		revision: z.number().int().nonnegative().optional(),
 		steps: z.array(TransactionStepSchema),
 		tracked: z.array(z.string()),
+		drifted: z.array(DriftedModuleSchema),
+		edited: z.array(z.string()),
 		issues: z.array(RefactorIssueSchema),
 	})
 	.meta({ id: "TransactionStatus" });
@@ -1420,6 +1434,12 @@ export const RefactorTrackResultSchema = z
 	.meta({ id: "RefactorTrackResult" });
 
 export type RefactorTrackResult = z.infer<typeof RefactorTrackResultSchema>;
+
+export const RefactorNoteWriteResultSchema = z
+	.object({ noted: z.boolean(), reason: z.string().optional() })
+	.meta({ id: "RefactorNoteWriteResult" });
+
+export type RefactorNoteWriteResult = z.infer<typeof RefactorNoteWriteResultSchema>;
 
 /** A subject move a reversal left standing, and why it could not be put back. */
 export const UnreversedRebindSchema = z
