@@ -129,6 +129,36 @@ describe("patience with a starting daemon", () => {
 	});
 });
 
+describe("answer budgets", () => {
+	it("fails only the late request: the socket stays open, the late reply is dropped, later requests answer", async () => {
+		const fake = await daemonAnswering((method) =>
+			method === "cacheStats"
+				? { ok: true, result: "now" }
+				: new Promise((resolve) => setTimeout(() => resolve({ ok: true, result: "late" }), 150)),
+		);
+		const client = await connectFrames(fake.port, TOKEN, { budgetMs: () => 50 });
+
+		const [read, write] = await Promise.allSettled([
+			client.request("overview", {}),
+			client.request("refactorCommit", {}),
+		]);
+		const failure = (outcome: PromiseSettledResult<unknown>) =>
+			outcome.status === "rejected"
+				? { cause: outcome.reason.cause, unknown: outcome.reason.message.includes("outcome is unknown") }
+				: "answered";
+		expect([failure(read), failure(write)]).toEqual([
+			{ cause: "requestTimeout", unknown: false },
+			{ cause: "requestTimeout", unknown: true },
+		]);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		expect(client.closed).toBe(false);
+		await expect(client.request("cacheStats", {})).resolves.toBe("now");
+		expect(fake.asked).toEqual(["overview", "refactorCommit", "cacheStats"]);
+		client.close();
+	});
+});
+
 describe("daemon refusal causes", () => {
 	it("recognizes the dispatcher's module refusal prefix", async () => {
 		const fake = await daemonAnswering(() => ({

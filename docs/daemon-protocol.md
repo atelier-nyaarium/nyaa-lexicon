@@ -151,14 +151,16 @@ completion, so the wait is bounded by one file, not by the whole remainder of th
 ## The method table
 
 `DAEMON_METHODS`, in the protocol package, is the one owner of what the daemon answers:
-one entry per method, each a method name with a `request` schema and a `response` schema, in
-dispatch order, with a doc line on every entry. Every entry declares its `lifecycle` (above) and
-`mutates`. The knowledge writes, the refactor steps and `indexFile` mutate, read through
-`methodMutates`: a read-only face never asks them, and a lost connection never repeats them. A test
-holds `mutates` to the handler's own effect. `shutdown` is no entry here: it is the one control in
-`DAEMON_CONTROLS`, so it never reaches a facade. `hubs` is its own entry aliasing `mostReferenced`,
-so the accepted method set is exactly what older clients ask by. Four types derive from it, and
-nothing else is hand-written:
+one entry per method in dispatch order. Each entry has `request` and `response` schemas, a `lifecycle`,
+`mutates`, and a `budget`. The budget selects a named `BUDGETS` wait: `read`, `status`, `history` or
+`refactor`. Each wait exceeds the daemon's bounds. The client fails only that request with
+`requestTimeout` if no answer arrives in time.
+
+`methodMutates` exposes which methods write knowledge, change refactor state or run `indexFile`.
+A read-only client does not call them. A lost connection does not repeat them. A test checks each
+`mutates` value against its handler's effect. `shutdown` is a control in `DAEMON_CONTROLS`, outside
+the method table, so it is not exposed by a facade. `hubs` is a separate alias for `mostReferenced`.
+Four types derive from the table:
 
 ```ts
 type DaemonMethod = keyof typeof DAEMON_METHODS;
@@ -286,11 +288,11 @@ cursor means: the target of a bound reference under `position`, else the innermo
 whose range holds it. An unbound or ambiguous reference falls through to the declaration; nothing
 is guessed by name. It reads under the gate, and the daemon decides the source (protocol 3.12.0):
 
-- A module the store lacks is final: `unowned` when no provider claims it (protocol 3.11.0),
-  `notIndexed` otherwise. Handed text is not parsed.
+- A module the store lacks is final. It is `unowned` when no provider uniquely owns it (unclaimed
+  or contested, protocol 3.11.0); otherwise it is `notIndexed`. Handed text is not parsed.
 - Without `contentHash` or `text`, or when they name the stored bytes, the stored facts answer.
-- Other bytes answer from a kept candidate, or from `text` parsed like `parseFacts`. Handed `text`
-  names its own bytes.
+- Other bytes require a uniquely owning provider. The answer uses a kept candidate or `text` parsed
+  like `parseFacts`. Otherwise the result is `unowned`. Handed `text` names its own bytes.
 - `contentHash` alone, with no kept candidate, answers `{ needsText: true }`; ask again with `text`.
 
 A found answer is `{ found: true, symbolId, via, contentHash }`, `via` being `reference` or

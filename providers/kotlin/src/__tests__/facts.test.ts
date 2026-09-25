@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { coordinatesOf, type Declaration } from "@nyaa-lexicon/protocol";
-import { KotlinProvider } from "../main.js";
 import { parseKotlin } from "../parse.js";
+import { started } from "./harness.js";
 
 /** Kotlin's template opener, spelled apart from a TypeScript placeholder. */
 const D = "$";
@@ -246,7 +246,7 @@ describe("literals", () => {
 		);
 		const facts = parseKotlin("Interpolate.kt", text);
 
-		expect(facts.literals.map((item) => item.value)).toEqual(["world", "hello ${name}!", "hi $name"]);
+		expect(facts.literals.map((item) => item.value)).toEqual(["world", `hello \${name}!`, "hi $name"]);
 		for (const literal of facts.literals) expect(coordinatesOf(text).sliceRange(literal.range)).toBeDefined();
 	});
 });
@@ -380,8 +380,7 @@ describe("syntax diagnostics", () => {
 
 describe("types", () => {
 	test("declared annotations are known, direct literals inferred, anything else unknown", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(process.cwd());
+		const provider = started(process.cwd());
 		const text = [
 			"const val count = 1",
 			'val label = "ready"',
@@ -425,8 +424,7 @@ describe("types", () => {
 	});
 
 	test("an id that names nothing, an unindexed module and a refused file are closed reasons", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(process.cwd());
+		const provider = started(process.cwd());
 		provider.parseFile({ module: "bad.kt", contentHash: "bad", text: "val x: Int = (\n" });
 		const start = { line: 0, character: 4 };
 

@@ -1,11 +1,9 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-	AdmissionLedger,
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
-	type Diagnostic,
 	defined,
 	discoverByWalk,
 	handlersFor,
@@ -13,6 +11,7 @@ import {
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	moduleStore,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -165,11 +164,6 @@ export const WORDS = {
 
 export const REFERENCE_ROLES = ["call", "read", "write", "import", "typeUse"] as const;
 
-interface StoredFacts {
-	contentHash: string;
-	parsed: ParsedCFile;
-}
-
 function containsStart(range: Range, position: Range["start"]): boolean {
 	return rangeContains(range, position);
 }
@@ -223,10 +217,6 @@ function ordinaryAmbiguity(candidates: CDeclaration[]): Binding {
 	} as Binding;
 }
 
-function importKey(module: string, specifier: string): string {
-	return `${module}\u0000${specifier}`;
-}
-
 function headerName(specifier: string): string {
 	if (
 		(specifier.startsWith("<") && specifier.endsWith(">")) ||
@@ -263,31 +253,26 @@ function pathForResolution(root: string, candidates: string[]): string | undefin
 	return candidates.find((candidate) => hasFile(root, candidate));
 }
 
-function diagnosticForRead(module: string, error: unknown): Diagnostic {
-	const detail = error instanceof Error ? error.message : String(error);
-	return { severity: "error", message: `unable to read ${module}: ${detail}`, path: module };
+function discover(root: string): ProjectModel {
+	if (!existsSync(root)) return projectDiagnostic(root, `workspace root does not exist: ${root}`);
+	try {
+		if (!statSync(root).isDirectory()) return projectDiagnostic(root, `workspace root is not a directory: ${root}`);
+		const model = discoverByWalk(root, { extensions: EXTENSIONS, excludedDirectories: EXCLUDED_DIRECTORIES });
+		const configFiles = PROJECT_CONFIGS.filter((name) => existsSync(path.join(root, name)));
+		return model.diagnostics.length === 0 ? { ...model, configFiles } : model;
+	} catch (error) {
+		return projectDiagnostic(
+			root,
+			`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 export class CProvider {
-	private workspaceRoot = process.cwd();
-	private readonly facts = new Map<string, StoredFacts>();
-	private readonly includeKinds = new Map<string, "quoted" | "angle">();
-	/** What the index took, so an included header's facts are what it holds and not what was emitted. */
-	readonly admission = new AdmissionLedger<StoredFacts>({
-		snapshot: (module) => this.facts.get(module),
-		restore: (module, held) => {
-			this.dropModule(module);
-			if (held === undefined) return;
-			this.facts.set(module, held);
-			this.recordIncludes(module, held.parsed.imports);
-		},
-	});
+	/** Include lookup uses held facts. */
+	readonly store = moduleStore<ParsedCFile>({ read: (module, text) => parseC(module, text) });
 
-	initialize(workspaceRoot: string) {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.facts.clear();
-		this.includeKinds.clear();
-		this.admission.reset();
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "c-provider",
 			language: LANGUAGE,
@@ -299,123 +284,47 @@ export class CProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.facts.clear();
-		this.includeKinds.clear();
-		if (!existsSync(this.workspaceRoot))
-			return projectDiagnostic(this.workspaceRoot, `workspace root does not exist: ${this.workspaceRoot}`);
-		try {
-			if (!statSync(this.workspaceRoot).isDirectory())
-				return projectDiagnostic(
-					this.workspaceRoot,
-					`workspace root is not a directory: ${this.workspaceRoot}`,
-				);
-			const model = discoverByWalk(this.workspaceRoot, {
-				extensions: EXTENSIONS,
-				excludedDirectories: EXCLUDED_DIRECTORIES,
-			});
-			const configFiles = PROJECT_CONFIGS.filter((name) => existsSync(path.join(this.workspaceRoot, name)));
-			return model.diagnostics.length === 0 ? { ...model, configFiles } : model;
-		} catch (error) {
-			return projectDiagnostic(
-				this.workspaceRoot,
-				`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
+	discoverProject(workspaceRoot: string): { model: ProjectModel; project: null } {
+		return { model: discover(path.resolve(workspaceRoot)), project: null };
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
-		const stored = this.parseAndStore(params.module, params.contentHash, params.text);
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		parsed: ParsedCFile,
+	) {
 		const bindingCache = new Map<string, Binding>();
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
-			declarations: stored.parsed.declarations.map(declarationWire),
-			references: stored.parsed.references.map((reference) =>
-				referenceWire(
-					reference,
-					this.bindingForReference(params.module, stored.parsed, reference, bindingCache),
-				),
+			declarations: parsed.declarations.map(declarationWire),
+			references: parsed.references.map((reference) =>
+				referenceWire(reference, this.bindingForReference(params.module, parsed, reference, bindingCache)),
 			),
-			imports: stored.parsed.imports.map(({ specifier, imported, reExport }) => ({
+			imports: parsed.imports.map(({ specifier, imported, reExport }) => ({
 				specifier,
 				imported,
 				reExport,
 			})),
-			literals: stored.parsed.literals,
-			comments: stored.parsed.comments,
-			diagnostics: stored.parsed.diagnostics,
+			literals: parsed.literals,
+			comments: parsed.comments,
+			diagnostics: parsed.diagnostics,
 		};
 	}
 
-	private parseAndStore(module: string, contentHash: string, text: string): StoredFacts {
-		const parsed = parseC(module, text);
-		// Dropped first: an include this parse no longer writes must not keep answering from the last.
-		this.dropModule(module);
-		const stored = { contentHash, parsed };
-		this.facts.set(module, stored);
-		this.recordIncludes(module, parsed.imports);
-		return stored;
-	}
-
-	/** An include's kind decides external against workspace, so it is stated by its own parse. */
-	private recordIncludes(module: string, imports: ParsedCFile["imports"]): void {
-		for (const imported of imports) this.includeKinds.set(importKey(module, imported.specifier), imported.kind);
-	}
-
-	/** The index let this module go, or refused the parse it holds nothing from. */
-	forgetModule(params: { module: string }): void {
-		this.dropModule(params.module);
-		this.admission.forgotten(params.module);
-	}
-
-	/** An include kind is stated by the facts holding it, so it goes when they do. */
-	private dropModule(module: string): void {
-		this.facts.delete(module);
-		const prefix = importKey(module, "");
-		for (const key of this.includeKinds.keys()) if (key.startsWith(prefix)) this.includeKinds.delete(key);
-	}
-
-	private factsForModule(module: string): StoredFacts | null {
-		const cached = this.facts.get(module);
-		if (cached !== undefined) return cached;
-		// A file the index does not hold must not come back through a read of its own bytes.
-		if (!this.admission.fillable(module)) return null;
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
-		try {
-			return this.parseAndStore(module, "disk", readFileSync(absolute, "utf8"));
-		} catch (error) {
-			const parsed: ParsedCFile = {
-				module,
-				declarations: [],
-				declarationsByName: new Map(),
-				declarationsById: new Map(),
-				references: [],
-				imports: [],
-				literals: [],
-				comments: [],
-				diagnostics: [diagnosticForRead(module, error)],
-				typeAnswers: new Map(),
-			};
-			const stored = { contentHash: "disk", parsed };
-			this.facts.set(module, stored);
-			return stored;
-		}
+	private factsForModule(module: string): ParsedCFile | null {
+		return this.store.load(module) ?? null;
 	}
 
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
 		const clean = headerName(params.specifier);
-		const kind =
-			this.includeKinds.get(importKey(params.fromModule, clean)) ??
-			this.includeKinds.get(importKey(params.fromModule, params.specifier)) ??
-			(params.specifier.startsWith("<") ? "angle" : undefined);
+		// Use held import kind; infer from "<" otherwise.
+		const written = this.store
+			.peek(params.fromModule)
+			?.imports.find((imported) => imported.specifier === clean || imported.specifier === params.specifier);
+		const kind = written?.kind ?? (params.specifier.startsWith("<") ? "angle" : undefined);
 		if (kind === "angle") return { status: "external", packageName: clean };
-		const resolved = pathForResolution(
-			this.workspaceRoot,
-			importCandidates(this.workspaceRoot, params.fromModule, clean),
-		);
+		const root = this.store.root;
+		const resolved = pathForResolution(root, importCandidates(root, params.fromModule, clean));
 		if (resolved !== undefined) return { status: "resolved", module: resolved };
 		if (kind === "quoted")
 			return { status: "unresolved", reason: "NotIndexed", detail: `no workspace header matches ${clean}` };
@@ -504,7 +413,7 @@ export class CProvider {
 				detail = `the included module ${resolution.module} is not indexed`;
 				continue;
 			}
-			for (const declaration of target.parsed.declarationsByName.get(name) ?? []) {
+			for (const declaration of target.declarationsByName.get(name) ?? []) {
 				if (
 					declaration.name === name &&
 					declaration.containerId === undefined &&
@@ -521,15 +430,14 @@ export class CProvider {
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {
-		const stored = this.factsForModule(params.module);
-		if (stored === null) return unknownBinding("NotIndexed", "module is not indexed");
-		const reference = stored.parsed.references.find(
+		const facts = this.factsForModule(params.module);
+		if (facts === null) return unknownBinding("NotIndexed", "module is not indexed");
+		const reference = facts.references.find(
 			(candidate) => candidate.name === params.name && containsStart(candidate.range, params.range.start),
 		);
-		if (reference !== undefined)
-			return this.bindingForReference(params.module, stored.parsed, reference, new Map());
+		if (reference !== undefined) return this.bindingForReference(params.module, facts, reference, new Map());
 		// Every declaration this provider extracts has its name in the source.
-		const declaration = stored.parsed.declarations.find(
+		const declaration = facts.declarations.find(
 			(candidate) =>
 				candidate.name === params.name &&
 				containsStart(candidate.selectionRange ?? candidate.range, params.range.start),
@@ -543,20 +451,20 @@ export class CProvider {
 			const parsed = parseSymbolId(params.symbolId);
 			if (parsed === null || parsed.language !== LANGUAGE)
 				return { status: "unknown", reason: "ParseError", detail: "the symbol id is not a C workspace id" };
-			const stored = this.factsForModule(parsed.module);
-			if (stored === null) return { status: "unknown", reason: "NotIndexed", detail: "module is not indexed" };
-			if (!stored.parsed.declarations.some((declaration) => declaration.symbolId === params.symbolId))
+			const facts = this.factsForModule(parsed.module);
+			if (facts === null) return { status: "unknown", reason: "NotIndexed", detail: "module is not indexed" };
+			if (!facts.declarations.some((declaration) => declaration.symbolId === params.symbolId))
 				return { status: "unknown", reason: "NotIndexed", detail: "the symbol id has no indexed declaration" };
-			return typeInfoFor(stored.parsed, params.symbolId);
+			return typeInfoFor(facts, params.symbolId);
 		}
-		const stored = this.factsForModule(params.module);
-		if (stored === null) return { status: "unknown", reason: "NotIndexed", detail: "module is not indexed" };
+		const facts = this.factsForModule(params.module);
+		if (facts === null) return { status: "unknown", reason: "NotIndexed", detail: "module is not indexed" };
 		const declaration =
-			stored.parsed.declarations.find(
+			facts.declarations.find(
 				(candidate) =>
 					candidate.typeRange !== undefined && containsStart(candidate.typeRange, params.range.start),
 			) ??
-			stored.parsed.declarations.find((candidate) =>
+			facts.declarations.find((candidate) =>
 				containsStart(candidate.selectionRange ?? candidate.range, params.range.start),
 			);
 		if (declaration === undefined)
@@ -565,7 +473,7 @@ export class CProvider {
 				reason: "NotIndexed",
 				detail: "no indexed declaration or type range matched the requested range",
 			};
-		return typeInfoFor(stored.parsed, declaration.symbolId);
+		return typeInfoFor(facts, declaration.symbolId);
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {

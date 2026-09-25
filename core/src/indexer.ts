@@ -293,8 +293,13 @@ export class WorkspaceIndexer {
 		// the hash of another, and every staleness check downstream would compare the wrong pair.
 		const readHash = hashContent(text);
 
-		// Preserve deeper facts when the requested depth is cheaper.
-		if (skipIfCurrent && this.store.contentHashOf(module) === readHash) {
+		// Preserve deeper facts when owner matches or is unrecorded.
+		const writer = this.store.writerOf(module);
+		if (
+			skipIfCurrent &&
+			this.store.contentHashOf(module) === readHash &&
+			(writer ?? parser.providerId) === parser.providerId
+		) {
 			const held = this.store.depthOf(module);
 			const satisfied = held === "full" || held === "surface" || held === depth;
 			if (satisfied) {
@@ -361,6 +366,7 @@ export class WorkspaceIndexer {
 				docs: facts.docs ?? [],
 				notes,
 				content: parser.content,
+				provider: parser.providerId,
 				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
 				// supervisor drops a comments field from a provider that never declared the tier.
 				digests: storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
@@ -828,6 +834,7 @@ export class WorkspaceIndexer {
 		// Evidence before ownership: a shared claim is decided by what the scope admits.
 		this.supervisor.observeWorkspace(reachable);
 		const roots = new Set(reachable.filter((module) => this.supervisor.route(module).owned));
+		this.dropMovedOwners();
 
 		// Hold all sets here.
 		this.breakdown = {
@@ -838,6 +845,18 @@ export class WorkspaceIndexer {
 			denied: everything.length - candidates.length,
 		};
 		return roots;
+	}
+
+	/** Drop rows owned by a different provider. */
+	private dropMovedOwners(): void {
+		let dropped = false;
+		for (const [module, writer] of this.store.writers()) {
+			const route = this.supervisor.route(module);
+			if (!route.owned || route.providerId === writer) continue;
+			// Keep dependency reads available.
+			dropped = this.store.forgetFile(module) || dropped;
+		}
+		if (dropped) this.caches.facts.invalidate();
 	}
 
 	private rootDepth(module: string): IndexDepth {

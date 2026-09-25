@@ -1,8 +1,15 @@
 import { expect, test } from "bun:test";
 import path from "node:path";
-import { composeSymbolId, coordinatesOf } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, coordinatesOf, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { extractDeclarationsCore, extractReferencesCore } from "../extractCore.js";
 import { GDScriptProvider, REFERENCE_ROLES, TIERS } from "../main.js";
+
+function started(root = process.cwd()) {
+	const handlers = handlersFor(new GDScriptProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
+}
 
 function rangeAt(text: string, offset: number) {
 	const position = coordinatesOf(text).positionAt(offset);
@@ -278,8 +285,7 @@ test("preserves Unicode identifier names and symbol identity", () => {
 });
 
 test("uses UTF-16 units for every emitted GDScript range", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `var target := 1
 var face = "😀"; const Script = preload("res://other.gd")
 var face2 = "😀"; var marker = "hello"; var count = 0xFF; var enabled = true
@@ -464,14 +470,15 @@ func run(value: int) -> void:
 });
 
 test("declares exactly the reference roles it emits", () => {
-	const info = new GDScriptProvider().initialize("/workspace");
+	const handlers = handlersFor(new GDScriptProvider());
+	const info = handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: process.cwd() });
 
 	expect(info.referenceRoles).toEqual([...REFERENCE_ROLES]);
 });
 
 test("binds project class names and unambiguous same-file declarations", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const base = provider.parseFile({
 		module: "base.gd",
 		contentHash: "base",
@@ -533,8 +540,7 @@ func run(target: Node, value: int) -> void:
 });
 
 test("binds an inner class extending its outer class", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const facts = provider.parseFile({
 		module: "nested.gd",
 		contentHash: "nested",
@@ -555,8 +561,7 @@ test("binds an inner class extending its outer class", () => {
 });
 
 test("binds a literal path on an inner class extends clause", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const base = provider.parseFile({
 		module: "base.gd",
 		contentHash: "base",
@@ -582,8 +587,7 @@ test("binds a literal path on an inner class extends clause", () => {
 });
 
 test("binds literal script paths and preserves dynamic loader uncertainty", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const base = provider.parseFile({
 		module: "base.gd",
 		contentHash: "base",
@@ -654,9 +658,8 @@ func run(path: String) -> void:
 });
 
 test("resolves script resources and classifies other loader paths honestly", () => {
-	const provider = new GDScriptProvider();
 	const fixtureRoot = path.join(process.cwd(), "providers/gdscript/src/__tests__/fixtures/autoload");
-	provider.initialize(fixtureRoot);
+	const provider = started(fixtureRoot);
 	provider.parseFile({
 		module: "state.gd",
 		contentHash: "state",
@@ -687,9 +690,8 @@ test("resolves script resources and classifies other loader paths honestly", () 
 });
 
 test("binds autoload reads to the registered script root", () => {
-	const provider = new GDScriptProvider();
 	const fixtureRoot = path.join(process.cwd(), "providers/gdscript/src/__tests__/fixtures/autoload");
-	provider.initialize(fixtureRoot);
+	const provider = started(fixtureRoot);
 	const state = provider.parseFile({
 		module: "state.gd",
 		contentHash: "state",
@@ -713,8 +715,7 @@ test("binds autoload reads to the registered script root", () => {
 });
 
 test("reports declared annotation types without inferring initializers", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `class_name Types
 extends Node
 const LIMIT: int = 3
@@ -756,8 +757,7 @@ func run(n: int) -> void:
 });
 
 test("attaches indexed symbols to declared and inferred script types", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const base = provider.parseFile({
 		module: "base.gd",
 		contentHash: "base",
@@ -797,8 +797,7 @@ var engine: Node2D
 });
 
 test("infers complete return unions and implicit null", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `func pick(a, b):
 	if a:
 		return "foo"
@@ -867,8 +866,7 @@ func typed_param(value: int):
 });
 
 test("treats match wildcard coverage as control flow", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `func covered(value):
 	match value:
 		1:
@@ -900,8 +898,7 @@ func uncovered(value):
 });
 
 test("bounds recursive inference and refuses awaited results", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `func recursive():
 	return recursive()
 
@@ -935,8 +932,7 @@ func explicit_null():
 });
 
 test("infers literal and shorthand initializers", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `var limit = 1
 const NAME = "x"
 var shorthand := false
@@ -955,8 +951,7 @@ var values = [1, 2]
 });
 
 test("extracts decoded literals without treating node paths as literals", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `const HEX = 0xFF
 var escaped = "a\\nb"
 var enabled = true
@@ -1004,8 +999,7 @@ func use():
 // GDScript has no string-interpolation syntax: `%` and `.format()` read an ordinary string at run
 // time, so its placeholder text is already reported verbatim, with nothing to fix.
 test("reports a % format string as one literal, its placeholders left verbatim", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = 'var cmd = "install %s@%s now" % [name, marketplace]\n';
 	const facts = provider.parseFile({ module: "fmt.gd", contentHash: "fmt", text });
 
@@ -1014,8 +1008,7 @@ test("reports a % format string as one literal, its placeholders left verbatim",
 
 // One lexer, so no second reading.
 test("reads literals through the same scan that masks strings and comments", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `var hash_inside = "a # b"
 # a comment with a "quote" and 42
 var after = 'x'
@@ -1039,13 +1032,12 @@ var count = 3
 		start: { line: 6, character: 12 },
 		end: { line: 6, character: 19 },
 	});
-	expect(facts.comments.map((comment) => comment.text)).toEqual(['# a comment with a "quote" and 42', "# 7"]);
+	expect(facts.comments?.map((comment) => comment.text)).toEqual(['# a comment with a "quote" and 42', "# 7"]);
 });
 
 // Strings and numbers are gathered separately; containers must still follow source order.
 test("attaches a number in an earlier function to that function, not to a later string's", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `func first():
 	return 1
 func second():
@@ -1060,8 +1052,7 @@ func second():
 });
 
 test("keeps signal strings as literals while excluding import specifiers", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `const script = preload("res://other.gd")
 var mentioned = "res://mentioned.gd"
 signal thing_happened
@@ -1083,8 +1074,7 @@ func connect_signal():
 });
 
 test("reports declaration size and control-flow metrics", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `var value = 1
 func sample(first, second):
 	if first:
@@ -1107,8 +1097,7 @@ func sample(first, second):
 // match, which is the only way to tell a capture offset apart from a search for the same text.
 // The old code searched, so it located the class name and the loader word instead of the path.
 test("an extends path is located by its capture rather than by searching the match", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = 'class Weapon extends "Weapon"\n';
 
 	const facts = provider.parseFile({ module: "weapon.gd", contentHash: "weapon", text });
@@ -1120,8 +1109,7 @@ test("an extends path is located by its capture rather than by searching the mat
 });
 
 test("a loader path is located by its capture rather than by searching the match", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = 'const Script = preload("load")\n';
 
 	const facts = provider.parseFile({ module: "user.gd", contentHash: "user", text });

@@ -282,173 +282,448 @@ export const LIFECYCLES = {
 	control: { starts: false, warms: false, waits: false, refusedAfterFailedWarmup: false },
 } as const satisfies Record<Lifecycle, LifecycleRule>;
 
-/** Dispatch order and facade docs; `mutates` controls read-only calls and retries. */
+/** Client-side wait limits by method class. */
+export const BUDGETS = {
+	/** Provider-backed requests. */
+	read: 180_000,
+	/** In-memory status queries. */
+	status: 30_000,
+	/** Git-history queries. */
+	history: 120_000,
+	/** Multiple provider calls per step. */
+	refactor: 300_000,
+	control: 15_000,
+} as const;
+
+export type Budget = keyof typeof BUDGETS;
+
+/** Method table for dispatch and facades. */
 export const DAEMON_METHODS = {
-	/** Declarations named exactly, optionally within one module. */
-	findByName: { request: FindByName, response: z.array(SymbolSummarySchema), lifecycle: "query", mutates: false },
-	/** One symbol's surface: members, notes, graph numbers and hierarchy. Null when unknown. */
-	describe: { request: BySymbol, response: DescribeResultSchema.nullable(), lifecycle: "query", mutates: false },
-	/** The stored row for one symbol id. */
+	/** Exact names, optional module filter. */
+	findByName: {
+		request: FindByName,
+		response: z.array(SymbolSummarySchema),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Symbol summary and hierarchy. */
+	describe: {
+		request: BySymbol,
+		response: DescribeResultSchema.nullable(),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Stored declaration by id. */
 	declarationOf: {
 		request: BySymbol,
 		response: StoredDeclarationSchema.nullable(),
 		lifecycle: "query",
 		mutates: false,
+		budget: "read",
 	},
-	/** Every declaration in one module. */
+	/** Declarations in one module. */
 	declarationsIn: {
 		request: ByModule,
 		response: z.array(StoredDeclarationSchema),
 		lifecycle: "query",
 		mutates: false,
+		budget: "read",
 	},
-	/** Supertypes and subtypes, read from heritage references. */
-	typeHierarchy: { request: BySymbol, response: TypeHierarchySchema, lifecycle: "query", mutates: false },
-	/** Callers and callees, with every call site. */
-	callHierarchy: { request: BySymbol, response: CallHierarchySchema, lifecycle: "query", mutates: false },
-	/** Who uses a symbol, capped, optionally within a scope. */
-	findReferences: { request: References, response: ReferencesResultSchema, lifecycle: "query", mutates: false },
-	/** What a symbol and everything inside it references, bound or not. */
-	usesFrom: { request: UsesFrom, response: UsesFromResultSchema, lifecycle: "query", mutates: false },
-	/** Where an import specifier lands. */
-	resolveImport: { request: Resolve, response: ImportResolutionSchema, lifecycle: "query", mutates: false },
-	/** How complete the index is, and whether one file failed. */
-	indexStatus: { request: Status, response: IndexStatusSchema, lifecycle: "status", mutates: false },
-	/** Starts workspace indexing and returns its status. */
-	indexWorkspace: { request: Empty, response: IndexStatusSchema, lifecycle: "trigger", mutates: false },
-	/** Literals by value, regex, kind, numeric range, container key or scope. */
-	findLiterals: { request: Literals, response: LiteralsResultSchema, lifecycle: "query", mutates: false },
-	/** Comment prose by substring or regex, with the symbol each is about. */
-	findComments: { request: Comments, response: CommentsResultSchema, lifecycle: "query", mutates: false },
-	/** Document prose by substring or regex, with the heading path each sits under. */
-	findDocs: { request: Docs, response: DocsResultSchema, lifecycle: "query", mutates: false },
-	/** Values written in several files. */
-	sharedLiterals: { request: Shared, response: SharedLiteralsResultSchema, lifecycle: "query", mutates: false },
-	/** Reference cycles, largest first. */
-	cycles: { request: Paged, response: z.array(CycleSchema), lifecycle: "query", mutates: false },
-	/** Symbols by resolved reference count. */
-	mostReferenced: { request: Paged, response: MostReferencedResultSchema, lifecycle: "query", mutates: false },
-	/** The `mostReferenced` answer under the name older clients ask by. */
-	hubs: { request: Paged, response: MostReferencedResultSchema, lifecycle: "query", mutates: false },
-	/** Result cache hit and miss counts. */
-	cacheStats: { request: Empty, response: CacheStatsSchema, lifecycle: "status", mutates: false },
-	/** Declared names by substring or regex, with kind, module and scope filters. */
-	searchSymbols: { request: Search, response: SearchSymbolsResultSchema, lifecycle: "query", mutates: false },
-	/** The declarations of one module. */
-	outlineModule: { request: ByModule, response: z.array(SymbolSummarySchema), lifecycle: "query", mutates: false },
-	/** A provider's warnings and info for one file. */
-	fileNotes: { request: ByModule, response: FileNotesSchema, lifecycle: "query", mutates: false },
-	/** Whether one file exists, is claimed, and is indexed, without indexing it. */
-	moduleStatus: { request: ByModule, response: ModuleStatusSchema, lifecycle: "query", mutates: false },
-	/** One file's status, the hash on disk, the hash indexed and its declarations, from one read. */
+	/** Heritage-based type hierarchy. */
+	typeHierarchy: {
+		request: BySymbol,
+		response: TypeHierarchySchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Callers, callees, and sites. */
+	callHierarchy: {
+		request: BySymbol,
+		response: CallHierarchySchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Capped symbol uses by scope. */
+	findReferences: {
+		request: References,
+		response: ReferencesResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** References inside a symbol. */
+	usesFrom: { request: UsesFrom, response: UsesFromResultSchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Resolve one written import. */
+	resolveImport: {
+		request: Resolve,
+		response: ImportResolutionSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Index completeness and failures. */
+	indexStatus: {
+		request: Status,
+		response: IndexStatusSchema,
+		lifecycle: "status",
+		mutates: false,
+		budget: "status",
+	},
+	/** Start indexing and return status. */
+	indexWorkspace: {
+		request: Empty,
+		response: IndexStatusSchema,
+		lifecycle: "trigger",
+		mutates: false,
+		budget: "status",
+	},
+	/** Search literals by value and scope. */
+	findLiterals: {
+		request: Literals,
+		response: LiteralsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Search comments and declaration links. */
+	findComments: {
+		request: Comments,
+		response: CommentsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Search document prose and headings. */
+	findDocs: { request: Docs, response: DocsResultSchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Values shared across files. */
+	sharedLiterals: {
+		request: Shared,
+		response: SharedLiteralsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Largest reference cycles first. */
+	cycles: { request: Paged, response: z.array(CycleSchema), lifecycle: "query", mutates: false, budget: "read" },
+	/** Symbols by incoming references. */
+	mostReferenced: {
+		request: Paged,
+		response: MostReferencedResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Alias for `mostReferenced`. */
+	hubs: { request: Paged, response: MostReferencedResultSchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Cache hits and misses. */
+	cacheStats: { request: Empty, response: CacheStatsSchema, lifecycle: "status", mutates: false, budget: "status" },
+	/** Search declarations by name. */
+	searchSymbols: {
+		request: Search,
+		response: SearchSymbolsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Declarations in one module. */
+	outlineModule: {
+		request: ByModule,
+		response: z.array(SymbolSummarySchema),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Provider notes for one file. */
+	fileNotes: { request: ByModule, response: FileNotesSchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Claim and index status for one file. */
+	moduleStatus: {
+		request: ByModule,
+		response: ModuleStatusSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** File status, hashes, and declarations. */
 	moduleDeclarations: {
 		request: ByModule,
 		response: ModuleDeclarationsSchema,
 		lifecycle: "query",
 		mutates: false,
+		budget: "read",
 	},
-	/** One module's paint facts, stored: declarations, references, literals, comments and words. */
-	moduleFacts: { request: ByModule, response: ModuleFactsResultSchema, lifecycle: "query", mutates: false },
-	/** Paint facts for text not yet written, parsed by the owning provider; nothing is stored. */
-	parseFacts: { request: ParseFacts, response: ParseFactsResultSchema, lifecycle: "probe", mutates: false },
-	/** The symbol under a cursor, in stored facts or in handed text: a bound reference's target, else the innermost declaration. */
-	symbolAt: { request: SymbolAt, response: SymbolAtReplySchema, lifecycle: "query", mutates: false },
-	/** Importers by written specifier or resolved module. */
-	findImports: { request: FindImports, response: FindImportsResultSchema, lifecycle: "query", mutates: false },
-	/** Files, symbols, coverage and the biggest modules. */
-	overview: { request: Empty, response: OverviewResultSchema, lifecycle: "query", mutates: false },
-	/** Files that change alongside one file in git history. */
-	coChangedWith: { request: CoChange, response: CoChangedWithResultSchema, lifecycle: "probe", mutates: false },
-	/** One file's age and churn. */
-	fileHistory: { request: ByModule, response: FileHistorySchema, lifecycle: "probe", mutates: false },
-	/** Commits whose message names a symbol. */
+	/** Stored paint facts for one module. */
+	moduleFacts: {
+		request: ByModule,
+		response: ModuleFactsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Paint facts for candidate text. */
+	parseFacts: {
+		request: ParseFacts,
+		response: ParseFactsResultSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "read",
+	},
+	/** Symbol under a source position. */
+	symbolAt: { request: SymbolAt, response: SymbolAtReplySchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Importers by specifier or module. */
+	findImports: {
+		request: FindImports,
+		response: FindImportsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Workspace coverage and largest modules. */
+	overview: { request: Empty, response: OverviewResultSchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Files changed with one module. */
+	coChangedWith: {
+		request: CoChange,
+		response: CoChangedWithResultSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "history",
+	},
+	/** Age and churn for one file. */
+	fileHistory: {
+		request: ByModule,
+		response: FileHistorySchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "history",
+	},
+	/** Commits whose messages name a symbol. */
 	commitsMentioning: {
 		request: Mentions,
 		response: CommitsMentioningResultSchema,
 		lifecycle: "probe",
 		mutates: false,
+		budget: "history",
 	},
-	/** Everything tier 1 knows about one symbol, as citable facts. Null when unknown. */
-	factsFor: { request: References, response: FactSetSchema.nullable(), lifecycle: "query", mutates: false },
-	/** The rows behind fact ids, and which ids no longer resolve. */
-	resolveFacts: { request: ResolveFacts, response: ResolveFactsResultSchema, lifecycle: "query", mutates: false },
-	/** Save an answer grounded in cited facts. */
-	recordAnswer: { request: RecordAnswer, response: RecordOutcomeSchema, lifecycle: "query", mutates: true },
-	/** Mark recorded answers doubtful without changing their prose. */
+	/** Citable facts for one symbol. */
+	factsFor: {
+		request: References,
+		response: FactSetSchema.nullable(),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Fact rows and unresolved ids. */
+	resolveFacts: {
+		request: ResolveFacts,
+		response: ResolveFactsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Save an answer with citations. */
+	recordAnswer: {
+		request: RecordAnswer,
+		response: RecordOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Mark answers doubtful. */
 	invalidateAnswer: {
 		request: InvalidateAnswer,
 		response: InvalidateOutcomeSchema,
 		lifecycle: "query",
 		mutates: true,
+		budget: "read",
 	},
-	/** Refresh an answer's evidence or clear its doubt. */
-	reaffirmAnswer: { request: ReaffirmAnswer, response: RecordOutcomeSchema, lifecycle: "query", mutates: true },
-	/** Recorded answers and their health: one when a question is named, all otherwise. */
-	recallAnswer: { request: RecallAnswer, response: RecallAnswerResultSchema, lifecycle: "query", mutates: false },
-	/** Missing, stale, shaky or doubted answers, ranked by demand. */
-	knowledgeGaps: { request: Gaps, response: KnowledgeGapsSchema, lifecycle: "query", mutates: false },
-	/** A scope's declarations with each question's state, members first. Null for an unknown symbol. */
+	/** Refresh evidence or clear doubt. */
+	reaffirmAnswer: {
+		request: ReaffirmAnswer,
+		response: RecordOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Recorded answers and health. */
+	recallAnswer: {
+		request: RecallAnswer,
+		response: RecallAnswerResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Rank answer gaps and doubts. */
+	knowledgeGaps: {
+		request: Gaps,
+		response: KnowledgeGapsSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Question state across a declaration scope. */
 	knowledgeScope: {
 		request: KnowledgeScopeRequest,
 		response: KnowledgeScopeSchema.nullable(),
 		lifecycle: "query",
 		mutates: false,
+		budget: "read",
 	},
-	/** Why an id names no declaration, as every tool answers it. */
-	diagnoseSubject: { request: BySymbol, response: SubjectDiagnosisSchema, lifecycle: "query", mutates: false },
-	/** A symbol's resolved type. */
-	typeOf: { request: BySymbol, response: TypeInfoSchema, lifecycle: "query", mutates: false },
-	/** What a rename would touch, with blockers and warnings. */
-	prepareRename: { request: Rename, response: RenamePlanSchema, lifecycle: "query", mutates: false },
-	/** The edits a rename would make, for a caller that applies them itself. */
-	renameEdits: { request: Rename, response: RenameEditPlanSchema, lifecycle: "query", mutates: false },
-	/** What a move would touch. */
-	planMove: { request: Move, response: MovePlanSchema, lifecycle: "query", mutates: false },
-	/** Reindex one file now. */
-	indexFile: { request: ByModule, response: IndexOutcomeSchema, lifecycle: "query", mutates: true },
-	/** One symbol's source text and the range it occupies. */
-	symbolSource: { request: SymbolSource, response: SymbolSourceSchema, lifecycle: "query", mutates: false },
-	/** Open the workspace's refactor transaction. */
-	refactorStart: { request: Empty, response: RefactorStartResultSchema, lifecycle: "query", mutates: true },
-	/** Steps, tracked files and issues; retirement reads this after warmup failure. */
-	refactorStatus: { request: Empty, response: TransactionStatusSchema, lifecycle: "probe", mutates: false },
-	/** Snapshot a file before a hand edit. */
-	refactorTrack: { request: ByModule, response: RefactorTrackResultSchema, lifecycle: "query", mutates: true },
-	/** Remove the newest step, restoring the files it wrote. */
-	refactorUndo: { request: Empty, response: RefactorUndoResultSchema, lifecycle: "query", mutates: true },
-	/** Return every tracked file to how the transaction found it, and close it. */
-	refactorRevert: { request: Empty, response: RefactorRevertResultSchema, lifecycle: "query", mutates: true },
-	/** Keep what is on disk and close the transaction. */
-	refactorCommit: { request: Commit, response: RefactorCommitResultSchema, lifecycle: "query", mutates: true },
-	/** Replace one symbol's whole span with new text, checked before it is written. */
-	refactorReplace: { request: Replace, response: ReplaceOutcomeSchema, lifecycle: "query", mutates: true },
-	/** Replace one symbol's span only if it is unchanged since read. */
+	/** Explain an unresolved symbol id. */
+	diagnoseSubject: {
+		request: BySymbol,
+		response: SubjectDiagnosisSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Resolved type for a symbol. */
+	typeOf: { request: BySymbol, response: TypeInfoSchema, lifecycle: "query", mutates: false, budget: "read" },
+	/** Rename impact, blockers, and warnings. */
+	prepareRename: {
+		request: Rename,
+		response: RenamePlanSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "refactor",
+	},
+	/** Rename edits for external application. */
+	renameEdits: {
+		request: Rename,
+		response: RenameEditPlanSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "refactor",
+	},
+	/** Move impact and blockers. */
+	planMove: { request: Move, response: MovePlanSchema, lifecycle: "query", mutates: false, budget: "refactor" },
+	/** Reindex one file. */
+	indexFile: { request: ByModule, response: IndexOutcomeSchema, lifecycle: "query", mutates: true, budget: "read" },
+	/** Source text and range for a symbol. */
+	symbolSource: {
+		request: SymbolSource,
+		response: SymbolSourceSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Open a refactor transaction. */
+	refactorStart: {
+		request: Empty,
+		response: RefactorStartResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Refactor state and issues. */
+	refactorStatus: {
+		request: Empty,
+		response: TransactionStatusSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "status",
+	},
+	/** Snapshot a file before editing. */
+	refactorTrack: {
+		request: ByModule,
+		response: RefactorTrackResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Undo the newest step. */
+	refactorUndo: {
+		request: Empty,
+		response: RefactorUndoResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Restore tracked files and close. */
+	refactorRevert: {
+		request: Empty,
+		response: RefactorRevertResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Keep disk changes and close. */
+	refactorCommit: {
+		request: Commit,
+		response: RefactorCommitResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Replace a symbol's full span. */
+	refactorReplace: {
+		request: Replace,
+		response: ReplaceOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Replace an unchanged symbol span. */
 	refactorReplaceSpan: {
 		request: ReplaceSpan,
 		response: ReplaceSpanOutcomeSchema,
 		lifecycle: "query",
 		mutates: true,
+		budget: "refactor",
 	},
-	/** Author a declaration after a sibling or at the end of a module. */
-	refactorInsert: { request: Insert, response: InsertOutcomeSchema, lifecycle: "query", mutates: true },
-	/** Rename a symbol across declarations, uses, imports and re-exports. */
-	refactorRename: { request: Rename, response: RenameStepOutcomeSchema, lifecycle: "query", mutates: true },
-	/** Move a declaration to another module, rewriting the imports that reach it. */
-	refactorMove: { request: Move, response: MoveOutcomeSchema, lifecycle: "query", mutates: true },
+	/** Insert a declaration beside another. */
+	refactorInsert: {
+		request: Insert,
+		response: InsertOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Rename symbols across the workspace. */
+	refactorRename: {
+		request: Rename,
+		response: RenameStepOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Move declarations and rewrite imports. */
+	refactorMove: {
+		request: Move,
+		response: MoveOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
 } as const satisfies Record<
 	string,
-	{ request: z.ZodType; response: z.ZodType; lifecycle: Exclude<Lifecycle, "control">; mutates: boolean }
+	{
+		request: z.ZodType;
+		response: z.ZodType;
+		lifecycle: Exclude<Lifecycle, "control">;
+		mutates: boolean;
+		budget: Exclude<Budget, "control">;
+	}
 >;
 
 /** Daemon controls outside the service method table. */
 export const DAEMON_CONTROLS = {
 	/** Stop after replying. */
-	shutdown: { lifecycle: "control" },
-} as const satisfies Record<string, { lifecycle: "control" }>;
+	shutdown: { lifecycle: "control", budget: "control" },
+} as const satisfies Record<string, { lifecycle: "control"; budget: "control" }>;
 
 /** Whether a lost request may have changed state. */
 export function methodMutates(name: DaemonMethod): boolean {
 	return DAEMON_METHODS[name].mutates;
+}
+
+/** Select an answer limit by method name. */
+export function answerBudgetMs(name: string): number {
+	if (isDaemonMethod(name)) return BUDGETS[DAEMON_METHODS[name].budget];
+	if (Object.hasOwn(DAEMON_CONTROLS, name)) return BUDGETS[DAEMON_CONTROLS[name as DaemonControl].budget];
+	return BUDGETS.read;
 }
 
 export type DaemonControl = keyof typeof DAEMON_CONTROLS;

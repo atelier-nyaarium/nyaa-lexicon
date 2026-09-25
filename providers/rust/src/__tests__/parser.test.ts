@@ -1,11 +1,30 @@
-import { expect, test } from "bun:test";
-import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { coordinatesOf, handlersFor, PROTOCOL_VERSION, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { RustProvider } from "../main.js";
 
-function parse(text: string, module = "src/lib.rs") {
+const roots: string[] = [];
+
+afterEach(() => {
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function parse(text: string, module = "src/lib.rs", depth?: "outline" | undefined) {
+	const root = mkdtempSync(path.join(tmpdir(), "lexicon-rust-parser-"));
+	roots.push(root);
+	const file = path.join(root, ...module.split("/"));
+	mkdirSync(path.dirname(file), { recursive: true });
+	writeFileSync(file, text);
 	const provider = new RustProvider();
-	provider.initialize("/workspace");
-	return { provider, facts: provider.parseFile({ module, contentHash: "test", text }) };
+	const handlers = handlersFor(provider);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return {
+		provider: handlers,
+		facts: handlers.parseFile({ module, contentHash: "test", text, ...(depth === undefined ? {} : { depth }) }),
+	};
 }
 
 function rangeOfText(text: string, value: string) {
@@ -423,7 +442,7 @@ pub fn work(first: i32 /* inline */) -> i32 {
 }
 `);
 
-	expect(facts.comments.map((comment) => comment.text)).toEqual([
+	expect((facts.comments ?? []).map((comment) => comment.text)).toEqual([
 		"// line",
 		"/// outer doc",
 		"//! inner doc",
@@ -441,13 +460,13 @@ test("ranges a comment over exactly the text it reports", () => {
 	const coordinates = coordinatesOf(text);
 	const { facts } = parse(text);
 
-	expect(facts.comments.map((comment) => coordinates.sliceRange(comment.range))).toEqual(
-		facts.comments.map((comment) => comment.text),
+	expect((facts.comments ?? []).map((comment) => coordinates.sliceRange(comment.range))).toEqual(
+		(facts.comments ?? []).map((comment) => comment.text),
 	);
 	const leadingRange = rangeOfText(text, "// leading");
 	const inlineRange = rangeOfText(text, "/* inline */");
 	if (leadingRange === undefined || inlineRange === undefined) throw new Error("comment range missing");
-	expect(facts.comments.map((comment) => comment.range)).toEqual([leadingRange, inlineRange]);
+	expect((facts.comments ?? []).map((comment) => comment.range)).toEqual([leadingRange, inlineRange]);
 });
 
 test("leaves a comment marker inside a literal out of the comment list", () => {
@@ -459,20 +478,20 @@ pub const SLASH: char = '/';
 // real
 `);
 
-	expect(facts.comments.map((comment) => comment.text)).toEqual(["// real"]);
+	expect((facts.comments ?? []).map((comment) => comment.text)).toEqual(["// real"]);
 });
 
 test("reports an unterminated block comment as one span reaching the end of file", () => {
 	const { facts } = parse("pub const BEFORE: i32 = 1;\n/* opened /* nested and never closed");
 
-	expect(facts.comments.map((comment) => comment.text)).toEqual(["/* opened /* nested and never closed"]);
+	expect((facts.comments ?? []).map((comment) => comment.text)).toEqual(["/* opened /* nested and never closed"]);
 	expect(facts.diagnostics.some((diagnostic) => diagnostic.message.includes("no closing delimiter"))).toBe(true);
 });
 
 test("closes an empty block comment instead of swallowing the rest of the file", () => {
 	const { facts } = parse("pub const A: i32 = 1 /**/;\npub struct After;\n");
 
-	expect(facts.comments.map((comment) => comment.text)).toEqual(["/**/"]);
+	expect((facts.comments ?? []).map((comment) => comment.text)).toEqual(["/**/"]);
 	expect(facts.declarations.map((candidate) => candidate.name)).toContain("After");
 });
 
@@ -480,25 +499,18 @@ test("reports a shebang line and leaves an inner attribute alone", () => {
 	const shebang = parse("#!/usr/bin/env run-cargo-script\npub const A: i32 = 1;\n", "src/tool.rs").facts;
 	const attribute = parse("#![allow(dead_code)]\n// real\n", "src/attr.rs").facts;
 
-	expect(shebang.comments.map((comment) => comment.text)).toEqual(["#!/usr/bin/env run-cargo-script"]);
-	expect(attribute.comments.map((comment) => comment.text)).toEqual(["// real"]);
+	expect((shebang.comments ?? []).map((comment) => comment.text)).toEqual(["#!/usr/bin/env run-cargo-script"]);
+	expect((attribute.comments ?? []).map((comment) => comment.text)).toEqual(["// real"]);
 });
 
 test("ends a line comment before a CRLF terminator", () => {
 	const { facts } = parse("// leading\r\npub const A: i32 = 1;\r\n");
 
-	expect(facts.comments.map((comment) => comment.text)).toEqual(["// leading"]);
+	expect((facts.comments ?? []).map((comment) => comment.text)).toEqual(["// leading"]);
 });
 
 test("withholds comments from an outline parse, as it withholds literals", () => {
-	const provider = new RustProvider();
-	provider.initialize("/workspace");
-	const facts = provider.parseFile({
-		module: "src/lib.rs",
-		contentHash: "outline",
-		text: '// leading\npub const A: &str = "value";\n',
-		depth: "outline",
-	});
+	const { facts } = parse('// leading\npub const A: &str = "value";\n', "src/lib.rs", "outline");
 
 	expect(facts.comments).toEqual([]);
 	expect(facts.literals).toEqual([]);

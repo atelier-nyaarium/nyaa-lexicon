@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { configuredSurfaceCandidates, isLikelyBundle, surfaceGlobMatches } from "../bundle";
-import { TypeScriptProvider } from "../main";
 import { extractSurfaceFile } from "../surface";
+import { harness } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
@@ -58,7 +58,7 @@ describe("runtime bundle surfaces", () => {
 			";",
 		);
 		const text = `${internals};function q(hH,{data,highWaterMark}){return hH(data,highWaterMark)};class C{run(){}};export{q as send,C as Client}`;
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(workspace({ "opaque/runtime.js": text }));
 
 		const facts = provider.parseFile({ module: "opaque/runtime.js", contentHash: "runtime", text });
@@ -147,7 +147,7 @@ describe("registered declaration surfaces", () => {
 			"node_modules/runtime/package.json": JSON.stringify({ name: "runtime", main: "index.js" }),
 			"node_modules/runtime/index.js": "exports.run=(value)=>value;\n",
 		});
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		expect(provider.resolveImport({ fromModule: "src/app.ts", specifier: "typed" })).toMatchObject({
@@ -169,7 +169,7 @@ describe("registered declaration surfaces", () => {
 			"opaque/runtime/widget.js": "exports.send=(value)=>value;\n",
 			"opaque/runtime/widget.d.ts": "export declare function send(value: string): string;\n",
 		});
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		expect(

@@ -35,13 +35,10 @@ moduleAdmission(module, contentHash, outcome)
                              what the index did with the parse you just answered
 ```
 
-The core sends `forgetModule` to every running provider whenever it lets a module go: the file was
-deleted, grew past the size limit, turned binary, or left the scope. It rides each provider's
-request queue, so it lands after any parse already asked. A provider that keeps workspace state of
-its own (a declaration index, a parse cache) drops the module and does not read it back until a
-`parseFile` names it again. A provider that holds nothing ignores it, and `handlersFor` wires it only
-when the provider object has a `forgetModule` method. Unlike a method it is optional, which is what
-lets an older provider keep working.
+The core sends `forgetModule` to every running provider when it removes a module. This happens when
+the file is deleted, exceeds the size limit, becomes binary, or leaves scope. The notification
+follows earlier requests on the provider queue. A store-backed provider withholds the module until
+a parse is admitted. A provider without a store has no handler for it and ignores it.
 
 ## What the index admitted
 
@@ -62,36 +59,50 @@ It is NOT `forgetModule`. A forget says the index holds nothing for the module. 
 index holds the module's earlier facts and took none of these. A provider that answers a refusal by
 dropping the module disagrees with the core in the other direction.
 
-**`AdmissionLedger` from `@nyaa-lexicon/protocol` owns this bookkeeping, and `handlersFor` drives
-it.** Declare `readonly admission = new AdmissionLedger<Held>({ snapshot, restore })`, where
-`snapshot(module)` takes everything your cross-file state holds for the module and
-`restore(module, held)` puts exactly that back (`undefined` holds nothing). A provider holding no
-cross-file state declares `readonly admission = null`. Then:
+**Stateful providers use the kit's module store.** Declare
+`readonly store = moduleStore<V, P, E>({ read, entries })` or use `asyncModuleStore` from
+`@nyaa-lexicon/protocol`. `handlersFor` wires the store to the protocol. Providers read through the
+store. The kit handles writes.
 
-- The kit stages every `parseFile` before calling yours, and settles every `moduleAdmission`; a
-  refusal restores what the parse displaced. Never stage or settle yourself.
-- The kit answers `probeFile` (protocol 3.12.0) by snapshotting, calling your `parseFile`, and
-  restoring on every path, including a throw or a rejected promise. The core sends it for a
-  candidate the index never rules on, so nothing is staged and no later verdict is consumed. A
-  piece of state `snapshot` leaves out survives a probe and a refusal alike; a probe test per
-  stateful provider guards it. The shared server runs handlers one at a time in arrival order, async
-  ones included, so a probe's restore lands before anything sent after it, even once the daemon
-  gave up waiting on it.
-- `forgotten(module)` in `forgetModule`, beside dropping the module from every cache.
-- `fillable(module)` at the top of every read off disk, after the cache hit. Without it a module the
-  index does not hold comes straight back through a read of its own bytes, and the correction undoes
-  itself.
-- `reset()` in `initialize`. A tombstone and an outstanding parse both name a module of the
-  workspace being left, and neither means anything in the next one.
+- `read(module, text, depth)` parses one module at the requested depth. The kit calls it at outline
+  depth for disk fills and freezes each value.
+- `entries(module, value, held, project, origin)` returns index entries for one module, such as
+packages, class names or Program roots. It is the only callback that receives `origin`. Cross-file
+lookups use `store.get(key)`, not provider-owned maps.
+- By default, `get(key)` fills discovered modules still owed a fill before returning entries. When
+  `indexParsesOnly` is true, `get` skips fills and fills add no entries. TypeScript uses this for
+  Program roots.
+- A transient probe, rename or move value is visible during that call. Otherwise the newest
+  unsettled parse is visible, then the admitted value, then a fill from disk.
+- The kit stages each `parseFile` and settles it from `moduleAdmission`. Admission makes the parse
+  the base value. A refusal preserves a prior admitted value. If none exists, it drops any fill and
+  blocks fills of the refused bytes.
+- `probeFile` (protocol 3.12.0), `renameEdits` and `moveEdits` use transient layers. The kit removes
+  each layer on return or throw. The core probes candidate text it does not index. Probes are not
+  staged and consume no verdict. The server handles requests in arrival order, including async
+  handlers. The kit removes each layer before the next request runs, even if the daemon timed out
+  while waiting.
+- `forgetModule` hides a module. Fills cannot restore it until a parse is admitted.
+- A fill reads `workspaceFile(root, module)` with `readSourceFile` at outline depth. The reader
+  applies the core's size and binary checks. Missing, binary, oversized, lossy files and parses with
+  error diagnostics are skipped until rediscovery. Unreadable files remain owed and retry on later
+  lookups. Refused bytes stay blocked until they change. A refusal drops a held fill. Rediscovery
+  clears all fills.
+- `discoverProject` receives the previous project value. The kit updates discovery and project
+  state while preserving admitted values.
+- `generation` increments on reset, on each discovery, and when a visible value, index entry or
+  withheld mark changes. `memo` caches each key for one generation.
+- Check mode recursively freezes plain objects and arrays. Set `LEXICON_STORE_CHECKS=1` to enable it.
+  A synchronous store calls `read` twice on the same text whenever it builds a value. Both results
+  must match.
 
-**Verdicts for one module arrive in the order you staged them.** The core serializes a module's
-parses and publishes each one's verdict on the queue that parse rode, so the ledger settles the
-OLDEST outstanding parse and ignores a verdict that is not for it. That is what lets a second parse
-land before the first verdict does without either being lost.
+A stateless provider implements the methods on a plain object. It has no store. `handlersFor`
+answers probes by calling `parseFile`.
 
-**A stateful provider answers `forgetModule` too.** A forget and a refusal are the two halves of one
-lifecycle, and a provider correcting for one still disagrees with the index on the other. A residue
-holds it, along with the rest of this section.
+**Verdicts follow parse order per module.** The core serializes parses per module. It sends each
+verdict on the provider queue used for that parse. The kit settles the oldest staged parse and
+ignores unmatched verdicts. A later parse can stage before an earlier verdict arrives. Both still
+settle.
 
 `parseFile` is one call returning everything from one parse. There is no `describe`: narrative is
 the core's job, and a provider writing prose means the boundary leaked. `discoverProject` is the
@@ -435,10 +446,8 @@ file, so a case holding several files proves a use binds into a file the provide
 
 ### Lifecycle cases
 
-Two cases drive a SCRIPT rather than one parse, because the rule is about what a verdict does
-BETWEEN two parses. Both are gated on the `binding` tier and on a fixture in the language, and both
-prove the provider binds across files at all before asserting anything, so neither can pass while
-observing nothing.
+The three lifecycle cases use scripts. Each requires the `binding` tier and a language fixture.
+The runner checks cross-file binding before its other assertions.
 
 - `refused-facts-are-not-held`: the index forgets the target and then refuses the parse that
   follows, so it holds nothing for it. The use must not bind into it, and must bind again once a
@@ -447,6 +456,12 @@ observing nothing.
   use would be unbound either way.
 - `a-refusal-keeps-what-was-admitted`: the index still holds the target's earlier facts, so the use
   must still bind. A provider that replaced them with the refused parse loses it.
+- `probes-and-refusals-are-unseen`: sixteen variants. Fourteen compare trial and control sessions.
+  Two check that refused disk bytes do not become visible, including after a fill. Each session
+  starts a fresh provider process. Paired runs compare parse, import, bind and `typeOf` answers.
+  Variants cover warm and cold probes, refusal and admission around rediscovery, rename and move
+  candidates, and disk fills followed by refusal. `protocol/src/__tests__/lifecycle-conformance.test.ts`
+  runs the case on every provider with a store.
 
 A fixture in a language is the claim that the provider binds across files. A language with no
 fixture skips, and adding one is the corpus's work rather than the provider's. The first case does
@@ -537,24 +552,21 @@ What the provider simplifies, which only differs from the compiler in rare or no
 
 The index must hold what the core holds, or a binding names a symbol the store does not have:
 
-- **Built from outline parses** of the discovered files the index lacks, on the first lookup. A
-  file is read through `readSourceFile`, the same size bound and binary guard the core reads with,
-  so a file the core refuses to read is never indexed.
-- **Only admitted facts.** A parse carrying an `error` diagnostic, which the core refuses, leaves
-  the module's last admitted declarations in place, whether it came through `parseFile` or from
-  disk.
-- **Forgotten on `forgetModule`,** and kept out of any later fill until `parseFile` names it again.
-- **A file that could not be read is retried** on each later lookup. A missing one is not.
-- **A rediscovery reads every module again.** One whose text is now refused or unreadable keeps
-  what was admitted; one whose file is gone, too large or binary leaves.
+- **Outline fills** read discovered modules missing from the store, on the first `store.get`. They
+  use `readSourceFile` and the core's size and binary checks.
+- **Only admitted values.** A refused parse leaves the last admitted value in place.
+- **Forgotten modules stay hidden** until a parse is admitted.
+- **Unreadable files retry** on each lookup. Missing, binary, oversized or lossy files and fills
+  with error diagnostics wait for rediscovery. Refused bytes stay blocked until they change.
+- **Rediscovery preserves admitted values and refusal marks.** It clears fills and reads eligible
+  files again.
 - **`typeOf` takes a declared type's symbol from the binding** of the type as written, so it never
   names a declaration the binding would not.
 
 One gap remains. The core forgets a file it cannot read, so a file made readable again with no
 watcher event stays out of the index until it is parsed again.
 
-Every provider holding cross-file state follows these rules now, through `AdmissionLedger` and the
-verdict the core publishes; "What the index admitted" above has the whole of it.
+Every stateful provider uses the kit's module store.
 
 ## Versioning
 

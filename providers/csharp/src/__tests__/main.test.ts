@@ -8,12 +8,14 @@ import {
 	type Declaration,
 	FileFactsSchema,
 	handlersFor,
+	PROTOCOL_VERSION,
 	PROVIDER_METHODS,
 	PROVIDER_NOTIFICATIONS,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { CsharpParser } from "../parser.js";
+import { handlersOf, parseThroughKit, startProvider } from "./harness.js";
 
 it("uses qualifier and parameter descriptors", () => {
 	const text = "class C { void IFoo.Bar(int name) {} }\n";
@@ -99,8 +101,8 @@ describe("C# declarations", () => {
 			"public delegate void Handler(string value);",
 		].join("\n");
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
-		const facts = provider.parseFile({ module: "demo.cs", contentHash: "hash", text });
+		startProvider(provider);
+		const facts = parseThroughKit(provider, { module: "demo.cs", contentHash: "hash", text });
 
 		expect(facts.diagnostics).toEqual([]);
 		expect(declaration(facts, "Demo", "namespace").languageKind).toBe("fileScopedNamespace");
@@ -127,7 +129,8 @@ describe("C# declarations", () => {
 
 	it("counts astral characters as two UTF-16 code units", () => {
 		const text = "/* 😀 */ public class Cart {}\n";
-		const facts = new CsharpProvider().parseFile({ module: "cart.cs", contentHash: "hash", text });
+		const provider = new CsharpProvider();
+		const facts = parseThroughKit(provider, { module: "cart.cs", contentHash: "hash", text });
 		const cart = declaration(facts, "Cart", "class");
 		expect(cart.selectionRange?.start).toEqual({ line: 0, character: 22 });
 		expect(text.slice(cart.selectionRange?.start.character, cart.selectionRange?.end.character)).toBe("Cart");
@@ -135,7 +138,8 @@ describe("C# declarations", () => {
 
 	it("keeps declaration ids module-relative and distinguishes method overloads", () => {
 		const text = "namespace N { public class C { public void Run() {} public void Run(int value) {} } }";
-		const facts = new CsharpProvider().parseFile({ module: "src/c.cs", contentHash: "hash", text });
+		const provider = new CsharpProvider();
+		const facts = parseThroughKit(provider, { module: "src/c.cs", contentHash: "hash", text });
 		const methods = facts.declarations.filter((item) => item.name === "Run" && item.kind === "method");
 		expect(methods).toHaveLength(2);
 		expect(methods.map((item) => item.symbolId)).toEqual([
@@ -174,8 +178,8 @@ describe("C# facts", () => {
 			"}",
 		].join("\n");
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
-		const facts = provider.parseFile({ module: "values.cs", contentHash: "hash", text });
+		startProvider(provider);
+		const facts = parseThroughKit(provider, { module: "values.cs", contentHash: "hash", text });
 		const count = declaration(facts, "Count", "field");
 		const label = declaration(facts, "Label", "field");
 		const enabled = declaration(facts, "Enabled", "field");
@@ -202,8 +206,8 @@ describe("C# facts", () => {
 			"}",
 		].join("\n");
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
-		const facts = provider.parseFile({ module: "c.cs", contentHash: "hash", text });
+		startProvider(provider);
+		const facts = parseThroughKit(provider, { module: "c.cs", contentHash: "hash", text });
 		const add = declaration(facts, "Add", "method");
 		const call = facts.references.find((item) => item.name === "Add" && item.role === "call");
 		const valueWrite = facts.references.find((item) => item.name === "Value" && item.role === "write");
@@ -219,7 +223,8 @@ describe("C# facts", () => {
 
 	it("reports a same-class call named add", () => {
 		const text = "public class Cart { public void add() {} public void run() { add(); } }";
-		const facts = new CsharpProvider().parseFile({ module: "cart.cs", contentHash: "hash", text });
+		const provider = new CsharpProvider();
+		const facts = parseThroughKit(provider, { module: "cart.cs", contentHash: "hash", text });
 		const method = declaration(facts, "add", "method");
 		const call = facts.references.find((item) => item.name === "add" && item.role === "call");
 		if (call === undefined) throw new Error("add call reference missing");
@@ -235,11 +240,10 @@ describe("C# workspace resolution", () => {
 				"using Demo.Items; namespace Demo { public class Cart { public Item Make() { return new Item(); } } }\n",
 		});
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
+		startProvider(provider, root);
 		const text =
 			"using Demo.Items; namespace Demo { public class Cart { public Item Make() { return new Item(); } } }\n";
-		const facts = provider.parseFile({ module: "src/cart.cs", contentHash: "hash", text });
+		const facts = parseThroughKit(provider, { module: "src/cart.cs", contentHash: "hash", text });
 		expect(provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Demo.Items" })).toEqual({
 			status: "resolved",
 			module: "src/item.cs",
@@ -247,27 +251,29 @@ describe("C# workspace resolution", () => {
 		const itemUse = facts.references.find((item) => item.name === "Item" && item.role === "instantiate");
 		if (itemUse === undefined) throw new Error("imported type reference missing");
 		expect(itemUse.binding.status).toBe("bound");
+		expect(provider.store.peek("src/item.cs")?.namespaceNames).toContain("Demo.Items");
+		expect(provider.store.peek("src/item.cs")?.metadata.size).toBeGreaterThan(0);
+		expect(provider.store.text("src/item.cs")?.depth).toBe("outline");
 	});
 
 	it("stops resolving into a file the index let go of, until it is parsed again", () => {
 		const item = "namespace Demo.Items { public class Item {} }\n";
 		const root = workspace({ "src/item.cs": item, "src/copy.cs": item });
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
+		const handlers = startProvider(provider, root);
 		const resolve = () => provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Demo.Items" });
 		expect(resolve()).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 
-		provider.forgetModule({ module: "src/copy.cs" });
+		handlers.forgetModule?.({ module: "src/copy.cs" });
 		expect(resolve()).toEqual({ status: "resolved", module: "src/item.cs" });
 
-		provider.parseFile({ module: "src/copy.cs", contentHash: "back", text: item });
+		handlers.parseFile({ module: "src/copy.cs", contentHash: "back", text: item });
 		expect(resolve()).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 	});
 
 	it("classifies standard library namespaces as external and missing namespaces as unresolved", () => {
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
+		startProvider(provider);
 		expect(provider.resolveImport({ fromModule: "main.cs", specifier: "System.Text" })).toEqual({
 			status: "external",
 			packageName: "System.Text",
@@ -284,10 +290,9 @@ describe("C# workspace resolution", () => {
 			"b.cs": "namespace N { public partial class C { public void Other() {} public void Other(int value) {} } }\n",
 		});
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
+		startProvider(provider, root);
 		const text = "namespace N { public partial class C { public void Use() { Other(); } } }\n";
-		const facts = provider.parseFile({ module: "a.cs", contentHash: "hash", text });
+		const facts = parseThroughKit(provider, { module: "a.cs", contentHash: "hash", text });
 		const reference = facts.references.find((item) => item.name === "Other" && item.role === "call");
 		if (reference === undefined) throw new Error("partial member reference missing");
 		expect(reference.binding).toMatchObject({ status: "ambiguous" });
@@ -299,9 +304,8 @@ describe("C# workspace resolution", () => {
 			"b.cs": "namespace N { public class Other { public void Run() {} } }\n",
 		});
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
-		const facts = provider.parseFile({
+		startProvider(provider, root);
+		const facts = parseThroughKit(provider, {
 			module: "a.cs",
 			contentHash: "hash",
 			text: "namespace N { public class C { public void Use() { Other(); } } }\n",
@@ -313,8 +317,7 @@ describe("C# workspace resolution", () => {
 			reason: "NotIndexed",
 			detail: "no declaration matches this C# reference",
 		});
-		const parsedFacts = (provider as unknown as { parsedFacts: Map<string, unknown> }).parsedFacts;
-		expect([...parsedFacts.keys()]).toEqual(["a.cs"]);
+		expect(provider.store.peek("b.cs")).toBeUndefined();
 	});
 });
 
@@ -325,8 +328,7 @@ describe("a using directive resolves to what the index holds", () => {
 
 	function scanned(root: string): CsharpProvider {
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
+		startProvider(provider, root);
 		return provider;
 	}
 
@@ -411,12 +413,12 @@ describe("a using directive resolves to what the index holds", () => {
 		const provider = scanned(root);
 		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 
-		provider.forgetModule({ module: "src/copy.cs" });
-		provider.discoverProject(root);
+		handlersOf(provider).forgetModule?.({ module: "src/copy.cs" });
+		handlersOf(provider).discoverProject({ workspaceRoot: root });
 		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
 
-		provider.initialize(root);
-		provider.discoverProject(root);
+		handlersOf(provider).initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		handlersOf(provider).discoverProject({ workspaceRoot: root });
 		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 	});
 });
@@ -424,13 +426,17 @@ describe("a using directive resolves to what the index holds", () => {
 describe("C# protocol behavior", () => {
 	it("reports syntax errors and keeps the declarations under attributes", () => {
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
-		const valid = provider.parseFile({
+		startProvider(provider);
+		const valid = parseThroughKit(provider, {
 			module: "valid.cs",
 			contentHash: "hash",
 			text: "[System.Obsolete] public class C { [System.Obsolete] public int Value { get; set; } }",
 		});
-		const broken = provider.parseFile({ module: "broken.cs", contentHash: "hash", text: "public class {\n" });
+		const broken = parseThroughKit(provider, {
+			module: "broken.cs",
+			contentHash: "hash",
+			text: "public class {\n",
+		});
 		expect(valid.diagnostics).toEqual([]);
 		expect(valid.declarations.map((item) => item.name)).toEqual(["C", "Value"]);
 		expect(broken.diagnostics.some((item) => item.severity === "error")).toBe(true);
@@ -438,14 +444,14 @@ describe("C# protocol behavior", () => {
 
 	it("honors outline depth while retaining declarations, imports, and diagnostics", () => {
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
-		const outline = provider.parseFile({
+		startProvider(provider);
+		const outline = parseThroughKit(provider, {
 			module: "outline.cs",
 			contentHash: "hash",
 			depth: "outline",
 			text: "using Demo; public class C { public void Run() { Missing(); } const int Value = 1; }",
 		});
-		const broken = provider.parseFile({
+		const broken = parseThroughKit(provider, {
 			module: "broken-outline.cs",
 			contentHash: "hash",
 			depth: "outline",
@@ -470,17 +476,15 @@ describe("C# protocol behavior", () => {
 			"obj/ignored.cs": "public class Ignored {}",
 			"src/project.csproj": "<Project />",
 		});
-		const model = new CsharpProvider().discoverProject(root);
+		const model = new CsharpProvider().discoverProject(root, null).model;
 		expect(model.files).toEqual(["src/a.cs"]);
 		expect(model.configFiles).toEqual(["src/project.csproj"]);
 	});
 
 	it("answers every protocol method and refuses unsupported edits", () => {
 		const provider = new CsharpProvider();
-		provider.initialize("/workspace");
-		expect(Object.keys(handlersFor(provider)).sort()).toEqual(
-			[...PROVIDER_METHODS, ...PROVIDER_NOTIFICATIONS].sort(),
-		);
+		const handlers = startProvider(provider);
+		expect(Object.keys(handlers).sort()).toEqual([...PROVIDER_METHODS, ...PROVIDER_NOTIFICATIONS].sort());
 		expect(TIERS).toMatchObject({ projectModel: true, declarations: true, syntaxDiagnostics: true });
 		expect(REFERENCE_ROLES).toEqual([
 			"call",

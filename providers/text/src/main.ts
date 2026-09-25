@@ -48,8 +48,6 @@ export const WORDS = {
 };
 
 export class TextProvider implements ProviderMethods {
-	/** Holds nothing across parses. */
-	readonly admission = null;
 	private workspaceRoot = process.cwd();
 
 	initialize(workspaceRoot: string) {

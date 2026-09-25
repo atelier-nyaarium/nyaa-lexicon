@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { type ImportResolution, type ProjectModel, walkWorkspace } from "@nyaa-lexicon/protocol";
-import { parseRustFile } from "./parser.js";
+import { type ImportResolution, type ModuleStore, type ProjectModel, walkWorkspace } from "@nyaa-lexicon/protocol";
+import type { ParsedFile } from "./model.js";
 import { tokenize } from "./tokens.js";
 
 export const RUST_EXTENSIONS = [".rs"] as const;
@@ -104,27 +104,10 @@ export function discoverRustProject(workspaceRoot: string): { state: RustProject
 }
 
 export class RustProjectResolver {
-	private state: RustProjectState;
+	constructor(private readonly store: ModuleStore<ParsedFile, RustProjectState, never>) {}
 
-	/** Top-level declaration names per module, with the text they were parsed from. */
-	private readonly topLevelNames = new Map<string, { text: string; names: Set<string> }>();
-
-	/**
-	 * `holdsNothing` is the index's word, not the disk's: a module it holds nothing for declares
-	 * nothing here either, however readable its bytes still are.
-	 */
-	constructor(
-		workspaceRoot: string,
-		private readonly holdsNothing: (module: string) => boolean = () => false,
-	) {
-		this.state = discoverRustProject(workspaceRoot).state;
-	}
-
-	reset(workspaceRoot: string): ProjectModel {
-		const result = discoverRustProject(workspaceRoot);
-		this.state = result.state;
-		this.topLevelNames.clear();
-		return result.model;
+	private get state(): RustProjectState {
+		return this.store.project;
 	}
 
 	get root(): string {
@@ -242,24 +225,19 @@ export class RustProjectResolver {
 		return this.existingModule(parentNamespace, this.rootForModule(module));
 	}
 
-	/** Asked per reference; unchanged text parses once. */
 	private moduleHasDeclaration(module: string, name: string): boolean {
-		if (this.holdsNothing(module)) return false;
-		const absolute = path.join(this.state.root, ...module.split("/"));
-		if (!existsSync(absolute) || !statSync(absolute).isFile()) return false;
-		try {
-			const text = readFileSync(absolute, "utf8");
-			const held = this.topLevelNames.get(module);
-			if (held !== undefined && held.text === text) return held.names.has(name);
-			const names = new Set(
-				parseRustFile(module, text)
-					.declarations.filter((declaration) => declaration.containerId === undefined)
-					.map((declaration) => declaration.name),
-			);
-			this.topLevelNames.set(module, { text, names });
-			return names.has(name);
-		} catch {
-			return false;
-		}
+		if (this.store.withheld(module)) return false;
+		const facts = this.store.load(module);
+		if (facts === undefined) return false;
+		const names = this.store.memo(
+			`rust-top-level-names:${module}`,
+			() =>
+				new Set(
+					facts.declarations
+						.filter((declaration) => declaration.containerId === undefined)
+						.map((declaration) => declaration.name),
+				),
+		);
+		return names.has(name);
 	}
 }

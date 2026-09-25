@@ -1,7 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
 import {
-	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -11,6 +8,7 @@ import {
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	moduleStore,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -23,12 +21,11 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
-	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import type { ImportBinding, ParsedFile, RawDeclaration, RawReference } from "./model.js";
 import { parseRustFile } from "./parser.js";
-import { RustProjectResolver } from "./project.js";
+import { discoverRustProject, RustProjectResolver, type RustProjectState } from "./project.js";
 
 export const LANGUAGE = "rust";
 export const EXTENSIONS = [".rs"] as const;
@@ -178,24 +175,19 @@ function parseFailure(module: string, detail: string): ParsedFile {
 	};
 }
 
-export class RustProvider {
-	private workspaceRoot = process.cwd();
-	private readonly parsedFacts = new Map<string, ParsedFile>();
-	/** What the index took, so an imported name resolves to what it holds. */
-	readonly admission = new AdmissionLedger<ParsedFile>({
-		snapshot: (module) => this.parsedFacts.get(module),
-		restore: (module, held) => {
-			if (held === undefined) this.parsedFacts.delete(module);
-			else this.parsedFacts.set(module, held);
-		},
-	});
-	private resolver = this.newResolver();
+function readRustFile(module: string, text: string, depth: IndexDepth): ParsedFile {
+	try {
+		return parseRustFile(module, text, depth === "outline" ? "outline" : "full");
+	} catch (error) {
+		return parseFailure(module, error instanceof Error ? error.message : String(error));
+	}
+}
 
-	initialize(workspaceRoot: string) {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.resolver = this.newResolver();
-		this.parsedFacts.clear();
-		this.admission.reset();
+export class RustProvider {
+	readonly store = moduleStore<ParsedFile, RustProjectState>({ read: readRustFile });
+	private readonly resolver = new RustProjectResolver(this.store);
+
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "rust-provider",
 			language: LANGUAGE,
@@ -207,23 +199,17 @@ export class RustProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.parsedFacts.clear();
-		return this.resolver.reset(this.workspaceRoot);
+	discoverProject(workspaceRoot: string): { model: ProjectModel; project: RustProjectState } {
+		const discovered = discoverRustProject(workspaceRoot);
+		return { model: discovered.model, project: discovered.state };
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		facts: ParsedFile,
+	) {
 		const outline = params.depth === "outline";
-		let facts: ParsedFile;
-		try {
-			facts = parseRustFile(params.module, params.text, outline ? "outline" : "full");
-		} catch (error) {
-			facts = parseFailure(params.module, error instanceof Error ? error.message : String(error));
-		}
-		this.parsedFacts.set(params.module, facts);
 		const references = outline ? [] : this.wireReferences(facts);
-		facts.references = references;
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -286,35 +272,8 @@ export class RustProvider {
 		return notImplementedMove("Rust move edits are not implemented");
 	}
 
-	/** The index let this module go, or refused the parse it holds nothing from. */
-	forgetModule(params: { module: string }): void {
-		this.parsedFacts.delete(params.module);
-		this.admission.forgotten(params.module);
-	}
-
-	private newResolver(): RustProjectResolver {
-		return new RustProjectResolver(this.workspaceRoot, (module) => this.holdsNothing(module));
-	}
-
-	/** Nothing held and no fill allowed: the index holds this module not at all. */
-	private holdsNothing(module: string): boolean {
-		return !this.parsedFacts.has(module) && !this.admission.fillable(module);
-	}
-
 	private factsForModule(module: string): ParsedFile | null {
-		const cached = this.parsedFacts.get(module);
-		if (cached !== undefined) return cached;
-		// A file the index does not hold must not come back through a read of its own bytes.
-		if (!this.admission.fillable(module)) return null;
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
-		try {
-			const facts = parseRustFile(module, readFileSync(absolute, "utf8"));
-			this.parsedFacts.set(module, facts);
-			return facts;
-		} catch {
-			return null;
-		}
+		return this.store.load(module) ?? null;
 	}
 
 	private wireReferences(facts: ParsedFile): Reference[] {

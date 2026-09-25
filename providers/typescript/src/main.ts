@@ -1,13 +1,15 @@
 // The TypeScript provider and its wire handlers.
 
+import path from "node:path";
 import {
-	AdmissionLedger,
+	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
+	type ProjectModel,
 	parseSymbolId,
 	runProviderOnStdio,
 	serveProvider,
@@ -15,24 +17,20 @@ import {
 import ts from "typescript";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { TypeScriptAnalyzer } from "./analyzer.js";
-import { isDeclarationModule, isLikelyBundle } from "./bundle.js";
+import { isDeclarationModule } from "./bundle.js";
 import { extractComments } from "./comments.js";
 import { extractFile, LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
+import {
+	createTypeScriptProject,
+	createTypeScriptStore,
+	syntaxErrors,
+	type TypeScriptProject,
+	type TypeScriptValue,
+} from "./module.js";
 import { isValidTargetModule } from "./move.js";
 import { type LoadedProject, loadProject, renderSpecifier, resolveSpecifier, toModule } from "./project.js";
 import { extractSurfaceFile } from "./surface.js";
-
-////////////////////////////////
-//  Interfaces & Types
-
-/** What a module holds across parses: its overlay text, its Program root, whether it is a runtime surface. */
-interface HeldModule {
-	overlay: string | undefined;
-	/** Unknown before the analyzer exists. */
-	rooted: boolean | undefined;
-	surface: boolean;
-}
 
 ////////////////////////////////
 //  Constants
@@ -152,33 +150,10 @@ export const REFERENCE_ROLES = ["call", "read", "write", "typeUse", "instantiate
 ////////////////////////////////
 //  Class
 
-/** Holds the loaded project between calls, so a tsconfig is parsed once rather than per file. */
 export class TypeScriptProvider {
-	private workspaceRoot = process.cwd();
-	private project: LoadedProject | null = null;
-	private analyzer: TypeScriptAnalyzer | null = null;
-	private readonly runtimeSurfaces = new Set<string>();
-	/** What the index took, so a use binds into what it holds and not into the Program's disk read. */
-	readonly admission = new AdmissionLedger<HeldModule>({
-		snapshot: (module) => ({
-			overlay: this.analyzer?.overlayText(module),
-			rooted: this.analyzer?.rooted(module),
-			surface: this.runtimeSurfaces.has(module),
-		}),
-		restore: (module, held) => {
-			this.analyzer?.restoreFile(module, held?.overlay, held?.rooted);
-			if (held?.surface === true) this.runtimeSurfaces.add(module);
-			else this.runtimeSurfaces.delete(module);
-		},
-	});
+	readonly store = createTypeScriptStore();
 
-	initialize(workspaceRoot: string) {
-		this.analyzer?.dispose();
-		this.workspaceRoot = workspaceRoot;
-		this.project = null;
-		this.analyzer = null;
-		this.runtimeSurfaces.clear();
-		this.admission.reset();
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "typescript-provider",
 			language: LANGUAGE,
@@ -190,57 +165,69 @@ export class TypeScriptProvider {
 		};
 	}
 
-	private loaded(): LoadedProject {
-		this.project ??= loadProject(this.workspaceRoot);
-		return this.project;
-	}
-
 	private analyzed(): TypeScriptAnalyzer {
-		this.analyzer ??= new TypeScriptAnalyzer(this.workspaceRoot, this.loaded(), (module) =>
-			this.holdsNothing(module),
-		);
-		return this.analyzer;
+		const project = this.store.project;
+		project.analyzer ??= new TypeScriptAnalyzer(this.store, project);
+		return project.analyzer;
 	}
 
-	/** No text of ours and no disk read the index allows: it holds this module not at all. */
-	private holdsNothing(module: string): boolean {
-		return !this.admission.fillable(module) && this.analyzer?.overlayText(module) === undefined;
-	}
-
-	discoverProject() {
-		const project = this.loaded();
-		const files = project.files
-			.map((file) => toModule(this.workspaceRoot, file))
-			.filter((module): module is string => module !== null);
+	discoverProject(
+		workspaceRoot: string,
+		previous: TypeScriptProject | undefined,
+	): { model: ProjectModel; project: TypeScriptProject } {
+		const root = path.resolve(workspaceRoot);
+		const sameRoot = previous?.root === root;
+		if (!sameRoot) previous?.analyzer?.dispose();
+		const loaded = sameRoot && previous !== undefined ? previous.loaded : loadProject(root);
+		const discovered =
+			loaded.configFiles.length === 0
+				? discoverByWalk(root, { extensions: EXTENSIONS })
+				: {
+						files: loaded.files
+							.map((file) => toModule(root, file))
+							.filter((module): module is string => module !== null),
+						configFiles: loaded.configFiles.map((file) => toModule(root, file) ?? file),
+						diagnostics: loaded.diagnostics,
+					};
+		const projectLoaded: LoadedProject = {
+			...loaded,
+			files: discovered.files.map((module) => path.resolve(root, module)),
+		};
+		const project = sameRoot && previous !== undefined ? previous : createTypeScriptProject(root, projectLoaded);
+		if (sameRoot) {
+			project.loaded.files = projectLoaded.files;
+			project.roots.clear();
+			for (const file of projectLoaded.files) project.roots.add(path.resolve(file));
+		}
 
 		return {
-			files,
-			externalRoots: [],
-			configFiles: project.configFiles.map((file) => toModule(this.workspaceRoot, file) ?? file),
-			diagnostics: project.diagnostics,
+			model: {
+				files: discovered.files,
+				externalRoots: [],
+				configFiles: discovered.configFiles,
+				diagnostics: discovered.diagnostics,
+			},
+			project,
 		};
 	}
 
-	/**
-	 * Parse the text the core supplied, never what is on disk.
-	 *
-	 * An editor's buffer differs from disk constantly, and answering about the saved version while
-	 * a caller asks about the open one is a whole class of wrong-but-plausible answers.
-	 */
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
-		if (this.isSurface(params)) {
+	/** Parse supplied text, never disk. */
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		value: TypeScriptValue,
+	) {
+		if (value.surface) {
 			const extracted = extractSurfaceFile(params.module, params.text);
-			if (!isDeclarationModule(params.module)) this.runtimeSurfaces.add(params.module);
 			return {
 				module: params.module,
 				contentHash: params.contentHash,
 				...extracted,
-				// Echoed so a self-detected surface is never stored as full under an outline request.
+				// Keep detected surfaces at surface depth.
 				depth: "surface" as const,
 			};
 		}
 
-		// Outline parsing skips binding and type analysis.
+		// Outline parses skip binding and type analysis.
 		if (params.depth === "outline") {
 			const source = ts.createSourceFile(
 				params.module,
@@ -250,8 +237,6 @@ export class TypeScriptProvider {
 				scriptKindOf(params.module),
 			);
 			const extracted = extractFile(params.module, source);
-			// Outline parsing reports syntax diagnostics without binding analysis.
-			const parseProblems = (source as unknown as { parseDiagnostics?: ts.Diagnostic[] }).parseDiagnostics ?? [];
 			return {
 				module: params.module,
 				contentHash: params.contentHash,
@@ -260,18 +245,14 @@ export class TypeScriptProvider {
 				imports: extracted.imports,
 				literals: [],
 				comments: [],
-				diagnostics: parseProblems.map((problem) => ({
-					severity: "error" as const,
-					message: ts.flattenDiagnosticMessageText(problem.messageText, " "),
-				})),
+				diagnostics: syntaxErrors(params.module, source),
 				depth: "outline" as const,
 			};
 		}
 
-		this.runtimeSurfaces.delete(params.module);
 		const analyzer = this.analyzed();
 		const source =
-			analyzer.updateFile(params.module, params.text) ??
+			analyzer.sourceFile(params.module) ??
 			ts.createSourceFile(params.module, params.text, ts.ScriptTarget.ESNext, true, scriptKindOf(params.module));
 		const extracted = analyzer.extract(params.module, source, params.contentHash);
 		const references = extracted.references.map((reference) => ({
@@ -300,13 +281,14 @@ export class TypeScriptProvider {
 		surfaceGlobs?: string[] | undefined;
 	}): ImportResolution {
 		const resolution = resolveSpecifier(
-			this.workspaceRoot,
+			this.store.root,
 			params.fromModule,
 			params.specifier,
-			this.loaded().options,
+			this.store.project.loaded.options,
 			params.surfaceGlobs,
+			(module) => this.runtimeSurface(module),
 		);
-		if (resolution.status === "resolved" && this.holdsNothing(resolution.module)) {
+		if (resolution.status === "resolved" && this.store.withheld(resolution.module)) {
 			return {
 				status: "unresolved",
 				reason: "NotIndexed",
@@ -321,14 +303,16 @@ export class TypeScriptProvider {
 		name: string;
 		range: { start: { line: number; character: number }; end: { line: number; character: number } };
 	}) {
-		if (this.runtimeSurfaces.has(params.module)) {
-			return {
-				status: "unbound" as const,
-				reason: "DynamicallyTyped" as const,
-				detail: "bundle surfaces do not retain implementation bindings",
-			};
-		}
-		return this.analyzed().bind(params.module, params.name, params.range);
+		return this.withModuleText(params.module, () => {
+			if (this.runtimeSurface(params.module)) {
+				return {
+					status: "unbound" as const,
+					reason: "DynamicallyTyped" as const,
+					detail: "bundle surfaces do not retain implementation bindings",
+				};
+			}
+			return this.analyzed().bind(params.module, params.name, params.range);
+		});
 	}
 
 	typeOf(
@@ -340,14 +324,17 @@ export class TypeScriptProvider {
 			  },
 	) {
 		const module = "symbolId" in params ? parseSymbolId(params.symbolId)?.module : params.module;
-		if (module !== undefined && this.runtimeSurfaces.has(module)) {
-			return {
-				status: "unknown" as const,
-				reason: "DynamicallyTyped" as const,
-				detail: "a JavaScript bundle does not retain source types",
-			};
-		}
-		return this.analyzed().typeOf(params);
+		if (module === undefined) return this.analyzed().typeOf(params);
+		return this.withModuleText(module, () => {
+			if (this.runtimeSurface(module)) {
+				return {
+					status: "unknown" as const,
+					reason: "DynamicallyTyped" as const,
+					detail: "a JavaScript bundle does not retain source types",
+				};
+			}
+			return this.analyzed().typeOf(params);
+		});
 	}
 
 	renameEdits(params: Parameters<TypeScriptAnalyzer["renameEdits"]>[0]) {
@@ -355,24 +342,19 @@ export class TypeScriptProvider {
 	}
 
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
-		if (!isValidTargetModule(this.workspaceRoot, params.toModule)) {
+		if (!isValidTargetModule(this.store.root, params.toModule)) {
 			return {
 				status: "refused",
 				reason: "InvalidTarget",
 				detail: `the target is not a TypeScript module: ${params.toModule}`,
 			};
 		}
-		const options = this.loaded().options;
+		const options = this.store.project.loaded.options;
 		return this.analyzed().moveEdits(params, (fromModule, targetModule, preferredSpecifier) =>
-			renderSpecifier(this.workspaceRoot, fromModule, targetModule, options, preferredSpecifier),
+			renderSpecifier(this.store.root, fromModule, targetModule, options, preferredSpecifier, (module) =>
+				this.runtimeSurface(module),
+			),
 		);
-	}
-
-	/** The index let this module go, or refused the parse it holds nothing from. */
-	forgetModule(params: { module: string }): void {
-		this.analyzer?.forgetModule(params.module);
-		this.runtimeSurfaces.delete(params.module);
-		this.admission.forgotten(params.module);
 	}
 
 	programStats() {
@@ -380,19 +362,31 @@ export class TypeScriptProvider {
 	}
 
 	shutdown() {
-		this.analyzer?.dispose();
-		this.analyzer = null;
-		this.runtimeSurfaces.clear();
-		this.admission.reset();
+		const project = this.currentProject();
+		project?.analyzer?.dispose();
+		if (project !== undefined) project.analyzer = undefined;
 		return {};
 	}
 
-	private isSurface(params: { module: string; text: string; depth?: IndexDepth | undefined }): boolean {
-		return (
-			params.depth === "surface" ||
-			params.module.split("/").includes("node_modules") ||
-			isLikelyBundle(params.module, params.text)
-		);
+	private runtimeSurface(module: string): boolean {
+		return this.store.load(module)?.surface === true && !isDeclarationModule(module);
+	}
+
+	private withModuleText<T>(module: string, run: () => T): T {
+		const held = this.store.text(module);
+		if (held === undefined) return run();
+		const project = this.store.project;
+		const absolute = path.resolve(project.root, module.replace(/\\/g, "/"));
+		if (project.roots.has(absolute) || this.store.get("root").includes(module)) return run();
+		return this.store.withText(module, held.text, run);
+	}
+
+	private currentProject(): TypeScriptProject | undefined {
+		try {
+			return this.store.project;
+		} catch {
+			return undefined;
+		}
 	}
 }
 

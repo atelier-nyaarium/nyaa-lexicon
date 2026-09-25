@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { Declaration, Reference } from "@nyaa-lexicon/protocol";
+import type { Declaration, handlersFor, Reference } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
+import { parseThroughKit, startProvider } from "./harness.js";
 
 const TEXT = [
 	"using System;",
@@ -21,12 +22,12 @@ const TEXT = [
 	"",
 ].join("\n");
 
-type Facts = ReturnType<CsharpProvider["parseFile"]>;
+type Facts = ReturnType<ReturnType<typeof handlersFor>["parseFile"]>;
 
 function parse(text = TEXT): { provider: CsharpProvider; facts: Facts } {
 	const provider = new CsharpProvider();
-	provider.initialize("/workspace");
-	return { provider, facts: provider.parseFile({ module: "attributes.cs", contentHash: "hash", text }) };
+	startProvider(provider);
+	return { provider, facts: parseThroughKit(provider, { module: "attributes.cs", contentHash: "hash", text }) };
 }
 
 function declared(facts: Facts, name: string, kind?: Declaration["kind"]): Declaration {

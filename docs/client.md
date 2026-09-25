@@ -140,6 +140,10 @@ request was already sent is not repeated, since the daemon may have applied it: 
 `DaemonError` with cause `connectionLost` and an unknown outcome. The table's `mutates` flag is what
 tells the two apart. A connection lost twice is a `DaemonError`.
 
+Each request waits on its answer for its entry's `budget` (`answerBudgetMs`). Past it, that request
+alone fails with cause `requestTimeout`, an unknown outcome for a write. The socket stays open, the
+request is not asked again, and a late answer is dropped.
+
 `session.moduleFacts({ module })` and `session.parseFacts({ module, text })` answer `PaintFacts`
 (`docs/daemon-protocol.md`'s Painting section): a module's declarations, references, literals,
 comments and the owning provider's own words, shaped for a client that paints code from facts
@@ -158,11 +162,11 @@ message.
   longer holds an install.
 - `Incompatible`, with `client` and `installed`: the two protocol majors cannot meet, the
   install's before any lock, the daemon's at welcome.
-- `DaemonError`, with a closed `cause` of `unknownMethod`, `refusedModule`, `spawnFailed`,
-  `connectionLost`, `closed`, `notRunning` or `daemon`, plus `waitingFor` when a wait ran out and
-  `code` when the frame named one structurally (today only `"stopping"`), separate from `cause`
-  and from matching prose. A refusal a daemon answered carries `from`, a `DaemonRef` naming that
-  daemon for `stopDaemon(from)`; its token never leaves the client, so logging one leaks nothing.
+- `DaemonError`, with a closed `cause`: `unknownMethod`, `refusedModule`, `spawnFailed`,
+  `connectionLost`, `requestTimeout`, `closed`, `notRunning` or `daemon`. `waitingFor` appears
+  when a wait expires. `code` carries the structural frame code (`"stopping"`), apart
+  from `cause` and the message. A daemon refusal includes `from`, a `DaemonRef` for
+  `stopDaemon(from)`. `DaemonRef` keeps its token private, so logging the ref does not expose it.
 
 An unbuilt install or missing Bun runtime has cause `spawnFailed`. An unsuitable workspace or a
 startup timeout has cause `daemon`.

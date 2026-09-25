@@ -3,7 +3,6 @@ import type {
 	Declaration,
 	Diagnostic,
 	Import,
-	ImportedName,
 	Literal,
 	Position,
 	Range,

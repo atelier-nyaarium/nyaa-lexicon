@@ -1,8 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import {
 	comparePositions,
-	composeSymbolId,
 	coordinatesOf,
 	type Declaration,
 	defined,
@@ -11,23 +8,12 @@ import {
 	type TypeInfo,
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
-import {
-	extractDeclarationsCore,
-	extractTypeAnnotationsCore,
-	headerEndLine,
-	type TypeAnnotationFact,
-} from "./extractCore.js";
+import { headerEndLine, type TypeAnnotationFact } from "./extractCore.js";
+import type { GDScriptStore, GDScriptValue } from "./module.js";
 
 //////// Types
 
 type Range = Declaration["range"];
-
-export interface TypeFacts {
-	module: string;
-	declarations: Declaration[];
-	annotations: TypeAnnotationFact[];
-	inferred: Map<string, TypeInfo>;
-}
 
 interface TypeResolver {
 	resolveType(module: string, name: string): Declaration | undefined;
@@ -93,13 +79,6 @@ interface InferenceContext {
 
 function positionInRange(range: Range, position: Range["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
-}
-
-function absoluteModule(workspaceRoot: string, module: string): string | null {
-	const absolute = path.resolve(workspaceRoot, ...module.split("/"));
-	const relative = path.relative(workspaceRoot, absolute);
-	if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-	return absolute;
 }
 
 function unknownType(reason: UnknownReason, detail: string): TypeInfo {
@@ -988,54 +967,28 @@ function countReturns(functionFact: FunctionFact, lines: InferenceLine[]): numbe
 //////// Index
 
 export class GDScriptTypeIndex {
-	private readonly factsByModule = new Map<string, TypeFacts>();
-
 	constructor(
-		private readonly workspaceRoot: string,
+		private readonly store: GDScriptStore,
 		private readonly resolver: TypeResolver,
-		private readonly fillable: (module: string) => boolean,
 	) {}
-
-	registerFile(module: string, text: string, declarations: Declaration[]): void {
-		const annotations = extractTypeAnnotationsCore(module, text, composeSymbolId);
-		this.factsByModule.set(module, {
-			module,
-			declarations,
-			annotations,
-			inferred: inferFile(module, declarations, annotations, text, this.resolver),
-		});
-	}
-
-	snapshot(module: string): TypeFacts | undefined {
-		return this.factsByModule.get(module);
-	}
-
-	restore(module: string, snapshot: TypeFacts | undefined): void {
-		if (snapshot === undefined) this.factsByModule.delete(module);
-		else this.factsByModule.set(module, snapshot);
-	}
-
-	forget(module: string): void {
-		this.factsByModule.delete(module);
-	}
 
 	typeOf(params: { symbolId: string } | { module: string; range: Range }): TypeInfo {
 		if ("symbolId" in params) return this.typeOfSymbol(params.symbolId);
-		const facts = this.factsForModule(params.module);
-		if (facts === null) return unknownType("NotIndexed", "module is not indexed");
+		const value = this.store.load(params.module, "full");
+		if (value === undefined) return unknownType("NotIndexed", "module is not indexed");
 
 		const position = params.range.start;
-		const annotation = facts.annotations.find(
+		const annotation = value.annotations.find(
 			(candidate) =>
 				positionInRange(candidate.targetRange, position) || positionInRange(candidate.typeRange, position),
 		);
-		if (annotation !== undefined) return declaredType(facts.module, annotation, this.resolver);
+		if (annotation !== undefined) return declaredType(params.module, annotation, this.resolver);
 
-		const declaration = facts.declarations.find(
+		const declaration = value.declarations.find(
 			(candidate) =>
 				candidate.selectionRange !== undefined && positionInRange(candidate.selectionRange, position),
 		);
-		if (declaration !== undefined) return this.typeOfDeclaration(facts, declaration);
+		if (declaration !== undefined) return this.typeOfDeclaration(params.module, value, declaration);
 		return unknownType("NotIndexed", "no indexed declaration or annotation matched the requested range");
 	}
 
@@ -1044,36 +997,28 @@ export class GDScriptTypeIndex {
 		if (parsed === null || parsed.language !== "gdscript") {
 			return unknownType("ParseError", "the symbol id is not a GDScript workspace id");
 		}
-		const facts = this.factsForModule(parsed.module);
-		if (facts === null) return unknownType("NotIndexed", "module is not indexed");
-		const declaration = facts.declarations.find((candidate) => candidate.symbolId === symbolId);
+		const value = this.store.load(parsed.module, "full");
+		if (value === undefined) return unknownType("NotIndexed", "module is not indexed");
+		const declaration = value.declarations.find((candidate) => candidate.symbolId === symbolId);
 		if (declaration === undefined) return unknownType("ParseError", "the symbol id has no declaration");
-		return this.typeOfDeclaration(facts, declaration);
+		return this.typeOfDeclaration(parsed.module, value, declaration);
 	}
 
-	private typeOfDeclaration(facts: TypeFacts, declaration: Declaration): TypeInfo {
-		const annotation = facts.annotations.find((candidate) => candidate.symbolId === declaration.symbolId);
-		if (annotation !== undefined) return declaredType(facts.module, annotation, this.resolver);
+	private typeOfDeclaration(module: string, value: GDScriptValue, declaration: Declaration): TypeInfo {
+		const annotation = value.annotations.find((candidate) => candidate.symbolId === declaration.symbolId);
+		if (annotation !== undefined) return declaredType(module, annotation, this.resolver);
 		return (
-			facts.inferred.get(declaration.symbolId) ??
+			this.inferred(module, value).get(declaration.symbolId) ??
 			unknownType("NotImplemented", "GDScript inference has no answer for this declaration")
 		);
 	}
 
-	private factsForModule(module: string): TypeFacts | null {
-		const cached = this.factsByModule.get(module);
-		if (cached !== undefined) return cached;
-		// A module the index does not hold must not return through a read of its own bytes.
-		if (!this.fillable(module)) return null;
-		const absolute = absoluteModule(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute)) return null;
-		try {
-			const text = readFileSync(absolute, "utf8");
-			const declarations = extractDeclarationsCore(module, text, composeSymbolId) as Declaration[];
-			this.registerFile(module, text, declarations);
-			return this.factsByModule.get(module) ?? null;
-		} catch {
-			return null;
-		}
+	private inferred(module: string, value: GDScriptValue): Map<string, TypeInfo> {
+		return this.store.memo(`infer:${module}`, () => {
+			const text = this.store.text(module)?.text;
+			return text === undefined
+				? new Map()
+				: inferFile(module, value.declarations, value.annotations, text, this.resolver);
+		});
 	}
 }

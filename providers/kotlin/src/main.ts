@@ -1,7 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -10,6 +9,7 @@ import {
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	moduleStore,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -19,19 +19,17 @@ import {
 	type Reference,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
-	readSourceFile,
 	runProviderOnStdio,
-	type SourceFileRead,
+	type StoreProvider,
 	type TypeInfo,
 	type UnknownReason,
 	walkWorkspace,
 	serveProvider as wireProvider,
-	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { ReferenceBinder } from "./binding.js";
 import { type KotlinFile, LANGUAGE, REFERENCE_ROLES, type TypeFact } from "./facts.js";
-import { cleanSpecifier, fileSite, type ModuleHeaders, PackageIndex } from "./packageIndex.js";
+import { cleanSpecifier, fileSite, PackageIndex, type PackageIndexEntry } from "./packageIndex.js";
 import { parseKotlin } from "./parse.js";
 
 export const TIERS = {
@@ -171,15 +169,24 @@ export { LANGUAGE, REFERENCE_ROLES };
 
 type RangeLike = Declaration["range"];
 
-/** What a parse displaces for its module: the full parse, the index headers, the unread mark. */
-interface HeldModule {
-	facts: KotlinFile | undefined;
-	headers: ModuleHeaders | undefined;
-	unread: boolean;
-	/** Whether the index had been filled. */
-	filled: boolean;
-	/** What a fill would fall back on. */
-	fallback: ModuleHeaders | undefined;
+function packageEntries(module: string, facts: KotlinFile): Iterable<readonly [string, PackageIndexEntry]> {
+	const packageName = facts.packageName ?? "";
+	const entries: [string, PackageIndexEntry][] = [[`pkg:${packageName}`, module]];
+	const segments = packageName.split(".");
+	for (let length = 1; length <= segments.length; length++)
+		entries.push([`prefix:${segments.slice(0, length).join(".")}`, module]);
+	for (const declaration of facts.declarations) {
+		if (declaration.kind === "package") continue;
+		const indexed = { declaration, module };
+		entries.push([`id:${declaration.symbolId}`, indexed]);
+		entries.push([
+			declaration.containerId === undefined
+				? `top:${packageName}\0${declaration.name}`
+				: `child:${declaration.containerId}`,
+			indexed,
+		]);
+	}
+	return entries;
 }
 
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
@@ -203,52 +210,14 @@ function simpleTypeName(display: string): string | undefined {
 	return match?.[1];
 }
 
-function admitted(facts: KotlinFile): boolean {
-	return !facts.diagnostics.some((diagnostic) => diagnostic.severity === "error");
-}
-
-export class KotlinProvider {
-	private workspaceRoot = process.cwd();
-	/** Full parses, for `bind` and `typeOf`. */
-	private readonly parsedFacts = new Map<string, KotlinFile>();
-	private workspaceFiles: string[] | null = null;
-	/** Each module's last facts the core would admit. */
-	private index = new PackageIndex();
-	/** The index before a rediscovery, until the next fill has read past it. */
-	private previous: PackageIndex | undefined;
-	/** Whether discovered files the index lacks have been read. */
-	private filled = false;
-	/** Present but unreadable at the last read; retried on a lookup. */
-	private readonly unread = new Set<string>();
-	/** The core's word on each parse, and what the module must hold when one is refused or probed. */
-	readonly admission = new AdmissionLedger<HeldModule>({
-		snapshot: (module) => ({
-			facts: this.parsedFacts.get(module),
-			headers: this.index.headersOf(module),
-			unread: this.unread.has(module),
-			filled: this.filled,
-			fallback: this.previous?.headersOf(module),
-		}),
-		restore: (module, held) => {
-			if (held?.facts === undefined) this.parsedFacts.delete(module);
-			else this.parsedFacts.set(module, held.facts);
-			this.index.remove(module);
-			if (held?.unread === true) this.unread.add(module);
-			else this.unread.delete(module);
-			if (held === undefined) return;
-			if (held.headers !== undefined) this.index.add(held.headers);
-			else if (!this.admission.fillable(module)) {
-				// Refused: the core keeps what it held before, whatever a rediscovery did since.
-				if (held.fallback !== undefined) this.index.add(held.fallback);
-			} else if (!held.filled && this.filled) {
-				// The fill that ran since skipped this module, so its read is owed now.
-				this.indexFromDisk(module, held.fallback);
-			}
-		},
+export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIndexEntry> {
+	readonly store = moduleStore<KotlinFile, null, PackageIndexEntry>({
+		read: (module, text, depth) => parseKotlin(module, text, depth === "outline"),
+		entries: packageEntries,
 	});
+	private readonly index = new PackageIndex(this.store);
 
-	initialize(workspaceRoot: string) {
-		this.reset(workspaceRoot);
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "kotlin-provider",
 			language: LANGUAGE,
@@ -260,31 +229,39 @@ export class KotlinProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		if (path.resolve(workspaceRoot) !== this.workspaceRoot) this.reset(workspaceRoot);
-		else this.rewalk();
+	discoverProject(workspaceRoot: string, _previous: null | undefined): { model: ProjectModel; project: null } {
+		const root = path.resolve(workspaceRoot);
 		try {
-			if (!existsSync(this.workspaceRoot))
-				return projectDiagnostic(this.workspaceRoot, `workspace root does not exist: ${this.workspaceRoot}`);
-			if (!statSync(this.workspaceRoot).isDirectory())
-				return projectDiagnostic(
-					this.workspaceRoot,
-					`workspace root is not a directory: ${this.workspaceRoot}`,
-				);
-			return { files: this.filesInWorkspace(), externalRoots: [], configFiles: [], diagnostics: [] };
+			if (!existsSync(root))
+				return { model: projectDiagnostic(root, `workspace root does not exist: ${root}`), project: null };
+			if (!statSync(root).isDirectory())
+				return {
+					model: projectDiagnostic(root, `workspace root is not a directory: ${root}`),
+					project: null,
+				};
+			return {
+				model: {
+					files: walkWorkspace(root, {
+						extensions: EXTENSIONS,
+						excludedDirectories: EXCLUDED_DIRECTORIES,
+					}).files,
+					externalRoots: [],
+					configFiles: [],
+					diagnostics: [],
+				},
+				project: null,
+			};
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			return projectDiagnostic(this.workspaceRoot, `unable to inspect workspace root: ${detail}`);
+			return { model: projectDiagnostic(root, `unable to inspect workspace root: ${detail}`), project: null };
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		facts: KotlinFile,
+	) {
 		const outline = params.depth === "outline";
-		const facts = parseKotlin(params.module, params.text, outline);
-		if (outline) this.parsedFacts.delete(params.module);
-		else this.parsedFacts.set(params.module, facts);
-		this.unread.delete(params.module);
-		this.index.add(facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -302,7 +279,7 @@ export class KotlinProvider {
 		const specifier = cleanSpecifier(params.specifier);
 		if (specifier === "")
 			return { status: "unresolved", reason: "ParseError", detail: "the import specifier is empty" };
-		const index = this.packageIndex();
+		const index = this.index;
 		if (params.specifier.endsWith(".*") && index.hasPackage(specifier)) {
 			const modules = index.modulesIn(specifier);
 			return modules.length === 1
@@ -366,14 +343,6 @@ export class KotlinProvider {
 		return unknownType("NotIndexed", "no indexed type target matched the requested range");
 	}
 
-	forgetModule(params: { module: string }): void {
-		this.parsedFacts.delete(params.module);
-		this.index.remove(params.module);
-		this.previous?.remove(params.module);
-		this.unread.delete(params.module);
-		this.admission.forgotten(params.module);
-	}
-
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "Kotlin rename edits are not implemented" };
 	}
@@ -382,92 +351,12 @@ export class KotlinProvider {
 		return notImplementedMove("Kotlin move edits are not implemented");
 	}
 
-	private reset(workspaceRoot: string): void {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.parsedFacts.clear();
-		this.workspaceFiles = null;
-		this.index = new PackageIndex();
-		this.previous = undefined;
-		this.filled = false;
-		this.unread.clear();
-		this.admission.reset();
-	}
-
-	/** Every module is read again, and the old index answers only for text that cannot be admitted. */
-	private rewalk(): void {
-		this.parsedFacts.clear();
-		this.workspaceFiles = null;
-		this.filled = false;
-		this.unread.clear();
-		if (this.previous === undefined) this.previous = this.index;
-		else
-			for (const module of this.index.heldModules())
-				this.previous.add(this.index.headersOf(module) as ModuleHeaders);
-		this.index = new PackageIndex();
-	}
-
-	private filesInWorkspace(): string[] {
-		if (this.workspaceFiles !== null) return this.workspaceFiles;
-		if (!existsSync(this.workspaceRoot) || !statSync(this.workspaceRoot).isDirectory()) return [];
-		this.workspaceFiles = walkWorkspace(this.workspaceRoot, {
-			extensions: EXTENSIONS,
-			excludedDirectories: EXCLUDED_DIRECTORIES,
-		}).files;
-		return this.workspaceFiles;
-	}
-
-	private read(module: string): SourceFileRead {
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		return absolute === null ? { kind: "missing" } : readSourceFile(absolute);
-	}
-
 	private factsForModule(module: string): KotlinFile | null {
-		const cached = this.parsedFacts.get(module);
-		if (cached !== undefined) return cached;
-		if (!this.admission.fillable(module)) return null;
-		const read = this.read(module);
-		if (read.kind !== "text") return null;
-		const facts = parseKotlin(module, read.text);
-		this.parsedFacts.set(module, facts);
-		return facts;
-	}
-
-	/** Outline facts of every discovered file on first use, so the first file parsed binds into the rest. */
-	private packageIndex(): PackageIndex {
-		if (this.filled) {
-			for (const module of [...this.unread]) if (this.admission.fillable(module)) this.indexFromDisk(module);
-			return this.index;
-		}
-		this.filled = true;
-		const previous = this.previous;
-		this.previous = undefined;
-		const modules = new Set([...this.filesInWorkspace(), ...(previous?.heldModules() ?? [])]);
-		for (const module of [...modules].sort())
-			if (!this.index.holds(module) && this.admission.fillable(module))
-				this.indexFromDisk(module, previous?.headersOf(module));
-		return this.index;
-	}
-
-	/** Refused or unreadable text keeps what was admitted; a file the core would not read leaves. */
-	private indexFromDisk(module: string, fallback?: ModuleHeaders): void {
-		this.unread.delete(module);
-		const read = this.read(module);
-		const facts = read.kind === "text" ? parseKotlin(module, read.text, true) : undefined;
-		// A disk read gets no core verdict, so the provider judges.
-		if (facts !== undefined && admitted(facts)) {
-			this.index.add(facts);
-			return;
-		}
-		if (read.kind === "unreadable") this.unread.add(module);
-		else if (read.kind !== "text") {
-			this.index.remove(module);
-			return;
-		}
-		if (fallback !== undefined) this.index.add(fallback);
+		return this.store.load(module, "full") ?? null;
 	}
 
 	private binder(facts: KotlinFile): ReferenceBinder {
-		return new ReferenceBinder(this.packageIndex(), facts);
+		return new ReferenceBinder(this.index, facts);
 	}
 
 	private wireReferences(facts: KotlinFile): Reference[] {

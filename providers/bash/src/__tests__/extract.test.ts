@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { coordinatesOf, handlersFor, type Range } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, handlersFor, PROTOCOL_VERSION, type Range } from "@nyaa-lexicon/protocol";
 import { parseBash } from "../extract.js";
 import { BashProvider } from "../main.js";
 
@@ -18,10 +18,16 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-function provider(files: Record<string, string>): BashProvider {
-	const bash = new BashProvider();
-	bash.initialize(workspace(files));
-	return bash;
+/** Starts through provider handlers. */
+function wire(root: string) {
+	const handlers = handlersFor(new BashProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
+}
+
+function provider(files: Record<string, string>) {
+	return wire(workspace(files));
 }
 
 function sliceOf(text: string, range: Range): string | undefined {
@@ -209,12 +215,10 @@ describe("sourcing", () => {
 	test("a probe answers from the candidate, then a sourced name binds into what the index holds", () => {
 		const main = "source ./lib.sh\nold\ndisk\ncandidate\n";
 		const root = workspace({ "main.sh": main, "lib.sh": "old() { :; }\n" });
-		const bash = new BashProvider();
-		bash.initialize(root);
-		const handlers = handlersFor(bash);
+		const handlers = wire(root);
 		/** Names in main.sh that bind; an unbound command is dropped as a program. */
 		const bound = () =>
-			bash
+			handlers
 				.parseFile({ module: "main.sh", contentHash: "main", text: main })
 				.references.filter((reference) => reference.role !== "import")
 				.map((reference) => reference.name);
@@ -613,7 +617,7 @@ describe("the wire face", () => {
 			"bin/plain": "echo no shebang\n",
 			"bin/x.py": "#!/bin/bash\n",
 		});
-		const project = new BashProvider().discoverProject(root);
+		const project = new BashProvider().discoverProject(root).model;
 		expect([...project.files].sort()).toEqual([
 			".bashrc",
 			"bin/posix",
@@ -624,7 +628,7 @@ describe("the wire face", () => {
 		]);
 		expect(project.diagnostics).toEqual([]);
 
-		const missing = new BashProvider().discoverProject(path.join(root, "gone"));
+		const missing = new BashProvider().discoverProject(path.join(root, "gone")).model;
 		expect(missing.files).toEqual([]);
 		expect(missing.diagnostics.map((diagnostic) => diagnostic.severity)).toEqual(["error"]);
 	});

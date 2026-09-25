@@ -1,7 +1,6 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	discoverByWalk,
@@ -10,6 +9,7 @@ import {
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	moduleStore,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -192,21 +192,9 @@ function unknown(reason: UnknownReason, detail: string): TypeInfo {
 }
 
 export class CppProvider {
-	private workspaceRoot = process.cwd();
-	private parsedFacts = new Map<string, CppFacts>();
-	/** What the index took, so an included header's facts are what it holds and not what was emitted. */
-	readonly admission = new AdmissionLedger<CppFacts>({
-		snapshot: (module) => this.parsedFacts.get(module),
-		restore: (module, held) => {
-			if (held === undefined) this.parsedFacts.delete(module);
-			else this.parsedFacts.set(module, held);
-		},
-	});
+	readonly store = moduleStore<CppFacts>({ read: (module, text) => parseCppFile(module, text) });
 
-	initialize(workspaceRoot: string) {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.parsedFacts.clear();
-		this.admission.reset();
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "cpp-provider",
 			language: LANGUAGE,
@@ -219,30 +207,34 @@ export class CppProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		this.workspaceRoot = path.resolve(workspaceRoot);
+	discoverProject(workspaceRoot: string, _previous: null | undefined): { model: ProjectModel; project: null } {
+		const root = path.resolve(workspaceRoot);
 		try {
-			if (!existsSync(this.workspaceRoot))
-				return projectDiagnostic(this.workspaceRoot, `workspace root does not exist: ${this.workspaceRoot}`);
-			if (!statSync(this.workspaceRoot).isDirectory())
-				return projectDiagnostic(
-					this.workspaceRoot,
-					`workspace root is not a directory: ${this.workspaceRoot}`,
-				);
-			const walked = discoverByWalk(this.workspaceRoot, {
+			if (!existsSync(root))
+				return { model: projectDiagnostic(root, `workspace root does not exist: ${root}`), project: null };
+			if (!statSync(root).isDirectory())
+				return {
+					model: projectDiagnostic(root, `workspace root is not a directory: ${root}`),
+					project: null,
+				};
+			const walked = discoverByWalk(root, {
 				extensions: EXTENSIONS,
 				excludedDirectories: EXCLUDED_DIRECTORIES,
 			});
-			return { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] };
+			return {
+				model: { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] },
+				project: null,
+			};
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			return projectDiagnostic(this.workspaceRoot, `unable to inspect workspace root: ${detail}`);
+			return { model: projectDiagnostic(root, `unable to inspect workspace root: ${detail}`), project: null };
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
-		const facts = parseCppFile(params.module, params.text);
-		this.parsedFacts.set(params.module, facts);
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		facts: CppFacts,
+	) {
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -263,9 +255,9 @@ export class CppProvider {
 
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
 		const specifier = params.specifier.replace(/^<|>$/g, "").replace(/^"|"$/g, "");
-		const knownImport = (
-			this.parsedFacts.get(params.fromModule) ?? this.factsForModule(params.fromModule)
-		)?.importFacts.find((item) => item.imported.specifier === specifier);
+		const knownImport = this.store
+			.load(params.fromModule)
+			?.importFacts.find((item) => item.imported.specifier === specifier);
 		if (knownImport !== undefined) {
 			if (!knownImport.quoted) return { status: "external", packageName: specifier };
 			return this.resolveQuotedImport(params.fromModule, specifier);
@@ -279,8 +271,8 @@ export class CppProvider {
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {
-		const facts = this.factsForModule(params.module);
-		if (facts === null) return { status: "unbound", reason: "NotIndexed", detail: "module is not indexed" };
+		const facts = this.store.load(params.module);
+		if (facts === undefined) return { status: "unbound", reason: "NotIndexed", detail: "module is not indexed" };
 		const reference = facts.references.find(
 			(candidate) => candidate.name === params.name && contains(candidate.range, params.range.start),
 		);
@@ -300,15 +292,15 @@ export class CppProvider {
 			const parsed = parseSymbolId(params.symbolId);
 			if (parsed === null || parsed.language !== LANGUAGE)
 				return unknown("ParseError", "the symbol id is not a C++ workspace id");
-			const facts = this.factsForModule(parsed.module);
-			if (facts === null) return unknown("NotIndexed", "module is not indexed");
+			const facts = this.store.load(parsed.module);
+			if (facts === undefined) return unknown("NotIndexed", "module is not indexed");
 			return (
 				facts.typeAnswers.get(params.symbolId) ??
 				unknown("NotImplemented", "no declared or inferred type is available")
 			);
 		}
-		const facts = this.factsForModule(params.module);
-		if (facts === null) return unknown("NotIndexed", "module is not indexed");
+		const facts = this.store.load(params.module);
+		if (facts === undefined) return unknown("NotIndexed", "module is not indexed");
 		const selected = facts.declarations.filter((declaration) =>
 			contains(declaration.selectionRange ?? declaration.range, params.range.start),
 		);
@@ -342,35 +334,12 @@ export class CppProvider {
 		return notImplementedMove("C++ move rendering is not implemented");
 	}
 
-	/** The index let this module go, or refused the parse it holds nothing from. */
-	forgetModule(params: { module: string }): void {
-		this.parsedFacts.delete(params.module);
-		this.admission.forgotten(params.module);
-	}
-
-	private factsForModule(module: string): CppFacts | null {
-		const cached = this.parsedFacts.get(module);
-		if (cached !== undefined) return cached;
-		// A file the index does not hold must not come back through a read of its own bytes.
-		if (!this.admission.fillable(module)) return null;
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute)) return null;
-		try {
-			if (!statSync(absolute).isFile()) return null;
-			const facts = parseCppFile(module, readFileSync(absolute, "utf8"));
-			this.parsedFacts.set(module, facts);
-			return facts;
-		} catch {
-			return null;
-		}
-	}
-
 	private workspaceCandidate(fromModule: string, specifier: string): string | null {
 		const fromDirectory = path.posix.dirname(fromModule.replace(/\\/g, "/"));
 		const raw = specifier.startsWith("/") ? specifier.slice(1) : path.posix.join(fromDirectory, specifier);
 		const candidates = [raw, ...EXTENSIONS.map((extension) => `${raw}${extension}`)];
 		for (const candidate of candidates) {
-			const absolute = workspaceFile(this.workspaceRoot, candidate);
+			const absolute = workspaceFile(this.store.root, candidate);
 			if (absolute === null || !existsSync(absolute)) continue;
 			try {
 				if (statSync(absolute).isFile()) return path.posix.normalize(candidate);
@@ -446,8 +415,8 @@ export class CppProvider {
 				unresolved = true;
 				continue;
 			}
-			const target = this.factsForModule(resolution.module);
-			if (target === null) {
+			const target = this.store.load(resolution.module);
+			if (target === undefined) {
 				unresolved = true;
 				continue;
 			}

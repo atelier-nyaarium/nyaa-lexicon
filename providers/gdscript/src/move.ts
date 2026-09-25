@@ -13,13 +13,15 @@ import {
 	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
-import type { GDScriptBindingIndex } from "./binding.js";
+import { GDScriptBindingIndex } from "./binding.js";
 import { extractDeclarations, extractFile } from "./extract.js";
+import type { GDScriptStore } from "./module.js";
 
 ////////////////////////////////
 //  Main
 
-export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindingIndex): MoveEditsResponse {
+export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): MoveEditsResponse {
+	const bindings = new GDScriptBindingIndex(store);
 	if (!isValidModule(request.module) || !isValidModule(request.toModule)) {
 		return {
 			status: "refused",
@@ -33,8 +35,6 @@ export function makeMoveEdits(request: MoveEditsRequest, bindings: GDScriptBindi
 	if (facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
 		return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
 	}
-	bindings.registerFile(request.module, facts.declarations, facts.references, request.text);
-
 	const insertionText = request.role.insertion?.text;
 	const carriesClassName =
 		insertionText === undefined ? false : hasClassNameDeclaration(request.toModule, insertionText);

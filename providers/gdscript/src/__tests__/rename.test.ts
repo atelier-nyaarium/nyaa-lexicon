@@ -1,8 +1,15 @@
 import { expect, test } from "bun:test";
 import path from "node:path";
-import { applyEdits, coordinatesOf, type RenameSite } from "@nyaa-lexicon/protocol";
+import { applyEdits, coordinatesOf, handlersFor, PROTOCOL_VERSION, type RenameSite } from "@nyaa-lexicon/protocol";
 import { extractFile } from "../extract.js";
 import { GDScriptProvider } from "../main.js";
+
+function started(root = process.cwd()) {
+	const handlers = handlersFor(new GDScriptProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
+}
 
 function rangeFor(text: string, value: string) {
 	const offset = text.indexOf(value);
@@ -13,8 +20,7 @@ function rangeFor(text: string, value: string) {
 }
 
 test("returns non-overlapping edits that reparse when applied in response order", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `class_name RenameFixture
 var old_value := 1
 func run() -> void:
@@ -49,8 +55,7 @@ func run() -> void:
 });
 
 test("refuses a position between CRLF terminators", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = "var old_name := 1\r\n";
 
 	expect(
@@ -65,8 +70,7 @@ test("refuses a position between CRLF terminators", () => {
 });
 
 test("refuses illegal, reserved, and colliding names", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = "var old_name := 1\nvar taken := 2\n";
 	const site = { range: { start: { line: 0, character: 4 }, end: { line: 0, character: 12 } } };
 
@@ -107,8 +111,7 @@ test("refuses illegal, reserved, and colliding names", () => {
 });
 
 test("blocks class_name and exported property contracts", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const classText = "class_name OldClass\nextends Node\n";
 	const classFacts = provider.parseFile({ module: "class.gd", contentHash: "class", text: classText });
 	const classDeclaration = classFacts.declarations.find((declaration) => declaration.name === "OldClass");
@@ -137,8 +140,7 @@ test("blocks class_name and exported property contracts", () => {
 });
 
 test("blocks dynamic loaders and signal string sites while the scanner omits signal strings", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `signal old_signal
 func run(path: String) -> void:
 	load(path)
@@ -170,8 +172,7 @@ func run(path: String) -> void:
 });
 
 test("blocks resource paths and local-only preload bindings", () => {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
+	const provider = started();
 	const text = `const LocalScript = preload("res://old.gd")
 `;
 
@@ -195,9 +196,8 @@ test("blocks resource paths and local-only preload bindings", () => {
 });
 
 test("refuses a class_name collision from the project registry", () => {
-	const provider = new GDScriptProvider();
 	const fixtureRoot = path.join(process.cwd(), "providers/gdscript/src/__tests__/fixtures/autoload");
-	provider.initialize(fixtureRoot);
+	const provider = started(fixtureRoot);
 
 	expect(
 		provider.renameEdits({

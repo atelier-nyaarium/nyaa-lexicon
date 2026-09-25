@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { BindingSchema, composeSymbolId, parseSymbolId, TypeInfoSchema } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
+import { parseThroughKit, startProvider } from "./harness.js";
 
 const roots: string[] = [];
 
@@ -20,8 +21,8 @@ function makeWorkspace(files: Record<string, string>): string {
 
 function parse(text: string, module = "main.cs") {
 	const provider = new CsharpProvider();
-	provider.initialize("/workspace");
-	return { provider, facts: provider.parseFile({ module, contentHash: "edge", text }) };
+	startProvider(provider);
+	return { provider, facts: parseThroughKit(provider, { module, contentHash: "edge", text }) };
 }
 
 function one<T>(values: T[], message: string): T {
@@ -84,7 +85,7 @@ describe("C# lexical facts", () => {
 			'public class Values {\n\tvoid M() {\n\t\tvar x = $"a // {"b /* c #"} d"; // real\n\t}\n}\n',
 		);
 
-		expect(facts.comments.map((item) => item.text)).toEqual(["// real"]);
+		expect((facts.comments ?? []).map((item) => item.text)).toEqual(["// real"]);
 	});
 
 	it("reports a comment inside a hole, which is code", () => {
@@ -92,7 +93,7 @@ describe("C# lexical facts", () => {
 			'public class Values {\n\tvoid M() {\n\t\tvar x = $"a {1 /* here */} b"; // real\n\t}\n}\n',
 		);
 
-		expect(facts.comments.map((item) => item.text)).toEqual(["/* here */", "// real"]);
+		expect((facts.comments ?? []).map((item) => item.text)).toEqual(["/* here */", "// real"]);
 	});
 
 	it("recognizes decimal, hexadecimal, binary, and suffixed numeric literals", () => {
@@ -310,11 +311,10 @@ describe("C# imports and binding", () => {
 				"using Alias = N.C; using static N.C; public class Use { public Alias Field; public int Read() { return Value; } }\n",
 		});
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
+		startProvider(provider, root);
 		const text =
 			"using Alias = N.C; using static N.C; public class Use { public Alias Field; public int Read() { return Value; } }\n";
-		const facts = provider.parseFile({ module: "src/use.cs", contentHash: "hash", text });
+		const facts = parseThroughKit(provider, { module: "src/use.cs", contentHash: "hash", text });
 		expect(provider.resolveImport({ fromModule: "src/use.cs", specifier: "N.C" })).toEqual({
 			status: "resolved",
 			module: "src/types.cs",
@@ -339,9 +339,8 @@ describe("C# imports and binding", () => {
 			"b.cs": "namespace N { public partial class C { public void Other() {} } }\n",
 		});
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
-		const facts = provider.parseFile({
+		startProvider(provider, root);
+		const facts = parseThroughKit(provider, {
 			module: "a.cs",
 			contentHash: "hash",
 			text: "namespace N { public partial class C { public void Use() { Other(); } } }\n",
@@ -431,9 +430,8 @@ describe("C# type answers", () => {
 			"src/use.cs": "using N; public class Use { public Item Value; }\n",
 		});
 		const provider = new CsharpProvider();
-		provider.initialize(root);
-		provider.discoverProject(root);
-		const facts = provider.parseFile({
+		startProvider(provider, root);
+		const facts = parseThroughKit(provider, {
 			module: "src/use.cs",
 			contentHash: "hash",
 			text: "using N; public class Use { public Item Value; }\n",
@@ -586,7 +584,10 @@ describe("C# references and diagnostics", () => {
 	});
 
 	it("rejects an invalid workspace root through the project model", () => {
-		const model = new CsharpProvider().discoverProject(path.join(tmpdir(), "does-not-exist-csharp-root"));
+		const model = new CsharpProvider().discoverProject(
+			path.join(tmpdir(), "does-not-exist-csharp-root"),
+			null,
+		).model;
 		expect(model.files).toEqual([]);
 		expect(model.diagnostics[0]).toMatchObject({ severity: "error" });
 	});

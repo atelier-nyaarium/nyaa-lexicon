@@ -1,7 +1,6 @@
 // The provider protocol's public surface. Importers take named symbols from here, never from the
 // domain files, so a split or rename inside stays invisible to core and providers.
 
-export { AdmissionLedger, type ModuleAdmission, type ModuleState, type ProviderAdmission } from "./admission.js";
 export {
 	type BoundedChildOptions,
 	type BoundedResult,
@@ -19,6 +18,9 @@ export {
 } from "./coordinates.js";
 export { Cursor, err, formatFailure, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
 export {
+	answerBudgetMs,
+	BUDGETS,
+	type Budget,
 	DAEMON_CONTROLS,
 	DAEMON_METHODS,
 	type DaemonControl,
@@ -327,6 +329,7 @@ export {
 	InitializeResponseSchema,
 	isProviderMethod,
 	METHOD_SCHEMAS,
+	type ModuleAdmission,
 	ModuleAdmissionNotificationSchema,
 	NOTIFICATION_SCHEMAS,
 	ParseFileRequestSchema,
@@ -342,6 +345,20 @@ export {
 	ResolveImportRequestSchema,
 	TypeOfRequestSchema,
 } from "./methods.js";
+export {
+	type AsyncModuleStore,
+	type AsyncStoreSpec,
+	asyncModuleStore,
+	type Entries,
+	type Held,
+	type Maybe,
+	type ModuleStore,
+	type ModuleValue,
+	moduleStore,
+	type Origin,
+	type StoreProvider,
+	type StoreSpec,
+} from "./moduleStore.js";
 export {
 	type DependencyOrigin,
 	DependencyOriginSchema,

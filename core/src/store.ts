@@ -109,6 +109,8 @@ export interface ReplaceFileInput {
 	docs?: DocRegion[];
 	notes?: FileNote[];
 	content?: FileContent;
+	/** Provider id for this parse. */
+	provider?: string;
 	digests?: PatternDigest[];
 	generated?: GeneratedVerdict | null;
 }
@@ -122,39 +124,8 @@ export interface FactsStamp {
 ////////////////////////////////
 //  Constants
 
-/** Bumped whenever the shape changes. A mismatch rebuilds rather than migrating. */
-// 2: exported became nullable, so a provider that cannot answer is not stored as false.
-// 3: full ranges, and a declaration's name span, because a rewrite needs to know what to replace.
-// 4: an index on a reference's name, which rename needs to find same-spelling occurrences that
-//    did NOT bind, since those are exactly the ones a rewrite might miss.
-// 5: imports, which were parsed and then thrown away. A name written inside an import statement is
-//    an occurrence a rewrite has to reach, and it was in no table at all.
-// 6: literals and per-declaration metrics. A name inside a string is not a reference, so it was in
-//    no table either, which is why a rename could leave `__all__` stale and never notice.
-// 7: an import that names no export gets a row anyway. Storing only named entries dropped the edge
-//    with the name, so `import os` and `import * as ns` were absent from the import graph entirely.
-// 8: a factId on every row. A symbol had a citable id and no other fact did, so the knowledge
-//    layer's contract that an answer lists what it consumed had nothing to list.
-// 9: a meta table holding the compatibility key for stored facts. A per-file hash cannot
-//    see a provider changing how it classifies, because the files it describes have not moved.
-// 10: answers, the knowledge layer's read side. Kept in the same database as the facts they cite so
-//    a rebuild of the index cannot leave citations pointing into a store that no longer exists.
-// 11: answers carry fact ids so an answer can cite an answer, and a gaps ledger counts every ask
-//    that found nothing, so "which answers are worth writing" is measured rather than guessed.
-// 12: answers carry a thinness mark, and answers plus gaps SURVIVE a rebuild. "The index is always
-//    derivable from source" was true until answers existed: they are the one thing here that is
-//    not, and a schema bump or provider change was silently deleting the knowledge base.
-// 13: answers carry a declared doubt. Mechanical staleness cannot see semantic drift, so an agent
-//    that changed a function's purpose needs a way to flag the recorded explanation without
-//    rewriting it, and the flag must survive a re-record by a writer who never saw it.
-// 16: comments, with their attachment resolved, and docComment retired from symbols. Doctrine in a
-//    codebase lives in comments, and they were the one thing every fallback to grep was looking
-//    for. A doc comment is now the leading-attached comment rather than a second copy of the same
-//    prose on the declaration, so the two can no longer disagree.
-// 17: document prose, anchored to the heading it sits under. A comment answers with the symbol it
-//    documents; a document region answers with the heading path it was found under, which is a
-//    different question and so a different table.
-export const SCHEMA_VERSION = 18;
+/** Store layout version; mismatches rebuild the index. */
+export const SCHEMA_VERSION = 19;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -227,6 +198,8 @@ CREATE TABLE files (
   depth       TEXT NOT NULL DEFAULT 'full',
   -- What the owning provider declared its files are; NULL on a row written before that was kept.
   content     TEXT,
+  -- Provider id, or NULL when absent.
+  provider    TEXT,
   -- Git's word: 'yes', 'no' or 'unknown' with its reason; NULL on a row written without asking.
   generated        TEXT,
   generatedReason  TEXT
@@ -1079,6 +1052,7 @@ export class IndexStore {
 			docs = [],
 			notes = [],
 			content = "code",
+			provider = null,
 			digests = [],
 			generated = null,
 		} = input;
@@ -1088,8 +1062,8 @@ export class IndexStore {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
-					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, generated, generatedReason)
-					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, provider, generated, generatedReason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					module,
@@ -1097,6 +1071,7 @@ export class IndexStore {
 					this.nextStamp(),
 					depth,
 					content,
+					provider,
 					generated?.status ?? null,
 					generated?.status === "unknown" ? generated.reason : null,
 				);
@@ -1325,6 +1300,23 @@ export class IndexStore {
 	/** Fills a row written before content was recorded. A recorded class is never overwritten here. */
 	recordContent(module: string, content: FileContent): void {
 		this.db.prepare("UPDATE files SET content = ? WHERE module = ? AND content IS NULL").run(content, module);
+	}
+
+	/** Recorded module owners. */
+	writers(): Map<string, string> {
+		const rows = this.db.prepare("SELECT module, provider FROM files WHERE provider IS NOT NULL").all() as Array<{
+			module: string;
+			provider: string;
+		}>;
+		return new Map(rows.map((row) => [row.module, row.provider]));
+	}
+
+	/** Recorded provider id, if any. */
+	writerOf(module: string): string | null {
+		const row = this.db.prepare("SELECT provider FROM files WHERE module = ?").get(module) as
+			| { provider: string | null }
+			| undefined;
+		return row?.provider ?? null;
 	}
 
 	/** The depth a module's stored facts were extracted at, or null when it is not indexed. */

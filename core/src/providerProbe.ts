@@ -1,7 +1,6 @@
 // Asking a provider about text that is not on disk.
 //
-// `parseFile` SETS the canonical view, so a candidate leaves the provider holding text nobody
-// wrote. Restoring is a finally here; by hand it missed exits.
+// Candidate parsing uses `probeFile`.
 
 import type {
 	FileFacts,
@@ -27,10 +26,9 @@ export interface ProviderProbe {
 	declares(providerId: string, tier: keyof ProviderTiers): boolean;
 	/** The owning provider's keywords, builtins and literal words; null when the module is unowned. */
 	words(module: string): ProviderWords | null;
-	/** One `probeFile`: the provider puts back its own view. Never rejects: a provider that THROWS on
-	 * a malformed candidate answers parsed:false, so every planner refuses instead of leaking. */
+	/** Failures return `parsed: false`; this call never rejects. */
 	parseCandidate(module: string, text: string): Promise<CandidateParse>;
-	/** These ASK rather than SET, so no restore is needed. */
+	/** Stateful stores isolate rename and move edits. */
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
 	moveEdits(module: string, request: MoveEditsRequest): Promise<MoveEditsResponse>;
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
@@ -8,8 +8,7 @@ import {
 	type ImportResolution,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
-import { extractDeclarations, extractFile } from "./extract.js";
-import { discoverProject } from "./project.js";
+import { type GDScriptStore, scopeForModule } from "./module.js";
 
 //////// Types
 
@@ -20,13 +19,6 @@ export interface GDScriptLoaderBinding {
 	localName: string;
 	loader: "preload" | "load";
 	specifier: string;
-}
-
-/** One module's binding state, each field absent where the index holds none. */
-export interface GDScriptBindingSnapshot {
-	declarations: Declaration[] | undefined;
-	references: Reference[] | undefined;
-	source: string | undefined;
 }
 
 //////// Helpers
@@ -97,57 +89,11 @@ function ambiguousBinding(): Binding {
 
 //////// Index
 
+/** Binding uses held entries. */
 export class GDScriptBindingIndex {
-	private readonly declarationsByModule = new Map<string, Declaration[]>();
-	private readonly referencesByModule = new Map<string, Reference[]>();
-	private readonly sourceByModule = new Map<string, string>();
-	private readonly moduleScopes = new Map<string, string>();
-	private readonly classNamesByScope = new Map<string, Map<string, Declaration[]>>();
-	private readonly autoloadModulesByScope = new Map<string, Map<string, string>>();
-	private workspaceIndexed = false;
-
-	constructor(
-		private readonly workspaceRoot: string,
-		private readonly fillable: (module: string) => boolean,
-	) {}
-
-	registerFile(module: string, declarations: Declaration[], references: Reference[], text: string): void {
-		this.ensureWorkspaceIndex();
-		this.replaceDeclarations(module, declarations);
-		this.referencesByModule.set(module, references);
-		this.sourceByModule.set(module, text);
-	}
-
-	snapshot(module: string): GDScriptBindingSnapshot | undefined {
-		const declarations = this.declarationsByModule.get(module);
-		const references = this.referencesByModule.get(module);
-		const source = this.sourceByModule.get(module);
-		if (declarations === undefined && references === undefined && source === undefined) return undefined;
-		return { declarations, references, source };
-	}
-
-	restore(module: string, snapshot: GDScriptBindingSnapshot | undefined): void {
-		if (snapshot === undefined) {
-			this.forget(module);
-			return;
-		}
-		if (snapshot.declarations === undefined) this.removeDeclarations(module);
-		else this.replaceDeclarations(module, snapshot.declarations);
-		if (snapshot.references === undefined) this.referencesByModule.delete(module);
-		else this.referencesByModule.set(module, snapshot.references);
-		if (snapshot.source === undefined) this.sourceByModule.delete(module);
-		else this.sourceByModule.set(module, snapshot.source);
-	}
-
-	/** Drops the module, its `class_name` registration included. */
-	forget(module: string): void {
-		this.removeDeclarations(module);
-		this.referencesByModule.delete(module);
-		this.sourceByModule.delete(module);
-	}
+	constructor(private readonly store: GDScriptStore) {}
 
 	bindReference(module: string, reference: Reference): Binding {
-		this.ensureWorkspaceIndex();
 		if (
 			reference.binding.status !== "unbound" ||
 			reference.binding.reason === "NotIndexed" ||
@@ -165,18 +111,14 @@ export class GDScriptBindingIndex {
 					detail: "the literal resource path has no indexed GDScript declaration",
 				};
 			}
-			const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
-			if (reference.role === "read" && this.autoloadModulesByScope.get(scope)?.has(reference.name)) {
+			const scope = scopeForModule(module, this.store.project);
+			if (reference.role === "read" && this.autoloadModule(scope, reference.name) !== undefined) {
 				return {
 					status: "unbound",
 					reason: "NotIndexed",
 					detail: "the autoload target has no indexed GDScript declaration",
 				};
 			}
-			// The parse-time placeholder says binding is not implemented, but this IS the binding
-			// pass and it searched the workspace. After a completed search the honest answer depends
-			// on WHY nothing matched: a member access hangs off a receiver whose type is unknown,
-			// while a bare name (builtin, engine class or typo) is simply not in the index.
 			if (reference.binding.reason === "NotImplemented") {
 				if (this.memberAccess(module, reference)) {
 					return {
@@ -198,8 +140,8 @@ export class GDScriptBindingIndex {
 	}
 
 	bind(module: string, name: string, range: Range): Binding {
-		const facts = this.factsForModule(module);
-		if (facts === null) return { status: "unbound", reason: "NotIndexed", detail: "module is not indexed" };
+		const facts = this.store.load(module, "full");
+		if (facts === undefined) return { status: "unbound", reason: "NotIndexed", detail: "module is not indexed" };
 
 		const reference = facts.references.find(
 			(candidate) => candidate.name === name && positionInRange(candidate.range, range.start),
@@ -207,7 +149,6 @@ export class GDScriptBindingIndex {
 		if (reference !== undefined) return this.bindReference(module, reference);
 
 		const declaration = facts.declarations.find(
-			// A name nowhere in the source is nowhere to match.
 			(candidate) =>
 				candidate.name === name &&
 				candidate.selectionRange !== undefined &&
@@ -223,15 +164,14 @@ export class GDScriptBindingIndex {
 	}
 
 	resolveType(module: string, name: string): Declaration | undefined {
-		this.ensureWorkspaceIndex();
 		const candidates = new Map<string, Declaration>();
 		const add = (declaration: Declaration | undefined): void => {
 			if (declaration !== undefined) candidates.set(declaration.symbolId, declaration);
 		};
 		add(this.preloadType(module, name));
-		const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
-		for (const declaration of this.classNamesByScope.get(scope)?.get(name) ?? []) add(declaration);
-		for (const declaration of this.declarationsByModule.get(module) ?? []) {
+		const scope = scopeForModule(module, this.store.project);
+		for (const declaration of this.store.get(`scoped:${scope}\0${name}`)) add(declaration);
+		for (const declaration of this.store.load(module, "full")?.declarations ?? []) {
 			if (declaration.name === name && (declaration.kind === "class" || declaration.kind === "enum"))
 				add(declaration);
 		}
@@ -239,16 +179,19 @@ export class GDScriptBindingIndex {
 	}
 
 	resolvePreloadType(module: string, expression: string): Declaration | undefined {
-		this.ensureWorkspaceIndex();
 		const match = /^preload\s*\(\s*&?\s*(["'])([^"']+)\1\s*\)$/u.exec(expression.trim());
 		if (match === null) return undefined;
-		const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
-		const targetModule = moduleForResource(this.workspaceRoot, scope, match[2] as string, module);
+		const scope = scopeForModule(module, this.store.project);
+		const targetModule = moduleForResource(
+			this.store.root,
+			this.projectDirectory(scope),
+			match[2] as string,
+			module,
+		);
 		return targetModule === null ? undefined : this.rootDeclaration(targetModule);
 	}
 
 	resolveImport(fromModule: string, specifier: string): ImportResolution {
-		this.ensureWorkspaceIndex();
 		if (/(?:^|\.)\s*(?:preload|load)\s*\(/.test(specifier)) {
 			return {
 				status: "unresolved",
@@ -256,8 +199,8 @@ export class GDScriptBindingIndex {
 				detail: "the loader path is computed at runtime",
 			};
 		}
-		const scope = this.moduleScopes.get(fromModule) ?? this.scopeForModule(fromModule);
-		const targetModule = moduleForResource(this.workspaceRoot, scope, specifier, fromModule);
+		const scope = scopeForModule(fromModule, this.store.project);
+		const targetModule = moduleForResource(this.store.root, this.projectDirectory(scope), specifier, fromModule);
 		if (targetModule === null) {
 			return {
 				status: "unresolved",
@@ -265,11 +208,12 @@ export class GDScriptBindingIndex {
 				detail: "the resource path is outside the indexed workspace",
 			};
 		}
-		if (targetModule.endsWith(".gd") && this.declarationsByModule.has(targetModule)) {
-			return { status: "resolved", module: targetModule };
+		if (targetModule.endsWith(".gd")) {
+			if (this.store.load(targetModule) !== undefined) return { status: "resolved", module: targetModule };
+		} else {
+			const target = absoluteModule(this.store.root, targetModule);
+			if (target !== null && existsSync(target)) return { status: "external", packageName: specifier };
 		}
-		const target = absoluteModule(this.workspaceRoot, targetModule);
-		if (target !== null && existsSync(target)) return { status: "external", packageName: specifier };
 		return {
 			status: "unresolved",
 			reason: "NotIndexed",
@@ -278,32 +222,18 @@ export class GDScriptBindingIndex {
 	}
 
 	hasRegisteredClassName(name: string): boolean {
-		this.ensureWorkspaceIndex();
-		for (const classNames of this.classNamesByScope.values()) {
-			if (classNames.has(name)) return true;
-		}
-		return false;
+		return this.store.get(`name:${name}`).length > 0;
 	}
 
 	isRegisteredClassNameSymbol(symbolId: string): boolean {
-		this.ensureWorkspaceIndex();
-		for (const declarations of this.declarationsByModule.values()) {
-			if (
-				declarations.some(
-					(declaration) => declaration.symbolId === symbolId && declaration.languageKind === "class_name",
-				)
-			) {
-				return true;
-			}
-		}
-		return false;
+		return this.store.get(`id:${symbolId}`).length > 0;
 	}
 
 	loaderBinding(module: string, localName: string, targetModule: string): GDScriptLoaderBinding | undefined {
-		this.ensureWorkspaceIndex();
-		const source = this.sourceByModule.get(module);
-		if (source === undefined) return undefined;
-		const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
+		const held = this.store.text(module);
+		if (held === undefined) return undefined;
+		const source = held.text;
+		const scope = scopeForModule(module, this.store.project);
 		const matches: GDScriptLoaderBinding[] = [];
 		const pattern =
 			/^\s*const\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)\s*=\s*(preload|load)\s*\(\s*&?\s*(["'])([^"']+)\3\s*\)/gmu;
@@ -312,10 +242,10 @@ export class GDScriptBindingIndex {
 			const loader = match[2] as "preload" | "load";
 			const specifier = match[4] as string;
 			if (name !== localName) continue;
-			const resolved = moduleForResource(this.workspaceRoot, scope, specifier, module);
+			const resolved = moduleForResource(this.store.root, this.projectDirectory(scope), specifier, module);
 			if (resolved === targetModule) matches.push({ localName: name, loader, specifier });
 		}
-		return matches.length === 1 ? (matches[0] as GDScriptLoaderBinding) : undefined;
+		return matches.length === 1 ? matches[0] : undefined;
 	}
 
 	private candidates(module: string, reference: Reference): Declaration[] {
@@ -323,24 +253,29 @@ export class GDScriptBindingIndex {
 		const add = (declaration: Declaration): void => {
 			candidates.set(declaration.symbolId, declaration);
 		};
-		const sameFile = this.declarationsByModule.get(module) ?? [];
+		const sameFile = this.store.load(module, "full")?.declarations ?? [];
 		const containerId = this.sameFileContainer(sameFile, reference);
 		const memberAccess = this.memberAccess(module, reference);
-		const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
+		const scope = scopeForModule(module, this.store.project);
 
 		if (isPathReference(reference)) {
-			const targetModule = moduleForResource(this.workspaceRoot, scope, reference.name, module);
+			const targetModule = moduleForResource(
+				this.store.root,
+				this.projectDirectory(scope),
+				reference.name,
+				module,
+			);
 			const target = targetModule === null ? undefined : this.rootDeclaration(targetModule);
 			if (target !== undefined) add(target);
 			return [...candidates.values()];
 		}
 
 		if (projectClassName(reference.role) && !memberAccess) {
-			for (const declaration of this.classNamesByScope.get(scope)?.get(reference.name) ?? []) add(declaration);
+			for (const declaration of this.store.get(`scoped:${scope}\0${reference.name}`)) add(declaration);
 		}
 
 		if (reference.role === "read" && !memberAccess) {
-			const targetModule = this.autoloadModulesByScope.get(scope)?.get(reference.name);
+			const targetModule = this.autoloadModule(scope, reference.name);
 			const target = targetModule === undefined ? undefined : this.rootDeclaration(targetModule);
 			if (target !== undefined) add(target);
 		}
@@ -376,7 +311,7 @@ export class GDScriptBindingIndex {
 	}
 
 	private memberAccess(module: string, reference: Reference): boolean {
-		const source = this.sourceByModule.get(module);
+		const source = this.store.text(module)?.text;
 		if (source === undefined) return false;
 		const prefix = coordinatesOf(source).sliceRange({
 			start: { line: reference.range.start.line, character: 0 },
@@ -386,14 +321,19 @@ export class GDScriptBindingIndex {
 	}
 
 	private preloadType(module: string, name: string): Declaration | undefined {
-		const source = this.sourceByModule.get(module);
+		const source = this.store.text(module)?.text;
 		if (source === undefined) return undefined;
-		const scope = this.moduleScopes.get(module) ?? this.scopeForModule(module);
-		for (const line of source.split(/\r?\n/)) {
+		const scope = scopeForModule(module, this.store.project);
+		for (const line of source.split(/\r?\n/u)) {
 			const match =
 				/^\s*const\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)\s*=\s*preload\s*\(\s*&?\s*(["'])([^"']+)\2\s*\)/u.exec(line);
 			if (match === null || match[1] !== name) continue;
-			const targetModule = moduleForResource(this.workspaceRoot, scope, match[3] as string, module);
+			const targetModule = moduleForResource(
+				this.store.root,
+				this.projectDirectory(scope),
+				match[3] as string,
+				module,
+			);
 			return targetModule === null ? undefined : this.rootDeclaration(targetModule);
 		}
 		return undefined;
@@ -409,128 +349,17 @@ export class GDScriptBindingIndex {
 		return owner?.containerId ?? root.symbolId;
 	}
 
-	private factsForModule(module: string): { declarations: Declaration[]; references: Reference[] } | null {
-		this.ensureWorkspaceIndex();
-		const references = this.referencesByModule.get(module);
-		const declarations = this.declarationsByModule.get(module);
-		if (references !== undefined && declarations !== undefined) return { declarations, references };
-
-		// A module the index does not hold must not return through a read of its own bytes.
-		if (!this.fillable(module)) return null;
-		const absolute = absoluteModule(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute)) return null;
-		try {
-			const text = readFileSync(absolute, "utf8");
-			const extracted = extractFile(module, text);
-			this.registerFile(module, extracted.declarations, extracted.references, text);
-			return extracted;
-		} catch {
-			return null;
-		}
-	}
-
-	private ensureWorkspaceIndex(): void {
-		if (this.workspaceIndexed) return;
-		this.workspaceIndexed = true;
-		if (!existsSync(this.workspaceRoot)) return;
-		try {
-			for (const module of discoverProject(this.workspaceRoot).files) {
-				if (!this.fillable(module)) continue;
-				const absolute = absoluteModule(this.workspaceRoot, module);
-				if (absolute === null || !existsSync(absolute)) continue;
-				try {
-					const text = readFileSync(absolute, "utf8");
-					this.sourceByModule.set(module, text);
-					this.replaceDeclarations(module, extractDeclarations(module, text));
-				} catch {}
-			}
-			this.indexAutoloads();
-		} catch {
-			return;
-		}
-	}
-
-	private indexAutoloads(): void {
-		const scopes = new Set(this.moduleScopes.values());
-		if (existsSync(path.join(this.workspaceRoot, "project.godot"))) scopes.add(this.workspaceRoot);
-		for (const scope of scopes) {
-			const projectFile = path.join(scope, "project.godot");
-			if (!existsSync(projectFile)) continue;
-			try {
-				const entries = new Map<string, string>();
-				let inAutoloads = false;
-				for (const line of readFileSync(projectFile, "utf8").split(/\r?\n/)) {
-					const section = /^\[([^\]]+)\]$/.exec(line.trim());
-					if (section !== null) {
-						inAutoloads = section[1] === "autoload";
-						continue;
-					}
-					if (!inAutoloads) continue;
-					const entry = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"\*?(res:\/\/[^"\\]+)"/.exec(line.trim());
-					if (entry === null) continue;
-					const module = moduleForResource(this.workspaceRoot, scope, entry[2] as string);
-					if (module !== null) entries.set(entry[1] as string, module);
-				}
-				if (entries.size > 0) this.autoloadModulesByScope.set(scope, entries);
-			} catch {}
-		}
-	}
-
 	private rootDeclaration(module: string): Declaration | undefined {
-		return this.declarationsByModule
-			.get(module)
-			?.find((declaration) => declaration.kind === "class" && declaration.containerId === undefined);
+		return this.store
+			.load(module, "full")
+			?.declarations.find((declaration) => declaration.kind === "class" && declaration.containerId === undefined);
 	}
 
-	private replaceDeclarations(module: string, declarations: Declaration[]): void {
-		this.removeDeclarations(module);
-		const scope = this.scopeForModule(module);
-		this.declarationsByModule.set(module, declarations);
-		this.moduleScopes.set(module, scope);
-		const classNames = this.classNamesByScope.get(scope) ?? new Map<string, Declaration[]>();
-		for (const declaration of declarations) {
-			if (declaration.languageKind !== "class_name") continue;
-			const registrations = classNames.get(declaration.name) ?? [];
-			registrations.push(declaration);
-			classNames.set(declaration.name, registrations);
-		}
-		this.classNamesByScope.set(scope, classNames);
+	private autoloadModule(scope: string, name: string): string | undefined {
+		return this.store.project.scopes.find((candidate) => candidate.directory === scope)?.autoloads[name];
 	}
 
-	private removeDeclarations(module: string): void {
-		const previous = this.declarationsByModule.get(module);
-		const scope = this.moduleScopes.get(module);
-		if (previous !== undefined && scope !== undefined) {
-			const classNames = this.classNamesByScope.get(scope);
-			if (classNames !== undefined) {
-				for (const declaration of previous) {
-					if (declaration.languageKind !== "class_name") continue;
-					const registrations = classNames
-						.get(declaration.name)
-						?.filter((candidate) => candidate.symbolId !== declaration.symbolId);
-					if (registrations === undefined || registrations.length === 0) classNames.delete(declaration.name);
-					else classNames.set(declaration.name, registrations);
-				}
-				if (classNames.size === 0) this.classNamesByScope.delete(scope);
-			}
-		}
-		this.declarationsByModule.delete(module);
-		this.moduleScopes.delete(module);
-	}
-
-	private scopeForModule(module: string): string {
-		const absolute = absoluteModule(this.workspaceRoot, module);
-		if (absolute === null) return this.workspaceRoot;
-		let directory = path.dirname(absolute);
-		while (true) {
-			if (existsSync(path.join(directory, "project.godot"))) return directory;
-			if (directory === this.workspaceRoot) return this.workspaceRoot;
-			const parent = path.dirname(directory);
-			if (parent === directory || !path.relative(this.workspaceRoot, parent).startsWith("..")) {
-				directory = parent;
-				continue;
-			}
-			return this.workspaceRoot;
-		}
+	private projectDirectory(scope: string): string {
+		return path.resolve(this.store.root, ...scope.split("/").filter(Boolean));
 	}
 }

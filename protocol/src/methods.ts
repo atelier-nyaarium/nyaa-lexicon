@@ -181,6 +181,8 @@ export const ModuleAdmissionNotificationSchema = z
 	})
 	.meta({ id: "ModuleAdmissionNotification" });
 
+export type ModuleAdmission = z.infer<typeof ModuleAdmissionNotificationSchema>;
+
 /** A provider-level failure, distinct from an Unknown answer. The request could not be served. */
 export const ProviderErrorSchema = z
 	.object({ reason: UnknownReasonSchema, detail: z.string().min(1) })

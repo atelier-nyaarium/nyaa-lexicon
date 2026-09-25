@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 
 //////// Types
@@ -14,6 +14,7 @@ export interface ProjectModelFact {
 	externalRoots: string[];
 	configFiles: string[];
 	diagnostics: Diagnostic[];
+	projectDirectories: string[];
 }
 
 type NormalizeModulePath = (raw: string) => string;
@@ -24,13 +25,24 @@ const IGNORED_DIRECTORIES = new Set([".git", ".godot"]);
 
 //////// Functions
 
-function filesUnder(root: string, directory: string, files: string[], normalize: NormalizeModulePath): void {
+function filesUnder(
+	root: string,
+	directory: string,
+	files: string[],
+	projectDirectories: string[],
+	normalize: NormalizeModulePath,
+): void {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (entry.isDirectory() && !IGNORED_DIRECTORIES.has(entry.name)) {
-			filesUnder(root, path.join(directory, entry.name), files, normalize);
+			filesUnder(root, path.join(directory, entry.name), files, projectDirectories, normalize);
 			continue;
 		}
-		if (!entry.isFile() || !entry.name.endsWith(".gd")) continue;
+		if (!entry.isFile()) continue;
+		if (entry.name === "project.godot") {
+			const relative = path.relative(root, directory);
+			projectDirectories.push(relative === "" ? "" : relative.split(path.sep).join("/"));
+		}
+		if (!entry.name.endsWith(".gd")) continue;
 		const relative = path.relative(root, path.join(directory, entry.name));
 		files.push(normalize(relative));
 	}
@@ -39,15 +51,16 @@ function filesUnder(root: string, directory: string, files: string[], normalize:
 export function discoverProjectCore(workspaceRoot: string, normalize: NormalizeModulePath): ProjectModelFact {
 	const root = path.resolve(workspaceRoot);
 	const files: string[] = [];
-	const hasProjectFile = existsSync(path.join(root, "project.godot"));
-	filesUnder(root, root, files, normalize);
+	const projectDirectories: string[] = [];
+	filesUnder(root, root, files, projectDirectories, normalize);
 	files.sort();
+	projectDirectories.sort();
 
 	return {
 		files,
 		externalRoots: [],
-		configFiles: hasProjectFile ? ["project.godot"] : [],
-		diagnostics: hasProjectFile
+		configFiles: projectDirectories.includes("") ? ["project.godot"] : [],
+		diagnostics: projectDirectories.includes("")
 			? []
 			: [
 					{
@@ -56,5 +69,6 @@ export function discoverProjectCore(workspaceRoot: string, normalize: NormalizeM
 						path: "project.godot",
 					},
 				],
+		projectDirectories,
 	};
 }

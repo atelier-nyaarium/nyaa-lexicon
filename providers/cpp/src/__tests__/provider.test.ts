@@ -18,6 +18,7 @@ import {
 	FileFactsSchema,
 	handlersFor,
 	InitializeResponseSchema,
+	PROTOCOL_VERSION,
 	type Range,
 } from "@nyaa-lexicon/protocol";
 import { CppProvider, REFERENCE_ROLES, TIERS } from "../main.js";
@@ -34,6 +35,13 @@ function workspace(files: Record<string, string>): string {
 		writeFileSync(full, text);
 	}
 	return root;
+}
+
+function wire(root = process.cwd()) {
+	const handlers = handlersFor(new CppProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
 }
 
 function span(text: string, value: string, from = 0): Range {
@@ -70,8 +78,9 @@ describe("C++ provider contract", () => {
 	});
 
 	test("declares its supported extensions, roles, and tiers", () => {
-		const provider = new CppProvider();
-		const info = provider.initialize(process.cwd());
+		const handlers = handlersFor(new CppProvider());
+		const info = handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		handlers.discoverProject({ workspaceRoot: process.cwd() });
 
 		expect(InitializeResponseSchema.parse(info).language).toBe("cpp");
 		expect(info.extensions).toEqual([".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"]);
@@ -186,8 +195,7 @@ describe("C++ provider contract", () => {
 	});
 
 	test("binds same-file names and reports overload ambiguity", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = [
 			"int add(int value) { return value; }",
 			"int add(double value) { return 1; }",
@@ -210,8 +218,7 @@ describe("C++ provider contract", () => {
 				'#include "item.hpp"\n#include <vector>\nusing api::Item;\nItem make() { return Item{}; }\n',
 			"src/item.hpp": "namespace api { struct Item {}; }\n",
 		});
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 		provider.parseFile({
 			module: "src/item.hpp",
 			contentHash: "item",
@@ -238,12 +245,10 @@ describe("C++ provider contract", () => {
 	test("answers a probe from the candidate, then binds includes into what the index holds", () => {
 		const use = '#include "cart.hpp"\nint run() { return total() + discount(); }\n';
 		const root = workspace({ "src/cart.hpp": "int total();\n", "src/use.cpp": use });
-		const provider = new CppProvider();
-		provider.initialize(root);
-		const handlers = handlersFor(provider);
+		const handlers = wire(root);
 		const included = () =>
 			["total", "discount"].map(
-				(name) => provider.bind({ module: "src/use.cpp", name, range: span(use, name) }).status,
+				(name) => handlers.bind({ module: "src/use.cpp", name, range: span(use, name) }).status,
 			);
 		handlers.parseFile({ module: "src/cart.hpp", contentHash: "old", text: "int total();\n" });
 		handlers.moduleAdmission?.({ module: "src/cart.hpp", contentHash: "old", outcome: { status: "admitted" } });
@@ -274,8 +279,7 @@ describe("C++ provider contract", () => {
 	});
 
 	test("returns declared and inferred types and reports syntax errors", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = "const int LIMIT = 1;\nauto enabled = true;\n";
 		const facts = provider.parseFile({ module: "types.cpp", contentHash: "types", text });
 		const limit = facts.declarations.find((declaration) => declaration.name === "LIMIT");
@@ -296,8 +300,7 @@ describe("C++ provider contract", () => {
 	});
 
 	test("returns reasoned refusals for edit methods", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const rename = provider.renameEdits({
 			module: "a.cpp",
 			text: "int value;",
@@ -328,8 +331,7 @@ describe("C++ provider contract", () => {
 	});
 
 	test("validates complete file facts against the protocol schema", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const facts = provider.parseFile({ module: "schema.cpp", contentHash: "schema", text: "int value = 1;\n" });
 
 		expect(FileFactsSchema.safeParse(facts).success).toBe(true);
@@ -360,15 +362,14 @@ function corpusSourceFiles(root: string): string[] {
 
 // A missing corpus is a local mistake and a CI fact, `temp/` being ignored and never cloned there.
 // Skipping in CI keeps the throw below meaningful where the corpus is supposed to exist.
-const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
+const corpusTest = corpusPresent || !Reflect.get(process.env, "CI") ? test : test.skip;
 
 corpusTest(
 	"parses every owned nlohmann/json corpus file",
 	async () => {
 		if (!corpusPresent) throw new Error("C++ corpus is absent");
 		const started = performance.now();
-		const provider = new CppProvider();
-		provider.initialize(corpusRoot);
+		const provider = wire(corpusRoot);
 		const files = corpusSourceFiles(corpusRoot);
 		const errorFiles: string[] = [];
 		// A span whose range does not cut its own text back out attaches to the wrong symbol,

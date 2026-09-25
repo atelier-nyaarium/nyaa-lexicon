@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composeSymbolId, handlersFor } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 
@@ -17,6 +17,13 @@ function makeWorkspace(files: Record<string, string>): string {
 		writeFileSync(absolute, text);
 	}
 	return root;
+}
+
+function wire(root = process.cwd()) {
+	const handlers = handlersFor(new CppProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
 }
 
 function declarationId(module: string, kind: "method" | "term" | "type", name: string): string {
@@ -41,10 +48,9 @@ describe("C++ structural coverage", () => {
 			"node_modules/package/index.cpp": "int packageValue;\n",
 			".git/hidden.cpp": "int hidden;\n",
 		});
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 
-		expect(provider.discoverProject(root)).toMatchObject({
+		expect(provider.discoverProject({ workspaceRoot: root })).toMatchObject({
 			files: [
 				"include/api.hh",
 				"include/api.hpp",
@@ -60,13 +66,14 @@ describe("C++ structural coverage", () => {
 	});
 
 	test("reports invalid workspace roots as project diagnostics", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 
-		expect(provider.discoverProject("/tmp/cpp-provider-path-that-is-not-present")).toMatchObject({
-			files: [],
-			diagnostics: [{ severity: "error" }],
-		});
+		expect(provider.discoverProject({ workspaceRoot: "/tmp/cpp-provider-path-that-is-not-present" })).toMatchObject(
+			{
+				files: [],
+				diagnostics: [{ severity: "error" }],
+			},
+		);
 	});
 
 	test("maps class defaults and access labels to visibility", () => {
@@ -229,8 +236,7 @@ describe("C++ structural coverage", () => {
 			"src/use.cpp": '#include "defs.hpp"\nint run() { return api::Thing{}; }\n',
 			"src/defs.hpp": "namespace api { struct Thing {}; }\n",
 		});
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 		const header = readFileSync(path.join(root, "src/defs.hpp"), "utf8");
 		provider.parseFile({ module: "src/defs.hpp", contentHash: "defs", text: header });
 		const text = readFileSync(path.join(root, "src/use.cpp"), "utf8");
@@ -243,8 +249,7 @@ describe("C++ structural coverage", () => {
 
 	test("distinguishes unresolved quoted includes from external bracket includes", () => {
 		const root = makeWorkspace({ "src/use.cpp": '#include "missing.hpp"\n#include <missing>\n' });
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 		const text = readFileSync(path.join(root, "src/use.cpp"), "utf8");
 		provider.parseFile({ module: "src/use.cpp", contentHash: "use", text });
 
@@ -259,8 +264,7 @@ describe("C++ structural coverage", () => {
 	});
 
 	test("keeps template-dependent binding and type answers unknown", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = "template <typename T> T call(T value) { return value; }";
 		const facts = provider.parseFile({ module: "dependent.cpp", contentHash: "dependent", text });
 		const value = facts.references.find((reference) => reference.name === "value");
@@ -275,8 +279,7 @@ describe("C++ structural coverage", () => {
 	});
 
 	test("answers type requests by declaration range and rejects malformed ids", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = "int run() { int value = 1; return value; }";
 		const facts = provider.parseFile({ module: "ranges.cpp", contentHash: "ranges", text });
 		const value = facts.declarations.find((declaration) => declaration.name === "value");
@@ -351,7 +354,7 @@ describe("C++ structural coverage", () => {
 	});
 
 	test("exposes every protocol handler key", () => {
-		const handlers = handlersFor(new CppProvider());
+		const handlers = wire();
 
 		expect(Object.keys(handlers).sort()).toEqual([
 			"bind",

@@ -33,6 +33,8 @@ const headerClaims: ProviderClaims = {
 	extensions: [],
 	sharedExtensions: [{ extension: ".fakeh", beside: [".fake"] }],
 };
+/** Plain `.fakeh` extension claim. */
+const plainHeaderClaims: ProviderClaims = { providerId: "fakeplain", language: "fake", extensions: [".fakeh"] };
 const fallbackClaims: ProviderClaims = {
 	providerId: "text",
 	language: "text",
@@ -76,10 +78,20 @@ function importsFrom(text: string): Import[] {
 function fakeSupervisor(
 	discovered: string[] = [],
 	parseRequests: Array<{ module: string; depth?: IndexDepth }> = [],
-	{ lazyEvidence = true, fallback = false }: { lazyEvidence?: boolean; fallback?: boolean } = {},
+	{
+		lazyEvidence = true,
+		fallback = false,
+		plainHeaders = false,
+	}: { lazyEvidence?: boolean; fallback?: boolean; plainHeaders?: boolean } = {},
 ): ProviderPort {
 	return sharedFake({
-		claims: [claims, dataClaims, headerClaims, ...(fallback ? [fallbackClaims] : [])],
+		claims: [
+			claims,
+			dataClaims,
+			headerClaims,
+			...(fallback ? [fallbackClaims] : []),
+			...(plainHeaders ? [plainHeaderClaims] : []),
+		],
 		discover: () => discovered,
 		lazyEvidence,
 		answers: {
@@ -481,6 +493,34 @@ describe("a shared extension claim", () => {
 		expect(outcomes).toContainEqual(expect.objectContaining({ module: "d.fake", action: "indexed" }));
 
 		await expect(service.indexFile("d.fakeh")).resolves.toMatchObject({ action: "indexed" });
+	});
+
+	it("parses a header again under its new owner once a batch moves the claim, and back", async () => {
+		await initGit();
+		put("e.fakeh", "export class Header {}\n");
+		const parses: Array<{ module: string }> = [];
+		service = new LexiconService(
+			store,
+			fakeSupervisor(["e.fakeh"], parses, { plainHeaders: true }),
+			sourceReader(root),
+			root,
+		);
+
+		await service.indexWorkspace();
+		const plain = store.writerOf("e.fakeh");
+		put("e.fake", "export class Source {}\n");
+		await service.applyBatch([{ kind: "changed", module: "e.fake", contentHash: "e-1" }]);
+		const shared = store.writerOf("e.fakeh");
+		rmSync(path.join(root, "e.fake"));
+		await service.applyBatch([{ kind: "deleted", module: "e.fake" }]);
+
+		expect({
+			plain,
+			shared,
+			back: store.writerOf("e.fakeh"),
+			headerParses: parses.filter((parse) => parse.module === "e.fakeh").length,
+		}).toEqual({ plain: "fakeplain", shared: "fakeheader", back: "fakeplain", headerParses: 3 });
+		expect(service.findByName("Header")).toHaveLength(1);
 	});
 });
 

@@ -1,10 +1,10 @@
 // The GDScript provider. It reports project structure, declarations, and reference candidates.
 
 import {
-	AdmissionLedger,
 	type Declaration,
 	handlersFor,
 	type ImportResolution,
+	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -14,20 +14,13 @@ import {
 	serveProvider,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { GDScriptBindingIndex, type GDScriptBindingSnapshot } from "./binding.js";
-import { extractFile, LANGUAGE } from "./extract.js";
+import { GDScriptBindingIndex } from "./binding.js";
+import { LANGUAGE } from "./extract.js";
+import { createGDScriptStore, type GDScriptProject, type GDScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
-import { discoverProject } from "./project.js";
+import { discoverGDScriptProject } from "./project.js";
 import { renameGdscript } from "./rename.js";
-import { GDScriptTypeIndex, type TypeFacts } from "./types.js";
-
-//////// Types
-
-/** Both indexes' state for one module, taken and put back together. */
-interface ModuleFacts {
-	binding: GDScriptBindingSnapshot | undefined;
-	types: TypeFacts | undefined;
-}
+import { GDScriptTypeIndex } from "./types.js";
 
 //////// Constants
 
@@ -141,21 +134,11 @@ const FILENAMES = ["project.godot"];
 //////// Class
 
 export class GDScriptProvider {
-	private workspaceRoot = process.cwd();
-	/** What the index took, so cross-file answers match what it holds. */
-	readonly admission = new AdmissionLedger<ModuleFacts>({
-		snapshot: (module) => this.heldFacts(module),
-		restore: (module, held) => {
-			this.bindingIndex.restore(module, held?.binding);
-			this.typeIndex.restore(module, held?.types);
-		},
-	});
-	private readonly fillable = (module: string): boolean => this.admission.fillable(module);
-	private bindingIndex = new GDScriptBindingIndex(this.workspaceRoot, this.fillable);
-	private typeIndex = new GDScriptTypeIndex(this.workspaceRoot, this.bindingIndex, this.fillable);
+	readonly store = createGDScriptStore();
+	private readonly bindingIndex = new GDScriptBindingIndex(this.store);
+	private readonly typeIndex = new GDScriptTypeIndex(this.store, this.bindingIndex);
 
-	initialize(workspaceRoot: string) {
-		this.rebuild(workspaceRoot);
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "gdscript-provider",
 			language: LANGUAGE,
@@ -168,16 +151,16 @@ export class GDScriptProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot) {
-		this.rebuild(workspaceRoot);
-		return discoverProject(workspaceRoot);
+	discoverProject(workspaceRoot: string, _previous: GDScriptProject | undefined) {
+		return discoverGDScriptProject(workspaceRoot);
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
-		const extracted = extractFile(params.module, params.text);
-		this.bindingIndex.registerFile(params.module, extracted.declarations, extracted.references, params.text);
-		this.typeIndex.registerFile(params.module, params.text, extracted.declarations);
-		const references = extracted.references.map((reference) => ({
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		value: GDScriptValue,
+	) {
+		const outline = params.depth === "outline";
+		const references = value.references.map((reference) => ({
 			...reference,
 			binding: this.bindingIndex.bindReference(params.module, reference),
 		}));
@@ -185,16 +168,17 @@ export class GDScriptProvider {
 			module: params.module,
 			contentHash: params.contentHash,
 			// A script with no class_name is named after its file; that name is nowhere to select.
-			declarations: extracted.declarations.map((declaration): Declaration => {
+			declarations: value.declarations.map((declaration): Declaration => {
 				if (declaration.languageKind !== "script") return declaration;
 				const { selectionRange: _synthesized, ...named } = declaration;
 				return named;
 			}),
-			references,
-			imports: extracted.imports,
-			literals: extracted.literals,
-			comments: extracted.comments,
-			diagnostics: extracted.diagnostics,
+			references: outline ? [] : references,
+			imports: value.imports,
+			literals: value.literals,
+			comments: value.comments,
+			diagnostics: value.diagnostics,
+			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}
 
@@ -222,31 +206,11 @@ export class GDScriptProvider {
 	}
 
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
-		return renameGdscript(params, (name) => this.bindingIndex.hasRegisteredClassName(name));
+		return renameGdscript(params, this.store);
 	}
 
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
-		return makeMoveEdits(params, this.bindingIndex);
-	}
-
-	forgetModule(params: { module: string }): void {
-		this.bindingIndex.forget(params.module);
-		this.typeIndex.forget(params.module);
-		this.admission.forgotten(params.module);
-	}
-
-	private rebuild(workspaceRoot: string): void {
-		this.workspaceRoot = workspaceRoot;
-		this.admission.reset();
-		this.bindingIndex = new GDScriptBindingIndex(workspaceRoot, this.fillable);
-		this.typeIndex = new GDScriptTypeIndex(workspaceRoot, this.bindingIndex, this.fillable);
-	}
-
-	private heldFacts(module: string): ModuleFacts | undefined {
-		const binding = this.bindingIndex.snapshot(module);
-		const types = this.typeIndex.snapshot(module);
-		if (binding === undefined && types === undefined) return undefined;
-		return { binding, types };
+		return makeMoveEdits(params, this.store);
 	}
 }
 

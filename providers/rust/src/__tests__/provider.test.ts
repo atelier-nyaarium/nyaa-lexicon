@@ -2,10 +2,27 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { handlersFor } from "@nyaa-lexicon/protocol";
+import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { REFERENCE_ROLES, RustProvider, TIERS } from "../main.js";
 
 const roots: string[] = [];
+
+function client(provider: RustProvider) {
+	const handlers = handlersFor(provider);
+	return {
+		handlers,
+		initialize: (workspaceRoot: string) =>
+			handlers.initialize({ workspaceRoot, protocolVersion: PROTOCOL_VERSION }),
+		discoverProject: (workspaceRoot: string) => handlers.discoverProject({ workspaceRoot }),
+		parseFile: (params: Parameters<typeof handlers.parseFile>[0]) => handlers.parseFile(params),
+		resolveImport: (params: Parameters<typeof handlers.resolveImport>[0]) => handlers.resolveImport(params),
+		bind: (params: Parameters<typeof handlers.bind>[0]) => handlers.bind(params),
+		typeOf: (params: Parameters<typeof handlers.typeOf>[0]) => handlers.typeOf(params),
+		renameEdits: (params: Parameters<typeof handlers.renameEdits>[0]) => handlers.renameEdits(params),
+		moveEdits: (params: Parameters<typeof handlers.moveEdits>[0]) => handlers.moveEdits(params),
+		forgetModule: (params: { module: string }) => handlers.forgetModule?.(params),
+	};
+}
 
 function workspace(files: Record<string, string>): string {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-rust-provider-"));
@@ -39,7 +56,7 @@ test("discovers Rust files and excludes generated directories", () => {
 		"target/generated.rs": "pub struct Generated;\n",
 		"node_modules/ignored.rs": "pub struct Ignored;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	const info = provider.initialize(root);
 	const model = provider.discoverProject(root);
 
@@ -61,7 +78,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 		mkdirSync(unreadable);
 		try {
 			chmodSync(unreadable, 0o000);
-			const provider = new RustProvider();
+			const provider = client(new RustProvider());
 			const info = provider.initialize(root);
 
 			expect(info.language).toBe("rust");
@@ -79,7 +96,7 @@ test("resolves Rust module paths and distinguishes external crates", () => {
 		"src/util.rs": "pub mod nested;\n",
 		"src/util/nested.rs": "pub struct Item;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	provider.discoverProject(root);
 
@@ -122,7 +139,7 @@ pub struct Other;
 pub fn helper() {}
 `,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const source = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text: source });
@@ -171,7 +188,7 @@ test("binds every call through a glob import of a costly sibling module", () => 
 		"src/lib.rs": `pub enum Token { Literal }\nfn filler() {\n${locals}\n}\n`,
 		"src/glob.rs": `mod tests {\n    use super::Token::*;\n    fn run() {\n${calls}\n    }\n}\n`,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const lib = provider.parseFile({
 		module: "src/lib.rs",
@@ -194,20 +211,20 @@ test("binds every call through a glob import of a costly sibling module", () => 
 	expect(bindings[0]).toMatchObject({ status: "ambiguous", candidates: topLevel });
 }, 5_000);
 
-test("answers a base-module symbol import from the module's current text", () => {
+test("answers a base-module symbol import from the text the store holds", () => {
 	const root = workspace({
 		"src/lib.rs": "pub enum Token { Literal }\n",
 		"src/glob.rs": "use super::Token;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
 
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
 	writeFileSync(path.join(root, "src/lib.rs"), "pub enum Other { Literal }\n");
-	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
-	writeFileSync(path.join(root, "src/lib.rs"), "pub enum Token { Literal }\n");
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	provider.parseFile({ module: "src/lib.rs", contentHash: "changed", text: "pub enum Other { Literal }\n" });
+	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 });
 
 test("answers every protocol method, including explicit refusals", () => {
@@ -236,7 +253,7 @@ test("answers every protocol method, including explicit refusals", () => {
 });
 
 test("honors outline depth for declarations and imports only", () => {
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize("/workspace");
 	const facts = provider.parseFile({
 		module: "src/lib.rs",
@@ -264,7 +281,7 @@ fn run(value: Item) { println!("value"); }
 });
 
 test("reports outline syntax diagnostics", () => {
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize("/workspace");
 	const facts = provider.parseFile({
 		module: "src/broken.rs",
@@ -281,7 +298,7 @@ test("reports outline syntax diagnostics", () => {
 
 test("typeOf accepts a declaration range and reports unknown inputs honestly", () => {
 	const root = workspace({ "src/lib.rs": "pub const LIMIT: i32 = 1;\n" });
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "limit", text });
@@ -312,7 +329,7 @@ test("resolves file modules beside files and inside module directories", () => {
 		"src/feature/item.rs": "pub struct Item;\n",
 		"src/feature/leaf.rs": "pub struct Leaf;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	provider.discoverProject(root);
 
@@ -345,7 +362,7 @@ test("discovers multiple Cargo roots and resolves crate paths within the nearest
 		"crates/two/src/item.rs": "pub struct Two;\n",
 		"crates/two/target/ignored.rs": "pub struct Ignored;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	const info = provider.initialize(root);
 	const model = provider.discoverProject(root);
 
@@ -376,7 +393,7 @@ cc = "1"
 `,
 		"src/lib.rs": "",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	provider.discoverProject(root);
 
@@ -401,7 +418,7 @@ test("binds parameters and locals in their containing function", () => {
 }
 `,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "scope", text });
@@ -439,7 +456,7 @@ fn run() { Local::make(); External::make(); }
 impl External { pub fn make() -> Self { External } }
 `,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const lib = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const util = readFileSync(path.join(root, "src/util.rs"), "utf8");
@@ -469,7 +486,7 @@ impl External { fn extra(&self) {} }
 `,
 		"src/util.rs": "pub struct External;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const lib = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "foreign-impl", text: lib });
@@ -489,7 +506,7 @@ use crate::missing::Gone;
 fn run() { println!("value"); }
 `,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "reasons", text });
@@ -511,7 +528,7 @@ const NAME = "cart";
 fn run() { let flag = true; let value = build(); }
 `,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "types", text });
@@ -531,7 +548,7 @@ fn run() { let flag = true; let value = build(); }
 });
 
 test("rejects a module path outside the workspace without reading it", () => {
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize("/workspace");
 
 	expect(
@@ -576,7 +593,7 @@ test("wires handlers to the same provider instance", () => {
 });
 
 test("reports an honest project diagnostic for missing roots", () => {
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	const missing = path.join(tmpdir(), "rust-provider-root-does-not-exist");
 
 	const model = provider.discoverProject(missing);
@@ -599,7 +616,7 @@ test("keeps Cargo.lock in the project model and excludes all generated roots", (
 		"node_modules/generated.rs": "pub struct Node;\n",
 		"src/ok.rs": "pub struct Ok;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	const model = provider.discoverProject(root);
 
 	expect(model.configFiles).toEqual(["Cargo.toml", "Cargo.lock"]);
@@ -617,7 +634,7 @@ fn private() {}
 `,
 		"src/item.rs": "pub struct Other;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "visibility", text });
@@ -645,7 +662,7 @@ test("resolves a declared type symbol from a return annotation", () => {
 pub fn build() -> Cart { Cart }
 `,
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "return", text });
@@ -662,7 +679,7 @@ pub fn build() -> Cart { Cart }
 });
 
 test("returns a parse error for an empty import specifier and refuses edits by reason", () => {
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize("/workspace");
 
 	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "" })).toEqual({
@@ -704,29 +721,29 @@ const CART = "pub fn add(left: i32, right: i32) -> i32 { left + right }\n";
 const LIB = "mod cart;\nuse crate::cart::add;\n\npub fn run() -> i32 { add(1, 2) }\n";
 
 /** Where `add` lands in `run`, reparsing the user each time. */
-function callsAdd(provider: RustProvider): string | undefined {
+function callsAdd(provider: ReturnType<typeof client>): string | undefined {
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text: LIB });
 	const call = facts.references.find((candidate) => candidate.name === "add" && candidate.role === "call");
 	return call?.binding.status === "bound" ? call.binding.symbolId : undefined;
 }
 
 /** The type of what `run`'s call to `add` binds into. */
-function addType(provider: RustProvider): string | undefined {
+function addType(provider: ReturnType<typeof client>): string | undefined {
 	const symbolId = callsAdd(provider);
 	const type = symbolId === undefined ? undefined : provider.typeOf({ symbolId });
 	return type?.status === "known" ? type.display : undefined;
 }
 
-function cartWorkspace(): RustProvider {
+function cartWorkspace(): ReturnType<typeof client> {
 	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	return provider;
 }
 
 /** The index's verdict on a parse, through the kit as the wire delivers it. */
-function verdict(provider: RustProvider, module: string, contentHash: string, refusal?: string): void {
-	handlersFor(provider).moduleAdmission?.({
+function verdict(provider: ReturnType<typeof client>, module: string, contentHash: string, refusal?: string): void {
+	provider.handlers.moduleAdmission?.({
 		module,
 		contentHash,
 		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
@@ -734,8 +751,14 @@ function verdict(provider: RustProvider, module: string, contentHash: string, re
 }
 
 /** Parses through the kit and settles the index's verdict on it. */
-function settle(provider: RustProvider, module: string, text: string, contentHash: string, refusal?: string): void {
-	handlersFor(provider).parseFile({ module, contentHash, text });
+function settle(
+	provider: ReturnType<typeof client>,
+	module: string,
+	text: string,
+	contentHash: string,
+	refusal?: string,
+): void {
+	provider.handlers.parseFile({ module, contentHash, text });
 	verdict(provider, module, contentHash, refusal);
 }
 
@@ -761,9 +784,9 @@ test("holds nothing for a module whose first parse the index refused", () => {
 test("answers a probe from the candidate, then binds into what the index holds, never the candidate or the disk", () => {
 	const disk = "pub fn add() -> u8 { 0 }\n";
 	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
-	const handlers = handlersFor(provider);
+	const handlers = provider.handlers;
 	settle(provider, "src/cart.rs", CART, "cart-1");
 	// The file changed on disk and its parse is outstanding across the probe.
 	writeFileSync(path.join(root, "src/cart.rs"), disk);
@@ -781,7 +804,7 @@ test("answers a probe from the candidate, then binds into what the index holds, 
 
 test("lets a new workspace fill a module the previous one withheld", () => {
 	const root = workspace({ "src/cart.rs": CART, "src/lib.rs": LIB });
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	provider.forgetModule({ module: "src/cart.rs" });
 	expect(callsAdd(provider)).toBeUndefined();
@@ -796,7 +819,7 @@ test("resolves a base-module symbol import against what the index holds, not the
 		"src/lib.rs": "pub enum Token { Literal }\n",
 		"src/glob.rs": "use super::Token;\n",
 	});
-	const provider = new RustProvider();
+	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
 	const token = "pub enum Token { Literal }\n";

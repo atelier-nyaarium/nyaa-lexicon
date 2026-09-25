@@ -46,5 +46,5 @@ export function extractFile(
 }
 
 export function extractDeclarations(module: string, text: string): Declaration[] {
-	return extractFile(module, text).declarations;
+	return extractDeclarationsCore(module, text, composeSymbolId) as Declaration[];
 }

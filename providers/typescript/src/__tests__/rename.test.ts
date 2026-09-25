@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyEdits, coordinatesOf, type Range, type RenameEditsRequest } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { TypeScriptProvider } from "../main";
+import { harness } from "./harness.js";
 
 const roots: string[] = [];
 
@@ -33,7 +33,7 @@ function syntaxErrors(text: string, module = "rename.ts"): readonly ts.Diagnosti
 }
 
 function rename(root: string, request: RenameEditsRequest) {
-	const provider = new TypeScriptProvider();
+	const provider = harness();
 	provider.initialize(root);
 	const response = provider.renameEdits(request);
 	provider.shutdown();

@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { GDScriptProvider, TIERS } from "../main.js";
 
 const PROVIDER_ROOT = path.join(process.cwd(), "providers/gdscript");
 
 function diagnostics(text: string, module = "broken.gd") {
-	return new GDScriptProvider().parseFile({ module, contentHash: "diagnostics", text }).diagnostics;
+	const handlers = handlersFor(new GDScriptProvider());
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: process.cwd() });
+	return handlers.parseFile({ module, contentHash: "diagnostics", text }).diagnostics;
 }
 
 function providerSourceFiles(directory: string): string[] {

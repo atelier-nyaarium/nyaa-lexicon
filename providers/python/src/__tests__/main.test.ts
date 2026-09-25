@@ -8,6 +8,7 @@ import {
 	composeSymbolId,
 	coordinatesOf,
 	type Declaration,
+	PROTOCOL_VERSION,
 	parseSymbolId,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
@@ -66,6 +67,17 @@ function writtenIn(facts: { references: Reference[] }): string[] {
 		.map((reference) => `${reference.name} in ${ownerOf(reference)}`);
 }
 
+function initializeProvider(provider: PythonProvider, root: string) {
+	const handlers = wireHandlers(provider);
+	const info = handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return info;
+}
+
+function parseFile(provider: PythonProvider, params: Parameters<ReturnType<typeof wireHandlers>["parseFile"]>[0]) {
+	return wireHandlers(provider).parseFile(params);
+}
+
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -76,7 +88,7 @@ const CART = "from .item import Item\ndef make():\n    return Item()\n";
 function itemWorkspace(): PythonProvider {
 	const root = workspace({ "src/item.py": ITEM });
 	const provider = new PythonProvider();
-	provider.initialize(root);
+	initializeProvider(provider, root);
 	return provider;
 }
 
@@ -97,7 +109,7 @@ async function admitItem(provider: PythonProvider, contentHash: string): Promise
 /** Where the call to `name`, imported from item, lands, reparsing the user each time. */
 async function makesItem(provider: PythonProvider, name = "Item"): Promise<string | undefined> {
 	const text = CART.replaceAll("Item", name);
-	const facts = await provider.parseFile({ module: "src/cart.py", contentHash: "cart", text });
+	const facts = await parseFile(provider, { module: "src/cart.py", contentHash: "cart", text });
 	return facts.references.find((candidate) => candidate.name === name && candidate.role === "call")?.binding.status;
 }
 
@@ -115,8 +127,8 @@ describe("Python provider project behavior", () => {
 	it("declares extracted roles and binds a certain module call", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		const info = provider.initialize(root);
-		const facts = await provider.parseFile({
+		const info = initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: [
@@ -150,7 +162,7 @@ describe("Python provider project behavior", () => {
 	it("disambiguates module redefinitions while keeping duplicate lookup ambiguous", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"def target():",
 			"    pass",
@@ -160,7 +172,7 @@ describe("Python provider project behavior", () => {
 			"    return target()",
 			"f()",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const functions = facts.declarations.filter((declaration) => declaration.name === "f");
 		const ids = functions.map((declaration) => declaration.symbolId);
 		const second = functions[1];
@@ -201,7 +213,7 @@ describe("Python provider project behavior", () => {
 	it("disambiguates conditional definitions in document order", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"if enabled:",
 			"    def f():",
@@ -210,7 +222,7 @@ describe("Python provider project behavior", () => {
 			"    def f():",
 			"        return 2",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(
 			facts.declarations
@@ -233,7 +245,7 @@ describe("Python provider project behavior", () => {
 	it("disambiguates property getter and setter declarations", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"class Item:",
 			"    @property",
@@ -243,7 +255,7 @@ describe("Python provider project behavior", () => {
 			"    def value(self, new_value):",
 			"        self._value = new_value",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(
 			facts.declarations
@@ -272,9 +284,9 @@ describe("Python provider project behavior", () => {
 	it("counts duplicate names within their enclosing scope", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f():", "    pass", "class Item:", "    def f(self):", "        pass"].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const ids = facts.declarations
 			.filter((declaration) => declaration.name === "f")
 			.map((declaration) => declaration.symbolId);
@@ -299,7 +311,7 @@ describe("Python provider project behavior", () => {
 	it("separates nested definition counters by enclosing scope", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"def left():",
 			"    def helper():",
@@ -313,7 +325,7 @@ describe("Python provider project behavior", () => {
 			"    def helper():",
 			"        pass",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(
 			facts.declarations
@@ -358,10 +370,10 @@ describe("Python provider project behavior", () => {
 	it("repeats symbol ids deterministically", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f():", "    pass", "def f():", "    pass"].join("\n");
-		const first = await provider.parseFile({ module: "main.py", contentHash: "first", text });
-		const second = await provider.parseFile({ module: "main.py", contentHash: "second", text });
+		const first = await parseFile(provider, { module: "main.py", contentHash: "first", text });
+		const second = await parseFile(provider, { module: "main.py", contentHash: "second", text });
 
 		expect(second.declarations.map((declaration) => declaration.symbolId)).toEqual(
 			first.declarations.map((declaration) => declaration.symbolId),
@@ -371,9 +383,9 @@ describe("Python provider project behavior", () => {
 	it("indexes all function parameter forms with owned symbol ids", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = "def run(self, /, cls, value: int = 1, *args, named=2, **kwargs):\n    return value\n";
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const run = facts.declarations.find((declaration) => declaration.name === "run");
 		if (run === undefined) throw new Error("run declaration missing");
 		const parameters = facts.declarations.filter((declaration) => declaration.containerId === run.symbolId);
@@ -416,7 +428,7 @@ describe("Python provider project behavior", () => {
 	it("emits decoded searchable literals without duplicating docstrings", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		const info = provider.initialize(root);
+		const info = initializeProvider(provider, root);
 		const text = [
 			'"""module docs"""',
 			'__all__ = ["add"]',
@@ -431,7 +443,7 @@ describe("Python provider project behavior", () => {
 			"negative = -1",
 			"complex_value = 1j",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const add = facts.declarations.find((declaration) => declaration.name === "add");
 		if (add === undefined) throw new Error("add declaration missing");
 
@@ -488,9 +500,9 @@ describe("Python provider project behavior", () => {
 	it("reports a multi-substitution f-string's text runs as literals, each slicing its own text", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = 'cmd = f"install {name}@{marketplace} now"\n';
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.literals.map((literal) => [literal.kind, literal.value])).toEqual([
 			["string", "install "],
@@ -505,9 +517,9 @@ describe("Python provider project behavior", () => {
 	it("skips the empty text run a nested format spec opens with, and still reports the rest", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = 'width = 10\nx = 1\ny = f"{x:{width}} done"\n';
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.literals.map((literal) => [literal.kind, literal.value])).toEqual([
 			["number", "10"],
@@ -519,7 +531,7 @@ describe("Python provider project behavior", () => {
 	it("reports UTF-16 ranges for declarations, references, imports, attributes, and literals", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			'X = "😀"; DECL = 1',
 			'X = "😀"; VALUE = X',
@@ -528,7 +540,7 @@ describe("Python provider project behavior", () => {
 			'X = "😀"; LIT = "target"',
 			'X = "😀"; obj.attr',
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		const declaration = facts.declarations.find((candidate) => candidate.name === "DECL");
 		if (declaration === undefined) throw new Error("DECL declaration missing");
@@ -581,7 +593,7 @@ describe("Python provider project behavior", () => {
 	it("emits every Python comment form verbatim and leaves docstrings alone", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		const info = provider.initialize(root);
+		const info = initializeProvider(provider, root);
 		const text = [
 			"#!/usr/bin/env python3",
 			"# -*- coding: utf-8 -*-",
@@ -601,7 +613,7 @@ describe("Python provider project behavior", () => {
 			"# standalone",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(info.tiers.comments).toBe(true);
 		expect(facts.comments).toEqual([
@@ -623,7 +635,7 @@ describe("Python provider project behavior", () => {
 	it("never reports a hash inside a string as a comment", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			'url = "https://example.com/path"',
 			"hashed = '# not a comment'",
@@ -634,7 +646,7 @@ describe("Python provider project behavior", () => {
 			"# real",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.comments).toEqual([{ text: "# real", range: spanAt(text, text.indexOf("# real"), "# real") }]);
 	});
@@ -642,9 +654,9 @@ describe("Python provider project behavior", () => {
 	it("measures comment columns in UTF-16 code units", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ['X = "😀"  # tail', "# 😀 lead", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.comments).toEqual([
 			{ text: "# tail", range: { start: { line: 0, character: 10 }, end: { line: 0, character: 16 } } },
@@ -655,21 +667,21 @@ describe("Python provider project behavior", () => {
 	it("reports comments from text the parser rejects", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["# kept", "def add(:", "    pass", "# also kept", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.declarations).toEqual([]);
-		expect(facts.comments.map((comment) => comment.text)).toEqual(["# kept", "# also kept"]);
+		expect((facts.comments ?? []).map((comment) => comment.text)).toEqual(["# kept", "# also kept"]);
 		expect(facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
 	});
 
 	it("keeps the comments read before an unterminated string, which Python has instead of blocks", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["# before", 'value = """opened and never closed', "# inside the string", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.comments).toEqual([
 			{ text: "# before", range: spanAt(text, text.indexOf("# before"), "# before") },
@@ -680,7 +692,7 @@ describe("Python provider project behavior", () => {
 	it("reports declaration metrics with explicit parameter and branch rules", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		const info = provider.initialize(root);
+		const info = initializeProvider(provider, root);
 		const text = [
 			"def calculate(self, *args, enabled=True, **kwargs):",
 			"    if enabled:",
@@ -689,7 +701,7 @@ describe("Python provider project behavior", () => {
 			"                return 1",
 			"    return 0",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const declaration = facts.declarations.find((candidate) => candidate.name === "calculate");
 		if (declaration === undefined) throw new Error("calculate declaration missing");
 
@@ -703,13 +715,13 @@ describe("Python provider project behavior", () => {
 			"src/other.py": "class Other:\n    pass\n",
 		});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const itemFacts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const itemFacts = await parseFile(provider, {
 			module: "src/item.py",
 			contentHash: "item",
 			text: "class Item:\n    pass\n",
 		});
-		const otherFacts = await provider.parseFile({
+		const otherFacts = await parseFile(provider, {
 			module: "src/other.py",
 			contentHash: "other",
 			text: "class Other:\n    pass\n",
@@ -717,7 +729,7 @@ describe("Python provider project behavior", () => {
 		const item = itemFacts.declarations.find((declaration) => declaration.name === "Item");
 		const other = otherFacts.declarations.find((declaration) => declaration.name === "Other");
 		if (item === undefined || other === undefined) throw new Error("import declaration missing");
-		const cart = await provider.parseFile({
+		const cart = await parseFile(provider, {
 			module: "src/cart.py",
 			contentHash: "cart",
 			text: [
@@ -747,7 +759,7 @@ describe("Python provider project behavior", () => {
 	it("returns parseable edits for declarations and reads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = "def old():\n    return old\n";
 		const declaration = spanAt(text, text.indexOf("old"), "old");
 		const reference = spanAt(text, text.lastIndexOf("old"), "old");
@@ -769,7 +781,7 @@ describe("Python provider project behavior", () => {
 		if (response.status !== "ready") throw new Error("rename was refused");
 		const rewritten = applyEdits(text, response.edits);
 		if ("problem" in rewritten) throw new Error(rewritten.problem);
-		const reparsed = await provider.parseFile({
+		const reparsed = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "rewritten",
 			text: rewritten.text,
@@ -780,9 +792,9 @@ describe("Python provider project behavior", () => {
 	it("applies rename sites using UTF-16 ranges", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = 'prefix = "😀"; old = 1\n';
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const declaration = facts.declarations.find((candidate) => candidate.name === "old");
 		if (declaration === undefined) throw new Error("old declaration missing");
 		if (declaration.selectionRange === undefined) throw new Error("declaration selection range missing");
@@ -805,7 +817,7 @@ describe("Python provider project behavior", () => {
 	it("rewrites static __all__ strings without touching the declaration", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = '__all__ = ["old"]\ndef old():\n    pass\n';
 		const site = spanAt(text, text.indexOf('"old"'), '"old"');
 		const response = await provider.renameEdits({
@@ -830,7 +842,7 @@ describe("Python provider project behavior", () => {
 	it("refuses parameter renames and collisions", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const parameterText = "def run(old):\n    return old\nrun(old=1)\n";
 		expect(
 			await provider.renameEdits({
@@ -857,7 +869,7 @@ describe("Python provider project behavior", () => {
 	it("rewrites named owner calls and leaves positional or unrelated calls alone", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def run(old):", "    return old", "run(old=1)", "run(2)", "other(old=3)"].join("\n");
 		const parameter = spanAt(text, text.indexOf("old"), "old");
 		const namedCall = spanAt(text, text.indexOf("run(old=1)"), "run");
@@ -890,7 +902,7 @@ describe("Python provider project behavior", () => {
 	it("rewrites owner calls in a file with no parameter sites", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["run(old=1)", "run(2)", "other(old=3)"].join("\n");
 		const namedCall = spanAt(text, text.indexOf("run(old=1)"), "run");
 		const positionalCall = spanAt(text, text.indexOf("run(2)"), "run");
@@ -913,7 +925,7 @@ describe("Python provider project behavior", () => {
 	it("blocks owner calls with dynamic keyword forwarding", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def run(old):", "    return old", "values = {}", "run(**values)"].join("\n");
 		const parameter = spanAt(text, text.indexOf("old"), "old");
 		const ownerCall = spanAt(text, text.indexOf("run(**values)"), "run");
@@ -942,7 +954,7 @@ describe("Python provider project behavior", () => {
 	it("does not block dynamic keywords for positional-only parameters", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def run(old, /):", "    return old", "values = {}", "run(**values)"].join("\n");
 		const parameter = spanAt(text, text.indexOf("old"), "old");
 		const ownerCall = spanAt(text, text.indexOf("run(**values)"), "run");
@@ -965,7 +977,7 @@ describe("Python provider project behavior", () => {
 	it("blocks string, attribute, and dynamic scope sites", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const cases = [
 			{
 				text: 'value: "old"\n',
@@ -1001,7 +1013,7 @@ describe("Python provider project behavior", () => {
 	it("keeps star and conditional imports unbound and binds parameter shadowing", async () => {
 		const root = workspace({ "src/item.py": "class Item:\n    pass\n" });
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const cases = [
 			{
 				module: "src/star.py",
@@ -1018,7 +1030,7 @@ describe("Python provider project behavior", () => {
 		] as const;
 
 		for (const testCase of cases) {
-			const facts = await provider.parseFile({
+			const facts = await parseFile(provider, {
 				module: testCase.module,
 				contentHash: testCase.name,
 				text: testCase.text,
@@ -1032,7 +1044,7 @@ describe("Python provider project behavior", () => {
 		}
 
 		const shadowText = ["from .item import Item", "def make(Item):", "    return Item()"].join("\n");
-		const shadowFacts = await provider.parseFile({
+		const shadowFacts = await parseFile(provider, {
 			module: "src/shadow.py",
 			contentHash: "shadow",
 			text: shadowText,
@@ -1049,14 +1061,14 @@ describe("Python provider project behavior", () => {
 	it("refreshes cross-file bindings when the target is reparsed", async () => {
 		const root = workspace({ "src/item.py": "class Item:\n    pass\n" });
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const cartText = "from .item import Item\ndef make():\n    return Item()\n";
-		const cart = await provider.parseFile({ module: "src/cart.py", contentHash: "cart", text: cartText });
+		const cart = await parseFile(provider, { module: "src/cart.py", contentHash: "cart", text: cartText });
 		const reference = cart.references.find((candidate) => candidate.name === "Item" && candidate.role === "call");
 		if (reference === undefined) throw new Error("imported reference missing");
 		expect(reference.binding.status).toBe("bound");
 
-		await provider.parseFile({ module: "src/item.py", contentHash: "item-2", text: "class NewItem:\n    pass\n" });
+		await parseFile(provider, { module: "src/item.py", contentHash: "item-2", text: "class NewItem:\n    pass\n" });
 
 		expect(await provider.bind({ module: "src/cart.py", name: "Item", range: reference.range })).toMatchObject({
 			status: "unbound",
@@ -1069,7 +1081,7 @@ describe("Python provider project behavior", () => {
 		await admitItem(provider, "item");
 		expect(await makesItem(provider)).toBe("bound");
 
-		provider.forgetModule({ module: "src/item.py" });
+		wireHandlers(provider).forgetModule?.({ module: "src/item.py" });
 		expect(await makesItem(provider)).toBe("unbound");
 
 		await admitItem(provider, "item-2");
@@ -1087,7 +1099,7 @@ describe("Python provider project behavior", () => {
 	it("answers a probe from the candidate, then binds as if it never ran", async () => {
 		const root = workspace({ "src/item.py": ITEM });
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const handlers = wireHandlers(provider);
 		await admitItem(provider, "item");
 		// The file changed on disk and its parse is outstanding across the probe.
@@ -1112,11 +1124,11 @@ describe("Python provider project behavior", () => {
 	it("lets a new workspace fill a module the previous one withheld", async () => {
 		const root = workspace({ "src/item.py": ITEM });
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		provider.forgetModule({ module: "src/item.py" });
+		initializeProvider(provider, root);
+		wireHandlers(provider).forgetModule?.({ module: "src/item.py" });
 		expect(await makesItem(provider)).toBe("unbound");
 
-		provider.initialize(root);
+		initializeProvider(provider, root);
 
 		expect(await makesItem(provider)).toBe("bound");
 	});
@@ -1124,8 +1136,8 @@ describe("Python provider project behavior", () => {
 	it("binds direct bases and annotation names but refuses receiver lookup", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: [
@@ -1161,8 +1173,8 @@ describe("Python provider project behavior", () => {
 	it("writes every signature use in the declaration it heads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: [
@@ -1203,8 +1215,8 @@ describe("Python provider project behavior", () => {
 	it("resolves a signature use outside the declaration it is written in", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: ["value = 3", "def g(value=value):", "    return value"].join("\n"),
@@ -1229,8 +1241,8 @@ describe("Python provider project behavior", () => {
 	it("keeps a nested header in its own declaration and a lambda default in the header around it", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: [
@@ -1255,8 +1267,8 @@ describe("Python provider project behavior", () => {
 	it("writes a type parameter's bound and constraints in the declaration it heads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: [
@@ -1300,8 +1312,8 @@ describe("Python provider project behavior", () => {
 	it.skipIf(!typeParameterDefaults)("writes a type parameter's default in the declaration it heads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: [
@@ -1333,7 +1345,7 @@ describe("Python provider project behavior", () => {
 	it("renames a class named in a type parameter bound", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"class Old:",
 			"    pass",
@@ -1357,9 +1369,9 @@ describe("Python provider project behavior", () => {
 	it("reports a string literal inside a type parameter bound", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = 'class Typed[T: "Later"]:\n    pass\nclass Later:\n    pass\n';
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typed = facts.declarations.find((declaration) => declaration.name === "Typed");
 
 		expect(facts.literals).toEqual([
@@ -1375,7 +1387,7 @@ describe("Python provider project behavior", () => {
 	it("declares a type parameter owned by the declaration it heads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"def wrap[T](value: T) -> T:",
 			"    return value",
@@ -1387,7 +1399,7 @@ describe("Python provider project behavior", () => {
 			"    pass",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const declaration = (name: string) => facts.declarations.find((candidate) => candidate.name === name);
 		const wrap = declaration("wrap");
 		const box = declaration("Box");
@@ -1406,9 +1418,9 @@ describe("Python provider project behavior", () => {
 	it("declares a type alias as its own symbol instead of writing its name", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class Item:", "    pass", "", "type Alias[T] = list[T]", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const alias = facts.declarations.find((declaration) => declaration.name === "Alias");
 		const typeParameter = facts.declarations.find((declaration) => declaration.name === "T");
 
@@ -1420,7 +1432,7 @@ describe("Python provider project behavior", () => {
 	it("binds a typeUse reference to a variable, a function, or an alias, not only a class", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"def factory():",
 			"    return None",
@@ -1431,7 +1443,7 @@ describe("Python provider project behavior", () => {
 			"type FromVariable = Number",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const declaration = (name: string) => {
 			const found = facts.declarations.find((candidate) => candidate.name === name);
 			if (found === undefined) throw new Error(`${name} declaration missing`);
@@ -1454,7 +1466,7 @@ describe("Python provider project behavior", () => {
 	it("renames a type parameter across its bound and every annotation", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def wrap[T](value: T) -> T:", "    return value", ""].join("\n");
 		const sites = [...text.matchAll(/\bT\b/g)].map((match) => ({ range: spanAt(text, match.index, "T") }));
 		const response = await provider.renameEdits({
@@ -1476,7 +1488,7 @@ describe("Python provider project behavior", () => {
 	it("renames a type alias's own name", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = "type Alias = int\n";
 		const range = spanAt(text, text.indexOf("Alias"), "Alias");
 		const sites = [{ range }];
@@ -1498,7 +1510,7 @@ describe("Python provider project behavior", () => {
 	it("keeps a call's arguments inside a type expression as ordinary reads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"def StringProperty(update=None):",
 			"    return None",
@@ -1512,7 +1524,7 @@ describe("Python provider project behavior", () => {
 			"    path: StringProperty(update=update_export_path)",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const callback = declarationNamed(facts, "update_export_path");
 		const argument = facts.references.find((reference) => reference.name === "update_export_path");
 
@@ -1523,9 +1535,9 @@ describe("Python provider project behavior", () => {
 	it("binds a class base's subscript operand to the class's own type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = "class Box[T](list[T]):\n    pass\n";
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const operand = facts.references.find((reference) => reference.role === "typeUse" && reference.name === "T");
 		const head = facts.references.find((reference) => reference.role === "extends");
@@ -1537,9 +1549,9 @@ describe("Python provider project behavior", () => {
 	it("reads an enclosing class's type parameter from a method body", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    def m(self):", "        return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1549,9 +1561,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a class-body local over the class's own type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    T = 1", "    x = T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const local = declarationWhere(
 			facts,
 			(declaration) => declaration.name === "T" && declaration.kind !== "typeParameter",
@@ -1564,9 +1576,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a method-local over the enclosing class's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    def m(self):", "        T = 2", "        return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const use = facts.references.find(
 			(reference) => reference.name === "T" && reference.role === "read" && reference.range.start.line === 3,
 		);
@@ -1581,9 +1593,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a parameter over the enclosing class's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    def m(self, T):", "        return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const parameter = declarationWhere(
 			facts,
 			(declaration) => declaration.name === "T" && declaration.kind === "variable",
@@ -1596,9 +1608,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a method's own type parameter over the enclosing class's", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    def m[T](self):", "        return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const method = declarationNamed(facts, "m");
 		const methodTypeParameter = declarationWhere(
 			facts,
@@ -1612,7 +1624,7 @@ describe("Python provider project behavior", () => {
 	it("reads an outer generic class's type parameter through a nested generic class", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"class Outer[T]:",
 			"    class Inner[U]:",
@@ -1620,7 +1632,7 @@ describe("Python provider project behavior", () => {
 			"            return T",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const outer = declarationNamed(facts, "Outer");
 		const outerTypeParameter = declarationWhere(
 			facts,
@@ -1634,9 +1646,9 @@ describe("Python provider project behavior", () => {
 	it("reads a generic function's type parameter from inside a comprehension", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    return [T for _ in range(1)]", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1646,9 +1658,9 @@ describe("Python provider project behavior", () => {
 	it("reads a generic function's type parameter from inside a lambda", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    return (lambda: T)()", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1658,9 +1670,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a comprehension's own target over the enclosing method's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    def m(self, xs):", "        return [T for T in xs]", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
 		expect(use?.binding).toEqual({
@@ -1673,9 +1685,9 @@ describe("Python provider project behavior", () => {
 	it("reads the enclosing method's type parameter from a comprehension that does not bind it", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["class C[T]:", "    def m(self, xs):", "        return [T for x in xs]", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1685,9 +1697,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a lambda's own parameter over the enclosing function's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    return (lambda T: T)(1)", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
 		expect(use?.binding).toEqual({
@@ -1700,9 +1712,9 @@ describe("Python provider project behavior", () => {
 	it("reads the enclosing function's type parameter from a lambda that does not bind it", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    return (lambda x: T)(1)", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1712,7 +1724,7 @@ describe("Python provider project behavior", () => {
 	it("reads a generic method's own class parameter from both a comprehension and a lambda", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"class C[T]:",
 			"    def m(self, xs):",
@@ -1721,7 +1733,7 @@ describe("Python provider project behavior", () => {
 			"        return comp, fn",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const uses = facts.references.filter((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1734,11 +1746,11 @@ describe("Python provider project behavior", () => {
 	it("refuses a nonlocal name access to an enclosing declaration's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    def g():", "        nonlocal T", "        return T", "    return g", ""].join(
 			"\n",
 		);
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
 		expect(use?.binding).toEqual({
@@ -1751,11 +1763,11 @@ describe("Python provider project behavior", () => {
 	it("resolves a class's own type parameter over a module-level global of the same name", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["T = 'module value'", "", "", "class C[T]:", "    def m(self):", "        return T", ""].join(
 			"\n",
 		);
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const classTypeParameter = declarationWhere(
 			facts,
 			(declaration) => declaration.name === "T" && declaration.kind === "typeParameter",
@@ -1768,9 +1780,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a function's own type parameter over a module-level global of the same name", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["T = 'module value'", "", "", "def f[T]():", "    return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const functionTypeParameter = declarationWhere(
 			facts,
 			(declaration) => declaration.name === "T" && declaration.kind === "typeParameter",
@@ -1787,7 +1799,7 @@ describe("Python provider project behavior", () => {
 	it("reads both a nested generic class's own type parameter and the outer class's", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"class Outer[T]:",
 			"    class Inner[U]:",
@@ -1795,7 +1807,7 @@ describe("Python provider project behavior", () => {
 			"            return T, U",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const outer = declarationNamed(facts, "Outer");
 		const inner = declarationNamed(facts, "Inner");
 		const outerTypeParameter = declarationWhere(
@@ -1816,9 +1828,9 @@ describe("Python provider project behavior", () => {
 	it("binds a plain return of a generic function's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeParameter = declarationNamed(facts, "T");
 		const use = facts.references.find((reference) => reference.name === "T" && reference.role === "read");
 
@@ -1828,9 +1840,9 @@ describe("Python provider project behavior", () => {
 	it("resolves a plain assignment over a generic function's own type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = ["def f[T]():", "    T = 3", "    return T", ""].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const use = facts.references.find(
 			(reference) => reference.name === "T" && reference.role === "read" && reference.range.start.line === 2,
 		);
@@ -1845,7 +1857,7 @@ describe("Python provider project behavior", () => {
 	it("keeps every name in Callable, Literal, Union, a forward reference, a union, tuple, and a nested generic as typeUse", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"class A:",
 			"    pass",
@@ -1867,7 +1879,7 @@ describe("Python provider project behavior", () => {
 			"    pass",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const ordered = [...facts.references].sort((left, right) =>
 			comparePositions(left.range.start, right.range.start),
 		);
@@ -1907,7 +1919,7 @@ describe("Python provider project behavior", () => {
 			].join("\n"),
 		});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"from .shared import Alias, _T, factory",
 			"",
@@ -1916,7 +1928,7 @@ describe("Python provider project behavior", () => {
 			"type FromFunction = factory",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "src/main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "src/main.py", contentHash: "hash", text });
 		const typeUses = facts.references.filter((reference) => reference.role === "typeUse");
 
 		expect(typeUses.find((reference) => reference.name === "Alias")?.binding.status).toBe("bound");
@@ -1927,7 +1939,7 @@ describe("Python provider project behavior", () => {
 	it("refuses to rename a type parameter onto its sibling", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 
 		const functionText = "def f[T, U](x: T, y: U) -> T:\n    return x\n";
 		const functionSites = [...functionText.matchAll(/\bT\b/g)].map((match) => ({
@@ -1985,7 +1997,7 @@ describe("Python provider project behavior", () => {
 			].join("\n"),
 		});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"from .values import Thing, LOCKED",
 			"",
@@ -1993,7 +2005,7 @@ describe("Python provider project behavior", () => {
 			"type FromConstant = LOCKED",
 			"",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "src/main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "src/main.py", contentHash: "hash", text });
 		const thingUse = facts.references.find(
 			(reference) => reference.role === "typeUse" && reference.name === "Thing",
 		);
@@ -2021,8 +2033,8 @@ describe("Python provider project behavior", () => {
 		].join("\n");
 		const root = workspace({});
 		const provider = new PythonProvider();
-		const info = provider.initialize(root);
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const info = initializeProvider(provider, root);
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeOf = async (name: string) => {
 			const declaration = facts.declarations.find((candidate) => candidate.name === name);
 			if (declaration === undefined) throw new Error(`${name} declaration missing`);
@@ -2061,8 +2073,8 @@ describe("Python provider project behavior", () => {
 	it("links named annotation and initializer types to indexed declarations", async () => {
 		const root = workspace({ "src/item.py": "class Item:\n    pass\n" });
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const itemFacts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const itemFacts = await parseFile(provider, {
 			module: "src/item.py",
 			contentHash: "item",
 			text: "class Item:\n    pass\n",
@@ -2078,7 +2090,7 @@ describe("Python provider project behavior", () => {
 			"from .item import Item",
 			"external_value: Item",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "src/main.py", contentHash: "main", text });
+		const facts = await parseFile(provider, { module: "src/main.py", contentHash: "main", text });
 		const declaration = (name: string) => {
 			const value = facts.declarations.find((candidate) => candidate.name === name);
 			if (value === undefined) throw new Error(`${name} declaration missing`);
@@ -2114,7 +2126,7 @@ describe("Python provider project behavior", () => {
 	it("joins literal returns and accounts for implicit None", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 		const text = [
 			"def pick(first, second):",
 			"    if first:",
@@ -2139,7 +2151,7 @@ describe("Python provider project behavior", () => {
 			"def generated():",
 			"    yield 'value'",
 		].join("\n");
-		const facts = await provider.parseFile({ module: "main.py", contentHash: "hash", text });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 		const typeOf = async (name: string) => {
 			const declaration = facts.declarations.find((candidate) => candidate.name === name);
 			if (declaration === undefined) throw new Error(`${name} declaration missing`);
@@ -2186,8 +2198,8 @@ describe("Python provider project behavior", () => {
 	it("keeps conditional definitions ambiguous", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: ["def helper():", "    pass", "if enabled:", "    def helper():", "        pass", "helper()"].join(
@@ -2205,8 +2217,8 @@ describe("Python provider project behavior", () => {
 	it("keeps comprehension bindings unbound", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: ["helper = 1", "values = [helper for helper in items]"].join("\n"),
@@ -2229,8 +2241,8 @@ describe("Python provider project behavior", () => {
 	it("poisons dynamic scopes with a runtime-constructed binding", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
-		provider.initialize(root);
-		const facts = await provider.parseFile({
+		initializeProvider(provider, root);
+		const facts = await parseFile(provider, {
 			module: "main.py",
 			contentHash: "hash",
 			text: ["def helper():", "    pass", "exec(code)", "helper()"].join("\n"),
@@ -2250,7 +2262,10 @@ describe("Python provider project behavior", () => {
 		const root = workspace({});
 		rmSync(root, { recursive: true, force: true });
 
-		const model = new PythonProvider().discoverProject(root);
+		const provider = new PythonProvider();
+		const handlers = wireHandlers(provider);
+		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		const model = handlers.discoverProject({ workspaceRoot: root });
 
 		expect(model).toEqual({
 			files: [],
@@ -2269,7 +2284,7 @@ describe("Python provider project behavior", () => {
 	it("keeps workspace, standard-library, and missing imports distinct", async () => {
 		const root = workspace({ "local.py": "value = 1\n" });
 		const provider = new PythonProvider();
-		provider.initialize(root);
+		initializeProvider(provider, root);
 
 		expect(await provider.resolveImport({ fromModule: "main.py", specifier: "local" })).toEqual({
 			status: "resolved",
@@ -2291,7 +2306,8 @@ describe("Python provider project behavior", () => {
 	it("uses one honest answer when python3 is absent", async () => {
 		const executable = "python3-lexicon-provider-missing";
 		const provider = new PythonProvider(new Python3Dispatch(executable));
-		const facts = await provider.parseFile({ module: "broken.py", contentHash: "hash", text: "value = 1\n" });
+		initializeProvider(provider, workspace({}));
+		const facts = await parseFile(provider, { module: "broken.py", contentHash: "hash", text: "value = 1\n" });
 		const detail = `Executable not found in $PATH: ${executable}`;
 
 		expect(facts).toMatchObject({

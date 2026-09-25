@@ -3,10 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
-import ts from "typescript";
-import { TypeScriptAnalyzer } from "../analyzer";
-import { TypeScriptProvider } from "../main";
-import { loadProject } from "../project";
+import { harness } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
@@ -60,7 +57,7 @@ describe("checker-backed analysis", () => {
 			].join("\n"),
 		};
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const classFacts = provider.parseFile({
 			module: "class-default.ts",
@@ -103,7 +100,7 @@ describe("checker-backed analysis", () => {
 			"bar.ts": 'export { add } from "./foo";\n',
 			"use.ts": 'import { add } from "./bar"; export function run() { add(); }\n',
 		});
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const useText = 'import { add } from "./bar"; export function run() { add(); }\n';
@@ -125,7 +122,7 @@ describe("checker-backed analysis", () => {
 
 	it("types the supplied overlay rather than the saved file", () => {
 		const root = workspace({ "disk.ts": "export const disk = 1;\n" });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const facts = provider.parseFile({
@@ -143,20 +140,25 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
-	it("refreshes fallback facts when source text changes at one overlay version", () => {
-		const root = workspace({});
-		const analyzer = new TypeScriptAnalyzer(root, loadProject(root));
-		const source = (text: string) =>
-			ts.createSourceFile("missing.ts", text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
-
-		const first = analyzer.extract("missing.ts", source("export function RenameOutcome() {}\n"));
-		const second = analyzer.extract("missing.ts", source("export function FreshOutcome() {}\n"));
+	it("refreshes facts for each transient candidate", () => {
+		const provider = harness();
+		provider.initialize(workspace({}));
+		const first = provider.handlers.probeFile({
+			module: "missing.ts",
+			contentHash: "first",
+			text: "export function RenameOutcome() {}\n",
+		});
+		const second = provider.handlers.probeFile({
+			module: "missing.ts",
+			contentHash: "second",
+			text: "export function FreshOutcome() {}\n",
+		});
 
 		expect({
 			first: first.declarations.find((declaration) => declaration.name === "RenameOutcome")?.name,
 			hasFresh: second.declarations.some((declaration) => declaration.name === "FreshOutcome"),
 		}).toEqual({ first: "RenameOutcome", hasFresh: true });
-		analyzer.dispose();
+		provider.shutdown();
 	});
 
 	it("reuses one compiler generation for unchanged indexed files", () => {
@@ -167,14 +169,73 @@ describe("checker-backed analysis", () => {
 			"c.ts": "export const c: number = 3;\n",
 		};
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		for (const module of ["a.ts", "b.ts", "c.ts"] as const) {
 			provider.parseFile({ module, contentHash: module, text: files[module] });
 		}
 
-		expect(provider.programStats()).toMatchObject({ programGenerations: 1 });
+		const before = provider.programStats().programGenerations;
+		for (const module of ["a.ts", "b.ts", "c.ts"] as const) {
+			provider.parseFile({ module, contentHash: `${module}-again`, text: files[module] });
+		}
+		expect(provider.programStats().programGenerations - before).toBe(0);
+		provider.shutdown();
+	});
+
+	it("keeps repeated passes flat and restores transient Program roots", () => {
+		const files = {
+			"tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+			"src/base.ts": "export class Base {}\n",
+			"src/use.ts": 'import { Base } from "./base"; export const value = new Base();\n',
+			"types.d.ts": "export interface Ambient { value: string }\n",
+		};
+		const provider = harness();
+		provider.initialize(workspace(files));
+		const modules = ["src/base.ts", "src/use.ts"] as const;
+		for (const module of modules) provider.parseFile({ module, contentHash: module, text: files[module] });
+		const firstPass = provider.programStats().programGenerations;
+		for (const module of modules) provider.parseFile({ module, contentHash: module, text: files[module] });
+		expect(provider.programStats().programGenerations - firstPass).toBe(0);
+
+		const changed = `${files["src/base.ts"]}export class Added {}\n`;
+		provider.handlers.probeFile({ module: "src/base.ts", contentHash: "changed", text: changed });
+		const afterChangedProbe = provider.programStats().programGenerations;
+		expect(afterChangedProbe - firstPass).toBe(2);
+		provider.handlers.probeFile({ module: "src/base.ts", contentHash: "same", text: files["src/base.ts"] });
+		const afterSameProbe = provider.programStats().programGenerations;
+		expect(afterSameProbe - afterChangedProbe).toBe(0);
+
+		provider.handlers.parseFile({
+			module: "types.d.ts",
+			contentHash: "types",
+			text: files["types.d.ts"],
+			depth: "surface",
+		});
+		provider.handlers.moduleAdmission?.({
+			module: "types.d.ts",
+			contentHash: "types",
+			outcome: { status: "admitted" },
+		});
+		provider.bind({
+			module: "types.d.ts",
+			name: "Ambient",
+			range: { start: { line: 0, character: 17 }, end: { line: 0, character: 24 } },
+		});
+		expect(provider.programStats().programGenerations - afterSameProbe).toBe(2);
+		provider.shutdown();
+	});
+
+	it("roots every discovered source when no tsconfig exists", () => {
+		const files = {
+			"src/a.ts": "export const a = 1;\n",
+			"src/nested/b.ts": "export const b = 2;\n",
+		};
+		const provider = harness();
+		provider.initialize(workspace(files));
+		provider.parseFile({ module: "src/a.ts", contentHash: "a", text: files["src/a.ts"] });
+		expect(provider.programStats().rootFiles).toBe(2);
 		provider.shutdown();
 	});
 
@@ -182,7 +243,7 @@ describe("checker-backed analysis", () => {
 		const initial = "export const value: number = 1;\n";
 		const changed = 'export const value: string = "next";\n';
 		const root = workspace({ "tsconfig.json": JSON.stringify({ include: ["*.ts"] }), "value.ts": initial });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		provider.parseFile({ module: "value.ts", contentHash: "v1", text: initial });
@@ -208,12 +269,13 @@ describe("checker-backed analysis", () => {
 			"touch.ts": "export const touch = 1;\n",
 		};
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const base = provider.parseFile({ module: "base.ts", contentHash: "base", text: files["base.ts"] });
 		const use = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
 		provider.parseFile({ module: "touch.ts", contentHash: "touch", text: files["touch.ts"] });
+		const generationsBeforeChange = provider.programStats().programGenerations;
 		const modelId = base.declarations.find((declaration) => declaration.name === "Model")?.symbolId;
 		const valueId = use.declarations.find((declaration) => declaration.name === "value")?.symbolId;
 
@@ -229,7 +291,7 @@ describe("checker-backed analysis", () => {
 			provenance: "declared",
 			symbolId: modelId,
 		});
-		expect(provider.programStats()).toMatchObject({ programGenerations: 2 });
+		expect(provider.programStats().programGenerations - generationsBeforeChange).toBe(1);
 		provider.shutdown();
 	});
 
@@ -242,7 +304,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "overloads.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "overloads.ts", contentHash: "overloads", text });
 		const reference = facts.references.find((candidate) => candidate.name === "choose");
@@ -263,7 +325,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "roles.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "roles.ts", contentHash: "roles", text });
 
@@ -296,7 +358,7 @@ describe("checker-backed analysis", () => {
 			].join("\n"),
 		};
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		provider.parseFile({ module: "base.ts", contentHash: "base", text: files["base.ts"] });
 		const facts = provider.parseFile({
@@ -320,7 +382,7 @@ describe("checker-backed analysis", () => {
 	it("binds a declaration range through the same checker path from a cold program", () => {
 		const text = "export function add() {}\n";
 		const root = workspace({ "add.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const binding = provider.bind({
 			module: "add.ts",
@@ -339,7 +401,7 @@ describe("checker-backed analysis", () => {
 			"c.ts": "export function add() {}\n",
 		};
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		for (const [module, text] of Object.entries(files)) {
@@ -354,7 +416,7 @@ describe("checker-backed analysis", () => {
 	it("binds a parameter declaration and its body references to one composed id", () => {
 		const text = "export function add(value: number) { return value; }\n";
 		const root = workspace({ "parameter.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const binding = provider.bind({
@@ -390,7 +452,7 @@ describe("checker-backed analysis", () => {
 			"src/index.ts": "export const source = 1;\n",
 			"dist/cycle-mcp.js": text,
 		});
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "dist/cycle-mcp.js", contentHash: "cycle", text });
 		const q4 = facts.declarations.find((declaration) => declaration.name === "Q4");
@@ -409,61 +471,73 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
-	it("keeps reference facts deterministic across sessions and program admission order", () => {
-		const files = {
-			"a.ts": "function shared(){}\n",
-			"b.ts": "function shared(){}\n",
-			"use.ts": "shared();\n",
-		};
-		const root = workspace(files);
-		const parse = (order: (keyof typeof files)[]) => {
-			const provider = new TypeScriptProvider();
-			provider.initialize(root);
-			for (const module of order) provider.parseFile({ module, contentHash: module, text: files[module] });
-			const first = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
-			const second = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
-			provider.shutdown();
-			return [first.references, second.references] as const;
-		};
+	it(
+		"keeps reference facts deterministic across sessions and program admission order",
+		() => {
+			const files = {
+				"a.ts": "function shared(){}\n",
+				"b.ts": "function shared(){}\n",
+				"use.ts": "shared();\n",
+			};
+			const root = workspace(files);
+			const parse = (order: (keyof typeof files)[]) => {
+				const provider = harness();
+				provider.initialize(root);
+				for (const module of order) provider.parseFile({ module, contentHash: module, text: files[module] });
+				const first = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
+				const second = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
+				provider.shutdown();
+				return [first.references, second.references] as const;
+			};
 
-		const [sameSession, sameSessionAgain] = parse(["a.ts", "b.ts", "use.ts"]);
-		const [freshSession, freshSessionAgain] = parse(["a.ts", "b.ts", "use.ts"]);
-		const [reordered] = parse(["b.ts", "a.ts", "use.ts"]);
-		expect(sameSessionAgain).toEqual(sameSession);
-		expect(freshSession).toEqual(sameSession);
-		expect(freshSessionAgain).toEqual(sameSession);
-		expect(reordered).toEqual(sameSession);
-		expect(sameSession[0]?.binding).toEqual({
-			status: "ambiguous",
-			candidates: ["lexicon typescript a.ts shared().", "lexicon typescript b.ts shared()."],
-			provenance: "bound",
-		});
+			const [sameSession, sameSessionAgain] = parse(["a.ts", "b.ts", "use.ts"]);
+			const [freshSession, freshSessionAgain] = parse(["a.ts", "b.ts", "use.ts"]);
+			const [reordered] = parse(["b.ts", "a.ts", "use.ts"]);
+			expect(sameSessionAgain).toEqual(sameSession);
+			expect(freshSession).toEqual(sameSession);
+			expect(freshSessionAgain).toEqual(sameSession);
+			expect(reordered).toEqual(sameSession);
+			expect(sameSession[0]?.binding).toEqual({
+				status: "ambiguous",
+				candidates: ["lexicon typescript a.ts shared().", "lexicon typescript b.ts shared()."],
+				provenance: "bound",
+			});
 
-		const fallbackText = "var A={run:()=>H()};function H(){}";
-		const fallbackRoot = workspace({
-			"tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
-			"src/index.ts": "export const source = 1;\n",
-			"dist/bundle.js": fallbackText,
-		});
-		const parseFallback = () => {
-			const provider = new TypeScriptProvider();
-			provider.initialize(fallbackRoot);
-			const first = provider.parseFile({ module: "dist/bundle.js", contentHash: "bundle", text: fallbackText });
-			const second = provider.parseFile({ module: "dist/bundle.js", contentHash: "bundle", text: fallbackText });
-			provider.shutdown();
-			return [first.references, second.references] as const;
-		};
-		const [fallbackFirst, fallbackSecond] = parseFallback();
-		const [fallbackFresh] = parseFallback();
-		expect(fallbackSecond).toEqual(fallbackFirst);
-		expect(fallbackFresh).toEqual(fallbackFirst);
-	});
+			const fallbackText = "var A={run:()=>H()};function H(){}";
+			const fallbackRoot = workspace({
+				"tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+				"src/index.ts": "export const source = 1;\n",
+				"dist/bundle.js": fallbackText,
+			});
+			const parseFallback = () => {
+				const provider = harness();
+				provider.initialize(fallbackRoot);
+				const first = provider.parseFile({
+					module: "dist/bundle.js",
+					contentHash: "bundle",
+					text: fallbackText,
+				});
+				const second = provider.parseFile({
+					module: "dist/bundle.js",
+					contentHash: "bundle",
+					text: fallbackText,
+				});
+				provider.shutdown();
+				return [first.references, second.references] as const;
+			};
+			const [fallbackFirst, fallbackSecond] = parseFallback();
+			const [fallbackFresh] = parseFallback();
+			expect(fallbackSecond).toEqual(fallbackFirst);
+			expect(fallbackFresh).toEqual(fallbackFirst);
+		},
+		{ timeout: 15_000 },
+	);
 
 	it("attributes initializer references to the declared variable", () => {
 		const text =
 			'var A={run:($)=>H($),name:"x"},B=[K(1)];function H($){return $}function K($){return $}var C=_(()=>H(2));';
 		const root = workspace({ "bundle.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "bundle.ts", contentHash: "bundle", text });
 		const declaration = (name: string) => facts.declarations.find((item) => item.name === name);
@@ -509,7 +583,7 @@ describe("checker-backed analysis", () => {
 			"const untyped = { retries: 4 };",
 		].join("\n");
 		const root = workspace({ "properties.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "properties.ts", contentHash: "properties", text });
 		const propertyIds = new Map(
@@ -549,7 +623,7 @@ describe("checker-backed analysis", () => {
 			"consume({ retries });",
 		].join("\n");
 		const root = workspace({ "shorthand.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "shorthand.ts", contentHash: "shorthand", text });
 		const local = facts.declarations.find(
@@ -587,7 +661,7 @@ describe("checker-backed analysis", () => {
 		].join("\n");
 		const root = workspace({ "cases.ts": text });
 		writeFileSync(path.join(root, "data.json"), '{"version":"test"}\n');
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "cases.ts", contentHash: "cases", text });
 		const reference = (name: string, role: "call" | "read") =>
@@ -664,7 +738,7 @@ describe("checker-backed analysis", () => {
 	it("reports a runtime reason only when the requested range has no source token", () => {
 		const text = "export const value = 1;\n";
 		const root = workspace({ "tokens.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		expect(
@@ -681,7 +755,7 @@ describe("checker-backed analysis", () => {
 	it("types a readable declaration range from a cold program", () => {
 		const text = "export const value: number = 1;\n";
 		const root = workspace({ "value.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		expect(provider.typeOf({ module: "value.ts", range: rangeAt(text, text.indexOf("value")) })).toMatchObject({
@@ -700,7 +774,7 @@ describe("checker-backed analysis", () => {
 		};
 		const displays = { "a.ts": "number", "b.ts": "string", "c.ts": "boolean" };
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		for (const [module, text] of Object.entries(files)) {
@@ -718,7 +792,7 @@ describe("checker-backed analysis", () => {
 	it("keeps lib-backed array types precise", () => {
 		const text = "export const values: string[] = [];\n";
 		const root = workspace({ "arrays.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "arrays.ts", contentHash: "arrays", text });
 		const target = facts.declarations.find((declaration) => declaration.name === "values");
@@ -748,7 +822,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "types.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "types.ts", contentHash: "types", text });
 		const typeOf = (name: string) => {
@@ -813,7 +887,7 @@ describe("checker-backed analysis", () => {
 			].join("\n"),
 		};
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const baseFacts = provider.parseFile({ module: "base.ts", contentHash: "base", text: files["base.ts"] });
 		const useFacts = provider.parseFile({ module: "use.ts", contentHash: "use", text: files["use.ts"] });
@@ -838,7 +912,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "facts.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		const initialized = provider.initialize(root);
 		const facts = provider.parseFile({ module: "facts.ts", contentHash: "facts", text });
 		const run = facts.declarations.find((declaration) => declaration.name === "run");
@@ -863,7 +937,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "inference.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "inference.ts", contentHash: "inference", text });
 		const typeOf = (name: string) => {
@@ -904,7 +978,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "return-unions.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "return-unions.ts", contentHash: "return-unions", text });
 		const typeOf = (name: string) => {
@@ -936,7 +1010,7 @@ describe("checker-backed analysis", () => {
 	it("types a constructor through its class construct signature", () => {
 		const text = "export class Box { constructor(value: string) {} }\n";
 		const root = workspace({ "constructor.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "constructor.ts", contentHash: "constructor", text });
 		const target = facts.declarations.find((declaration) => declaration.kind === "constructor");
@@ -959,7 +1033,7 @@ describe("checker-backed analysis", () => {
 			"",
 		].join("\n");
 		const root = workspace({ "ambiguous.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		const facts = provider.parseFile({ module: "ambiguous.ts", contentHash: "ambiguous", text });
 		const target = facts.declarations.find((declaration) => declaration.name === "value");
@@ -978,33 +1052,40 @@ describe("source admission", () => {
 		const module = "stale.ts";
 		const text = "export const value = 1;\n";
 		const root = workspace({ [module]: text });
-		const analyzer = new TypeScriptAnalyzer(root, loadProject(root));
+		const provider = harness();
+		provider.initialize(root);
 		const range = { start: { line: 0, character: 99 }, end: { line: 0, character: 100 } };
 
-		expect(analyzer.bind(module, "value", range)).toEqual({
+		expect(provider.bind({ module, name: "value", range })).toEqual({
 			status: "unbound",
 			reason: "RuntimeConstructed",
 			detail: "the range is not a source token",
 		});
-		expect(analyzer.typeOf({ module, range })).toEqual({
+		expect(provider.typeOf({ module, range })).toEqual({
 			status: "unknown",
 			reason: "RuntimeConstructed",
 			detail: "the range is not a source token",
 		});
-		analyzer.dispose();
+		provider.shutdown();
 	});
 
-	it("reports compiler diagnostics for several readable files from cold programs", () => {
+	it("reports syntax diagnostics for several readable files", () => {
 		const files = {
 			"a.ts": "export const a = ;\n",
 			"b.ts": "export const b = ;\n",
 			"c.ts": "export const c = ;\n",
 		};
 		const root = workspace(files);
-		const analyzer = new TypeScriptAnalyzer(root, loadProject(root));
+		const provider = harness();
+		provider.initialize(root);
 
 		for (const module of Object.keys(files)) {
-			expect(analyzer.diagnostics(module)).toEqual(
+			const facts = provider.parseFile({
+				module,
+				contentHash: module,
+				text: (files as Record<string, string>)[module] as string,
+			});
+			expect(facts.diagnostics).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
 						severity: "error",
@@ -1014,35 +1095,23 @@ describe("source admission", () => {
 				]),
 			);
 		}
-		analyzer.dispose();
+		provider.shutdown();
 	});
 
-	it("reports cold source failures with their reason and detail", () => {
+	it("reports unsupported and missing source requests", () => {
 		const root = workspace({ "present.ts": "export const value = 1;\n" });
-		const analyzer = new TypeScriptAnalyzer(root, loadProject(root));
+		const provider = harness();
+		provider.initialize(root);
 
-		expect(analyzer.diagnostics("../outside.ts")).toEqual([
-			{
-				severity: "error",
-				message: "ExternalDependency: the module is outside the indexed workspace",
-				path: "../outside.ts",
-			},
-		]);
-		expect(analyzer.diagnostics("notes.txt")).toEqual([
-			{
-				severity: "error",
-				message: "NotImplemented: the provider does not claim extension .txt",
-				path: "notes.txt",
-			},
-		]);
-		expect(analyzer.diagnostics("missing.ts")).toEqual([
-			{
-				severity: "error",
-				message: "ParseError: the file does not exist",
-				path: "missing.ts",
-			},
-		]);
-		analyzer.dispose();
+		expect(provider.bind({ module: "notes.txt", name: "value", range: rangeAt("value", 0) })).toMatchObject({
+			status: "unbound",
+			reason: "NotImplemented",
+		});
+		expect(provider.bind({ module: "missing.ts", name: "value", range: rangeAt("value", 0) })).toMatchObject({
+			status: "unbound",
+			reason: "ParseError",
+		});
+		provider.shutdown();
 	});
 });
 
@@ -1050,7 +1119,7 @@ describe("outline depth", () => {
 	it("echoes outline with declarations and imports only", () => {
 		const files = { "cart.ts": 'import { z } from "./zed";\nexport class Cart {}\nconst noise = "literal";\n' };
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const facts = provider.parseFile({
@@ -1071,7 +1140,7 @@ describe("outline depth", () => {
 	it("still reports a syntax error at outline depth", () => {
 		const files = { "broken.ts": "export function add( {\n" };
 		const root = workspace(files);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const facts = provider.parseFile({

@@ -488,7 +488,7 @@ export enum Color { Red }
 	});
 
 	it("reports a multi-substitution template's text parts as literals, delimiters and all", () => {
-		const source = "const cmd = `install ${p.name}@${p.marketplace}`;";
+		const source = "const cmd = `install $" + "{p.name}@" + "$" + "{p.marketplace}`;";
 		const found = extract(source);
 
 		expect(found.literals.map((literal) => [literal.kind, literal.value])).toEqual([
@@ -500,7 +500,7 @@ export enum Color { Red }
 	});
 
 	it("reports a tagged template's text parts the same as an untagged one", () => {
-		const source = "const out = tag`a${1}b`;";
+		const source = "const out = tag`a$" + "{1}b`;";
 		const found = extract(source);
 
 		expect(found.literals.map((literal) => [literal.kind, literal.value])).toEqual([

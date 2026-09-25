@@ -129,6 +129,12 @@ const CASES = [
 		expect: "keepsAdmitted",
 		fixtures: FIXTURES,
 	},
+	{
+		id: "probes-and-refusals-are-unseen",
+		about: "A probe, refusal, rediscovery, rename or move leaves no trace another module can observe. Each paired trial runs in a fresh process beside a control, and parses, binds, imports and types must match. Disk-byte refusals also assert that the user does not bind facts the index never admitted.",
+		expect: "unseen",
+		fixtures: FIXTURES,
+	},
 ];
 
 ////////////////////////////////

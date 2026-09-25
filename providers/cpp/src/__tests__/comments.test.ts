@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { coordinatesOf, FileFactsSchema } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { CppProvider, TIERS } from "../main.js";
 import { parseCppFile } from "../parser.js";
 
@@ -88,9 +88,11 @@ describe("C++ comment spans", () => {
 	});
 
 	test("declares the comments tier and answers parseFile with the spans", () => {
-		const provider = new CppProvider();
+		const handlers = handlersFor(new CppProvider());
+		handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		handlers.discoverProject({ workspaceRoot: process.cwd() });
 		const text = "// header\nint value = 1;\n";
-		const facts = FileFactsSchema.parse(provider.parseFile({ module: "source.cpp", contentHash: "source", text }));
+		const facts = FileFactsSchema.parse(handlers.parseFile({ module: "source.cpp", contentHash: "source", text }));
 
 		expect(TIERS.comments).toBe(true);
 		expect(facts.comments).toEqual([

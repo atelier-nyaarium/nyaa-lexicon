@@ -7,7 +7,7 @@
 import path from "node:path";
 import { type ImportResolution, normalizeModulePath } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { configuredSurfaceCandidates, isDeclarationModule, isLikelyBundle, surfaceGlobMatches } from "./bundle.js";
+import { configuredSurfaceCandidates, isDeclarationModule, surfaceGlobMatches } from "./bundle.js";
 import { claimsExtension } from "./file-types.js";
 
 ////////////////////////////////
@@ -148,12 +148,20 @@ export function resolveSpecifier(
 	specifier: string,
 	options: ts.CompilerOptions,
 	surfaceGlobs: string[] = [],
+	lookupSurface: (module: string, fileName: string) => boolean = () => false,
 ): ImportResolution {
 	const containing = path.join(workspaceRoot, fromModule);
 	const resolved = ts.resolveModuleName(specifier, containing, options, HOST).resolvedModule;
 
 	if (resolved === undefined) {
-		const runtime = resolveRuntimeSurface(workspaceRoot, containing, specifier, options, surfaceGlobs);
+		const runtime = resolveRuntimeSurface(
+			workspaceRoot,
+			containing,
+			specifier,
+			options,
+			surfaceGlobs,
+			lookupSurface,
+		);
 		if (runtime !== null) return runtime;
 		// A bare specifier that resolves to nothing is still named as a package, since that is what
 		// the author wrote and what a reader needs to go look up.
@@ -174,7 +182,7 @@ export function resolveSpecifier(
 			surface: { module },
 		};
 	}
-	return surfaceDepth(module, resolved.resolvedFileName, surfaceGlobs) === "surface"
+	return surfaceDepth(module, resolved.resolvedFileName, surfaceGlobs, lookupSurface) === "surface"
 		? { status: "resolved", module, depth: "surface" }
 		: { status: "resolved", module };
 }
@@ -199,6 +207,7 @@ export function renderSpecifier(
 	targetModule: string,
 	options: ts.CompilerOptions,
 	preferredSpecifier?: string,
+	lookupSurface: (module: string, fileName: string) => boolean = () => false,
 ): SpecifierRenderResult {
 	const root = path.resolve(workspaceRoot);
 	const from = moduleAbsolute(root, fromModule);
@@ -214,7 +223,7 @@ export function renderSpecifier(
 			kind: "relative" as const,
 		},
 		...pathAliasCandidates(root, target, options),
-		...packageCandidates(root, fromModule, target, targetModule, options),
+		...packageCandidates(root, fromModule, target, targetModule, options, lookupSurface),
 	]);
 	const preferredKind = preferredSpecifier === undefined ? undefined : candidateKind(preferredSpecifier, options);
 	const preferred =
@@ -222,7 +231,7 @@ export function renderSpecifier(
 	const considered = preferred.length > 0 ? preferred : candidates;
 	const valid = targetExists
 		? considered.filter((candidate) =>
-				resolvesToTarget(root, fromModule, candidate.specifier, targetModule, options),
+				resolvesToTarget(root, fromModule, candidate.specifier, targetModule, options, lookupSurface),
 			)
 		: considered;
 
@@ -344,6 +353,7 @@ function packageCandidates(
 	target: string,
 	targetModule: string,
 	options: ts.CompilerOptions,
+	lookupSurface: (module: string, fileName: string) => boolean,
 ): RenderCandidate[] {
 	const packageInfo = nearestPackage(target, root);
 	if (packageInfo === undefined || packageInfo.exports === false) return [];
@@ -351,7 +361,9 @@ function packageCandidates(
 	if (relative.startsWith("..")) return [];
 	const suffix = relative === "index" ? "" : `/${relative}`;
 	const specifier = `${packageInfo.name}${suffix}`;
-	return resolvesToTarget(root, fromModule, specifier, targetModule, options) ? [{ specifier, kind: "package" }] : [];
+	return resolvesToTarget(root, fromModule, specifier, targetModule, options, lookupSurface)
+		? [{ specifier, kind: "package" }]
+		: [];
 }
 
 function nearestPackage(target: string, root: string): { name: string; root: string; exports: boolean } | undefined {
@@ -393,8 +405,9 @@ function resolvesToTarget(
 	specifier: string,
 	targetModule: string,
 	options: ts.CompilerOptions,
+	lookupSurface: (module: string, fileName: string) => boolean,
 ): boolean {
-	const result = resolveSpecifier(root, fromModule, specifier, options);
+	const result = resolveSpecifier(root, fromModule, specifier, options, [], lookupSurface);
 	if (result.status === "resolved") return result.module === targetModule;
 	return result.status === "external" && result.surface?.module === targetModule;
 }
@@ -433,6 +446,7 @@ function resolveRuntimeSurface(
 	specifier: string,
 	options: ts.CompilerOptions,
 	surfaceGlobs: string[],
+	lookupSurface: (module: string, fileName: string) => boolean,
 ): ImportResolution | null {
 	if (!specifier.startsWith("/")) return null;
 	const clean = specifier.slice(1).split(/[?#]/, 1)[0] ?? "";
@@ -444,8 +458,7 @@ function resolveRuntimeSurface(
 		const file = path.join(workspaceRoot, module);
 		if (!ts.sys.fileExists(file)) return false;
 		if (surfaceGlobs.some((glob) => surfaceGlobMatches(glob, module))) return true;
-		const text = ts.sys.readFile(file);
-		return text !== undefined && isLikelyBundle(module, text);
+		return lookupSurface(module, file);
 	});
 	if (existing.length !== 1) return null;
 
@@ -464,10 +477,14 @@ function normalizeCandidate(module: string): string | null {
 	}
 }
 
-function surfaceDepth(module: string, fileName: string, globs: string[]): "full" | "surface" {
+function surfaceDepth(
+	module: string,
+	fileName: string,
+	globs: string[],
+	lookupSurface: (module: string, fileName: string) => boolean,
+): "full" | "surface" {
 	if (isDeclarationModule(module) || globs.some((glob) => surfaceGlobMatches(glob, module))) return "surface";
-	const text = ts.sys.readFile(fileName);
-	return text !== undefined && isLikelyBundle(module, text) ? "surface" : "full";
+	return lookupSurface(module, fileName) ? "surface" : "full";
 }
 
 /** `@scope/name` keeps two segments; everything else keeps one. */

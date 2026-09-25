@@ -34,6 +34,8 @@ export interface DaemonChannelOptions {
 	start?: boolean;
 	/** Acquisition seam for tests. */
 	ensure?: typeof ensureDaemon;
+	/** Per-request answer timeout override. */
+	budgetMs?: (method: string) => number;
 }
 
 export interface DaemonChannel {
@@ -92,7 +94,7 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 		const client = await connectFrames(daemon.lock.port, daemon.lock.token, {
 			signal,
 			from,
-			...defined({ patience: options.patience, onWaiting: options.onWaiting }),
+			...defined({ patience: options.patience, onWaiting: options.onWaiting, budgetMs: options.budgetMs }),
 		});
 		return { client, from };
 	}

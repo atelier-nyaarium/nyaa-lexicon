@@ -1,25 +1,13 @@
-import type { Declaration, UnknownReason } from "@nyaa-lexicon/protocol";
-import type { ImportInfo, KotlinFile, TypePath } from "./facts.js";
+import type { Declaration, ModuleStore, UnknownReason } from "@nyaa-lexicon/protocol";
+import type { KotlinFile, TypePath } from "./facts.js";
 
 export interface IndexedDeclaration {
 	declaration: Declaration;
 	module: string;
 }
 
-/** What the index takes from a parse. */
-export type ModuleHeaders = Pick<
-	KotlinFile,
-	"module" | "packageName" | "declarations" | "imports" | "supertypes" | "receiverTypes"
->;
-
-/** What resolving a type written in a module needs from that module. */
-interface ModuleEntry {
-	packageKey: string;
-	imports: ImportInfo[];
-	declarations: Declaration[];
-	supertypes: KotlinFile["supertypes"];
-	receiverTypes: KotlinFile["receiverTypes"];
-}
+/** A derived package entry. */
+export type PackageIndexEntry = IndexedDeclaration | string;
 
 export type PathResolution =
 	| { status: "found"; entries: IndexedDeclaration[] }
@@ -93,138 +81,41 @@ type Access =
 	/** Owners or their subclasses. */
 	| { mode: "protected"; owners: readonly string[] };
 
-/**
- * Every workspace declaration by package and name, by container, and each module's headers. The only
- * admitter of a candidate: every lookup takes the use site and answers only what it may name.
- */
+/** Resolves declarations from kit entries. */
 export class PackageIndex {
-	private readonly topLevel = new Map<string, Map<string, IndexedDeclaration[]>>();
-	private readonly children = new Map<string, IndexedDeclaration[]>();
-	private readonly modules = new Map<string, ModuleEntry>();
-	private readonly modulesByPackage = new Map<string, Set<string>>();
-	/** Package prefix to how many packages extend it. */
-	private readonly prefixes = new Map<string, number>();
-	private readonly byId = new Map<string, IndexedDeclaration>();
-	private readonly supertypeCache = new Map<string, string[]>();
+	constructor(private readonly store: ModuleStore<KotlinFile, null, PackageIndexEntry>) {}
 
-	add(facts: ModuleHeaders): void {
-		this.remove(facts.module);
-		const packageKey = facts.packageName ?? "";
-		const declarations = facts.declarations.filter((declaration) => declaration.kind !== "package");
-		this.modules.set(facts.module, {
-			packageKey,
-			imports: facts.imports,
-			declarations,
-			supertypes: facts.supertypes,
-			receiverTypes: facts.receiverTypes,
-		});
-		const modules = this.modulesByPackage.get(packageKey);
-		if (modules === undefined) {
-			this.modulesByPackage.set(packageKey, new Set([facts.module]));
-			this.countPrefixes(packageKey, 1);
-		} else modules.add(facts.module);
-		for (const declaration of declarations) {
-			const entry = { declaration, module: facts.module };
-			this.byId.set(declaration.symbolId, entry);
-			if (declaration.containerId === undefined) {
-				let names = this.topLevel.get(packageKey);
-				if (names === undefined) {
-					names = new Map();
-					this.topLevel.set(packageKey, names);
-				}
-				const list = names.get(declaration.name);
-				if (list === undefined) names.set(declaration.name, [entry]);
-				else list.push(entry);
-			} else {
-				const list = this.children.get(declaration.containerId);
-				if (list === undefined) this.children.set(declaration.containerId, [entry]);
-				else list.push(entry);
-			}
-		}
-		this.supertypeCache.clear();
+	private declarations(key: string): IndexedDeclaration[] {
+		return this.store.get(key).filter((entry): entry is IndexedDeclaration => typeof entry !== "string");
 	}
 
-	/** One pass per list the module touched. */
-	remove(module: string): void {
-		const held = this.modules.get(module);
-		if (held === undefined) return;
-		this.modules.delete(module);
-		this.supertypeCache.clear();
-		const names = this.topLevel.get(held.packageKey);
-		const touchedNames = new Set<string>();
-		const touchedContainers = new Set<string>();
-		for (const declaration of held.declarations) {
-			if (this.byId.get(declaration.symbolId)?.module === module) this.byId.delete(declaration.symbolId);
-			if (declaration.containerId === undefined) touchedNames.add(declaration.name);
-			else touchedContainers.add(declaration.containerId);
-		}
-		const other = (entry: IndexedDeclaration): boolean => entry.module !== module;
-		for (const name of touchedNames) {
-			const kept = names?.get(name)?.filter(other) ?? [];
-			if (kept.length > 0) names?.set(name, kept);
-			else names?.delete(name);
-		}
-		for (const container of touchedContainers) {
-			const kept = this.children.get(container)?.filter(other) ?? [];
-			if (kept.length > 0) this.children.set(container, kept);
-			else this.children.delete(container);
-		}
-		if (names?.size === 0) this.topLevel.delete(held.packageKey);
-		const modules = this.modulesByPackage.get(held.packageKey);
-		modules?.delete(module);
-		if (modules?.size === 0) {
-			this.modulesByPackage.delete(held.packageKey);
-			this.countPrefixes(held.packageKey, -1);
-		}
+	private modulesFor(key: string): string[] {
+		return this.store.get(key).filter((entry): entry is string => typeof entry === "string");
 	}
 
-	private countPrefixes(packageKey: string, delta: number): void {
-		if (packageKey === "") return;
-		const segments = packageKey.split(".");
-		for (let length = 1; length <= segments.length; length++) {
-			const prefix = segments.slice(0, length).join(".");
-			const count = (this.prefixes.get(prefix) ?? 0) + delta;
-			if (count > 0) this.prefixes.set(prefix, count);
-			else this.prefixes.delete(prefix);
-		}
+	private children(containerId: string): IndexedDeclaration[] {
+		return this.declarations(`child:${containerId}`);
 	}
 
-	holds(module: string): boolean {
-		return this.modules.has(module);
-	}
-
-	headersOf(module: string): ModuleHeaders | undefined {
-		const entry = this.modules.get(module);
-		if (entry === undefined) return undefined;
-		return {
-			module,
-			...(entry.packageKey === "" ? {} : { packageName: entry.packageKey }),
-			declarations: entry.declarations,
-			imports: entry.imports,
-			supertypes: entry.supertypes,
-			receiverTypes: entry.receiverTypes,
-		};
-	}
-
-	heldModules(): string[] {
-		return [...this.modules.keys()];
+	private byId(symbolId: string): IndexedDeclaration | undefined {
+		return this.declarations(`id:${symbolId}`)[0];
 	}
 
 	hasPackage(packageKey: string): boolean {
-		return this.modulesByPackage.has(packageKey);
+		return this.modulesFor(`pkg:${packageKey}`).length > 0;
 	}
 
-	/** A package, or the start of one. */
+	/** A package or its prefix. */
 	isPackagePrefix(path: string): boolean {
-		return this.prefixes.has(path);
+		return this.modulesFor(`prefix:${path}`).length > 0;
 	}
 
 	declaration(symbolId: string): IndexedDeclaration | undefined {
-		return this.byId.get(symbolId);
+		return this.byId(symbolId);
 	}
 
 	modulesIn(packageKey: string): string[] {
-		return [...(this.modulesByPackage.get(packageKey) ?? [])];
+		return this.modulesFor(`pkg:${packageKey}`);
 	}
 
 	topLevelNamed(site: UseSite, packageKey: string, name: string): IndexedDeclaration[] {
@@ -232,17 +123,13 @@ export class PackageIndex {
 	}
 
 	private declaredTopLevel(packageKey: string, name: string): IndexedDeclaration[] {
-		return this.topLevel.get(packageKey)?.get(name) ?? [];
+		return this.declarations(`top:${packageKey}\0${name}`);
 	}
 
 	/** A header's site: enclosing containers. */
 	declarationSite(module: string, containerId: string | undefined): UseSite {
 		const enclosing: string[] = [];
-		for (
-			let current = containerId;
-			current !== undefined;
-			current = this.byId.get(current)?.declaration.containerId
-		)
+		for (let current = containerId; current !== undefined; current = this.byId(current)?.declaration.containerId)
 			enclosing.push(current);
 		return { module, lexical: enclosing, subclasses: enclosing };
 	}
@@ -273,7 +160,7 @@ export class PackageIndex {
 		if (containerId === undefined)
 			return declaration.exported === false ? { mode: "topLevel", module: entry.module } : { mode: "public" };
 		if (declaration.visibility !== "private" && declaration.visibility !== "protected") return { mode: "public" };
-		const container = this.byId.get(containerId)?.declaration;
+		const container = this.byId(containerId)?.declaration;
 		const classId = container !== undefined && isCompanion(container) ? container.containerId : undefined;
 		if (declaration.visibility === "protected")
 			return { mode: "protected", owners: classId === undefined ? [containerId] : [containerId, classId] };
@@ -283,12 +170,12 @@ export class PackageIndex {
 	}
 
 	packageOf(module: string): string | undefined {
-		return this.modules.get(module)?.packageKey;
+		return this.store.peek(module)?.packageName;
 	}
 
 	receiverTypeOf(symbolId: string): TypePath | undefined {
-		const entry = this.byId.get(symbolId);
-		return entry === undefined ? undefined : this.modules.get(entry.module)?.receiverTypes.get(symbolId);
+		const entry = this.byId(symbolId);
+		return entry === undefined ? undefined : this.store.peek(entry.module)?.receiverTypes.get(symbolId);
 	}
 
 	/** A dotted path: the longest package prefix, then containers by name, each step admitted. */
@@ -333,7 +220,7 @@ export class PackageIndex {
 
 	/** `Type.member`: nested classifiers and enum entries, an object's members, then companion members. */
 	staticMembers(site: UseSite, container: Declaration, name: string): IndexedDeclaration[] {
-		const children = this.children.get(container.symbolId) ?? [];
+		const children = this.children(container.symbolId);
 		const object = isObject(container);
 		const direct = this.admitted(
 			site,
@@ -352,13 +239,13 @@ export class PackageIndex {
 	}
 
 	private companionMembers(containerId: string, name: string, accept: Accept): IndexedDeclaration[] {
-		return (this.children.get(containerId) ?? [])
+		return this.children(containerId)
 			.filter((entry) => isCompanion(entry.declaration))
 			.flatMap((companion) => this.named(companion.declaration.symbolId, name, accept));
 	}
 
 	private named(containerId: string, name: string, accept: Accept): IndexedDeclaration[] {
-		return (this.children.get(containerId) ?? []).filter(
+		return this.children(containerId).filter(
 			(entry) => entry.declaration.name === name && isMember(entry.declaration) && accept(entry.declaration),
 		);
 	}
@@ -388,7 +275,7 @@ export class PackageIndex {
 		accept: Accept,
 		options: { staticOnly?: boolean; supertypesOnly?: boolean } = {},
 	): IndexedDeclaration[] {
-		const own = this.byId.get(classId);
+		const own = this.byId(classId);
 		if (own === undefined) return [];
 		const staticOnly = options.staticOnly === true && !isObject(own.declaration);
 		const admit: Accept = staticOnly ? (declaration) => isStatic(declaration) && accept(declaration) : accept;
@@ -424,47 +311,44 @@ export class PackageIndex {
 			const id = pending.pop() as string;
 			if (seen.has(id)) continue;
 			seen.add(id);
-			const entry = this.byId.get(id);
+			const entry = this.byId(id);
 			if (entry === undefined) continue;
 			into.add(entry.declaration.name);
-			for (const path of this.modules.get(entry.module)?.supertypes.get(id) ?? [])
-				into.add(path.at(-1) as string);
+			for (const path of this.store.peek(entry.module)?.supertypes.get(id) ?? []) into.add(path.at(-1) as string);
 			pending.push(...this.supertypeIds(id));
 		}
 	}
 
 	/** Supertypes the index can resolve, written in the class's own module. */
 	supertypeIds(classId: string): string[] {
-		const cached = this.supertypeCache.get(classId);
-		if (cached !== undefined) return cached;
-		this.supertypeCache.set(classId, []);
-		const entry = this.byId.get(classId);
-		const paths = entry === undefined ? [] : (this.modules.get(entry.module)?.supertypes.get(classId) ?? []);
-		const ids: string[] = [];
-		if (entry !== undefined)
-			for (const path of paths) {
-				const { module, declaration } = entry;
-				const site = this.declarationSite(module, declaration.containerId);
-				const resolved = this.resolveType(site, declaration.containerId, path);
-				if (resolved !== undefined && resolved.declaration.symbolId !== classId)
-					ids.push(resolved.declaration.symbolId);
-			}
-		this.supertypeCache.set(classId, ids);
-		return ids;
+		return this.store.memo(`kotlin:supertype:${classId}`, () => {
+			const entry = this.byId(classId);
+			const paths = entry === undefined ? [] : (this.store.peek(entry.module)?.supertypes.get(classId) ?? []);
+			const ids: string[] = [];
+			if (entry !== undefined)
+				for (const path of paths) {
+					const { module, declaration } = entry;
+					const site = this.declarationSite(module, declaration.containerId);
+					const resolved = this.resolveType(site, declaration.containerId, path);
+					if (resolved !== undefined && resolved.declaration.symbolId !== classId)
+						ids.push(resolved.declaration.symbolId);
+				}
+			return ids;
+		});
 	}
 
 	/** A type written at a site: enclosing containers, imports, package, stars, then a package path. */
 	resolveType(site: UseSite, containerId: string | undefined, path: TypePath): IndexedDeclaration | undefined {
-		const context = this.modules.get(site.module);
+		const context = this.store.peek(site.module);
 		const [first, ...rest] = path;
 		if (context === undefined || first === undefined) return undefined;
 		const classifiers = (entries: IndexedDeclaration[]): IndexedDeclaration[] =>
 			entries.filter((entry) => isClassifier(entry.declaration));
 		let found: IndexedDeclaration[] = [];
 		for (let current = containerId; current !== undefined && found.length === 0; ) {
-			const named = (this.children.get(current) ?? []).filter((entry) => entry.declaration.name === first);
+			const named = this.children(current).filter((entry) => entry.declaration.name === first);
 			found = classifiers(this.admitted(site, named));
-			current = this.byId.get(current)?.declaration.containerId;
+			current = this.byId(current)?.declaration.containerId;
 		}
 		if (found.length === 0)
 			for (const item of context.imports)
@@ -472,7 +356,7 @@ export class PackageIndex {
 					const resolution = this.resolvePath(fileSite(site.module), cleanSpecifier(item.specifier));
 					if (resolution.status === "found") found.push(...classifiers(resolution.entries));
 				}
-		if (found.length === 0) found = classifiers(this.topLevelNamed(site, context.packageKey, first));
+		if (found.length === 0) found = classifiers(this.topLevelNamed(site, context.packageName ?? "", first));
 		if (found.length === 0)
 			for (const item of context.imports)
 				if (item.star)

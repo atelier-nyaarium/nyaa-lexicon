@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyEdits, coordinatesOf, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
-import { TypeScriptProvider } from "../main";
+import { harness } from "./harness.js";
 
 const roots: string[] = [];
 
@@ -27,7 +27,7 @@ function rangeForText(text: string, value: string, from = 0): Range {
 }
 
 function move(root: string, request: MoveEditsRequest) {
-	const provider = new TypeScriptProvider();
+	const provider = harness();
 	provider.initialize(root);
 	const response = provider.moveEdits(request);
 	provider.shutdown();

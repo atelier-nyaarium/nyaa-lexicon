@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { coordinatesOf } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { RustProvider } from "../main.js";
 
 function rustFiles(directory: string): string[] {
@@ -19,7 +19,8 @@ const corpusRoot = path.join(process.cwd(), "temp/ripgrep");
 const corpusPresent = existsSync(corpusRoot) && rustFiles(corpusRoot).length > 0;
 // A missing corpus is a local mistake and a CI fact, `temp/` being ignored and never cloned there.
 // Skipping in CI keeps the throw below meaningful where the corpus is supposed to exist.
-const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
+const ciEnvironment = Reflect.get(process.env, "CI");
+const corpusTest = corpusPresent || !ciEnvironment ? test : test.skip;
 
 corpusTest(
 	"parses every Rust file from the guarded ripgrep corpus",
@@ -28,18 +29,20 @@ corpusTest(
 		if (!corpusPresent) throw new Error("ripgrep corpus is absent");
 		const files = rustFiles(root);
 		const provider = new RustProvider();
-		provider.initialize(root);
+		const handlers = handlersFor(provider);
+		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		handlers.discoverProject({ workspaceRoot: root });
 		// A span whose range does not cut its own text back out attaches to the wrong symbol, and only
 		// real source has the string forms that break that.
 		const strayed: string[] = [];
 		let spans = 0;
-		const parsed: Array<ReturnType<RustProvider["parseFile"]>> = [];
+		const parsed: Array<Awaited<ReturnType<typeof handlers.parseFile>>> = [];
 		for (const file of files) {
 			// Yields, so the timeout can fire.
 			await new Promise((resolve) => setImmediate(resolve));
 			const module = path.relative(root, file).split(path.sep).join("/");
 			const text = readFileSync(file, "utf8");
-			const facts = provider.parseFile({ module, contentHash: "corpus", text });
+			const facts = handlers.parseFile({ module, contentHash: "corpus", text });
 			const coordinates = coordinatesOf(text);
 			for (const comment of facts.comments ?? []) {
 				spans++;

@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyEdits, composeSymbolId, coordinatesOf, type MoveEditsRequest, type Range } from "@nyaa-lexicon/protocol";
+import {
+	applyEdits,
+	composeSymbolId,
+	coordinatesOf,
+	handlersFor,
+	type MoveEditsRequest,
+	PROTOCOL_VERSION,
+	type Range,
+} from "@nyaa-lexicon/protocol";
 import { loadGdscriptMoveCases } from "../../../../protocol/src/conformance/moveCorpusGdscript.js";
 import { MoveCaseSchema } from "../../../../protocol/src/conformance/types.js";
 import { extractDeclarationsCore } from "../extractCore.js";
@@ -51,11 +59,10 @@ function methodId(module: string, root: string, name: string): string {
 }
 
 function move(root: string, request: MoveEditsRequest) {
-	const provider = new GDScriptProvider();
-	provider.initialize(root);
-	provider.discoverProject(root);
-	const response = provider.moveEdits(request);
-	return response;
+	const handlers = handlersFor(new GDScriptProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers.moveEdits(request);
 }
 
 function apply(root: string, text: string, request: MoveEditsRequest) {

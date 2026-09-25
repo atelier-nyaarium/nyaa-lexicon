@@ -12,6 +12,7 @@ import {
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
+import { parseThroughKit, startProvider } from "./harness.js";
 
 const roots: string[] = [];
 
@@ -55,19 +56,19 @@ function reference(
 function indexed(files: Record<string, string>, module: string) {
 	const root = makeWorkspace(files);
 	const provider = new CsharpProvider();
-	provider.initialize(root);
-	const model = provider.discoverProject(root);
+	const handlers = startProvider(provider, root);
+	const model = handlers.discoverProject({ workspaceRoot: root });
 	expect(model.diagnostics).toEqual([]);
 	const text = files[module];
 	if (text === undefined) throw new Error(`fixture missing: ${module}`);
-	const facts = provider.parseFile({ module, contentHash: "coverage", text });
+	const facts = handlers.parseFile({ module, contentHash: "coverage", text });
 	return { provider, facts, root };
 }
 
 function parse(text: string, module = "main.cs") {
 	const provider = new CsharpProvider();
-	provider.initialize("/workspace");
-	const facts = provider.parseFile({ module, contentHash: "coverage", text });
+	startProvider(provider);
+	const facts = parseThroughKit(provider, { module, contentHash: "coverage", text });
 	return { provider, facts };
 }
 
@@ -92,17 +93,17 @@ describe("C# import-driven type answers", () => {
 				"using static Lib.Box; public class StaticUse { public int Read() { return Count; } public void Call() { Touch(); } }\n",
 		};
 		const { provider, facts: plainFacts } = indexed(files, "src/plain.cs");
-		const aliasFacts = provider.parseFile({
+		const aliasFacts = parseThroughKit(provider, {
 			module: "src/alias.cs",
 			contentHash: "coverage",
 			text: files["src/alias.cs"],
 		});
-		const staticFacts = provider.parseFile({
+		const staticFacts = parseThroughKit(provider, {
 			module: "src/static.cs",
 			contentHash: "coverage",
 			text: files["src/static.cs"],
 		});
-		const boxFacts = provider.parseFile({
+		const boxFacts = parseThroughKit(provider, {
 			module: "src/box.cs",
 			contentHash: "coverage",
 			text: files["src/box.cs"],
@@ -148,7 +149,7 @@ describe("C# import-driven type answers", () => {
 			"src/missing.cs": "using Alias = Missing.Type; public class MissingUse { public Alias Value; }\n",
 		};
 		const { provider, facts: externalFacts } = indexed(files, "src/external.cs");
-		const missingFacts = provider.parseFile({
+		const missingFacts = parseThroughKit(provider, {
 			module: "src/missing.cs",
 			contentHash: "coverage",
 			text: files["src/missing.cs"],
@@ -206,7 +207,7 @@ describe("C# role-specific binding", () => {
 			].join("\n"),
 		};
 		const { provider, facts } = indexed(files, "src/derived.cs");
-		const baseFacts = provider.parseFile({
+		const baseFacts = parseThroughKit(provider, {
 			module: "src/base.cs",
 			contentHash: "coverage",
 			text: files["src/base.cs"],
@@ -241,7 +242,7 @@ describe("C# role-specific binding", () => {
 			"src/use.cs": "using Outer.Inner; namespace Outer { public class Holder { public Item Value; } }\n",
 		};
 		const { provider, facts } = indexed(files, "src/use.cs");
-		const itemFacts = provider.parseFile({
+		const itemFacts = parseThroughKit(provider, {
 			module: "src/item.cs",
 			contentHash: "coverage",
 			text: files["src/item.cs"],

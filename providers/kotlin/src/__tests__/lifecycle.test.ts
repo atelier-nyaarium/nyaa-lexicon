@@ -11,8 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Binding, handlersFor, MAX_SOURCE_BYTES, type ModuleAdmission } from "@nyaa-lexicon/protocol";
-import { KotlinProvider } from "../main.js";
+import { type Binding, MAX_SOURCE_BYTES, type ModuleAdmission } from "@nyaa-lexicon/protocol";
+import { started } from "./harness.js";
 
 const roots: string[] = [];
 
@@ -29,13 +29,6 @@ function put(root: string, module: string, text: string | Buffer): void {
 	writeFileSync(full, text);
 }
 
-function started(root: string): KotlinProvider {
-	const provider = new KotlinProvider();
-	provider.initialize(root);
-	provider.discoverProject(root);
-	return provider;
-}
-
 const USE = "package p\n\nfun use(): Foo = Foo()\n";
 const FOO = "package p\n\nclass Foo\n";
 /** A brace left open at the end of the file is refused. */
@@ -46,7 +39,6 @@ const BAR_USE = "package p\n\nval b = Bar()\n";
 const CANDIDATE = "package p\n\nclass Candidate\n";
 const CANDIDATE_USE = "package p\n\nval c = Candidate()\n";
 
-/** The core's word on a parse. */
 function verdict(module: string, contentHash: string, reason?: string): ModuleAdmission {
 	return {
 		module,
@@ -55,8 +47,8 @@ function verdict(module: string, contentHash: string, reason?: string): ModuleAd
 	};
 }
 
-/** Every binding of `name` in a full parse of `text`, one per use. */
-function bindings(provider: KotlinProvider, module: string, text: string, name = "Foo"): Binding[] {
+/** Bindings at every use. */
+function bindings(provider: ReturnType<typeof started>, module: string, text: string, name = "Foo"): Binding[] {
 	return provider
 		.parseFile({ module, contentHash: "h", text })
 		.references.filter((reference) => reference.name === name)
@@ -101,11 +93,13 @@ describe("discovery", () => {
 			...Object.fromEntries(excluded.map((directory) => [`${directory}/Hidden.kt`, "class Hidden\n"])),
 		});
 
-		expect(started(root).discoverProject(root)).toMatchObject({
+		expect(started(root).discoverProject({ workspaceRoot: root })).toMatchObject({
 			files: ["src/A.kt", "src/nested/B.kt"],
 			diagnostics: [],
 		});
-		expect(new KotlinProvider().discoverProject(path.join(root, "absent"))).toMatchObject({
+		expect(
+			started(path.join(root, "absent")).discoverProject({ workspaceRoot: path.join(root, "absent") }),
+		).toMatchObject({
 			files: [],
 			diagnostics: [{ severity: "error" }],
 		});
@@ -134,7 +128,7 @@ describe("discovery", () => {
 				const provider = started(corpus);
 				const refused: string[] = [];
 				let declarations = 0;
-				const files = provider.discoverProject(corpus).files;
+				const files = provider.discoverProject({ workspaceRoot: corpus }).files;
 				for (const module of files) {
 					// Yields, so the timeout can fire.
 					await new Promise((resolve) => setImmediate(resolve));
@@ -162,7 +156,7 @@ describe("a module the core lets go of", () => {
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 
 		renameSync(path.join(root, "a/Foo.kt"), path.join(root, "a/Bar.kt"));
-		provider.forgetModule({ module: "a/Foo.kt" });
+		provider.forgetModule?.({ module: "a/Foo.kt" });
 		provider.parseFile({ module: "a/Bar.kt", contentHash: "h", text: FOO });
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Bar.kt Foo#"]);
@@ -175,8 +169,8 @@ describe("a module the core lets go of", () => {
 	test("stays out of the first lookup while its file is still on disk, until it is parsed again", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		// Forgotten before any lookup, as a scope prune arrives before the first full parse.
-		provider.forgetModule({ module: "a/Foo.kt" });
+		// Pruning can precede the first lookup.
+		provider.forgetModule?.({ module: "a/Foo.kt" });
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
 
 		provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO, depth: "outline" });
@@ -186,7 +180,6 @@ describe("a module the core lets go of", () => {
 	test("answers no direct read of its own while its file is still on disk, until it is parsed again", () => {
 		const root = workspace({ "a/Foo.kt": FOO });
 		const provider = started(root);
-		const handlers = handlersFor(provider);
 		const foo = provider
 			.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO })
 			.declarations.find((item) => item.name === "Foo");
@@ -198,26 +191,31 @@ describe("a module the core lets go of", () => {
 		];
 		expect(read()[0]).toEqual({ status: "bound", symbolId: "lexicon kotlin a/Foo.kt Foo#", provenance: "bound" });
 
-		provider.forgetModule({ module: "a/Foo.kt" });
+		provider.forgetModule?.({ module: "a/Foo.kt" });
 		expect(read().map((answer) => ("reason" in answer ? answer.reason : answer.status))).toEqual([
 			"NotIndexed",
 			"NotIndexed",
 			"NotIndexed",
 		]);
 
-		handlers.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO, depth: "outline" });
+		provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO, depth: "outline" });
 		expect(read()[0]).toEqual({ status: "bound", symbolId: "lexicon kotlin a/Foo.kt Foo#", provenance: "bound" });
 	});
 
-	test("is dropped by a rediscovery once its file is gone, which reads every other file again", () => {
+	test("applies forget and parse events across rediscovery", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Gone.kt": "package p\n\nclass Gone\n", "a/Use.kt": USE });
 		const provider = started(root);
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 
 		rmSync(path.join(root, "a/Gone.kt"));
-		// Changed on disk with no parse, as a client that is not the core leaves it.
 		put(root, "a/Foo.kt", "package p\n\nprivate class Foo\n");
-		provider.discoverProject(root);
+		provider.discoverProject({ workspaceRoot: root });
+		provider.forgetModule?.({ module: "a/Gone.kt" });
+		provider.parseFile({
+			module: "a/Foo.kt",
+			contentHash: "private",
+			text: "package p\n\nprivate class Foo\n",
+		});
 
 		expect(targets(bindings(provider, "a/Use.kt", "package p\n\nval g = Gone()\n", "Gone"))).toEqual(["unbound"]);
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
@@ -228,10 +226,10 @@ describe("the index takes only what the core admits", () => {
 	test("keeps a module's last admitted declarations when the core refuses the parse", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		const handlers = handlersFor(provider);
+		const handlers = provider;
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 
-		// Clean facts, so only the verdict can turn them away.
+		// A clean parse isolates the core verdict.
 		const parsed = handlers.parseFile({ module: "a/Foo.kt", contentHash: "renamed", text: RENAMED });
 		expect(parsed.diagnostics).toEqual([]);
 		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["lexicon kotlin a/Foo.kt Bar#"]);
@@ -242,22 +240,30 @@ describe("the index takes only what the core admits", () => {
 		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["unbound"]);
 	});
 
-	test("keeps what was admitted when a rediscovery reads refused text off disk", () => {
+	test("keeps the admitted value when rediscovery sees refused text on disk, but drops its own disk read", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+		provider.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO });
+		provider.moduleAdmission?.(verdict("a/Foo.kt", "h"));
 
 		put(root, "a/Foo.kt", REFUSED);
-		provider.discoverProject(root);
+		provider.discoverProject({ workspaceRoot: root });
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 		expect(targets(bindings(provider, "a/Use.kt", "package p\n\nval e = Extra()\n", "Extra"))).toEqual(["unbound"]);
+
+		const filledRoot = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
+		const filledOnly = started(filledRoot);
+		expect(targets(bindings(filledOnly, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
+		put(filledRoot, "a/Foo.kt", REFUSED);
+		filledOnly.discoverProject({ workspaceRoot: filledRoot });
+		expect(targets(bindings(filledOnly, "a/Use.kt", USE))).toEqual(["unbound"]);
 	});
 
 	test("holds nothing for a refused parse, and no later fill or read brings it back", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		const handlers = handlersFor(provider);
+		const handlers = provider;
 		const facts = handlers.parseFile({ module: "a/Foo.kt", contentHash: "h", text: FOO });
 		const foo = facts.declarations.find((item) => item.name === "Foo");
 		handlers.moduleAdmission?.(verdict("a/Foo.kt", "h", "the store refused an id"));
@@ -265,7 +271,7 @@ describe("the index takes only what the core admits", () => {
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
 		expect(provider.typeOf({ symbolId: foo?.symbolId ?? "" })).toMatchObject({ reason: "NotIndexed" });
 
-		provider.discoverProject(root);
+		provider.discoverProject({ workspaceRoot: root });
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
 
 		provider.parseFile({ module: "a/Foo.kt", contentHash: "again", text: FOO });
@@ -275,7 +281,7 @@ describe("the index takes only what the core admits", () => {
 	test("ignores a verdict naming bytes a later parse replaced", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		const handlers = handlersFor(provider);
+		const handlers = provider;
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "first", text: RENAMED });
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "second", text: FOO });
 
@@ -287,10 +293,10 @@ describe("the index takes only what the core admits", () => {
 	test("answers a probe from the candidate, then holds what the core admitted, never the candidate or the disk", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		const handlers = handlersFor(provider);
+		const handlers = provider;
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "old", text: FOO });
 		handlers.moduleAdmission?.(verdict("a/Foo.kt", "old"));
-		// The file changed on disk and its parse is outstanding across the probe.
+		// The index verdict is pending during the probe.
 		put(root, "a/Foo.kt", RENAMED);
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "disk", text: RENAMED });
 		const probed = handlers.probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
@@ -320,16 +326,16 @@ describe("the index takes only what the core admits", () => {
 
 	test("a probe that runs the first fill leaves its module as that fill would, before and after a rediscovery", () => {
 		const fresh = started(workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE }));
-		handlersFor(fresh).probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
+		fresh.probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
 
-		// The disk turns unadmittable, so the fill falls back on the headers held before the rediscovery.
+		// A refused fill preserves admitted headers.
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const rediscovered = started(root);
-		const handlers = handlersFor(rediscovered);
+		const handlers = rediscovered;
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "old", text: FOO });
 		handlers.moduleAdmission?.(verdict("a/Foo.kt", "old"));
 		put(root, "a/Foo.kt", REFUSED);
-		rediscovered.discoverProject(root);
+		rediscovered.discoverProject({ workspaceRoot: root });
 		handlers.probeFile({ module: "a/Foo.kt", contentHash: "probe", text: CANDIDATE });
 
 		expect([fresh, rediscovered].map((provider) => targets(bindings(provider, "a/Use.kt", USE)))).toEqual([
@@ -341,12 +347,12 @@ describe("the index takes only what the core admits", () => {
 	test("a refusal keeps the admitted headers across a rediscovery that lands before its verdict", () => {
 		const root = workspace({ "a/Foo.kt": FOO, "a/Use.kt": USE });
 		const provider = started(root);
-		const handlers = handlersFor(provider);
+		const handlers = provider;
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "old", text: FOO });
 		handlers.moduleAdmission?.(verdict("a/Foo.kt", "old"));
-		provider.discoverProject(root);
+		provider.discoverProject({ workspaceRoot: root });
 		handlers.parseFile({ module: "a/Foo.kt", contentHash: "candidate", text: CANDIDATE });
-		provider.discoverProject(root);
+		provider.discoverProject({ workspaceRoot: root });
 		handlers.moduleAdmission?.(verdict("a/Foo.kt", "candidate", "the store refused an id"));
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
@@ -375,8 +381,8 @@ describe("the index takes only what the core admits", () => {
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["unbound"]);
 
 		for (const module of ["a/Foo.kt", "a/Bar.kt"]) chmodSync(path.join(root, module), 0o644);
-		handlersFor(provider).parseFile({ module: "a/Bar.kt", contentHash: "h", text: RENAMED, depth: "outline" });
-		handlersFor(provider).moduleAdmission?.(verdict("a/Bar.kt", "h", "the store refused an id"));
+		provider.parseFile({ module: "a/Bar.kt", contentHash: "h", text: RENAMED, depth: "outline" });
+		provider.moduleAdmission?.(verdict("a/Bar.kt", "h", "the store refused an id"));
 
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Foo.kt Foo#"]);
 		expect(targets(bindings(provider, "a/Use.kt", BAR_USE, "Bar"))).toEqual(["unbound"]);
@@ -384,7 +390,7 @@ describe("the index takes only what the core admits", () => {
 });
 
 describe("a declared type's symbol", () => {
-	const typeOfNamed = (provider: KotlinProvider, module: string, text: string, name: string) => {
+	const typeOfNamed = (provider: ReturnType<typeof started>, module: string, text: string, name: string) => {
 		const facts = provider.parseFile({ module, contentHash: "h", text });
 		const declaration = facts.declarations.find((candidate) => candidate.name === name);
 		return provider.typeOf({ symbolId: declaration?.symbolId ?? "" });

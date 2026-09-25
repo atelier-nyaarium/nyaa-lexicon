@@ -1,13 +1,15 @@
 import { expect, test } from "bun:test";
+import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { GDScriptProvider } from "../main";
 
 ////////////////////////////////
 //  Helpers
 
 function parse(text: string) {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
-	return provider.parseFile({ module: "scripts/player.gd", contentHash: "h", text });
+	const handlers = handlersFor(new GDScriptProvider());
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: process.cwd() });
+	return handlers.parseFile({ module: "scripts/player.gd", contentHash: "h", text });
 }
 
 ////////////////////////////////

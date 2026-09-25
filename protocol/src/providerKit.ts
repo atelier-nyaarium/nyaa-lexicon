@@ -3,14 +3,15 @@
 import { closeSync, type Dirent, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
-import type { ModuleAdmission, ProviderAdmission } from "./admission.js";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
-import { PROVIDER_NOTIFICATIONS } from "./methods.js";
+import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
 import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
 import { firstLineOf, shebangInterpreter } from "./shebang.js";
 import type { Descriptor } from "./symbolId.js";
-import { normalizeModulePath } from "./symbolId.js";
+import { workspaceModule } from "./workspacePath.js";
+
+export { workspaceFile, workspaceModule } from "./workspacePath.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -18,8 +19,8 @@ import { normalizeModulePath } from "./symbolId.js";
 type Request<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["request"]>;
 type Response<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["response"]>;
 
-/** Every method, and `shutdown`, which answers nothing. */
-interface ProviderRequestMethods {
+/** Handler contract for stateless providers. */
+export interface ProviderMethods {
 	initialize(workspaceRoot: string): Response<"initialize">;
 	discoverProject(workspaceRoot: string): Response<"discoverProject">;
 	parseFile(params: Request<"parseFile">): Response<"parseFile">;
@@ -30,17 +31,6 @@ interface ProviderRequestMethods {
 	moveEdits(params: Request<"moveEdits">): Response<"moveEdits">;
 	shutdown?(): void;
 }
-
-/**
- * A provider as a plain object; `handlersFor` wires it to the method table.
- *
- * Notifications are taken from the frozen list rather than written out, so one added there is an
- * optional member of every provider without anyone remembering to add it twice. `moduleAdmission`
- * is the kit's: a provider holding cross-file state hands over its ledger, and one holding none
- * says `null`.
- */
-export type ProviderMethods = ProviderRequestMethods &
-	Omit<ProviderNotificationHandlers, "moduleAdmission"> & { readonly admission: ProviderAdmission | null };
 
 export interface WalkOptions {
 	/** With the dot; a file is claimed when its name ends with one. */
@@ -81,40 +71,16 @@ const SHEBANG_PROBE_BYTES = 256;
 ////////////////////////////////
 //  Functions & Helpers
 
-/**
- * Only what the provider declares, bound to it.
- *
- * The loop erases the pairing between a name and its params, which the caller's own type already
- * satisfied; `serveProvider` parses each one by its schema before the handler sees it.
- */
-function notificationsOf(provider: ProviderMethods): ProviderNotificationHandlers {
-	const handlers: ProviderNotificationHandlers = {};
-	for (const notification of PROVIDER_NOTIFICATIONS) {
-		if (notification === "moduleAdmission") continue;
-		const handler = provider[notification] as ((params: unknown) => void) | undefined;
-		if (handler === undefined) continue;
-		(handlers as Record<string, (params: unknown) => void>)[notification] = (params) =>
-			handler.call(provider, params);
-	}
-	return handlers;
-}
-
-export function handlersFor(provider: ProviderMethods): ProviderHandlers & ProviderNotificationHandlers {
-	// A provider predating the ledger leaves it undefined.
-	const admission = provider.admission ?? null;
+/** Wire stateless methods; probes call `parseFile`. */
+export function handlersFor<V extends ModuleValue, P, E>(
+	provider: ProviderMethods | StoreProvider<V, P, E>,
+): ProviderHandlers & ProviderNotificationHandlers {
+	if ("store" in provider) return storeHandlersFor(provider);
 	return {
-		...notificationsOf(provider),
-		...(admission === null ? {} : { moduleAdmission: (verdict: ModuleAdmission) => admission.settle(verdict) }),
 		initialize: (params) => provider.initialize(params.workspaceRoot),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
-		parseFile: (params) => {
-			admission?.staged(params.module, params.contentHash);
-			return provider.parseFile(params);
-		},
-		probeFile: (params) =>
-			admission === null
-				? provider.parseFile(params)
-				: admission.probe(params.module, () => provider.parseFile(params)),
+		parseFile: (params) => provider.parseFile(params),
+		probeFile: (params) => provider.parseFile(params),
 		resolveImport: (params) => provider.resolveImport(params),
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
@@ -125,31 +91,6 @@ export function handlersFor(provider: ProviderMethods): ProviderHandlers & Provi
 			return {};
 		},
 	};
-}
-
-/** The module a file under `root` gets, or null when it is outside or unrepresentable. */
-export function workspaceModule(root: string, absolute: string): string | null {
-	const relative = path.relative(root, absolute).split(path.sep).join("/");
-	if (relative === "" || relative.startsWith("../") || path.isAbsolute(relative)) return null;
-	try {
-		return normalizeModulePath(relative);
-	} catch {
-		return null;
-	}
-}
-
-/** The absolute path of a module inside `root`, or null when it would leave it. */
-export function workspaceFile(root: string, module: string): string | null {
-	let canonical: string;
-	try {
-		canonical = normalizeModulePath(module);
-	} catch {
-		return null;
-	}
-	const absolute = path.resolve(root, ...canonical.split("/"));
-	const relative = path.relative(root, absolute);
-	if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-	return absolute;
 }
 
 export function projectDiagnostic(root: string, message: string): ProjectModel {

@@ -14,6 +14,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { extractFile } from "./extract.js";
 import { extractGdscriptParameterNames, isGdscriptIdentifier } from "./extractCore.js";
+import type { GDScriptStore } from "./module.js";
 
 type StringSpan = { start: number; end: number; contentStart: number; contentEnd: number };
 
@@ -175,10 +176,7 @@ function refused(
 	return { status: "refused", reason, detail } as const;
 }
 
-export function renameGdscript(
-	params: RenameEditsRequest,
-	hasRegisteredClassName: (name: string) => boolean,
-): RenameEditsResponse {
+export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore): RenameEditsResponse {
 	if (!params.module.endsWith(".gd")) return refused("ParseError", "the module is not a GDScript file");
 	if (!isGdscriptIdentifier(params.newName))
 		return refused("InvalidName", "the new name is not a legal GDScript identifier");
@@ -197,7 +195,7 @@ export function renameGdscript(
 	if (facts.declarations.some((declaration) => declaration.name === params.newName)) {
 		return refused("Collision", "the new name already exists in this GDScript file");
 	}
-	if (hasRegisteredClassName(params.newName))
+	if (store.get(`name:${params.newName}`).length > 0)
 		return refused("Collision", "the new name is already a registered class_name");
 
 	const coordinates = coordinatesOf(params.text);

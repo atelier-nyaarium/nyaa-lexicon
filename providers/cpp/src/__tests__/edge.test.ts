@@ -32,6 +32,13 @@ function makeWorkspace(files: Record<string, string>): string {
 	return root;
 }
 
+function wire(root = process.cwd()) {
+	const handlers = handlersFor(new CppProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
+}
+
 function declarationNames(text: string, module = "edge.cpp") {
 	return parseCppFile(module, text).declarations;
 }
@@ -272,8 +279,7 @@ describe("C++ parser edges", () => {
 	});
 
 	test("binds qualified names in the same file and keeps overloads ambiguous", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = [
 			"namespace api { struct Item {}; }",
 			"int use() { api::Item item; return item.value; }",
@@ -293,8 +299,7 @@ describe("C++ parser edges", () => {
 		const root = makeWorkspace({
 			"src/use.cpp": '#include <lib/vector.hpp>\n#include "missing.hpp"\nstd::vector<int> values;\n',
 		});
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 		const external = provider.resolveImport({ fromModule: "src/use.cpp", specifier: "lib/vector.hpp" });
 		const facts = provider.parseFile({
 			module: "src/use.cpp",
@@ -319,8 +324,7 @@ describe("C++ parser edges", () => {
 			"src/detail/item.hpp": "struct Item {};\n",
 			"outside.hpp": "struct Outside {};\n",
 		});
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 
 		expect(provider.resolveImport({ fromModule: "src/use.cpp", specifier: "detail/item.hpp" })).toEqual({
 			status: "resolved",
@@ -333,8 +337,7 @@ describe("C++ parser edges", () => {
 	});
 
 	test("infers simple initializers and auto returns while refusing unknown expressions", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = [
 			"auto count = 1;",
 			'auto label = "ok";',
@@ -355,8 +358,7 @@ describe("C++ parser edges", () => {
 	});
 
 	test("returns type answers for annotations and ranges", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const text = "const unsigned int limit = 3;\n";
 		const facts = provider.parseFile({ module: "annotation.cpp", contentHash: "annotation", text });
 		const declaration = facts.declarations.find((candidate) => candidate.name === "limit");
@@ -377,8 +379,7 @@ describe("C++ parser edges", () => {
 	});
 
 	test("keeps template-dependent declarations and references unresolved", () => {
-		const provider = new CppProvider();
-		provider.initialize(process.cwd());
+		const provider = wire();
 		const facts = provider.parseFile({
 			module: "dependent.cpp",
 			contentHash: "dependent",
@@ -424,10 +425,14 @@ describe("C++ parser edges", () => {
 			"notes.txt": "not source\n",
 			"build/generated.cpp": "int generated;\n",
 		});
-		const provider = new CppProvider();
-		provider.initialize(root);
+		const provider = wire(root);
 
-		expect(provider.discoverProject(root).files).toEqual(["header.hh", "header.hpp", "header.hxx", "main.cpp"]);
+		expect(provider.discoverProject({ workspaceRoot: root }).files).toEqual([
+			"header.hh",
+			"header.hpp",
+			"header.hxx",
+			"main.cpp",
+		]);
 	});
 
 	test("returns a schema-valid response for every provider handler", () => {

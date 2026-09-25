@@ -1,7 +1,6 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-	AdmissionLedger,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -12,6 +11,7 @@ import {
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	moduleStore,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -24,7 +24,6 @@ import {
 	type TypeInfo,
 	type UnknownReason,
 	serveProvider as wireServeProvider,
-	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { type CsharpFacts, CsharpParser, type DeclarationMeta, LANGUAGE, positionKey } from "./parser.js";
@@ -243,23 +242,11 @@ function typeOwner(meta: DeclarationMeta): string {
 }
 
 export class CsharpProvider {
-	private workspaceRoot = process.cwd();
-	private parsedFacts = new Map<string, CsharpFacts>();
-	private discoveredFiles: string[] | null = null;
-	/** What the index took, so a cross-file answer reads what it holds. */
-	readonly admission = new AdmissionLedger<CsharpFacts>({
-		snapshot: (module) => this.parsedFacts.get(module),
-		restore: (module, held) => {
-			if (held === undefined) this.parsedFacts.delete(module);
-			else this.parsedFacts.set(module, held);
-		},
+	readonly store = moduleStore<CsharpFacts>({
+		read: (module, text, depth) => new CsharpParser(module, text, depth === "outline").parse(),
 	});
 
-	initialize(workspaceRoot: string) {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.parsedFacts.clear();
-		this.discoveredFiles = null;
-		this.admission.reset();
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "csharp-provider",
 			language: LANGUAGE,
@@ -271,35 +258,36 @@ export class CsharpProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.parsedFacts.clear();
-		this.discoveredFiles = null;
+	discoverProject(workspaceRoot: string, _previous: null | undefined): { model: ProjectModel; project: null } {
+		const root = path.resolve(workspaceRoot);
 		try {
-			if (!existsSync(this.workspaceRoot))
-				return projectDiagnostic(this.workspaceRoot, `workspace root does not exist: ${this.workspaceRoot}`);
-			if (!statSync(this.workspaceRoot).isDirectory())
-				return projectDiagnostic(
-					this.workspaceRoot,
-					`workspace root is not a directory: ${this.workspaceRoot}`,
-				);
-			const walked = discoverByWalk(this.workspaceRoot, {
+			if (!existsSync(root))
+				return { model: projectDiagnostic(root, `workspace root does not exist: ${root}`), project: null };
+			if (!statSync(root).isDirectory())
+				return {
+					model: projectDiagnostic(root, `workspace root is not a directory: ${root}`),
+					project: null,
+				};
+			const walked = discoverByWalk(root, {
 				extensions: EXTENSIONS,
 				configExtensions: [".csproj", ".sln"],
 				excludedDirectories: EXCLUDED_DIRECTORIES,
 			});
-			this.discoveredFiles = walked.files;
-			return { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] };
+			return {
+				model: { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] },
+				project: null,
+			};
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			return projectDiagnostic(this.workspaceRoot, `unable to inspect workspace root: ${detail}`);
+			return { model: projectDiagnostic(root, `unable to inspect workspace root: ${detail}`), project: null };
 		}
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
+	parseFile(
+		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
+		facts: CsharpFacts,
+	) {
 		const outline = params.depth === "outline";
-		const facts = new CsharpParser(params.module, params.text, outline).parse();
-		this.parsedFacts.set(params.module, facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -320,7 +308,7 @@ export class CsharpProvider {
 
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
 		const candidates: string[] = [];
-		for (const module of this.filesForLookup()) {
+		for (const module of this.store.modules()) {
 			const facts = this.factsForModule(module);
 			const declaresNamespace = facts?.namespaceNames.includes(params.specifier) ?? false;
 			const declaresType = [...(facts?.metadata.values() ?? [])].some((meta) => {
@@ -347,7 +335,7 @@ export class CsharpProvider {
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {
-		const facts = this.factsForModule(params.module);
+		const facts = this.factsForModule(params.module, "full");
 		if (facts === null) return unbound("NotIndexed", "module is not indexed");
 		const reference = facts.references.find(
 			(candidate) => candidate.name === params.name && contains(candidate.range, params.range.start),
@@ -370,7 +358,7 @@ export class CsharpProvider {
 			return unknown("ParseError", "the symbol id is not a C# workspace id");
 		const module = symbolId === undefined ? ("module" in params ? params.module : undefined) : parsedId?.module;
 		if (module === undefined) return unknown("ParseError", "the symbol id is not a C# workspace id");
-		const facts = this.factsForModule(module);
+		const facts = this.factsForModule(module, "full");
 		if (facts === null) return unknown("NotIndexed", "module is not indexed");
 		const metadata =
 			symbolId === undefined
@@ -393,11 +381,6 @@ export class CsharpProvider {
 		return this.typeForMetadata(module, facts, metadata[0] as DeclarationMeta);
 	}
 
-	forgetModule(params: { module: string }): void {
-		this.parsedFacts.delete(params.module);
-		this.admission.forgotten(params.module);
-	}
-
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "C# rename edits are not implemented" };
 	}
@@ -406,37 +389,8 @@ export class CsharpProvider {
 		return notImplementedMove("C# move edits are not implemented");
 	}
 
-	private filesForLookup(): string[] {
-		if (this.discoveredFiles === null) {
-			try {
-				this.discoveredFiles = discoverByWalk(this.workspaceRoot, {
-					extensions: EXTENSIONS,
-					configExtensions: [".csproj", ".sln"],
-					excludedDirectories: EXCLUDED_DIRECTORIES,
-				}).files;
-			} catch {
-				return [];
-			}
-		}
-		// Withholding is factsForModule's gate; a withheld module may still hold admitted facts.
-		return this.discoveredFiles;
-	}
-
-	private factsForModule(module: string): CsharpFacts | null {
-		const cached = this.parsedFacts.get(module);
-		if (cached !== undefined) return cached;
-		// A module the index does not hold must not return through its own bytes.
-		if (!this.admission.fillable(module)) return null;
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute)) return null;
-		try {
-			if (!statSync(absolute).isFile()) return null;
-			const facts = new CsharpParser(module, readFileSync(absolute, "utf8")).parse();
-			this.parsedFacts.set(module, facts);
-			return facts;
-		} catch {
-			return null;
-		}
+	private factsForModule(module: string, depth?: "full"): CsharpFacts | null {
+		return this.store.load(module, depth) ?? null;
 	}
 
 	private typeForMetadata(module: string, facts: CsharpFacts, meta: DeclarationMeta): TypeInfo {
@@ -602,7 +556,7 @@ export class CsharpProvider {
 		const owner = typeOwner(from);
 		if (owner === "") return [];
 		const candidates: Declaration[] = [];
-		for (const otherModule of this.filesForLookup()) {
+		for (const otherModule of this.store.modules()) {
 			if (otherModule === module) continue;
 			const other = this.factsForModule(otherModule);
 			for (const meta of other?.metadata.values() ?? []) {

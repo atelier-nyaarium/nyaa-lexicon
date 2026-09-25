@@ -41,13 +41,17 @@ export interface DaemonErrorDetails {
 	from?: DaemonRef | undefined;
 }
 
-/** Daemon refusal or connection failure; `notRunning` means attach found no usable daemon. */
+/**
+ * Daemon failures.
+ * `notRunning` means attach found no usable daemon; `requestTimeout` means the live socket did not answer.
+ */
 export class DaemonError extends Error {
 	override readonly cause:
 		| "unknownMethod"
 		| "refusedModule"
 		| "spawnFailed"
 		| "connectionLost"
+		| "requestTimeout"
 		| "closed"
 		| "notRunning"
 		| "daemon";

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { coordinatesOf, FileFactsSchema } from "@nyaa-lexicon/protocol";
 import { CsharpProvider, TIERS } from "../main.js";
 import { CsharpParser } from "../parser.js";
+import { parseThroughKit, startProvider } from "./harness.js";
 
 function parseCsharp(module: string, text: string) {
 	return new CsharpParser(module, text).parse();
@@ -125,8 +126,11 @@ describe("C# comment spans", () => {
 
 	test("declares the comments tier and answers parseFile with the spans", () => {
 		const provider = new CsharpProvider();
+		startProvider(provider);
 		const text = "// header\npublic class Value { }\n";
-		const facts = FileFactsSchema.parse(provider.parseFile({ module: "Value.cs", contentHash: "value", text }));
+		const facts = FileFactsSchema.parse(
+			parseThroughKit(provider, { module: "Value.cs", contentHash: "value", text }),
+		);
 
 		expect(TIERS.comments).toBe(true);
 		expect(facts.comments).toEqual([
@@ -136,8 +140,9 @@ describe("C# comment spans", () => {
 
 	test("holds comments back at outline depth, as literals are", () => {
 		const provider = new CsharpProvider();
+		startProvider(provider);
 		const text = '// header\npublic class Value { string Name = "x"; }\n';
-		const facts = provider.parseFile({ module: "Value.cs", contentHash: "value", text, depth: "outline" });
+		const facts = parseThroughKit(provider, { module: "Value.cs", contentHash: "value", text, depth: "outline" });
 
 		expect(facts.depth).toBe("outline");
 		expect(facts.comments).toEqual([]);

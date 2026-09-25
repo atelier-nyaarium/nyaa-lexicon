@@ -201,6 +201,24 @@ describe("daemon channel reconnects", () => {
 		session.close();
 	});
 
+	it("fails a request past its budget once, never reconnecting or asking again", async () => {
+		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
+		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
+		fake = await fakeDaemon((_connection, request) => (request === 1 ? "hang" : { ok: true, result: STATS }));
+		writeLock(fake.port);
+
+		const session = daemonChannel({
+			workspaceRoot,
+			stateDir,
+			source: { root: workspaceRoot, buildVersion: BUILD, bundleStamp: null },
+			budgetMs: () => 100,
+		});
+		await expect(session.ask("cacheStats", {})).rejects.toMatchObject({ cause: "requestTimeout" });
+		expect(await session.ask("cacheStats", {})).toEqual(STATS);
+		expect({ connections: fake.connections, requests: fake.requests }).toEqual({ connections: 1, requests: 2 });
+		session.close();
+	});
+
 	it("reopens after the first connection closes before welcome", async () => {
 		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
 		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));

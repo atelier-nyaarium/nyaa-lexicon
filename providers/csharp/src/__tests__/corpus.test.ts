@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
+import { startProvider } from "./harness.js";
 
 const corpusRoot = path.join(process.cwd(), "temp/newtonsoft-json");
 const corpusTest = existsSync(corpusRoot) ? it : it.skip;
@@ -12,8 +13,8 @@ describe("Newtonsoft.Json corpus", () => {
 		"parses every C# file without error diagnostics",
 		async () => {
 			const provider = new CsharpProvider();
-			provider.initialize(corpusRoot);
-			const model = provider.discoverProject(corpusRoot);
+			const handlers = startProvider(provider, corpusRoot);
+			const model = handlers.discoverProject({ workspaceRoot: corpusRoot });
 			expect(model.diagnostics).toEqual([]);
 			expect(model.files.length).toBeGreaterThan(0);
 			const started = performance.now();
@@ -26,7 +27,7 @@ describe("Newtonsoft.Json corpus", () => {
 				// Yields, so the timeout can fire.
 				await new Promise((resolve) => setImmediate(resolve));
 				const text = readFileSync(path.join(corpusRoot, module), "utf8");
-				const facts = provider.parseFile({ module, contentHash: "corpus", text });
+				const facts = handlers.parseFile({ module, contentHash: "corpus", text });
 				const messages = facts.diagnostics
 					.filter((item) => item.severity === "error")
 					.map((item) => item.message);

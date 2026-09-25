@@ -15,18 +15,14 @@ import {
 import ts from "typescript";
 import { contextualPropertySymbol, type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
+import type { TypeScriptProject, TypeScriptStore } from "./module.js";
 import { makeMoveEdits } from "./move.js";
 import type { SpecifierRenderer } from "./project.js";
-import { type LoadedProject, toModule } from "./project.js";
+import { toModule } from "./project.js";
 import { makeRenameEdits } from "./rename.js";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-interface Overlay {
-	text: string;
-	version: number;
-}
 
 interface Position {
 	line: number;
@@ -51,10 +47,39 @@ interface SourceFailure {
 
 type SourceContextResult = SourceContext | SourceFailure;
 
-/**
- * `withheld` is not `external`: the file sits in the workspace and its bytes are readable, but the
- * index holds nothing for it, so it names no workspace symbol.
- */
+class ProgramGenerationStats {
+	private last: ts.Program | undefined;
+	private generations = 0;
+	private firstProgramMs: number | undefined;
+	private firstProgramWorkspaceFiles = 0;
+
+	/** A new Program object is a rebuild. */
+	observe(program: ts.Program | undefined, elapsedMs: number, workspaceFiles: () => number): void {
+		if (program === undefined || program === this.last) return;
+		this.last = program;
+		this.generations += 1;
+		if (this.firstProgramMs === undefined) {
+			this.firstProgramMs = elapsedMs;
+			this.firstProgramWorkspaceFiles = workspaceFiles();
+		}
+	}
+
+	snapshot(rootFiles: number): {
+		rootFiles: number;
+		workspaceFiles: number;
+		firstProgramMs: number | undefined;
+		programGenerations: number;
+	} {
+		return {
+			rootFiles,
+			workspaceFiles: this.firstProgramWorkspaceFiles,
+			firstProgramMs: this.firstProgramMs,
+			programGenerations: this.generations,
+		};
+	}
+}
+
+/** Withheld, unlike external, cannot name workspace symbols. */
 interface MappedDeclaration {
 	id: string | undefined;
 	external: boolean;
@@ -66,51 +91,31 @@ interface MappedDeclaration {
 //  Class
 
 export class TypeScriptAnalyzer {
-	private readonly root: string;
-	private readonly projectOptions: ts.CompilerOptions;
-	/** The tsconfig's files; parsed modules join them as roots. */
-	private readonly projectRoots: ReadonlySet<string>;
-	private readonly scripts = new Set<string>();
-	private readonly overlays = new Map<string, Overlay>();
-	/** The highest overlay version issued per key, so a dropped overlay cannot reuse one. */
-	private readonly versions = new Map<string, number>();
-	private readonly extracted = new Map<string, { version: number; contentHash: string; value: Extracted }>();
 	private readonly service: ts.LanguageService;
-	private projectVersion = 0;
-	private lastProgram: ts.Program | undefined;
-	private countedProgramVersion: number | undefined;
-	private programGenerations = 0;
-	private firstProgramReadyAt: number | undefined;
-	private firstProgramWorkspaceFiles = 0;
+	private readonly programCounters = new ProgramGenerationStats();
 
-	/**
-	 * `holdsNothing` is the index's word, not the disk's. The Program reads any file it can resolve,
-	 * so without it a use binds into a module the index refused or let go.
-	 */
+	/** Store text gates symbols; disk serves type reads. */
 	constructor(
-		root: string,
-		project: LoadedProject,
-		private readonly holdsNothing: (module: string) => boolean = () => false,
+		private readonly store: TypeScriptStore,
+		private readonly project: TypeScriptProject,
 	) {
-		this.root = path.resolve(root);
-		this.projectOptions = project.options;
-		this.projectRoots = new Set(project.files.map((file) => path.resolve(file)));
-		for (const file of this.projectRoots) this.scripts.add(file);
+		const root = project.root;
+		const compiler = project.loaded;
 
 		const host: ts.LanguageServiceHost = {
-			getCompilationSettings: () => project.options,
-			getCurrentDirectory: () => this.root,
+			getCompilationSettings: () => compiler.options,
+			getCurrentDirectory: () => root,
 			getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-			getProjectVersion: () => String(this.projectVersion),
-			getScriptFileNames: () => [...this.scripts],
+			getProjectVersion: () => String(store.generation),
+			getScriptFileNames: () => [...project.roots, ...store.get("root").map((module) => this.fileName(module))],
 			getScriptKind: (fileName) => scriptKindOf(fileName),
 			getScriptSnapshot: (fileName) => {
-				const text = this.readFile(fileName);
+				const text = this.hostText(fileName);
 				return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
 			},
-			getScriptVersion: (fileName) => String(this.overlays.get(this.key(fileName))?.version ?? 0),
-			fileExists: (fileName) => this.readFile(fileName) !== undefined,
-			readFile: (fileName) => this.readFile(fileName),
+			getScriptVersion: (fileName) => this.scriptVersion(fileName),
+			fileExists: (fileName) => this.hostText(fileName) !== undefined || ts.sys.fileExists(fileName),
+			readFile: (fileName) => this.hostText(fileName) ?? ts.sys.readFile(fileName),
 			readDirectory: ts.sys.readDirectory,
 			directoryExists: ts.sys.directoryExists,
 			getDirectories: ts.sys.getDirectories,
@@ -118,73 +123,22 @@ export class TypeScriptAnalyzer {
 			useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
 		};
 		host.resolveModuleNames = (names, containingFile) =>
-			names.map((name) => ts.resolveModuleName(name, containingFile, project.options, host).resolvedModule);
+			names.map((name) => ts.resolveModuleName(name, containingFile, compiler.options, host).resolvedModule);
 		this.service = ts.createLanguageService(host, ts.createDocumentRegistry());
 	}
 
-	updateFile(module: string, text: string): ts.SourceFile | undefined {
-		const fileName = this.fileName(module);
-		const key = this.key(fileName);
-		const previous = this.overlays.get(key);
-		if (previous === undefined) {
-			// Version 0 names what the registry holds, never the disk.
-			if (this.heldText(fileName) === text) this.overlays.set(key, { text, version: 0 });
-			else this.setOverlay(key, text);
-		} else if (previous.text !== text) {
-			this.setOverlay(key, text);
-		}
+	sourceFile(module: string): ts.SourceFile | undefined {
 		const context = this.sourceContext(module);
 		return isSourceFailure(context) ? undefined : context.source;
 	}
 
-	/** The text held for this module, or nothing when only the disk answers for it. */
-	overlayText(module: string): string | undefined {
-		return this.overlays.get(this.key(this.fileName(module)))?.text;
-	}
-
-	/** Whether the Program roots this module. */
-	rooted(module: string): boolean {
-		return this.scripts.has(this.fileName(module));
-	}
-
-	/**
-	 * Puts back the text and root a refused or probed parse displaced. No text drops the module's; an
-	 * unknown root is the project's own.
-	 */
-	restoreFile(module: string, text: string | undefined, rooted?: boolean): void {
-		const fileName = this.fileName(module);
-		const key = this.key(fileName);
-		const unrooted = !(rooted ?? this.projectRoots.has(fileName)) && this.scripts.delete(fileName);
-		if (text === undefined) {
-			if (this.dropOverlay(key) || unrooted) this.invalidateProgram();
-			return;
-		}
-		if (this.overlays.get(key)?.text !== text) this.setOverlay(key, text);
-		if (unrooted) this.invalidateProgram();
-	}
-
-	/** The index holds nothing for this module, so neither the text nor the root is ours to keep. */
-	forgetModule(module: string): void {
-		const fileName = this.fileName(module);
-		const key = this.key(fileName);
-		const hadOverlay = this.dropOverlay(key);
-		const hadExtract = this.extracted.delete(key);
-		const wasRooted = this.scripts.delete(fileName);
-		if (hadOverlay || hadExtract || wasRooted) this.invalidateProgram();
-	}
-
 	extract(module: string, source: ts.SourceFile, contentHash?: string): Extracted {
-		const key = this.key(source.fileName);
-		const version = this.overlays.get(key)?.version ?? 0;
+		const key = `extract:${module}:${contentHash ?? hashText(source.text)}`;
 		const context = this.sourceContext(module);
 		const activeSource = isSourceFailure(context) ? source : context.source;
-		const sourceHash = contentHash ?? hashText(activeSource.text);
-		const cached = this.extracted.get(key);
-		if (cached?.version === version && cached.contentHash === sourceHash) return cached.value;
-
-		const value = extractFile(module, activeSource, isSourceFailure(context) ? undefined : context.checker);
-		this.extracted.set(key, { version, contentHash: sourceHash, value });
-		return value;
+		return this.store.memo(key, () =>
+			extractFile(module, activeSource, isSourceFailure(context) ? undefined : context.checker),
+		);
 	}
 
 	bind(module: string, name: string, range: Range): Binding {
@@ -237,10 +191,6 @@ export class TypeScriptAnalyzer {
 	}
 
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
-		const source = this.updateFile(params.module, params.text);
-		if (source === undefined) {
-			return { status: "refused", reason: "ParseError", detail: "the module could not be loaded" };
-		}
 		const context = this.sourceContext(params.module);
 		if (isSourceFailure(context)) {
 			return { status: "refused", reason: "ParseError", detail: context.detail };
@@ -265,9 +215,6 @@ export class TypeScriptAnalyzer {
 
 		let checker: ts.TypeChecker | undefined;
 		if (params.exists) {
-			if (this.updateFile(params.module, params.text) === undefined) {
-				return { status: "refused", reason: "ParseError", detail: "the module could not be loaded" };
-			}
 			const context = this.sourceContext(params.module);
 			if (!isSourceFailure(context)) checker = context.checker;
 		}
@@ -282,20 +229,11 @@ export class TypeScriptAnalyzer {
 		programGenerations: number;
 	} {
 		const program = this.program();
-		return {
-			rootFiles: program?.getRootFileNames().length ?? 0,
-			workspaceFiles: this.firstProgramWorkspaceFiles,
-			firstProgramMs: this.firstProgramReadyAt,
-			programGenerations: this.programGenerations,
-		};
+		return this.programCounters.snapshot(program?.getRootFileNames().length ?? 0);
 	}
 
 	dispose(): void {
 		this.service.dispose();
-		this.lastProgram = undefined;
-		this.extracted.clear();
-		this.overlays.clear();
-		this.versions.clear();
 	}
 
 	private typeOfSymbolId(symbolId: string): TypeInfo {
@@ -509,8 +447,16 @@ export class TypeScriptAnalyzer {
 
 	private sourceContext(module: string): SourceContextResult {
 		const fileName = this.fileName(module);
-		const admission = this.admit(module, fileName);
-		if (admission !== undefined) return admission;
+		if (this.isExternal(fileName)) {
+			return sourceFailure("ExternalDependency", "the module is outside the indexed workspace");
+		}
+		if (!claimsExtension(module)) {
+			return sourceFailure(
+				"NotImplemented",
+				`the provider does not claim extension ${path.extname(module) || "(none)"}`,
+			);
+		}
+		if (this.hostText(fileName) === undefined) return sourceFailure("ParseError", "the file does not exist");
 
 		const program = this.program();
 		if (program === undefined) return sourceFailure("ParseError", "the Program could not be created");
@@ -526,13 +472,13 @@ export class TypeScriptAnalyzer {
 	}
 
 	private fallbackProgram(fileName: string): ts.Program | undefined {
-		const options: ts.CompilerOptions = { ...this.projectOptions, allowJs: true, noResolve: true };
+		const options: ts.CompilerOptions = { ...this.project.loaded.options, allowJs: true, noResolve: true };
 		const host = ts.createCompilerHost(options, true);
 		const defaultGetSourceFile = host.getSourceFile.bind(host);
-		host.readFile = (name) => this.readFile(name);
-		host.fileExists = (name) => this.readFile(name) !== undefined;
+		host.readFile = (name) => this.hostText(name) ?? ts.sys.readFile(name);
+		host.fileExists = (name) => this.hostText(name) !== undefined || ts.sys.fileExists(name);
 		host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) => {
-			const text = this.readFile(name);
+			const text = this.hostText(name) ?? ts.sys.readFile(name);
 			if (text !== undefined) {
 				return ts.createSourceFile(name, text, languageVersion, true, scriptKindOf(name));
 			}
@@ -541,70 +487,19 @@ export class TypeScriptAnalyzer {
 		return ts.createProgram([fileName], options, host);
 	}
 
-	private admit(module: string, fileName: string): SourceFailure | undefined {
-		if (this.isExternal(fileName)) {
-			return sourceFailure("ExternalDependency", "the module is outside the indexed workspace");
-		}
-		if (!claimsExtension(module)) {
-			return sourceFailure(
-				"NotImplemented",
-				`the provider does not claim extension ${path.extname(module) || "(none)"}`,
-			);
-		}
-		if (this.readFile(fileName) === undefined) return sourceFailure("ParseError", "the file does not exist");
-		if (!this.scripts.has(fileName)) {
-			this.scripts.add(fileName);
-			this.invalidateProgram();
-		}
-		return undefined;
-	}
-
-	/**
-	 * The text the last-built Program holds for this file, which is what the registry holds. Read
-	 * without building, since a versioned overlay would invalidate a build made here.
-	 */
-	private heldText(fileName: string): string | undefined {
-		return this.lastProgram?.getSourceFile(fileName)?.text;
-	}
-
-	/**
-	 * A version never comes back around, since the document registry keys a cached source file by it.
-	 * Reusing one after a dropped overlay hands back the text the dropped overlay held.
-	 */
-	private dropOverlay(key: string): boolean {
-		if (!this.overlays.delete(key)) return false;
-		this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
-		return true;
-	}
-
-	private setOverlay(key: string, text: string): void {
-		const version = (this.versions.get(key) ?? 0) + 1;
-		this.versions.set(key, version);
-		this.overlays.set(key, { text, version });
-		this.invalidateProgram();
-	}
-
-	private invalidateProgram(): void {
-		this.projectVersion += 1;
-		this.extracted.clear();
-	}
-
 	private program(): ts.Program | undefined {
+		this.store.get("root");
 		const started = Date.now();
 		const program = this.service.getProgram();
-		this.lastProgram = program;
-		if (program !== undefined && this.countedProgramVersion !== this.projectVersion) {
-			this.countedProgramVersion = this.projectVersion;
-			this.programGenerations += 1;
-		}
-		if (this.firstProgramReadyAt === undefined && program !== undefined) {
-			this.firstProgramReadyAt = Date.now() - started;
-			this.firstProgramWorkspaceFiles = program
-				.getSourceFiles()
-				.filter(
-					(source) => this.toModule(source.fileName) !== null && !this.isExternal(source.fileName),
-				).length;
-		}
+		this.programCounters.observe(
+			program,
+			Date.now() - started,
+			() =>
+				program
+					?.getSourceFiles()
+					.filter((source) => this.toModule(source.fileName) !== null && !this.isExternal(source.fileName))
+					.length ?? 0,
+		);
 		return program;
 	}
 
@@ -615,12 +510,12 @@ export class TypeScriptAnalyzer {
 			if (this.isExternal(source.fileName)) return { id: undefined, external: true, withheld: false, node };
 			const module = this.toModule(source.fileName);
 			if (module === null) return { id: undefined, external: true, withheld: false, node };
-			if (this.holdsNothing(module)) return { id: undefined, external: false, withheld: true, node };
+			if (this.store.peek(module) === undefined) return { id: undefined, external: false, withheld: true, node };
 			let ids = idsByFile.get(source.fileName);
 			if (ids === undefined) {
 				ids = new Map<string, string[]>();
 				for (const declaration of this.extract(module, source).declarations) {
-					// Every declaration this provider extracts has its name in the source.
+					// Extracted names occur in source.
 					const key = positionKey(declaration.selectionRange ?? declaration.range);
 					ids.set(key, [...(ids.get(key) ?? []), declaration.symbolId]);
 				}
@@ -632,25 +527,32 @@ export class TypeScriptAnalyzer {
 	}
 
 	private fileName(module: string): string {
-		return path.resolve(this.root, module.replace(/\\/g, "/"));
+		return path.resolve(this.project.root, module.replace(/\\/g, "/"));
 	}
 
-	private key(fileName: string): string {
-		const normalized = path.normalize(fileName);
-		return ts.sys.useCaseSensitiveFileNames ? normalized : normalized.toLowerCase();
+	private hostText(fileName: string): string | undefined {
+		const module = this.toModule(fileName);
+		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return ts.sys.readFile(fileName);
+		return this.store.text(module)?.text ?? ts.sys.readFile(fileName);
 	}
 
-	private readFile(fileName: string): string | undefined {
-		return this.overlays.get(this.key(fileName))?.text ?? ts.sys.readFile(fileName);
+	private scriptVersion(fileName: string): string {
+		const module = this.toModule(fileName);
+		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return "0";
+		const held = this.store.text(module);
+		if (held !== undefined) return held.contentHash;
+		// Disk timestamps version type reads.
+		const modified = ts.sys.getModifiedTime?.(fileName)?.getTime() ?? 0;
+		return `${this.store.withheld(module) ? "withheld" : "absent"}:${modified}`;
 	}
 
 	private toModule(fileName: string): string | null {
-		return toModule(this.root, fileName);
+		return toModule(this.project.root, fileName);
 	}
 
 	private isExternal(fileName: string): boolean {
 		const absolute = path.resolve(fileName);
-		const relative = path.relative(this.root, absolute);
+		const relative = path.relative(this.project.root, absolute);
 		return (
 			relative.startsWith(`..${path.sep}`) ||
 			relative === ".." ||

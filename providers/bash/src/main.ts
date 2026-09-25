@@ -1,19 +1,18 @@
 // The wire face of the Bash provider.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-	AdmissionLedger,
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
-	type Diagnostic,
 	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	moduleStore,
 	type Position,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -173,46 +172,32 @@ function declarationWire(declaration: BashDeclaration): Declaration {
 	return wire;
 }
 
-function diagnosticForRead(module: string, error: unknown): Diagnostic {
-	const detail = error instanceof Error ? error.message : String(error);
-	return { severity: "error", message: `unable to read ${module}: ${detail}`, path: module };
-}
-
-function emptyFacts(module: string, diagnostic: Diagnostic): ParsedBashFile {
-	return {
-		module,
-		text: "",
-		declarations: [],
-		references: [],
-		imports: [],
-		sources: [],
-		literals: [],
-		comments: [],
-		diagnostics: [diagnostic],
-		functionsByName: new Map(),
-		globalsByName: new Map(),
-	};
+function discover(root: string): ProjectModel {
+	if (!existsSync(root)) return projectDiagnostic(root, `workspace root does not exist: ${root}`);
+	try {
+		if (!statSync(root).isDirectory()) return projectDiagnostic(root, `workspace root is not a directory: ${root}`);
+		return discoverByWalk(root, {
+			extensions: EXTENSIONS,
+			filenames: FILENAMES,
+			shebangs: SHEBANGS,
+			excludedDirectories: EXCLUDED_DIRECTORIES,
+		});
+	} catch (error) {
+		return projectDiagnostic(
+			root,
+			`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 ////////////////////////////////
 //  Class
 
 export class BashProvider {
-	private workspaceRoot = process.cwd();
-	private readonly facts = new Map<string, ParsedBashFile>();
-	/** What the index took, so a sourced file's facts are what it holds and not what was emitted. */
-	readonly admission = new AdmissionLedger<ParsedBashFile>({
-		snapshot: (module) => this.facts.get(module),
-		restore: (module, held) => {
-			if (held === undefined) this.facts.delete(module);
-			else this.facts.set(module, held);
-		},
-	});
+	/** Sourced bindings use held facts. */
+	readonly store = moduleStore<ParsedBashFile>({ read: (module, text) => parseBash(module, text) });
 
-	initialize(workspaceRoot: string) {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.facts.clear();
-		this.admission.reset();
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "bash-provider",
 			language: LANGUAGE,
@@ -226,34 +211,11 @@ export class BashProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.facts.clear();
-		if (!existsSync(this.workspaceRoot))
-			return projectDiagnostic(this.workspaceRoot, `workspace root does not exist: ${this.workspaceRoot}`);
-		try {
-			if (!statSync(this.workspaceRoot).isDirectory())
-				return projectDiagnostic(
-					this.workspaceRoot,
-					`workspace root is not a directory: ${this.workspaceRoot}`,
-				);
-			return discoverByWalk(this.workspaceRoot, {
-				extensions: EXTENSIONS,
-				filenames: FILENAMES,
-				shebangs: SHEBANGS,
-				excludedDirectories: EXCLUDED_DIRECTORIES,
-			});
-		} catch (error) {
-			return projectDiagnostic(
-				this.workspaceRoot,
-				`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
+	discoverProject(workspaceRoot: string): { model: ProjectModel; project: null } {
+		return { model: discover(path.resolve(workspaceRoot)), project: null };
 	}
 
-	parseFile(params: { module: string; contentHash: string; text: string }) {
-		const parsed = parseBash(params.module, params.text);
-		this.facts.set(params.module, parsed);
+	parseFile(params: { module: string; contentHash: string; text: string }, parsed: ParsedBashFile) {
 		const references: Reference[] = [];
 		for (const reference of parsed.references) {
 			const binding = this.bindReference(params.module, parsed, reference);
@@ -288,18 +250,18 @@ export class BashProvider {
 				reason: "RuntimeConstructed",
 				detail: "the sourced path expands at run time",
 			};
+		const root = this.store.root;
 		if (path.isAbsolute(specifier)) {
-			const module = workspaceModule(this.workspaceRoot, specifier);
+			const module = workspaceModule(root, specifier);
 			if (module === null) return { status: "external", packageName: specifier };
 			return this.hasFile(module)
 				? { status: "resolved", module }
 				: { status: "unresolved", reason: "NotIndexed", detail: `no workspace file at ${specifier}` };
 		}
-		const fromAbsolute = workspaceFile(this.workspaceRoot, params.fromModule);
-		const directories =
-			fromAbsolute === null ? [this.workspaceRoot] : [path.dirname(fromAbsolute), this.workspaceRoot];
+		const fromAbsolute = workspaceFile(root, params.fromModule);
+		const directories = fromAbsolute === null ? [root] : [path.dirname(fromAbsolute), root];
 		for (const directory of directories) {
-			const module = workspaceModule(this.workspaceRoot, path.resolve(directory, specifier));
+			const module = workspaceModule(root, path.resolve(directory, specifier));
 			if (module !== null && this.hasFile(module)) return { status: "resolved", module };
 		}
 		return { status: "unresolved", reason: "NotIndexed", detail: `no workspace file matches ${specifier}` };
@@ -344,31 +306,12 @@ export class BashProvider {
 	}
 
 	private hasFile(module: string): boolean {
-		const absolute = workspaceFile(this.workspaceRoot, module);
+		const absolute = workspaceFile(this.store.root, module);
 		return absolute !== null && existsSync(absolute) && statSync(absolute).isFile();
 	}
 
-	/** The index let this module go, or refused the parse it holds nothing from. */
-	forgetModule(params: { module: string }): void {
-		this.facts.delete(params.module);
-		this.admission.forgotten(params.module);
-	}
-
 	private factsFor(module: string): ParsedBashFile | null {
-		const cached = this.facts.get(module);
-		if (cached !== undefined) return cached;
-		// A file the index does not hold must not come back through a read of its own bytes.
-		if (!this.admission.fillable(module)) return null;
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		if (absolute === null || !this.hasFile(module)) return null;
-		let parsed: ParsedBashFile;
-		try {
-			parsed = parseBash(module, readFileSync(absolute, "utf8"));
-		} catch (error) {
-			parsed = emptyFacts(module, diagnosticForRead(module, error));
-		}
-		this.facts.set(module, parsed);
-		return parsed;
+		return this.store.load(module) ?? null;
 	}
 
 	private declarationById(symbolId: string): BashDeclaration | null {

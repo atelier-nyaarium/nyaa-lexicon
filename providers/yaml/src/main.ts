@@ -55,8 +55,6 @@ export const WORDS = {
 };
 
 export class YamlProvider {
-	/** Holds nothing across parses. */
-	readonly admission = null;
 	private workspaceRoot = process.cwd();
 
 	initialize(workspaceRoot: string) {

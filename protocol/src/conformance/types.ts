@@ -366,14 +366,11 @@ export const LifecycleCaseSchema = z
 		/** Prose for the failure report, so a red case explains itself. */
 		about: z.string().min(1),
 		/**
-		 * Which half of the rule this case walks.
-		 *
-		 * `notHeld`: the index holds nothing for the target, so the use must not bind into it.
-		 * `keepsAdmitted`: the index still holds the target's earlier facts, so the use must bind.
-		 *
-		 * Data rather than the case's id, so the runner dispatches on what a case IS.
+		 * `notHeld`: a forgotten target does not bind.
+		 * `keepsAdmitted`: refusal preserves the admitted binding.
+		 * `unseen`: target lifecycle operations leave other-module answers unchanged.
 		 */
-		expect: z.enum(["notHeld", "keepsAdmitted"]),
+		expect: z.enum(["notHeld", "keepsAdmitted", "unseen"]),
 		fixtures: z.record(z.string().min(1), LifecycleFixtureSchema),
 	})
 	.meta({ id: "LifecycleCase" });
@@ -399,6 +396,13 @@ export type LifecycleCase = z.infer<typeof LifecycleCaseSchema>;
 /** `stalled`: machine or process, never answer. */
 export type CaseOutcome = "passed" | "failed" | "skipped" | "stalled";
 
+export interface VariantResult {
+	name: string;
+	description: string;
+	outcome: "passed" | "failed";
+	problems: string[];
+}
+
 export interface CaseResult {
 	caseId: string;
 	/** `protocol` for checks about the wire contract itself, which no tier can gate. */
@@ -406,6 +410,8 @@ export interface CaseResult {
 	outcome: CaseOutcome;
 	/** Why it failed, stalled or was skipped. Empty on a pass. */
 	problems: string[];
+	/** Per-variant results. */
+	variants?: VariantResult[];
 }
 
 export interface SuiteReport {

@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { FileFactsSchema, handlersFor } from "@nyaa-lexicon/protocol";
+import { FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { KotlinProvider, LANGUAGE, REFERENCE_ROLES, TIERS } from "../main.js";
 
 test("initialize declares identity, every tier but docs, and the roles the provider emits", () => {
-	const provider = new KotlinProvider();
+	const handlers = handlersFor(new KotlinProvider());
 
-	expect(provider.initialize(process.cwd())).toMatchObject({
+	expect(handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION })).toMatchObject({
 		providerId: "kotlin-provider",
 		language: LANGUAGE,
 		extensions: [".kt"],
@@ -16,9 +16,9 @@ test("initialize declares identity, every tier but docs, and the roles the provi
 });
 
 test("every handler answers, both notifications included, and write operations refuse with a closed reason", () => {
-	const provider = new KotlinProvider();
-	provider.initialize(process.cwd());
-	const handlers = handlersFor(provider);
+	const handlers = handlersFor(new KotlinProvider());
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: process.cwd() });
 
 	expect(Object.keys(handlers).sort()).toEqual([
 		"bind",
@@ -57,8 +57,9 @@ test("every handler answers, both notifications included, and write operations r
 });
 
 test("a full parse answers every collection; an outline keeps declarations, imports and diagnostics only", () => {
-	const provider = new KotlinProvider();
-	provider.initialize(process.cwd());
+	const handlers = handlersFor(new KotlinProvider());
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: process.cwd() });
 	const text = [
 		"package demo",
 		"import kotlin.collections.List",
@@ -66,9 +67,9 @@ test("a full parse answers every collection; an outline keeps declarations, impo
 		'class Box { fun run(values: List<Int>): String = values.first().toString() + "!" }',
 		"",
 	].join("\n");
-	const full = provider.parseFile({ module: "Box.kt", contentHash: "hash", text });
-	const outline = provider.parseFile({ module: "Box.kt", contentHash: "hash", text, depth: "outline" });
-	const broken = provider.parseFile({
+	const full = handlers.parseFile({ module: "Box.kt", contentHash: "hash", text });
+	const outline = handlers.parseFile({ module: "Box.kt", contentHash: "hash", text, depth: "outline" });
+	const broken = handlers.parseFile({
 		module: "Broken.kt",
 		contentHash: "b",
 		text: "class Broken {\n",
@@ -76,7 +77,7 @@ test("a full parse answers every collection; an outline keeps declarations, impo
 	});
 
 	expect(FileFactsSchema.parse(full)).toMatchObject({ module: "Box.kt", contentHash: "hash" });
-	expect([full.references.length > 0, full.literals.length, full.comments.length]).toEqual([true, 1, 1]);
+	expect([full.references.length > 0, full.literals.length, full.comments?.length]).toEqual([true, 1, 1]);
 	expect(FileFactsSchema.parse(outline)).toMatchObject({
 		depth: "outline",
 		declarations: full.declarations,

@@ -5,7 +5,7 @@ import path from "node:path";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractComments } from "../comments";
-import { TypeScriptProvider } from "../main";
+import { harness } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
@@ -142,13 +142,13 @@ describe("the comments tier on the wire", () => {
 	it("carries comments with full facts, having declared the tier", () => {
 		const text = "// leading\nexport const total = 42; // trailing\n";
 		const root = workspace({ "src/a.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		const declared = provider.initialize(root);
 
 		const facts = provider.parseFile({ module: "src/a.ts", contentHash: "a1", text });
 
 		expect(declared.tiers.comments).toBe(true);
-		expect("comments" in facts ? facts.comments.map((comment) => comment.text) : []).toEqual([
+		expect("comments" in facts ? (facts.comments ?? []).map((comment) => comment.text) : []).toEqual([
 			"// leading",
 			"// trailing",
 		]);
@@ -157,7 +157,7 @@ describe("the comments tier on the wire", () => {
 	it("reports no comments at a reduced depth, like the literals beside them", () => {
 		const text = "// leading\nexport function work(): number {\n\treturn 1;\n}\n";
 		const root = workspace({ "src/a.ts": text });
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 
 		const outline = provider.parseFile({ module: "src/a.ts", contentHash: "a1", text, depth: "outline" });

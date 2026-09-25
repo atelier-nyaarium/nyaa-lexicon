@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Declaration, handlersFor, moduleOf, type Range } from "@nyaa-lexicon/protocol";
+import { type Declaration, handlersFor, moduleOf, PROTOCOL_VERSION, type Range } from "@nyaa-lexicon/protocol";
 import { GDScriptProvider } from "../main.js";
 
 ////////////////////////////////
@@ -22,8 +22,8 @@ const REFUSAL = { status: "refused", reason: "the index refused these facts" } a
 
 const roots: string[] = [];
 
-function started(cartText: string): { provider: GDScriptProvider; root: string } {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-gdscript-admission-"));
+function started(cartText: string) {
+	const root = mkdtempSync(path.join(tmpdir(), "lexicon-gdscript-store-"));
 	roots.push(root);
 	for (const [module, text] of Object.entries({
 		"project.godot": PROJECT,
@@ -35,29 +35,39 @@ function started(cartText: string): { provider: GDScriptProvider; root: string }
 		writeFileSync(full, text);
 	}
 	const provider = new GDScriptProvider();
-	provider.initialize(root);
-	provider.discoverProject(root);
-	return { provider, root };
+	const handlers = handlersFor(provider);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return { handlers, provider, root };
 }
 
-/** The index's verdict on a parse, through the kit as the wire delivers it. */
-function verdict(provider: GDScriptProvider, contentHash: string, refused = false): void {
-	handlersFor(provider).moduleAdmission?.({
-		module: TARGET,
+function verdict(
+	handlers: ReturnType<typeof started>["handlers"],
+	module: string,
+	contentHash: string,
+	refused = false,
+): void {
+	handlers.moduleAdmission?.({
+		module,
 		contentHash,
 		outcome: refused ? REFUSAL : { status: "admitted" },
 	});
 }
 
-function settle(provider: GDScriptProvider, contentHash: string, text: string, refused = false) {
-	const facts = handlersFor(provider).parseFile({ module: TARGET, contentHash, text });
-	verdict(provider, contentHash, refused);
+function settle(
+	handlers: ReturnType<typeof started>["handlers"],
+	module: string,
+	contentHash: string,
+	text: string,
+	refused = false,
+) {
+	const facts = handlers.parseFile({ module, contentHash, text });
+	verdict(handlers, module, contentHash, refused);
 	return facts;
 }
 
-/** Where the `Cart` supertype in `src/use.gd` lands. */
-function cartBindsInto(provider: GDScriptProvider): string | null {
-	const facts = provider.parseFile({ module: "src/use.gd", contentHash: "use", text: USE });
+function cartBindsInto(handlers: ReturnType<typeof started>["handlers"]): string | null {
+	const facts = settle(handlers, "src/use.gd", "use", USE);
 	const reference = facts.references.find((candidate) => candidate.name === "Cart");
 	if (reference?.binding.status !== "bound") return null;
 	return moduleOf(reference.binding.symbolId);
@@ -69,7 +79,6 @@ function symbolFor(facts: { declarations: Declaration[] }, name: string): string
 	return declaration.symbolId;
 }
 
-/** The span selecting `Cart` in its own declaration. */
 function cartRange(facts: { declarations: Declaration[] }): Range {
 	const range = facts.declarations.find((candidate) => candidate.name === "Cart")?.selectionRange;
 	if (range === undefined) throw new Error("the class_name declaration carries no selection range");
@@ -83,61 +92,110 @@ afterEach(() => {
 ////////////////////////////////
 //  Tests
 
-test("forgetModule unregisters the module's class_name", () => {
-	const { provider } = started(CART);
-	settle(provider, "v1", CART);
-	expect(cartBindsInto(provider)).toBe(TARGET);
+test("forgetting through the wire removes a module's class_name and prevents a fill", () => {
+	const { handlers } = started(CART);
+	const facts = settle(handlers, TARGET, "v1", CART);
+	const range = cartRange(facts);
+	expect(cartBindsInto(handlers)).toBe(TARGET);
 
-	provider.forgetModule({ module: TARGET });
-	expect(cartBindsInto(provider)).toBeNull();
+	handlers.forgetModule?.({ module: TARGET });
+	expect(handlers.bind({ module: TARGET, name: "Cart", range }).status).toBe("unbound");
+	expect(cartBindsInto(handlers)).toBeNull();
+	expect(handlers.resolveImport({ fromModule: "src/use.gd", specifier: `res://${TARGET}` })).toMatchObject({
+		status: "unresolved",
+		reason: "NotIndexed",
+	});
 });
 
-test("a forgotten module does not come back through a read of its own bytes", () => {
-	const { provider } = started(CART);
-	const range = cartRange(settle(provider, "v1", CART));
-	expect(provider.bind({ module: TARGET, name: "Cart", range }).status).toBe("bound");
+test("a fresh initialize can read a module the prior index forgot", () => {
+	const { handlers, root } = started(CART);
+	const facts = settle(handlers, TARGET, "v1", CART);
+	const range = cartRange(facts);
+	handlers.forgetModule?.({ module: TARGET });
 
-	provider.forgetModule({ module: TARGET });
-	expect(provider.bind({ module: TARGET, name: "Cart", range }).status).toBe("unbound");
-	expect(cartBindsInto(provider)).toBeNull();
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	expect(handlers.bind({ module: TARGET, name: "Cart", range }).status).toBe("bound");
 });
 
-test("a fresh workspace reads a module the previous one forgot", () => {
-	const { provider, root } = started(CART);
-	const range = cartRange(settle(provider, "v1", CART));
-	provider.forgetModule({ module: TARGET });
-
-	provider.initialize(root);
-	provider.discoverProject(root);
-	expect(provider.bind({ module: TARGET, name: "Cart", range }).status).toBe("bound");
-});
-
-test("a refusal puts back the module's type facts, not only its bindings", () => {
-	const { provider } = started(CART_WITH_COUNT);
-	const facts = settle(provider, "v1", CART_WITH_COUNT);
+test("a refusal preserves the held module's type facts", () => {
+	const { handlers } = started(CART_WITH_COUNT);
+	const facts = settle(handlers, TARGET, "v1", CART_WITH_COUNT);
 	const count = symbolFor(facts, "count");
-	expect(provider.typeOf({ symbolId: count }).status).toBe("known");
+	expect(handlers.typeOf({ symbolId: count }).status).toBe("known");
 
-	settle(provider, "v2", CART, true);
-	expect(provider.typeOf({ symbolId: count }).status).toBe("known");
+	settle(handlers, TARGET, "v2", CART, true);
+	expect(handlers.typeOf({ symbolId: count }).status).toBe("known");
 });
 
-test("answers a probe from the candidate, then from what the index holds, never the candidate or the disk", () => {
-	const { provider, root } = started(CART_WITH_COUNT);
-	const handlers = handlersFor(provider);
-	const count = symbolFor(settle(provider, "old", CART_WITH_COUNT), "count");
-	// The file changed on disk and its parse is outstanding across the probe.
+test("outline fills and full reads contribute the same class_name entries", () => {
+	const { handlers, provider } = started(CART_WITH_COUNT);
+	const key = "scoped:\0Cart";
+	const outlineEntry = provider.store.get(key)[0];
+	const outline = provider.store.peek(TARGET);
+	if (outlineEntry === undefined || outline === undefined) throw new Error("outline fill did not hold Cart");
+	expect({ depth: provider.store.text(TARGET)?.depth, references: outline.references }).toEqual({
+		depth: "outline",
+		references: [],
+	});
+
+	handlers.parseFile({ module: TARGET, contentHash: "full", text: CART_WITH_COUNT });
+	verdict(handlers, TARGET, "full");
+	const fullEntry = provider.store.get(key)[0];
+	const full = provider.store.peek(TARGET);
+	if (fullEntry === undefined || full === undefined) throw new Error("full parse did not hold Cart");
+	expect({
+		sameEntry: fullEntry,
+		depth: provider.store.text(TARGET)?.depth,
+		hasReferences: full.references.length > 0,
+	}).toEqual({
+		sameEntry: outlineEntry,
+		depth: "full",
+		hasReferences: true,
+	});
+});
+
+test("rediscovery indexes class names and autoloads by the nearest project scope", () => {
+	const { handlers, provider, root } = started(CART);
+	writeFileSync(path.join(root, "project.godot"), `${PROJECT}\n[autoload]\nRootGlobal = "*res://src/cart.gd"\n`);
+	writeFileSync(path.join(root, "common.gd"), "class_name Common\nextends Node\n");
+	const nested = path.join(root, "nested");
+	mkdirSync(nested, { recursive: true });
+	writeFileSync(
+		path.join(nested, "project.godot"),
+		'[application]\nconfig/name="nested"\n\n[autoload]\nNestedGlobal = "res://state.gd"\n',
+	);
+	writeFileSync(path.join(nested, "common.gd"), "class_name Common\nextends Node\n");
+	writeFileSync(path.join(nested, "state.gd"), "extends Node\n");
+
+	const model = handlers.discoverProject({ workspaceRoot: root });
+	expect(model.configFiles).toEqual(["nested/project.godot", "project.godot"]);
+	expect(provider.store.project.scopes).toEqual([
+		{ directory: "", autoloads: { RootGlobal: "src/cart.gd" } },
+		{ directory: "nested", autoloads: { NestedGlobal: "nested/state.gd" } },
+	]);
+	expect(provider.store.get("scoped:\0Common").map((declaration) => moduleOf(declaration.symbolId))).toEqual([
+		"common.gd",
+	]);
+	expect(provider.store.get("scoped:nested\0Common").map((declaration) => moduleOf(declaration.symbolId))).toEqual([
+		"nested/common.gd",
+	]);
+});
+
+test("a probe answers from its candidate, then from what the index holds", () => {
+	const { handlers, root } = started(CART_WITH_COUNT);
+	const count = symbolFor(settle(handlers, TARGET, "old", CART_WITH_COUNT), "count");
 	writeFileSync(path.join(root, TARGET), CRATE);
 	handlers.parseFile({ module: TARGET, contentHash: "disk", text: CRATE });
 	const probed = handlers.probeFile({ module: TARGET, contentHash: "probe", text: CART_WITH_TOTAL });
 	const total = symbolFor(probed, "total");
 	const answers = () => ({
-		cart: cartBindsInto(provider),
-		count: provider.typeOf({ symbolId: count }).status,
-		total: provider.typeOf({ symbolId: total }).status,
+		cart: cartBindsInto(handlers),
+		count: handlers.typeOf({ symbolId: count }).status,
+		total: handlers.typeOf({ symbolId: total }).status,
 	});
 	const staged = answers();
-	verdict(provider, "disk", true);
+	verdict(handlers, TARGET, "disk", true);
 
 	expect({
 		candidate: probed.declarations.map((declaration) => declaration.name),
@@ -150,11 +208,11 @@ test("answers a probe from the candidate, then from what the index holds, never 
 	});
 });
 
-test("a forgotten module's types do not come back through a read of its own bytes", () => {
-	const { provider } = started(CART_WITH_COUNT);
-	const count = symbolFor(settle(provider, "v1", CART_WITH_COUNT), "count");
-	expect(provider.typeOf({ symbolId: count }).status).toBe("known");
+test("a forgotten module's types do not return through a fill", () => {
+	const { handlers } = started(CART_WITH_COUNT);
+	const count = symbolFor(settle(handlers, TARGET, "v1", CART_WITH_COUNT), "count");
+	expect(handlers.typeOf({ symbolId: count }).status).toBe("known");
 
-	provider.forgetModule({ module: TARGET });
-	expect(provider.typeOf({ symbolId: count }).status).toBe("unknown");
+	handlers.forgetModule?.({ module: TARGET });
+	expect(handlers.typeOf({ symbolId: count }).status).toBe("unknown");
 });

@@ -10,6 +10,7 @@ import {
 	handlersFor,
 	InitializeResponseSchema,
 	type MoveEditsRequest,
+	PROTOCOL_VERSION,
 	ProjectModelSchema,
 	type Range,
 	type RenameEditsRequest,
@@ -41,20 +42,30 @@ function rangeAt(text: string, value: string, from = 0): Range {
 	return range;
 }
 
-function facts(provider: CProvider, module: string, text: string) {
-	return provider.parseFile({ module, contentHash: `${module}:${text.length}`, text });
+function started(root = workspace({})) {
+	const handlers = handlersFor(new CProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: root });
+	return handlers;
+}
+
+function facts(handlers: ReturnType<typeof started>, module: string, text: string) {
+	const contentHash = `${module}:${text.length}`;
+	const parsed = handlers.parseFile({ module, contentHash, text });
+	verdict(handlers, module, contentHash);
+	return parsed;
 }
 
 /** The index's verdict on a parse, through the kit as the wire delivers it. */
-function verdict(provider: CProvider, module: string, contentHash: string, refusal?: string): void {
-	handlersFor(provider).moduleAdmission?.({
+function verdict(handlers: ReturnType<typeof started>, module: string, contentHash: string, refusal?: string): void {
+	handlers.moduleAdmission?.({
 		module,
 		contentHash,
 		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
 	});
 }
 
-function declarationOf(parsed: ReturnType<CProvider["parseFile"]>, name: string, kind?: string) {
+function declarationOf(parsed: Pick<ReturnType<CProvider["parseFile"]>, "declarations">, name: string, kind?: string) {
 	return parsed.declarations.find(
 		(declaration) => declaration.name === name && (kind === undefined || declaration.kind === kind),
 	);
@@ -66,8 +77,8 @@ afterEach(() => {
 
 describe("C provider protocol", () => {
 	test("declares C files, supported reference roles, and implemented tiers", () => {
-		const provider = new CProvider();
-		const response = provider.initialize(process.cwd());
+		const handlers = handlersFor(new CProvider());
+		const response = handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
 
 		expect(InitializeResponseSchema.parse(response).language).toBe("c");
 		expect(response.providerId).toBe("c-provider");
@@ -77,7 +88,7 @@ describe("C provider protocol", () => {
 	});
 
 	test("exposes every provider method through the handler table", () => {
-		const handlers = handlersFor(new CProvider());
+		const handlers = started();
 
 		expect(Object.keys(handlers).sort()).toEqual([
 			"bind",
@@ -102,13 +113,11 @@ describe("C provider protocol", () => {
 			"src/extra.h": "int spare;\n",
 			"src/use.c": '#include "local.h"\n',
 		});
-		const provider = new CProvider();
-		provider.initialize(root);
-		const handlers = handlersFor(provider);
-		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/use.c", specifier });
+		const handlers = started(root);
+		const resolve = (specifier: string) => handlers.resolveImport({ fromModule: "src/use.c", specifier });
 
 		handlers.parseFile({ module: "src/use.c", contentHash: "quoted", text: '#include "local.h"\n' });
-		verdict(provider, "src/use.c", "quoted");
+		verdict(handlers, "src/use.c", "quoted");
 		handlers.parseFile({
 			module: "src/use.c",
 			contentHash: "angle",
@@ -117,7 +126,7 @@ describe("C provider protocol", () => {
 
 		expect(resolve("local.h")).toEqual({ status: "external", packageName: "local.h" });
 
-		verdict(provider, "src/use.c", "angle", "the index refused these facts");
+		verdict(handlers, "src/use.c", "angle", "the index refused these facts");
 
 		expect(resolve("local.h")).toEqual({ status: "resolved", module: "src/local.h" });
 		expect(resolve("extra.h")).toEqual({ status: "resolved", module: "src/extra.h" });
@@ -125,17 +134,15 @@ describe("C provider protocol", () => {
 
 	test("an admitted reparse drops an include kind the file no longer states", () => {
 		const root = workspace({ "src/extra.h": "int spare;\n", "src/use.c": "#include <extra.h>\n" });
-		const provider = new CProvider();
-		provider.initialize(root);
-		const handlers = handlersFor(provider);
-		const resolve = () => provider.resolveImport({ fromModule: "src/use.c", specifier: "extra.h" });
+		const handlers = started(root);
+		const resolve = () => handlers.resolveImport({ fromModule: "src/use.c", specifier: "extra.h" });
 
 		handlers.parseFile({ module: "src/use.c", contentHash: "angle", text: "#include <extra.h>\n" });
-		verdict(provider, "src/use.c", "angle");
+		verdict(handlers, "src/use.c", "angle");
 		expect(resolve()).toEqual({ status: "external", packageName: "extra.h" });
 
 		handlers.parseFile({ module: "src/use.c", contentHash: "none", text: "int run(void) { return 0; }\n" });
-		verdict(provider, "src/use.c", "none");
+		verdict(handlers, "src/use.c", "none");
 
 		expect(resolve()).toEqual({ status: "resolved", module: "src/extra.h" });
 	});
@@ -145,18 +152,16 @@ describe("C provider protocol", () => {
 		const disk = '#include "item.h"\nint renamed(void);\n';
 		const user = '#include "cart.h"\n\nint run(void) { return add(1, 2) + renamed() + candidate(); }\n';
 		const root = workspace({ "src/item.h": "int item;\n", "src/cart.h": old, "src/use.c": user });
-		const provider = new CProvider();
-		provider.initialize(root);
-		const handlers = handlersFor(provider);
+		const handlers = started(root);
 		const served = () => ({
-			bound: facts(provider, "src/use.c", user)
+			bound: facts(handlers, "src/use.c", user)
 				.references.filter((reference) => reference.binding.status === "bound")
 				.map((reference) => reference.name),
-			item: provider.resolveImport({ fromModule: "src/cart.h", specifier: "item.h" }).status,
+			item: handlers.resolveImport({ fromModule: "src/cart.h", specifier: "item.h" }).status,
 		});
 
 		handlers.parseFile({ module: "src/cart.h", contentHash: "old", text: old });
-		verdict(provider, "src/cart.h", "old");
+		verdict(handlers, "src/cart.h", "old");
 		// Disk parse outstanding across the probe.
 		writeFileSync(path.join(root, "src/cart.h"), disk);
 		handlers.parseFile({ module: "src/cart.h", contentHash: "disk", text: disk });
@@ -166,7 +171,7 @@ describe("C provider protocol", () => {
 			text: '#include "item.h"\nint candidate(void);\n',
 		});
 		const outstanding = served();
-		verdict(provider, "src/cart.h", "disk", "the index refused these facts");
+		verdict(handlers, "src/cart.h", "disk", "the index refused these facts");
 
 		expect({
 			candidate: probed.declarations.map((declaration) => declaration.name),
@@ -181,14 +186,13 @@ describe("C provider protocol", () => {
 
 	test("a forgotten module does not come back through a read of its own bytes", () => {
 		const root = workspace({ "src/cart.h": "int add(int left, int right);\n" });
-		const provider = new CProvider();
-		provider.initialize(root);
+		const handlers = started(root);
 		const user = '#include "cart.h"\n\nint run(void) { return add(1, 2); }\n';
-		const bound = () => facts(provider, "src/use.c", user).references.find((reference) => reference.name === "add");
+		const bound = () => facts(handlers, "src/use.c", user).references.find((reference) => reference.name === "add");
 
 		expect(bound()?.binding.status).toBe("bound");
 
-		provider.forgetModule({ module: "src/cart.h" });
+		handlers.forgetModule?.({ module: "src/cart.h" });
 
 		expect(bound()?.binding.status).toBe("unbound");
 	});
@@ -204,9 +208,7 @@ describe("C provider protocol", () => {
 			"vendor-cache/ignored.h": "int ignored;\n",
 			"notes.txt": "not a C module\n",
 		});
-		const provider = new CProvider();
-
-		const project = provider.discoverProject(root);
+		const project = new CProvider().discoverProject(root).model;
 
 		expect(ProjectModelSchema.parse(project).files).toEqual(["include/sample.h", "src/main.c"]);
 		expect(project.configFiles).toEqual(["CMakeLists.txt", "Makefile"]);
@@ -215,9 +217,7 @@ describe("C provider protocol", () => {
 	});
 
 	test("reports a project diagnostic for a missing workspace", () => {
-		const provider = new CProvider();
-
-		const project = provider.discoverProject(path.join(tmpdir(), "c-provider-no-such-workspace"));
+		const project = new CProvider().discoverProject(path.join(tmpdir(), "c-provider-no-such-workspace")).model;
 
 		expect(project.files).toEqual([]);
 		expect(project.diagnostics[0]?.severity).toBe("error");
@@ -225,10 +225,9 @@ describe("C provider protocol", () => {
 	});
 
 	test("returns a complete schema-shaped empty file", () => {
-		const provider = new CProvider();
-		provider.initialize(process.cwd());
+		const handlers = started();
 
-		const parsed = facts(provider, "empty.c", "\n");
+		const parsed = facts(handlers, "empty.c", "\n");
 
 		expect(FileFactsSchema.safeParse(parsed).success).toBe(true);
 		expect(parsed.declarations).toEqual([]);
@@ -285,15 +284,14 @@ describe("C lexical cursor and tokens", () => {
 
 describe("C comment spans", () => {
 	function commentTexts(text: string) {
-		const provider = new CProvider();
-		return (facts(provider, "spans.c", text).comments ?? []).map((comment) => comment.text);
+		return (facts(started(), "spans.c", text).comments ?? []).map((comment) => comment.text);
 	}
 
 	test("declares the comments tier and carries spans through parseFile", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "// note\nint value = 1;\n";
 
-		const parsed = facts(provider, "spans.c", text);
+		const parsed = facts(handlers, "spans.c", text);
 
 		expect(TIERS.comments).toBe(true);
 		expect(FileFactsSchema.safeParse(parsed).success).toBe(true);
@@ -322,10 +320,10 @@ describe("C comment spans", () => {
 	});
 
 	test("runs an unterminated block comment to end of file as one span", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "int before = 1;\n/* opened and never closed";
 
-		const parsed = facts(provider, "open.c", text);
+		const parsed = facts(handlers, "open.c", text);
 
 		expect(parsed.comments).toEqual([
 			{ range: rangeAt(text, "/* opened and never closed"), text: "/* opened and never closed" },
@@ -334,20 +332,20 @@ describe("C comment spans", () => {
 	});
 
 	test("ends a block comment at the first close, since C blocks do not nest", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "/* outer /* inner */\nint after = 1;\n";
 
-		const parsed = facts(provider, "nest.c", text);
+		const parsed = facts(handlers, "nest.c", text);
 
 		expect((parsed.comments ?? []).map((comment) => comment.text)).toEqual(["/* outer /* inner */"]);
 		expect(declarationOf(parsed, "after")).toBeDefined();
 	});
 
 	test("continues a line comment across a backslash newline", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "// wraps \\\nstill comment\nint after = 1;\n";
 
-		const parsed = facts(provider, "continued.c", text);
+		const parsed = facts(handlers, "continued.c", text);
 
 		expect(parsed.comments).toEqual([
 			{ range: rangeAt(text, "// wraps \\\nstill comment"), text: "// wraps \\\nstill comment" },
@@ -356,10 +354,10 @@ describe("C comment spans", () => {
 	});
 
 	test("spans a comment holding astral text in UTF-16 code units", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "int value = 1; /* 😀 */\n";
 
-		const parsed = facts(provider, "utf16.c", text);
+		const parsed = facts(handlers, "utf16.c", text);
 
 		expect(parsed.comments).toEqual([{ range: rangeAt(text, "/* 😀 */"), text: "/* 😀 */" }]);
 	});
@@ -628,7 +626,7 @@ describe("C declarations", () => {
 
 	test("does not invent a nested type declaration for a tagged type use", () => {
 		const parsed = facts(
-			new CProvider(),
+			started(),
 			"tag-use.c",
 			"struct Item { int value; };\nint run(void) { struct Item item; return item.value; }\n",
 		);
@@ -766,9 +764,9 @@ describe("Ghidra C syntax", () => {
 
 describe("C preprocessor and diagnostics", () => {
 	test("reports declarations from every conditional branch", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "#if FEATURE\nint value;\n#else\nint value;\n#endif\nint run(void) { return value; }\n";
-		const parsed = facts(provider, "conditional.c", text);
+		const parsed = facts(handlers, "conditional.c", text);
 		const values = parsed.declarations.filter((declaration) => declaration.name === "value");
 		const reference = parsed.references.find((candidate) => candidate.name === "value");
 
@@ -789,8 +787,7 @@ describe("C preprocessor and diagnostics", () => {
 	});
 
 	test("turns an unfinished initializer into an error without throwing", () => {
-		const provider = new CProvider();
-		const parsed = facts(provider, "broken.c", "#if ENABLED\nint value = ;\n#endif\n");
+		const parsed = facts(started(), "broken.c", "#if ENABLED\nint value = ;\n#endif\n");
 
 		expect(parsed.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
 		expect(parsed.diagnostics.map((diagnostic) => diagnostic.message)).toContain("Initializer has no expression.");
@@ -815,7 +812,7 @@ describe("C preprocessor and diagnostics", () => {
 
 describe("C literals and references", () => {
 	test("extracts decoded strings, numbers, booleans, and character literals", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = [
 			"const int limit = 3;",
 			"bool enabled = true;",
@@ -823,7 +820,7 @@ describe("C literals and references", () => {
 			"int letter = 'A';",
 			"int run(void) { double ratio = 2.5; return enabled; }",
 		].join("\n");
-		const parsed = facts(provider, "literals.c", text);
+		const parsed = facts(handlers, "literals.c", text);
 
 		expect(parsed.literals.map((literal) => [literal.kind, literal.value, literal.number])).toEqual([
 			["number", "3", 3],
@@ -835,7 +832,7 @@ describe("C literals and references", () => {
 	});
 
 	test("preserves all-f hex integers and omits unsafe numeric values", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = [
 			"unsigned first = 0xff;",
 			"unsigned second = 0xffff;",
@@ -844,7 +841,7 @@ describe("C literals and references", () => {
 			"unsigned wide = 0xffffffffffffffff;",
 			"unsigned decimal = 4294967295;",
 		].join("\n");
-		const parsed = facts(provider, "integer-masks.c", text);
+		const parsed = facts(handlers, "integer-masks.c", text);
 		const numbers = parsed.literals.filter((literal) => literal.kind === "number");
 
 		expect(numbers.map((literal) => [literal.value, literal.number])).toEqual([
@@ -870,10 +867,10 @@ describe("C literals and references", () => {
 	});
 
 	test("classifies calls, reads, writes, and compound writes", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text =
 			"int add(int value) { return value; }\nint run(void) { int local = 1; local += add(local); return local; }\n";
-		const parsed = facts(provider, "references.c", text);
+		const parsed = facts(handlers, "references.c", text);
 		const localReferences = parsed.references.filter((reference) => reference.name === "local");
 
 		expect(parsed.references.find((reference) => reference.name === "add")?.role).toBe("call");
@@ -895,10 +892,10 @@ describe("C literals and references", () => {
 
 describe("C binding and imports", () => {
 	test("binds a local reference to its declaration rather than its name", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text =
 			"int add(int value) { return value; }\nint run(void) { int value = 1; return value + add(value); }\n";
-		const parsed = facts(provider, "bind.c", text);
+		const parsed = facts(handlers, "bind.c", text);
 		const local = parsed.declarations.find(
 			(declaration) => declaration.name === "value" && declaration.containerId?.includes("run()"),
 		);
@@ -911,10 +908,10 @@ describe("C binding and imports", () => {
 	});
 
 	test("binds type uses and calls through the same-file index", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text =
 			"struct Item { int value; };\nint add(void) { return 1; }\nint run(void) { struct Item item; return add(); }\n";
-		const parsed = facts(provider, "same-file.c", text);
+		const parsed = facts(handlers, "same-file.c", text);
 		const typeReference = parsed.references.find((reference) => reference.name === "Item");
 		const callReference = parsed.references.find((reference) => reference.name === "add");
 
@@ -929,33 +926,31 @@ describe("C binding and imports", () => {
 			"src/item.h": "int item;\n",
 			"root.h": "int root;\n",
 		});
-		const provider = new CProvider();
-		provider.initialize(root);
+		const handlers = started(root);
 		const text = readFileSync(path.join(root, "src/cart.c"), "utf8");
 
-		facts(provider, "src/cart.c", text);
+		facts(handlers, "src/cart.c", text);
 
-		expect(provider.resolveImport({ fromModule: "src/cart.c", specifier: "item.h" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "src/cart.c", specifier: "item.h" })).toEqual({
 			status: "resolved",
 			module: "src/item.h",
 		});
-		expect(provider.resolveImport({ fromModule: "src/cart.c", specifier: "root.h" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "src/cart.c", specifier: "root.h" })).toEqual({
 			status: "resolved",
 			module: "root.h",
 		});
 	});
 
 	test("marks angle includes external and missing quoted includes unresolved", () => {
-		const provider = new CProvider();
-		provider.initialize(process.cwd());
+		const handlers = started();
 		const text = '#include <stdio.h>\n#include "missing.h"\n';
-		const parsed = facts(provider, "imports.c", text);
+		const parsed = facts(handlers, "imports.c", text);
 
-		expect(provider.resolveImport({ fromModule: "imports.c", specifier: "<stdio.h>" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "imports.c", specifier: "<stdio.h>" })).toEqual({
 			status: "external",
 			packageName: "stdio.h",
 		});
-		expect(provider.resolveImport({ fromModule: "imports.c", specifier: "missing.h" })).toMatchObject({
+		expect(handlers.resolveImport({ fromModule: "imports.c", specifier: "missing.h" })).toMatchObject({
 			status: "unresolved",
 			reason: "NotIndexed",
 		});
@@ -975,10 +970,9 @@ describe("C binding and imports", () => {
 			"src/cart.c": '#include "item.h"\nint run(void) { return item; }\n',
 			"src/item.h": "int item;\n",
 		});
-		const provider = new CProvider();
-		provider.initialize(root);
+		const handlers = started(root);
 		const source = readFileSync(path.join(root, "src/cart.c"), "utf8");
-		const parsed = facts(provider, "src/cart.c", source);
+		const parsed = facts(handlers, "src/cart.c", source);
 		const reference = parsed.references.find((candidate) => candidate.name === "item");
 
 		if (reference === undefined) throw new Error("workspace reference is missing");
@@ -995,19 +989,19 @@ describe("C binding and imports", () => {
 	});
 
 	test("binds by a requested reference range and by a declaration range", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "int add(void) { return 1; }\nint run(void) { return add(); }\n";
-		const parsed = facts(provider, "bind-range.c", text);
+		const parsed = facts(handlers, "bind-range.c", text);
 		const reference = parsed.references.find((candidate) => candidate.name === "add");
 		const declaration = declarationOf(parsed, "add", "function");
 
 		if (reference === undefined || declaration === undefined) throw new Error("bind range fixture is missing");
-		expect(provider.bind({ module: "bind-range.c", name: "add", range: reference.range })).toMatchObject({
+		expect(handlers.bind({ module: "bind-range.c", name: "add", range: reference.range })).toMatchObject({
 			status: "bound",
 			symbolId: declaration.symbolId,
 		});
 		expect(
-			provider.bind({
+			handlers.bind({
 				module: "bind-range.c",
 				name: "add",
 				range: declaration.selectionRange as NonNullable<typeof declaration.selectionRange>,
@@ -1021,10 +1015,10 @@ describe("C binding and imports", () => {
 
 describe("C type answers", () => {
 	test("returns declared primitive, pointer, alias, and function types", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text =
 			"typedef unsigned int Count;\nconst int limit = 1;\nCount *counter;\nint run(void) { return limit; }\n";
-		const parsed = facts(provider, "types.c", text);
+		const parsed = facts(handlers, "types.c", text);
 		const count = declarationOf(parsed, "Count");
 		const limit = declarationOf(parsed, "limit");
 		const counter = declarationOf(parsed, "counter");
@@ -1033,22 +1027,22 @@ describe("C type answers", () => {
 		if (count === undefined || limit === undefined || counter === undefined || run === undefined) {
 			throw new Error("type declarations are missing");
 		}
-		expect(provider.typeOf({ symbolId: count.symbolId })).toMatchObject({
+		expect(handlers.typeOf({ symbolId: count.symbolId })).toMatchObject({
 			status: "known",
 			display: "unsigned int",
 			provenance: "declared",
 		});
-		expect(provider.typeOf({ symbolId: limit.symbolId })).toMatchObject({
+		expect(handlers.typeOf({ symbolId: limit.symbolId })).toMatchObject({
 			status: "known",
 			display: "int",
 			provenance: "declared",
 		});
-		expect(provider.typeOf({ symbolId: counter.symbolId })).toMatchObject({
+		expect(handlers.typeOf({ symbolId: counter.symbolId })).toMatchObject({
 			status: "known",
 			display: "Count *",
 			provenance: "declared",
 		});
-		expect(provider.typeOf({ symbolId: run.symbolId })).toMatchObject({
+		expect(handlers.typeOf({ symbolId: run.symbolId })).toMatchObject({
 			status: "known",
 			display: "int",
 			provenance: "declared",
@@ -1056,36 +1050,35 @@ describe("C type answers", () => {
 	});
 
 	test("returns the declaration type for a position inside its type range", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "const unsigned int limit = 1;\n";
-		const parsed = facts(provider, "type-range.c", text);
+		const parsed = facts(handlers, "type-range.c", text);
 		const limit = declarationOf(parsed, "limit");
 
 		if (limit === undefined) throw new Error("limit declaration is missing");
-		const answer = provider.typeOf({ module: "type-range.c", range: rangeAt(text, "unsigned int") });
+		const answer = handlers.typeOf({ module: "type-range.c", range: rangeAt(text, "unsigned int") });
 
 		expect(answer).toMatchObject({ status: "known", display: "unsigned int", provenance: "declared" });
 	});
 
 	test("links named aggregate types from type answers", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "struct Item { int value; };\nstruct Item item;\n";
-		const parsed = facts(provider, "aggregate-type.c", text);
+		const parsed = facts(handlers, "aggregate-type.c", text);
 		const item = declarationOf(parsed, "item");
 
 		if (item === undefined) throw new Error("aggregate variable is missing");
-		const answer = provider.typeOf({ symbolId: item.symbolId });
+		const answer = handlers.typeOf({ symbolId: item.symbolId });
 
 		expect(answer).toMatchObject({ status: "known", display: "struct Item", provenance: "declared" });
 		expect(answer.status === "known" ? answer.symbolId : "").toContain("Item#");
 	});
 
 	test("uses closed unknown reasons for invalid and missing type requests", () => {
-		const provider = new CProvider();
-		provider.initialize(process.cwd());
+		const handlers = started();
 
-		const invalid = provider.typeOf({ symbolId: "not-a-c-symbol" });
-		const missing = provider.typeOf({ symbolId: "lexicon c missing.c value." });
+		const invalid = handlers.typeOf({ symbolId: "not-a-c-symbol" });
+		const missing = handlers.typeOf({ symbolId: "lexicon c missing.c value." });
 
 		expect(invalid).toMatchObject({ status: "unknown", reason: "ParseError" });
 		expect(missing).toMatchObject({ status: "unknown", reason: "NotIndexed" });
@@ -1096,7 +1089,7 @@ describe("C type answers", () => {
 describe("C edge coverage", () => {
 	test("parses nested block locals without promoting expressions to declarations", () => {
 		const parsed = facts(
-			new CProvider(),
+			started(),
 			"nested.c",
 			"int run(int flag) { if (flag) { int inside = 1; inside++; } for (int index = 0; index < 2; index++) { int loop = index; } return flag; }\n",
 		);
@@ -1131,7 +1124,7 @@ describe("C edge coverage", () => {
 
 	test("keeps static functions file-local while exporting ordinary functions", () => {
 		const parsed = facts(
-			new CProvider(),
+			started(),
 			"functions.c",
 			"static int hidden(void) { return 0; }\nint visible(void) { return hidden(); }\n",
 		);
@@ -1184,33 +1177,30 @@ describe("C edge coverage", () => {
 			"src/header-user.c": '#include "item"\n',
 			"src/item.h": "int item;\n",
 		});
-		const provider = new CProvider();
-		provider.initialize(root);
-		facts(provider, "src/header-user.c", readFileSync(path.join(root, "src/header-user.c"), "utf8"));
+		const handlers = started(root);
+		facts(handlers, "src/header-user.c", readFileSync(path.join(root, "src/header-user.c"), "utf8"));
 
-		expect(provider.resolveImport({ fromModule: "src/header-user.c", specifier: "item" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "src/header-user.c", specifier: "item" })).toEqual({
 			status: "resolved",
 			module: "src/item.h",
 		});
 	});
 
 	test("treats standard system families as external dependencies", () => {
-		const provider = new CProvider();
-		provider.initialize(process.cwd());
+		const handlers = started();
 
-		expect(provider.resolveImport({ fromModule: "main.c", specifier: "sys/socket.h" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "main.c", specifier: "sys/socket.h" })).toEqual({
 			status: "external",
 			packageName: "sys/socket.h",
 		});
-		expect(provider.resolveImport({ fromModule: "main.c", specifier: "linux/input.h" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "main.c", specifier: "linux/input.h" })).toEqual({
 			status: "external",
 			packageName: "linux/input.h",
 		});
 	});
 
 	test("returns a reasoned unknown binding for a missing source name", () => {
-		const provider = new CProvider();
-		const parsed = facts(provider, "unknown.c", "int run(void) { return missing; }\n");
+		const parsed = facts(started(), "unknown.c", "int run(void) { return missing; }\n");
 		const reference = parsed.references.find((candidate) => candidate.name === "missing");
 
 		expect(reference?.binding).toMatchObject({ status: "unbound", reason: "NotIndexed" });
@@ -1218,9 +1208,9 @@ describe("C edge coverage", () => {
 	});
 
 	test("reports ordinary duplicate candidates as ambiguous when conditional provenance is absent", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "int value;\nstatic int value;\nint run(void) { return value; }\n";
-		const parsed = facts(provider, "duplicate.c", text);
+		const parsed = facts(handlers, "duplicate.c", text);
 		const reference = parsed.references.find((candidate) => candidate.name === "value");
 
 		expect(parsed.declarations.filter((declaration) => declaration.name === "value")).toHaveLength(2);
@@ -1233,10 +1223,9 @@ describe("C edge coverage", () => {
 			"src/main.c": '#include "api.h"\nint run(void) { return add(); }\n',
 			"src/api.h": "int add(void);\n",
 		});
-		const provider = new CProvider();
-		provider.initialize(root);
+		const handlers = started(root);
 		const source = readFileSync(path.join(root, "src/main.c"), "utf8");
-		const parsed = facts(provider, "src/main.c", source);
+		const parsed = facts(handlers, "src/main.c", source);
 		const reference = parsed.references.find((candidate) => candidate.name === "add");
 
 		expect(reference?.role).toBe("call");
@@ -1245,14 +1234,14 @@ describe("C edge coverage", () => {
 	});
 
 	test("finds type information by a declaration selection range", () => {
-		const provider = new CProvider();
+		const handlers = started();
 		const text = "int value = 1;\n";
-		const parsed = facts(provider, "selection-type.c", text);
+		const parsed = facts(handlers, "selection-type.c", text);
 		const value = declarationOf(parsed, "value");
 
 		if (value === undefined) throw new Error("selection declaration is missing");
 		expect(
-			provider.typeOf({
+			handlers.typeOf({
 				module: "selection-type.c",
 				range: value.selectionRange as NonNullable<typeof value.selectionRange>,
 			}),
@@ -1265,21 +1254,20 @@ describe("C edge coverage", () => {
 
 	test("loads a header from disk when a type request arrives before parsing it", () => {
 		const root = workspace({ "include/value.h": "typedef unsigned long Word;\n" });
-		const provider = new CProvider();
-		provider.initialize(root);
+		const handlers = started(root);
 		const symbolId = composeSymbolId({
 			language: "c",
 			module: "include/value.h",
 			descriptors: [{ kind: "type", name: "Word" }],
 		});
 
-		expect(provider.typeOf({ symbolId })).toMatchObject({ status: "known", display: "unsigned long" });
+		expect(handlers.typeOf({ symbolId })).toMatchObject({ status: "known", display: "unsigned long" });
 	});
 
 	test("keeps the requested content hash on the wire", () => {
-		const provider = new CProvider();
+		const handlers = started();
 
-		expect(facts(provider, "hash.c", "int value;\n").contentHash).toBe("hash.c:11");
+		expect(facts(handlers, "hash.c", "int value;\n").contentHash).toBe("hash.c:11");
 	});
 
 	test("does not expose preprocessor literals as source literals", () => {
@@ -1317,8 +1305,7 @@ describe("C edge coverage", () => {
 
 describe("C edit refusals and protocol values", () => {
 	test("refuses rename and move with a closed reason", () => {
-		const provider = new CProvider();
-		provider.initialize(process.cwd());
+		const handlers = started();
 		const rename: RenameEditsRequest = {
 			module: "a.c",
 			text: "int value;\n",
@@ -1340,22 +1327,22 @@ describe("C edit refusals and protocol values", () => {
 			sites: [],
 		};
 
-		expect(provider.renameEdits(rename)).toMatchObject({ status: "refused", reason: "NotImplemented" });
-		expect(provider.moveEdits(move)).toMatchObject({ status: "refused", reason: "NotImplemented" });
+		expect(handlers.renameEdits(rename)).toMatchObject({ status: "refused", reason: "NotImplemented" });
+		expect(handlers.moveEdits(move)).toMatchObject({ status: "refused", reason: "NotImplemented" });
 	});
 
 	test("validates binding and type values against their schemas", () => {
-		const provider = new CProvider();
-		const parsed = facts(provider, "schema.c", "int value = 1;\n");
+		const handlers = started();
+		const parsed = facts(handlers, "schema.c", "int value = 1;\n");
 		const value = declarationOf(parsed, "value");
 
 		if (value === undefined) throw new Error("schema declaration is missing");
-		const binding = provider.bind({
+		const binding = handlers.bind({
 			module: "schema.c",
 			name: "value",
 			range: value.selectionRange as NonNullable<typeof value.selectionRange>,
 		});
-		const type = provider.typeOf({ symbolId: value.symbolId });
+		const type = handlers.typeOf({ symbolId: value.symbolId });
 
 		expect(BindingSchema.parse(binding).status).toBe("bound");
 		expect(TypeInfoSchema.parse(type).status).toBe("known");
@@ -1372,13 +1359,14 @@ const corpusPresent =
 
 // A missing corpus is a local mistake and a CI fact, `temp/` being ignored and never cloned there.
 // Skipping in CI keeps the throw below meaningful where the corpus is supposed to exist.
-const corpusTest = corpusPresent || !process.env["CI"] ? test : test.skip;
+const { CI } = process.env;
+const corpusTest = corpusPresent || !CI ? test : test.skip;
 
 corpusTest(
 	"parses every claimed C file from both requested corpora",
 	async () => {
 		if (!corpusPresent) throw new Error("C corpora are absent");
-		const started = performance.now();
+		const startedAt = performance.now();
 		let files = 0;
 		let bytes = 0;
 		let declarations = 0;
@@ -1392,9 +1380,8 @@ corpusTest(
 		let spans = 0;
 
 		for (const root of [libuvCorpusRoot, ghidraCorpusRoot]) {
-			const provider = new CProvider();
-			provider.initialize(root);
-			const project = provider.discoverProject(root);
+			const handlers = started(root);
+			const project = new CProvider().discoverProject(root).model;
 			expect(project.diagnostics).toEqual([]);
 			const modules = project.files.filter((module) => module.endsWith(".c") || module.endsWith(".h"));
 			rootCounts.push({ root: path.relative(process.cwd(), root), files: modules.length });
@@ -1403,7 +1390,7 @@ corpusTest(
 				// Yields, so the timeout can fire.
 				await new Promise((resolve) => setImmediate(resolve));
 				const source = readFileSync(path.join(root, module), "utf8");
-				const parsed = facts(provider, module, source);
+				const parsed = facts(handlers, module, source);
 				files++;
 				bytes += source.length;
 				declarations += parsed.declarations.length;
@@ -1433,7 +1420,7 @@ corpusTest(
 			}
 		}
 
-		const seconds = (performance.now() - started) / 1000;
+		const seconds = (performance.now() - startedAt) / 1000;
 		console.log(
 			`[c corpus] roots=${JSON.stringify(rootCounts)} files=${files} bytes=${bytes} declarations=${declarations} references=${references} imports=${imports} comments=${spans} syntaxErrorFiles=${syntaxErrorFiles.length} wallSeconds=${seconds.toFixed(3)}`,
 		);

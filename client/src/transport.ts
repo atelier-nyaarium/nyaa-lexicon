@@ -8,8 +8,11 @@
 
 import { connect as netConnect, type Socket } from "node:net";
 import {
+	answerBudgetMs,
 	CLIENT_LINE_CAP,
 	CONNECT_TIMEOUT_MS,
+	isDaemonMethod,
+	methodMutates,
 	PROTOCOL_VERSION,
 	parseVersion,
 	type ResponseFrame,
@@ -40,6 +43,8 @@ export interface ConnectFramesOptions {
 	signal?: AbortSignal;
 	/** Tags refusals with the daemon that raised them. */
 	from?: DaemonRef;
+	/** Per-request answer timeout override. */
+	budgetMs?: (method: string) => number;
 }
 
 export type WaitingEvent = { waitingFor: string; retryInMs: number; elapsedMs: number };
@@ -161,6 +166,7 @@ export function writeFrame(socket: Socket, frame: ServerFrame | Record<string, u
 export function connectFrames(port: number, token: string, options: ConnectFramesOptions = {}): Promise<FrameClient> {
 	const timeoutMs = options.timeoutMs ?? CONNECT_TIMEOUT_MS;
 	const patience = options.patience ?? STARTING_CEILING_MS;
+	const budgetMs = options.budgetMs ?? answerBudgetMs;
 	const startedAt = Date.now();
 	const { signal, from } = options;
 	let notified: string | undefined;
@@ -178,7 +184,12 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 		let nextId = 0;
 		const pending = new Map<
 			number,
-			{ resolve: (frame: ResponseFrame) => void; reject: (error: Error) => void; sent: boolean }
+			{
+				resolve: (frame: ResponseFrame) => void;
+				reject: (error: Error) => void;
+				sent: boolean;
+				budget: ReturnType<typeof setTimeout>;
+			}
 		>();
 
 		const connectDeadline = setTimeout(() => {
@@ -247,9 +258,11 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 				writeFrame(socket, { kind: "pong", n: frame.n });
 				return;
 			}
+			// Late replies have no waiter.
 			const waiter = pending.get(frame.id);
 			if (waiter) {
 				pending.delete(frame.id);
+				clearTimeout(waiter.budget);
 				waiter.resolve(frame);
 			}
 		}
@@ -265,8 +278,10 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 		socket.on("close", () => {
 			closed = true;
 			handshakeOver();
-			for (const waiter of pending.values())
+			for (const waiter of pending.values()) {
+				clearTimeout(waiter.budget);
 				waiter.reject(new ConnectionLostError("the daemon connection closed", waiter.sent));
+			}
 			pending.clear();
 			if (!welcomed) {
 				rejectConnect(
@@ -284,7 +299,23 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 					return;
 				}
 				const id = nextId++;
-				const waiter = { resolve, reject, sent: false };
+				const ms = budgetMs(method);
+				// Timeout drops one waiter; socket stays open.
+				const budget = setTimeout(() => {
+					if (!pending.delete(id)) return;
+					const unknown = isDaemonMethod(method) && methodMutates(method) ? "; the outcome is unknown" : "";
+					reject(
+						new DaemonError(
+							`the daemon did not answer ${method} within ${ms}ms${unknown}`,
+							"requestTimeout",
+							{
+								from,
+							},
+						),
+					);
+				}, ms);
+				budget.unref?.();
+				const waiter = { resolve, reject, sent: false, budget };
 				pending.set(id, waiter);
 				waiter.sent = writeFrame(socket, { kind: "request", id, method, params });
 			});

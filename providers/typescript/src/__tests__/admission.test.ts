@@ -2,8 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { handlersFor } from "@nyaa-lexicon/protocol";
-import { TypeScriptProvider } from "../main";
+import { harness } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
@@ -26,23 +25,26 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-/** The index's verdict on a parse, through the kit as the wire delivers it. */
-function verdict(provider: TypeScriptProvider, module: string, hash: string, refusal?: string): void {
-	handlersFor(provider).moduleAdmission?.({
+function verdict(provider: ReturnType<typeof harness>, module: string, hash: string, refusal?: string): void {
+	provider.handlers.moduleAdmission?.({
 		module,
 		contentHash: hash,
 		outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
 	});
 }
 
-/** Parses the target and settles the index's verdict on it. */
-function settle(provider: TypeScriptProvider, module: string, text: string, hash: string, refusal?: string): void {
-	handlersFor(provider).parseFile({ module, contentHash: hash, text });
+function settle(
+	provider: ReturnType<typeof harness>,
+	module: string,
+	text: string,
+	hash: string,
+	refusal?: string,
+): void {
+	provider.handlers.parseFile({ module, contentHash: hash, text });
 	verdict(provider, module, hash, refusal);
 }
 
-/** Where `add` lands when `src/use.ts` is parsed now. */
-function addBinding(provider: TypeScriptProvider) {
+function addBinding(provider: ReturnType<typeof harness>) {
 	const facts = provider.parseFile({
 		module: "src/use.ts",
 		contentHash: "use",
@@ -62,7 +64,7 @@ afterEach(() => {
 
 describe("a use follows what the index holds, not what the parse emitted", () => {
 	it("stops binding into a module the index forgot, and binds again once a parse is admitted", () => {
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(workspace(CART));
 		settle(provider, "src/cart.ts", CART["src/cart.ts"], "cart-1");
 		expect(addBinding(provider).status).toBe("bound");
@@ -76,13 +78,63 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 		expect(addBinding(provider).status).toBe("bound");
 	});
 
+	it("never binds into a file the core would refuse, before the core has parsed it", () => {
+		const bindingInto = (files: Record<string, string>, user: string, name: string) => {
+			const provider = harness();
+			provider.initialize(workspace(files));
+			const text = files[user] as string;
+			const reference = provider
+				.parseFile({ module: user, contentHash: user, text })
+				.references.find((candidate) => candidate.name === name && candidate.role !== "import");
+			const binding = reference?.binding;
+			return binding?.status === "unbound" ? binding.reason : binding?.status;
+		};
+
+		expect({
+			typescript: bindingInto(
+				{ ...CART, "src/cart.ts": `${CART["src/cart.ts"]}const broken = ;\n` },
+				"src/use.ts",
+				"add",
+			),
+			annotatedJavaScript: bindingInto(
+				{
+					"src/cart.js": "export function add(left: number, right) { return left + right; }\n",
+					"src/use.js": 'import { add } from "./cart.js";\nexport const total = add(1, 2);\n',
+				},
+				"src/use.js",
+				"add",
+			),
+			plainJavaScript: bindingInto(
+				{
+					"src/cart.js": "export function add(left, right) { return left + right; }\n",
+					"src/use.js": 'import { add } from "./cart.js";\nexport const total = add(1, 2);\n',
+				},
+				"src/use.js",
+				"add",
+			),
+			malformedBundle: bindingInto(
+				{
+					"src/bundle.min.js": "export function run(){return 1}\nexport const x=(;",
+					"src/use.js": 'import { run } from "./bundle.min.js";\nexport const value = run();\n',
+				},
+				"src/use.js",
+				"run",
+			),
+		}).toEqual({
+			typescript: "NotIndexed",
+			annotatedJavaScript: "NotIndexed",
+			plainJavaScript: "bound",
+			malformedBundle: "NotIndexed",
+		});
+	});
+
 	it("answers a probe from the candidate, then binds into what the index holds, never the candidate or the disk", () => {
 		const root = workspace(CART);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
-		const handlers = handlersFor(provider);
+		const handlers = provider.handlers;
 		settle(provider, "src/cart.ts", CART["src/cart.ts"], "cart-1");
-		// The file changed on disk and its parse is outstanding across the probe.
+		// The index verdict is pending during the probe.
 		writeFileSync(path.join(root, "src/cart.ts"), "export function renamed() {}\n");
 		handlers.parseFile({ module: "src/cart.ts", contentHash: "cart-2", text: "export function renamed() {}\n" });
 		const probed = handlers.probeFile({
@@ -107,15 +159,15 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 			"loose.d.ts": ambient,
 		};
 		const answers = [false, true].map((warm) => {
-			const provider = new TypeScriptProvider();
+			const provider = harness();
 			provider.initialize(workspace(files));
 			if (warm) provider.parseFile({ module: "src/use.ts", contentHash: "use", text: use });
-			const rootsBefore = provider.programStats().rootFiles;
-			handlersFor(provider).probeFile({ module: "loose.d.ts", contentHash: "probe", text: ambient });
+			const rootsBefore = provider.provider.store.get("root").length;
+			provider.handlers.probeFile({ module: "loose.d.ts", contentHash: "probe", text: ambient });
 			const bound = provider
 				.parseFile({ module: "src/use.ts", contentHash: "use", text: use })
 				.references.find((reference) => reference.name === "GlobalThing")?.binding.status;
-			return { roots: provider.programStats().rootFiles - rootsBefore, bound };
+			return { roots: provider.provider.store.get("root").length - rootsBefore, bound };
 		});
 
 		expect(answers).toEqual([
@@ -125,7 +177,7 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 	});
 
 	it("refuses to resolve an import into a module the index holds nothing for", () => {
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(workspace(CART));
 		settle(provider, "src/cart.ts", CART["src/cart.ts"], "cart-1");
 		expect(provider.resolveImport({ fromModule: "src/use.ts", specifier: "./cart" })).toMatchObject({
@@ -140,7 +192,7 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 	});
 
 	it("parses its own bytes after a refusal dropped the module's text", () => {
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(workspace({ "src/thing.ts": "export function base() {}\n" }));
 		settle(provider, "src/thing.ts", "export function alpha() {}\n", "alpha", "refused");
 
@@ -159,10 +211,10 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 			"src/thing.ts": "export function base() {}\n",
 			"src/other.ts": "export const other = 1;\n",
 		});
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		settle(provider, "src/thing.ts", "export function base() {}\n", "base", "refused");
-		// Reads the Program back while only the disk answers for the dropped module.
+		// Disk supplies text after the refusal.
 		provider.parseFile({ module: "src/other.ts", contentHash: "other", text: "export const other = 1;\n" });
 
 		writeFileSync(path.join(root, "src/thing.ts"), "export function renamed() {}\n");
@@ -178,9 +230,9 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 describe("a parse answers for the bytes it carries", () => {
 	it("parses the bytes it is handed after the Program read the file from disk and the file then changed", () => {
 		const root = workspace(CART);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
-		// Builds the Program, which reads cart.ts off the disk as it stands now.
+		// Build before changing cart.ts on disk.
 		provider.parseFile({ module: "src/use.ts", contentHash: "use", text: CART["src/use.ts"] });
 
 		const grown = `${CART["src/cart.ts"]}export class Marker {}\n`;
@@ -191,7 +243,7 @@ describe("a parse answers for the bytes it carries", () => {
 
 	it("parses the bytes it is handed rather than the newer bytes on disk", () => {
 		const root = workspace(CART);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
 		provider.parseFile({ module: "src/use.ts", contentHash: "use", text: CART["src/use.ts"] });
 
@@ -205,14 +257,14 @@ describe("a parse answers for the bytes it carries", () => {
 
 	it("parses new disk text after a refused overlay was dropped and the Program read the disk again", () => {
 		const root = workspace(CART);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
-		// A refused first parse has no text to put back, so the module drops to the disk.
+		// First refusal leaves disk text as the fallback.
 		settle(provider, "src/cart.ts", `${CART["src/cart.ts"]}export class Refused {}\n`, "cart-refused", "refused");
 
 		const grown = `${CART["src/cart.ts"]}export class Grown {}\n`;
 		writeFileSync(path.join(root, "src/cart.ts"), grown);
-		// Reads the Program back while only the disk answers for the dropped module.
+		// Disk supplies text after the refusal.
 		provider.parseFile({ module: "src/use.ts", contentHash: "use", text: CART["src/use.ts"] });
 
 		const facts = provider.parseFile({ module: "src/cart.ts", contentHash: "cart-grown", text: grown });
@@ -223,15 +275,15 @@ describe("a parse answers for the bytes it carries", () => {
 
 	it("builds the Program once for a parse of changed text after an invalidation left none built", () => {
 		const root = workspace(CART);
-		const provider = new TypeScriptProvider();
+		const provider = harness();
 		provider.initialize(root);
-		// The refused parse builds once; the refusal drops the overlay and invalidates without building.
+		// First parse builds; refusal drops held text and invalidates.
 		settle(provider, "src/cart.ts", `${CART["src/cart.ts"]}export class Refused {}\n`, "cart-refused", "refused");
 
 		const grown = `${CART["src/cart.ts"]}export class Grown {}\n`;
 		writeFileSync(path.join(root, "src/cart.ts"), grown);
 		provider.parseFile({ module: "src/cart.ts", contentHash: "cart-grown", text: grown });
-		// Read after the parse, since reading the stats builds whatever is invalidated.
+		// Stats access builds the invalidated Program.
 		expect(provider.programStats().programGenerations).toBe(2);
 	});
 });

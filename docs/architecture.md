@@ -102,8 +102,8 @@ every provider hears: ownership can move between the two, and a newcomer has not
 settle. A provider outage publishes nothing, since the index keeps what it had and there is nobody
 to tell. A parse the core never asked for publishes nothing either, which is why a file made
 readable again with no watcher event stays out until something parses it.
-`protocol/src/admission.ts` is the provider's half. `docs/provider-protocol.md` has the rules a
-provider author reads.
+`protocol/src/moduleStore.ts` owns provider state. See `docs/provider-protocol.md` for its
+contract.
 
 A `files` row also carries git's word on whether the file is generated, three-valued: `yes`, `no`,
 or `unknown` with the reason git could not say. The indexer asks git once per admission for every

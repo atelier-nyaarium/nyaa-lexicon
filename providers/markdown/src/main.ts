@@ -51,8 +51,6 @@ export const WORDS = {
 };
 
 export class MarkdownProvider {
-	/** Holds nothing across parses. */
-	readonly admission = null;
 	private workspaceRoot = process.cwd();
 
 	initialize(workspaceRoot: string) {

@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	AdmissionLedger,
+	asyncModuleStore,
 	type Binding,
 	type CommentSpan,
 	comparePositions,
@@ -539,23 +539,15 @@ function unboundBinding(reason: UnknownReason, detail: string): Binding {
 //////// Provider
 
 export class PythonProvider {
-	private workspaceRoot = process.cwd();
-	private parsedFacts = new Map<string, MappedFacts>();
-	/** What the index took, so an imported name resolves to what it holds. */
-	readonly admission = new AdmissionLedger<MappedFacts>({
-		snapshot: (module) => this.parsedFacts.get(module),
-		restore: (module, held) => {
-			if (held === undefined) this.parsedFacts.delete(module);
-			else this.parsedFacts.set(module, held);
-		},
-	});
+	readonly store;
 
-	constructor(private readonly python3 = new Python3Dispatch()) {}
+	constructor(private readonly python3 = new Python3Dispatch()) {
+		this.store = asyncModuleStore<MappedFacts>({
+			read: async (module, text) => mapFacts(module, await extractFacts(this.python3, module, text)),
+		});
+	}
 
-	initialize(workspaceRoot: string) {
-		this.workspaceRoot = path.resolve(workspaceRoot);
-		this.parsedFacts.clear();
-		this.admission.reset();
+	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "python-provider",
 			language: LANGUAGE,
@@ -567,37 +559,37 @@ export class PythonProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
-		this.workspaceRoot = path.resolve(workspaceRoot);
+	discoverProject(workspaceRoot: string): { model: ProjectModel; project: null } {
+		const root = path.resolve(workspaceRoot);
 		try {
-			if (!existsSync(this.workspaceRoot)) {
-				return projectDiagnostic(this.workspaceRoot, `workspace root does not exist: ${this.workspaceRoot}`);
+			if (!existsSync(root)) {
+				return { model: projectDiagnostic(root, `workspace root does not exist: ${root}`), project: null };
 			}
-			if (!statSync(this.workspaceRoot).isDirectory()) {
-				return projectDiagnostic(
-					this.workspaceRoot,
-					`workspace root is not a directory: ${this.workspaceRoot}`,
-				);
+			if (!statSync(root).isDirectory()) {
+				return {
+					model: projectDiagnostic(root, `workspace root is not a directory: ${root}`),
+					project: null,
+				};
 			}
 			return {
-				files: discoverByWalk(this.workspaceRoot, {
-					extensions: EXTENSIONS,
-					excludedDirectories: EXCLUDED_DIRECTORIES,
-				}).files,
-				externalRoots: [],
-				configFiles: [],
-				diagnostics: [],
+				model: {
+					files: discoverByWalk(root, {
+						extensions: EXTENSIONS,
+						excludedDirectories: EXCLUDED_DIRECTORIES,
+					}).files,
+					externalRoots: [],
+					configFiles: [],
+					diagnostics: [],
+				},
+				project: null,
 			};
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			return projectDiagnostic(this.workspaceRoot, `unable to inspect workspace root: ${detail}`);
+			return { model: projectDiagnostic(root, `unable to inspect workspace root: ${detail}`), project: null };
 		}
 	}
 
-	async parseFile(params: { module: string; contentHash: string; text: string }) {
-		const raw = await extractFacts(this.python3, params.module, params.text);
-		const facts = mapFacts(params.module, raw);
-		this.parsedFacts.set(params.module, facts);
+	async parseFile(params: { module: string; contentHash: string; text: string }, facts: MappedFacts) {
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -610,23 +602,8 @@ export class PythonProvider {
 		};
 	}
 
-	/** The index let this module go, or refused the parse it holds nothing from. */
-	forgetModule(params: { module: string }): void {
-		this.parsedFacts.delete(params.module);
-		this.admission.forgotten(params.module);
-	}
-
 	private async factsForModule(module: string): Promise<MappedFacts | null> {
-		const cached = this.parsedFacts.get(module);
-		if (cached !== undefined) return cached;
-		// A file the index does not hold must not come back through a read of its own bytes.
-		if (!this.admission.fillable(module)) return null;
-		const absolute = workspaceFile(this.workspaceRoot, module);
-		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
-		const raw = await extractFacts(this.python3, module, readFileSync(absolute, "utf8"));
-		const facts = mapFacts(module, raw);
-		this.parsedFacts.set(module, facts);
-		return facts;
+		return (await this.store.load(module)) ?? null;
 	}
 
 	private async wireReferences(module: string, facts: ReturnType<typeof mapFacts>): Promise<Reference[]> {
@@ -761,11 +738,12 @@ export class PythonProvider {
 	}
 
 	async resolveImport(params: { fromModule: string; specifier: string }): Promise<ImportResolution> {
+		const root = this.store.root;
 		const parts = importParts(params.fromModule, params.specifier);
-		const candidates = fileCandidates(this.workspaceRoot, parts);
+		const candidates = fileCandidates(root, parts);
 		const firstCandidate = candidates[0];
 		if (firstCandidate !== undefined) {
-			const module = workspaceModule(this.workspaceRoot, firstCandidate);
+			const module = workspaceModule(root, firstCandidate);
 			if (module !== null) return { status: "resolved" as const, module };
 		}
 		if (!params.specifier.startsWith(".")) {
@@ -774,7 +752,7 @@ export class PythonProvider {
 			if (stdlibModuleNames === null) {
 				return notImplementedImport(this.python3.unavailableDetail);
 			}
-			if (stdlibModuleNames.has(packageName) || externalPackageExists(this.workspaceRoot, params.specifier)) {
+			if (stdlibModuleNames.has(packageName) || externalPackageExists(root, params.specifier)) {
 				return { status: "external" as const, packageName };
 			}
 			const moduleAvailable = await pythonModuleAvailable(this.python3, packageName);
@@ -931,7 +909,7 @@ function unknownType(reason: UnknownReason, detail: string): TypeInfo {
 // contract is written sync-only for every other language, and the wire dispatch loop awaits
 // whatever a handler returns regardless of this declared type.
 export function wireHandlers(provider: PythonProvider): ReturnType<typeof handlersFor> {
-	return handlersFor(provider as unknown as Parameters<typeof handlersFor>[0]);
+	return handlersFor(provider);
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new PythonProvider()): void {

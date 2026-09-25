@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
+import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { GDScriptProvider, TIERS } from "../main.js";
 
 function commentsOf(text: string, module = "comments.gd") {
-	const provider = new GDScriptProvider();
-	provider.initialize("/workspace");
-	return provider.parseFile({ module, contentHash: module, text }).comments;
+	const handlers = handlersFor(new GDScriptProvider());
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	handlers.discoverProject({ workspaceRoot: process.cwd() });
+	return handlers.parseFile({ module, contentHash: module, text }).comments ?? [];
 }
 
 test("declares the comments tier it now answers", () => {

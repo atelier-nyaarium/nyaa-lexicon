@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Binding } from "@nyaa-lexicon/protocol";
-import { KotlinProvider, REFERENCE_ROLES } from "../main.js";
+import { REFERENCE_ROLES } from "../main.js";
+import { started } from "./harness.js";
 
 const roots: string[] = [];
 
@@ -34,8 +35,7 @@ function workspace(files: Record<string, string>): string {
 
 /** Every reference in `module` as `line:name:role` to its targets, in source order. */
 function bindings(files: Record<string, string>, module: string): Map<string, Target[]> {
-	const provider = new KotlinProvider();
-	provider.initialize(workspace(files));
+	const provider = started(workspace(files));
 	const facts = provider.parseFile({ module, contentHash: "h", text: files[module] as string });
 	const found = new Map<string, Target[]>();
 	for (const reference of facts.references) {
@@ -179,8 +179,7 @@ describe("Kotlin locals", () => {
 	// A binder and its identifier can span the same characters, so the environment keys by node.
 	test("a binder sharing its identifier's range declares once and never uses itself", () => {
 		const source = ["package a", "val x = 1", "fun f() = x", "fun g() = listOf(1).map { v -> v }", ""].join("\n");
-		const provider = new KotlinProvider();
-		provider.initialize(workspace({ "a/Pkg.kt": PACKAGE, "a/Use.kt": source }));
+		const provider = started(workspace({ "a/Pkg.kt": PACKAGE, "a/Use.kt": source }));
 		const facts = provider.parseFile({ module: "a/Use.kt", contentHash: "h", text: source });
 		const named = (name: string): number =>
 			facts.declarations.filter((declaration) => declaration.name === name).length;
@@ -437,8 +436,7 @@ describe("Kotlin accessibility on every lookup path", () => {
 	});
 
 	test("resolveImport refuses a private nested class from its own file and from another", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(workspace({ "p/A.kt": A, "q/Use.kt": USE }));
+		const provider = started(workspace({ "p/A.kt": A, "q/Use.kt": USE }));
 		const resolve = (fromModule: string, specifier: string) => provider.resolveImport({ fromModule, specifier });
 
 		expect([resolve("p/A.kt", "p.A.Hidden"), resolve("q/Use.kt", "p.A.Hidden")]).toMatchObject([
@@ -495,8 +493,7 @@ describe("Kotlin imports", () => {
 			"src/Use.kt":
 				"package sample.use\nimport sample.models.Item as Product\nimport sample.models.*\nfun use(value: Product): Product = Product()\n",
 		});
-		const provider = new KotlinProvider();
-		provider.initialize(root);
+		const provider = started(root);
 		const text = readFileSync(path.join(root, "src/Use.kt"), "utf8");
 		const facts = provider.parseFile({ module: "src/Use.kt", contentHash: "h", text });
 		const [alias, star] = facts.imports;
@@ -521,8 +518,7 @@ describe("Kotlin imports", () => {
 			"dup/a.kt": "package duplicate\nclass A\n",
 			"dup/b.kt": "package duplicate\nclass A\n",
 		});
-		const provider = new KotlinProvider();
-		provider.initialize(root);
+		const provider = started(root);
 		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "use.kt", specifier });
 
 		expect(resolve("org.example.models.One")).toEqual({ status: "resolved", module: "src/one.kt" });
@@ -536,8 +532,7 @@ describe("Kotlin imports", () => {
 	});
 
 	test("an external import blocks lower tiers, and an unindexed name answers NotIndexed", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(workspace({ "a/Pkg.kt": "package a\nclass Instant\n" }));
+		const provider = started(workspace({ "a/Pkg.kt": "package a\nclass Instant\n" }));
 		const facts = provider.parseFile({
 			module: "a/Use.kt",
 			contentHash: "h",
@@ -645,8 +640,7 @@ describe("Kotlin reference roles", () => {
 	});
 
 	test("a file can hold every declared role, and nothing outside them", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(process.cwd());
+		const provider = started(process.cwd());
 		const facts = provider.parseFile({
 			module: "Roles.kt",
 			contentHash: "h",
@@ -657,8 +651,7 @@ describe("Kotlin reference roles", () => {
 	});
 
 	test("keywords, labels, this@ and a named argument's label are not references", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(process.cwd());
+		const provider = started(process.cwd());
 		const facts = provider.parseFile({
 			module: "Words.kt",
 			contentHash: "h",
@@ -687,8 +680,7 @@ describe("Kotlin reference roles", () => {
 	});
 
 	test("a local owns its initializer, an accessor its body, a class its supertype arguments", () => {
-		const provider = new KotlinProvider();
-		provider.initialize(process.cwd());
+		const provider = started(process.cwd());
 		const facts = provider.parseFile({
 			module: "Owners.kt",
 			contentHash: "h",
@@ -714,8 +706,7 @@ describe("Kotlin reference roles", () => {
 			"base/Base.kt": "package sample\nopen class Base\n",
 			"child/Child.kt": "package child\nimport sample.Base\nfun make(): Base = Base()\n",
 		});
-		const provider = new KotlinProvider();
-		provider.initialize(root);
+		const provider = started(root);
 		const at = (line: number, character: number) => ({ start: { line, character }, end: { line, character } });
 
 		expect(provider.bind({ module: "child/Child.kt", name: "Base", range: at(2, 20) })).toMatchObject({
