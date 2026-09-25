@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-python",
-	"version": "9.0.0",
+	"version": "9.1.0",
 	"private": true,
 	"type": "module",
 	"description": "Python provider using ast through a standard-library helper",
