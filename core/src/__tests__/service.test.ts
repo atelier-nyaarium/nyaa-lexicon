@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { hashContent } from "@nyaa-lexicon/protocol";
 import type { MethodResponse } from "../providerPort";
 import { LexiconService } from "../service";
 import { fromText, sourceReader } from "../sourceRead";
@@ -1507,11 +1508,13 @@ describe("performing a rename", () => {
 		});
 	}
 
-	function plant() {
-		writeFileSync(path.join(dir, "cart.ts"), "export function add() {}\n");
+	const cartText = "export function add() {}\n";
+
+	function plant(indexedHash = hashContent(cartText)) {
+		writeFileSync(path.join(dir, "cart.ts"), cartText);
 		store.replaceFile({
 			module: "cart.ts",
-			contentHash: "h1",
+			contentHash: indexedHash,
 			declarations: [
 				{
 					symbolId: target,
@@ -1586,7 +1589,7 @@ describe("performing a rename", () => {
 		writeFileSync(path.join(dir, "use.ts"), lossy);
 		store.replaceFile({
 			module: "use.ts",
-			contentHash: "h1",
+			contentHash: hashContent(lossy.toString("utf8")),
 			declarations: [],
 			references: [
 				{
@@ -1619,5 +1622,23 @@ describe("performing a rename", () => {
 
 		expect(outcome.renamed).toBe(false);
 		expect(asked).toBe(0);
+	});
+
+	// File changes invalidate stored ranges.
+	it("refuses before asking any provider when a file it would edit changed since indexing", async () => {
+		plant("indexed-before-an-edit");
+		let asked = 0;
+		const service = serviceThat(() => {
+			asked++;
+			return rewriteTheName;
+		});
+
+		const edits = await service.renameEdits(target, "append");
+		const outcome = await service.renameSymbol(target, "append");
+
+		expect(edits.ok).toBe(false);
+		expect(outcome.renamed).toBe(false);
+		expect(asked).toBe(0);
+		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe(cartText);
 	});
 });

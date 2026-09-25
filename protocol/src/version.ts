@@ -60,7 +60,8 @@ export type Compatibility =
 // 3.13.0: the `fileRoles` tier and `FileFacts.role`, which an older core ignores. `describe.moduleRole`
 // and `overview.entryPoints`. `indexStatus.generation` also moves on knowledge writes.
 // 3.14.0: a `main` file role requires the symbol id of its declaration.
-export const PROTOCOL_VERSION = "3.14.0" as const;
+// 3.15.0 defines previews, before-images and transaction expectations.
+export const PROTOCOL_VERSION = "3.15.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

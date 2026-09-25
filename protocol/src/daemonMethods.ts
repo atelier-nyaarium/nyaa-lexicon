@@ -21,6 +21,7 @@ import {
 	IndexOutcomeSchema,
 	IndexStatusSchema,
 	InsertOutcomeSchema,
+	InsertPreviewSchema,
 	InvalidateOutcomeSchema,
 	KnowledgeGapsSchema,
 	KnowledgeScopeSchema,
@@ -31,11 +32,13 @@ import {
 	MostReferencedResultSchema,
 	MoveOutcomeSchema,
 	MovePlanSchema,
+	MovePreviewSchema,
 	OverviewResultSchema,
 	ParseFactsResultSchema,
 	QuestionClassSchema,
 	RecallAnswerResultSchema,
 	RecordOutcomeSchema,
+	RefactorBeforeImageSchema,
 	RefactorCommitResultSchema,
 	RefactorRevertResultSchema,
 	RefactorStartResultSchema,
@@ -223,7 +226,17 @@ const FindImports = z
 const SymbolSource = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional() })
 	.meta({ id: "SymbolSourceRequest" });
-const Commit = z.object({ force: z.boolean().optional() }).meta({ id: "CommitRequest" });
+/** Rejects stale transaction expectations. */
+const Expectation = z
+	.object({ id: z.string().min(1), revision: z.number().int().nonnegative() })
+	.meta({ id: "RefactorExpectation" });
+const Commit = z
+	.object({ force: z.boolean().optional(), expect: Expectation.optional() })
+	.meta({ id: "CommitRequest" });
+const Unwind = z.object({ expect: Expectation.optional() }).meta({ id: "UnwindRequest" });
+const BeforeImage = z
+	.object({ module: ModulePath, id: z.string().min(1).optional() })
+	.meta({ id: "BeforeImageRequest" });
 const Replace = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional(), newText: z.string() })
 	.meta({ id: "ReplaceRequest" });
@@ -599,6 +612,14 @@ export const DAEMON_METHODS = {
 	},
 	/** Move impact and blockers. */
 	planMove: { request: Move, response: MovePlanSchema, lifecycle: "query", mutates: false, budget: "refactor" },
+	previewMove: { request: Move, response: MovePreviewSchema, lifecycle: "query", mutates: false, budget: "refactor" },
+	previewInsert: {
+		request: Insert,
+		response: InsertPreviewSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "refactor",
+	},
 	/** Reindex one file. */
 	indexFile: { request: ByModule, response: IndexOutcomeSchema, lifecycle: "query", mutates: true, budget: "read" },
 	/** Source text and range for a symbol. */
@@ -633,9 +654,16 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "refactor",
 	},
+	refactorBeforeImage: {
+		request: BeforeImage,
+		response: RefactorBeforeImageSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
 	/** Undo the newest step. */
 	refactorUndo: {
-		request: Empty,
+		request: Unwind,
 		response: RefactorUndoResultSchema,
 		lifecycle: "query",
 		mutates: true,
@@ -643,7 +671,7 @@ export const DAEMON_METHODS = {
 	},
 	/** Restore tracked files and close. */
 	refactorRevert: {
-		request: Empty,
+		request: Unwind,
 		response: RefactorRevertResultSchema,
 		lifecycle: "query",
 		mutates: true,

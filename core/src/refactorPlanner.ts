@@ -10,6 +10,7 @@ import type {
 	Range,
 	RenameConcern,
 	RenameSite,
+	TextEdit,
 	UnknownReason,
 } from "@nyaa-lexicon/protocol";
 import {
@@ -56,6 +57,7 @@ import {
 	sharesSpan,
 	siteBlocked,
 	spanChanged,
+	staleSincePlanned,
 	subjectRefused,
 	unrepresentableModule,
 } from "./refusals.js";
@@ -166,7 +168,8 @@ export type ReplacementPlan =
 export type MoveEditsOutcome =
 	| {
 			ok: true;
-			files: Array<{ module: string; text: string }>;
+			/** Apply edits to the base, or empty text when created, to get `text`. */
+			files: Array<{ module: string; text: string; edits: TextEdit[] }>;
 			/** Each module's hash as its edits were cut, null where absent. */
 			bases: Array<{ module: string; hash: string | null }>;
 			issues: RefactorIssue[];
@@ -191,6 +194,8 @@ export type InsertPlan =
 			created: boolean;
 			/** Whole candidate file, splice applied. */
 			candidate: string;
+			/** Edit that produces candidate text from the base, or empty text if created. */
+			edits: TextEdit[];
 			/** The exact whole-line block spliced in, indentation applied, framing blanks excluded. */
 			block: string;
 			/** Null when the module is being created. */
@@ -311,8 +316,9 @@ export class RefactorPlanner {
 
 		if (this.blockPresent(point, block)) return { state: "present", module: point.module };
 
-		const candidate = this.spliceBlock(point, block);
-		if (typeof candidate !== "string") return { state: "refused", reason: editsRefused(candidate.problem) };
+		const spliced = this.spliceBlock(point, block);
+		if ("problem" in spliced) return { state: "refused", reason: editsRefused(spliced.problem) };
+		const candidate = spliced.text;
 
 		const owner = this.probe.owner(point.module);
 		if (!owner.owned) return { state: "refused", reason: noProviderOwns(point.module, owner.reason) };
@@ -330,6 +336,7 @@ export class RefactorPlanner {
 			module: point.module,
 			created: point.created,
 			candidate,
+			edits: spliced.edits,
 			block,
 			baseHash: point.created ? null : hashContent(point.before),
 			facts: context.seen(),
@@ -436,21 +443,32 @@ export class RefactorPlanner {
 	}
 
 	/** Whole-line splice, framed by blank lines where the neighbors are not already blank. */
-	private spliceBlock(point: SplicePoint, block: string): string | { problem: string } {
+	private spliceBlock(point: SplicePoint, block: string): { text: string; edits: TextEdit[] } | { problem: string } {
+		const edit = this.spliceEdit(point, block);
+		if ("problem" in edit) return edit;
+		const applied = applyEdits(point.before, [edit]);
+		return "problem" in applied ? applied : { text: applied.text, edits: [edit] };
+	}
+
+	private spliceEdit(point: SplicePoint, block: string): TextEdit | { problem: string } {
+		const coords = coordinatesOf(point.before);
 		if (point.line !== null) {
-			const coords = coordinatesOf(point.before);
 			const above = point.line === 0 ? undefined : coords.lineText(point.line - 1);
 			const leadingBlank = above !== undefined && above.trim().length > 0 ? "\n" : "";
-			const newText = `${leadingBlank}${block}\n${point.trailingBlank ? "\n" : ""}`;
 			const at = { line: point.line, character: 0 };
-			const applied = applyEdits(point.before, [{ range: { start: at, end: at }, newText }]);
-			return "problem" in applied ? applied : applied.text;
+			return {
+				range: { start: at, end: at },
+				newText: `${leadingBlank}${block}\n${point.trailingBlank ? "\n" : ""}`,
+			};
 		}
 
-		if (point.before.length === 0) return `${block}\n`;
-		const base = point.before.endsWith("\n") ? point.before : `${point.before}\n`;
-		const separator = base.endsWith("\n\n") ? "" : "\n";
-		return `${base}${separator}${block}\n`;
+		const end = coords.positionAt(point.before.length);
+		if (end === undefined) return { problem: `the end of ${point.module} has no position` };
+		const range = { start: end, end };
+		if (point.before.length === 0) return { range, newText: `${block}\n` };
+		const newline = point.before.endsWith("\n") ? "" : "\n";
+		const separator = `${point.before}${newline}`.endsWith("\n\n") ? "" : "\n";
+		return { range, newText: `${newline}${separator}${block}\n` };
 	}
 
 	/** Silence from a provider that never claimed syntax reporting is not approval. Said out loud,
@@ -570,7 +588,7 @@ export class RefactorPlanner {
 	 */
 	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
 		const requests = this.moveRequests(plan, context);
-		const files: Array<{ module: string; text: string }> = [];
+		const files: Array<{ module: string; text: string; edits: TextEdit[] }> = [];
 		const bases: Array<{ module: string; hash: string | null }> = [];
 		const blocked: RefactorIssue[] = [];
 
@@ -605,7 +623,7 @@ export class RefactorPlanner {
 			if ("problem" in applied) {
 				return { ok: false, issues: [], reason: providerRefused(request.module, applied.problem) };
 			}
-			files.push({ module: request.module, text: applied.text });
+			files.push({ module: request.module, text: applied.text, edits: answer.edits });
 		}
 
 		if (blocked.length > 0) {
@@ -1153,6 +1171,9 @@ export class RefactorPlanner {
 		const plan = await this.prepareRename(symbolId, newName, new ReadContext(this.store));
 		const blocker = plan.blockers[0];
 		if (blocker !== undefined) return { ok: false, plan, reason: blocker.detail };
+		// File changes invalidate stored ranges.
+		const stale = this.source.staleModules(plan.files.map((file) => file.module));
+		if (stale.length > 0) return { ok: false, plan, reason: staleSincePlanned(stale, "rename") };
 
 		const files: FileEdits[] = [];
 		const blocked: RenameBlocker[] = [];
@@ -1182,7 +1203,8 @@ export class RefactorPlanner {
 					sites: [{ module: file.module, line: site.range.start.line + 1 }],
 				});
 			}
-			if (answer.edits.length > 0) files.push({ module: file.module, edits: answer.edits });
+			if (answer.edits.length > 0)
+				files.push({ module: file.module, contentHash: hashContent(text), edits: answer.edits });
 		}
 
 		if (blocked.length > 0) {

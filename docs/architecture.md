@@ -426,10 +426,21 @@ the baseline.
 The journal survives an index rebuild, because facts are derivable from source and an undo record
 is not. A journal table that cannot be read fails the open rather than being treated as absent:
 opening as though the transaction never existed would strand files already written to disk.
+An open transaction carries a durable revision advanced by changes to its step, image, issue, rebind
+and recovery-intent rows. Status gives that revision to callers, and commit, undo and revert compare
+it before acting, so a removed step or a new baseline cannot make an old view current again.
 
 Recovery runs at startup before the daemon answers anything, and judges each file by what it holds
 rather than by the phase alone. A file matching neither its before nor its after image belongs to
 someone else and is reported as a conflict, never overwritten.
+
+An image stores regular-file bytes or absence. Snapshots use `lstat` and `O_NOFOLLOW`, and compare
+the opened handle's device and inode with the earlier `lstat`, so a link or a path swapped before
+open is never read as a file. Tracking or journaling a non-regular path refuses before writing the
+journal. A non-regular path at a step's output does not match its image. Restore replaces links or
+removes them without following their targets. Undo and revert refuse before recording recovery intent
+when a directory blocks a restore. Startup recovery keeps the transaction, intent and blobs when any
+restore conflicts; retrying the same operation finishes after the directory is removed.
 
 A transaction records its origin. `refactor_start` opens an `explicit` one, which recovery leaves open
 because a session may still be holding it. A standalone step opens an `own` one inside the gate when

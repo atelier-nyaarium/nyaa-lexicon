@@ -31,7 +31,11 @@ export type ApplyOutcome = WriteOutcome;
  * This is not atomic ACROSS files: a crash between two renames leaves some applied. Making that
  * impossible needs a journal, and the pre-check removes every failure this code can actually see.
  */
-export function writeAll(workspaceRoot: string, files: FileEdits[], readSource: SourceReader): ApplyOutcome {
+export function writeAll(
+	workspaceRoot: string,
+	files: Array<Pick<FileEdits, "module" | "edits">>,
+	readSource: SourceReader,
+): ApplyOutcome {
 	const staged: Array<{ module: string; text: string }> = [];
 
 	for (const file of files) {

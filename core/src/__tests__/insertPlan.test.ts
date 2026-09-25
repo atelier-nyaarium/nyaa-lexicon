@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { composeSymbolId, type FileFacts, hashContent, type Range } from "@nyaa-lexicon/protocol";
+import { applyEdits, composeSymbolId, type FileFacts, hashContent, type Range } from "@nyaa-lexicon/protocol";
 import type { ImportResolver } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { type InsertArgs, RefactorPlanner } from "../refactorPlanner";
@@ -440,6 +440,33 @@ describe("appending to a module", () => {
 		expect(outcome.state).toBe("planned");
 		if (outcome.state !== "planned") return;
 		expect(outcome.candidate).toBe("function alpha() {}\n\nfunction omega() {}\n");
+	});
+
+	// Preview edit transforms base text.
+	it("hands back the one edit that turns the base text into the candidate", async () => {
+		const alpha = declarationOf({ name: "alpha", range: range(0, 0, 0, 19) });
+		const beta = declarationOf({ name: "beta", range: range(1, 0, 1, 18) });
+		const cases: Array<{ world: World; args: InsertArgs }> = [
+			{ world: { text: "", declarations: [] }, args: { module: "src/fresh.ts", text: "const a = 1;" } },
+			{ world: { text: "function alpha() {}", declarations: [alpha] }, args: { module: MODULE, text: "let b;" } },
+			{
+				world: { text: "function alpha() {}\n\n", declarations: [alpha] },
+				args: { module: MODULE, text: "let b;" },
+			},
+			{
+				world: { text: "function alpha() {}\nfunction beta() {}\n", declarations: [alpha, beta] },
+				args: { after: alpha.symbolId, text: "function added() {}" },
+			},
+		];
+
+		for (const { world, args } of cases) {
+			const outcome = await plan(world, args);
+
+			expect(outcome.state).toBe("planned");
+			if (outcome.state !== "planned") continue;
+			expect(outcome.edits).toHaveLength(1);
+			expect(applyEdits(outcome.created ? "" : world.text, outcome.edits)).toEqual({ text: outcome.candidate });
+		}
 	});
 });
 

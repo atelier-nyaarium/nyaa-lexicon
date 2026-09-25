@@ -1266,7 +1266,7 @@ export const RenamePlanSchema = z
 export type RenamePlan = z.infer<typeof RenamePlanSchema>;
 
 export const FileEditsSchema = z
-	.object({ module: z.string(), edits: z.array(TextEditSchema) })
+	.object({ module: z.string(), contentHash: z.string(), edits: z.array(TextEditSchema) })
 	.meta({ id: "FileEdits" });
 
 export type FileEdits = z.infer<typeof FileEditsSchema>;
@@ -1307,6 +1307,79 @@ export const MovePlanSchema = z
 
 export type MovePlan = z.infer<typeof MovePlanSchema>;
 
+/** Apply edits to the base, or empty text when created, to get `text`. */
+export const MovePreviewFileSchema = z
+	.object({
+		module: z.string(),
+		contentHash: z.string().nullable(),
+		created: z.boolean(),
+		text: z.string(),
+		edits: z.array(TextEditSchema),
+	})
+	.meta({ id: "MovePreviewFile" });
+
+export const MovePreviewSchema = z
+	.discriminatedUnion("ok", [
+		z.object({
+			ok: z.literal(true),
+			files: z.array(MovePreviewFileSchema),
+			issues: z.array(RefactorIssueSchema),
+			blockers: z.array(z.object({ module: z.string().optional(), reason: z.string() })),
+		}),
+		z.object({
+			ok: z.literal(false),
+			files: z.array(MovePreviewFileSchema),
+			issues: z.array(RefactorIssueSchema),
+			blockers: z.array(z.object({ module: z.string().optional(), reason: z.string() })),
+			reason: z.string(),
+		}),
+	])
+	.meta({ id: "MovePreview" });
+
+export type MovePreview = z.infer<typeof MovePreviewSchema>;
+
+/** Apply planned edits to the base, or empty text when created, to get `text`. */
+export const InsertPreviewSchema = z
+	.discriminatedUnion("state", [
+		z.object({
+			state: z.literal("planned"),
+			module: z.string(),
+			contentHash: z.string().nullable(),
+			created: z.boolean(),
+			text: z.string(),
+			edits: z.array(TextEditSchema),
+			issues: z.array(RefactorIssueSchema),
+		}),
+		z.object({ state: z.literal("present"), module: z.string(), issues: z.array(RefactorIssueSchema) }),
+		z.object({ state: z.literal("refused"), reason: z.string(), issues: z.array(RefactorIssueSchema) }),
+	])
+	.meta({ id: "InsertPreview" });
+
+export type InsertPreview = z.infer<typeof InsertPreviewSchema>;
+
+export const RefactorBeforeImageSchema = z
+	.union([
+		z.object({ tracked: z.literal(false) }),
+		z.object({ tracked: z.literal(true), existed: z.literal(false) }),
+		z.object({
+			tracked: z.literal(true),
+			existed: z.literal(true),
+			contentHash: z.string(),
+			encoding: z.literal("text"),
+			text: z.string(),
+		}),
+		z.object({
+			tracked: z.literal(true),
+			existed: z.literal(true),
+			contentHash: z.string(),
+			encoding: z.literal("base64"),
+			bytes: z.string(),
+		}),
+	])
+	.meta({ id: "RefactorBeforeImage" });
+
+export type RefactorBeforeImage = z.infer<typeof RefactorBeforeImageSchema>;
+
 export const StepKindSchema = z.enum(["replace", "rename", "move", "insert", "track"]).meta({ id: "StepKind" });
 
 export type StepKind = z.infer<typeof StepKindSchema>;
@@ -1327,6 +1400,7 @@ export const TransactionStatusSchema = z
 		open: z.boolean(),
 		id: z.string().optional(),
 		startedAt: z.number().optional(),
+		revision: z.number().int().nonnegative().optional(),
 		steps: z.array(TransactionStepSchema),
 		tracked: z.array(z.string()),
 		issues: z.array(RefactorIssueSchema),

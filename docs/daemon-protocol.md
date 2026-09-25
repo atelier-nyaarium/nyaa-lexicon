@@ -192,6 +192,33 @@ One method is not in the table. `shutdown` is answered by the daemon process its
 dispatch, with `{ stopping: true }` sent before it stops so the caller reads success rather than a
 dropped connection.
 
+`renameEdits` returns each edited file's `contentHash` and text edits. It refuses if a file changed
+since indexing because its edits use stored ranges.
+
+`previewMove` returns touched modules' base hashes, candidate text, `created`, edits, issues and
+blockers. `previewInsert` returns the planned module's base hash, candidate text, `created`, edits and
+issues. An identical block returns `present`, and an unsafe candidate returns `refused`. Applying
+Applying `edits` to the base, or to empty text when `created`, produces `text`. Move preview refuses
+if the source or a referencing module changed, or a write-time check detects a change. Both previews
+upgrade outline facts, share the write methods' planner path and open no transaction.
+
+`refactorBeforeImage` takes `{ module, id? }`. A tracked baseline reports whether the file existed.
+If it did, the result includes its `contentHash` and exact `text` or `base64` bytes. The result is
+`{ tracked: false }` when no transaction is open, `id` does not match, or the module has no baseline.
+
+An open `refactorStatus` includes a durable `revision`. Changes to its step, image, issue, rebind or
+recovery-intent rows advance it, including a new step, a finalized or undone step, and a baseline
+added by `refactorTrack`.
+`refactorCommit`, `refactorUndo` and `refactorRevert` accept optional
+`expect: { id, revision }` values from the last `refactorStatus` read. They refuse without changes if
+the open transaction's id or revision differs, or no transaction is open. The revision survives a
+daemon restart, so undoing a step and creating another at the same step number cannot reuse an old
+expectation.
+
+`refactorTrack` and refactor steps refuse paths that are not regular files. Snapshots never follow
+leaf links, and restore replaces a link rather than writing to its target. Undo and revert refuse
+before restoring if a directory blocks a file path, and report the path.
+
 ### One read binds an answer to its bytes
 
 `moduleDeclarations` answers one module's status (`exists`, `claimed`, `indexed`, `depth`, the

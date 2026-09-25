@@ -4,14 +4,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { RefactorUndoResult } from "@nyaa-lexicon/protocol";
+import { bunCommand } from "@nyaa-lexicon/client";
+import { applyEdits, hashContent, type RefactorUndoResult, type ResponseOf } from "@nyaa-lexicon/protocol";
 import { createDispatch, daemonHandlers, type Gate } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
-import { TransactionManager } from "../transactions";
+import { hashBytes, TransactionManager } from "../transactions";
 
 ////////////////////////////////
 //  Helpers
@@ -67,7 +68,11 @@ beforeEach(async () => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-fixture-refactor-"));
 	store = IndexStore.open(path.join(root, "index.sqlite")).store;
 	supervisor = new ProviderSupervisor();
-	await supervisor.start({ command: [process.execPath, "run", FIXTURE], timeoutMs: 30_000 }, root);
+	const launch = bunCommand(
+		{ kind: "bun", executable: process.execPath, version: Bun.version },
+		{ platform: process.platform, env: { XDG_STATE_HOME: root }, home: root },
+	);
+	await supervisor.start({ command: [...launch, "run", FIXTURE], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
 	transactions = new TransactionManager(store, root);
 	dispatch = createDispatch(service, { transactions });
@@ -87,6 +92,51 @@ afterEach(() => {
 //  Tests
 
 describe("a move through the daemon's handlers", () => {
+	it("previews the exact files the move writes", async () => {
+		const before = new Map(["a.ref", "b.ref"].map((module) => [module, read(module)]));
+		const status = transactions.status();
+		const preview = (await dispatch("previewMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+		})) as ResponseOf<"previewMove">;
+
+		expect(preview.ok).toBe(true);
+		if (!preview.ok) throw new Error(preview.reason);
+		const copy = new Map(before);
+		for (const file of preview.files) {
+			const prior = before.get(file.module) ?? null;
+			expect(file.contentHash).toBe(prior === null ? null : hashContent(prior));
+			expect(file.created).toBe(prior === null);
+			expect(applyEdits(prior ?? "", file.edits)).toEqual({ text: file.text });
+			copy.set(file.module, file.text);
+		}
+		expect(new Map(["a.ref", "b.ref"].map((module) => [module, read(module)]))).toEqual(before);
+		expect(transactions.status()).toEqual(status);
+
+		const outcome = (await dispatch("refactorMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+		})) as ResponseOf<"refactorMove">;
+		expect(outcome.moved).toBe(true);
+		for (const file of preview.files) expect(read(file.module)).toBe(copy.get(file.module) ?? null);
+	}, 60_000);
+
+	it("reports a refused target as a blocker", async () => {
+		put("b.ref", "export class Cart {}\n");
+		await service.indexFile("b.ref");
+		const preview = (await dispatch("previewMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+		})) as ResponseOf<"previewMove">;
+
+		expect(preview.ok).toBe(false);
+		if (preview.ok) throw new Error("colliding target preview succeeded");
+		expect(preview.blockers.length).toBeGreaterThan(0);
+		expect(preview.reason).toContain("TargetCollision");
+		expect(read("a.ref")).toBe("export class Cart {}\n");
+		expect(read("b.ref")).toBe("export class Cart {}\n");
+	}, 60_000);
+
 	it("rebinds the subject with the move as evidence, and its answer recalls at the new address", async () => {
 		const outcome = await dispatch("refactorMove", { symbolId: CART, toModule: "b.ref" });
 
@@ -194,6 +244,107 @@ describe("a move through the daemon's handlers", () => {
 		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
 		expect(store.answer(MOVED, "describe")?.prose).toBe("The other cart.");
 		expect(journaledRebinds()).toBe(0);
+	});
+});
+
+describe("read-only refactor previews", () => {
+	it("previews the exact insert text and leaves disk and transaction state alone", async () => {
+		const before = read("a.ref");
+		const status = transactions.status();
+		const preview = (await dispatch("previewInsert", {
+			module: "a.ref",
+			text: "export const Extra = 1",
+		})) as ResponseOf<"previewInsert">;
+
+		expect(preview.state).toBe("planned");
+		if (preview.state !== "planned") {
+			throw new Error(preview.state === "refused" ? preview.reason : "insert is already present");
+		}
+		const copy = new Map([["a.ref", before]]);
+		copy.set(preview.module, preview.text);
+		expect(preview.contentHash).toBe(hashContent(before as string));
+		expect(preview.created).toBe(false);
+		expect(applyEdits(before as string, preview.edits)).toEqual({ text: preview.text });
+		expect(read("a.ref")).toBe(before);
+		expect(transactions.status()).toEqual(status);
+
+		const outcome = (await dispatch("refactorInsert", {
+			module: "a.ref",
+			text: "export const Extra = 1",
+		})) as ResponseOf<"refactorInsert">;
+		expect(outcome.inserted).toBe(true);
+		expect(read("a.ref")).toBe(copy.get("a.ref") ?? null);
+	}, 60_000);
+
+	it("does not open a transaction", async () => {
+		await dispatch("refactorCommit", {});
+		expect(transactions.status().open).toBe(false);
+		await dispatch("previewMove", { symbolId: CART, toModule: "b.ref" });
+		await dispatch("previewInsert", { module: "a.ref", text: "export const Extra = 1" });
+		expect(transactions.status().open).toBe(false);
+		expect(await dispatch("refactorBeforeImage", { module: "a.ref" })).toEqual({ tracked: false });
+	}, 60_000);
+
+	it("returns the tracked before-image for edited, created and untracked modules", async () => {
+		const original = read("a.ref") as string;
+		await dispatch("refactorTrack", { module: "a.ref" });
+		put("a.ref", "export class Changed {}\n");
+		await dispatch("refactorTrack", { module: "created.ref" });
+		put("created.ref", "created later\n");
+		const binary = Buffer.from([0, 255, 1]);
+		writeFileSync(path.join(root, "binary.ref"), binary);
+		await dispatch("refactorTrack", { module: "binary.ref" });
+		writeFileSync(path.join(root, "binary.ref"), Buffer.from("changed"));
+
+		expect(await dispatch("refactorBeforeImage", { module: "a.ref" })).toEqual({
+			tracked: true,
+			existed: true,
+			contentHash: hashContent(original),
+			encoding: "text",
+			text: original,
+		});
+		expect(await dispatch("refactorBeforeImage", { module: "created.ref" })).toEqual({
+			tracked: true,
+			existed: false,
+		});
+		expect(await dispatch("refactorBeforeImage", { module: "binary.ref" })).toEqual({
+			tracked: true,
+			existed: true,
+			contentHash: hashBytes(binary),
+			encoding: "base64",
+			bytes: binary.toString("base64"),
+		});
+		expect(await dispatch("refactorBeforeImage", { module: "untracked.ref" })).toEqual({ tracked: false });
+		expect(await dispatch("refactorBeforeImage", { module: "a.ref", id: transactions.status().id })).toMatchObject({
+			tracked: true,
+		});
+		expect(await dispatch("refactorBeforeImage", { module: "a.ref", id: "rt-another" })).toEqual({
+			tracked: false,
+		});
+	}, 60_000);
+});
+
+describe("acting on the refactor that was shown", () => {
+	it("refuses undo, revert and commit shown an older refactor, and changes nothing", async () => {
+		const shown = transactions.status();
+		const id = shown.id as string;
+		const revision = shown.revision as number;
+		await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
+
+		expect(await dispatch("refactorUndo", { expect: { id, revision } })).toMatchObject({ undone: false });
+		expect(await dispatch("refactorRevert", { expect: { id, revision } })).toMatchObject({ reverted: false });
+		expect(await dispatch("refactorCommit", { expect: { id: "rt-another", revision } })).toMatchObject({
+			committed: false,
+		});
+		expect(read("a.ref")).toBe("export class Basket {}\n");
+		const current = transactions.status();
+		expect(current).toMatchObject({ open: true, id, steps: [{ stepNo: 1 }] });
+		if (current.revision === undefined) throw new Error("open transaction has no revision");
+
+		expect(await dispatch("refactorUndo", { expect: { id, revision: current.revision } })).toMatchObject({
+			undone: true,
+		});
+		expect(read("a.ref")).toBe("export class Cart {}\n");
 	});
 });
 

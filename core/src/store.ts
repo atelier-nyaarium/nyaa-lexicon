@@ -185,6 +185,52 @@ CREATE TABLE IF NOT EXISTS refactor_recovery_intents (
 );
 `;
 
+const REFACTOR_REVISION_TRIGGERS = `
+CREATE TRIGGER IF NOT EXISTS refactor_steps_revision_insert AFTER INSERT ON refactor_steps
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_steps_revision_update AFTER UPDATE ON refactor_steps
+WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.stepNo IS NOT NEW.stepNo OR OLD.kind IS NOT NEW.kind
+  OR OLD.phase IS NOT NEW.phase OR OLD.plan IS NOT NEW.plan OR OLD.createdAt IS NOT NEW.createdAt
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_steps_revision_delete AFTER DELETE ON refactor_steps
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_images_revision_insert AFTER INSERT ON refactor_images
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_images_revision_update AFTER UPDATE ON refactor_images
+WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.scope IS NOT NEW.scope OR OLD.stepNo IS NOT NEW.stepNo
+  OR OLD.module IS NOT NEW.module OR OLD.existedBefore IS NOT NEW.existedBefore OR OLD.beforeHash IS NOT NEW.beforeHash
+  OR OLD.existsAfter IS NOT NEW.existsAfter OR OLD.afterHash IS NOT NEW.afterHash
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_images_revision_delete AFTER DELETE ON refactor_images
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_issues_revision_insert AFTER INSERT ON refactor_issues
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_issues_revision_update AFTER UPDATE ON refactor_issues
+WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.stepNo IS NOT NEW.stepNo OR OLD.kind IS NOT NEW.kind
+  OR OLD.detail IS NOT NEW.detail OR OLD.module IS NOT NEW.module OR OLD.line IS NOT NEW.line
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_issues_revision_delete AFTER DELETE ON refactor_issues
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_rebinds_revision_insert AFTER INSERT ON refactor_rebinds
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_rebinds_revision_update AFTER UPDATE ON refactor_rebinds
+WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.stepNo IS NOT NEW.stepNo OR OLD.ordinal IS NOT NEW.ordinal
+  OR OLD.subjectId IS NOT NEW.subjectId OR OLD.fromSymbolId IS NOT NEW.fromSymbolId
+  OR OLD.toSymbolId IS NOT NEW.toSymbolId OR OLD.priorFrom IS NOT NEW.priorFrom
+  OR OLD.priorEvidence IS NOT NEW.priorEvidence OR OLD.priorBoundAt IS NOT NEW.priorBoundAt
+  OR OLD.priorState IS NOT NEW.priorState OR OLD.priorOrphanedAt IS NOT NEW.priorOrphanedAt
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_rebinds_revision_delete AFTER DELETE ON refactor_rebinds
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_insert AFTER INSERT ON refactor_recovery_intents
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_update AFTER UPDATE ON refactor_recovery_intents
+WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.operation IS NOT NEW.operation OR OLD.stepNo IS NOT NEW.stepNo
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
+CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_delete AFTER DELETE ON refactor_recovery_intents
+BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
+`;
+
 // Every range is stored whole. Keeping only a start meant the index could say where something was
 // and never what text it occupied, which is the difference between navigating and editing.
 const SCHEMA = `
@@ -392,6 +438,7 @@ CREATE TABLE refactor_transactions (
   id        TEXT PRIMARY KEY,
   state     TEXT NOT NULL,
   startedAt INTEGER NOT NULL,
+  revision  INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   -- 'own': recovery closes it. Null reads as 'explicit'.
   origin    TEXT
 );
@@ -1009,6 +1056,11 @@ export class IndexStore {
 		if (!columnExists(db, "refactor_transactions", "origin")) {
 			db.exec("ALTER TABLE refactor_transactions ADD COLUMN origin TEXT");
 		}
+		if (!columnExists(db, "refactor_transactions", "revision")) {
+			db.exec(
+				"ALTER TABLE refactor_transactions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)",
+			);
+		}
 		if (!columnExists(db, "symbols", "patternCoverage")) {
 			db.exec("ALTER TABLE symbols ADD COLUMN patternCoverage TEXT");
 		}
@@ -1028,6 +1080,7 @@ export class IndexStore {
 		}
 		// Every statement is IF NOT EXISTS, so an index, trigger or view added later lands on an existing store here.
 		db.exec(KNOWLEDGE_SCHEMA);
+		db.exec(REFACTOR_REVISION_TRIGGERS);
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {

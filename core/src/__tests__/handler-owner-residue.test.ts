@@ -30,7 +30,7 @@ const STAGED = [
 ];
 
 /** The background upgrade ungated, then the answer shared. */
-const UPGRADED = ["prepareRename", "renameEdits", "planMove"];
+const UPGRADED = ["prepareRename", "renameEdits", "planMove", "previewMove", "previewInsert"];
 
 function names(source: string, pattern: RegExp): string[] {
 	return [...source.matchAll(pattern)].map((match) => match[1] as string).sort();

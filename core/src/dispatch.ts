@@ -15,8 +15,17 @@ import {
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
+import type { ReadContext } from "./readContext.js";
+import type { MoveEditsOutcome } from "./refactorPlanner.js";
 import { journaledStep, StepRefusal } from "./refactorStep.js";
-import { changedWhilePlanned, factsMovedWhilePlanned, renameBlocked, staleSincePlanned } from "./refusals.js";
+import type { PlannedMove } from "./refusalSlots.js";
+import {
+	changedWhilePlanned,
+	factsMovedWhilePlanned,
+	type Refusal,
+	renameBlocked,
+	staleSincePlanned,
+} from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
@@ -120,20 +129,7 @@ function refactorMove(
 					planned: {
 						modules: touched,
 						planRecord: { from: plan.fromModule, to: plan.toModule },
-						stale: () => {
-							if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
-								return changedWhilePlanned(plan.fromModule, "move");
-							}
-							// The target too: one that changed or appeared would be overwritten.
-							const moved = edits.bases.find((base) => service.currentHashOf(base.module) !== base.hash);
-							if (moved !== undefined) return changedWhilePlanned(moved.module, "move");
-							// Import sites were chosen from stored ranges; the same rule applies.
-							const stale = service.staleModules(plan.referencing);
-							if (stale.length > 0) return staleSincePlanned(stale, "move");
-							// Rows re-committed under an equal hash: a re-parse or an upgrade.
-							const movedFacts = service.factsMoved(context.seen());
-							return movedFacts.length > 0 ? factsMovedWhilePlanned(movedFacts, "move") : null;
-						},
+						stale: () => moveStale(service, plan, edits, context),
 						begin: () => {
 							for (const id of plan.closure) {
 								const rebased = service.rebaseIntoModule(id, plan.symbolId, plan.toModule);
@@ -379,6 +375,98 @@ function refactorInsert(
 	);
 }
 
+function moveStale(
+	service: LexiconService,
+	plan: Extract<PlannedMove, { ok: true }>,
+	edits: Extract<MoveEditsOutcome, { ok: true }>,
+	context: ReadContext,
+): Refusal | null {
+	if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
+		return changedWhilePlanned(plan.fromModule, "move");
+	}
+	// Target changes would be overwritten.
+	const moved = edits.bases.find((base) => service.currentHashOf(base.module) !== base.hash);
+	if (moved !== undefined) return changedWhilePlanned(moved.module, "move");
+	// Import edits use stored ranges.
+	const stale = service.staleModules(plan.referencing);
+	if (stale.length > 0) return staleSincePlanned(stale, "move");
+	// Equal hashes can hide reparses or upgrades.
+	const movedFacts = service.factsMoved(context.seen());
+	return movedFacts.length > 0 ? factsMovedWhilePlanned(movedFacts, "move") : null;
+}
+
+async function previewMove(
+	service: LexiconService,
+	args: { symbolId: string; toModule: string },
+): Promise<ResponseOf<"previewMove">> {
+	const refused = (reason: Refusal): ResponseOf<"previewMove"> => ({
+		ok: false,
+		files: [],
+		issues: [],
+		blockers: [{ reason }],
+		reason,
+	});
+
+	const context = service.newReadContext();
+	const plan = service.planMove(args.symbolId, args.toModule, context);
+	if (!plan.ok) return refused(plan.reason);
+	// Check stale sites before provider requests.
+	const stale = service.staleModules([plan.fromModule, ...plan.referencing]);
+	if (stale.length > 0) return refused(staleSincePlanned(stale, "move"));
+
+	const result = await service.moveEdits(plan, context);
+	if (!result.ok) {
+		const blockers =
+			result.issues.length > 0
+				? result.issues.map((issue) => ({ module: issue.module, reason: issue.detail }))
+				: [{ reason: result.reason }];
+		return {
+			ok: false,
+			files: [],
+			issues: result.issues,
+			blockers,
+			reason: result.reason,
+		};
+	}
+	const moved = moveStale(service, plan, result, context);
+	if (moved !== null) return refused(moved);
+
+	return {
+		ok: true,
+		files: result.files.map((file) => {
+			const base = result.bases.find((candidate) => candidate.module === file.module);
+			if (base === undefined) throw new Error(`move preview has no base for ${file.module}`);
+			return {
+				module: file.module,
+				contentHash: base.hash,
+				created: base.hash === null,
+				text: file.text,
+				edits: file.edits,
+			};
+		}),
+		issues: result.issues,
+		blockers: [],
+	};
+}
+
+async function previewInsert(
+	service: LexiconService,
+	args: { after?: string | undefined; module?: string | undefined; text: string },
+): Promise<ResponseOf<"previewInsert">> {
+	const plan = await service.planInsert(args);
+	if (plan.state === "refused") return { state: "refused", reason: plan.reason, issues: [] };
+	if (plan.state === "present") return { state: "present", module: plan.module, issues: [] };
+	return {
+		state: "planned",
+		module: plan.module,
+		contentHash: plan.baseHash,
+		created: plan.created,
+		text: plan.candidate,
+		edits: plan.edits,
+		issues: plan.issues,
+	};
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -521,20 +609,24 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		planMove: upgradedRead((params) =>
 			service.planMove(params.symbolId, params.toModule, service.newReadContext()),
 		),
+		// Upgrade outlines before preview reads.
+		previewMove: upgradedRead((params) => previewMove(service, params)),
+		previewInsert: upgradedRead((params) => previewInsert(service, params)),
 		indexFile: write((params) => service.indexFile(params.module)),
 		symbolSource: read((params) => service.symbolSource(params)),
 		refactorStart: write(() => transactions().start()),
 		refactorStatus: read(() => transactions().status()),
 		refactorTrack: write((params) => transactions().track(params.module)),
+		refactorBeforeImage: read((params) => transactions().beforeImage(params.module, params.id)),
 		// Restoring puts back text the index does not describe, so the facts for those files are
 		// of a version that no longer exists on disk.
-		refactorUndo: write(async () => {
-			const outcome = transactions().undo();
+		refactorUndo: write(async (params) => {
+			const outcome = transactions().undo(params.expect);
 			for (const module of outcome.modules ?? []) await service.indexFile(module);
 			return outcome;
 		}),
-		refactorRevert: write(async () => {
-			const outcome = transactions().revert();
+		refactorRevert: write(async (params) => {
+			const outcome = transactions().revert(params.expect);
 			for (const module of outcome.modules) await service.indexFile(module);
 			return outcome;
 		}),

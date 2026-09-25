@@ -1,7 +1,8 @@
 // One journaled step over a fake world, with the gate held between its plan and its write.
 //
 // A plan runs outside the gate and its write inside, so what the world does in between is the
-// race the step's stale check exists for. The hold is released only after `between` has run.
+// race the step's stale check exists for. The hold is released only after `between` has run. A
+// preview asks the same world with nothing held.
 
 import { applyEdits } from "@nyaa-lexicon/protocol";
 import { createDispatch } from "../dispatch";
@@ -24,6 +25,8 @@ export interface StepWorld {
 	store?: IndexStore;
 	/** Text on disk per module, for a rename step's own write; a rename step only. */
 	textOf?(module: string): string;
+	/** Modules changed on disk since indexing. */
+	staleModules?(modules: string[]): string[];
 }
 
 export interface Stepped {
@@ -32,7 +35,25 @@ export interface Stepped {
 }
 
 ////////////////////////////////
+//  Constants
+
+const journal = {
+	openTransaction: () => ({ id: "rt-test", startedAt: 0, origin: "explicit" }),
+	beginStep: () => ({ ok: true, stepNo: 1 }),
+	completeStep: () => {},
+	recordIssues: () => {},
+	rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [] }),
+} as unknown as TransactionManager;
+
+////////////////////////////////
 //  Functions & Helpers
+
+/** Run a preview without holding the gate. */
+export async function askWith(world: StepWorld, method: "previewMove" | "previewInsert", params: unknown) {
+	const written: Stepped["written"] = [];
+	const service = serviceFor(world, written, () => {});
+	return { answer: await createDispatch(service, { transactions: journal })(method, params), written };
+}
 
 export async function stepWith(
 	world: StepWorld,
@@ -40,12 +61,32 @@ export async function stepWith(
 	params: unknown,
 	between: () => void,
 ): Promise<Stepped> {
-	const gate = new WorkspaceGate();
 	const written: Stepped["written"] = [];
 	let planned!: () => void;
 	const plannedOnce = new Promise<void>((resolve) => {
 		planned = resolve;
 	});
+	const service = serviceFor(world, written, () => planned());
+	const dispatch = createDispatch(service, { transactions: journal });
+
+	let release!: () => void;
+	const held = service.gate.exclusive(
+		() =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			}),
+	);
+	const call = dispatch(method, params);
+	await plannedOnce;
+	between();
+	release();
+	await held;
+	return { outcome: await call, written };
+}
+
+/** Fires when planning reads finish. */
+function serviceFor(world: StepWorld, written: Stepped["written"], planned: () => void): LexiconService {
+	const gate = new WorkspaceGate();
 	const answering =
 		<A extends unknown[], R>(plan: (...args: A) => Promise<R>) =>
 		async (...args: A): Promise<R> => {
@@ -54,7 +95,7 @@ export async function stepWith(
 			return answer;
 		};
 
-	const service = {
+	return {
 		gate,
 		upgradeRemaining: async () => {},
 		newReadContext: () => new ReadContext(world.store as IndexStore),
@@ -92,35 +133,11 @@ export async function stepWith(
 		},
 		factsMoved: (...args: Parameters<RefactorPlanner["factsMoved"]>) => world.planner.factsMoved(...args),
 		currentHashOf: (module: string) => world.currentHashOf(module),
-		staleModules: (): string[] => [],
+		staleModules: (modules: string[]) => world.staleModules?.(modules) ?? [],
 		declarationsIn: (module: string) => world.declarationsIn(module),
 		writeModule: (module: string, text: string) => {
 			written.push({ module, text });
 		},
 		indexFile: async (module: string) => ({ module, action: "indexed" }),
 	} as unknown as LexiconService;
-
-	const transactions = {
-		openTransaction: () => ({ id: "rt-test", startedAt: 0, origin: "explicit" }),
-		beginStep: () => ({ ok: true, stepNo: 1 }),
-		completeStep: () => {},
-		recordIssues: () => {},
-		rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [] }),
-	} as unknown as TransactionManager;
-
-	const dispatch = createDispatch(service, { transactions });
-
-	let release!: () => void;
-	const held = gate.exclusive(
-		() =>
-			new Promise<void>((resolve) => {
-				release = resolve;
-			}),
-	);
-	const call = dispatch(method, params);
-	await plannedOnce;
-	between();
-	release();
-	await held;
-	return { outcome: await call, written };
 }

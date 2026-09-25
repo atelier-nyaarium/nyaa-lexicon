@@ -424,6 +424,30 @@ export function nothingToUndo(): Refusal {
 	return mint(`this transaction has no steps to undo`);
 }
 
+export function refactorChangedSinceShown(): Refusal {
+	return mint(`the refactor changed since it was shown. Read refactor_status again and decide on what it holds now`);
+}
+
+export function recoveryPending(operation: "undo" | "revert"): Refusal {
+	return mint(
+		`a ${operation} is still restoring this transaction. Remove any blocking directory, then call refactor_${operation} again`,
+	);
+}
+
+export function notARegularFile(module: string, found: "link" | "directory" | "special"): Refusal {
+	const what = found === "link" ? "a symbolic link" : found === "directory" ? "a directory" : "not a regular file";
+	return mint(
+		`${module} is ${what}, and a refactor snapshots regular files only. Name the file itself, or edit this path by hand`,
+	);
+}
+
+export function directoryInTheWay(modules: string[], operation: "undo" | "revert"): Refusal {
+	const them = modules.length === 1 ? "it" : "them";
+	return mint(
+		`${modules.join(", ")} ${modules.length === 1 ? "is" : "are"} now a directory, so the ${operation} cannot restore ${them}. Delete ${them} and ${operation} again`,
+	);
+}
+
 /** The step is journaled and the files are not, so the caller is told what still stands. */
 export function stepNotWritten(kind: string, problem: string, stranded: string | null): Refusal {
 	const remains =

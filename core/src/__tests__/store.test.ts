@@ -548,7 +548,7 @@ describe("opening the index", () => {
 		expect(second.rebuilt).toBe(true);
 
 		const open = second.store.journal((db) => db.prepare("SELECT * FROM refactor_transactions").all());
-		expect(open).toEqual([{ id: "t1", state: "open", startedAt: 1, origin: null }]);
+		expect(open).toEqual([{ id: "t1", state: "open", startedAt: 1, revision: 3, origin: null }]);
 		expect(second.store.blob("blob-a")).toEqual(before);
 		const moves = second.store.journal((db) =>
 			db.prepare("SELECT subjectId, toSymbolId FROM refactor_rebinds WHERE transactionId = 't1'").all(),

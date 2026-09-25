@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { IndexStore } from "../store";
-import { TransactionManager } from "../transactions";
+import { hashBytes, readLeaf, TransactionManager } from "../transactions";
 
 ////////////////////////////////
 //  Helpers
@@ -12,7 +22,7 @@ let root: string;
 let store: IndexStore;
 let manager: TransactionManager;
 
-function write(module: string, text: string) {
+function write(module: string, text: string | Uint8Array) {
 	const full = path.join(root, module);
 	mkdirSync(path.dirname(full), { recursive: true });
 	writeFileSync(full, text);
@@ -72,6 +82,137 @@ describe("holding one transaction per workspace", () => {
 		manager.start();
 		manager.commit();
 		expect(manager.start().started).toBe(true);
+	});
+});
+
+describe("reading tracked before-images", () => {
+	it("returns the opening text, absent-file state, bytes and untracked state", () => {
+		const opening = Buffer.from("opening\n");
+		const binary = Buffer.from([0, 255, 1]);
+		write("tracked.ts", opening);
+		write("binary.ts", binary);
+		const { id } = manager.start();
+		manager.track("tracked.ts");
+		manager.track("created.ts");
+		manager.track("binary.ts");
+		write("tracked.ts", "edited\n");
+		write("created.ts", "created later\n");
+		write("binary.ts", "edited\n");
+
+		expect(manager.beforeImage("tracked.ts")).toEqual({
+			tracked: true,
+			existed: true,
+			contentHash: hashBytes(opening),
+			encoding: "text",
+			text: "opening\n",
+		});
+		expect(manager.beforeImage("created.ts")).toEqual({ tracked: true, existed: false });
+		expect(manager.beforeImage("binary.ts")).toEqual({
+			tracked: true,
+			existed: true,
+			contentHash: hashBytes(binary),
+			encoding: "base64",
+			bytes: binary.toString("base64"),
+		});
+		expect(manager.beforeImage("untracked.ts")).toEqual({ tracked: false });
+		expect(manager.beforeImage("tracked.ts", id)).toMatchObject({ tracked: true, text: "opening\n" });
+		expect(manager.beforeImage("tracked.ts", "rt-another")).toEqual({ tracked: false });
+		manager.commit();
+		expect(manager.beforeImage("tracked.ts")).toEqual({ tracked: false });
+	});
+});
+
+describe("acting on the transaction that was shown", () => {
+	it("refuses commit, undo and revert once its id or revision moved, changing nothing", () => {
+		write("a.ts", "original\n");
+		const { id } = manager.start();
+		const shown = manager.status();
+		if (shown.revision === undefined) throw new Error("open transaction has no revision");
+		step("replace", { "a.ts": "edited\n" });
+		const current = manager.status();
+		if (current.revision === undefined) throw new Error("open transaction has no revision");
+
+		for (const stale of [
+			{ id, revision: shown.revision },
+			{ id: "rt-another", revision: current.revision },
+		]) {
+			expect(manager.undo(stale).undone).toBe(false);
+			expect(manager.revert(stale).reverted).toBe(false);
+			expect(manager.commit({ expect: stale }).committed).toBe(false);
+		}
+		expect(read("a.ts")).toBe("edited\n");
+		expect(manager.status()).toMatchObject({ open: true, id, steps: [{ stepNo: 1 }] });
+
+		expect(manager.undo({ id, revision: current.revision }).undone).toBe(true);
+		const afterUndo = manager.status();
+		if (afterUndo.revision === undefined) throw new Error("open transaction has no revision");
+		expect(manager.commit({ expect: { id, revision: afterUndo.revision } }).committed).toBe(true);
+		expect(manager.revert({ id, revision: afterUndo.revision }).reverted).toBe(false);
+	});
+
+	it("does not accept a reused step number after undo", () => {
+		write("a.ts", "original\n");
+		const { id } = manager.start();
+		step("replace", { "a.ts": "one\n" });
+		step("replace", { "a.ts": "two\n" });
+		const shown = manager.status();
+		if (shown.revision === undefined) throw new Error("open transaction has no revision");
+
+		expect(manager.undo({ id, revision: shown.revision }).undone).toBe(true);
+		step("replace", { "a.ts": "replacement two\n" });
+		const current = manager.status();
+		if (current.revision === undefined) throw new Error("open transaction has no revision");
+		expect(current.steps.map(({ stepNo }) => stepNo)).toEqual([1, 2]);
+		expect(current.revision).toBeGreaterThan(shown.revision);
+
+		expect(manager.undo({ id, revision: shown.revision }).undone).toBe(false);
+		expect(manager.revert({ id, revision: shown.revision }).reverted).toBe(false);
+		expect(manager.commit({ expect: { id, revision: shown.revision } }).committed).toBe(false);
+		expect(read("a.ts")).toBe("replacement two\n");
+		expect(manager.status().revision).toBe(current.revision);
+	});
+
+	it("advances and persists the revision when tracking adds a baseline", () => {
+		write("a.ts", "original\n");
+		manager.start();
+		const shown = manager.status();
+		if (shown.revision === undefined) throw new Error("open transaction has no revision");
+
+		expect(manager.track("a.ts").tracked).toBe(true);
+		const tracked = manager.status();
+		if (tracked.revision === undefined) throw new Error("open transaction has no revision");
+		expect(tracked.revision).toBeGreaterThan(shown.revision);
+		expect(manager.track("a.ts").tracked).toBe(true);
+		expect(manager.status().revision).toBe(tracked.revision);
+		const id = tracked.id as string;
+		expect(manager.undo({ id, revision: shown.revision }).undone).toBe(false);
+		expect(manager.revert({ id, revision: shown.revision }).reverted).toBe(false);
+		expect(manager.commit({ expect: { id, revision: shown.revision } }).committed).toBe(false);
+		expect(manager.status().tracked).toEqual(["a.ts"]);
+
+		store.close();
+		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+		manager = new TransactionManager(store, root);
+		expect(manager.status().revision).toBe(tracked.revision);
+	});
+});
+
+describe("opening a path without following a swapped leaf", () => {
+	it("refuses a file replaced between lstat and open", () => {
+		const full = path.join(root, "swap.ts");
+		const old = path.join(root, "old.ts");
+		const replacement = path.join(root, "replacement.ts");
+		write("swap.ts", "before\n");
+		write("replacement.ts", "after\n");
+
+		const leaf = readLeaf(full, (target, flags) => {
+			renameSync(target, old);
+			renameSync(replacement, target);
+			return openSync(target, flags);
+		});
+
+		expect(leaf).toEqual({ kind: "link" });
+		expect(readFileSync(old, "utf8")).toBe("before\n");
 	});
 });
 
@@ -234,6 +375,77 @@ describe("committing", () => {
 	});
 });
 
+// Directories at restore paths block undo.
+describe("restoring where a directory now stands", () => {
+	beforeEach(() => {
+		write("a.ts", "original\n");
+		manager.start();
+		step("replace", { "a.ts": "edited\n", "b.ts": "created\n" });
+		rmSync(path.join(root, "b.ts"));
+		write("b.ts/inner.ts", "mine\n");
+	});
+
+	it("refuses undo and revert before restoring anything, naming the directory", () => {
+		expect(manager.undo()).toMatchObject({ undone: false, reason: expect.stringContaining("b.ts") });
+		expect(manager.revert()).toMatchObject({ reverted: false, reason: expect.stringContaining("b.ts") });
+
+		expect(read("a.ts")).toBe("edited\n");
+		expect(read("b.ts/inner.ts")).toBe("mine\n");
+		// No recovery intent remains.
+		new TransactionManager(store, root).recover();
+		expect(read("a.ts")).toBe("edited\n");
+		expect(manager.status().steps).toHaveLength(1);
+	});
+
+	it("reverts once the directory is deleted", () => {
+		rmSync(path.join(root, "b.ts"), { recursive: true });
+
+		expect(manager.revert().reverted).toBe(true);
+		expect(read("a.ts")).toBe("original\n");
+		expect(read("b.ts")).toBeNull();
+	});
+});
+
+// Link reads and writes affect the target.
+describe("never reading or writing through a leaf link", () => {
+	beforeEach(() => {
+		write("a.ts", "original\n");
+		write("elsewhere.txt", "edited\n");
+		manager.start();
+	});
+
+	function link(module: string): void {
+		rmSync(path.join(root, module), { force: true });
+		symlinkSync(path.join(root, "elsewhere.txt"), path.join(root, module));
+	}
+
+	it("refuses to track a link or journal a step over one", () => {
+		link("linked.ts");
+
+		expect(manager.track("linked.ts")).toMatchObject({ tracked: false, reason: expect.any(String) });
+		expect(manager.beginStep("replace", ["linked.ts"]).ok).toBe(false);
+		expect(manager.status()).toMatchObject({ steps: [], tracked: [] });
+	});
+
+	it("does not read a link to identical bytes as the step's output", () => {
+		step("replace", { "a.ts": "edited\n" });
+		link("a.ts");
+
+		expect(manager.undo().undone).toBe(false);
+		expect(lstatSync(path.join(root, "a.ts")).isSymbolicLink()).toBe(true);
+	});
+
+	it("reverts a file over the link that replaced it, leaving the link's target alone", () => {
+		manager.track("a.ts");
+		link("a.ts");
+
+		expect(manager.revert().reverted).toBe(true);
+		expect(lstatSync(path.join(root, "a.ts")).isFile()).toBe(true);
+		expect(read("a.ts")).toBe("original\n");
+		expect(read("elsewhere.txt")).toBe("edited\n");
+	});
+});
+
 describe("recovering after a crash", () => {
 	beforeEach(() => {
 		write("a.ts", "original\n");
@@ -308,6 +520,49 @@ describe("recovering after a crash", () => {
 		expect(outcome.closed).toBeUndefined();
 		expect(manager.start().started).toBe(false);
 	});
+
+	// Recovery preserves directories at restore paths.
+	for (const operation of ["undo", "revert"] as const) {
+		it(`finishes an interrupted ${operation}, leaving a directory in a file's place as a conflict`, () => {
+			step("replace", { "a.ts": "edited\n", "b.ts": "created\n" });
+			const dying = new TransactionManager(store, root, undefined, () => {
+				write("b.ts/inner.ts", "mine\n");
+				throw new Error("died after restoring");
+			});
+			expect(() => dying[operation]()).toThrow("died after restoring");
+
+			const recovered = new TransactionManager(store, root);
+			const outcome = recovered.recover();
+
+			expect(outcome).toMatchObject({ recovered: true, restored: ["a.ts"], conflicts: ["b.ts"] });
+			expect(read("a.ts")).toBe("original\n");
+			expect(read("b.ts/inner.ts")).toBe("mine\n");
+			expect(recovered.status()).toMatchObject({ open: true, tracked: ["a.ts", "b.ts"] });
+			expect(recovered.beforeImage("a.ts")).toMatchObject({ tracked: true, text: "original\n" });
+			expect(
+				store.journal((db) => db.prepare("SELECT operation, stepNo FROM refactor_recovery_intents").get()),
+			).toEqual({
+				operation,
+				stepNo: operation === "undo" ? 1 : null,
+			});
+			expect(recovered.commit().committed).toBe(false);
+			expect(recovered.openTransaction()).not.toBeNull();
+
+			if (operation === "undo") expect(recovered.undo().undone).toBe(false);
+			else expect(recovered.revert().reverted).toBe(false);
+
+			rmSync(path.join(root, "b.ts"), { recursive: true, force: true });
+			if (operation === "undo") expect(recovered.undo().undone).toBe(true);
+			else expect(recovered.revert().reverted).toBe(true);
+
+			expect(read("b.ts")).toBeNull();
+			if (operation === "undo") {
+				expect(recovered.status()).toMatchObject({ open: true, steps: [], tracked: ["a.ts", "b.ts"] });
+			} else {
+				expect(recovered.status().open).toBe(false);
+			}
+		});
+	}
 });
 
 // Otherwise it blocks every later session.

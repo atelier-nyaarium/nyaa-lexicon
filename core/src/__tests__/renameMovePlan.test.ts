@@ -1,11 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { composeSymbolId, hashContent, type ImportResolution, type Range } from "@nyaa-lexicon/protocol";
+import {
+	applyEdits,
+	composeSymbolId,
+	hashContent,
+	type ImportResolution,
+	type Range,
+	type ResponseOf,
+} from "@nyaa-lexicon/protocol";
 import { ImportResolver, type ResolveSpecifier } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { RefactorPlanner } from "../refactorPlanner";
 import type { SourceWorkspace } from "../sourceWorkspace";
 import type { FactsStamp, IndexStore, StoredDeclaration, StoredImport, StoredReference } from "../store";
-import { stepWith } from "./steppedPlan";
+import { askWith, stepWith } from "./steppedPlan";
 
 ////////////////////////////////
 //  Helpers
@@ -92,6 +99,7 @@ function plannerFor(world: World): RefactorPlanner {
 			if (module === TARGET) return { text: null };
 			return { refused: "unknown module" };
 		},
+		staleModules: (): string[] => [],
 	};
 
 	const probe: ProviderProbe = {
@@ -275,6 +283,15 @@ interface ImportWorld {
 	imports: StoredImport[];
 	/** Per-module stamp; absent falls back to `INDEXED`. */
 	stamps?: Record<string, FactsStamp | null>;
+	/** Disk text overrides indexed text. */
+	disk?: Record<string, string>;
+}
+
+function staleIn(world: ImportWorld, modules: string[]): string[] {
+	return modules.filter((module) => {
+		const disk = world.disk?.[module];
+		return disk !== undefined && disk !== world.texts[module];
+	});
 }
 
 function multiStoreFor(world: ImportWorld): IndexStore {
@@ -333,9 +350,10 @@ function multiPlannerFor(world: ImportWorld, resolve: ResolveSpecifier): Refacto
 			};
 		},
 		writable: (module: string) => {
-			const text = world.texts[module];
+			const text = world.disk?.[module] ?? world.texts[module];
 			return { text: text === undefined ? null : text };
 		},
+		staleModules: (modules: string[]) => staleIn(world, modules),
 	};
 
 	const probe: ProviderProbe = {
@@ -553,5 +571,48 @@ describe("refusing a move when the importer's rows moved, covered by its referen
 
 		expect(outcome).toMatchObject({ moved: false, reason: expect.stringMatching(/indexed again/) });
 		expect(written).toEqual([]);
+	});
+
+	const previewOver = (world: ImportWorld) =>
+		askWith(
+			{
+				planner: multiPlannerFor(world, resolve),
+				currentHashOf: (module) => {
+					const text = world.disk?.[module] ?? world.texts[module];
+					return text === undefined ? null : hashContent(text);
+				},
+				declarationsIn: (module) => world.declarations.filter((d) => d.module === module),
+				store: multiStoreFor(world),
+				staleModules: (modules) => staleIn(world, modules),
+			},
+			"previewMove",
+			{ symbolId: alpha, toModule: TARGET },
+		);
+
+	it("previews each file as the edits that make its text, writing nothing", async () => {
+		const world = worldFor();
+
+		const { answer, written } = await previewOver(world);
+
+		const preview = answer as ResponseOf<"previewMove">;
+		expect(preview.ok).toBe(true);
+		expect(preview.files.map((file) => file.module).sort()).toEqual([MODULE, TARGET]);
+		for (const file of preview.files) {
+			const base = file.created ? "" : (world.texts[file.module] as string);
+			expect(applyEdits(base, file.edits)).toEqual({ text: file.text });
+		}
+		expect(written).toEqual([]);
+	});
+
+	// Move edits depend on stored ranges.
+	it("refuses a preview when the source or an importer changed since indexing", async () => {
+		for (const module of [MODULE, IMPORTER]) {
+			const world = worldFor();
+			world.disk = { [module]: `// edited\n${world.texts[module]}` };
+
+			const { answer } = await previewOver(world);
+
+			expect(answer).toMatchObject({ ok: false, files: [] });
+		}
 	});
 });

@@ -527,6 +527,7 @@ describe("rename", () => {
 		const found = declaration("item");
 		const firstFile: FileEdits = {
 			module: MODULE,
+			contentHash: "first",
 			edits: [
 				{ range: span(1, 0, 1, 4), newText: "renamed" },
 				{ range: span(5, 2, 5, 6), newText: "renamed" },
@@ -534,6 +535,7 @@ describe("rename", () => {
 		};
 		const secondFile: FileEdits = {
 			module: "src/other.ts",
+			contentHash: "second",
 			edits: [{ range: span(3, 1, 3, 5), newText: "renamed" }],
 		};
 		const renameEdits = mock<(symbolId: string, newName: string) => Promise<RenameEditPlan>>().mockResolvedValue(

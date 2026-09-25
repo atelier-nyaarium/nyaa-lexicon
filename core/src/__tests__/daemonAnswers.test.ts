@@ -360,9 +360,21 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	prepareRename: async () => {
 		expect((await ask("prepareRename", { symbolId: cart, newName: "Basket" })).oldName).toBe("Cart");
 	},
-	renameEdits: () => ask("renameEdits", { symbolId: cart, newName: "Basket" }),
+	renameEdits: async () => {
+		const planned = await ask("renameEdits", { symbolId: cart, newName: "Basket" });
+		if (planned.ok) expect(planned.files.every((file) => file.contentHash.length > 0)).toBe(true);
+	},
 	planMove: async () => {
 		expect((await ask("planMove", { symbolId: cart, toModule: "item.ref" })).ok).toBe(true);
+	},
+	previewMove: async () => {
+		const preview = await ask("previewMove", { symbolId: cart, toModule: "item.ref" });
+		expect(Array.isArray(preview.blockers)).toBe(true);
+	},
+	previewInsert: async () => {
+		expect((await ask("previewInsert", { module: "item.ref", text: "export const PREVIEW_STEP = 1" })).state).toBe(
+			"planned",
+		);
 	},
 	indexFile: async () => {
 		expect((await ask("indexFile", { module: "cart.ref" })).action).toBe("indexed");
@@ -428,6 +440,13 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	refactorTrack: async () => {
 		expect((await ask("refactorTrack", { module: "cart.ref" })).tracked).toBe(true);
 	},
+	refactorBeforeImage: async () => {
+		expect(await ask("refactorBeforeImage", { module: "cart.ref" })).toMatchObject({
+			tracked: true,
+			existed: true,
+			encoding: "text",
+		});
+	},
 	refactorReplace: async () => {
 		const outcome = await ask("refactorReplace", { symbolId: cart, newText: "export class Cart extends Bag" });
 		expect(outcome.replaced).toBe(true);
@@ -486,9 +505,11 @@ const REFACTOR = [
 	"refactorStart",
 	"refactorStatus",
 	"refactorTrack",
+	"refactorBeforeImage",
 	"refactorReplace",
 	"refactorReplaceSpan",
 	"refactorUndo",
+	"previewInsert",
 	"refactorInsert",
 	"refactorRename",
 	"refactorMove",
