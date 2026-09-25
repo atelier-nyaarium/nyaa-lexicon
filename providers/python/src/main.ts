@@ -12,6 +12,7 @@ import {
 	type Diagnostic,
 	defined,
 	discoverByWalk,
+	type FileRole,
 	handlersFor,
 	type ImportedName,
 	type ImportResolution,
@@ -68,6 +69,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** Python 3.12 hard and soft keywords (`keyword.kwlist` and `keyword.softkwlist`), merged. */
@@ -251,6 +253,7 @@ type RawBinding =
 interface RawFacts {
 	declarations: RawDeclaration[];
 	references: RawReference[];
+	role: FileRole;
 	imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
 	importStatements: RawImportStatement[];
 	moduleDocstring?: Range | null;
@@ -285,6 +288,7 @@ type MappedTypeAnnotation = RawTypeAnnotation & { symbolId?: string };
 interface MappedFacts {
 	declarations: Declaration[];
 	references: Reference[];
+	role: FileRole;
 	referenceScopes: Map<Reference, RawDescriptor[]>;
 	imports: RawFacts["imports"];
 	importBindings: RawImportBinding[];
@@ -320,6 +324,7 @@ async function extractFacts(python3: Python3Dispatch, module: string, text: stri
 		return {
 			declarations: [],
 			references: [],
+			role: { kind: "unknown", reason: "NotImplemented" },
 			imports: [],
 			importStatements: [],
 			moduleDocstring: null,
@@ -416,6 +421,7 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 	return {
 		declarations,
 		references,
+		role: raw.role,
 		referenceScopes,
 		imports: raw.imports,
 		importBindings: raw.importBindings,
@@ -595,6 +601,7 @@ export class PythonProvider {
 			contentHash: params.contentHash,
 			declarations: facts.declarations,
 			references: await this.wireReferences(params.module, facts),
+			role: facts.role,
 			imports: facts.imports,
 			literals: facts.literals,
 			comments: facts.comments,

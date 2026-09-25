@@ -577,6 +577,85 @@ describe("opening the index", () => {
 	});
 });
 
+describe("a file's role", () => {
+	it("reads back each role, lists entries by module within scope and cap, and says when none were reported", () => {
+		const all = () => true;
+		const empty = store.entryPoints(all, 50);
+
+		store.replaceFile({
+			module: "src/b.ts",
+			contentHash: "h1",
+			declarations: [declaration("main", "src/b.ts")],
+			references: [],
+			role: { kind: "entry", how: "main", symbolId: idOf("main", "src/b.ts") },
+		});
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			role: { kind: "entry", how: "topLevel" },
+		});
+		store.replaceFile({
+			module: "src/c.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			role: { kind: "unknown", reason: "NotImplemented" },
+		});
+		store.replaceFile({ module: "src/d.ts", contentHash: "h1", declarations: [], references: [] });
+
+		expect({
+			empty,
+			roles: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"].map((module) => store.roleOf(module)),
+			entries: store.entryPoints(all, 50),
+			capped: store.entryPoints(all, 1),
+			// Reported roles, no entries.
+			scopedEmpty: store.entryPoints((module) => module === "src/c.ts", 50),
+			// No reported roles.
+			scopedAbsent: store.entryPoints((module) => module === "src/d.ts", 50),
+		}).toEqual({
+			empty: null,
+			roles: [
+				{ kind: "entry", how: "topLevel" },
+				{ kind: "entry", how: "main", symbolId: idOf("main", "src/b.ts") },
+				{ kind: "unknown", reason: "NotImplemented" },
+				null,
+			],
+			entries: {
+				entries: [
+					{ module: "src/a.ts", how: "topLevel" },
+					{ module: "src/b.ts", how: "main", symbolId: idOf("main", "src/b.ts") },
+				],
+				more: 0,
+			},
+			capped: { entries: [{ module: "src/a.ts", how: "topLevel" }], more: 1 },
+			scopedEmpty: { entries: [], more: 0 },
+			scopedAbsent: null,
+		});
+	});
+
+	it("refuses an entry naming a declaration the file does not hold, keeping the file's old facts", () => {
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("add")],
+			references: [],
+		});
+
+		expect(() =>
+			store.replaceFile({
+				module: "src/a.ts",
+				contentHash: "h2",
+				declarations: [],
+				references: [],
+				role: { kind: "entry", how: "main", symbolId: idOf("main") },
+			}),
+		).toThrow();
+		expect(store.declarationsIn("src/a.ts").map((d) => d.name)).toEqual(["add"]);
+	});
+});
+
 /**
  * The knowledge layer's prerequisite: a fact an answer can name and later resolve.
  *

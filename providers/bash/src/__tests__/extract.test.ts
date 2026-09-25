@@ -104,6 +104,42 @@ describe("declarations", () => {
 	});
 });
 
+describe("file roles", () => {
+	const roleOf = (text: string) =>
+		provider({ "lib.sh": text }).parseFile({ module: "lib.sh", contentHash: "h", text }).role;
+
+	test("functions, assignments, sources, and setup inside if or a brace group are a library", () => {
+		for (const text of [
+			'#!/bin/bash\n# helpers\nVERSION=1\nDIR=$(dirname "$0")\nadd() { echo $(( $1 + $2 )); }\n',
+			'source "$(dirname "$0")/common.sh"\n. ./colors.sh\n\ngreet() {\n  echo "$1"\n}\n',
+			'if [ -f config.sh ]; then source ./config.sh; elif [ -n "$X" ]; then X=1; else VERSION=1; fi\n',
+			"{ VERSION=1; }\n",
+		]) {
+			expect(roleOf(text)).toEqual({ kind: "library" });
+		}
+	});
+
+	test("commands, including inside if or a brace group, are top-level entries", () => {
+		for (const text of [
+			"greet() { echo $1; }\ngreet hello\n",
+			"if [ -f config.sh ]; then source ./config.sh; else echo missing; fi\n",
+			"{ VERSION=1; echo $VERSION; }\n",
+			"VERSION=1 &\n",
+		]) {
+			expect(roleOf(text)).toEqual({ kind: "entry", how: "topLevel" });
+		}
+	});
+
+	test("a probe reports the same role as a parse", () => {
+		const text = "echo hello\n";
+		const handlers = wire(workspace({ "script.sh": text }));
+		expect(handlers.probeFile({ module: "script.sh", contentHash: "h", text }).role).toEqual({
+			kind: "entry",
+			how: "topLevel",
+		});
+	});
+});
+
 describe("references and literals", () => {
 	const text = [
 		`greet() { echo "hello $NAME" "\${GREETING:-hi}" '# not $NAME' $'tab\\there'; }`,

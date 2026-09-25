@@ -203,7 +203,7 @@ describe("every refusal is a named constructor", () => {
 	it("citationsNoLongerResolve: names the count and the stale ids", async () => {
 		const [declaration] = plant();
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
-		// The declaration moves down a line: still indexed, its fact id re-minted.
+		// Changed signatures mint new facts.
 		store.replaceFile({
 			module: "a.ref",
 			contentHash: "h2",
@@ -212,9 +212,10 @@ describe("every refusal is a named constructor", () => {
 					symbolId: SYMBOL,
 					kind: "class",
 					name: "Cart",
-					range: at(3),
-					selectionRange: at(3),
+					range: at(0),
+					selectionRange: at(0),
 					visibility: "public",
+					signature: "class Cart extends Basket",
 				},
 			],
 			references: [],
@@ -572,6 +573,166 @@ describe("noticing that an answer's ground moved", () => {
 	});
 });
 
+/** Owned facts survive owner moves. */
+describe("answers surviving code that moves", () => {
+	const METHOD = "lexicon reference a.ref Cart#total().";
+	const OTHER = "lexicon reference a.ref Basket#";
+	const span = (start: number, end: number) => ({
+		start: { line: start, character: 0 },
+		end: { line: end, character: 1 },
+	});
+
+	function plantCart(offset: number, withBasket = false, importLine = 0): void {
+		const basket = withBasket
+			? [
+					{
+						symbolId: OTHER,
+						kind: "class" as const,
+						name: "Basket",
+						range: span(0, 2),
+						visibility: "public" as const,
+					},
+				]
+			: [];
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: `h${offset}${withBasket}`,
+			declarations: [
+				...basket,
+				{
+					symbolId: SYMBOL,
+					kind: "class",
+					name: "Cart",
+					range: span(offset, offset + 5),
+					visibility: "public",
+				},
+				{
+					symbolId: METHOD,
+					kind: "method",
+					name: "total",
+					range: span(offset + 2, offset + 4),
+					visibility: "public",
+					containerId: SYMBOL,
+				},
+			],
+			references: [
+				{
+					name: "Money",
+					role: "call",
+					range: at(offset + 4),
+					fromId: METHOD,
+					binding: { status: "unbound", reason: "NotIndexed" },
+				},
+			],
+			imports: [{ specifier: "./money", reExport: false, imported: [{ name: "Money", range: at(importLine) }] }],
+			literals: [{ kind: "string", value: "cart.updated", range: at(offset + 1), containerId: SYMBOL }],
+			depth: "full",
+			comments: [
+				{
+					range: at(offset + 3),
+					raw: "// Sums line items.",
+					normalized: "Sums line items.",
+					form: "inline",
+					placement: "inside",
+					anchorId: METHOD,
+				} satisfies AttachedComment,
+			],
+		});
+	}
+
+	function citeAll(): string[] {
+		const declarations = store.declarationsIn("a.ref").filter((d) => d.symbolId !== OTHER);
+		return [
+			...declarations.map((d) => d.factId),
+			store.referencesIn("a.ref")[0]?.factId as string,
+			store.literalsWithValue("cart.updated", 5)[0]?.factId as string,
+			store.commentsAnchoredTo(METHOD)[0]?.factId as string,
+		];
+	}
+
+	it("keeps an answer fresh through an edit above its subject", async () => {
+		plantCart(0);
+		await service.recordAnswer(SYMBOL, "describe", "A cart that announces updates.", citeAll());
+
+		plantCart(7);
+
+		expect(service.recallAnswer(SYMBOL, "describe")?.stale).toEqual([]);
+	});
+
+	it("keeps a nested declaration's answer fresh when its container moves below a new sibling", async () => {
+		plantCart(0);
+		const cited = store.declarationsIn("a.ref").find((d) => d.symbolId === METHOD)?.factId as string;
+		await service.recordAnswer(METHOD, "describe", "Sums line items.", [
+			cited,
+			store.commentsAnchoredTo(METHOD)[0]?.factId as string,
+		]);
+
+		plantCart(3, true);
+
+		expect(service.recallAnswer(METHOD, "describe")?.stale).toEqual([]);
+	});
+
+	// Unowned imports use absolute ranges.
+	it("stales a cited import when lines above it move", async () => {
+		plantCart(0);
+		const imported = store.importsIn("a.ref")[0]?.factId as string;
+		await service.recordAnswer(SYMBOL, "why", "Totals are Money, never floats.", [...citeAll(), imported]);
+
+		plantCart(0, false, 9);
+
+		expect(service.recallAnswer(SYMBOL, "why")?.stale).toEqual([imported]);
+	});
+
+	it("keeps a doc region's id when its heading moves down the document", async () => {
+		const region = plantWithDocRegion();
+		await service.recordAnswer(HEADING, "describe", "The project's principles.", [region]);
+		store.replaceFile({
+			module: "guide.md",
+			contentHash: "h2",
+			declarations: [
+				{
+					symbolId: HEADING,
+					kind: "heading",
+					name: "Principles",
+					range: at(6),
+					selectionRange: at(6),
+					visibility: "public",
+				},
+			],
+			references: [],
+			depth: "full",
+			docs: [{ range: at(7), text: "No band-aids. Weigh the long-run cost.", fenced: false, anchorId: HEADING }],
+		});
+
+		expect(service.recallAnswer(HEADING, "describe")?.stale).toEqual([]);
+	});
+
+	// Container changes alter declaration identity.
+	it("retires a method's declaration fact when it moves into another class", () => {
+		plantCart(0, true);
+		const cited = store.declarationsIn("a.ref").find((d) => d.symbolId === METHOD)?.factId as string;
+		store.replaceFile({
+			module: "a.ref",
+			contentHash: "h-reparented",
+			declarations: [
+				{ symbolId: OTHER, kind: "class", name: "Basket", range: span(0, 4), visibility: "public" },
+				{
+					symbolId: "lexicon reference a.ref Basket#total().",
+					kind: "method",
+					name: "total",
+					range: span(2, 4),
+					visibility: "public",
+					containerId: OTHER,
+				},
+				{ symbolId: SYMBOL, kind: "class", name: "Cart", range: span(6, 8), visibility: "public" },
+			],
+			references: [],
+		});
+
+		expect(store.factById(cited)).toBeNull();
+	});
+});
+
 /**
  * Answers are the one thing here a re-index cannot regenerate.
  *
@@ -580,6 +741,78 @@ describe("noticing that an answer's ground moved", () => {
  * across the rebuild because a fact id is a digest of content: unchanged code mints identical ids.
  */
 describe("the knowledge base surviving a rebuild", () => {
+	it("reads a changed citation stale, an unchanged one fresh, and an answer leaning on the stale one shaky", async () => {
+		const BASKET = "lexicon reference b.ref Basket#";
+		const file = path.join(dir, "major.sqlite");
+		const plantBoth = (target: IndexStore, cartSignature?: string) => {
+			target.replaceFile({
+				module: "a.ref",
+				contentHash: cartSignature ?? "h1",
+				declarations: [
+					{
+						symbolId: SYMBOL,
+						kind: "class",
+						name: "Cart",
+						range: at(0),
+						selectionRange: at(0),
+						visibility: "public",
+						...(cartSignature === undefined ? {} : { signature: cartSignature }),
+					},
+				],
+				references: [],
+			});
+			target.replaceFile({
+				module: "b.ref",
+				contentHash: "h1",
+				declarations: [
+					{
+						symbolId: BASKET,
+						kind: "class",
+						name: "Basket",
+						range: at(0),
+						selectionRange: at(0),
+						visibility: "public",
+					},
+				],
+				references: [],
+			});
+		};
+		const first = IndexStore.open(file, "major-8");
+		const before = new LexiconService(
+			first.store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
+		plantBoth(first.store);
+		const cart = first.store.declarationsIn("a.ref")[0]?.factId as string;
+		const basket = first.store.declarationsIn("b.ref")[0]?.factId as string;
+		const leaned = await before.recordAnswer(SYMBOL, "describe", "A cart.", [cart]);
+		await before.recordAnswer(BASKET, "describe", "A basket.", [basket]);
+		await before.recordAnswer(BASKET, "why", "Holds what a cart checks out.", [
+			basket,
+			leaned.recorded ? leaned.answer.factId : "",
+		]);
+		first.store.close();
+
+		const second = IndexStore.open(file, "major-9");
+		const after = new LexiconService(
+			second.store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+		);
+		plantBoth(second.store, "class Cart extends Basket");
+
+		expect({
+			rebuilt: second.rebuilt,
+			changed: after.recallAnswer(SYMBOL, "describe")?.stale,
+			unchanged: after.recallAnswer(BASKET, "describe")?.stale,
+			shaky: after.recallAnswer(BASKET, "why")?.inheritedStale.length,
+		}).toEqual({ rebuilt: true, changed: [cart], unchanged: [], shaky: 1 });
+		second.store.close();
+	});
+
 	it("keeps answers and their demand ledger when the indexer fingerprint changes", async () => {
 		const file = path.join(dir, "survive.sqlite");
 		const first = IndexStore.open(file, "fingerprint-a");

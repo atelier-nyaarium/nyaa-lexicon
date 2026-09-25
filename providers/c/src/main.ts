@@ -6,6 +6,7 @@ import {
 	type Declaration,
 	defined,
 	discoverByWalk,
+	type FileRole,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
@@ -84,6 +85,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** C11 keywords. Builtins are the standard fixed-width and size typedefs, never real keywords. */
@@ -166,6 +168,13 @@ export const REFERENCE_ROLES = ["call", "read", "write", "import", "typeUse"] as
 
 function containsStart(range: Range, position: Range["start"]): boolean {
 	return rangeContains(range, position);
+}
+
+function fileRole(parsed: ParsedCFile): FileRole {
+	const main = parsed.declarations.find(
+		(declaration) => declaration.name === "main" && declaration.kind === "function" && declaration.isDefinition,
+	);
+	return main === undefined ? { kind: "library" } : { kind: "entry", how: "main", symbolId: main.symbolId };
 }
 
 function declarationWire(declaration: CDeclaration): Declaration {
@@ -308,6 +317,7 @@ export class CProvider {
 			literals: parsed.literals,
 			comments: parsed.comments,
 			diagnostics: parsed.diagnostics,
+			role: fileRole(parsed),
 		};
 	}
 

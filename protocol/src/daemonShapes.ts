@@ -9,7 +9,7 @@ import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS } from "./factId.js";
 import { MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
-import { IndexDepthSchema, LiteralSchema } from "./project.js";
+import { EntryHowSchema, FileRoleSchema, IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import {
 	DeclarationSchema,
@@ -544,6 +544,8 @@ export const DescribeResultSchema = z
 		hierarchy: TypeHierarchySchema,
 		/** Questions applicable to this symbol (`questionsFor`), in `QUESTION_CLASSES` order. */
 		questions: z.array(QuestionClassSchema).optional(),
+		/** Provider-reported file role. */
+		moduleRole: FileRoleSchema.optional(),
 		tier: AnswerTierSchema,
 	})
 	.meta({ id: "DescribeResult" });
@@ -955,7 +957,7 @@ export const IndexStatusSchema = z
 		fullFiles: z.number(),
 		/** Stored files still owing a full pass; reference counts are lower bounds while nonzero. */
 		outlineFiles: z.number(),
-		/** Changes whenever the stored facts do; equal values mean an answer drawn from them still holds. */
+		/** Fact and answer writes change it. Equal values mean indexed reads still hold. */
 		generation: z.string().optional(),
 	})
 	.meta({ id: "IndexStatus" });
@@ -1063,6 +1065,12 @@ export const OverviewResultSchema = z
 			stale: z.number().optional(),
 			doubted: z.number().optional(),
 		}),
+		/** Reported entry files; absent without role data. */
+		entryPoints: z
+			.array(z.object({ module: z.string(), how: EntryHowSchema, symbolId: z.string().optional() }))
+			.optional(),
+		/** Entry count beyond the cap. */
+		moreEntryPoints: z.number().optional(),
 	})
 	.meta({ id: "OverviewResult" });
 

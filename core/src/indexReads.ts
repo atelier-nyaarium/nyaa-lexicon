@@ -216,6 +216,7 @@ export class IndexReadModel {
 			fenced: region.fenced,
 			text: region.normalized,
 		}));
+		const moduleRole = this.store.roleOf(declaration.module);
 
 		return {
 			symbol: this.withDocumentation(toSummary(declaration)),
@@ -228,6 +229,7 @@ export class IndexReadModel {
 			questions: [...context.questionsOf(declaration)],
 			...(comments.length === 0 ? {} : { comments }),
 			...(attached.length > comments.length ? { moreComments: attached.length - comments.length } : {}),
+			...(moduleRole === null ? {} : { moduleRole }),
 			tier: "bound",
 		};
 	}

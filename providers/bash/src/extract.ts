@@ -1,7 +1,15 @@
 // The walk over the unbash tree: what each node means to an index.
 
 import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
-import { type Command, type Node, parse, type Statement, type TestExpression } from "unbash";
+import {
+	type Command,
+	type If,
+	type Node,
+	type ParsedScript,
+	parse,
+	type Statement,
+	type TestExpression,
+} from "unbash";
 import {
 	aliases,
 	DECLARING,
@@ -75,6 +83,45 @@ function walkCommand(w: Walk, scope: Scope, node: Command): void {
 		}
 	}
 	for (const redirect of node.redirects) walkRedirect(w, scope, redirect);
+}
+
+/** An assignment, `source` or `.`, whatever its words expand to. */
+function isSetup(command: Command): boolean {
+	if (command.redirects.length > 0) return false;
+	if (command.name === undefined) return command.prefix.length > 0 && command.suffix.length === 0;
+	const builtin = staticValue(command.name);
+	return (builtin === "source" || builtin === ".") && command.suffix.length > 0;
+}
+
+// Only the branches decide, as in every provider.
+function branchesRun(node: If): boolean {
+	if (node.then.commands.some(runsOnLoad)) return true;
+	if (node.else === undefined) return false;
+	return node.else.type === "If" ? branchesRun(node.else) : node.else.commands.some(runsOnLoad);
+}
+
+function runsOnLoad(statement: Statement): boolean {
+	const { command } = statement;
+	if (command.type === "Function") return false;
+	if (statement.background === true || statement.redirects.length > 0) return true;
+	switch (command.type) {
+		case "Command":
+			return !isSetup(command);
+		case "If":
+			return branchesRun(command);
+		case "BraceGroup":
+			return command.body.commands.some(runsOnLoad);
+		default:
+			return true;
+	}
+}
+
+function fileRole(script: ParsedScript): ParsedBashFile["role"] {
+	if (script.errors !== undefined && script.errors.length > 0)
+		return { kind: "unknown" as const, reason: "ParseError" as const };
+	return script.commands.some(runsOnLoad)
+		? { kind: "entry" as const, how: "topLevel" as const }
+		: { kind: "library" as const };
 }
 
 function walkTest(w: Walk, scope: Scope, expression: TestExpression): void {
@@ -201,9 +248,11 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 export function parseBash(module: string, source: string): ParsedBashFile {
 	const shift = source.charCodeAt(0) === 0xfeff ? 1 : 0;
 	const text = source.slice(shift);
+	const script = parse(text);
 	const out: ParsedBashFile = {
 		module,
 		text: source,
+		role: fileRole(script),
 		declarations: [],
 		references: [],
 		imports: [],
@@ -227,7 +276,6 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		statements: (scope, statements) => walkStatements(w, scope, statements),
 		opaque: [],
 	};
-	const script = parse(text);
 	walkStatements(w, { locals: new Map(), confined: false }, script.commands);
 	settle(w);
 	out.comments = commentsIn(w);

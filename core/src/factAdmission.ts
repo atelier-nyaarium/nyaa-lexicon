@@ -1,7 +1,7 @@
 // One reading of every symbol id a provider hands the index, before any of it is written.
 // Refused before the transaction, so the file's previous facts survive.
 
-import type { Declaration, DocRegion, Literal, Reference } from "@nyaa-lexicon/protocol";
+import type { Declaration, DocRegion, FileRole, Literal, Reference } from "@nyaa-lexicon/protocol";
 import { composeSymbolId, moduleOf, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
@@ -13,6 +13,7 @@ export interface ProviderFacts {
 	references: Reference[];
 	literals: Literal[];
 	docs: DocRegion[];
+	role?: FileRole | undefined;
 }
 
 /** A provider contract violation; the file is not written. */
@@ -75,5 +76,8 @@ export function admitFacts(module: string, facts: ProviderFacts): void {
 		declaredHere("document anchor", region.anchorId);
 		if (kinds.get(region.anchorId) !== "heading")
 			refuse(module, `document anchor ${region.anchorId} is not a heading`);
+	}
+	if (facts.role?.kind === "entry" && facts.role.symbolId !== undefined) {
+		declaredHere("entry point", facts.role.symbolId);
 	}
 }

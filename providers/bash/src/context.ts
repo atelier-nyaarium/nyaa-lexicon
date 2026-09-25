@@ -6,6 +6,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	type FileRole,
 	type Import,
 	type Literal,
 	type Range,
@@ -47,6 +48,7 @@ export interface SourceImport {
 export interface ParsedBashFile {
 	module: string;
 	text: string;
+	role: FileRole;
 	declarations: BashDeclaration[];
 	references: BashReference[];
 	imports: Import[];

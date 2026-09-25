@@ -44,6 +44,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** Kotlin's hard, soft and modifier keywords, merged. Builtins are the standard library's core types. */
@@ -271,6 +272,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 			literals: outline ? [] : facts.literals,
 			comments: outline ? [] : facts.comments,
 			diagnostics: facts.diagnostics,
+			role: facts.role,
 			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}

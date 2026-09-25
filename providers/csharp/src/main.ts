@@ -40,6 +40,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** C# reserved and contextual keywords. No builtin vocabulary: every primitive type is a keyword. */
@@ -299,6 +300,7 @@ export class CsharpProvider {
 						binding: this.bindingForReference(params.module, facts, reference),
 					})),
 			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
+			role: facts.role,
 			literals: outline ? [] : facts.literals,
 			comments: outline ? [] : facts.comments,
 			diagnostics: facts.diagnostics,

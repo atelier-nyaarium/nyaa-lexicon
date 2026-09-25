@@ -8,15 +8,17 @@
 // Shape: `lexfact <kind> <module> <digest>`, space-separated and module-encoded exactly like a
 // symbol id, so one module spells the same in both grammars.
 //
-// IDENTITY IS CONTENT. The digest covers every field that makes the fact what it is, position
-// included, so resolving an id and checking whether it changed are ONE operation: an id that no
-// longer resolves is exactly a fact that changed or vanished. `docs/knowledge-layer.md` wants
-// mechanical invalidation to be a comparison rather than a judgement, and this is that comparison.
+// IDENTITY IS CONTENT RELATIVE TO THE OWNER. The digest covers every field that makes the fact what
+// it is, so resolving an id and checking whether it changed are ONE operation: an id that no longer
+// resolves is exactly a fact that changed or vanished. `docs/knowledge-layer.md` wants mechanical
+// invalidation to be a comparison rather than a judgement, and this is that comparison.
 //
-// The cost of that choice: a fact that merely MOVED gets a new id, so an edit above a cited site
-// invalidates a citation a semantic identity would have kept. The alternative is an ordinal among
-// identical siblings, and inserting one sibling renumbers every later one, which is unstable in a
-// worse way because nothing announces it.
+// Position enters as an offset from the fact's OWNER, the declaration it belongs to: a declaration
+// owns itself, a reference its `fromId`, a literal its container, a comment or doc region its
+// anchor. An edit above the owner, or moving the owner within its file, keeps every id it owns. A
+// fact with no owner (an import, a module-level reference) keeps its absolute range, so it still
+// changes when anything above it moves. An ordinal among identical siblings was the rejected
+// alternative: inserting one sibling renumbers every later one, and nothing announces it.
 
 import { createHash } from "node:crypto";
 import { Cursor, err, ok, type ParseResult } from "./cursor.js";
@@ -29,7 +31,7 @@ import {
 	moduleOf,
 	readIdField,
 } from "./symbolId.js";
-import type { Declaration, Range, Reference } from "./symbols.js";
+import type { Declaration, Position, Range, Reference } from "./symbols.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -41,6 +43,8 @@ export interface FactId {
 	module: string;
 	digest: string;
 }
+
+export type OwnerStarts = ReadonlyMap<string, Position>;
 
 /** One tuple slot. Absent is encoded distinctly from empty, so the two never hash alike. */
 type FactField = string | number | boolean | null | undefined;
@@ -105,19 +109,34 @@ function digestOf(kind: FactKind, module: string, parts: FactField[]): string {
 		.slice(0, DIGEST_LENGTH);
 }
 
-/** Four slots whether or not the range exists, so an absent one cannot shift the tuple. */
-function rangeFields(range: Range | undefined): FactField[] {
-	if (range === undefined) return [null, null, null, null];
-	return [range.start.line, range.start.character, range.end.line, range.end.character];
+/** Relative lines and first-line columns. */
+function relativeTo(position: Position, origin: Position): [number, number] {
+	const line = position.line - origin.line;
+	return [line, line === 0 ? position.character - origin.character : position.character];
 }
 
-/**
- * The composer. Callers reach for a per-kind builder below rather than this, so no module outside
- * this file decides what a fact's identifying tuple contains.
- */
-export function composeFactId(kind: FactKind, module: string, parts: FactField[]): string {
+/** Four slots whether or not the range exists, so an absent one cannot shift the tuple. */
+function rangeFields(range: Range | undefined, origin?: Position): FactField[] {
+	if (range === undefined) return [null, null, null, null];
+	if (origin === undefined) return [range.start.line, range.start.character, range.end.line, range.end.character];
+	return [...relativeTo(range.start, origin), ...relativeTo(range.end, origin)];
+}
+
+/** The owner start supplies the origin. */
+function ownedRangeFields(range: Range, owner: string | null | undefined, owners: OwnerStarts): FactField[] {
+	if (owner === null || owner === undefined) return rangeFields(range);
+	const origin = owners.get(owner);
+	if (origin === undefined) throw new Error(`a fact's owner is not declared in its file: ${owner}`);
+	return rangeFields(range, origin);
+}
+
+function composeFactId(kind: FactKind, module: string, parts: FactField[]): string {
 	if (!isCanonicalModule(module)) throw new Error(`module is not in canonical form: ${module}`);
 	return `${FACT_SCHEME} ${kind} ${encodeModuleField(module)} ${digestOf(kind, module, parts)}`;
+}
+
+export function ownerStarts(declarations: readonly Declaration[]): OwnerStarts {
+	return new Map(declarations.map((d) => [d.symbolId, d.range.start]));
 }
 
 /** Everything that makes this declaration what it is, so a changed signature is a changed fact. */
@@ -131,19 +150,19 @@ export function declarationFactId(module: string, d: Declaration): string {
 		d.exported,
 		d.containerId,
 		d.signature,
-		...rangeFields(d.range),
-		...rangeFields(d.selectionRange),
+		...rangeFields(d.range, d.range.start),
+		...rangeFields(d.selectionRange, d.range.start),
 		d.metrics?.lines,
 		d.metrics?.parameters,
 		d.metrics?.nesting,
 		d.metrics?.branches,
-		// Absent keeps old ids.
+		// Omitted fields add no digest slot.
 		...(d.contains === undefined ? [] : [d.contains]),
 	]);
 }
 
 /** The binding is part of the fact: the same call newly resolving is news, not the same news. */
-export function referenceFactId(module: string, r: Reference): string {
+export function referenceFactId(module: string, r: Reference, owners: OwnerStarts): string {
 	const target = r.binding.status === "bound" ? r.binding.symbolId : null;
 	const candidates = r.binding.status === "ambiguous" ? r.binding.candidates.join(",") : null;
 	const how = r.binding.status === "unbound" ? r.binding.reason : r.binding.provenance;
@@ -155,7 +174,7 @@ export function referenceFactId(module: string, r: Reference): string {
 		candidates,
 		how,
 		r.fromId,
-		...rangeFields(r.range),
+		...ownedRangeFields(r.range, r.fromId, owners),
 	]);
 }
 
@@ -176,18 +195,33 @@ export function importFactId(module: string, specifier: string, reExport: boolea
 	]);
 }
 
-export function literalFactId(module: string, l: Literal): string {
-	return composeFactId("literal", module, [l.kind, l.value, l.number, l.containerId, ...rangeFields(l.range)]);
+export function literalFactId(module: string, l: Literal, owners: OwnerStarts): string {
+	return composeFactId("literal", module, [
+		l.kind,
+		l.value,
+		l.number,
+		l.containerId,
+		...ownedRangeFields(l.range, l.containerId, owners),
+	]);
 }
 
-/** Text and place, never the anchor: a re-attached comment is not new prose. */
-export function commentFactId(module: string, c: CommentSpan): string {
-	return composeFactId("comment", module, [c.text, ...rangeFields(c.range)]);
+/** Comment anchors define identity. */
+export function commentFactId(
+	module: string,
+	c: CommentSpan & { anchorId: string | null },
+	owners: OwnerStarts,
+): string {
+	return composeFactId("comment", module, [c.text, c.anchorId, ...ownedRangeFields(c.range, c.anchorId, owners)]);
 }
 
 /** Fenced rides along: the same words as prose and as a command are not the same fact. */
-export function docFactId(module: string, d: DocRegion): string {
-	return composeFactId("doc", module, [d.text, d.fenced, ...rangeFields(d.range)]);
+export function docFactId(module: string, d: DocRegion, owners: OwnerStarts): string {
+	return composeFactId("doc", module, [
+		d.text,
+		d.fenced,
+		d.anchorId,
+		...ownedRangeFields(d.range, d.anchorId, owners),
+	]);
 }
 
 /**

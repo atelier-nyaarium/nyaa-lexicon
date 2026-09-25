@@ -188,6 +188,37 @@ export const ProjectModelSchema = z
 export type ProjectModel = z.infer<typeof ProjectModelSchema>;
 
 /** Everything one parse yields. One call, so a provider parses once and holds no cache. */
+export const EntryHowSchema = z
+	.enum([
+		/** Runtime-invoked function. */
+		"main",
+		/** Run-as-program guarded code. */
+		"guardedMain",
+		/** Statements run during load. */
+		"topLevel",
+	])
+	.meta({ id: "EntryHow" });
+
+export type EntryHow = z.infer<typeof EntryHowSchema>;
+
+/**
+ * Source-local entry classification; libraries may still run initializers or decorators on load.
+ */
+export const FileRoleSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("library") }),
+		z.object({
+			kind: z.literal("entry"),
+			how: EntryHowSchema,
+			symbolId: z.string().min(1).optional(),
+		}),
+		/** Entry candidate the provider cannot classify. */
+		z.object({ kind: z.literal("unknown"), reason: UnknownReasonSchema }),
+	])
+	.meta({ id: "FileRole" });
+
+export type FileRole = z.infer<typeof FileRoleSchema>;
+
 export const FileFactsSchema = z
 	.object({
 		module: z.string().min(1),
@@ -205,6 +236,8 @@ export const FileFactsSchema = z
 		diagnostics: z.array(DiagnosticSchema),
 		/** Extraction depth. Absent means full; outline means a full pass remains owed. */
 		depth: IndexDepthSchema.optional(),
+		/** Required by the `fileRoles` tier. */
+		role: FileRoleSchema.optional(),
 	})
 	.meta({ id: "FileFacts" });
 

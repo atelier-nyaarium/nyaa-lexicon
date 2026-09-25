@@ -4,6 +4,7 @@ import {
 	type Declaration,
 	type Diagnostic,
 	defined,
+	type FileRole,
 	handlersFor,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -43,6 +44,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** Rust 2021 strict and reserved keywords. Builtins are the primitive types, never real keywords. */
@@ -175,6 +177,20 @@ function parseFailure(module: string, detail: string): ParsedFile {
 	};
 }
 
+function rustFileRole(module: string, declarations: readonly Declaration[], rootModules: readonly string[]): FileRole {
+	const main = declarations.find(
+		(declaration) =>
+			declaration.name === "main" &&
+			declaration.kind === "function" &&
+			declaration.languageKind === "fn" &&
+			declaration.containerId === undefined,
+	);
+	if (main === undefined) return { kind: "library" };
+	if (rootModules.includes(module) && (module === "main.rs" || /(?:^|\/)src\/main\.rs$/u.test(module)))
+		return { kind: "entry", how: "main", symbolId: main.symbolId };
+	return { kind: "unknown", reason: "NotImplemented" };
+}
+
 function readRustFile(module: string, text: string, depth: IndexDepth): ParsedFile {
 	try {
 		return parseRustFile(module, text, depth === "outline" ? "outline" : "full");
@@ -219,6 +235,7 @@ export class RustProvider {
 			literals: facts.literals,
 			comments: facts.comments,
 			diagnostics: facts.diagnostics,
+			role: rustFileRole(params.module, facts.declarations, this.store.project.rootModules),
 			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}

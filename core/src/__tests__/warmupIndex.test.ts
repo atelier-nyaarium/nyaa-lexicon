@@ -449,6 +449,25 @@ describe("warmup pass", () => {
 		});
 	});
 
+	// Demand does not advance generation.
+	it("moves the generation when an answer is written, not when demand is counted", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		await service.warmupWorkspace();
+		const [declaration] = service.declarationsIn("a.fake");
+		if (declaration === undefined) throw new Error("no declaration indexed");
+		const settled = service.indexStatus().generation;
+		service.recordDemand({ symbolId: declaration.symbolId, question: "why" });
+		const asked = service.indexStatus().generation;
+		await service.recordAnswer(declaration.symbolId, "describe", "A.", [declaration.factId]);
+
+		expect({ asked: asked === settled, answered: service.indexStatus().generation === settled }).toEqual({
+			asked: true,
+			answered: false,
+		});
+	});
+
 	it("judges each lifecycle alike before and after the handler lands", () => {
 		const names = [
 			"moduleDeclarations",

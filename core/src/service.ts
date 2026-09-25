@@ -75,6 +75,9 @@ const ENSURE_TREE_BUDGET_MS = 60_000;
 /** A reporting cap, not a correctness one. Says so in the output when it bites. */
 const COMMENT_COUNT_SCAN = 200_000;
 
+/** Entry list reporting cap. */
+const ENTRY_POINTS_SHOWN = 50;
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -564,6 +567,7 @@ export class LexiconService {
 		// A document's headings are symbols and belong in the total, but a reader taking that total
 		// for callable code reads it wrong the moment one is indexed, so the split rides alongside.
 		const byKind = this.store.symbolsByKind();
+		const entries = this.store.entryPoints(includeModule, ENTRY_POINTS_SHOWN);
 		return {
 			...totals,
 			content,
@@ -583,6 +587,8 @@ export class LexiconService {
 				...defined({ stale }),
 				...(doubted === 0 ? {} : { doubted }),
 			},
+			...(entries === null ? {} : { entryPoints: entries.entries }),
+			...(entries === null || entries.more === 0 ? {} : { moreEntryPoints: entries.more }),
 		};
 	}
 

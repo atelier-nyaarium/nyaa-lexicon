@@ -9,6 +9,7 @@ import {
 	type ProviderTiers,
 	type ProviderWords,
 } from "@nyaa-lexicon/protocol";
+import { settleDeclaredTiers } from "../declaredTiers";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
 import { type HeadReader, type ProviderClaims, routeModule, routingContextOf } from "../routing";
 
@@ -162,11 +163,8 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 			override !== undefined
 				? await override(params as MethodRequest<K>, module)
 				: defaultAnswer(method, params, discover);
-		// The declared tier owns the comments field, exactly as the supervisor settles it at the wire.
 		if (method === "parseFile" || method === "probeFile") {
-			const facts = answered as MethodResponse<"parseFile">;
-			if (tiers.comments === true) facts.comments ??= [];
-			else delete facts.comments;
+			settleDeclaredTiers(tiers, answered as MethodResponse<"parseFile">);
 		}
 		// Validated as the wire validates it, so no fixture can assert on a shape a provider cannot send.
 		return METHOD_SCHEMAS[method].response.parse(answered) as MethodResponse<K>;

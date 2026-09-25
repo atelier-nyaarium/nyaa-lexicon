@@ -5,7 +5,7 @@
 
 import type { z } from "zod";
 import { comparePositions, coordinatesOf } from "../coordinates.js";
-import type { CommentSpan, DocRegion, FileFacts, ImportResolution, Literal } from "../project.js";
+import type { CommentSpan, DocRegion, FileFacts, FileRole, ImportResolution, Literal } from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Range, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
@@ -15,6 +15,7 @@ import type {
 	ExpectedDocRegionSchema,
 	ExpectedLiteral,
 	ExpectedReferenceSchema,
+	ExpectedRole,
 } from "./types.js";
 
 ////////////////////////////////
@@ -279,6 +280,30 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	// The same rule comment spans get: a range that lies attaches prose to the wrong section.
 	if (source !== undefined) problems.push(...checkDocRanges(source, facts.docs ?? [], byId));
 
+	const wantedRole = fixture?.role ?? testCase.role;
+	if (wantedRole !== undefined) problems.push(...checkRole(wantedRole, facts.role, byId));
+
+	return problems;
+}
+
+function checkRole(expected: ExpectedRole, actual: FileRole | undefined, byId: Map<string, Declaration>): string[] {
+	if (actual === undefined) return [`role: expected ${expected.kind}, got none`];
+	if (actual.kind !== expected.kind) return [`role: expected ${expected.kind}, got ${actual.kind}`];
+	if (expected.kind === "unknown" && actual.kind === "unknown") {
+		return expected.reason === undefined || expected.reason === actual.reason
+			? []
+			: [`role: expected reason ${expected.reason}, got ${actual.reason}`];
+	}
+	if (expected.kind !== "entry" || actual.kind !== "entry") return [];
+	const problems: string[] = [];
+	if (actual.how !== expected.how) problems.push(`role: expected how ${expected.how}, got ${actual.how}`);
+	const main = actual.symbolId === undefined ? undefined : byId.get(actual.symbolId);
+	if (actual.symbolId !== undefined && main === undefined) {
+		problems.push(`role: symbolId ${actual.symbolId} names no declaration in the file`);
+	}
+	if (expected.main !== undefined && main?.name !== expected.main) {
+		problems.push(`role: expected main ${expected.main}, got ${main?.name ?? "none"}`);
+	}
 	return problems;
 }
 

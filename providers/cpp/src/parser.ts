@@ -8,6 +8,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	type FileRole,
 	type Import,
 	type Literal,
 	type Metrics,
@@ -41,6 +42,7 @@ export interface CppDeclarationRecord {
 	nameTokenEnd: number;
 	templateDependent: boolean;
 	parameterNames: Set<string>;
+	hasBody: boolean;
 }
 
 type DraftInput = Omit<
@@ -73,9 +75,25 @@ export interface CppFacts {
 	literals: Literal[];
 	comments: CommentSpan[];
 	diagnostics: Diagnostic[];
+	role: FileRole;
 	records: CppDeclarationRecord[];
 	importFacts: ImportFact[];
 	typeAnswers: Map<string, TypeInfo>;
+}
+
+function fileRoleFor(module: string, records: CppDeclarationRecord[]): FileRole {
+	const main = records.find(
+		(record) =>
+			record.parent === null &&
+			record.declaration.kind === "function" &&
+			record.own.kind === "method" &&
+			record.own.name === "main" &&
+			record.hasBody &&
+			record.declaration.symbolId === composeSymbolId({ language: LANGUAGE, module, descriptors: [record.own] }),
+	);
+	return main === undefined
+		? { kind: "library" }
+		: { kind: "entry", how: "main", symbolId: main.declaration.symbolId };
 }
 
 type DraftType =
@@ -611,6 +629,7 @@ class StructuralParser {
 			literals,
 			comments,
 			diagnostics: this.sortedDiagnostics(),
+			role: fileRoleFor(this.module, [...recordMap.values()]),
 			records: [...recordMap.values()],
 			importFacts: this.imports,
 			typeAnswers,
@@ -836,6 +855,7 @@ class StructuralParser {
 			nameTokenEnd: draft.nameEndIndex,
 			templateDependent: draft.templateDependent,
 			parameterNames: draft.parameterNames,
+			hasBody: draft.hasBody,
 		};
 	}
 

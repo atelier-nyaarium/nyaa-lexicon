@@ -56,6 +56,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** C++20 keywords. Builtins are fixed-width typedefs and `std::string`; fundamental types are real keywords. */
@@ -250,6 +251,7 @@ export class CppProvider {
 			literals: facts.literals,
 			comments: facts.comments,
 			diagnostics: facts.diagnostics,
+			role: facts.role,
 		};
 	}
 

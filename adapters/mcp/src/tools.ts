@@ -34,6 +34,7 @@ import { compileSearchRegex, QUESTION_CLASSES, searchTerm } from "@nyaa-lexicon/
 import type {
 	CoChangedWithResult,
 	CommitsMentioningResult,
+	EntryHow,
 	FindImportsResult,
 	ImportResolution,
 	InsertOutcome,
@@ -196,6 +197,8 @@ export interface OverviewResult {
 	/** Data and document files, largest first, each saying which. */
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
 	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
+	entryPoints?: Array<{ module: string; how: EntryHow; symbolId?: string | undefined }> | undefined;
+	moreEntryPoints?: number | undefined;
 }
 
 export interface ToolResult {
@@ -693,6 +696,8 @@ export const RECORD_ANSWER_DESCRIPTION = `
 Save an answer grounded in cited facts.
 
 Use current full fact IDs from \`symbol_facts\`. Changes to supporting facts make the answer stale.
+
+Never state line numbers: code that only moves keeps the answer fresh.
 
 Answer should be 1 to 2 concise incomplete sentences. May be longer if it's too complex for ≤2.
 

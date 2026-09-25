@@ -314,10 +314,11 @@ parses and inspects them, so no caller ever splits an id by hand.
 
 **Fact ids** name a single row: a declaration, a reference, an import, a literal, a comment, a
 document region, or an answer.
-Identity IS content, so the digest covers every field including position. That makes resolving an
-id and asking whether it changed the same operation, and it makes a citation that stops resolving
-exactly a fact that moved. The cost is stated rather than hidden: a fact that merely moved gets a
-new id.
+Fact ids hash each fact's fields and position relative to its owner: declarations own themselves,
+references use `fromId`, literals use their container, and comments or doc regions use their
+anchor. Editing above an owner or moving it within its file preserves the ids of facts it owns.
+Unowned facts, including imports and module-level references, use absolute positions. The store
+mints ids because it has every owner's start. A residue test enforces that boundary.
 
 **Subject ids** name what knowledge is about: an opaque identity minted once from a declaration's
 first address and the clock, whose current address is a symbol id. Answers and gaps key by it, so

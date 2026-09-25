@@ -48,6 +48,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** JS/TS reserved and contextual keywords. Builtins are the primitive and structural type names. */
@@ -244,6 +245,7 @@ export class TypeScriptProvider {
 				references: [],
 				imports: extracted.imports,
 				literals: [],
+				role: extracted.role,
 				comments: [],
 				diagnostics: syntaxErrors(params.module, source),
 				depth: "outline" as const,
@@ -270,6 +272,7 @@ export class TypeScriptProvider {
 			references,
 			imports: extracted.imports,
 			literals: extracted.literals,
+			role: extracted.role,
 			comments: extractComments(source),
 			diagnostics: analyzer.diagnostics(params.module),
 		};

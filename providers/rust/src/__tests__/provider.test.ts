@@ -70,6 +70,45 @@ test("discovers Rust files and excludes generated directories", () => {
 	expect(model.diagnostics).toEqual([]);
 });
 
+test("reports a main role for a known executable crate root", () => {
+	const root = workspace({ "main.rs": "fn main() {}\n", "src/main.rs": "fn main() {}\n" });
+	const provider = client(new RustProvider());
+	provider.initialize(root);
+	provider.discoverProject(root);
+
+	for (const module of ["main.rs", "src/main.rs"]) {
+		const text = "fn main() {}\n";
+		const facts = provider.parseFile({ module, contentHash: module, text });
+		const main = facts.declarations.find((declaration) => declaration.name === "main");
+
+		if (main === undefined) throw new Error("main declaration missing");
+		const role = { kind: "entry", how: "main", symbolId: main.symbolId } as const;
+		expect(facts.role).toEqual(role);
+		expect(provider.handlers.probeFile({ module, contentHash: `${module}-probe`, text }).role).toEqual(role);
+	}
+});
+
+test("reports an unknown role for other top-level mains and library without one", () => {
+	const root = workspace({
+		"src/lib.rs": "pub fn add() {}\nmod child { fn main() {} }\n",
+		"src/bin/tool.rs": "fn main() {}\n",
+	});
+	const provider = client(new RustProvider());
+	provider.initialize(root);
+	provider.discoverProject(root);
+
+	expect(provider.parseFile({ module: "src/bin/tool.rs", contentHash: "tool", text: "fn main() {}\n" }).role).toEqual(
+		{ kind: "unknown", reason: "NotImplemented" },
+	);
+	expect(
+		provider.parseFile({
+			module: "src/lib.rs",
+			contentHash: "lib",
+			text: "pub fn add() {}\nmod child { fn main() {} }\n",
+		}).role,
+	).toEqual({ kind: "library" });
+});
+
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 	"skips unreadable directories during project discovery",
 	() => {

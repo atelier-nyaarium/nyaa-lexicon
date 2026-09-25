@@ -45,6 +45,8 @@ export const ProviderTiersSchema = z
 		 * caller must report as unchecked rather than as passing.
 		 */
 		syntaxDiagnostics: z.boolean().optional(),
+		/** Every code parse returns a role; absent reads as false. */
+		fileRoles: z.boolean().optional(),
 	})
 	.meta({ id: "ProviderTiers" });
 

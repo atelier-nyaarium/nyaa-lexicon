@@ -224,6 +224,8 @@ async function runCase(
 	fixture: ConformanceFixture,
 	language: string,
 	declaredRoles?: readonly string[],
+	/** Required by `fileRoles` for code parses. */
+	owesRole = false,
 ): Promise<string[]> {
 	const problems: string[] = [];
 	const text = fixture.files[fixture.subject];
@@ -245,6 +247,7 @@ async function runCase(
 
 	if (facts) {
 		problems.push(...checkFacts(testCase, facts, language, text));
+		if (owesRole && facts.role === undefined) problems.push("role: fileRoles is declared, but this parse has none");
 		// A declared role list is a promise about coverage, so emitting outside it is the same
 		// over-claim as declaring a tier that is not built. Undeclared coverage stays unchecked.
 		if (declaredRoles !== undefined) {
@@ -1170,7 +1173,14 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				const project = await session.call("discoverProject", { workspaceRoot: root });
 				const problems = [
 					...discoveryProblems(fixture, project.files),
-					...(await runCase(session, testCase, fixture, info.language, info.referenceRoles)),
+					...(await runCase(
+						session,
+						testCase,
+						fixture,
+						info.language,
+						info.referenceRoles,
+						info.tiers.fileRoles === true && (info.content ?? "code") === "code",
+					)),
 				];
 				results.push({
 					caseId: testCase.id,

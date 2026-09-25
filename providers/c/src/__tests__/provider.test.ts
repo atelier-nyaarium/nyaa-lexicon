@@ -107,6 +107,33 @@ describe("C provider protocol", () => {
 		expect(handlers.shutdown({})).toEqual({});
 	});
 
+	test("reports a defined main on parses and probes", () => {
+		const handlers = started();
+		const text = "int main(void) {\n\treturn 0;\n}\n";
+		const parsed = facts(handlers, "src/main.c", text);
+		const main = declarationOf(parsed, "main", "function");
+
+		expect(main).toBeDefined();
+		expect(parsed.role).toEqual({ kind: "entry", how: "main", symbolId: main?.symbolId });
+
+		const probed = handlers.probeFile({ module: "src/probe.c", contentHash: "probe", text });
+		const probedMain = declarationOf(probed, "main", "function");
+
+		expect(probedMain).toBeDefined();
+		expect(probed.role).toEqual({ kind: "entry", how: "main", symbolId: probedMain?.symbolId });
+	});
+
+	test("a main prototype does not make a file an entry", () => {
+		const handlers = started();
+		const parsed = facts(
+			handlers,
+			"src/cart.c",
+			"int main(void);\nint add(int left, int right) { return left + right; }\n",
+		);
+
+		expect(parsed.role).toEqual({ kind: "library" });
+	});
+
 	test("a refusal leaves only the include kinds the admitted parse stated", () => {
 		const root = workspace({
 			"src/local.h": "int shared;\n",

@@ -53,6 +53,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** POSIX and bash reserved words. Builtins are the shell's built-in commands, `true`/`false` excepted: those are literals. */
@@ -236,6 +237,7 @@ export class BashProvider {
 			references,
 			imports: parsed.imports,
 			literals: parsed.literals,
+			role: parsed.role,
 			comments: parsed.comments,
 			diagnostics: parsed.diagnostics,
 		};

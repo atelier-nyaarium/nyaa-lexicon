@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { type ProviderTiers, ProviderTiersSchema } from "../methods.js";
 import { MoveBlockedReasonSchema, MoveEditsRequestSchema, MoveRefusalSchema } from "../move.js";
+import { EntryHowSchema } from "../project.js";
 import { SymbolKindSchema, VisibilitySchema } from "../symbols.js";
 import { UnknownReasonSchema } from "../values.js";
 
@@ -149,6 +150,16 @@ export const ExpectedLiteralSchema = z
 
 export type ExpectedLiteral = z.infer<typeof ExpectedLiteralSchema>;
 
+export const ExpectedRoleSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("library") }),
+		z.object({ kind: z.literal("entry"), how: EntryHowSchema, main: z.string().min(1).optional() }),
+		z.object({ kind: z.literal("unknown"), reason: UnknownReasonSchema.optional() }),
+	])
+	.meta({ id: "ExpectedRole" });
+
+export type ExpectedRole = z.infer<typeof ExpectedRoleSchema>;
+
 /** One language's source for a case: the repo to write, and which file the case asks about. */
 export const ConformanceFixtureSchema = z
 	.object({
@@ -196,6 +207,8 @@ export const ConformanceFixtureSchema = z
 		literals: z.array(ExpectedLiteralSchema).optional(),
 		/** Doc region expectations only this language can state, replacing the case's when present. */
 		docs: z.array(ExpectedDocRegionSchema).optional(),
+		/** Overrides the case's role for this language. */
+		role: ExpectedRoleSchema.optional(),
 		/** Exact declaration names only this language can state, replacing the case's when present. */
 		declarationNames: z.array(z.string().min(1)).optional(),
 		documentation: DocumentedSchema.optional(),
@@ -267,6 +280,8 @@ export const ConformanceCaseSchema = z
 		 * there, or a fence swallowed into the paragraph beside it.
 		 */
 		docs: z.array(ExpectedDocRegionSchema).optional(),
+		/** Role expected for the subject file. */
+		role: ExpectedRoleSchema.optional(),
 		/**
 		 * A declaration and the comment documenting it, whose RANGES must relate in one of two ways.
 		 *

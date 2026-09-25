@@ -150,6 +150,12 @@ it. A lenient extractor recovers from anything and returns nothing, so silence f
 never declared the tier means unchecked rather than clean. Absent is therefore different from
 false, and conformance fails a provider that declares it and then stays quiet on invalid text.
 
+`fileRoles` requires a `role` on each code-file parse. `library` means no entry pattern is
+recognized. Initializers and decorators may still run at load. `entry` carries `how`: `main`,
+`guardedMain` or `topLevel`. A `main` role names its declaration with `symbolId`. `unknown` carries a
+reason when a candidate cannot be classified. Without the tier, the wire drops `role`. Conformance
+fails if a tier-declaring provider omits it.
+
 `content` says what the claimed files ARE: `code` declares behavior, `data` declares structure (a
 JSON or YAML key is a `property` declaration, and a fixture has thousands), `document` is prose under
 headings, `text` is prose with no structure at all. Absent means code. The core records it per file

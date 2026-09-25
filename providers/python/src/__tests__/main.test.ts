@@ -141,7 +141,8 @@ describe("Python provider project behavior", () => {
 		});
 
 		expect(info.referenceRoles).toEqual(["call", "read", "write", "extends", "typeUse"]);
-		expect(info.tiers).toMatchObject({ literals: true, metrics: true });
+		expect(info.tiers).toMatchObject({ fileRoles: true, literals: true, metrics: true });
+		expect(facts.role).toEqual({ kind: "library" });
 		const helper = facts.references.find((reference) => reference.name === "helper");
 		expect(helper?.binding).toMatchObject({
 			status: "bound",

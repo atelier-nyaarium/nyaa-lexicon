@@ -10,6 +10,10 @@ async function extract(module: string, text: string) {
 	const facts = await python3.runJson<{
 		declarations: { name: string; kind: string; exported: boolean; visibility: string }[];
 		imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
+		role:
+			| { kind: "library" }
+			| { kind: "entry"; how: "main" | "guardedMain" | "topLevel"; symbolId?: string }
+			| { kind: "unknown"; reason: string };
 		literals: { kind: string; value: string; range: { start: { line: number; character: number } } }[];
 		references: { name: string; role: string }[];
 		diagnostics: { severity: string }[];
@@ -17,6 +21,91 @@ async function extract(module: string, text: string) {
 	if (facts === null) throw new Error(python3.unavailableDetail);
 	return facts;
 }
+
+test("recognizes guarded main in either order, nested in setup too, unless its else runs on import", async () => {
+	const texts = [
+		'if __name__ == "__main__":\n    pass\n',
+		"if '__main__' == __name__:\n    pass\n",
+		"if FEATURE:\n    if __name__ == '__main__':\n        run()\n",
+		"if __name__ == '__main__':\n    run()\nelse:\n    value = 1\n",
+	];
+	const roles = await Promise.all(texts.map(async (text) => (await extract("pkg/cli.py", text)).role));
+	const elseRuns = await extract("pkg/cli.py", "if __name__ == '__main__':\n    run()\nelse:\n    initialize()\n");
+
+	expect(roles).toEqual(texts.map(() => ({ kind: "entry", how: "guardedMain" })));
+	expect(elseRuns.role).toEqual({ kind: "entry", how: "topLevel" });
+});
+
+test("classifies other module statements as top-level entries", async () => {
+	const facts = await extract("pkg/script.py", "if __name__ == '__main__':\n    pass\nprint('loaded')\n");
+
+	expect(facts.role).toEqual({ kind: "entry", how: "topLevel" });
+});
+
+test("classifies declarative conditional setup as a library", async () => {
+	const fixtureText =
+		"from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from collections.abc import Iterable\n";
+	const facts = await extract("src/lib.py", fixtureText);
+	const nested = await extract(
+		"src/nested.py",
+		"if FEATURE:\n    if ENABLED:\n        value = 1\n    else:\n        pass\nelse:\n    from fallback import value\n",
+	);
+	const executable = await extract("src/setup.py", "if FEATURE:\n    initialize()\n");
+	const executableElse = await extract("src/setup_else.py", "if FEATURE:\n    pass\nelse:\n    initialize()\n");
+
+	expect(facts.role).toEqual({ kind: "library" });
+	expect(nested.role).toEqual({ kind: "library" });
+	expect(executable.role).toEqual({ kind: "entry", how: "topLevel" });
+	expect(executableElse.role).toEqual({ kind: "entry", how: "topLevel" });
+});
+
+test("classifies declarative import fallback setup as a library", async () => {
+	const fixtureText = "try:\n    import ujson as json\nexcept ImportError:\n    import json\n";
+	const facts = await extract("src/lib.py", fixtureText);
+	const complete = await extract(
+		"src/complete.py",
+		"try:\n    import preferred\nexcept ImportError:\n    import fallback\nelse:\n    selected = preferred\nfinally:\n    pass\n",
+	);
+	const executableBranches = [
+		["src/setup_body.py", "try:\n    initialize()\nexcept ImportError:\n    import fallback\n"],
+		["src/setup_handler.py", "try:\n    import preferred\nexcept ImportError:\n    initialize()\n"],
+		[
+			"src/setup_else.py",
+			"try:\n    import preferred\nexcept ImportError:\n    import fallback\nelse:\n    initialize()\n",
+		],
+		[
+			"src/setup_finally.py",
+			"try:\n    import preferred\nexcept ImportError:\n    import fallback\nfinally:\n    initialize()\n",
+		],
+	] as const;
+
+	expect(facts.role).toEqual({ kind: "library" });
+	expect(complete.role).toEqual({ kind: "library" });
+	for (const [module, text] of executableBranches) {
+		const facts = await extract(module, text);
+		expect(facts.role).toEqual({ kind: "entry", how: "topLevel" });
+	}
+});
+
+test("keeps imports, declarations, assignments, and bare strings in a library", async () => {
+	const facts = await extract(
+		"pkg/library.py",
+		[
+			'"""Library docs."""',
+			"import os",
+			"value = 1",
+			"value: int",
+			"value += 1",
+			"'standalone string'",
+			"def run():",
+			"    pass",
+			"class Library:",
+			"    pass",
+		].join("\n"),
+	);
+
+	expect(facts.role).toEqual({ kind: "library" });
+});
 
 test("extracts public declarations, explicit exports, and final reassignments", async () => {
 	const facts = await extract(

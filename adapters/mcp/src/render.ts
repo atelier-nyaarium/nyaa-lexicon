@@ -25,8 +25,10 @@ import type {
 } from "@nyaa-lexicon/core";
 import {
 	answerHealth,
+	type EntryHow,
 	FACT_KINDS,
 	type FactKind,
+	type FileRole,
 	type InsertOutcome,
 	type KnowledgeSweep,
 	type MoveOutcome,
@@ -157,6 +159,18 @@ function appendDependencies(lines: string[], summary: DescribeResult["graph"]): 
 > Counts use resolved indexed bindings.`);
 }
 
+const ENTRY_HOW: Record<EntryHow, string> = {
+	main: "the runtime calls its main",
+	guardedMain: "runs under a run-as-program guard",
+	topLevel: "runs statements on load",
+};
+
+function roleText(role: FileRole): string {
+	if (role.kind === "library") return "library (no recognized entry pattern)";
+	if (role.kind === "unknown") return `unknown (${role.reason})`;
+	return `entry point: ${ENTRY_HOW[role.how]}${role.symbolId === undefined ? "" : `, ${code(role.symbolId)}`}`;
+}
+
 /** One symbol as its complete surface. */
 export function renderDescribe(result: DescribeResult): string {
 	// The line span makes "read the body" a range read of exactly those lines, never a file read.
@@ -177,6 +191,7 @@ export function renderDescribe(result: DescribeResult): string {
 		`**Module:** ${location}`,
 		`**ID:** ${code(result.symbol.symbolId)}`,
 	];
+	if (result.moduleRole !== undefined) lines.push(`**File role:** ${roleText(result.moduleRole)}`);
 
 	if (result.prose !== undefined && result.prose.length > 0) {
 		lines.push(`
@@ -1057,6 +1072,8 @@ export function renderOverview(result: {
 	largest: Array<{ module: string; symbols: number }>;
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
 	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
+	entryPoints?: Array<{ module: string; how: EntryHow; symbolId?: string | undefined }> | undefined;
+	moreEntryPoints?: number | undefined;
 }): string {
 	const lines = [
 		`# Workspace overview
@@ -1195,6 +1212,22 @@ None recorded yet. \`knowledge_gaps\` lists what is worth writing.
 
 ${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. \`knowledge_gaps\` lists what is missing.
 `);
+		}
+	}
+
+	if (result.entryPoints !== undefined || result.moreEntryPoints !== undefined) {
+		const entries = result.entryPoints ?? [];
+		lines.push(`
+## Entry points
+`);
+		if (entries.length === 0 && result.moreEntryPoints === undefined) lines.push("No recognized entry points.");
+		for (const entry of entries) {
+			const main = entry.symbolId === undefined ? "" : `, ${code(entry.symbolId)}`;
+			lines.push(`- ${code(entry.module)}: ${ENTRY_HOW[entry.how]}${main}`);
+		}
+		if (result.moreEntryPoints !== undefined) {
+			lines.push(`
+> ${result.moreEntryPoints} more not shown.`);
 		}
 	}
 

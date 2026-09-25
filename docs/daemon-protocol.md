@@ -300,8 +300,12 @@ A found answer is `{ found: true, symbolId, via, contentHash }`, `via` being `re
 `unowned` or `unparsed`. `contentHash` names the bytes the answer came from; `notIndexed` and
 `unowned` carry none.
 
-`indexStatus.generation` (protocol 3.10.0) changes whenever the stored facts do, and differs across
-daemon restarts, so an answer drawn from facts holds while it stays equal.
+`indexStatus.generation` changes on stored fact or knowledge writes and daemon restarts. Equal
+values mean the indexed facts and knowledge have not changed. Counting demand does not advance it.
+
+`describe.moduleRole` is present when the module's provider reported a role. `overview.entryPoints`
+is present when any file in scope has one, lists at most 50 entries, and `moreEntryPoints` counts
+the rest.
 
 ## Validation, both directions
 

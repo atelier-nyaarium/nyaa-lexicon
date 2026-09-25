@@ -57,7 +57,9 @@ export type Compatibility =
 // 3.12.0: `probeFile` replaces `parseFile.probe`: one request, and the provider puts back what the
 // parse displaced. `symbolAt` takes `contentHash` and answers `needsText` when neither the stored
 // facts nor a kept candidate hold those bytes.
-export const PROTOCOL_VERSION = "3.12.0" as const;
+// 3.13.0: the `fileRoles` tier and `FileFacts.role`, which an older core ignores. `describe.moduleRole`
+// and `overview.entryPoints`. `indexStatus.generation` also moves on knowledge writes.
+export const PROTOCOL_VERSION = "3.13.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

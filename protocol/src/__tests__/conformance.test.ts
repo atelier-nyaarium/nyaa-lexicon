@@ -228,6 +228,7 @@ const WRONG_VALUES: Record<string, unknown> = {
 	documentation: { declaration: "Missing", comment: "// missing" },
 	parseErrors: "required",
 	notes: "required",
+	role: { kind: "entry", how: "main" },
 };
 
 describe("corpus", () => {

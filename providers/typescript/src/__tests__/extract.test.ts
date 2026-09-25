@@ -60,10 +60,69 @@ function textAt(
 	return value;
 }
 
+const declarationsFixtureText =
+	'import { createLogger } from "./log";\nconst logger = createLogger();\nexport function add(a: number, b: number): number {\n\treturn a + b;\n}\n';
+const moduleSetupFixtureText =
+	"function add(a, b) {\n\treturn a + b;\n}\nif (!Array.prototype.at) {\n\tArray.prototype.at = function at(index) {\n\t\treturn this[index];\n\t};\n}\nmodule.exports = { add };\nexports.version = 1;\n";
+
 ////////////////////////////////
 //  Tests
 
 describe("what it reports", () => {
+	it("keeps declarations and their initializers as a library", () => {
+		expect(extract(declarationsFixtureText, "src/cart.ts").role).toEqual({ kind: "library" });
+	});
+
+	it("keeps module setup assignments as a library", () => {
+		expect(extract(moduleSetupFixtureText, "src/lib.cjs").role).toEqual({ kind: "library" });
+
+		for (const operator of ["=", "+=", ">>>=", "??="]) {
+			expect(extract(`value ${operator} next;`).role).toEqual({ kind: "library" });
+		}
+	});
+
+	it("keeps recursively declarative control flow as a library", () => {
+		for (const text of [
+			"if (ready) { exports.ready = true; } else { if (fallback) exports.fallback = true; }",
+			"try { exports.ready = true; } catch (error) { exports.error = error; } finally { exports.done = true; }",
+			"{ exports.ready = true; }",
+			"setup: { exports.ready = true; }",
+		]) {
+			expect(extract(`${moduleSetupFixtureText}${text}`).role).toEqual({ kind: "library" });
+		}
+
+		for (const text of [
+			"if (ready) { exports.ready = true; } else { initialize(); }",
+			"try { exports.ready = true; } catch { initialize(); }",
+			"{ exports.ready = true; initialize(); }",
+		]) {
+			expect(extract(text).role).toEqual({ kind: "entry", how: "topLevel" });
+		}
+	});
+
+	it("recognizes run-as-program guards, nested in setup too, unless their else runs on import", () => {
+		for (const text of [
+			"export function run(): void {}\nif (import.meta.main) run();\n",
+			"function run() {}\nif (require.main === module) run();\n",
+			"if (module === require.main) run();",
+			"if (enabled) { if (import.meta.main) run(); }",
+			"if (import.meta.main) run(); else exports.ready = true;",
+		]) {
+			expect(extract(text).role).toEqual({ kind: "entry", how: "guardedMain" });
+		}
+
+		expect(extract("if (require.main === module) run(); else initialize();").role).toEqual({
+			kind: "entry",
+			how: "topLevel",
+		});
+	});
+
+	it("recognizes top-level expressions and control flow", () => {
+		for (const text of ['console.log("hello");\n', "if (ready) run();", "{ run(); }", "debugger;"]) {
+			expect(extract(text).role).toEqual({ kind: "entry", how: "topLevel" });
+		}
+	});
+
 	it("reports each declaration kind as itself", () => {
 		const source = `
 export class Cart {}

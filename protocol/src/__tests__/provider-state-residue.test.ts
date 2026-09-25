@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
-import { calleeOf, callsIn, lineOf, type ParsedSource, parseSource } from "../astResidue";
+import { calleeOf, callsIn, lineOf, type ParsedSource, parseSource, reachedCalls } from "../astResidue";
 import { readSwept, sourceFiles } from "../residue";
 
 /** Stateful provider data stays in the kit. */
@@ -10,8 +10,9 @@ const PROVIDERS = join(import.meta.dirname, "..", "..", "..", "providers");
 
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "__tests__"]);
 
-/** Source-content reads. */
-const CONTENT_READS = new Set(["readFileSync", "readFile", "readSourceFile", "openSync", "createReadStream", "file"]);
+const READ_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises", "@nyaa-lexicon/protocol"]);
+
+const CONTENT_READS = new Set(["readFileSync", "readFile", "readSourceFile", "openSync", "createReadStream"]);
 
 /** Allowed configuration and asset reads. */
 const ALLOWED_READS: Record<string, string> = {
@@ -45,6 +46,21 @@ function parsedProviders(): Array<{ provider: string; files: ParsedSource[] }> {
 }
 
 const where = (parsed: ParsedSource, node: ts.Node) => `${relative(PROVIDERS, parsed.file)}:${lineOf(parsed, node)}`;
+
+/** Finds reads by name or import. */
+function contentReads(parsed: ParsedSource): Array<{ node: ts.Node; name: string }> {
+	const named = callsIn(parsed.source).flatMap((call) => {
+		const callee = calleeOf(call);
+		if (callee === undefined) return [];
+		const read = CONTENT_READS.has(callee.name) || (callee.receiver === "Bun" && callee.name === "file");
+		return read ? [{ node: call as ts.Node, name: callee.name }] : [];
+	});
+	const seen = new Set(named.map(({ node }) => node));
+	const imported = reachedCalls(parsed.source, READ_MODULES, CONTENT_READS)
+		.filter(({ call }) => !seen.has(call))
+		.map(({ call, name }) => ({ node: call, name }));
+	return [...named, ...imported];
+}
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
 	return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === kind);
@@ -116,18 +132,26 @@ describe("provider state lives in the kit's module store", () => {
 		expect(offenders, "handlersFor stages, settles, probes and forgets through the store").toEqual([]);
 	});
 
+	it("fires on a read through an alias, a namespace or a require", () => {
+		const planted = [
+			'import { readFileSync as loadText } from "node:fs";\nloadText(path);\n',
+			'import * as fs from "fs";\nfs.readFileSync(path);\n',
+			'const { readFile } = require("node:fs/promises");\nreadFile(path);\n',
+			"Bun.file(path).text();\n",
+		];
+
+		expect(planted.map((text) => contentReads(parseSource("planted.ts", text)).length)).toEqual([1, 1, 1, 1]);
+	});
+
 	it("reads no module text off disk outside the kit", () => {
 		const offenders: string[] = [];
 		const reading = new Set<string>();
 		for (const { files } of parsedProviders()) {
 			for (const parsed of files) {
 				const file = relative(PROVIDERS, parsed.file);
-				for (const call of callsIn(parsed.source)) {
-					const callee = calleeOf(call);
-					if (callee === undefined || !CONTENT_READS.has(callee.name)) continue;
-					if (callee.name === "file" && callee.receiver !== "Bun") continue;
+				for (const { node, name } of contentReads(parsed)) {
 					if (Object.hasOwn(ALLOWED_READS, file)) reading.add(file);
-					else offenders.push(`${where(parsed, call)} ${callee.name}`);
+					else offenders.push(`${where(parsed, node)} ${name}`);
 				}
 			}
 		}

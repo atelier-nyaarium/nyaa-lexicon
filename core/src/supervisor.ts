@@ -8,6 +8,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { Writable } from "node:stream";
 import {
 	defined,
+	type FileFacts,
 	isCompatibleProtocol,
 	METHOD_SCHEMAS,
 	type ModuleAdmission,
@@ -27,6 +28,7 @@ import {
 import type { z } from "zod";
 import { type Clock, systemClock } from "./clock.js";
 import { withTimeout } from "./deadline.js";
+import { settleDeclaredTiers } from "./declaredTiers.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
 import {
@@ -474,13 +476,9 @@ export class ProviderSupervisor implements ProviderPort {
 			// Validated here so a malformed answer fails at the provider that produced it, rather
 			// than as a confusing shape error somewhere downstream.
 			const parsed = METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
-			// The comments tier the provider declared is the one its answer carries: a field from a
-			// provider without the tier reports nothing stripped, and one with the tier reported spans.
 			const facts = method === "parseFile" || method === "probeFile";
 			if (facts && typeof parsed === "object" && parsed !== null) {
-				const answer = parsed as { comments?: unknown[] };
-				if (provider.tiers.comments === true) answer.comments ??= [];
-				else delete answer.comments;
+				settleDeclaredTiers(provider.tiers, parsed as Partial<FileFacts>);
 			}
 			return parsed;
 		});

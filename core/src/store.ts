@@ -16,9 +16,12 @@ import {
 	declarationFactId,
 	defined,
 	docFactId,
+	type EntryHow,
 	type FileContent,
 	type FileNote,
 	type FileNotes,
+	type FileRole,
+	FileRoleSchema,
 	type Import,
 	type IndexDepth,
 	importFactId,
@@ -26,6 +29,7 @@ import {
 	languageOf,
 	literalFactId,
 	type Metrics,
+	ownerStarts,
 	parseFactId,
 	type Reference,
 	type ReferenceRole,
@@ -113,6 +117,7 @@ export interface ReplaceFileInput {
 	provider?: string;
 	digests?: PatternDigest[];
 	generated?: GeneratedVerdict | null;
+	role?: FileRole | undefined;
 }
 
 /** One commit of a module's rows: the depth they hold and the clock stamp the commit took. */
@@ -125,7 +130,7 @@ export interface FactsStamp {
 //  Constants
 
 /** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -202,10 +207,16 @@ CREATE TABLE files (
   provider    TEXT,
   -- Git's word: 'yes', 'no' or 'unknown' with its reason; NULL on a row written without asking.
   generated        TEXT,
-  generatedReason  TEXT
+  generatedReason  TEXT,
+  -- library, entry, or unknown; NULL when no role was reported.
+  role             TEXT,
+  roleHow          TEXT,
+  roleSymbolId     TEXT,
+  roleReason       TEXT
 );
 CREATE INDEX files_indexed_at ON files(indexedAt);
 CREATE INDEX files_depth ON files(depth);
+CREATE INDEX files_role ON files(role);
 
 -- Parse failures persist until a successful parse or file removal.
 CREATE TABLE parse_failures (
@@ -854,6 +865,8 @@ export class IndexStore {
 
 	/** The newest stamp written or held, so no two commits share one. */
 	private newestStamp: number;
+	/** In-process recall changes. */
+	private knowledgeTurns = 0;
 
 	private constructor(
 		private readonly db: DatabaseSync,
@@ -1055,15 +1068,18 @@ export class IndexStore {
 			provider = null,
 			digests = [],
 			generated = null,
+			role,
 		} = input;
-		admitFacts(module, { declarations, references, literals, docs });
+		admitFacts(module, { declarations, references, literals, docs, role });
+		const owners = ownerStarts(declarations);
 		const digestOf = new Map(digests.map((digest) => [digest.symbolId, digest]));
 		this.inTransaction(() => {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
-					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, provider, generated, generatedReason)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, provider, generated, generatedReason,
+					 role, roleHow, roleSymbolId, roleReason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					module,
@@ -1074,6 +1090,10 @@ export class IndexStore {
 					provider,
 					generated?.status ?? null,
 					generated?.status === "unknown" ? generated.reason : null,
+					role?.kind ?? null,
+					role?.kind === "entry" ? role.how : null,
+					role?.kind === "entry" ? (role.symbolId ?? null) : null,
+					role?.kind === "unknown" ? role.reason : null,
 				);
 			// A successful parse clears its failure record.
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
@@ -1131,7 +1151,7 @@ export class IndexStore {
 				const target = r.binding.status === "bound" ? r.binding.symbolId : null;
 				const how = r.binding.status === "unbound" ? r.binding.reason : r.binding.provenance;
 				reference.run(
-					referenceFactId(module, r),
+					referenceFactId(module, r, owners),
 					module,
 					r.name,
 					r.role,
@@ -1183,7 +1203,7 @@ export class IndexStore {
 			);
 			for (const literal of literals) {
 				literalRow.run(
-					literalFactId(module, literal),
+					literalFactId(module, literal, owners),
 					module,
 					literal.kind,
 					literal.value,
@@ -1204,7 +1224,11 @@ export class IndexStore {
 				// The anchor is recomputed on every pass and written fresh. Nothing migrates an old
 				// one forward, so a symbol that moved cannot leave a comment pointing at where it was.
 				commentRow.run(
-					commentFactId(module, { range: comment.range, text: comment.raw }),
+					commentFactId(
+						module,
+						{ range: comment.range, text: comment.raw, anchorId: comment.anchorId },
+						owners,
+					),
 					module,
 					comment.raw,
 					comment.normalized,
@@ -1224,7 +1248,7 @@ export class IndexStore {
 			);
 			for (const region of docs) {
 				docRow.run(
-					docFactId(module, region),
+					docFactId(module, region, owners),
 					module,
 					region.text,
 					normalizeDocText(region.plain ?? region.text),
@@ -1327,6 +1351,44 @@ export class IndexStore {
 		return row?.depth ?? null;
 	}
 
+	/** Null means no role was reported. */
+	roleOf(module: string): FileRole | null {
+		const row = this.db
+			.prepare("SELECT role, roleHow, roleSymbolId, roleReason FROM files WHERE module = ?")
+			.get(module) as RoleRow | undefined;
+		return row === undefined ? null : roleFromRow(row);
+	}
+
+	/**
+	 * Entry files in scope, capped by `limit`. Null means no role was reported.
+	 */
+	entryPoints(
+		include: (module: string) => boolean,
+		limit: number,
+	): { entries: Array<{ module: string; how: EntryHow; symbolId?: string }>; more: number } | null {
+		const rows = this.db
+			.prepare("SELECT module, role, roleHow, roleSymbolId FROM files WHERE role IS NOT NULL ORDER BY module")
+			.iterate() as Iterable<{ module: string; role: string; roleHow: EntryHow; roleSymbolId: string | null }>;
+		let reported = false;
+		let more = 0;
+		const entries: Array<{ module: string; how: EntryHow; symbolId?: string }> = [];
+		for (const row of rows) {
+			if (!include(row.module)) continue;
+			reported = true;
+			if (row.role !== "entry") continue;
+			if (entries.length === limit) {
+				more++;
+				continue;
+			}
+			entries.push({
+				module: row.module,
+				how: row.roleHow,
+				...(row.roleSymbolId === null ? {} : { symbolId: row.roleSymbolId }),
+			});
+		}
+		return reported ? { entries, more } : null;
+	}
+
 	/** What a module's rows were committed as, or null when it is not indexed. */
 	stampOf(module: string): FactsStamp | null {
 		const row = this.db.prepare("SELECT depth, indexedAt FROM files WHERE module = ?").get(module) as
@@ -1395,11 +1457,13 @@ export class IndexStore {
 
 	/** One bounded sweep, one transaction, resuming from the cursor the last one persisted. */
 	sweepSubjects(batch: number, pass: SweepPass, now: number): SweepReport {
-		return this.inTransaction(() => {
+		const report = this.inTransaction(() => {
 			const { report, cursor } = this.subjects.sweepSubjects(batch, pass, now, readSweepCursor(this.db));
 			writeMeta(this.db, SWEEP_CURSOR_KEY, JSON.stringify(cursor));
 			return report;
 		});
+		if (report.rebound + report.orphaned + report.deleted > 0) this.knowledgeTurns++;
+		return report;
 	}
 
 	strandedRows(limit: number): StrandedRow[] {
@@ -1563,9 +1627,16 @@ export class IndexStore {
 				answer.doubt?.at ?? null,
 				answer.doubt?.by ?? null,
 			);
+		// A saved answer advances generation immediately.
+		this.knowledgeTurns++;
 		// Answering closes the gap. The ask count served its purpose; keeping the row would make
 		// every later gap query filter it out forever.
 		this.db.prepare("DELETE FROM gaps WHERE subjectId = ? AND question = ?").run(subjectId, answer.question);
+	}
+
+	/** Recall-changing write count. */
+	knowledgeGeneration(): number {
+		return this.knowledgeTurns;
 	}
 
 	/**
@@ -1581,6 +1652,7 @@ export class IndexStore {
 				 WHERE subjectId = (SELECT subjectId FROM subjects_addressed WHERE symbolId = ?) AND question = ?`,
 			)
 			.run(doubt.factId, doubt.reason, doubt.at, doubt.by ?? null, symbolId, question);
+		if (result.changes > 0) this.knowledgeTurns++;
 		return result.changes > 0;
 	}
 
@@ -2305,6 +2377,26 @@ function verdictFromRow(status: string, reason: string | null): GeneratedVerdict
 		return { status, reason: reason as GeneratedReason };
 	}
 	return null;
+}
+
+interface RoleRow {
+	role: string | null;
+	roleHow: string | null;
+	roleSymbolId: string | null;
+	roleReason: string | null;
+}
+
+function roleFromRow(row: RoleRow): FileRole | null {
+	if (row.role === null) return null;
+	const parsed = FileRoleSchema.safeParse({
+		kind: row.role,
+		...defined({
+			how: row.roleHow ?? undefined,
+			symbolId: row.roleSymbolId ?? undefined,
+			reason: row.roleReason ?? undefined,
+		}),
+	});
+	return parsed.success ? parsed.data : null;
 }
 
 /** Row shapes, named so the mappers read as field access rather than a wall of casts. */

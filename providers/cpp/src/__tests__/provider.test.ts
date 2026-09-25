@@ -88,6 +88,30 @@ describe("C++ provider contract", () => {
 		expect(info.tiers).toEqual(TIERS);
 	});
 
+	test("marks a global main definition as the file entry", () => {
+		const module = "src/main.cpp";
+		const text = "int main() { return 0; }\n";
+		const facts = parseCppFile(module, text);
+		const main = facts.declarations.find((declaration) => declaration.name === "main");
+
+		expect(main).toBeDefined();
+		expect(facts.role).toEqual({ kind: "entry", how: "main", symbolId: main?.symbolId });
+
+		const handlers = wire();
+		const request = { module, contentHash: "main", text };
+		expect(handlers.parseFile(request).role).toEqual(facts.role);
+		expect(handlers.probeFile(request).role).toEqual(facts.role);
+	});
+
+	test("treats prototypes and scoped main functions as library files", () => {
+		const facts = parseCppFile(
+			"src/library.cpp",
+			"int main();\nnamespace app { int main() { return 0; } }\nclass Program { int main() { return 0; } };\n",
+		);
+
+		expect(facts.role).toEqual({ kind: "library" });
+	});
+
 	test("extracts nested namespaces, templates, members, enums, aliases, and overloads", () => {
 		const text = [
 			"namespace outer {",

@@ -2,6 +2,7 @@ import type {
 	CommentSpan,
 	Declaration,
 	Diagnostic,
+	FileRole,
 	ImportedName,
 	Literal,
 	Range,
@@ -107,4 +108,5 @@ export interface KotlinFile extends HeaderFacts {
 	comments: CommentSpan[];
 	typeFacts: TypeFact[];
 	diagnostics: Diagnostic[];
+	role: FileRole;
 }

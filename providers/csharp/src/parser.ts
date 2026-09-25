@@ -7,6 +7,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	type FileRole,
 	type ImportedName,
 	type Literal,
 	type Metrics,
@@ -44,11 +45,13 @@ export interface DeclarationMeta {
 	bodyStartOffset?: number;
 	bodyEndOffset?: number;
 	parameterCount?: number;
+	isStatic?: boolean;
 }
 
 export interface CsharpFacts {
 	module: string;
 	text: string;
+	role: FileRole;
 	declarations: Declaration[];
 	references: Reference[];
 	imports: CsharpImport[];
@@ -100,6 +103,7 @@ interface RawDeclaration {
 	bodyStartToken?: Token | undefined;
 	bodyEndToken?: Token | undefined;
 	parameterCount?: number | undefined;
+	isStatic?: boolean | undefined;
 	nameTokenOffsets: number[];
 }
 
@@ -412,6 +416,7 @@ export class CsharpParser {
 	private readonly diagnostics: Diagnostic[];
 	private readonly reportedDiagnostics = new Set<string>();
 	private readonly scopeCounts = new Map<RawDeclaration | undefined, Map<string, number>>();
+	private skippedFileScope = false;
 	private localOrdinal = 0;
 
 	constructor(
@@ -445,6 +450,7 @@ export class CsharpParser {
 		return {
 			module: this.module,
 			text: this.text,
+			role: this.fileRole(finalized.declarations, finalized.metadata),
 			declarations: finalized.declarations,
 			references,
 			imports: this.rawImports,
@@ -455,6 +461,16 @@ export class CsharpParser {
 			namespaceNames: [...this.namespaceNames].sort(),
 			attributeNames: this.attributeNames,
 		};
+	}
+
+	private fileRole(declarations: Declaration[], metadata: Map<string, DeclarationMeta>): FileRole {
+		const main = declarations.find((declaration) => {
+			if (declaration.kind !== "method" || declaration.name !== "Main") return false;
+			return metadata.get(declaration.symbolId)?.isStatic === true;
+		});
+		if (main !== undefined) return { kind: "entry", how: "main", symbolId: main.symbolId };
+		if (this.skippedFileScope) return { kind: "unknown", reason: "NotImplemented" };
+		return { kind: "library" };
 	}
 
 	private token(index: number): Token | undefined {
@@ -584,6 +600,7 @@ export class CsharpParser {
 				leadingStart === undefined ? undefined : { start: leadingStart },
 			);
 			if (parsed <= index) {
+				if (parent === undefined) this.skippedFileScope = true;
 				index = this.skipUnknown(index, end);
 			} else {
 				index = parsed;
@@ -1494,6 +1511,7 @@ export class CsharpParser {
 			bodyStartToken: boundary.kind === "body" ? this.token(boundary.index) : undefined,
 			bodyEndToken: bodyClose >= 0 ? this.token(bodyClose) : undefined,
 			nameTokenOffsets,
+			isStatic: modifiers.has("static"),
 		});
 		const typeSpan =
 			operator === undefined
@@ -2257,6 +2275,7 @@ export class CsharpParser {
 					typeName: raw.typeName,
 					inferredType: raw.inferredType,
 					isPartial: raw.isPartial,
+					isStatic: raw.isStatic,
 				}),
 				...(raw.bodyStartToken === undefined ? {} : { bodyStartOffset: raw.bodyStartToken.endOffset }),
 				...(raw.bodyEndToken === undefined ? {} : { bodyEndOffset: raw.bodyEndToken.startOffset }),

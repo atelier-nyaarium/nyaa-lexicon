@@ -371,6 +371,7 @@ export class WorkspaceIndexer {
 				// supervisor drops a comments field from a provider that never declared the tier.
 				digests: storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
 				generated: generatedVerdict,
+				role: facts.role,
 			});
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
@@ -895,8 +896,8 @@ export class WorkspaceIndexer {
 			...(concerned === null ? {} : { concerning: concerned }),
 			fullFiles: depths.full + depths.surface,
 			outlineFiles: depths.outline,
-			// The facts cache turns over whenever stored facts move.
-			generation: `${this.epoch}.${this.caches.facts.stats().generation}`,
+			// Fact and knowledge writes advance generation.
+			generation: `${this.epoch}.${this.caches.facts.stats().generation}.${this.store.knowledgeGeneration()}`,
 		};
 	}
 

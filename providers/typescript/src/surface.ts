@@ -5,12 +5,13 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	type FileRole,
 	type Import,
 	type ImportedName,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { isDeclarationModule } from "./bundle.js";
-import { LANGUAGE } from "./extract.js";
+import { fileRoleOf, LANGUAGE } from "./extract.js";
 import { scriptKindOf } from "./file-types.js";
 
 ////////////////////////////////
@@ -23,6 +24,7 @@ export interface SurfaceFacts {
 	literals: [];
 	comments: [];
 	diagnostics: Diagnostic[];
+	role: FileRole;
 }
 
 interface ExportedNode {
@@ -50,6 +52,7 @@ export function extractSurfaceFile(module: string, text: string): SurfaceFacts {
 		literals: [],
 		comments: [],
 		diagnostics: syntaxDiagnostics(module, source),
+		role: fileRoleOf(source),
 	};
 }
 
