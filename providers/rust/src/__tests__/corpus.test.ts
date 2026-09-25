@@ -26,7 +26,7 @@ corpusTest(
 	"parses every Rust file from the guarded ripgrep corpus",
 	async () => {
 		const root = corpusRoot;
-		if (!corpusPresent) throw new Error("ripgrep corpus is absent");
+		if (!corpusPresent) throw new Error("ripgrep corpus is absent; run bun run corpora");
 		const files = rustFiles(root);
 		const provider = new RustProvider();
 		const handlers = handlersFor(provider);

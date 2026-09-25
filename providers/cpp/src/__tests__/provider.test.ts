@@ -367,7 +367,7 @@ const corpusTest = corpusPresent || !Reflect.get(process.env, "CI") ? test : tes
 corpusTest(
 	"parses every owned nlohmann/json corpus file",
 	async () => {
-		if (!corpusPresent) throw new Error("C++ corpus is absent");
+		if (!corpusPresent) throw new Error("C++ corpus is absent; run bun run corpora");
 		const started = performance.now();
 		const provider = wire(corpusRoot);
 		const files = corpusSourceFiles(corpusRoot);

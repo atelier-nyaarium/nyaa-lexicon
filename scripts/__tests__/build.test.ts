@@ -11,6 +11,7 @@ import {
 	readVersion,
 	setVersion,
 	UMD_WRAPPER_RE,
+	untrackedFiles,
 	versionTargets,
 } from "../build";
 
@@ -176,9 +177,12 @@ describe("dirtyTrackedFiles", () => {
 		expect(dirtyTrackedFiles(line)).toEqual(["core/src/index.ts"]);
 	});
 
-	it("ignores untracked and ignored entries, so a scratch file cannot block a release", () => {
-		const out = ["? scratch.ts", "! node_modules/", "# branch.oid aaa"].join("\n");
-		expect(dirtyTrackedFiles(out)).toEqual([]);
+	it("leaves untracked entries to untrackedFiles, which skips ignored entries and dist", () => {
+		const out = ["? scratch.ts", "? dist/extra.js", "! node_modules/", "# branch.oid aaa"].join("\n");
+		expect({ dirty: dirtyTrackedFiles(out), untracked: untrackedFiles(out) }).toEqual({
+			dirty: [],
+			untracked: ["scratch.ts"],
+		});
 	});
 
 	it("ignores tracked files under root and workspace dist directories", () => {

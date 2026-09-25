@@ -1365,7 +1365,7 @@ const corpusTest = corpusPresent || !CI ? test : test.skip;
 corpusTest(
 	"parses every claimed C file from both requested corpora",
 	async () => {
-		if (!corpusPresent) throw new Error("C corpora are absent");
+		if (!corpusPresent) throw new Error("C corpora are absent; run bun run corpora");
 		const startedAt = performance.now();
 		let files = 0;
 		let bytes = 0;

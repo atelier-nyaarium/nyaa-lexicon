@@ -48,10 +48,23 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
 
 ```bash
 bun install
+bun run corpora   # the test corpora, cloned into temp/ at pinned commits; once, and after a pin moves
 bun run lint      # biome ci AND tsc --build, both run, both reported
 bun run test      # bun test, including the residue tests
 bun run lint:fix
+bun run bench     # a timed cold index of Lexicon's own source; --against <ref> compares and gates
 ```
+
+Run `bun run corpora` before tests. Corpus tests require local checkouts. `CORPORA` in
+`scripts/corpora.ts` pins every corpus tests read.
+
+`bench` builds `dist/`, indexes a separate checkout of HEAD, then restores `dist/` to its committed
+state. With `--against <ref>`, it builds that ref in a temporary worktree and fails if the working
+tree is over 20% slower. Run it after extraction, provider project-model, or indexer changes. Cold
+indexing takes minutes.
+
+NyaaCode consumes Lexicon as an extension submodule. Its umbrella's `lexicon:dev` builds this
+checkout and snapshots it into the extension without releasing; see its `AGENTS.md`.
 
 **Read both halves of the gate.** Grepping lint output for `error TS` misses every formatting
 failure. When in doubt, run `bunx biome ci . --reporter=summary` on its own.
@@ -106,6 +119,10 @@ Never hand-edit a version. The root `package.json` is the only file BUMPED; ever
 and `.claude-plugin/plugin.json` is SET from it, and the MCP server DERIVES its version at build
 time. Bumping and building are one command because a `dist/` built at a version the manifests do not
 claim looks correct and is not.
+
+A release refuses uncommitted tracked changes and untracked files outside `dist/`, since provider
+discovery walks directories and would bundle source the commit lacks. A failed step, a bundle or
+smoke stopped by Ctrl-C, or a refused commit reverts and unstages the version files and `dist/`.
 
 **The build starts every bundled provider before it finishes.** Bundling proves the imports
 resolved, not that the thing runs, and a provider that dies on launch is recorded as an outage and
@@ -164,9 +181,9 @@ Ordered by how much they prove:
    suite cannot express survives a clean gate and dies to a five-line probe.
 
    Provider discovery prefers the bundle over the source, so `indexCli` and the daemon both spawn
-   what is in `dist/`, not what you just edited. Proving a provider change end to end takes
-   `bun run build --build-only` first and a `git restore dist` after, or the next release build
-   refuses the dirty tree.
+   what is in `dist/`, not what you just edited. `bench` and NyaaCode's `lexicon:dev` build and
+   restore `dist/` themselves. For an ad hoc probe, run `bun run build --build-only` first and
+   `git restore dist` after, so a probe's bundle never lands in a commit.
 
 ## Rules
 
@@ -180,12 +197,13 @@ Ordered by how much they prove:
 - **Never branch on a language in `core/` or `formats/`.** A residue test fails the build on the
   quoted name itself; the fix is a new field on the provider contract.
 - **A provider learns what the index ADMITTED, never what it emitted.** `core/src/indexer.ts` is the
-  one publisher of a `moduleAdmission` verdict and publishes it after the write it describes: after
-  `store.replaceFile` returns, or after `recordFailure` on a refusal. `protocol/src/admission.ts`
-  owns the provider's half, so the staging, the tombstone and the rule that a verdict for replaced
-  bytes settles nothing are written once rather than in nine providers. A provider answering one of
-  the two notifications answers both, since a forget says the index holds nothing and a refusal says
-  it holds the previous facts. Two residues and a lifecycle conformance case pair hold it.
+  sole `moduleAdmission` publisher, after `store.replaceFile` returns or `recordFailure` records a
+  refusal. The provider kit, `protocol/src/moduleStore.ts`, stages parses, settles them from
+  verdicts, layers probes, forgets and fills. Providers declare `read`, `entries` and an optional
+  `same`.
+  `admission-publish-residue.test.ts` holds the publisher. `provider-state-residue.test.ts` forbids
+  module text reads outside the kit and state beside the store. Lifecycle conformance case
+  `probes-and-refusals-are-unseen` checks every stateful provider against a control.
 - **Core asks providers through `ProviderPort`, and tests double it through `fakeSupervisor`.**
   The port is declared where its callers live, so a member core starts calling fails the type check
   rather than a suite at runtime. A residue forbids casting a double to the supervisor class. The
@@ -325,7 +343,7 @@ already knows the answer is being graded on a test it has seen.
   names the bundle, then index the directory holding it. Indexing the package root instead gets its
   source, not the bundle, since a project's own config does not include its build output.
 
-Corpora clone into `temp/`, which is ignored.
+Blind corpora are cloned manually into ignored `temp/`. `bun run corpora` clones corpora read by tests.
 
 ## References
 

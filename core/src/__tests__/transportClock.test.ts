@@ -86,6 +86,8 @@ describe("the transport's timers on the daemon's clock", () => {
 		const socket = await rawConnect(port, []);
 		const closed = closedOf(socket);
 
+		// Connect may beat arming.
+		await until(() => clock.pending() > 0);
 		clock.advance(HELLO_DEADLINE_MS);
 		await closed;
 		await until(() => clock.pending() === 0);

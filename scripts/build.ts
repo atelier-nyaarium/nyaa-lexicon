@@ -406,6 +406,15 @@ export function dirtyTrackedFiles(porcelainV2: string): string[] {
 	return dirty;
 }
 
+/** Untracked paths outside `dist`. Provider discovery walks directories, so a release would bundle them. */
+export function untrackedFiles(porcelainV2: string): string[] {
+	return porcelainV2
+		.split("\n")
+		.filter((line) => line.startsWith("? "))
+		.map((line) => line.slice(2))
+		.filter((file) => !isDistPath(file));
+}
+
 function git(args: string[], root: string): string {
 	return execFileSync("git", args, { cwd: root, encoding: "utf8" });
 }
@@ -431,11 +440,18 @@ function main(argv: string[]): void {
 	// A clean tree is what makes the rollback below safe. --build-only writes no tracked file, so
 	// it has nothing to roll back and no reason to care.
 	if (!buildOnly) {
-		const dirty = dirtyTrackedFiles(git(["status", "--porcelain=v2", "--branch"], ROOT));
+		const status = git(["status", "--porcelain=v2", "--branch"], ROOT);
+		const dirty = dirtyTrackedFiles(status);
 		if (dirty.length > 0) {
 			console.error("Commit your work before building. Uncommitted changes to tracked files:");
 			for (const file of dirty) console.error(`  ${file}`);
-			console.error("\n(untracked files are fine; --build-only skips this check)");
+			console.error("\n(--build-only skips this check)");
+			process.exit(1);
+		}
+		const untracked = untrackedFiles(status);
+		if (untracked.length > 0) {
+			console.error("Add, ignore or remove untracked files; the bundle would ship them without their source:");
+			for (const file of untracked) console.error(`  ${file}`);
 			process.exit(1);
 		}
 
@@ -455,30 +471,32 @@ function main(argv: string[]): void {
 	const targets = versionTargets(ROOT);
 	const current = readVersion(readFileSync(path.join(ROOT, targets[0] as string), "utf8"));
 	const version = buildOnly ? current : nextVersion(current, kind as BumpKind);
-
-	if (!buildOnly) {
-		for (const target of targets) {
-			const file = path.join(ROOT, target);
-			const text = readFileSync(file, "utf8");
-			const was = readVersion(text);
-			writeFileSync(file, setVersion(text, version));
-			console.log(`set ${target}: ${was} -> ${version}`);
-		}
-	}
-	for (const site of DERIVED_SITES) console.log(`derives ${site.what} from package.json: ${site.file}`);
-
-	// Stale output from a previous run must not survive into the commit.
-	rmSync(path.join(ROOT, DIST_DIR), { recursive: true, force: true });
-
-	// Package tsc output goes to `.tsbuild`, so a `dist` beside a package.json is always a fossil and
-	// nothing here writes one. Walks `targets` rather than a list, so a new package is swept too.
-	for (const target of targets)
-		rmSync(path.join(ROOT, path.dirname(target), DIST_DIR), { recursive: true, force: true });
-
 	const providers = providerBundles(ROOT);
 	if (providers.length === 0) throw new Error("no providers found to bundle; the shipped index would find nothing");
 
+	// Ctrl-C stops the child; the parent lives on to run the rollback.
+	process.on("SIGINT", () => {});
+
 	try {
+		if (!buildOnly) {
+			for (const target of targets) {
+				const file = path.join(ROOT, target);
+				const text = readFileSync(file, "utf8");
+				const was = readVersion(text);
+				writeFileSync(file, setVersion(text, version));
+				console.log(`set ${target}: ${was} -> ${version}`);
+			}
+		}
+		for (const site of DERIVED_SITES) console.log(`derives ${site.what} from package.json: ${site.file}`);
+
+		// Stale output from a previous run must not survive into the commit.
+		rmSync(path.join(ROOT, DIST_DIR), { recursive: true, force: true });
+
+		// Package tsc output goes to `.tsbuild`, so a `dist` beside a package.json is always a fossil and
+		// nothing here writes one. Walks `targets` rather than a list, so a new package is swept too.
+		for (const target of targets)
+			rmSync(path.join(ROOT, path.dirname(target), DIST_DIR), { recursive: true, force: true });
+
 		for (const entry of [...ENTRYPOINTS, ...providers]) {
 			const outfile = path.join(DIST_DIR, entry.out);
 			execFileSync(
@@ -510,6 +528,10 @@ function main(argv: string[]): void {
 		console.log(`self-contained: ${checkBundlesAreSelfContained(ROOT)} bundles`);
 		smokeProviders(ROOT, providers);
 		smokeIsolation(ROOT);
+		if (!buildOnly) {
+			git(["add", "--", ...targets, DIST_DIR], ROOT);
+			git(["commit", "-m", `Build ${version}`], ROOT);
+		}
 	} catch (failure) {
 		// bun prints its own compiler errors; only a smoke failure needs this script to speak.
 		const said = failure instanceof Error ? failure.message : "";
@@ -517,7 +539,9 @@ function main(argv: string[]): void {
 		if (!buildOnly) {
 			// dist/ is committed, so a half-written bundle left beside reverted versions is a lie
 			// on disk that a later commit could pick up.
+			git(["reset", "--quiet", "--", ...targets, DIST_DIR], ROOT);
 			git(["checkout", "--", ...targets, DIST_DIR], ROOT);
+			git(["clean", "-fdq", "--", DIST_DIR], ROOT);
 			console.error(`\nbuild failed; reverted ${targets.length} version file(s) and ${DIST_DIR}/ to ${current}`);
 		} else {
 			console.error("\nbuild failed");
@@ -525,14 +549,11 @@ function main(argv: string[]): void {
 		process.exit(1);
 	}
 
-	if (buildOnly) {
-		console.log(`\nbuilt ${DIST_DIR}/ at ${version}. Nothing bumped, nothing committed.`);
-		return;
-	}
-
-	git(["add", "--", ...targets, DIST_DIR], ROOT);
-	git(["commit", "-m", `Build ${version}`], ROOT);
-	console.log(`\n${current} -> ${version}, committed as "Build ${version}". Push to ship.`);
+	console.log(
+		buildOnly
+			? `\nbuilt ${DIST_DIR}/ at ${version}. Nothing bumped, nothing committed.`
+			: `\n${current} -> ${version}, committed as "Build ${version}". Push to ship.`,
+	);
 }
 
 if (path.basename(process.argv[1] ?? "") === "build.ts") main(process.argv.slice(2));

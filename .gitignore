@@ -1,7 +1,7 @@
 node_modules/
 
 # tsc project-reference output. NOT "dist": dist/ is the shipped bundle and IS committed,
-# because the MCP server runs as `node dist/main.js` with no install step and no bun.
+# because the MCP server runs as `bun dist/main.js` with no install step.
 .tsbuild/
 *.tsbuildinfo
 

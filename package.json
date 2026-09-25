@@ -14,6 +14,8 @@
 	],
 	"scripts": {
 		"build": "bun run scripts/build.ts",
+		"corpora": "bun scripts/corpora.ts",
+		"bench": "bun scripts/bench.ts",
 		"lint": "bun run scripts/lint.ts",
 		"lint:fix": "biome check --write .",
 		"test": "bun test --parallel --timeout 30000 --path-ignore-patterns '**/temp/**' --path-ignore-patterns '**/dist/**'",
