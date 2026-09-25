@@ -19,6 +19,7 @@ TYPE_USE_KINDS = {"class", "variable", "function", "interface", "typeParameter"}
 TYPE_PARAM_NODES = getattr(ast, "type_param", ())
 # PEP 695 `type X = ...` statement; absent before 3.12.
 TYPE_ALIAS_NODES = getattr(ast, "TypeAlias", ())
+TRY_NODES = (ast.Try, getattr(ast, "TryStar", ast.Try))
 
 
 # //////// Helpers
@@ -51,6 +52,75 @@ def descriptors_from_identity_key(key):
 
 def diagnostic(message):
     return {"severity": "error", "message": message}
+
+
+def is_main_guard(node):
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    test = node.test
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq) or len(test.comparators) != 1:
+        return False
+    left, right = test.left, test.comparators[0]
+    return (
+        isinstance(left, ast.Name)
+        and left.id == "__name__"
+        and isinstance(right, ast.Constant)
+        and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name)
+        and right.id == "__name__"
+        and isinstance(left, ast.Constant)
+        and left.value == "__main__"
+    )
+
+
+# Effects on load, weakest first. A file takes its strongest.
+DECLARES, GUARDED, RUNS = 0, 1, 2
+
+DECLARATIVE_NODES = (
+    ast.Import,
+    ast.ImportFrom,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.AugAssign,
+    ast.Pass,
+)
+
+
+def strongest(statements):
+    return max((load_effect(statement) for statement in statements), default=DECLARES)
+
+
+def load_effect(node):
+    if isinstance(node, DECLARATIVE_NODES) or isinstance(node, TYPE_ALIAS_NODES):
+        return DECLARES
+    if (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    ):
+        return DECLARES
+    if is_main_guard(node):
+        # The guarded body is the program; its else still runs on import.
+        return max(GUARDED, strongest(node.orelse))
+    if isinstance(node, ast.If):
+        return strongest([*node.body, *node.orelse])
+    if isinstance(node, TRY_NODES):
+        handlers = [statement for handler in node.handlers for statement in handler.body]
+        return strongest([*node.body, *handlers, *node.orelse, *node.finalbody])
+    return RUNS
+
+
+def file_role(tree):
+    effect = strongest(tree.body)
+    if effect == RUNS:
+        return {"kind": "entry", "how": "topLevel"}
+    if effect == GUARDED:
+        return {"kind": "entry", "how": "guardedMain"}
+    return {"kind": "library"}
 
 
 def names_in_target(target):
@@ -1079,6 +1149,7 @@ class Analyzer:
             "references": self.references,
             "imports": self.imports,
             "importStatements": self.import_statements,
+            "role": file_role(tree),
             "moduleDocstring": self.module_docstring,
             "importBindings": self.import_bindings,
             "scopeInfos": [
@@ -2519,6 +2590,7 @@ def extract(module, text):
             "references": [],
             "imports": [],
             "importStatements": [],
+            "role": {"kind": "unknown", "reason": "ParseError"},
             "moduleDocstring": None,
             "importBindings": [],
             "scopeInfos": [],
