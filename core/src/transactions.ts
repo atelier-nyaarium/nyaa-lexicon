@@ -93,6 +93,7 @@ interface KnownFileState {
 	edited: boolean;
 }
 
+/** Status token used by refactor requests. See `docs/daemon-protocol.md` `expect`. */
 export interface Expectation {
 	id: string;
 	revision: number;
@@ -122,7 +123,7 @@ export interface Recovered {
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Over bytes, not decoded text, so two files that differ only in encoding never share an image. */
+/** Hashes byte images. See `docs/architecture.md` Refactor transactions. */
 export function hashBytes(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex").slice(0, 32);
 }
@@ -244,11 +245,8 @@ function parseDiskStates(raw: string | null): DiskState[] | null {
 //  Class
 
 /**
- * One per workspace, owned by the daemon.
- *
- * Every method here assumes the workspace gate is already held by its caller. Acquiring it inside
- * would deadlock against the caller that took it to make its decision, and taking it later than
- * the decision would let another writer invalidate the hashes this one just checked.
+ * Owns refactor state transitions for one workspace.
+ * Gate ownership follows `WorkspaceGate` in `docs/architecture.md`.
  */
 export class TransactionManager {
 	constructor(
@@ -261,11 +259,7 @@ export class TransactionManager {
 	////////////////////////////////
 	//  Lifecycle
 
-	/**
-	 * Refuses a second transaction rather than nesting: one workspace, one stack of undo.
-	 *
-	 * Nobody holds an `own` transaction after a crash, so recovery closes it.
-	 */
+	/** Opens the workspace transaction. See `docs/daemon-protocol.md` `refactorStart`. */
 	start(origin: TransactionOrigin = "explicit"): StartedTransaction {
 		const open = this.openTransaction();
 		if (open) return { started: false, id: open.id, reason: transactionAlreadyOpen() };
@@ -282,23 +276,18 @@ export class TransactionManager {
 		return { started: true, id };
 	}
 
+	/** Reads open transaction state. See `docs/daemon-protocol.md` `refactorStatus`. */
 	openTransaction(): { id: string; startedAt: number; origin: TransactionOrigin; revision: number } | null {
 		const row = this.store.journalRead((db) =>
 			db.prepare("SELECT id, startedAt, origin, revision FROM refactor_transactions WHERE state = 'open'").get(),
 		) as { id: string; startedAt: number; origin: TransactionOrigin | null; revision: number } | undefined;
-		// Pre-column rows are `explicit`.
+		// A null origin means explicit.
 		return row === undefined
 			? null
 			: { id: row.id, startedAt: row.startedAt, origin: row.origin ?? "explicit", revision: row.revision };
 	}
 
-	/**
-	 * Snapshots a file's current bytes as the transaction's opening image.
-	 *
-	 * Never overwrites an existing baseline. Tracking a file a step already touched would move the
-	 * mark revert restores to, so revert would stop at a mid-transaction state and call it the
-	 * beginning.
-	 */
+	/** Records the opening image. See `docs/architecture.md` Refactor transactions. */
 	track(module: string): TrackedFile {
 		const open = this.openTransaction();
 		if (!open) return { tracked: false, reason: noTransactionOpen() };
@@ -310,7 +299,7 @@ export class TransactionManager {
 		return { tracked: true };
 	}
 
-	/** Records verified editor writes. */
+	/** Applies an editor state note. See `docs/daemon-protocol.md` `refactorNoteWrite`. */
 	noteWrite(module: string, state: { contentHash: string } | { absent: true }): NotedFileWrite {
 		const open = this.openTransaction();
 		if (!open) return { noted: false, reason: noTransactionOpen() };
@@ -335,7 +324,7 @@ export class TransactionManager {
 		return { noted: true };
 	}
 
-	/** A mismatched transaction id is untracked. */
+	/** Reads the opening image. See `docs/daemon-protocol.md` `refactorBeforeImage`. */
 	beforeImage(module: string, id?: string): RefactorBeforeImage {
 		const open = this.openTransaction();
 		if (!open || (id !== undefined && id !== open.id)) return { tracked: false };
@@ -368,6 +357,7 @@ export class TransactionManager {
 		};
 	}
 
+	/** Reads transaction state. See `docs/daemon-protocol.md` `refactorStatus`. */
 	status(): TransactionStatus {
 		const open = this.openTransaction();
 		if (!open) return { open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [] };
@@ -429,13 +419,7 @@ export class TransactionManager {
 	////////////////////////////////
 	//  Steps
 
-	/**
-	 * Records a step and its before-images, then hands back the number to write under.
-	 *
-	 * Journaling happens before any file is touched, so the phase a crash leaves behind always
-	 * over-states progress rather than under-stating it. Recovery can undo work that never
-	 * happened; it cannot undo work it has no record of.
-	 */
+	/** Journals step images. See `docs/architecture.md` Refactor transactions. */
 	beginStep(
 		kind: StepKind,
 		modules: string[],
@@ -460,13 +444,11 @@ export class TransactionManager {
 		});
 
 		for (const image of images) {
-			// The baseline is claimed here too, so a file a step touches is revertible even when
-			// nobody thought to track it first.
+			// Give every step-touched module a baseline for Revert.
 			if (!this.imageFor(open.id, "baseline", 0, image.module)) this.claimBaseline(open.id, image);
 			const known = this.knownState(open.id, image.module);
 			const beforeEdited = known !== null && known.edited && holds(image, known.existed, known.hash);
-			// A step that knows its outcome journals it now, or a crash before completion reads as a
-			// conflict. Hashed HERE so the image-hash spelling has one owner.
+			// Store a known output hash before a write so recovery can identify its result.
 			const planned = plannedText?.find((entry) => entry.module === image.module);
 			this.writeImage(
 				open.id,
@@ -483,7 +465,7 @@ export class TransactionManager {
 		return { ok: true, stepNo };
 	}
 
-	/** Records what the step produced, so undo can tell its own output from a later manual edit. */
+	/** Records step output. See `docs/architecture.md` Refactor transactions. */
 	completeStep(stepNo: number, phase: StepPhase): void {
 		const open = this.openTransaction();
 		if (!open) return;
@@ -516,8 +498,7 @@ export class TransactionManager {
 		});
 	}
 
-	/** Moves the subjects a step re-minted and journals exactly what moved, one row each in the same
-	 * transaction, so a reversal puts back that and nothing else. */
+	/** Journals subject moves. See `core/src/subjects.ts` `rebindBack`. */
 	rebind(stepNo: number, entries: RebindEntry[], evidence: RebindEvidence): RebindResult {
 		const open = this.openTransaction();
 		if (!open) throw new Error("no refactor transaction is open");
@@ -572,13 +553,7 @@ export class TransactionManager {
 	////////////////////////////////
 	//  Unwinding
 
-	/**
-	 * Restores the newest step, refusing when a file no longer holds what that step wrote.
-	 *
-	 * The hash check is what keeps undo from eating a manual edit. A file that changed after the
-	 * step is not the step's output any more, and putting the old bytes back would silently discard
-	 * whatever replaced them.
-	 */
+	/** Restores the newest step. See `docs/architecture.md` Refactor transactions. */
 	undo(expect?: Expectation): UndoneStep {
 		const open = this.openTransaction();
 		if (!this.asShown(open, expect)) return { undone: false, reason: refactorChangedSinceShown() };
@@ -610,8 +585,7 @@ export class TransactionManager {
 		for (const image of images) {
 			if (image.afterHash === null) continue;
 			const current = this.snapshot(image.module);
-			// Still at its before-image: the write never landed (a planned-after step that failed),
-			// so undoing is a no-op restore, never a discard.
+			// A file at its before-image needs no restore.
 			if (holds(current, image.existedBefore, image.beforeHash)) continue;
 			if ("foreign" in current || current.hash !== image.afterHash) {
 				return { undone: false, reason: undoWouldDiscard(image.module, top.stepNo) };
@@ -627,7 +601,7 @@ export class TransactionManager {
 		return this.finalizeUndo(open.id, top.stepNo);
 	}
 
-	/** Puts every tracked file back to its opening image, whatever happened in between. */
+	/** Restores tracked baselines. See `docs/daemon-protocol.md` `refactorRevert`. */
 	revert(drifted: TransactionStatus["drifted"], expect?: Expectation): RevertedTransaction {
 		const open = this.openTransaction();
 		if (!this.asShown(open, expect)) return { reverted: false, modules: [], reason: refactorChangedSinceShown() };
@@ -675,7 +649,7 @@ export class TransactionManager {
 		return this.finalizeRevert(open.id);
 	}
 
-	/** Keeps what is on disk and drops the journal, so nothing can be undone afterwards. */
+	/** Closes the transaction. See `docs/daemon-protocol.md` `refactorCommit`. */
 	commit(options: { force?: boolean | undefined; expect?: Expectation | undefined } = {}): CommittedTransaction {
 		const open = this.openTransaction();
 		if (!this.asShown(open, options.expect)) {
@@ -699,14 +673,7 @@ export class TransactionManager {
 	////////////////////////////////
 	//  Recovery
 
-	/**
-	 * Puts the workspace back to a phase boundary after a crash, before anyone can ask about it.
-	 *
-	 * A step is judged by what its files actually hold rather than by its phase alone, because the
-	 * phase says what was STARTED. A file matching neither image is someone else's edit and is
-	 * never overwritten: reporting a conflict is recoverable, and silently reverting a stranger's
-	 * work is not.
-	 */
+	/** Resumes journaled recovery. See `docs/architecture.md` Refactor transactions. */
 	recover(): Recovered {
 		this.sweepTemporaries();
 
@@ -784,12 +751,12 @@ export class TransactionManager {
 					restored.push(image.module);
 					continue;
 				}
-				// Matches neither: written past what the journal knows, or edited by someone else.
+				// A state matching neither image is a conflict and stays on disk.
 				conflicts.push(image.module);
 			}
 
-			// Files went back to their before-images, so what the step moved goes back too, in one commit
-			// with the step's rows. A move whose modules both conflicted stays, with the files nobody restored.
+			// Keep a move whose source and target both conflicted.
+			// Other subject moves reverse in the same journal write as image cleanup.
 			const conflicted = new Set(conflicts.slice(conflictsBefore));
 			const touched = (symbolId: string) => conflicted.has(moduleOf(symbolId) ?? "");
 			const applied = this.rebindsOf(open.id, step.stepNo).filter(
@@ -1017,10 +984,7 @@ export class TransactionManager {
 			.map((image) => image.module);
 	}
 
-	/**
-	 * Temp rename avoids truncating restored files on crash.
-	 * Link operations affect the link, never its target. Directories block restore.
-	 */
+	/** Replaces or removes a leaf without following links; directories block restore. */
 	private restore(image: { module: string; existedBefore: boolean; beforeHash: string | null }): boolean {
 		const full = containedWorkspaceFile(this.workspaceRoot, image.module);
 		if (full === null) return false;
@@ -1031,8 +995,7 @@ export class TransactionManager {
 			return true;
 		}
 
-		// A file already holding its before-image is left alone. Rewriting identical bytes would
-		// change its timestamp and wake the watcher for nothing.
+		// Skip identical bytes to preserve the timestamp and avoid a watcher event.
 		const leaf = readLeaf(full);
 		if (leaf.kind === "file" && hashBytes(leaf.bytes) === image.beforeHash) return true;
 
@@ -1083,7 +1046,7 @@ export class TransactionManager {
 		return open !== null && open.id === expect.id && open.revision === expect.revision;
 	}
 
-	/** Left behind when a write died between its temp file and its rename. */
+	/** Removes staging files for modules still held by the journal. */
 	private sweepTemporaries(): void {
 		const rows = this.store.journalRead((db) =>
 			db.prepare("SELECT DISTINCT module FROM refactor_images").all(),
@@ -1146,7 +1109,7 @@ export class TransactionManager {
 		}));
 	}
 
-	/** What a step moved, in the order it moved it; the schema vouched for every field at the write. */
+	/** Reads subject moves in journal order with the prior state needed to reverse them. */
 	private rebindsOf(transactionId: string, stepNo: number): AppliedRebind[] {
 		const rows = this.store.journalRead((db) =>
 			db
@@ -1226,13 +1189,13 @@ export class TransactionManager {
 		});
 	}
 
-	/** Drops everything but the transaction row, which keeps its outcome for anyone still asking. */
+	/** Removes journal rows and records the transaction's terminal state. */
 	private close(transactionId: string, state: "committed" | "reverted"): void {
 		this.store.journalWrite((db) => this.drop(db, transactionId, state));
 		this.store.pruneBlobs();
 	}
 
-	/** The deletes of a close, for a caller already inside the journal's transaction. */
+	/** Removes journal rows inside the caller's store transaction. */
 	private drop(db: DatabaseSync, transactionId: string, state: "committed" | "reverted"): void {
 		db.prepare("DELETE FROM refactor_images WHERE transactionId = ?").run(transactionId);
 		db.prepare("DELETE FROM refactor_known_states WHERE transactionId = ?").run(transactionId);

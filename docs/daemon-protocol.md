@@ -192,49 +192,52 @@ One method is not in the table. `shutdown` is answered by the daemon process its
 dispatch, with `{ stopping: true }` sent before it stops so the caller reads success rather than a
 dropped connection.
 
-`renameEdits` returns each edited file's `contentHash` and text edits. It refuses if a file changed
-since indexing because its edits use stored ranges.
+## Refactor methods
 
-`previewMove` returns touched modules' base hashes, candidate text, `created`, edits, issues and
-blockers. `previewInsert` returns the planned module's base hash, candidate text, `created`, edits and
-issues. An identical block returns `present`, and an unsafe candidate returns `refused`. Applying
-Applying `edits` to the base, or to empty text when `created`, produces `text`. Move preview refuses
-if the source or a referencing module changed, or a write-time check detects a change. Both previews
-upgrade outline facts, share the write methods' planner path and open no transaction.
+`renameEdits` returns either a plan with changed files or a refusal with the plan and reason.
+Each changed file carries the `contentHash` of the text its ranges address. Before asking providers
+for edits, it refuses planned files whose indexed text no longer matches disk. It also refuses when
+a file cannot be read for writing, a provider refuses, or any occurrence is blocked. Warnings in
+the plan remain warnings.
 
-`refactorBeforeImage` takes `{ module, id? }`. A tracked baseline reports whether the file existed.
-If it did, the result includes its `contentHash` and exact `text` or `base64` bytes. The result is
-`{ tracked: false }` when no transaction is open, `id` does not match, or the module has no baseline.
+`previewMove` returns `ok`, changed files, issues and blockers. Each returned file carries its
+base `contentHash`, candidate `text`, `created` flag and edits. Applying the edits to text with
+that hash, or to empty text when the file is new, produces the candidate. Files with no edits are
+omitted. It checks source and reference modules against indexed text before provider work, then
+checks current source, target and reference hashes and read stamps after provider work. A stale
+input returns `ok: false` with no files.
 
-An open `refactorStatus` includes a durable `revision`. Changes to its step, image, issue, rebind or
-recovery-intent or known-state rows advance it. `refactorNoteWrite` advances it when the known hash,
-absence or `edited` marker changes. The revision survives
-a daemon restart, so undoing a step and creating another at the same step number cannot reuse an old
-expectation.
+`previewInsert` returns `planned`, `present` or `refused`. A planned result carries the base
+`contentHash`, candidate `text`, `created` flag and edits. Applying the edits to the text with
+that hash, or to empty text when the file is new, produces the candidate. Insertion after a
+declaration refuses when its indexed file hash differs from the current text. Insertion by module
+uses the current text as its base. An identical block returns `present`.
 
-Each tracked module has one journaled known state: raw-byte hash or absence. It starts at the
-baseline. Completed steps, undo, recovery restores and accepted `refactorNoteWrite` set it from disk.
-That method accepts `{ module, contentHash }` or `{ module, absent: true }` only when disk matches.
-Otherwise it refuses. An accepted note marks the module `edited`.
+None opens a transaction or writes workspace files. Their handlers may upgrade outline facts before
+answering and use the planners shared with their corresponding write methods.
 
-`refactorStatus` reports sorted `drifted` and `edited` lists. Each `drifted` entry has a `module` and
-the current disk `contentHash`; the hash is null when the file is absent or has no safe regular-file
-hash. It includes tracked modules whose disk state differs from known state. `edited` lists modules
-whose known state came from an editor note. `refactorStatus` hashes tracked files without storing
-blobs under the shared gate.
-`refactorCommit`, `refactorUndo` and `refactorRevert` accept optional `expect: { id, revision }`
-from status. They refuse if no transaction is open or its id or revision differs.
-`refactorRevert` also accepts the `drifted` list. If omitted, `drifted`
-defaults to `[]`. Under the exclusive gate, it recomputes drift and refuses without changes unless
-the module and hash of every entry match. Order does not matter. Before restoring, Revert journals
-each file's current state. Recovery restores it only while disk still has that state or already has
-the baseline; any other state is a conflict and leaves the transaction open. A tracked path whose
-parent link resolves outside the workspace is reported with a null hash, and Revert refuses with
-that path named until the link is removed or repointed.
+`refactorBeforeImage` takes `{ module, id? }`. It returns `{ tracked: false }` when no transaction
+is open, the optional id differs, or the module has no baseline. Otherwise it reports whether the
+file existed. An existing baseline includes its hash and exact bytes, as `text` when UTF-8 round
+trips without a NUL in the first 8192 bytes, or as `base64` otherwise.
 
-`refactorTrack`, `refactorNoteWrite` and refactor steps require regular files. Snapshots never follow
-leaf links, and restore replaces a link rather than writing to its target. Undo and revert refuse
-before restoring if a directory blocks a file path, and report the path.
+An open `refactorStatus` includes the durable transaction `id` and `revision`, plus steps, tracked
+modules, issues, `drifted` entries and `edited` modules. See `docs/architecture.md` for how the
+journal tracks known state and resolves disk paths.
+
+`refactorNoteWrite` accepts `{ module, contentHash }` or `{ module, absent: true }`. It refuses
+without an open transaction, for an untracked module, or when the report does not match disk. See
+`docs/architecture.md` for how an accepted note updates state and the transaction revision.
+
+`refactorCommit`, `refactorUndo` and `refactorRevert` accept optional
+`expect: { id, revision }` from status. When supplied, the request refuses if the open transaction
+is absent or its id or revision has changed. Without `expect`, no revision check is made.
+
+`refactorRevert` also accepts `drifted`, defaulting to `[]`. Under the exclusive gate, it
+compares the displayed module and hash pairs with current drift. Order does not matter. A changed
+set refuses before restoration. A request resuming a recorded revert intent uses its saved disk
+states without repeating this comparison. Accepted restores and recovery checks follow
+`docs/architecture.md`, which also covers file and link handling.
 
 ### One read binds an answer to its bytes
 

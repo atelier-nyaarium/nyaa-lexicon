@@ -284,17 +284,12 @@ export class RefactorPlanner {
 		};
 	}
 
-	/** Modules whose rows a plan read and the index has committed again since. */
+	/** Modules whose stored facts changed after the read context captured them. */
 	factsMoved(seen: FactsSeen[]): string[] {
 		return factsMovedSince(seen, this.store);
 	}
 
-	/**
-	 * What inserting new declaration(s) would do, without writing anything.
-	 *
-	 * Same shape as a replacement: everything expensive happens here, the caller holds the gate for
-	 * the write alone. Refusal beats guessing at every ambiguous spot.
-	 */
+	/** Owns insertion splice selection for `previewInsert`. See `docs/daemon-protocol.md`. */
 	async planInsert(args: InsertArgs): Promise<InsertPlan> {
 		const flush = args.text.replace(/\s+$/, "");
 		if (flush.trim().length === 0) return { state: "refused", reason: nothingToInsert() };
@@ -527,13 +522,7 @@ export class RefactorPlanner {
 		return warnings;
 	}
 
-	/**
-	 * What moving one declaration to another module would involve, without writing anything.
-	 *
-	 * The core works out WHICH modules are touched and WHAT the moved body depends on, both of
-	 * which come out of the index. Rendering the text is the provider's, so this stops at handing
-	 * each module a request.
-	 */
+	/** Derives move facts for `previewMove` from one read context. See `docs/daemon-protocol.md`. */
 	planMove(symbolId: string, rawTarget: string, context: ReadContext): PlannedMove {
 		const target = workspaceModule(rawTarget);
 		if ("refused" in target) return { ok: false, reason: target.refused };
@@ -580,12 +569,7 @@ export class RefactorPlanner {
 		};
 	}
 
-	/**
-	 * Asks every involved module's provider for its part of a move.
-	 *
-	 * One blocked site anywhere fails the whole move. A relocated declaration whose importers still
-	 * point at the old module is code that does not build, which is worse than not starting.
-	 */
+	/** Collects provider edits for `previewMove`. See `docs/daemon-protocol.md`. */
 	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
 		const requests = this.moveRequests(plan, context);
 		const files: Array<{ module: string; text: string; edits: TextEdit[] }> = [];
@@ -1158,15 +1142,7 @@ export class RefactorPlanner {
 		return concerns;
 	}
 
-	/**
-	 * What a rename WOULD write, without writing it.
-	 *
-	 * Separate from `renameSymbol` because an editor applies the edits itself, and computing them
-	 * twice is how the two disagree about which occurrences a rename touches.
-	 *
-	 * One blocked site fails the whole operation: it is an occurrence that should change and cannot,
-	 * so applying the rest leaves code that no longer builds.
-	 */
+	/** Builds the complete edit set for `renameEdits`. See `docs/daemon-protocol.md`. */
 	async renameEdits(symbolId: string, newName: string): Promise<PlannedRenameEdits> {
 		const plan = await this.prepareRename(symbolId, newName, new ReadContext(this.store));
 		const blocker = plan.blockers[0];

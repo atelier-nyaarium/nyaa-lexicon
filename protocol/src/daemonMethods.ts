@@ -613,7 +613,7 @@ export const DAEMON_METHODS = {
 		mutates: false,
 		budget: "refactor",
 	},
-	/** Rename edits for external application. */
+	/** Caller-applied rename edits. See `docs/daemon-protocol.md` `renameEdits`. */
 	renameEdits: {
 		request: Rename,
 		response: RenameEditPlanSchema,
@@ -623,7 +623,9 @@ export const DAEMON_METHODS = {
 	},
 	/** Move impact and blockers. */
 	planMove: { request: Move, response: MovePlanSchema, lifecycle: "query", mutates: false, budget: "refactor" },
+	/** Move preview. See `docs/daemon-protocol.md` `previewMove`. */
 	previewMove: { request: Move, response: MovePreviewSchema, lifecycle: "query", mutates: false, budget: "refactor" },
+	/** Insertion preview. See `docs/daemon-protocol.md` `previewInsert`. */
 	previewInsert: {
 		request: Insert,
 		response: InsertPreviewSchema,
@@ -665,7 +667,7 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "refactor",
 	},
-	/** Records verified editor writes. */
+	/** Editor state note. See `docs/daemon-protocol.md` `refactorNoteWrite`. */
 	refactorNoteWrite: {
 		request: NoteWrite,
 		response: RefactorNoteWriteResultSchema,
@@ -673,6 +675,7 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "refactor",
 	},
+	/** Opening image read. See `docs/daemon-protocol.md` `refactorBeforeImage`. */
 	refactorBeforeImage: {
 		request: BeforeImage,
 		response: RefactorBeforeImageSchema,

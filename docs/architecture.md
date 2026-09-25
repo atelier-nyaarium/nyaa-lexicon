@@ -410,45 +410,65 @@ drives a whole daemon in a test.
 
 ## Refactor transactions
 
-A transaction is a stack of steps over one workspace, at most one open at a time. Writes go to
-disk as they happen, and `TransactionManager` journals what each file looked like first, so undo
-and revert are restores rather than replays. `docs/provider-protocol.md` covers the provider half.
+A workspace has one open transaction and one stack of steps. Writers change disk as they go.
+`TransactionManager` journals the images needed to restore files, and `IndexStore` persists those
+rows and their byte snapshots. The journal survives an index rebuild. `docs/provider-protocol.md`
+covers the provider half.
 
-Snapshots are raw bytes in a content-addressed table, so a file that is not valid UTF-8 comes back
-byte-identical and re-snapshotting an unchanged file costs a lookup. Two scopes are kept apart: the
-baseline is what the transaction first saw and is what revert restores, while each step's images
-are what undo restores. Collapsing them would make one of the two wrong.
+### Images and known state
 
-Undo refuses when a file no longer holds what its step wrote. That check is what stops it eating a
-manual edit made afterwards, and it is why every layer snapshots what it actually read rather than
-the baseline.
+`refactor_images` keeps two images separate. The baseline records a module's opening state for
+Revert. Each step image records the state immediately before that step for Undo. Both distinguish
+absence from an empty file and store regular-file bytes by content hash. A step can also store its
+decided operation and any known output hash before it writes.
 
-The journal survives an index rebuild, because facts are derivable from source and an undo record
-is not. A journal table that cannot be read fails the open rather than being treated as absent:
-opening as though the transaction never existed would strand files already written to disk.
-An open transaction has a durable revision. Step, image, issue, rebind, recovery-intent and
-known-state changes advance it. Changing only `edited` does not. Status returns the revision;
-commit, undo and revert compare it before acting.
+`track` adds a baseline once. `beginStep` adds a baseline for any module a step touches, even if
+the caller did not track it first. After a write, `completeStep` records the observed output hash
+and advances the step. Undo restores step images. When an output hash is present, Undo refuses if
+the current file no longer matches it, unless the file is already at its before-image. An output
+without a hash has no such check.
 
-Each tracked module has a journaled known state: raw-byte hash or absence. Tracking records the
-baseline. Completed steps, undo, recovery restores and accepted editor notes set it from disk.
-`refactor_note_write` accepts a hash or absence only when disk matches. Status hashes tracked files
-without storing blobs. `drifted` lists modules whose disk state differs from known state; `edited`
-lists modules last reported by an editor. Revert receives the displayed drift set and recomputes it
-under the exclusive gate. It refuses if the set changed. A recorded recovery intent resumes without
-the comparison.
+Each tracked module has a known state: a raw-byte hash or absence. It starts at the baseline.
+Completed writes update it when disk is absent or a regular file. Restores and accepted editor
+notes update it too. An editor note is accepted only when disk matches the reported hash or absence,
+and it marks the module as edited. Status exposes that marker in `edited` and compares each tracked
+path with its known state. Its other wire fields are described in `docs/daemon-protocol.md`.
 
-Recovery runs at startup before the daemon answers anything, and judges each file by what it holds
-rather than by the phase alone. A file matching neither its before nor its after image belongs to
-someone else and is reported as a conflict, never overwritten.
+### Revisions and drift
 
-An image stores regular-file bytes or absence. Snapshots use `lstat` and `O_NOFOLLOW`, and compare
-the opened handle's device and inode with the earlier `lstat`, so a link or a path swapped before
-open is never read as a file. Tracking or journaling a non-regular path refuses before writing the
-journal. A non-regular path at a step's output does not match its image. Restore replaces links or
-removes them without following their targets. Undo and revert refuse before recording recovery intent
-when a directory blocks a restore. Startup recovery keeps the transaction, intent and blobs when any
-restore conflicts; retrying the same operation finishes after the directory is removed.
+An open transaction has a durable revision. Changes to step, image, issue, rebind, recovery-intent
+or known-state rows advance it. This includes a change to only the `edited` marker. An update that
+leaves every stored field unchanged does not advance it. The revision increases when rows change,
+not once per user operation. Wire expectations are described in `docs/daemon-protocol.md`.
+
+Status reports a sorted drift entry for each tracked module whose current path does not match its
+known state. The entry carries a content hash for a regular file and null for absence or any path
+with no safe regular-file hash. The status shape does not distinguish those null cases.
+
+### Recovery and paths
+
+Startup recovery runs before the daemon serves requests. For an unfinished step without a recovery
+intent, it compares each file with its before-image and any recorded output hash. If neither
+matches, it keeps the disk contents and reports a conflict. Recovery removes that unfinished
+step's images, rebinds and step row. Any issue rows remain in transaction status.
+
+Undo checks known output hashes before it records an intent. If a crash leaves an undo intent,
+recovery resumes restoring the step images without repeating that hash check. A directory or
+unreachable path keeps the intent and is reported as a conflict.
+
+A new Revert first compares the displayed drift set under the workspace gate. If it matches, Revert
+journals each tracked path's full disk state before restoring. That state distinguishes a file hash,
+absence, link target, directory, special-node identity and a parent outside the workspace. Recovery
+restores a path only while it still has that state or already matches the baseline. A mismatch keeps
+the transaction, intent and blobs for retry. A Revert that resumes an intent uses its saved disk
+states instead of comparing the displayed drift set again.
+
+Snapshots accept absent paths and regular files. They use `lstat`, `O_NOFOLLOW` and an opened
+file's device and inode to avoid reading a leaf link or a path swapped before open. A leaf link
+created after tracking is replaced or removed without following its target. A directory at the
+restore path blocks a new Undo or Revert before its intent is recorded. If one appears after an
+intent, recovery leaves the intent pending. A parent link that resolves outside the workspace gives
+the tracked path no safe hash, and Revert refuses until that path is brought back inside.
 
 A transaction records its origin. `refactor_start` opens an `explicit` one, which recovery leaves open
 because a session may still be holding it. A standalone step opens an `own` one inside the gate when
