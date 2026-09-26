@@ -1,4 +1,5 @@
 import ast
+import bisect
 import io
 import json
 import keyword
@@ -20,6 +21,25 @@ TYPE_PARAM_NODES = getattr(ast, "type_param", ())
 # PEP 695 `type X = ...` statement; absent before 3.12.
 TYPE_ALIAS_NODES = getattr(ast, "TypeAlias", ())
 TRY_NODES = (ast.Try, getattr(ast, "TryStar", ast.Try))
+# Headers ending at their own colon.
+COMPOUND_HEADER_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.For,
+    ast.AsyncFor,
+    ast.With,
+    ast.AsyncWith,
+)
+# Literal containers a header folds; a tuple only when parenthesized.
+FOLDED_NODES = (ast.List, ast.Dict, ast.Set, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+# Template strings are 3.14+.
+STRING_NODES = (ast.JoinedStr, getattr(ast, "TemplateStr", ast.JoinedStr))
+# Interpolated string tokens: f-strings 3.12+, t-strings 3.14+.
+STRING_OPENERS = {getattr(tokenize, name) for name in ("FSTRING_START", "TSTRING_START") if hasattr(tokenize, name)}
+STRING_CLOSERS = {getattr(tokenize, name) for name in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, name)}
+OPEN_BRACKETS = {"(", "[", "{"}
+CLOSE_BRACKETS = {")", "]", "}"}
 
 
 # //////// Helpers
@@ -186,6 +206,16 @@ def assignment_targets(node):
     return []
 
 
+def whole_targets(node):
+    """Targets bound whole, not unpacked from a tuple or list."""
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return [item.optional_vars for item in node.items if item.optional_vars is not None]
+    target = getattr(node, "target", None)
+    return [] if target is None else [target]
+
+
 def type_param_expressions(node):
     # default_value is 3.13+.
     for parameter in getattr(node, "type_params", []):
@@ -285,42 +315,43 @@ def text_for_range(text, value):
     return "".join(parts)
 
 
-# tokenize columns are codepoint indices, unlike the byte offsets ast reports.
-def comment_spans(text):
-    lines = text.splitlines(keepends=True)
-
-    def position(line_number, column):
-        return {
-            "line": line_number - 1,
-            "character": utf16_length(source_line(lines, line_number)[:column]),
-        }
-
-    spans = []
+def lex(text):
+    tokens = []
     try:
         for token in tokenize.generate_tokens(io.StringIO(text).readline):
-            if token.type != tokenize.COMMENT:
-                continue
-            spans.append(
-                {
-                    "range": {
-                        "start": position(token.start[0], token.start[1]),
-                        "end": position(token.end[0], token.end[1]),
-                    },
-                    "text": token.string,
-                }
-            )
-    # Lexing halts at the first bad token; comments already read stay facts.
+            tokens.append(token)
+    # Lexing halts at the first bad token; tokens already read stay.
     except (SyntaxError, tokenize.TokenError, ValueError):
         pass
-    return spans
+    return tokens
+
+
+# A point is (line number, codepoint column), as tokenize reports it.
+def point_position(lines, point):
+    line_number, column = point
+    return {"line": line_number - 1, "character": utf16_length(source_line(lines, line_number)[:column])}
+
+
+def point_range(lines, start, end):
+    return {"start": point_position(lines, start), "end": point_position(lines, end)}
+
+
+def comment_spans(lines, tokens):
+    return [
+        {"range": point_range(lines, token.start, token.end), "text": token.string}
+        for token in tokens
+        if token.type == tokenize.COMMENT
+    ]
 
 
 class Analyzer:
-    def __init__(self, module, text):
+    def __init__(self, module, text, tokens=None):
         self.module = module
         self.text = text
         self.package_init = module.replace("\\", "/").split("/")[-1] == "__init__.py"
         self.lines = text.splitlines(keepends=True)
+        self.tokens = lex(text) if tokens is None else tokens
+        self.token_starts = [token.start for token in self.tokens]
         self.export_names = None
         self.declarations = {}
         self.references = []
@@ -411,9 +442,229 @@ class Analyzer:
             "end": {"line": line_number - 1, "character": utf16_length(line[: character + len(name)])},
         }
 
-    def signature_of(self, node):
-        line = source_line(self.lines, getattr(node, "lineno", 1)).strip()
-        return line or None
+    def point_of(self, line_number, byte_column):
+        line = source_line(self.lines, line_number)
+        return (line_number, len(line.encode("utf-8")[:byte_column].decode("utf-8")))
+
+    def start_point(self, node):
+        return self.point_of(node.lineno, node.col_offset)
+
+    def end_point(self, node):
+        return self.point_of(node.end_lineno, node.end_col_offset)
+
+    def first_token_at(self, point):
+        index = bisect.bisect_left(self.token_starts, point)
+        # A dedent is zero-width, at the statement after it.
+        while index < len(self.tokens) and self.tokens[index].type == tokenize.DEDENT:
+            index += 1
+        return index
+
+    def header_of(self, node, target, whole=True, item=None):
+        """Spans for the header's one line, rendered by the provider."""
+        shape = self.header_shape(node, target, whole, item)
+        if shape is None:
+            return None
+        lead, start, end, values = shape
+        folds = sorted(self.header_folds(values))
+        omit = []
+        verbatim = []
+        for piece in (lead, (start, end)):
+            if piece is not None:
+                self.header_cuts(piece, folds, omit, verbatim)
+        header = {
+            "start": point_position(self.lines, start),
+            "end": point_position(self.lines, end),
+            "folds": [point_range(self.lines, *fold) for fold in folds],
+            "omit": omit,
+            "verbatim": verbatim,
+        }
+        if lead is not None:
+            header["lead"] = point_range(self.lines, *lead)
+        return header
+
+    def header_shape(self, node, target, whole, item):
+        """The lead, header span and folded values; never spans a sibling target."""
+        if not whole:
+            # Unpacked: no value of its own.
+            return None, self.start_point(target), self.end_point(target), []
+        if isinstance(node, ast.Assign) and len(node.targets) > 1:
+            equals = self.operator_before(self.start_point(node.value), "=")
+            if equals is None:
+                return None
+            # Its own name leads the shared value.
+            return (self.start_point(target), self.end_point(target)), equals.start, self.end_point(node), [node.value]
+        if item is not None and len(node.items) > 1:
+            keyword = self.first_token_at(self.start_point(node))
+            if keyword < len(self.tokens) and self.tokens[keyword].string == "async":
+                keyword += 1
+            own = self.balanced(self.start_point(item.context_expr), self.end_point(item.optional_vars))
+            if own is None or keyword >= len(self.tokens):
+                return None
+            return (self.start_point(node), self.tokens[keyword].end), *own, [item.context_expr]
+        start = self.header_start(node)
+        if start is None:
+            return None
+        if isinstance(node, COMPOUND_HEADER_NODES):
+            colon = self.header_colon(node)
+            if colon is None:
+                return None
+            return None, start, colon.end, self.header_values(node)
+        return None, start, self.end_point(node), self.header_values(node)
+
+    def header_start(self, node):
+        decorators = getattr(node, "decorator_list", None)
+        if not decorators:
+            return self.start_point(node)
+        at = self.operator_before(self.start_point(decorators[0]), "@")
+        return None if at is None else at.start
+
+    def operator_before(self, point, symbol):
+        """The operator token before an expression, past parentheses around it."""
+        index = self.first_token_at(point)
+        while index > 0:
+            index -= 1
+            token = self.tokens[index]
+            if token.type == tokenize.OP and token.string == symbol:
+                return token
+            if token.type not in (tokenize.NL, tokenize.COMMENT) and token.string != "(":
+                return None
+        return None
+
+    def balanced(self, start, end):
+        """The span widened over parentheses it closes or opens without holding both."""
+        first = self.first_token_at(start)
+        stop = self.first_token_at(end)
+        if first >= stop:
+            return None
+        depth = 0
+        lowest = 0
+        for index in range(first, stop):
+            token = self.tokens[index]
+            if token.type == tokenize.OP and token.string in OPEN_BRACKETS:
+                depth += 1
+            elif token.type == tokenize.OP and token.string in CLOSE_BRACKETS:
+                depth -= 1
+                lowest = min(lowest, depth)
+        opened = -lowest
+        closed = depth - lowest
+        while opened > 0 and first > 0:
+            first -= 1
+            if self.tokens[first].string == "(":
+                opened -= 1
+        while closed > 0 and stop < len(self.tokens):
+            if self.tokens[stop].string == ")":
+                closed -= 1
+            stop += 1
+        return self.tokens[first].start, self.tokens[stop - 1].end
+
+    def header_colon(self, node):
+        # After the last expression, a lambda's colon cannot match.
+        anchor = None
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            anchor = node.returns
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            anchor = node.iter
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            last = node.items[-1]
+            anchor = last.context_expr if last.optional_vars is None else last.optional_vars
+        first = self.first_token_at(self.start_point(node) if anchor is None else self.end_point(anchor))
+        depth = 0
+        for index in range(first, len(self.tokens)):
+            token = self.tokens[index]
+            if token.type != tokenize.OP:
+                continue
+            if token.string == ":" and depth <= 0:
+                return token
+            if token.string in OPEN_BRACKETS:
+                depth += 1
+            elif token.string in CLOSE_BRACKETS:
+                depth -= 1
+        return None
+
+    def header_values(self, node):
+        """Expressions whose literal containers fold; targets, annotations and types stay whole."""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defaults = [value for value in node.args.kw_defaults if value is not None]
+            return [*node.decorator_list, *node.args.defaults, *defaults]
+        if isinstance(node, ast.ClassDef):
+            return [*node.decorator_list, *node.bases, *(item.value for item in node.keywords)]
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            return [node.iter]
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            return [item.context_expr for item in node.items]
+        if isinstance(node, ASSIGNMENT_NODES) and node.value is not None:
+            return [node.value]
+        return []
+
+    def header_folds(self, values):
+        folds = []
+        pending = list(values)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, FOLDED_NODES) or (isinstance(node, ast.Tuple) and self.parenthesized(node)):
+                folds.append((self.start_point(node), self.end_point(node)))
+            elif not isinstance(node, STRING_NODES):
+                # A subscript reads as a type.
+                pending.extend(
+                    child
+                    for child in ast.iter_child_nodes(node)
+                    if not (isinstance(node, ast.Subscript) and child is node.slice)
+                )
+        return folds
+
+    def parenthesized(self, node):
+        start = self.start_point(node)
+        first = self.first_token_at(start)
+        if first >= len(self.tokens) or self.tokens[first].start != start or self.tokens[first].string != "(":
+            return False
+        depth = 0
+        for index in range(first, len(self.tokens)):
+            token = self.tokens[index]
+            if token.type != tokenize.OP:
+                continue
+            if token.string in OPEN_BRACKETS:
+                depth += 1
+            elif token.string in CLOSE_BRACKETS:
+                depth -= 1
+                if depth == 0:
+                    return token.end == self.end_point(node)
+        return False
+
+    def header_cuts(self, piece, folds, omit, verbatim):
+        """Comments and backslash continuations to omit, literals kept as written; folds skipped."""
+        start, end = piece
+        index = self.first_token_at(start)
+        upcoming = bisect.bisect_left(folds, (start,))
+        depth = 0
+        opened = None
+        previous = None
+        while index < len(self.tokens) and self.tokens[index].start < end:
+            token = self.tokens[index]
+            if upcoming < len(folds) and token.start >= folds[upcoming][0]:
+                index = self.first_token_at(folds[upcoming][1])
+                previous = self.tokens[index - 1]
+                upcoming += 1
+                continue
+            index += 1
+            if depth == 0 and previous is not None and self.continues(previous, token):
+                omit.append(point_range(self.lines, previous.end, token.start))
+            if token.type in STRING_OPENERS:
+                opened = token.start if depth == 0 else opened
+                depth += 1
+            elif token.type in STRING_CLOSERS and depth > 0:
+                depth -= 1
+                if depth == 0:
+                    verbatim.append(point_range(self.lines, opened, token.end))
+            elif depth == 0 and token.type == tokenize.STRING:
+                verbatim.append(point_range(self.lines, token.start, token.end))
+            elif depth == 0 and token.type == tokenize.COMMENT:
+                omit.append(point_range(self.lines, token.start, token.end))
+            previous = token
+
+    def continues(self, previous, token):
+        if token.start[0] <= previous.end[0] or previous.type in (tokenize.NL, tokenize.NEWLINE):
+            return False
+        return source_line(self.lines, previous.end[0]).rstrip("\r\n").endswith("\\")
 
     def metrics_of(self, node):
         start_line = getattr(node, "lineno", 1)
@@ -967,6 +1218,8 @@ class Analyzer:
         scope_kind,
         module_scope,
         parent_exported,
+        whole=True,
+        item=None,
     ):
         exported = self.is_exported(name, module_scope, parent_exported)
         raw = {
@@ -980,9 +1233,9 @@ class Analyzer:
             "exported": exported,
         }
         if not isinstance(node, (ast.arg, TYPE_PARAM_NODES)):
-            signature = self.signature_of(node)
-            if signature is not None:
-                raw["signature"] = signature
+            header = self.header_of(node, selection_node, whole, item)
+            if header is not None:
+                raw["header"] = header
             raw["metrics"] = self.metrics_of(node)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
             type_text = self.add_type_annotation(node, name, node.returns, descriptor_path[:-1])
@@ -1005,6 +1258,8 @@ class Analyzer:
         self.declaration_nodes.setdefault(identity_key, []).append(node)
 
     def add_assignment(self, node, scope_path, scope_kind, module_scope, parent_exported):
+        items = {id(item.optional_vars): item for item in getattr(node, "items", []) if item.optional_vars is not None}
+        whole = {id(target) for target in whole_targets(node)}
         for target in assignment_targets(node):
             if not isinstance(target, ast.Name) or target.id == "__all__":
                 continue
@@ -1017,6 +1272,8 @@ class Analyzer:
                 scope_kind,
                 module_scope,
                 parent_exported,
+                whole=id(target) in whole,
+                item=items.get(id(target)),
             )
 
     def record_type_params(self, node, descriptor_path):
@@ -2580,8 +2837,9 @@ def rename_edits(module, text, old_name, new_name, sites, owner_calls=None):
 # //////// Entry point
 
 def extract(module, text):
+    tokens = lex(text)
     # Comments are lexical, so a file the parser rejects still reports them.
-    comments = comment_spans(text)
+    comments = comment_spans(text.splitlines(keepends=True), tokens)
     try:
         tree = ast.parse(text, filename=module, type_comments=True)
     except SyntaxError as error:
@@ -2600,7 +2858,7 @@ def extract(module, text):
             "comments": comments,
             "diagnostics": [diagnostic(f"parse error: {error}")],
         }
-    return {**Analyzer(module, text).analyze(tree), "comments": comments}
+    return {**Analyzer(module, text, tokens).analyze(tree), "comments": comments}
 
 
 def main():
