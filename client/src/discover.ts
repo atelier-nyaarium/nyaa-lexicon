@@ -23,12 +23,14 @@ import path from "node:path";
 import {
 	DAEMON_STOPPING_MESSAGE,
 	type DaemonLock,
+	exclusionConfirmed,
+	isDaemonMethod,
 	PROTOCOL_VERSION,
 	TransactionStatusSchema,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
 import { beforeDeadline } from "./deadline.js";
-import { DaemonError } from "./errors.js";
+import { DaemonError, unfiltered } from "./errors.js";
 import { bunCommand } from "./launch.js";
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
@@ -155,7 +157,11 @@ export async function callDaemon(
 	params?: unknown,
 	options: { acceptOlder?: boolean; signal?: AbortSignal } = {},
 ): Promise<unknown> {
-	return requestOnce(lock.port, lock.token, method, params, options);
+	const answer = await requestOnce(lock.port, lock.token, method, params, options);
+	if (isDaemonMethod(method) && !exclusionConfirmed(method, params, answer)) {
+		throw unfiltered(method, PROTOCOL_VERSION, lock.protocolVersion);
+	}
+	return answer;
 }
 
 ////////////////////////////////

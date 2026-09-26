@@ -7,9 +7,8 @@ import { hashContent } from "./hash.js";
 import type { METHOD_SCHEMAS, ModuleAdmission, ProviderMethod } from "./methods.js";
 import type { IndexDepth } from "./project.js";
 import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
-import { readSourceFile } from "./sourceFile.js";
+import { readWorkspaceFile } from "./sourceFile.js";
 import type { Diagnostic } from "./symbols.js";
-import { workspaceFile } from "./workspacePath.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -542,8 +541,7 @@ class Kit<V extends ModuleValue, P, E> {
 			this.owed.delete(module);
 			return;
 		}
-		const absolute = workspaceFile(this.root, module);
-		const read = absolute === null ? ({ kind: "missing" } as const) : readSourceFile(absolute);
+		const read = readWorkspaceFile(this.root, module);
 		// Retry unreadable files on later reads.
 		if (read.kind === "unreadable") return;
 		const contentHash = read.kind === "text" && read.lossless ? hashContent(read.text) : undefined;

@@ -86,6 +86,15 @@ describe("walking a workspace", () => {
 		).toEqual({ files: ["deep/nested/d.kt", "project.godot", "src/a.kt"], configFiles: ["app.csproj"] });
 	});
 
+	it("claims an extensionless file by the interpreter its shebang names", () => {
+		put("bin/run", "#!/usr/bin/env bash\necho\n");
+		put("bin/tool", "#!/usr/bin/python3\n");
+		put("bin/notes", "plain\n");
+		put("bin/named.sh", "#!/usr/bin/env bash\n");
+
+		expect(walkWorkspace(root, { extensions: [], shebangs: ["bash"] }).files).toEqual(["bin/run"]);
+	});
+
 	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 		"skips a directory it cannot read rather than failing the walk",
 		() => {

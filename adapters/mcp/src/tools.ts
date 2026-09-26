@@ -5,11 +5,9 @@
 // what that is.
 
 import type {
-	CommentQuery,
 	CommentsResult,
 	ContentTotals,
 	DescribeResult,
-	DocQuery,
 	DocsResult,
 	FactSet,
 	FileHistory,
@@ -17,7 +15,6 @@ import type {
 	IndexStatus,
 	InvalidateOutcome,
 	KnowledgeGaps,
-	LiteralQuery,
 	LiteralsResult,
 	MovePlan,
 	QuestionClass,
@@ -48,6 +45,7 @@ import type {
 	RenameStepOutcome,
 	ReplaceOutcome,
 	ReplaceSpanOutcome,
+	RequestOf,
 	SearchSymbolsResult,
 	StoredDeclaration,
 	SubjectDiagnosis,
@@ -129,29 +127,14 @@ export interface ToolBackend {
 	refactorMove: (symbolId: string, toModule: string) => Promise<MoveOutcome>;
 	refactorRename: (symbolId: string, newName: string) => Promise<RenameStepOutcome>;
 	indexStatus: (concerning?: string) => Promise<IndexStatus>;
-	findLiterals: (query: LiteralQuery & { limit?: number | undefined }) => Promise<LiteralsResult>;
-	findComments: (query: CommentQuery & { limit?: number | undefined }) => Promise<CommentsResult>;
-	findDocs: (query: DocQuery & { limit?: number | undefined }) => Promise<DocsResult>;
+	findLiterals: (query: RequestOf<"findLiterals">) => Promise<LiteralsResult>;
+	findComments: (query: RequestOf<"findComments">) => Promise<CommentsResult>;
+	findDocs: (query: RequestOf<"findDocs">) => Promise<DocsResult>;
 	coChangedWith: (module: string, limit?: number) => Promise<CoChangedWithResult>;
-	searchSymbols: (
-		text: string | undefined,
-		options: {
-			regex?: string | undefined;
-			kind?: string | undefined;
-			module?: string | undefined;
-			limit?: number | undefined;
-			within?: string | undefined;
-		},
-	) => Promise<SearchSymbolsResult>;
+	searchSymbols: (query: RequestOf<"searchSymbols">) => Promise<SearchSymbolsResult>;
 	outlineModule: (module: string) => Promise<SymbolSummary[]>;
 	fileNotes: (module: string) => Promise<FileNotes>;
-	findImports: (query: {
-		specifier?: string | undefined;
-		specifierRegex?: string | undefined;
-		module?: string | undefined;
-		moduleRegex?: string | undefined;
-		limit?: number | undefined;
-	}) => Promise<FindImportsResult>;
+	findImports: (query: RequestOf<"findImports">) => Promise<FindImportsResult>;
 	hubs: (limit?: number) => Promise<MostReferencedResult>;
 	overview: () => Promise<OverviewResult>;
 	fileHistory: (module: string) => Promise<FileHistory>;
@@ -671,7 +654,9 @@ Use \`within\` to restrict declarations to a scope.
 export const OUTLINE_MODULE_DESCRIPTION = `
 # \`outline_module\`
 
-List indexed declarations in a file, nested by container.
+List indexed declarations in a file, nested by container. Locals are left out.
+
+Each row ends with \`refs=N\`, the uses \`describe_symbol\` counts.
 
 Use for source shape without reading bodies.
 `.trim();
@@ -1135,7 +1120,7 @@ export async function refactorInsert(
 
 export async function findLiterals(
 	backend: ToolBackend,
-	args: LiteralQuery & { limit?: number | undefined },
+	args: Omit<RequestOf<"findLiterals">, "exclude">,
 ): Promise<ToolResult> {
 	try {
 		const found = await backend.findLiterals(args);
@@ -1149,7 +1134,7 @@ export async function findLiterals(
 
 export async function findComments(
 	backend: ToolBackend,
-	args: CommentQuery & { limit?: number | undefined },
+	args: Omit<RequestOf<"findComments">, "exclude">,
 ): Promise<ToolResult> {
 	if (args.text !== undefined && args.regex !== undefined) {
 		return text(`Set \`text\` or \`regex\`, not both.`, true);
@@ -1168,7 +1153,7 @@ export async function findComments(
 
 export async function searchDocs(
 	backend: ToolBackend,
-	args: DocQuery & { limit?: number | undefined },
+	args: Omit<RequestOf<"findDocs">, "exclude">,
 ): Promise<ToolResult> {
 	if (args.text !== undefined && args.regex !== undefined) {
 		return text(`Set \`text\` or \`regex\`, not both.`, true);
@@ -1210,7 +1195,7 @@ export async function searchSymbols(
 	}
 	const refused = refusedTerm(args.text, args.module);
 	if (refused !== undefined) return refused;
-	const found = await backend.searchSymbols(args.text, args);
+	const found = await backend.searchSymbols(args);
 	return text(await withIndexState(backend, renderSymbolSearch(found)));
 }
 

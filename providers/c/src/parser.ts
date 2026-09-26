@@ -13,6 +13,7 @@ import {
 	type Reference,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
+import { type TokenSpan, tokenHeader } from "./header.js";
 import { type CToken, lexC, previousSignificant, significant, syntaxValue, tokenRange } from "./tokens.js";
 
 const LANGUAGE = "c";
@@ -95,6 +96,11 @@ interface DeclaratorName {
 	typeEnd: number;
 	typeText: string;
 	typeName?: string;
+	/** Where the first declarator begins. */
+	listStart: number;
+	segmentStart: number;
+	/** Exclusive: its `,` or the end. */
+	segmentEnd: number;
 }
 
 interface FunctionCandidate {
@@ -132,7 +138,7 @@ interface Candidate {
 	parentPath: DescriptorPath;
 	visibility: Declaration["visibility"];
 	exported?: boolean;
-	signature?: string;
+	signature?: string | undefined;
 	metrics?: Metrics;
 	typeText?: string;
 	typeStartIndex?: number;
@@ -321,6 +327,8 @@ const BUILTIN_TYPES = new Set([
 ]);
 
 const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
+
+const COMMA = new Set([","]);
 
 const OPENERS = new Set(["(", "[", "{"]);
 const CLOSERS = new Map([
@@ -578,7 +586,7 @@ function stripTypeText(value: string): string {
 
 export function parseC(module: string, text: string): ParsedCFile {
 	const lexed = lexC(module, text);
-	const parser = new CParser(module, lexed.tokens, lexed.comments, lexed.diagnostics);
+	const parser = new CParser(module, text, lexed.tokens, lexed.comments, lexed.diagnostics);
 	return parser.parse();
 }
 
@@ -607,6 +615,7 @@ class CParser {
 
 	constructor(
 		private readonly module: string,
+		private readonly text: string,
 		private readonly tokens: CToken[],
 		private readonly comments: CommentSpan[],
 		initialDiagnostics: Diagnostic[],
@@ -848,7 +857,7 @@ class CParser {
 			parentPath: [],
 			visibility: "public",
 			exported: true,
-			signature: renderTokens(this.tokens, index, Math.max(index, last + 1)),
+			signature: this.header(index, Math.max(index, last)),
 			conditionalKey: this.conditionalByIndex.get(index) ?? "",
 			conditionalGroup: this.conditionalGroupByIndex.get(index) ?? "",
 		});
@@ -1044,7 +1053,7 @@ class CParser {
 			functionCandidate !== undefined &&
 			(context.kind === "file" || this.looksLikeDeclaration(first, contentEnd))
 		) {
-			this.parseFunction(statement, functionCandidate, context);
+			this.parseFunction(statement, functionCandidate, context, first, contentEnd);
 			return;
 		}
 		if (context.kind === "function" && !this.looksLikeDeclaration(first, contentEnd)) {
@@ -1096,7 +1105,13 @@ class CParser {
 		return isIdentifierToken(this.tokens[next]) || tokenValue(this.tokens, next) === "*";
 	}
 
-	private parseFunction(statement: Statement, candidate: FunctionCandidate, context: ScopeContext): void {
+	private parseFunction(
+		statement: Statement,
+		candidate: FunctionCandidate,
+		context: ScopeContext,
+		first: number,
+		contentEnd: number,
+	): void {
 		const rangeStartIndex = declarationRangeStart(this.tokens, statement.start);
 		const endIndex = statement.terminator === "body" ? (statement.bodyClose ?? statement.last) : statement.last;
 		const returnType = this.typeTextBefore(statement.start, candidate.nameIndex);
@@ -1108,6 +1123,8 @@ class CParser {
 				: "local";
 		const exported = context.kind === "file" ? visibility === "public" : false;
 		const body = statement.terminator === "body" && statement.bodyOpen !== undefined;
+		const laterDeclarator = body ? -1 : this.topLevelIndex(candidate.close + 1, contentEnd, COMMA);
+		const headerEnd = body ? (statement.bodyOpen as number) : laterDeclarator < 0 ? contentEnd : laterDeclarator;
 		const metrics = body
 			? this.functionMetrics(
 					statement.bodyOpen as number,
@@ -1131,11 +1148,7 @@ class CParser {
 			parentPath: context.parentPath,
 			visibility,
 			exported,
-			signature: renderTokens(
-				this.tokens,
-				statement.start,
-				statement.terminator === "body" ? (statement.bodyOpen ?? endIndex) : endIndex + 1,
-			),
+			signature: this.header(first, previousCode(this.tokens, headerEnd)),
 			metrics,
 			typeText: returnType.text,
 			typeStartIndex: returnType.start,
@@ -1300,9 +1313,10 @@ class CParser {
 			return;
 		}
 		const rangeStartIndex = declarationRangeStart(this.tokens, statement.start);
+		const isTypedef = hasTopLevelValue(this.tokens, start, end, "typedef");
+		const isConstant = hasTopLevelValue(this.tokens, start, end, "const");
+		const isStatic = hasTopLevelValue(this.tokens, start, end, "static");
 		for (const declarator of names) {
-			const isTypedef = hasTopLevelValue(this.tokens, start, end, "typedef");
-			const isConstant = hasTopLevelValue(this.tokens, start, end, "const");
 			const declaration = this.addCandidate({
 				name: declarator.name,
 				declarationKind: isTypedef
@@ -1319,14 +1333,9 @@ class CParser {
 				selectionIndex: declarator.nameIndex,
 				selectionEndIndex: declarator.nameEndIndex,
 				parentPath: context.parentPath,
-				visibility:
-					context.kind === "file"
-						? hasTopLevelValue(this.tokens, start, end, "static")
-							? "fileLocal"
-							: "public"
-						: "local",
-				exported: context.kind === "file" ? !hasTopLevelValue(this.tokens, start, end, "static") : false,
-				signature: renderTokens(this.tokens, statement.start, statement.last + 1),
+				visibility: context.kind === "file" ? (isStatic ? "fileLocal" : "public") : "local",
+				exported: context.kind === "file" ? !isStatic : false,
+				signature: this.declaratorHeader(start, declarator),
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
@@ -1352,6 +1361,7 @@ class CParser {
 		const isTypedef =
 			tokenValue(this.tokens, nextCode(this.tokens, statement.start, statement.last + 1)) === "typedef";
 		const contentEnd = statement.terminator === "semicolon" ? statement.last : statement.last + 1;
+		const first = this.skipLabels(nextCode(this.tokens, statement.start, contentEnd), contentEnd);
 		const tagName = aggregate.tagIndex < 0 ? undefined : tokenValue(this.tokens, aggregate.tagIndex);
 		const rangeStartIndex = declarationRangeStart(this.tokens, statement.start);
 		const names =
@@ -1371,7 +1381,11 @@ class CParser {
 				parentPath: context.parentPath,
 				visibility: context.kind === "file" ? "public" : "local",
 				exported: context.kind === "file",
-				signature: renderTokens(this.tokens, statement.start, statement.last + 1),
+				// Leading specifiers belong to declarators.
+				signature: this.header(
+					aggregate.keywordIndex,
+					previousCode(this.tokens, this.aggregateHeaderEnd(aggregate, contentEnd)),
+				),
 				typeText: `${aggregate.keyword} ${tagName}`,
 				typeStartIndex: aggregate.keywordIndex,
 				typeEndIndex: aggregate.tagIndex,
@@ -1401,7 +1415,7 @@ class CParser {
 					parentPath: context.parentPath,
 					visibility: context.kind === "file" ? "public" : "local",
 					exported: context.kind === "file",
-					signature: renderTokens(this.tokens, statement.start, statement.last + 1),
+					signature: this.declaratorHeader(first, declarator),
 					typeText:
 						declarator.typeText ||
 						(tagName === undefined ? aggregate.keyword : `${aggregate.keyword} ${tagName}`),
@@ -1428,7 +1442,7 @@ class CParser {
 					parentPath: context.parentPath,
 					visibility: context.kind === "file" ? "public" : "local",
 					exported: context.kind === "file",
-					signature: renderTokens(this.tokens, statement.start, statement.last + 1),
+					signature: this.declaratorHeader(first, declarator),
 					typeText: declarator.typeText,
 					typeStartIndex: declarator.typeStart,
 					typeEndIndex: declarator.typeEnd,
@@ -1501,7 +1515,7 @@ class CParser {
 				selectionEndIndex: declarator.nameEndIndex,
 				parentPath: container.descriptorPath,
 				visibility: "public",
-				signature: renderTokens(this.tokens, first, end + 1),
+				signature: this.declaratorHeader(this.headerStart(first, end), declarator),
 				typeText: declarator.typeText,
 				typeStartIndex: declarator.typeStart,
 				typeEndIndex: declarator.typeEnd,
@@ -1530,7 +1544,7 @@ class CParser {
 				selectionIndex: nameIndex,
 				parentPath: container.descriptorPath,
 				visibility: "public",
-				signature: renderTokens(this.tokens, segment.start, last + 1),
+				signature: this.header(this.headerStart(segment.start, segment.end), last),
 				typeText: container.name,
 				conditionalKey: this.conditionalByIndex.get(nameIndex) ?? "",
 				conditionalGroup: this.conditionalGroupByIndex.get(nameIndex) ?? "",
@@ -1580,6 +1594,38 @@ class CParser {
 			return index;
 		}
 		return -1;
+	}
+
+	/** The first code token from `start`, past directives when code follows them. */
+	private headerStart(start: number, end: number): number {
+		const first = nextCode(this.tokens, start, end);
+		let index = first;
+		while (index < end && this.directiveTokens.has(index)) index = nextCode(this.tokens, index + 1, end);
+		return index < end ? index : first;
+	}
+
+	private header(first: number, last: number, lead?: TokenSpan): string | undefined {
+		if (first < 0 || last < first) return undefined;
+		return tokenHeader(this.text, this.tokens, this.pairs, { first, last, ...defined({ lead }) });
+	}
+
+	/** Its `{`, even past a tag the parser could not read. */
+	private aggregateHeaderEnd(aggregate: AggregateInfo, end: number): number {
+		if (aggregate.bodyOpen >= 0) return aggregate.bodyOpen;
+		for (let index = aggregate.keywordIndex; index < end; index++) {
+			if (!this.directiveTokens.has(index) && tokenValue(this.tokens, index) === "{") return index;
+		}
+		return end;
+	}
+
+	/** Specifiers from `first`, then this declarator alone. */
+	private declaratorHeader(first: number, declarator: DeclaratorName): string | undefined {
+		const listFirst = this.headerStart(declarator.listStart, declarator.segmentEnd);
+		const own = this.headerStart(declarator.segmentStart, declarator.segmentEnd);
+		const last = previousCode(this.tokens, declarator.segmentEnd);
+		if (own <= listFirst) return this.header(first, last);
+		const specifiers = previousCode(this.tokens, listFirst);
+		return this.header(own, last, specifiers < first ? undefined : { first, last: specifiers });
 	}
 
 	private topLevelIndex(start: number, end: number, wanted: Set<string>): number {
@@ -1658,6 +1704,9 @@ class CParser {
 				typeEnd: cursor,
 				typeText,
 				...defined({ typeName }),
+				listStart: cursor,
+				segmentStart: segment.start,
+				segmentEnd: segment.end,
 			});
 		}
 		return names;
@@ -1695,6 +1744,9 @@ class CParser {
 				typeEnd,
 				typeText,
 				...(aggregate.tagIndex < 0 ? {} : { typeName: tokenValue(this.tokens, aggregate.tagIndex) }),
+				listStart: start,
+				segmentStart: segment.start,
+				segmentEnd: segment.end,
 			});
 		}
 		return names;

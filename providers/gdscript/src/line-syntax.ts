@@ -5,10 +5,29 @@ import type { ParsedKeyword, ParsedLine, SourceLine } from "./parse-model.js";
 
 //////// Line scanner
 
-function skipAnnotation(cursor: Cursor): void {
+/** Script-level and standalone annotations, which belong to no declaration. */
+const DETACHED_ANNOTATIONS = new Set([
+	"tool",
+	"icon",
+	"static_unload",
+	"export_category",
+	"export_group",
+	"export_subgroup",
+	"warning_ignore_start",
+	"warning_ignore_restore",
+]);
+
+/** A run of annotations: where the ones the next declaration owns begin. */
+export interface AnnotationRun {
+	/** Null when none follow the last detached one. */
+	head: number | null;
+	detached: boolean;
+}
+
+function skipAnnotation(cursor: Cursor): string {
 	cursor.next();
-	cursor.readIdentifier();
-	if (cursor.peek() !== "(") return;
+	const name = cursor.readIdentifier()?.name ?? "";
+	if (cursor.peek() !== "(") return name;
 
 	let depth = 0;
 	while (cursor.good()) {
@@ -16,9 +35,34 @@ function skipAnnotation(cursor: Cursor): void {
 		if (character === "(") depth++;
 		if (character === ")") {
 			depth--;
-			if (depth === 0) return;
+			if (depth === 0) return name;
 		}
 	}
+	return name;
+}
+
+function skipAnnotations(cursor: Cursor): AnnotationRun {
+	const run: AnnotationRun = { head: null, detached: false };
+	while (cursor.peek() === "@") {
+		const start = cursor.offset;
+		if (DETACHED_ANNOTATIONS.has(skipAnnotation(cursor))) {
+			run.head = null;
+			run.detached = true;
+		} else {
+			run.head ??= start;
+		}
+		cursor.skipWhitespace();
+	}
+	return run;
+}
+
+/** Null unless the line holds annotations and nothing else. */
+export function annotationLine(line: SourceLine): AnnotationRun | null {
+	const cursor = new Cursor(line.code);
+	cursor.skipWhitespace();
+	if (cursor.peek() !== "@") return null;
+	const run = skipAnnotations(cursor);
+	return cursor.good() ? null : run;
 }
 
 interface LineSegment {
@@ -49,12 +93,9 @@ export function parseLineHead(line: SourceLine, generic = false, start = 0, end 
 	cursor.skipWhitespace();
 	if (cursor.peek() === "" || cursor.peek() === "#") return null;
 
-	let annotated = false;
-	while (cursor.peek() === "@") {
-		annotated = true;
-		skipAnnotation(cursor);
-		cursor.skipWhitespace();
-	}
+	const annotated = cursor.peek() === "@";
+	const annotations = skipAnnotations(cursor);
+	const head = annotations.head ?? cursor.offset;
 
 	let first = cursor.readIdentifier();
 	if (first === null) return null;
@@ -72,6 +113,7 @@ export function parseLineHead(line: SourceLine, generic = false, start = 0, end 
 			name,
 			static: false,
 			annotated: false,
+			head,
 		};
 	}
 
@@ -86,30 +128,14 @@ export function parseLineHead(line: SourceLine, generic = false, start = 0, end 
 	const keyword = first.name as ParsedKeyword;
 	if (!["class_name", "extends", "func", "var", "const", "signal", "enum", "class", "for"].includes(keyword))
 		return null;
-	if (keyword === "extends") return { keyword, name: null, static: isStatic, annotated };
-	if (keyword === "enum") {
-		cursor.skipWhitespace();
-		return {
-			keyword,
-			name: cursor.readIdentifier(),
-			static: isStatic,
-			annotated,
-		};
-	}
+	if (keyword === "extends") return { keyword, name: null, static: isStatic, annotated, head };
 	cursor.skipWhitespace();
-	if (keyword === "for") {
-		return {
-			keyword,
-			name: cursor.readIdentifier(),
-			static: isStatic,
-			annotated,
-		};
-	}
 	return {
 		keyword,
 		name: cursor.readIdentifier(),
 		static: isStatic,
 		annotated,
+		head,
 	};
 }
 

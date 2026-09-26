@@ -11,52 +11,11 @@ import {
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { sourceRange } from "./cursor.js";
+import { HeaderReader } from "./header.js";
 import type { ImportBinding, ParsedFile, RawDeclaration, RawReference, RustDescriptor, TypeAnswer } from "./model.js";
-import { type RustToken, tokenize } from "./tokens.js";
+import { angleDelta, isValueToken, KEYWORDS, type RustToken, tokenize } from "./tokens.js";
 
 const LANGUAGE = "rust";
-
-const KEYWORDS = new Set([
-	"as",
-	"async",
-	"await",
-	"break",
-	"const",
-	"continue",
-	"crate",
-	"dyn",
-	"else",
-	"enum",
-	"extern",
-	"false",
-	"fn",
-	"for",
-	"if",
-	"impl",
-	"in",
-	"let",
-	"loop",
-	"match",
-	"mod",
-	"move",
-	"mut",
-	"pub",
-	"ref",
-	"return",
-	"self",
-	"Self",
-	"static",
-	"struct",
-	"super",
-	"trait",
-	"true",
-	"type",
-	"unsafe",
-	"use",
-	"where",
-	"while",
-	"yield",
-]);
 
 const MODIFIERS = new Set(["async", "const", "default", "extern", "unsafe", "auto", "safe", "gen"]);
 
@@ -86,6 +45,15 @@ const TYPE_WORDS = new Set([
 
 const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
 
+const STATEMENT_END = new Set([";"]);
+
+const VARIANT_END = new Set([","]);
+
+/** A `let` after one of these is a condition. */
+const CONDITION_WORDS = ["if", "while", "&&"];
+
+const CONDITION_END = new Set(["{", "&&", "||", ";"]);
+
 interface ParseContext {
 	descriptors: RustDescriptor[];
 	containerId?: string;
@@ -97,6 +65,8 @@ interface ParseContext {
 interface Prefix {
 	index: number;
 	start: RustToken;
+	/** Where the header starts, outer attributes included. */
+	headerStart: number;
 	visibility: Declaration["visibility"];
 	exported: boolean;
 	modifiers: Set<string>;
@@ -118,19 +88,6 @@ interface SpanRange {
 
 function tokenAt(tokens: RustToken[], index: number): RustToken | undefined {
 	return tokens[index];
-}
-
-function isValueToken(token: RustToken | undefined, value: string): boolean {
-	return token !== undefined && (token.kind === "symbol" || token.kind === "identifier") && token.value === value;
-}
-
-function angleDelta(token: RustToken): number {
-	if (token.kind !== "symbol") return 0;
-	if (token.value === "<") return 1;
-	if (token.value === "<<" || token.value === "<<=") return 2;
-	if (token.value === ">") return -1;
-	if (token.value === ">>" || token.value === ">>=") return -2;
-	return 0;
 }
 
 function isNameToken(token: RustToken | undefined): token is RustToken {
@@ -238,6 +195,7 @@ export class RustParser {
 	private readonly implTraitTokens = new Set<number>();
 	private readonly implTypeTokens = new Set<number>();
 	private readonly methodCounts = new Map<string, number>();
+	private readonly headers: HeaderReader;
 	private localOrdinal = 0;
 
 	constructor(
@@ -248,6 +206,7 @@ export class RustParser {
 		this.scan = tokenize(text);
 		this.tokens = this.scan.tokens;
 		this.buildMatching();
+		this.headers = new HeaderReader(text, this.tokens, this.matching, this.scan.commentOffsets);
 	}
 
 	parse(): ParsedFile {
@@ -410,6 +369,7 @@ export class RustParser {
 					value: "",
 					raw: "",
 				} as RustToken),
+			headerStart: this.headers.start(this.tokens[start] === undefined ? end - 1 : start),
 			visibility,
 			exported,
 			modifiers,
@@ -500,7 +460,7 @@ export class RustParser {
 		visibility: Declaration["visibility"],
 		exported: boolean,
 		options: {
-			signature?: string;
+			signature?: string | undefined;
 			typeName?: string;
 			typeDisplay?: string;
 			typeRange?: Range;
@@ -611,10 +571,8 @@ export class RustParser {
 		const returnInfo =
 			this.depth === "outline" ? undefined : this.returnType(close + 1, bodyOpen < end ? bodyOpen : endIndex);
 		const descriptor = this.methodDescriptor(context, nameToken.value);
-		const signatureEnd = bodyOpen < endIndex ? bodyOpen : endIndex + 1;
-		const baseSignature = sourceOfTokens(this.text, this.tokens, start, signatureEnd);
-		const signature =
-			context.implTrait === undefined ? baseSignature : `${baseSignature} (impl ${context.implTrait})`;
+		const headerStop = bodyEnd >= 0 ? bodyOpen : semicolon >= 0 ? semicolon : close + 1;
+		const signature = this.headers.render(prefix.headerStart, headerStop);
 		const kind = context.kind === "impl" || context.kind === "trait" ? "method" : "function";
 		const typeOptions =
 			this.depth === "outline"
@@ -757,7 +715,11 @@ export class RustParser {
 							? {}
 							: { typeDisplay, ...(typeName === undefined ? {} : { typeName }) }
 						: { typeDisplay: initializer.display };
+				// Siblings share only `let`, so each header stays its own size.
+				const shared = names.length === 1 ? this.letHeader(index, patternEnd, end) : undefined;
 				for (const nameIndex of names) {
+					const signature =
+						shared ?? this.headers.renderAfter(index, this.bindingStart(nameIndex), nameIndex + 1);
 					const nameToken = this.tokens[nameIndex] as RustToken;
 					const ordinal = this.localOrdinal++;
 					const raw = this.addRawDeclaration(
@@ -779,6 +741,7 @@ export class RustParser {
 						false,
 						{
 							localOrdinal: ordinal,
+							signature,
 							...typeOptions,
 						},
 					);
@@ -822,6 +785,28 @@ export class RustParser {
 		}
 	}
 
+	/** A `let` to its `;`, or to its block when it is a condition. */
+	private letHeader(letIndex: number, patternEnd: number, end: number): string | undefined {
+		const condition = CONDITION_WORDS.some((word) => isValueToken(this.tokens[letIndex - 1], word));
+		if (condition && isValueToken(this.tokens[patternEnd], "=")) {
+			return this.headers.render(letIndex, this.headers.stop(patternEnd + 1, end, CONDITION_END), patternEnd + 1);
+		}
+		const stop = this.headers.stop(patternEnd, end, STATEMENT_END);
+		const equal = this.topLevelToken(patternEnd, stop, "=");
+		return this.headers.render(letIndex, stop, equal >= 0 ? equal + 1 : undefined);
+	}
+
+	/** A pattern binding's own `ref` and `mut`, then its name. */
+	private bindingStart(nameIndex: number): number {
+		let start = nameIndex;
+		while (
+			(isValueToken(this.tokens[start - 1], "mut") || isValueToken(this.tokens[start - 1], "ref")) &&
+			!isValueToken(this.tokens[start - 2], "&")
+		)
+			start--;
+		return start;
+	}
+
 	private patternNames(start: number, end: number): number[] {
 		const names: number[] = [];
 		for (let index = start; index < end; index++) {
@@ -841,6 +826,12 @@ export class RustParser {
 		return display === undefined ? undefined : { display, basis: "literal initializer" };
 	}
 
+	/** From the prefix to `bodyOpen`, or to the item's `;` when there is none. */
+	private itemHeader(prefix: Prefix, bodyOpen: number, end: number): string | undefined {
+		const stop = bodyOpen >= 0 ? bodyOpen : this.headers.stop(prefix.index, end, STATEMENT_END);
+		return this.headers.render(prefix.headerStart, stop);
+	}
+
 	private parseStruct(start: number, end: number, prefix: Prefix, context: ParseContext): number {
 		const name = tokenAt(this.tokens, start + 1);
 		if (name === undefined || !isNameToken(name)) {
@@ -852,6 +843,8 @@ export class RustParser {
 		const bodyEnd = bodyOpen >= 0 && isValueToken(this.tokens[bodyOpen], "{") ? this.matchingIndex(bodyOpen) : -1;
 		const endIndex = bodyEnd >= 0 ? bodyEnd : bodyOpen >= 0 ? bodyOpen : this.statementEnd(start, end);
 		const endToken = tokenAt(this.tokens, endIndex) ?? name;
+		// A tuple struct's fields are part of its header.
+		const headerBody = isValueToken(this.tokens[bodyOpen], "(") ? -1 : bodyOpen;
 		const raw = this.addRawDeclaration(
 			name,
 			prefix.start,
@@ -862,7 +855,7 @@ export class RustParser {
 			"struct",
 			prefix.visibility,
 			prefix.exported,
-			{},
+			{ signature: this.itemHeader(prefix, headerBody, end) },
 		);
 		if (bodyEnd >= 0) this.parseStructFields(bodyOpen + 1, bodyEnd, raw, prefix);
 		return endIndex + 1;
@@ -907,6 +900,7 @@ export class RustParser {
 				fieldPrefix.visibility,
 				fieldPrefix.exported,
 				{
+					signature: this.headers.render(from, to),
 					...defined({ typeDisplay, typeName, typeRange: fieldTypeRange }),
 				},
 			);
@@ -932,13 +926,23 @@ export class RustParser {
 			"enum",
 			prefix.visibility,
 			prefix.exported,
-			{},
+			{ signature: this.itemHeader(prefix, bodyOpen, end) },
 		);
 		if (bodyEnd >= 0) {
 			for (const [from, to] of this.segments(bodyOpen + 1, bodyEnd)) {
 				const variant = tokenAt(this.tokens, from);
 				if (variant === undefined || !isNameToken(variant)) continue;
 				const descriptor: RustDescriptor = { kind: "term", name: variant.value };
+				// A struct variant's fields are its body.
+				const headerStop = isValueToken(this.tokens[from + 1], "{")
+					? from + 1
+					: this.headers.stop(from, to, VARIANT_END);
+				const discriminant = this.topLevelToken(from + 1, headerStop, "=");
+				const signature = this.headers.render(
+					from,
+					headerStop,
+					discriminant >= 0 ? discriminant + 1 : undefined,
+				);
 				this.addRawDeclaration(
 					variant,
 					variant,
@@ -954,7 +958,7 @@ export class RustParser {
 					"variant",
 					prefix.visibility,
 					prefix.exported,
-					{},
+					{ signature },
 				);
 			}
 		}
@@ -980,7 +984,7 @@ export class RustParser {
 			"trait",
 			prefix.visibility,
 			prefix.exported,
-			{},
+			{ signature: this.itemHeader(prefix, bodyOpen, end) },
 		);
 		if (bodyEnd >= 0)
 			this.parseItems(bodyOpen + 1, bodyEnd, {
@@ -1050,7 +1054,7 @@ export class RustParser {
 			"module",
 			prefix.visibility,
 			prefix.exported,
-			{},
+			{ signature: this.itemHeader(prefix, next, end) },
 		);
 		if (bodyEnd >= 0)
 			this.parseItems(next + 1, bodyEnd, {
@@ -1085,6 +1089,7 @@ export class RustParser {
 			prefix.visibility,
 			prefix.exported,
 			{
+				signature: this.itemHeader(prefix, -1, end),
 				...(typeDisplay === undefined ? {} : { typeDisplay, ...(typeName === undefined ? {} : { typeName }) }),
 			},
 		);
@@ -1110,6 +1115,8 @@ export class RustParser {
 		const typeName = this.depth === "outline" || colon < 0 ? undefined : this.simpleTypeName(colon + 1, typeEnd);
 		const typeRange =
 			this.depth === "outline" || colon < 0 ? undefined : rangeOfTokens(this.tokens, colon + 1, typeEnd);
+		const headerStop = this.headers.stop(nameIndex + 1, end, STATEMENT_END);
+		const value = this.topLevelToken(nameIndex + 1, headerStop, "=");
 		const raw = this.addRawDeclaration(
 			name,
 			prefix.start,
@@ -1121,6 +1128,7 @@ export class RustParser {
 			prefix.visibility,
 			prefix.exported,
 			{
+				signature: this.headers.render(prefix.headerStart, headerStop, value >= 0 ? value + 1 : undefined),
 				...(typeDisplay === undefined
 					? {}
 					: {
@@ -1162,7 +1170,7 @@ export class RustParser {
 			"macroRules",
 			prefix.visibility,
 			prefix.exported,
-			{},
+			{ signature: this.headers.render(prefix.headerStart, nameIndex + 1) },
 		);
 		const bodyToken = bodyOpen >= 0 ? tokenAt(this.tokens, bodyOpen) : undefined;
 		if (bodyToken !== undefined && bodyEnd >= 0)

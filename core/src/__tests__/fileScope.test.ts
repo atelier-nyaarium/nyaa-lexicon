@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { globToRegExp } from "@nyaa-lexicon/protocol";
 import {
 	describeScope,
 	fileScopeFor,
 	generatedVerdicts,
 	gitFiles,
 	gitIgnored,
-	globToRegExp,
 	includedFiles,
 	isExternalModule,
 	runGit,

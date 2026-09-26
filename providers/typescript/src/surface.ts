@@ -13,6 +13,7 @@ import ts from "typescript";
 import { isDeclarationModule } from "./bundle.js";
 import { fileRoleOf, LANGUAGE } from "./extract.js";
 import { scriptKindOf } from "./file-types.js";
+import { headerOf } from "./header.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -63,7 +64,7 @@ function runtimeSurface(module: string, source: ts.SourceFile): Declaration[] {
 	for (const item of exported) {
 		const callable = callableOf(item.node);
 		if (callable === undefined) continue;
-		recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, false);
+		recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, item.node);
 	}
 	return declarations;
 }
@@ -74,7 +75,7 @@ function declarationSurface(module: string, source: ts.SourceFile): Declaration[
 	for (const item of exportedNodes(source, true)) {
 		const callable = callableOf(item.node);
 		if (callable !== undefined) {
-			recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, true);
+			recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, item.node);
 			continue;
 		}
 		recordDeclaration(module, source, declarations, occurrences, item);
@@ -232,7 +233,8 @@ function recordFunction(
 	name: string,
 	callable: SurfaceCallable,
 	selection: ts.Node | undefined,
-	typed: boolean,
+	/** The exported node; its header is the signature. */
+	exported: ts.Node,
 	container?: { symbolId: string; descriptors: Descriptor[] },
 	kind: SurfaceCallableKind = container === undefined ? "function" : "method",
 ): void {
@@ -253,7 +255,7 @@ function recordFunction(
 		visibility: "public",
 		exported: container === undefined,
 		metrics: { lines: range.end.line - range.start.line + 1, parameters: callable.parameters.length },
-		signature: functionSignature(name, callable, source, typed, kind),
+		...defined({ signature: headerOf(holderOf(exported), source) }),
 		...(container === undefined ? {} : { containerId: container.symbolId }),
 	});
 	recordParameters(module, source, declarations, occurrences, callable.parameters, symbolId, descriptors);
@@ -281,9 +283,7 @@ function recordDeclaration(
 		visibility: "public",
 		exported: true,
 		metrics: { lines: range.end.line - range.start.line + 1 },
-		...(declarationSignature(item.name, item.node, source) === undefined
-			? {}
-			: { signature: declarationSignature(item.name, item.node, source) as string }),
+		...defined({ signature: headerOf(item.node, source) }),
 	});
 	if (ts.isClassDeclaration(item.node) || ts.isInterfaceDeclaration(item.node)) {
 		recordMembers(module, source, declarations, occurrences, item.node.members, symbolId, descriptors);
@@ -310,7 +310,7 @@ function recordMembers(
 				"constructor",
 				member,
 				constructorToken(member, source),
-				true,
+				member,
 				{ symbolId: containerId, descriptors: containerDescriptors },
 				"constructor",
 			);
@@ -319,7 +319,7 @@ function recordMembers(
 		if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member)) {
 			const name = propertyNameText(member.name);
 			if (name !== null) {
-				recordFunction(module, source, declarations, occurrences, name, member, member.name, true, {
+				recordFunction(module, source, declarations, occurrences, name, member, member.name, member, {
 					symbolId: containerId,
 					descriptors: containerDescriptors,
 				});
@@ -348,7 +348,7 @@ function recordMembers(
 			exported: false,
 			containerId,
 			metrics: { lines: range.end.line - range.start.line + 1 },
-			signature: member.getText(source),
+			...defined({ signature: headerOf(member, source) }),
 		});
 		if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
 			recordParameters(module, source, declarations, occurrences, member.parameters, symbolId, descriptors);
@@ -426,32 +426,22 @@ function declarationKind(node: ts.Node): { kind: Declaration["kind"]; descriptor
 	return null;
 }
 
-function functionSignature(
-	name: string,
-	callable: SurfaceCallable,
-	source: ts.SourceFile,
-	typed: boolean,
-	kind: SurfaceCallableKind,
-): string {
-	const typeParameters = callable.typeParameters?.map((item) => item.getText(source)).join(", ");
-	const parameters = callable.parameters
-		.map((parameter) => (typed ? parameter.getText(source) : parameter.name.getText(source)))
-		.join(", ");
-	const returns = typed && callable.type !== undefined ? `: ${callable.type.getText(source)}` : "";
-	const label = kind === "function" ? `function ${name}` : kind === "constructor" ? "constructor" : name;
-	return `${label}${typeParameters === undefined ? "" : `<${typeParameters}>`}(${parameters})${returns}`;
-}
-
-function declarationSignature(name: string, node: ts.Node, source: ts.SourceFile): string | undefined {
-	if (ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) {
-		const keyword = ts.isClassDeclaration(node) ? "class" : "interface";
-		const typeParameters = node.typeParameters?.map((item) => item.getText(source)).join(", ");
-		return `${keyword} ${name}${typeParameters === undefined ? "" : `<${typeParameters}>`}`;
+/** The statement or assignment writing an exported function value, else the node itself. */
+function holderOf(node: ts.Node): ts.Node {
+	let value = node;
+	while (
+		ts.isParenthesizedExpression(value.parent) ||
+		ts.isAsExpression(value.parent) ||
+		ts.isTypeAssertionExpression(value.parent) ||
+		ts.isSatisfiesExpression(value.parent) ||
+		ts.isNonNullExpression(value.parent)
+	) {
+		value = value.parent;
 	}
-	if (ts.isTypeAliasDeclaration(node)) return `type ${name} = ${node.type.getText(source)}`;
-	if (ts.isEnumDeclaration(node)) return `enum ${name}`;
-	if (ts.isVariableDeclaration(node)) return node.getText(source);
-	return undefined;
+	const parent = value.parent;
+	if (ts.isExportAssignment(parent) || ts.isPropertyAssignment(parent)) return parent;
+	if (ts.isBinaryExpression(parent) && parent.right === value) return parent;
+	return node;
 }
 
 function declarationImports(source: ts.SourceFile): Import[] {

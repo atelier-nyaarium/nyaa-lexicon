@@ -101,6 +101,7 @@ export function declare(
 		...defined({ declaredType: options.declaredType }),
 	};
 	w.out.declarations.push(declaration);
+	w.headers.push({ declaration, span: options.header });
 	if (options.kind === "function") {
 		w.definedIn.set(declaration, scope);
 		const definitions = w.out.functionsByName.get(name);

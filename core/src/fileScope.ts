@@ -14,7 +14,13 @@
 import type { ChildProcess } from "node:child_process";
 import { type Dirent, existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { type BoundedTimer, normalizeModulePath, runBounded, workspaceFile } from "@nyaa-lexicon/protocol";
+import {
+	type BoundedTimer,
+	globToRegExp,
+	normalizeModulePath,
+	runBounded,
+	workspaceFile,
+} from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 
 ////////////////////////////////
@@ -73,46 +79,6 @@ export function isExternalModule(workspaceRoot: string, module: string): boolean
 
 ////////////////////////////////
 //  Functions & Helpers
-
-/**
- * Turn one glob into a matcher.
- *
- * `**` crosses directory separators and `*` does not, which is the distinction that makes
- * `src/*.ts` and `src/**\/*.ts` mean different things. Everything else is escaped, so a dot in a
- * pattern matches a dot rather than any character.
- */
-export function globToRegExp(glob: string): RegExp {
-	let out = "";
-	for (let i = 0; i < glob.length; i++) {
-		const char = glob[i] as string;
-
-		// The separator next to a ** is part of it. `dist/**` has to match `dist` itself, or naming
-		// a directory would fail to name the directory, and `a/**/b` has to match `a/b` with nothing
-		// in between.
-		if (char === "/" && glob[i + 1] === "*" && glob[i + 2] === "*") {
-			if (glob[i + 3] === "/") {
-				out += "/(?:.*/)?";
-				i += 3;
-				continue;
-			}
-			out += "(?:/.*)?";
-			i += 2;
-			continue;
-		}
-
-		if (char === "*") {
-			if (glob[i + 1] === "*") {
-				out += glob[i + 2] === "/" ? "(?:.*/)?" : ".*";
-				i += glob[i + 2] === "/" ? 2 : 1;
-				continue;
-			}
-			out += "[^/]*";
-			continue;
-		}
-		out += char.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-	}
-	return new RegExp(`^${out}$`);
-}
 
 /** What one git run answers, or how to run it in a test that proves the timeout kills a wedged one. */
 export interface GitRunOptions {
@@ -305,10 +271,10 @@ export async function fileScopeFor(
 	const exclude = config.exclude ?? [];
 	const deny = config.deny ?? [];
 	const bundles = config.bundles ?? [];
-	const matchers = include.map(globToRegExp);
-	const excluded = exclude.map(globToRegExp);
-	const denied = deny.map(globToRegExp);
-	const surfaces = bundles.map(globToRegExp);
+	const matchers = include.map((glob) => globToRegExp(glob));
+	const excluded = exclude.map((glob) => globToRegExp(glob));
+	const denied = deny.map((glob) => globToRegExp(glob));
+	const surfaces = bundles.map((glob) => globToRegExp(glob));
 	const included = (module: string) => matchers.some((matcher) => matcher.test(module));
 	const denies = (module: string) => denied.some((matcher) => matcher.test(module));
 	const allowed = (module: string) =>
@@ -402,7 +368,7 @@ export async function generatedVerdicts(
  */
 export function includedFiles(workspaceRoot: string, globs: string[]): string[] {
 	if (globs.length === 0) return [];
-	const matchers = globs.map(globToRegExp);
+	const matchers = globs.map((glob) => globToRegExp(glob));
 	const found: string[] = [];
 
 	const walk = (relative: string, depth: number) => {

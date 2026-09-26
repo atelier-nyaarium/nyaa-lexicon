@@ -10,6 +10,7 @@ import {
 import { parseXml, XmlCdata, XmlComment, XmlElement, type XmlNode, XmlText } from "@rgrove/parse-xml";
 import { markupTooDeep, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
+import { startTagSignature } from "./startTag.js";
 
 export interface XmlContext {
 	language: string;
@@ -53,14 +54,6 @@ function tagEnd(text: string, start: number): number | undefined {
 		else if (ch === ">") return i;
 	}
 	return undefined;
-}
-
-/** A start tag as a signature, cut so a value of megabytes does not ride along. */
-const SIGNATURE_CAP = 160;
-
-function signatureOf(text: string, start: number, end: number): string {
-	const tag = text.slice(start, end);
-	return tag.length > SIGNATURE_CAP ? `${tag.slice(0, SIGNATURE_CAP)}...` : tag;
 }
 
 /** The attributes as written in one start tag, by a cursor that stops at the closing bracket. */
@@ -212,8 +205,15 @@ export function readXml(context: XmlContext): XmlFacts {
 			range,
 			selectionRange,
 			visibility: "public",
-			signature: signatureOf(text, node.start, end + 1),
-			...defined({ containerId: parentId }),
+			...defined({
+				signature: startTagSignature(
+					text,
+					node.start,
+					end + 1,
+					scan.spans.map((attribute) => ({ start: attribute.valueStart, end: attribute.valueEnd })),
+				),
+				containerId: parentId,
+			}),
 		});
 		for (const attribute of scan.spans) {
 			const attrRange = rangeAt(context, bom + attribute.nameStart, bom + attribute.valueEnd);

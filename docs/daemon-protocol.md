@@ -192,6 +192,32 @@ One method is not in the table. `shutdown` is answered by the daemon process its
 dispatch, with `{ stopping: true }` sent before it stops so the caller reads success rather than a
 dropped connection.
 
+## Excluding modules from a search
+
+`findLiterals`, `findComments`, `findDocs`, `searchSymbols`, `findImports` and `sharedLiterals` take
+an optional `exclude`, the `ModuleExclusion` in `protocol/src/moduleExclusion.ts`: `hide` globs, `keep` globs
+carved back out, and exact `allow` modules. Globs use `lexicon.json`'s grammar and match
+case-insensitively; `allow` compares module keys exactly. `compileExclusion` is the one matcher, for
+the daemon and for any client checking a path itself.
+
+The daemon reads the hidden modules from the index in the same read hold as the search, and every
+page, count and regex scan leaves them out in SQL. A regex scan's budget is spent only on visible
+rows, so `scanIncomplete` says nothing about a hidden file. `sharedLiterals` counts `files` and
+`uses` over visible modules only. No answer carries a hidden count, since a count would tell a regex
+what a hidden file holds.
+
+An answer that applied the exclusion says so with `excluded: true`: on `query` for literals, comments
+and docs, at the top level for symbols and imports, and on every row of `sharedLiterals`. An empty
+`sharedLiterals` answer needs no echo, since an exclusion never adds a match. A daemon predating the
+field strips it unread, so a client that sent `exclude` and gets no echo throws `Incompatible` and
+returns nothing. The table marks these methods `exclusion: true`, and `exclusionConfirmed` is the
+check.
+
+`admittedModules` answers, for up to 512 modules, why the index may read each one: `discovered`
+when the scope admits it to auto-discovery, `imported` when the last pass reached it only through an
+import, and `null` when the scope denies it or nothing reaches it. `moduleStatus.claimed` is broader:
+a claim admits any path a caller names, and the text provider claims every file.
+
 ## Refactor methods
 
 `renameEdits` returns either a plan with changed files or a refusal with the plan and reason.
@@ -239,11 +265,37 @@ set refuses before restoration. A request resuming a recorded revert intent uses
 states without repeating this comparison. Accepted restores and recovery checks follow
 `docs/architecture.md`, which also covers file and link handling.
 
+`refactorTrack` answers `refactor: { id }` for the transaction it tracked into, or `refactor: null`
+when none is open. A daemon predating the field omits it.
+
+### Committed steps
+
+`refactorRenameCommitted` and `refactorMoveCommitted` take the `refactorRename` or `refactorMove`
+request plus `bases`: every module the caller was shown, with the hash it saw, or null for absent.
+Each writes one step as a refactor of its own and commits it before answering. They are methods
+rather than a flag because an older daemon strips an unknown field and would join the open refactor.
+
+A committed step refuses with `openRefactor: { id }` while a refactor is open, checked before
+planning and again inside the gate. It refuses with `unexpected` when a module it would write is
+missing from `bases` or no longer at its hash; each entry carries the module's hash now. Extra bases
+are ignored. The check runs on the before-images the step journals, so a caller that journaled
+`bases` holds the exact text the step replaced.
+
+A committed answer carries `symbolId`, the root's id now; `files`, each written module with its
+before and after hash; `forwarded`, every id the step re-minted; and `reverse`, the step that puts it
+back. To undo, a client previews `reverse` with `renameEdits` or `previewMove` and asks the same
+method with those bases; redo is the reverse's reverse. After a lost answer, `reverseOf` in
+`protocol/src/symbolId.ts` rebuilds `reverse` from the requested id and
+`diagnoseSubject(requestedId).forwardedTo`. It answers null for a local, whose id carries no name. A
+reverse is not byte-exact: a re-pointed import may format differently, and a module the forward move
+created stays.
+
 ### One read binds an answer to its bytes
 
 `moduleDeclarations` answers one module's status (`exists`, `claimed`, `indexed`, `depth`, the
 recorded `failure`), what one read of the file found (`read.kind`: `text`, `missing`, `binary` or
-`tooLarge`, with `detail` for the last two), `contentHash` (the hash the index holds, null with no
+`tooLarge`, with `detail` for the last two and for a link whose real path leaves the workspace, which
+reads as `missing` and unclaimed), `contentHash` (the hash the index holds, null with no
 row), `diskHash` (the hash of the bytes that same read loaded, null unless text) and the
 declaration rows, from ONE synchronous snapshot: `core/src/moduleDeclarations.ts` runs to
 completion, a residue forbids `await` and `async` in it, so no field describes a different
@@ -365,8 +417,9 @@ parsed through the entry's `response` schema before it reaches the frame writer,
 there throws like any other error, which the transport turns into an error frame. Both parses are
 always on.
 
-Every path-valued request field (`module`, `toModule`, `fromModule`) is the `ModulePath` schema:
-a transform through the id grammar's `normalizeModulePath`, so `./src/a.ts`, a backslash path and
+Every path-valued request field (`module`, `toModule`, `fromModule`, `modules`, `exclude.allow`,
+`bases[].module`) is
+the `ModulePath` schema: a transform through the id grammar's `normalizeModulePath`, so `./src/a.ts`, a backslash path and
 an NFD filename are served under the one key the index files them by, and an absolute path, a path
 escaping the workspace or one carrying a control character is refused in the grammar's own words
 before any handler reads or writes. That is workspace containment: nothing the wire names can

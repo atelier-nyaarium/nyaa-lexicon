@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import type {
+	AdmittedModule,
 	ImportResolution,
 	IndexCause,
 	IndexDepth,
@@ -33,7 +34,7 @@ import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarat
 import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import type { ResultCache } from "./resultCache.js";
-import { readHead, type SourceReader, unreadableReason } from "./sourceRead.js";
+import { OUTSIDE_WORKSPACE_REASON, readHead, type SourceReader, unreadableReason } from "./sourceRead.js";
 import type { FileNote, IndexStore } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
@@ -261,6 +262,7 @@ export class WorkspaceIndexer {
 		if (!claim.claimed) return this.unadmitted(module, claim.unclaimedReason);
 
 		const read = this.readSource(module);
+		if (read.kind === "outside") return this.unadmitted(module, OUTSIDE_WORKSPACE_REASON);
 		if (read.kind === "missing") {
 			return this.outcome(module, "missing", undefined, this.forgetFile(module));
 		}
@@ -904,6 +906,19 @@ export class WorkspaceIndexer {
 	/** What `indexFile` would find, decided in its order, without asking a provider or writing. */
 	moduleStatus(module: string): ModuleStatus {
 		return statusOf(module, this.claimOf(module), this.readSource(module), this.store);
+	}
+
+	/** Why the index may read a module: discovered by scope, or reached by import. Narrower than a claim. */
+	async admittedModules(modules: string[]): Promise<AdmittedModule[]> {
+		const scope = await this.currentScope();
+		return modules.map((module) => ({ module, admitted: this.admissionIn(scope, module) }));
+	}
+
+	private admissionIn(scope: FileScope, module: string): AdmittedModule["admitted"] {
+		if (scope.denies(module)) return null;
+		if (scope.allows(module)) return "discovered";
+		// Roots already pass `allows`; anything else here came from an import.
+		return this.reachable?.has(module) === true ? "imported" : null;
 	}
 
 	/** Status, both hashes and the rows from one read: `moduleDeclarations.ts` owns the snapshot. */

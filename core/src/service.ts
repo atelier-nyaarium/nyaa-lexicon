@@ -10,6 +10,7 @@ import {
 	type CommitsMentioningResult,
 	type Cycle,
 	defined,
+	type FileEdits,
 	type FileHistory,
 	type ImportResolution,
 	type ModuleFactsResult,
@@ -21,7 +22,7 @@ import {
 	type SymbolAtReply,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
-import { writeAll } from "./applyEdits.js";
+import { stageAll, writeAll } from "./applyEdits.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
@@ -37,16 +38,11 @@ import { ImportResolver } from "./imports.js";
 import { type IndexCaches, WorkspaceIndexer } from "./indexer.js";
 import {
 	type CallHierarchy,
-	type CommentQuery,
 	type CommentsResult,
-	DEFAULT_COMMENT_LIMIT,
-	DEFAULT_LITERAL_LIMIT,
 	DEFAULT_REFERENCE_LIMIT,
 	type DescribeResult,
-	type DocQuery,
 	type DocsResult,
 	IndexReadModel,
-	type LiteralQuery,
 	type LiteralsResult,
 	type ReferencesResult,
 	type SymbolSummary,
@@ -218,6 +214,10 @@ export class LexiconService {
 
 	moduleDeclarations(module: string): ReturnType<WorkspaceIndexer["moduleDeclarations"]> {
 		return this.indexer.moduleDeclarations(module);
+	}
+
+	admittedModules(modules: string[]): ReturnType<WorkspaceIndexer["admittedModules"]> {
+		return this.indexer.admittedModules(modules);
 	}
 
 	warmHold(): string | null {
@@ -412,20 +412,20 @@ export class LexiconService {
 		return this.reads.usesFrom(...args);
 	}
 
-	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
-		return this.reads.findLiterals(query, limit);
+	findLiterals(...args: Parameters<IndexReadModel["findLiterals"]>): LiteralsResult {
+		return this.reads.findLiterals(...args);
 	}
 
-	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT): SharedLiteralsResult {
-		return this.reads.sharedLiterals(minimumFiles, limit);
+	sharedLiterals(...args: Parameters<IndexReadModel["sharedLiterals"]>): SharedLiteralsResult {
+		return this.reads.sharedLiterals(...args);
 	}
 
-	findDocs(query: DocQuery, limit = DEFAULT_COMMENT_LIMIT): DocsResult {
-		return this.reads.findDocs(query, limit);
+	findDocs(...args: Parameters<IndexReadModel["findDocs"]>): DocsResult {
+		return this.reads.findDocs(...args);
 	}
 
-	findComments(query: CommentQuery, limit = DEFAULT_COMMENT_LIMIT): CommentsResult {
-		return this.reads.findComments(query, limit);
+	findComments(...args: Parameters<IndexReadModel["findComments"]>): CommentsResult {
+		return this.reads.findComments(...args);
 	}
 
 	cycles(limit = 20): Cycle[] {
@@ -670,19 +670,29 @@ export class LexiconService {
 	async renameSymbol(symbolId: string, newName: string): Promise<RenameOutcome> {
 		const planned = await this.renameEdits(symbolId, newName);
 		if (!planned.ok) return { renamed: false, plan: planned.plan, reason: planned.reason };
-		const { plan, files } = planned;
+		const written = await this.writeRenameEdits(planned.files);
+		return "reason" in written
+			? { renamed: false, plan: planned.plan, reason: written.reason }
+			: { renamed: true, plan: planned.plan, modules: written.modules };
+	}
 
+	/** The text each file would hold after a rename, unwritten. */
+	renameTexts(files: FileEdits[]): { texts: Array<{ module: string; text: string }> } | { reason: Refusal } {
+		const staged = stageAll(files, this.readSource);
+		return "staged" in staged ? { texts: staged.staged } : { reason: writeFailed(staged.module, staged.reason) };
+	}
+
+	/** Writes a rename's edits, then reindexes each file. */
+	async writeRenameEdits(files: FileEdits[]): Promise<{ modules: string[] } | { reason: Refusal }> {
 		const written = writeAll(this.workspaceRoot, files, this.readSource);
-		if (!written.applied) {
-			return { renamed: false, plan, reason: writeFailed(written.module, written.reason) };
-		}
+		if (!written.applied) return { reason: writeFailed(written.module, written.reason) };
 
 		// Re-indexed immediately, since every edited file's facts are now wrong and a rename is
 		// usually followed by another question about the same symbols.
 		for (const module of written.modules) {
 			if (textOf(this.readSource(module)) !== null) await this.indexFile(module);
 		}
-		return { renamed: true, plan, modules: written.modules };
+		return { modules: written.modules };
 	}
 
 	/**

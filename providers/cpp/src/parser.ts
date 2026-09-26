@@ -18,6 +18,7 @@ import {
 	type TypeInfo,
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
+import { type HeaderKind, headerOf, type TokenSpan } from "./header.js";
 import type { Token } from "./tokens.js";
 import { isSignificant, rangeOfToken, tokenize } from "./tokens.js";
 
@@ -585,6 +586,7 @@ class StructuralParser {
 
 	constructor(
 		private readonly module: string,
+		private readonly text: string,
 		private readonly tokens: Token[],
 		diagnostics: Diagnostic[],
 	) {
@@ -1274,7 +1276,7 @@ class StructuralParser {
 						endIndex: end,
 						nameStartIndex: item.start,
 						nameEndIndex: item.end,
-						signature: joinTokens(this.tokens, prefix.startIndex, end),
+						signature: this.header(prefix.startIndex, end, "type"),
 						metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 						templateDependent: scope.templateDependent,
 						parameterNames: new Set(),
@@ -1299,7 +1301,7 @@ class StructuralParser {
 				endIndex: end,
 				nameStartIndex: item.start,
 				nameEndIndex: item.end,
-				signature: joinTokens(this.tokens, prefix.startIndex, open),
+				signature: this.header(prefix.startIndex, open, "type"),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: this.templateDependent(scope, prefix),
 				parameterNames: new Set(),
@@ -1341,7 +1343,7 @@ class StructuralParser {
 				endIndex: end,
 				nameStartIndex: actualNameIndex,
 				nameEndIndex: actualNameIndex + 1,
-				signature: joinTokens(this.tokens, prefix.startIndex, end),
+				signature: this.header(prefix.startIndex, end, "type"),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: this.templateDependent(scope, prefix),
 				parameterNames: new Set(),
@@ -1364,7 +1366,7 @@ class StructuralParser {
 			endIndex: end,
 			nameStartIndex: actualNameIndex,
 			nameEndIndex: actualNameIndex + 1,
-			signature: joinTokens(this.tokens, prefix.startIndex, body),
+			signature: this.header(prefix.startIndex, body, "type"),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 			templateDependent,
 			parameterNames: new Set(),
@@ -1411,7 +1413,7 @@ class StructuralParser {
 				endIndex: end,
 				nameStartIndex: nameIndex,
 				nameEndIndex: nameIndex + 1,
-				signature: joinTokens(this.tokens, prefix.startIndex, end),
+				signature: this.header(prefix.startIndex, end, "type"),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: scope.templateDependent,
 				parameterNames: new Set(),
@@ -1433,7 +1435,7 @@ class StructuralParser {
 			endIndex: end,
 			nameStartIndex: nameIndex,
 			nameEndIndex: nameIndex + 1,
-			signature: joinTokens(this.tokens, prefix.startIndex, body),
+			signature: this.header(prefix.startIndex, body, "type"),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 			templateDependent: this.templateDependent(scope, prefix),
 			parameterNames: new Set(),
@@ -1473,7 +1475,7 @@ class StructuralParser {
 					endIndex: end,
 					nameStartIndex: nameIndex,
 					nameEndIndex: nameIndex + 1,
-					signature: joinTokens(this.tokens, segmentStart, end),
+					signature: this.header(segmentStart, end, "value"),
 					metrics: bodyMetrics(this.tokens, segmentStart, end),
 					templateDependent: parent.templateDependent,
 					parameterNames: new Set(),
@@ -1510,7 +1512,7 @@ class StructuralParser {
 				endIndex: end + 1,
 				nameStartIndex: nameIndex,
 				nameEndIndex: nameIndex + 1,
-				signature: joinTokens(this.tokens, prefix.startIndex, end + 1),
+				signature: this.header(prefix.startIndex, end + 1, "type"),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end + 1),
 				type: { status: "known", display: joinTokens(this.tokens, equals + 1, end) || "type" },
 				templateDependent: scope.templateDependent,
@@ -1544,7 +1546,7 @@ class StructuralParser {
 			endIndex: end + 1,
 			nameStartIndex: nameIndex,
 			nameEndIndex: nameIndex + 1,
-			signature: joinTokens(this.tokens, prefix.startIndex, end + 1),
+			signature: this.header(prefix.startIndex, end + 1, "type"),
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end + 1),
 			type: {
 				status: "known",
@@ -1743,7 +1745,7 @@ class StructuralParser {
 				endIndex: Math.max(prefix.startIndex + 1, declarationEnd),
 				nameStartIndex: nameInfo.nameStartIndex,
 				nameEndIndex: nameInfo.nameEndIndex,
-				signature: joinTokens(this.tokens, prefix.startIndex, body >= 0 ? body : bodyOrEnd.end + 1),
+				signature: this.header(prefix.startIndex, body >= 0 ? body : bodyOrEnd.end + 1, "value"),
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, Math.max(prefix.startIndex + 1, declarationEnd)),
 				type: templateDependent
 					? unknownTemplateType("template-dependent return type is not resolved")
@@ -1762,7 +1764,7 @@ class StructuralParser {
 			existing.endIndex = Math.max(prefix.startIndex + 1, declarationEnd);
 			existing.nameStartIndex = nameInfo.nameStartIndex;
 			existing.nameEndIndex = nameInfo.nameEndIndex;
-			existing.signature = joinTokens(this.tokens, prefix.startIndex, body);
+			existing.signature = this.header(prefix.startIndex, body, "value");
 			existing.metrics = bodyMetrics(
 				this.tokens,
 				prefix.startIndex,
@@ -1873,7 +1875,7 @@ class StructuralParser {
 					endIndex: Math.max(nameIndex + 1, index),
 					nameStartIndex: nameIndex,
 					nameEndIndex: nameIndex + 1,
-					signature: joinTokens(this.tokens, segmentStart, Math.max(nameIndex + 1, index)),
+					signature: this.header(segmentStart, Math.max(nameIndex + 1, index), "value"),
 					metrics: bodyMetrics(this.tokens, segmentStart, Math.max(nameIndex + 1, index)),
 					type: templateDependent
 						? unknownTemplateType("template-dependent parameter type is not resolved")
@@ -1956,12 +1958,55 @@ class StructuralParser {
 				segmentStart = index + 1;
 			}
 		}
+		const shared =
+			prefix === undefined || segments.length < 2 ? undefined : this.sharedSpecifiers(prefix, segments[0]);
 		let inheritedType = "";
 		for (const segment of segments) {
-			const result = this.variableSegment(segment.start, segment.end, scope, prefix, inheritedType);
+			const result = this.variableSegment(segment.start, segment.end, scope, prefix, inheritedType, shared);
 			if (result === null) continue;
 			if (inheritedType === "") inheritedType = result.typeText;
 		}
+	}
+
+	/** What later declarators share: the statement before its first declarator. */
+	private sharedSpecifiers(prefix: Prefix, first: { start: number; end: number } | undefined): TokenSpan | undefined {
+		if (first === undefined) return undefined;
+		const nameIndex = this.declaratorName(prefix.keywordIndex, first.end);
+		if (nameIndex < 0) return undefined;
+		return { start: prefix.startIndex, end: this.declaratorStart(nameIndex, prefix) };
+	}
+
+	/** The last name before a declarator's initializer or first top-level bracket. */
+	private declaratorName(contentStart: number, endIndex: number): number {
+		const equals = this.findNextText(contentStart, "=", endIndex);
+		const firstParen = this.findTopLevelAny(contentStart, ["(", "["], endIndex);
+		const nameEnd = equals >= 0 ? equals : firstParen >= 0 ? firstParen : endIndex;
+		return this.lastName(contentStart, nameEnd);
+	}
+
+	/** Where the declarator named at `nameIndex` begins: qualifier and pointer operators included. */
+	private declaratorStart(nameIndex: number, prefix: Prefix): number {
+		let start = nameIndex;
+		let before = significantBefore(this.tokens, start);
+		while (before > prefix.keywordIndex && tokenAt(this.tokens, before)?.text === "::") {
+			const qualifier = this.templateQualifierBefore(significantBefore(this.tokens, before), prefix);
+			if (qualifier === null || qualifier.startIndex < prefix.keywordIndex) break;
+			start = qualifier.startIndex;
+			before = significantBefore(this.tokens, start);
+		}
+		while (before > prefix.keywordIndex && this.isPointerOperator(before)) {
+			start = before;
+			before = significantBefore(this.tokens, start);
+		}
+		return start;
+	}
+
+	/** `*`, `&`, `&&`, or a cv-qualifier after `*`. */
+	private isPointerOperator(index: number): boolean {
+		const value = tokenAt(this.tokens, index)?.text ?? "";
+		if (value === "*" || value === "&" || value === "&&") return true;
+		if (value !== "const" && value !== "volatile") return false;
+		return tokenAt(this.tokens, significantBefore(this.tokens, index))?.text === "*";
 	}
 
 	private variableSegment(
@@ -1970,16 +2015,15 @@ class StructuralParser {
 		scope: Scope,
 		prefix: Prefix | undefined,
 		inheritedType: string,
+		shared: TokenSpan | undefined,
 	): { typeText: string } | null {
 		const meaningful = this.significantIndexes(startIndex, endIndex);
 		if (meaningful.length === 0) return null;
-		const contentStart =
-			prefix !== undefined && startIndex === prefix.startIndex ? prefix.keywordIndex : startIndex;
+		const later = prefix !== undefined && startIndex !== prefix.startIndex;
+		const contentStart = prefix !== undefined && !later ? prefix.keywordIndex : startIndex;
 		const equals = this.findNextText(contentStart, "=", endIndex);
 		const initializerStart = equals >= 0 ? equals + 1 : endIndex;
-		const firstParen = this.findTopLevelAny(contentStart, ["(", "["], endIndex);
-		const nameEnd = equals >= 0 ? equals : firstParen >= 0 ? firstParen : endIndex;
-		const nameIndex = this.lastName(contentStart, nameEnd);
+		const nameIndex = this.declaratorName(contentStart, endIndex);
 		if (nameIndex < 0) return null;
 		const typeStart = contentStart;
 		const beforeName = this.significantIndexes(typeStart, nameIndex);
@@ -2019,7 +2063,9 @@ class StructuralParser {
 			endIndex: declarationEnd,
 			nameStartIndex: nameIndex,
 			nameEndIndex: nameIndex + 1,
-			signature: joinTokens(this.tokens, declarationStart, declarationEnd),
+			signature: later
+				? this.header(startIndex, declarationEnd, "value", shared)
+				: this.header(declarationStart, declarationEnd, "value"),
 			metrics: bodyMetrics(this.tokens, declarationStart, declarationEnd),
 			type,
 			templateDependent: scope.templateDependent,
@@ -2094,10 +2140,10 @@ class StructuralParser {
 				endIndex: Math.max(parameter.nameEndIndex, parameter.endIndex),
 				nameStartIndex: parameter.nameStartIndex,
 				nameEndIndex: parameter.nameEndIndex,
-				signature: joinTokens(
-					this.tokens,
+				signature: this.header(
 					parameter.startIndex,
 					Math.max(parameter.nameEndIndex, parameter.endIndex),
+					"value",
 				),
 				metrics: bodyMetrics(
 					this.tokens,
@@ -2129,6 +2175,10 @@ class StructuralParser {
 		for (let index = draft.nameStartIndex; index < draft.nameEndIndex; index++)
 			this.excludedTokenIndexes.add(index);
 		return draft;
+	}
+
+	private header(startIndex: number, endIndex: number, kind: HeaderKind, lead?: TokenSpan): string | undefined {
+		return headerOf(this.text, this.tokens, startIndex, endIndex, kind, lead);
 	}
 
 	private visibilityFor(scope: Scope, modifiers: Set<string>, fallback?: Visibility): Visibility {
@@ -2283,7 +2333,7 @@ class StructuralParser {
 
 export function parseCppFile(module: string, text: string): CppFacts {
 	const source = tokenize(text, module);
-	const parser = new StructuralParser(module, source.tokens, source.diagnostics);
+	const parser = new StructuralParser(module, text, source.tokens, source.diagnostics);
 	parser.parse();
 	return parser.finish();
 }

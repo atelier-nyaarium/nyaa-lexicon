@@ -1,16 +1,8 @@
 import { defined } from "@nyaa-lexicon/protocol";
 import type { DeclarationWalk, Scope } from "./declarationScope.js";
-import {
-	accessOf,
-	contextOf,
-	identifiers,
-	initializerOf,
-	leadingAnnotationsSkipped,
-	modifiersOf,
-	until,
-} from "./declarationShape.js";
+import { accessOf, contextOf, identifiers, initializerOf, modifiersOf, until } from "./declarationShape.js";
+import { headerOf, parameterHeaderOf } from "./header.js";
 import { bodyMetrics } from "./metrics.js";
-import { render } from "./render.js";
 import { childOfType, childrenOfType, nameText, type SyntaxNode } from "./tree.js";
 import { TYPE_NODES } from "./typePaths.js";
 
@@ -20,10 +12,9 @@ export function primaryConstructor(walk: DeclarationWalk, node: SyntaxNode, scop
 	if (owner === null || className === undefined || scope.classId === undefined) return scope;
 	const keyword = childOfType(node, "constructor");
 	const parameters = childrenOfType(childOfType(node, "class_parameters") ?? node, "class_parameter");
-	const typeParameters = childOfType(owner, "type_parameters");
 	const signatureNodes =
 		keyword === undefined
-			? [className, ...(typeParameters === undefined ? [] : [typeParameters]), node]
+			? owner.children.slice(owner.children.indexOf(className), owner.children.indexOf(node) + 1)
 			: node.children.slice(node.children.indexOf(keyword));
 	const added = walk.sink.add({
 		node,
@@ -35,7 +26,7 @@ export function primaryConstructor(walk: DeclarationWalk, node: SyntaxNode, scop
 		descriptorKind: "method",
 		scope,
 		access: accessOf(modifiersOf(walk.text, childOfType(node, "modifiers")), "class"),
-		signature: render(walk.text, signatureNodes, walk.lines),
+		signature: headerOf(walk.text, signatureNodes),
 		owns: true,
 		metrics: { parameters: parameters.length },
 	});
@@ -48,7 +39,6 @@ export function classParameter(walk: DeclarationWalk, node: SyntaxNode, scope: S
 	const name = nameText(walk.text, nameNode);
 	const keyword = node.children.find((child) => child.type === "val" || child.type === "var");
 	const type = node.children.find((child) => TYPE_NODES.has(child.type));
-	const signature = render(walk.text, [node], walk.lines);
 	if (keyword !== undefined && scope.classScope !== undefined) {
 		const added = walk.sink.add({
 			node,
@@ -59,7 +49,7 @@ export function classParameter(walk: DeclarationWalk, node: SyntaxNode, scope: S
 			descriptorKind: "term",
 			scope: scope.classScope,
 			access: accessOf(modifiersOf(walk.text, childOfType(node, "modifiers")), "class"),
-			signature,
+			signature: headerOf(walk.text, [node]),
 			owns: false,
 		});
 		if (type !== undefined) walk.sink.declaredType(added.symbolId, type);
@@ -75,7 +65,7 @@ export function classParameter(walk: DeclarationWalk, node: SyntaxNode, scope: S
 		descriptorKind: "parameter",
 		scope,
 		access: { visibility: "local", exported: false },
-		signature,
+		signature: parameterHeaderOf(walk.text, [node]),
 		owns: false,
 	});
 	walk.sink.declaredType(added.symbolId, type);
@@ -104,11 +94,7 @@ export function functionDeclaration(walk: DeclarationWalk, node: SyntaxNode, sco
 		descriptorKind: "method",
 		scope,
 		access: accessOf(modifiers, context),
-		signature: render(
-			walk.text,
-			until(leadingAnnotationsSkipped(node), (child) => child.type === "function_body"),
-			walk.lines,
-		),
+		signature: headerOf(walk.text, [node], body),
 		owns: true,
 		metrics: {
 			parameters: parameters === undefined ? 0 : childrenOfType(parameters, "parameter").length,
@@ -140,11 +126,7 @@ export function secondaryConstructor(walk: DeclarationWalk, node: SyntaxNode, sc
 		descriptorKind: "method",
 		scope,
 		access: accessOf(modifiersOf(walk.text, childOfType(node, "modifiers")), contextOf(node)),
-		signature: render(
-			walk.text,
-			until(leadingAnnotationsSkipped(node), (child) => child.type === "block"),
-			walk.lines,
-		),
+		signature: headerOf(walk.text, [node], block),
 		owns: true,
 		metrics: {
 			parameters: parameters === undefined ? 0 : childrenOfType(parameters, "parameter").length,
@@ -154,15 +136,13 @@ export function secondaryConstructor(walk: DeclarationWalk, node: SyntaxNode, sc
 	return { ...scope, descriptors: added.descriptors, containerId: added.symbolId };
 }
 
-/** Modifiers before and a default after sit beside the parameter node. */
-export function parameter(walk: DeclarationWalk, node: SyntaxNode, scope: Scope): void {
+/** Modifiers before and a default after sit beside the parameter node, the `index`th of its list. */
+export function parameter(walk: DeclarationWalk, node: SyntaxNode, index: number, scope: Scope): void {
 	const nameNode = identifiers(node)[0];
 	const list = node.parent;
 	if (nameNode === undefined || list === null) return;
-	const index = list.children.indexOf(node);
-	const before = list.children[index - 1];
-	const first = before?.type === "parameter_modifiers" ? before : node;
-	let last = node;
+	const from = list.children[index - 1]?.type === "parameter_modifiers" ? index - 1 : index;
+	let to = index;
 	for (let next = index + 1; next < list.children.length; next++) {
 		const sibling = list.children[next] as SyntaxNode;
 		if (
@@ -172,9 +152,11 @@ export function parameter(walk: DeclarationWalk, node: SyntaxNode, scope: Scope)
 			sibling.type === "parameter"
 		)
 			break;
-		last = sibling;
+		to = next;
 	}
-	const siblings = list.children.slice(list.children.indexOf(first), list.children.indexOf(last) + 1);
+	const siblings = list.children.slice(from, to + 1);
+	const first = siblings[0] ?? node;
+	const last = siblings.at(-1) ?? node;
 	const added = walk.sink.add({
 		node,
 		start: first.start,
@@ -186,7 +168,7 @@ export function parameter(walk: DeclarationWalk, node: SyntaxNode, scope: Scope)
 		descriptorKind: "parameter",
 		scope,
 		access: { visibility: "local", exported: false },
-		signature: render(walk.text, siblings, walk.lines),
+		signature: parameterHeaderOf(walk.text, siblings),
 		owns: false,
 	});
 	walk.sink.declaredType(
@@ -207,7 +189,7 @@ export function typeParameter(walk: DeclarationWalk, node: SyntaxNode, scope: Sc
 		descriptorKind: "typeParameter",
 		scope,
 		access: { visibility: "local", exported: false },
-		signature: render(walk.text, [node], walk.lines),
+		signature: parameterHeaderOf(walk.text, [node]),
 		owns: false,
 	});
 }
@@ -224,7 +206,7 @@ export function setterParameter(walk: DeclarationWalk, node: SyntaxNode, scope: 
 		descriptorKind: "parameter",
 		scope,
 		access: { visibility: "local", exported: false },
-		signature: render(walk.text, [nameNode], walk.lines),
+		signature: parameterHeaderOf(walk.text, [nameNode]),
 		owns: false,
 	});
 	walk.sink.declaredType(

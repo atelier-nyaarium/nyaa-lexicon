@@ -4,28 +4,27 @@
 // service stays unaware that anything is remote.
 
 import {
+	type CommittedFile,
+	type CommittedStep,
 	DAEMON_METHODS,
 	type DaemonMethod,
 	defined,
 	type InsertOutcome,
 	isDaemonMethod,
 	type MoveOutcome,
+	type RefactorIssue,
 	type RenameStepOutcome,
 	type ReplaceSpanOutcome,
 	type RequestOf,
 	type ResponseOf,
+	type ReverseStep,
+	reverseOf,
 } from "@nyaa-lexicon/protocol";
 import type { ReadContext } from "./readContext.js";
 import type { MoveEditsOutcome } from "./refactorPlanner.js";
-import { journaledStep, StepRefusal } from "./refactorStep.js";
+import { journaledStep, type RefusedWith, type StepPolicy, StepRefusal } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
-import {
-	changedWhilePlanned,
-	factsMovedWhilePlanned,
-	type Refusal,
-	renameBlocked,
-	staleSincePlanned,
-} from "./refusals.js";
+import { changedWhilePlanned, factsMovedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
@@ -48,6 +47,23 @@ export interface Gate {
 }
 
 type Effect = "read" | "write" | "staged";
+
+/** A rename or move's result, before its wire shape is chosen. */
+export type StepResult =
+	| {
+			done: true;
+			/** The root's id now. */
+			root: string;
+			forwarded: Array<{ from: string; to: string }>;
+			modules: string[];
+			/** A move's canonical target. */
+			toModule?: string;
+			files: CommittedFile[];
+			reverse: ReverseStep;
+			migrated?: { answers: number; gaps: number };
+			issues: RefactorIssue[];
+	  }
+	| ({ done: false; reason: Refusal; issues: RefactorIssue[] } & RefusedWith);
 
 type Run<M extends DaemonMethod> = (params: RequestOf<M>, gate: Gate) => Promise<ResponseOf<M>> | ResponseOf<M>;
 
@@ -97,29 +113,42 @@ function refactorMove(
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId: string; toModule: string },
-): Promise<MoveOutcome> {
+	hold: StepPolicy,
+): Promise<StepResult> {
+	let requested = args.symbolId;
 	let touched: string[] = [];
+	let source = "";
 	let target = args.toModule;
 	let migrated: { answers: number; gaps: number } | undefined;
 	const idMap = new Map<string, string>();
 
-	return journaledStep<MoveOutcome>(
+	return journaledStep<StepResult>(
 		{ service, transactions, write },
 		{
 			kind: "move",
-			refuse: (reason, issues) => ({ moved: false, issues, reason }),
-			succeed: (issues) => ({
-				moved: true,
-				toModule: target,
-				modules: touched,
-				...defined({ migrated }),
-				issues,
-			}),
+			hold,
+			refuse: (reason, issues, why) => ({ done: false, reason, issues, ...why }),
+			succeed: (issues, _hold, files) => {
+				const root = idMap.get(requested) ?? requested;
+				return {
+					done: true,
+					root,
+					forwarded: [...idMap].map(([from, to]) => ({ from, to })),
+					modules: touched,
+					toModule: target,
+					files,
+					reverse: reverseOf("move", requested, root) ?? { kind: "move", symbolId: root, toModule: source },
+					...defined({ migrated }),
+					issues,
+				};
+			},
 			plan: async () => {
 				// Held past the call, so the stale check below asks what it stamped.
 				const context = service.newReadContext();
 				const plan = service.planMove(args.symbolId, args.toModule, context);
 				if (!plan.ok) return { refused: plan.reason };
+				requested = plan.symbolId;
+				source = plan.fromModule;
 				target = plan.toModule;
 				const edits = await service.moveEdits(plan, context);
 				if (!edits.ok) return { refused: edits.reason, issues: edits.issues };
@@ -128,7 +157,9 @@ function refactorMove(
 				return {
 					planned: {
 						modules: touched,
+						writes: touched,
 						planRecord: { from: plan.fromModule, to: plan.toModule },
+						plannedText: edits.files.map((file) => ({ module: file.module, text: file.text })),
 						stale: () => moveStale(service, plan, edits, context),
 						begin: () => {
 							for (const id of plan.closure) {
@@ -163,41 +194,61 @@ function refactorMove(
 /**
  * A rename as one transaction step, journaled like any other.
  *
- * The plan is computed outside the gate and the ids it will re-mint are worked out before anything
- * moves, because afterwards the old ids no longer resolve and there is nothing left to map from.
+ * The edits and the ids they re-mint are worked out outside the gate before anything moves,
+ * because afterwards the old ids no longer resolve and there is nothing left to map from.
  */
 function refactorRename(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId: string; newName: string },
-): Promise<RenameStepOutcome> {
+	hold: StepPolicy,
+): Promise<StepResult> {
 	let modules: string[] = [];
+	let oldName = "";
 	let migrated: { answers: number; gaps: number } | undefined;
+	let idMap = new Map<string, string>();
 
-	return journaledStep<RenameStepOutcome>(
+	return journaledStep<StepResult>(
 		{ service, transactions, write },
 		{
 			kind: "rename",
-			refuse: (reason, issues) => ({ renamed: false, issues, reason }),
-			succeed: (issues) => ({
-				renamed: true,
-				modules,
-				...defined({ migrated }),
-				issues,
-			}),
+			hold,
+			refuse: (reason, issues, why) => ({ done: false, reason, issues, ...why }),
+			succeed: (issues, _hold, files) => {
+				const root = idMap.get(args.symbolId) ?? args.symbolId;
+				return {
+					done: true,
+					root,
+					forwarded: [...idMap].map(([from, to]) => ({ from, to })),
+					modules,
+					files,
+					// A local's id carries no name.
+					reverse: reverseOf("rename", args.symbolId, root) ?? {
+						kind: "rename",
+						symbolId: root,
+						newName: oldName,
+					},
+					...defined({ migrated }),
+					issues,
+				};
+			},
 			plan: async () => {
 				// One context, so the plan and the two follow-up reads below stamp and share one set.
 				const context = service.newReadContext();
-				const plan = await service.prepareRename(args.symbolId, args.newName, context);
-				if (plan.blockers.length > 0) {
+				const edits = await service.renameEdits(args.symbolId, args.newName, context);
+				if (!edits.ok) {
 					return {
-						refused: plan.blockers[0]?.detail ?? renameBlocked(),
-						issues: plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
+						refused: edits.reason,
+						issues: edits.plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
 					};
 				}
+				const plan = edits.plan;
+				oldName = plan.oldName;
+				const planned = service.renameTexts(edits.files);
+				if ("reason" in planned) return { refused: planned.reason };
 
-				const idMap = service.renameIdMap(args.symbolId, args.newName, context);
+				idMap = service.renameIdMap(args.symbolId, args.newName, context);
 				const edited = plan.files.map((file) => file.module);
 				// Worked out before the write, since afterwards these ids resolve to nothing and the
 				// modules holding stale bindings would be unfindable.
@@ -208,12 +259,19 @@ function refactorRename(
 				return {
 					planned: {
 						modules: [...edited, ...alsoBound],
+						writes: edits.files.map((file) => file.module),
 						planRecord: plan,
+						plannedText: planned.texts,
 						stale: () => {
 							// Every site was chosen from stored ranges; a changed module has moved
 							// them, so rewriting would hit some occurrences and miss others.
 							const stale = service.staleModules(edited);
 							if (stale.length > 0) return staleSincePlanned(stale, "rename");
+							// The edits address the text they were planned on.
+							const changed = edits.files.find(
+								(file) => service.currentHashOf(file.module) !== file.contentHash,
+							);
+							if (changed !== undefined) return changedWhilePlanned(changed.module, "rename");
 							// Rows re-committed under an equal hash: a re-parse or an upgrade.
 							const moved = service.factsMoved(context.seen());
 							return moved.length > 0 ? factsMovedWhilePlanned(moved, "rename") : null;
@@ -222,14 +280,12 @@ function refactorRename(
 							entries: [...idMap].map(([from, to]) => ({ from, to })),
 							evidence: "journalRename",
 						}),
-						// renameSymbol writes AND reindexes the edited files itself; only the
-						// stale-binding modules remain for the executor.
+						// The written files are reindexed by the write; only the stale-binding modules
+						// remain for the executor.
 						apply: async () => {
-							const outcome = await service.renameSymbol(args.symbolId, args.newName);
-							if (!outcome.renamed) {
-								throw new StepRefusal(outcome.reason ?? "the rename could not be applied");
-							}
-							modules = [...outcome.modules, ...alsoBound];
+							const written = await service.writeRenameEdits(edits.files);
+							if ("reason" in written) throw new StepRefusal(written.reason);
+							modules = [...written.modules, ...alsoBound];
 						},
 						reindex: alsoBound,
 						issues: plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail })),
@@ -257,7 +313,7 @@ function refactorReplace(
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId?: string | undefined; factId?: string | undefined; newText: string },
-	span?: { expectedSpanHash: string; standalone: boolean },
+	span?: { expectedSpanHash: string; hold: StepPolicy },
 ): Promise<ReplaceSpanOutcome> {
 	let module = "";
 	let stale = false;
@@ -266,7 +322,7 @@ function refactorReplace(
 		{ service, transactions, write },
 		{
 			kind: "replace",
-			standalone: span?.standalone === true,
+			hold: span?.hold ?? "join",
 			refuse: (reason, issues) => ({ replaced: false, issues, reason, ...(stale ? { stale } : {}) }),
 			succeed: (issues, transaction) => ({
 				replaced: true,
@@ -285,6 +341,7 @@ function refactorReplace(
 				return {
 					planned: {
 						modules: [plan.module],
+						writes: [plan.module],
 						planRecord: { range: plan.range },
 						plannedText: [{ module: plan.module, text: plan.text }],
 						// The plan was spliced from, and its span checked on, one exact version of the file.
@@ -321,6 +378,7 @@ function refactorInsert(
 		{ service, transactions, write },
 		{
 			kind: "insert",
+			hold: "join",
 			refuse: (reason, issues) => ({ inserted: false, issues, reason }),
 			succeed: (issues) => ({ inserted: true, module, symbolIds, issues }),
 			plan: async () => {
@@ -343,6 +401,7 @@ function refactorInsert(
 				return {
 					planned: {
 						modules: [plan.module],
+						writes: [plan.module],
 						planRecord: { created: plan.created },
 						plannedText: [{ module: plan.module, text: plan.candidate }],
 						// A created module must STILL be absent: another writer landing one between
@@ -373,6 +432,45 @@ function refactorInsert(
 			},
 		},
 	);
+}
+
+function renameStepOutcome(result: StepResult): RenameStepOutcome {
+	if (!result.done) return { renamed: false, issues: result.issues, reason: result.reason };
+	return { renamed: true, modules: result.modules, ...defined({ migrated: result.migrated }), issues: result.issues };
+}
+
+function moveOutcome(result: StepResult): MoveOutcome {
+	if (!result.done) return { moved: false, issues: result.issues, reason: result.reason };
+	return {
+		moved: true,
+		...defined({ toModule: result.toModule, migrated: result.migrated }),
+		modules: result.modules,
+		issues: result.issues,
+	};
+}
+
+/** A committed step's answer, with the step that reverses it. */
+function committedOutcome(kind: "rename" | "move"): (result: StepResult) => CommittedStep {
+	return (result) => {
+		if (!result.done) {
+			return {
+				committed: false,
+				reason: result.reason,
+				issues: result.issues,
+				...defined({ openRefactor: result.openRefactor, unexpected: result.unexpected }),
+			};
+		}
+		return {
+			committed: true,
+			kind,
+			symbolId: result.root,
+			files: result.files,
+			forwarded: result.forwarded,
+			reverse: result.reverse,
+			...defined({ migrated: result.migrated }),
+			issues: result.issues,
+		};
+	};
 }
 
 function moveStale(
@@ -538,10 +636,10 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		indexStatus: read((params) => service.indexStatus(params.concerning)),
 		// Trigger lifecycle starts warming before this status answer.
 		indexWorkspace: read(() => service.indexStatus()),
-		findLiterals: read(({ limit, ...query }) => service.findLiterals(query, limit)),
-		findComments: read(({ limit, ...query }) => service.findComments(query, limit)),
-		findDocs: read(({ limit, ...query }) => service.findDocs(query, limit)),
-		sharedLiterals: read((params) => service.sharedLiterals(params.minimumFiles, params.limit)),
+		findLiterals: read(({ limit, exclude, ...query }) => service.findLiterals(query, limit, exclude)),
+		findComments: read(({ limit, exclude, ...query }) => service.findComments(query, limit, exclude)),
+		findDocs: read(({ limit, exclude, ...query }) => service.findDocs(query, limit, exclude)),
+		sharedLiterals: read((params) => service.sharedLiterals(params.minimumFiles, params.limit, params.exclude)),
 		cycles: read((params) => service.cycles(params.limit)),
 		mostReferenced: read((params) => service.mostReferenced(params.limit)),
 		hubs: read((params) => service.mostReferenced(params.limit)),
@@ -550,6 +648,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		outlineModule: read((params) => service.outline(params.module)),
 		fileNotes: read((params) => service.fileNotes(params.module)),
 		moduleStatus: read((params) => service.moduleStatus(params.module)),
+		admittedModules: read((params) => service.admittedModules(params.modules)),
 		moduleDeclarations: read((params) => service.moduleDeclarations(params.module)),
 		moduleFacts: read((params) => service.moduleFacts(params.module)),
 		// Candidate parses read under the gate: an index parse landing between a candidate and its
@@ -641,13 +740,26 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		refactorReplaceSpan: staged((params, gate) =>
 			refactorReplace(service, transactions(), gate.write, params, {
 				expectedSpanHash: params.expectedSpanHash,
-				standalone: params.standalone === true,
+				hold: params.standalone === true ? "joinOrOwn" : "join",
 			}),
 		),
 		refactorInsert: staged((params, gate) => refactorInsert(service, transactions(), gate.write, params)),
-		// Rename replans edit sites under the gate.
-		refactorRename: staged((params, gate) => refactorRename(service, transactions(), gate.write, params)),
-		refactorMove: staged((params, gate) => refactorMove(service, transactions(), gate.write, params)),
+		refactorRename: staged((params, gate) =>
+			refactorRename(service, transactions(), gate.write, params, "join").then(renameStepOutcome),
+		),
+		refactorMove: staged((params, gate) =>
+			refactorMove(service, transactions(), gate.write, params, "join").then(moveOutcome),
+		),
+		refactorRenameCommitted: staged((params, gate) =>
+			refactorRename(service, transactions(), gate.write, params, { own: params.bases }).then(
+				committedOutcome("rename"),
+			),
+		),
+		refactorMoveCommitted: staged((params, gate) =>
+			refactorMove(service, transactions(), gate.write, params, { own: params.bases }).then(
+				committedOutcome("move"),
+			),
+		),
 	} satisfies { [M in DaemonMethod]: Handler<M> };
 }
 

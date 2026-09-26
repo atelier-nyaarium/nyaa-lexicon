@@ -1143,8 +1143,12 @@ export class RefactorPlanner {
 	}
 
 	/** Builds the complete edit set for `renameEdits`. See `docs/daemon-protocol.md`. */
-	async renameEdits(symbolId: string, newName: string): Promise<PlannedRenameEdits> {
-		const plan = await this.prepareRename(symbolId, newName, new ReadContext(this.store));
+	async renameEdits(
+		symbolId: string,
+		newName: string,
+		context: ReadContext = new ReadContext(this.store),
+	): Promise<PlannedRenameEdits> {
+		const plan = await this.prepareRename(symbolId, newName, context);
 		const blocker = plan.blockers[0];
 		if (blocker !== undefined) return { ok: false, plan, reason: blocker.detail };
 		// File changes invalidate stored ranges.

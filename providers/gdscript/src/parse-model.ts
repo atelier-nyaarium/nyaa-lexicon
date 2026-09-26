@@ -70,6 +70,8 @@ export interface ParsedLine {
 	name: Token | null;
 	static: boolean;
 	annotated: boolean;
+	/** Header's start column: its first owned annotation, or the keyword. */
+	head: number;
 }
 
 export interface Scope {

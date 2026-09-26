@@ -10,6 +10,7 @@ import {
 	type ContentCounts,
 	type ContentTotals,
 	commentFactId,
+	compileExclusion,
 	type Declaration,
 	type DocRegion,
 	type Doubt,
@@ -29,6 +30,7 @@ import {
 	languageOf,
 	literalFactId,
 	type Metrics,
+	type ModuleExclusion,
 	ownerStarts,
 	parseFactId,
 	type Reference,
@@ -90,15 +92,37 @@ export type {
 ////////////////////////////////
 //  Interfaces & Types
 
+declare const hiddenBrand: unique symbol;
+
+/** Modules a search skips; only the store mints one. */
+export type HiddenModules = readonly string[] & { readonly [hiddenBrand]: true };
+
+export const HiddenModules = {
+	/** No exclusion asked. */
+	none: Object.freeze([]) as unknown as HiddenModules,
+};
+
+export interface LiteralFilter {
+	value?: string | undefined;
+	kind?: string | undefined;
+	low?: number | undefined;
+	high?: number | undefined;
+	key?: string | undefined;
+	scope?: ScopeFilter | undefined;
+	hidden: HiddenModules;
+}
+
 export interface CommentFilter {
 	form?: string | undefined;
 	module?: string | undefined;
+	hidden: HiddenModules;
 }
 
 export interface DocFilter {
 	/** Restricts to fenced regions when true, to prose when false, to neither when absent. */
 	fenced?: boolean | undefined;
 	module?: string | undefined;
+	hidden: HiddenModules;
 }
 
 export interface ReplaceFileInput {
@@ -1974,6 +1998,18 @@ export class IndexStore {
 		return rows.map(rowToReference);
 	}
 
+	/** Use counts per declaration, in one read; unused is absent. */
+	useCountsIn(module: string): Map<string, number> {
+		const rows = this.db
+			.prepare(
+				`SELECT r.targetId AS symbolId, COUNT(*) AS n FROM refs r
+				 WHERE r.targetId IN (SELECT symbolId FROM symbols WHERE module = ?) AND ${useSql("r")}
+				 GROUP BY r.targetId`,
+			)
+			.all(module) as Array<{ symbolId: string; n: number }>;
+		return new Map(rows.map((row) => [row.symbolId, row.n]));
+	}
+
 	/** Mentions included; see usesIn. */
 	referencesIn(module: string): StoredReference[] {
 		const rows = this.db.prepare("SELECT * FROM refs WHERE module = ? ORDER BY startLine, startChar").all(module);
@@ -2040,19 +2076,30 @@ export class IndexStore {
 	}
 
 	/** Import rows for bounded application-side searches. */
-	importsForScan(scanLimit: number): StoredImport[] {
-		const rows = this.db.prepare("SELECT * FROM imports ORDER BY module, startLine LIMIT ?").all(scanLimit);
+	importsForScan(scanLimit: number, hidden: HiddenModules): StoredImport[] {
+		const { clause, values } = importWhere(hidden);
+		const rows = this.db
+			.prepare(`SELECT * FROM imports ${clause} ORDER BY module, startLine LIMIT ?`)
+			.all(...values, scanLimit);
 		return rows.map(rowToImport);
 	}
 
 	/** Search declarations by name substring or regular expression. */
 	searchSymbols(
 		text: string | undefined,
-		options: { regex?: string | undefined; kind?: string; module?: string; limit: number; scope?: ScopeFilter },
+		options: {
+			regex?: string | undefined;
+			kind?: string;
+			module?: string;
+			limit: number;
+			scope?: ScopeFilter;
+			hidden: HiddenModules;
+		},
 	): StoredDeclaration[] {
 		const regex = options.regex === undefined ? undefined : compileSearchRegex(options.regex);
 		const clauses: string[] = [];
 		const values: Array<string | number> = [];
+		leaveOut(options.hidden, clauses, values);
 		if (text !== undefined) {
 			clauses.push("name LIKE ? ESCAPE '\\'");
 			values.push(`%${likePattern(text)}%`);
@@ -2089,10 +2136,11 @@ export class IndexStore {
 	}
 
 	/** Imports whose specifier contains this text. "Which files import X", by the name as written. */
-	importsMatching(specifier: string, limit: number): StoredImport[] {
+	importsMatching(specifier: string, limit: number, hidden: HiddenModules): StoredImport[] {
+		const { clause, values } = importWhere(hidden, specifier);
 		const rows = this.db
-			.prepare("SELECT * FROM imports WHERE specifier LIKE ? ESCAPE '\\' ORDER BY module, startLine LIMIT ?")
-			.all(`%${likePattern(specifier)}%`, limit);
+			.prepare(`SELECT * FROM imports ${clause} ORDER BY module, startLine LIMIT ?`)
+			.all(...values, limit);
 		return rows.map(rowToImport);
 	}
 
@@ -2100,6 +2148,12 @@ export class IndexStore {
 	indexedFiles(): string[] {
 		const rows = this.db.prepare("SELECT module FROM files ORDER BY module").all() as Array<{ module: string }>;
 		return rows.map((row) => row.module);
+	}
+
+	/** Modules `exclude` hides, for this hold's searches. */
+	hiddenModules(exclude: ModuleExclusion | undefined): HiddenModules {
+		if (exclude === undefined) return HiddenModules.none;
+		return this.indexedFiles().filter(compileExclusion(exclude)) as readonly string[] as HiddenModules;
 	}
 
 	/** Every module with facts, ordered by symbol count. Content is null on a row written before it was kept. */
@@ -2193,48 +2247,7 @@ export class IndexStore {
 	////////////////////////////////
 	//  Literals
 
-	/** Exact decoded value. The cheap case, and an indexed read. */
-	literalsWithValue(value: string, limit: number): StoredLiteral[] {
-		const rows = this.db
-			.prepare("SELECT * FROM literals WHERE value = ? ORDER BY module, startLine LIMIT ?")
-			.all(value, limit);
-		return rows.map(rowToLiteral);
-	}
-
-	/** The true count, so a page never reports its own cap as a total. */
-	countLiteralsWithValue(value: string): number {
-		const row = this.db.prepare("SELECT COUNT(*) AS n FROM literals WHERE value = ?").get(value);
-		return (row as { n: number }).n;
-	}
-
-	/** Numeric range, as arithmetic. A string comparison would put "10" before "9". */
-	literalsInRange(low: number, high: number, limit: number): StoredLiteral[] {
-		const rows = this.db
-			.prepare(
-				"SELECT * FROM literals WHERE number IS NOT NULL AND number BETWEEN ? AND ? ORDER BY number LIMIT ?",
-			)
-			.all(low, high, limit);
-		return rows.map(rowToLiteral);
-	}
-
-	countLiteralsInRange(low: number, high: number): number {
-		const row = this.db
-			.prepare("SELECT COUNT(*) AS n FROM literals WHERE number IS NOT NULL AND number BETWEEN ? AND ?")
-			.get(low, high);
-		return (row as { n: number }).n;
-	}
-
-	literalsWhere(
-		filter: {
-			value?: string | undefined;
-			kind?: string | undefined;
-			low?: number | undefined;
-			high?: number | undefined;
-			key?: string | undefined;
-			scope?: ScopeFilter | undefined;
-		},
-		limit: number,
-	): StoredLiteral[] {
+	literalsWhere(filter: LiteralFilter, limit: number): StoredLiteral[] {
 		const { clause, values, join } = literalWhere(filter);
 		const rows = this.db
 			.prepare(
@@ -2244,32 +2257,11 @@ export class IndexStore {
 		return rows.map(rowToLiteral);
 	}
 
-	countLiteralsWhere(filter: {
-		value?: string;
-		kind?: string | undefined;
-		low?: number | undefined;
-		high?: number | undefined;
-		key?: string | undefined;
-		scope?: ScopeFilter | undefined;
-	}): number {
+	countLiteralsWhere(filter: LiteralFilter): number {
 		const { clause, values, join } = literalWhere(filter);
 		return (
 			this.db.prepare(`SELECT COUNT(*) AS n FROM literals l ${join} ${clause}`).get(...values) as { n: number }
 		).n;
-	}
-
-	/**
-	 * Every literal, for a caller that must match them itself.
-	 *
-	 * SQLite has no REGEXP without an extension, and node:sqlite ships none, so a regex search
-	 * reads and filters. Bounded by the caller rather than unbounded here, because a workspace has
-	 * far more literals than symbols and an unbounded read is how a query becomes a hang.
-	 */
-	literalsOfKind(kind: string, scanLimit: number): StoredLiteral[] {
-		const rows = this.db
-			.prepare("SELECT * FROM literals WHERE kind = ? ORDER BY module, startLine LIMIT ?")
-			.all(kind, scanLimit);
-		return rows.map(rowToLiteral);
 	}
 
 	/** Every literal in one module, matching declarationsIn and referencesIn. */
@@ -2284,20 +2276,20 @@ export class IndexStore {
 	//  Comments
 
 	/** Substring over the NORMALIZED text, so a phrase the writer wrapped still matches. */
-	commentsContaining(text: string, limit: number, filter: CommentFilter = {}): StoredComment[] {
+	commentsContaining(text: string, limit: number, filter: CommentFilter): StoredComment[] {
 		const { clause, values } = commentWhere(filter, text);
 		const rows = this.db.prepare(`SELECT * FROM comments ${clause} ${COMMENT_ORDER} LIMIT ?`).all(...values, limit);
 		return rows.map(rowToComment);
 	}
 
 	/** The true count, so a page never reports its own cap as a total. */
-	countCommentsContaining(text: string, filter: CommentFilter = {}): number {
+	countCommentsContaining(text: string, filter: CommentFilter): number {
 		const { clause, values } = commentWhere(filter, text);
 		return (this.db.prepare(`SELECT COUNT(*) AS n FROM comments ${clause}`).get(...values) as { n: number }).n;
 	}
 
 	/** Every comment a caller must match itself, for the same reason literals need one: no REGEXP. */
-	commentsToScan(scanLimit: number, filter: CommentFilter = {}): StoredComment[] {
+	commentsToScan(scanLimit: number, filter: CommentFilter): StoredComment[] {
 		const { clause, values } = commentWhere(filter);
 		const rows = this.db
 			.prepare(`SELECT * FROM comments ${clause} ${COMMENT_ORDER} LIMIT ?`)
@@ -2305,7 +2297,7 @@ export class IndexStore {
 		return rows.map(rowToComment);
 	}
 
-	countComments(filter: CommentFilter = {}): number {
+	countComments(filter: CommentFilter): number {
 		const { clause, values } = commentWhere(filter);
 		return (this.db.prepare(`SELECT COUNT(*) AS n FROM comments ${clause}`).get(...values) as { n: number }).n;
 	}
@@ -2329,26 +2321,26 @@ export class IndexStore {
 	////////////////////////////////
 	//  Documents
 
-	docsContaining(text: string, limit: number, filter: DocFilter = {}): StoredDoc[] {
+	docsContaining(text: string, limit: number, filter: DocFilter): StoredDoc[] {
 		const { clause, values } = docWhere(filter, text);
 		const rows = this.db.prepare(`SELECT * FROM docs ${clause} ${DOC_ORDER} LIMIT ?`).all(...values, limit);
 		return rows.map(rowToDoc);
 	}
 
 	/** The true count, so a page never reports its own cap as a total. */
-	countDocsContaining(text: string, filter: DocFilter = {}): number {
+	countDocsContaining(text: string, filter: DocFilter): number {
 		const { clause, values } = docWhere(filter, text);
 		return (this.db.prepare(`SELECT COUNT(*) AS n FROM docs ${clause}`).get(...values) as { n: number }).n;
 	}
 
 	/** Every region a caller must match itself, for the same reason comments need one: no REGEXP. */
-	docsToScan(scanLimit: number, filter: DocFilter = {}): StoredDoc[] {
+	docsToScan(scanLimit: number, filter: DocFilter): StoredDoc[] {
 		const { clause, values } = docWhere(filter);
 		const rows = this.db.prepare(`SELECT * FROM docs ${clause} ${DOC_ORDER} LIMIT ?`).all(...values, scanLimit);
 		return rows.map(rowToDoc);
 	}
 
-	countDocs(filter: DocFilter = {}): number {
+	countDocs(filter: DocFilter): number {
 		const { clause, values } = docWhere(filter);
 		return (this.db.prepare(`SELECT COUNT(*) AS n FROM docs ${clause}`).get(...values) as { n: number }).n;
 	}
@@ -2368,13 +2360,15 @@ export class IndexStore {
 	sharedLiterals(
 		minimumFiles: number,
 		limit: number,
+		hidden: HiddenModules,
 	): Array<{ value: string; kind: string; files: number; uses: number }> {
+		const { clause, values } = sharedWhere(hidden);
 		const rows = this.db
 			.prepare(
 				`SELECT value, kind, COUNT(DISTINCT module) AS files, COUNT(*) AS uses
-				 FROM literals GROUP BY value, kind HAVING files >= ? ORDER BY files DESC, uses DESC LIMIT ?`,
+				 FROM literals ${clause} GROUP BY value, kind HAVING files >= ? ORDER BY files DESC, uses DESC LIMIT ?`,
 			)
-			.all(minimumFiles, limit) as Array<{ value: string; kind: string; files: number; uses: number }>;
+			.all(...values, minimumFiles, limit) as Array<{ value: string; kind: string; files: number; uses: number }>;
 		return rows;
 	}
 
@@ -2638,14 +2632,19 @@ interface LiteralRow {
 	endChar: number;
 }
 
-function literalWhere(filter: {
-	value?: string | undefined;
-	kind?: string | undefined;
-	low?: number | undefined;
-	high?: number | undefined;
-	key?: string | undefined;
-	scope?: ScopeFilter | undefined;
-}) {
+/** Excludes hidden modules, bound as a JSON list. */
+function leaveOut(
+	hidden: HiddenModules,
+	where: string[],
+	values: Array<string | number>,
+	column: "module" | "l.module" = "module",
+): void {
+	if (hidden.length === 0) return;
+	where.push(`${column} NOT IN (SELECT value FROM json_each(?))`);
+	values.push(JSON.stringify(hidden));
+}
+
+function literalWhere(filter: LiteralFilter) {
 	const where: string[] = [];
 	const values: Array<string | number> = [];
 	// A key is an inner match: a literal with no container has no name to match.
@@ -2653,6 +2652,7 @@ function literalWhere(filter: {
 		filter.key === undefined
 			? "LEFT JOIN symbols s ON s.symbolId = l.containerId"
 			: "JOIN symbols s ON s.symbolId = l.containerId";
+	leaveOut(filter.hidden, where, values, "l.module");
 	if (filter.value !== undefined) {
 		where.push("l.value = ?");
 		values.push(filter.value);
@@ -2692,6 +2692,7 @@ const COMMENT_ORDER = "ORDER BY module, startLine, startChar";
 function commentWhere(filter: CommentFilter, text?: string): { clause: string; values: Array<string | number> } {
 	const where: string[] = [];
 	const values: Array<string | number> = [];
+	leaveOut(filter.hidden, where, values);
 	if (text !== undefined) {
 		where.push("normalized LIKE ? ESCAPE '\\'");
 		values.push(`%${likePattern(text)}%`);
@@ -2714,6 +2715,7 @@ const DOC_ORDER = "ORDER BY module, startLine, startChar";
 function docWhere(filter: DocFilter, text?: string): { clause: string; values: Array<string | number> } {
 	const where: string[] = [];
 	const values: Array<string | number> = [];
+	leaveOut(filter.hidden, where, values);
 	if (text !== undefined) {
 		where.push("normalized LIKE ? ESCAPE '\\'");
 		values.push(`%${likePattern(text)}%`);
@@ -2726,6 +2728,24 @@ function docWhere(filter: DocFilter, text?: string): { clause: string; values: A
 		where.push("module = ?");
 		values.push(filter.module);
 	}
+	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
+}
+
+function importWhere(hidden: HiddenModules, specifier?: string): { clause: string; values: Array<string | number> } {
+	const where: string[] = [];
+	const values: Array<string | number> = [];
+	leaveOut(hidden, where, values);
+	if (specifier !== undefined) {
+		where.push("specifier LIKE ? ESCAPE '\\'");
+		values.push(`%${likePattern(specifier)}%`);
+	}
+	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
+}
+
+function sharedWhere(hidden: HiddenModules): { clause: string; values: Array<string | number> } {
+	const where: string[] = [];
+	const values: Array<string | number> = [];
+	leaveOut(hidden, where, values);
 	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
 }
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { FOLD_MARK } from "@nyaa-lexicon/protocol";
 import { configuredSurfaceCandidates, isLikelyBundle, surfaceGlobMatches } from "../bundle";
 import { extractSurfaceFile } from "../surface";
 import { harness } from "./harness.js";
@@ -53,7 +54,7 @@ describe("bundle classification", () => {
 });
 
 describe("runtime bundle surfaces", () => {
-	it("keeps exported function names and parameters without implementation facts or types", () => {
+	it("keeps exported function names and headers without implementation facts or types", () => {
 		const internals = Array.from({ length: 400 }, (_, index) => `function x${index}(a){return a+${index}}`).join(
 			";",
 		);
@@ -67,7 +68,7 @@ describe("runtime bundle surfaces", () => {
 
 		expect(isLikelyBundle("opaque/runtime.js", text)).toBe(true);
 		expect(names).toEqual(["send", "hH", "data", "highWaterMark"]);
-		expect(send?.signature).toBe("function send(hH, {data,highWaterMark})");
+		expect(send?.signature).toBe("function q(hH,{data,highWaterMark})");
 		expect(facts.references).toEqual([]);
 		expect(facts.literals).toEqual([]);
 		expect(provider.typeOf({ symbolId: send?.symbolId ?? "" })).toMatchObject({
@@ -128,14 +129,53 @@ describe("registered declaration surfaces", () => {
 			kind: "constructor",
 			signature: "constructor(seed: string)",
 		});
-		expect(facts.declarations.find((declaration) => declaration.name === "send")?.signature).toContain(
-			"hH: Uint8Array",
+		expect(facts.declarations.find((declaration) => declaration.name === "send")?.signature).toBe(
+			"export declare function send(hH: Uint8Array, { data, highWaterMark }: Options): Result",
 		);
 		expect(facts.declarations.find((declaration) => declaration.name === "open")).toMatchObject({
 			kind: "method",
-			signature: "open(url: string): Promise<void>",
+			signature: "public open(url: string): Promise<void>",
 		});
 		expect(facts.declarations.filter((declaration) => declaration.name === "ready")).toHaveLength(2);
+	});
+
+	it("signs every surface declaration with its whole header, as a workspace parse does", () => {
+		const declared = extractSurfaceFile(
+			"types/geo.d.ts",
+			[
+				"@sealed",
+				"export declare abstract class Box<T>",
+				"\textends Base<T> // why",
+				"\timplements Shape {",
+				"\tprotected constructor(seed: string);",
+				"\tpublic static open(",
+				"\t\turl: string,",
+				"\t): Promise<void>;",
+				"}",
+				"export interface Options extends Base<string> {",
+				"\texact: boolean;",
+				"}",
+				"export type Claim = { claimed: true } | { claimed: false };",
+				"export declare enum Mode { A }",
+			].join("\n"),
+		);
+		const signature = (facts: typeof declared, name: string) =>
+			facts.declarations.find((declaration) => declaration.name === name)?.signature;
+		expect(["Box", "open", "Options", "exact", "Claim", "Mode"].map((name) => signature(declared, name))).toEqual([
+			"@sealed export declare abstract class Box<T> extends Base<T> implements Shape",
+			"public static open(url: string): Promise<void>",
+			"export interface Options extends Base<string>",
+			"exact: boolean",
+			`export type Claim = {${FOLD_MARK}} | {${FOLD_MARK}}`,
+			"export declare enum Mode",
+		]);
+
+		const runtime = extractSurfaceFile(
+			"node_modules/runtime/index.js",
+			"exports.run = (value) => {\n\treturn value;\n};\nmodule.exports.stop = function (reason) {};\n",
+		);
+		expect(signature(runtime, "run")).toBe(`exports.run = (value) => {${FOLD_MARK}}`);
+		expect(signature(runtime, "stop")).toBe("module.exports.stop = function (reason) {}");
 	});
 
 	it("uses package declarations and JavaScript only as a fallback", () => {

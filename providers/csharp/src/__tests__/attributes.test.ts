@@ -93,12 +93,14 @@ describe("C# attributes", () => {
 		expect(nameOf(facts, literal?.containerId)).toBe("Named");
 	});
 
-	it("starts an attributed declaration at its attribute and keeps the attribute out of its signature and types", () => {
+	it("starts an attributed declaration and its signature at its attribute and keeps the attribute out of its types", () => {
 		const { provider, facts } = parse();
 		expect(declared(facts, "Holder").range.start).toEqual({ line: 4, character: 0 });
-		expect(declared(facts, "Holder").signature).toBe("public class Holder : Base");
+		expect(declared(facts, "Holder").signature).toBe("[Marker(typeof(Base))] public class Holder : Base");
 		expect(declared(facts, "Method").range.start).toEqual({ line: 7, character: 4 });
-		expect(declared(facts, "Method").signature).toBe("public Base Method([Marker] Base x = null) => x");
+		expect(declared(facts, "Method").signature).toBe(
+			"[Marker] [return: Marker] public Base Method([Marker] Base x = null)",
+		);
 		expect(declared(facts, "One").range.start).toEqual({ line: 13, character: 20 });
 		expect(declared(facts, "Two", "constant").range.start).toEqual({ line: 13, character: 34 });
 		expect(provider.typeOf({ symbolId: declared(facts, "x").symbolId })).toMatchObject({ display: "Base" });

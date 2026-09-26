@@ -34,6 +34,8 @@ export const ExpectedDeclarationSchema = z
 		container: z.string().optional(),
 		/** Descriptor chain of the symbol id, as `kind:name` pairs. */
 		descriptors: z.array(z.string().min(1)).optional(),
+		/** The whole signature, exactly. */
+		signature: z.string().min(1).optional(),
 		/**
 		 * Where the NAME starts, which is the only way to pin what `character` counts.
 		 *

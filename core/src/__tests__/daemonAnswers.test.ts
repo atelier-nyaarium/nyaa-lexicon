@@ -215,18 +215,27 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	findLiterals: async () => {
 		expect((await ask("findLiterals", { value: "warning" })).total).toBe(2);
 		expect((await ask("findLiterals", { kind: "number", min: 1, max: 5, limit: 10 })).literals).toHaveLength(1);
+		const hidden = await ask("findLiterals", { value: "warning", exclude: { hide: ["*.json"] } });
+		expect(hidden).toMatchObject({ query: { excluded: true }, total: 1 });
 	},
 	findComments: async () => {
 		expect((await ask("findComments", { text: "until checkout", limit: 10 })).total).toBe(1);
+		const hidden = await ask("findComments", { text: "until checkout", exclude: { hide: ["cart.ref"] } });
+		expect(hidden).toMatchObject({ query: { excluded: true }, total: 0 });
 	},
 	findDocs: async () => {
 		expect((await ask("findDocs", { text: "until checkout" })).total).toBe(1);
 		const fenced = await ask("findDocs", { fenced: true, module: "README.md" });
 		expect(fenced.docs[0]?.headingPath).toEqual(["Cart", "Checkout"]);
+		const hidden = await ask("findDocs", { text: "until checkout", exclude: { hide: ["**/*.MD"] } });
+		expect(hidden).toMatchObject({ query: { excluded: true }, total: 0 });
 	},
 	sharedLiterals: async () => {
 		const shared = await ask("sharedLiterals", { minimumFiles: 2, limit: 10 });
 		expect(shared).toEqual([expect.objectContaining({ value: "warning", files: 2 })]);
+		const kept = await ask("sharedLiterals", { minimumFiles: 2, exclude: { hide: ["ghost/**"] } });
+		expect(kept).toEqual([expect.objectContaining({ value: "warning", files: 2, excluded: true })]);
+		expect(await ask("sharedLiterals", { minimumFiles: 2, exclude: { hide: ["*.json"] } })).toEqual([]);
 	},
 	cycles: () => ask("cycles", { limit: 5 }),
 	mostReferenced: () => ask("mostReferenced", { limit: 5 }),
@@ -236,6 +245,9 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect((await ask("searchSymbols", { text: "Cart" })).symbols.length).toBeGreaterThan(1);
 		const exact = await ask("searchSymbols", { regex: "/^add$/", kind: "function", module: "cart.ref", limit: 5 });
 		expect(exact.total).toBe(1);
+		const hidden = await ask("searchSymbols", { text: "Cart", exclude: { hide: ["README.md"] } });
+		expect(hidden.excluded).toBe(true);
+		expect(hidden.symbols.map((symbol) => symbol.module)).toEqual(["cart.ref"]);
 	},
 	outlineModule: async () => {
 		const outline = await ask("outlineModule", { module: "README.md" });
@@ -259,6 +271,13 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			unclaimedReason: "unclaimed",
 			indexed: false,
 		});
+	},
+	admittedModules: async () => {
+		expect(await ask("admittedModules", { modules: ["cart.ref", "notes.txt", "ghost.ref"] })).toEqual([
+			{ module: "cart.ref", admitted: "discovered" },
+			{ module: "notes.txt", admitted: "discovered" },
+			{ module: "ghost.ref", admitted: null },
+		]);
 	},
 	moduleDeclarations: async () => {
 		const held = await ask("moduleDeclarations", { module: "cart.ref" });
@@ -322,7 +341,11 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			unowned: { found: false, reason: "unowned" },
 		});
 	},
-	findImports: () => ask("findImports", { specifier: "./item", limit: 5 }),
+	findImports: async () => {
+		await ask("findImports", { specifier: "./item", limit: 5 });
+		const hidden = await ask("findImports", { specifier: "./item", exclude: { hide: ["cart.ref"] } });
+		expect(hidden).toMatchObject({ excluded: true, imports: [] });
+	},
 	overview: async () => {
 		const overview = await ask("overview", {});
 		expect(overview.files).toBe(4);
@@ -438,7 +461,10 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect((await ask("refactorStatus", {})).open).toBe(true);
 	},
 	refactorTrack: async () => {
-		expect((await ask("refactorTrack", { module: "cart.ref" })).tracked).toBe(true);
+		expect(await ask("refactorTrack", { module: "cart.ref" })).toEqual({
+			tracked: true,
+			refactor: { id: answers.refactorStart?.id as string },
+		});
 	},
 	refactorNoteWrite: async () => {
 		const image = await ask("refactorBeforeImage", { module: "cart.ref" });
@@ -485,6 +511,21 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	refactorMove: async () => {
 		expect((await ask("refactorMove", { symbolId: cart, toModule: "item.ref" })).moved).toBe(false);
 	},
+	// A refactor is open here.
+	refactorRenameCommitted: async () => {
+		const bases = [{ module: "cart.ref", contentHash: null }];
+		expect(await ask("refactorRenameCommitted", { symbolId: cart, newName: "Basket", bases })).toMatchObject({
+			committed: false,
+			openRefactor: { id: answers.refactorStart?.id },
+		});
+	},
+	refactorMoveCommitted: async () => {
+		const bases = [{ module: "cart.ref", contentHash: null }];
+		expect(await ask("refactorMoveCommitted", { symbolId: cart, toModule: "item.ref", bases })).toMatchObject({
+			committed: false,
+			openRefactor: { id: answers.refactorStart?.id },
+		});
+	},
 	refactorRevert: async () => {
 		const status = await ask("refactorStatus", {});
 		expect(
@@ -529,6 +570,8 @@ const REFACTOR = [
 	"refactorInsert",
 	"refactorRename",
 	"refactorMove",
+	"refactorRenameCommitted",
+	"refactorMoveCommitted",
 	"refactorRevert",
 	"refactorCommit",
 ] as const satisfies readonly DaemonMethod[];
@@ -729,5 +772,30 @@ describe("populated answers parse back to themselves", () => {
 		expect(moved.modules).toEqual(expect.arrayContaining(["a.ts", "b.ts", "c.ts"]));
 
 		expect((await ask("refactorCommit", { force: true })).committed).toBe(true);
+	}, 60_000);
+
+	it("commits a rename and a move as refactors of their own", async () => {
+		const planned = await ask("renameEdits", { symbolId: pong, newName: "pongAgain" });
+		if (!planned.ok) throw new Error(planned.reason);
+		const renamed = await ask("refactorRenameCommitted", {
+			symbolId: pong,
+			newName: "pongAgain",
+			bases: planned.files.map((file) => ({ module: file.module, contentHash: file.contentHash })),
+		});
+		expect(renamed).toMatchObject({ committed: true, kind: "rename", reverse: { newName: "pong" } });
+
+		// Wherever the case above left it.
+		const from = harness.service.findByName("helper")[0]?.module ?? "a.ts";
+		const toModule = from === "a.ts" ? "c.ts" : "a.ts";
+		const moving = harness.symbol("helper", from);
+		const preview = await ask("previewMove", { symbolId: moving, toModule });
+		if (!preview.ok) throw new Error(preview.reason);
+		const moved = await ask("refactorMoveCommitted", {
+			symbolId: moving,
+			toModule,
+			bases: preview.files.map((file) => ({ module: file.module, contentHash: file.contentHash })),
+		});
+		expect(moved).toMatchObject({ committed: true, kind: "move", reverse: { toModule: from } });
+		expect((await ask("refactorStatus", {})).open).toBe(false);
 	}, 60_000);
 });

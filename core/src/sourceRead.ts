@@ -1,10 +1,14 @@
 // The one reading of a workspace file, for indexing and for a writer. Routing is the caller's; the
 // bound and the text check are here, so no second read site can decode a binary or stall on a giant.
 
-import { existsSync, realpathSync, statSync } from "node:fs";
-import path from "node:path";
-import { firstLineOfFile, MAX_SOURCE_BYTES, readSourceFile, workspaceFile } from "@nyaa-lexicon/protocol";
-import { moduleNotText, moduleNotUtf8, type Refusal, textNotEncodable } from "./refusals.js";
+import {
+	MAX_SOURCE_BYTES,
+	readWorkspaceFile,
+	readWorkspaceHead,
+	resolveContained,
+	workspaceFile,
+} from "@nyaa-lexicon/protocol";
+import { moduleNotText, moduleNotUtf8, moduleOutsideWorkspace, type Refusal, textNotEncodable } from "./refusals.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -18,7 +22,9 @@ export type SourceRead =
 	  }
 	| { kind: "missing" }
 	| { kind: "binary" }
-	| { kind: "tooLarge"; bytes: number };
+	| { kind: "tooLarge"; bytes: number }
+	/** Its real path leaves the workspace, through a link. */
+	| { kind: "outside" };
 
 export type SourceReader = (module: string) => SourceRead;
 
@@ -28,47 +34,29 @@ export type WritableSource = { text: string | null } | { refused: Refusal };
 export { MAX_SOURCE_BYTES };
 
 ////////////////////////////////
+//  Constants
+
+/** Refusal reason for a module outside the workspace. */
+export const OUTSIDE_WORKSPACE_REASON = "its real path leaves the workspace";
+
+////////////////////////////////
 //  Functions & Helpers
 
 /**
- * The absolute path a WRITE may land on, or a named refusal. Reads follow the name as given;
- * a write must also land under the real root, since a directory link inside the workspace can
- * point outside it and a rename through it would create the file there.
+ * The absolute path a WRITE may land on, or a named refusal.
+ * Refuses when a directory link inside the workspace would let the write land outside it.
  */
 export function insideWorkspace(root: string, module: string): string {
 	if (workspaceFile(root, module) === null) {
 		throw new Error(`module path must stay inside the workspace, got: ${module}`);
 	}
-	const file = containedWorkspaceFile(root, module);
-	if (file !== null) return file;
+	const where = resolveContained(root, module, "keep");
+	if (where.kind !== "outside") return where.path;
 	throw new Error(`module path must not leave the workspace through a link, got: ${module}`);
 }
 
-/** Returns null when an existing parent resolves outside the workspace. */
-export function containedWorkspaceFile(root: string, module: string): string | null {
-	const file = workspaceFile(root, module);
-	if (file === null) return null;
-	const realRoot = realpathSync(root);
-	const parent = realpathSync(nearestExisting(path.dirname(file)));
-	return parent === realRoot || parent.startsWith(realRoot + path.sep) ? file : null;
-}
-
-/** The closest ancestor on disk, so a file in a directory not yet created is judged by its future parent. */
-function nearestExisting(dir: string): string {
-	let current = dir;
-	while (!existsSync(current)) {
-		const up = path.dirname(current);
-		if (up === current) return current;
-		current = up;
-	}
-	return current;
-}
-
 export function readSource(root: string, module: string): SourceRead {
-	// Outside the root there is nothing of this workspace to read.
-	const file = workspaceFile(root, module);
-	if (file === null) return { kind: "missing" };
-	const read = readSourceFile(file);
+	const read = readWorkspaceFile(root, module);
 	// Unreadable indexes as missing, like a gone file.
 	return read.kind === "unreadable" ? { kind: "missing" } : read;
 }
@@ -89,6 +77,8 @@ export function writableSource(module: string, read: SourceRead): WritableSource
 			return read.lossless ? { text: read.text } : { refused: moduleNotUtf8(module) };
 		case "missing":
 			return { text: null };
+		case "outside":
+			return { refused: moduleOutsideWorkspace(module) };
 		default:
 			return { refused: moduleNotText(module, unreadableReason(read)) };
 	}
@@ -101,15 +91,7 @@ export function writableText(module: string, text: string): Refusal | null {
 
 /** A module's first line from its opening bytes, for a shebang claim; undefined when unreadable. */
 export function readHead(root: string, module: string): string | undefined {
-	const file = workspaceFile(root, module);
-	if (file === null) return undefined;
-	try {
-		// Before open: opening a FIFO blocks until someone writes it.
-		if (!statSync(file).isFile()) return undefined;
-	} catch {
-		return undefined;
-	}
-	return firstLineOfFile(file);
+	return readWorkspaceHead(root, module);
 }
 
 /** Text or nothing, for a reader with no use for the reason. */

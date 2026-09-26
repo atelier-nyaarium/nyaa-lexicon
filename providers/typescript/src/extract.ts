@@ -16,6 +16,7 @@ import {
 	RUNNING_KINDS,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { headerOf } from "./header.js";
 
 ////////////////////////////////
 //  Constants
@@ -382,14 +383,6 @@ function visibilityOf(node: ts.Node, exported: boolean): Declaration["visibility
 function isExported(node: ts.Node): boolean {
 	const modifiers = ts.canHaveModifiers(node) ? (ts.getModifiers(node) ?? []) : [];
 	return modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
-}
-
-/** The signature line without the body, which is the compression the describe tool ships. */
-function signatureOf(node: ts.Node, source: ts.SourceFile): string | undefined {
-	const text = node.getText(source);
-	const brace = text.indexOf("{");
-	const line = (brace === -1 ? text : text.slice(0, brace)).split("\n")[0]?.trim();
-	return line === undefined || line === "" ? undefined : line;
 }
 
 function isDeclarationName(node: ts.Node): boolean {
@@ -800,7 +793,7 @@ export function extractFileWithNodes(
 			const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
 			declarationNodes.set(node, symbolId);
 			const range = declarationRangeOf(node, source);
-			const signature = signatureOf(node, source);
+			const signature = headerOf(node, source);
 			const defaultSpan = defaultSelectionRange(node, source);
 
 			noteDeclaredIn(scope);
@@ -824,7 +817,8 @@ export function extractFileWithNodes(
 		const name = classified ? nameOf(node) : null;
 		if (!classified || name === null) return scope;
 
-		const exported = exportedByParent || isExported(node);
+		const local = scope.runs === true;
+		const exported = !local && (exportedByParent || isExported(node));
 		const descriptors: Descriptor[] = [
 			...scope.descriptors,
 			descriptorFor(scope, { kind: classified.descriptor, name }),
@@ -840,11 +834,10 @@ export function extractFileWithNodes(
 			name,
 			range,
 			selectionRange: nameRange(node, source, (node as { name?: ts.Node }).name),
-			visibility: visibilityOf(node, exported),
+			visibility: local ? "local" : visibilityOf(node, exported),
 			exported,
 			metrics: metricsOf(node, range),
-			...(signatureOf(node, source) === undefined ? {} : { signature: signatureOf(node, source) as string }),
-			...defined({ containerId: scope.containerId }),
+			...defined({ signature: headerOf(node, source), containerId: scope.containerId }),
 		});
 
 		const inner = { descriptors, containerId: symbolId };
@@ -853,7 +846,8 @@ export function extractFileWithNodes(
 	}
 
 	function recordVariables(statement: ts.VariableStatement, scope: Scope): void {
-		const exported = isExported(statement);
+		const local = scope.runs === true;
+		const exported = !local && isExported(statement);
 		// `const` is a different kind from `let`, and a consumer deciding whether something can be
 		// reassigned reads the kind rather than re-parsing the declaration.
 		const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
@@ -866,7 +860,7 @@ export function extractFileWithNodes(
 			declarationNodes.set(declaration, symbolId);
 			declarationScopes.set(declaration, { descriptors, containerId: symbolId });
 			const range = declarationRangeOf(statement, source);
-			const signature = signatureOf(declaration, source);
+			const signature = headerOf(declaration, source);
 
 			noteDeclaredIn(scope);
 			declarations.push({
@@ -875,7 +869,7 @@ export function extractFileWithNodes(
 				name,
 				range,
 				selectionRange: rangeOf(declaration.name, source),
-				visibility: exported ? "public" : "fileLocal",
+				visibility: local ? "local" : exported ? "public" : "fileLocal",
 				exported,
 				metrics: metricsOf(declaration, range),
 				...defined({ signature, containerId: scope.containerId }),

@@ -83,9 +83,9 @@ lookups use `store.get(key)`, not provider-owned maps.
   handlers. The kit removes each layer before the next request runs, even if the daemon timed out
   while waiting.
 - `forgetModule` hides a module. Fills cannot restore it until a parse is admitted.
-- A fill reads `workspaceFile(root, module)` with `readSourceFile` at outline depth. The reader
-  applies the core's size and binary checks. Missing, binary, oversized, lossy files and parses with
-  error diagnostics are skipped until rediscovery. Unreadable files remain owed and retry on later
+- A fill reads a module with `readWorkspaceFile` at outline depth. The reader applies the core's
+  containment, size and binary checks. Missing, binary, oversized, lossy files, files whose real path
+  leaves the workspace, and parses with error diagnostics are skipped until rediscovery. Unreadable files remain owed and retry on later
   lookups. Refused bytes stay blocked until they change. A refusal drops a held fill. Rediscovery
   clears all fills.
 - `discoverProject` receives the previous project value. The kit updates discovery and project
@@ -278,6 +278,9 @@ whose body runs and declares something: TypeScript marks an arrow or function-ex
 or property, and a getter or setter. A data format sets nothing, so a nested key is a member of the
 key above it. A parameter, or a declaration with `local` visibility, is local wherever it sits. The
 field is part of the declaration's fact id only when set, so an unmarked declaration keeps its id.
+A declaration written directly in a running body has `local` visibility, however deep that body
+sits in an initializer; case `body-declarations-are-local` holds it, and `outlineModule` leaves
+every local out.
 
 Every id a parse hands over is read once, at the boundary, for what its field says it means. A
 declaration's id names the file being parsed. A `containerId`, a reference's `fromId` and a
@@ -289,6 +292,25 @@ quoting, would read back as a second id for one symbol, which the citation model
 One failure refuses the whole
 file as a parse failure naming the id, and the file's previous facts stand. Compose ids with
 `composeSymbolId` and these hold by construction.
+
+## A signature is the header
+
+`Declaration.signature` is the header on one line: from the first token, decorators, attributes and
+modifiers included, to where the body begins. A declaration with no body runs to its end, its
+terminator dropped; a Python or GDScript block colon belongs to the header. The doc comment and
+every comment inside are out. A value keeps its initializer, with each literal container written as
+a value (object, array, dict, list, set, tuple, block, a closure's block body) folded to its
+delimiters around `FOLD_MARK`. An empty container stays as written. A type stays whole, except an
+inline type body whose members list as their own declarations: `type T = {…}`,
+`typedef struct {…} Pair`. A string, template or regex literal stays as written, a line break or
+tab inside it escaped (`\n`); whitespace collapses only outside literals.
+
+A provider finds the spans, literals included; `renderHeader` in `protocol/src/header.ts` turns them
+into the line, so the whitespace, folding and joining rules are one function. A declarator sharing
+a statement passes the statement's head as `lead` rather than omitting its siblings, so a statement
+of many declarators stays linear. Cases `a-signature-is-the-whole-header` and
+`a-literal-in-a-header-keeps-its-whitespace` pin each language's spelling, and every case fails a
+signature that is not one line.
 
 ## Comments are spans, never attachments
 
@@ -570,7 +592,7 @@ What the provider simplifies, which only differs from the compiler in rare or no
 The index must hold what the core holds, or a binding names a symbol the store does not have:
 
 - **Outline fills** read discovered modules missing from the store, on the first `store.get`. They
-  use `readSourceFile` and the core's size and binary checks.
+  use `readWorkspaceFile` and the core's containment, size and binary checks.
 - **Only admitted values.** A refused parse leaves the last admitted value in place.
 - **Forgotten modules stay hidden** until a parse is admitted.
 - **Unreadable files retry** on each lookup. Missing, binary, oversized or lossy files and fills

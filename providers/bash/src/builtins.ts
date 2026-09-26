@@ -3,6 +3,7 @@
 import { defined } from "@nyaa-lexicon/protocol";
 import type { AssignmentPrefix, Word } from "unbash";
 import {
+	ASSIGNMENT_RE,
 	FUNCTION_NAME_RE,
 	IDENTIFIER_RE,
 	pushOpaque,
@@ -13,8 +14,9 @@ import {
 	type Walk,
 	wordRange,
 } from "./context.js";
+import { assignmentFolds, commandHeader, leadOf, operandHeader } from "./header.js";
 import { confinedIn, declare, declareOrWrite, resolve } from "./scope.js";
-import { bareValue, declareOrWriteWord, walkIndex, walkWord, walkWords } from "./words.js";
+import { bareValue, declareOrWriteWord, markQuoted, walkIndex, walkWord, walkWords } from "./words.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -31,7 +33,6 @@ interface Options {
 
 export const DECLARING = new Set(["local", "declare", "typeset", "readonly", "export"]);
 
-const ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/;
 const LET_RE = /(\+\+|--)?([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*(\+\+|--|(?:<<|>>|[-+*/%&|^])?=(?!=))?/g;
 const NO_VALUES: ReadonlySet<string> = new Set();
 const READ_VALUED = new Set(["a", "d", "i", "n", "N", "p", "t", "u"]);
@@ -76,6 +77,7 @@ export function walkAssignmentPrefix(w: Walk, scope: Scope, prefix: AssignmentPr
 			declareOrWrite(w, scope, name, selection, rangeAt(w, prefix.pos, prefix.end), {
 				kind: "variable",
 				local: false,
+				header: { start: prefix.pos, end: prefix.end, folds: assignmentFolds(prefix.text, prefix.pos) },
 			});
 		}
 		walkIndex(w, scope, prefix.index, prefix.indexParts, prefix.pos + prefix.text.indexOf("[") + 1);
@@ -102,6 +104,7 @@ export function declaring(w: Walk, scope: Scope, builtin: string, command: Word,
 		return;
 	}
 	const { flags, operands } = options(words, NO_VALUES);
+	const lead = leadOf(command, words, operands);
 	for (const word of operands) {
 		const text = word.text;
 		const spelled = staticValue(word) ?? text;
@@ -154,6 +157,7 @@ export function declaring(w: Walk, scope: Scope, builtin: string, command: Word,
 			global,
 			...(exported ? { exported } : {}),
 			...defined({ declaredType }),
+			header: { ...operandHeader(lead, word), folds: assignmentFolds(text, word.pos) },
 		});
 		if (match !== null) {
 			const value = spelled.slice(match[0].length);
@@ -167,31 +171,33 @@ export function declaring(w: Walk, scope: Scope, builtin: string, command: Word,
 }
 
 /** `read` writes every name after its options; `-a` names an array. */
-export function reading(w: Walk, scope: Scope, words: Word[]): void {
+export function reading(w: Walk, scope: Scope, command: Word, words: Word[]): void {
 	const { valued, operands } = options(words, READ_VALUED);
 	for (const [flag, word] of valued) {
-		if (flag === "a") declareOrWriteWord(w, scope, word, "array");
+		if (flag === "a") declareOrWriteWord(w, scope, word, (named) => commandHeader(command, named), "array");
 		else walkWord(w, scope, word);
 	}
-	for (const word of operands) declareOrWriteWord(w, scope, word);
+	const lead = leadOf(command, words, operands);
+	for (const word of operands) declareOrWriteWord(w, scope, word, (named) => operandHeader(lead, named));
 }
 
 /** `mapfile` and `readarray` fill the array named after their options. */
-export function mapping(w: Walk, scope: Scope, words: Word[]): void {
+export function mapping(w: Walk, scope: Scope, command: Word, words: Word[]): void {
 	const { valued, operands } = options(words, MAPFILE_VALUED);
 	for (const word of valued.values()) walkWord(w, scope, word);
-	declareOrWriteWord(w, scope, operands[0], "array");
+	declareOrWriteWord(w, scope, operands[0], (named) => commandHeader(command, named), "array");
 }
 
 /** `printf -v NAME` writes the name in place of printing. */
-export function printing(w: Walk, scope: Scope, words: Word[]): void {
+export function printing(w: Walk, scope: Scope, command: Word, words: Word[]): void {
 	const { valued, operands } = options(words, PRINTF_VALUED);
-	declareOrWriteWord(w, scope, valued.get("v"));
+	declareOrWriteWord(w, scope, valued.get("v"), (named) => commandHeader(command, named));
 	walkWords(w, scope, operands);
 }
 
 /** Each `let` word is an arithmetic expression; a name before `=` or beside `++` is written, else read. */
-export function letting(w: Walk, scope: Scope, words: Word[]): void {
+export function letting(w: Walk, scope: Scope, command: Word, words: Word[]): void {
+	const lead = { start: command.pos, end: command.end };
 	for (const word of words) {
 		const spelled = staticValue(word);
 		if (spelled === undefined) {
@@ -199,6 +205,7 @@ export function letting(w: Walk, scope: Scope, words: Word[]): void {
 			continue;
 		}
 		pushOpaque(w, word.pos, word.end);
+		markQuoted(w, word);
 		let cursor = 0;
 		for (const match of spelled.matchAll(LET_RE)) {
 			const name = match[2] as string;
@@ -206,7 +213,11 @@ export function letting(w: Walk, scope: Scope, words: Word[]): void {
 			cursor = at - word.pos + name.length;
 			const range = rangeAt(w, at, at + name.length);
 			if (match[1] !== undefined || match[3] !== undefined) {
-				declareOrWrite(w, scope, name, range, range, { kind: "variable", local: false });
+				declareOrWrite(w, scope, name, range, range, {
+					kind: "variable",
+					local: false,
+					header: operandHeader(lead, word),
+				});
 			} else pushReference(w, scope, { name, range, role: "read" });
 		}
 	}
@@ -232,8 +243,10 @@ export function unsetting(w: Walk, scope: Scope, words: Word[]): void {
 	}
 }
 
-export function aliases(w: Walk, scope: Scope, words: Word[]): void {
-	for (const word of options(words, NO_VALUES).operands) {
+export function aliases(w: Walk, scope: Scope, command: Word, words: Word[]): void {
+	const { operands } = options(words, NO_VALUES);
+	const lead = leadOf(command, words, operands);
+	for (const word of operands) {
 		const match = /^([^=\s]+)=/.exec(word.text);
 		if (match === null) continue;
 		const name = match[1] as string;
@@ -241,6 +254,7 @@ export function aliases(w: Walk, scope: Scope, words: Word[]): void {
 			kind: "function",
 			local: false,
 			languageKind: "alias",
+			header: operandHeader(lead, word),
 		});
 		walkWord(w, scope, word, false);
 	}

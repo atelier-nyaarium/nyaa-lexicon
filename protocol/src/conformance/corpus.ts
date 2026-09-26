@@ -7,6 +7,7 @@
 // Adding a language means adding fixtures here, and the provider team is the right author: they
 // know their language's edge cases better than this file does.
 
+import { headerCases } from "./headerCases.js";
 import { repeatedNamePathCase } from "./identityCases.js";
 import { markupCases } from "./markupCases.js";
 import { roleCases } from "./roleCases.js";
@@ -3377,8 +3378,8 @@ const CASES: ConformanceCase[] = [
  * instead of somewhere inside a provider run where it looks like the provider's fault.
  */
 export function loadCorpus(): ConformanceCase[] {
-	return [...CASES, stringFormCase(), repeatedNamePathCase(), ...markupCases(), ...roleCases()].map((testCase) =>
-		ConformanceCaseSchema.parse(testCase),
+	return [...CASES, stringFormCase(), repeatedNamePathCase(), ...markupCases(), ...roleCases(), ...headerCases()].map(
+		(testCase) => ConformanceCaseSchema.parse(testCase),
 	);
 }
 

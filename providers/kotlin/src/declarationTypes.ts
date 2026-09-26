@@ -1,17 +1,8 @@
 import { type Declaration, defined } from "@nyaa-lexicon/protocol";
 import type { DeclarationWalk, Scope } from "./declarationScope.js";
-import {
-	accessOf,
-	BODY_TYPES,
-	contextOf,
-	identifiers,
-	LANGUAGE_MODIFIERS,
-	leadingAnnotationsSkipped,
-	modifiersOf,
-	until,
-} from "./declarationShape.js";
+import { accessOf, BODY_TYPES, contextOf, identifiers, LANGUAGE_MODIFIERS, modifiersOf } from "./declarationShape.js";
+import { headerOf } from "./header.js";
 import { bodyMetrics } from "./metrics.js";
-import { render } from "./render.js";
 import { childOfType, nameText, type SyntaxNode } from "./tree.js";
 import { supertypePaths, TYPE_NODES } from "./typePaths.js";
 
@@ -46,11 +37,7 @@ export function typeDeclaration(walk: DeclarationWalk, node: SyntaxNode, scope: 
 		descriptorKind: "type",
 		scope,
 		access: accessOf(modifiers, context),
-		signature: render(
-			walk.text,
-			until(leadingAnnotationsSkipped(node), (child) => BODY_TYPES.has(child.type)),
-			walk.lines,
-		),
+		signature: headerOf(walk.text, [node], body),
 		owns: true,
 		metrics: bodyMetrics(walk.tree.leaves, body),
 	});
@@ -76,7 +63,7 @@ export function typeAlias(walk: DeclarationWalk, node: SyntaxNode, scope: Scope)
 		descriptorKind: "type",
 		scope,
 		access: accessOf(modifiersOf(walk.text, childOfType(node, "modifiers")), context),
-		signature: render(walk.text, leadingAnnotationsSkipped(node), walk.lines),
+		signature: headerOf(walk.text, [node]),
 		owns: true,
 	});
 	const equals = node.children.findIndex((child) => child.type === "=");
@@ -100,7 +87,7 @@ export function enumEntry(walk: DeclarationWalk, node: SyntaxNode, scope: Scope)
 		descriptorKind: "term",
 		scope,
 		access: accessOf([], "class"),
-		signature: render(walk.text, [node], walk.lines),
+		signature: headerOf(walk.text, [node], childOfType(node, "class_body")),
 		owns: true,
 	});
 	return {

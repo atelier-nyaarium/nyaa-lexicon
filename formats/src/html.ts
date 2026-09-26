@@ -11,6 +11,7 @@ import {
 import { type DefaultTreeAdapterMap, parse } from "parse5";
 import { markupTooDeep, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
+import { startTagSignature } from "./startTag.js";
 
 export interface HtmlContext {
 	language: string;
@@ -130,14 +131,6 @@ function textOf(node: Node, inline = false): string {
 		}
 	}
 	return result;
-}
-
-/** A start tag as a signature, cut so a value of megabytes does not ride along. */
-const SIGNATURE_CAP = 160;
-
-function signatureOf(text: string, start: number, end: number): string {
-	const tag = text.slice(start, end);
-	return tag.length > SIGNATURE_CAP ? `${tag.slice(0, SIGNATURE_CAP)}...` : tag;
 }
 
 const HEADING = /^h[1-6]$/u;
@@ -267,6 +260,11 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 				? rangeAt(context, bom + start + 1, bom + start + 1 + tag.length)
 				: rangeAt(context, bom + identityValue.inner.start, bom + identityValue.inner.end);
 		if (declarationRange !== undefined && selection !== undefined) {
+			const values = element.attrs.flatMap((attribute) => {
+				const at = loc.attrs?.[attribute.name];
+				const value = at === undefined ? undefined : attributeValue(text, at.startOffset, at.endOffset);
+				return value === undefined ? [] : [value];
+			});
 			declarations.push({
 				symbolId,
 				kind: isHeading ? "heading" : "property",
@@ -274,8 +272,10 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 				range: declarationRange,
 				selectionRange: selection,
 				visibility: "public",
-				signature: signatureOf(text, start, startTag.endOffset),
-				...defined({ containerId: parentId }),
+				...defined({
+					signature: startTagSignature(text, start, startTag.endOffset, values),
+					containerId: parentId,
+				}),
 			});
 		}
 		for (const attribute of element.attrs) {

@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
-import { IndexStore, SCHEMA_VERSION } from "../store";
+import { HiddenModules, IndexStore, SCHEMA_VERSION } from "../store";
 
 ////////////////////////////////
 //  Helpers
@@ -201,7 +201,11 @@ describe("writing a file's facts", () => {
 			references: [],
 		});
 
-		const found = store.searchSymbols(undefined, { regex: "/foo\\w*bar/i", limit: 50 });
+		const found = store.searchSymbols(undefined, {
+			regex: "/foo\\w*bar/i",
+			limit: 50,
+			hidden: HiddenModules.none,
+		});
 
 		expect(found.map((entry) => entry.name)).toEqual(["FooBar"]);
 	});
@@ -695,7 +699,9 @@ describe("citable facts", () => {
 		expect(store.declarationsIn("src/a.ts")[0]?.factId).toMatch(/^lexfact declaration /);
 		expect(store.referencesIn("src/a.ts")[0]?.factId).toMatch(/^lexfact reference /);
 		expect(store.importsIn("src/a.ts")[0]?.factId).toMatch(/^lexfact import /);
-		expect(store.literalsWithValue("hello", 10)[0]?.factId).toMatch(/^lexfact literal /);
+		expect(store.literalsWhere({ value: "hello", hidden: HiddenModules.none }, 10)[0]?.factId).toMatch(
+			/^lexfact literal /,
+		);
 	});
 
 	it("resolves an id back to the fact it names, whichever kind that is", () => {
@@ -711,7 +717,7 @@ describe("citable facts", () => {
 		});
 
 		const declarationId = store.declarationsIn("src/a.ts")[0]?.factId as string;
-		const literalId = store.literalsWithValue("hello", 10)[0]?.factId as string;
+		const literalId = store.literalsWhere({ value: "hello", hidden: HiddenModules.none }, 10)[0]?.factId as string;
 		const commentId = store.commentsAnchoredTo(idOf("add"))[0]?.factId as string;
 
 		expect(store.factById(declarationId)).toMatchObject({ fact: "declaration", name: "add" });
@@ -997,6 +1003,6 @@ describe("forgetting a file", () => {
 		store.forgetFile("src/a.ts");
 
 		expect(store.totals()).toMatchObject({ files: 0, symbols: 0, references: 0, imports: 0, literals: 0 });
-		expect(store.literalsWithValue("gone", 10)).toEqual([]);
+		expect(store.literalsWhere({ value: "gone", hidden: HiddenModules.none }, 10)).toEqual([]);
 	});
 });

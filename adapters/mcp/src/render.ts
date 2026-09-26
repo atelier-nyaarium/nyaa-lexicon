@@ -1389,7 +1389,8 @@ export function renderOutline(module: string, declarations: SymbolSummary[], not
 	];
 	const walk = (nodes: typeof declarations, depth: number) => {
 		for (const node of nodes) {
-			lines.push(`${"  ".repeat(depth)}- ${line(node)}`);
+			const refs = node.referenceCount === undefined ? "" : ` refs=${node.referenceCount}`;
+			lines.push(`${"  ".repeat(depth)}- ${line(node)}${refs}`);
 			walk(children.get(node.symbolId) ?? [], depth + 1);
 		}
 	};

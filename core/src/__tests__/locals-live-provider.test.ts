@@ -206,6 +206,52 @@ describe("a real provider's function values and namespaces", () => {
 	);
 });
 
+const CATALOG = [
+	"export const CATALOG = [",
+	"\t{",
+	"\t\trun: async (input: string) => {",
+	"\t\t\tconst result = await work(input);",
+	"\t\t\treturn result;",
+	"\t\t},",
+	"\t},",
+	"];",
+	"",
+	"export function work(value: string): Promise<string> {",
+	"\tconst doubled = value + value;",
+	"\treturn Promise.resolve(doubled);",
+	"}",
+	"",
+	"export class Shop {",
+	"\tcount = 0;",
+	"\tadd(): number {",
+	"\t\treturn this.count;",
+	"\t}",
+	"}",
+	"",
+].join("\n");
+
+const CATALOG_USER = ['import { Shop, work } from "./catalog";', "", 'work("a");', "new Shop().add();", ""].join("\n");
+
+describe("an outline", () => {
+	it.skipIf(sourceProvider("typescript").length === 0)(
+		"lists what a file declares, never a local in any body, each row counted as describe counts it",
+		async () => {
+			const service = await indexed({ "src/catalog.ts": CATALOG, "src/use.ts": CATALOG_USER }, ["typescript"]);
+
+			const outline = service.outline("src/catalog.ts");
+			expect(outline.map((row) => row.name)).toEqual(["CATALOG", "work", "Shop", "count", "add"]);
+			for (const row of outline) {
+				expect([row.name, row.referenceCount]).toEqual([
+					row.name,
+					service.describe(row.symbolId)?.referenceCount,
+				]);
+			}
+			expect(outline.find((row) => row.name === "work")?.referenceCount).toBe(2);
+		},
+		60_000,
+	);
+});
+
 describe("a real provider's data", () => {
 	it.each([
 		["json", "config.json", '{ "server": { "port": 80, "tls": { "cert": "a.pem" } } }\n'],

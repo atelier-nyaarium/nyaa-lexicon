@@ -58,7 +58,9 @@ export class SourceWorkspace {
 	 */
 	symbolSource(address: Address): PlannedSource {
 		const read = this.sliced(address, (module) => {
-			const text = textOf(this.readSource(module));
+			const current = this.readSource(module);
+			if (current.kind === "outside") return { refused: refusal.moduleOutsideWorkspace(module) };
+			const text = textOf(current);
 			return text === null ? { refused: refusal.moduleNotOnDisk(module) } : { text };
 		});
 		if (!read.found) return read;

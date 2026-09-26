@@ -12,7 +12,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { type DaemonChannelOptions, daemonChannel } from "../channel";
 import type { EnsureResult } from "../ensure";
-import { DaemonError } from "../errors";
+import { DaemonError, Incompatible } from "../errors";
 import { lineSplitter, writeFrame } from "../transport";
 
 const TOKEN = "t".repeat(32);
@@ -414,6 +414,39 @@ describe("daemon channel acquisition", () => {
 			pid: refused.from?.pid,
 			serialized: JSON.stringify(refused.from).includes(TOKEN),
 		}).toEqual({ pid: process.pid, serialized: false });
+		session.close();
+	});
+});
+
+describe("daemon channel exclusion", () => {
+	const docs = (query: Record<string, unknown>) => ({
+		ok: true as const,
+		result: { query, docs: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } },
+	});
+	const exclude = { hide: ["**/.env*"] };
+
+	it("refuses an answer that does not confirm the exclusion it was asked for", async () => {
+		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
+		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
+		// An older daemon strips `exclude` and echoes nothing.
+		fake = await fakeDaemon(() => docs({ text: "sk-a" }));
+		writeLock(fake.port);
+
+		const session = channel();
+		const unconfirmed = await session.ask("findDocs", { text: "sk-a", exclude }).catch((error: unknown) => error);
+		expect(unconfirmed).toBeInstanceOf(Incompatible);
+		expect((await session.ask("findDocs", { text: "sk-a" })).total).toBe(0);
+		session.close();
+	});
+
+	it("returns an answer that confirms it", async () => {
+		stateDir = mkdtempSync(path.join(tmpdir(), "lexicon-channel-state-"));
+		workspaceRoot = mkdtempSync(path.join(tmpdir(), "lexicon-channel-work-"));
+		fake = await fakeDaemon(() => docs({ text: "sk-a", excluded: true }));
+		writeLock(fake.port);
+
+		const session = channel();
+		expect((await session.ask("findDocs", { text: "sk-a", exclude })).query.excluded).toBe(true);
 		session.close();
 	});
 });

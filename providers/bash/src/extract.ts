@@ -22,7 +22,7 @@ import {
 	unsetting,
 	walkAssignmentPrefix,
 } from "./builtins.js";
-import { commentsIn } from "./comments.js";
+import { commentRanges, commentSpans } from "./comments.js";
 import {
 	FUNCTION_NAME_RE,
 	type ParsedBashFile,
@@ -34,6 +34,7 @@ import {
 	type Walk,
 	wordRange,
 } from "./context.js";
+import { commandHeader, signHeaders } from "./header.js";
 import { walkRedirect } from "./heredoc.js";
 import { declare, settle, subshell } from "./scope.js";
 import { declareOrWriteWord, walkArithmetic, walkWord, walkWords } from "./words.js";
@@ -55,21 +56,21 @@ function walkCommand(w: Walk, scope: Scope, node: Command): void {
 		if (builtin !== undefined && DECLARING.has(builtin)) {
 			declaring(w, scope, builtin, name, words);
 		} else if (builtin === "read") {
-			reading(w, scope, words);
+			reading(w, scope, name, words);
 		} else if (builtin === "mapfile" || builtin === "readarray") {
-			mapping(w, scope, words);
+			mapping(w, scope, name, words);
 		} else if (builtin === "printf") {
-			printing(w, scope, words);
+			printing(w, scope, name, words);
 		} else if (builtin === "getopts") {
 			walkWord(w, scope, words[0]);
-			declareOrWriteWord(w, scope, words[1]);
+			declareOrWriteWord(w, scope, words[1], (word) => commandHeader(name, word));
 			walkWords(w, scope, words.slice(2));
 		} else if (builtin === "let") {
-			letting(w, scope, words);
+			letting(w, scope, name, words);
 		} else if (builtin === "unset") {
 			unsetting(w, scope, words);
 		} else if (builtin === "alias") {
-			aliases(w, scope, words);
+			aliases(w, scope, name, words);
 		} else if (builtin === "source" || builtin === ".") {
 			sourced(w, scope, words[0]);
 			walkWords(w, scope, words.slice(1));
@@ -149,7 +150,11 @@ function walkTest(w: Walk, scope: Scope, expression: TestExpression): void {
 function walkFunction(w: Walk, scope: Scope, node: Extract<Node, { type: "Function" }>): void {
 	const name = node.name.value;
 	const range = rangeAt(w, node.pos, node.end);
-	const declaration = declare(w, scope, name, wordRange(w, node.name), range, { kind: "function", local: false });
+	const declaration = declare(w, scope, name, wordRange(w, node.name), range, {
+		kind: "function",
+		local: false,
+		header: { start: node.pos, end: node.body.pos },
+	});
 	declaration.metrics = { lines: range.end.line - range.start.line + 1 };
 	walkWord(w, scope, node.name, false);
 	const own = parseSymbolId(declaration.symbolId)?.descriptors.at(-1) ?? { kind: "method", name };
@@ -205,7 +210,10 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 			break;
 		case "For":
 		case "Select":
-			declareOrWriteWord(w, scope, node.name);
+			declareOrWriteWord(w, scope, node.name, (word) => ({
+				start: node.pos,
+				end: (node.wordlist.at(-1) ?? word).end,
+			}));
 			walkWords(w, scope, node.wordlist);
 			walkNode(w, scope, node.body);
 			break;
@@ -221,7 +229,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 			}
 			break;
 		case "Coproc":
-			declareOrWriteWord(w, scope, node.name, "array");
+			declareOrWriteWord(w, scope, node.name, (word) => ({ start: node.pos, end: word.end }), "array");
 			walkNode(w, subshell(scope), node.body);
 			for (const redirect of node.redirects) walkRedirect(w, scope, redirect);
 			break;
@@ -270,15 +278,19 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		coordinates: coordinatesOf(source),
 		out,
 		pending: [],
+		headers: [],
 		heredocNext: 0,
 		minted: new Map(),
 		definedIn: new WeakMap(),
 		statements: (scope, statements) => walkStatements(w, scope, statements),
 		opaque: [],
+		quoted: [],
 	};
 	walkStatements(w, { locals: new Map(), confined: false }, script.commands);
 	settle(w);
-	out.comments = commentsIn(w);
+	const comments = commentRanges(w);
+	out.comments = commentSpans(w, comments);
+	signHeaders(w, comments);
 	for (const error of script.errors ?? []) {
 		out.diagnostics.push({
 			severity: "error",

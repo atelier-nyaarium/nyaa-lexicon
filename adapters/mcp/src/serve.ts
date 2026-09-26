@@ -111,7 +111,7 @@ function backendOver(ask: Asker): ToolBackend {
 		findComments: (query) => ask("findComments", query),
 		findDocs: (query) => ask("findDocs", query),
 		coChangedWith: (module, limit) => ask("coChangedWith", { module, limit }),
-		searchSymbols: (text, options) => ask("searchSymbols", { ...defined({ text }), ...options }),
+		searchSymbols: (query) => ask("searchSymbols", query),
 		outlineModule: (module) => ask("outlineModule", { module }),
 		fileNotes: (module) => ask("fileNotes", { module }),
 		findImports: (query) => ask("findImports", query),

@@ -7,6 +7,7 @@ import {
 	type Diagnostic,
 	defined,
 	type FileRole,
+	type HeaderSpan,
 	type Import,
 	type Literal,
 	type Range,
@@ -77,6 +78,12 @@ export interface Pending {
 	scope: Scope;
 }
 
+/** A header, rendered once comments are known. */
+export interface PendingHeader {
+	declaration: BashDeclaration;
+	span: HeaderSpan;
+}
+
 export interface Walk {
 	module: string;
 	/** The text unbash read: the file without its byte order mark. */
@@ -86,6 +93,7 @@ export interface Walk {
 	coordinates: TextCoordinates;
 	out: ParsedBashFile;
 	pending: Pending[];
+	headers: PendingHeader[];
 	/** Where the next here-document body may begin; bodies on one line stack. */
 	heredocNext: number;
 	/** Name paths already minted, so a repeat carries an occurrence. */
@@ -96,6 +104,8 @@ export interface Walk {
 	statements: (scope: Scope, statements: Statement[]) => void;
 	/** Start and end pairs of every span a `#` is data in; a `#` outside them opens a comment. */
 	opaque: number[];
+	/** Start and end pairs of every quoted part, which a header keeps as written. */
+	quoted: number[];
 }
 
 export interface DeclareOptions {
@@ -106,6 +116,8 @@ export interface DeclareOptions {
 	exported?: boolean;
 	declaredType?: DeclaredType;
 	languageKind?: string;
+	/** Offsets into the text; comments removed later. */
+	header: HeaderSpan;
 }
 
 ////////////////////////////////
@@ -114,6 +126,7 @@ export interface DeclareOptions {
 export const LANGUAGE = "bash";
 
 export const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/;
 /** A function may carry what a variable may not, short of the shell's own metacharacters. */
 export const FUNCTION_NAME_RE = /^[A-Za-z_.][A-Za-z0-9_.:@+,-]*$/;
 const NUMBER_RE = /^[0-9]+$/;

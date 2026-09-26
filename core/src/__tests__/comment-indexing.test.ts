@@ -14,8 +14,10 @@ import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
-import { IndexStore } from "../store";
+import { HiddenModules, IndexStore } from "../store";
 import { fakeSupervisor } from "./fakeProvider";
+
+const ALL = { hidden: HiddenModules.none };
 
 ////////////////////////////////
 //  Helpers
@@ -116,7 +118,7 @@ describe("indexing comments", () => {
 		expect(attached[0]?.form).toBe("leading");
 		// The phrase spans the wrap, so raw never spells it and normalized does.
 		expect(attached[0]?.raw).toContain("\n");
-		expect(store.commentsContaining("than clamping", 10)).toHaveLength(1);
+		expect(store.commentsContaining("than clamping", 10, ALL)).toHaveLength(1);
 	});
 
 	it("derives a symbol's documentation from the comment above it", async () => {
@@ -251,13 +253,13 @@ describe("indexing comments", () => {
 		await service.indexWorkspace();
 
 		expect(service.commentsFor(idOf("work"))).toHaveLength(1);
-		expect(store.commentsToScan(50)).toHaveLength(1);
+		expect(store.commentsToScan(50, ALL)).toHaveLength(1);
 	});
 
 	it("stores nothing for a file whose provider reports no comments", async () => {
 		const service = await index({ text: "work\n", declarations: [decl("work", 0, 0)], comments: [] });
 
 		expect(service.commentsFor(idOf("work"))).toEqual([]);
-		expect(store.commentsToScan(50)).toEqual([]);
+		expect(store.commentsToScan(50, ALL)).toEqual([]);
 	});
 });

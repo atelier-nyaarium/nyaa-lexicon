@@ -1,6 +1,6 @@
 // The file's comments: every `#` outside the spans the walk saw a `#` as data in, to its line's end.
 
-import type { CommentSpan } from "@nyaa-lexicon/protocol";
+import type { CommentSpan, OffsetRange } from "@nyaa-lexicon/protocol";
 import { rangeAt, type Walk } from "./context.js";
 
 ////////////////////////////////
@@ -20,10 +20,11 @@ function mergedOpaque(w: Walk): number[] {
 	return merged;
 }
 
-export function commentsIn(w: Walk): CommentSpan[] {
+/** Offsets into the walked text, in file order. */
+export function commentRanges(w: Walk): OffsetRange[] {
 	const text = w.text;
 	const opaque = mergedOpaque(w);
-	const comments: CommentSpan[] = [];
+	const comments: OffsetRange[] = [];
 	let span = 0;
 	let at = text.indexOf("#");
 	while (at !== -1) {
@@ -36,8 +37,12 @@ export function commentsIn(w: Walk): CommentSpan[] {
 		let end = newline === -1 ? text.length : newline;
 		if (text[end - 1] === "\r") end--;
 		// The shebang counts: it is lexically a comment, and the corpus expects it reported.
-		comments.push({ range: rangeAt(w, at, end), text: text.slice(at, end) });
+		comments.push({ start: at, end });
 		at = text.indexOf("#", end);
 	}
 	return comments;
+}
+
+export function commentSpans(w: Walk, comments: readonly OffsetRange[]): CommentSpan[] {
+	return comments.map(({ start, end }) => ({ range: rangeAt(w, start, end), text: w.text.slice(start, end) }));
 }

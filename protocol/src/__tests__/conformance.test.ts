@@ -485,6 +485,19 @@ describe("checking answers", () => {
 		);
 	});
 
+	it("holds a signature to its exact text, and every signature to one line", () => {
+		const testCase = { declarations: [{ name: "a", signature: "a(x)" }] } as ConformanceCase;
+		expect(checkFacts(testCase, facts({ declarations: [decl("a", { signature: "a(x)" })] }))).toEqual([]);
+		expect(checkFacts(testCase, facts({ declarations: [decl("a", { signature: "a(y)" })] }))).toHaveLength(1);
+		expect(checkFacts(testCase, facts({ declarations: [decl("a")] }))).toHaveLength(1);
+		for (const signature of ["a(\n\tx)", " a(x)", "a(\tx)", "a(x) "]) {
+			const unchecked = facts({ declarations: [decl("b", { signature })] });
+			expect(checkFacts({} as ConformanceCase, unchecked), JSON.stringify(signature)).toHaveLength(1);
+		}
+		const literal = facts({ declarations: [decl("b", { signature: 'b = "x  y"' })] });
+		expect(checkFacts({} as ConformanceCase, literal)).toEqual([]);
+	});
+
 	describe("file roles", () => {
 		it("checks a main entry against its declared symbol, by name and line", () => {
 			const onLine = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 4 } });

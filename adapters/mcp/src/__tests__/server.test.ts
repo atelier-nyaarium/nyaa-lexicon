@@ -128,10 +128,10 @@ function searchSource(routes: string[], optionsSeen: Array<Record<string, unknow
 				fullFiles: 1,
 				outlineFiles: 0,
 			}),
-			searchSymbols: async (text, options) => {
+			searchSymbols: async (options) => {
 				optionsSeen.push(options);
 				return {
-					text,
+					text: options.text,
 					...(typeof options.regex === "string" ? { regex: options.regex } : {}),
 					symbols: [],
 					total: 0,
@@ -416,7 +416,7 @@ describe("query project routing", () => {
 					fullFiles: 1,
 					outlineFiles: 0,
 				}),
-				searchSymbols: async (text) => {
+				searchSymbols: async ({ text }) => {
 					if (text !== undefined) seen.push(text);
 					return { text, symbols: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},

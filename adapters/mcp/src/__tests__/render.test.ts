@@ -209,6 +209,26 @@ describe("explaining where a workspace's files went", () => {
 	});
 });
 
+describe("an outline row", () => {
+	it("ends with its reference count after the signature, and with nothing when the count is absent", () => {
+		const row = (extra: Record<string, unknown>) => ({
+			symbolId: "lexicon ts src/a.ts add().",
+			name: "add",
+			kind: "function" as const,
+			module: "src/a.ts",
+			exported: true,
+			visibility: "public" as const,
+			signature: "export function add(a: number): number",
+			...extra,
+		});
+
+		expect(renderOutline("src/a.ts", [row({ referenceCount: 3 })])).toContain(
+			"`export function add(a: number): number` refs=3",
+		);
+		expect(renderOutline("src/a.ts", [row({})])).not.toContain("refs=");
+	});
+});
+
 describe("showing what a provider said while reading", () => {
 	const note = {
 		severity: "info" as const,

@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach.js";
-import { IndexStore } from "../store";
+import { HiddenModules, IndexStore } from "../store";
+
+const ALL = { hidden: HiddenModules.none };
 
 ////////////////////////////////
 //  Helpers
@@ -93,8 +95,8 @@ describe("storing comments", () => {
 			],
 		});
 
-		expect(store.commentsContaining("than clamping", 10)).toHaveLength(1);
-		expect(store.commentsContaining("nothing here", 10)).toEqual([]);
+		expect(store.commentsContaining("than clamping", 10, ALL)).toHaveLength(1);
+		expect(store.commentsContaining("nothing here", 10, ALL)).toEqual([]);
 	});
 
 	it("treats a LIKE wildcard in the query as a literal character", () => {
@@ -112,7 +114,7 @@ describe("storing comments", () => {
 			],
 		});
 
-		expect(store.commentsContaining("100%", 10).map((item) => item.normalized)).toEqual(["100% sure"]);
+		expect(store.commentsContaining("100%", 10, ALL).map((item) => item.normalized)).toEqual(["100% sure"]);
 	});
 
 	it("keeps a module-level comment anchored to nothing", () => {
@@ -127,7 +129,7 @@ describe("storing comments", () => {
 			comments: [{ ...comment("// Copyright someone", null), form: "standalone", placement: "inside" }],
 		});
 
-		const [found] = store.commentsToScan(10);
+		const [found] = store.commentsToScan(10, ALL);
 		expect(found?.anchorId).toBeNull();
 		expect(found?.form).toBe("standalone");
 	});
@@ -147,7 +149,7 @@ describe("storing comments", () => {
 			],
 		});
 
-		expect(store.commentsToScan(10, { form: "trailing" }).map((item) => item.raw)).toEqual(["// trails"]);
+		expect(store.commentsToScan(10, { ...ALL, form: "trailing" }).map((item) => item.raw)).toEqual(["// trails"]);
 	});
 
 	// The invariant: an anchor is rewritten by the next pass, never carried forward. A symbol that
@@ -194,7 +196,7 @@ describe("storing comments", () => {
 
 		store.forgetFile("src/a.ts");
 
-		expect(store.commentsToScan(10)).toEqual([]);
+		expect(store.commentsToScan(10, ALL)).toEqual([]);
 	});
 
 	// Two identical comments in one file are two facts, exactly as two identical literals are.
@@ -219,7 +221,7 @@ describe("storing comments", () => {
 			],
 		});
 
-		expect(store.commentsToScan(10)).toHaveLength(2);
+		expect(store.commentsToScan(10, ALL)).toHaveLength(2);
 	});
 
 	it("gives every comment a parseable fact id", () => {
@@ -234,7 +236,7 @@ describe("storing comments", () => {
 			comments: [comment("// docs", null)],
 		});
 
-		const [found] = store.commentsToScan(10);
+		const [found] = store.commentsToScan(10, ALL);
 		expect(found?.factId).toMatch(/^lexfact comment /);
 	});
 });

@@ -21,9 +21,12 @@ import {
 } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
+	type CommittedFile,
 	moduleOf,
 	type RefactorBeforeImage,
 	type RefactorIssue,
+	resolveContained,
+	type StepBase,
 	type StepKind,
 	type StepPhase,
 	type TransactionStatus,
@@ -48,6 +51,7 @@ import {
 	refactorChangedSinceShown,
 	refactorDriftChangedSinceShown,
 	refactorPathLeavesWorkspace,
+	stepOutsideBases,
 	transactionAlreadyOpen,
 	undoWouldDiscard,
 	unresolvedIssues,
@@ -59,7 +63,7 @@ import type { AppliedRebind, KeptRebind, RebindEntry, RebindEvidence, RebindResu
 
 export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
 
-import { containedWorkspaceFile, insideWorkspace } from "./sourceRead.js";
+import { insideWorkspace } from "./sourceRead.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -99,7 +103,7 @@ export interface Expectation {
 	revision: number;
 }
 
-export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: Refusal };
+export type StepOutcome = { ok: true; stepNo: number } | { ok: false; reason: Refusal; unexpected?: StepBase[] };
 
 type RecoveryIntent = {
 	operation: "undo" | "revert";
@@ -107,7 +111,7 @@ type RecoveryIntent = {
 	diskStates: DiskState[] | null;
 };
 
-/** `explicit` from `refactor_start`, `own` from a standalone step. */
+/** `explicit` from `refactor_start`, `own` from a step that opens its own. */
 export type TransactionOrigin = "explicit" | "own";
 
 export interface Recovered {
@@ -290,13 +294,14 @@ export class TransactionManager {
 	/** Records the opening image. See `docs/architecture.md` Refactor transactions. */
 	track(module: string): TrackedFile {
 		const open = this.openTransaction();
-		if (!open) return { tracked: false, reason: noTransactionOpen() };
+		if (!open) return { tracked: false, refactor: null, reason: noTransactionOpen() };
 
-		if (this.imageFor(open.id, "baseline", 0, module)) return { tracked: true };
+		const refactor = { id: open.id };
+		if (this.imageFor(open.id, "baseline", 0, module)) return { tracked: true, refactor };
 		const image = this.snapshot(module);
-		if ("foreign" in image) return { tracked: false, reason: notARegularFile(module, image.foreign) };
+		if ("foreign" in image) return { tracked: false, refactor, reason: notARegularFile(module, image.foreign) };
 		this.claimBaseline(open.id, image);
-		return { tracked: true };
+		return { tracked: true, refactor };
 	}
 
 	/** Applies an editor state note. See `docs/daemon-protocol.md` `refactorNoteWrite`. */
@@ -425,6 +430,7 @@ export class TransactionManager {
 		modules: string[],
 		plan?: unknown,
 		plannedText?: Array<{ module: string; text: string }>,
+		expect?: { writes: string[]; bases: StepBase[] },
 	): StepOutcome {
 		const open = this.openTransaction();
 		if (!open) return { ok: false, reason: noTransactionOpen() };
@@ -435,6 +441,17 @@ export class TransactionManager {
 			const image = this.snapshot(module);
 			if ("foreign" in image) return { ok: false, reason: notARegularFile(module, image.foreign) };
 			images.push(image);
+		}
+
+		if (expect !== undefined) {
+			const shown = new Map(expect.bases.map((base) => [base.module, base.contentHash]));
+			const unexpected = images
+				.filter((image) => expect.writes.includes(image.module))
+				.filter((image) => !shown.has(image.module) || shown.get(image.module) !== image.hash)
+				.map((image) => ({ module: image.module, contentHash: image.hash }));
+			if (unexpected.length > 0) {
+				return { ok: false, reason: stepOutsideBases(unexpected.map((base) => base.module)), unexpected };
+			}
 		}
 
 		this.store.journalWrite((db) => {
@@ -534,6 +551,15 @@ export class TransactionManager {
 			});
 			return result;
 		});
+	}
+
+	/** A step's modules and hashes; gone after commit. */
+	stepFiles(stepNo: number): CommittedFile[] {
+		const open = this.openTransaction();
+		if (!open) return [];
+		return this.imagesOf(open.id, "step", stepNo)
+			.map((image) => ({ module: image.module, before: image.beforeHash, after: image.afterHash }))
+			.sort((left, right) => (left.module < right.module ? -1 : left.module > right.module ? 1 : 0));
 	}
 
 	recordIssues(stepNo: number, issues: RefactorIssue[]): void {
@@ -864,6 +890,12 @@ export class TransactionManager {
 		return insideWorkspace(this.workspaceRoot, module);
 	}
 
+	/** The leaf itself, never its link target; null if outside. */
+	private contained(module: string): string | null {
+		const where = resolveContained(this.workspaceRoot, module, "keep");
+		return where.kind === "outside" ? null : where.path;
+	}
+
 	/** Reads regular files without following links. */
 	private snapshot(module: string): PathState {
 		const leaf = readLeaf(this.full(module));
@@ -876,7 +908,7 @@ export class TransactionManager {
 	}
 
 	private diskState(module: string): DiskState {
-		const full = containedWorkspaceFile(this.workspaceRoot, module);
+		const full = this.contained(module);
 		if (full === null) return { module, kind: "outside" };
 		const leaf = readLeaf(full);
 		if (leaf.kind === "missing") return { module, kind: "missing" };
@@ -978,7 +1010,7 @@ export class TransactionManager {
 	private directoriesAt(images: Array<{ module: string }>): string[] {
 		return images
 			.filter((image) => {
-				const full = containedWorkspaceFile(this.workspaceRoot, image.module);
+				const full = this.contained(image.module);
 				return full !== null && lstatOf(full)?.isDirectory() === true;
 			})
 			.map((image) => image.module);
@@ -986,7 +1018,7 @@ export class TransactionManager {
 
 	/** Replaces or removes a leaf without following links; directories block restore. */
 	private restore(image: { module: string; existedBefore: boolean; beforeHash: string | null }): boolean {
-		const full = containedWorkspaceFile(this.workspaceRoot, image.module);
+		const full = this.contained(image.module);
 		if (full === null) return false;
 		if (lstatOf(full)?.isDirectory() === true) return false;
 

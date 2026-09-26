@@ -6,14 +6,16 @@ import {
 	DAEMON_METHODS,
 	type DaemonMethod,
 	defined,
+	exclusionConfirmed,
 	methodMutates,
+	PROTOCOL_VERSION,
 	type RequestOf,
 	type ResponseOf,
 	requestRule,
 } from "@nyaa-lexicon/protocol";
 import { DaemonRef } from "./daemonRef.js";
 import { type EnsureMode, ensureDaemon, ensureFailure, type InstallSource } from "./ensure.js";
-import { DaemonError } from "./errors.js";
+import { DaemonError, unfiltered } from "./errors.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./transport.js";
 
 ////////////////////////////////
@@ -48,6 +50,8 @@ export interface DaemonChannel {
 interface Open {
 	client: FrameClient;
 	from: DaemonRef;
+	/** The daemon's own declared protocol version. */
+	protocolVersion: string;
 }
 
 interface Attempt {
@@ -96,7 +100,7 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 			from,
 			...defined({ patience: options.patience, onWaiting: options.onWaiting, budgetMs: options.budgetMs }),
 		});
-		return { client, from };
+		return { client, from, protocolVersion: daemon.lock.protocolVersion };
 	}
 
 	function begin(mode: EnsureMode): Attempt {
@@ -173,6 +177,10 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 				"daemon",
 				{ from },
 			);
+		}
+		// A returned answer always confirms it applied `exclude`.
+		if (!exclusionConfirmed(method, params, parsed.data)) {
+			throw unfiltered(method, PROTOCOL_VERSION, current.protocolVersion);
 		}
 		return parsed.data as ResponseOf<M>;
 	}

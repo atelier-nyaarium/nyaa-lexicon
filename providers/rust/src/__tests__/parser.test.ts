@@ -306,7 +306,7 @@ impl Render<String> for Ref<'_> {
 	expect(methods[0]?.containerId).toBe(trait.symbolId);
 	expect(methods[1]?.containerId).toBe(referenceType.symbolId);
 	expect(methods[1]?.languageKind).toBe("traitImplMethod");
-	expect(methods[1]?.signature).toContain("impl Render<String>");
+	expect(methods[1]?.signature).toBe("fn render<'a>(&'a self, value: String) -> &'a str");
 	expect(methods[1]?.metrics?.parameters).toBe(2);
 	expect(provider.typeOf({ symbolId: methods[1]?.symbolId ?? "" })).toMatchObject({
 		status: "known",

@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { journaledStep, type PlannedStep, type StepHold, StepRefusal } from "../refactorStep";
+import { type CommittedFile, hashContent } from "@nyaa-lexicon/protocol";
+import {
+	journaledStep,
+	type PlannedStep,
+	type RefusedWith,
+	type StepHold,
+	type StepPolicy,
+	StepRefusal,
+} from "../refactorStep";
 import { changedWhilePlanned } from "../refusals";
 import type { LexiconService } from "../service";
 import { IndexStore } from "../store";
@@ -21,7 +29,9 @@ interface Outcome {
 	ok: boolean;
 	issues: RefactorIssue[];
 	reason?: string;
+	why?: RefusedWith | undefined;
 	hold?: StepHold;
+	files?: CommittedFile[];
 }
 
 function write(module: string, text: string) {
@@ -48,17 +58,18 @@ const service = {
 	},
 } as unknown as LexiconService;
 
-function run(parts: Partial<PlannedStep> & Pick<PlannedStep, "apply">, standalone = false): Promise<Outcome> {
+function run(parts: Partial<PlannedStep> & Pick<PlannedStep, "apply">, hold: StepPolicy = "join"): Promise<Outcome> {
 	return journaledStep<Outcome>(
 		{ service, transactions, write: (work) => Promise.resolve(work()) },
 		{
 			kind: "replace",
-			standalone,
-			refuse: (reason, issues) => ({ ok: false, issues, reason }),
-			succeed: (issues, hold) => ({ ok: true, issues, hold }),
+			hold,
+			refuse: (reason, issues, why) => ({ ok: false, issues, reason, why }),
+			succeed: (issues, hold, files) => ({ ok: true, issues, hold, files }),
 			plan: async () => ({
 				planned: {
 					modules: ["src/a.ts"],
+					writes: ["src/a.ts"],
 					stale: () => null,
 					reindex: ["src/a.ts"],
 					issues: [],
@@ -236,18 +247,31 @@ describe("the one failure policy every operation now shares", () => {
 	});
 });
 
-describe("a standalone step", () => {
+describe("a step that opens its own transaction when none is open", () => {
 	it("opens a transaction of its own when none is open, and leaves none open once written", async () => {
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, true);
+		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, "joinOrOwn");
 
 		expect(outcome).toMatchObject({ ok: true, hold: "own" });
 		expect(read("src/a.ts")).toBe("after\n");
 		expect(transactions.start().started).toBe(true);
 	});
 
+	it("closes its own transaction when journaling throws, and writes nothing", async () => {
+		transactions = new (class extends TransactionManager {
+			override beginStep(): never {
+				throw new Error("EACCES");
+			}
+		})(store, root);
+		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, "joinOrOwn");
+
+		expect(outcome.ok).toBe(false);
+		expect(read("src/a.ts")).toBe("before\n");
+		expect(transactions.status().open).toBe(false);
+	});
+
 	it("writes into a transaction someone else opened, and leaves it theirs to undo or close", async () => {
 		transactions.start();
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, true);
+		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, "joinOrOwn");
 
 		expect(outcome).toMatchObject({ ok: true, hold: "joined" });
 		expect(transactions.start().started).toBe(false);
@@ -258,7 +282,7 @@ describe("a standalone step", () => {
 	it("closes its own transaction when refused inside the gate, and after a failed apply it undid", async () => {
 		const stale = await run(
 			{ stale: () => changedWhilePlanned("src/a.ts", "step"), apply: () => write("src/a.ts", "after\n") },
-			true,
+			"joinOrOwn",
 		);
 		expect(stale.ok).toBe(false);
 		expect(transactions.start().started).toBe(true);
@@ -271,7 +295,7 @@ describe("a standalone step", () => {
 					throw new StepRefusal("the provider said no");
 				},
 			},
-			true,
+			"joinOrOwn",
 		);
 		expect(failed.ok).toBe(false);
 		expect(read("src/a.ts")).toBe("before\n");
@@ -287,11 +311,57 @@ describe("a standalone step", () => {
 					throw new Error("boom");
 				},
 			},
-			true,
+			"joinOrOwn",
 		);
 
 		expect(outcome.reason).toMatch(/could not be written: boom; src\/a\.ts matched neither image/);
 		expect(read("src/a.ts")).toBe("junk that matches neither image\n");
 		expect(transactions.start().started).toBe(true);
+	});
+});
+
+describe("a step that commits its own transaction", () => {
+	const before = hashContent("before\n");
+
+	it("refuses while a refactor is open, naming it, and writes nothing", async () => {
+		const open = transactions.start();
+		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, { own: [] });
+
+		expect(outcome).toMatchObject({ ok: false, why: { openRefactor: { id: open.id } } });
+		expect(read("src/a.ts")).toBe("before\n");
+		expect(transactions.status().steps).toEqual([]);
+	});
+
+	it("refuses a written module missing from its bases or off its hash, saying where it stands", async () => {
+		for (const bases of [[], [{ module: "src/a.ts", contentHash: "0".repeat(32) }]]) {
+			const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, { own: bases });
+
+			expect(outcome).toMatchObject({
+				ok: false,
+				why: { unexpected: [{ module: "src/a.ts", contentHash: before }] },
+			});
+			expect(read("src/a.ts")).toBe("before\n");
+			expect(transactions.status().open).toBe(false);
+		}
+	});
+
+	it("takes extra bases and needs none for a module it only reindexes, and answers what it wrote", async () => {
+		write("src/b.ts", "bound\n");
+		const outcome = await run(
+			{ modules: ["src/a.ts", "src/b.ts"], reindex: ["src/b.ts"], apply: () => write("src/a.ts", "after\n") },
+			{
+				own: [
+					{ module: "src/a.ts", contentHash: before },
+					{ module: "src/unrelated.ts", contentHash: null },
+				],
+			},
+		);
+
+		expect(outcome).toMatchObject({
+			ok: true,
+			hold: "own",
+			files: [{ module: "src/a.ts", before, after: hashContent("after\n") }],
+		});
+		expect(transactions.status().open).toBe(false);
 	});
 });

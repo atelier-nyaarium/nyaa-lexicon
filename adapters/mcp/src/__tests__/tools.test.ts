@@ -77,7 +77,7 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			truncated: false,
 			count: { kind: "exact", count: 0 },
 		}),
-		searchSymbols: async (text) => ({
+		searchSymbols: async ({ text }) => ({
 			text,
 			symbols: [],
 			total: 0,
@@ -863,7 +863,7 @@ describe("refusing a search term the store cannot match as written", () => {
 		let asked = 0;
 		const result = await searchSymbols(
 			backend({
-				searchSymbols: async (text) => {
+				searchSymbols: async ({ text }) => {
 					asked += 1;
 					return { text, symbols: [], total: 0, truncated: false, count: { kind: "exact", count: 0 } };
 				},

@@ -2,6 +2,7 @@
 
 import { coordinatesOf, defined, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import { Cursor } from "./cursor.js";
+import { HeaderReader, type HeaderStop } from "./header.js";
 import { basenameOf, containsCharacter, indentOf, isIgnorable, parseLineHead, parseLineHeads } from "./line-syntax.js";
 import type {
 	ActiveEnum,
@@ -11,13 +12,14 @@ import type {
 	DeclarationKind,
 	Descriptor,
 	ParsedKeyword,
+	ParsedLine,
 	ReferenceToken,
 	Scope,
 	SourceLine,
 	Token,
 	Visibility,
 } from "./parse-model.js";
-import { readLines } from "./source-scan.js";
+import { readLines, scanSource } from "./source-scan.js";
 import { matchingReferenceToken, nextReferenceToken, referenceTokens } from "./tokens.js";
 
 //////// Declarations
@@ -58,21 +60,25 @@ function visibilityOf(name: string, local: boolean): Visibility {
 	return name.startsWith("_") ? "private" : "public";
 }
 
-function signatureOf(line: SourceLine): string | undefined {
-	const cursor = new Cursor(line.text);
-	cursor.skipWhitespace();
-	let signature = "";
-	while (cursor.good()) signature += cursor.next();
-	return signature === "" ? undefined : signature;
+function nameEndOf(token: Token): number {
+	return token.start + token.name.length;
 }
 
-function signatureOfLines(lines: SourceLine[]): string | undefined {
-	const signatures: string[] = [];
-	for (const line of lines) {
-		const signature = signatureOf(line);
-		if (signature !== undefined) signatures.push(signature);
-	}
-	return signatures.length === 0 ? undefined : signatures.join("\n");
+/** Where the header stops, and whether its colon opens a type. */
+function lineHeader(headers: HeaderReader, line: SourceLine, parsed: ParsedLine, name: Token): string | undefined {
+	const keyword = parsed.keyword;
+	const stop: HeaderStop =
+		keyword === "func" || keyword === "var" || keyword === "const" || keyword === "for" || keyword === "class"
+			? "colon"
+			: keyword === "enum"
+				? "brace"
+				: "line";
+	const typed = keyword === "var" || keyword === "const" || keyword === "for";
+	return headers.header({ line, head: parsed.head, nameEnd: nameEndOf(name), stop, typed });
+}
+
+function memberHeader(headers: HeaderReader, line: SourceLine, member: Token): string | undefined {
+	return headers.header({ line, head: member.start, nameEnd: nameEndOf(member), stop: "member" });
 }
 
 function functionHeaderComplete(lines: SourceLine[]): boolean {
@@ -163,12 +169,12 @@ function makeDeclaration(
 	scope: Scope,
 	languageKind: string | undefined,
 	visibility: Visibility,
+	signature: string | undefined,
 	exported?: boolean,
 ): DeclarationFact {
 	const descriptors = [...scope.descriptors, descriptorFor(keyword, name)];
 	const symbolId = compose({ language: "gdscript", module, descriptors });
 	const local = scope.functionScope;
-	const signature = signatureOf(line);
 	return {
 		symbolId,
 		kind: declarationKindFor(keyword, local),
@@ -189,6 +195,7 @@ function makeImplicitClass(
 	line: SourceLine,
 	name: string,
 	className: Token | null,
+	signature: string | undefined,
 ): DeclarationFact {
 	const token = className ?? { name, start: 0 };
 	const symbolId = compose({
@@ -196,7 +203,6 @@ function makeImplicitClass(
 		module,
 		descriptors: [{ kind: "type", name }],
 	});
-	const signature = signatureOf(line);
 	return {
 		symbolId,
 		kind: "class",
@@ -205,7 +211,7 @@ function makeImplicitClass(
 		range: rangeOf(coordinates, line),
 		selectionRange: selectionRangeOf(line, token),
 		visibility: visibilityOf(name, false),
-		...(className === null || signature === undefined ? {} : { signature }),
+		...defined({ signature }),
 	};
 }
 
@@ -381,12 +387,18 @@ function multilineEnumMember(line: SourceLine): Token | null {
 
 export function extractGdscript(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
 	const coordinates = coordinatesOf(text);
-	const lines = readLines(text);
+	const scanned = scanSource(text);
+	const lines = scanned.lines;
+	const headers = new HeaderReader(text, scanned);
 	const tokens = referenceTokens(lines);
 	const classLine = lines
 		.map((line) => ({ line, parsed: parseLineHeads(line).find((candidate) => candidate.keyword === "class_name") }))
 		.find((entry) => entry.parsed?.keyword === "class_name" && entry.parsed.name !== null);
 	const className = classLine?.parsed?.name ?? null;
+	const classHeader =
+		classLine?.parsed === undefined || className === null
+			? undefined
+			: lineHeader(headers, classLine.line, classLine.parsed, className);
 	const rootName = className?.name ?? basenameOf(module);
 	const rootLine = classLine?.line ?? {
 		line: 0,
@@ -396,7 +408,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 		stringStarts: [],
 		endsInString: false,
 	};
-	const root = makeImplicitClass(compose, module, coordinates, rootLine, rootName, className);
+	const root = makeImplicitClass(compose, module, coordinates, rootLine, rootName, className, classHeader);
 	// The script IS the class, so the root's range spans the whole file. A one-line range here made
 	// a class-level move relocate only the class_name line and orphan every member behind it.
 	const firstLine = lines[0] ?? rootLine;
@@ -424,8 +436,6 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					activeFunctionHeader.lines[0] as SourceLine,
 					line,
 				);
-				const signature = signatureOfLines(activeFunctionHeader.lines);
-				if (signature !== undefined) activeFunctionHeader.declaration.signature = signature;
 				addFunctionParameters(
 					declarations,
 					module,
@@ -475,6 +485,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 						},
 						"enumMember",
 						visibilityOf(member.name, false),
+						memberHeader(headers, line, member),
 					);
 					declarations.push(declaration);
 				}
@@ -508,6 +519,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					scope,
 					"innerClass",
 					visibilityOf(parsed.name.name, false),
+					lineHeader(headers, line, parsed, parsed.name),
 				);
 				declarations.push(declaration);
 				scopes.push({
@@ -530,6 +542,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					scope,
 					"enum",
 					visibilityOf(parsed.name.name, false),
+					lineHeader(headers, line, parsed, parsed.name),
 				);
 				declarations.push(declaration);
 				for (const member of enumMembers(line)) {
@@ -548,6 +561,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 						},
 						"enumMember",
 						visibilityOf(member.name, false),
+						memberHeader(headers, line, member),
 					);
 					declarations.push(memberDeclaration);
 				}
@@ -584,6 +598,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 				scope,
 				languageKind,
 				visibilityOf(parsed.name.name, local),
+				lineHeader(headers, line, parsed, parsed.name),
 			);
 			if (parsed.keyword === "var") {
 				declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lines, lineIndex, indent));
@@ -773,9 +788,17 @@ function addDeclarationMetrics(declarations: DeclarationFact[], text: string): D
 function extractGeneric(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
 	const declarations: DeclarationFact[] = [];
 	const coordinates = coordinatesOf(text);
-	for (const line of readLines(text)) {
+	const scanned = scanSource(text);
+	const headers = new HeaderReader(text, scanned);
+	for (const line of scanned.lines) {
 		const parsed = parseLineHead(line, true);
 		if (parsed === null || parsed.name === null) continue;
+		const signature = headers.header({
+			line,
+			head: parsed.head,
+			nameEnd: nameEndOf(parsed.name),
+			stop: parsed.keyword === "const" ? "line" : "brace",
+		});
 		const declaration = makeDeclaration(
 			compose,
 			module,
@@ -787,6 +810,7 @@ function extractGeneric(module: string, text: string, compose: ComposeSymbolId):
 			{ indent: -1, descriptors: [], containerId: "", functionScope: false },
 			undefined,
 			"public",
+			signature,
 			true,
 		);
 		declarations.push({

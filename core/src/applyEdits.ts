@@ -16,15 +16,16 @@ export type { FileEdits } from "@nyaa-lexicon/protocol";
 
 export type ApplyOutcome = WriteOutcome;
 
+/** A file's staged text, or the first refusal. */
+export type StagedEdits =
+	| { staged: Array<{ module: string; text: string }> }
+	| Extract<ApplyOutcome, { applied: false }>;
+
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Preflights every file. Writes can stop partway. */
-export function writeAll(
-	workspaceRoot: string,
-	files: Array<Pick<FileEdits, "module" | "edits">>,
-	readSource: SourceReader,
-): ApplyOutcome {
+/** Splices every file's edits without writing. */
+export function stageAll(files: Array<Pick<FileEdits, "module" | "edits">>, readSource: SourceReader): StagedEdits {
 	const staged: Array<{ module: string; text: string }> = [];
 
 	for (const file of files) {
@@ -38,6 +39,18 @@ export function writeAll(
 		if (unwritable !== null) return { applied: false, reason: unwritable, module: file.module };
 		staged.push({ module: file.module, text: result.text });
 	}
+	return { staged };
+}
+
+/** Preflights every file. Writes can stop partway. */
+export function writeAll(
+	workspaceRoot: string,
+	files: Array<Pick<FileEdits, "module" | "edits">>,
+	readSource: SourceReader,
+): ApplyOutcome {
+	const preflight = stageAll(files, readSource);
+	if (!("staged" in preflight)) return preflight;
+	const { staged } = preflight;
 
 	for (const file of staged) {
 		try {

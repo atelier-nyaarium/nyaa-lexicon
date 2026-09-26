@@ -28,24 +28,6 @@ export function contextOf(node: SyntaxNode): Context {
 	return "function";
 }
 
-export function leadingAnnotationsSkipped(node: SyntaxNode): SyntaxNode[] {
-	const out: SyntaxNode[] = [];
-	let leading = true;
-	for (const child of node.children) {
-		if (child.type === "modifiers") {
-			for (const modifier of child.children) {
-				if (leading && modifier.type === "annotation") continue;
-				leading = false;
-				out.push(modifier);
-			}
-			continue;
-		}
-		leading = false;
-		out.push(child);
-	}
-	return out;
-}
-
 export function until(nodes: SyntaxNode[], stop: (node: SyntaxNode) => boolean): SyntaxNode[] {
 	const index = nodes.findIndex(stop);
 	return index < 0 ? nodes : nodes.slice(0, index);

@@ -25,6 +25,7 @@ export {
 	DAEMON_METHODS,
 	type DaemonControl,
 	type DaemonMethod,
+	exclusionConfirmed,
 	isDaemonMethod,
 	LIFECYCLES,
 	type Lifecycle,
@@ -47,6 +48,8 @@ export {
 	parseDaemonLock,
 } from "./daemonRecords.js";
 export {
+	type AdmittedModule,
+	AdmittedModuleSchema,
 	type Answer,
 	type AnswerHealth,
 	AnswerSchema,
@@ -77,6 +80,10 @@ export {
 	CommentsResultSchema,
 	type CommitsMentioningResult,
 	CommitsMentioningResultSchema,
+	type CommittedFile,
+	CommittedFileSchema,
+	type CommittedStep,
+	CommittedStepSchema,
 	type ContentCounts,
 	ContentCountsSchema,
 	type ContentTotals,
@@ -217,6 +224,8 @@ export {
 	ReplaceSpanOutcomeSchema,
 	type ResolveFactsResult,
 	ResolveFactsResultSchema,
+	type ReverseStep,
+	ReverseStepSchema,
 	type ScanCounts,
 	ScanCountsSchema,
 	type ScopeQuestion,
@@ -231,6 +240,8 @@ export {
 	SharedLiteralsResultSchema,
 	type SourceReadOutcome,
 	SourceReadOutcomeSchema,
+	type StepBase,
+	StepBaseSchema,
 	type StepKind,
 	StepKindSchema,
 	type StepPhase,
@@ -331,6 +342,7 @@ export {
 	referenceFactId,
 } from "./factId.js";
 export { hashContent } from "./hash.js";
+export { FOLD_MARK, type HeaderFold, type HeaderSpan, renderHeader } from "./header.js";
 export {
 	BindRequestSchema,
 	DiscoverProjectRequestSchema,
@@ -357,6 +369,13 @@ export {
 	ResolveImportRequestSchema,
 	TypeOfRequestSchema,
 } from "./methods.js";
+export {
+	compileExclusion,
+	globToRegExp,
+	type ModuleExclusion,
+	ModuleExclusionSchema,
+} from "./moduleExclusion.js";
+export { ModulePathSchema } from "./modulePath.js";
 export {
 	type AsyncModuleStore,
 	type AsyncStoreSpec,
@@ -426,7 +445,6 @@ export {
 	angleDelta,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	discoverByWalk,
-	firstLineOfFile,
 	handlersFor,
 	type ProviderMethods,
 	projectDiagnostic,
@@ -463,7 +481,13 @@ export {
 	serveProvider,
 } from "./serve.js";
 export { firstLineOf, shebangInterpreter } from "./shebang.js";
-export { MAX_SOURCE_BYTES, readSourceFile, type SourceFileRead } from "./sourceFile.js";
+export {
+	MAX_SOURCE_BYTES,
+	type OutsideRead,
+	readWorkspaceFile,
+	readWorkspaceHead,
+	type SourceFileRead,
+} from "./sourceFile.js";
 export {
 	ANONYMOUS_NAMESPACE,
 	composeSymbolId,
@@ -487,6 +511,7 @@ export {
 	quoteName,
 	readIdField,
 	rebaseSymbolId,
+	reverseOf,
 	SYMBOL_SCHEME,
 	type SymbolId,
 	type SymbolIdPrefix,
@@ -537,3 +562,4 @@ export {
 	parseVersion,
 	type Version,
 } from "./version.js";
+export { type Contained, type LeafMode, resolveContained } from "./workspacePath.js";

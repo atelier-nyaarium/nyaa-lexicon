@@ -4,7 +4,7 @@
 // race the step's stale check exists for. The hold is released only after `between` has run. A
 // preview asks the same world with nothing held.
 
-import { applyEdits } from "@nyaa-lexicon/protocol";
+import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
 import { createDispatch } from "../dispatch";
 import { ReadContext } from "../readContext";
 import type { RefactorPlanner } from "../refactorPlanner";
@@ -43,6 +43,7 @@ const journal = {
 	completeStep: () => {},
 	recordIssues: () => {},
 	rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [] }),
+	stepFiles: () => [],
 } as unknown as TransactionManager;
 
 ////////////////////////////////
@@ -87,6 +88,11 @@ export async function stepWith(
 /** Fires when planning reads finish. */
 function serviceFor(world: StepWorld, written: Stepped["written"], planned: () => void): LexiconService {
 	const gate = new WorkspaceGate();
+	const editedText = (file: FileEdits): { module: string; text: string } => {
+		const applied = applyEdits(world.textOf?.(file.module) ?? "", file.edits);
+		if ("problem" in applied) throw new Error(applied.problem);
+		return { module: file.module, text: applied.text };
+	};
 	const answering =
 		<A extends unknown[], R>(plan: (...args: A) => Promise<R>) =>
 		async (...args: A): Promise<R> => {
@@ -110,7 +116,8 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 		rebaseIntoModule: (...args: Parameters<RefactorPlanner["rebaseIntoModule"]>) =>
 			world.planner.rebaseIntoModule(...args),
 		checkMoveLanded: (): unknown[] => [],
-		prepareRename: (...args: Parameters<RefactorPlanner["prepareRename"]>) => world.planner.prepareRename(...args),
+		renameEdits: (...args: Parameters<RefactorPlanner["renameEdits"]>) => world.planner.renameEdits(...args),
+		renameTexts: (files: FileEdits[]) => ({ texts: files.map(editedText) }),
 		renameIdMap: (...args: Parameters<RefactorPlanner["renameIdMap"]>) => world.planner.renameIdMap(...args),
 		// The last synchronous read a rename plan takes.
 		modulesBoundTo: (...args: Parameters<RefactorPlanner["modulesBoundTo"]>) => {
@@ -118,18 +125,9 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 			planned();
 			return answer;
 		},
-		renameSymbol: async (symbolId: string, newName: string) => {
-			const edits = await world.planner.renameEdits(symbolId, newName);
-			if (!edits.ok) return { renamed: false as const, plan: edits.plan, reason: edits.reason };
-			const modules: string[] = [];
-			for (const file of edits.files) {
-				const before = world.textOf?.(file.module) ?? "";
-				const applied = applyEdits(before, file.edits);
-				if ("problem" in applied) throw new Error(applied.problem);
-				written.push({ module: file.module, text: applied.text });
-				modules.push(file.module);
-			}
-			return { renamed: true as const, plan: edits.plan, modules };
+		writeRenameEdits: async (files: FileEdits[]) => {
+			written.push(...files.map(editedText));
+			return { modules: files.map((file) => file.module) };
 		},
 		factsMoved: (...args: Parameters<RefactorPlanner["factsMoved"]>) => world.planner.factsMoved(...args),
 		currentHashOf: (module: string) => world.currentHashOf(module),

@@ -1,15 +1,7 @@
 import { defined } from "@nyaa-lexicon/protocol";
 import type { DeclarationWalk, Scope } from "./declarationScope.js";
-import {
-	accessOf,
-	contextOf,
-	identifiers,
-	initializerOf,
-	leadingAnnotationsSkipped,
-	modifiersOf,
-	until,
-} from "./declarationShape.js";
-import { render } from "./render.js";
+import { accessOf, contextOf, identifiers, initializerOf, modifiersOf } from "./declarationShape.js";
+import { headerOf, parameterHeaderOf } from "./header.js";
 import { childOfType, childrenOfType, nameText, type SyntaxNode } from "./tree.js";
 import { TYPE_NODES } from "./typePaths.js";
 
@@ -27,14 +19,7 @@ export function property(walk: DeclarationWalk, node: SyntaxNode, scope: Scope):
 	if (variable === undefined || nameNode === undefined) return scope;
 	const modifiers = modifiersOf(walk.text, childOfType(node, "modifiers"));
 	const constant = modifiers.includes("const");
-	const header = until(
-		leadingAnnotationsSkipped(node),
-		(child) =>
-			child.type === "=" ||
-			child.type === "property_delegate" ||
-			child.type === "getter" ||
-			child.type === "setter",
-	);
+	const accessors = node.children.find((child) => child.type === "getter" || child.type === "setter");
 	const added = walk.sink.add({
 		node,
 		nameNode,
@@ -44,7 +29,7 @@ export function property(walk: DeclarationWalk, node: SyntaxNode, scope: Scope):
 		descriptorKind: "term",
 		scope,
 		access: accessOf(modifiers, context),
-		signature: render(walk.text, header, walk.lines),
+		signature: headerOf(walk.text, [node], accessors),
 		owns: true,
 	});
 	const beforeName = node.children.slice(0, node.children.indexOf(variable));
@@ -90,7 +75,7 @@ export function binder(
 		descriptorKind,
 		scope,
 		access: { visibility: "local", exported: false },
-		signature: render(walk.text, [variable], walk.lines),
+		signature: parameterHeaderOf(walk.text, [variable]),
 		owns: false,
 	});
 	walk.sink.declaredType(
@@ -111,12 +96,11 @@ export function catchParameter(walk: DeclarationWalk, node: SyntaxNode, nameNode
 		descriptorKind: "parameter",
 		scope,
 		access: { visibility: "local", exported: false },
-		signature: render(
+		signature: parameterHeaderOf(
 			walk.text,
 			type === undefined
 				? [nameNode]
 				: node.children.slice(node.children.indexOf(nameNode), node.children.indexOf(type) + 1),
-			walk.lines,
 		),
 		owns: false,
 	});

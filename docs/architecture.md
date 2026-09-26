@@ -141,10 +141,11 @@ prune and the ages.
 
 **A reader that derives topology takes a context; one that does not reads the store.** `describe`,
 `usesFrom`, `findReferences`, the two hierarchies, `mostReferenced`, `headingPath`, the scoped
-searches, `factsFor` and `knowledgeScope` all ask about nesting, locality, containment or a
-summary, so each mints one context and hands it down. `findByName`, `outline`, `declarationsIn`,
-`fileNotes`, `commentsFor` and `docsFor` ask nothing about nesting: they answer rows the store
-already orders, each summarized at most once, so a context would add an unused memo.
+searches, `factsFor`, `knowledgeScope` and `outline`, which leaves locals out, all ask about
+nesting, locality, containment or a summary, so each mints one context and hands it down.
+`findByName`, `declarationsIn`, `fileNotes`, `commentsFor` and `docsFor` ask nothing about nesting:
+they answer rows the store already orders, each summarized at most once, so a context would add an
+unused memo.
 
 `core/src/locals.ts` holds the per-module `Containment` and `ancestryOf`, the one container walk
 that a module's own rows and a store-resolved chain both take. `read-context-residue.test.ts` fails
@@ -276,6 +277,14 @@ say anything new about is dropped from the batch rather than granted admission b
 batch for it, so `core/src/fileScope.ts`'s `gitIgnored` and `generatedVerdicts` ask git about a
 submodule's own root (found from its gitlink stage entry, mode `160000`) rather than a path
 beneath it, fanning the root's verdict back out to every path the batch asked about under it.
+
+A module is read only where its real path stays under the workspace's real root. `resolveContained`
+in `protocol/src/workspacePath.ts` owns that check for reads and writes, and `readWorkspaceFile` in
+`protocol/src/sourceFile.ts` is the one reader, for the core and the provider kit alike. It opens
+the resolved file, then confirms a fresh resolve names the same device and inode, which narrows a
+link swapped between the check and the open. A tracked file link or an import through a directory
+link that leaves the workspace indexes as `unclaimed` with that reason, and its facts are forgotten,
+so a store written before the check forgets them on its next warm scan. A writer refuses it by name.
 
 A file whose last read failed is not retried by a batch that does not name it. The failure is about
 that file's own bytes, so only its own event can mean they moved, and retrying it every batch reads
@@ -471,10 +480,17 @@ intent, recovery leaves the intent pending. A parent link that resolves outside 
 the tracked path no safe hash, and Revert refuses until that path is brought back inside.
 
 A transaction records its origin. `refactor_start` opens an `explicit` one, which recovery leaves open
-because a session may still be holding it. A standalone step opens an `own` one inside the gate when
-none is open and commits it before answering, so nobody holds it after a crash: recovery closes it,
-committed when its step finalized and reverted otherwise. A standalone step that finds one open joins
-it and closes nothing, and its answer says which it did.
+because a session may still be holding it. Every step declares a `StepPolicy` in
+`core/src/refactorStep.ts`. `join` needs an open transaction. `joinOrOwn`, the span replace's
+`standalone`, opens an `own` one inside the gate when none is open and commits it before answering,
+and joins one that is open, closing nothing, and its answer says which it did. `{ own: bases }`, minted
+only by the two committed handlers, refuses an open transaction before planning and again inside the
+gate, then opens and commits its own. `beginStep` holds each module the step writes (`writes`, apart
+from modules it only reindexes) to `bases` on the before-images it journals. Nobody holds an `own`
+transaction after a crash: recovery closes it, committed when its step finalized and reverted
+otherwise. A throw inside the step settles its `own` transaction the same way before answering: a
+refusal when it reverted, the throw when a finalized step committed. A rename and a move journal
+their planned text, so recovery restores a half-written one.
 
 ### What a writer reads
 
@@ -482,7 +498,8 @@ A writer splices decoded text and writes it back as UTF-8, so it reads through `
 `core/src/sourceRead.ts`. That answers the text only when the decode was lossless: the text
 re-encoded as UTF-8 equals the bytes read. A BOM decodes to U+FEFF and round-trips, so it is kept.
 A module that is not valid UTF-8 is refused by name, since its U+FFFD would replace bytes nobody
-edited. A binary or oversized module is refused too, rather than overwritten as though absent.
+edited. A binary or oversized module is refused too, rather than overwritten as though absent, and so
+is one whose real path leaves the workspace through a link.
 Text bound for a module passes `writableText` beside it: a lone surrogate encodes as U+FFFD, so
 new text holding one is refused before a replace or an insert plans, and again at the write.
 
@@ -577,7 +594,8 @@ about to stop existing. `modulesBoundTo` finds them and they are reindexed along
 ones, declaring module first so dependents rebind against declarations that already carry the new
 ids.
 
-`refactorRename` in `dispatch.ts` creates one `ReadContext` for its initial `prepareRename`,
-`renameIdMap` and `modulesBoundTo` reads. Inside the gate, `renameSymbol` replans with a fresh
-context and writes those sites. The stale check compares the initial context's `seen()` and file
-hash. It refuses if indexed rows changed under an unchanged hash.
+`refactorRename` in `dispatch.ts` creates one `ReadContext` for its `renameEdits`, `renameIdMap`
+and `modulesBoundTo` reads, so the edits, and the files they write, are planned once outside the
+gate. Inside the gate, the stale check compares that context's `seen()`, each edited file's indexed
+hash and each written file's planned hash, then `writeRenameEdits` writes the planned edits. It
+refuses if indexed rows changed under an unchanged hash.

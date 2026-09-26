@@ -309,6 +309,12 @@ export function moduleNotText(module: string, why: string): Refusal {
 	return mint(`${module} is not text a writer can splice (${why}). Edit it by hand`);
 }
 
+export function moduleOutsideWorkspace(module: string): Refusal {
+	return mint(
+		`${module} resolves outside the workspace through a link, so Lexicon neither reads nor writes it. Edit the file where the link points, or replace the link with the file`,
+	);
+}
+
 export function rangeOutsideModule(module: string): Refusal {
 	return mint(`the stored range falls outside ${module}. Re-index it and ask again`);
 }
@@ -424,6 +430,19 @@ export function nothingToUndo(): Refusal {
 	return mint(`this transaction has no steps to undo`);
 }
 
+export function refactorOpenForCommittedStep(id: string): Refusal {
+	return mint(
+		`refactor ${id} is open, and a committed step writes only when none is. Commit or revert that refactor, then retry`,
+	);
+}
+
+export function stepOutsideBases(modules: string[]): Refusal {
+	const them = modules.length === 1 ? "it is" : "they are";
+	return mint(
+		`${modules.join(", ")} would be written, but ${them} missing from bases or no longer at the hash given. Preview again, journal what it names, then retry with its bases`,
+	);
+}
+
 export function refactorChangedSinceShown(): Refusal {
 	return mint(`the refactor changed since it was shown. Read refactor_status again and decide on what it holds now`);
 }
@@ -488,10 +507,6 @@ export function stepRefused(problem: string, stranded: string | null): Refusal {
 	return mint(`${problem}${remains}`);
 }
 
-export function renameBlocked(): Refusal {
-	return mint(`the rename is blocked; the blockers name what stands in the way`);
-}
-
 /** The world moved between planning and the gate, so the plan describes text that is gone. */
 export function changedWhilePlanned(module: string, kind: string): Refusal {
 	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);
@@ -502,7 +517,7 @@ export function factsMovedWhilePlanned(modules: string[], kind: string): Refusal
 	return mint(`indexed again while the ${kind} was planned: ${modules.join(", ")}. Plan again`);
 }
 
-/** A standalone step's failed write, settled as recovery would. */
+/** An own step's failed write, settled as recovery would. */
 export function stepAbandoned(problem: Refusal, conflicts: string[]): Refusal {
 	const left = conflicts.length === 0 ? "" : `; ${conflicts.join(", ")} matched neither image and was left as found`;
 	return mint(`${problem}${left}`);

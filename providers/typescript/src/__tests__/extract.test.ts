@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, FOLD_MARK, parseSymbolId } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractFile } from "../extract";
 
@@ -234,14 +234,120 @@ export enum Color { Red }
 		expect(signature).toBe("export function add(a: number): number");
 	});
 
-	it("starts each variable signature at its own declarator", () => {
-		const found = extract("var a = 1, b = 2;\nlet c = 3, d = 4;\n");
+	it("gives each declarator its statement's keyword and leaves the other declarators out", () => {
+		const found = extract("var a = 1, b = 2;\nlet c = 3, /* d */ d = 4;\n");
 		expect(found.declarations.map((declaration) => [declaration.name, declaration.signature])).toEqual([
-			["a", "a = 1"],
-			["b", "b = 2"],
-			["c", "c = 3"],
-			["d", "d = 4"],
+			["a", "var a = 1"],
+			["b", "var b = 2"],
+			["c", "let c = 3"],
+			["d", "let d = 4"],
 		]);
+	});
+
+	it("carries a callable's whole header on one line, decorators kept and comments out", () => {
+		const found = extract(
+			[
+				"@sealed",
+				"export class Box<T>",
+				"\textends Base<T> { // why",
+				"\t@field({ required: true })",
+				"\tresize(",
+				"\t\twidth: number, // wide",
+				"\t\topts: { exact: boolean } = { exact: false },",
+				"\t): Map<",
+				"\t\tstring,",
+				"\t\tnumber",
+				"\t> {",
+				"\t\treturn new Map();",
+				"\t}",
+				"}",
+			].join("\n"),
+		);
+		const signature = (name: string) =>
+			found.declarations.find((declaration) => declaration.name === name)?.signature;
+		expect(signature("Box")).toBe("@sealed export class Box<T> extends Base<T>");
+		expect(signature("resize")).toBe(
+			`@field({${FOLD_MARK}}) resize(width: number, opts: { exact: boolean } = {${FOLD_MARK}}): Map<string, number>`,
+		);
+	});
+
+	it("keeps a value's initializer with each literal container folded, and its call arguments whole", () => {
+		const found = extract(
+			[
+				"export const TABLE = [",
+				"\t{ id: 1 },",
+				"];",
+				'export const Schema = z.object({ id: z.string() }).describe("row");',
+				"export const run = async (input: { id: string }): Promise<void> => {",
+				"\tawait go(input);",
+				"};",
+				"export const EMPTY = {};",
+				"export type Claim = { claimed: true } | { claimed: false };",
+				"export const Named = class extends Base { size = 1; };",
+			].join("\n"),
+		);
+		const fold = (open: string, close: string) => `${open}${FOLD_MARK}${close}`;
+		expect(
+			found.declarations
+				.filter((declaration) => declaration.containerId === undefined)
+				.map((declaration) => [declaration.name, declaration.signature]),
+		).toEqual([
+			["TABLE", `export const TABLE = ${fold("[", "]")}`],
+			["Schema", `export const Schema = z.object(${fold("{", "}")}).describe("row")`],
+			["run", `export const run = async (input: { id: string }): Promise<void> => ${fold("{", "}")}`],
+			["EMPTY", "export const EMPTY = {}"],
+			["Claim", `export type Claim = ${fold("{", "}")} | ${fold("{", "}")}`],
+			["Named", `export const Named = class extends Base ${fold("{", "}")}`],
+		]);
+	});
+
+	it("keeps a literal's spacing as written, its line breaks escaped, and collapses only around it", () => {
+		const found = extract(
+			[
+				'@tag("x  y")',
+				"export class Box {}",
+				"export const T = `first",
+				"  second ${Box}  third`;",
+				"export const R = /a  b/,   S = 'c  d';",
+			].join("\n"),
+		);
+		expect(found.declarations.map((declaration) => [declaration.name, declaration.signature])).toEqual([
+			["Box", '@tag("x  y") export class Box'],
+			["T", "export const T = `first\\n  second ${Box}  third`"],
+			["R", "export const R = /a  b/"],
+			["S", "export const S = 'c  d'"],
+		]);
+	});
+
+	it("renders a statement of many declarators in time linear in their count", () => {
+		const timed = (count: number) => {
+			const text = `var ${Array.from({ length: count }, (_, index) => `a${index} = ${index}`).join(", ")};\n`;
+			let best = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				const started = performance.now();
+				extract(text, "src/many.js");
+				best = Math.min(best, performance.now() - started);
+			}
+			return best;
+		};
+		// Linear reads 8x; a walk of every sibling per declarator read 64x.
+		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+	});
+
+	it("marks what a running body declares local, however deep the body sits in an initializer", () => {
+		const found = extract(
+			[
+				"export const CATALOG = [{ run: () => { const result = 1; return result; } }];",
+				"export function outer() {",
+				"\tclass Local {}",
+				"\treturn Local;",
+				"}",
+			].join("\n"),
+		);
+		const visibility = (name: string) =>
+			found.declarations.find((declaration) => declaration.name === name)?.visibility;
+		expect(["CATALOG", "result", "outer", "Local"].map(visibility)).toEqual(["public", "local", "public", "local"]);
+		expect(found.declarations.find((declaration) => declaration.name === "result")?.exported).toBe(false);
 	});
 
 	it("uses the declaration id for literals inside object methods", () => {

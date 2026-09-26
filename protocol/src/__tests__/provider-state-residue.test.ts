@@ -12,7 +12,7 @@ const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "__tests__"]);
 
 const READ_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises", "@nyaa-lexicon/protocol"]);
 
-const CONTENT_READS = new Set(["readFileSync", "readFile", "readSourceFile", "openSync", "createReadStream"]);
+const CONTENT_READS = new Set(["readFileSync", "readFile", "readWorkspaceFile", "openSync", "createReadStream"]);
 
 /** Allowed configuration and asset reads. */
 const ALLOWED_READS: Record<string, string> = {

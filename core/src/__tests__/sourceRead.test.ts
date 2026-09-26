@@ -72,6 +72,7 @@ describe("reading a workspace file for a writer", () => {
 			{ kind: "text", text: "a\u{FFFD}", lossless: false },
 			{ kind: "binary" },
 			{ kind: "tooLarge", bytes: MAX_SOURCE_BYTES + 1 },
+			{ kind: "outside" },
 		] as const) {
 			expect(writableSource("a.ts", read)).toEqual({ refused: expect.stringContaining("a.ts") });
 		}

@@ -14,13 +14,14 @@ const TIGHT_BEFORE: ReadonlySet<string> = new Set([
 	"!",
 	"!!",
 	";",
+	"<",
 	">",
 ]);
 
 const TIGHT_AFTER: ReadonlySet<string> = new Set(["(", "[", "{", ".", "?.", "::", "@", "<"]);
 
-/** Header text, spaced, comments dropped. */
-export function render(text: string, nodes: SyntaxNode[], lines: LineTable): string {
+/** Type text, spaced, comments dropped. */
+export function renderType(text: string, nodes: SyntaxNode[], lines: LineTable): string {
 	const parts: string[] = [];
 	let previous = "";
 	let lastLine = -1;
@@ -39,8 +40,8 @@ export function render(text: string, nodes: SyntaxNode[], lines: LineTable): str
 			parts.push("\n".repeat(line - lastLine));
 			previous = "";
 		}
-		const tightBefore = TIGHT_BEFORE.has(value) || (value === "<" && !["fun", "val", "var"].includes(previous));
-		if (parts.length > 0 && previous !== "" && !tightBefore && !TIGHT_AFTER.has(previous)) parts.push(" ");
+		if (parts.length > 0 && previous !== "" && !TIGHT_BEFORE.has(value) && !TIGHT_AFTER.has(previous))
+			parts.push(" ");
 		parts.push(value);
 		previous = value;
 		lastLine = lines.position(node.end).line;

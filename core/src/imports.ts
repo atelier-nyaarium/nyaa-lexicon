@@ -9,6 +9,7 @@ import {
 	type ImportOrigin,
 	type ImportResolution,
 	type IndexDepth,
+	type ModuleExclusion,
 	type MoveImportSite,
 	type Range,
 } from "@nyaa-lexicon/protocol";
@@ -96,12 +97,16 @@ export class ImportResolver {
 	 * TypeScript specifier IS a string in source and a Python one is not, so any answer built on
 	 * literal search works in one language and silently returns nothing in the other.
 	 */
-	async findImports(query: {
+	async findImports({
+		exclude,
+		...query
+	}: {
 		specifier?: string | undefined;
 		specifierRegex?: string | undefined;
 		module?: string | undefined;
 		moduleRegex?: string | undefined;
 		limit?: number | undefined;
+		exclude?: ModuleExclusion | undefined;
 	}): Promise<FindImportsResult> {
 		const limit = query.limit ?? DEFAULT_REFERENCE_LIMIT;
 		const targets = [query.specifier, query.specifierRegex, query.module, query.moduleRegex].filter(
@@ -109,20 +114,27 @@ export class ImportResolver {
 		).length;
 		if (targets !== 1) throw new Error("Set exactly one import search target.");
 
-		const answer = (paged: Paged<StoredImport>) => ({ query, imports: paged.items, ...wire(paged) });
+		// Read before any await, inside the caller's hold.
+		const hidden = this.store.hiddenModules(exclude);
+		const answer = (paged: Paged<StoredImport>) => ({
+			query,
+			imports: paged.items,
+			...(exclude === undefined ? {} : { excluded: true as const }),
+			...wire(paged),
+		});
 
 		if (query.specifier !== undefined) {
-			return answer(pageProbed(this.store.importsMatching(query.specifier, limit + 1), limit));
+			return answer(pageProbed(this.store.importsMatching(query.specifier, limit + 1, hidden), limit));
 		}
 		if (query.specifierRegex !== undefined) {
 			const expression = compileSearchRegex(query.specifierRegex);
-			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
+			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT, hidden);
 			const matched = scanned.filter((statement) => expression.test(statement.specifier));
 			return answer(pageScanned(matched, limit, { read: scanned.length, cap: IMPORT_SCAN_LIMIT }));
 		}
 		if (query.module !== undefined) {
 			const target = query.module;
-			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
+			const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT, hidden);
 			const matched: StoredImport[] = [];
 			let read = 0;
 			for (const statement of scanned) {
@@ -136,7 +148,7 @@ export class ImportResolver {
 
 		if (query.moduleRegex === undefined) throw new Error("Set exactly one import search target.");
 		const expression = compileSearchRegex(query.moduleRegex);
-		const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT);
+		const scanned = this.store.importsForScan(IMPORT_SCAN_LIMIT, hidden);
 		const matched: StoredImport[] = [];
 		let read = 0;
 		for (const statement of scanned) {

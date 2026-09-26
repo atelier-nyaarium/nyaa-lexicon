@@ -17,12 +17,14 @@ import {
 	type LiteralQuery,
 	type LiteralsResult,
 	languageOf,
+	type ModuleExclusion,
 	type MostReferencedResult,
 	ProvenanceSchema,
 	type Range,
 	type ReferencesResult,
 	type ReferenceUse,
 	type SearchSymbolsResult,
+	type SharedLiteralsResult,
 	type SymbolSummary,
 	type TypeHierarchy,
 	UnknownReasonSchema,
@@ -36,14 +38,15 @@ import { proseHit } from "./proseText.js";
 import { ReadContext, toSummary } from "./readContext.js";
 import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
 import { compileSearchRegex } from "./search.js";
-import type {
-	FileNotes,
-	IndexStore,
-	StoredComment,
-	StoredDeclaration,
-	StoredDoc,
-	StoredLiteral,
-	StoredReference,
+import {
+	type FileNotes,
+	HiddenModules,
+	type IndexStore,
+	type StoredComment,
+	type StoredDeclaration,
+	type StoredDoc,
+	type StoredLiteral,
+	type StoredReference,
 } from "./store.js";
 
 export type {
@@ -126,6 +129,12 @@ function preview(raw: string): string {
  */
 function page(query: LiteralQuery, paged: Paged<StoredLiteral>): LiteralsResult {
 	return { query, literals: paged.items, ...wire(paged) };
+}
+
+/** The query echoed, with `excluded` only when one ran. */
+function asked<Q extends { excluded?: true | undefined }>(query: Q, exclude: ModuleExclusion | undefined): Q {
+	const { excluded: _echo, ...rest } = query;
+	return (exclude === undefined ? rest : { ...rest, excluded: true }) as Q;
 }
 
 /** A provenance when bound or ambiguous; a reason when not. */
@@ -254,7 +263,7 @@ export class IndexReadModel {
 
 	/** Every comment, for a caller that must count or match them itself. */
 	commentsToScan(scanLimit: number): StoredComment[] {
-		return this.store.commentsToScan(scanLimit);
+		return this.store.commentsToScan(scanLimit, { hidden: HiddenModules.none });
 	}
 
 	/** One declaration with its ranges, which `describe` deliberately does not carry. */
@@ -267,9 +276,17 @@ export class IndexReadModel {
 		return this.store.declarationsIn(module);
 	}
 
-	/** The same, as summaries, which now carry the container an outline nests by. */
+	/** A file's declared symbols, locals excluded, with use counts. */
 	outline(module: string): SymbolSummary[] {
-		return this.store.declarationsIn(module).map(toSummary);
+		const context = new ReadContext(this.store);
+		const counts = this.store.useCountsIn(module);
+		return context
+			.heldIn(module)
+			.filter((declaration) => !context.isLocal(declaration))
+			.map((declaration) => ({
+				...toSummary(declaration),
+				referenceCount: counts.get(declaration.symbolId) ?? 0,
+			}));
 	}
 
 	fileNotes(module: string): FileNotes {
@@ -285,6 +302,7 @@ export class IndexReadModel {
 			module?: string | undefined;
 			within?: string | undefined;
 			limit?: number | undefined;
+			exclude?: ModuleExclusion | undefined;
 		} = {},
 	): SearchSymbolsResult {
 		if ((text === undefined) === (options.regex === undefined)) {
@@ -296,6 +314,7 @@ export class IndexReadModel {
 		const found = this.store.searchSymbols(text, {
 			...defined({ regex: options.regex, kind: options.kind, module: options.module, scope: scoped }),
 			limit: options.within === undefined ? (options.limit ?? DEFAULT_REFERENCE_LIMIT) + 1 : REGEX_SCAN_LIMIT,
+			hidden: this.store.hiddenModules(options.exclude),
 		});
 		const paged =
 			scope === undefined
@@ -312,6 +331,7 @@ export class IndexReadModel {
 			text,
 			...defined({ regex: options.regex }),
 			symbols: paged.items.map(toSummary),
+			...(options.exclude === undefined ? {} : { excluded: true }),
 			...wire(paged),
 		};
 	}
@@ -370,11 +390,12 @@ export class IndexReadModel {
 	 * An exact value and a numeric range are indexed reads. A regex is not, because SQLite has no
 	 * REGEXP here, so it reads a bounded page and says when it stopped early.
 	 */
-	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT): LiteralsResult {
+	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT, exclude?: ModuleExclusion): LiteralsResult {
 		const context = new ReadContext(this.store);
 		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
 		const scoped = scope === undefined ? undefined : filterFor(scope);
-		const base = { kind: query.kind, key: query.key, scope: scoped };
+		const base = { kind: query.kind, key: query.key, scope: scoped, hidden: this.store.hiddenModules(exclude) };
+		const echo = asked(query, exclude);
 		if (query.value !== undefined) {
 			const found = this.store.literalsWhere(
 				{ ...base, value: query.value },
@@ -383,7 +404,7 @@ export class IndexReadModel {
 			const matched =
 				scope === undefined ? found : found.filter((literal) => context.literalWithin(scope, literal));
 			return page(
-				query,
+				echo,
 				scope === undefined
 					? pageCounted(matched, limit, this.store.countLiteralsWhere({ ...base, value: query.value }))
 					: pageScanned(matched, limit, { read: found.length, cap: REGEX_SCAN_LIMIT }),
@@ -400,7 +421,7 @@ export class IndexReadModel {
 			const matched =
 				scope === undefined ? found : found.filter((literal) => context.literalWithin(scope, literal));
 			return page(
-				query,
+				echo,
 				scope === undefined
 					? pageCounted(matched, limit, this.store.countLiteralsWhere({ ...base, low, high }))
 					: pageScanned(matched, limit, { read: found.length, cap: REGEX_SCAN_LIMIT }),
@@ -414,7 +435,7 @@ export class IndexReadModel {
 				(literal) =>
 					expression.test(literal.value) && (scope === undefined || context.literalWithin(scope, literal)),
 			);
-			return page(query, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
+			return page(echo, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
 		}
 
 		// The refusal shows the shapes, because naming the parameters alone was measured to fail: a
@@ -433,7 +454,7 @@ export class IndexReadModel {
 	 * Substring is an indexed-ish read; a regex is not, because SQLite has no REGEXP here, so it
 	 * reads a bounded page and says when it stopped early.
 	 */
-	findComments(query: CommentQuery, requested = DEFAULT_COMMENT_LIMIT): CommentsResult {
+	findComments(query: CommentQuery, requested = DEFAULT_COMMENT_LIMIT, exclude?: ModuleExclusion): CommentsResult {
 		// Both is not a narrower search, it is two searches, and answering one of them silently
 		// picks a winner the caller never chose.
 		if (query.text !== undefined && query.regex !== undefined) {
@@ -446,7 +467,9 @@ export class IndexReadModel {
 			: DEFAULT_COMMENT_LIMIT;
 		const filter = {
 			...defined({ form: query.form, module: query.module }),
+			hidden: this.store.hiddenModules(exclude),
 		};
+		const echo = asked(query, exclude);
 		const context = new ReadContext(this.store);
 		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
 
@@ -459,13 +482,13 @@ export class IndexReadModel {
 				);
 				return this.pageComments(
 					context,
-					query,
+					echo,
 					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 				);
 			}
 			const found = this.store.commentsContaining(query.text, limit, filter);
 			const total = this.store.countCommentsContaining(query.text, filter);
-			return this.pageComments(context, query, pageCounted(found, limit, total));
+			return this.pageComments(context, echo, pageCounted(found, limit, total));
 		}
 
 		if (query.regex !== undefined) {
@@ -478,7 +501,7 @@ export class IndexReadModel {
 			);
 			return this.pageComments(
 				context,
-				query,
+				echo,
 				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 			);
 		}
@@ -492,12 +515,12 @@ export class IndexReadModel {
 				);
 				return this.pageComments(
 					context,
-					query,
+					echo,
 					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 				);
 			}
 			const found = this.store.commentsToScan(limit, filter);
-			return this.pageComments(context, query, pageCounted(found, limit, this.store.countComments(filter)));
+			return this.pageComments(context, echo, pageCounted(found, limit, this.store.countComments(filter)));
 		}
 
 		throw new Error('give a text or a regex, e.g. { text: "refuses rather than" } or { regex: "/TODO|FIXME/" }');
@@ -522,7 +545,7 @@ export class IndexReadModel {
 	 * Separate from `findComments` because the ANSWER differs, not the data: a comment result names
 	 * the symbol it documents, and this one names the heading path it was found under.
 	 */
-	findDocs(query: DocQuery, requested = DEFAULT_COMMENT_LIMIT): DocsResult {
+	findDocs(query: DocQuery, requested = DEFAULT_COMMENT_LIMIT, exclude?: ModuleExclusion): DocsResult {
 		if (query.text !== undefined && query.regex !== undefined) {
 			throw new Error("give a text or a regex, not both");
 		}
@@ -531,12 +554,14 @@ export class IndexReadModel {
 			: DEFAULT_COMMENT_LIMIT;
 		const filter = {
 			...defined({ fenced: query.fenced, module: query.module }),
+			hidden: this.store.hiddenModules(exclude),
 		};
+		const echo = asked(query, exclude);
 
 		if (query.text !== undefined) {
 			const found = this.store.docsContaining(query.text, limit, filter);
 			const total = this.store.countDocsContaining(query.text, filter);
-			return this.pageDocs(query, pageCounted(found, limit, total));
+			return this.pageDocs(echo, pageCounted(found, limit, total));
 		}
 
 		if (query.regex !== undefined) {
@@ -544,7 +569,7 @@ export class IndexReadModel {
 			const scanned = this.store.docsToScan(REGEX_SCAN_LIMIT, filter);
 			const matched = scanned.filter((region) => expression.test(region.normalized));
 			return this.pageDocs(
-				query,
+				echo,
 				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
 				expression,
 			);
@@ -553,7 +578,7 @@ export class IndexReadModel {
 		// Neither given: the whole tier, filtered. Useful for "every region in this document".
 		if (query.fenced !== undefined || query.module !== undefined) {
 			const found = this.store.docsToScan(limit, filter);
-			return this.pageDocs(query, pageCounted(found, limit, this.store.countDocs(filter)));
+			return this.pageDocs(echo, pageCounted(found, limit, this.store.countDocs(filter)));
 		}
 
 		throw new Error('give a text or a regex, e.g. { text: "band-aid" } or { regex: "/TODO|FIXME/" }');
@@ -623,8 +648,9 @@ export class IndexReadModel {
 	}
 
 	/** Values written in more than one file, which is the strongest textual signal of a relationship. */
-	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT) {
-		return this.store.sharedLiterals(minimumFiles, limit);
+	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT, exclude?: ModuleExclusion): SharedLiteralsResult {
+		const rows = this.store.sharedLiterals(minimumFiles, limit, this.store.hiddenModules(exclude));
+		return exclude === undefined ? rows : rows.map((row) => ({ ...row, excluded: true }));
 	}
 
 	/**

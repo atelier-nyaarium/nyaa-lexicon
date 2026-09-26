@@ -4,6 +4,7 @@
 // stops using it is caught. A text sweep cannot see this; the compiler already knows.
 
 import type { ApplyOutcome } from "../applyEdits.js";
+import type { StepResult } from "../dispatch.js";
 import type { InsertPlan, MoveEditsOutcome, RefactorPlanner, ReplacementPlan } from "../refactorPlanner.js";
 import type { PlanAnswer, StepShape } from "../refactorStep.js";
 import type { Refusal } from "../refusals.js";
@@ -58,6 +59,10 @@ type _rename = Assert<
 type _planAnswer = Assert<IsRefusal<Refused<Extract<PlanAnswer<never>, { refused: unknown }>, "refused">>>;
 
 type _refuse = Assert<IsRefusal<Parameters<StepShape<never>["refuse"]>[0]>>;
+
+type _step = Assert<IsRefusal<Refused<Extract<StepResult, { done: false }>>>>;
+
+type _begin = Assert<IsRefusal<Refused<Extract<ReturnType<TransactionManager["beginStep"]>, { ok: false }>>>>;
 
 /** The journal's reasons are optional on the wire, so they are read by index rather than inferred. */
 type Optional<T extends { reason?: unknown }> = NonNullable<T["reason"]>;

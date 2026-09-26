@@ -7,6 +7,7 @@ import {
 	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
+	coordinatesOf,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
@@ -36,6 +37,7 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
+import { type RawHeader, signatureOf } from "./header";
 import { isValidTargetModule, makeMoveEdits } from "./move";
 import { Python3Dispatch } from "./python3";
 
@@ -149,7 +151,7 @@ interface RawDeclaration {
 	selectionRange: Range;
 	visibility: Declaration["visibility"];
 	exported: boolean;
-	signature?: string;
+	header?: RawHeader;
 	metrics?: {
 		lines?: number;
 		parameters?: number;
@@ -339,7 +341,8 @@ async function extractFacts(python3: Python3Dispatch, module: string, text: stri
 	}
 }
 
-function mapFacts(module: string, raw: RawFacts): MappedFacts {
+function mapFacts(module: string, text: string, raw: RawFacts): MappedFacts {
+	const coordinates = coordinatesOf(text);
 	const declarations: Declaration[] = raw.declarations.map((declaration) => ({
 		symbolId: idFor(module, declaration.descriptorPath),
 		kind: declaration.kind,
@@ -348,7 +351,11 @@ function mapFacts(module: string, raw: RawFacts): MappedFacts {
 		selectionRange: declaration.selectionRange,
 		visibility: declaration.visibility,
 		exported: declaration.exported,
-		...defined({ signature: declaration.signature, metrics: declaration.metrics }),
+		...defined({
+			signature:
+				declaration.header === undefined ? undefined : signatureOf(text, coordinates, declaration.header),
+			metrics: declaration.metrics,
+		}),
 		...(declaration.containerPath.length === 0 ? {} : { containerId: idFor(module, declaration.containerPath) }),
 	}));
 	const typeAnnotations: MappedTypeAnnotation[] = raw.typeAnnotations.map((annotation) => ({
@@ -549,7 +556,7 @@ export class PythonProvider {
 
 	constructor(private readonly python3 = new Python3Dispatch()) {
 		this.store = asyncModuleStore<MappedFacts>({
-			read: async (module, text) => mapFacts(module, await extractFacts(this.python3, module, text)),
+			read: async (module, text) => mapFacts(module, text, await extractFacts(this.python3, module, text)),
 		});
 	}
 

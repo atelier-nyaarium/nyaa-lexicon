@@ -133,7 +133,7 @@ var after := 1
 	const local = declarations.find((declaration) => declaration.name === "local");
 
 	expect(solve?.range.end).toEqual({ line: 4, character: "\tvar local := value".length });
-	expect(solve?.signature).toBe("static func solve(\nvalue: int,\n) -> int:");
+	expect(solve?.signature).toBe("static func solve(value: int) -> int:");
 	expect(local?.kind).toBe("variable");
 	expect(local?.containerId).toBe(solve?.symbolId);
 	expect(declarations.filter((declaration) => declaration.name === "local")).toHaveLength(1);

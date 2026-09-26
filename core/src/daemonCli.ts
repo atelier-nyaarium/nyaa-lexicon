@@ -390,7 +390,7 @@ async function main(argv: string[]): Promise<void> {
 		});
 		if (recovered.recovered) {
 			log(`recovered refactor ${recovered.transactionId}: restored ${recovered.restored.length} file(s)`);
-			if (recovered.closed !== undefined) log(`closed a standalone step's transaction as ${recovered.closed}`);
+			if (recovered.closed !== undefined) log(`closed a step's own transaction as ${recovered.closed}`);
 			if (recovered.conflicts.length > 0) {
 				log(`left alone, changed by someone else: ${recovered.conflicts.join(", ")}`);
 			}

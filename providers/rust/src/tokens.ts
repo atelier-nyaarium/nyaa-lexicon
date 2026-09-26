@@ -1,3 +1,4 @@
+import type { OffsetRange } from "@nyaa-lexicon/protocol";
 import { Cursor, type CursorSpan, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "./cursor.js";
 import type { CommentSpan } from "./model.js";
 
@@ -14,11 +15,74 @@ export interface ScanDiagnostic {
 	span: CursorSpan;
 }
 
+interface ScanComments {
+	spans: CommentSpan[];
+	/** Each span's UTF-16 offsets, in source order. */
+	offsets: OffsetRange[];
+}
+
 export interface ScanResult {
 	tokens: RustToken[];
 	comments: CommentSpan[];
+	/** Each comment's UTF-16 offsets, in source order. */
+	commentOffsets: OffsetRange[];
 	diagnostics: ScanDiagnostic[];
 	lineTokens: Map<number, RustToken[]>;
+}
+
+export const KEYWORDS = new Set([
+	"as",
+	"async",
+	"await",
+	"break",
+	"const",
+	"continue",
+	"crate",
+	"dyn",
+	"else",
+	"enum",
+	"extern",
+	"false",
+	"fn",
+	"for",
+	"if",
+	"impl",
+	"in",
+	"let",
+	"loop",
+	"match",
+	"mod",
+	"move",
+	"mut",
+	"pub",
+	"ref",
+	"return",
+	"self",
+	"Self",
+	"static",
+	"struct",
+	"super",
+	"trait",
+	"true",
+	"type",
+	"unsafe",
+	"use",
+	"where",
+	"while",
+	"yield",
+]);
+
+export function isValueToken(token: RustToken | undefined, value: string): boolean {
+	return token !== undefined && (token.kind === "symbol" || token.kind === "identifier") && token.value === value;
+}
+
+export function angleDelta(token: RustToken): number {
+	if (token.kind !== "symbol") return 0;
+	if (token.value === "<") return 1;
+	if (token.value === "<<" || token.value === "<<=") return 2;
+	if (token.value === ">") return -1;
+	if (token.value === ">>" || token.value === ">>=") return -2;
+	return 0;
 }
 
 const MULTI_SYMBOLS = [
@@ -119,11 +183,12 @@ function spanFrom(mark: ReturnType<Cursor["mark"]>, cursor: Cursor): CursorSpan 
 	return cursor.span(mark);
 }
 
-function addComment(source: string, comments: CommentSpan[], span: CursorSpan): void {
-	comments.push({
+function addComment(source: string, comments: ScanComments, span: CursorSpan): void {
+	comments.spans.push({
 		range: { start: span.start, end: span.end },
 		text: sourceRange(source, span.startOffset, span.endOffset),
 	});
+	comments.offsets.push({ start: span.startOffset, end: span.endOffset });
 }
 
 /** A line comment stops before its terminator, and CRLF is one terminator. */
@@ -259,7 +324,7 @@ function scanRawString(source: string, cursor: Cursor, prefixLength: number, dia
 	return makeToken(source, "string", sourceRange(source, bodyStart, bodyEnd), span);
 }
 
-function scanLineComment(source: string, cursor: Cursor, comments: CommentSpan[]): void {
+function scanLineComment(source: string, cursor: Cursor, comments: ScanComments): void {
 	const mark = cursor.mark();
 	const inner = cursor.peek(2) === "!";
 	const doc = cursor.peek(2) === "/" || inner;
@@ -268,12 +333,7 @@ function scanLineComment(source: string, cursor: Cursor, comments: CommentSpan[]
 	addComment(source, comments, spanFrom(mark, cursor));
 }
 
-function scanBlockComment(
-	source: string,
-	cursor: Cursor,
-	comments: CommentSpan[],
-	diagnostics: ScanDiagnostic[],
-): void {
+function scanBlockComment(source: string, cursor: Cursor, comments: ScanComments, diagnostics: ScanDiagnostic[]): void {
 	const mark = cursor.mark();
 	// `/**/` closes the comment rather than opening a doc one.
 	const doc = cursor.peek(2) === "!" || (cursor.peek(2) === "*" && cursor.peek(3) !== "/");
@@ -353,7 +413,7 @@ function addToken(source: string, tokens: RustToken[], lineTokens: Map<number, R
 export function tokenize(source: string): ScanResult {
 	const cursor = new Cursor(source);
 	const tokens: RustToken[] = [];
-	const comments: CommentSpan[] = [];
+	const comments: ScanComments = { spans: [], offsets: [] };
 	const diagnostics: ScanDiagnostic[] = [];
 	const lineTokens = new Map<number, RustToken[]>();
 	let guard = -1;
@@ -445,5 +505,5 @@ export function tokenize(source: string): ScanResult {
 		addToken(source, tokens, lineTokens, makeToken(source, "symbol", value, span));
 	}
 
-	return { tokens, comments, diagnostics, lineTokens };
+	return { tokens, comments: comments.spans, commentOffsets: comments.offsets, diagnostics, lineTokens };
 }

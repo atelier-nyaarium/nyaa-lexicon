@@ -8,7 +8,7 @@ import { createDispatch } from "../dispatch";
 import * as refusal from "../refusals";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
-import { IndexStore } from "../store";
+import { HiddenModules, IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 
 ////////////////////////////////
@@ -645,7 +645,7 @@ describe("answers surviving code that moves", () => {
 		return [
 			...declarations.map((d) => d.factId),
 			store.referencesIn("a.ref")[0]?.factId as string,
-			store.literalsWithValue("cart.updated", 5)[0]?.factId as string,
+			store.literalsWhere({ value: "cart.updated", hidden: HiddenModules.none }, 5)[0]?.factId as string,
 			store.commentsAnchoredTo(METHOD)[0]?.factId as string,
 		];
 	}
@@ -892,7 +892,8 @@ describe("grading a thin answer", () => {
 	it("does not mark an answer that reaches a literal, a reference or a child answer", async () => {
 		const facts = plant();
 		const literal = facts.find(() => true);
-		const literalFact = store.literalsWithValue("cart.updated", 5)[0]?.factId as string;
+		const literalFact = store.literalsWhere({ value: "cart.updated", hidden: HiddenModules.none }, 5)[0]
+			?.factId as string;
 		const outcome = await service.recordAnswer(SYMBOL, "describe", "Announces cart.updated.", [
 			literal as string,
 			literalFact,

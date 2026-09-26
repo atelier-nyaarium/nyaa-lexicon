@@ -126,7 +126,7 @@ export const DeclarationSchema = z
 		 * the provider cannot say, and is different from false.
 		 */
 		exported: z.boolean().optional(),
-		/** Rendered signature. The compression tier reads this instead of the body. */
+		/** The header on one line, values as written, comments stripped. See `renderHeader`. */
 		signature: z.string().optional(),
 		/** Enclosing declaration, absent at module top level. */
 		containerId: z.string().min(1).optional(),

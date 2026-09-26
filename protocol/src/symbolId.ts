@@ -6,6 +6,7 @@
 // stays stable.
 
 import { Cursor, err, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
+import type { ReverseStep } from "./daemonShapes.js";
 import { defined } from "./defined.js";
 
 ////////////////////////////////
@@ -566,4 +567,16 @@ export function rebaseSymbolId(text: string, from: string, to: string): string |
 		module: newRoot.module,
 		descriptors: [...newRoot.descriptors, ...id.descriptors.slice(oldRoot.descriptors.length)],
 	});
+}
+
+/**
+ * The step that reverses `requestedId`, now `forwardedId`, back.
+ * Null for a malformed id, or a local, which carries no name.
+ */
+export function reverseOf(kind: ReverseStep["kind"], requestedId: string, forwardedId: string): ReverseStep | null {
+	const requested = parseSymbolId(requestedId);
+	if (requested === null) return null;
+	if (kind === "move") return { kind, symbolId: forwardedId, toModule: requested.module };
+	const name = requested.descriptors.at(-1)?.name;
+	return name === undefined ? null : { kind, symbolId: forwardedId, newName: name };
 }

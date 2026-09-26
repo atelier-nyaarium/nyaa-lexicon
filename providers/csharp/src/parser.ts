@@ -8,12 +8,15 @@ import {
 	type Diagnostic,
 	defined,
 	type FileRole,
+	type HeaderFold,
 	type ImportedName,
 	type Literal,
 	type Metrics,
+	type OffsetRange,
 	qualifierDescriptors,
 	type Range,
 	type Reference,
+	renderHeader,
 	type SymbolKind,
 } from "@nyaa-lexicon/protocol";
 import { Cursor } from "./cursor.js";
@@ -71,6 +74,14 @@ export function positionKey(position: Range["start"]): string {
 /** Doc comment or attribute start. */
 interface Leading {
 	start: Token;
+	/** First attached attribute section's index, where the header starts. */
+	attributes: number | undefined;
+}
+
+/** A later declarator: the shared lead ends before `from`, its own span starts at `to`. */
+interface HeaderSkip {
+	from: number;
+	to: number;
 }
 
 interface AttributeSection {
@@ -302,6 +313,18 @@ const STATEMENT_BOUNDARY = new Set([";", "{", "}"]);
 const LAMBDA_ATTRIBUTE_CONTEXT = new Set(["(", ",", "=>", "return", ...ASSIGNMENT_WORDS]);
 
 const CONSTRAINT_KEYWORDS = new Set(["class", "struct", "notnull", "unmanaged", "default", "new"]);
+
+/** A `[` or `(` after these opens a value. */
+const VALUE_OPENERS = new Set(["=", "(", ",", "=>", ":", "??", "?"]);
+
+/** Their parenthesized operand is a type. */
+const TYPE_OPERATORS = new Set(["typeof", "default", "sizeof", "nameof"]);
+
+/** Keywords that may follow a value. */
+const VALUE_FOLLOWERS = new Set(["is", "as", "switch", "with"]);
+
+/** After `()`: lambda params, a type argument, or another argument before `,`. */
+const NOT_TUPLE_FOLLOWERS = new Set(["=>", ",", ">", ">>"]);
 
 function isTrivia(token: Token | undefined): boolean {
 	return (
@@ -558,7 +581,7 @@ export class CsharpParser {
 	private parseScope(start: number, end: number, parent: RawDeclaration | undefined): void {
 		let index = start;
 		let documentationStart: Token | undefined;
-		let attributesStart: Token | undefined;
+		let attributes: number | undefined;
 		let lastDocumentationLine = -2;
 		while (index < end) {
 			const current = this.token(index);
@@ -588,16 +611,19 @@ export class CsharpParser {
 			const section = this.attributeSectionAt(index, end);
 			if (section !== undefined) {
 				if (section.close < 0) return;
-				if (section.attached) attributesStart ??= this.token(section.open);
+				if (section.attached) attributes ??= section.open;
 				index = section.close + 1;
 				continue;
 			}
-			const leadingStart = earliest(documentationStart, attributesStart);
+			const leadingStart = earliest(
+				documentationStart,
+				attributes === undefined ? undefined : this.token(attributes),
+			);
 			const parsed = this.parseAt(
 				index,
 				end,
 				parent,
-				leadingStart === undefined ? undefined : { start: leadingStart },
+				leadingStart === undefined ? undefined : { start: leadingStart, attributes },
 			);
 			if (parsed <= index) {
 				if (parent === undefined) this.skippedFileScope = true;
@@ -606,7 +632,7 @@ export class CsharpParser {
 				index = parsed;
 			}
 			documentationStart = undefined;
-			attributesStart = undefined;
+			attributes = undefined;
 			lastDocumentationLine = -2;
 		}
 	}
@@ -884,7 +910,7 @@ export class CsharpParser {
 				codeStart: this.token(codeStartIndex) ?? keyword,
 				visibility: "public",
 				exported: true,
-				signature: this.signature(codeStartIndex, next),
+				signature: this.header(codeStartIndex, next),
 				nameTokenOffsets: names.map((item) => item.startOffset),
 			});
 			this.namespaceNames.add(fullName);
@@ -910,7 +936,7 @@ export class CsharpParser {
 			codeStart: this.token(codeStartIndex) ?? keyword,
 			visibility: "public",
 			exported: true,
-			signature: this.signature(codeStartIndex, next),
+			signature: this.header(codeStartIndex, next),
 			nameTokenOffsets: names.map((item) => item.startOffset),
 		});
 		this.namespaceNames.add(fullName);
@@ -986,7 +1012,7 @@ export class CsharpParser {
 			visibility: visibilityFor(modifiers, parent, kind),
 			exported: exportedFor(visibilityFor(modifiers, parent, kind), parent),
 			isPartial: modifiers.has("partial"),
-			signature: this.signature(codeStartIndex, codeEnd),
+			signature: this.header(leading?.attributes ?? codeStartIndex, codeEnd),
 			bodyStartToken: bodyOpen < 0 ? undefined : this.token(bodyOpen),
 			bodyEndToken: bodyClose < 0 ? undefined : this.token(bodyClose),
 			nameTokenOffsets: [nameToken.startOffset],
@@ -1321,11 +1347,12 @@ export class CsharpParser {
 
 	private parseEnumMembers(start: number, end: number, parent: RawDeclaration): void {
 		let current = start;
-		let pendingLeading: Leading | undefined;
+		let pendingLeading: Token | undefined;
+		let pendingAttributes: number | undefined;
 		while (current < end) {
 			const item = this.token(current);
 			if (item?.kind === "doc") {
-				pendingLeading = { start: earliest(pendingLeading?.start, item) as Token };
+				pendingLeading = earliest(pendingLeading, item);
 				current++;
 				continue;
 			}
@@ -1336,7 +1363,8 @@ export class CsharpParser {
 			const section = this.attributeSectionAt(current, end);
 			if (section !== undefined) {
 				if (section.close < 0) return;
-				pendingLeading = { start: earliest(pendingLeading?.start, this.token(section.open)) as Token };
+				pendingLeading = earliest(pendingLeading, this.token(section.open));
+				pendingAttributes ??= section.open;
 				current = section.close + 1;
 				continue;
 			}
@@ -1361,16 +1389,18 @@ export class CsharpParser {
 				languageKind: "enumMember",
 				name: name.value,
 				parent,
-				startToken: pendingLeading?.start ?? name,
+				startToken: pendingLeading ?? name,
 				endToken,
 				selectionStart: name,
 				selectionEnd: name,
 				codeStart: name,
 				visibility: "public",
 				exported: parent.exported,
+				signature: this.header(pendingAttributes ?? nameIndex, finish),
 				nameTokenOffsets: [name.startOffset],
 			});
 			pendingLeading = undefined;
+			pendingAttributes = undefined;
 			current = this.value(finish) === "," ? finish + 1 : finish;
 		}
 	}
@@ -1409,7 +1439,7 @@ export class CsharpParser {
 			codeStart: this.token(codeStartIndex) ?? keyword,
 			visibility,
 			exported: exportedFor(visibility, parent),
-			signature: this.signature(codeStartIndex, boundary >= 0 ? boundary : finish),
+			signature: this.header(leading?.attributes ?? codeStartIndex, boundary >= 0 ? boundary : finish),
 			nameTokenOffsets: [name.startOffset],
 		});
 		const close = open < 0 ? -1 : this.matching(open, "(", ")", finish);
@@ -1446,6 +1476,7 @@ export class CsharpParser {
 					start,
 					modifiers.start,
 					boundary,
+					arrow >= 0 ? arrow : boundary.index,
 					nameIndex,
 					end,
 					parent,
@@ -1493,6 +1524,7 @@ export class CsharpParser {
 			this.report("Method body is not closed.", this.token(boundary.index));
 		const close = this.matching(open, "(", ")", end);
 		if (close < 0) this.report("Parameter list is not closed.", this.token(open));
+		const arrow = close < 0 ? -1 : this.findTopLevelValue(close + 1, boundary.index, "=>");
 		const endIndex = bodyClose >= 0 ? bodyClose : boundary.kind === "semicolon" ? boundary.index : end - 1;
 		const method = this.addDeclaration({
 			kind,
@@ -1507,7 +1539,7 @@ export class CsharpParser {
 			codeStart: this.token(codeStartIndex) ?? selectionStart,
 			visibility,
 			exported: exportedFor(visibility, parent),
-			signature: this.signature(codeStartIndex, boundary.index),
+			signature: this.header(leading?.attributes ?? codeStartIndex, arrow >= 0 ? arrow : boundary.index),
 			bodyStartToken: boundary.kind === "body" ? this.token(boundary.index) : undefined,
 			bodyEndToken: bodyClose >= 0 ? this.token(bodyClose) : undefined,
 			nameTokenOffsets,
@@ -1636,6 +1668,7 @@ export class CsharpParser {
 			const nameToken = nextToken as Token;
 			const finish = this.findSemicolon(next + 1, end);
 			const endToken = this.token(finish >= 0 ? finish : next) ?? nameToken;
+			const declarator = this.declaratorSegments(current, finish >= 0 ? finish : next + 1)[0];
 			const typeEnd = this.previousSignificant(next, current);
 			const typeText =
 				!this.outline && !inferred && typeEnd >= current
@@ -1658,6 +1691,7 @@ export class CsharpParser {
 				codeStart: item as Token,
 				visibility: "local",
 				exported: false,
+				signature: declarator === undefined ? undefined : this.header(current, declarator.end),
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
 				...defined({ inferredType }),
 				nameTokenOffsets: [nameToken.startOffset],
@@ -1673,6 +1707,7 @@ export class CsharpParser {
 		start: number,
 		codeStartIndex: number,
 		boundary: Boundary,
+		headerEnd: number,
 		nameIndex: number,
 		end: number,
 		parent: RawDeclaration,
@@ -1706,7 +1741,7 @@ export class CsharpParser {
 			codeStart: this.token(codeStartIndex) ?? name,
 			visibility,
 			exported: exportedFor(visibility, parent),
-			signature: this.signature(codeStartIndex, boundary.index),
+			signature: this.header(leading?.attributes ?? codeStartIndex, headerEnd),
 			...(this.outline ? {} : { typeText: this.typeTextBeforeName(start, nameIndex) }),
 			nameTokenOffsets: [name.startOffset],
 		});
@@ -1769,7 +1804,11 @@ export class CsharpParser {
 				codeStart: this.token(codeStartIndex) ?? name,
 				visibility,
 				exported: exportedFor(visibility, parent),
-				signature: this.signature(codeStartIndex, boundary.index),
+				signature: this.header(
+					leading?.attributes ?? codeStartIndex,
+					segment.end,
+					segmentIndex === 0 ? undefined : { from: firstNameIndex, to: nameIndex },
+				),
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
 				nameTokenOffsets: [name.startOffset],
 			});
@@ -1825,7 +1864,11 @@ export class CsharpParser {
 				codeStart: this.token(codeStartIndex) ?? name,
 				visibility,
 				exported: exportedFor(visibility, parent),
-				signature: this.signature(codeStartIndex, boundary.index),
+				signature: this.header(
+					leading?.attributes ?? codeStartIndex,
+					segment.end,
+					segmentIndex === 0 ? undefined : { from: firstName, to: nameIndex },
+				),
 				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
 				...defined({ inferredType }),
 				nameTokenOffsets: [name.startOffset],
@@ -2087,11 +2130,84 @@ export class CsharpParser {
 		return this.cursor.textBetween(start.startOffset, end.endOffset).trim();
 	}
 
-	private signature(start: number, end: number): string | undefined {
-		const first = this.token(this.nextSignificant(start, end));
-		const last = this.token(this.previousSignificant(end, start));
-		if (first === undefined || last === undefined) return undefined;
-		return this.sourceSpan(first, last);
+	/** Token `first` through the last significant token before `end`, on one line. */
+	private header(first: number, end: number, skip?: HeaderSkip): string | undefined {
+		const last = this.previousSignificant(end, first);
+		const head = this.token(first);
+		const tail = this.token(last);
+		if (last < first || head === undefined || tail === undefined) return undefined;
+		const folds: HeaderFold[] = [];
+		const omit: OffsetRange[] = [];
+		const verbatim: OffsetRange[] = [];
+		let lead: OffsetRange | undefined;
+		let start = head.startOffset;
+		let previous: Token | undefined;
+		let before = -1;
+		for (let index = first; index <= last; index++) {
+			const item = this.tokens[index] as Token;
+			if (index === skip?.from) {
+				const shared = this.token(before);
+				if (shared !== undefined) lead = { start, end: shared.endOffset };
+				start = (this.tokens[skip.to] as Token).startOffset;
+				index = skip.to - 1;
+				previous = undefined;
+				continue;
+			}
+			if (previous !== undefined && this.text.slice(previous.endOffset, item.startOffset).trim() !== "")
+				omit.push({ start: previous.endOffset, end: item.startOffset });
+			previous = item;
+			if (item.kind === "comment" || item.kind === "doc" || item.kind === "directive") {
+				omit.push({ start: item.startOffset, end: item.endOffset });
+				continue;
+			}
+			if (item.kind === "newline") continue;
+			if (item.kind === "string" || item.kind === "character")
+				verbatim.push({ start: item.startOffset, end: item.endOffset });
+			const close = this.valueContainerEnd(index, before, last);
+			if (close > index) {
+				const closeToken = this.tokens[close] as Token;
+				folds.push({ start: item.startOffset, end: closeToken.endOffset });
+				index = close;
+				previous = closeToken;
+			}
+			before = index;
+		}
+		return renderHeader(this.text, {
+			...(lead === undefined ? {} : { lead }),
+			start,
+			end: tail.endOffset,
+			folds,
+			omit,
+			verbatim,
+		});
+	}
+
+	/** Where a literal container opening at `index` closes; -1 when none does. */
+	private valueContainerEnd(index: number, before: number, last: number): number {
+		const value = this.value(index);
+		if (value === "{") return this.matching(index, "{", "}", last + 1);
+		const opener = this.value(before);
+		if (opener === undefined || !VALUE_OPENERS.has(opener)) return -1;
+		if (value === "[") {
+			// `a?[0]` indexes.
+			if (opener === "?" && this.token(before)?.endOffset === this.token(index)?.startOffset) return -1;
+			const close = this.matching(index, "[", "]", last + 1);
+			return close < 0 || this.declaresAfter(close, last) ? -1 : close;
+		}
+		if (value !== "(") return -1;
+		if (opener === "(" && TYPE_OPERATORS.has(this.value(this.previousSignificant(before)) ?? "")) return -1;
+		const close = this.matching(index, "(", ")", last + 1);
+		if (close < 0 || this.findTopLevelValue(index + 1, close, ",") < 0) return -1;
+		const after = this.value(this.nextSignificant(close + 1, last + 1)) ?? "";
+		return NOT_TUPLE_FOLLOWERS.has(after) || this.declaresAfter(close, last) ? -1 : close;
+	}
+
+	/** A name or type after `close` makes the brackets an attribute or a tuple type. */
+	private declaresAfter(close: number, last: number): boolean {
+		const next = this.token(this.nextSignificant(close + 1, last + 1));
+		if (isIdentifier(next)) return !VALUE_FOLLOWERS.has(next.value);
+		const value = syntaxValue(next);
+		return value === "(" || value === "[" || value === "?";
 	}
 
 	private recordTypeSpan(span: TypeSpan | undefined, declaration: RawDeclaration): void {

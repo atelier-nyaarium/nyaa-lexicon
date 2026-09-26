@@ -64,7 +64,15 @@ export type Compatibility =
 // 3.16.0: `refactorStatus` reports drifted module hashes, `refactorNoteWrite` records an editor
 // write, and `refactorRevert` confirms those hashes before restoring. Recovery retains each
 // pre-revert disk state, and known-state edits advance the transaction revision.
-export const PROTOCOL_VERSION = "3.16.0" as const;
+// 3.17.0: `refactorRenameCommitted` and `refactorMoveCommitted` write a step as its own committed
+// refactor, refuse one open, check `bases` against the before-images, and answer the reverse step.
+// Methods, not a flag, since an older daemon strips a field and would join. `refactorTrack.refactor`.
+// Six value searches take `exclude` and echo `excluded: true`; a client refuses an answer without it.
+// `admittedModules` says whether discovery or an import admits each module.
+// A module whose real path leaves the workspace is unclaimed and forgotten, and writes refuse it.
+// A signature is the whole header on one line, through `renderHeader`. `outlineModule` leaves locals
+// out and each row carries `referenceCount`.
+export const PROTOCOL_VERSION = "3.17.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

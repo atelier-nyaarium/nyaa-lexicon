@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashContent } from "../hash";
@@ -420,6 +420,24 @@ describe("the module store's verdicts", () => {
 			now: store.get("two:x"),
 			moved: store.generation !== generation,
 		}).toEqual({ before: ["a.toy"], old: [], now: ["a.toy"], moved: true });
+	});
+});
+
+describe("the module store's fills", () => {
+	it("misses a module whose real path leaves the workspace, and fills one linked inside", () => {
+		const elsewhere = workspace({ "secret.toy": "y" });
+		const root = workspace({ "a.toy": "x" });
+		symlinkSync(path.join(elsewhere, "secret.toy"), path.join(root, "b.toy"));
+		symlinkSync(path.join(root, "a.toy"), path.join(root, "c.toy"));
+		const store = moduleStore<Toy, null, string>({ read, entries });
+		toy(store, root);
+
+		expect({
+			outside: store.load("b.toy"),
+			inside: store.load("c.toy")?.text,
+			y: store.get("name:y"),
+			x: store.get("name:x"),
+		}).toEqual({ outside: undefined, inside: "x", y: [], x: ["a.toy", "c.toy"] });
 	});
 });
 

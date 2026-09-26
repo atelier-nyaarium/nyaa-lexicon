@@ -44,7 +44,6 @@ export {
 	type GeneratedVerdict,
 	generatedVerdicts,
 	gitFiles,
-	globToRegExp,
 	includedFiles,
 	readScopeConfig,
 	type ScopeConfig,

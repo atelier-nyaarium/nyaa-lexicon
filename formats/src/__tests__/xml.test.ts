@@ -26,6 +26,14 @@ describe("XML", () => {
 		expect(coordinatesOf(text).sliceRange((elements[1] as { selectionRange: Range }).selectionRange)).toBe("n");
 	});
 
+	it("signs an element with its start tag on one line, each attribute value as written", () => {
+		const facts = read(`<root\n\tid="r"\n\tkind="a  b"\n\tnote='one\n  two'>\n\t<item/>\n</root>`);
+		expect(facts.declarations.filter((d) => d.kind === "property").map((d) => d.signature)).toEqual([
+			`<root id="r" kind="a  b" note='one\\n  two'>`,
+			"<item/>",
+		]);
+	});
+
 	it("caps a signature and names the holder of an oversized value", () => {
 		const facts = read(`<root><big d="${"x".repeat(20_000)}"/><t>${"y".repeat(20_000)}</t></root>`);
 		expect(facts.declarations.find((d) => d.name === "big")?.signature?.length).toBeLessThan(200);

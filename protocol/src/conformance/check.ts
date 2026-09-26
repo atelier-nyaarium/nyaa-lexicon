@@ -80,6 +80,11 @@ function checkDeclaration(
 			);
 		}
 	}
+	if (expected.signature !== undefined && actual.signature !== expected.signature) {
+		problems.push(
+			`${at}: signature is ${JSON.stringify(actual.signature ?? null)}, expected ${JSON.stringify(expected.signature)}`,
+		);
+	}
 	if (expected.descriptors !== undefined) {
 		const parts = describeIdParts(actual.symbolId);
 		if (parts === null) {
@@ -207,6 +212,11 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 			problems.push(`declaration ${declaration.name}: id ${declaration.symbolId} is minted twice in one file`);
 		}
 		minted.add(declaration.symbolId);
+		// Universal: a signature is one line. A literal may hold a double space.
+		const signature = declaration.signature;
+		if (signature !== undefined && (signature !== signature.trim() || /[^\S ]/.test(signature))) {
+			problems.push(`declaration ${declaration.name}: signature ${JSON.stringify(signature)} is not one line`);
+		}
 	}
 
 	// A fixture's own declarations REPLACE the case's, matching how imports and typeOf already work.

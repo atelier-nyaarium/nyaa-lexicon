@@ -87,6 +87,12 @@ describe("holding one transaction per workspace", () => {
 		manager.commit();
 		expect(manager.start().started).toBe(true);
 	});
+
+	it("names the refactor a track landed in, and null when none is open", () => {
+		expect(manager.track("a.ts")).toMatchObject({ tracked: false, refactor: null });
+		const { id } = manager.start();
+		expect(manager.track("a.ts")).toEqual({ tracked: true, refactor: { id } });
+	});
 });
 
 describe("reading tracked before-images", () => {
@@ -766,7 +772,7 @@ describe("recovering after a crash", () => {
 });
 
 // Otherwise it blocks every later session.
-describe("recovering a standalone step's transaction", () => {
+describe("recovering a step's own transaction", () => {
 	beforeEach(() => {
 		write("a.ts", "original\n");
 		manager.start("own");

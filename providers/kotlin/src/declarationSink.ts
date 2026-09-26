@@ -8,7 +8,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { type DeclaredNodes, type HeaderFacts, LANGUAGE, type TypeFact, type TypePath } from "./facts.js";
 import { literalShape } from "./literals.js";
-import { render } from "./render.js";
+import { renderType } from "./render.js";
 import type { LineTable, SyntaxNode } from "./tree.js";
 import { TYPE_NODES, typePath } from "./typePaths.js";
 
@@ -35,7 +35,7 @@ export interface MintInput {
 	descriptorKind: Descriptor["kind"];
 	scope: IdScope;
 	access: Pick<Declaration, "visibility" | "exported">;
-	signature?: string;
+	signature?: string | undefined;
 	owns: boolean;
 	metrics?: Omit<Metrics, "lines">;
 }
@@ -126,7 +126,7 @@ export class DeclarationSink {
 
 	declaredType(symbolId: string, type: SyntaxNode | undefined): void {
 		if (this.outline || type === undefined) return;
-		const display = render(this.text, [type], this.lines);
+		const display = renderType(this.text, [type], this.lines);
 		if (display === "") return;
 		this.typeFacts.push({
 			symbolId,

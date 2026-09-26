@@ -5,12 +5,14 @@
 
 import { z } from "zod";
 import {
+	AdmittedModuleSchema,
 	CacheStatsSchema,
 	CallHierarchySchema,
 	CoChangedWithResultSchema,
 	CommentFormSchema,
 	CommentsResultSchema,
 	CommitsMentioningResultSchema,
+	CommittedStepSchema,
 	CycleSchema,
 	DescribeResultSchema,
 	DocsResultSchema,
@@ -55,6 +57,7 @@ import {
 	ResolveFactsResultSchema,
 	SearchSymbolsResultSchema,
 	SharedLiteralsResultSchema,
+	StepBaseSchema,
 	StoredDeclarationSchema,
 	SubjectDiagnosisSchema,
 	SymbolAtReplySchema,
@@ -64,32 +67,14 @@ import {
 	TypeHierarchySchema,
 	UsesFromResultSchema,
 } from "./daemonShapes.js";
+import { ModuleExclusionSchema } from "./moduleExclusion.js";
+import { ModulePathSchema as ModulePath } from "./modulePath.js";
 import { ImportResolutionSchema } from "./project.js";
-import { normalizeModulePath } from "./symbolId.js";
 import { PositionSchema } from "./symbols.js";
 import { TypeInfoSchema } from "./values.js";
 
 ////////////////////////////////
 //  Requests
-
-/**
- * Every path-valued request field: normalized to the one module key the index files under (NFC,
- * forward slashes, no `.` or empty segments), and refused with the grammar's own words before any
- * read or write when it is absolute, escapes the workspace, or carries a control character. A
- * transform, not a refine: a caller spelling `./src/a.ts` or an NFD filename is served, not refused.
- */
-const ModulePath = z
-	.string()
-	.min(1)
-	.transform((raw, context) => {
-		try {
-			return normalizeModulePath(raw);
-		} catch (error) {
-			context.addIssue({ code: "custom", message: error instanceof Error ? error.message : String(error) });
-			return z.NEVER;
-		}
-	})
-	.meta({ id: "ModulePath" });
 
 const Empty = z.object({}).meta({ id: "EmptyRequest" });
 const BySymbol = z.object({ symbolId: z.string().min(1) }).meta({ id: "BySymbolRequest" });
@@ -124,6 +109,13 @@ const KnowledgeScopeRequest = z
 const Resolve = z.object({ fromModule: ModulePath, specifier: z.string().min(1) }).meta({ id: "ResolveRequest" });
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) }).meta({ id: "RenameRequest" });
 const Move = z.object({ symbolId: z.string().min(1), toModule: ModulePath }).meta({ id: "MoveRequest" });
+/** Every module the caller saw in the preview, at the hash it saw. */
+const Bases = z
+	.array(z.object({ module: ModulePath, contentHash: StepBaseSchema.shape.contentHash }))
+	.min(1)
+	.max(4096);
+const RenameCommitted = Rename.extend({ bases: Bases }).meta({ id: "RenameCommittedRequest" });
+const MoveCommitted = Move.extend({ bases: Bases }).meta({ id: "MoveCommittedRequest" });
 const Literals = z
 	.object({
 		value: z.string().optional(),
@@ -134,6 +126,7 @@ const Literals = z
 		limit: z.number().int().positive().optional(),
 		within: z.string().min(1).optional(),
 		key: z.string().min(1).optional(),
+		exclude: ModuleExclusionSchema.optional(),
 	})
 	.meta({ id: "LiteralsRequest" });
 const Comments = z
@@ -144,6 +137,7 @@ const Comments = z
 		module: ModulePath.optional(),
 		limit: z.number().int().positive().max(200).optional(),
 		within: z.string().min(1).optional(),
+		exclude: ModuleExclusionSchema.optional(),
 	})
 	.meta({ id: "CommentsRequest" });
 const Docs = z
@@ -153,10 +147,15 @@ const Docs = z
 		fenced: z.boolean().optional(),
 		module: ModulePath.optional(),
 		limit: z.number().int().positive().max(200).optional(),
+		exclude: ModuleExclusionSchema.optional(),
 	})
 	.meta({ id: "DocsRequest" });
 const Shared = z
-	.object({ minimumFiles: z.number().int().positive().optional(), limit: z.number().int().positive().optional() })
+	.object({
+		minimumFiles: z.number().int().positive().optional(),
+		limit: z.number().int().positive().optional(),
+		exclude: ModuleExclusionSchema.optional(),
+	})
 	.meta({ id: "SharedRequest" });
 const CoChange = z
 	.object({ module: ModulePath, limit: z.number().int().positive().optional() })
@@ -169,6 +168,7 @@ const Search = z
 		module: z.string().min(1).optional(),
 		limit: z.number().int().positive().optional(),
 		within: z.string().min(1).optional(),
+		exclude: ModuleExclusionSchema.optional(),
 	})
 	.refine((args) => (args.text === undefined) !== (args.regex === undefined), "Set exactly one of text or regex.")
 	.meta({ id: "SearchRequest" });
@@ -223,8 +223,10 @@ const FindImports = z
 		module: ModulePath.optional(),
 		moduleRegex: z.string().min(1).optional(),
 		limit: z.number().int().positive().optional(),
+		exclude: ModuleExclusionSchema.optional(),
 	})
 	.meta({ id: "FindImportsRequest" });
+const AdmittedModules = z.object({ modules: z.array(ModulePath).max(512) }).meta({ id: "AdmittedModulesRequest" });
 const SymbolSource = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional() })
 	.meta({ id: "SymbolSourceRequest" });
@@ -412,6 +414,7 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
+		exclusion: true,
 	},
 	/** Search comments and declaration links. */
 	findComments: {
@@ -420,9 +423,17 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
+		exclusion: true,
 	},
 	/** Search document prose and headings. */
-	findDocs: { request: Docs, response: DocsResultSchema, lifecycle: "query", mutates: false, budget: "read" },
+	findDocs: {
+		request: Docs,
+		response: DocsResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+		exclusion: true,
+	},
 	/** Values shared across files. */
 	sharedLiterals: {
 		request: Shared,
@@ -430,6 +441,7 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
+		exclusion: true,
 	},
 	/** Largest reference cycles first. */
 	cycles: { request: Paged, response: z.array(CycleSchema), lifecycle: "query", mutates: false, budget: "read" },
@@ -452,8 +464,9 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
+		exclusion: true,
 	},
-	/** Declarations in one module. */
+	/** Declarations in a module, locals excluded, each with `referenceCount`. */
 	outlineModule: {
 		request: ByModule,
 		response: z.array(SymbolSummarySchema),
@@ -467,6 +480,14 @@ export const DAEMON_METHODS = {
 	moduleStatus: {
 		request: ByModule,
 		response: ModuleStatusSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Why the index may read each module. See `docs/daemon-protocol.md` `admittedModules`. */
+	admittedModules: {
+		request: AdmittedModules,
+		response: z.array(AdmittedModuleSchema),
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
@@ -504,6 +525,7 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
+		exclusion: true,
 	},
 	/** Workspace coverage and largest modules. */
 	overview: { request: Empty, response: OverviewResultSchema, lifecycle: "query", mutates: false, budget: "read" },
@@ -747,6 +769,22 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "refactor",
 	},
+	/** Rename as its own committed refactor. See `docs/daemon-protocol.md` `refactorRenameCommitted`. */
+	refactorRenameCommitted: {
+		request: RenameCommitted,
+		response: CommittedStepSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Move as its own committed refactor. See `docs/daemon-protocol.md` `refactorRenameCommitted`. */
+	refactorMoveCommitted: {
+		request: MoveCommitted,
+		response: CommittedStepSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
 } as const satisfies Record<
 	string,
 	{
@@ -755,6 +793,8 @@ export const DAEMON_METHODS = {
 		lifecycle: Exclude<Lifecycle, "control">;
 		mutates: boolean;
 		budget: Exclude<Budget, "control">;
+		/** Echoes `excluded: true` when `exclude` was applied. */
+		exclusion?: true;
 	}
 >;
 
@@ -813,6 +853,18 @@ export type ReadMethod = {
 /** Own keys only: `toString` is `in` the table and must not be dispatched. */
 export function isDaemonMethod(name: string): name is DaemonMethod {
 	return Object.hasOwn(DAEMON_METHODS, name);
+}
+
+/**
+ * False when a request carried `exclude` but the answer omits `excluded: true`.
+ * Catches a daemon too old to filter, which strips the field and answers unfiltered.
+ */
+export function exclusionConfirmed(method: DaemonMethod, params: unknown, answer: unknown): boolean {
+	if (!("exclusion" in DAEMON_METHODS[method])) return true;
+	if ((params as { exclude?: unknown } | null)?.exclude === undefined) return true;
+	type Echo = { excluded?: unknown; query?: { excluded?: unknown } } | null;
+	const echoed = (echo: Echo) => echo?.excluded === true || echo?.query?.excluded === true;
+	return Array.isArray(answer) ? answer.every(echoed) : echoed(answer as Echo);
 }
 
 export type RequestOf<M extends DaemonMethod> = z.infer<(typeof DAEMON_METHODS)[M]["request"]>;

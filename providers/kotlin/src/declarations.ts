@@ -41,16 +41,16 @@ class DeclarationWalker implements DeclarationWalk {
 	}
 
 	walk(): DeclarationFacts {
-		const stack: Array<{ node: SyntaxNode; scope: Scope }> = [];
+		const stack: Array<{ node: SyntaxNode; scope: Scope; index: number }> = [];
 		const root: Scope = { descriptors: [] };
 		for (let index = this.tree.root.children.length - 1; index >= 0; index--)
-			stack.push({ node: this.tree.root.children[index] as SyntaxNode, scope: root });
+			stack.push({ node: this.tree.root.children[index] as SyntaxNode, scope: root, index });
 		while (stack.length > 0) {
-			const { node, scope } = stack.pop() as { node: SyntaxNode; scope: Scope };
-			const inner = this.enter(node, scope);
+			const { node, scope, index } = stack.pop() as { node: SyntaxNode; scope: Scope; index: number };
+			const inner = this.enter(node, scope, index);
 			if (inner === null) continue;
-			for (let index = node.children.length - 1; index >= 0; index--)
-				stack.push({ node: node.children[index] as SyntaxNode, scope: inner });
+			for (let child = node.children.length - 1; child >= 0; child--)
+				stack.push({ node: node.children[child] as SyntaxNode, scope: inner, index: child });
 		}
 		return {
 			...defined({ packageName: this.packageName }),
@@ -60,8 +60,8 @@ class DeclarationWalker implements DeclarationWalk {
 		};
 	}
 
-	/** The scope a node's children see, or null to skip them. */
-	private enter(node: SyntaxNode, scope: Scope): Scope | null {
+	/** The scope a node's children see, or null to skip them. `index` is its place among its siblings. */
+	private enter(node: SyntaxNode, scope: Scope, index: number): Scope | null {
 		switch (node.type) {
 			case "package_header":
 				this.packageHeader(node);
@@ -89,7 +89,7 @@ class DeclarationWalker implements DeclarationWalk {
 			case "anonymous_initializer":
 				return { ...scope, descriptors: [...scope.descriptors, { kind: "meta", name: "init" }] };
 			case "parameter":
-				if (node.parent?.type === "function_value_parameters") parameter(this, node, scope);
+				if (node.parent?.type === "function_value_parameters") parameter(this, node, index, scope);
 				return scope;
 			case "type_parameter":
 				typeParameter(this, node, scope);

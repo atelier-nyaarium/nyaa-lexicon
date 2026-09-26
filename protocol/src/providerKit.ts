@@ -1,13 +1,14 @@
 // The wiring every provider shares: its handler table, and a walk that spells modules as ids do.
 
-import { closeSync, type Dirent, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
 import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
-import { firstLineOf, shebangInterpreter } from "./shebang.js";
+import { shebangInterpreter } from "./shebang.js";
+import { readWorkspaceHead } from "./sourceFile.js";
 import type { Descriptor } from "./symbolId.js";
 import { workspaceModule } from "./workspacePath.js";
 
@@ -65,9 +66,6 @@ export const DEFAULT_EXCLUDED_DIRECTORIES: ReadonlySet<string> = new Set([
 	"vendor-cache",
 ]);
 
-/** Enough of a file to hold its shebang line. */
-const SHEBANG_PROBE_BYTES = 256;
-
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -113,25 +111,6 @@ export function angleDelta(text: string): number {
 	return 0;
 }
 
-/** The first line of a file, from its opening bytes; empty when it cannot be read. */
-export function firstLineOfFile(absolute: string): string {
-	let fd: number;
-	try {
-		fd = openSync(absolute, "r");
-	} catch {
-		return "";
-	}
-	try {
-		const buffer = Buffer.allocUnsafe(SHEBANG_PROBE_BYTES);
-		const bytes = readSync(fd, buffer, 0, SHEBANG_PROBE_BYTES, 0);
-		return firstLineOf(buffer.subarray(0, bytes).toString("utf8"));
-	} catch {
-		return "";
-	} finally {
-		closeSync(fd);
-	}
-}
-
 /** Whether a name has no extension; a leading dot is the whole name, not an extension. */
 function extensionless(name: string): boolean {
 	return name.lastIndexOf(".") <= 0;
@@ -147,7 +126,9 @@ export function walkWorkspace(root: string, options: WalkOptions): { files: stri
 		(options.filenames?.includes(name) ?? false) ||
 		(shebangs.length > 0 && extensionless(name) && claimedByShebang(absolute));
 	const claimedByShebang = (absolute: string) => {
-		const interpreter = shebangInterpreter(firstLineOfFile(absolute));
+		const module = workspaceModule(root, absolute);
+		const head = module === null ? undefined : readWorkspaceHead(root, module);
+		const interpreter = shebangInterpreter(head ?? "");
 		return interpreter !== undefined && shebangs.includes(interpreter);
 	};
 	const config = (name: string) => options.configExtensions?.some((extension) => name.endsWith(extension)) ?? false;

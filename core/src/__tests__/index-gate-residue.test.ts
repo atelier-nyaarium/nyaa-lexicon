@@ -43,10 +43,10 @@ const SELF_GATING = [
  * Roads whose caller holds the gate around a unit larger than one file.
  *
  * A method of one of these names takes no hold itself, so a call inside one is already held and a
- * call outside one is not. `renameSymbol` is here because the refactor executor holds the gate
- * around it from another file, where containment cannot see it.
+ * call outside one is not. `renameSymbol` and `writeRenameEdits` are here because the refactor
+ * executor holds the gate around them from another file, where containment cannot see it.
  */
-const CALLER_HELD = new Set(["indexFile", "applyBatch", "renameSymbol"]);
+const CALLER_HELD = new Set(["indexFile", "applyBatch", "renameSymbol", "writeRenameEdits"]);
 
 /**
  * What `journaledStep` runs inside its write. The shape's plan runs before the hold; these members

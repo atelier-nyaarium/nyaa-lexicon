@@ -32,6 +32,15 @@ export class Incompatible extends Error {
 	}
 }
 
+/** A daemon answered a request's `exclude` without applying it. */
+export function unfiltered(method: string, client: string, daemon: string): Incompatible {
+	return new Incompatible(
+		`the daemon answered ${method} without applying \`exclude\`; it speaks protocol ${daemon}. Update the Lexicon install so a daemon that filters replaces it.`,
+		client,
+		daemon,
+	);
+}
+
 export interface DaemonErrorDetails {
 	/** The wait that expired. */
 	waitingFor?: string | undefined;

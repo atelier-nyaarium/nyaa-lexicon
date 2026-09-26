@@ -14,6 +14,7 @@ import {
 	parseSymbolIdResult,
 	quoteName,
 	rebaseSymbolId,
+	reverseOf,
 	type SymbolId,
 	sameNameAndKind,
 	spellsName,
@@ -820,5 +821,30 @@ describe("what a malformed id still spells", () => {
 
 		expect(spellsName(`${head} ${decomposed}`)(composed)).toBe(true);
 		expect(spellsName(`${head} ${composed}#`)(decomposed)).toBe(true);
+	});
+});
+
+describe("the step that puts a rename or a move back", () => {
+	const method = composeSymbolId(CART);
+	const renamed = composeSymbolId({
+		...CART,
+		descriptors: [CART.descriptors[0] as Descriptor, { kind: "method", name: "put" }],
+	});
+	const moved = composeSymbolId({ ...CART, module: "src/basket.ts" });
+
+	it("renames the id it answers as now back to the requested name", () => {
+		expect(reverseOf("rename", method, renamed)).toEqual({ kind: "rename", symbolId: renamed, newName: "add" });
+	});
+
+	it("moves the id it answers as now back to the requested module", () => {
+		expect(reverseOf("move", method, moved)).toEqual({ kind: "move", symbolId: moved, toModule: "src/cart.ts" });
+	});
+
+	it("answers null when the requested id cannot say: malformed, or a local with no name", () => {
+		const local = composeSymbolId({ language: "typescript", module: "src/cart.ts", descriptors: [], local: 1 });
+
+		expect(reverseOf("rename", "nonsense", renamed)).toBeNull();
+		expect(reverseOf("rename", local, local)).toBeNull();
+		expect(reverseOf("move", local, moved)).toEqual({ kind: "move", symbolId: moved, toModule: "src/cart.ts" });
 	});
 });

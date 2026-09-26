@@ -14,6 +14,7 @@ import {
 	type Walk,
 	wordRange,
 } from "./context.js";
+import type { HeaderOf } from "./header.js";
 import { declareOrWrite, subshell } from "./scope.js";
 
 ////////////////////////////////
@@ -22,12 +23,29 @@ import { declareOrWrite, subshell } from "./scope.js";
 const NAME_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
 const ARITHMETIC_WRITES = new Set(["=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=", "^="]);
 const ASSIGNING_EXPANSIONS = new Set(["=", ":="]);
+const QUOTED = new Set(["SingleQuoted", "AnsiCQuoted", "DoubleQuoted", "LocaleString"]);
 
 ////////////////////////////////
 //  Functions & Helpers
 
+/** The quoted parts of a word no walk descends into. */
+export function markQuoted(w: Walk, word: Word): void {
+	let at = word.pos;
+	for (const part of word.parts ?? []) {
+		const end = at + part.text.length;
+		if (QUOTED.has(part.type)) w.quoted.push(at, end);
+		at = end;
+	}
+}
+
 /** A word naming a variable a builtin writes; `NAME[i]` names NAME. */
-export function declareOrWriteWord(w: Walk, scope: Scope, word: Word | undefined, declaredType?: DeclaredType): void {
+export function declareOrWriteWord(
+	w: Walk,
+	scope: Scope,
+	word: Word | undefined,
+	header: HeaderOf,
+	declaredType?: DeclaredType,
+): void {
 	if (word === undefined) return;
 	const name = word.value.replace(/\[.*$/, "");
 	if (!IDENTIFIER_RE.test(name)) {
@@ -39,6 +57,7 @@ export function declareOrWriteWord(w: Walk, scope: Scope, word: Word | undefined
 		kind: "variable",
 		local: false,
 		...defined({ declaredType }),
+		header: header(word),
 	});
 	// A subscript may expand, and the word's text is data either way.
 	walkWord(w, scope, word, false);
@@ -59,7 +78,12 @@ function expansionReference(
 	if (offset === -1) return;
 	const range = rangeAt(w, at + offset, at + offset + name.length);
 	if (role === "write") {
-		declareOrWrite(w, scope, name, range, rangeAt(w, at, at + text.length), { kind: "variable", local: false });
+		const end = at + text.length;
+		declareOrWrite(w, scope, name, range, rangeAt(w, at, end), {
+			kind: "variable",
+			local: false,
+			header: { start: at, end },
+		});
 	} else pushReference(w, scope, { name, range, role });
 }
 
@@ -87,6 +111,7 @@ function walkParts(w: Walk, scope: Scope, parts: WordPart[], start: number): voi
 	let at = start;
 	for (const part of parts) {
 		const end = at + part.text.length;
+		if (QUOTED.has(part.type)) w.quoted.push(at, end);
 		switch (part.type) {
 			// A text run beside an expansion in the same word: its own literal, since the word as a
 			// whole is not one value.
@@ -156,16 +181,26 @@ export function walkArithmetic(
 	w: Walk,
 	scope: Scope,
 	expression: ArithmeticExpression | undefined,
-	write = false,
+	writer?: ArithmeticExpression,
 ): void {
 	if (expression === undefined) return;
 	switch (expression.type) {
 		case "ArithmeticBinary":
-			walkArithmetic(w, scope, expression.left, ARITHMETIC_WRITES.has(expression.operator));
+			walkArithmetic(
+				w,
+				scope,
+				expression.left,
+				ARITHMETIC_WRITES.has(expression.operator) ? expression : undefined,
+			);
 			walkArithmetic(w, scope, expression.right);
 			break;
 		case "ArithmeticUnary":
-			walkArithmetic(w, scope, expression.operand, expression.operator === "++" || expression.operator === "--");
+			walkArithmetic(
+				w,
+				scope,
+				expression.operand,
+				expression.operator === "++" || expression.operator === "--" ? expression : undefined,
+			);
 			break;
 		case "ArithmeticTernary":
 			walkArithmetic(w, scope, expression.test);
@@ -184,8 +219,13 @@ export function walkArithmetic(
 			const name = bracket === -1 ? expression.value : expression.value.slice(0, bracket);
 			if (!IDENTIFIER_RE.test(name)) break;
 			const selection = rangeAt(w, expression.pos, expression.pos + name.length);
-			if (write) declareOrWrite(w, scope, name, selection, selection, { kind: "variable", local: false });
-			else pushReference(w, scope, { name, range: selection, role: "read" });
+			if (writer !== undefined) {
+				declareOrWrite(w, scope, name, selection, selection, {
+					kind: "variable",
+					local: false,
+					header: { start: writer.pos, end: writer.end },
+				});
+			} else pushReference(w, scope, { name, range: selection, role: "read" });
 			if (bracket !== -1) {
 				walkIndex(w, scope, expression.value.slice(bracket + 1, -1), undefined, expression.pos + bracket + 1);
 			}

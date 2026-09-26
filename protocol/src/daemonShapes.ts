@@ -483,6 +483,8 @@ export const SymbolSummarySchema = z
 		containerId: z.string().optional(),
 		/** Where the body lives, 0-based source lines. */
 		lines: z.object({ start: z.number(), end: z.number() }).optional(),
+		/** Uses bound to it, as `describe` counts; set on `outlineModule` rows. */
+		referenceCount: z.number().int().nonnegative().optional(),
 	})
 	.meta({ id: "SymbolSummary" });
 
@@ -651,6 +653,8 @@ export const LiteralQuerySchema = z
 		max: z.number().optional(),
 		key: z.string().optional(),
 		within: z.string().optional(),
+		/** The request's `exclude` was applied. */
+		excluded: z.literal(true).optional(),
 	})
 	.meta({ id: "LiteralQuery" });
 
@@ -670,6 +674,8 @@ export const CommentQuerySchema = z
 		form: CommentFormSchema.optional(),
 		module: z.string().optional(),
 		within: z.string().optional(),
+		/** The request's `exclude` was applied. */
+		excluded: z.literal(true).optional(),
 	})
 	.meta({ id: "CommentQuery" });
 
@@ -718,6 +724,8 @@ export const DocQuerySchema = z
 		/** True for fenced regions only, false for prose only, absent for both. */
 		fenced: z.boolean().optional(),
 		module: z.string().optional(),
+		/** The request's `exclude` was applied. */
+		excluded: z.literal(true).optional(),
 	})
 	.meta({ id: "DocQuery" });
 
@@ -770,6 +778,8 @@ export const SearchSymbolsResultSchema = z
 		text: z.string().optional(),
 		regex: z.string().optional(),
 		symbols: z.array(SymbolSummarySchema),
+		/** The request's `exclude` was applied. */
+		excluded: z.literal(true).optional(),
 		...counted,
 	})
 	.meta({ id: "SearchSymbolsResult" });
@@ -788,7 +798,14 @@ export type MostReferencedResult = z.infer<typeof MostReferencedResultSchema>;
 
 /** One value written in several files, with how widely. */
 export const SharedLiteralSchema = z
-	.object({ value: z.string(), kind: z.string(), files: z.number(), uses: z.number() })
+	.object({
+		value: z.string(),
+		kind: z.string(),
+		files: z.number(),
+		uses: z.number(),
+		/** The request's `exclude` was applied. */
+		excluded: z.literal(true).optional(),
+	})
 	.meta({ id: "SharedLiteral" });
 
 export type SharedLiteral = z.infer<typeof SharedLiteralSchema>;
@@ -843,7 +860,13 @@ export const ImportQuerySchema = z
 export type ImportQuery = z.infer<typeof ImportQuerySchema>;
 
 export const FindImportsResultSchema = z
-	.object({ query: ImportQuerySchema, imports: z.array(StoredImportSchema), ...counted })
+	.object({
+		query: ImportQuerySchema,
+		imports: z.array(StoredImportSchema),
+		/** The request's `exclude` was applied. */
+		excluded: z.literal(true).optional(),
+		...counted,
+	})
 	.meta({ id: "FindImportsResult" });
 
 export type FindImportsResult = z.infer<typeof FindImportsResultSchema>;
@@ -913,7 +936,17 @@ export const ModuleStatusSchema = z
 
 export type ModuleStatus = z.infer<typeof ModuleStatusSchema>;
 
-/** What one read of the file found. `detail` says why for `binary` and `tooLarge`. */
+/**
+ * Why the index may read a module: auto-discovery admits it, or an indexed module imports it.
+ * Null when the scope denies it or nothing reaches it.
+ */
+export const AdmittedModuleSchema = z
+	.object({ module: z.string(), admitted: z.enum(["discovered", "imported"]).nullable() })
+	.meta({ id: "AdmittedModule" });
+
+export type AdmittedModule = z.infer<typeof AdmittedModuleSchema>;
+
+/** What one read found. `detail` explains `binary`, `tooLarge`, or a link-outside `missing`. */
 export const SourceReadOutcomeSchema = z
 	.object({
 		kind: z.enum(["text", "missing", "binary", "tooLarge"]),
@@ -1395,13 +1428,12 @@ export const TransactionStepSchema = z
 
 export type TransactionStep = z.infer<typeof TransactionStepSchema>;
 
+const Hash32 = z.string().regex(/^[0-9a-f]{32}$/);
+
 export const DriftedModuleSchema = z
 	.object({
 		module: z.string(),
-		contentHash: z
-			.string()
-			.regex(/^[0-9a-f]{32}$/)
-			.nullable(),
+		contentHash: Hash32.nullable(),
 	})
 	.meta({ id: "DriftedModule" });
 
@@ -1430,7 +1462,12 @@ export const RefactorStartResultSchema = z
 export type RefactorStartResult = z.infer<typeof RefactorStartResultSchema>;
 
 export const RefactorTrackResultSchema = z
-	.object({ tracked: z.boolean(), reason: z.string().optional() })
+	.object({
+		tracked: z.boolean(),
+		/** The open refactor tracked into, or null; absent from an older daemon. */
+		refactor: z.object({ id: z.string() }).nullable().optional(),
+		reason: z.string().optional(),
+	})
 	.meta({ id: "RefactorTrackResult" });
 
 export type RefactorTrackResult = z.infer<typeof RefactorTrackResultSchema>;
@@ -1532,6 +1569,57 @@ export const RenameStepOutcomeSchema = z
 	.meta({ id: "RenameStepOutcome" });
 
 export type RenameStepOutcome = z.infer<typeof RenameStepOutcomeSchema>;
+
+/** A module as the caller last saw it; a null hash means absent. */
+export const StepBaseSchema = z.object({ module: z.string(), contentHash: Hash32.nullable() }).meta({ id: "StepBase" });
+
+export type StepBase = z.infer<typeof StepBaseSchema>;
+
+/** Puts back a committed rename or move; ask the same committed method. */
+export const ReverseStepSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("rename"), symbolId: z.string(), newName: z.string() }),
+		z.object({ kind: z.literal("move"), symbolId: z.string(), toModule: z.string() }),
+	])
+	.meta({ id: "ReverseStep" });
+
+export type ReverseStep = z.infer<typeof ReverseStepSchema>;
+
+/** A module the step wrote; a null hash means absent. */
+export const CommittedFileSchema = z
+	.object({ module: z.string(), before: Hash32.nullable(), after: Hash32.nullable() })
+	.meta({ id: "CommittedFile" });
+
+export type CommittedFile = z.infer<typeof CommittedFileSchema>;
+
+/** A committed rename or move, or why nothing was written. */
+export const CommittedStepSchema = z
+	.discriminatedUnion("committed", [
+		z.object({
+			committed: z.literal(true),
+			kind: z.enum(["rename", "move"]),
+			/** The root's id now. */
+			symbolId: z.string(),
+			files: z.array(CommittedFileSchema),
+			/** Every id the step re-minted, old to new. */
+			forwarded: z.array(z.object({ from: z.string(), to: z.string() })),
+			reverse: ReverseStepSchema,
+			migrated: migrated.optional(),
+			issues: z.array(RefactorIssueSchema),
+		}),
+		z.object({
+			committed: z.literal(false),
+			reason: z.string(),
+			issues: z.array(RefactorIssueSchema),
+			/** Refused because this refactor is open. */
+			openRefactor: z.object({ id: z.string() }).optional(),
+			/** Modules `bases` missed, or that changed since, at their current hash. */
+			unexpected: z.array(StepBaseSchema).optional(),
+		}),
+	])
+	.meta({ id: "CommittedStep" });
+
+export type CommittedStep = z.infer<typeof CommittedStepSchema>;
 
 export const InsertOutcomeSchema = z
 	.object({
