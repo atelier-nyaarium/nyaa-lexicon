@@ -115,7 +115,7 @@ async function main(): Promise<void> {
 		if (holding.length > 0) {
 			throw new Error(`a link out of the workspace reached the store: ${holding.join(", ")}`);
 		}
-		console.log("isolation ok: no bunfig preload, .env, json.py or outside link reached lexicon");
+		console.log("isolation ok: no bunfig preload, .env or json.py ran, and no outside link reached the store");
 	} finally {
 		await session?.stopDaemon().catch(() => {});
 		clearInterval(holdOpen);

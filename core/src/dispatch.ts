@@ -723,6 +723,23 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			),
 		),
 		refactorBeforeImage: read((params) => transactions().beforeImage(params.module, params.id)),
+		refactorSettlements: read((params) => transactions().settlements(params.after, params.limit)),
+		refactorSettledImage: read((params) => transactions().settledImage(params.seq, params.module, params.side)),
+		refactorWriteFile: write(async ({ module, content, expect }) => {
+			const bytes =
+				content === null
+					? null
+					: content.encoding === "text"
+						? { text: content.text }
+						: { bytes: Buffer.from(content.bytes, "base64") };
+			const outcome = transactions().writeFile(module, bytes, expect);
+			if (!outcome.written) return outcome;
+			const indexed = await service.indexFile(module).then(
+				() => true,
+				() => false,
+			);
+			return { ...outcome, indexed };
+		}),
 		// Restoring puts back text the index does not describe, so the facts for those files are
 		// of a version that no longer exists on disk.
 		refactorUndo: write(async (params) => {

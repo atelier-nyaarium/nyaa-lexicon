@@ -469,6 +469,30 @@ export function notedWriteDoesNotMatch(module: string): Refusal {
 	);
 }
 
+export function writeChanged(module: string, now: string | null): Refusal {
+	const holds = now === null ? "is absent" : `now hashes to ${now}`;
+	return mint(`${module} ${holds}, not what the write expected. Read it again and write against what it holds`);
+}
+
+export function writeLeavesWorkspace(module: string): Refusal {
+	return mint(
+		`${module} resolves outside the workspace through a link, so nothing is written. Write a path inside it`,
+	);
+}
+
+export function writeOverDirectory(module: string): Refusal {
+	return mint(`${module} is a directory. Write a file path inside it`);
+}
+
+export function writeOverNonFile(module: string, found: "link" | "special"): Refusal {
+	const what = found === "link" ? "a symbolic link" : "not a regular file";
+	return mint(`${module} is ${what}, so nothing is written. Write the file it names, or edit this path by hand`);
+}
+
+export function writeTooLarge(module: string, bytes: number, cap: number): Refusal {
+	return mint(`${module} would be ${bytes} bytes, over the ${cap}-byte write cap. Edit it by hand`);
+}
+
 export function recoveryPending(operation: "undo" | "revert"): Refusal {
 	return mint(
 		`a ${operation} is still restoring this transaction. Remove any blocking directory, then call refactor_${operation} again`,

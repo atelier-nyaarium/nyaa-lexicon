@@ -12,8 +12,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { hashBytes } from "@nyaa-lexicon/protocol";
 import { IndexStore } from "../store";
-import { hashBytes, readLeaf, TransactionManager } from "../transactions";
+import { readLeaf, TransactionManager } from "../transactions";
 
 ////////////////////////////////
 //  Helpers
@@ -79,7 +80,15 @@ describe("holding one transaction per workspace", () => {
 	});
 
 	it("reports no transaction as an answer rather than an error", () => {
-		expect(manager.status()).toEqual({ open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [] });
+		expect(manager.status()).toEqual({
+			open: false,
+			steps: [],
+			tracked: [],
+			drifted: [],
+			edited: [],
+			issues: [],
+			ledger: { id: expect.any(String), latest: 0 },
+		});
 	});
 
 	it("opens again once the first is committed", () => {
@@ -91,7 +100,7 @@ describe("holding one transaction per workspace", () => {
 	it("names the refactor a track landed in, and null when none is open", () => {
 		expect(manager.track("a.ts")).toMatchObject({ tracked: false, refactor: null });
 		const { id } = manager.start();
-		expect(manager.track("a.ts")).toEqual({ tracked: true, refactor: { id } });
+		expect(manager.track("a.ts")).toEqual({ tracked: true, refactor: { id }, ledger: manager.ledger() });
 	});
 });
 

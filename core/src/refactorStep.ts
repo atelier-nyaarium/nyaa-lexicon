@@ -1,9 +1,6 @@
 // One executor for a journaled write step, so the failure policy exists once.
 //
-// Four operations spelled this lifecycle separately, and drift shipped: only insert guarded a
-// reindex failure, only insert journaled its outcome at begin, and no automatic undo repaired the
-// index afterwards. An operation now DECLARES its parts; the policy cannot be re-implemented
-// wrongly, and a fifth operation is one declaration.
+// One executor owns step ordering and failures.
 
 import { type CommittedFile, defined, type StepBase } from "@nyaa-lexicon/protocol";
 import {
@@ -24,7 +21,7 @@ import type { RefactorIssue, StepKind, TransactionManager } from "./transactions
 /** Thrown by apply() to refuse with a caller-facing reason. Anything else is a write failure. */
 export class StepRefusal extends Error {}
 
-/** The addresses a step re-mints, journaled at begin so recovery can put them back. */
+/** Recovery reverses these rebind rows. */
 export interface StepRebind {
 	entries: RebindEntry[];
 	evidence: RebindEvidence;
@@ -35,15 +32,14 @@ export interface PlannedStep {
 	/** What apply writes; `modules` may add ones only reindexed. */
 	writes: string[];
 	planRecord?: unknown;
-	/** A step that knows its final text journals it at begin, closing the crash window between
-	 * write and completion. */
+	/** Recovery matches early writes by hash; completion records disk state. */
 	plannedText?: Array<{ module: string; text: string }>;
 	/** Inside the gate, before journaling: null while the planned world still holds. */
 	stale: () => Refusal | null;
 	/** Inside the gate, after stale passes, before journaling. Position is free: beginStep touches
 	 * only the journal, which no capture reads. */
 	begin?: () => void;
-	/** Read after begin, journaled with the step, applied only once every reindex succeeded. */
+	/** Record rebinds before apply; apply after all reindexes. */
 	rebind?: () => StepRebind;
 	/** Writes files. May own internal reindexing (rename does). */
 	apply: () => Promise<void> | void;
@@ -133,7 +129,6 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 			if (stale !== null) return refuse(stale);
 			planned.begin?.();
 
-			// Journaled with the plan, so recovery of an unfinished step can rebind the addresses back.
 			const rebind = planned.rebind?.();
 			const record =
 				rebind === undefined

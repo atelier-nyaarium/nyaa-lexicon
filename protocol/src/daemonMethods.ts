@@ -45,9 +45,12 @@ import {
 	RefactorCommitResultSchema,
 	RefactorNoteWriteResultSchema,
 	RefactorRevertResultSchema,
+	RefactorSettledImageSchema,
+	RefactorSettlementsSchema,
 	RefactorStartResultSchema,
 	RefactorTrackResultSchema,
 	RefactorUndoResultSchema,
+	RefactorWriteFileResultSchema,
 	ReferencesResultSchema,
 	RenameEditPlanSchema,
 	RenamePlanSchema,
@@ -250,6 +253,25 @@ const NoteWrite = z
 const BeforeImage = z
 	.object({ module: ModulePath, id: z.string().min(1).optional() })
 	.meta({ id: "BeforeImageRequest" });
+const Settlements = z
+	.object({ after: z.number().int().nonnegative(), limit: z.number().int().positive().max(64).optional() })
+	.meta({ id: "SettlementsRequest" });
+const SettledImage = z
+	.object({ seq: z.number().int().positive(), module: ModulePath, side: z.enum(["opened", "settled"]) })
+	.meta({ id: "SettledImageRequest" });
+/** Null content deletes; null `expect` requires absence. */
+const WriteFile = z
+	.object({
+		module: ModulePath,
+		content: z
+			.discriminatedUnion("encoding", [
+				z.object({ encoding: z.literal("text"), text: z.string() }),
+				z.object({ encoding: z.literal("base64"), bytes: z.base64() }),
+			])
+			.nullable(),
+		expect: StepBaseSchema.shape.contentHash,
+	})
+	.meta({ id: "WriteFileRequest" });
 const Replace = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional(), newText: z.string() })
 	.meta({ id: "ReplaceRequest" });
@@ -704,6 +726,30 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",
+	},
+	/** List retained settlements. */
+	refactorSettlements: {
+		request: Settlements,
+		response: RefactorSettlementsSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "status",
+	},
+	/** Read one retained image. */
+	refactorSettledImage: {
+		request: SettledImage,
+		response: RefactorSettledImageSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "read",
+	},
+	/** Gated write or delete. */
+	refactorWriteFile: {
+		request: WriteFile,
+		response: RefactorWriteFileResultSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
 	},
 	/** Undo the newest step. */
 	refactorUndo: {

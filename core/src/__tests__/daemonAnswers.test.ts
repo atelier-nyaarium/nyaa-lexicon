@@ -461,9 +461,10 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect((await ask("refactorStatus", {})).open).toBe(true);
 	},
 	refactorTrack: async () => {
-		expect(await ask("refactorTrack", { module: "cart.ref" })).toEqual({
+		expect(await ask("refactorTrack", { module: "cart.ref" })).toMatchObject({
 			tracked: true,
 			refactor: { id: answers.refactorStart?.id as string },
+			ledger: { latest: expect.any(Number) },
 		});
 	},
 	refactorNoteWrite: async () => {
@@ -545,6 +546,30 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		await ask("refactorInsert", { module: "item.ref", text: "export const ITEM_STEP = 1" });
 		expect((await ask("refactorCommit", { force: true })).committed).toBe(true);
 	},
+	refactorSettlements: async () => {
+		const answer = await ask("refactorSettlements", { after: 0 });
+		const last = answer.settlements.at(-1);
+		expect(last).toMatchObject({ origin: "explicit", outcome: "committed", files: [{ module: "item.ref" }] });
+		expect(answer.ledger.latest).toBe(last?.seq as number);
+	},
+	refactorSettledImage: async () => {
+		const seq = answers.refactorSettlements?.ledger.latest as number;
+		const settled = await ask("refactorSettledImage", { seq, module: "item.ref", side: "settled" });
+		expect(settled.held && "text" in settled ? settled.text : "").toContain("ITEM_STEP");
+		expect(await ask("refactorSettledImage", { seq, module: "cart.ref", side: "opened" })).toEqual({ held: false });
+	},
+	refactorWriteFile: async () => {
+		const content = { encoding: "text" as const, text: "written\n" };
+		const created = await ask("refactorWriteFile", { module: "written.ref", content, expect: null });
+		expect(created).toMatchObject({ written: true, refactor: null, indexed: true });
+		expect(await ask("refactorWriteFile", { module: "written.ref", content, expect: null })).toMatchObject({
+			written: false,
+			refused: "changed",
+		});
+		const holds = created.written ? created.contentHash : null;
+		const deleted = await ask("refactorWriteFile", { module: "written.ref", content: null, expect: holds });
+		expect(deleted).toMatchObject({ written: true, contentHash: null });
+	},
 };
 
 /** Each later answer depends on an earlier one, so these never run as independent cases. */
@@ -574,6 +599,9 @@ const REFACTOR = [
 	"refactorMoveCommitted",
 	"refactorRevert",
 	"refactorCommit",
+	"refactorSettlements",
+	"refactorSettledImage",
+	"refactorWriteFile",
 ] as const satisfies readonly DaemonMethod[];
 
 const SEQUENCED = new Set<DaemonMethod>([...KNOWLEDGE, ...REFACTOR]);

@@ -266,7 +266,58 @@ states without repeating this comparison. Accepted restores and recovery checks 
 `docs/architecture.md`, which also covers file and link handling.
 
 `refactorTrack` answers `refactor: { id }` for the transaction it tracked into, or `refactor: null`
-when none is open. A daemon predating the field omits it.
+when none is open. It also returns `ledger`. Older daemons may omit either field.
+
+### Settlements
+
+Every close writes a settlement, including commit, Revert and recovery. Recovery may finish a
+Revert or close an `own` transaction. Each settlement has `seq`, transaction `id`, `origin`,
+`outcome`, `closedAt` and sorted `files`. Each file names a tracked module. `opened` is the
+baseline hash restored by Revert. `settled` is the known close state. After Revert, it equals
+`opened`. A different disk state is recorded as `drifted`. Its hash is `hashBytes` over file bytes.
+A null `opened` or `settled` hash means absence. `drifted.contentHash` is null when the path is
+absent or not a file.
+
+`refactorStatus` and `refactorTrack` return `ledger: { id, latest }`, whether or not a refactor is
+open. `latest` is the highest `seq`, or 0 before the first close. A new `id` invalidates old
+sequences.
+
+`refactorSettlements` takes `{ after, limit? }`. The default limit is 16. The maximum is 64. It
+returns the ledger mark, the `oldest` retained sequence or null, and later settlements in
+ascending order. `oldest > after + 1` indicates pruned records. The ledger retains 128 settlements.
+
+`refactorSettledImage` takes `{ seq, module, side }`. `side` is `opened` or `settled`. Bytes are
+returned as `text` when UTF-8 round-trips and the first 8192 bytes contain no NUL. Otherwise,
+they are returned as `base64`. A null hash returns `{ held: true, absent: true }`. An unknown
+module or pruned image returns `{ held: false }`. Images are retained for the 32 newest `explicit`
+settlements. `own` settlements retain hashes only.
+
+These reads are not exposed over MCP. They may start a daemon but never start indexing. They answer
+even when warmup fails.
+
+### Gated writes
+
+`refactorWriteFile` writes one file under the exclusive gate used by commit, undo, revert and
+recovery. It takes `{ module, content, expect }`. Text content uses `{ encoding: "text", text }` and
+is written as UTF-8. Binary content uses `{ encoding: "base64", bytes }`. Null deletes the file.
+`expect` is `hashBytes` of the bytes read by the caller, or null when the file must not exist.
+
+Refusals, in order:
+
+- `unencodable`: Text contains a lone surrogate.
+- `tooLarge`: More than 4 MiB (`MAX_SOURCE_BYTES`). The cap keeps base64 requests under the socket line limit.
+- `outside`: The real path leaves the workspace through a leaf or folder link.
+- `directory` or `notAFile`: The path is a directory, in-workspace link or special file.
+- `changed`: The disk hash differs from `expect`. `contentHash` gives the current hash.
+
+Otherwise, it writes the bytes as given, creating parent folders inside the workspace, or deletes
+the file. With a refactor open, it tracks the file before writing and retains its before-image. It
+then records the written bytes as known state and keeps them for settlement. Commit settles them.
+Revert restores the before-image. The handler then indexes the file.
+
+It answers `{ written: true, contentHash, refactor, ledger, indexed }`. `contentHash` is null after
+a delete. `refactor` is the open refactor's `{ id }` or null. `indexed` is false when the indexing
+attempt fails. The method is not exposed over MCP.
 
 ### Committed steps
 
@@ -418,19 +469,16 @@ there throws like any other error, which the transport turns into an error frame
 always on.
 
 Every path-valued request field (`module`, `toModule`, `fromModule`, `modules`, `exclude.allow`,
-`bases[].module`) is
-the `ModulePath` schema: a transform through the id grammar's `normalizeModulePath`, so `./src/a.ts`, a backslash path and
-an NFD filename are served under the one key the index files them by, and an absolute path, a path
-escaping the workspace or one carrying a control character is refused in the grammar's own words
-before any handler reads or writes. That is workspace containment: nothing the wire names can
-reach a file outside the root, `refactorTrack` included. Filters (`within`, substring and regex
-matches) are not paths and are left alone. No case folding and no realpath at query time: two
-names are two modules, and a file the grammar cannot spell is out of scope rather than indexed
-under a key nobody can ask by. Two names that normalize to ONE key (a composed and a decomposed
-spelling of the same filename, both on a case-sensitive disk) are one module; the composed file
-is the one read and indexed, and the other is unreachable by name. A write lands under the real
-root: a directory link inside the workspace pointing outside it is refused for writing, while
-reads follow the name as given.
+`bases[].module`) uses the `ModulePath` schema and `normalizeModulePath`. Relative paths, backslashes
+and NFD filenames resolve to the indexed key. Absolute paths, paths outside the workspace and
+paths with control characters are refused before a handler reads or writes. Wire paths cannot
+reach outside the root, including `refactorTrack`. Filters (`within`, substring and regex matches) are
+not paths.
+
+No case folding occurs at query time. Names remain distinct unless normalization maps them to one
+key. Composed and decomposed spellings on a case-sensitive disk can map to one key. The composed
+file is read and indexed. The other name is unreachable. A link that leaves the root is unclaimed
+for reads and refused for writes. `readWorkspaceFile` reads no bytes through it.
 
 To the caller, either failure is the same thing: the promise from `request` or `ask` rejects with a
 `DaemonError` whose message is the daemon's `error` string. For a request that did not fit its

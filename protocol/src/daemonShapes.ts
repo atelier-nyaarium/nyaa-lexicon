@@ -1413,7 +1413,7 @@ export const RefactorBeforeImageSchema = z
 
 export type RefactorBeforeImage = z.infer<typeof RefactorBeforeImageSchema>;
 
-export const StepKindSchema = z.enum(["replace", "rename", "move", "insert", "track"]).meta({ id: "StepKind" });
+export const StepKindSchema = z.enum(["replace", "rename", "move", "insert"]).meta({ id: "StepKind" });
 
 export type StepKind = z.infer<typeof StepKindSchema>;
 
@@ -1429,6 +1429,13 @@ export const TransactionStepSchema = z
 export type TransactionStep = z.infer<typeof TransactionStepSchema>;
 
 const Hash32 = z.string().regex(/^[0-9a-f]{32}$/);
+
+/** IDs scope sequences. */
+export const LedgerMarkSchema = z
+	.object({ id: z.string(), latest: z.number().int().nonnegative() })
+	.meta({ id: "LedgerMark" });
+
+export type LedgerMark = z.infer<typeof LedgerMarkSchema>;
 
 export const DriftedModuleSchema = z
 	.object({
@@ -1450,6 +1457,8 @@ export const TransactionStatusSchema = z
 		drifted: z.array(DriftedModuleSchema),
 		edited: z.array(z.string()),
 		issues: z.array(RefactorIssueSchema),
+		/** Optional across daemon versions. */
+		ledger: LedgerMarkSchema.optional(),
 	})
 	.meta({ id: "TransactionStatus" });
 
@@ -1464,13 +1473,90 @@ export type RefactorStartResult = z.infer<typeof RefactorStartResultSchema>;
 export const RefactorTrackResultSchema = z
 	.object({
 		tracked: z.boolean(),
-		/** The open refactor tracked into, or null; absent from an older daemon. */
+		/** Omitted by older daemons. */
 		refactor: z.object({ id: z.string() }).nullable().optional(),
+		/** Optional across daemon versions. */
+		ledger: LedgerMarkSchema.optional(),
 		reason: z.string().optional(),
 	})
 	.meta({ id: "RefactorTrackResult" });
 
 export type RefactorTrackResult = z.infer<typeof RefactorTrackResultSchema>;
+
+export const SettledFileSchema = z
+	.object({
+		module: z.string(),
+		/** Baseline restored by Revert. */
+		opened: Hash32.nullable(),
+		/** Baseline after Revert. */
+		settled: Hash32.nullable(),
+		/** Differing disk hash; null if absent or non-file. */
+		drifted: z.object({ contentHash: Hash32.nullable() }).optional(),
+	})
+	.meta({ id: "SettledFile" });
+
+export type SettledFile = z.infer<typeof SettledFileSchema>;
+
+export const SettlementSchema = z
+	.object({
+		/** Increasing, never reused. */
+		seq: z.number().int().positive(),
+		id: z.string(),
+		origin: z.enum(["explicit", "own"]),
+		outcome: z.enum(["committed", "reverted"]),
+		closedAt: z.number(),
+		/** Sorted tracked modules. */
+		files: z.array(SettledFileSchema),
+	})
+	.meta({ id: "Settlement" });
+
+export type Settlement = z.infer<typeof SettlementSchema>;
+
+export const RefactorSettlementsSchema = z
+	.object({
+		ledger: LedgerMarkSchema,
+		/** Oldest retained, or null. */
+		oldest: z.number().int().positive().nullable(),
+		settlements: z.array(SettlementSchema),
+	})
+	.meta({ id: "RefactorSettlements" });
+
+export type RefactorSettlements = z.infer<typeof RefactorSettlementsSchema>;
+
+/** False: pruned or unknown. */
+export const RefactorSettledImageSchema = z
+	.union([
+		z.object({ held: z.literal(false) }),
+		z.object({ held: z.literal(true), absent: z.literal(true) }),
+		z.object({ held: z.literal(true), contentHash: z.string(), encoding: z.literal("text"), text: z.string() }),
+		z.object({ held: z.literal(true), contentHash: z.string(), encoding: z.literal("base64"), bytes: z.string() }),
+	])
+	.meta({ id: "RefactorSettledImage" });
+
+export type RefactorSettledImage = z.infer<typeof RefactorSettledImageSchema>;
+
+export const RefactorWriteFileResultSchema = z
+	.discriminatedUnion("written", [
+		z.object({
+			written: z.literal(true),
+			contentHash: Hash32.nullable(),
+			/** Open refactor ID, nullable. */
+			refactor: z.object({ id: z.string() }).nullable(),
+			ledger: LedgerMarkSchema,
+			/** False when indexing fails. */
+			indexed: z.boolean(),
+		}),
+		z.object({
+			written: z.literal(false),
+			refused: z.enum(["changed", "outside", "directory", "notAFile", "tooLarge", "unencodable"]),
+			reason: z.string(),
+			/** Current hash when changed. */
+			contentHash: Hash32.nullable().optional(),
+		}),
+	])
+	.meta({ id: "RefactorWriteFileResult" });
+
+export type RefactorWriteFileResult = z.infer<typeof RefactorWriteFileResultSchema>;
 
 export const RefactorNoteWriteResultSchema = z
 	.object({ noted: z.boolean(), reason: z.string().optional() })

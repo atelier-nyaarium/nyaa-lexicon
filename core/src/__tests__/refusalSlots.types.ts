@@ -77,4 +77,6 @@ type _start = Assert<IsRefusal<Optional<ReturnType<TransactionManager["start"]>>
 
 type _track = Assert<IsRefusal<Optional<ReturnType<TransactionManager["track"]>>>>;
 
+type _writeFile = Assert<IsRefusal<Refused<Extract<ReturnType<TransactionManager["writeFile"]>, { written: false }>>>>;
+
 type _write = Assert<IsRefusal<Refused<Extract<ApplyOutcome, { applied: false }>>>>;

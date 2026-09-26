@@ -2,17 +2,13 @@ import { describe, expect, it } from "bun:test";
 import { join, relative } from "node:path";
 import { codeOnly, readSwept, sourceFiles } from "../residue";
 
-/**
- * One content hash, `hashContent` in this package. A second sha256 over file text in core or the
- * client would file facts under one hash and compare a consumer's read against another, and the
- * two never meet until a stale answer does. Hashes of other things keep their own owner.
- */
+/** Content hashing lives here. */
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 
 const SWEPT = ["core/src", "client/src"].map((dir) => join(ROOT, dir));
 
-/** Not content hashes: a refactor image's bytes, a workspace's key, a bundle's identity. */
-const OWNERS = new Set(["core/src/transactions.ts", "client/src/paths.ts", "client/src/discover.ts"]);
+/** Other hash owners. */
+const OWNERS = new Set(["client/src/paths.ts", "client/src/discover.ts"]);
 
 const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "tmp"]);
 

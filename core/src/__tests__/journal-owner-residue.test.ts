@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { JOURNAL_TABLE_NAMES } from "../journalSchema";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -13,23 +14,15 @@ import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
  * only record of what a half-applied refactor used to look like, so a disagreement about when a
  * step counts as written does not corrupt a query, it removes the ability to put files back.
  *
- * The store is exempt because it owns the SQL for every table; it moves rows and decides nothing.
+ * Store owns row access; registry owns schema.
  */
 const CORE_SRC = join(import.meta.dirname, "..");
 
-/** Spelled once here, so a new journal table joins the rule by being added to this list. */
-const JOURNAL_TABLES = [
-	"refactor_transactions",
-	"refactor_steps",
-	"refactor_blobs",
-	"refactor_images",
-	"refactor_known_states",
-	"refactor_issues",
-	"refactor_rebinds",
-];
+/** Registered tables enter the residue sweep. */
+const JOURNAL_TABLES: readonly string[] = JOURNAL_TABLE_NAMES;
 
-/** transactions.ts decides what the rows mean; store.ts holds the schema and the row plumbing. */
-const OWNERS = new Set(["transactions.ts", "store.ts"]);
+/** Transactions interpret rows; store moves them, registry defines them. */
+const OWNERS = new Set(["transactions.ts", "store.ts", "journalSchema.ts"]);
 
 const SKIP = ["__tests__", "dist", "node_modules"];
 const TOKEN = "store.journal(";

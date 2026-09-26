@@ -196,6 +196,8 @@ provider claims a shebang.
 In Git mode, tracked files remain in scope even under a default-excluded directory; directory exclusions
 only limit files added by provider discovery. An ignored file never enters scope unless explicitly included.
 Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
+Denied files are excluded from indexing. A provider compiler host may still read a denied file for
+`typeOf`. The TypeScript host may fall back to its own file reads.
 
 Indexing, the watcher and the provider probe read through the guarded source reader. Transaction snapshots
 read bytes for byte-exact rollback and never send those bytes to a provider.

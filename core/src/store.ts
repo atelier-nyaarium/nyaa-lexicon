@@ -4,6 +4,7 @@
 // "who uses this" has no cheap answer in memory, and an index on the target column turns it into
 // the same read as "what is this".
 
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
 	type Answer,
@@ -50,13 +51,20 @@ import { type Clock, systemClock } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { admitFacts } from "./factAdmission.js";
 import type { GeneratedReason, GeneratedVerdict } from "./fileScope.js";
+import {
+	installRevisionTriggers,
+	JOURNAL_DDL,
+	JOURNAL_TABLE_NAMES,
+	JOURNAL_TABLES,
+	type JournalTable,
+	keptBlobs,
+} from "./journalSchema.js";
 import { stampSeen } from "./lastSeen.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 import {
-	EVIDENCE_IN,
 	KNOWLEDGE_SCHEMA,
 	KNOWLEDGE_TABLES,
 	KNOWLEDGE_VIEWS,
@@ -66,7 +74,6 @@ import {
 	restoreSubjects,
 	type SalvagedAnswer,
 	type SalvagedGap,
-	STATE_IN,
 	type StrandedRow,
 	SWEEP_START,
 	type SweepCursor,
@@ -172,109 +179,6 @@ CREATE TABLE IF NOT EXISTS notes (
   PRIMARY KEY (module, ordinal)
 );
 CREATE INDEX IF NOT EXISTS notes_module ON notes(module);
-`;
-
-/** Added in place, so IF NOT EXISTS. What a refactor step moved, one row each, in the order it moved them. */
-const REBINDS_TABLE = `
--- Written in the same transaction as the move it records. The CHECKs are the subjects table's
--- own, so a row here is a prior state it accepts back.
-CREATE TABLE IF NOT EXISTS refactor_rebinds (
-  transactionId   TEXT NOT NULL,
-  stepNo          INTEGER NOT NULL,
-  ordinal         INTEGER NOT NULL,
-  subjectId       TEXT NOT NULL,
-  fromSymbolId    TEXT NOT NULL,
-  toSymbolId      TEXT NOT NULL,
-  priorFrom       TEXT,
-  priorEvidence   TEXT NOT NULL CHECK (priorEvidence IN (${EVIDENCE_IN})),
-  priorBoundAt    INTEGER NOT NULL,
-  priorState      TEXT NOT NULL CHECK (priorState IN (${STATE_IN})),
-  priorOrphanedAt INTEGER,
-  PRIMARY KEY (transactionId, stepNo, ordinal),
-  CHECK ((priorState = 'bound' AND priorOrphanedAt IS NULL) OR (priorState = 'orphaned' AND priorOrphanedAt IS NOT NULL)),
-  CHECK (typeof(subjectId) = 'text' AND subjectId != ''),
-  CHECK (typeof(fromSymbolId) = 'text' AND fromSymbolId != ''),
-  CHECK (typeof(toSymbolId) = 'text' AND toSymbolId != ''),
-  CHECK (priorFrom IS NULL OR (typeof(priorFrom) = 'text' AND priorFrom != '')),
-  CHECK (typeof(priorBoundAt) = 'integer'),
-  CHECK (priorOrphanedAt IS NULL OR typeof(priorOrphanedAt) = 'integer')
-);
-`;
-
-const RECOVERY_INTENTS_TABLE = `
-CREATE TABLE IF NOT EXISTS refactor_recovery_intents (
-  transactionId TEXT PRIMARY KEY,
-  operation TEXT NOT NULL CHECK (operation IN ('undo', 'revert')),
-  stepNo INTEGER,
-  diskStates TEXT
-);
-`;
-
-const REFACTOR_KNOWN_STATES_TABLE = `
-CREATE TABLE IF NOT EXISTS refactor_known_states (
-  transactionId TEXT NOT NULL,
-  module        TEXT NOT NULL,
-  existed       INTEGER NOT NULL CHECK (existed IN (0, 1)),
-  contentHash   TEXT,
-  edited        INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1)),
-  PRIMARY KEY (transactionId, module),
-  CHECK ((existed = 0 AND contentHash IS NULL) OR (existed = 1 AND contentHash IS NOT NULL))
-);
-`;
-
-const REFACTOR_REVISION_TRIGGERS = `
-CREATE TRIGGER IF NOT EXISTS refactor_steps_revision_insert AFTER INSERT ON refactor_steps
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_steps_revision_update AFTER UPDATE ON refactor_steps
-WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.stepNo IS NOT NEW.stepNo OR OLD.kind IS NOT NEW.kind
-  OR OLD.phase IS NOT NEW.phase OR OLD.plan IS NOT NEW.plan OR OLD.createdAt IS NOT NEW.createdAt
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_steps_revision_delete AFTER DELETE ON refactor_steps
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_images_revision_insert AFTER INSERT ON refactor_images
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_images_revision_update AFTER UPDATE ON refactor_images
-WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.scope IS NOT NEW.scope OR OLD.stepNo IS NOT NEW.stepNo
-  OR OLD.module IS NOT NEW.module OR OLD.existedBefore IS NOT NEW.existedBefore OR OLD.beforeHash IS NOT NEW.beforeHash
-  OR OLD.existsAfter IS NOT NEW.existsAfter OR OLD.afterHash IS NOT NEW.afterHash OR OLD.beforeEdited IS NOT NEW.beforeEdited
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_images_revision_delete AFTER DELETE ON refactor_images
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_issues_revision_insert AFTER INSERT ON refactor_issues
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_issues_revision_update AFTER UPDATE ON refactor_issues
-WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.stepNo IS NOT NEW.stepNo OR OLD.kind IS NOT NEW.kind
-  OR OLD.detail IS NOT NEW.detail OR OLD.module IS NOT NEW.module OR OLD.line IS NOT NEW.line
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_issues_revision_delete AFTER DELETE ON refactor_issues
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_rebinds_revision_insert AFTER INSERT ON refactor_rebinds
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_rebinds_revision_update AFTER UPDATE ON refactor_rebinds
-WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.stepNo IS NOT NEW.stepNo OR OLD.ordinal IS NOT NEW.ordinal
-  OR OLD.subjectId IS NOT NEW.subjectId OR OLD.fromSymbolId IS NOT NEW.fromSymbolId
-  OR OLD.toSymbolId IS NOT NEW.toSymbolId OR OLD.priorFrom IS NOT NEW.priorFrom
-  OR OLD.priorEvidence IS NOT NEW.priorEvidence OR OLD.priorBoundAt IS NOT NEW.priorBoundAt
-  OR OLD.priorState IS NOT NEW.priorState OR OLD.priorOrphanedAt IS NOT NEW.priorOrphanedAt
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_rebinds_revision_delete AFTER DELETE ON refactor_rebinds
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_insert AFTER INSERT ON refactor_recovery_intents
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_update AFTER UPDATE ON refactor_recovery_intents
-WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.operation IS NOT NEW.operation OR OLD.stepNo IS NOT NEW.stepNo
-  OR OLD.diskStates IS NOT NEW.diskStates
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_recovery_intents_revision_delete AFTER DELETE ON refactor_recovery_intents
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_known_states_revision_insert AFTER INSERT ON refactor_known_states
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_known_states_revision_update AFTER UPDATE ON refactor_known_states
-WHEN OLD.transactionId IS NOT NEW.transactionId OR OLD.module IS NOT NEW.module
-  OR OLD.existed IS NOT NEW.existed OR OLD.contentHash IS NOT NEW.contentHash OR OLD.edited IS NOT NEW.edited
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = NEW.transactionId AND state = 'open'; END;
-CREATE TRIGGER IF NOT EXISTS refactor_known_states_revision_delete AFTER DELETE ON refactor_known_states
-BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = OLD.transactionId AND state = 'open'; END;
 `;
 
 // Every range is stored whole. Keeping only a start meant the index could say where something was
@@ -478,71 +382,7 @@ CREATE INDEX docs_fact ON docs(factId);
 -- per question class, replaced rather than versioned; citations are JSON, read whole.
 ${KNOWLEDGE_SCHEMA}
 
--- The refactor journal. One open transaction per workspace, enforced by the partial index below
--- rather than by whoever happens to check first.
-CREATE TABLE refactor_transactions (
-  id        TEXT PRIMARY KEY,
-  state     TEXT NOT NULL,
-  startedAt INTEGER NOT NULL,
-  revision  INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
-  -- 'own': recovery closes it. Null reads as 'explicit'.
-  origin    TEXT
-);
-CREATE UNIQUE INDEX refactor_one_open ON refactor_transactions(state) WHERE state = 'open';
-
--- The phase is what recovery reads. A crash between any two of these leaves a state that has to
--- be distinguishable from the others, so it is committed before the work it names, not after.
-CREATE TABLE refactor_steps (
-  transactionId TEXT NOT NULL,
-  stepNo        INTEGER NOT NULL,
-  kind          TEXT NOT NULL,
-  phase         TEXT NOT NULL,
-  -- The plan as decided, so applying never recomputes it and cannot drift from what was reported.
-  plan          TEXT,
-  createdAt     INTEGER NOT NULL,
-  PRIMARY KEY (transactionId, stepNo)
-);
-${REBINDS_TABLE}
-${RECOVERY_INTENTS_TABLE}
-${REFACTOR_KNOWN_STATES_TABLE}
--- Content addressed, so snapshotting every layer of a long transaction stores each distinct file
--- version once rather than once per layer. Bytes, not text: a file that is not valid UTF-8 still
--- has to come back byte-identical.
-CREATE TABLE refactor_blobs (
-  hash  TEXT PRIMARY KEY,
-  bytes BLOB NOT NULL
-);
-
--- The scope separates the transaction's opening image of a file from each step's. Revert reads
--- the baseline, undo reads the step, and collapsing them would make one of the two wrong.
---
--- Existence is recorded on both sides because absent and empty are different files: a target the
--- transaction created has existedBefore 0, and undoing it means deleting rather than writing "".
-CREATE TABLE refactor_images (
-  transactionId TEXT NOT NULL,
-  scope         TEXT NOT NULL,
-  stepNo        INTEGER,
-  module        TEXT NOT NULL,
-  existedBefore INTEGER NOT NULL,
-  beforeHash    TEXT,
-  existsAfter   INTEGER,
-  afterHash     TEXT,
-  beforeEdited  INTEGER NOT NULL DEFAULT 0 CHECK (beforeEdited IN (0, 1)),
-  PRIMARY KEY (transactionId, scope, stepNo, module)
-);
-CREATE INDEX refactor_images_txn ON refactor_images(transactionId);
-
--- Problems a step introduced, kept per step so status can say which one to look at, and so a
--- commit refusal names the step rather than the workspace.
-CREATE TABLE refactor_issues (
-  transactionId TEXT NOT NULL,
-  stepNo        INTEGER NOT NULL,
-  kind          TEXT NOT NULL,
-  detail        TEXT NOT NULL,
-  module        TEXT,
-  line          INTEGER
-);
-CREATE INDEX refactor_issues_txn ON refactor_issues(transactionId);
+${JOURNAL_DDL}
 `;
 
 /**
@@ -621,20 +461,17 @@ const SWEEP_CURSOR_KEY = "knowledgeSweepCursor";
  */
 const WORKSPACE_KEY = "workspaceRoot";
 
-/** Tables a rebuild carries across, because no re-index can regenerate what is in them. */
-const SALVAGED_TABLES = [
-	...KNOWLEDGE_TABLES,
-	"refactor_transactions",
-	"refactor_steps",
-	"refactor_blobs",
-	"refactor_images",
-	"refactor_issues",
-	"refactor_rebinds",
-	"refactor_recovery_intents",
-] as const;
+/** Carries the ledger id across rebuilds. */
+const LEDGER_KEY = "refactorLedger";
 
-/** Journal tables, whose loss is worse than a failed open: it strands edits already on disk. */
-const JOURNAL_TABLES = SALVAGED_TABLES.filter((table) => table.startsWith("refactor_"));
+/** Preserve journals needed to recover disk edits. */
+const SALVAGED_JOURNAL: readonly string[] = JOURNAL_TABLE_NAMES.filter((table) => {
+	const entry: JournalTable = JOURNAL_TABLES[table];
+	return entry.salvage;
+});
+
+/** Tables a rebuild carries across, because no re-index can regenerate what is in them. */
+const SALVAGED_TABLES: readonly string[] = [...KNOWLEDGE_TABLES, ...SALVAGED_JOURNAL];
 
 /** What survives a rebuild, keyed by table so a new salvaged table needs no new field. */
 type SalvagedKnowledge = Record<string, Array<Record<string, unknown>>>;
@@ -663,7 +500,7 @@ function salvageKnowledge(db: DatabaseSync): SalvagedKnowledge {
 		try {
 			salvaged[table] = db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
 		} catch (error) {
-			if (JOURNAL_TABLES.includes(table)) {
+			if (SALVAGED_JOURNAL.includes(table)) {
 				throw new Error(
 					`the refactor journal in ${table} could not be read, so an unfinished refactor cannot be recovered: ${
 						error instanceof Error ? error.message : String(error)
@@ -754,7 +591,7 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: nu
 		gap.run(subjectId, row.question, row.recordedAs, row.askCount, row.lastAsked);
 	}
 
-	for (const table of JOURNAL_TABLES) restoreByColumn(db, table, salvaged[table] ?? []);
+	for (const table of SALVAGED_JOURNAL) restoreByColumn(db, table, salvaged[table] ?? []);
 	return { unplaced, dropped: rows.dropped };
 }
 
@@ -1036,6 +873,8 @@ export class IndexStore {
 
 		// Read before any rebuild drops the table it lives in.
 		const stored = version === SCHEMA_VERSION ? readMeta(db, COMPATIBILITY_KEY) : null;
+		// Preserve the ledger id across rebuilds.
+		const ledger = readMeta(db, LEDGER_KEY);
 		// Read before a rebuild creates it: a store without the table journaled its moves as JSON.
 		const liftRebinds = !tableExists(db, "refactor_rebinds");
 		if (version === SCHEMA_VERSION && compatibility != null && stored !== null && stored !== compatibility) {
@@ -1080,7 +919,7 @@ export class IndexStore {
 			// Table and lift in one commit, or a crash between them reads as a store that already lifted.
 			db.exec("BEGIN");
 			try {
-				db.exec(REBINDS_TABLE);
+				db.exec(JOURNAL_TABLES.refactor_rebinds.ddl);
 				dropped += liftAppliedRebinds(db);
 				db.exec("COMMIT");
 			} catch (error) {
@@ -1128,7 +967,7 @@ export class IndexStore {
 		}
 		// Every statement is IF NOT EXISTS, so an index, trigger or view added later lands on an existing store here.
 		db.exec(KNOWLEDGE_SCHEMA);
-		db.exec(REFACTOR_KNOWN_STATES_TABLE);
+		db.exec(JOURNAL_DDL);
 		if (!columnExists(db, "refactor_recovery_intents", "diskStates")) {
 			db.exec("ALTER TABLE refactor_recovery_intents ADD COLUMN diskStates TEXT");
 		}
@@ -1165,10 +1004,8 @@ export class IndexStore {
 				)
 			WHERE baseline.scope = 'baseline'
 		`);
-		db.exec("DROP TRIGGER IF EXISTS refactor_images_revision_update");
-		db.exec("DROP TRIGGER IF EXISTS refactor_recovery_intents_revision_update");
-		db.exec("DROP TRIGGER IF EXISTS refactor_known_states_revision_update");
-		db.exec(REFACTOR_REVISION_TRIGGERS);
+		installRevisionTriggers(db);
+		if (readMeta(db, LEDGER_KEY) === null) writeMeta(db, LEDGER_KEY, ledger ?? randomUUID());
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
@@ -1692,17 +1529,17 @@ export class IndexStore {
 		return row?.bytes ?? null;
 	}
 
-	/** Blobs no image still points at. Called after a transaction settles, never during one. */
+	/** Prunes unreferenced blobs after settlement. */
 	pruneBlobs(): number {
-		const result = this.db
-			.prepare(
-				`DELETE FROM refactor_blobs WHERE hash NOT IN (
-				   SELECT beforeHash FROM refactor_images WHERE beforeHash IS NOT NULL
-				   UNION SELECT afterHash FROM refactor_images WHERE afterHash IS NOT NULL
-				 )`,
-			)
-			.run();
+		const result = this.db.prepare(`DELETE FROM refactor_blobs WHERE hash NOT IN (${keptBlobs()})`).run();
 		return Number(result.changes);
+	}
+
+	/** Ledger identity survives store rebuilds. */
+	refactorLedgerId(): string {
+		const id = readMeta(this.db, LEDGER_KEY);
+		if (id === null) throw new Error("the store has no settlement ledger id");
+		return id;
 	}
 
 	/**

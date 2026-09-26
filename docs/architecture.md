@@ -489,8 +489,40 @@ gate, then opens and commits its own. `beginStep` holds each module the step wri
 from modules it only reindexes) to `bases` on the before-images it journals. Nobody holds an `own`
 transaction after a crash: recovery closes it, committed when its step finalized and reverted
 otherwise. A throw inside the step settles its `own` transaction the same way before answering: a
-refusal when it reverted, the throw when a finalized step committed. A rename and a move journal
-their planned text, so recovery restores a half-written one.
+refusal when it reverted, the throw when a finalized step committed. Every step journals its
+planned-text hash at begin. Recovery can restore a write that reached disk before `completeStep`
+records the disk state.
+
+### Closing and the settlement ledger
+
+`drop` is the terminal path. `commit` and `recover` call it through `close`.
+`finalizeRevert` calls it in its journal write. One store transaction deletes transaction rows and
+writes one `refactor_settlements` row (`seq`, `id`, `origin`, `outcome`, `closedAt`). It writes one
+`refactor_settled_files` row per tracked module. `opened` is the baseline image. `settled` is the
+known state at close. After a Revert, it equals `opened`. A disk state that differs from `settled`
+is drift. `drop` is the only writer for both settlement tables.
+
+Editor notes retain their bytes. Every known state has an image. `pruneBlobs` keeps opened and
+settled images for the 32 newest explicit settlements. Own settlements keep hashes only. `drop`
+keeps the 128 newest settlements and deletes expired closed transaction rows. The ledger ID lives
+in the meta table and survives rebuilds with the settlements. A new ID marks a new ledger. See
+Settlements in `docs/daemon-protocol.md`.
+
+### The table registry
+
+`JOURNAL_TABLES` in `core/src/journalSchema.ts` registers each journal table's DDL, rebuild salvage
+policy, revision behavior and blob columns. Schema creation, salvage, revision triggers,
+`pruneBlobs` and residue tests use this registry.
+
+### Gated writes
+
+The exclusive gate serializes `TransactionManager.writeFile` with commit, Undo, Revert and recovery.
+Containment uses real paths. The write refuses a link that leaves the workspace, a directory, an
+in-workspace link or a special file. The disk hash must match the caller's `expect`.
+With a refactor open, the method tracks the file before writing, then records the written bytes as
+known state for settlement. A crash between the disk write and that record leaves drift, not an
+untracked write. The handler then indexes the file. `MAX_SOURCE_BYTES` sets the size cap and keeps
+base64 requests under the socket line cap.
 
 ### What a writer reads
 

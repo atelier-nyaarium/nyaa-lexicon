@@ -9,6 +9,7 @@ import type {
 	RefactorStartResult,
 	RefactorTrackResult,
 	RefactorUndoResult,
+	RefactorWriteFileResult,
 	RenameConcern,
 	RenameEditPlan,
 	RenamePlan,
@@ -53,6 +54,11 @@ export type NotedFileWrite = Refusing<RefactorNoteWriteResult>;
 export type UndoneStep = Refusing<RefactorUndoResult>;
 export type RevertedTransaction = Refusing<RefactorRevertResult>;
 export type CommittedTransaction = Refusing<RefactorCommitResult>;
+
+/** Gated write result before indexing. */
+export type WrittenFile =
+	| Omit<Extract<RefactorWriteFileResult, { written: true }>, "indexed">
+	| (Omit<Extract<RefactorWriteFileResult, { written: false }>, "reason"> & { reason: Refusal });
 
 /** A step the writer could not apply, named with the file it stopped on. */
 export type WriteOutcome = { applied: true; modules: string[] } | { applied: false; reason: Refusal; module?: string };

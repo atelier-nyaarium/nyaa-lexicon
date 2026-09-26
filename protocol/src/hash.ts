@@ -1,5 +1,4 @@
-// The one content hash: what the index files a module under, and what a consumer compares its
-// own read against. Both sides must agree byte for byte, so both import this.
+// Keep text and byte hashes distinct.
 
 import { createHash } from "node:crypto";
 
@@ -18,4 +17,9 @@ const HASH_LENGTH = 32;
  */
 export function hashContent(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, HASH_LENGTH);
+}
+
+/** Preserve distinctions lost by UTF-8 decoding. */
+export function hashBytes(bytes: Uint8Array): string {
+	return createHash("sha256").update(bytes).digest("hex").slice(0, HASH_LENGTH);
 }

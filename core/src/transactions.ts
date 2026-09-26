@@ -7,7 +7,6 @@
 // Files are snapshotted as raw bytes. A source file that is not valid UTF-8 still has to come back
 // byte-identical, and hashing decoded text would let two different files share an image.
 
-import { createHash } from "node:crypto";
 import {
 	closeSync,
 	constants,
@@ -22,9 +21,14 @@ import {
 import type { DatabaseSync } from "node:sqlite";
 import {
 	type CommittedFile,
+	hashBytes,
+	type LedgerMark,
+	MAX_SOURCE_BYTES,
 	moduleOf,
 	type RefactorBeforeImage,
 	type RefactorIssue,
+	type RefactorSettledImage,
+	type RefactorSettlements,
 	resolveContained,
 	type StepBase,
 	type StepKind,
@@ -32,6 +36,7 @@ import {
 	type TransactionStatus,
 } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
+import { SETTLEMENTS_KEPT } from "./journalSchema.js";
 import type {
 	CommittedTransaction,
 	NotedFileWrite,
@@ -39,6 +44,7 @@ import type {
 	StartedTransaction,
 	TrackedFile,
 	UndoneStep,
+	WrittenFile,
 } from "./refusalSlots.js";
 import {
 	directoryInTheWay,
@@ -55,7 +61,12 @@ import {
 	transactionAlreadyOpen,
 	undoWouldDiscard,
 	unresolvedIssues,
+	writeChanged,
+	writeLeavesWorkspace,
 	writeNotTracked,
+	writeOverDirectory,
+	writeOverNonFile,
+	writeTooLarge,
 } from "./refusals.js";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
@@ -63,7 +74,7 @@ import type { AppliedRebind, KeptRebind, RebindEntry, RebindEvidence, RebindResu
 
 export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
 
-import { insideWorkspace } from "./sourceRead.js";
+import { insideWorkspace, writableText } from "./sourceRead.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -127,11 +138,6 @@ export interface Recovered {
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Hashes byte images. See `docs/architecture.md` Refactor transactions. */
-export function hashBytes(bytes: Uint8Array): string {
-	return createHash("sha256").update(bytes).digest("hex").slice(0, 32);
-}
-
 /** No-follow and nonblocking flags protect against link and FIFO swaps. */
 const OPEN_LEAF = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
@@ -179,6 +185,19 @@ export function readLeaf(
 	} finally {
 		closeSync(fd);
 	}
+}
+
+/** Text requires UTF-8 and no NUL in the first 8 KiB. */
+function encoded(
+	contentHash: string,
+	bytes: Uint8Array,
+):
+	| { contentHash: string; encoding: "text"; text: string }
+	| { contentHash: string; encoding: "base64"; bytes: string } {
+	const text = Buffer.from(bytes).toString("utf8");
+	const roundTrips = Buffer.from(text, "utf8").equals(Buffer.from(bytes));
+	if (roundTrips && !bytes.subarray(0, 8192).includes(0)) return { contentHash, encoding: "text", text };
+	return { contentHash, encoding: "base64", bytes: Buffer.from(bytes).toString("base64") };
 }
 
 function holds(current: PathState, existed: boolean, hash: string | null): boolean {
@@ -293,15 +312,17 @@ export class TransactionManager {
 
 	/** Records the opening image. See `docs/architecture.md` Refactor transactions. */
 	track(module: string): TrackedFile {
+		const ledger = this.ledger();
 		const open = this.openTransaction();
-		if (!open) return { tracked: false, refactor: null, reason: noTransactionOpen() };
+		if (!open) return { tracked: false, refactor: null, ledger, reason: noTransactionOpen() };
 
 		const refactor = { id: open.id };
-		if (this.imageFor(open.id, "baseline", 0, module)) return { tracked: true, refactor };
+		if (this.imageFor(open.id, "baseline", 0, module)) return { tracked: true, refactor, ledger };
 		const image = this.snapshot(module);
-		if ("foreign" in image) return { tracked: false, refactor, reason: notARegularFile(module, image.foreign) };
+		if ("foreign" in image)
+			return { tracked: false, refactor, ledger, reason: notARegularFile(module, image.foreign) };
 		this.claimBaseline(open.id, image);
-		return { tracked: true, refactor };
+		return { tracked: true, refactor, ledger };
 	}
 
 	/** Applies an editor state note. See `docs/daemon-protocol.md` `refactorNoteWrite`. */
@@ -316,17 +337,76 @@ export class TransactionManager {
 			"absent" in state
 				? { module, existed: false, hash: null }
 				: { module, existed: true, hash: state.contentHash };
-		const current = this.diskState(module);
-		if (!diskStateHoldsImage(current, expected.existed, expected.hash)) {
+		const current = this.observe(module);
+		if (!diskStateHoldsImage(current.state, expected.existed, expected.hash)) {
 			return { noted: false, reason: notedWriteDoesNotMatch(module) };
 		}
 
+		this.noteKnown(open.id, module, expected.hash, current.bytes);
+		return { noted: true };
+	}
+
+	/** Gated write or delete. */
+	writeFile(
+		module: string,
+		content: { text: string } | { bytes: Uint8Array } | null,
+		expect: string | null,
+	): WrittenFile {
+		if (content !== null && "text" in content) {
+			const unencodable = writableText(module, content.text);
+			if (unencodable !== null) return { written: false, refused: "unencodable", reason: unencodable };
+		}
+		const bytes = content === null ? null : "text" in content ? Buffer.from(content.text, "utf8") : content.bytes;
+		if (bytes !== null && bytes.length > MAX_SOURCE_BYTES) {
+			return {
+				written: false,
+				refused: "tooLarge",
+				reason: writeTooLarge(module, bytes.length, MAX_SOURCE_BYTES),
+			};
+		}
+
+		// Leaf links can escape.
+		const full = this.contained(module);
+		if (full === null || resolveContained(this.workspaceRoot, module).kind === "outside") {
+			return { written: false, refused: "outside", reason: writeLeavesWorkspace(module) };
+		}
+		const leaf = readLeaf(full);
+		if (leaf.kind === "directory")
+			return { written: false, refused: "directory", reason: writeOverDirectory(module) };
+		if (leaf.kind === "link" || leaf.kind === "special") {
+			return { written: false, refused: "notAFile", reason: writeOverNonFile(module, leaf.kind) };
+		}
+		const current = leaf.kind === "file" ? hashBytes(leaf.bytes) : null;
+		if (current !== expect) {
+			return { written: false, refused: "changed", reason: writeChanged(module, current), contentHash: current };
+		}
+
+		const open = this.openTransaction();
+		if (open !== null) {
+			// Journal before writing.
+			const tracked = this.track(module);
+			if (!tracked.tracked) throw new Error(tracked.reason ?? `${module} could not be tracked`);
+		}
+		if (bytes === null) rmSync(full, { force: true });
+		else writeSourceFile(full, bytes);
+		const contentHash = bytes === null ? null : hashBytes(bytes);
+		if (open !== null) this.noteKnown(open.id, module, contentHash, bytes);
+		return {
+			written: true,
+			contentHash,
+			refactor: open === null ? null : { id: open.id },
+			ledger: this.ledger(),
+		};
+	}
+
+	/** Keeps known bytes for settlement. */
+	private noteKnown(transactionId: string, module: string, hash: string | null, bytes: Uint8Array | null): void {
 		this.store.journalWrite((db) => {
+			if (hash !== null && bytes !== null) this.store.putBlob(hash, bytes);
 			db.prepare(
 				"UPDATE refactor_known_states SET existed = ?, contentHash = ?, edited = 1 WHERE transactionId = ? AND module = ?",
-			).run(expected.existed ? 1 : 0, expected.hash, open.id, module);
+			).run(hash === null ? 0 : 1, hash, transactionId, module);
 		});
-		return { noted: true };
 	}
 
 	/** Reads the opening image. See `docs/daemon-protocol.md` `refactorBeforeImage`. */
@@ -348,24 +428,84 @@ export class TransactionManager {
 		if (contentHash === null) throw new Error(`tracked baseline has no content hash: ${module}`);
 		const bytes = this.store.blob(contentHash);
 		if (bytes === null) throw new Error(`tracked baseline bytes are missing: ${module}`);
-		const text = Buffer.from(bytes).toString("utf8");
-		const roundTrips = Buffer.from(text, "utf8").equals(Buffer.from(bytes));
-		if (roundTrips && !bytes.subarray(0, 8192).includes(0)) {
-			return { tracked: true, existed: true, contentHash, encoding: "text", text };
-		}
-		return {
-			tracked: true,
-			existed: true,
-			contentHash,
-			encoding: "base64",
-			bytes: Buffer.from(bytes).toString("base64"),
-		};
+		return { tracked: true, existed: true, ...encoded(contentHash, bytes) };
+	}
+
+	ledger(): LedgerMark {
+		const row = this.store.journalRead((db) =>
+			db.prepare("SELECT MAX(seq) AS latest FROM refactor_settlements").get(),
+		) as { latest: number | null };
+		return { id: this.store.refactorLedgerId(), latest: row.latest ?? 0 };
+	}
+
+	settlements(after: number, limit = 16): RefactorSettlements {
+		return this.store.journalRead((db) => {
+			const bounds = db
+				.prepare("SELECT MIN(seq) AS oldest, MAX(seq) AS latest FROM refactor_settlements")
+				.get() as {
+				oldest: number | null;
+				latest: number | null;
+			};
+			const rows = db
+				.prepare(
+					"SELECT seq, transactionId, origin, outcome, closedAt FROM refactor_settlements WHERE seq > ? ORDER BY seq LIMIT ?",
+				)
+				.all(after, limit) as Array<{
+				seq: number;
+				transactionId: string;
+				origin: "explicit" | "own";
+				outcome: "committed" | "reverted";
+				closedAt: number;
+			}>;
+			const filesOf = db.prepare(
+				"SELECT module, opened, settled, drifted, driftedHash FROM refactor_settled_files WHERE seq = ? ORDER BY module",
+			);
+			return {
+				ledger: { id: this.store.refactorLedgerId(), latest: bounds.latest ?? 0 },
+				oldest: bounds.oldest,
+				settlements: rows.map((row) => ({
+					seq: row.seq,
+					id: row.transactionId,
+					origin: row.origin,
+					outcome: row.outcome,
+					closedAt: row.closedAt,
+					files: (
+						filesOf.all(row.seq) as Array<{
+							module: string;
+							opened: string | null;
+							settled: string | null;
+							drifted: number;
+							driftedHash: string | null;
+						}>
+					).map((file) => ({
+						module: file.module,
+						opened: file.opened,
+						settled: file.settled,
+						...(file.drifted === 1 ? { drifted: { contentHash: file.driftedHash } } : {}),
+					})),
+				})),
+			};
+		});
+	}
+
+	settledImage(seq: number, module: string, side: "opened" | "settled"): RefactorSettledImage {
+		const row = this.store.journalRead((db) =>
+			db
+				.prepare("SELECT opened, settled FROM refactor_settled_files WHERE seq = ? AND module = ?")
+				.get(seq, module),
+		) as { opened: string | null; settled: string | null } | undefined;
+		if (row === undefined) return { held: false };
+		const hash = row[side];
+		if (hash === null) return { held: true, absent: true };
+		const bytes = this.store.blob(hash);
+		return bytes === null ? { held: false } : { held: true, ...encoded(hash, bytes) };
 	}
 
 	/** Reads transaction state. See `docs/daemon-protocol.md` `refactorStatus`. */
 	status(): TransactionStatus {
+		const ledger = this.ledger();
 		const open = this.openTransaction();
-		if (!open) return { open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [] };
+		if (!open) return { open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [], ledger };
 
 		const steps = this.store.journalRead((db) =>
 			db
@@ -400,6 +540,7 @@ export class TransactionManager {
 				.map((state) => state.module)
 				.sort(),
 			issues: this.issues(open.id),
+			ledger,
 		};
 	}
 
@@ -908,24 +1049,33 @@ export class TransactionManager {
 	}
 
 	private diskState(module: string): DiskState {
+		return this.observe(module).state;
+	}
+
+	/** Hashes and retains bytes from one read. */
+	private observe(module: string): { state: DiskState; bytes: Buffer | null } {
 		const full = this.contained(module);
-		if (full === null) return { module, kind: "outside" };
+		if (full === null) return { state: { module, kind: "outside" }, bytes: null };
 		const leaf = readLeaf(full);
-		if (leaf.kind === "missing") return { module, kind: "missing" };
-		if (leaf.kind === "file") return { module, kind: "file", hash: hashBytes(leaf.bytes) };
+		if (leaf.kind === "missing") return { state: { module, kind: "missing" }, bytes: null };
+		if (leaf.kind === "file")
+			return { state: { module, kind: "file", hash: hashBytes(leaf.bytes) }, bytes: leaf.bytes };
 		if (leaf.kind === "link") {
 			try {
-				return { module, kind: "link", target: readlinkSync(full) };
+				return { state: { module, kind: "link", target: readlinkSync(full) }, bytes: null };
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT") return { module, kind: "missing" };
+				if ((error as NodeJS.ErrnoException).code === "ENOENT")
+					return { state: { module, kind: "missing" }, bytes: null };
 				throw error;
 			}
 		}
-		if (leaf.kind === "directory") return { module, kind: "directory" };
+		if (leaf.kind === "directory") return { state: { module, kind: "directory" }, bytes: null };
 		const found = lstatOf(full);
-		return found === null
-			? { module, kind: "missing" }
-			: { module, kind: "special", identity: `${found.dev}:${found.ino}:${found.mode}` };
+		const state: DiskState =
+			found === null
+				? { module, kind: "missing" }
+				: { module, kind: "special", identity: `${found.dev}:${found.ino}:${found.mode}` };
+		return { state, bytes: null };
 	}
 
 	private observeKnownStates(
@@ -1221,19 +1371,63 @@ export class TransactionManager {
 		});
 	}
 
-	/** Removes journal rows and records the transaction's terminal state. */
-	private close(transactionId: string, state: "committed" | "reverted"): void {
-		this.store.journalWrite((db) => this.drop(db, transactionId, state));
+	/** Writes settlement snapshots before pruning blobs. */
+	private close(transactionId: string, outcome: "committed" | "reverted"): void {
+		this.store.journalWrite((db) => this.drop(db, transactionId, outcome));
 		this.store.pruneBlobs();
 	}
 
-	/** Removes journal rows inside the caller's store transaction. */
-	private drop(db: DatabaseSync, transactionId: string, state: "committed" | "reverted"): void {
+	/** Settles the transaction and removes rows atomically. */
+	private drop(db: DatabaseSync, transactionId: string, outcome: "committed" | "reverted"): void {
+		const origin =
+			(
+				db.prepare("SELECT origin FROM refactor_transactions WHERE id = ?").get(transactionId) as
+					| { origin: TransactionOrigin | null }
+					| undefined
+			)?.origin ?? "explicit";
+		const baselines = db
+			.prepare(
+				"SELECT module, existedBefore, beforeHash FROM refactor_images WHERE transactionId = ? AND scope = 'baseline' ORDER BY module",
+			)
+			.all(transactionId) as Array<{ module: string; existedBefore: number; beforeHash: string | null }>;
+		const known = new Map(
+			(
+				db
+					.prepare("SELECT module, existed, contentHash FROM refactor_known_states WHERE transactionId = ?")
+					.all(transactionId) as Array<{ module: string; existed: number; contentHash: string | null }>
+			).map((row) => [row.module, row.existed === 1 ? row.contentHash : null]),
+		);
+
+		const { lastInsertRowid } = db
+			.prepare("INSERT INTO refactor_settlements (transactionId, origin, outcome, closedAt) VALUES (?, ?, ?, ?)")
+			.run(transactionId, origin, outcome, this.now());
+		const settle = db.prepare(
+			"INSERT INTO refactor_settled_files (seq, module, opened, settled, drifted, driftedHash) VALUES (?, ?, ?, ?, ?, ?)",
+		);
+		for (const baseline of baselines) {
+			const opened = baseline.existedBefore === 1 ? baseline.beforeHash : null;
+			const state = known.get(baseline.module);
+			// Revert uses baseline state.
+			const settled = outcome === "reverted" || state === undefined ? opened : state;
+			const disk = this.diskState(baseline.module);
+			const drifted = !diskStateHoldsImage(disk, settled !== null, settled);
+			const driftedHash = drifted && disk.kind === "file" ? disk.hash : null;
+			settle.run(Number(lastInsertRowid), baseline.module, opened, settled, drifted ? 1 : 0, driftedHash);
+		}
+
 		db.prepare("DELETE FROM refactor_images WHERE transactionId = ?").run(transactionId);
 		db.prepare("DELETE FROM refactor_known_states WHERE transactionId = ?").run(transactionId);
 		db.prepare("DELETE FROM refactor_issues WHERE transactionId = ?").run(transactionId);
 		db.prepare("DELETE FROM refactor_rebinds WHERE transactionId = ?").run(transactionId);
 		db.prepare("DELETE FROM refactor_steps WHERE transactionId = ?").run(transactionId);
-		db.prepare("UPDATE refactor_transactions SET state = ? WHERE id = ?").run(state, transactionId);
+		db.prepare("UPDATE refactor_transactions SET state = ? WHERE id = ?").run(outcome, transactionId);
+
+		db.prepare(
+			"DELETE FROM refactor_settlements WHERE seq NOT IN (SELECT seq FROM refactor_settlements ORDER BY seq DESC LIMIT ?)",
+		).run(SETTLEMENTS_KEPT);
+		db.prepare("DELETE FROM refactor_settled_files WHERE seq NOT IN (SELECT seq FROM refactor_settlements)").run();
+		db.prepare(
+			"DELETE FROM refactor_transactions WHERE state != 'open' AND id NOT IN (SELECT transactionId FROM refactor_settlements)",
+		).run();
 	}
 }

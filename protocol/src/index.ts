@@ -150,6 +150,8 @@ export {
 	KnowledgeScopeSchema,
 	type KnowledgeSweep,
 	KnowledgeSweepSchema,
+	type LedgerMark,
+	LedgerMarkSchema,
 	type LiteralQuery,
 	LiteralQuerySchema,
 	type LiteralsResult,
@@ -198,12 +200,18 @@ export {
 	RefactorNoteWriteResultSchema,
 	type RefactorRevertResult,
 	RefactorRevertResultSchema,
+	type RefactorSettledImage,
+	RefactorSettledImageSchema,
+	type RefactorSettlements,
+	RefactorSettlementsSchema,
 	type RefactorStartResult,
 	RefactorStartResultSchema,
 	type RefactorTrackResult,
 	RefactorTrackResultSchema,
 	type RefactorUndoResult,
 	RefactorUndoResultSchema,
+	type RefactorWriteFileResult,
+	RefactorWriteFileResultSchema,
 	type ReferencesResult,
 	ReferencesResultSchema,
 	type ReferenceUse,
@@ -234,6 +242,10 @@ export {
 	ScopeSymbolSchema,
 	type SearchSymbolsResult,
 	SearchSymbolsResultSchema,
+	type SettledFile,
+	SettledFileSchema,
+	type Settlement,
+	SettlementSchema,
 	type SharedLiteral,
 	SharedLiteralSchema,
 	type SharedLiteralsResult,
@@ -341,7 +353,7 @@ export {
 	parseFactIdResult,
 	referenceFactId,
 } from "./factId.js";
-export { hashContent } from "./hash.js";
+export { hashBytes, hashContent } from "./hash.js";
 export { FOLD_MARK, type HeaderFold, type HeaderSpan, renderHeader } from "./header.js";
 export {
 	BindRequestSchema,

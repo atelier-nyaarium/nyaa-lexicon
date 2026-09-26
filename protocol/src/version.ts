@@ -72,7 +72,7 @@ export type Compatibility =
 // A module whose real path leaves the workspace is unclaimed and forgotten, and writes refuse it.
 // A signature is the whole header on one line, through `renderHeader`. `outlineModule` leaves locals
 // out and each row carries `referenceCount`.
-export const PROTOCOL_VERSION = "3.17.0" as const;
+export const PROTOCOL_VERSION = "3.18.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

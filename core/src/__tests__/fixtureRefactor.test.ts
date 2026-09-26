@@ -5,14 +5,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { bunCommand } from "@nyaa-lexicon/client";
-import { applyEdits, hashContent, type RefactorUndoResult, type ResponseOf } from "@nyaa-lexicon/protocol";
+import { applyEdits, hashBytes, hashContent, type RefactorUndoResult, type ResponseOf } from "@nyaa-lexicon/protocol";
 import { createDispatch, daemonHandlers, type Gate } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
-import { hashBytes, TransactionManager } from "../transactions";
+import { TransactionManager } from "../transactions";
 
 ////////////////////////////////
 //  Helpers
