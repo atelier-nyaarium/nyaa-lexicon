@@ -19,6 +19,9 @@ const PYTHON3_TIMEOUT_MS = 30_000;
 /** Windows' App Installer alias exits with this when no Python is installed. */
 const STORE_ALIAS_EXIT = 9009;
 
+/** The py launcher exits with this when no matching runtime is installed. */
+const PY_NO_RUNTIME_EXIT = 103;
+
 /** Matches the previous spawnSync default; stdout past this is killed and read as a failure. */
 const PYTHON3_MAX_BUFFER_BYTES = 200 * 1024 * 1024;
 
@@ -88,6 +91,7 @@ export class Python3Dispatch {
 					throw new Error(`${command} produced more output than the buffer allows`);
 				case "exited":
 					if (result.code === STORE_ALIAS_EXIT) continue;
+					if (command === "py" && result.code === PY_NO_RUNTIME_EXIT) continue;
 					this.found = at;
 					if (result.code !== 0) {
 						const detail = result.stderr.toString("utf8").trim();

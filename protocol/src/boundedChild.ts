@@ -98,8 +98,10 @@ export function liveGroupCount(): number {
 
 /** Awaits the one `closed` shared by every caller, never a fresh `once("close", ...)` (fires once, so a late listener waits forever); kills the whole group whenever close has not fired, since a pgid stays reserved while any member lives and ESRCH just means it is already empty. */
 async function reap(child: ChildProcess, closed: Promise<void>, hasClosed: () => boolean): Promise<void> {
-	// The tree first: a root killed alone orphans what it forked.
-	if (!hasClosed() && process.platform === "win32" && child.pid !== undefined) await taskkillTree(child.pid);
+	const rootLives = () => child.exitCode === null && child.signalCode === null;
+	// The tree first: a root killed alone orphans what it forked. A dead root's pid may name a stranger.
+	if (!hasClosed() && process.platform === "win32" && child.pid !== undefined && rootLives())
+		await taskkillTree(child.pid);
 	if (!hasClosed()) {
 		try {
 			if (process.platform !== "win32" && child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
@@ -108,6 +110,9 @@ async function reap(child: ChildProcess, closed: Promise<void>, hasClosed: () =>
 			// The group, or the lone process, is already gone.
 		}
 	}
+	// Windows has no group to reach an orphan holding our pipes; closing our ends lets close fire.
+	if (process.platform === "win32" && !hasClosed())
+		for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
 	await closed;
 }
 
@@ -138,6 +143,8 @@ export async function runBounded(
 	child.stderr?.on("error", () => {});
 
 	if (child.pid !== undefined) liveGroups.add(child.pid);
+	// Windows has no group to outlive its root, so a dead root's pid is no longer ours to kill.
+	if (process.platform === "win32") child.once("exit", () => child.pid !== undefined && liveGroups.delete(child.pid));
 
 	// One listener for the whole run, shared by settling and reaping: see reap's own comment.
 	// Established before anything below that could throw, so a throw there can still reap through it.

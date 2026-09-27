@@ -27,14 +27,26 @@ function pipeListed(name: string): boolean | null {
 	}
 }
 
+/** Relistens when closed, so a live holder never reads dead. */
+function listen(name: string): void {
+	const server = createServer((socket) => socket.destroy());
+	let listening = false;
+	server.on("error", () => {});
+	server.once("listening", () => {
+		listening = true;
+	});
+	server.once("close", () => {
+		if (listening) listen(name);
+	});
+	server.listen(`${PIPES}${name}`);
+	server.unref();
+}
+
 /** One per process, never keeping it alive. */
 function holdPipe(): string | null {
 	if (heldPipe !== undefined) return heldPipe;
 	const name = `${PIPE_PREFIX}${process.pid}-${randomBytes(8).toString("hex")}`;
-	const server = createServer((socket) => socket.destroy());
-	server.on("error", () => {});
-	server.listen(`${PIPES}${name}`);
-	server.unref();
+	listen(name);
 	heldPipe = pipeListed(name) === true ? name : null;
 	return heldPipe;
 }
