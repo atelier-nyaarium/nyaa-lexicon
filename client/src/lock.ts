@@ -2,7 +2,7 @@
 //
 // The decision this file owns: given what is on disk, connect, replace, spawn, or wait out a delete.
 
-import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, parseDaemonLock, servesClient } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -14,12 +14,16 @@ import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
  * stop first. Collapsing them leaves an orphan holding the port.
  *
  * `awaitDelete` is separate from both: nothing here is a daemon to retire or connect to.
+ *
+ * `outdated` is a newer major that no longer serves this client: its own clients need it, so it is
+ * neither ridden nor retired, and this client must update.
  */
 export type LockDecision =
 	| { action: "connect"; lock: DaemonLock }
 	| { action: "spawn"; reason: string }
 	| { action: "replace"; lock: DaemonLock; reason: string; cause: ReplaceCause }
-	| { action: "awaitDelete"; lock: DaemonLock; reason: string };
+	| { action: "awaitDelete"; lock: DaemonLock; reason: string }
+	| { action: "outdated"; lock: DaemonLock; reason: string };
 
 /**
  * Why a daemon has to go, which decides whether a client may retire it on its own.
@@ -103,9 +107,18 @@ export function decideFromLock(context: LockContext): LockDecision {
 		};
 	}
 
-	// Newer is ridden, never retired: two sides replacing each other rebuild the index per flip.
+	// Newer is ridden down to the oldest major it serves, and never retired: two sides replacing each
+	// other rebuild the index per flip.
 	if (!sameMajor(lock.protocolVersion, context.ourProtocolVersion)) {
-		if (newerBuild(lock.protocolVersion, context.ourProtocolVersion)) return { action: "connect", lock };
+		if (newerBuild(lock.protocolVersion, context.ourProtocolVersion)) {
+			if (servesClient(lock.protocolVersion, lock.oldestClientMajor, context.ourProtocolVersion))
+				return { action: "connect", lock };
+			return {
+				action: "outdated",
+				lock,
+				reason: `the daemon speaks ${lock.protocolVersion} and no longer serves protocol ${context.ourProtocolVersion}`,
+			};
+		}
 		return {
 			action: "replace",
 			lock,

@@ -26,7 +26,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import ts from "typescript";
 import { callsIn, parseSource } from "../protocol/src/astResidue.js";
-import { PROTOCOL_VERSION } from "../protocol/src/version.js";
+import { OLDEST_CLIENT_MAJOR, PROTOCOL_VERSION } from "../protocol/src/version.js";
 import { git, outliveInterrupts } from "./child";
 import { DIST_DIR } from "./dist";
 
@@ -614,7 +614,11 @@ function main(argv: string[]): void {
 		}
 		writeFileSync(
 			path.join(ROOT, DIST_DIR, VERSION_FILE),
-			`${JSON.stringify({ buildVersion: version, protocolVersion: PROTOCOL_VERSION }, null, "\t")}\n`,
+			`${JSON.stringify(
+				{ buildVersion: version, protocolVersion: PROTOCOL_VERSION, oldestClientMajor: OLDEST_CLIENT_MAJOR },
+				null,
+				"\t",
+			)}\n`,
 		);
 		console.log(`wrote ${DIST_DIR}/${VERSION_FILE}: ${version}, protocol ${PROTOCOL_VERSION}`);
 		console.log(`self-contained: ${checkBundlesAreSelfContained(ROOT)} bundles`);

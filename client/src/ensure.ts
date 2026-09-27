@@ -5,7 +5,7 @@
 // (the loser exits before touching the store), and callers ensure one per request, so a client
 // that finds the daemon gone simply starts another.
 
-import { type DaemonLock, defined } from "@nyaa-lexicon/protocol";
+import { type DaemonLock, defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { unlessAborted } from "./deadline.js";
 import {
 	callDaemon,
@@ -17,7 +17,7 @@ import {
 	type SpawnWatch,
 	spawnDaemonProcess,
 } from "./discover.js";
-import { DaemonError, NotInstalled } from "./errors.js";
+import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
 import type { LockDecision } from "./lock.js";
 import { currentHost, workspacePaths } from "./paths.js";
 import { type BundledBun, runtimeProblem } from "./runtime.js";
@@ -68,6 +68,7 @@ export type EnsureMode = "attach" | "start";
 
 export type EnsureReason =
 	| "otherWorkspace"
+	| "clientOutdated"
 	| "notRunning"
 	| "noBunRuntime"
 	| "unbuilt"
@@ -76,19 +77,22 @@ export type EnsureReason =
 	| "notInstalled";
 export type EnsureResult =
 	| { connected: true; lock: DaemonLock }
-	| { connected: false; reason: Exclude<EnsureReason, "notInstalled">; detail: string }
-	| { connected: false; reason: "notInstalled"; detail: string; root: string | undefined };
+	| { connected: false; reason: Exclude<EnsureReason, "notInstalled" | "clientOutdated">; detail: string }
+	| { connected: false; reason: "notInstalled"; detail: string; root: string | undefined }
+	| { connected: false; reason: "clientOutdated"; detail: string; daemonProtocol: string };
 
 /**
  * The one reading of a refusal as a session error: no install and nothing live to ride is
- * `NotInstalled`, no daemon to start is `spawnFailed`, and an empty attach is
- * `notRunning`; other failures remain daemon errors.
+ * `NotInstalled`, a newer daemon that no longer serves this client is `Incompatible`, no daemon to
+ * start is `spawnFailed`, and an empty attach is `notRunning`; other failures remain daemon errors.
  */
 export function ensureFailure(
 	result: Extract<EnsureResult, { connected: false }>,
 	context = "",
-): DaemonError | NotInstalled {
+): DaemonError | NotInstalled | Incompatible {
 	if (result.reason === "notInstalled") return new NotInstalled(`${context}${result.detail}`, result.root);
+	if (result.reason === "clientOutdated")
+		return new Incompatible(`${context}${result.detail}`, PROTOCOL_VERSION, result.daemonProtocol);
 	if (result.reason === "notRunning") return new DaemonError(`${context}${result.detail}`, "notRunning");
 	const spawn = result.reason === "spawnFailed" || result.reason === "unbuilt" || result.reason === "noBunRuntime";
 	return new DaemonError(`${context}${result.detail}`, spawn ? "spawnFailed" : "daemon");
@@ -96,9 +100,19 @@ export function ensureFailure(
 
 function attached(decision: LockDecision): EnsureResult {
 	if (decision.action === "connect") return { connected: true, lock: decision.lock };
+	if (decision.action === "outdated") return outdated(decision);
 	if (decision.action === "replace" && decision.cause === "otherWorkspace")
 		return { connected: false, reason: "otherWorkspace", detail: decision.reason };
 	return { connected: false, reason: "notRunning", detail: decision.reason };
+}
+
+function outdated(decision: Extract<LockDecision, { action: "outdated" }>): EnsureResult {
+	return {
+		connected: false,
+		reason: "clientOutdated",
+		detail: `${decision.reason}; update this Lexicon client`,
+		daemonProtocol: decision.lock.protocolVersion,
+	};
 }
 
 ////////////////////////////////
@@ -171,6 +185,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 	if (decision.action === "awaitDelete") decision = await awaitDeleteClear();
 
 	if (decision.action === "connect") return { connected: true, lock: decision.lock };
+	if (decision.action === "outdated") return outdated(decision);
 
 	if (decision.action === "awaitDelete") {
 		return {
@@ -218,8 +233,9 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Ensure
 		let next = await awaitRelease();
 		// A delete may have claimed the slot while we waited; that is never a daemon to spawn over.
 		if (next.action === "awaitDelete") next = await awaitDeleteClear();
-		// Someone else already replaced it with a daemon we can use.
+		// Someone else already replaced it with a daemon we can use, or one that outgrew us.
 		if (next.action === "connect") return { connected: true, lock: next.lock };
+		if (next.action === "outdated") return outdated(next);
 		if (next.action === "awaitDelete") {
 			return {
 				connected: false,

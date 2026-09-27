@@ -21,7 +21,12 @@ export const HelloFrameSchema = z
 
 /** The server's yes: the token held, requests may flow. */
 export const WelcomeFrameSchema = z
-	.object({ kind: z.literal("welcome"), protocolVersion: z.string().min(1) })
+	.object({
+		kind: z.literal("welcome"),
+		protocolVersion: z.string().min(1),
+		/** The oldest protocol major the daemon still serves; absent, its own. */
+		oldestClientMajor: z.number().int().nonnegative().optional(),
+	})
 	.meta({ id: "WelcomeFrame" });
 
 /** The server's no, stated before the close so a bad token is distinguishable from a crash. */

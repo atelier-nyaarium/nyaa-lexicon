@@ -17,6 +17,7 @@ export interface FakeDaemonOptions {
 	token: string;
 	/** What the welcome claims. */
 	protocolVersion?: string;
+	oldestClientMajor?: number;
 	answer: (method: string, params: unknown) => FakeAnswer | Promise<FakeAnswer>;
 }
 
@@ -61,6 +62,9 @@ export function fakeDaemon(options: FakeDaemonOptions): Promise<FakeDaemon> {
 						writeFrame(socket, {
 							kind: "welcome",
 							protocolVersion: options.protocolVersion ?? PROTOCOL_VERSION,
+							...(options.oldestClientMajor === undefined
+								? {}
+								: { oldestClientMajor: options.oldestClientMajor }),
 						});
 						return;
 					}
@@ -103,6 +107,7 @@ export function ownLock(fields: {
 	buildVersion: string;
 	bundleStamp: string | null;
 	protocolVersion?: string;
+	oldestClientMajor?: number;
 }): DaemonLock {
 	const identity = processIdentity(process.pid);
 	return DaemonLockSchema.parse({
@@ -111,6 +116,7 @@ export function ownLock(fields: {
 		pid: process.pid,
 		...(identity === null ? {} : { pidStart: identity.startTicks }),
 		protocolVersion: fields.protocolVersion ?? PROTOCOL_VERSION,
+		...(fields.oldestClientMajor === undefined ? {} : { oldestClientMajor: fields.oldestClientMajor }),
 		buildVersion: fields.buildVersion,
 		...(fields.bundleStamp === null ? {} : { bundleStamp: fields.bundleStamp }),
 		workspaceRoot: fields.workspaceRoot,

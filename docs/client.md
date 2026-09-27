@@ -41,7 +41,8 @@ Four things are read, in this order:
 3. **The refusal.** A client whose protocol major is ahead of the install's cannot be served by
    any daemon that install starts, so it fails as `Incompatible` naming both:
    `this client speaks protocol <ours>, the install at <root> speaks <theirs>`. An install ahead
-   of the client is ridden. No lock has been read yet.
+   of the client is ridden while its `oldestClientMajor` reaches the client's major, and refused
+   the same way past it. No lock has been read yet.
 4. **The lock.** `ensureDaemon` reads the workspace's lock and applies `decideFromLock` (the rules
    are under Compatibility in `docs/daemon-protocol.md`) with "ours" being the INSTALL's build
    version and the stamp over every bundle under the install's `dist/`, never the consumer's own
@@ -64,8 +65,10 @@ install is located again on every reconnect, so a session whose install was remo
 keeps riding its daemon.
 
 The socket opens on the first question, not inside `connect`. Its welcome frame is judged again
-there: a daemon behind the client's protocol major is refused as `Incompatible`, so a direct
-connection cannot bypass the lock's rule. The one conversation that accepts an older daemon is
+there: a daemon behind the client's protocol major, or ahead of it past its `oldestClientMajor`, is
+refused as `Incompatible`, so a direct connection cannot bypass the lock's rule. A lock naming a
+newer daemon past that line is `outdated`: never retired, since its own clients need it, and the
+client fails `Incompatible` asking to be updated. The one conversation that accepts an older daemon is
 its retirement: `ensureDaemon` asks it `refactorStatus` and `shutdown`, which every major
 answers, before spawning the install's own, since a daemon that cannot be asked to stop would
 hold its workspace until it lingered out.
@@ -84,8 +87,8 @@ spends the poll does not get back, so a daemon that never answers cannot double 
 Three versions stay apart, and each pair has one rule. The client's own `PROTOCOL_VERSION` comes
 from the protocol package it bundles; the install's from `dist/version.json`; the running daemon's
 from its lock. Client against install is the refusal above. Install against daemon is
-`decideFromLock`: ride a newer daemon within the major, retire an older one and spawn the
-install's. Client against daemon is the welcome check.
+`decideFromLock`: ride a newer daemon down to the oldest major it serves, retire an older one and
+spawn the install's. Client against daemon is the welcome check.
 
 ## The install record and the version file
 

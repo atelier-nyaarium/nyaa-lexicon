@@ -12,9 +12,9 @@ import {
 	defined,
 	type InstallVersion,
 	PROTOCOL_VERSION,
-	parseVersion,
 	type RequestOf,
 	type ResponseOf,
+	servesClient,
 } from "@nyaa-lexicon/protocol";
 import { awaitIndexed, type IndexedAnswer } from "./awaitIndexed.js";
 import { type ChainAnswer, resolveChain } from "./chain.js";
@@ -104,15 +104,16 @@ function locateInstall(
 	return { root, version };
 }
 
-/** A client ahead of the install would ask for a table the install has never heard of. Behind it rides forward. */
-function refuseAhead(root: string, installed: string): void {
-	const us = parseVersion(PROTOCOL_VERSION);
-	const them = parseVersion(installed);
-	if (us !== null && them !== null && us.major <= them.major) return;
+/**
+ * A client ahead of the install would ask for a table the install has never heard of. Behind it
+ * rides forward, down to the oldest major the install still serves.
+ */
+function refuseIncompatible(root: string, installed: InstallVersion): void {
+	if (servesClient(installed.protocolVersion, installed.oldestClientMajor)) return;
 	throw new Incompatible(
-		`this client speaks protocol ${PROTOCOL_VERSION}, the install at ${root} speaks ${installed}`,
+		`this client speaks protocol ${PROTOCOL_VERSION}, the install at ${root} speaks ${installed.protocolVersion}`,
 		PROTOCOL_VERSION,
-		installed,
+		installed.protocolVersion,
 	);
 }
 
@@ -130,7 +131,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 	const source = (): DaemonSource | NotInstalled => {
 		const current = locateInstall(options, currentHost());
 		if (current instanceof NotInstalled) return current;
-		refuseAhead(current.root, current.version.protocolVersion);
+		refuseIncompatible(current.root, current.version);
 		return {
 			root: current.root,
 			buildVersion: current.version.buildVersion,

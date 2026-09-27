@@ -24,6 +24,8 @@ export const DaemonLockSchema = z
 		pidStart: z.string().min(1).optional(),
 		/** Protocol version the daemon speaks, so a client on a different major replaces it. */
 		protocolVersion: z.string().min(1),
+		/** The oldest protocol major the daemon still serves; absent, its own. */
+		oldestClientMajor: z.number().int().nonnegative().optional(),
 		/** The BUILD the daemon runs, which decides its method table. Absent reads as a mismatch. */
 		buildVersion: z.string().min(1).optional(),
 		/** Which BUNDLE, so a rebuild inside one version is noticed too. */
@@ -51,6 +53,8 @@ export const InstallVersionSchema = z
 	.object({
 		buildVersion: z.string().regex(RELEASE_RE),
 		protocolVersion: z.string().regex(RELEASE_RE),
+		/** The oldest protocol major the install's daemon serves; absent, its own. */
+		oldestClientMajor: z.number().int().nonnegative().optional(),
 	})
 	.meta({ id: "InstallVersion" });
 

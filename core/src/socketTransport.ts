@@ -14,6 +14,7 @@ import {
 	HEARTBEAT_MISSED_LIMIT,
 	HEARTBEAT_MS,
 	HELLO_DEADLINE_MS,
+	OLDEST_CLIENT_MAJOR,
 	PROTOCOL_VERSION,
 	type RequestFrame,
 	SERVER_LINE_CAP,
@@ -124,7 +125,11 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 				helloed = true;
 				authed.add(socket);
 				options.onConnections?.(authed.size);
-				writeFrame(socket, { kind: "welcome", protocolVersion: PROTOCOL_VERSION });
+				writeFrame(socket, {
+					kind: "welcome",
+					protocolVersion: PROTOCOL_VERSION,
+					oldestClientMajor: OLDEST_CLIENT_MAJOR,
+				});
 				return;
 			}
 

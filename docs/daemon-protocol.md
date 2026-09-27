@@ -25,6 +25,7 @@ port             localhost port, chosen by the OS at bind
 token            48 hex characters, presented on every connection
 pid, pidStart    the holder, and its identity mark where the platform offers one
 protocolVersion  what the daemon speaks
+oldestClientMajor the oldest protocol major whose table it still serves; absent reads as its own
 buildVersion     which release it runs, which decides its method table
 bundleStamp      a digest of every bundle's bytes under dist/, so a rebuild inside one version is noticed and two copies of one release agree
 workspaceRoot    the canonical root it serves
@@ -79,8 +80,8 @@ carry real result sets, ends the connection the same way.
 of connecting or the daemon closes the socket. A wrong token is answered
 `{ kind: "reject", reason: "bad token" }` and then closed, so a bad token is distinguishable from a
 crash, and nothing else is said to an unauthenticated peer. The right token is answered
-`{ kind: "welcome", protocolVersion }`, after which requests may flow. `connectFrames` resolves on
-welcome and gives up after five seconds without one.
+`{ kind: "welcome", protocolVersion, oldestClientMajor }`, after which requests may flow.
+`connectFrames` resolves on welcome and gives up after five seconds without one.
 
 **Request and response:** `{ kind: "request", id, method, params }`, with `id` a client-chosen
 non-negative integer echoed on the answer, so a slow query never blocks the one behind it. The
@@ -502,17 +503,19 @@ the client's types say cannot exist.
 
 ## Compatibility
 
-A client reads the lock and asks `decideFromLock` what to do. The answer is one of four values, so
-there is no fifth outcome to invent: `connect`, `spawn` with a reason, `replace` with the lock, a
-reason and a cause, or `awaitDelete` while a delete holds the slot. The rules, in the order they
-are applied:
+A client reads the lock and asks `decideFromLock` what to do. The answer is one of five values, so
+there is no sixth outcome to invent: `connect`, `spawn` with a reason, `replace` with the lock, a
+reason and a cause, `awaitDelete` while a delete holds the slot, or `outdated` for a newer daemon
+that no longer serves this client. The rules, in the order they are applied:
 
 - No lock, unreadable JSON, or a file that does not match `DaemonLockSchema`: spawn.
 - The holder is dead: spawn. A dead pid is never a replace, since there is nothing to stop, and a
   crashed daemon would otherwise look alive for as long as its file survived.
 - The lock names another workspace: replace, cause `otherWorkspace`. This one is reported and never
   acted on, because that daemon is answering correctly for somebody else.
-- A different protocol major: connect if the daemon's is newer, otherwise replace, cause `protocol`.
+- A different protocol major: an older daemon is replaced, cause `protocol`. A newer one is ridden
+  when its `oldestClientMajor` reaches this client's major, and is `outdated` otherwise: neither
+  ridden nor retired, since its own clients need it, and the client fails `Incompatible`.
 - A different build: connect if the daemon's is newer, otherwise replace, cause `build`. "Ours" is
   the install's build, or with no install known this client's own `CLIENT_BUILD_VERSION`, never
   its protocol, since a patch can add a method without moving the protocol. Ordered
@@ -525,10 +528,11 @@ are applied:
 
 **Clients ride forward and retire backward.** Riding forward is why removing or renaming a method
 costs a protocol major: a client connects to a newer daemon on the premise that everything in its
-table is still answered, and the day that premise fails it fails as `unknown method` from a daemon
-the client chose to keep. A new method or a new optional field is a minor. `PROTOCOL_VERSION` is
-the one number both rules read, and the welcome frame carries it so a client that reached the
-socket some other way still learns what it is talking to.
+table is still answered. A daemon states how far back that holds as `OLDEST_CLIENT_MAJOR`, and a
+major that removes a method raises it, so an older client is told to update rather than meeting
+`unknown method`. A new method or a new optional field is a minor. `PROTOCOL_VERSION` and
+`oldestClientMajor` are what both rules read, and the welcome frame carries both so a client that
+reached the socket some other way still learns what it is talking to.
 
 `ensureDaemon` carries the decision out. A replace first asks the outgoing daemon `refactorStatus`
 and retires it only on a clear `open: false`, since an open transaction holds the only copy of the

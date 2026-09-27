@@ -18,6 +18,7 @@ import {
 	type ResponseFrame,
 	type ServerFrame,
 	ServerFrameSchema,
+	servesClient,
 } from "@nyaa-lexicon/protocol";
 import type { DaemonRef } from "./daemonRef.js";
 import { DaemonError, Incompatible } from "./errors.js";
@@ -108,6 +109,11 @@ function behindUs(theirs: string): boolean {
 	const them = parseVersion(theirs);
 	const us = parseVersion(PROTOCOL_VERSION);
 	return them === null || us === null || them.major < us.major;
+}
+
+/** A daemon ahead of this client's major serves it only down to the oldest major it names. */
+function outgrewUs(theirs: string, oldestClientMajor: number | undefined): boolean {
+	return !behindUs(theirs) && !servesClient(theirs, oldestClientMajor);
 }
 
 /** The daemon's refusals are worded once, so the cause is read from the words. */
@@ -229,8 +235,12 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 
 			if (frame.kind === "welcome") {
 				if (welcomed) return;
-				// Judged here as well as from the lock, so a direct connection cannot bypass the rule.
-				if (behindUs(frame.protocolVersion) && options.acceptOlder !== true) {
+				// Judged here as well as from the lock, so a direct connection cannot bypass the rule. The
+				// retirement conversation reads any older daemon; none is asked of one that outgrew us.
+				if (
+					(behindUs(frame.protocolVersion) && options.acceptOlder !== true) ||
+					outgrewUs(frame.protocolVersion, frame.oldestClientMajor)
+				) {
 					handshakeOver();
 					rejectConnect(
 						new Incompatible(

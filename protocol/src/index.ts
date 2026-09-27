@@ -574,8 +574,10 @@ export {
 	type Compatibility,
 	checkCompatibility,
 	isCompatibleProtocol,
+	OLDEST_CLIENT_MAJOR,
 	PROTOCOL_VERSION,
 	parseVersion,
+	servesClient,
 	type Version,
 } from "./version.js";
 export { type Contained, type LeafMode, resolveContained } from "./workspacePath.js";

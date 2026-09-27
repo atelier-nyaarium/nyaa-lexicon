@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createServer, type Socket } from "node:net";
+import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { DaemonError, Incompatible } from "../errors";
 import { connectFrames, notifyWaiting, requestOnce } from "../transport";
 import { type FakeAnswer, type FakeDaemon, fakeDaemon } from "./fakeDaemon";
@@ -19,11 +20,16 @@ const STARTING: FakeAnswer = {
 
 const fakes: FakeDaemon[] = [];
 
-async function daemonAnswering(answer: FakeDaemonAnswer, protocolVersion?: string): Promise<FakeDaemon> {
+async function daemonAnswering(
+	answer: FakeDaemonAnswer,
+	protocolVersion?: string,
+	oldestClientMajor?: number,
+): Promise<FakeDaemon> {
 	const fake = await fakeDaemon({
 		token: TOKEN,
 		answer,
 		...(protocolVersion === undefined ? {} : { protocolVersion }),
+		...(oldestClientMajor === undefined ? {} : { oldestClientMajor }),
 	});
 	fakes.push(fake);
 	return fake;
@@ -57,12 +63,18 @@ describe("the welcome check", () => {
 		expect(await settledAt(fake, 0)).toBe(0);
 	});
 
-	it("rides a daemon greeting with a higher major", async () => {
-		const fake = await daemonAnswering(() => ({ ok: true, result: "served" }), "99.0.0");
+	it("rides a daemon greeting with a higher major only while it still serves this client's", async () => {
+		const ours = Number(PROTOCOL_VERSION.split(".")[0]);
+		const fake = await daemonAnswering(() => ({ ok: true, result: "served" }), "99.0.0", ours);
 
 		const client = await connectFrames(fake.port, TOKEN);
 		await expect(client.request("overview", {})).resolves.toBe("served");
 		client.close();
+
+		for (const oldest of [undefined, ours + 1]) {
+			const outgrown = await daemonAnswering(() => ({ ok: true, result: "served" }), "99.0.0", oldest);
+			await expect(connectFrames(outgrown.port, TOKEN, { acceptOlder: true })).rejects.toThrow(Incompatible);
+		}
 	});
 
 	// Retirement is the one conversation with an older daemon, and it must be able to happen.

@@ -20,6 +20,7 @@ import {
 	DaemonLockSchema,
 	defined,
 	type LockRole,
+	OLDEST_CLIENT_MAJOR,
 	PROTOCOL_VERSION,
 } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
@@ -149,6 +150,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		token,
 		...holderIdentity(),
 		protocolVersion: PROTOCOL_VERSION,
+		oldestClientMajor: OLDEST_CLIENT_MAJOR,
 		buildVersion: source.buildVersion,
 		...(source.bundleStamp === null ? {} : { bundleStamp: source.bundleStamp }),
 		workspaceRoot: canonicalRoot(options.workspaceRoot),

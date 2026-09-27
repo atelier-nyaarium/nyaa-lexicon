@@ -166,7 +166,7 @@ export function liveDeps(): ManageDeps {
 			// The listing's directory, never one re-derived from the workspace: a store renamed by
 			// hand or chosen by its project is found where it is.
 			const decision = findDaemon(store.workspaceRoot, ownSource(), currentHost(), store.directory);
-			if (decision.action === "connect") return decision.lock;
+			if (decision.action === "connect" || decision.action === "outdated") return decision.lock;
 			if (decision.action === "replace" && decision.lock.workspaceRoot === store.workspaceRoot) {
 				return decision.lock;
 			}

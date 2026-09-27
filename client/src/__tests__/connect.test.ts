@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { connect, type Session } from "../connect";
 import { bundleStamp } from "../discover";
 import { DaemonError, Incompatible, NotInstalled } from "../errors";
@@ -28,10 +28,15 @@ const fakes: FakeDaemon[] = [];
 const sessions: Session[] = [];
 
 /** A checkout as the build leaves it: a bundle and a version file under dist/. */
-function installAt(root: string, protocolVersion: string = PROTOCOL_VERSION): void {
+const OUR_MAJOR = Number(PROTOCOL_VERSION.split(".")[0]);
+
+function installAt(root: string, protocolVersion: string = PROTOCOL_VERSION, oldestClientMajor?: number): void {
 	mkdirSync(path.join(root, "dist"), { recursive: true });
 	writeFileSync(path.join(root, "dist", "daemon.js"), "// bundle\n");
-	writeFileSync(path.join(root, "dist", "version.json"), JSON.stringify({ buildVersion: BUILD, protocolVersion }));
+	writeFileSync(
+		path.join(root, "dist", "version.json"),
+		JSON.stringify({ buildVersion: BUILD, protocolVersion, ...defined({ oldestClientMajor }) }),
+	);
 }
 
 /** A daemon serving the workspace, its lock wearing the install's identity. */
@@ -39,8 +44,9 @@ async function daemonAnswering(
 	answer: (method: string) => FakeAnswer | Promise<FakeAnswer>,
 	protocolVersion: string = PROTOCOL_VERSION,
 	buildVersion: string = BUILD,
+	oldestClientMajor?: number,
 ): Promise<FakeDaemon> {
-	const fake = await fakeDaemon({ token: TOKEN, answer, protocolVersion });
+	const fake = await fakeDaemon({ token: TOKEN, answer, protocolVersion, ...defined({ oldestClientMajor }) });
 	fakes.push(fake);
 	const paths = workspacePaths(host, workspace);
 	mkdirSync(paths.dir, { recursive: true });
@@ -54,6 +60,7 @@ async function daemonAnswering(
 				buildVersion,
 				bundleStamp: bundleStamp(install),
 				protocolVersion,
+				...defined({ oldestClientMajor }),
 			}),
 		),
 	);
@@ -143,15 +150,28 @@ describe("reaching a daemon", () => {
 		expect(await session.cacheStats({})).toEqual(STATS);
 	});
 
-	it("rides an install and a daemon ahead of this client's protocol major", async () => {
+	it("rides an install and a daemon ahead of this client's protocol major that still serve it", async () => {
 		const ahead = "99.0.0";
-		installAt(install, ahead);
+		installAt(install, ahead, OUR_MAJOR);
 		writeInstallRecord(install, host);
-		await daemonAnswering(serving, ahead);
+		await daemonAnswering(serving, ahead, BUILD, OUR_MAJOR);
 
 		const session = await open({ workspaceRoot: workspace });
 
 		expect(await session.cacheStats({})).toEqual(STATS);
+	});
+
+	it("refuses an install or a daemon ahead of this client's protocol major that no longer serves it", async () => {
+		const ahead = "99.0.0";
+		installAt(install, ahead);
+		writeInstallRecord(install, host);
+		await expect(open({ workspaceRoot: workspace })).rejects.toThrow(Incompatible);
+
+		installAt(install, ahead, OUR_MAJOR);
+		const daemon = await daemonAnswering(serving, ahead, BUILD, OUR_MAJOR + 1);
+		await expect(open({ workspaceRoot: workspace })).rejects.toThrow(Incompatible);
+		// Its own clients still need it, so it is neither asked nor stopped.
+		expect(daemon.asked).toEqual([]);
 	});
 
 	it("refuses an install that falls behind this client before a session lock read", async () => {

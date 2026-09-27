@@ -71,9 +71,16 @@ describe("finding a daemon", () => {
 		expect(decision.action === "replace" && decision.reason).toMatch(/1\.0\.0/);
 	});
 
-	// Retiring it starts a war: it replaces us back, and every flip rebuilds the index.
-	it("connects to a daemon on a NEWER protocol major rather than dragging the workspace back", () => {
-		expect(decide({ lock: { protocolVersion: "2.0.0" }, ours: "1.2.0" })).toMatchObject({ action: "connect" });
+	// Retiring it starts a war: it replaces us back, and every flip rebuilds the index. Riding it past
+	// the oldest major it serves would fail on a removed method, so that client is outdated instead.
+	it("rides a NEWER protocol major down to the oldest it serves, and never drags the workspace back", () => {
+		expect(decide({ lock: { protocolVersion: "2.0.0", oldestClientMajor: 1 }, ours: "1.2.0" })).toMatchObject({
+			action: "connect",
+		});
+		expect(decide({ lock: { protocolVersion: "2.0.0" }, ours: "1.2.0" })).toMatchObject({ action: "outdated" });
+		expect(decide({ lock: { protocolVersion: "3.0.0", oldestClientMajor: 2 }, ours: "1.2.0" })).toMatchObject({
+			action: "outdated",
+		});
 	});
 
 	// Unreadable is not newer. Riding a daemon whose wire nobody can name is the one outcome worse

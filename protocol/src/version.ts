@@ -77,7 +77,13 @@ export type Compatibility =
 // 3.19.0: `refactorWriteFile.refactor` refuses a write unless that refactor, or none, is open.
 // `refactorBeforeImage.content: false` omits the bytes. An older daemon drops either field.
 // `Reference.qualified` marks a use reached through a receiver or path; an older core ignores it.
-export const PROTOCOL_VERSION = "3.19.0" as const;
+// 3.20.0: `oldestClientMajor` on the lock, the welcome and `version.json`: the oldest protocol major
+// whose table the daemon still serves. A client behind a newer major rides only down to it; absent
+// reads as the daemon's own major.
+export const PROTOCOL_VERSION = "3.20.0" as const;
+
+/** The oldest protocol major whose method table this build's daemon still answers in full. */
+export const OLDEST_CLIENT_MAJOR = 3;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 
@@ -124,4 +130,16 @@ export function checkCompatibility(theirs: string, ours: string = PROTOCOL_VERSI
 /** Convenience for a gate that only needs a yes or no. */
 export function isCompatibleProtocol(theirs: string, ours: string = PROTOCOL_VERSION): boolean {
 	return checkCompatibility(theirs, ours).ok;
+}
+
+/**
+ * Whether a daemon on `theirs`, answering majors back to `oldestClientMajor`, serves a client on
+ * `ours`. Behind the client's major it never does; ahead, only down to the major it names, which
+ * absent is its own. Unparseable answers false.
+ */
+export function servesClient(theirs: string, oldestClientMajor: number | undefined, ours: string = PROTOCOL_VERSION) {
+	const them = parseVersion(theirs);
+	const us = parseVersion(ours);
+	if (them === null || us === null || them.major < us.major) return false;
+	return (oldestClientMajor ?? them.major) <= us.major;
 }
