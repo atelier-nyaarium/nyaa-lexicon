@@ -40,6 +40,10 @@ STRING_OPENERS = {getattr(tokenize, name) for name in ("FSTRING_START", "TSTRING
 STRING_CLOSERS = {getattr(tokenize, name) for name in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, name)}
 OPEN_BRACKETS = {"(", "[", "{"}
 CLOSE_BRACKETS = {")", "]", "}"}
+# Trivia before a statement.
+LINE_TRIVIA = (tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.COMMENT)
+NON_CODE_TOKENS = (*LINE_TRIVIA, tokenize.NEWLINE, tokenize.ENDMARKER, tokenize.ENCODING)
+BYTE_ORDER_MARK = chr(0xFEFF)
 
 
 # //////// Helpers
@@ -336,18 +340,63 @@ def point_range(lines, start, end):
     return {"start": point_position(lines, start), "end": point_position(lines, end)}
 
 
+def is_code(token):
+    if token.type in NON_CODE_TOKENS:
+        return False
+    # A leading byte order mark lexes as a name.
+    return not (token.start == (1, 0) and token.string == BYTE_ORDER_MARK)
+
+
+def last_line(token):
+    """Last line a token covers; ending at column 0 covers none of that line."""
+    end_line, end_column = token.end
+    return end_line - 1 if end_column == 0 and end_line > token.start[0] else end_line
+
+
 def comment_spans(lines, tokens):
-    return [
-        {"range": point_range(lines, token.start, token.end), "text": token.string}
-        for token in tokens
-        if token.type == tokenize.COMMENT
-    ]
+    code = [index for index, token in enumerate(tokens) if is_code(token)]
+    spans = []
+    for index, token in enumerate(tokens):
+        if token.type != tokenize.COMMENT:
+            continue
+        at = bisect.bisect_left(code, index)
+        before = tokens[code[at - 1]] if at > 0 else None
+        after = tokens[code[at]] if at < len(code) else None
+        spans.append(
+            {
+                "range": point_range(lines, token.start, token.end),
+                "text": token.string,
+                "codeBefore": before is not None and last_line(before) == token.start[0],
+                "codeAfter": after is not None and after.start[0] == token.end[0],
+            }
+        )
+    return spans
+
+
+def blank_lines(tokens):
+    """Zero-based lines no token touches; None when lexing stopped short."""
+    if not tokens or tokens[-1].type != tokenize.ENDMARKER:
+        return None
+    touched = set()
+    openers = []
+    for token in tokens:
+        if token.type in STRING_OPENERS:
+            openers.append(token.start[0])
+        elif token.type in STRING_CLOSERS and openers:
+            touched.update(range(openers.pop(), token.end[0] + 1))
+        if is_code(token) or token.type == tokenize.COMMENT:
+            touched.update(range(token.start[0], last_line(token) + 1))
+    # The end marker opens the line past the last.
+    return [line - 1 for line in range(1, tokens[-1].start[0]) if line not in touched]
 
 
 class Analyzer:
     def __init__(self, module, text, tokens=None):
         self.module = module
         self.text = text
+        # The AST reads the text without a leading U+FEFF, so its line 1 columns start after it.
+        self.bom_bytes = 3 if text.startswith(BYTE_ORDER_MARK) else 0
+        self.parsed_text = text[1:] if self.bom_bytes else text
         self.package_init = module.replace("\\", "/").split("/")[-1] == "__init__.py"
         self.lines = text.splitlines(keepends=True)
         self.tokens = lex(text) if tokens is None else tokens
@@ -358,7 +407,7 @@ class Analyzer:
         self.imports = []
         self.import_statements = []
         self.tree = None
-        self.module_docstring = None
+        self.indent_marks = None
         self.final_names = set()
         self.final_modules = set()
         self.descriptor_occurrences = {}
@@ -376,6 +425,8 @@ class Analyzer:
         self.literals = []
 
     def position(self, line_number, byte_column):
+        if line_number == 1:
+            byte_column += self.bom_bytes
         line = source_line(self.lines, line_number)
         prefix = line.encode("utf-8")[:byte_column].decode("utf-8")
         return {"line": line_number - 1, "character": utf16_length(prefix)}
@@ -429,20 +480,29 @@ class Analyzer:
         start = self.position(end_line, end_column - len(node.attr.encode("utf-8")))
         return {"start": start, "end": end}
 
-    def selection_of(self, node, name):
-        line_number = getattr(node, "lineno", 1)
-        line = source_line(self.lines, line_number)
-        start_byte = getattr(node, "col_offset", 0)
-        start_character = len(line.encode("utf-8")[:start_byte].decode("utf-8"))
-        character = line.find(name, start_character)
-        if character < 0:
-            character = start_character
-        return {
-            "start": {"line": line_number - 1, "character": utf16_length(line[:character])},
-            "end": {"line": line_number - 1, "character": utf16_length(line[: character + len(name)])},
-        }
+    def selection_of(self, node):
+        """Name token a node binds."""
+        if isinstance(node, ast.ExceptHandler):
+            anchor = self.end_point(node.type)
+        elif isinstance(node, ast.MatchAs) and node.pattern is not None:
+            anchor = self.end_point(node.pattern)
+        elif isinstance(node, ast.MatchMapping) and node.patterns:
+            anchor = self.end_point(node.patterns[-1])
+        else:
+            anchor = self.start_point(node)
+        end = self.end_point(node)
+        index = self.first_token_at(anchor)
+        while index < len(self.tokens) and self.tokens[index].start < end:
+            token = self.tokens[index]
+            # Skip keywords and sigils.
+            if token.type == tokenize.NAME and not keyword.iskeyword(token.string):
+                return point_range(self.lines, token.start, token.end)
+            index += 1
+        return self.range_of(node)
 
     def point_of(self, line_number, byte_column):
+        if line_number == 1:
+            byte_column += self.bom_bytes
         line = source_line(self.lines, line_number)
         return (line_number, len(line.encode("utf-8")[:byte_column].decode("utf-8")))
 
@@ -458,6 +518,99 @@ class Analyzer:
         while index < len(self.tokens) and self.tokens[index].type == tokenize.DEDENT:
             index += 1
         return index
+
+    def token_after(self, index, kind):
+        while index < len(self.tokens) and self.tokens[index].type != kind:
+            index += 1
+        return self.tokens[index] if index < len(self.tokens) else None
+
+    def line_after(self, index, kind):
+        """Next line start past a token kind."""
+        token = self.token_after(index, kind)
+        if token is None:
+            return None
+        # Unterminated last line.
+        if token.string == "":
+            return point_position(self.lines, token.start)
+        return {"line": token.start[0], "character": 0}
+
+    def member_insert_line(self, node):
+        """Zero-based line after a block body's last statement."""
+        colon = self.header_colon(node)
+        if colon is None:
+            return None
+        index = self.first_token_at(colon.end)
+        while index < len(self.tokens) and self.tokens[index].type == tokenize.COMMENT:
+            index += 1
+        # A body on the header's line has no block to extend.
+        if index == len(self.tokens) or self.tokens[index].type != tokenize.NEWLINE:
+            return None
+        newline = self.token_after(self.first_token_at(self.end_point(node.body[-1])), tokenize.NEWLINE)
+        # No line break ends the file's last line.
+        if newline is None or newline.string == "":
+            return None
+        return newline.start[0]
+
+    def prologue_end(self, tree):
+        """After shebang, docstring and future imports."""
+        ends = [{"line": 0, "character": 0}]
+        first = self.tokens[0] if self.tokens else None
+        if (
+            first is not None
+            and first.type == tokenize.COMMENT
+            and first.start == (1, 0)
+            and first.string.startswith("#!")
+        ):
+            ends.append(self.line_after(0, tokenize.NL))
+        statements = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__" and node.level == 0
+        ]
+        opening = tree.body[0] if tree.body else None
+        if (
+            isinstance(opening, ast.Expr)
+            and isinstance(opening.value, ast.Constant)
+            and isinstance(opening.value.value, str)
+        ):
+            statements.append(opening)
+        for node in statements:
+            ends.append(self.line_after(self.first_token_at(self.end_point(node)), tokenize.NEWLINE))
+        known = [end for end in ends if end is not None]
+        return max(known, key=lambda end: (end["line"], end["character"]))
+
+    def module_name_range(self, node):
+        """Module tokens after `from`."""
+        first = self.first_token_at(self.start_point(node)) + 1
+        last = first
+        while last < len(self.tokens) and not (
+            self.tokens[last].type == tokenize.NAME and self.tokens[last].string == "import"
+        ):
+            last += 1
+        if last == first or last == len(self.tokens):
+            return None
+        return point_range(self.lines, self.tokens[first].start, self.tokens[last - 1].end)
+
+    def statement_indent(self, node):
+        """Suite indent if line-first, else None."""
+        index = self.first_token_at(self.start_point(node))
+        before = index - 1
+        while before >= 0 and self.tokens[before].type in LINE_TRIVIA:
+            before -= 1
+        if before >= 0 and self.tokens[before].type != tokenize.NEWLINE:
+            return None
+        if self.indent_marks is None:
+            stack = [""]
+            self.indent_marks = [(-1, "")]
+            for position, token in enumerate(self.tokens):
+                if token.type == tokenize.INDENT:
+                    stack.append(token.string)
+                elif token.type == tokenize.DEDENT:
+                    stack.pop()
+                else:
+                    continue
+                self.indent_marks.append((position, stack[-1]))
+        return self.indent_marks[bisect.bisect_left(self.indent_marks, (index,)) - 1][1]
 
     def header_of(self, node, target, whole=True, item=None):
         """Spans for the header's one line, rendered by the provider."""
@@ -662,9 +815,8 @@ class Analyzer:
             previous = token
 
     def continues(self, previous, token):
-        if token.start[0] <= previous.end[0] or previous.type in (tokenize.NL, tokenize.NEWLINE):
-            return False
-        return source_line(self.lines, previous.end[0]).rstrip("\r\n").endswith("\\")
+        """Line crossed without a newline token."""
+        return token.start[0] > previous.end[0] and previous.type not in (tokenize.NL, tokenize.NEWLINE)
 
     def metrics_of(self, node):
         start_line = getattr(node, "lineno", 1)
@@ -1140,11 +1292,11 @@ class Analyzer:
             return "protected"
         return "public"
 
-    def add_type_annotation(self, anchor_node, anchor_name, annotation, scope_path=None):
-        text = ast.get_source_segment(self.text, annotation)
+    def add_type_annotation(self, anchor_node, annotation, scope_path=None):
+        text = ast.get_source_segment(self.parsed_text, annotation)
         if text is None or text == "":
             return None
-        anchor_range = self.selection_of(anchor_node, anchor_name)
+        anchor_range = self.selection_of(anchor_node)
         annotation_range = self.range_of(annotation)
         if not any(
             item["anchorRange"] == anchor_range
@@ -1228,7 +1380,7 @@ class Analyzer:
             "descriptorPath": descriptor_path,
             "containerPath": descriptor_path[:-1],
             "range": self.range_of(node),
-            "selectionRange": self.selection_of(selection_node, name),
+            "selectionRange": self.selection_of(selection_node),
             "visibility": self.visibility_of(name, scope_kind, exported),
             "exported": exported,
         }
@@ -1237,15 +1389,19 @@ class Analyzer:
             if header is not None:
                 raw["header"] = header
             raw["metrics"] = self.metrics_of(node)
+        if isinstance(node, ast.ClassDef):
+            member_line = self.member_insert_line(node)
+            if member_line is not None:
+                raw["memberInsertLine"] = member_line
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
-            type_text = self.add_type_annotation(node, name, node.returns, descriptor_path[:-1])
+            type_text = self.add_type_annotation(node, node.returns, descriptor_path[:-1])
             if type_text is not None:
                 raw["typeText"] = type_text
                 raw["typeForwardReference"] = isinstance(node.returns, ast.Constant) and isinstance(
                     node.returns.value, str
                 )
         elif isinstance(node, ast.AnnAssign):
-            type_text = self.add_type_annotation(selection_node, name, node.annotation, descriptor_path[:-1])
+            type_text = self.add_type_annotation(selection_node, node.annotation, descriptor_path[:-1])
             if type_text is not None:
                 raw["typeText"] = type_text
                 raw["typeForwardReference"] = isinstance(node.annotation, ast.Constant) and isinstance(
@@ -1323,7 +1479,7 @@ class Analyzer:
                 arguments.append(node.args.kwarg)
             for argument in arguments:
                 if argument.annotation is not None:
-                    self.add_type_annotation(argument, argument.arg, argument.annotation, scope_path)
+                    self.add_type_annotation(argument, argument.annotation, scope_path)
         leaf_descriptor = descriptor(descriptor_kind, node.name)
         if descriptor_kind == "method":
             leaf_descriptor = self.descriptor_for(scope_path, leaf_descriptor)
@@ -1381,21 +1537,13 @@ class Analyzer:
 
     def analyze(self, tree):
         self.tree = tree
-        if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
-            if isinstance(tree.body[0].value.value, str):
-                self.module_docstring = self.range_of(tree.body[0])
         self.export_names = self.find_export_names()
         self.find_final_bindings()
         self.walk_statements(tree.body, [], "module", True, False)
         for node in ast.walk(tree):
             if isinstance(node, ast.AnnAssign):
                 for target in names_in_target(node.target):
-                    self.add_type_annotation(
-                        target,
-                        target.id,
-                        node.annotation,
-                        self.node_scope_paths.get(id(node), []),
-                    )
+                    self.add_type_annotation(target, node.annotation, self.node_scope_paths.get(id(node), []))
         self.prepare_binding_index()
         self.refresh_type_descriptors()
         ReferenceVisitor(self).visit(tree)
@@ -1407,7 +1555,7 @@ class Analyzer:
             "imports": self.imports,
             "importStatements": self.import_statements,
             "role": file_role(tree),
-            "moduleDocstring": self.module_docstring,
+            "prologueEnd": self.prologue_end(tree),
             "importBindings": self.import_bindings,
             "scopeInfos": [
                 {
@@ -1582,7 +1730,7 @@ class LiteralVisitor(ast.NodeVisitor):
             and not isinstance(value, bool)
         ):
             signed = value if isinstance(node.op, ast.UAdd) else -value
-            source = ast.get_source_segment(self.analyzer.text, node) or repr(signed)
+            source = ast.get_source_segment(self.analyzer.parsed_text, node) or repr(signed)
             number = signed if not isinstance(signed, float) or math.isfinite(signed) else None
             self.add_literal("number", source, node, number)
             return
@@ -1599,7 +1747,7 @@ class LiteralVisitor(ast.NodeVisitor):
             # caller has to know which one wrote it to search for one.
             self.add_literal("boolean", "true" if value else "false", node)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            source = ast.get_source_segment(self.analyzer.text, node) or repr(value)
+            source = ast.get_source_segment(self.analyzer.parsed_text, node) or repr(value)
             number = value if not isinstance(value, float) or math.isfinite(value) else None
             self.add_literal("number", source, node, number)
 
@@ -1963,21 +2111,17 @@ class InferenceAnalyzer:
         return answers
 
 
-def type_comment_expressions(text):
+def type_comment_expressions(text, signature):
+    """Signature or single type expressions."""
     if not text:
         return []
-    parts = [text]
-    stripped = text.strip()
-    if stripped.startswith("(") and "->" in stripped:
-        arguments, returns = stripped.split("->", 1)
-        parts = [arguments.strip(), returns.strip()]
-    expressions = []
-    for part in parts:
-        try:
-            expressions.append(ast.parse(part, mode="eval").body)
-        except SyntaxError:
-            return []
-    return expressions
+    try:
+        if signature:
+            parsed = ast.parse(text, mode="func_type")
+            return [*parsed.argtypes, parsed.returns]
+        return [ast.parse(text, mode="eval").body]
+    except SyntaxError:
+        return []
 
 
 class ReferenceVisitor(ast.NodeVisitor):
@@ -1999,6 +2143,7 @@ class ReferenceVisitor(ast.NodeVisitor):
                 "name": name,
                 "range": reference_range,
                 "role": role,
+                "qualified": isinstance(node, ast.Attribute),
                 "scopePath": list(self.scope_path),
                 "ownerPath": list(self.owner_path),
                 "binding": self.analyzer.binding_for(
@@ -2015,7 +2160,7 @@ class ReferenceVisitor(ast.NodeVisitor):
         )
 
     def add_named_reference(self, node, name, role):
-        self.add_reference(node, role, name=name, range_value=self.analyzer.selection_of(node, name))
+        self.add_reference(node, role, name=name, range_value=self.analyzer.selection_of(node))
 
     def visit_ClassDef(self, node):
         old_path = self.scope_path
@@ -2105,7 +2250,8 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.owner_path = old_owner
 
     def visit_type_comment(self, text, anchor):
-        for expression in type_comment_expressions(text):
+        signature = isinstance(anchor, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for expression in type_comment_expressions(text, signature):
             self.visit_type_expression(expression, anchor)
 
     def visit_type_expression(self, node, anchor=None):
@@ -2297,6 +2443,8 @@ class ReferenceVisitor(ast.NodeVisitor):
                 "kind": "import",
                 "specifier": node.names[0].name if node.names else "",
                 "range": self.analyzer.range_of(node),
+                "moduleRange": None,
+                "indent": self.analyzer.statement_indent(node),
                 "reExport": False,
                 "aliases": aliases,
             }
@@ -2329,6 +2477,8 @@ class ReferenceVisitor(ast.NodeVisitor):
                 "kind": "from",
                 "specifier": specifier,
                 "range": self.analyzer.range_of(node),
+                "moduleRange": self.analyzer.module_name_range(node),
+                "indent": self.analyzer.statement_indent(node),
                 "reExport": re_export,
                 "aliases": aliases,
             }
@@ -2406,13 +2556,8 @@ class RenameVisitor(ast.NodeVisitor):
         end = argument.col_offset + len(argument.arg.encode("utf-8"))
         return self.analyzer.range_from_columns(argument.lineno, argument.col_offset, end)
 
-    def definition_range(self, node, prefix):
-        start = node.col_offset + len(prefix.encode("utf-8"))
-        end = start + len(node.name.encode("utf-8"))
-        return self.analyzer.range_from_columns(node.lineno, start, end)
-
-    def visit_function(self, node, prefix):
-        self.add_candidate(node.name, self.definition_range(node, prefix), "declaration", True)
+    def visit_function(self, node):
+        self.add_candidate(node.name, self.analyzer.selection_of(node), "declaration", True)
         for decorator in node.decorator_list:
             self.visit(decorator)
         self.visit_type_param_bounds(node)
@@ -2444,13 +2589,13 @@ class RenameVisitor(ast.NodeVisitor):
         self.scope_path = old_path
 
     def visit_FunctionDef(self, node):
-        self.visit_function(node, "def ")
+        self.visit_function(node)
 
     def visit_AsyncFunctionDef(self, node):
-        self.visit_function(node, "async def ")
+        self.visit_function(node)
 
     def visit_ClassDef(self, node):
-        self.add_candidate(node.name, self.definition_range(node, "class "), "declaration", True)
+        self.add_candidate(node.name, self.analyzer.selection_of(node), "declaration", True)
         for decorator in node.decorator_list:
             self.visit(decorator)
         self.visit_type_param_bounds(node)
@@ -2469,7 +2614,7 @@ class RenameVisitor(ast.NodeVisitor):
         for parameter in getattr(node, "type_params", []):
             self.add_candidate(
                 parameter.name,
-                self.analyzer.selection_of(parameter, parameter.name),
+                self.analyzer.selection_of(parameter),
                 "declaration",
                 True,
             )
@@ -2840,8 +2985,9 @@ def extract(module, text):
     tokens = lex(text)
     # Comments are lexical, so a file the parser rejects still reports them.
     comments = comment_spans(text.splitlines(keepends=True), tokens)
+    blank = blank_lines(tokens)
     try:
-        tree = ast.parse(text, filename=module, type_comments=True)
+        tree = ast.parse(text[1:] if text.startswith(BYTE_ORDER_MARK) else text, filename=module, type_comments=True)
     except SyntaxError as error:
         return {
             "declarations": [],
@@ -2849,16 +2995,17 @@ def extract(module, text):
             "imports": [],
             "importStatements": [],
             "role": {"kind": "unknown", "reason": "ParseError"},
-            "moduleDocstring": None,
+            "prologueEnd": None,
             "importBindings": [],
             "scopeInfos": [],
             "typeAnnotations": [],
             "inferredTypes": [],
             "literals": [],
             "comments": comments,
+            "blankLines": blank,
             "diagnostics": [diagnostic(f"parse error: {error}")],
         }
-    return {**Analyzer(module, text, tokens).analyze(tree), "comments": comments}
+    return {**Analyzer(module, text, tokens).analyze(tree), "comments": comments, "blankLines": blank}
 
 
 def main():
