@@ -64,6 +64,56 @@ describe("C# comment spans", () => {
 		expect(facts.comments.map((comment) => comment.text)).toEqual(["// real"]);
 	});
 
+	test("reads a raw interpolated string's holes as code, as many braces deep as its dollars", () => {
+		const text = [
+			"public class Holes {",
+			'\tpublic string One = $"""x {F(/* one */ 1)} y""";',
+			'\tpublic string Two = $$"""{not a hole /* text */} {{G(/* two */ 2)}}""";',
+			'\tpublic string Nested = $"""{H("""quoted // text""")} z""";',
+			"}",
+			"// real",
+			"",
+		].join("\n");
+		const facts = parseCsharp("Holes.cs", text);
+
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.comments.map((comment) => comment.text)).toEqual(["/* one */", "/* two */", "// real"]);
+		expect(facts.literals.map((literal) => literal.value)).toEqual([
+			"x {F(/* one */ 1)} y",
+			"{not a hole /* text */} {{G(/* two */ 2)}}",
+			'{H("""quoted // text""")} z',
+		]);
+	});
+
+	test("reads a hole's format as text", () => {
+		const text = [
+			"public class Formats {",
+			'\tpublic string Date = $"{when:yyyy//MM}";',
+			'\tpublic string Raw = $"""{when:dd/*x*/}""";',
+			'\tpublic string Grouped = $"{(a ? b : c) /* code */:N0}";',
+			"}",
+			"",
+		].join("\n");
+		const facts = parseCsharp("Formats.cs", text);
+
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.comments.map((comment) => comment.text)).toEqual(["/* code */"]);
+	});
+
+	test("drops a hole's comment with the conditional branch that drops its string", () => {
+		const text = [
+			"public class Dropped {",
+			"#if false",
+			'\tpublic string Gone = $"{1 /* gone */}";',
+			"#endif",
+			'\tpublic string Kept = $"{2 /* kept */}";',
+			"}",
+			"",
+		].join("\n");
+
+		expect(commentTexts(text)).toEqual(["/* kept */"]);
+	});
+
 	test("reports a trailing comment on a directive whose body is tokens, never the directive", () => {
 		const text = [
 			"#define TRACE // why",
@@ -134,8 +184,14 @@ describe("C# comment spans", () => {
 
 		expect(TIERS.comments).toBe(true);
 		expect(facts.comments).toEqual([
-			{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } }, text: "// header" },
+			{
+				range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } },
+				text: "// header",
+				codeBefore: false,
+				codeAfter: false,
+			},
 		]);
+		expect(facts.blankLines).toEqual([]);
 	});
 
 	test("holds comments back at outline depth, as literals are", () => {
@@ -151,5 +207,86 @@ describe("C# comment spans", () => {
 
 	test("reports no comments for a file that has none", () => {
 		expect(commentTexts('public class C { string Text = "no markers here"; }\n')).toEqual([]);
+	});
+});
+
+describe("C# comment trivia and blank lines", () => {
+	test("says whether code shares a comment's first line before it and its last line after it", () => {
+		const text = [
+			"// own line",
+			"public class Trivia { // trailing",
+			"\tint a = /* inline */ 1;",
+			"\t/* first */ // second",
+			"\t/* spans",
+			"\t   lines */ int b;",
+			"\tint c; /* opens",
+			"\t   here */",
+			"#if DEBUG // directive",
+			"\t/// doc",
+			"\tint d;",
+			"#endif",
+			'\tstring e = $"{d /* hole */}";',
+			'\tstring f = $@"{',
+			"\t\t// hole line",
+			'\t\td}";',
+			"}",
+			"",
+		].join("\n");
+		const expected = {
+			"// own line": [false, false],
+			"// trailing": [true, false],
+			"/* inline */": [true, true],
+			"/* first */": [false, false],
+			"// second": [false, false],
+			"/* spans\n\t   lines */": [false, true],
+			"/* opens\n\t   here */": [true, false],
+			"// directive": [true, false],
+			"/// doc": [false, false],
+			"/* hole */": [true, true],
+			"// hole line": [false, false],
+		};
+		const trivia = (source: string) =>
+			Object.fromEntries(
+				parseCsharp("Trivia.cs", source).comments.map((comment) => [
+					comment.text.replaceAll("\r\n", "\n"),
+					[comment.codeBefore, comment.codeAfter],
+				]),
+			);
+
+		expect(trivia(text)).toEqual(expected);
+		expect(trivia(text.replaceAll("\n", "\r\n"))).toEqual(expected);
+	});
+
+	test("counts a line blank only when no token touches it", () => {
+		const text = [
+			"public class Blank {",
+			"",
+			'\tstring a = @"one',
+			"",
+			'two";',
+			'\tstring b = """',
+			"",
+			'\t\t""";',
+			'\tstring c = $"{',
+			"",
+			'\t\tb}";',
+			"\t/* a",
+			"",
+			"\tb */",
+			"   \t",
+			"#if false",
+			"",
+			"\tint dropped;",
+			"#endif",
+			"}",
+			"",
+		].join("\n");
+		const blank = (source: string) => parseCsharp("Blank.cs", source).blankLines;
+
+		expect(blank(text)).toEqual([1, 14, 16]);
+		expect(blank(text.replaceAll("\n", "\r\n"))).toEqual([1, 14, 16]);
+		expect(blank("")).toEqual([]);
+		expect(blank("\n")).toEqual([0]);
+		expect(blank("class C {}\n  ")).toEqual([1]);
 	});
 });

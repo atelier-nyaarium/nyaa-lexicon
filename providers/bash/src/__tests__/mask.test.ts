@@ -100,4 +100,22 @@ describe("the comment mask", () => {
 		}
 		expect(comments).toBeGreaterThan(0);
 	});
+
+	// No bash comment shares a line with another, so a line's other text before a comment is code.
+	test("trivia and blank lines agree with each line's text", async () => {
+		for (const [name, text] of corpus()) {
+			await new Promise((resolve) => setImmediate(resolve));
+			const coordinates = coordinatesOf(text);
+			const parsed = parseBash(name, text);
+			for (const comment of parsed.comments) {
+				const before = coordinates.lineText(comment.range.start.line)?.slice(0, comment.range.start.character);
+				const wrong = comment.codeBefore !== (before?.trim() !== "") || comment.codeAfter !== false;
+				expect(wrong ? { name, comment } : null).toBeNull();
+			}
+			for (const line of parsed.blankLines) {
+				const held = coordinates.lineText(line)?.trim();
+				expect(held === "" ? null : { name, line, held }).toBeNull();
+			}
+		}
+	});
 });

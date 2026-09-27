@@ -9,6 +9,7 @@ import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
+import { fakeClasses, fakeImports } from "./fakeGrammar";
 import { parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
 import { gitAdd, gitInit } from "./gitFixture";
 
@@ -67,11 +68,7 @@ function declaration(module: string, name: string): Declaration {
 }
 
 function importsFrom(text: string): Import[] {
-	return [...text.matchAll(/import\s+["']([^"']+)["']/g)].map((match) => ({
-		specifier: match[1] as string,
-		imported: [],
-		reExport: false,
-	}));
+	return fakeImports(text).map((specifier) => ({ specifier, imported: [], reExport: false }));
 }
 
 /** `lazyEvidence: false` ignores the indexer's registered source, so only a scan's own observation routes a header. */
@@ -106,16 +103,17 @@ function fakeSupervisor(
 					: request.text.includes("WARN")
 						? [{ severity: "warning" as const, message: "duplicate key" }]
 						: [];
-				const declarations = [...request.text.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)].map((match) =>
-					declaration(request.module, match[1] as string),
-				);
+				const declarations = fakeClasses(request.text).map((found) => declaration(request.module, found.name));
+				// A provider that ignores the depth ceiling: line 1 is `"NOTE"`, sent at every depth.
+				const noted = request.text.split("\n")[1] === '"NOTE"';
+				const note = { start: { line: 1, character: 0 }, end: { line: 1, character: 6 } };
 				return {
 					module: request.module,
 					contentHash: request.contentHash,
 					declarations,
 					references: [],
 					imports: importsFrom(request.text),
-					literals: [],
+					literals: noted ? [{ kind: "string" as const, value: "NOTE", range: note }] : [],
 					diagnostics,
 				};
 			},
@@ -627,6 +625,18 @@ describe("reachability and failures", () => {
 			module: "external.fake",
 			depth: "surface",
 		});
+	});
+
+	it("stores no literals from a surface parse, even when the provider sends them", async () => {
+		await initGit();
+		put(".gitignore", "external.fake\n");
+		put("root.fake", 'export class Root {}\n"NOTE"\nimport "external:external.fake";\n');
+		put("external.fake", 'export class External {}\n"NOTE"\n');
+		service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+
+		await service.indexWorkspace();
+
+		expect(service.findLiterals({ value: "NOTE" }).literals.map((hit) => hit.module)).toEqual(["root.fake"]);
 	});
 
 	it("omits dependency modules from the overview", async () => {

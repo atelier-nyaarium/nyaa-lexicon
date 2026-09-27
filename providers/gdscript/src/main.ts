@@ -2,6 +2,7 @@
 
 import {
 	type Declaration,
+	defined,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
@@ -177,6 +178,7 @@ export class GDScriptProvider {
 			imports: value.imports,
 			literals: value.literals,
 			comments: value.comments,
+			...defined({ blankLines: value.blankLines }),
 			diagnostics: value.diagnostics,
 			...(outline ? { depth: "outline" as const } : {}),
 		};

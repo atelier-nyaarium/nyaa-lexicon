@@ -3,7 +3,6 @@
 ////////////////////////////////
 //  Constants
 
-const SHEBANG_RE = /^#![ \t]*([^\s\0]+)((?:[ \t]+[^\s\0]+)*)/;
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** `env` options that take the next word. */
 const ENV_VALUED_OPTIONS = new Set(["-u", "-C", "--unset", "--chdir"]);
@@ -24,14 +23,42 @@ function basenameOf(program: string): string | undefined {
 	return name === "" ? undefined : name;
 }
 
+/** Words after `#!`, split and unquoted as `env -S` does. A NUL ends the line. */
+function wordsOf(line: string): string[] {
+	const words: string[] = [];
+	let word: string | null = null;
+	let quote: string | null = null;
+	for (let at = 2; at < line.length; at++) {
+		const character = line[at] as string;
+		if (character === "\0") break;
+		if (quote !== null) {
+			if (character === quote) quote = null;
+			else if (character === "\\" && quote === '"' && at + 1 < line.length) word += line[++at] as string;
+			else word += character;
+			continue;
+		}
+		if (character.trim() === "") {
+			if (word !== null) words.push(word);
+			word = null;
+			continue;
+		}
+		word ??= "";
+		if (character === '"' || character === "'") quote = character;
+		else if (character === "\\" && at + 1 < line.length) word += line[++at] as string;
+		else word += character;
+	}
+	if (word !== null) words.push(word);
+	return words;
+}
+
 /**
  * `bash` for `#!/bin/bash`, `#!/usr/bin/env bash` and `#!/usr/bin/env -S bash -e`; undefined without a shebang.
  * The name the line gives, not what one kernel runs: `env bash -e` counts, though Linux hands `env` one argument.
  */
 export function shebangInterpreter(firstLine: string): string | undefined {
-	const match = SHEBANG_RE.exec(firstLine);
-	if (match === null) return undefined;
-	const words = [match[1] as string, ...(match[2] as string).trim().split(/[ \t]+/)].filter((word) => word !== "");
+	if (!firstLine.startsWith("#!")) return undefined;
+	const words = wordsOf(firstLine);
+	if (words.length === 0) return undefined;
 	const program = basenameOf(words[0] as string);
 	if (program !== "env") return program;
 	// `env` runs the first word that is not an option, an option's argument, or an assignment.

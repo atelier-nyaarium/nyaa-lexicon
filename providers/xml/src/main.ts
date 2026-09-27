@@ -3,6 +3,7 @@ import { readXml, type XmlFacts } from "@nyaa-lexicon/formats/xml";
 import {
 	type Binding,
 	coordinatesOf,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -97,6 +98,7 @@ export class XmlProvider {
 			imports: [],
 			literals: shallow ? [] : facts.literals,
 			comments: shallow ? [] : facts.comments,
+			...defined({ blankLines: shallow ? undefined : facts.blankLines }),
 			diagnostics: facts.diagnostics,
 			...(shallow ? { depth: params.depth } : {}),
 		};

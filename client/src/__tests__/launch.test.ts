@@ -11,7 +11,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join, relative } from "node:path";
-import { codeOnly, readSwept, runBounded, sourceFiles, systemTimer } from "@nyaa-lexicon/protocol";
+import { runBounded, sourceFiles, systemTimer } from "@nyaa-lexicon/protocol";
+import { memberReads, parsedFiles, parseSource } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 import { bunCommand, RUNTIME_BUNFIG, RUNTIME_TSCONFIG } from "../launch";
 import type { PlatformEnv } from "../paths";
 
@@ -137,13 +139,20 @@ describe("one owner for bun argv", () => {
 	const SWEPT = ["client/src", "core/src", "adapters/mcp/src", "adapters/lsp/src"].map((d) => join(REPO, d));
 	const OWNERS = new Set(["client/src/launch.ts"]);
 	const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "tmp"]);
-	/** The executable leading an argv or a spawn call; a mention inside a message is not one. */
-	const LEADS_ARGV = /\.executable\s*[,\]]/;
+	/** An executable read as an argv element or a call argument; a mention inside a message is not one. */
+	const leadsArgv = (source: ts.Node): boolean =>
+		memberReads(source).some(({ node, name }) => {
+			if (name !== "executable") return false;
+			const parent = node.parent;
+			return (
+				ts.isArrayLiteralExpression(parent) || (ts.isCallExpression(parent) && parent.arguments.includes(node))
+			);
+		});
 
 	it("fires on an argv or a spawn call led by an executable", () => {
 		expect(
 			["[runtime.executable, bundle]", "spawn(resolved.executable, args)", "`at ${runtime.executable}`"].map(
-				(code) => LEADS_ARGV.test(code),
+				(code) => leadsArgv(parseSource("probe.ts", code).source),
 			),
 		).toEqual([true, true, false]);
 	});
@@ -155,11 +164,10 @@ describe("one owner for bun argv", () => {
 	it("builds a bun argv only in launch.ts", () => {
 		const offenders: string[] = [];
 		for (const swept of SWEPT) {
-			for (const file of sourceFiles(swept, SKIP_DIRS)) {
+			for (const { file, source } of parsedFiles(swept, SKIP_DIRS)) {
 				const name = relative(REPO, file);
 				if (OWNERS.has(name)) continue;
-				const source = readSwept(file);
-				if (source !== null && LEADS_ARGV.test(codeOnly(source))) offenders.push(name);
+				if (leadsArgv(source)) offenders.push(name);
 			}
 		}
 

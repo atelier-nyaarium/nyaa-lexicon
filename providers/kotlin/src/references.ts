@@ -2,7 +2,8 @@ import { type Binding, type CommentSpan, defined, type Literal } from "@nyaa-lex
 import { unclosedComment } from "./diagnostics.js";
 import type { ScopeEnvironment } from "./environment.js";
 import type { Frame, Receiver, ReferenceInfo, ReferenceRole } from "./facts.js";
-import { literalShape } from "./literals.js";
+import { blankLines, codeLeaves, triviaOf } from "./layout.js";
+import { literalShape, shortTemplateName } from "./literals.js";
 import {
 	COMMENT_TYPES,
 	childOfType,
@@ -17,6 +18,7 @@ export interface UseFacts {
 	references: ReferenceInfo[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines: number[];
 }
 
 const LITERAL_TYPES: ReadonlySet<string> = new Set([
@@ -49,8 +51,22 @@ const PLACEHOLDER: Binding = {
 	detail: "binding is resolved by the provider index",
 };
 
-function identifierCharacter(character: string, first: boolean): boolean {
-	return character === "_" || /^\p{L}$/u.test(character) || (!first && /^\p{Nd}$/u.test(character));
+/** Qualification status is explicit for every use. */
+type Reach = Pick<ReferenceInfo, "importInfo" | "receiver"> & { qualified: boolean | undefined };
+
+const BARE: Reach = { qualified: false };
+
+/** An enclosing scope's extension captures any receiver but `super`. */
+function receiverReach(left: SyntaxNode | undefined): boolean | undefined {
+	return left?.type === "super_expression" ? true : undefined;
+}
+
+/** An alias binds the path, not its segments. */
+function aliasedPathSegment(node: SyntaxNode): boolean {
+	const path = node.parent;
+	const directive = path?.parent;
+	if (path?.type !== "qualified_identifier" || directive?.type !== "import") return false;
+	return path.children[0] !== node && childOfType(directive, "identifier") !== undefined;
 }
 
 function isHeritage(userType: SyntaxNode): boolean {
@@ -79,6 +95,7 @@ class UseWalker {
 	private frame: Frame | undefined;
 	/** An unclosed comment's start, which swallows everything after. */
 	private readonly unclosed: number;
+	private readonly code: SyntaxNode[];
 
 	constructor(
 		private readonly text: string,
@@ -87,6 +104,15 @@ class UseWalker {
 		private readonly environment: ScopeEnvironment,
 	) {
 		this.unclosed = unclosedComment(text, tree) ?? text.length;
+		this.code = codeLeaves(tree.leaves);
+	}
+
+	private comment(start: number, end: number): CommentSpan {
+		return {
+			range: this.lines.range(start, end),
+			text: this.text.slice(start, end),
+			...triviaOf(this.code, this.lines, start, end),
+		};
 	}
 
 	walk(): UseFacts {
@@ -118,19 +144,20 @@ class UseWalker {
 			for (let index = node.children.length - 1; index >= 0; index--)
 				stack.push({ node: node.children[index] as SyntaxNode, exit: false });
 		}
-		if (this.unclosed < this.text.length)
-			this.comments.push({
-				range: this.lines.range(this.unclosed, this.text.length),
-				text: this.text.slice(this.unclosed),
-			});
-		return { references: this.references, literals: this.literals, comments: this.comments };
+		if (this.unclosed < this.text.length) this.comments.push(this.comment(this.unclosed, this.text.length));
+		return {
+			references: this.references,
+			literals: this.literals,
+			comments: this.comments,
+			blankLines: blankLines(this.text, this.tree.leaves, this.lines, this.unclosed),
+		};
 	}
 
 	private visit(node: SyntaxNode): void {
 		if (COMMENT_TYPES.has(node.type)) {
 			if (node.start >= this.unclosed) return;
 			const end = this.text.charAt(node.end - 1) === "\r" ? node.end - 1 : node.end;
-			this.comments.push({ range: this.lines.range(node.start, end), text: this.text.slice(node.start, end) });
+			this.comments.push(this.comment(node.start, end));
 			return;
 		}
 		if (LITERAL_TYPES.has(node.type) || node.type === "identifier") {
@@ -151,35 +178,27 @@ class UseWalker {
 		else if (node.type === "string_content") this.shortTemplate(node);
 	}
 
-	/** The grammar leaves `"$name"` as two string contents. */
 	private shortTemplate(node: SyntaxNode): void {
-		if (node.end - node.start !== 1 || this.text.charAt(node.start) !== "$") return;
-		const siblings = node.parent?.children ?? [];
-		const next = siblings[siblings.indexOf(node) + 1];
-		if (next?.type !== "string_content" || next.start !== node.end) return;
-		let end = next.start;
-		while (end < next.end && identifierCharacter(this.text.charAt(end), end === next.start)) end++;
-		if (end === next.start) return;
+		const name = shortTemplateName(this.text, node);
+		if (name === undefined) return;
+		const [start, end] = name;
 		this.add(
 			{
 				type: "identifier",
 				named: true,
 				missing: false,
 				field: null,
-				start: next.start,
+				start,
 				end,
 				parent: node.parent,
 				children: [],
 			},
 			"read",
+			BARE,
 		);
 	}
 
-	private add(
-		node: SyntaxNode,
-		role: ReferenceRole,
-		extra: Pick<ReferenceInfo, "importInfo" | "receiver"> = {},
-	): void {
+	private add(node: SyntaxNode, role: ReferenceRole, reach: Reach): void {
 		const index = this.references.length;
 		const owner = this.owners.at(-1);
 		this.references.push({
@@ -188,11 +207,11 @@ class UseWalker {
 				range: this.lines.range(node.start, node.end),
 				role,
 				binding: PLACEHOLDER,
-				...defined({ fromId: owner }),
+				...defined({ fromId: owner, qualified: reach.qualified }),
 			},
 			index,
 			offset: node.start,
-			...defined({ frame: this.frame, importInfo: extra.importInfo, receiver: extra.receiver }),
+			...defined({ frame: this.frame, importInfo: reach.importInfo, receiver: reach.receiver }),
 		});
 		if (!this.firstReference.has(node)) this.firstReference.set(node, index);
 	}
@@ -211,24 +230,24 @@ class UseWalker {
 		return index === undefined ? { kind: "expression" } : { kind: "name", index };
 	}
 
-	private applied(node: SyntaxNode, target: SyntaxNode, extra: Pick<ReferenceInfo, "receiver">): boolean {
+	private applied(node: SyntaxNode, target: SyntaxNode, reach: Reach): boolean {
 		const parent = target.parent;
 		if (parent === null) return false;
 		if (parent.type === "call_expression" && parent.children[0] === target) {
-			this.add(node, this.environment.declaresType(nameText(this.text, node)) ? "instantiate" : "call", extra);
+			this.add(node, this.environment.declaresType(nameText(this.text, node)) ? "instantiate" : "call", reach);
 			return true;
 		}
 		if (parent.type === "assignment" && parent.children[0] === target) {
 			const operator = parent.children.find((child) => child.field === "operator");
-			if (operator !== undefined && operator.type !== "=") this.add(node, "read", extra);
-			this.add(node, "write", extra);
+			if (operator !== undefined && operator.type !== "=") this.add(node, "read", reach);
+			this.add(node, "write", reach);
 			return true;
 		}
 		if (parent.type === "unary_expression" && target.field === "argument") {
 			const operator = parent.children.find((child) => child.field === "operator");
 			if (operator?.type === "++" || operator?.type === "--") {
-				this.add(node, "read", extra);
-				this.add(node, "write", extra);
+				this.add(node, "read", reach);
+				this.add(node, "write", reach);
 				return true;
 			}
 			// The grammar reads `!f(x)` as `(!f)(x)`.
@@ -242,7 +261,7 @@ class UseWalker {
 				this.add(
 					node,
 					this.environment.declaresType(nameText(this.text, node)) ? "instantiate" : "call",
-					extra,
+					reach,
 				);
 				return true;
 			}
@@ -255,7 +274,7 @@ class UseWalker {
 		if (parent === null || this.environment.namesDeclaration(node) || misreadKeyword(this.text, node)) return;
 		const importInfo = this.environment.importAt(node);
 		if (importInfo !== undefined) {
-			this.add(node, "import", { importInfo });
+			this.add(node, "import", { qualified: aliasedPathSegment(node), importInfo });
 			return;
 		}
 		if (BINDER_PARENTS.has(parent.type)) return;
@@ -276,18 +295,21 @@ class UseWalker {
 				const previous = siblings.slice(0, position).findLast((child) => child.type === "identifier");
 				const receiver = previous === undefined ? undefined : this.receiverOf(previous);
 				const last = siblings.findLast((child) => child.type === "identifier") === node;
-				this.add(node, last && isHeritage(parent) ? "extends" : "typeUse", defined({ receiver }));
+				this.add(node, last && isHeritage(parent) ? "extends" : "typeUse", {
+					qualified: previous !== undefined,
+					...defined({ receiver }),
+				});
 				return;
 			}
 			case "type_constraint":
-				this.add(node, "typeUse");
+				this.add(node, "typeUse", BARE);
 				return;
 			case "navigation_expression": {
 				if (position === 0) break;
 				const operator = siblings[position - 1];
 				if (operator?.type === "::" && name === "class") return;
-				const receiver = this.receiverOf(siblings[0]);
-				if (!this.applied(node, parent, { receiver })) this.add(node, "read", { receiver });
+				const reach = { qualified: receiverReach(siblings[0]), receiver: this.receiverOf(siblings[0]) };
+				if (!this.applied(node, parent, reach)) this.add(node, "read", reach);
 				return;
 			}
 			case "callable_reference": {
@@ -297,18 +319,22 @@ class UseWalker {
 				const typeName = left.type === "user_type" ? memberName(left) : undefined;
 				const index = typeName === undefined ? undefined : this.firstReference.get(typeName);
 				this.add(node, "read", {
+					qualified: receiverReach(left),
 					receiver: index === undefined ? this.receiverOf(left) : { kind: "name", index, callable: true },
 				});
 				return;
 			}
 			case "infix_expression":
 				if (position === 1) {
-					this.add(node, "call", { receiver: this.receiverOf(siblings[0]) });
+					this.add(node, "call", {
+						qualified: receiverReach(siblings[0]),
+						receiver: this.receiverOf(siblings[0]),
+					});
 					return;
 				}
 				break;
 		}
-		if (!this.applied(node, node, {})) this.add(node, "read");
+		if (!this.applied(node, node, BARE)) this.add(node, "read", BARE);
 	}
 }
 

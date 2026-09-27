@@ -18,14 +18,16 @@ const FLAGS: Record<string, number> = {
 	y: 0,
 };
 
+/** Flags hold no slash, so the last slash closes the pattern. */
 export function compileSearchRegex(source: string): SearchPattern {
-	const match = /^\/((?:\\.|[^/])*)\/([a-z]*)$/.exec(source);
-	if (match === null || match[1] === undefined || match[2] === undefined) {
+	const close = source.lastIndexOf("/");
+	if (!source.startsWith("/") || close === 0) {
 		throw new Error("Regex failed to compile: expected /pattern/flags.");
 	}
+	const pattern = source.slice(1, close);
 
 	let flags = 0;
-	for (const flag of match[2]) {
+	for (const flag of source.slice(close + 1)) {
 		const bit = FLAGS[flag];
 		if (bit === undefined)
 			throw new Error(`Regex failed to compile: unsupported flag \`${flag}\`; i, m and s apply.`);
@@ -33,7 +35,7 @@ export function compileSearchRegex(source: string): SearchPattern {
 	}
 
 	try {
-		const compiled = RE2JS.compile(match[1], flags);
+		const compiled = RE2JS.compile(pattern, flags);
 		return {
 			test: (text) => compiled.matcher(text).find(),
 			find: (text) => {

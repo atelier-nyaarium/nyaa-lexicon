@@ -1,8 +1,8 @@
 // The one owner of "which symbol does this comment belong to".
 //
-// Providers report spans and nothing else, so every rule here is position math over ranges core
-// already stores plus the module's own text. Each provider implementing this would be another
-// chance to disagree about one idea.
+// Providers report spans and their trivia (code before or after on the line, blank lines outside
+// tokens), so every rule here is position math over facts; the text is only quoted, never read for
+// syntax. Each provider implementing this would be another chance to disagree about one idea.
 //
 // Nothing guesses. A comment that could belong to either of two declarations belongs to neither:
 // it becomes standalone against whatever encloses it, because a wrong anchor baked into a stored
@@ -40,7 +40,7 @@ export interface AttachedComment {
 interface Group {
 	range: Range;
 	raw: string;
-	/** Nothing but whitespace precedes it on its first line. */
+	/** No code precedes it on its first line. */
 	ownLine: boolean;
 	/** Code follows it on its last line. */
 	codeAfter: boolean;
@@ -48,10 +48,6 @@ interface Group {
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function beforeStart(lineText: string, character: number): string {
-	return lineText.slice(0, character);
-}
 
 function comparePoints(a: Range["start"], b: Range["start"]): number {
 	return a.line === b.line ? a.character - b.character : a.line - b.line;
@@ -75,7 +71,7 @@ function enclosing(declarations: Declaration[], range: Range): Declaration | und
 ////////////////////////////////
 //  Grouping
 
-/** One comment's relationship to the line holding it, read from the span alone. */
+/** One comment's relationship to the line holding it, read from its facts alone. */
 interface Placed {
 	comment: CommentSpan;
 	ownLine: boolean;
@@ -84,11 +80,10 @@ interface Placed {
 	joinable: boolean;
 }
 
-function place(comment: CommentSpan, coordinates: ReturnType<typeof coordinatesOf>): Placed {
-	const lineText = coordinates.lineText(comment.range.start.line) ?? "";
-	const ownLine = beforeStart(lineText, comment.range.start.character).trim() === "";
-	const endLine = coordinates.lineText(comment.range.end.line) ?? "";
-	const codeAfter = endLine.slice(comment.range.end.character).trim() !== "";
+/** Absent trivia reads as code on both sides, so the comment stays standalone. */
+function place(comment: CommentSpan): Placed {
+	const ownLine = comment.codeBefore === false;
+	const codeAfter = comment.codeAfter !== false;
 	return {
 		comment,
 		ownLine,
@@ -138,7 +133,7 @@ function groupComments(comments: CommentSpan[], text: string): Group[] {
 	const sorted = [...comments].sort((left, right) => comparePoints(left.range.start, right.range.start));
 	const groups: Group[] = [];
 
-	for (const run of partitionRuns(sorted.map((comment) => place(comment, coordinates)))) {
+	for (const run of partitionRuns(sorted.map(place))) {
 		const first = run[0] as Placed;
 		const last = run.at(-1) as Placed;
 		if (run.length === 1) {
@@ -178,11 +173,29 @@ function shapeOf(first: Placed, last: Placed): { ownLine: boolean; codeAfter: bo
  * it precedes, and languages disagree about whether the declaration's range covers it, so treating
  * that line as a wall loses the documentation of every decorated symbol in half the languages here.
  */
-function nothingBetween(from: number, to: number, blankLines: Set<number>, declarationLines: Set<number>): boolean {
+function nothingBetween(
+	from: number,
+	to: number,
+	blankLines: Set<number> | null,
+	declarationLines: Set<number>,
+): boolean {
+	// Unknown blank lines: only the next line is safe.
+	if (blankLines === null) return to === from + 1;
 	for (let line = from + 1; line < to; line++) {
 		if (blankLines.has(line) || declarationLines.has(line)) return false;
 	}
 	return true;
+}
+
+/** A range that takes in its doc names itself first; a whole script names itself later or never. */
+function namesNext(candidate: Declaration, group: Group, declarations: Declaration[]): boolean {
+	const named = candidate.selectionRange?.start ?? candidate.range.end;
+	return !declarations.some(
+		(other) =>
+			other !== candidate &&
+			comparePoints(other.range.start, group.range.end) >= 0 &&
+			comparePoints(other.range.start, named) < 0,
+	);
 }
 
 /**
@@ -196,10 +209,12 @@ function nothingBetween(from: number, to: number, blankLines: Set<number>, decla
 function leadingTarget(
 	group: Group,
 	declarations: Declaration[],
-	blankLines: Set<number>,
+	blankLines: Set<number> | null,
 	declarationLines: Set<number>,
 ): Declaration | undefined {
-	const included = declarations.find((declaration) => sameStart(declaration.range, group.range));
+	const included = declarations.find(
+		(declaration) => sameStart(declaration.range, group.range) && namesNext(declaration, group, declarations),
+	);
 	if (included !== undefined) return included;
 
 	let nearest: Declaration | undefined;
@@ -247,24 +262,37 @@ function sameLineAnchor(
 	return right === undefined ? undefined : { anchor: right.declaration, side: "before" };
 }
 
+/** The first name after the comment on its last line. */
+function followingOnLine(group: Group, declarations: Declaration[]): Declaration | undefined {
+	const { end } = group.range;
+	let first: { declaration: Declaration; at: Range["start"] } | undefined;
+	for (const declaration of declarations) {
+		const at = declaration.selectionRange?.start;
+		if (at === undefined || at.line !== end.line || at.character < end.character) continue;
+		if (first === undefined || at.character < first.at.character) first = { declaration, at };
+	}
+	return first?.declaration;
+}
+
 ////////////////////////////////
 //  Attaching
 
 /**
  * Every comment in one module, grouped and anchored.
  *
- * The text is required rather than optional because "nothing between these two" is a question only
- * the source can answer. Inferring it from stored endpoints is how a blank line becomes invisible.
+ * Text supplies only a run's raw form. Blank lines come from the provider, which knows a line inside
+ * a string is not one; without them, only the next line may hold the declaration.
  */
-export function attachComments(declarations: Declaration[], comments: CommentSpan[], text: string): AttachedComment[] {
+export function attachComments(
+	declarations: Declaration[],
+	comments: CommentSpan[],
+	text: string,
+	blankLines?: readonly number[],
+): AttachedComment[] {
 	const groups = groupComments(comments, text);
 	if (groups.length === 0) return [];
 
-	const coordinates = coordinatesOf(text);
-	const blankLines = new Set<number>();
-	for (let line = 0; line < coordinates.lineCount(); line++) {
-		if ((coordinates.lineText(line) ?? "").trim() === "") blankLines.add(line);
-	}
+	const blank = blankLines === undefined ? null : new Set(blankLines);
 	const declarationLines = new Set(declarations.map((declaration) => declaration.range.start.line));
 
 	// A declaration takes the NEAREST qualifying group; the rest of its candidates fall through to
@@ -272,7 +300,7 @@ export function attachComments(declarations: Declaration[], comments: CommentSpa
 	const leadFor = new Map<string, Group>();
 	for (const group of groups) {
 		if (!group.ownLine || group.codeAfter) continue;
-		const target = leadingTarget(group, declarations, blankLines, declarationLines);
+		const target = leadingTarget(group, declarations, blank, declarationLines);
 		if (target === undefined) continue;
 		const held = leadFor.get(target.symbolId);
 		if (held === undefined || group.range.end.line > held.range.end.line) leadFor.set(target.symbolId, group);
@@ -287,6 +315,12 @@ export function attachComments(declarations: Declaration[], comments: CommentSpa
 		if (leads !== undefined)
 			return { ...fact, form: "leading" as const, placement: "above" as const, anchorId: leads };
 
+		if (group.ownLine && group.codeAfter) {
+			const next = followingOnLine(group, declarations);
+			if (next !== undefined) {
+				return { ...fact, form: "inline" as const, placement: "before" as const, anchorId: next.symbolId };
+			}
+		}
 		if (!group.ownLine) {
 			const found = sameLineAnchor(group, declarations);
 			if (found !== undefined) {

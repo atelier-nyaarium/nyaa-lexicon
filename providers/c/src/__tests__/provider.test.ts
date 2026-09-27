@@ -322,7 +322,9 @@ describe("C comment spans", () => {
 
 		expect(TIERS.comments).toBe(true);
 		expect(FileFactsSchema.safeParse(parsed).success).toBe(true);
-		expect(parsed.comments).toEqual([{ range: rangeAt(text, "// note"), text: "// note" }]);
+		expect(parsed.comments).toEqual([
+			{ range: rangeAt(text, "// note"), text: "// note", codeBefore: false, codeAfter: false },
+		]);
 	});
 
 	test("reports every comment form C has, doc comments included", () => {
@@ -353,7 +355,12 @@ describe("C comment spans", () => {
 		const parsed = facts(handlers, "open.c", text);
 
 		expect(parsed.comments).toEqual([
-			{ range: rangeAt(text, "/* opened and never closed"), text: "/* opened and never closed" },
+			{
+				range: rangeAt(text, "/* opened and never closed"),
+				text: "/* opened and never closed",
+				codeBefore: false,
+				codeAfter: false,
+			},
 		]);
 		expect(declarationOf(parsed, "before")).toBeDefined();
 	});
@@ -375,7 +382,12 @@ describe("C comment spans", () => {
 		const parsed = facts(handlers, "continued.c", text);
 
 		expect(parsed.comments).toEqual([
-			{ range: rangeAt(text, "// wraps \\\nstill comment"), text: "// wraps \\\nstill comment" },
+			{
+				range: rangeAt(text, "// wraps \\\nstill comment"),
+				text: "// wraps \\\nstill comment",
+				codeBefore: false,
+				codeAfter: false,
+			},
 		]);
 		expect(declarationOf(parsed, "after")).toBeDefined();
 	});
@@ -386,7 +398,9 @@ describe("C comment spans", () => {
 
 		const parsed = facts(handlers, "utf16.c", text);
 
-		expect(parsed.comments).toEqual([{ range: rangeAt(text, "/* 😀 */"), text: "/* 😀 */" }]);
+		expect(parsed.comments).toEqual([
+			{ range: rangeAt(text, "/* 😀 */"), text: "/* 😀 */", codeBefore: true, codeAfter: false },
+		]);
 	});
 
 	test("reports a retokenized Ghidra warning line as a single comment", () => {
@@ -623,6 +637,36 @@ describe("C declarations", () => {
 		expect(declarations.find((declaration) => declaration.name === "second")?.visibility).toBe("public");
 	});
 
+	test("reads attribute and type operator arguments as arguments, never declarators", () => {
+		const parsed = parseC(
+			"arguments.c",
+			[
+				'int __attribute__((section("x"))) t;',
+				'int __declspec(allocate("x")) u;',
+				"int * __attribute__((aligned(8))) p;",
+				"int __attribute__((cleanup(release))) *z, w;",
+				"int n;",
+				"typeof(n) m;",
+				"__typeof__(n) k;",
+				'int __attribute__((section("y"))) g(void) { typeof(n) local = n; return local; }',
+			].join("\n"),
+		);
+
+		expect(parsed.diagnostics).toEqual([]);
+		expect(parsed.declarations.map((declaration) => `${declaration.kind} ${declaration.name}`)).toEqual([
+			"variable t",
+			"variable u",
+			"variable p",
+			"variable z",
+			"variable w",
+			"variable n",
+			"variable m",
+			"variable k",
+			"function g",
+			"variable local",
+		]);
+	});
+
 	test("tolerates Ghidra type names and calling conventions", () => {
 		const parsed = parseC(
 			"ghidra.c",
@@ -717,14 +761,17 @@ describe("Ghidra C syntax", () => {
 		expect(parsed.references.find((reference) => reference.name === "owner::member")).toMatchObject({
 			name: "owner::member",
 			role: "read",
+			qualified: true,
 		});
 		expect(parsed.references.find((reference) => reference.name === "::global")).toMatchObject({
 			name: "::global",
 			role: "write",
+			qualified: true,
 		});
 		expect(parsed.references.find((reference) => reference.name === "owner::nested::leaf")).toMatchObject({
 			name: "owner::nested::leaf",
 			role: "read",
+			qualified: true,
 		});
 	});
 
@@ -764,7 +811,7 @@ describe("Ghidra C syntax", () => {
 
 	test("retokenizes the complete Ghidra warning suffix", () => {
 		const text = "void run(void) {\n  if ((value\n// WARNING: Load size is inaccurate));\n}\n";
-		const lexed = lexC("warning-suffix.c", text);
+		const lexed = lexC("warning-suffix.c", text, "ghidra");
 		const parsed = parseC("warning-suffix.c", text);
 
 		expect(parsed.diagnostics).toEqual([]);
@@ -773,6 +820,38 @@ describe("Ghidra C syntax", () => {
 				.filter((token) => token.start.line === 2 && token.kind === "symbol")
 				.map((token) => token.value),
 		).toEqual([")", ")", ";"]);
+	});
+
+	test("reads the warning as a comment wherever the file is valid C", () => {
+		const text = [
+			"int f(int a, // WARNING: Load size is inaccurate) see",
+			"\tint b) {",
+			"\ttotal = a; // WARNING: Load size is inaccurate, see total",
+			"\treturn b;",
+			"}",
+		].join("\n");
+		const parsed = parseC("valid-warning.c", text);
+		const codeOnCommentLines = lexC("valid-warning.c", text).tokens.filter(
+			(token) =>
+				[0, 2].includes(token.start.line) &&
+				token.start.character > 20 &&
+				token.kind !== "comment" &&
+				token.kind !== "newline",
+		);
+
+		expect(parsed.diagnostics).toEqual([]);
+		expect(codeOnCommentLines).toEqual([]);
+		expect(
+			parsed.declarations
+				.filter((declaration) => declaration.languageKind === "parameter")
+				.map((parameter) => parameter.name),
+		).toEqual(["a", "b"]);
+		expect(parsed.declarations.some((declaration) => declaration.name === "see")).toBe(false);
+		expect(parsed.references.map((reference) => `${reference.name}:${reference.role}`)).toEqual([
+			"total:write",
+			"a:read",
+			"b:read",
+		]);
 	});
 
 	test("does not retokenize an ordinary comment containing delimiters", () => {
@@ -904,6 +983,53 @@ describe("C literals and references", () => {
 		expect(localReferences.some((reference) => reference.role === "read")).toBe(true);
 		expect(localReferences.some((reference) => reference.role === "write")).toBe(true);
 		expect(localReferences.filter((reference) => reference.role === "read")).toHaveLength(3);
+	});
+
+	test("qualifies member names and designators, never their receivers", () => {
+		const handlers = started();
+		const text = [
+			'#include "item.h"',
+			"struct Item { int count; void (*run)(void); };",
+			"int total(struct Item item, struct Item *ptr) {",
+			"  struct Item made = { .count = 1 };",
+			"  item.count = ptr->count;",
+			"  ptr->run();",
+			"  return item. /* gap */ count + made.count;",
+			"}",
+		].join("\n");
+		const parsed = facts(handlers, "members.c", text);
+		const marked = (name: string) =>
+			parsed.references
+				.filter((reference) => reference.name === name)
+				.map((reference) => [reference.role, reference.qualified]);
+
+		expect(marked("count")).toEqual([
+			["write", true],
+			["write", true],
+			["read", true],
+			["read", true],
+			["read", true],
+		]);
+		expect(marked("run")).toEqual([["call", true]]);
+		expect(marked("item")).toEqual([
+			["read", false],
+			["read", false],
+		]);
+		expect(marked("ptr")).toEqual([
+			["read", false],
+			["read", false],
+		]);
+		expect(marked("Item").every(([, qualified]) => qualified === false)).toBe(true);
+		expect(marked("item.h")).toEqual([["import", false]]);
+		expect(parsed.references.every((reference) => typeof reference.qualified === "boolean")).toBe(true);
+	});
+
+	test("does not qualify a name after a directive's trailing member operator", () => {
+		const parsed = parseC("directive-member.c", "void run(void) {\n#define TAIL ptr->\nfield = 1;\n}\n");
+
+		expect(parsed.references.filter((reference) => reference.name === "field")).toMatchObject([
+			{ role: "write", qualified: false },
+		]);
 	});
 
 	test("marks struct and typedef names as type uses", () => {
@@ -1099,6 +1225,48 @@ describe("C type answers", () => {
 
 		expect(answer).toMatchObject({ status: "known", display: "struct Item", provenance: "declared" });
 		expect(answer.status === "known" ? answer.symbolId : "").toContain("Item#");
+	});
+
+	test("spells a declared type from its tokens, never from its rendered text", () => {
+		const handlers = started();
+		const text = [
+			"_Alignas(16) const char v;",
+			"alignas(8) int a;",
+			"int *(*g);",
+			"static _Atomic(int) *q;",
+			'int __attribute__((section("const"))) s;',
+			'extern "C" volatile unsigned x;',
+		].join("\n");
+		const parsed = facts(handlers, "spelled.c", text);
+		const display = (name: string) => {
+			const declaration = declarationOf(parsed, name);
+			if (declaration === undefined) return "missing";
+			const answer = handlers.typeOf({ symbolId: declaration.symbolId });
+			return answer.status === "known" ? answer.display : answer.status;
+		};
+
+		expect(["v", "a", "g", "q", "s", "x"].map(display)).toEqual([
+			"char",
+			"int",
+			"int **",
+			"_Atomic(int) *",
+			'int __attribute__((section("const")))',
+			"unsigned",
+		]);
+	});
+
+	test("links a declared type past an attribute's arguments", () => {
+		const handlers = started();
+		const text = "typedef int length;\n__attribute__((aligned(8))) length size;\n";
+		const parsed = facts(handlers, "attributed.c", text);
+		const length = declarationOf(parsed, "length");
+		const size = declarationOf(parsed, "size");
+
+		if (length === undefined || size === undefined) throw new Error("attributed declarations are missing");
+		expect(handlers.typeOf({ symbolId: size.symbolId })).toMatchObject({
+			status: "known",
+			symbolId: length.symbolId,
+		});
 	});
 
 	test("uses closed unknown reasons for invalid and missing type requests", () => {

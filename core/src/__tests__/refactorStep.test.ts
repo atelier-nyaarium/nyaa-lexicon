@@ -6,15 +6,15 @@ import { type CommittedFile, hashContent } from "@nyaa-lexicon/protocol";
 import {
 	journaledStep,
 	type PlannedStep,
+	type PlannedWrite,
 	type RefusedWith,
 	type StepHold,
 	type StepPolicy,
-	StepRefusal,
 } from "../refactorStep";
 import { changedWhilePlanned } from "../refusals";
 import type { LexiconService } from "../service";
 import { IndexStore } from "../store";
-import { type RefactorIssue, TransactionManager } from "../transactions";
+import { type RefactorIssue, type StepPhase, TransactionManager } from "../transactions";
 
 ////////////////////////////////
 //  Helpers
@@ -24,6 +24,8 @@ let store: IndexStore;
 let transactions: TransactionManager;
 let reindexed: string[];
 let failReindexOf: string | null;
+/** Runs before the `base` check. */
+let beforeWrite: ((module: string) => void) | null;
 
 interface Outcome {
 	ok: boolean;
@@ -48,6 +50,11 @@ function read(module: string): string | null {
 	}
 }
 
+function hashOf(module: string): string | null {
+	const text = read(module);
+	return text === null ? null : hashContent(text);
+}
+
 /** Only what the executor asks of the service. */
 const service = {
 	upgradeRemaining: async () => {},
@@ -56,9 +63,20 @@ const service = {
 		reindexed.push(module);
 		return { module, action: "indexed" };
 	},
+	currentHashOf: hashOf,
+	writeModule: (module: string, text: string, base: string | null) => {
+		beforeWrite?.(module);
+		if (hashOf(module) !== base) return false;
+		write(module, text);
+		return true;
+	},
 } as unknown as LexiconService;
 
-function run(parts: Partial<PlannedStep> & Pick<PlannedStep, "apply">, hold: StepPolicy = "join"): Promise<Outcome> {
+function over(module: string, before: string, text: string): PlannedWrite {
+	return { module, base: hashContent(before), text };
+}
+
+function run(parts: Partial<PlannedStep> = {}, hold: StepPolicy = "join"): Promise<Outcome> {
 	return journaledStep<Outcome>(
 		{ service, transactions, write: (work) => Promise.resolve(work()) },
 		{
@@ -69,7 +87,7 @@ function run(parts: Partial<PlannedStep> & Pick<PlannedStep, "apply">, hold: Ste
 			plan: async () => ({
 				planned: {
 					modules: ["src/a.ts"],
-					writes: ["src/a.ts"],
+					writes: [over("src/a.ts", "before\n", "after\n")],
 					stale: () => null,
 					reindex: ["src/a.ts"],
 					issues: [],
@@ -86,6 +104,7 @@ beforeEach(() => {
 	transactions = new TransactionManager(store, root);
 	reindexed = [];
 	failReindexOf = null;
+	beforeWrite = null;
 	write("src/a.ts", "before\n");
 });
 
@@ -108,7 +127,6 @@ describe("the addresses a step re-mints", () => {
 		let reported: unknown;
 		const outcome = await run({
 			rebind,
-			apply: () => write("src/a.ts", "after\n"),
 			finish: (_issues, rebound) => {
 				reported = rebound;
 			},
@@ -125,7 +143,7 @@ describe("the addresses a step re-mints", () => {
 		transactions.start();
 		store.subjects.mint(from, 1);
 		failReindexOf = "src/a.ts";
-		const outcome = await run({ rebind, apply: () => write("src/a.ts", "after\n") });
+		const outcome = await run({ rebind });
 
 		expect(outcome.ok).toBe(true);
 		expect(outcome.issues.map((issue) => issue.kind)).toContain("ReindexFailed");
@@ -136,51 +154,101 @@ describe("the addresses a step re-mints", () => {
 
 describe("the one failure policy every operation now shares", () => {
 	it("refuses without an open transaction, before planning anything", async () => {
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") });
+		const outcome = await run();
 
 		expect(outcome.ok).toBe(false);
 		expect(outcome.reason).toMatch(/no refactor transaction/);
 		expect(read("src/a.ts")).toBe("before\n");
 	});
 
-	it("refuses a stale world inside the gate with nothing journaled", async () => {
+	it("refuses a stale world or a moved base inside the gate with nothing journaled", async () => {
 		transactions.start();
+		const stale = await run({ stale: () => changedWhilePlanned("src/a.ts", "step") });
+		const moved = await run({ writes: [over("src/a.ts", "older\n", "after\n")] });
+
+		expect([stale, moved]).toMatchObject([
+			{ ok: false, reason: expect.stringContaining("changed while the step was planned") },
+			{ ok: false, reason: expect.stringContaining("src/a.ts changed while the replacement was planned") },
+		]);
+		expect({ steps: transactions.status().steps, text: read("src/a.ts") }).toEqual({ steps: [], text: "before\n" });
+	});
+
+	// Recheck `base` before writing.
+	it("backs out a step whose file moved mid-write, restoring what it wrote and leaving the moved file alone", async () => {
+		transactions.start();
+		write("src/b.ts", "before b\n");
+		beforeWrite = (module) => {
+			if (module === "src/b.ts") write("src/b.ts", "saved by the editor\n");
+		};
 		const outcome = await run({
-			stale: () => changedWhilePlanned("src/a.ts", "step"),
-			apply: () => write("src/a.ts", "after\n"),
+			modules: ["src/a.ts", "src/b.ts"],
+			writes: [over("src/a.ts", "before\n", "after\n"), over("src/b.ts", "before b\n", "after b\n")],
+			reindex: ["src/a.ts", "src/b.ts"],
 		});
 
-		expect(outcome).toMatchObject({
+		expect({
+			outcome,
+			texts: [read("src/a.ts"), read("src/b.ts")],
+			reindexed,
+			status: transactions.status(),
+		}).toMatchObject({
+			outcome: {
+				ok: false,
+				reason: expect.stringContaining("src/b.ts changed while the replacement was planned"),
+			},
+			texts: ["before\n", "saved by the editor\n"],
+			reindexed: ["src/a.ts"],
+			status: { steps: [], tracked: ["src/a.ts"] },
+		});
+	});
+
+	it("releases every module a refused step never wrote, so a later edit to one survives Revert", async () => {
+		transactions.start();
+		write("src/b.ts", "before b\n");
+		beforeWrite = (module) => {
+			if (module === "src/a.ts") write("src/a.ts", "saved by the editor\n");
+		};
+		const outcome = await run({
+			modules: ["src/a.ts", "src/b.ts"],
+			writes: [over("src/a.ts", "before\n", "after\n"), over("src/b.ts", "before b\n", "after b\n")],
+			reindex: ["src/a.ts", "src/b.ts"],
+		});
+		beforeWrite = null;
+		write("src/b.ts", "later owner edit\n");
+		const status = transactions.status();
+		transactions.revert(status.drifted);
+
+		expect({ ok: outcome.ok, tracked: status.tracked, b: read("src/b.ts") }).toEqual({
 			ok: false,
-			reason: expect.stringContaining("changed while the step was planned"),
+			tracked: [],
+			b: "later owner edit\n",
 		});
-		expect(transactions.status().steps).toEqual([]);
 	});
 
-	// The audit's zombie, generalized: a failed apply must remove its step AND repair the index
-	// for whatever the undo restored; the helper-local undos never reindexed.
-	it("undoes a failed apply, reindexes the restored files, and passes the refusal through", async () => {
+	it("keeps a save landing between the write and its record as drift, so undo refuses instead of overwriting it", async () => {
+		transactions = new (class extends TransactionManager {
+			override completeStep(stepNo: number, phase: StepPhase): void {
+				if (phase === "written") write("src/a.ts", "saved by the editor\n");
+				super.completeStep(stepNo, phase);
+			}
+		})(store, root);
 		transactions.start();
-		const outcome = await run({
-			apply: () => {
-				write("src/a.ts", "half-written\n");
-				throw new StepRefusal("the provider said no");
-			},
-		});
+		const outcome = await run();
 
-		expect(outcome).toMatchObject({ ok: false, reason: "the provider said no" });
-		expect(read("src/a.ts")).toBe("before\n");
-		expect(reindexed).toEqual(["src/a.ts"]);
-		expect(transactions.status().steps).toEqual([]);
+		expect({
+			ok: outcome.ok,
+			drifted: transactions.status().drifted.map((each) => each.module),
+			undone: transactions.undo().undone,
+			text: read("src/a.ts"),
+		}).toEqual({ ok: true, drifted: ["src/a.ts"], undone: false, text: "saved by the editor\n" });
 	});
 
-	it("frames an unexpected apply error as a write failure", async () => {
+	it("frames an unexpected write error as a write failure", async () => {
 		transactions.start();
-		const outcome = await run({
-			apply: () => {
-				throw new Error("EACCES");
-			},
-		});
+		beforeWrite = () => {
+			throw new Error("EACCES");
+		};
+		const outcome = await run();
 
 		expect(outcome.ok).toBe(false);
 		expect(outcome.reason).toBe("the replace could not be written: EACCES");
@@ -193,7 +261,6 @@ describe("the one failure policy every operation now shares", () => {
 		failReindexOf = "src/a.ts";
 		let finished = 0;
 		const outcome = await run({
-			apply: () => write("src/a.ts", "after\n"),
 			finish: () => {
 				finished++;
 			},
@@ -211,7 +278,6 @@ describe("the one failure policy every operation now shares", () => {
 	it("runs finish only after a clean reindex, and keeps a finish failure as an issue", async () => {
 		transactions.start();
 		const clean = await run({
-			apply: () => write("src/a.ts", "after\n"),
 			finish: (issues) => {
 				issues.push({ kind: "Landed", detail: "verified" });
 			},
@@ -219,7 +285,7 @@ describe("the one failure policy every operation now shares", () => {
 		expect(clean.issues.map((issue) => issue.kind)).toContain("Landed");
 
 		const failing = await run({
-			apply: () => write("src/a.ts", "again\n"),
+			writes: [over("src/a.ts", "after\n", "again\n")],
 			finish: () => {
 				throw new Error("verifier crashed");
 			},
@@ -228,17 +294,14 @@ describe("the one failure policy every operation now shares", () => {
 		expect(failing.issues.map((issue) => issue.kind)).toContain("FinishIncomplete");
 	});
 
-	// An apply that wrote something UNEXPECTED then failed matches neither journal image; the undo
-	// rightly refuses, and the executor must say the step remains rather than strand it silently.
-	it("says so when a failed apply cannot be undone", async () => {
+	// A failed write can leave text matching neither journal image. Undo refuses, so the executor reports the step.
+	it("says so when a failed write cannot be undone", async () => {
 		transactions.start();
-		const outcome = await run({
-			plannedText: [{ module: "src/a.ts", text: "after\n" }],
-			apply: () => {
-				write("src/a.ts", "junk that matches neither image\n");
-				throw new Error("boom");
-			},
-		});
+		beforeWrite = () => {
+			write("src/a.ts", "junk that matches neither image\n");
+			throw new Error("boom");
+		};
+		const outcome = await run();
 
 		expect(outcome.ok).toBe(false);
 		expect(outcome.reason).toMatch(/could not be written: boom/);
@@ -249,7 +312,7 @@ describe("the one failure policy every operation now shares", () => {
 
 describe("a step that opens its own transaction when none is open", () => {
 	it("opens a transaction of its own when none is open, and leaves none open once written", async () => {
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, "joinOrOwn");
+		const outcome = await run({}, "joinOrOwn");
 
 		expect(outcome).toMatchObject({ ok: true, hold: "own" });
 		expect(read("src/a.ts")).toBe("after\n");
@@ -262,7 +325,7 @@ describe("a step that opens its own transaction when none is open", () => {
 				throw new Error("EACCES");
 			}
 		})(store, root);
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, "joinOrOwn");
+		const outcome = await run({}, "joinOrOwn");
 
 		expect(outcome.ok).toBe(false);
 		expect(read("src/a.ts")).toBe("before\n");
@@ -271,7 +334,7 @@ describe("a step that opens its own transaction when none is open", () => {
 
 	it("writes into a transaction someone else opened, and leaves it theirs to undo or close", async () => {
 		transactions.start();
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, "joinOrOwn");
+		const outcome = await run({}, "joinOrOwn");
 
 		expect(outcome).toMatchObject({ ok: true, hold: "joined" });
 		expect(transactions.start().started).toBe(false);
@@ -279,40 +342,25 @@ describe("a step that opens its own transaction when none is open", () => {
 		expect(read("src/a.ts")).toBe("before\n");
 	});
 
-	it("closes its own transaction when refused inside the gate, and after a failed apply it undid", async () => {
-		const stale = await run(
-			{ stale: () => changedWhilePlanned("src/a.ts", "step"), apply: () => write("src/a.ts", "after\n") },
-			"joinOrOwn",
-		);
+	it("closes its own transaction when refused inside the gate, and after a moved write it backed out", async () => {
+		const stale = await run({ stale: () => changedWhilePlanned("src/a.ts", "step") }, "joinOrOwn");
 		expect(stale.ok).toBe(false);
 		expect(transactions.start().started).toBe(true);
 		transactions.revert(transactions.status().drifted);
 
-		const failed = await run(
-			{
-				apply: () => {
-					write("src/a.ts", "half-written\n");
-					throw new StepRefusal("the provider said no");
-				},
-			},
-			"joinOrOwn",
-		);
+		beforeWrite = () => write("src/a.ts", "saved by the editor\n");
+		const failed = await run({}, "joinOrOwn");
 		expect(failed.ok).toBe(false);
-		expect(read("src/a.ts")).toBe("before\n");
+		expect(read("src/a.ts")).toBe("saved by the editor\n");
 		expect(transactions.start().started).toBe(true);
 	});
 
-	it("closes its own transaction when a failed apply cannot be undone, leaving the file as found", async () => {
-		const outcome = await run(
-			{
-				plannedText: [{ module: "src/a.ts", text: "after\n" }],
-				apply: () => {
-					write("src/a.ts", "junk that matches neither image\n");
-					throw new Error("boom");
-				},
-			},
-			"joinOrOwn",
-		);
+	it("closes its own transaction when a failed write cannot be undone, leaving the file as found", async () => {
+		beforeWrite = () => {
+			write("src/a.ts", "junk that matches neither image\n");
+			throw new Error("boom");
+		};
+		const outcome = await run({}, "joinOrOwn");
 
 		expect(outcome.reason).toMatch(/could not be written: boom; src\/a\.ts matched neither image/);
 		expect(read("src/a.ts")).toBe("junk that matches neither image\n");
@@ -325,7 +373,7 @@ describe("a step that commits its own transaction", () => {
 
 	it("refuses while a refactor is open, naming it, and writes nothing", async () => {
 		const open = transactions.start();
-		const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, { own: [] });
+		const outcome = await run({}, { own: [] });
 
 		expect(outcome).toMatchObject({ ok: false, why: { openRefactor: { id: open.id } } });
 		expect(read("src/a.ts")).toBe("before\n");
@@ -334,7 +382,7 @@ describe("a step that commits its own transaction", () => {
 
 	it("refuses a written module missing from its bases or off its hash, saying where it stands", async () => {
 		for (const bases of [[], [{ module: "src/a.ts", contentHash: "0".repeat(32) }]]) {
-			const outcome = await run({ apply: () => write("src/a.ts", "after\n") }, { own: bases });
+			const outcome = await run({}, { own: bases });
 
 			expect(outcome).toMatchObject({
 				ok: false,
@@ -348,7 +396,7 @@ describe("a step that commits its own transaction", () => {
 	it("takes extra bases and needs none for a module it only reindexes, and answers what it wrote", async () => {
 		write("src/b.ts", "bound\n");
 		const outcome = await run(
-			{ modules: ["src/a.ts", "src/b.ts"], reindex: ["src/b.ts"], apply: () => write("src/a.ts", "after\n") },
+			{ modules: ["src/a.ts", "src/b.ts"], reindex: ["src/b.ts"] },
 			{
 				own: [
 					{ module: "src/a.ts", contentHash: before },

@@ -1,6 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { type ImportResolution, type ModuleStore, type ProjectModel, walkWorkspace } from "@nyaa-lexicon/protocol";
+import {
+	type Diagnostic,
+	type ImportResolution,
+	type ModuleStore,
+	type ProjectModel,
+	walkWorkspace,
+} from "@nyaa-lexicon/protocol";
 import type { ParsedFile } from "./model.js";
 import { tokenize } from "./tokens.js";
 
@@ -39,23 +45,34 @@ function fileCandidatesForNamespace(
 	return [`${relative}.rs`, `${relative}/mod.rs`];
 }
 
-function dependencyNames(root: string): Set<string> {
+const DEPENDENCY_TABLES = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+type TomlTable = Record<string, unknown>;
+
+function isTable(value: unknown): value is TomlTable {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Top-level and `[target.<cfg>]` dependency tables. */
+function dependencyTables(manifest: TomlTable): TomlTable[] {
+	const { target } = manifest;
+	const targets = isTable(target) ? Object.values(target).filter(isTable) : [];
+	return [manifest, ...targets].flatMap((scope) => DEPENDENCY_TABLES.map((name) => scope[name]).filter(isTable));
+}
+
+function dependencyNames(root: string): { names: Set<string>; diagnostics: Diagnostic[] } {
 	const cargo = path.join(root, "Cargo.toml");
-	if (!existsSync(cargo) || !statSync(cargo).isFile()) return new Set();
-	const names = new Set<string>();
-	let section = "";
-	for (const line of readFileSync(cargo, "utf8").split(/\r?\n/u)) {
-		const header = /^\s*\[\s*([^\]]+)\s*\]\s*$/u.exec(line);
-		if (header !== null) {
-			section = header[1] ?? "";
-			continue;
-		}
-		if (!(section === "dependencies" || section === "dev-dependencies" || section === "build-dependencies"))
-			continue;
-		const name = /^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=/.exec(line)?.[1];
-		if (name !== undefined) names.add(name);
+	if (!existsSync(cargo) || !statSync(cargo).isFile()) return { names: new Set(), diagnostics: [] };
+	let manifest: unknown;
+	try {
+		manifest = Bun.TOML.parse(readFileSync(cargo, "utf8"));
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		const message = `Cargo.toml is not TOML, so no crate is external: ${detail}`;
+		return { names: new Set(), diagnostics: [{ severity: "warning", message, path: "Cargo.toml" }] };
 	}
-	return names;
+	const tables = isTable(manifest) ? dependencyTables(manifest) : [];
+	return { names: new Set(tables.flatMap((table) => Object.keys(table))), diagnostics: [] };
 }
 
 export interface RustProjectState {
@@ -97,9 +114,10 @@ export function discoverRustProject(workspaceRoot: string): { state: RustProject
 		(file) => /(?:^|\/)src\/(?:lib|main)\.rs$/u.test(file) || /^(?:lib|main)\.rs$/u.test(file),
 	);
 	const sourceRoot = rootModules[0] ?? null;
+	const dependencies = dependencyNames(root);
 	return {
-		state: { root, files, configFiles, dependencies: dependencyNames(root), rootModule: sourceRoot, rootModules },
-		model: { files, externalRoots: [], configFiles, diagnostics: [] },
+		state: { root, files, configFiles, dependencies: dependencies.names, rootModule: sourceRoot, rootModules },
+		model: { files, externalRoots: [], configFiles, diagnostics: dependencies.diagnostics },
 	};
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
-import { calleeOf, callsIn, lineOf, type ParsedSource, parseSource, reachedCalls } from "../astResidue";
+import { calleeOf, callsIn, instantiates, lineOf, type ParsedSource, parseSource, reachedCalls } from "../astResidue";
 import { readSwept, sourceFiles } from "../residue";
 
 /** Stateful provider data stays in the kit. */
@@ -25,7 +25,21 @@ const ALLOWED_READS: Record<string, string> = {
 
 const COLLECTIONS = new Set(["Map", "Set", "WeakMap", "WeakSet", "Array"]);
 
-const MUTATORS = new Set(["set", "add", "delete", "clear", "push", "pop", "shift", "unshift", "splice"]);
+const MUTATORS = new Set([
+	"set",
+	"add",
+	"delete",
+	"clear",
+	"push",
+	"pop",
+	"shift",
+	"unshift",
+	"splice",
+	"fill",
+	"reverse",
+	"sort",
+	"copyWithin",
+]);
 
 const KIT_NOTIFICATIONS = new Set(["moduleAdmission", "forgetModule", "probeFile"]);
 
@@ -109,8 +123,9 @@ function fieldsOf(declaration: ts.ClassDeclaration): Array<{ node: ts.Node; name
 
 describe("provider state lives in the kit's module store", () => {
 	it("reads every provider's sources, and finds the stores, so a passing run is never vacuous", () => {
+		const names = new Set(["moduleStore", "ModuleStore", "asyncModuleStore", "AsyncModuleStore"]);
 		const stores = parsedProviders().filter((entry) =>
-			entry.files.some((parsed) => /\b(async)?[mM]oduleStore</.test(parsed.source.text)),
+			entry.files.some((parsed) => instantiates(parsed.source, names)),
 		);
 		expect(stores.length).toBeGreaterThanOrEqual(9);
 	});

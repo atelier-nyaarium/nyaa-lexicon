@@ -7,8 +7,15 @@ import { extractFile } from "../extract";
 //  Helpers
 
 function extract(text: string, module = "src/a.ts") {
-	const source = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+	const kind = module.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const source = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, kind);
 	return extractFile(module, source);
+}
+
+function qualifiedByName(text: string, module?: string) {
+	return Object.fromEntries(
+		extract(text, module).references.map((reference) => [reference.name, reference.qualified]),
+	);
 }
 
 function extractWithChecker(text: string, module = "src/a.ts") {
@@ -271,6 +278,45 @@ export enum Color { Red }
 		);
 	});
 
+	it("joins a broken type list tight and keeps a broken comparison or shift spaced", () => {
+		const found = extract(
+			[
+				"export function pick<",
+				"\tT,",
+				"\tK extends Map<string, Array<number>",
+				"\t>,",
+				">(value: T, small = left <",
+				"\tright, wide = bits >>",
+				"\t2): Box<",
+				"\tT",
+				"> {",
+				"\treturn value;",
+				"}",
+				"export class Pair<",
+				"\tA = Array<",
+				"\t\tnumber",
+				"\t>>",
+				"\textends Base<A> {",
+				"\tcast = <",
+				"\t\tnumber",
+				"\t>raw;",
+				"}",
+				"export const call = make<",
+				"\tstring",
+				">(first <",
+				"\tsecond);",
+			].join("\n"),
+		);
+		const signature = (name: string) =>
+			found.declarations.find((declaration) => declaration.name === name)?.signature;
+		expect(signature("pick")).toBe(
+			"export function pick<T, K extends Map<string, Array<number>>>(value: T, small = left < right, wide = bits >> 2): Box<T>",
+		);
+		expect(signature("Pair")).toBe("export class Pair<A = Array<number>> extends Base<A>");
+		expect(signature("cast")).toBe("cast = <number>raw");
+		expect(signature("call")).toBe("export const call = make<string>(first < second)");
+	});
+
 	it("keeps a value's initializer with each literal container folded, and its call arguments whole", () => {
 		const found = extract(
 			[
@@ -381,6 +427,7 @@ export enum Color { Red }
 		]);
 		for (const reference of properties) {
 			expect(textAt(source, reference.range)).toBe(reference.name);
+			expect(reference.qualified).toBe(false);
 		}
 	});
 
@@ -718,6 +765,99 @@ export enum Color { Red }
 	});
 });
 
+describe("member insertion", () => {
+	function insertLines(text: string, names: string[]) {
+		const declarations = extract(text).declarations;
+		return Object.fromEntries(
+			names.map((name) => [
+				name,
+				declarations.find((declaration) => declaration.name === name)?.memberInsertLine ?? null,
+			]),
+		);
+	}
+
+	it("names each container's closing brace line when the brace starts it", () => {
+		const text = [
+			"export class Box {",
+			"\ta = 1;",
+			"}",
+			"export interface Shape {",
+			"\tarea(): number;",
+			"\t}",
+			"export enum Color {",
+			"\tRed,",
+			"}",
+			"export namespace Outer.Inner {",
+			"\texport const n = 1;",
+			"}",
+			'declare module "ambient" {',
+			"\tconst m: number;",
+			"}",
+			"export type Point = {",
+			"\tx: number;",
+			"};",
+			"export const helpers = {",
+			"\trun() {},",
+			"} as const;",
+			"export const Widget = class {",
+			"\tb = 2; // trailing",
+			"};",
+			"export default class {",
+			"\tc = 3;",
+			"",
+			"}",
+		].join("\n");
+
+		expect(
+			insertLines(text, [
+				"Box",
+				"Shape",
+				"Color",
+				"Outer",
+				"Inner",
+				"ambient",
+				"Point",
+				"helpers",
+				"Widget",
+				"default",
+			]),
+		).toEqual({
+			Box: 2,
+			Shape: 5,
+			Color: 8,
+			Outer: null,
+			Inner: 11,
+			ambient: 14,
+			Point: 17,
+			helpers: 20,
+			Widget: 23,
+			default: 27,
+		});
+	});
+
+	it("leaves no insertion point when anything but indentation precedes the closing brace", () => {
+		const text = [
+			"export class Tight { a = 1; }",
+			"export class Empty {}",
+			"export class Trailing {",
+			"\tb = 2; }",
+			"export class Noted {",
+			"\tc = 3;",
+			"\t/* end */ }",
+			"export function run() {",
+			"}",
+		].join("\n");
+
+		expect(insertLines(text, ["Tight", "Empty", "Trailing", "Noted", "run"])).toEqual({
+			Tight: null,
+			Empty: null,
+			Trailing: null,
+			Noted: null,
+			run: null,
+		});
+	});
+});
+
 describe("visibility and reach", () => {
 	it("separates exported from file-local", () => {
 		expect(named("export function a() {}", "a")?.exported).toBe(true);
@@ -924,6 +1064,94 @@ describe("references", () => {
 	it("records a method call by its property name", () => {
 		const found = extract("export function run() { cart.add(); }");
 		expect(found.references.map((r) => r.name)).toContain("add");
+	});
+
+	it("leaves a bare name unqualified", () => {
+		const source =
+			"helper();\nconst total = value;\nlet item: Item;\nlist[index];\nconst { key: renamed } = row;\n";
+		expect(qualifiedByName(source)).toEqual({
+			helper: false,
+			value: false,
+			Item: false,
+			list: false,
+			index: false,
+			key: false,
+			row: false,
+		});
+	});
+
+	it("qualifies a member reached through a receiver, never the receiver", () => {
+		const source = [
+			"class Cart extends Base {",
+			"\t#count = 0;",
+			"\trun() {",
+			"\t\tstore.add();",
+			"\t\tstore?.remove();",
+			"\t\tthis.total = this.#count;",
+			"\t\tsuper.reset();",
+			"\t\treturn import.meta;",
+			"\t}",
+			"}",
+		].join("\n");
+		expect(qualifiedByName(source)).toEqual({
+			Base: false,
+			store: false,
+			add: true,
+			remove: true,
+			total: true,
+			"#count": true,
+			reset: true,
+			meta: true,
+		});
+	});
+
+	it("qualifies every segment after a path's head", () => {
+		const source = [
+			"let t: ns.inner.T;",
+			"let v: typeof ns.value;",
+			'let q: import("./m").lib.Q;',
+			"import alias = ns.Base;",
+			"class Child extends ns.Parent {}",
+		].join("\n");
+		expect(qualifiedByName(source)).toEqual({
+			ns: false,
+			inner: true,
+			T: true,
+			value: true,
+			lib: true,
+			Q: true,
+			Base: true,
+			Parent: true,
+		});
+	});
+
+	it("leaves an implicit member without a receiver unqualified", () => {
+		expect(
+			qualifiedByName("enum E { A = 1, B = A }\nnamespace N { export const a = 1; export const b = a; }\n"),
+		).toEqual({ A: false, a: false });
+	});
+
+	it("leaves an imported binding's use unqualified and qualifies members off a namespace import", () => {
+		const found = extract(
+			'import { helper } from "./helper";\nimport * as lib from "./lib";\nhelper();\nlib.run();\n',
+		);
+		expect(found.references.map((reference) => [reference.name, reference.qualified])).toEqual([
+			["helper", false],
+			["lib", false],
+			["run", true],
+		]);
+	});
+
+	it("qualifies a JSX member or namespaced tag name", () => {
+		expect(
+			qualifiedByName("const a = <ui.Button />;\nconst b = <svg:rect width={size} />;\n", "src/a.tsx"),
+		).toEqual({
+			ui: false,
+			Button: true,
+			svg: false,
+			rect: true,
+			size: false,
+		});
 	});
 });
 

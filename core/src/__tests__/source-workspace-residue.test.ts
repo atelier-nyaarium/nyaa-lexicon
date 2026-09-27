@@ -1,6 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	constructorParameters,
+	exportsNamed,
+	importing,
+	parseSource,
+	reachesIn,
+	readingStore,
+	usesName,
+} from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds SourceWorkspace to the disk side.
@@ -10,43 +19,36 @@ import { join } from "node:path";
 const MODULE = join(import.meta.dirname, "..", "sourceWorkspace.ts");
 
 const FORBIDDEN = [
-	{ pattern: /\bfrom "\.\/supervisor\.js"/, why: "reading the workspace must not be able to ask a provider" },
-	{ pattern: /\bfrom "\.\/service\.js"/, why: "the source workspace is upstream of the service" },
-	{ pattern: /\bstore\.(?:replaceFile|forgetFile)/, why: "the indexer owns what the index holds" },
-	{ pattern: /\bfrom "node:fs"/, why: "reads go through the injected reader, writes through sourceWriter" },
+	importing("./supervisor.js", "reading the workspace must not be able to ask a provider"),
+	importing("./service.js", "the source workspace is upstream of the service"),
+	readingStore(["replaceFile", "forgetFile"], "the indexer owns what the index holds"),
+	importing("node:fs", "reads go through the injected reader, writes through sourceWriter"),
 ];
+
+const parsed = () => parseSource(MODULE, readFileSync(MODULE, "utf8")).source;
 
 ////////////////////////////////
 //  Tests
 
 describe("the source workspace is the disk side and only that", () => {
 	it("finds the module, so a passing run is never vacuous", () => {
-		const source = readFileSync(MODULE, "utf8");
-		expect(source).toContain("export class SourceWorkspace");
-		expect(source).toContain("symbolSource");
+		const source = parsed();
+		expect(exportsNamed(source, "SourceWorkspace")).toBe(true);
+		expect(usesName(source, "symbolSource")).toBe(true);
 	});
 
 	it("reaches no provider, no index write and no direct filesystem", () => {
-		const source = readFileSync(MODULE, "utf8");
-		const offenders = FORBIDDEN.filter(({ pattern }) => pattern.test(source)).map(
-			({ pattern, why }) => `${pattern.source}: ${why}`,
-		);
-
-		expect(offenders, "the source workspace reads text and writes text; it does not parse it").toEqual([]);
+		expect(
+			reachesIn(parsed(), FORBIDDEN),
+			"the source workspace reads text and writes text; it does not parse it",
+		).toEqual([]);
 	});
 
 	it("takes a store, a reader and a root, and nothing else", () => {
-		const source = readFileSync(MODULE, "utf8");
-		const parameters = /constructor\(([\s\S]*?)\)\s*\{/.exec(source)?.[1] ?? "";
-		const named = parameters
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0);
-
-		expect(named).toEqual([
-			"private readonly store: IndexStore,",
-			"private readonly readSource: SourceReader,",
-			"private readonly workspaceRoot: string,",
+		expect(constructorParameters(parsed(), "SourceWorkspace")).toEqual([
+			"private readonly store: IndexStore",
+			"private readonly readSource: SourceReader",
+			"private readonly workspaceRoot: string",
 		]);
 	});
 });

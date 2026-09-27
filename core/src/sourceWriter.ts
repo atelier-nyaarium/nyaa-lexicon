@@ -40,11 +40,11 @@ export function writeSourceFile(full: string, contents: string | Uint8Array): vo
 	renameSync(temporary, full);
 }
 
-/** Removes leftovers without following links. */
+/** Removes leftovers without following links; preserves directories. */
 export function sweepTemporary(full: string): void {
 	const temporary = temporaryPathFor(full);
 	try {
-		lstatSync(temporary);
+		if (lstatSync(temporary).isDirectory()) return;
 	} catch {
 		return;
 	}

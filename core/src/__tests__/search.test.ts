@@ -10,8 +10,14 @@ describe("compiling a caller's regex", () => {
 		expect(compileSearchRegex("/a.b/").test("a\nb")).toBe(false);
 	});
 
+	it("closes the pattern at its last slash, so a slash in a class or escaped stays in it", () => {
+		expect(compileSearchRegex("/[/]/").test("a/b")).toBe(true);
+		expect(compileSearchRegex("/a\\/b/i").test("A/B")).toBe(true);
+	});
+
 	it("refuses what is not /pattern/flags, an unknown flag, and what RE2 has no reading of", () => {
 		expect(() => compileSearchRegex("cycle")).toThrow(/expected \/pattern\/flags/);
+		expect(() => compileSearchRegex("/cycle")).toThrow(/expected \/pattern\/flags/);
 		expect(() => compileSearchRegex("/cycle/x")).toThrow(/unsupported flag/);
 		expect(() => compileSearchRegex("/(a)\\1/")).toThrow(/RE2 syntax/);
 		expect(() => compileSearchRegex("/(?<=a)b/")).toThrow(/RE2 syntax/);

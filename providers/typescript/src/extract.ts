@@ -87,29 +87,23 @@ function parameterRangeOf(node: ts.ParameterDeclaration | ts.BindingElement, sou
  */
 function declarationRangeOf(node: ts.Node, source: ts.SourceFile) {
 	const comments = ts.getLeadingCommentRanges(source.text, node.pos) ?? [];
-	const declarationStart = docCommentStart(source.text, comments, node.getStart(source));
+	const declarationStart = docCommentStart(source, comments, node.getStart(source));
 	const start = source.getLineAndCharacterOfPosition(declarationStart);
 	const end = source.getLineAndCharacterOfPosition(node.getEnd());
 	return { start, end };
 }
 
 /** A blank line ends the block, so what sits above one is the file's rather than the symbol's. */
-function docCommentStart(text: string, comments: readonly ts.CommentRange[], nodeStart: number): number {
+function docCommentStart(source: ts.SourceFile, comments: readonly ts.CommentRange[], nodeStart: number): number {
+	const lineOf = (offset: number) => source.getLineAndCharacterOfPosition(offset).line;
 	let start = nodeStart;
 	for (let i = comments.length - 1; i >= 0; i--) {
 		const comment = comments[i] as ts.CommentRange;
-		if (blankLineBetween(text, comment.end, start)) break;
+		// Only whitespace lies between, so a skipped line is blank.
+		if (lineOf(start) - lineOf(comment.end) > 1) break;
 		start = comment.pos;
 	}
 	return start;
-}
-
-function blankLineBetween(text: string, from: number, to: number): boolean {
-	let newlines = 0;
-	for (let i = from; i < to; i++) {
-		if (text[i] === "\n" && ++newlines > 1) return true;
-	}
-	return false;
 }
 
 function nameRange(node: ts.Node, source: ts.SourceFile, name: ts.Node | undefined) {
@@ -551,6 +545,23 @@ function referenceTarget(expression: ts.Expression): ts.Identifier | ts.PrivateI
 	return undefined;
 }
 
+/** Reached through a receiver or path. */
+function isQualifiedReference(node: ReferenceNode): boolean {
+	const parent = node.parent;
+	if (ts.isPropertyAccessExpression(parent) || ts.isMetaProperty(parent) || ts.isJsxNamespacedName(parent)) {
+		return parent.name === node;
+	}
+	if (ts.isQualifiedName(parent) && parent.right === node) return true;
+	return isImportTypeQualifier(node);
+}
+
+/** Every segment of `import("m").a.B`. */
+function isImportTypeQualifier(node: ts.Node): boolean {
+	let path = node;
+	while (ts.isQualifiedName(path.parent)) path = path.parent;
+	return ts.isImportTypeNode(path.parent) && path.parent.qualifier === path;
+}
+
 ////////////////////////////////
 //  Declarations
 
@@ -589,6 +600,57 @@ function anonymousDefaultExportOf(
 		return { kind: "variable", descriptor: "term" };
 	}
 	return undefined;
+}
+
+/** Through parentheses and type-only wrappers. */
+function unwrapped(expression: ts.Expression): ts.Expression {
+	let current = expression;
+	while (
+		ts.isParenthesizedExpression(current) ||
+		ts.isAsExpression(current) ||
+		ts.isTypeAssertionExpression(current) ||
+		ts.isSatisfiesExpression(current) ||
+		ts.isNonNullExpression(current)
+	) {
+		current = current.expression;
+	}
+	return current;
+}
+
+/** The node's member braces, if any. */
+function memberBodyOf(node: ts.Node): ts.Node | undefined {
+	if (ts.isClassLike(node) || ts.isInterfaceDeclaration(node) || ts.isEnumDeclaration(node)) return node;
+	if (ts.isModuleDeclaration(node)) {
+		return node.body !== undefined && ts.isModuleBlock(node.body) ? node.body : undefined;
+	}
+	if (ts.isTypeAliasDeclaration(node)) return ts.isTypeLiteralNode(node.type) ? node.type : undefined;
+	const value =
+		ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)
+			? node.initializer
+			: ts.isExportAssignment(node)
+				? node.expression
+				: undefined;
+	const inner = value === undefined ? undefined : unwrapped(value);
+	return inner !== undefined && (ts.isClassExpression(inner) || ts.isObjectLiteralExpression(inner))
+		? inner
+		: undefined;
+}
+
+/** The closing brace's line when only indentation precedes it; otherwise undefined. */
+function memberInsertLineOf(node: ts.Node, source: ts.SourceFile): number | undefined {
+	const closer = memberBodyOf(node)?.getChildren(source).at(-1);
+	if (closer === undefined || closer.kind !== ts.SyntaxKind.CloseBraceToken || closer.pos === closer.end) {
+		return undefined;
+	}
+	const lineOf = (offset: number) => source.getLineAndCharacterOfPosition(offset).line;
+	// Its `pos` is the previous token's end, and its trivia holds any comment before it.
+	const comments = [
+		...(ts.getTrailingCommentRanges(source.text, closer.pos) ?? []),
+		...(ts.getLeadingCommentRanges(source.text, closer.pos) ?? []),
+	];
+	const before = Math.max(closer.pos, ...comments.map((comment) => comment.end));
+	const line = lineOf(closer.getStart(source));
+	return lineOf(before - 1) < line ? line : undefined;
 }
 
 /** Excludes bodyless signatures and function types. */
@@ -806,7 +868,11 @@ export function extractFileWithNodes(
 				visibility: "public",
 				exported: true,
 				metrics: metricsOf(node, range),
-				...defined({ signature, containerId: scope.containerId }),
+				...defined({
+					signature,
+					containerId: scope.containerId,
+					memberInsertLine: memberInsertLineOf(node, source),
+				}),
 			});
 
 			const inner = { descriptors, containerId: symbolId };
@@ -837,7 +903,11 @@ export function extractFileWithNodes(
 			visibility: local ? "local" : visibilityOf(node, exported),
 			exported,
 			metrics: metricsOf(node, range),
-			...defined({ signature: headerOf(node, source), containerId: scope.containerId }),
+			...defined({
+				signature: headerOf(node, source),
+				containerId: scope.containerId,
+				memberInsertLine: memberInsertLineOf(node, source),
+			}),
 		});
 
 		const inner = { descriptors, containerId: symbolId };
@@ -872,7 +942,11 @@ export function extractFileWithNodes(
 				visibility: local ? "local" : exported ? "public" : "fileLocal",
 				exported,
 				metrics: metricsOf(declaration, range),
-				...defined({ signature, containerId: scope.containerId }),
+				...defined({
+					signature,
+					containerId: scope.containerId,
+					memberInsertLine: memberInsertLineOf(declaration, source),
+				}),
 			});
 		}
 	}
@@ -938,6 +1012,7 @@ export function extractFileWithNodes(
 			range: rangeOf(node, source),
 			role,
 			binding: { status: "unbound", reason: "NotImplemented", detail: "binding runs in the bind tier" },
+			qualified: isQualifiedReference(node),
 			...defined({ fromId: scope.containerId }),
 		});
 	}

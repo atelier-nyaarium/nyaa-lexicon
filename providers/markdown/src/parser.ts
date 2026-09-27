@@ -17,7 +17,7 @@ import {
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 import type { Heading, Root, RootContent } from "mdast";
-import { fromMarkdown } from "mdast-util-from-markdown";
+import { type Extension, fromMarkdown } from "mdast-util-from-markdown";
 import { frontmatterFromMarkdown } from "mdast-util-frontmatter";
 import { toString as inlineText } from "mdast-util-to-string";
 import { frontmatter } from "micromark-extension-frontmatter";
@@ -100,12 +100,15 @@ function delimitedContent(coordinates: TextCoordinates, openOffset: number, valu
 	return end === undefined || end < start ? null : { start, end };
 }
 
-/** An mdast code node does not say which kind it is, and an indented block is not fenced. */
-function isFencedCode(coordinates: TextCoordinates, openOffset: number): boolean {
-	const open = coordinates.positionAt(openOffset);
-	if (open === undefined) return false;
-	const line = (coordinates.lineText(open.line) ?? "").replace(/^ {0,3}/u, "");
-	return line.startsWith("```") || line.startsWith("~~~");
+/** Micromark's fence offsets; an opening one starts its block. */
+function fenceStarts(opens: Set<number>, shift: number): Extension {
+	return {
+		enter: {
+			codeFencedFence(token) {
+				opens.add(token.start.offset + shift);
+			},
+		},
+	};
 }
 
 function headingName(node: Heading): string {
@@ -173,9 +176,10 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 
 	// Stripped explicitly rather than left to the parser, so the shift is a known width.
 	const shift = bomWidth(text);
+	const fences = new Set<number>();
 	const tree: Root = fromMarkdown(text.slice(shift), {
 		extensions: [frontmatter(["yaml"])],
-		mdastExtensions: [frontmatterFromMarkdown(["yaml"])],
+		mdastExtensions: [frontmatterFromMarkdown(["yaml"]), fenceStarts(fences, shift)],
 	});
 
 	const stack: HeadingFrame[] = [];
@@ -245,7 +249,7 @@ export function parseMarkdown(module: string, text: string): ParsedMarkdownFile 
 
 		if (STRUCTURAL_BLOCKS.has(node.type)) continue;
 
-		const fenced = node.type === "code" && isFencedCode(coordinates, span.start);
+		const fenced = node.type === "code" && fences.has(span.start);
 		const content = fenced ? delimitedContent(coordinates, span.start, node.value) : span;
 		if (content === null) continue;
 

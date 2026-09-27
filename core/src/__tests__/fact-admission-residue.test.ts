@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { codeOnly } from "@nyaa-lexicon/protocol";
+import { callsTo, declarationNamed, parseSource, startOf } from "@nyaa-lexicon/protocol/ast";
+import type ts from "typescript";
 
 /**
  * Holds factAdmission.ts as the one reading of a provider's symbol ids, taken before the store
@@ -14,17 +15,17 @@ const STORE = join(import.meta.dirname, "..", "store.ts");
 
 describe("one module admits a provider's facts", () => {
 	it("admits before the store's write path opens its transaction", () => {
-		const code = codeOnly(readFileSync(STORE, "utf8"));
-		const write = code.indexOf("replaceFile(");
-		expect(write, "the store's write path is replaceFile").toBeGreaterThan(-1);
+		const { source } = parseSource(STORE, readFileSync(STORE, "utf8"));
+		const write = declarationNamed(source, "replaceFile");
+		expect(write, "the store's write path is replaceFile").toBeDefined();
 
-		const transaction = code.indexOf("this.inTransaction(", write);
-		const admission = code.indexOf("admitFacts(", write);
-		expect(transaction).toBeGreaterThan(write);
+		const transaction = callsTo(write as ts.Node, "inTransaction", "this")[0];
+		const admission = callsTo(write as ts.Node, "admitFacts")[0];
+		expect(transaction).toBeDefined();
 		expect(
 			admission,
 			"replaceFile must call admitFacts from core/src/factAdmission.ts before it writes anything",
-		).toBeGreaterThan(write);
-		expect(admission).toBeLessThan(transaction);
+		).toBeDefined();
+		expect(startOf(admission as ts.Node)).toBeLessThan(startOf(transaction as ts.Node));
 	});
 });

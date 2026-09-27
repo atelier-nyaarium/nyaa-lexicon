@@ -23,6 +23,16 @@ describe("the fake provider's defaults", () => {
 		expect("depth" in parseFake({ module: "a.fake", contentHash: "h", text: "", depth: "outline" })).toBe(true);
 	});
 
+	it("spans a body past its inner braces, and reads nothing inside a string", () => {
+		const facts = parseFake({
+			module: "a.fake",
+			contentHash: "h",
+			text: 'export class Cart {\n\tadd() { return "}"; }\n}\nconst s = "export class Ghost {}";\n',
+		});
+
+		expect(facts.declarations.map((d) => [d.name, d.range.end.line])).toEqual([["Cart", 2]]);
+	});
+
 	it("resolves a relative specifier against its importer and nothing else", () => {
 		expect(resolveFake({ fromModule: "src/a.fake", specifier: "./b" })).toEqual({
 			status: "resolved",

@@ -71,7 +71,7 @@ describe("a link whose real path leaves the workspace", () => {
 		link(path.join(outside, "secret.fake"), "a.fake");
 
 		const source = service.symbolSource({ symbolId: inside?.symbolId as string });
-		expect(() => service.writeModule("a.fake", "export class Written {}\n")).toThrow();
+		expect(() => service.writeModule("a.fake", "export class Written {}\n", null)).toThrow();
 		const outcomes = await service.applyBatch([readEvent(root, "a.fake")]);
 
 		expect({

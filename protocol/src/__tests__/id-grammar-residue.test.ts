@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "../residue";
+import ts from "typescript";
+import { parsedFiles, stringsIn } from "../astResidue";
+import { sourceFiles } from "../residue";
 
 /**
  * Enforces the single-owner rule for both id grammars.
@@ -33,18 +35,19 @@ describe("nothing but the owner spells an id scheme", () => {
 		expect(swept(ROOTS[0] as string).length).toBeGreaterThan(0);
 	});
 
-	// A scheme word followed by a space inside a quote is an id being built or matched by hand.
+	// A string opening with a scheme word and a space is an id being built or matched by hand.
 	// The trailing space is what separates it from `SYMBOL_SCHEME` and from the package name.
 	it("has no hand-built symbol or fact id anywhere outside its grammar file", () => {
 		const offenders: string[] = [];
-		const pattern = /["'`](lexicon|lexfact) /;
+		const schemes = ["lexicon ", "lexfact "];
 
 		for (const root of ROOTS) {
-			for (const file of swept(root)) {
-				const source = readSwept(file);
-				if (source === null) continue;
-				const match = pattern.exec(codeOnly(source));
-				if (match) offenders.push(`${file}: ${match[0]}`);
+			for (const { file, source } of parsedFiles(root, SKIP_DIRS)) {
+				if (OWNERS.includes(basename(file))) continue;
+				for (const { node, text } of stringsIn(source)) {
+					const opens = ts.isStringLiteralLike(node) || ts.isTemplateHead(node);
+					if (opens && schemes.some((scheme) => text.startsWith(scheme))) offenders.push(`${file}: ${text}`);
+				}
 			}
 		}
 

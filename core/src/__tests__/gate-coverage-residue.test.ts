@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { callsIn, lineOf, type ParsedSource, parseSource } from "@nyaa-lexicon/protocol/ast";
+import { callsIn, dottedName, lineOf, type ParsedSource, parseSource } from "@nyaa-lexicon/protocol/ast";
 import ts from "typescript";
 
 ////////////////////////////////
@@ -55,16 +55,16 @@ function handlers(parsed: ParsedSource): Handler[] {
 	return found;
 }
 
-/** The printed callee of a call, so `service.indexFile(x)` reads back as it is written. */
-function calleeText(call: ts.CallExpression, parsed: ParsedSource): string {
-	return call.expression.getText(parsed.source);
+/** Canonical callee spelling: `service.indexFile(x)` becomes `service.indexFile`. */
+function calleeText(call: ts.CallExpression): string {
+	return dottedName(call.expression) ?? "";
 }
 
 /** Calls under `node` whose callee is spelled as one of `names`. */
-function callsNamed(parsed: ParsedSource, node: ts.Node, names: readonly string[]): ts.CallExpression[] {
+function callsNamed(node: ts.Node, names: readonly string[]): ts.CallExpression[] {
 	const found: ts.CallExpression[] = [];
 	const walk = (current: ts.Node): void => {
-		if (ts.isCallExpression(current) && names.includes(calleeText(current, parsed))) found.push(current);
+		if (ts.isCallExpression(current) && names.includes(calleeText(current))) found.push(current);
 		ts.forEachChild(current, walk);
 	};
 	walk(node);
@@ -124,7 +124,7 @@ function escapingWrites(parsed: ParsedSource, handler: ts.Node): ts.Node[] {
 			node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
 			ts.isIdentifier(node.left) &&
 			inside(node, regions, parsed) &&
-			callsNamed(parsed, node.right, WRITING_CALLS).length > 0
+			callsNamed(node.right, WRITING_CALLS).length > 0
 		) {
 			escaping.push(node);
 		}
@@ -146,9 +146,7 @@ describe("every writing dispatch handler takes the workspace gate", () => {
 
 	it("sees the writing calls it names, so the list has not gone stale", () => {
 		const written = handlers(parsed).flatMap((handler) =>
-			callsNamed(parsed, handler.node, [...WRITING_CALLS, ...RESTORING_CALLS]).map((call) =>
-				calleeText(call, parsed),
-			),
+			callsNamed(handler.node, [...WRITING_CALLS, ...RESTORING_CALLS]).map((call) => calleeText(call)),
 		);
 		for (const call of [...WRITING_CALLS, ...RESTORING_CALLS]) {
 			expect(written, `${call} is no longer called in dispatch; update the list`).toContain(call);
@@ -162,10 +160,10 @@ describe("every writing dispatch handler takes the workspace gate", () => {
 			// A `write` handler is exclusive for its whole body; only `staged` has regions.
 			if (handler.effect === "write") continue;
 			const regions = handler.effect === "staged" ? exclusiveRegions(parsed, handler.node) : [];
-			for (const call of callsNamed(parsed, handler.node, WRITING_CALLS)) {
+			for (const call of callsNamed(handler.node, WRITING_CALLS)) {
 				if (inside(call, regions, parsed)) continue;
 				offenders.push(
-					`${handler.method} (${handler.effect}) calls ${calleeText(call, parsed)} outside gate.write at line ${lineOf(parsed, call)}`,
+					`${handler.method} (${handler.effect}) calls ${calleeText(call)} outside gate.write at line ${lineOf(parsed, call)}`,
 				);
 			}
 			for (const assignment of escapingWrites(parsed, handler.node)) {
@@ -187,8 +185,8 @@ describe("every writing dispatch handler takes the workspace gate", () => {
 		const offenders: string[] = [];
 
 		for (const handler of handlers(parsed)) {
-			if (callsNamed(parsed, handler.node, RESTORING_CALLS).length === 0) continue;
-			if (callsNamed(parsed, handler.node, ["service.indexFile"]).length === 0) {
+			if (callsNamed(handler.node, RESTORING_CALLS).length === 0) continue;
+			if (callsNamed(handler.node, ["service.indexFile"]).length === 0) {
 				offenders.push(`${handler.method} restores without reindexing`);
 			}
 		}

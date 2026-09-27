@@ -1,4 +1,5 @@
 import {
+	type CommentSpan,
 	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
@@ -8,8 +9,9 @@ import {
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
 import { parseXml, XmlCdata, XmlComment, XmlElement, type XmlNode, XmlText } from "@rgrove/parse-xml";
-import { markupTooDeep, TOO_DEEP } from "./depth.js";
+import { isTooDeep, MAX_NESTING, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
+import { LayoutRecorder, trimmedSpan } from "./layout.js";
 import { startTagSignature } from "./startTag.js";
 
 export interface XmlContext {
@@ -23,7 +25,9 @@ export interface XmlContext {
 export interface XmlFacts {
 	declarations: Declaration[];
 	literals: Literal[];
-	comments: Array<{ range: Range; text: string }>;
+	comments: CommentSpan[];
+	/** Absent when the text did not parse. */
+	blankLines?: number[];
 	diagnostics: Diagnostic[];
 }
 
@@ -99,27 +103,50 @@ function rangeAt(context: XmlContext, start: number, end: number): Range | undef
 	return context.coordinates.rangeAt(context.offset + start, context.offset + end);
 }
 
+/** Element depth past the limit, walked without recursing. */
+function nestedTooDeep(nodes: readonly XmlNode[]): boolean {
+	const pending = nodes.map((node) => ({ node, depth: 1 }));
+	while (pending.length > 0) {
+		const { node, depth } = pending.pop() as { node: XmlNode; depth: number };
+		if (!(node instanceof XmlElement)) continue;
+		if (depth > MAX_NESTING) return true;
+		for (const child of node.children) pending.push({ node: child, depth: depth + 1 });
+	}
+	return false;
+}
+
 export function readXml(context: XmlContext): XmlFacts {
 	const declarations: Declaration[] = [];
 	const literals: Literal[] = [];
-	const comments: Array<{ range: Range; text: string }> = [];
+	const comments: CommentSpan[] = [];
 	const diagnostics: Diagnostic[] = [];
 	const bom = context.text.startsWith("\uFEFF") ? 1 : 0;
 	const text = context.text.slice(bom);
-	if (text.trim() === "") return { declarations, literals, comments, diagnostics };
-	if (markupTooDeep(text))
-		return {
-			declarations,
-			literals,
-			comments,
-			diagnostics: [{ severity: "error", message: TOO_DEEP, path: context.module }],
-		};
+	const layout = new LayoutRecorder(context.coordinates);
+	const extent = { start: context.offset, end: context.offset + context.text.length };
+	if (text.trim() === "")
+		return { declarations, literals, comments, blankLines: layout.finish(extent).blankLines, diagnostics };
+	const tooDeep: XmlFacts = {
+		declarations,
+		literals,
+		comments,
+		diagnostics: [{ severity: "error", message: TOO_DEEP, path: context.module }],
+	};
 	let document: { children: XmlNode[] };
 	try {
-		document = parseXml(text, { includeOffsets: true, preserveComments: true, preserveCdata: true }) as unknown as {
+		// Every node kept, so each token's lines are known.
+		document = parseXml(text, {
+			includeOffsets: true,
+			preserveComments: true,
+			preserveCdata: true,
+			preserveDocumentType: true,
+			preserveXmlDeclaration: true,
+		}) as unknown as {
 			children: XmlNode[];
 		};
 	} catch (error) {
+		// The parser recurses per element.
+		if (isTooDeep(error)) return tooDeep;
 		const failure = error as { message?: string; pos?: number };
 		const at = typeof failure.pos === "number" ? rangeAt(context, bom + failure.pos, bom + failure.pos) : undefined;
 		return {
@@ -136,7 +163,9 @@ export function readXml(context: XmlContext): XmlFacts {
 			],
 		};
 	}
+	if (nestedTooDeep(document.children)) return tooDeep;
 
+	const file = (offset: number): number => context.offset + bom + offset;
 	const addLiteral = (value: string, start: number, end: number, containerId: string, label: string): void => {
 		if (value.trim() === "") return;
 		const range = rangeAt(context, bom + start, bom + end);
@@ -160,15 +189,31 @@ export function readXml(context: XmlContext): XmlFacts {
 		const parentId = current.parentId;
 		const parents = current.parents;
 		if (node instanceof XmlComment) {
-			const range = rangeAt(context, bom + node.start, bom + node.end);
-			if (range !== undefined) comments.push({ range, text: text.slice(node.start, node.end) });
+			layout.comment(file(node.start), file(node.end), text.slice(node.start, node.end));
 			continue;
 		}
 		if (node instanceof XmlText || node instanceof XmlCdata) {
+			// Whitespace text is not code; CDATA always is.
+			const code =
+				node instanceof XmlCdata
+					? { start: node.start, end: node.end }
+					: trimmedSpan(text.slice(node.start, node.end), node.start);
+			if (code !== undefined) layout.code(file(code.start), file(code.end));
 			if (parentId !== undefined) addLiteral(node.text, node.start, node.end, parentId, current.parentName ?? "");
 			continue;
 		}
-		if (!(node instanceof XmlElement)) continue;
+		if (!(node instanceof XmlElement)) {
+			layout.code(file(node.start), file(node.end));
+			continue;
+		}
+		// Children abut, so the tags are what lies outside them.
+		const first = node.children[0];
+		const last = node.children[node.children.length - 1];
+		if (first === undefined || last === undefined) layout.code(file(node.start), file(node.end));
+		else {
+			layout.code(file(node.start), file(first.start));
+			layout.code(file(last.end), file(node.end));
+		}
 		const end = tagEnd(text, node.start);
 		if (end === undefined) continue;
 		const scan = scanAttributes(text, node.start, end);
@@ -244,5 +289,6 @@ export function readXml(context: XmlContext): XmlFacts {
 			pending.push({ node: child, parentId: elementId, parentName: name, parents: descriptors });
 		}
 	}
-	return { declarations, literals, comments, diagnostics };
+	const { comments: spans, blankLines } = layout.finish(extent);
+	return { declarations, literals, comments: spans, blankLines, diagnostics };
 }

@@ -614,6 +614,47 @@ describe("Kotlin qualified names", () => {
 		});
 	});
 
+	test("a path or super marks a use qualified; a bare name, an import's local or a capturable receiver does not", () => {
+		const provider = started(process.cwd());
+		const facts = provider.parseFile({
+			module: "Reach.kt",
+			contentHash: "h",
+			text: [
+				"import a.b.Item",
+				"import a.b.Other as Alias",
+				"class Box : a.Base() {",
+				"    val size = 1",
+				'    fun f(box: Box): a.b.Item? { size; this.size; box.size; super.g(); box.h(); box add 1; "$size" }',
+				"    fun g() = ::size",
+				"}",
+				"",
+			].join("\n"),
+		});
+		const found: Record<string, Array<boolean | "absent">> = {};
+		for (const reference of facts.references) {
+			const key = `${reference.range.start.line}:${reference.name}:${reference.role}`;
+			found[key] = [...(found[key] ?? []), reference.qualified ?? "absent"];
+		}
+
+		expect(found).toMatchObject({
+			"0:Item:import": [false],
+			"1:Other:import": [true],
+			"2:a:typeUse": [false],
+			"2:Base:extends": [true],
+			"4:Box:typeUse": [false],
+			"4:a:typeUse": [false],
+			"4:b:typeUse": [true],
+			"4:Item:typeUse": [true],
+			// Bare, then `this.`, `box.`, and the template.
+			"4:size:read": [false, "absent", "absent", false],
+			"4:g:call": [true],
+			"4:h:call": ["absent"],
+			"4:box:read": [false, false, false],
+			"4:add:call": ["absent"],
+			"5:size:read": [false],
+		});
+	});
+
 	test("a qualifier chain of twenty thousand links binds without overflowing", () => {
 		const text = `package a\nobject Box { val next = 1 }\nfun f() = Box${".next".repeat(20000)}\n`;
 		const found = bindings({ "a/Use.kt": text }, "a/Use.kt");

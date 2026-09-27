@@ -18,7 +18,7 @@ import ts from "typescript";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { TypeScriptAnalyzer } from "./analyzer.js";
 import { isDeclarationModule } from "./bundle.js";
-import { extractComments } from "./comments.js";
+import { extractTrivia } from "./comments.js";
 import { extractFile, LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
 import {
@@ -273,7 +273,7 @@ export class TypeScriptProvider {
 			imports: extracted.imports,
 			literals: extracted.literals,
 			role: extracted.role,
-			comments: extractComments(source),
+			...extractTrivia(source),
 			diagnostics: analyzer.diagnostics(params.module),
 		};
 	}

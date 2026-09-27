@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { coordinatesOf, type Range } from "@nyaa-lexicon/protocol";
+import { MAX_NESTING, TOO_DEEP } from "../depth.js";
 import { readXml } from "../xml.js";
 
 function read(text: string) {
@@ -65,5 +66,14 @@ describe("XML", () => {
 		const facts = read(text);
 		expect(facts.declarations[0]?.range.start.character).toBe(1);
 		expect(facts.literals[0]?.range.start.character).toBe(7);
+	});
+
+	it("reads depth from the parsed tree, and survives the parser's stack overflow", () => {
+		const nest = (depth: number) => `${"<a>".repeat(depth)}${"</a>".repeat(depth)}`;
+		const tooDeep = (text: string) => read(text).diagnostics.some((d) => d.message === TOO_DEEP);
+		expect(tooDeep(nest(MAX_NESTING))).toBe(false);
+		expect(tooDeep(nest(MAX_NESTING + 1))).toBe(true);
+		expect(tooDeep(nest(100_000))).toBe(true);
+		expect(tooDeep(`<r><!-- ${"<a>".repeat(MAX_NESTING + 1)} --></r>`)).toBe(false);
 	});
 });

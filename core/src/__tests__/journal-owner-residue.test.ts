@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { sourceFiles } from "@nyaa-lexicon/protocol";
+import { type MemberRead, memberCalls, mentionsWord, parsedFiles } from "@nyaa-lexicon/protocol/ast";
+import type ts from "typescript";
 import { JOURNAL_TABLE_NAMES } from "../journalSchema";
 
 ////////////////////////////////
@@ -25,7 +26,18 @@ const JOURNAL_TABLES: readonly string[] = JOURNAL_TABLE_NAMES;
 const OWNERS = new Set(["transactions.ts", "store.ts", "journalSchema.ts"]);
 
 const SKIP = ["__tests__", "dist", "node_modules"];
-const TOKEN = "store.journal(";
+
+/** Journal tables named as string words or identifiers. */
+function tablesNamed(source: ts.SourceFile): string[] {
+	return JOURNAL_TABLES.filter((table) => mentionsWord(source, table));
+}
+
+/** `store.journal(...)`, off any receiver ending in the store. */
+function journalEscapes(source: ts.SourceFile): MemberRead[] {
+	return memberCalls(source, ["journal"]).filter(
+		({ receiver }) => receiver === "store" || receiver?.endsWith(".store") === true,
+	);
+}
 
 ////////////////////////////////
 //  Tests
@@ -36,26 +48,16 @@ describe("only the transaction manager touches the refactor journal", () => {
 	});
 
 	it("sees the owners themselves, so the rule is checking real names", () => {
-		const owned = sourceFiles(CORE_SRC, SKIP).filter((file) => OWNERS.has(basename(file)));
-		const mentions = owned.filter((file) =>
-			JOURNAL_TABLES.some((table) => codeOnly(readFileSync(file, "utf8")).includes(table)),
-		);
+		const owned = parsedFiles(CORE_SRC, SKIP).filter(({ file }) => OWNERS.has(basename(file)));
+		const mentions = owned.filter(({ source }) => tablesNamed(source).length > 0);
 
 		expect(mentions.length, "the journal tables should be named by their owners").toBe(OWNERS.size);
 	});
 
 	it("has no journal table named anywhere else in core", () => {
-		const offenders: string[] = [];
-
-		for (const file of sourceFiles(CORE_SRC, SKIP)) {
-			if (OWNERS.has(basename(file))) continue;
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source);
-			for (const table of JOURNAL_TABLES) {
-				if (code.includes(table)) offenders.push(`${file}: ${table}`);
-			}
-		}
+		const offenders = parsedFiles(CORE_SRC, SKIP)
+			.filter(({ file }) => !OWNERS.has(basename(file)))
+			.flatMap(({ file, source }) => tablesNamed(source).map((table) => `${file}: ${table}`));
 
 		expect(
 			offenders,
@@ -64,14 +66,11 @@ describe("only the transaction manager touches the refactor journal", () => {
 	});
 
 	it("has no raw journal escape outside the store", () => {
-		const files = sourceFiles(CORE_SRC, SKIP);
+		const files = parsedFiles(CORE_SRC, SKIP);
 		expect(files.length).toBeGreaterThan(0);
 		const offenders = files
-			.filter((file) => basename(file) !== "store.ts")
-			.flatMap((file) => {
-				const source = readSwept(file);
-				return source !== null && codeOnly(source).includes(TOKEN) ? [file] : [];
-			});
+			.filter(({ file, source }) => basename(file) !== "store.ts" && journalEscapes(source).length > 0)
+			.map(({ file }) => file);
 		expect(offenders).toEqual([]);
 	});
 });

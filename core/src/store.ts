@@ -161,7 +161,7 @@ export interface FactsStamp {
 //  Constants
 
 /** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -254,7 +254,9 @@ CREATE TABLE symbols (
   patternDigest   TEXT,
   patternCoverage TEXT,
   -- Null reads the kind.
-  contains        TEXT CHECK (contains IN ('members', 'locals'))
+  contains        TEXT CHECK (contains IN ('members', 'locals')),
+  -- Null: the provider named no safe insertion line.
+  memberInsertLine INTEGER
 );
 CREATE INDEX symbols_module ON symbols(module);
 CREATE INDEX symbols_name ON symbols(name);
@@ -267,6 +269,8 @@ CREATE TABLE refs (
   role       TEXT NOT NULL,
   targetId   TEXT,
   fromId     TEXT,
+  -- Null when the provider did not say.
+  qualified  INTEGER,
   provenance TEXT NOT NULL,
   startLine  INTEGER NOT NULL,
   startChar  INTEGER NOT NULL,
@@ -1099,8 +1103,9 @@ export class IndexStore {
 				`INSERT OR REPLACE INTO symbols
 				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
-				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage, contains)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage, contains,
+				  memberInsertLine)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
 				// The name columns are NOT NULL from before names could be absent; the flag says which.
@@ -1133,14 +1138,15 @@ export class IndexStore {
 					digest?.patternDigest ?? null,
 					digest?.patternCoverage ?? null,
 					d.contains ?? null,
+					d.memberInsertLine ?? null,
 				);
 			}
 			this.subjects.restoreResolving(module, this.clock.now());
 			this.subjects.refreshDigests(module);
 
 			const reference = this.db.prepare(
-				`INSERT INTO refs (factId, module, name, role, targetId, fromId, provenance, startLine, startChar, endLine, endChar)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO refs (factId, module, name, role, targetId, fromId, qualified, provenance, startLine, startChar, endLine, endChar)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const r of references) {
 				// An unbound reference keeps its REASON where a bound one keeps its provenance:
@@ -1154,6 +1160,7 @@ export class IndexStore {
 					r.role,
 					target,
 					r.fromId ?? null,
+					r.qualified === undefined ? null : r.qualified ? 1 : 0,
 					how,
 					r.range.start.line,
 					r.range.start.character,
@@ -2396,6 +2403,7 @@ interface SymbolRow {
 	mNesting: number | null;
 	mBranches: number | null;
 	contains: string | null;
+	memberInsertLine: number | null;
 }
 
 /** Absent stays absent through the round trip, so "not measured" never arrives looking like zero. */
@@ -2416,6 +2424,7 @@ interface RefRow {
 	role: string;
 	targetId: string | null;
 	fromId: string | null;
+	qualified: number | null;
 	provenance: string;
 	startLine: number;
 	startChar: number;
@@ -2451,6 +2460,7 @@ function rowToDeclaration(raw: unknown): StoredDeclaration {
 		...(row.containerId === null ? {} : { containerId: row.containerId }),
 		...(row.signature === null ? {} : { signature: row.signature }),
 		...(row.contains === null ? {} : { contains: row.contains as StoredDeclaration["contains"] }),
+		...(row.memberInsertLine === null ? {} : { memberInsertLine: row.memberInsertLine }),
 	};
 }
 
@@ -2788,6 +2798,7 @@ function rowToReference(raw: unknown): StoredReference {
 		role: row.role as StoredReference["role"],
 		targetId: row.targetId,
 		fromId: row.fromId,
+		qualified: row.qualified === null ? null : row.qualified === 1,
 		provenance: row.provenance,
 		startLine: row.startLine,
 		startCharacter: row.startChar,

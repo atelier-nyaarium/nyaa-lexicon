@@ -199,6 +199,21 @@ describe("rename edits", () => {
 		expect(defaultResponse.blocked[0]).toMatchObject({ reason: "NotImplemented" });
 	});
 
+	it("blocks a site that covers only part of a token", () => {
+		const text = 'const oldNameLonger = 1;\nconst label = "oldName here";\n';
+		const response = rename(workspace({ "partial.ts": text }), {
+			module: "partial.ts",
+			text,
+			oldName: "oldName",
+			newName: "newName",
+			sites: [site(text, "oldName"), site(text, "oldName", text.indexOf('"'))],
+		});
+
+		if (response.status !== "ready") throw new Error("partial rename was refused");
+		expect(response.edits).toEqual([]);
+		expect(response.blocked.map((entry) => entry.reason)).toEqual(["ParseError", "ParseError"]);
+	});
+
 	it("refuses invalid names, reserved words, and scope collisions", () => {
 		const text = "const oldName = 1;\nconst existing = 2;\noldName;\n";
 		const root = workspace({ "collision.ts": text });
@@ -257,6 +272,19 @@ describe("rename edits", () => {
 			{ range: rangeForText(text, "oldName", text.indexOf("oldName = 2")), newText: "newName" },
 			{ range: rangeForText(text, "#oldName", text.indexOf("return")), newText: "#newName" },
 		]);
+	});
+
+	it("refuses a # name when no site is a private name", () => {
+		const text = 'const oldName = 1;\nconst tag = "#oldName";\n';
+		const response = rename(workspace({ "hash.ts": text }), {
+			module: "hash.ts",
+			text,
+			oldName: "oldName",
+			newName: "#newName",
+			sites: [site(text, "oldName"), site(text, "#oldName")],
+		});
+
+		expect(response).toMatchObject({ status: "refused", reason: "InvalidName" });
 	});
 
 	it("blocks a JSX casing change", () => {

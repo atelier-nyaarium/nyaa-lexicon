@@ -155,6 +155,40 @@ describe("signatures are whole headers on one line", () => {
 		expect([...found.values()].filter((signature) => signature?.includes("\n"))).toEqual([]);
 	});
 
+	test("type brackets broken across lines join tight, a comparison keeps its spaces", () => {
+		const found = signatures(
+			[
+				"package demo",
+				"",
+				"class Pair<",
+				"    A,",
+				"    B",
+				">(val a: A, val b: B)",
+				"",
+				"val nested: List<List<Int",
+				">> = emptyList<",
+				"    List<Int>",
+				">()",
+				"",
+				"fun check(ok: Boolean = count <",
+				"    limit, far: Boolean = count >",
+				"    limit) = ok",
+				"",
+				"val flag = count <",
+				"    limit",
+				"",
+			].join("\n"),
+		);
+
+		expect(Object.fromEntries(found)).toMatchObject({
+			"class Pair": "class Pair<A, B>(val a: A, val b: B)",
+			"property nested": "val nested: List<List<Int>> = emptyList<List<Int>>()",
+			"function check": "fun check(ok: Boolean = count < limit, far: Boolean = count > limit)",
+			"variable ok": "ok: Boolean = count < limit",
+			"property flag": "val flag = count < limit",
+		});
+	});
+
 	test("literals keep their whitespace as written, a line break or tab escaped, templates whole", () => {
 		const found = signatures(
 			[

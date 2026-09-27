@@ -1,3 +1,4 @@
+import { defined } from "@nyaa-lexicon/protocol";
 import { childOfType, type SyntaxNode } from "./tree.js";
 
 export interface LiteralShape {
@@ -25,6 +26,66 @@ function decodeEscape(raw: string): string {
 }
 
 const HEX_RE = /^[0-9A-Fa-f]{4}/u;
+
+/** A template opener as the grammar read it. */
+export interface TemplateEntry {
+	/** The `$` or `${` leaf. */
+	opener: SyntaxNode;
+	/** Dollars ending at the opener. */
+	dollars: number;
+	/** `$name` read as content: the name. */
+	name?: [number, number];
+}
+
+function identifierCharacter(character: string, first: boolean): boolean {
+	return character === "_" || /^\p{L}$/u.test(character) || (!first && /^\p{Nd}$/u.test(character));
+}
+
+/** The grammar leaves `"$name"` as contents `$` and `name`. */
+export function shortTemplateName(text: string, node: SyntaxNode): [number, number] | undefined {
+	if (node.type !== "string_content" || node.end - node.start !== 1 || text.charAt(node.start) !== "$") return;
+	const siblings = node.parent?.children ?? [];
+	const next = siblings[siblings.indexOf(node) + 1];
+	if (next?.type !== "string_content" || next.start !== node.end) return;
+	let end = next.start;
+	while (end < next.end && identifierCharacter(text.charAt(end), end === next.start)) end++;
+	return end === next.start ? undefined : [next.start, end];
+}
+
+/** `$` characters ending one content's own text. */
+function trailingDollars(part: string): number {
+	let count = 0;
+	while (count < part.length && part.charAt(part.length - 1 - count) === "$") count++;
+	return count;
+}
+
+/** Dollars ending the adjacent contents before `index`. */
+function dollarsBefore(text: string, children: SyntaxNode[], index: number): number {
+	let count = 0;
+	for (let at = index - 1; at >= 0; at--) {
+		const content = children[at] as SyntaxNode;
+		if (content.type !== "string_content" || content.end !== (children[at + 1] as SyntaxNode).start) break;
+		const part = text.slice(content.start, content.end);
+		const dollars = trailingDollars(part);
+		count += dollars;
+		if (dollars < part.length) break;
+	}
+	return count;
+}
+
+/** Every template opener in a string literal. */
+export function templateEntries(text: string, literal: SyntaxNode): TemplateEntry[] {
+	const entries: TemplateEntry[] = [];
+	const { children } = literal;
+	for (let index = 0; index < children.length; index++) {
+		const child = children[index] as SyntaxNode;
+		const name = shortTemplateName(text, child);
+		const opener = child.type === "interpolation" ? child.children[0] : name === undefined ? undefined : child;
+		if (opener !== undefined)
+			entries.push({ opener, dollars: 1 + dollarsBefore(text, children, index), ...defined({ name }) });
+	}
+	return entries;
+}
 
 /** The grammar splits `A` into contents `\u` and `0041`. */
 function stringValue(text: string, node: SyntaxNode): string {

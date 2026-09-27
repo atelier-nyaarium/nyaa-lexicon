@@ -127,6 +127,12 @@ number keeps its written form in `value` and its arithmetic value in `number`, b
 `1000` are one number and two literals. Report the spelling and a caller has to know which language
 wrote a literal before it can search for one, which returns a short answer rather than an empty one.
 
+A `Reference`'s `qualified` is true when the syntax tree reaches the name through a receiver or a
+path: a member access (`a.b`, `a?.b`, `a->b`, `self.b`, `this.b`) or a qualified name (`A::b`,
+`pkg.Type`). It is false for a bare name, and absent when the provider cannot tell. Rename relies on
+it: no local can capture a qualified use, so an unmarked one is treated as capturable. Set it from
+the parse tree, never from the text around the name.
+
 A `Reference`'s `fromId` names the declaration a use is WRITTEN in, and a header use a provider
 emits belongs to the declaration whose header it sits in rather than to the scope around it.
 Binding is a separate question and still resolves in the enclosing scope, so Python's

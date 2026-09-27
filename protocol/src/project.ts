@@ -140,6 +140,10 @@ export const CommentSpanSchema = z
 		range: RangeSchema,
 		/** Verbatim, markers included. Empty is not a comment. */
 		text: z.string().min(1),
+		/** A code token precedes it on its first line. Absent reads as true. */
+		codeBefore: z.boolean().optional(),
+		/** A code token follows it on its last line; comments are not code. Absent reads as true. */
+		codeAfter: z.boolean().optional(),
 	})
 	.meta({ id: "CommentSpan" });
 
@@ -245,6 +249,8 @@ export const FileFactsSchema = z
 		literals: z.array(LiteralSchema),
 		/** Absent reads as the `comments` tier being false. */
 		comments: z.array(CommentSpanSchema).optional(),
+		/** Lines untouched by any token, including comment and literal tokens; a final line break adds no empty line. */
+		blankLines: z.array(z.number().int().nonnegative()).optional(),
 		/** Absent reads as the `docs` tier being false. */
 		docs: z.array(DocRegionSchema).optional(),
 		diagnostics: z.array(DiagnosticSchema),

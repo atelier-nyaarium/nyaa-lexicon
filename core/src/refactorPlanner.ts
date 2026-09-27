@@ -7,6 +7,7 @@ import type {
 	FileFacts,
 	MoveDependency,
 	MoveEditsRequest,
+	Position,
 	Range,
 	RenameConcern,
 	RenameSite,
@@ -70,6 +71,25 @@ export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } 
 
 ////////////////////////////////
 //  Functions & Helpers
+
+function inside(range: Range, at: Position): boolean {
+	return comparePositions(range.start, at) <= 0 && comparePositions(at, range.end) <= 0;
+}
+
+function contains(outer: Range, inner: Range): boolean {
+	return inside(outer, inner.start) && inside(outer, inner.end);
+}
+
+function siteKey(module: string, line: number, character: number): string {
+	return `${module}\0${line}\0${character}`;
+}
+
+/** Member type, or null. */
+function memberOwner(symbolId: string): string | null {
+	const id = parseSymbolId(symbolId);
+	if (id === null || id.local !== undefined || id.descriptors.at(-2)?.kind !== "type") return null;
+	return ownerOf(symbolId);
+}
 
 /** A module a plan may create or write, in its canonical spelling, or why not. */
 function workspaceModule(raw: string): { module: string } | { refused: Refusal } {
@@ -368,42 +388,38 @@ export class RefactorPlanner {
 		if (nameLine === undefined) return { refused: moduleChangedReindex(module) };
 		const indent = /^[ \t]*/.exec(nameLine)?.[0] ?? "";
 
-		// Siblings only: a member's follower is never the next top-level declaration. Declarator
-		// and overload groups share ranges and never compete.
+		const shared = (who: string) => ({ refused: noInsertionPoint(who) });
+
+		const container = anchor.containerId === undefined ? null : context.declaration(anchor.containerId);
+		if (anchor.containerId !== undefined && !container) {
+			return { refused: subjectRefused(anchor.containerId, this.store) };
+		}
+		// A member written outside its container's body, as a Rust impl method or a C++ out-of-line
+		// definition, sits in a block no fact here names.
+		if (container && !contains(container.range, anchor.range)) return shared(container.name);
+
+		// Only siblings inside the container's body: a member's follower cannot be top-level or in
+		// another block. Declarator and overload groups share ranges and never compete.
 		let next: StoredDeclaration | null = null;
 		for (const candidate of context.heldBy(module, anchor.containerId)) {
 			if (candidate.symbolId === anchor.symbolId) continue;
 			if (isWithin(candidate.symbolId, anchor.symbolId)) continue;
 			if (sameRange(candidate.range, anchor.range)) continue;
 			if (comparePositions(candidate.range.start, anchor.range.end) < 0) continue;
+			if (container && !contains(container.range, candidate.range)) continue;
 			if (next === null || comparePositions(candidate.range.start, next.range.start) < 0) next = candidate;
 		}
-
-		const shared = (who: string) => ({ refused: noInsertionPoint(who) });
 
 		if (next !== null) {
 			if (next.range.start.line === anchor.range.end.line) return shared(next.name);
 			return { module, before, created: false, line: next.range.start.line, indent, trailingBlank: true };
 		}
 
-		if (anchor.containerId === undefined) {
-			return { module, before, created: false, line: null, indent, trailingBlank: false };
-		}
-		const container = context.declaration(anchor.containerId);
-		if (!container) return { refused: subjectRefused(anchor.containerId, this.store) };
-		const endPos = container.range.end;
-		const endLine = coords.lineText(endPos.line);
-		// Computable only when the end line holds nothing but closers: range.end is exclusive, and
-		// with the anchor proven to end on an earlier line, whitespace and closing punctuation ahead
-		// of it (C and C++ ranges end after "};") all belong to the container's own terminator.
-		const clean =
-			endLine !== undefined &&
-			endPos.character >= 1 &&
-			endPos.character <= endLine.length &&
-			!/[^\s}\])>;,]/.test(endLine.slice(0, endPos.character - 1)) &&
-			anchor.range.end.line < endPos.line;
-		if (!clean) return shared(container.name);
-		return { module, before, created: false, line: endPos.line, indent, trailingBlank: false };
+		if (!container) return { module, before, created: false, line: null, indent, trailingBlank: false };
+		// The provider names the line; the anchor must end before it.
+		const line = container.memberInsertLine;
+		if (line === undefined || anchor.range.end.line >= line) return shared(container.name);
+		return { module, before, created: false, line, indent, trailingBlank: false };
 	}
 
 	private endPoint(rawModule: string): SplicePoint | { refused: Refusal } {
@@ -983,7 +999,12 @@ export class RefactorPlanner {
 		// to point at a definition that still has the old name.
 		byModule.set(declaration.module, [{ range: declaration.selectionRange }]);
 
+		// Parser-reported member accesses; no local captures them.
+		const qualified = new Set<string>();
 		for (const reference of context.referencesTo(symbolId)) {
+			if (reference.qualified === true) {
+				qualified.add(siteKey(reference.module, reference.startLine, reference.startCharacter));
+			}
 			const sites = byModule.get(reference.module) ?? [];
 			sites.push({
 				range: {
@@ -1023,7 +1044,7 @@ export class RefactorPlanner {
 		const blockers =
 			newName === oldName
 				? [{ kind: "SameName", detail: alreadyNamed(oldName) }]
-				: this.renameCollisions(symbolId, newName, new Set(byModule.keys()), context);
+				: this.renameCollisions(symbolId, newName, byModule, qualified, context);
 
 		return {
 			symbolId,
@@ -1098,28 +1119,62 @@ export class RefactorPlanner {
 	}
 
 	/**
-	 * Places the new name already means something, in a file this rename would rewrite.
+	 * Places a rewritten occurrence would resolve the new name to something else.
 	 *
-	 * Without this a rename produces a file where one spelling means two things, which still parses
-	 * often enough to be committed. Checked against the files being REWRITTEN rather than the whole
-	 * workspace, because another module owning the name is normal and only a collision inside a file
-	 * we are editing is a collision.
+	 * A declaration collides when its scope holds a rename site, when it is a member of the renamed
+	 * member's type, or when the renamed symbol nests inside its scope around one of its uses. A
+	 * member's own declaration and a site the parser marked `qualified` are no sites here: no local can
+	 * capture them. A declaration's container is its scope; module level spans the file. Everything
+	 * comes from the index, never from source text.
 	 *
-	 * A blocker rather than a warning: this is something known to break, not somewhere we cannot see
-	 * far enough. Each one names the conflicting site and both ways out, since a refusal that does
-	 * not say what to do next just moves the search to the caller.
+	 * A blocker rather than a warning: this is known to break. Each one names the conflicting site
+	 * and both ways out.
 	 */
 	private renameCollisions(
 		symbolId: string,
 		newName: string,
-		touched: Set<string>,
+		sites: ReadonlyMap<string, readonly RenameSite[]>,
+		qualified: ReadonlySet<string>,
 		context: ReadContext,
 	): RenameBlocker[] {
+		const renamed = context.declaration(symbolId);
+		const owner = memberOwner(symbolId);
+		const ownDeclaration = (module: string, site: RenameSite) =>
+			owner !== null &&
+			renamed?.module === module &&
+			renamed.selectionRange !== undefined &&
+			sameRange(site.range, renamed.selectionRange);
+		const exposed = new Map<string, Position[]>();
+		for (const [module, each] of sites) {
+			const starts = each
+				.filter(
+					(site) =>
+						!ownDeclaration(module, site) &&
+						!qualified.has(siteKey(module, site.range.start.line, site.range.start.character)),
+				)
+				.map((site) => site.range.start);
+			exposed.set(module, starts);
+		}
+		const scopeOf = (declaration: StoredDeclaration) => context.ancestorsOf(declaration)[0]?.range ?? null;
+		const collides = (other: StoredDeclaration) => {
+			if (owner !== null && owner === memberOwner(other.symbolId)) return true;
+			const scope = scopeOf(other);
+			if ((exposed.get(other.module) ?? []).some((at) => scope === null || inside(scope, at))) return true;
+			if (owner !== null || renamed === null) return false;
+			const own = scopeOf(renamed);
+			// Capture requires nested scopes.
+			const nested = own !== null && (scope === null || (inside(scope, own.start) && inside(scope, own.end)));
+			if (!nested || other.module !== renamed.module) return false;
+			return context.referencesTo(other.symbolId).some((reference) => {
+				const at = { line: reference.startLine, character: reference.startCharacter };
+				return reference.module === renamed.module && reference.qualified !== true && inside(own, at);
+			});
+		};
 		const declared = context
 			.declarationsNamed(newName)
-			.filter((other) => other.symbolId !== symbolId && touched.has(other.module));
+			.filter((other) => other.symbolId !== symbolId && sites.has(other.module) && collides(other));
 
-		const bound = context.importsBinding(newName).filter((entry) => touched.has(entry.module));
+		const bound = context.importsBinding(newName).filter((entry) => (exposed.get(entry.module) ?? []).length > 0);
 
 		const concerns: RenameBlocker[] = [];
 		if (declared.length > 0) {

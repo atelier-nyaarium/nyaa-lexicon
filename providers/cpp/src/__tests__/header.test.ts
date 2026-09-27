@@ -26,6 +26,46 @@ describe("C++ declaration headers", () => {
 		expect(found.get("bias")).toBe("int bias");
 	});
 
+	test("a template list broken across lines joins tight; a comparison or a shift keeps its spaces", () => {
+		const found = signatures([
+			"template <",
+			"\ttypename T,",
+			"\ttypename U = std::map<",
+			"\t\tint,",
+			"\t\tstd::vector<T>>>",
+			"T pick(T left, U right);",
+			"std::map<",
+			"\tint,",
+			"\tstd::vector<int>",
+			"> table;",
+			"bool clamp(int limit = count <",
+			"\t10);",
+			"void pair(bool x = a <",
+			"\tb, bool y = c > d);",
+			"int shifted = value >>",
+			"\t2;",
+			"bool mixed = a <",
+			"\tb && c",
+			"\t> d;",
+			"auto cast = static_cast<",
+			"\tint>(x);",
+			"bool operator<(",
+			"\tconst Box &other) const;",
+		]);
+		expect(found.get("pick")).toBe(
+			"template <typename T, typename U = std::map<int, std::vector<T>>> T pick(T left, U right)",
+		);
+		expect(found.get("table")).toBe("std::map<int, std::vector<int>> table");
+		expect(found.has("int")).toBe(false);
+		expect(found.get("clamp")).toBe("bool clamp(int limit = count < 10)");
+		expect(found.get("pair")).toBe("void pair(bool x = a < b, bool y = c > d)");
+		expect([found.get("x"), found.get("y")]).toEqual(["bool x = a < b", "bool y = c > d"]);
+		expect(found.get("shifted")).toBe("int shifted = value >> 2");
+		expect(found.get("mixed")).toBe("bool mixed = a < b && c > d");
+		expect(found.get("cast")).toBe("auto cast = static_cast<int>(x)");
+		expect(found.get("operator<")).toBe("bool operator<(const Box &other) const");
+	});
+
 	test("return types, qualifiers and defaulted bodies read as written", () => {
 		const found = signatures([
 			"struct Point {",
@@ -153,7 +193,7 @@ describe("C++ declaration headers", () => {
 			for (let round = 0; round < 3; round++) {
 				const started = performance.now();
 				commas.forEach((comma, at) => {
-					headerOf(text, tokens, comma + 1, ends[at] as number, "value", { start: 0, end: 1 });
+					headerOf(text, tokens, comma + 1, ends[at] as number, "value", new Set(), { start: 0, end: 1 });
 				});
 				best = Math.min(best, performance.now() - started);
 			}

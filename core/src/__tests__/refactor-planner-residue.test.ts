@@ -1,6 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	calling,
+	exportsNamed,
+	importing,
+	naming,
+	parseSource,
+	reachesIn,
+	readingStore,
+	usesName,
+} from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds RefactorPlanner to planning.
@@ -10,43 +20,39 @@ import { join } from "node:path";
 const MODULE = join(import.meta.dirname, "..", "refactorPlanner.ts");
 
 const FORBIDDEN = [
-	{ pattern: /\bfrom "\.\/supervisor\.js"/, why: "providers are reached through ProviderProbe" },
-	{ pattern: /\bfrom "\.\/sourceWriter\.js"/, why: "planning does not write source" },
-	{
-		pattern: /\b(?:readSource|sourceReader|textOf|fromText)\b/,
-		why: "a module a plan writes is read through SourceWorkspace.writable",
-	},
-	{ pattern: /\bwriteAll\s*\(/, why: "planning does not write source" },
-	{ pattern: /\bwriteModule\s*\(/, why: "planning does not write source" },
-	{ pattern: /\bindexFile\s*\(/, why: "planning does not reindex" },
-	{ pattern: /\bstore\.(?:replaceFile|forgetFile)/, why: "the indexer owns what the index holds" },
-	{ pattern: /\bfrom "\.\/indexer\.js"/, why: "planning must not be able to start a scan" },
-	{ pattern: /\bfrom "\.\/service\.js"/, why: "the planner is upstream of the service" },
+	importing("./supervisor.js", "providers are reached through ProviderProbe"),
+	importing("./sourceWriter.js", "planning does not write source"),
+	naming(
+		["readSource", "sourceReader", "textOf", "fromText"],
+		"a module a plan writes is read through SourceWorkspace.writable",
+	),
+	calling("writeAll", "planning does not write source"),
+	calling("writeModule", "planning does not write source"),
+	calling("indexFile", "planning does not reindex"),
+	readingStore(["replaceFile", "forgetFile"], "the indexer owns what the index holds"),
+	importing("./indexer.js", "planning must not be able to start a scan"),
+	importing("./service.js", "the planner is upstream of the service"),
+	// `renameSymbol` belongs to the caller; the planner neither declares nor calls it.
+	naming(["renameSymbol"], "leaves carrying a rename out to the caller"),
 ];
+
+const parsed = () => parseSource(MODULE, readFileSync(MODULE, "utf8")).source;
 
 ////////////////////////////////
 //  Tests
 
 describe("the refactor planner plans and does not act", () => {
 	it("finds the module, so a passing run is never vacuous", () => {
-		const source = readFileSync(MODULE, "utf8");
-		expect(source).toContain("export class RefactorPlanner");
-		expect(source).toContain("planReplacement");
-		expect(source.length).toBeGreaterThan(20_000);
+		const source = parsed();
+		expect(exportsNamed(source, "RefactorPlanner")).toBe(true);
+		expect(usesName(source, "planReplacement")).toBe(true);
+		expect(source.text.length).toBeGreaterThan(20_000);
 	});
 
-	it("writes nothing, reindexes nothing, and holds no supervisor", () => {
-		const source = readFileSync(MODULE, "utf8");
-		const offenders = FORBIDDEN.filter(({ pattern }) => pattern.test(source)).map(
-			({ pattern, why }) => `${pattern.source}: ${why}`,
-		);
-
-		expect(offenders, "asking for a plan must never be the thing that changes the workspace").toEqual([]);
-	});
-
-	// renameSymbol is the one method that carries a rename out, and it is deliberately NOT here.
-	it("leaves carrying a rename out to the caller", () => {
-		const source = readFileSync(MODULE, "utf8");
-		expect(source).not.toMatch(/\brenameSymbol\s*\(/);
+	it("writes nothing, reindexes nothing, holds no supervisor and carries out no rename", () => {
+		expect(
+			reachesIn(parsed(), FORBIDDEN),
+			"asking for a plan must never be the thing that changes the workspace",
+		).toEqual([]);
 	});
 });

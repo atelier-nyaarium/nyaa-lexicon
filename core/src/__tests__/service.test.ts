@@ -1117,6 +1117,106 @@ describe("planning a rename", () => {
 			expect(blocker?.detail).toContain("Rename that declaration first, or pick another name.");
 		});
 
+		// Scopes and member access come from the index. A local in another function is out of scope, a
+		// site the parser marked qualified cannot be captured, and any other site in scope blocks.
+		it("blocks only where a rewritten site falls in the other name's scope", async () => {
+			const module = "src/state.ts";
+			const text = [
+				"export class State {",
+				"\ttracking(file) {",
+				"\t\treturn file;",
+				"\t}",
+				"\tdraft(file) {",
+				"\t\tconst held = this.tracking(file);",
+				"\t\treturn held;",
+				"\t}",
+				"}",
+				"export function label(x) {",
+				"\treturn x;",
+				"}",
+				"export function fold(x) {",
+				"\tconst labelled = label(x);",
+				"\treturn labelled;",
+				"}",
+				"export function tally(x) {",
+				"\tconst named = x;",
+				"\t// Count it.",
+				"\tlabel(named);",
+				"}",
+				"",
+			].join("\n");
+			const at = (line: number, start: number, endLine: number, end: number) => ({
+				start: { line, character: start },
+				end: { line: endLine, character: end },
+			});
+			const id = (path: string) => `lexicon ts ${module} ${path}`;
+			const declare = (
+				path: string,
+				kind: "class" | "method" | "function" | "variable",
+				range: ReturnType<typeof at>,
+				selectionRange: ReturnType<typeof at>,
+				containerId?: string,
+			) => ({
+				symbolId: id(path),
+				kind,
+				name: path.replace(/[#().]+$/, "").replace(/^.*[#.]/, ""),
+				range,
+				selectionRange,
+				visibility: containerId?.endsWith(").") ? ("local" as const) : ("public" as const),
+				...(containerId === undefined ? {} : { containerId: id(containerId) }),
+			});
+			const bound = (name: string, range: ReturnType<typeof at>, target: string, role: "call" | "read") => ({
+				name,
+				range,
+				role,
+				binding: { status: "bound" as const, symbolId: id(target), provenance: "bound" as const },
+			});
+			store.replaceFile({
+				module,
+				contentHash: hashContent(text),
+				declarations: [
+					declare("State#", "class", at(0, 0, 8, 1), at(0, 13, 0, 18)),
+					declare("State#tracking().", "method", at(1, 1, 3, 2), at(1, 1, 1, 9), "State#"),
+					declare("State#draft().", "method", at(4, 1, 7, 2), at(4, 1, 4, 6), "State#"),
+					declare("State#draft().held.", "variable", at(5, 8, 5, 34), at(5, 8, 5, 12), "State#draft()."),
+					declare("label().", "function", at(9, 0, 11, 1), at(9, 16, 9, 21)),
+					declare("fold().", "function", at(12, 0, 15, 1), at(12, 16, 12, 20)),
+					declare("fold().labelled.", "variable", at(13, 7, 13, 26), at(13, 7, 13, 15), "fold()."),
+					declare("tally().", "function", at(16, 0, 20, 1), at(16, 16, 16, 21)),
+					declare("tally().named.", "variable", at(17, 7, 17, 17), at(17, 7, 17, 12), "tally()."),
+				],
+				references: [
+					{ ...bound("tracking", at(5, 20, 5, 28), "State#tracking().", "call"), qualified: true },
+					bound("held", at(6, 9, 6, 13), "State#draft().held.", "read"),
+					bound("label", at(13, 18, 13, 23), "label().", "call"),
+					bound("labelled", at(14, 8, 14, 16), "fold().labelled.", "read"),
+					bound("label", at(19, 1, 19, 6), "label().", "call"),
+					bound("named", at(19, 7, 19, 12), "tally().named.", "read"),
+				],
+			});
+			const reading = new LexiconService(
+				store,
+				supervisor,
+				fromText((name) => (name === module ? text : null)),
+			);
+			const taken = async (path: string, name: string) =>
+				(await reading.prepareRename(id(path), name, reading.newReadContext())).blockers
+					.filter((b) => b.kind === "NameTaken")
+					.flatMap((b) => b.sites ?? []);
+
+			expect({
+				member: await taken("State#tracking().", "held"),
+				otherFunction: await taken("label().", "held"),
+				captured: await taken("label().", "labelled"),
+				afterSentence: await taken("label().", "named"),
+			}).toEqual({
+				member: [],
+				otherFunction: [],
+				captured: [{ module, line: 13 }],
+				afterSentence: [{ module, line: 17 }],
+			});
+		});
+
 		it("blocks when the new name is already imported into a file it rewrites", async () => {
 			const target = plant();
 			store.replaceFile({
@@ -1494,8 +1594,18 @@ describe("searching imports", () => {
 	});
 });
 
-describe("performing a rename", () => {
+describe("planning a rename's writes", () => {
 	const target = "lexicon ts cart.ts add().";
+
+	/** Returns planned writes only. */
+	async function planned(service: LexiconService, newName: string) {
+		const edits = await service.renameEdits(target, newName);
+		if (!edits.ok) return { planned: false as const, plan: edits.plan, reason: edits.reason };
+		const staged = service.renameWrites(edits.files);
+		return "reason" in staged
+			? { planned: false as const, plan: edits.plan, reason: staged.reason }
+			: { planned: true as const, plan: edits.plan, writes: staged.writes };
+	}
 
 	/** Answers renameEdits however the test needs, and resolves nothing, so only bound sites appear. */
 	function answering(reply: (module: string) => unknown) {
@@ -1540,17 +1650,22 @@ describe("performing a rename", () => {
 		blocked: [],
 	};
 
-	it("writes the provider's edits and says which files it touched", async () => {
+	it("plans each file's whole text over the hash its edits were cut from, writing nothing", async () => {
 		plant();
-		const outcome = await serviceThat(() => rewriteTheName).renameSymbol(target, "append");
+		const outcome = await planned(
+			serviceThat(() => rewriteTheName),
+			"append",
+		);
 
-		expect(outcome).toMatchObject({ renamed: true, modules: ["cart.ts"] });
-		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe("export function append() {}\n");
+		expect(outcome).toMatchObject({
+			planned: true,
+			writes: [{ module: "cart.ts", base: hashContent(cartText), text: "export function append() {}\n" }],
+		});
+		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe(cartText);
 	});
 
-	// The load-bearing rule. A blocked site is an occurrence that SHOULD change and cannot, so
-	// applying the rest would leave a tree that no longer builds.
-	it("writes nothing at all when any occurrence is blocked", async () => {
+	// A blocked site should change but cannot. Applying the other edits would leave invalid code.
+	it("plans nothing at all when any occurrence is blocked", async () => {
 		plant();
 		const blocked = {
 			status: "ready",
@@ -1564,25 +1679,28 @@ describe("performing a rename", () => {
 			],
 		};
 
-		const outcome = await serviceThat(() => blocked).renameSymbol(target, "append");
+		const outcome = await planned(
+			serviceThat(() => blocked),
+			"append",
+		);
 
-		expect(outcome.renamed).toBe(false);
-		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe("export function add() {}\n");
+		expect(outcome.planned).toBe(false);
 		expect(outcome.plan.blockers.map((b) => b.kind)).toEqual(["StringLiteral"]);
 	});
 
-	it("writes nothing when the provider refuses the whole request", async () => {
+	it("plans nothing when the provider refuses the whole request", async () => {
 		plant();
 		const refused = { status: "refused", reason: "Collision", detail: "append already exists here" };
 
-		const outcome = await serviceThat(() => refused).renameSymbol(target, "append");
+		const outcome = await planned(
+			serviceThat(() => refused),
+			"append",
+		);
 
-		expect(outcome).toMatchObject({ renamed: false });
-		expect((outcome as { reason: string }).reason).toContain("Collision");
-		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe("export function add() {}\n");
+		expect(outcome).toMatchObject({ planned: false, reason: expect.stringContaining("Collision") });
 	});
 
-	it("writes no file when one it would rewrite is not valid UTF-8", async () => {
+	it("plans nothing when one file it would rewrite is not valid UTF-8", async () => {
 		plant();
 		const call = { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } };
 		const lossy = Buffer.from([...Buffer.from("add();\n// "), 0xc3, 0x28, 0x0a]);
@@ -1605,22 +1723,23 @@ describe("performing a rename", () => {
 				? { status: "ready", edits: [{ range: call, newText: "append" }], blocked: [] }
 				: rewriteTheName;
 
-		const outcome = await serviceThat(reply).renameSymbol(target, "append");
+		const outcome = await planned(serviceThat(reply), "append");
 
-		expect(outcome).toMatchObject({ renamed: false, reason: expect.stringContaining("use.ts") });
-		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe("export function add() {}\n");
-		expect(readFileSync(path.join(dir, "use.ts")).equals(lossy)).toBe(true);
+		expect(outcome).toMatchObject({ planned: false, reason: expect.stringContaining("use.ts") });
 	});
 
 	it("refuses before asking any provider when the plan itself is blocked", async () => {
 		plant();
 		let asked = 0;
-		const outcome = await serviceThat(() => {
-			asked++;
-			return rewriteTheName;
-		}).renameSymbol(target, "add");
+		const outcome = await planned(
+			serviceThat(() => {
+				asked++;
+				return rewriteTheName;
+			}),
+			"add",
+		);
 
-		expect(outcome.renamed).toBe(false);
+		expect(outcome.planned).toBe(false);
 		expect(asked).toBe(0);
 	});
 
@@ -1633,12 +1752,9 @@ describe("performing a rename", () => {
 			return rewriteTheName;
 		});
 
-		const edits = await service.renameEdits(target, "append");
-		const outcome = await service.renameSymbol(target, "append");
+		const outcome = await planned(service, "append");
 
-		expect(edits.ok).toBe(false);
-		expect(outcome.renamed).toBe(false);
+		expect(outcome.planned).toBe(false);
 		expect(asked).toBe(0);
-		expect(readFileSync(path.join(dir, "cart.ts"), "utf8")).toBe(cartText);
 	});
 });

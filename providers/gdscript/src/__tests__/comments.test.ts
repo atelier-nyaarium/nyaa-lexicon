@@ -25,10 +25,30 @@ var total = 42 # trailing
 `;
 
 	expect(commentsOf(text)).toEqual([
-		{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } }, text: "# leading" },
-		{ range: { start: { line: 2, character: 1 }, end: { line: 2, character: 9 } }, text: "# inline" },
-		{ range: { start: { line: 5, character: 15 }, end: { line: 5, character: 25 } }, text: "# trailing" },
-		{ range: { start: { line: 7, character: 0 }, end: { line: 7, character: 12 } }, text: "# standalone" },
+		{
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } },
+			text: "# leading",
+			codeBefore: false,
+			codeAfter: false,
+		},
+		{
+			range: { start: { line: 2, character: 1 }, end: { line: 2, character: 9 } },
+			text: "# inline",
+			codeBefore: false,
+			codeAfter: false,
+		},
+		{
+			range: { start: { line: 5, character: 15 }, end: { line: 5, character: 25 } },
+			text: "# trailing",
+			codeBefore: true,
+			codeAfter: false,
+		},
+		{
+			range: { start: { line: 7, character: 0 }, end: { line: 7, character: 12 } },
+			text: "# standalone",
+			codeBefore: false,
+			codeAfter: false,
+		},
 	]);
 });
 
@@ -56,6 +76,8 @@ test("keeps the marker text unaltered rather than stripping or trimming it", () 
 	expect(commentsOf(text)[0]).toEqual({
 		range: { start: { line: 0, character: 15 }, end: { line: 0, character: 26 } },
 		text: "#\tspaced   ",
+		codeBefore: true,
+		codeAfter: false,
 	});
 });
 

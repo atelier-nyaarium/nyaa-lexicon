@@ -28,8 +28,12 @@ export interface HeaderSpan {
 	folds?: readonly HeaderFold[];
 	/** Text left out, comments included. Ones outside the span are ignored. */
 	omit?: readonly OffsetRange[];
+	/** Text removed with nothing in its place, as a line continuation inside a word. */
+	splices?: readonly OffsetRange[];
 	/** String, template and regex literals: kept as written, a line break or tab escaped. */
 	verbatim?: readonly OffsetRange[];
+	/** Offsets of `<` and `>` tokens the parser read as type brackets; any other is an operator. */
+	angles?: readonly number[];
 }
 
 ////////////////////////////////
@@ -38,14 +42,14 @@ export interface HeaderSpan {
 /** Stands for a folded container's contents. */
 export const FOLD_MARK = String.fromCodePoint(0x2026);
 
-/** A line broken after one of these joins without a space. */
-const OPENERS = new Set(["(", "[", "<"]);
+/** A line broken after one of these joins without a space; angles join through their marks. */
+const OPENERS = new Set(["(", "["]);
 
 /** A line broken before one of these joins without a space. */
-const TIGHT_BEFORE = new Set([")", "]", ">", ",", ";", "."]);
+const TIGHT_BEFORE = new Set([")", "]", ",", ";", "."]);
 
 /** A line broken before one of these drops the trailing comma. */
-const CLOSERS = new Set([")", "]", ">", "}"]);
+const CLOSERS = new Set([")", "]", "}"]);
 
 /** An omission before one of these takes the space before it too. */
 const JOINS_LEFT = new Set([",", ";", ")", "]"]);
@@ -58,6 +62,8 @@ const ESCAPES: Record<string, string> = { "\r\n": "\\n", "\n": "\\n", "\r": "\\r
 
 /** Where the search for a literal's stand-in starts: the private use area. */
 const FIRST_MARK = 0xe000;
+
+const LAST_CODE_POINT = 0x10ffff;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -106,8 +112,8 @@ function omission(text: string, piece: OffsetRange, cut: OffsetRange): OffsetRan
 	return { start, end: cut.end, newText: "" };
 }
 
-/** A character none of the pieces holds, so a literal's stand-in cannot collide with source. */
-function freeMark(text: string, pieces: readonly OffsetRange[]): string {
+/** Characters none of the pieces holds, so a stand-in cannot collide with source. Null when none are left. */
+function freeMarks(text: string, pieces: readonly OffsetRange[], count: number): string[] | null {
 	const used = new Set<number>();
 	for (const piece of pieces) {
 		for (const character of text.slice(piece.start, piece.end)) {
@@ -115,9 +121,19 @@ function freeMark(text: string, pieces: readonly OffsetRange[]): string {
 			if (code >= FIRST_MARK) used.add(code);
 		}
 	}
-	let code = FIRST_MARK;
-	while (used.has(code)) code++;
-	return String.fromCodePoint(code);
+	const marks: string[] = [];
+	for (let code = FIRST_MARK; marks.length < count; code++) {
+		if (code > LAST_CODE_POINT) return null;
+		if (!used.has(code)) marks.push(String.fromCodePoint(code));
+	}
+	return marks;
+}
+
+/** Stand-ins: the literal mark, and the parser's type brackets. */
+interface Marks {
+	literal: string;
+	open: string;
+	close: string;
 }
 
 /** One piece with its cuts applied; each literal stands in as its index between two marks. */
@@ -125,9 +141,10 @@ function applied(
 	text: string,
 	piece: OffsetRange,
 	span: HeaderSpan,
-	mark: string,
+	marks: Marks,
 	literals: string[],
 ): string | undefined {
+	const mark = marks.literal;
 	const slice = text.slice(piece.start, piece.end);
 	const coordinates = coordinatesOf(slice);
 	const edits: TextEdit[] = [];
@@ -146,13 +163,21 @@ function applied(
 		const omitted = omission(text, piece, cut);
 		replace(omitted.start, omitted.end, omitted.newText);
 	}
+	for (const splice of span.splices ?? []) if (within(piece, splice)) replace(splice.start, splice.end, "");
+	for (const at of span.angles ?? []) {
+		if (at < piece.start || at >= piece.end) continue;
+		if (text[at] === "<") replace(at, at + 1, marks.open);
+		else if (text[at] === ">") replace(at, at + 1, marks.close);
+	}
 	// A cut inside an earlier one overlaps it, and the plan leaves it out.
 	const result = applyEdits(slice, planEdits(coordinates, edits).edits);
 	return "text" in result ? result.text : undefined;
 }
 
 /** Whitespace runs to one space; a broken line joins tight at brackets and loses a trailing comma. */
-function collapse(raw: string): string {
+function collapse(raw: string, marks: Marks): string {
+	const opens = (character: string) => OPENERS.has(character) || character === marks.open;
+	const closes = (character: string) => CLOSERS.has(character) || character === marks.close;
 	let out = "";
 	let gap = false;
 	let broken = false;
@@ -163,8 +188,11 @@ function collapse(raw: string): string {
 			continue;
 		}
 		if (gap && out !== "") {
-			if (broken && CLOSERS.has(character) && out.endsWith(",")) out = out.slice(0, -1);
-			const tight = broken && (OPENERS.has(out.at(-1) ?? "") || TIGHT_BEFORE.has(character));
+			// A comma after an opener or another comma holds an empty slot, as `Dictionary<,>` does.
+			const trailing = out.endsWith(",") && !opens(out.at(-2) ?? "") && out.at(-2) !== ",";
+			if (broken && closes(character) && trailing) out = out.slice(0, -1);
+			const tight =
+				broken && (opens(out.at(-1) ?? "") || TIGHT_BEFORE.has(character) || character === marks.close);
 			if (!tight) out += " ";
 		}
 		out += character;
@@ -179,16 +207,23 @@ function collapse(raw: string): string {
 export function renderHeader(text: string, span: HeaderSpan): string | undefined {
 	if (span.end <= span.start) return undefined;
 	const pieces = [...(span.lead === undefined ? [] : [span.lead]), { start: span.start, end: span.end }];
-	const mark = freeMark(text, pieces);
+	const free = freeMarks(text, pieces, 3);
+	if (free === null) return undefined;
+	const [literal = "", open = "", close = ""] = free;
+	const marks = { literal, open, close };
 	const literals: string[] = [];
 	const raws: string[] = [];
 	for (const piece of pieces) {
-		const raw = applied(text, piece, span, mark, literals);
+		const raw = applied(text, piece, span, marks, literals);
 		if (raw === undefined) return undefined;
 		raws.push(raw);
 	}
 	// Marks pair up, so every odd part is a literal's index.
-	const parts = collapse(raws.join(" ")).split(mark);
-	const line = parts.map((part, at) => (at % 2 === 1 ? (literals[Number(part)] ?? "") : part)).join("");
+	const parts = collapse(raws.join(" "), marks).split(literal);
+	const line = parts
+		.map((part, at) =>
+			at % 2 === 1 ? (literals[Number(part)] ?? "") : part.replaceAll(open, "<").replaceAll(close, ">"),
+		)
+		.join("");
 	return line === "" ? undefined : line;
 }

@@ -224,6 +224,8 @@ const WRONG_VALUES: Record<string, unknown> = {
 	imports: { from: "src/a.ts", specifier: "./b", resolvesTo: "src/b.ts" },
 	typeOf: { name: "Missing", display: "number" },
 	comments: ["// never emitted"],
+	commentTrivia: [{ comment: "// never emitted", codeBefore: false, codeAfter: false }],
+	blankLines: [1],
 	literals: [{ value: "never emitted", kind: "string" }],
 	docs: [{ text: "never emitted" }],
 	documentation: { declaration: "Missing", comment: "// missing" },
@@ -721,6 +723,8 @@ describe("checking answers", () => {
 			const at = (text: string, line: number, from: number, to: number) => ({
 				range: { start: { line, character: from }, end: { line, character: to } },
 				text,
+				codeBefore: false,
+				codeAfter: false,
 			});
 
 			it("passes when every range cuts its own text back out", () => {
@@ -752,6 +756,63 @@ describe("checking answers", () => {
 				facts.comments = [at("// a", 1, 0, 4)];
 				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toHaveLength(1);
 			});
+		});
+
+		describe("trivia, checked against the source in the one direction whitespace proves", () => {
+			const source = "// own\nlet x = 1; // after\n";
+			const own = { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } }, text: "// own" };
+			const after = {
+				range: { start: { line: 1, character: 11 }, end: { line: 1, character: 19 } },
+				text: "// after",
+			};
+
+			it("fails a comment alone on its line that claims code, or leaves the claim out", () => {
+				const facts = withComments([]);
+				facts.comments = [own, { ...after, codeBefore: true, codeAfter: false }];
+				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toHaveLength(2);
+			});
+
+			it("passes true trivia, and leaves text beside a comment unjudged", () => {
+				const facts = withComments([]);
+				facts.comments = [
+					{ ...own, codeBefore: false, codeAfter: false },
+					{ ...after, codeBefore: false, codeAfter: false },
+				];
+				expect(checkFacts({} as ConformanceCase, facts, undefined, source)).toEqual([]);
+			});
+
+			it("checks each copy of a repeated comment against its own expectation, in source order", () => {
+				const same = (line: number, codeAfter: boolean) => ({
+					range: { start: { line, character: 0 }, end: { line, character: 10 } },
+					text: "/* same */",
+					codeBefore: false,
+					codeAfter,
+				});
+				const wanted = {
+					commentTrivia: [
+						{ comment: "/* same */", codeBefore: false, codeAfter: false },
+						{ comment: "/* same */", codeBefore: false, codeAfter: true },
+					],
+				} as unknown as ConformanceCase;
+				const facts = withComments([]);
+				facts.comments = [same(1, false), same(0, false)];
+				expect(checkFacts(wanted, facts)).toHaveLength(1);
+				facts.comments = [same(1, true), same(0, false)];
+				expect(checkFacts(wanted, facts)).toEqual([]);
+			});
+		});
+	});
+
+	describe("blank lines, exact, and never a line holding text", () => {
+		it("fails a missing or wrong list, and a reported line that holds text", () => {
+			const source = "a\n\nb\n";
+			const blank = (blankLines?: number[]) => facts(blankLines ? { blankLines } : {});
+			const wanted = { blankLines: [1] } as unknown as ConformanceCase;
+			expect(checkFacts(wanted, blank([1]), undefined, source)).toEqual([]);
+			expect(checkFacts(wanted, blank(), undefined, source)).toHaveLength(1);
+			expect(checkFacts({} as ConformanceCase, blank([2]), undefined, source)).toEqual([
+				'blankLines: line 2 holds "b"',
+			]);
 		});
 	});
 
@@ -1090,6 +1151,12 @@ describe("the reference provider", () => {
 			["Cart", "class"],
 			["add", "function"],
 		]);
+	});
+
+	it("reads declarations and comments off one lexer, so a string is neither", () => {
+		const source = "const doc = `\nexport class Phantom\n// not a comment\n`;\nexport const real = 1; // note\n";
+		expect(extractDeclarations("src/a.ref", source).map((d) => d.name)).toEqual(["real"]);
+		expect(extractComments(source).map((comment) => comment.text)).toEqual(["// note"]);
 	});
 
 	it("declares the tiers it does not do as false, rather than claiming them", () => {

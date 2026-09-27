@@ -1,22 +1,33 @@
 # Parsing law
 
-Every hand-written parser here follows these rules. If a parser teaches a rule this list does not
+Every in-house parser follows these rules, and every provider reading through a gold parser follows
+rules 4, 12 and 13 over what that parser gives it. If a parser teaches a rule this list does not
 have, add it and bring the existing parsers up to it, rather than leaving the law describing code
 that does not follow it.
 
-## 1. Check for a library before writing the parser
+## 1. Gold or in-house, never a patched approximation
 
-Ask what the grammar is first. A transport, a config format or a language has a maintained
-implementation, and yours will not match its decade of edge cases. This law is for the grammars
-that are genuinely ours.
+A provider reads a language through one of two parsers:
 
-The document formats obey this rule rather than the rest of this law: markdown, YAML and JSON are
-read through pinned libraries, because CommonMark alone answers setext headings, tilde fences,
-indented code and markers inside HTML comments, and a hand-written scanner gets each of those wrong
-in turn. A format is only rejected for a library when no maintained one reports source POSITIONS,
-since a declaration without a range is not a declaration.
+- **Gold:** the language's own parser, or its spec's reference implementation, where Lexicon can
+  call it: in-process, or through a toolchain that language's users already have. The TypeScript
+  compiler, CPython's `ast` and `tokenize`, CommonMark's micromark, `yaml`, parse5, `jsonc-parser`.
+- **In-house:** a parser written here to this law, reporting exactly the facts Lexicon needs. C,
+  C++, C#, Rust and GDScript.
 
-Choosing one takes three questions.
+A third-party approximation of a grammar is neither. Its gaps become repairs, gap lexers and text
+scans around it, each a rule of this law broken on purpose. Kotlin's tree-sitter grammar, Bash's
+unbash and XML's parse-xml each move to in-house.
+
+Gold when the real parser is callable where Lexicon runs, in-house when it is not. Bash has no
+parser anyone can call, so Bash is in-house.
+
+A document format is rejected for a library when no maintained one reports source POSITIONS, since
+a declaration without a range is not a declaration. Markdown, YAML and JSON are read through pinned
+reference implementations, because CommonMark alone answers setext headings, tilde fences, indented
+code and markers inside HTML comments, and a hand-written scanner gets each of those wrong in turn.
+
+Choosing a gold parser takes three questions.
 
 **Does it report positions, and are they right?** The obvious one, and the one a correctness spike
 covers.
@@ -36,8 +47,12 @@ XML is read through `@rgrove/parse-xml` and HTML through `parse5`, and both answ
 Both put offsets on every node, parse5 on every attribute too; both bundle for node with no
 UMD wrapper; and 6 MB of either parses in under half a second. Their nesting cost is the one to
 know: parse-xml recurses and overflows the stack at ten thousand nested elements under node, and
-parse5 survives a hundred thousand but spends thirty-five seconds on them, so `markupTooDeep` in
-`formats/src/depth.ts` counts tag depth before either runs and refuses past the shared limit.
+parse5 survives a hundred thousand but spends thirty-five seconds on them, so each reader counts
+depth from its own parser's events through `NestingGauge` in `formats/src/depth.ts` and refuses
+past the shared limit.
+
+parse-xml keeps no attribute offsets or start-tag end, so `formats/src/xml.ts` still finds attribute
+value spans with its own start-tag scan. That scan runs only on text parse-xml accepted.
 
 Kotlin is read through `web-tree-sitter` and the vendored `tree-sitter-kotlin` grammar
 (`providers/kotlin/src/tree-sitter-kotlin.wasm`, from `@tree-sitter-grammars/tree-sitter-kotlin`
@@ -69,7 +84,11 @@ read from the original text. The repairs that follow have the same shape:
   follows it, since error recovery reads past the statement's end and a bare slice recovers
   differently.
 - **`@A annotation class B`** is parsed without its annotations, which are attached back.
-- **A `$$"` prefix** is blanked, since multi-dollar literals postdate the grammar.
+- **A `$$"` prefix** is blanked first, since multi-dollar literals postdate the grammar; the grammar
+  has no token for it, so finding it is the one pattern over text here.
+- **A template in a prefixed literal** with fewer dollars than the prefix has its opener blanked and
+  the file reparsed, the dollars counted from the grammar's own tokens, so the tree reads it as
+  content.
 - **A nested body's `}` after a member on one line** gets a newline ahead of it inside an ERROR
   region.
 - **`I by d {`**, whose body the grammar reads as a trailing lambda on `d`, has its owner reparsed
@@ -87,9 +106,8 @@ repairs listed before it, so no repair calls another, and diagnostics read the f
 On the two corpora, the 29 files whose first parse has errors take 185 ms between them. What
 the repairs do not reach is a `warning` naming its region, never an error: an annotated statement
 inside a body (`@Suppress("x") while (...)`) reads as a call and yields no reference; a misread
-member inside a class body is not reparsed alone; and a lone `$` inside a multi-dollar literal still
-reads as a template. kotlinx-coroutines has eleven files carrying such warnings; Switchboard has
-none.
+member inside a class body is not reparsed alone. kotlinx-coroutines has eleven files carrying such
+warnings; Switchboard has none.
 
 An `error` refuses the file, so it is kept for text no valid source produces: an unterminated
 literal or block comment, an `import` or `package` naming nothing, damage running to the end of
@@ -119,6 +137,9 @@ stage is never skipped.
 Legal: testing one character, or validating a candidate string the cursor already cut out, anchored
 end to end. Illegal: a pattern that must know about nesting, balance, or the rest of the input. If
 a capture group is doing structural work, the tool is wrong.
+
+Tests obey it too. A residue sweep reads code through `protocol/src/astResidue.ts`, the TypeScript
+parser's tree. A pattern, where a rule needs one, runs over one identifier's or one string's text.
 
 ## 5. Prefer a grammar that cannot need balancing
 
@@ -190,3 +211,77 @@ branch, so every other line, including `#define` and `#include`, is not indexed.
 and ignored. The C++ tokenizer deletes a backslash-newline before tokenizing, as translation phase
 two does, so a directive continued over several lines is one line to the parser and a macro body
 never reads as code; surviving tokens keep their physical positions.
+
+## 13. Decide from tokens, never from the raw text around a position
+
+A decision about a position reads the tokens or the tree around it, never the characters before or
+after it. A look back through raw text finds a comment's words, a string's contents or the previous
+line's end, and reads each as code.
+
+When core needs a fact the text alone would answer only by looking around, the provider reports it
+from its own tokens: whether code shares a comment's line, where a container's members end, which
+`<` its parser read as a type bracket, whether a reference is qualified.
+
+# Writing a provider
+
+## Adding a language
+
+Pick the tier first (rule 1). Then:
+
+- **Package:** `providers/<language>/src/main.ts`, serving its handlers through `serveProvider` and
+  `runProviderOnStdio`. Parsed state lives in a `moduleStore`; `provider-state-residue.test.ts`
+  refuses state beside it.
+- **Tiers:** declare only what the provider answers. A skipped tier answers NotImplemented with a
+  reason.
+- **Conformance:** add the language's fixtures to the shared cases in `protocol/src/conformance/`,
+  including a `FORMS` entry in `stringForms.ts` with a marker inside every string form.
+  `bun run protocol/src/conformance/cli.ts -- bun run providers/<language>/src/main.ts` must report
+  zero FAIL.
+- **Bundle:** `bun run build --build-only` rebuilds `dist/`. Core's live tests and the daemon run
+  the bundle, so a stale `dist/` tests old code.
+
+## Facts core decides from
+
+Core reads no source text around a position. Each of these comes from the provider's own tokens or
+tree.
+
+- **Positions:** UTF-16 code units. A byte order mark is no token. Under CRLF a line ends before its
+  `\r`.
+- **Comments:** every comment carries `codeBefore` and `codeAfter`. Absent reads as code beside it,
+  which detaches a doc comment.
+- **`blankLines`:** lines no token touches, comments and literals included. The empty remainder after
+  a final line break is not a line.
+- **`memberInsertLine`:** on every container. Its closer's line when the closer starts it, or the
+  line after an indented body's last statement. Absent when there is no safe point.
+- **Headers:** `renderHeader` with `omit` for comments, `splices` for text removed outright (a line
+  continuation), `verbatim` for literals, `folds` for literal containers, and `angles` for each `<`
+  and `>` the parser read as a type bracket.
+- **References:** `qualified` when the tree reaches the use through a member accessor. Absent reads
+  as exposed to a rename.
+
+## Mistakes this law was written after
+
+Each shipped at least once and broke on the next edge case.
+
+1. **A tokenizer built from regexes.** Patterns over lines or whole files to find strings, comments
+   or declarations. Use one lexer on the Cursor (rules 2 and 3), or the gold parser's tokens.
+2. **Reading around a position.** `text[i - 1]`, `lastIndexOf`, "the line ends with `:`", "only
+   whitespace before this". Ask the neighbouring token, or report a fact (rule 13).
+3. **Deciding from rendered text.** Cutting a type's display at `<`, or matching words in text
+   already joined from tokens. Walk the tokens that made it.
+4. **A second scanner for one question.** A comment scan, string scan or bracket counter beside the
+   real lexer. They disagree on the first unusual form (rule 12).
+5. **Counting every `<` as a bracket.** Classify type brackets once, and have every splitter ask it.
+6. **Sweeping an edit or span list for overlap by hand.** `planEdits` and `unionOf` in
+   `protocol/src/edits.ts` own it; `edit-plan-residue.test.ts` refuses a copy.
+7. **Leaving a fact absent.** Emit every field the tier allows, on every row.
+8. **An untested string form.** Every hole in the string grammar is a false comment. Plant a marker
+   in each form.
+9. **A whole-file rescan per declaration or reference.** Build one index per parse, and time the
+   language's corpus.
+10. **Trusting unit tests alone.** Diff every fact over a real corpus before and after, and explain
+    each one that moved.
+11. **Changing extraction without a major.** A new kind, name, range, binding or literal for
+    unchanged source ships as a major release.
+12. **Patching a library's missing positions with text scans.** That is the approximation tier.
+    Move the language to gold or in-house instead.

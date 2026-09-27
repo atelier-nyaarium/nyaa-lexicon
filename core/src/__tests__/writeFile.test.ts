@@ -54,9 +54,19 @@ function hash(text: string): string {
 	return hashBytes(Buffer.from(text));
 }
 
-function write(module: string, text: string | null, expect: string | null): Promise<RefactorWriteFileResult> {
+function write(
+	module: string,
+	text: string | null,
+	expect: string | null,
+	refactor?: string | null,
+): Promise<RefactorWriteFileResult> {
 	const content = text === null ? null : { encoding: "text" as const, text };
-	const request: RequestOf<"refactorWriteFile"> = { module, content, expect };
+	const request: RequestOf<"refactorWriteFile"> = {
+		module,
+		content,
+		expect,
+		...(refactor === undefined ? {} : { refactor }),
+	};
 	return dispatch("refactorWriteFile", request) as Promise<RefactorWriteFileResult>;
 }
 
@@ -190,6 +200,32 @@ describe("a gated write that is refused", () => {
 });
 
 describe("a gated write while a refactor is open", () => {
+	it("refuses before tracking when it expects no refactor or another, and writes under the one it expects", async () => {
+		const none = await write("a.ref", "export class Basket {}\n", hash(ORIGINAL), null);
+		const { id } = transactions.start();
+		const refused = [
+			await write("a.ref", "x\n", hash("export class Basket {}\n"), null),
+			await write("a.ref", "x\n", hash("export class Basket {}\n"), "other"),
+		];
+		const untouched = { tracked: transactions.status().tracked, text: bytesAt("a.ref")?.toString("utf8") };
+		const expected = await write("a.ref", "export class Cart {}\n", hash("export class Basket {}\n"), id);
+
+		expect({ none: none.written, refused, untouched, expected }).toMatchObject({
+			none: true,
+			refused: [
+				{ written: false, refused: "refactor", openRefactor: { id } },
+				{ written: false, refused: "refactor", openRefactor: { id } },
+			],
+			untouched: { tracked: [], text: "export class Basket {}\n" },
+			expected: { written: true, refactor: { id } },
+		});
+		transactions.commit();
+		expect(await write("a.ref", "x\n", hash("export class Cart {}\n"), id)).toMatchObject({
+			refused: "refactor",
+			openRefactor: null,
+		});
+	});
+
 	it("tracks the file and makes the written bytes its known state, so commit settles them", async () => {
 		const { id } = transactions.start();
 		const outcome = await write("a.ref", "export class Basket {}\n", hash(ORIGINAL));

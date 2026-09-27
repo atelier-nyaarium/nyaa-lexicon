@@ -4,6 +4,7 @@ import {
 	type Binding,
 	coordinatesOf,
 	type Descriptor,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -70,6 +71,8 @@ function empty(): JsonFacts {
  */
 function readRecords(module: string, text: string, coordinates: TextCoordinates, strict: boolean): JsonFacts {
 	const facts = empty();
+	const blankLines: number[] = [];
+	let whole = true;
 	let offset = 0;
 	let record = 0;
 
@@ -81,11 +84,17 @@ function readRecords(module: string, text: string, coordinates: TextCoordinates,
 			facts.literals.push(...read.literals);
 			facts.comments.push(...read.comments);
 			facts.diagnostics.push(...read.diagnostics);
+			if (read.blankLines === undefined) whole = false;
+			else blankLines.push(...read.blankLines);
 			record++;
+		} else if (offset < text.length) {
+			// Blank record line; the final break adds no line.
+			const at = coordinates.positionAt(offset)?.line;
+			if (at !== undefined) blankLines.push(at);
 		}
 		offset += line.length + 1;
 	}
-	return facts;
+	return { ...facts, ...defined({ blankLines: whole ? blankLines : undefined }) };
 }
 
 export class JsonProvider {
@@ -133,6 +142,7 @@ export class JsonProvider {
 			imports: [],
 			literals: shallow ? [] : facts.literals,
 			comments: shallow ? [] : facts.comments,
+			...defined({ blankLines: shallow ? undefined : facts.blankLines }),
 			diagnostics: facts.diagnostics,
 			...(shallow ? { depth: params.depth as IndexDepth } : {}),
 		};

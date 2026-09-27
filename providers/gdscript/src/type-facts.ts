@@ -8,17 +8,18 @@ import {
 	type Range,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
-import { extractGdscript, headerEndLine } from "./declarations.js";
+import { extractGdscript } from "./declarations.js";
 import type { ComposeSymbolId, DeclarationFact, ReferenceToken } from "./parse-model.js";
-import { referenceRange, sourceBetween } from "./references.js";
-import { readLines } from "./source-scan.js";
-import { matchingReferenceToken, nextReferenceToken, referenceTokens } from "./tokens.js";
+import { scanSource } from "./source-scan.js";
+import { matchingReferenceToken, nextReferenceToken, referenceTokens, sourceBetween, tokenRange } from "./tokens.js";
 
 export interface TypeAnnotationFact {
 	symbolId?: string;
 	targetRange: Range;
 	typeRange: Range;
 	display: string;
+	/** A lone identifier type. */
+	typeName?: string;
 }
 
 //////// Type facts
@@ -60,12 +61,13 @@ function typeFact(
 	if (first.kind === "newline" || last.kind === "newline") return null;
 	const display = sourceBetween(coordinates, first, last)?.trim();
 	if (display === undefined || display === "") return null;
+	const typeName = end - start === 1 && first.kind === "identifier" ? first.value : undefined;
 	return {
-		...defined({ symbolId }),
+		...defined({ symbolId, typeName }),
 		targetRange,
 		typeRange: {
-			start: referenceRange(first).start,
-			end: referenceRange(last).end,
+			start: tokenRange(first).start,
+			end: tokenRange(last).end,
 		},
 		display,
 	};
@@ -114,7 +116,7 @@ function addParameterTypeFacts(
 			tokens,
 			colon + 1,
 			Math.min(typeEnd, to),
-			referenceRange(name),
+			tokenRange(name),
 			parameter?.symbolId,
 		);
 		if (fact !== null) facts.push(fact);
@@ -142,9 +144,9 @@ export function extractTypeAnnotationsCore(
 ): TypeAnnotationFact[] {
 	if (!module.endsWith(".gd")) return [];
 	const coordinates = coordinatesOf(text);
-	const lines = readLines(text);
+	const scanned = scanSource(text);
 	const declarations = extractGdscript(module, text, compose);
-	const tokens = referenceTokens(lines);
+	const tokens = referenceTokens(scanned);
 	const facts: TypeAnnotationFact[] = [];
 	for (const declaration of declarations) {
 		// Every declaration this provider extracts has its name in the source.
@@ -158,14 +160,7 @@ export function extractTypeAnnotationsCore(
 			const colon = nextReferenceToken(tokens, nameIndex);
 			if (colon >= 0 && (tokens[colon] as ReferenceToken).value === ":") {
 				const typeEnd = typeExpressionEnd(tokens, colon + 1, new Set(["=", ",", ";", "in"]));
-				const fact = typeFact(
-					coordinates,
-					tokens,
-					colon + 1,
-					typeEnd,
-					referenceRange(name),
-					declaration.symbolId,
-				);
+				const fact = typeFact(coordinates, tokens, colon + 1, typeEnd, tokenRange(name), declaration.symbolId);
 				if (fact !== null) facts.push(fact);
 			}
 		}
@@ -185,15 +180,11 @@ export function extractTypeAnnotationsCore(
 				(candidate) => candidate.containerId === declaration.symbolId && candidate.languageKind === "parameter",
 			),
 		);
-		for (let index = close + 1; index <= tokens.length; index++) {
-			const token = tokens[index] as ReferenceToken | undefined;
-			if (token === undefined || token.line > headerEndLine(lines, declaration)) break;
-			if (token.value !== "->") continue;
-			const typeEnd = typeExpressionEnd(tokens, index + 1, new Set([":"]));
-			const fact = typeFact(coordinates, tokens, index + 1, typeEnd, referenceRange(name), declaration.symbolId);
-			if (fact !== null) facts.push(fact);
-			break;
-		}
+		const arrow = nextReferenceToken(tokens, close);
+		if (tokens[arrow]?.value !== "->") continue;
+		const typeEnd = typeExpressionEnd(tokens, arrow + 1, new Set([":"]));
+		const fact = typeFact(coordinates, tokens, arrow + 1, typeEnd, tokenRange(name), declaration.symbolId);
+		if (fact !== null) facts.push(fact);
 	}
 	return facts;
 }

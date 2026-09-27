@@ -1,6 +1,6 @@
 // Owns shared parser data shapes.
 
-import type { Metrics, Range } from "@nyaa-lexicon/protocol";
+import type { Metrics, Position, Range } from "@nyaa-lexicon/protocol";
 
 //////// Types
 
@@ -26,6 +26,7 @@ export interface DeclarationFact {
 	exported?: boolean;
 	signature?: string;
 	containerId?: string;
+	memberInsertLine?: number;
 	metrics?: Metrics;
 }
 
@@ -33,16 +34,36 @@ export interface SourceLine {
 	line: number;
 	text: string;
 	code: string;
+	/** Leading blanks' width, a tab counting four. */
+	indent: number;
+	/** Content end, before a carriage return. */
+	end: number;
 	hasString: boolean;
-	stringStarts: number[];
 	endsInString: boolean;
 }
 
+export type StringQuote = "'" | '"';
+
+/** StringName, NodePath and raw. */
+export type StringPrefix = "" | "&" | "^" | "r";
+
+/** A terminated string, prefix and quotes included. */
+export interface StringSpan {
+	start: Position;
+	end: Position;
+	prefix: StringPrefix;
+	quote: StringQuote;
+	triple: boolean;
+}
+
 export interface ReferenceToken {
-	kind: "identifier" | "symbol" | "newline";
+	kind: "identifier" | "symbol" | "newline" | "string" | "number";
+	/** Source text; a string includes its prefix and quotes. */
 	value: string;
 	line: number;
 	character: number;
+	/** Strings only. */
+	string?: StringSpan;
 }
 
 export interface ReferenceBlock {
@@ -72,6 +93,10 @@ export interface ParsedLine {
 	annotated: boolean;
 	/** Header's start column: its first owned annotation, or the keyword. */
 	head: number;
+	/** Owned annotation names on this line. */
+	annotations: string[];
+	/** Nothing but indentation precedes `head`. */
+	leading: boolean;
 }
 
 export interface Scope {
@@ -92,7 +117,9 @@ export interface ActiveFunctionHeader {
 	indent: number;
 	scope: Scope;
 	declaration: DeclarationFact;
-	lines: SourceLine[];
+	start: SourceLine;
+	/** The block colon's line. */
+	endLine: number;
 }
 
 export interface ComposeInput {

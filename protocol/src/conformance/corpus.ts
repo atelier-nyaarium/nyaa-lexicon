@@ -9,6 +9,7 @@
 
 import { headerCases } from "./headerCases.js";
 import { repeatedNamePathCase } from "./identityCases.js";
+import { layoutCases } from "./layoutCases.js";
 import { markupCases } from "./markupCases.js";
 import { roleCases } from "./roleCases.js";
 import { stringFormCase } from "./stringForms.js";
@@ -1120,26 +1121,30 @@ const CASES: ConformanceCase[] = [
 		tier: "comments",
 		// The suite checks EVERY reported span's range against the source, so a provider parsing
 		// stripped text while the core indexes the file fails here rather than in a search result.
-		about: "A leading byte order mark moves no span, so a comment still cuts its own text out of the file.",
+		about: "A leading byte order mark moves no span, so a comment still cuts its own text out of the file, and the declarations after it still parse.",
 		fixtures: {
 			[TYPESCRIPT]: {
 				files: { "src/bom.ts": `${BOM}// a note\nexport const after = 1;\n` },
 				subject: "src/bom.ts",
+				declarations: [{ name: "after" }],
 				comments: ["// a note"],
 			},
 			[REFERENCE]: {
 				files: { "src/bom.ref": `${BOM}// a note\nexport const after = 1;\n` },
 				subject: "src/bom.ref",
+				declarations: [{ name: "after" }],
 				comments: ["// a note"],
 			},
 			[PYTHON]: {
 				files: { "src/bom.py": `${BOM}# a note\nafter = 1\n` },
 				subject: "src/bom.py",
+				declarations: [{ name: "after" }],
 				comments: ["# a note"],
 			},
 			[GDSCRIPT]: {
 				files: { "src/bom.gd": `${BOM}# a note\nvar after = 1\n` },
 				subject: "src/bom.gd",
+				declarations: [{ name: "after" }],
 				comments: ["# a note"],
 			},
 			[BASH]: {
@@ -1150,21 +1155,25 @@ const CASES: ConformanceCase[] = [
 			[C]: {
 				files: { "src/bom.c": `${BOM}// a note\nint after = 1;\n` },
 				subject: "src/bom.c",
+				declarations: [{ name: "after" }],
 				comments: ["// a note"],
 			},
 			[CPP]: {
 				files: { "src/bom.cpp": `${BOM}// a note\nint after = 1;\n` },
 				subject: "src/bom.cpp",
+				declarations: [{ name: "after" }],
 				comments: ["// a note"],
 			},
 			[CSHARP]: {
 				files: { "src/Bom.cs": `${BOM}// a note\npublic class Bom { }\n` },
 				subject: "src/Bom.cs",
+				declarations: [{ name: "Bom" }],
 				comments: ["// a note"],
 			},
 			[RUST]: {
 				files: { "src/bom.rs": `${BOM}// a note\npub const AFTER: i32 = 1;\n` },
 				subject: "src/bom.rs",
+				declarations: [{ name: "AFTER" }],
 				comments: ["// a note"],
 			},
 			[KOTLIN]: {
@@ -1175,11 +1184,13 @@ const CASES: ConformanceCase[] = [
 			[JSON_LANG]: {
 				files: { "bom.jsonc": `${BOM}// a note\n{ "after": 1 }\n` },
 				subject: "bom.jsonc",
+				declarations: [{ name: "after" }],
 				comments: ["// a note"],
 			},
 			[YAML]: {
 				files: { "bom.yml": `${BOM}# a note\nafter: 1\n` },
 				subject: "bom.yml",
+				declarations: [{ name: "after" }],
 				comments: ["# a note"],
 			},
 			[XML]: {
@@ -3378,9 +3389,15 @@ const CASES: ConformanceCase[] = [
  * instead of somewhere inside a provider run where it looks like the provider's fault.
  */
 export function loadCorpus(): ConformanceCase[] {
-	return [...CASES, stringFormCase(), repeatedNamePathCase(), ...markupCases(), ...roleCases(), ...headerCases()].map(
-		(testCase) => ConformanceCaseSchema.parse(testCase),
-	);
+	return [
+		...CASES,
+		stringFormCase(),
+		repeatedNamePathCase(),
+		...markupCases(),
+		...roleCases(),
+		...headerCases(),
+		...layoutCases(),
+	].map((testCase) => ConformanceCaseSchema.parse(testCase));
 }
 
 /** Cases for one tier, which is how a provider team runs only what it claims. */

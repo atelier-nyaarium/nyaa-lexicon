@@ -10,7 +10,7 @@ import { type DeclaredNodes, type HeaderFacts, LANGUAGE, type TypeFact, type Typ
 import { literalShape } from "./literals.js";
 import { renderType } from "./render.js";
 import type { LineTable, SyntaxNode } from "./tree.js";
-import { TYPE_NODES, typePath } from "./typePaths.js";
+import { headName, TYPE_NODES, typePath } from "./typePaths.js";
 
 /** What a declaration's id is minted from. */
 export interface IdScope {
@@ -36,6 +36,7 @@ export interface MintInput {
 	scope: IdScope;
 	access: Pick<Declaration, "visibility" | "exported">;
 	signature?: string | undefined;
+	memberInsertLine?: number | undefined;
 	owns: boolean;
 	metrics?: Omit<Metrics, "lines">;
 }
@@ -94,7 +95,11 @@ export class DeclarationSink {
 			range,
 			selectionRange: this.range(input.nameNode),
 			...input.access,
-			...defined({ signature: input.signature, containerId: input.scope.containerId }),
+			...defined({
+				signature: input.signature,
+				containerId: input.scope.containerId,
+				memberInsertLine: input.memberInsertLine,
+			}),
 			metrics: { lines: range.end.line - range.start.line + 1, ...input.metrics },
 		};
 		this.declarations.push(declaration);
@@ -132,6 +137,7 @@ export class DeclarationSink {
 			symbolId,
 			answer: { status: "known", display, provenance: "declared" },
 			annotationRange: this.range(type),
+			...defined({ head: headName(type)?.start }),
 		});
 	}
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { readSwept } from "@nyaa-lexicon/protocol";
+import { callsTo, parseSource } from "@nyaa-lexicon/protocol/ast";
 
 function sourceFiles(directory: string): string[] {
 	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -16,7 +17,7 @@ describe("scope containment ownership", () => {
 		const files = sourceFiles(root).filter((file) => !file.includes(`${path.sep}__tests__${path.sep}`));
 		const matches = files.filter((file) => {
 			const source = readSwept(file);
-			return source !== null && source.includes("isWithin(");
+			return source !== null && callsTo(parseSource(file, source).source, "isWithin").length > 0;
 		});
 		expect(matches.length).toBeGreaterThan(0);
 		// Planner containment is rename closure, not search scope.

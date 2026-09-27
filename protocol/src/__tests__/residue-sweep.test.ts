@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "../residue.js";
+import { readSwept, sourceFiles } from "../residue.js";
 
 ////////////////////////////////
 //  Tests
@@ -47,9 +47,8 @@ describe("sweeping a tree that another test is writing into", () => {
 		const root = mkdtempSync(join(tmpdir(), "residue-sweep-"));
 		try {
 			const file = join(root, "a.ts");
-			writeFileSync(file, "// a comment\nconst token = 1;\n");
-			expect(codeOnly(readSwept(file) ?? "")).not.toContain("a comment");
-			expect(codeOnly(readSwept(file) ?? "")).toContain("token");
+			writeFileSync(file, "const token = 1;\n");
+			expect(readSwept(file)).toBe("const token = 1;\n");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

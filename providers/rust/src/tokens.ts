@@ -1,13 +1,26 @@
-import type { OffsetRange } from "@nyaa-lexicon/protocol";
+import type { OffsetRange, Range } from "@nyaa-lexicon/protocol";
 import { Cursor, type CursorSpan, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "./cursor.js";
 import type { CommentSpan } from "./model.js";
 
 export type RustTokenKind = "identifier" | "number" | "string" | "char" | "lifetime" | "symbol";
 
+/** Lexed number parts, underscores kept. */
+export interface RustNumber {
+	base: 2 | 8 | 10 | 16;
+	integer: string;
+	/** Empty for `1.`. */
+	fraction?: string;
+	exponent?: { sign: "" | "+" | "-"; digits: string };
+	suffix: string;
+}
+
 export interface RustToken extends CursorSpan {
 	kind: RustTokenKind;
 	value: string;
 	raw: string;
+	number?: RustNumber;
+	/** Byte or C literal prefix. */
+	prefix?: "b" | "c";
 }
 
 export interface ScanDiagnostic {
@@ -23,9 +36,12 @@ interface ScanComments {
 
 export interface ScanResult {
 	tokens: RustToken[];
+	/** Each says whether a code token shares its first and last lines. */
 	comments: CommentSpan[];
 	/** Each comment's UTF-16 offsets, in source order. */
 	commentOffsets: OffsetRange[];
+	/** Lines no token or comment touches. */
+	blankLines: number[];
 	diagnostics: ScanDiagnostic[];
 	lineTokens: Map<number, RustToken[]>;
 }
@@ -72,22 +88,17 @@ export const KEYWORDS = new Set([
 	"yield",
 ]);
 
+/** Keywords that still end an operand. */
+export const OPERAND_WORDS = new Set(["self", "Self", "true", "false", "crate", "super", "await"]);
+
 export function isValueToken(token: RustToken | undefined, value: string): boolean {
 	return token !== undefined && (token.kind === "symbol" || token.kind === "identifier") && token.value === value;
-}
-
-export function angleDelta(token: RustToken): number {
-	if (token.kind !== "symbol") return 0;
-	if (token.value === "<") return 1;
-	if (token.value === "<<" || token.value === "<<=") return 2;
-	if (token.value === ">") return -1;
-	if (token.value === ">>" || token.value === ">>=") return -2;
-	return 0;
 }
 
 const MULTI_SYMBOLS = [
 	">>=",
 	"<<=",
+	"...",
 	"..=",
 	"=>",
 	"->",
@@ -135,7 +146,11 @@ function decodeString(text: string): string {
 			continue;
 		}
 		const escaped = cursor.next();
-		if (escaped === "\n") continue;
+		if (escaped === "\n" || (escaped === "\r" && cursor.peek() === "\n")) {
+			// Continuation skips following whitespace.
+			cursor.readWhile((next) => next === " " || next === "\t" || next === "\n" || next === "\r");
+			continue;
+		}
 		if (escaped === "x") {
 			const hex = cursor.next() + cursor.next();
 			const codePoint = Number.parseInt(hex, 16);
@@ -231,7 +246,6 @@ function scanQuoted(
 			if (cursor.good()) cursor.next();
 			continue;
 		}
-		if (character === "\r") break;
 		cursor.next();
 	}
 	const bodyEnd = cursor.offset;
@@ -246,30 +260,31 @@ function scanQuoted(
 	return makeToken(source, quote === '"' ? "string" : "char", decodeString(body), span);
 }
 
-function tryCharacter(source: string, cursor: Cursor): RustToken | null {
+/** rustc's char literal. Null if unterminated. */
+function tryCharacter(source: string, cursor: Cursor, prefixLength: number): RustToken | null {
 	const mark = cursor.mark();
-	cursor.next();
-	let guard = -1;
-	while (cursor.good() && cursor.peek() !== "\n") {
-		if (cursor.offset <= guard) throw new Error("character reader failed to advance");
-		guard = cursor.offset;
-		if (cursor.peek() === "\\") {
-			cursor.next();
-			if (cursor.good()) cursor.next();
-			continue;
-		}
-		if (cursor.peek() === "'") {
-			cursor.next();
-			const span = spanFrom(mark, cursor);
-			const bodyStart = mark.offset + 1;
-			const bodyEnd = span.endOffset - 1;
-			return makeToken(source, "char", decodeString(sourceRange(source, bodyStart, bodyEnd)), span);
-		}
-		if (cursor.peek() === " ") break;
+	for (let index = 0; index < prefixLength; index++) cursor.next();
+	const bodyStart = cursor.offset;
+	if (cursor.peek(1) === "'" && cursor.peek() !== "\\") {
 		cursor.next();
+	} else {
+		let guard = -1;
+		while (cursor.good() && cursor.peek() !== "'") {
+			if (cursor.offset <= guard) throw new Error("character reader failed to advance");
+			guard = cursor.offset;
+			const character = cursor.peek();
+			if (character === "/" || (character === "\n" && cursor.peek(1) !== "'")) break;
+			cursor.next();
+			if (character === "\\" && cursor.good()) cursor.next();
+		}
 	}
-	cursor.rewind(mark);
-	return null;
+	if (cursor.peek() !== "'") {
+		cursor.rewind(mark);
+		return null;
+	}
+	const bodyEnd = cursor.offset;
+	cursor.next();
+	return makeToken(source, "char", decodeString(sourceRange(source, bodyStart, bodyEnd)), spanFrom(mark, cursor));
 }
 
 function isLifetime(cursor: Cursor): boolean {
@@ -365,28 +380,99 @@ function scanBlockComment(source: string, cursor: Cursor, comments: ScanComments
 	diagnostics.push({ message: "block comment has no closing delimiter", span: spanFrom(mark, cursor) });
 }
 
-function scanNumber(cursor: Cursor): string {
-	let value = "";
+/** Whitespace or one comment. */
+function scanTrivia(source: string, cursor: Cursor, comments: ScanComments, diagnostics: ScanDiagnostic[]): boolean {
+	if (/\s/u.test(cursor.peek())) {
+		cursor.next();
+		return true;
+	}
+	if (matches(cursor, "//")) {
+		scanLineComment(source, cursor, comments);
+		return true;
+	}
+	if (matches(cursor, "/*")) {
+		scanBlockComment(source, cursor, comments, diagnostics);
+		return true;
+	}
+	return false;
+}
+
+/** Shebang unless the next token is `[`. */
+function isShebang(source: string, cursor: Cursor): boolean {
+	if (!matches(cursor, "#!")) return false;
+	const mark = cursor.mark();
+	consumeText(cursor, "#!");
+	const skipped: ScanComments = { spans: [], offsets: [] };
 	let guard = -1;
 	while (cursor.good()) {
-		if (cursor.offset <= guard) throw new Error("number reader failed to advance");
+		if (cursor.offset <= guard) throw new Error("shebang lookahead failed to advance");
 		guard = cursor.offset;
-		const character = cursor.peek();
-		if (isAsciiDigit(character) || /[A-Za-z_]/u.test(character)) {
-			value += cursor.next();
-			continue;
-		}
-		if (character === "." && cursor.peek(1) !== ".") {
-			value += cursor.next();
-			continue;
-		}
-		if ((character === "+" || character === "-") && /[eE]/u.test(value.slice(-1))) {
-			value += cursor.next();
-			continue;
-		}
-		break;
+		if (!scanTrivia(source, cursor, skipped, [])) break;
 	}
-	return value;
+	const attribute = cursor.peek() === "[";
+	cursor.rewind(mark);
+	return !attribute;
+}
+
+const BASE_PREFIXES = new Map<string, 2 | 8 | 16>([
+	["b", 2],
+	["o", 8],
+	["x", 16],
+]);
+
+function isHexLetter(character: string): boolean {
+	return (character >= "a" && character <= "f") || (character >= "A" && character <= "F");
+}
+
+/** Binary and octal accept decimal digits. */
+function readDigits(cursor: Cursor, hex: boolean): string {
+	return cursor.readWhile(
+		(character) => character === "_" || isAsciiDigit(character) || (hex && isHexLetter(character)),
+	);
+}
+
+function readExponent(cursor: Cursor): NonNullable<RustNumber["exponent"]> {
+	const character = cursor.peek();
+	const sign = character === "+" || character === "-" ? character : "";
+	if (sign !== "") cursor.next();
+	return { sign, digits: readDigits(cursor, false) };
+}
+
+function readSuffix(cursor: Cursor): string {
+	return isIdentifierStart(cursor.peek()) ? cursor.readWhile(isIdentifierPart) : "";
+}
+
+/** rustc_lexer's number grammar. */
+function scanNumber(cursor: Cursor): RustNumber {
+	const first = cursor.next();
+	const base = first === "0" ? BASE_PREFIXES.get(cursor.peek()) : undefined;
+	let number: RustNumber;
+	if (base === undefined) {
+		number = { base: 10, integer: first + readDigits(cursor, false), suffix: "" };
+	} else {
+		cursor.next();
+		number = { base, integer: readDigits(cursor, base === 16), suffix: "" };
+		// A digitless base literal ends here.
+		if ([...number.integer].every((character) => character === "_")) {
+			number.suffix = readSuffix(cursor);
+			return number;
+		}
+	}
+	const next = cursor.peek(1);
+	// Leaves `1..2` and `1.max()`.
+	if (cursor.peek() === "." && next !== "." && !isIdentifierStart(next)) {
+		cursor.next();
+		number.fraction = isAsciiDigit(cursor.peek()) ? readDigits(cursor, false) : "";
+		if (number.fraction !== "" && (cursor.peek() === "e" || cursor.peek() === "E")) {
+			cursor.next();
+			number.exponent = readExponent(cursor);
+		}
+	} else if (cursor.peek() === "e" || cursor.peek() === "E") {
+		cursor.next();
+		number.exponent = readExponent(cursor);
+	}
+	number.suffix = readSuffix(cursor);
+	return number;
 }
 
 function scanIdentifier(cursor: Cursor): string {
@@ -410,6 +496,38 @@ function addToken(source: string, tokens: RustToken[], lineTokens: Map<number, R
 	lineTokens.set(token.start.line, line);
 }
 
+/** From the nearest code token on each side; comments are not code. */
+function withTrivia(comments: ScanComments, tokens: readonly RustToken[]): CommentSpan[] {
+	let next = 0;
+	return comments.spans.map((comment, at) => {
+		const start = (comments.offsets[at] as OffsetRange).start;
+		while (next < tokens.length && (tokens[next] as RustToken).startOffset < start) next++;
+		const before = tokens[next - 1];
+		const after = tokens[next];
+		return {
+			...comment,
+			codeBefore: before !== undefined && before.end.line === comment.range.start.line,
+			codeAfter: after !== undefined && after.start.line === comment.range.end.line,
+		};
+	});
+}
+
+/** An end at a line's first column touches only the lines before it. */
+function lastLineOf(range: Range): number {
+	return range.end.character === 0 && range.end.line > range.start.line ? range.end.line - 1 : range.end.line;
+}
+
+/** Lines below `lineCount` no token or comment touches. */
+function blankLinesOf(ranges: readonly Range[], lineCount: number): number[] {
+	const touched = new Uint8Array(lineCount);
+	for (const range of ranges) {
+		for (let line = range.start.line; line <= lastLineOf(range) && line < lineCount; line++) touched[line] = 1;
+	}
+	const blank: number[] = [];
+	for (let line = 0; line < lineCount; line++) if (touched[line] === 0) blank.push(line);
+	return blank;
+}
+
 export function tokenize(source: string): ScanResult {
 	const cursor = new Cursor(source);
 	const tokens: RustToken[] = [];
@@ -418,8 +536,7 @@ export function tokenize(source: string): ScanResult {
 	const lineTokens = new Map<number, RustToken[]>();
 	let guard = -1;
 
-	// A leading `#!` opens a shebang unless it opens an inner attribute.
-	if (source.startsWith("#!") && !source.startsWith("#![")) {
+	if (isShebang(source, cursor)) {
 		const mark = cursor.mark();
 		readToLineEnd(cursor);
 		addComment(source, comments, spanFrom(mark, cursor));
@@ -428,19 +545,8 @@ export function tokenize(source: string): ScanResult {
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("tokenizer failed to advance");
 		guard = cursor.offset;
+		if (scanTrivia(source, cursor, comments, diagnostics)) continue;
 		const character = cursor.peek();
-		if (/\s/u.test(character)) {
-			cursor.next();
-			continue;
-		}
-		if (matches(cursor, "//")) {
-			scanLineComment(source, cursor, comments);
-			continue;
-		}
-		if (matches(cursor, "/*")) {
-			scanBlockComment(source, cursor, comments, diagnostics);
-			continue;
-		}
 		const mark = cursor.mark();
 		if (character === "r" && (cursor.peek(1) === '"' || cursor.peek(1) === "#")) {
 			let offset = 1;
@@ -453,7 +559,7 @@ export function tokenize(source: string): ScanResult {
 		}
 		if ((character === "b" || character === "c") && cursor.peek(1) === '"') {
 			const token = scanQuoted(source, cursor, '"', 2, diagnostics);
-			addToken(source, tokens, lineTokens, token);
+			addToken(source, tokens, lineTokens, { ...token, prefix: character });
 			continue;
 		}
 		if ((character === "b" || character === "c") && cursor.peek(1) === "r") {
@@ -461,7 +567,14 @@ export function tokenize(source: string): ScanResult {
 			while (cursor.peek(offset) === "#") offset++;
 			if (cursor.peek(offset) === '"') {
 				const token = scanRawString(source, cursor, 2, diagnostics);
-				addToken(source, tokens, lineTokens, token);
+				addToken(source, tokens, lineTokens, { ...token, prefix: character });
+				continue;
+			}
+		}
+		if (character === "b" && cursor.peek(1) === "'") {
+			const token = tryCharacter(source, cursor, 2);
+			if (token !== null) {
+				addToken(source, tokens, lineTokens, { ...token, prefix: character });
 				continue;
 			}
 		}
@@ -475,7 +588,7 @@ export function tokenize(source: string): ScanResult {
 				addToken(source, tokens, lineTokens, scanLifetime(source, cursor));
 				continue;
 			}
-			const token = tryCharacter(source, cursor);
+			const token = tryCharacter(source, cursor, 1);
 			if (token !== null) {
 				addToken(source, tokens, lineTokens, token);
 				continue;
@@ -488,9 +601,10 @@ export function tokenize(source: string): ScanResult {
 			continue;
 		}
 		if (isAsciiDigit(character)) {
-			const value = scanNumber(cursor);
+			const number = scanNumber(cursor);
 			const span = spanFrom(mark, cursor);
-			addToken(source, tokens, lineTokens, makeToken(source, "number", value, span));
+			const token = makeToken(source, "number", sourceRange(source, span.startOffset, span.endOffset), span);
+			addToken(source, tokens, lineTokens, { ...token, number });
 			continue;
 		}
 		const symbol = MULTI_SYMBOLS.find((candidate) => matches(cursor, candidate));
@@ -505,5 +619,15 @@ export function tokenize(source: string): ScanResult {
 		addToken(source, tokens, lineTokens, makeToken(source, "symbol", value, span));
 	}
 
-	return { tokens, comments: comments.spans, commentOffsets: comments.offsets, diagnostics, lineTokens };
+	// A final line break ends the last line rather than opening another.
+	const lineCount = cursor.column > 0 ? cursor.line + 1 : cursor.line;
+	const ranges = [...tokens, ...comments.spans.map((comment) => comment.range)];
+	return {
+		tokens,
+		comments: withTrivia(comments, tokens),
+		commentOffsets: comments.offsets,
+		blankLines: blankLinesOf(ranges, lineCount),
+		diagnostics,
+		lineTokens,
+	};
 }

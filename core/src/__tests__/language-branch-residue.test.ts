@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { sourceFiles } from "@nyaa-lexicon/protocol";
+import { parsedFiles, stringsIn } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -51,18 +53,15 @@ describe("core does not branch on language", () => {
 	it("has no quoted language name anywhere in core or formats", () => {
 		const offenders: string[] = [];
 
-		for (const file of SWEPT.flatMap((dir) => sourceFiles(dir, SKIP))) {
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source).toLowerCase();
-			for (const name of LANGUAGE_NAMES) {
-				// The NAME, not the comparison. Requiring an adjacent `===` or `case` let a branch through
-				// under any other spelling: a name held in a constant, a `startsWith`, an object key. There
-				// is no legitimate quoted language name here, so the string itself is the violation.
-				const escaped = name.replace(/[#+.*]/g, "\\$&");
-				const pattern = new RegExp(`["'\`]${escaped}["'\`]`);
-				if (pattern.test(code)) offenders.push(`${file}: ${name}`);
-			}
+		for (const { file, source } of SWEPT.flatMap((dir) => parsedFiles(dir, SKIP))) {
+			// Match the quoted name itself: adjacent `===` or `case` checks miss constants, `startsWith` calls or object keys.
+			// No quoted language name is legitimate here.
+			const quoted = new Set(
+				stringsIn(source)
+					.filter(({ node }) => ts.isStringLiteralLike(node))
+					.map(({ text }) => text.toLowerCase()),
+			);
+			for (const name of LANGUAGE_NAMES) if (quoted.has(name)) offenders.push(`${file}: ${name}`);
 		}
 
 		expect(

@@ -469,6 +469,42 @@ func run(value: int) -> void:
 	expect(roles("method", "call")[0]?.fromId).toBe(roles("helper", "call")[0]?.fromId);
 });
 
+test("marks a use qualified only when a receiver or path reaches it", () => {
+	const text = `class_name Example
+extends Node
+const Script = preload("res://base.gd")
+enum Mode { IDLE }
+var inner: Outer.Inner
+var count: int = 0
+func run() -> void:
+	count = Mode.IDLE
+	self.count += 1
+	super.run()
+	GameState.reset()
+	var keys = (Mode
+		.keys())
+	var ratio = 1.e5
+`;
+	const references = extractReferencesCore("scripts/qualified.gd", text, composeSymbolId);
+	const qualified = (name: string) =>
+		references.filter((reference) => reference.name === name).map((reference) => reference.qualified);
+
+	expect(references.every((reference) => typeof reference.qualified === "boolean")).toBe(true);
+	// Implicit member, then `self.count +=`.
+	expect(qualified("count")).toEqual([false, true, true]);
+	expect(qualified("Mode")).toEqual([false, false]);
+	expect(qualified("IDLE")).toEqual([true]);
+	expect(qualified("Outer")).toEqual([false]);
+	expect(qualified("Inner")).toEqual([true]);
+	expect(qualified("run")).toEqual([true]);
+	expect(qualified("GameState")).toEqual([false]);
+	expect(qualified("reset")).toEqual([true]);
+	expect(qualified("keys")).toEqual([true]);
+	expect(qualified("Node")).toEqual([false]);
+	expect(qualified("res://base.gd")).toEqual([false]);
+	expect(references.some((reference) => reference.name === "e5" && reference.qualified === true)).toBe(false);
+});
+
 test("declares exactly the reference roles it emits", () => {
 	const handlers = handlersFor(new GDScriptProvider());
 	const info = handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
@@ -520,6 +556,7 @@ func run(target: Node, value: int) -> void:
 	});
 	expect(baseRead?.binding).toEqual(extendsReference?.binding);
 	expect(helperCall?.binding.status).toBe("bound");
+	expect([helperCall?.qualified, memberCall?.qualified, memberWrite?.qualified]).toEqual([false, true, true]);
 	// The bind pass searched and found nothing, so it answers WHY rather than repeating the
 	// parse-time "not implemented": a member hangs off a receiver whose type is unknown.
 	expect(memberCall?.binding).toMatchObject({ status: "unbound", reason: "DynamicallyTyped" });
@@ -655,6 +692,30 @@ func run(path: String) -> void:
 		reason: "RuntimeConstructed",
 		detail: "the loader path is computed at runtime",
 	});
+});
+
+test("reads a loader call from tokens: not a member, not a partial path, and across lines", () => {
+	const provider = started();
+	const text = `func run(saver, name):
+	saver.preload("res://x.gd")
+	var level = load("res://levels/" + name)
+	var scene = ResourceLoader.load("res://scene.tscn")
+const Split = preload(
+	"res://split.gd"
+)
+`;
+	const facts = provider.parseFile({ module: "loaders.gd", contentHash: "loaders", text });
+
+	expect(facts.imports.map((entry) => entry.specifier)).toEqual([
+		"res://scene.tscn",
+		"res://split.gd",
+		'load("res://levels/" + name)',
+	]);
+	expect(facts.references.filter((entry) => entry.role === "import").map((entry) => entry.name)).toEqual([
+		"res://scene.tscn",
+		"res://split.gd",
+	]);
+	expect(facts.references.find((entry) => entry.name === "preload")).toMatchObject({ role: "call", qualified: true });
 });
 
 test("resolves script resources and classifies other loader paths honestly", () => {
@@ -794,6 +855,103 @@ var engine: Node2D
 		symbolId: baseDeclaration?.symbolId,
 	});
 	expect(typeOf("engine")).toEqual({ status: "known", display: "Node2D", provenance: "declared" });
+});
+
+test("binds a preloaded type only from a real const, never from string text", () => {
+	const provider = started();
+	provider.parseFile({ module: "enemy.gd", contentHash: "enemy", text: "extends Node\n" });
+	const quoted = `var doc = """
+const Enemy = preload("res://enemy.gd")
+"""
+var foe: Enemy
+`;
+	const real = 'const Enemy = preload("res://enemy.gd")\nvar foe: Enemy\n';
+	const typeOfFoe = (module: string, text: string) => {
+		const facts = provider.parseFile({ module, contentHash: module, text });
+		const foe = facts.declarations.find((declaration) => declaration.name === "foe");
+		return provider.typeOf({ symbolId: foe?.symbolId ?? "" });
+	};
+
+	expect(typeOfFoe("quoted.gd", quoted)).toEqual({ status: "known", display: "Enemy", provenance: "declared" });
+	expect(typeOfFoe("real.gd", real)).toMatchObject({ symbolId: expect.stringContaining("enemy.gd") });
+});
+
+test("infers a member call on a constructed value as unknown, not as the constructed type", () => {
+	const provider = started();
+	provider.parseFile({ module: "enemy.gd", contentHash: "enemy", text: "class_name Enemy\nextends Node\n" });
+	const text = "var named = Enemy.new().get_name()\nvar made = Enemy.new()\nvar negative = -5\n";
+	const facts = provider.parseFile({ module: "calls.gd", contentHash: "calls", text });
+	const typeOf = (name: string) => {
+		const declaration = facts.declarations.find((candidate) => candidate.name === name);
+		return provider.typeOf({ symbolId: declaration?.symbolId ?? "" });
+	};
+
+	expect(typeOf("named")).toEqual({
+		status: "unknown",
+		reason: "NotImplemented",
+		detail: "the expression is outside the supported inference subset",
+	});
+	expect(typeOf("made")).toMatchObject({ status: "inferred", display: "Enemy" });
+	expect(typeOf("negative")).toEqual({ status: "inferred", display: "int", basis: "initializer" });
+});
+
+test("parses node-path casts, accessor-closed initializers and bare enum members", () => {
+	const provider = started();
+	provider.parseFile({ module: "lazy.gd", contentHash: "lazy", text: "class_name LazyLoader\nextends Node\n" });
+	const text = `@onready var tile_mode := $TileMode as Node2D
+@onready var sort_button := %Sort as MenuButton
+var loader = LazyLoader.new("res://x.gd"):
+	get: return loader
+enum State { INSTALLED, AVAILABLE = 5 }
+`;
+	const facts = provider.parseFile({ module: "nodes.gd", contentHash: "nodes", text });
+	const typeOf = (name: string) => {
+		const declaration = facts.declarations.find((candidate) => candidate.name === name);
+		return provider.typeOf({ symbolId: declaration?.symbolId ?? "" });
+	};
+
+	expect(typeOf("tile_mode")).toMatchObject({ status: "inferred", display: "Node2D" });
+	expect(typeOf("sort_button")).toMatchObject({ status: "inferred", display: "MenuButton" });
+	expect(typeOf("loader")).toMatchObject({ status: "inferred", display: "LazyLoader" });
+	expect(typeOf("INSTALLED")).toMatchObject({ status: "unknown", reason: "DynamicallyTyped" });
+	expect(typeOf("AVAILABLE")).toEqual({ status: "inferred", display: "int (5)", basis: "initializer" });
+});
+
+test("reads statements from tokens: a docstring line and an inline branch colon", () => {
+	const provider = started();
+	const text = `func documented():
+	var note = """
+unindented
+"""
+	return 1
+
+func inline_branch(value):
+	if value: return {"a": 1}
+	return 2
+
+func either(a, b):
+	if(a == null):
+		return b
+	else:
+		return a
+`;
+	const facts = provider.parseFile({ module: "statements.gd", contentHash: "statements", text });
+	const typeOf = (name: string) => {
+		const declaration = facts.declarations.find((candidate) => candidate.name === name);
+		return provider.typeOf({ symbolId: declaration?.symbolId ?? "" });
+	};
+
+	expect(typeOf("documented")).toEqual({ status: "inferred", display: "int (1)", basis: "1 return statement" });
+	expect(typeOf("either")).toEqual({
+		status: "unknown",
+		reason: "DynamicallyTyped",
+		detail: "the value of b is not statically known",
+	});
+	expect(typeOf("inline_branch")).toEqual({
+		status: "inferred",
+		display: "Dictionary | int (2)",
+		basis: "2 return statements",
+	});
 });
 
 test("infers complete return unions and implicit null", () => {
@@ -1091,6 +1249,38 @@ func sample(first, second):
 
 	expect(sample?.metrics).toEqual({ lines: 8, parameters: 2, nesting: 1, branches: 4 });
 	expect(value?.metrics).toEqual({ lines: 1 });
+});
+
+test("counts branches from tokens: a parenthesized condition, a conditional expression and short-circuits", () => {
+	const provider = started();
+	const text = `func sample(a, b):
+	if(a):
+		return 1
+	var t = 1 if a else 2
+	return a and b or t
+`;
+	const facts = provider.parseFile({ module: "branches.gd", contentHash: "branches", text });
+	const sample = facts.declarations.find((declaration) => declaration.name === "sample");
+
+	expect(sample?.metrics).toEqual({ lines: 5, parameters: 2, nesting: 1, branches: 5 });
+});
+
+test("reads numbers and string prefixes as whole tokens, not as names", () => {
+	const text = 'var a = 0xFF\nvar b = 1e5 + 1.e5\nvar c = r"x"\nvar d = a &&"y"\n';
+	const names = extractReferencesCore("scripts/tokens.gd", text, composeSymbolId).map((reference) => reference.name);
+
+	expect(names).toEqual(["a"]);
+});
+
+test("a string literal owns its prefix and a raw string keeps its escapes", () => {
+	const provider = started();
+	const text = 'var raw = r"a\\nb"\nvar both = a &&"x"\n';
+	const facts = provider.parseFile({ module: "prefix.gd", contentHash: "prefix", text });
+
+	expect(facts.literals.map((literal) => ({ value: literal.value, start: literal.range.start }))).toEqual([
+		{ value: "a\\nb", start: { line: 0, character: 10 } },
+		{ value: "x", start: { line: 1, character: 15 } },
+	]);
 });
 
 // Both inputs below are pathological but legal: the path text also occurs EARLIER in the same

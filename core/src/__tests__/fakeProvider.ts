@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+	coordinatesOf,
 	type Declaration,
 	type Import,
 	METHOD_SCHEMAS,
@@ -12,6 +13,7 @@ import {
 import { settleDeclaredTiers } from "../declaredTiers";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
 import { type HeadReader, type ProviderClaims, routeModule, routingContextOf } from "../routing";
+import { fakeClasses, fakeImports } from "./fakeGrammar";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -60,33 +62,25 @@ export const FAKE_CLAIMS: ProviderClaims = { providerId: "fake", language: "fake
 
 /** Classes with the span of their body, so two identical bodies digest alike and an edited one does not. */
 export function parseClasses(module: string, text: string): Declaration[] {
-	const lines = text.split("\n");
-	const out: Declaration[] = [];
-	for (const [line, source] of lines.entries()) {
-		const match = /^export class ([A-Za-z_$][\w$]*)/.exec(source);
-		if (match === null) continue;
-		let end = line;
-		while (end < lines.length - 1 && !(lines[end] as string).includes("}")) end++;
-		const name = match[1] as string;
-		out.push({
-			symbolId: `lexicon fake ${module} ${name}#`,
-			kind: "class",
-			name,
-			range: { start: { line, character: 0 }, end: { line: end, character: (lines[end] as string).length } },
-			selectionRange: { start: { line, character: 13 }, end: { line, character: 13 + name.length } },
-			visibility: "public",
-			exported: true,
-		});
-	}
-	return out;
+	const coordinates = coordinatesOf(text);
+	const rangeOf = (start: number, end: number) => {
+		const range = coordinates.rangeAt(start, end);
+		if (range === undefined) throw new Error(`unaddressable fake range: ${start} to ${end}`);
+		return range;
+	};
+	return fakeClasses(text).map((found) => ({
+		symbolId: `lexicon fake ${module} ${found.name}#`,
+		kind: "class",
+		name: found.name,
+		range: rangeOf(found.start, found.end),
+		selectionRange: rangeOf(found.nameStart, found.nameStart + found.name.length),
+		visibility: "public",
+		exported: true,
+	}));
 }
 
 export function importsFrom(text: string): Import[] {
-	return [...text.matchAll(/import\s+["']([^"']+)["']/g)].map((match) => ({
-		specifier: match[1] as string,
-		imported: [],
-		reExport: false,
-	}));
+	return fakeImports(text).map((specifier) => ({ specifier, imported: [], reExport: false }));
 }
 
 /** The default parse: `export class X` declares, `import "./x"` imports, a `SYNTAX` line fails, an outline answers outline. */
@@ -99,6 +93,7 @@ export function parseFake(request: MethodRequest<"parseFile">): MethodResponse<"
 		references: [],
 		imports: importsFrom(request.text),
 		literals: [],
+		// A sentinel anywhere in the text, comments included, not a structure the grammar reads.
 		diagnostics: request.text.includes("SYNTAX") ? [{ severity: "error" as const, message: "syntax error" }] : [],
 	};
 }

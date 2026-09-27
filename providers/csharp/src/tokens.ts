@@ -24,11 +24,23 @@ export interface Token {
 	endOffset: number;
 }
 
+/** Whether a code token shares a comment's first line before it and its last line after it. */
+export interface CommentTrivia {
+	codeBefore: boolean;
+	codeAfter: boolean;
+}
+
 export interface LexedSource {
 	tokens: Token[];
 	literals: Token[];
 	/** Every line and block comment token, in source order. A directive is not a comment. */
 	comments: Token[];
+	/** By comment token, interpolation holes included. */
+	trivia: Map<Token, CommentTrivia>;
+	/** Lines no token touches, dropped conditional branches included. */
+	blankLines: number[];
+	/** Kept tokens right after a dropped conditional branch holding more than line breaks. */
+	droppedBefore: Set<Token>;
 	diagnostics: Diagnostic[];
 }
 
@@ -48,6 +60,7 @@ const OPERATORS = [
 	"?.",
 	"++",
 	"--",
+	"->",
 	"+=",
 	"-=",
 	"*=",
@@ -64,6 +77,15 @@ const OPERATORS = [
 
 // Only these take a trailing comment; elsewhere slashes are the directive's own text.
 const TOKENIZED_DIRECTIVES = new Set(["define", "elif", "else", "endif", "if", "line", "nullable", "pragma", "undef"]);
+
+/** Take a pp expression. */
+const CONDITION_DIRECTIVES = new Set(["if", "elif"]);
+
+/** Longest first. */
+const CONDITION_OPERATORS = ["&&", "||", "==", "!=", "!", "(", ")"] as const;
+
+/** Deeper is unknown. */
+const MAX_CONDITION_DEPTH = 64;
 
 /** Escaped, since a raw zero-width character is forbidden in this repo's sources. */
 const BYTE_ORDER_MARK = "\uFEFF";
@@ -105,6 +127,18 @@ function consumeAscii(cursor: Cursor, value: string): void {
 	for (let index = 0; index < value.length; index++) cursor.next();
 }
 
+/** Up to `limit` of `character`. */
+function consumeRun(cursor: Cursor, character: string, limit: number): void {
+	for (let count = 0; count < limit && cursor.peek() === character; count++) cursor.next();
+}
+
+/** Length of the run of `character` at the cursor. */
+function runLength(cursor: Cursor, character: string): number {
+	let length = 0;
+	while (cursor.peek(length) === character) length++;
+	return length;
+}
+
 function decodeEscape(cursor: Cursor): string {
 	const slash = cursor.next();
 	if (slash !== "\\") return slash;
@@ -124,6 +158,33 @@ function decodeEscape(cursor: Cursor): string {
 	if (hex.length !== digits) return `${escaped}${hex}`;
 	const codePoint = Number.parseInt(hex, 16);
 	return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : `${escaped}${hex}`;
+}
+
+/** The line holding its last character. */
+export function lastLine(item: Token): number {
+	return item.end.character === 0 && item.end.line > item.start.line ? item.end.line - 1 : item.end.line;
+}
+
+/** Tracks code and comments in source order to mark each comment's boundary-line trivia. */
+class TriviaTracker {
+	private codeLine = -1;
+	private readonly pending: Token[] = [];
+
+	constructor(private readonly trivia: Map<Token, CommentTrivia>) {}
+
+	comment(item: Token): void {
+		this.trivia.set(item, { codeBefore: item.start.line === this.codeLine, codeAfter: false });
+		this.pending.push(item);
+	}
+
+	code(startLine: number, endLine: number): void {
+		for (const item of this.pending) {
+			const found = this.trivia.get(item);
+			if (found !== undefined) found.codeAfter = startLine === lastLine(item);
+		}
+		this.pending.length = 0;
+		this.codeLine = endLine;
+	}
 }
 
 function readNumber(cursor: Cursor): string {
@@ -158,57 +219,89 @@ function readNumber(cursor: Cursor): string {
 }
 
 /**
- * A hole is code: it nests braces, holds strings of its own, and its comments are comments.
+ * A hole is code: it nests braces, holds strings of its own, and recognizes comments. A colon
+ * outside its groups starts format text through the closing brace.
  *
- * Returns its raw source, opening and closing brace included, since what it renders to is not
+ * Returns raw source with both braces because its rendered value is not
  * known here; the literal's decoded value carries the hole verbatim rather than dropping it.
  */
-function skipInterpolationHole(cursor: Cursor, found: Token[]): string {
+function skipInterpolationHole(
+	cursor: Cursor,
+	found: Token[],
+	trivia: Map<Token, CommentTrivia>,
+	braces: number,
+): string {
 	const holeStart = cursor.offset;
-	let depth = 1;
-	cursor.next();
-	while (cursor.good() && depth > 0) {
+	const tracker = new TriviaTracker(trivia);
+	let nested = 0;
+	let grouped = 0;
+	let format = false;
+	tracker.code(cursor.line, cursor.line);
+	consumeRun(cursor, "{", braces);
+	while (cursor.good()) {
 		const before = cursor.offset;
 		const character = cursor.peek();
-		if (character === "{") depth++;
-		if (character === "}") depth--;
-		if (sameAscii(cursor, "//")) {
-			const start = cursor.mark();
-			cursor.readWhile((item) => !isNewline(item));
-			found.push(token(cursor, "comment", "", start));
-			continue;
+		if (character === "}" && nested === 0) {
+			const line = cursor.line;
+			consumeRun(cursor, "}", braces);
+			tracker.code(line, line);
+			break;
 		}
-		if (sameAscii(cursor, "/*")) {
-			const start = cursor.mark();
-			consumeAscii(cursor, "/*");
-			while (cursor.good() && !sameAscii(cursor, "*/")) cursor.next();
-			if (sameAscii(cursor, "*/")) consumeAscii(cursor, "*/");
-			found.push(token(cursor, "comment", "", start));
-			continue;
-		}
-		if (character === '"' || character === "'" || character === "$" || character === "@") {
-			const nested = readPrefixString(cursor);
-			if (nested !== null) {
-				found.push(...nested.holeComments);
+		if (!format) {
+			if (character === ":" && nested === 0 && grouped === 0) format = true;
+			else if (character === "{") nested++;
+			else if (character === "}") nested--;
+			else if (character === "(" || character === "[") grouped++;
+			else if ((character === ")" || character === "]") && grouped > 0) grouped--;
+			if (sameAscii(cursor, "//")) {
+				const start = cursor.mark();
+				cursor.readWhile((item) => !isNewline(item));
+				const comment = token(cursor, "comment", "", start);
+				found.push(comment);
+				tracker.comment(comment);
 				continue;
 			}
+			if (sameAscii(cursor, "/*")) {
+				const start = cursor.mark();
+				consumeAscii(cursor, "/*");
+				while (cursor.good() && !sameAscii(cursor, "*/")) cursor.next();
+				if (sameAscii(cursor, "*/")) consumeAscii(cursor, "*/");
+				const comment = token(cursor, "comment", "", start);
+				found.push(comment);
+				tracker.comment(comment);
+				continue;
+			}
+			if (character === '"' || character === "'" || character === "$" || character === "@") {
+				const line = cursor.line;
+				const inner = readPrefixString(cursor, trivia);
+				if (inner !== null) {
+					found.push(...inner.holeComments);
+					tracker.code(line, cursor.line);
+					continue;
+				}
+			}
 		}
-		cursor.next();
+		const line = cursor.line;
+		const consumed = cursor.next();
+		if (!isWhitespace(consumed) && !isNewline(consumed)) tracker.code(line, line);
 		if (cursor.offset <= before) throw new Error("interpolation scan failed to advance");
 	}
 	return cursor.textBetween(holeStart, cursor.offset);
 }
 
+/** `dollars` is the `$` count; zero is not interpolated. */
 function readString(
 	cursor: Cursor,
 	quote: '"' | "'",
 	verbatim: boolean,
 	rawString: boolean,
-	interpolated: boolean,
+	dollars: number,
+	trivia: Map<Token, CommentTrivia>,
 ): { value: string; closed: boolean; invalidNewline: boolean; holeComments: Token[] } {
 	let value = "";
 	let invalidNewline = false;
 	const holeComments: Token[] = [];
+	const interpolated = dollars > 0;
 	if (rawString) {
 		// Closes only on a run as long as the opener; a shorter run is content.
 		let opener = 0;
@@ -217,6 +310,15 @@ function readString(
 			opener++;
 		}
 		while (cursor.good()) {
+			if (interpolated && cursor.peek() === "{") {
+				// A hole opens with the dollar count's last braces; fewer are text.
+				const run = runLength(cursor, "{");
+				const content = run < dollars ? run : run - dollars;
+				value += "{".repeat(content);
+				consumeRun(cursor, "{", content);
+				if (run >= dollars) value += skipInterpolationHole(cursor, holeComments, trivia, dollars);
+				continue;
+			}
 			if (cursor.peek() !== quote) {
 				value += cursor.next();
 				continue;
@@ -254,7 +356,7 @@ function readString(
 				value += "{";
 				continue;
 			}
-			value += skipInterpolationHole(cursor, holeComments);
+			value += skipInterpolationHole(cursor, holeComments, trivia, 1);
 			continue;
 		}
 		if (interpolated && cursor.peek() === "}" && cursor.peek(1) === "}") {
@@ -273,7 +375,10 @@ function readString(
 	return { value, closed: false, invalidNewline, holeComments };
 }
 
-function readPrefixString(cursor: Cursor): {
+function readPrefixString(
+	cursor: Cursor,
+	trivia: Map<Token, CommentTrivia>,
+): {
 	value: string;
 	quote: '"' | "'";
 	rawString: boolean;
@@ -283,10 +388,10 @@ function readPrefixString(cursor: Cursor): {
 } | null {
 	const start = cursor.mark();
 	let verbatim = false;
-	let interpolated = false;
+	let dollars = 0;
 	while (cursor.peek() === "$" || cursor.peek() === "@") {
 		if (cursor.next() === "@") verbatim = true;
-		else interpolated = true;
+		else dollars++;
 	}
 	const quote = cursor.peek();
 	if (quote !== '"' && quote !== "'") {
@@ -294,7 +399,7 @@ function readPrefixString(cursor: Cursor): {
 		return null;
 	}
 	const rawString = !verbatim && quote === '"' && cursor.peek(1) === '"' && cursor.peek(2) === '"';
-	const string = readString(cursor, quote, verbatim, rawString, interpolated);
+	const string = readString(cursor, quote, verbatim, rawString, dollars, trivia);
 	return { ...string, quote, rawString };
 }
 
@@ -331,11 +436,132 @@ interface ConditionalGroup {
 	closed: boolean;
 }
 
-function conditionIsFalse(text: string, token: Token): boolean {
-	let condition = text.slice(token.startOffset, token.endOffset);
-	condition = condition.replace(/^\s*#\s*if\b/u, "");
-	condition = condition.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gu, "").trim();
-	return condition === "false";
+interface ConditionToken {
+	kind: "name" | "operator";
+	value: string;
+}
+
+/** To the quote or line end. */
+function skipDirectiveString(cursor: Cursor): void {
+	cursor.next();
+	while (cursor.good() && !isNewline(cursor.peek()) && cursor.peek() !== '"') cursor.next();
+	if (cursor.peek() === '"') cursor.next();
+}
+
+/** Tokenized stops at `//`. */
+function skipDirectiveText(cursor: Cursor, tokenized: boolean): void {
+	while (cursor.good() && !isNewline(cursor.peek())) {
+		if (tokenized && sameAscii(cursor, "//")) break;
+		if (tokenized && cursor.peek() === '"') skipDirectiveString(cursor);
+		else cursor.next();
+	}
+}
+
+/** Undefined on a non-pp token. */
+function readCondition(cursor: Cursor): ConditionToken[] | undefined {
+	const found: ConditionToken[] = [];
+	let valid = true;
+	while (cursor.good() && !isNewline(cursor.peek()) && !sameAscii(cursor, "//")) {
+		const before = cursor.offset;
+		const character = cursor.peek();
+		if (isWhitespace(character)) {
+			cursor.next();
+		} else if (sameAscii(cursor, "/*")) {
+			consumeAscii(cursor, "/*");
+			while (cursor.good() && !isNewline(cursor.peek()) && !sameAscii(cursor, "//") && !sameAscii(cursor, "*/"))
+				cursor.next();
+			if (sameAscii(cursor, "*/")) consumeAscii(cursor, "*/");
+			else valid = false;
+		} else if (isIdentifierStart(character)) {
+			found.push({ kind: "name", value: cursor.readWhile(isIdentifierPart) });
+		} else if (character === '"') {
+			skipDirectiveString(cursor);
+			valid = false;
+		} else {
+			const operator = CONDITION_OPERATORS.find((candidate) => sameAscii(cursor, candidate));
+			if (operator === undefined) {
+				cursor.next();
+				valid = false;
+			} else {
+				consumeAscii(cursor, operator);
+				found.push({ kind: "operator", value: operator });
+			}
+		}
+		if (cursor.offset <= before) throw new Error("condition reader failed to advance");
+	}
+	return valid ? found : undefined;
+}
+
+/** Symbols evaluate unknown. */
+class ConditionEvaluator {
+	private index = 0;
+	private valid = true;
+
+	constructor(private readonly items: ConditionToken[]) {}
+
+	/** Undefined: unknown or invalid. */
+	value(): boolean | undefined {
+		const value = this.or(0);
+		return this.valid && this.index === this.items.length ? value : undefined;
+	}
+
+	private or(depth: number): boolean | undefined {
+		let value = this.and(depth);
+		while (this.accept("||")) {
+			const right = this.and(depth);
+			value = value === true || right === true ? true : value === false && right === false ? false : undefined;
+		}
+		return value;
+	}
+
+	private and(depth: number): boolean | undefined {
+		let value = this.equality(depth);
+		while (this.accept("&&")) {
+			const right = this.equality(depth);
+			value = value === false || right === false ? false : value === true && right === true ? true : undefined;
+		}
+		return value;
+	}
+
+	private equality(depth: number): boolean | undefined {
+		let value = this.unary(depth);
+		for (;;) {
+			const equal = this.accept("==") ? true : this.accept("!=") ? false : undefined;
+			if (equal === undefined) return value;
+			const right = this.unary(depth);
+			value = value === undefined || right === undefined ? undefined : (value === right) === equal;
+		}
+	}
+
+	private unary(depth: number): boolean | undefined {
+		if (depth > MAX_CONDITION_DEPTH) {
+			this.valid = false;
+			return undefined;
+		}
+		if (this.accept("!")) {
+			const operand = this.unary(depth + 1);
+			return operand === undefined ? undefined : !operand;
+		}
+		if (this.accept("(")) {
+			const inner = this.or(depth + 1);
+			if (!this.accept(")")) this.valid = false;
+			return inner;
+		}
+		const item = this.items[this.index];
+		if (item?.kind !== "name") {
+			this.valid = false;
+			return undefined;
+		}
+		this.index++;
+		return item.value === "true" ? true : item.value === "false" ? false : undefined;
+	}
+
+	private accept(operator: string): boolean {
+		const item = this.items[this.index];
+		if (item?.kind !== "operator" || item.value !== operator) return false;
+		this.index++;
+		return true;
+	}
 }
 
 function branchIsWhole(
@@ -372,13 +598,36 @@ function closedThroughout(group: ConditionalGroup): boolean {
 	return true;
 }
 
+/** Every main-stream comment's trivia; a directive is code. */
+function trackTrivia(tokens: Token[], trivia: Map<Token, CommentTrivia>): void {
+	const tracker = new TriviaTracker(trivia);
+	for (const item of tokens) {
+		if (item.kind === "newline" || item.kind === "eof") continue;
+		if (item.kind === "comment" || item.kind === "doc") tracker.comment(item);
+		else tracker.code(item.start.line, lastLine(item));
+	}
+}
+
+/** The empty remainder after a final line break is not a line. */
+function blankLinesOf(tokens: Token[], end: Token): number[] {
+	const touched = new Set<number>();
+	for (const item of tokens) {
+		if (item.kind === "newline" || item.kind === "eof") continue;
+		for (let line = item.start.line; line <= lastLine(item); line++) touched.add(line);
+	}
+	const count = end.start.line + (end.start.character > 0 ? 1 : 0);
+	const blank: number[] = [];
+	for (let line = 0; line < count; line++) if (!touched.has(line)) blank.push(line);
+	return blank;
+}
+
 function resolveConditionals(
-	text: string,
 	tokens: Token[],
 	literals: Token[],
 	comments: Token[],
 	diagnostics: Diagnostic[],
-): LexedSource {
+	falseConditions: Set<Token>,
+): Omit<LexedSource, "trivia" | "blankLines"> {
 	const directiveIndexes = tokens.flatMap((token, index) => (token.kind === "directive" ? [index] : []));
 	const directiveTokens = new Set(directiveIndexes);
 	const protectedTokens = new Set<number>();
@@ -444,7 +693,7 @@ function resolveConditionals(
 		if (!closedThroughout(group)) continue;
 		const first = tokens[group.ifIndex];
 		if (first === undefined) continue;
-		const activeBranch = conditionIsFalse(text, first) ? 1 : 0;
+		const activeBranch = falseConditions.has(first) ? 1 : 0;
 		const allWhole = group.branches.every((branch) => branchIsWhole(tokens, branch, directiveTokens, removed));
 		for (let branchIndex = 0; branchIndex < group.branches.length; branchIndex++) {
 			if ((allWhole && !(activeBranch === 1 && branchIndex === 0)) || (!allWhole && branchIndex === activeBranch))
@@ -457,16 +706,38 @@ function resolveConditionals(
 		}
 	}
 	const removedOffsets = new Set<number>();
-	for (const index of removed) {
-		const token = tokens[index];
-		if (token !== undefined) removedOffsets.add(token.startOffset);
+	const droppedBefore = new Set<Token>();
+	let droppedCode = false;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index] as Token;
+		if (removed.has(index)) {
+			removedOffsets.add(token.startOffset);
+			droppedCode ||= token.kind !== "newline";
+			continue;
+		}
+		if (droppedCode) droppedBefore.add(token);
+		droppedCode = false;
 	}
 	return {
 		tokens: tokens.filter((_token, index) => !removed.has(index)),
 		literals: literals.filter((item) => !removedOffsets.has(item.startOffset)),
-		comments: comments.filter((item) => !removedOffsets.has(item.startOffset)),
+		comments: keptComments(comments, tokens, removed),
+		droppedBefore,
 		diagnostics,
 	};
+}
+
+/** Drops a comment inside a dropped token too, as a hole's comment is inside its string. */
+function keptComments(comments: Token[], tokens: Token[], removed: Set<number>): Token[] {
+	const spans = [...removed].sort((left, right) => left - right).map((index) => tokens[index] as Token);
+	const kept: Token[] = [];
+	let span = 0;
+	for (const item of comments) {
+		while (span < spans.length && (spans[span] as Token).endOffset <= item.startOffset) span++;
+		const covering = spans[span];
+		if (covering === undefined || covering.startOffset > item.startOffset) kept.push(item);
+	}
+	return kept;
 }
 
 export function tokenize(
@@ -478,6 +749,8 @@ export function tokenize(
 	const literals: Token[] = [];
 	const comments: Token[] = [];
 	const diagnostics: Diagnostic[] = [];
+	const falseConditions = new Set<Token>();
+	const trivia = new Map<Token, CommentTrivia>();
 	const collectLiterals = options.collectLiterals ?? true;
 	const collectComments = options.collectComments ?? true;
 	const addComment = (item: Token): void => {
@@ -534,22 +807,16 @@ export function tokenize(
 			cursor.next();
 			cursor.readWhile(isWhitespace);
 			const keyword = cursor.readWhile(isIdentifierPart);
-			const tokenized = TOKENIZED_DIRECTIVES.has(keyword);
-			while (cursor.good() && !isNewline(cursor.peek())) {
-				if (!tokenized) {
-					cursor.next();
-					continue;
-				}
-				if (sameAscii(cursor, "//")) break;
-				if (cursor.peek() === '"') {
-					cursor.next();
-					while (cursor.good() && !isNewline(cursor.peek()) && cursor.peek() !== '"') cursor.next();
-					if (cursor.peek() === '"') cursor.next();
-					continue;
-				}
-				cursor.next();
+			let value: boolean | undefined;
+			if (CONDITION_DIRECTIVES.has(keyword)) {
+				const condition = readCondition(cursor);
+				value = condition === undefined ? undefined : new ConditionEvaluator(condition).value();
+			} else {
+				skipDirectiveText(cursor, TOKENIZED_DIRECTIVES.has(keyword));
 			}
-			tokens.push(token(cursor, "directive", keyword, start));
+			const directive = token(cursor, "directive", keyword, start);
+			tokens.push(directive);
+			if (keyword === "if" && value === false) falseConditions.add(directive);
 			if (sameAscii(cursor, "//")) {
 				const commentStart = cursor.mark();
 				cursor.readWhile((item) => !isNewline(item));
@@ -562,7 +829,7 @@ export function tokenize(
 			tokens.push(token(cursor, "identifier", value, start));
 		} else if (character === '"' || character === "'" || character === "$" || character === "@") {
 			const start = cursor.mark();
-			const parsed = readPrefixString(cursor);
+			const parsed = readPrefixString(cursor, trivia);
 			if (parsed === null) {
 				cursor.next();
 				tokens.push(token(cursor, "punctuation", character, start));
@@ -604,8 +871,11 @@ export function tokenize(
 		}
 		if (cursor.offset <= before) throw new Error("tokenizer failed to advance");
 	}
-	tokens.push(token(cursor, "eof", "", cursor.mark()));
-	return resolveConditionals(text, tokens, literals, comments, diagnostics);
+	const end = token(cursor, "eof", "", cursor.mark());
+	tokens.push(end);
+	trackTrivia(tokens, trivia);
+	const blankLines = blankLinesOf(tokens, end);
+	return { ...resolveConditionals(tokens, literals, comments, diagnostics, falseConditions), trivia, blankLines };
 }
 
 export function positionRange(token: Token): Range {

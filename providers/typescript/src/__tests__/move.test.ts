@@ -249,10 +249,85 @@ describe("move edits", () => {
 	// can already reach through an existing import joins it instead.
 	it("folds a new name into an existing import for the same specifier", () => {
 		const target = 'import { existing } from "./source";\n\nexport const kept = 1;\n';
-		const body = "export function moved() { return sibling; }\n";
-		const response = move(
-			workspace({ "source.ts": "export const sibling = 1;\nexport const existing = 2;\n", "target.ts": target }),
+		for (const name of ["sibling", "$sibling", "café"]) {
+			const body = `export function moved() { return ${name}; }\n`;
+			const response = move(
+				workspace({
+					"source.ts": `export const ${name} = 1;\nexport const existing = 2;\n`,
+					"target.ts": target,
+				}),
+				{
+					module: "target.ts",
+					text: target,
+					exists: true,
+					symbolId: "lexicon typescript source.ts moved.",
+					name: "moved",
+					fromModule: "source.ts",
+					toModule: "target.ts",
+					role: { insertion: { text: body } },
+					importSites: [],
+					dependencies: [
+						{ name, origin: { kind: "sourceModule", symbolId: `source.${name}.`, name, exported: true } },
+					],
+					sites: [],
+				},
+			);
+
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(response.blocked).toEqual([]);
+			expect(applyEdits(target, response.edits)).toEqual({
+				text: `import { existing, ${name} } from "./source";\n\nexport const kept = 1;\n\n${body}`,
+			});
+		}
+	});
+
+	it("folds an aliased name into an existing import for its origin specifier", () => {
+		const target = 'import { existing } from "pkg";\n';
+		const body = "export function moved() { return $local; }\n";
+		const response = move(workspace({ "target.ts": target }), {
+			module: "target.ts",
+			text: target,
+			exists: true,
+			symbolId: "lexicon typescript source.ts moved.",
+			name: "moved",
+			fromModule: "source.ts",
+			toModule: "target.ts",
+			role: { insertion: { text: body } },
+			importSites: [],
+			dependencies: [
+				{
+					name: "$local",
+					origin: {
+						kind: "external",
+						via: { specifier: "pkg", importKind: "named", importedName: "$remote", localName: "$local" },
+					},
+				},
+			],
+			sites: [],
+		});
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(response.blocked).toEqual([]);
+		expect(applyEdits(target, response.edits)).toEqual({
+			text: `import { existing, $remote as $local } from "pkg";\n\n${body}`,
+		});
+	});
+
+	it("keeps default, namespace and type-only forms in their own statement", () => {
+		const target = 'import { existing } from "pkg";\n';
+		const body = "export function moved() { return local; }\n";
+		const cases = [
+			{ via: { importKind: "default" }, statement: 'import local from "pkg";' },
+			{ via: { importKind: "namespace" }, statement: 'import * as local from "pkg";' },
+			{ via: { importKind: "typeOnly" }, statement: 'import type local from "pkg";' },
 			{
+				via: { importKind: "typeOnly", importedName: "Remote" },
+				statement: 'import type { Remote as local } from "pkg";',
+			},
+		] as const;
+
+		for (const { via, statement } of cases) {
+			const response = move(workspace({ "target.ts": target }), {
 				module: "target.ts",
 				text: target,
 				exists: true,
@@ -264,19 +339,17 @@ describe("move edits", () => {
 				importSites: [],
 				dependencies: [
 					{
-						name: "sibling",
-						origin: { kind: "sourceModule", symbolId: "source.sibling.", name: "sibling", exported: true },
+						name: "local",
+						origin: { kind: "external", via: { specifier: "pkg", localName: "local", ...via } },
 					},
 				],
 				sites: [],
-			},
-		);
+			});
 
-		if (response.status !== "ready") throw new Error("move was refused");
-		expect(response.blocked).toEqual([]);
-		expect(applyEdits(target, response.edits)).toEqual({
-			text: `import { existing, sibling } from "./source";\n\nexport const kept = 1;\n\n${body}`,
-		});
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(response.blocked).toEqual([]);
+			expect(applyEdits(target, response.edits)).toEqual({ text: `${target}${statement}\n\n\n${body}` });
+		}
 	});
 
 	it("keeps its own statement when the existing import is type-only", () => {
@@ -308,6 +381,76 @@ describe("move edits", () => {
 		expect(applyEdits(target, response.edits)).toEqual({
 			text: `import type { Shape } from "./source";\nimport { sibling } from "./source";\n\n\n${body}`,
 		});
+	});
+
+	// A byte order mark is whitespace to the scanner, so nothing precedes the first statement.
+	it("breaks the line before a first statement only when a token or comment precedes it there", () => {
+		const bom = String.fromCharCode(0xfeff);
+		const body = "export function moved() { return sibling; }\n";
+		const cases = [
+			{
+				target: `${bom}export const kept = 1;\n`,
+				expected: `${bom}import { sibling } from "./source";\nexport const kept = 1;\n\n${body}`,
+			},
+			{
+				target: "/* lead */ export const kept = 1;\n",
+				expected: `/* lead */ \nimport { sibling } from "./source";\nexport const kept = 1;\n\n${body}`,
+			},
+		];
+
+		for (const { target, expected } of cases) {
+			const response = move(workspace({ "source.ts": "export const sibling = 1;\n", "target.ts": target }), {
+				module: "target.ts",
+				text: target,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: body } },
+				importSites: [],
+				dependencies: [
+					{
+						name: "sibling",
+						origin: { kind: "sourceModule", symbolId: "source.sibling.", name: "sibling", exported: true },
+					},
+				],
+				sites: [],
+			});
+
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(response.blocked).toEqual([]);
+			expect(applyEdits(target, response.edits)).toEqual({ text: expected });
+		}
+	});
+
+	it("appends below the target's last content with one blank line between", () => {
+		const body = "export const moved = 1;\n";
+		const cases = [
+			{ target: "export const kept = 1;\n", expected: `export const kept = 1;\n\n${body}` },
+			{ target: "export const kept = 1;\r\n\r\n", expected: `export const kept = 1;\r\n\r\n${body}` },
+			{ target: "export const kept = 1;\n\t\n", expected: `export const kept = 1;\n\t\n${body}` },
+			{ target: "// only a comment", expected: `// only a comment\n${body}` },
+		];
+
+		for (const { target, expected } of cases) {
+			const response = move(workspace({ "target.ts": target }), {
+				module: "target.ts",
+				text: target,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: body } },
+				importSites: [],
+				dependencies: [],
+				sites: [],
+			});
+
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(applyEdits(target, response.edits)).toEqual({ text: expected });
+		}
 	});
 
 	it("blocks a private sibling with PrivateSibling", () => {

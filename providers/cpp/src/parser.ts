@@ -18,9 +18,10 @@ import {
 	type TypeInfo,
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
+import { bracketDelta, templateAngles } from "./angles.js";
 import { type HeaderKind, headerOf, type TokenSpan } from "./header.js";
 import type { Token } from "./tokens.js";
-import { isSignificant, rangeOfToken, tokenize } from "./tokens.js";
+import { directiveTokenIndexes, isSignificant, rangeOfToken, tokenize } from "./tokens.js";
 
 type Visibility = Declaration["visibility"];
 
@@ -66,6 +67,7 @@ export interface CppReferenceRecord {
 	tokenIndex: number;
 	from: CppDeclarationRecord | null;
 	qualifiedPath: string[];
+	qualified: boolean;
 	templateDependent: boolean;
 }
 
@@ -75,6 +77,7 @@ export interface CppFacts {
 	imports: Import[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines: number[];
 	diagnostics: Diagnostic[];
 	role: FileRole;
 	records: CppDeclarationRecord[];
@@ -123,6 +126,7 @@ interface DraftRecord {
 	parameterNames: Set<string>;
 	parameterSignature: string | undefined;
 	hasBody: boolean;
+	memberInsertLine?: number | undefined;
 }
 
 interface TemplateParameter {
@@ -581,16 +585,21 @@ class StructuralParser {
 	private readonly declarationSpecifierTokenIndexes = new Set<number>();
 	private readonly typeTokenIndexes = new Set<number>();
 	private readonly templateTokenIndexes = new Set<number>();
+	private readonly trailingReturnArrows = new Set<number>();
 	private readonly diagnostics: Diagnostic[];
 	private readonly imports: ImportFact[] = [];
+	/** Offsets of template brackets. */
+	private readonly angles: Set<number>;
 
 	constructor(
 		private readonly module: string,
 		private readonly text: string,
 		private readonly tokens: Token[],
+		private readonly blankLines: number[],
 		diagnostics: Diagnostic[],
 	) {
 		this.diagnostics = diagnostics.map((item) => ({ ...item, path: module }));
+		this.angles = templateAngles(tokens, directiveTokenIndexes(tokens));
 	}
 
 	parse(): void {
@@ -630,6 +639,7 @@ class StructuralParser {
 			imports: this.imports.map((item) => item.imported),
 			literals,
 			comments,
+			blankLines: this.blankLines,
 			diagnostics: this.sortedDiagnostics(),
 			role: fileRoleFor(this.module, [...recordMap.values()]),
 			records: [...recordMap.values()],
@@ -845,7 +855,7 @@ class StructuralParser {
 							descriptors: namePath(draft.parent),
 						}),
 					}),
-			...defined({ metrics: draft.metrics }),
+			...defined({ memberInsertLine: draft.memberInsertLine, metrics: draft.metrics }),
 		};
 		return {
 			declaration,
@@ -863,6 +873,7 @@ class StructuralParser {
 
 	private extractReferences(recordMap: Map<DraftRecord, CppDeclarationRecord>): CppReferenceRecord[] {
 		const references: CppReferenceRecord[] = [];
+		const accessed = this.accessedNames();
 		for (let index = 0; index < this.tokens.length; index++) {
 			const token = tokenAt(this.tokens, index);
 			if (
@@ -882,10 +893,41 @@ class StructuralParser {
 				tokenIndex: index,
 				from,
 				qualifiedPath: this.qualifiedPath(index),
+				// Using-declarations bind names.
+				qualified: accessed.has(index) && role !== "import",
 				templateDependent: from?.templateDependent ?? false,
 			});
 		}
 		return references;
+	}
+
+	/** Operands of `.`, `->` and `::`, outside directives. */
+	private accessedNames(): Set<number> {
+		const directives = directiveTokenIndexes(this.tokens);
+		const names = new Set<number>();
+		let previous: Token | undefined;
+		let pending = false;
+		for (let index = 0; index < this.tokens.length; index++) {
+			const token = tokenAt(this.tokens, index);
+			if (token === undefined || !isSignificant(token) || directives.has(index)) continue;
+			if (pending && token.kind === "identifier") {
+				pending = token.value === "template";
+				if (!pending) names.add(index);
+			} else {
+				pending = token.kind === "punctuation" && this.isAccessor(index, previous);
+			}
+			previous = token;
+		}
+		return names;
+	}
+
+	private isAccessor(index: number, before: Token | undefined): boolean {
+		const value = tokenAt(this.tokens, index)?.text;
+		if (value === "." || value === "::") return true;
+		if (value !== "->" || this.trailingReturnArrows.has(index) || before?.kind !== "identifier") return false;
+		if (before.value === "this") return true;
+		// Could precede trailing returns.
+		return !KEYWORDS.has(before.value) && !TYPE_WORDS.has(before.value) && !isShoutCase(before.value);
 	}
 
 	/** Read from tokens, so a marker inside a string is never one. */
@@ -893,7 +935,12 @@ class StructuralParser {
 		const comments: CommentSpan[] = [];
 		for (const token of this.tokens) {
 			if (token.kind !== "comment") continue;
-			comments.push({ range: rangeOfToken(token), text: token.text });
+			comments.push({
+				range: rangeOfToken(token),
+				text: token.text,
+				codeBefore: token.codeBefore ?? false,
+				codeAfter: token.codeAfter ?? false,
+			});
 		}
 		return comments;
 	}
@@ -1305,6 +1352,7 @@ class StructuralParser {
 				metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 				templateDependent: this.templateDependent(scope, prefix),
 				parameterNames: new Set(),
+				memberInsertLine: this.memberInsertLine(close),
 			});
 		}
 		if (close < 0) this.addDiagnostic("Namespace body is not closed.", open);
@@ -1370,6 +1418,7 @@ class StructuralParser {
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 			templateDependent,
 			parameterNames: new Set(),
+			memberInsertLine: this.memberInsertLine(close),
 		});
 		this.addTemplateParameters(prefix.template, record, scope);
 		this.markClassBases(nameIndex + 1, body);
@@ -1439,6 +1488,7 @@ class StructuralParser {
 			metrics: bodyMetrics(this.tokens, prefix.startIndex, end),
 			templateDependent: this.templateDependent(scope, prefix),
 			parameterNames: new Set(),
+			memberInsertLine: this.memberInsertLine(close),
 		});
 		this.parseEnumerators(body + 1, close < 0 ? limit : close, record, scope);
 		if (close < 0) this.addDiagnostic("Enum body is not closed.", body);
@@ -1816,6 +1866,7 @@ class StructuralParser {
 	): DraftType | undefined {
 		const arrow = this.findNextText(closeIndex, "->", headerEnd + 1);
 		if (arrow >= 0) {
+			this.trailingReturnArrows.add(arrow);
 			const typeIndexes = this.significantIndexes(arrow + 1, headerEnd + 1);
 			for (const typeIndex of typeIndexes)
 				if (tokenAt(this.tokens, typeIndex)?.kind === "identifier") this.typeTokenIndexes.add(typeIndex);
@@ -1842,6 +1893,7 @@ class StructuralParser {
 		let parentheses = 0;
 		let brackets = 0;
 		let braces = 0;
+		let templates = 0;
 		for (let index = startIndex; index <= limit; index++) {
 			const value = tokenAt(this.tokens, index)?.text;
 			if (value === "(") parentheses++;
@@ -1850,7 +1902,10 @@ class StructuralParser {
 			else if (value === "]") brackets = Math.max(0, brackets - 1);
 			else if (value === "{") braces++;
 			else if (value === "}") braces = Math.max(0, braces - 1);
-			const boundary = index === limit || (value === "," && parentheses === 0 && brackets === 0 && braces === 0);
+			else templates = Math.max(0, templates + bracketDelta(tokenAt(this.tokens, index), this.angles));
+			const boundary =
+				index === limit ||
+				(value === "," && parentheses === 0 && brackets === 0 && braces === 0 && templates === 0);
 			if (!boundary) continue;
 			const equals = this.findNextText(segmentStart, "=", index);
 			const nameIndex = this.lastName(segmentStart, equals >= 0 ? equals : index);
@@ -1945,6 +2000,7 @@ class StructuralParser {
 		let parentheses = 0;
 		let brackets = 0;
 		let braces = 0;
+		let templates = 0;
 		for (let index = startIndex; index <= endIndex; index++) {
 			const value = tokenAt(this.tokens, index)?.text;
 			if (value === "(") parentheses++;
@@ -1953,7 +2009,9 @@ class StructuralParser {
 			else if (value === "]") brackets = Math.max(0, brackets - 1);
 			else if (value === "{") braces++;
 			else if (value === "}") braces = Math.max(0, braces - 1);
-			if ((value === "," && parentheses === 0 && brackets === 0 && braces === 0) || index === endIndex) {
+			else templates = Math.max(0, templates + bracketDelta(tokenAt(this.tokens, index), this.angles));
+			const top = parentheses === 0 && brackets === 0 && braces === 0 && templates === 0;
+			if ((value === "," && top) || index === endIndex) {
 				segments.push({ start: segmentStart, end: index });
 				segmentStart = index + 1;
 			}
@@ -2178,7 +2236,17 @@ class StructuralParser {
 	}
 
 	private header(startIndex: number, endIndex: number, kind: HeaderKind, lead?: TokenSpan): string | undefined {
-		return headerOf(this.text, this.tokens, startIndex, endIndex, kind, lead);
+		return headerOf(this.text, this.tokens, startIndex, endIndex, kind, this.angles, lead);
+	}
+
+	/** The closing brace's line when nothing precedes it there; undefined when it is missing or shares its line. */
+	private memberInsertLine(close: number): number | undefined {
+		const closer = tokenAt(this.tokens, close);
+		if (closer === undefined) return undefined;
+		let previous = close - 1;
+		while (tokenAt(this.tokens, previous)?.kind === "newline") previous--;
+		const before = tokenAt(this.tokens, previous);
+		return before === undefined || before.end.line < closer.start.line ? closer.start.line : undefined;
 	}
 
 	private visibilityFor(scope: Scope, modifiers: Set<string>, fallback?: Visibility): Visibility {
@@ -2333,7 +2401,7 @@ class StructuralParser {
 
 export function parseCppFile(module: string, text: string): CppFacts {
 	const source = tokenize(text, module);
-	const parser = new StructuralParser(module, text, source.tokens, source.diagnostics);
+	const parser = new StructuralParser(module, text, source.tokens, source.blankLines, source.diagnostics);
 	parser.parse();
 	return parser.finish();
 }

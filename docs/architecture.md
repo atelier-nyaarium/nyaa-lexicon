@@ -458,8 +458,10 @@ with no safe regular-file hash. The status shape does not distinguish those null
 
 Startup recovery runs before the daemon serves requests. For an unfinished step without a recovery
 intent, it compares each file with its before-image and any recorded output hash. If neither
-matches, it keeps the disk contents and reports a conflict. Recovery removes that unfinished
-step's images, rebinds and step row. Any issue rows remain in transaction status.
+matches, it keeps the disk contents and reports a conflict. Restore also fails on a folder at the
+staging path, a parent link leaving the workspace, or a file used as a parent. Each case reports a
+conflict. The sweep leaves a folder at the staging path in place. Recovery removes that unfinished
+step's images, rebinds, and step row. Any issue rows remain in transaction status.
 
 Undo checks known output hashes before it records an intent. If a crash leaves an undo intent,
 recovery resumes restoring the step images without repeating that hash check. A directory or
@@ -489,9 +491,15 @@ gate, then opens and commits its own. `beginStep` holds each module the step wri
 from modules it only reindexes) to `bases` on the before-images it journals. Nobody holds an `own`
 transaction after a crash: recovery closes it, committed when its step finalized and reverted
 otherwise. A throw inside the step settles its `own` transaction the same way before answering: a
-refusal when it reverted, the throw when a finalized step committed. Every step journals its
-planned-text hash at begin. Recovery can restore a write that reached disk before `completeStep`
-records the disk state.
+refusal when it reverted, the throw when a finalized step committed.
+
+A plan declares each write as `{ module, base, text }`. `base` is the disk hash, or `null` when the
+file is absent. `text` is the full replacement. Plans contain no apply closures, and writers do not
+derive edits again. Inside the gate, the executor checks each base and journals each planned-text
+hash at `beginStep`. It writes each file only if disk still matches its base. If an editor changes a
+file first, the step releases it. If the step claimed its baseline, the file is also untracked, so
+undo and revert leave it alone. The step undoes files already written. Recovery can restore a write
+that reached disk before `completeStep` records the disk state.
 
 ### Closing and the settlement ledger
 
@@ -535,11 +543,11 @@ is one whose real path leaves the workspace through a link.
 Text bound for a module passes `writableText` beside it: a lone surrogate encodes as U+FFFD, so
 new text holding one is refused before a replace or an insert plans, and again at the write.
 
-The planner reads this way for replace, the span replace, insert, move and rename edits. `writeAll`
-reads every file this way before writing any, so one lossy file refuses a whole rename, and
-`SourceWorkspace.writeModule` reads again at the write. A residue pins `writeSourceFile` to those two
-and the journal's byte restore. Reads stay lenient: indexing, outlines and `symbolSource` answer the
-decoded text.
+The planner reads this way for replace, span replace, insert, move, and rename edits. `stageAll`
+reads every file this way and stages rename text before any file is written. One lossy file refuses
+the whole rename. `SourceWorkspace.writeModule` reads again at the write and checks the base hash.
+A residue pins `writeSourceFile` to that writer and the journal's byte restore. Reads stay lenient.
+Indexing, outlines, and `symbolSource` answer the decoded text.
 
 ### Replacing a symbol
 
@@ -628,6 +636,7 @@ ids.
 
 `refactorRename` in `dispatch.ts` creates one `ReadContext` for its `renameEdits`, `renameIdMap`
 and `modulesBoundTo` reads, so the edits, and the files they write, are planned once outside the
-gate. Inside the gate, the stale check compares that context's `seen()`, each edited file's indexed
-hash and each written file's planned hash, then `writeRenameEdits` writes the planned edits. It
-refuses if indexed rows changed under an unchanged hash.
+gate. `renameWrites` stages each file's whole text over the hash its edits were cut from. Inside
+the gate, the stale check compares that context's `seen()` and each edited file's indexed hash, and
+the executor writes the staged texts over their bases. It refuses if indexed rows changed under an
+unchanged hash.

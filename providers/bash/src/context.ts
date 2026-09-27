@@ -2,6 +2,7 @@
 
 import {
 	type CommentSpan,
+	Cursor,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
@@ -56,6 +57,7 @@ export interface ParsedBashFile {
 	sources: SourceImport[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines: number[];
 	diagnostics: Diagnostic[];
 	/** Every definition of a name in source order; the last is the one a call reaches. */
 	functionsByName: Map<string, BashDeclaration[]>;
@@ -106,6 +108,24 @@ export interface Walk {
 	opaque: number[];
 	/** Start and end pairs of every quoted part, which a header keeps as written. */
 	quoted: number[];
+	/** Spans where backslash-newline is preserved: `'...'`, `$'...'` and quoted here-document bodies. */
+	raw: number[];
+}
+
+/** A word's `NAME=`, `NAME+=` or `NAME[...]=` head, as `declare` reads its operands. */
+export interface AssignmentHead {
+	name: string;
+	/** Where the value starts in the text. */
+	valueAt: number;
+	value: string;
+	/** The value opens with `(`. */
+	array: boolean;
+}
+
+/** `NAME` or `NAME[...]`, the subscript without its brackets. */
+export interface Subscripted {
+	name: string;
+	index?: string;
 }
 
 export interface DeclareOptions {
@@ -126,7 +146,7 @@ export interface DeclareOptions {
 export const LANGUAGE = "bash";
 
 export const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-export const ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/;
+export const NAME_CHAR_RE = /^[A-Za-z0-9_]$/;
 /** A function may carry what a variable may not, short of the shell's own metacharacters. */
 export const FUNCTION_NAME_RE = /^[A-Za-z_.][A-Za-z0-9_.:@+,-]*$/;
 const NUMBER_RE = /^[0-9]+$/;
@@ -135,12 +155,13 @@ const NUMBER_RE = /^[0-9]+$/;
 //  Functions & Helpers
 
 /** A word may end on the `\r` of a line ending, which is no position; the line's content end is. */
-function clamp(w: Walk, offset: number): number {
-	return w.text[offset] === "\n" && w.text[offset - 1] === "\r" ? offset - 1 : offset;
+export function contentOffset(w: Walk, offset: number): number {
+	const position = w.coordinates.positionAt(offset + w.shift);
+	return position !== undefined && w.coordinates.offsetAt(position) === undefined ? offset - 1 : offset;
 }
 
 export function rangeAt(w: Walk, start: number, end: number): Range {
-	const range = w.coordinates.rangeAt(clamp(w, start) + w.shift, clamp(w, end) + w.shift);
+	const range = w.coordinates.rangeAt(contentOffset(w, start) + w.shift, contentOffset(w, end) + w.shift);
 	if (range !== undefined) return range;
 	const zero = { line: 0, character: 0 };
 	return { start: zero, end: zero };
@@ -200,4 +221,34 @@ export function bareNumber(w: Walk, scope: Scope, word: Word): void {
 
 export function pushOpaque(w: Walk, start: number, end: number): void {
 	if (end > start) w.opaque.push(start, end);
+}
+
+/** The subscript runs to the first `]`. */
+export function assignmentOf(text: string): AssignmentHead | undefined {
+	const cursor = new Cursor(text);
+	const name = cursor.takeWhile((character) => NAME_CHAR_RE.test(character));
+	if (!IDENTIFIER_RE.test(name)) return undefined;
+	if (cursor.peek() === "[") {
+		cursor.takeWhile((character) => character !== "]");
+		if (cursor.next() !== "]") return undefined;
+	}
+	if (cursor.peek() === "+") cursor.next();
+	if (cursor.next() !== "=") return undefined;
+	const valueAt = cursor.offset;
+	const array = cursor.peek() === "(";
+	return { name, valueAt, value: cursor.takeWhile(() => true), array };
+}
+
+/** The name runs to the first `[`, and a final `]` closes the subscript. */
+export function subscripted(text: string): Subscripted {
+	const cursor = new Cursor(text);
+	const name = cursor.takeWhile((character) => character !== "[");
+	if (cursor.next() !== "[") return { name };
+	let index = "";
+	while (cursor.good()) {
+		const character = cursor.next();
+		if (character === "]" && !cursor.good()) break;
+		index += character;
+	}
+	return { name, index };
 }

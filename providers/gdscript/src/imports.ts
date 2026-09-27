@@ -1,12 +1,11 @@
 // Owns GDScript static import facts and loader name resolution.
 
-import { coordinatesOf, type ImportedName } from "@nyaa-lexicon/protocol";
+import { comparePositions, coordinatesOf, type ImportedName, type Position } from "@nyaa-lexicon/protocol";
 import { extractGdscript } from "./declarations.js";
-import type { ComposeSymbolId, DeclarationFact, ReferenceToken } from "./parse-model.js";
-import { pathSyntax } from "./path-syntax.js";
-import { sourceBetween } from "./references.js";
-import { readLines } from "./source-scan.js";
-import { matchingReferenceToken, nextReferenceToken, referenceTokens } from "./tokens.js";
+import type { ComposeSymbolId, DeclarationFact } from "./parse-model.js";
+import { extendsPaths, type LoaderCall, loaderCalls } from "./path-syntax.js";
+import { scanSource } from "./source-scan.js";
+import { referenceTokens } from "./tokens.js";
 
 //////// Imports
 
@@ -16,15 +15,15 @@ export interface ImportFact {
 	reExport: boolean;
 }
 
-function importedLoaderName(declarations: DeclarationFact[], line: number, loaderStart: number): ImportedName[] {
+function importedLoaderName(declarations: DeclarationFact[], loader: Position): ImportedName[] {
 	// Every declaration this provider extracts has its name in the source.
 	const declaration = declarations
 		.filter(
 			(candidate) =>
 				candidate.selectionRange !== undefined &&
-				candidate.selectionRange.start.line === line &&
-				candidate.selectionRange.start.character < loaderStart &&
-				candidate.selectionRange.end.character <= loaderStart,
+				candidate.selectionRange.start.line === loader.line &&
+				candidate.selectionRange.start.character < loader.character &&
+				candidate.selectionRange.end.character <= loader.character,
 		)
 		.sort((left, right) => right.selectionRange.start.character - left.selectionRange.start.character)[0];
 	if (declaration === undefined) return [];
@@ -32,47 +31,32 @@ function importedLoaderName(declarations: DeclarationFact[], line: number, loade
 	return [{ local: declaration.name, localRange: declaration.selectionRange ?? declaration.range }];
 }
 
+function moduleLoaderCalls(module: string, text: string, compose: ComposeSymbolId) {
+	const scanned = scanSource(text);
+	const tokens = referenceTokens(scanned);
+	const declarations = extractGdscript(module, text, compose);
+	return { tokens, declarations, calls: loaderCalls(tokens, coordinatesOf(text), declarations) };
+}
+
+export function extractLoaderCallsCore(module: string, text: string, compose: ComposeSymbolId): LoaderCall[] {
+	return module.endsWith(".gd") ? moduleLoaderCalls(module, text, compose).calls : [];
+}
+
+/** Literal paths in source order, then computed loaders. */
 export function extractImportsCore(module: string, text: string, compose: ComposeSymbolId): ImportFact[] {
 	if (!module.endsWith(".gd")) return [];
-	const coordinates = coordinatesOf(text);
-	const lines = readLines(text);
-	const declarations = extractGdscript(module, text, compose);
-	const imports: ImportFact[] = [];
-	const literalLoaderPositions = new Set<string>();
-	for (const line of lines) {
-		for (const path of pathSyntax(line)) {
-			if (path.kind === "extends") {
-				imports.push({ specifier: path.path, imported: [], reExport: false });
-				continue;
-			}
-			literalLoaderPositions.add(`${line.line}:${path.loaderStart}`);
-			imports.push({
-				specifier: path.path,
-				imported: importedLoaderName(declarations, line.line, path.loaderStart),
-				reExport: false,
-			});
-		}
-	}
-
-	const tokens = referenceTokens(lines);
-	for (let index = 0; index < tokens.length; index++) {
-		const token = tokens[index] as ReferenceToken;
-		if (token.kind !== "identifier" || (token.value !== "preload" && token.value !== "load")) continue;
-		const tokenKey = `${token.line}:${token.character}`;
-		if (literalLoaderPositions.has(tokenKey)) continue;
-		const open = nextReferenceToken(tokens, index);
-		if (open < 0 || (tokens[open] as ReferenceToken).value !== "(") continue;
-		const close = matchingReferenceToken(tokens, open, "(", ")");
-		if (close < 0) continue;
-		const closing = tokens[close] as ReferenceToken | undefined;
-		if (closing === undefined) continue;
-		const specifier = sourceBetween(coordinates, token, closing)?.trim();
-		if (specifier === undefined || specifier === "") continue;
-		imports.push({
-			specifier,
-			imported: importedLoaderName(declarations, token.line, token.character),
-			reExport: false,
-		});
-	}
-	return imports;
+	const { tokens, declarations, calls } = moduleLoaderCalls(module, text, compose);
+	const literal = [
+		...extendsPaths(tokens).map((path) => ({ at: path.range.start, fact: { specifier: path.path, imported: [] } })),
+		...calls
+			.filter((call) => call.literal !== undefined)
+			.map((call) => ({
+				at: call.range.start,
+				fact: { specifier: call.specifier, imported: importedLoaderName(declarations, call.range.start) },
+			})),
+	].sort((left, right) => comparePositions(left.at, right.at));
+	const computed = calls
+		.filter((call) => call.literal === undefined)
+		.map((call) => ({ specifier: call.specifier, imported: importedLoaderName(declarations, call.range.start) }));
+	return [...literal.map((entry) => entry.fact), ...computed].map((fact) => ({ ...fact, reExport: false }));
 }

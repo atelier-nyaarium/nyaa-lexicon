@@ -4,13 +4,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+	checkDerivedSites,
 	checkProtocolRelease,
 	dirtyTrackedFiles,
 	expandWorkspaceEntry,
+	hasUmdWrapper,
 	nextVersion,
 	readVersion,
 	setVersion,
-	UMD_WRAPPER_RE,
 	untrackedFiles,
 	versionTargets,
 } from "../build";
@@ -58,15 +59,16 @@ describe("nextVersion", () => {
 		expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
 	});
 
-	it("rejects every AMD wrapper spelling", () => {
+	it("rejects every AMD wrapper spelling, and only a real read", () => {
 		for (const source of [
 			'typeof define === "function" && define.amd',
-			"typeof define == 'function' && define.amd",
-			'"function" === typeof define && define.amd',
 			"'function' == typeof define && define.amd",
+			'typeof define=="function"&&define["amd"]',
 		])
-			expect(UMD_WRAPPER_RE.test(source)).toBe(true);
+			expect(hasUmdWrapper(source)).toBe(true);
+		expect(hasUmdWrapper('const note = "define.amd"; // define.amd\nconfig.define.amd;')).toBe(false);
 	});
+
 	it("bumps each component and zeroes the ones below it", () => {
 		expect(nextVersion("1.2.3", "patch")).toBe("1.2.4");
 		expect(nextVersion("1.2.3", "minor")).toBe("1.3.0");
@@ -96,8 +98,10 @@ describe("setVersion / readVersion", () => {
 		expect(readVersion(setVersion('{"version": "0.0.1"}', "9.8.7"))).toBe("9.8.7");
 	});
 
-	it("refuses a file with two version fields rather than guessing which one", () => {
-		const two = '{"version": "1.0.0", "deps": {"version": "2.0.0"}}';
+	it("moves only the top-level version, and refuses a duplicated one rather than guessing", () => {
+		const nested = '{"version": "1.0.0", "deps": {"version": "2.0.0"}}';
+		expect(setVersion(nested, "1.0.1")).toBe('{"version": "1.0.1", "deps": {"version": "2.0.0"}}');
+		const two = '{"version": "1.0.0", "version": "2.0.0"}';
 		expect(() => setVersion(two, "1.0.1")).toThrow(/found 2/);
 		expect(() => readVersion(two)).toThrow(/found 2/);
 	});
@@ -207,6 +211,36 @@ describe("dirtyTrackedFiles", () => {
 	it("reports unmerged entries", () => {
 		const line = "u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.ts";
 		expect(dirtyTrackedFiles(line)).toEqual(["conflict.ts"]);
+	});
+});
+
+describe("checkDerivedSites", () => {
+	function site(file: string, body: string): void {
+		const depth = file.split("/").length - 1;
+		mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+		const manifest = `${"../".repeat(depth)}package.json`;
+		writeFileSync(path.join(root, file), `import packageJson from "${manifest}";\n${body}\n`);
+	}
+
+	function sites(serve: string, core = "export const V = packageJson.version;"): void {
+		pkg(".");
+		site("adapters/mcp/src/serve.ts", serve);
+		site("core/src/version.ts", core);
+		site("client/src/version.ts", "export const V = packageJson.version;");
+	}
+
+	it("accepts real reads of the root manifest's version", () => {
+		sites('export const INFO = { name: "x", version: packageJson.version };');
+		expect(() => checkDerivedSites(root)).not.toThrow();
+	});
+
+	it("refuses a read that is only a comment, or not the named property's value", () => {
+		sites('export const INFO = { version: "1.0.0" }; // version: packageJson.version');
+		expect(() => checkDerivedSites(root)).toThrow(/serve\.ts/);
+		sites("export const INFO = { name: packageJson.version };");
+		expect(() => checkDerivedSites(root)).toThrow(/serve\.ts/);
+		sites("export const INFO = { version: packageJson.version };", 'export const V = "packageJson.version";');
+		expect(() => checkDerivedSites(root)).toThrow(/version\.ts/);
 	});
 });
 

@@ -99,8 +99,9 @@ const AMBIENT_NODE_FLAG = (ts.NodeFlags as unknown as { Ambient?: number }).Ambi
 
 interface SiteContext {
 	site: RenameSite;
+	/** Set only when the site covers it exactly. */
 	token: ts.Node | undefined;
-	text: string;
+	name: string | undefined;
 	valid: boolean;
 }
 
@@ -119,7 +120,9 @@ export function makeRenameEdits(
 ): RenameEditsResponse {
 	const coordinates = coordinatesOf(source.text);
 	const sites = request.sites.map((site) => siteContext(source, coordinates, site));
-	const privateTarget = request.oldName.startsWith("#") || sites.some((site) => site.text.startsWith("#"));
+	const privateTarget =
+		request.oldName.startsWith("#") ||
+		sites.some((site) => site.token !== undefined && ts.isPrivateIdentifier(site.token));
 	const candidateName = request.newName.startsWith("#") ? request.newName.slice(1) : request.newName;
 
 	if (request.newName.startsWith("#") && !privateTarget) {
@@ -132,7 +135,10 @@ export function makeRenameEdits(
 		return { status: "refused", reason: "InvalidName", detail: "the new name is not a legal identifier" };
 	}
 
-	const matchingSites = sites.filter((site) => matchesName(site, request.oldName));
+	// A site that covers no token is reported, never skipped.
+	const matchingSites = sites.filter(
+		(site) => site.valid && (site.token === undefined || matchesName(site, request.oldName)),
+	);
 	if (request.oldName !== request.newName && hasCollision(checker, matchingSites, candidateName)) {
 		return {
 			status: "refused",
@@ -445,9 +451,34 @@ function isUppercaseName(name: string): boolean {
 
 function siteContext(source: ts.SourceFile, coordinates: TextCoordinates, site: RenameSite): SiteContext {
 	const offsets = coordinates.offsetsForRange(site.range);
-	if (offsets === undefined) return { site, token: undefined, text: "", valid: false };
+	if (offsets === undefined) return { site, token: undefined, name: undefined, valid: false };
 	const token = offsets.start < source.end ? tokenAt(source, offsets.start) : undefined;
-	return { site, token, text: source.text.slice(offsets.start, offsets.end), valid: true };
+	if (token === undefined || !covers(offsets, token, source)) {
+		return { site, token: undefined, name: undefined, valid: true };
+	}
+	return { site, token, name: nameOf(token, source), valid: true };
+}
+
+/** The whole token, or a string literal's contents between its quotes. */
+function covers(offsets: { start: number; end: number }, token: ts.Node, source: ts.SourceFile): boolean {
+	const start = token.getStart(source);
+	const end = token.getEnd();
+	if (offsets.start === start && offsets.end === end) return true;
+	const quoted = ts.isStringLiteral(token) || ts.isNoSubstitutionTemplateLiteral(token);
+	return quoted && offsets.start === start + 1 && offsets.end === end - 1;
+}
+
+/** An identifier's or literal's value, else the token's own text. */
+function nameOf(token: ts.Node, source: ts.SourceFile): string {
+	if (
+		ts.isIdentifier(token) ||
+		ts.isPrivateIdentifier(token) ||
+		ts.isStringLiteral(token) ||
+		ts.isNoSubstitutionTemplateLiteral(token)
+	) {
+		return token.text;
+	}
+	return token.getText(source);
 }
 
 function tokenAt(source: ts.SourceFile, position: number): ts.Node | undefined {
@@ -463,17 +494,10 @@ function tokenAt(source: ts.SourceFile, position: number): ts.Node | undefined {
 }
 
 function matchesName(site: SiteContext, oldName: string): boolean {
-	if (site.text === oldName) return true;
-	if (site.token?.kind === ts.SyntaxKind.PrivateIdentifier) {
-		return (site.token as ts.PrivateIdentifier).text === (oldName.startsWith("#") ? oldName : `#${oldName}`);
+	if (site.token !== undefined && ts.isPrivateIdentifier(site.token)) {
+		return site.name === (oldName.startsWith("#") ? oldName : `#${oldName}`);
 	}
-	if (
-		site.token?.kind === ts.SyntaxKind.StringLiteral ||
-		site.token?.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral
-	) {
-		return (site.token as ts.StringLiteral).text === oldName;
-	}
-	return false;
+	return site.name === oldName;
 }
 
 function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: BlockedSite[]): RenameEditsResponse {

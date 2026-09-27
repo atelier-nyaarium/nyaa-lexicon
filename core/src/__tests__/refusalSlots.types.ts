@@ -3,7 +3,7 @@
 // Read through each owner's declared signature rather than through the narrowing, so a slot that
 // stops using it is caught. A text sweep cannot see this; the compiler already knows.
 
-import type { ApplyOutcome } from "../applyEdits.js";
+import type { StagedEdits } from "../applyEdits.js";
 import type { StepResult } from "../dispatch.js";
 import type { InsertPlan, MoveEditsOutcome, RefactorPlanner, ReplacementPlan } from "../refactorPlanner.js";
 import type { PlanAnswer, StepShape } from "../refactorStep.js";
@@ -49,9 +49,7 @@ type _blocker = Assert<IsRefusal<Awaited1<ReturnType<RefactorPlanner["prepareRen
 ////////////////////////////////
 //  The service
 
-type _rename = Assert<
-	IsRefusal<Refused<Extract<Awaited1<ReturnType<LexiconService["renameSymbol"]>>, { renamed: false }>>>
->;
+type _rename = Assert<IsRefusal<Refused<Extract<ReturnType<LexiconService["renameWrites"]>, { reason: unknown }>>>>;
 
 ////////////////////////////////
 //  The executor, the journal and the writer
@@ -79,4 +77,4 @@ type _track = Assert<IsRefusal<Optional<ReturnType<TransactionManager["track"]>>
 
 type _writeFile = Assert<IsRefusal<Refused<Extract<ReturnType<TransactionManager["writeFile"]>, { written: false }>>>>;
 
-type _write = Assert<IsRefusal<Refused<Extract<ApplyOutcome, { applied: false }>>>>;
+type _write = Assert<IsRefusal<Refused<Extract<StagedEdits, { applied: false }>>>>;

@@ -1,9 +1,10 @@
 // Owns GDScript declaration extraction and declaration spans.
 
 import { coordinatesOf, defined, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
-import { Cursor } from "./cursor.js";
+import { type Blocks, blockHeader, blocksOf, bodyEndLine, hasCode, headerEndLine } from "./blocks.js";
 import { HeaderReader, type HeaderStop } from "./header.js";
-import { basenameOf, containsCharacter, indentOf, isIgnorable, parseLineHead, parseLineHeads } from "./line-syntax.js";
+import { withMemberInsertLines } from "./layout.js";
+import { basenameOf, parseLineHeads } from "./line-syntax.js";
 import type {
 	ActiveEnum,
 	ActiveFunctionHeader,
@@ -19,14 +20,17 @@ import type {
 	Token,
 	Visibility,
 } from "./parse-model.js";
-import { readLines, scanSource } from "./source-scan.js";
-import { matchingReferenceToken, nextReferenceToken, referenceTokens } from "./tokens.js";
+import {
+	firstLineToken,
+	isIgnorable,
+	type LexedSource,
+	lexSource,
+	matchingReferenceToken,
+	nextReferenceToken,
+	tokenAt,
+} from "./tokens.js";
 
 //////// Declarations
-
-export function contentEndCharacter(line: SourceLine): number {
-	return line.text.endsWith("\r") ? line.text.length - 1 : line.text.length;
-}
 
 function rangeOf(coordinates: TextCoordinates, line: SourceLine): Range {
 	return rangeOfLines(coordinates, line, line);
@@ -34,18 +38,11 @@ function rangeOf(coordinates: TextCoordinates, line: SourceLine): Range {
 
 function rangeOfLines(coordinates: TextCoordinates, start: SourceLine, end: SourceLine): Range {
 	const startOffset = coordinates.offsetAt({ line: start.line, character: 0 });
-	const endOffset = coordinates.offsetAt({ line: end.line, character: contentEndCharacter(end) });
+	const endOffset = coordinates.offsetAt({ line: end.line, character: end.end });
 	if (startOffset === undefined || endOffset === undefined) throw new Error("source line has no coordinate");
 	const range = coordinates.rangeAt(startOffset, endOffset);
 	if (range === undefined) throw new Error("source line range is invalid");
 	return range;
-}
-
-export function headerEndLine(lines: readonly { code: string }[], declaration: Pick<DeclarationFact, "range">): number {
-	for (let line = declaration.range.start.line; line < lines.length; line++) {
-		if ((lines[line]?.code ?? "").trimEnd().endsWith(":")) return line;
-	}
-	return declaration.range.end.line;
 }
 
 function selectionRangeOf(line: SourceLine, token: Token): Range {
@@ -60,10 +57,6 @@ function visibilityOf(name: string, local: boolean): Visibility {
 	return name.startsWith("_") ? "private" : "public";
 }
 
-function nameEndOf(token: Token): number {
-	return token.start + token.name.length;
-}
-
 /** Where the header stops, and whether its colon opens a type. */
 function lineHeader(headers: HeaderReader, line: SourceLine, parsed: ParsedLine, name: Token): string | undefined {
 	const keyword = parsed.keyword;
@@ -74,64 +67,45 @@ function lineHeader(headers: HeaderReader, line: SourceLine, parsed: ParsedLine,
 				? "brace"
 				: "line";
 	const typed = keyword === "var" || keyword === "const" || keyword === "for";
-	return headers.header({ line, head: parsed.head, nameEnd: nameEndOf(name), stop, typed });
+	return headers.header({ line, head: parsed.head, name: name.start, stop, typed });
 }
 
 function memberHeader(headers: HeaderReader, line: SourceLine, member: Token): string | undefined {
-	return headers.header({ line, head: member.start, nameEnd: nameEndOf(member), stop: "member" });
+	return headers.header({ line, head: member.start, name: member.start, stop: "member" });
 }
 
-function functionHeaderComplete(lines: SourceLine[]): boolean {
-	let parameterDepth = 0;
-	let closedParameters = false;
-	for (const line of lines) {
-		const cursor = new Cursor(line.code);
-		while (cursor.good()) {
-			const character = cursor.next();
-			if (character === "(") parameterDepth++;
-			if (character === ")" && parameterDepth > 0) {
-				parameterDepth--;
-				closedParameters = parameterDepth === 0;
-			}
-			if (character === ":" && closedParameters) return true;
-		}
-	}
-	return false;
+/** `get` or `set`, then its parameters or colon. */
+export function isAccessorHead(lexed: LexedSource, line: number): boolean {
+	const [first, second] = (lexed.lineTokens[line] ?? []).slice(0, 2).map((index) => lexed.tokens[index]);
+	if (first?.kind !== "identifier" || (first.value !== "set" && first.value !== "get")) return false;
+	return second?.value === "(" || second?.value === ":";
 }
 
-export function isAccessorHead(line: SourceLine): boolean {
-	const cursor = new Cursor(line.code);
-	cursor.skipWhitespace();
-	const name = cursor.readIdentifier();
-	if (name === null || (name.name !== "set" && name.name !== "get")) return false;
-	cursor.skipWhitespace();
-	return cursor.peek() === "(" || cursor.peek() === ":";
-}
-
-function accessorEndLine(lines: SourceLine[], declarationIndex: number, declarationIndent: number): SourceLine {
+function accessorEndLine(lexed: LexedSource, declarationIndex: number, declarationIndent: number): SourceLine {
+	const lines = lexed.lines;
 	let index = declarationIndex + 1;
-	while (index < lines.length && isIgnorable(lines[index] as SourceLine)) index++;
+	while (index < lines.length && isIgnorable(lexed, index)) index++;
 	const accessor = lines[index] as SourceLine | undefined;
-	if (accessor === undefined || indentOf(accessor.text) < declarationIndent || !isAccessorHead(accessor)) {
+	if (accessor === undefined || accessor.indent < declarationIndent || !isAccessorHead(lexed, index)) {
 		return lines[declarationIndex] as SourceLine;
 	}
 
 	let end = index;
-	const accessorIndent = indentOf(accessor.text);
+	const accessorIndent = accessor.indent;
 	index++;
 	while (index < lines.length) {
 		const line = lines[index] as SourceLine;
-		if (isIgnorable(line)) {
+		if (isIgnorable(lexed, index)) {
 			index++;
 			continue;
 		}
-		const indent = indentOf(line.text);
+		const indent = line.indent;
 		if (indent > accessorIndent) {
 			end = index;
 			index++;
 			continue;
 		}
-		if (indent === accessorIndent && isAccessorHead(line)) {
+		if (indent === accessorIndent && isAccessorHead(lexed, index)) {
 			end = index;
 			index++;
 			continue;
@@ -243,6 +217,20 @@ function parameterSegments(tokens: ReferenceToken[], start: number, end: number)
 	return segments;
 }
 
+/** The parentheses right after a function's name. */
+function parameterList(
+	lexed: LexedSource,
+	declaration: Pick<DeclarationFact, "selectionRange">,
+): { open: number; close: number } | undefined {
+	const { start } = declaration.selectionRange;
+	const name = tokenAt(lexed, start.line, start.character);
+	if (name < 0) return undefined;
+	const open = nextReferenceToken(lexed.tokens, name);
+	if (open < 0 || (lexed.tokens[open] as ReferenceToken).value !== "(") return undefined;
+	const close = matchingReferenceToken(lexed.tokens, open, "(", ")");
+	return close < 0 ? undefined : { open, close };
+}
+
 function parameterNameAndEnd(
 	tokens: ReferenceToken[],
 	segment: ParameterSegment,
@@ -280,23 +268,12 @@ function addFunctionParameters(
 	compose: ComposeSymbolId,
 	declaration: DeclarationFact,
 	scope: Scope,
-	tokens: ReferenceToken[],
+	lexed: LexedSource,
 ): void {
-	const nameIndex = tokens.findIndex(
-		(token) =>
-			token.kind === "identifier" &&
-			token.line === declaration.selectionRange.start.line &&
-			token.character === declaration.selectionRange.start.character &&
-			token.value === declaration.name,
-	);
-	if (nameIndex < 0) return;
-	let open = nextReferenceToken(tokens, nameIndex);
-	while (open >= 0 && (tokens[open] as ReferenceToken).value !== "(") open = nextReferenceToken(tokens, open);
-	if (open < 0) return;
-	const close = matchingReferenceToken(tokens, open, "(", ")");
-	if (close < 0) return;
-	for (const segment of parameterSegments(tokens, open + 1, close)) {
-		const parameter = parameterNameAndEnd(tokens, segment);
+	const list = parameterList(lexed, declaration);
+	if (list === undefined) return;
+	for (const segment of parameterSegments(lexed.tokens, list.open + 1, list.close)) {
+		const parameter = parameterNameAndEnd(lexed.tokens, segment);
 		if (parameter === null) continue;
 		const parameterId = compose({
 			language: "gdscript",
@@ -326,73 +303,62 @@ function addFunctionParameters(
 	}
 }
 
-function enumMembers(line: SourceLine): Token[] {
-	const cursor = new Cursor(line.code);
+/** Members written after the line's `{`. */
+function enumMembers(lexed: LexedSource, line: number): Token[] {
 	const members: Token[] = [];
 	let inside = false;
 	let expectName = false;
 	let expressionDepth = 0;
-	while (cursor.good()) {
-		const character = cursor.peek();
-		if (character === "#") break;
+	for (const index of lexed.lineTokens[line] ?? []) {
+		const token = lexed.tokens[index] as ReferenceToken;
+		const value = token.value;
 		if (!inside) {
-			cursor.next();
-			if (character === "{") {
+			if (value === "{") {
 				inside = true;
 				expectName = true;
 			}
 			continue;
 		}
 		if (expressionDepth > 0) {
-			const consumed = cursor.next();
-			if (consumed === "(") expressionDepth++;
-			if (consumed === ")") expressionDepth--;
+			if (value === "(") expressionDepth++;
+			if (value === ")") expressionDepth--;
 			continue;
 		}
-		if (character === "}") break;
-		if (character === "(") {
-			expressionDepth = 1;
-			cursor.next();
-			continue;
-		}
-		if (character === ",") {
-			expectName = true;
-			cursor.next();
-			continue;
-		}
-		if (character === "=" && expectName === false) {
+		if (value === "}") break;
+		if (value === "(") expressionDepth = 1;
+		else if (value === ",") expectName = true;
+		else if (expectName && token.kind === "identifier") {
+			members.push({ name: value, start: token.character });
 			expectName = false;
-			cursor.next();
-			continue;
 		}
-		if (expectName) {
-			const token = cursor.readIdentifier();
-			if (token !== null) {
-				members.push(token);
-				expectName = false;
-				continue;
-			}
-		}
-		cursor.next();
 	}
 	return members;
 }
 
-function multilineEnumMember(line: SourceLine): Token | null {
-	const cursor = new Cursor(line.code);
-	cursor.skipWhitespace();
-	if (cursor.peek() === "" || cursor.peek() === "#" || cursor.peek() === "}") return null;
-	return cursor.readIdentifier();
+/** An enum member leading a line of a multi-line enum. */
+function multilineEnumMember(lexed: LexedSource, line: number): Token | null {
+	const first = firstLineToken(lexed, line);
+	return first?.kind === "identifier" ? { name: first.value, start: first.character } : null;
+}
+
+/** Opens a brace it does not close. */
+function opensBrace(lexed: LexedSource, line: number): boolean {
+	const values = (lexed.lineTokens[line] ?? []).map((index) => (lexed.tokens[index] as ReferenceToken).value);
+	return values.includes("{") && !values.includes("}");
 }
 
 export function extractGdscript(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
 	const coordinates = coordinatesOf(text);
-	const scanned = scanSource(text);
-	const lines = scanned.lines;
-	const headers = new HeaderReader(text, scanned);
-	const tokens = referenceTokens(lines);
+	const lexed = lexSource(text);
+	const blocks = blocksOf(lexed);
+	const statementLines = new Set(blocks.statements.map((statement) => statement.line));
+	const lines = lexed.lines;
+	const headers = new HeaderReader(text, lexed);
 	const classLine = lines
-		.map((line) => ({ line, parsed: parseLineHeads(line).find((candidate) => candidate.keyword === "class_name") }))
+		.map((line) => ({
+			line,
+			parsed: parseLineHeads(lexed, line.line).find((candidate) => candidate.keyword === "class_name"),
+		}))
 		.find((entry) => entry.parsed?.keyword === "class_name" && entry.parsed.name !== null);
 	const className = classLine?.parsed?.name ?? null;
 	const classHeader =
@@ -404,8 +370,9 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 		line: 0,
 		text: "",
 		code: "",
+		indent: 0,
+		end: 0,
 		hasString: false,
-		stringStarts: [],
 		endsInString: false,
 	};
 	const root = makeImplicitClass(compose, module, coordinates, rootLine, rootName, className, classHeader);
@@ -425,48 +392,35 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 	];
 	let activeEnum: ActiveEnum | null = null;
 	let activeFunctionHeader: ActiveFunctionHeader | null = null;
+	const openFunction = (header: ActiveFunctionHeader): void => {
+		addFunctionParameters(declarations, module, compose, header.declaration, header.scope, lexed);
+		scopes.push({
+			indent: header.indent,
+			descriptors: [...header.scope.descriptors, { kind: "method", name: header.declaration.name }],
+			containerId: header.declaration.symbolId,
+			functionScope: true,
+		});
+	};
 
 	for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
 		const line = lines[lineIndex] as SourceLine;
 		if (activeFunctionHeader !== null) {
-			activeFunctionHeader.lines.push(line);
-			if (functionHeaderComplete(activeFunctionHeader.lines)) {
-				activeFunctionHeader.declaration.range = rangeOfLines(
-					coordinates,
-					activeFunctionHeader.lines[0] as SourceLine,
-					line,
-				);
-				addFunctionParameters(
-					declarations,
-					module,
-					compose,
-					activeFunctionHeader.declaration,
-					activeFunctionHeader.scope,
-					tokens,
-				);
-				scopes.push({
-					indent: activeFunctionHeader.indent,
-					descriptors: [
-						...activeFunctionHeader.scope.descriptors,
-						{ kind: "method", name: activeFunctionHeader.declaration.name },
-					],
-					containerId: activeFunctionHeader.declaration.symbolId,
-					functionScope: true,
-				});
-				activeFunctionHeader = null;
-			}
+			if (line.line < activeFunctionHeader.endLine) continue;
+			activeFunctionHeader.declaration.range = rangeOfLines(coordinates, activeFunctionHeader.start, line);
+			openFunction(activeFunctionHeader);
+			activeFunctionHeader = null;
 			continue;
 		}
 
-		const parsedLines = parseLineHeads(line);
-		if (isIgnorable(line)) continue;
+		const parsedLines = parseLineHeads(lexed, line.line);
+		if (isIgnorable(lexed, line.line)) continue;
 
-		const indent = indentOf(line.text);
+		const indent = line.indent;
 		if (activeEnum !== null) {
 			if (indent <= activeEnum.indent || parsedLines.length > 0) {
 				activeEnum = null;
 			} else {
-				const member = multilineEnumMember(line);
+				const member = multilineEnumMember(lexed, line.line);
 				if (member !== null && !activeEnum.names.has(member.name)) {
 					activeEnum.names.add(member.name);
 					const declaration = makeDeclaration(
@@ -492,7 +446,10 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 				continue;
 			}
 		}
-		while (scopes.length > 1 && indent <= (scopes[scopes.length - 1] as Scope).indent) scopes.pop();
+		// A continuation line closes no scope.
+		if (statementLines.has(line.line)) {
+			while (scopes.length > 1 && indent <= (scopes[scopes.length - 1] as Scope).indent) scopes.pop();
+		}
 		for (const parsed of parsedLines) {
 			if (parsed.keyword === "class_name") continue;
 			const scope = scopes[scopes.length - 1] as Scope;
@@ -545,7 +502,8 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					lineHeader(headers, line, parsed, parsed.name),
 				);
 				declarations.push(declaration);
-				for (const member of enumMembers(line)) {
+				const members = enumMembers(lexed, line.line);
+				for (const member of members) {
 					const memberDeclaration = makeDeclaration(
 						compose,
 						module,
@@ -565,12 +523,12 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					);
 					declarations.push(memberDeclaration);
 				}
-				if (containsCharacter(line.code, "{") && !containsCharacter(line.code, "}")) {
+				if (opensBrace(lexed, line.line)) {
 					activeEnum = {
 						indent,
 						descriptors: [...scope.descriptors, { kind: "type", name: parsed.name.name }],
 						containerId: declaration.symbolId,
-						names: new Set(enumMembers(line).map((member) => member.name)),
+						names: new Set(members.map((member) => member.name)),
 					};
 				}
 				continue;
@@ -601,202 +559,154 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 				lineHeader(headers, line, parsed, parsed.name),
 			);
 			if (parsed.keyword === "var") {
-				declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lines, lineIndex, indent));
+				declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lexed, lineIndex, indent));
 			}
 			declarations.push(declaration);
 			if (parsed.keyword !== "func") continue;
-			if (functionHeaderComplete([line])) {
-				addFunctionParameters(declarations, module, compose, declaration, scope, tokens);
-				scopes.push({
-					indent,
-					descriptors: [...scope.descriptors, { kind: "method", name: parsed.name.name }],
-					containerId: declaration.symbolId,
-					functionScope: true,
-				});
-			} else {
-				activeFunctionHeader = {
-					indent,
-					scope,
-					declaration,
-					lines: [line],
-				};
-			}
+			const header = { indent, scope, declaration, start: line, endLine: headerEndLine(blocks, declaration) };
+			if (header.endLine > line.line) activeFunctionHeader = header;
+			else openFunction(header);
 		}
 	}
 
-	return declarations.map((declaration) => {
+	const spanned = declarations.map((declaration) => {
 		if (declaration.kind !== "method" && declaration.languageKind !== "innerClass") return declaration;
 		const start = lines[declaration.range.start.line] as SourceLine | undefined;
-		const end = lines[bodyEndLine(lines, declaration) - 1] as SourceLine | undefined;
+		const end = lines[bodyEndLine(blocks, declaration) - 1] as SourceLine | undefined;
 		return start === undefined || end === undefined
 			? declaration
 			: { ...declaration, range: rangeOfLines(coordinates, start, end) };
 	});
+	return withMemberInsertLines(spanned, lexed.scanned, lexed.tokens, coordinates);
 }
 
-export function bodyEndLine(lines: SourceLine[], declaration: DeclarationFact): number {
-	const header = lines[declaration.range.start.line] as SourceLine | undefined;
-	if (header === undefined) return declaration.range.end.line + 1;
-	const headerIndent = indentOf(header.text);
-	const headerEnd = headerEndLine(lines, declaration);
-	let last = headerEnd;
-	for (let index = headerEnd + 1; index < lines.length; index++) {
-		const line = lines[index] as SourceLine;
-		const indent = indentOf(line.text);
-		if (isIgnorable(line)) {
-			if (line.text.trim() !== "" && indent > headerIndent) last = index;
-			continue;
-		}
-		if (indent <= headerIndent) break;
-		last = index;
+function functionParameterCount(lexed: LexedSource, declaration: DeclarationFact): number {
+	const list = parameterList(lexed, declaration);
+	if (list === undefined) return 0;
+	return parameterSegments(lexed.tokens, list.open + 1, list.close).filter((segment) =>
+		hasCode(lexed.tokens, segment),
+	).length;
+}
+
+const CONTROL_WORDS = new Set(["if", "elif", "else", "for", "while", "match"]);
+
+/** A body line: its indent and the code tokens starting on it. */
+interface BodyRow {
+	indent: number;
+	tokens: ReferenceToken[];
+}
+
+/** Lines in `start..end` holding code. */
+function bodyRows(lexed: LexedSource, start: number, end: number): BodyRow[] {
+	const rows: BodyRow[] = [];
+	for (let line = start; line < end; line++) {
+		if (isIgnorable(lexed, line)) continue;
+		rows.push({
+			indent: (lexed.lines[line] as SourceLine).indent,
+			tokens: (lexed.lineTokens[line] ?? []).map((index) => lexed.tokens[index] as ReferenceToken),
+		});
 	}
-	return last + 1;
+	return rows;
 }
 
-function functionParameterCount(lines: SourceLine[], declaration: DeclarationFact): number {
-	const code = lines
-		.slice(declaration.range.start.line, headerEndLine(lines, declaration) + 1)
-		.map((line) => line.code)
-		.join("\n");
-	const open = code.indexOf("(");
-	if (open < 0) return 0;
+function wordCount(tokens: ReferenceToken[], words: readonly string[]): number {
+	return tokens.filter((token) => token.kind === "identifier" && words.includes(token.value)).length;
+}
+
+function controlHeader(tokens: ReferenceToken[]): string | null {
+	const first = tokens[0];
+	return first?.kind === "identifier" && CONTROL_WORDS.has(first.value) ? first.value : null;
+}
+
+function hasTopLevelColon(tokens: ReferenceToken[]): boolean {
 	let depth = 0;
-	let brackets = 0;
-	let braces = 0;
-	let parameters = 0;
-	let hasValue = false;
-	for (let index = open; index < code.length; index++) {
-		const character = code[index] as string;
-		if (character === "(") {
-			depth++;
-			continue;
-		}
-		if (character === ")") {
-			depth--;
-			if (depth === 0) return parameters + (hasValue ? 1 : 0);
-			continue;
-		}
-		if (character === "[") brackets++;
-		else if (character === "]") brackets--;
-		else if (character === "{") braces++;
-		else if (character === "}") braces--;
-		if (depth !== 1) continue;
-		if (character === "," && brackets === 0 && braces === 0) {
-			if (hasValue) parameters++;
-			hasValue = false;
-			continue;
-		}
-		if (!/\s/.test(character)) hasValue = true;
+	for (const { value } of tokens) {
+		if (value === "(" || value === "[" || value === "{") depth++;
+		else if (value === ")" || value === "]" || value === "}") depth--;
+		else if (value === ":" && depth === 0) return true;
 	}
-	return parameters + (hasValue ? 1 : 0);
+	return false;
 }
 
-function controlHeader(code: string): string | null {
-	const trimmed = code.trimStart();
-	for (const keyword of ["if", "elif", "else", "for", "while", "match"]) {
-		if (trimmed === keyword || trimmed.startsWith(`${keyword} `) || trimmed.startsWith(`${keyword}:`))
-			return keyword;
-	}
-	return null;
-}
-
-function topLevelColon(code: string): number {
-	let parentheses = 0;
-	let brackets = 0;
-	let braces = 0;
-	for (let index = 0; index < code.length; index++) {
-		const character = code[index] as string;
-		if (character === "(") parentheses++;
-		else if (character === ")") parentheses--;
-		else if (character === "[") brackets++;
-		else if (character === "]") brackets--;
-		else if (character === "{") braces++;
-		else if (character === "}") braces--;
-		else if (character === ":" && parentheses === 0 && brackets === 0 && braces === 0) return index;
-	}
-	return -1;
-}
-
-function matchArmCount(lines: SourceLine[], start: number, end: number): number {
+function matchArmCount(rows: readonly BodyRow[]): number {
 	const matches: { indent: number; armIndent: number | null }[] = [];
 	let count = 0;
-	for (let index = start; index < end; index++) {
-		const line = lines[index] as SourceLine;
-		if (!meaningfulLine(line)) continue;
-		const indent = indentOf(line.text);
+	for (const { indent, tokens } of rows) {
 		while (matches.length > 0 && indent <= (matches[matches.length - 1] as { indent: number }).indent)
 			matches.pop();
 		const current = matches[matches.length - 1];
 		if (current !== undefined && indent > current.indent) {
 			if (current.armIndent === null) current.armIndent = indent;
-			if (indent === current.armIndent && topLevelColon(line.code) >= 0) count++;
+			if (indent === current.armIndent && hasTopLevelColon(tokens)) count++;
 		}
-		if (controlHeader(line.code) === "match") matches.push({ indent, armIndent: null });
+		if (controlHeader(tokens) === "match") matches.push({ indent, armIndent: null });
 	}
 	return count;
 }
 
-function meaningfulLine(line: SourceLine): boolean {
-	return !isIgnorable(line);
-}
-
-function bodyMetrics(lines: SourceLine[], start: number, end: number): Pick<Metrics, "nesting" | "branches"> {
+function bodyMetrics(rows: readonly BodyRow[]): Pick<Metrics, "nesting" | "branches"> {
 	const controls: number[] = [];
 	let nesting = 0;
-	let branches = matchArmCount(lines, start, end);
-	for (let index = start; index < end; index++) {
-		const line = lines[index] as SourceLine;
-		if (!meaningfulLine(line)) continue;
-		const indent = indentOf(line.text);
+	let branches = matchArmCount(rows);
+	for (const { indent, tokens } of rows) {
 		while (controls.length > 0 && indent <= (controls[controls.length - 1] as number)) controls.pop();
 		nesting = Math.max(nesting, controls.length);
-		const header = controlHeader(line.code);
+		const header = controlHeader(tokens);
 		if (header !== null) {
 			if (header !== "match") branches++;
 			controls.push(indent);
+			continue;
 		}
-		if (!/^\s*(?:if|elif|else|for|while|match)\b/.test(line.code)) {
-			if (/\bif\b/.test(line.code) && /\belse\b/.test(line.code)) branches++;
-			branches += (line.code.match(/\b(?:and|or)\b/g) ?? []).length;
-		}
+		// A conditional expression, then each short-circuit.
+		if (wordCount(tokens, ["if"]) > 0 && wordCount(tokens, ["else"]) > 0) branches++;
+		branches += wordCount(tokens, ["and", "or"]);
 	}
 	return { nesting, branches: branches + 1 };
 }
 
-function metricsForDeclaration(lines: SourceLine[], declaration: DeclarationFact): Metrics {
+function metricsForDeclaration(blocks: Blocks, declaration: DeclarationFact): Metrics {
 	const metrics: Metrics = {
 		lines: declaration.range.end.line - declaration.range.start.line + 1,
 	};
 	if (declaration.kind !== "method") return metrics;
-	const headerEnd = headerEndLine(lines, declaration);
-	const end = bodyEndLine(lines, declaration);
+	const lexed = blocks.lexed;
+	const headerEnd = headerEndLine(blocks, declaration);
+	const end = bodyEndLine(blocks, declaration);
 	const lastBodyLine = Math.max(headerEnd, end - 1);
 	metrics.lines = lastBodyLine - declaration.range.start.line + 1;
-	metrics.parameters = functionParameterCount(lines, declaration);
-	const bodyStart = headerEnd + 1;
-	if (bodyStart < end && lines.slice(bodyStart, end).some(meaningfulLine)) {
-		Object.assign(metrics, bodyMetrics(lines, bodyStart, end));
+	metrics.parameters = functionParameterCount(lexed, declaration);
+	const header = blockHeader(blocks, declaration);
+	if (header !== undefined && hasCode(lexed.tokens, header.inline)) {
+		const { start, end: stop } = header.inline;
+		const tokens = lexed.tokens.slice(start, stop).filter((token) => token.kind !== "newline");
+		Object.assign(metrics, bodyMetrics([{ indent: header.statement.indent, tokens }]));
+		return metrics;
 	}
+	const rows = bodyRows(lexed, headerEnd + 1, end);
+	if (rows.length > 0) Object.assign(metrics, bodyMetrics(rows));
 	return metrics;
 }
 
 function addDeclarationMetrics(declarations: DeclarationFact[], text: string): DeclarationFact[] {
-	const lines = readLines(text);
-	return declarations.map((declaration) => ({ ...declaration, metrics: metricsForDeclaration(lines, declaration) }));
+	const blocks = blocksOf(lexSource(text));
+	return declarations.map((declaration) => ({
+		...declaration,
+		metrics: metricsForDeclaration(blocks, declaration),
+	}));
 }
 
 function extractGeneric(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
 	const declarations: DeclarationFact[] = [];
 	const coordinates = coordinatesOf(text);
-	const scanned = scanSource(text);
-	const headers = new HeaderReader(text, scanned);
-	for (const line of scanned.lines) {
-		const parsed = parseLineHead(line, true);
-		if (parsed === null || parsed.name === null) continue;
+	const lexed = lexSource(text);
+	const headers = new HeaderReader(text, lexed);
+	for (const line of lexed.lines) {
+		const parsed = parseLineHeads(lexed, line.line, true)[0];
+		if (parsed === undefined || parsed.name === null) continue;
 		const signature = headers.header({
 			line,
 			head: parsed.head,
-			nameEnd: nameEndOf(parsed.name),
+			name: parsed.name.start,
 			stop: parsed.keyword === "const" ? "line" : "brace",
 		});
 		const declaration = makeDeclaration(

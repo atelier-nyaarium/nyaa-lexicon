@@ -1,8 +1,10 @@
+import { templateEntries } from "./literals.js";
 import {
 	COMMENT_TYPES,
 	childOfType,
 	insertLeaf,
 	isProblem,
+	LineTable,
 	leavesOf,
 	misreadKeyword,
 	nodeAt,
@@ -89,8 +91,6 @@ const REPAIR_ROUNDS = 8;
 
 const ISOLATION_ROOM = 4096;
 
-const INLINE_SPACE = new Set([" ", "\t"]);
-
 const DELEGATING_OWNERS: ReadonlySet<string> = new Set(["class_declaration", "object_declaration", "object_literal"]);
 
 export interface Damage {
@@ -104,7 +104,14 @@ export interface Damage {
 	characters: number;
 }
 
-export type RepairName = "comments" | "respelling" | "isolation" | "annotations" | "delegation";
+export type RepairName =
+	| "prefixes"
+	| "comments"
+	| "respelling"
+	| "isolation"
+	| "annotations"
+	| "delegation"
+	| "templates";
 
 /** Rewritten spans, original offsets. */
 export interface RepairRecord {
@@ -133,10 +140,12 @@ interface Repair {
 
 /** Ordered: each reads masks only through the ones before it. */
 const REPAIRS: readonly Repair[] = [
+	{ apply: dollarPrefixes },
 	{ apply: commentTrivia },
 	{ apply: respelling },
 	{ apply: isolation },
 	{ apply: delegationBodies },
+	{ apply: prefixedTemplates },
 ];
 
 export function damageOf(text: string, root: SyntaxNode, leaves: SyntaxNode[]): Damage {
@@ -187,19 +196,63 @@ function blank(part: string): string {
 	return part.replace(/[^\n]/gu, " ");
 }
 
-function lineBreakAt(text: string, at: number): boolean {
-	return text.charAt(at) === "\n" || text.charAt(at) === "\r";
+/** Sorted `spans` blanked. */
+function blankSpans(mask: string, spans: Array<[number, number]>): string {
+	let out = "";
+	let from = 0;
+	for (const [start, end] of spans) {
+		out += mask.slice(from, start) + blank(mask.slice(start, end));
+		from = end;
+	}
+	return out + mask.slice(from);
+}
+
+/** Multi-dollar literals postdate the grammar; `$$"` reads as a plain literal once its dollars are blank. */
+function dollarPrefixes(artifact: ParseArtifact, reread: Reread): ParseArtifact {
+	if (artifact.damage.errors === 0) return artifact;
+	const spans = [...artifact.mask.matchAll(/\${2,}(?=")/gu)].map((run): [number, number] => [
+		run.index,
+		run.index + run[0].length,
+	]);
+	if (spans.length === 0) return artifact;
+	const read = reread(artifact.text, blankSpans(artifact.mask, spans));
+	return { ...read, mask: artifact.mask, record: recorded(artifact, "prefixes", spans) };
+}
+
+/** A template with fewer dollars than the prefix is content. */
+function prefixedTemplates(artifact: ParseArtifact, reread: Reread): ParseArtifact {
+	const { text, tree } = artifact;
+	const spans: Array<[number, number]> = [];
+	for (const { repair, spans: prefixes } of artifact.record) {
+		if (repair !== "prefixes") continue;
+		for (const [start, end] of prefixes) {
+			const literal =
+				nodeAt(tree.root, "string_literal", end) ?? nodeAt(tree.root, "multiline_string_literal", end);
+			if (literal === undefined) continue;
+			for (const { opener, dollars } of templateEntries(text, literal))
+				if (dollars < end - start) spans.push([opener.start, opener.start + 1]);
+		}
+	}
+	if (spans.length === 0) return artifact;
+	spans.sort((left, right) => left[0] - right[0]);
+	const read = reread(text, blankSpans(artifact.mask, spans));
+	return { ...read, mask: artifact.mask, record: recorded(artifact, "templates", spans) };
 }
 
 /** Block comments opening a line that code follows on. */
-function lineOpeningComments(text: string, leaves: SyntaxNode[]): SyntaxNode[] {
-	return leaves.filter((leaf) => {
-		if (leaf.type !== "block_comment") return false;
-		let before = leaf.start - 1;
-		while (before >= 0 && INLINE_SPACE.has(text.charAt(before))) before--;
-		let after = leaf.end;
-		while (INLINE_SPACE.has(text.charAt(after))) after++;
-		return before >= 0 && lineBreakAt(text, before) && after < text.length && !lineBreakAt(text, after);
+function lineOpeningComments(leaves: SyntaxNode[], lines: LineTable): SyntaxNode[] {
+	const tokens = leaves.filter((leaf) => leaf.end > leaf.start);
+	const line = (offset: number): number => lines.position(offset).line;
+	return tokens.filter((leaf, index) => {
+		const before = tokens[index - 1];
+		const after = tokens[index + 1];
+		return (
+			leaf.type === "block_comment" &&
+			before !== undefined &&
+			after !== undefined &&
+			line(before.end - 1) < line(leaf.start) &&
+			line(after.start) === line(leaf.end - 1)
+		);
 	});
 }
 
@@ -209,11 +262,12 @@ function lineOpeningComments(text: string, leaves: SyntaxNode[]): SyntaxNode[] {
  */
 function commentTrivia(artifact: ParseArtifact, reread: Reread): ParseArtifact {
 	const blanked: SyntaxNode[] = [];
+	const lines = new LineTable(artifact.text);
 	let latest = artifact;
 	let mask = artifact.mask;
 	for (;;) {
 		// Blanking may expose more.
-		const comments = lineOpeningComments(mask, latest.tree.leaves);
+		const comments = lineOpeningComments(latest.tree.leaves, lines);
 		if (comments.length === 0) break;
 		let next = "";
 		let from = 0;
@@ -276,22 +330,17 @@ function respelled(text: string, mask: string, tree: SyntaxTree): string {
 function closersOnTheirOwnLine(mask: string, tree: SyntaxTree): string {
 	const problems = outermostProblems(tree.root).filter((node) => node.type === "ERROR");
 	if (problems.length === 0) return mask;
+	const tokens = tree.leaves.filter((leaf) => leaf.end > leaf.start);
 	let out = "";
 	let from = 0;
-	for (const leaf of tree.leaves) {
-		if (leaf.type !== "}" || leaf.missing) continue;
-		const before = mask.charAt(leaf.start - 1);
-		if (before !== " " && before !== "\t") continue;
+	for (let index = 1; index < tokens.length; index++) {
+		const leaf = tokens[index] as SyntaxNode;
+		if (leaf.type !== "}" || (tokens[index - 1] as SyntaxNode).end >= leaf.start) continue;
 		if (!problems.some((node) => node.start <= leaf.start && leaf.start < node.end)) continue;
 		out += `${mask.slice(from, leaf.start - 1)}\n`;
 		from = leaf.start;
 	}
 	return out + mask.slice(from);
-}
-
-/** Multi-dollar literals postdate the grammar; `$$"` reads as a plain literal once its dollars are blank. */
-function withoutDollarPrefixes(mask: string): string {
-	return mask.replace(/\${2,}(?=")/gu, (run) => " ".repeat(run.length));
 }
 
 /** Where equal-length masks differ. */
@@ -312,10 +361,7 @@ function respelling(artifact: ParseArtifact, reread: Reread): ParseArtifact {
 	let latest = artifact;
 	let best = artifact;
 	for (let round = 0; round < REPAIR_ROUNDS && latest.damage.errors > 0; round++) {
-		const mask = closersOnTheirOwnLine(
-			withoutDollarPrefixes(respelled(text, latest.mask, latest.tree)),
-			latest.tree,
-		);
+		const mask = closersOnTheirOwnLine(respelled(text, latest.mask, latest.tree), latest.tree);
 		if (mask === latest.mask) break;
 		latest = reread(text, mask);
 		if (lessDamaged(latest.damage, best.damage)) best = latest;

@@ -161,6 +161,64 @@ test("resolves Rust module paths and distinguishes external crates", () => {
 	});
 });
 
+test("reads dependency names from Cargo.toml's tables, not its text", () => {
+	const root = workspace({
+		"Cargo.toml": `[package]
+name = "demo"
+description = """
+[dependencies]
+fake = "1"
+"""
+
+[dependencies] # runtime
+serde = { version = "1",
+  features = ["derive"] }
+"quoted" = "1"
+tokio.workspace = true
+
+[dependencies.regex]
+version = "1"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+proptest = "1"
+`,
+		"src/lib.rs": "pub fn run() {}\n",
+	});
+	const provider = client(new RustProvider());
+	provider.initialize(root);
+	expect(provider.discoverProject(root).diagnostics).toEqual([]);
+	const packageOf = (crate: string) => {
+		const resolution = provider.resolveImport({ fromModule: "src/lib.rs", specifier: `${crate}::Item` });
+		return resolution.status === "external" ? resolution.packageName : null;
+	};
+
+	expect(["serde", "quoted", "tokio", "regex", "libc", "proptest"].map(packageOf)).toEqual([
+		"serde",
+		"quoted",
+		"tokio",
+		"regex",
+		"libc",
+		"proptest",
+	]);
+	expect(["fake", "features", "version"].map(packageOf)).toEqual([null, null, null]);
+});
+
+test("reports a Cargo.toml it cannot read as TOML", () => {
+	const root = workspace({
+		"Cargo.toml": '[dependencies\nserde = "1"\n',
+		"src/lib.rs": "pub fn run() {}\n",
+	});
+	const provider = client(new RustProvider());
+	provider.initialize(root);
+
+	expect(provider.discoverProject(root).diagnostics).toEqual([
+		expect.objectContaining({ severity: "warning", path: "Cargo.toml" }),
+	]);
+});
+
 test("binds direct imports across files and makes glob bindings ambiguous", () => {
 	const root = workspace({
 		"src/lib.rs": `pub mod util;

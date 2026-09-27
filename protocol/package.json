@@ -6,7 +6,8 @@
 	"description": "The provider protocol: wire schemas, symbol id grammar, NDJSON framing, conformance suite",
 	"exports": {
 		".": "./src/index.ts",
-		"./ast": "./src/astResidue.ts"
+		"./ast": "./src/astResidue.ts",
+		"./toy": "./src/conformance/toyLexer.ts"
 	},
 	"dependencies": {
 		"vscode-jsonrpc": "9.0.2",

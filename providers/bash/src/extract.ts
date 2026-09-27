@@ -1,6 +1,6 @@
 // The walk over the unbash tree: what each node means to an index.
 
-import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { Cursor, coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
 import {
 	type Command,
 	type If,
@@ -22,7 +22,7 @@ import {
 	unsetting,
 	walkAssignmentPrefix,
 } from "./builtins.js";
-import { commentRanges, commentSpans } from "./comments.js";
+import { blankLinesOf, commentSpans, spansOf, tokensOf } from "./comments.js";
 import {
 	FUNCTION_NAME_RE,
 	type ParsedBashFile,
@@ -41,6 +41,11 @@ import { declareOrWriteWord, walkArithmetic, walkWord, walkWords } from "./words
 
 export type { BashDeclaration, BashReference, DeclaredType, ParsedBashFile, SourceImport } from "./context.js";
 export { LANGUAGE } from "./context.js";
+
+////////////////////////////////
+//  Constants
+
+const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -254,7 +259,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 //  Main
 
 export function parseBash(module: string, source: string): ParsedBashFile {
-	const shift = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+	const shift = new Cursor(source).peek() === BYTE_ORDER_MARK ? 1 : 0;
 	const text = source.slice(shift);
 	const script = parse(text);
 	const out: ParsedBashFile = {
@@ -267,6 +272,7 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		sources: [],
 		literals: [],
 		comments: [],
+		blankLines: [],
 		diagnostics: [],
 		functionsByName: new Map(),
 		globalsByName: new Map(),
@@ -285,12 +291,14 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		statements: (scope, statements) => walkStatements(w, scope, statements),
 		opaque: [],
 		quoted: [],
+		raw: [],
 	};
 	walkStatements(w, { locals: new Map(), confined: false }, script.commands);
 	settle(w);
-	const comments = commentRanges(w);
-	out.comments = commentSpans(w, comments);
-	signHeaders(w, comments);
+	const tokens = tokensOf(w, spansOf(w.opaque), spansOf(w.raw));
+	out.comments = commentSpans(w, tokens);
+	out.blankLines = blankLinesOf(w, tokens);
+	signHeaders(w, tokens);
 	for (const error of script.errors ?? []) {
 		out.diagnostics.push({
 			severity: "error",

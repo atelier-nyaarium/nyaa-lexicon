@@ -6,7 +6,7 @@
 // the splice, which is the bug class where two appliers disagree about overlapping ranges.
 
 import { z } from "zod";
-import { coordinatesOf, type TextCoordinates } from "./coordinates.js";
+import { coordinatesOf, type OffsetRange, type TextCoordinates } from "./coordinates.js";
 import { RangeSchema } from "./symbols.js";
 
 ////////////////////////////////
@@ -141,4 +141,16 @@ export function applyEdits(text: string, edits: TextEdit[]): { text: string } | 
 		out = out.slice(0, offsets.start) + edit.newText + out.slice(offsets.end);
 	}
 	return { text: out };
+}
+
+/** Spans sorted, with every overlapping or touching pair joined into one. */
+export function unionOf(spans: readonly OffsetRange[]): OffsetRange[] {
+	const sorted = [...spans].sort((a, b) => a.start - b.start || a.end - b.end);
+	const merged: OffsetRange[] = [];
+	for (const span of sorted) {
+		const last = merged.at(-1);
+		if (last !== undefined && span.start <= last.end) last.end = Math.max(last.end, span.end);
+		else merged.push({ start: span.start, end: span.end });
+	}
+	return merged;
 }

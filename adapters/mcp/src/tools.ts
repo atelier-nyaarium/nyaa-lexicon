@@ -551,7 +551,8 @@ export const REFACTOR_COMMIT_DESCRIPTION = `
 
 Keep what is on disk and close the transaction. Nothing is undoable afterwards.
 
-Refuses while issues are outstanding. \`force\` accepts them deliberately.
+Refuses while issues are outstanding. \`force\` accepts them deliberately. \`ExportedBeyondIndex\` and
+\`SameSpellingUnbound\` are advisory and never block.
 `.trim();
 
 export const REFACTOR_REPLACE_DESCRIPTION = `

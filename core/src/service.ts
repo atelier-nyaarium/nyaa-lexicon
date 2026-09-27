@@ -22,7 +22,7 @@ import {
 	type SymbolAtReply,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
-import { stageAll, writeAll } from "./applyEdits.js";
+import { stageAll } from "./applyEdits.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
@@ -53,11 +53,12 @@ import { PaintReads } from "./paintFacts.js";
 import type { ProviderPort } from "./providerPort.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
 import { ReadContext } from "./readContext.js";
-import { RefactorPlanner, type RenamePlan } from "./refactorPlanner.js";
+import { RefactorPlanner } from "./refactorPlanner.js";
+import type { PlannedWrite } from "./refactorStep.js";
 import type { UnknownType } from "./refusalSlots.js";
 import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
-import { type SourceReader, textOf } from "./sourceRead.js";
+import type { SourceReader } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredComment, StoredDeclaration } from "./store.js";
 import { WorkspaceGate } from "./workspaceGate.js";
@@ -76,11 +77,6 @@ const ENTRY_POINTS_SHOWN = 50;
 
 ////////////////////////////////
 //  Interfaces & Types
-
-/** The plan rides along either way, so a refusal can say what it would have done. */
-export type RenameOutcome =
-	| { renamed: true; plan: RenamePlan; modules: string[] }
-	| { renamed: false; plan: RenamePlan; reason: Refusal };
 
 ////////////////////////////////
 ////////////////////////////////
@@ -147,7 +143,7 @@ export class LexiconService {
 	/** Less than the supervisor offers, on purpose. */
 	readonly probe: ProviderProbe;
 
-	/** Plans only. renameSymbol below is what writes. */
+	/** Plans; journaled steps write. */
 	readonly planner: RefactorPlanner;
 
 	/** Paint facts, stored or freshly parsed. */
@@ -284,8 +280,9 @@ export class LexiconService {
 		return this.planner.rebaseIntoModule(...args);
 	}
 
-	writeModule(module: string, text: string): void {
-		this.source.writeModule(module, text);
+	/** False on base mismatch. */
+	writeModule(module: string, text: string, base: string | null): boolean {
+		return this.source.writeModule(module, text, base);
 	}
 
 	////////////////////////////////
@@ -664,35 +661,12 @@ export class LexiconService {
 		});
 	}
 
-	/**
-	 * Perform a rename, or explain why it did not happen. Nothing is written unless all of it can be.
-	 */
-	async renameSymbol(symbolId: string, newName: string): Promise<RenameOutcome> {
-		const planned = await this.renameEdits(symbolId, newName);
-		if (!planned.ok) return { renamed: false, plan: planned.plan, reason: planned.reason };
-		const written = await this.writeRenameEdits(planned.files);
-		return "reason" in written
-			? { renamed: false, plan: planned.plan, reason: written.reason }
-			: { renamed: true, plan: planned.plan, modules: written.modules };
-	}
-
-	/** The text each file would hold after a rename, unwritten. */
-	renameTexts(files: FileEdits[]): { texts: Array<{ module: string; text: string }> } | { reason: Refusal } {
+	/** Unwritten rename texts with edit bases. */
+	renameWrites(files: FileEdits[]): { writes: PlannedWrite[] } | { reason: Refusal } {
 		const staged = stageAll(files, this.readSource);
-		return "staged" in staged ? { texts: staged.staged } : { reason: writeFailed(staged.module, staged.reason) };
-	}
-
-	/** Writes a rename's edits, then reindexes each file. */
-	async writeRenameEdits(files: FileEdits[]): Promise<{ modules: string[] } | { reason: Refusal }> {
-		const written = writeAll(this.workspaceRoot, files, this.readSource);
-		if (!written.applied) return { reason: writeFailed(written.module, written.reason) };
-
-		// Re-indexed immediately, since every edited file's facts are now wrong and a rename is
-		// usually followed by another question about the same symbols.
-		for (const module of written.modules) {
-			if (textOf(this.readSource(module)) !== null) await this.indexFile(module);
-		}
-		return { modules: written.modules };
+		if (!("staged" in staged)) return { reason: writeFailed(staged.module, staged.reason) };
+		const bases = new Map(files.map((file) => [file.module, file.contentHash]));
+		return { writes: staged.staged.map(({ module, text }) => ({ module, base: bases.get(module) ?? null, text })) };
 	}
 
 	/**

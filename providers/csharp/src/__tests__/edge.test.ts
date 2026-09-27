@@ -249,6 +249,69 @@ describe("C# declaration structure", () => {
 		]);
 	});
 
+	it("declares tuple-typed members, locals, delegates and conversions", () => {
+		const text = [
+			"public class C {",
+			"(int count, Customer customer) value;",
+			"(int, int)[] pairs = null;",
+			"public (int, int)? Pair { get; }",
+			"public (int count, Customer customer) Get() {",
+			"  (int count, Customer customer) local = default;",
+			"  Touch(local);",
+			"  (int, string) other;",
+			"  return local;",
+			"}",
+			"Dictionary<int, List<(int id, Customer row)>> rows;",
+			"int IPair<(int left, int right)>.Sum() => 0;",
+			"public static implicit operator (int, int)(C c) => default;",
+			"}",
+			"delegate (int, int) Pairing();",
+		].join("\n");
+		const { provider, facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.declarations.map((item) => `${item.kind}:${item.name}`)).toEqual([
+			"class:C",
+			"field:value",
+			"field:pairs",
+			"property:Pair",
+			"method:Get",
+			"variable:local",
+			"variable:other",
+			"field:rows",
+			"method:Sum",
+			"operator:operator(int,int)",
+			"variable:c",
+			"function:Pairing",
+		]);
+		const display = (name: string) =>
+			provider.typeOf({
+				symbolId: one(
+					facts.declarations.filter((item) => item.name === name),
+					`${name} missing`,
+				).symbolId,
+			});
+		expect(display("value")).toEqual({
+			status: "known",
+			display: "(int count, Customer customer)",
+			provenance: "declared",
+		});
+		expect(display("pairs")).toMatchObject({ display: "(int, int)[]" });
+		expect(display("Pair")).toMatchObject({ display: "(int, int)?" });
+		expect(display("Get")).toMatchObject({ display: "(int count, Customer customer)" });
+		expect(display("local")).toMatchObject({ display: "(int count, Customer customer)" });
+		expect(display("operator(int,int)")).toMatchObject({ display: "(int, int)" });
+		expect(display("Pairing")).toMatchObject({ display: "(int, int)" });
+		// Element names are not references.
+		const names = ["count", "customer", "id", "row", "left", "right"];
+		expect(facts.references.filter((item) => names.includes(item.name))).toEqual([]);
+		expect(facts.references.filter((item) => item.name === "Customer").map((item) => item.role)).toEqual([
+			"typeUse",
+			"typeUse",
+			"typeUse",
+			"typeUse",
+		]);
+	});
+
 	it("maps default, explicit, protected, file, and local visibility", () => {
 		const text = [
 			"public class PublicType {}",
@@ -395,6 +458,24 @@ describe("C# type answers", () => {
 		});
 	});
 
+	it("infers an integer from a hexadecimal or binary literal whose digits look like suffixes", () => {
+		const text = "public class C { void Run() { var mask = 0x1F; var high = 0xE0; var bits = 0b1; } }";
+		const { provider, facts } = parse(text);
+		const inferred = ["mask", "high", "bits"].map((name) => {
+			const local = one(
+				facts.declarations.filter((item) => item.name === name),
+				`${name} missing`,
+			);
+			return provider.typeOf({ symbolId: local.symbolId });
+		});
+
+		expect(inferred.map((item) => (item.status === "inferred" ? item.display : item.status))).toEqual([
+			"int",
+			"int",
+			"int",
+		]);
+	});
+
 	it("returns honest answers for dynamic and unsupported types", () => {
 		const text = "public class C { public dynamic Value; public C() {} }";
 		const { provider, facts } = parse(text);
@@ -422,6 +503,43 @@ describe("C# type answers", () => {
 			}),
 		).toMatchObject({ status: "unknown", reason: "ParseError" });
 		TypeInfoSchema.parse(provider.typeOf({ symbolId: value.symbolId }));
+	});
+
+	it("reads a declared type and its name from the type's own tokens", () => {
+		const text = [
+			"interface IFoo { int Bar { get; } }",
+			"class Outer<T> { public class Inner {} }",
+			"class C : IFoo {",
+			"Outer<int>.Inner field1;",
+			"global::Outer<int>.Inner field2;",
+			"int[] numbers;",
+			"int IFoo.Bar => 0;",
+			"public static C operator +(C a, C b) => a;",
+			"void Extend(this C self, params Outer<int>.Inner[] rest) {}",
+			"public Outer<int>.Inner Property { get; }",
+			"}",
+		].join("\n");
+		const { provider, facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		// The last, so `Bar` is the explicit implementation.
+		const declared = (name: string) =>
+			one(facts.declarations.filter((item) => item.name === name).toReversed(), `${name} missing`);
+		const typeOf = (name: string) => provider.typeOf({ symbolId: declared(name).symbolId });
+		const inner = declared("Inner").symbolId;
+		const c = declared("C").symbolId;
+		expect(facts.declarations.filter((item) => item.kind === "field").map((item) => item.name)).toEqual([
+			"field1",
+			"field2",
+			"numbers",
+		]);
+		expect(typeOf("field1")).toMatchObject({ display: "Outer<int>.Inner", symbolId: inner });
+		expect(typeOf("field2")).toMatchObject({ display: "global::Outer<int>.Inner", symbolId: inner });
+		expect(typeOf("numbers")).toEqual({ status: "known", display: "int[]", provenance: "declared" });
+		expect(typeOf("Bar")).toEqual({ status: "known", display: "int", provenance: "declared" });
+		expect(typeOf("operator+")).toMatchObject({ display: "C", symbolId: c });
+		expect(typeOf("self")).toMatchObject({ display: "C", symbolId: c });
+		expect(typeOf("rest")).toMatchObject({ display: "Outer<int>.Inner[]", symbolId: inner });
+		expect(typeOf("Property")).toMatchObject({ display: "Outer<int>.Inner", symbolId: inner });
 	});
 
 	it("resolves an annotated workspace type to its declaration", () => {
@@ -531,6 +649,86 @@ describe("C# references and diagnostics", () => {
 		// `new N.Simple[5]`: an array creation.
 		expect(roleOf("N", 5)).toBe("read");
 		expect(roleOf("Simple", 5)).toBe("instantiate");
+	});
+
+	it("marks a name right of a member operator or qualifier as qualified", () => {
+		const text = [
+			"using Alias = System.Text;",
+			"namespace N {",
+			"[System.Serializable]",
+			"class C : Base.Inner {",
+			"  int count;",
+			"  void Run(C other) {",
+			"    count = other.count;",
+			"    this.count = other?.count ?? 0;",
+			"    base.Run(other);",
+			"    Run(null);",
+			"    System.Console.WriteLine(Alias.Encoding);",
+			"    var c = new global::N.C { count = 1 };",
+			"    unsafe { P* p = null; p->X = 1; }",
+			"    other",
+			"      // trailing",
+			"      .Run(x..y);",
+			"    Ext::Type t = null;",
+			"  }",
+			"}",
+			"}",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		for (const reference of facts.references) expect(typeof reference.qualified).toBe("boolean");
+		const onLine = (line: number): Array<[string, boolean | undefined]> =>
+			facts.references
+				.filter((item) => item.range.start.line === line)
+				.map((item) => [item.name, item.qualified]);
+		// Import binding.
+		expect(onLine(0)).toEqual([["System.Text", false]]);
+		expect(onLine(2)).toEqual([
+			["System", false],
+			["Serializable", true],
+		]);
+		expect(onLine(3)).toEqual([
+			["Base", false],
+			["Inner", true],
+		]);
+		// Implicit member access stays unqualified.
+		expect(onLine(6)).toEqual([
+			["count", false],
+			["other", false],
+			["count", true],
+		]);
+		expect(onLine(7)).toEqual([
+			["count", true],
+			["other", false],
+			["count", true],
+		]);
+		expect(onLine(8)).toEqual([
+			["Run", true],
+			["other", false],
+		]);
+		expect(onLine(9)).toEqual([["Run", false]]);
+		expect(onLine(10)).toEqual([
+			["System", false],
+			["Console", true],
+			["WriteLine", true],
+			["Alias", false],
+			["Encoding", true],
+		]);
+		expect(onLine(11).filter(([name]) => name !== "c")).toEqual([
+			["N", true],
+			["C", true],
+			["count", false],
+		]);
+		expect(onLine(12).filter(([name]) => name === "X")).toEqual([["X", true]]);
+		expect(onLine(15)).toEqual([
+			["Run", true],
+			["x", false],
+			["y", false],
+		]);
+		expect(onLine(16).filter(([name]) => name !== "t")).toEqual([
+			["Ext", false],
+			["Type", true],
+		]);
 	});
 
 	it("reports unclosed strings and delimiters as errors", () => {

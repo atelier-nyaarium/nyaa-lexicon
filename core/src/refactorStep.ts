@@ -1,9 +1,10 @@
 // One executor for a journaled write step, so the failure policy exists once.
 //
-// One executor owns step ordering and failures.
+// Plans carry whole texts and base hashes; the executor journals then writes.
 
 import { type CommittedFile, defined, type StepBase } from "@nyaa-lexicon/protocol";
 import {
+	changedWhilePlanned,
 	noTransactionOpen,
 	type Refusal,
 	refactorOpenForCommittedStep,
@@ -18,7 +19,7 @@ import type { RefactorIssue, StepKind, TransactionManager } from "./transactions
 ////////////////////////////////
 //  Interfaces & Types
 
-/** Thrown by apply() to refuse with a caller-facing reason. Anything else is a write failure. */
+/** Caller-facing refusal; other errors fail writes. */
 export class StepRefusal extends Error {}
 
 /** Recovery reverses these rebind rows. */
@@ -27,23 +28,28 @@ export interface StepRebind {
 	evidence: RebindEvidence;
 }
 
+/** Whole text over its planned disk hash. */
+export interface PlannedWrite {
+	module: string;
+	/** Null when absent. */
+	base: string | null;
+	text: string;
+}
+
 export interface PlannedStep {
+	/** Includes all written modules. */
 	modules: string[];
-	/** What apply writes; `modules` may add ones only reindexed. */
-	writes: string[];
+	/** Ordered writes require their disk bases. */
+	writes: PlannedWrite[];
 	planRecord?: unknown;
-	/** Recovery matches early writes by hash; completion records disk state. */
-	plannedText?: Array<{ module: string; text: string }>;
-	/** Inside the gate, before journaling: null while the planned world still holds. */
+	/** Null while planned facts still hold. */
 	stale: () => Refusal | null;
 	/** Inside the gate, after stale passes, before journaling. Position is free: beginStep touches
 	 * only the journal, which no capture reads. */
 	begin?: () => void;
-	/** Record rebinds before apply; apply after all reindexes. */
+	/** Rebinds recorded before writes, applied after reindex. */
 	rebind?: () => StepRebind;
-	/** Writes files. May own internal reindexing (rename does). */
-	apply: () => Promise<void> | void;
-	/** Reindexed after apply, in order: only what apply did not already reindex. */
+	/** Reindexed after writes, in order. */
 	reindex: string[];
 	issues: RefactorIssue[];
 	/** Runs ONLY when every reindex succeeded: half-reindexed facts must never feed a verifier. */
@@ -92,6 +98,16 @@ function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** Refusal noun. */
+function nounOf(kind: StepKind): string {
+	return kind === "replace" ? "replacement" : kind;
+}
+
+/** First module with a stale base. */
+function movedBase(service: LexiconService, writes: readonly PlannedWrite[]): string | null {
+	return writes.find((write) => service.currentHashOf(write.module) !== write.base)?.module ?? null;
+}
+
 /** Whether the policy refuses this transaction state. */
 function policyRefusal(policy: StepPolicy, open: { id: string } | null): { reason: Refusal; why?: RefusedWith } | null {
 	if (policy === "join") return open === null ? { reason: noTransactionOpen() } : null;
@@ -124,7 +140,9 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 				return shape.refuse(reason, [], why);
 			};
 
-			// The plan was made outside the gate; the world it described must still hold inside it.
+			// Validate the plan under the gate.
+			const moved = movedBase(service, planned.writes);
+			if (moved !== null) return refuse(changedWhilePlanned(moved, nounOf(shape.kind)));
 			const stale = planned.stale();
 			if (stale !== null) return refuse(stale);
 			planned.begin?.();
@@ -134,14 +152,33 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 				rebind === undefined
 					? planned.planRecord
 					: { ...(planned.planRecord as Record<string, unknown> | undefined), rebind };
-			const bases =
-				typeof shape.hold === "object" ? { writes: planned.writes, bases: shape.hold.own } : undefined;
-			const begun = transactions.beginStep(shape.kind, planned.modules, record, planned.plannedText, bases);
+			const written = planned.writes.map((write) => write.module);
+			const tracked = new Set(planned.modules.filter((module) => transactions.tracks(module)));
+			const bases = typeof shape.hold === "object" ? { writes: written, bases: shape.hold.own } : undefined;
+			// Journal after-hashes before writes.
+			const begun = transactions.beginStep(shape.kind, planned.modules, record, planned.writes, bases);
 			if (!begun.ok) return refuse(begun.reason, defined({ unexpected: begun.unexpected }));
 
+			const landed = new Set<string>();
+			// A write that threw may have left partial text, so undo judges it.
+			let threw: string | null = null;
 			try {
-				await planned.apply();
+				for (const write of planned.writes) {
+					threw = write.module;
+					const wrote = service.writeModule(write.module, write.text, write.base);
+					threw = null;
+					if (wrote) {
+						landed.add(write.module);
+						continue;
+					}
+					throw new StepRefusal(changedWhilePlanned(write.module, nounOf(shape.kind)));
+				}
 			} catch (error) {
+				// Release unwritten modules, or Revert erases later edits to them.
+				for (const module of planned.modules) {
+					if (landed.has(module) || module === threw) continue;
+					transactions.releaseModule(begun.stepNo, module, !tracked.has(module));
+				}
 				// Journaled but not (fully) written: the step is removed, and the restored files are
 				// reindexed, or disk and facts diverge exactly where a caller retries next.
 				const undone = transactions.undo();
@@ -202,7 +239,7 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 			transactions.recordIssues(begun.stepNo, issues);
 			transactions.completeStep(begun.stepNo, "finalized");
 			// Committing drops the journal.
-			const files = transactions.stepFiles(begun.stepNo).filter((file) => planned.writes.includes(file.module));
+			const files = transactions.stepFiles(begun.stepNo).filter((file) => written.includes(file.module));
 			// Issues are reported, never left open.
 			if (hold === "own") transactions.commit({ force: true });
 			return shape.succeed(issues, hold, files);

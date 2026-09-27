@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join, relative } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { sourceFiles } from "@nyaa-lexicon/protocol";
+import { callsTo, parsedFiles } from "@nyaa-lexicon/protocol/ast";
 
 /**
  * One publisher. The record names the machine's installed lexicon, so only the plugin's MCP server
@@ -17,8 +18,6 @@ const OWNERS = new Set(["client/src/install.ts", "adapters/mcp/src/serve.ts"]);
 
 const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "tmp"]);
 
-const PUBLISH = /\bwriteInstallRecord\s*\(/;
-
 ////////////////////////////////
 //  Tests
 
@@ -30,11 +29,10 @@ describe("no production source but the MCP server publishes the install record",
 	it("calls writeInstallRecord only in its definition and the MCP server", () => {
 		const offenders: string[] = [];
 		for (const dir of SWEPT) {
-			for (const file of sourceFiles(dir, SKIP_DIRS)) {
+			for (const { file, source } of parsedFiles(dir, SKIP_DIRS)) {
 				const name = relative(ROOT, file);
 				if (OWNERS.has(name)) continue;
-				const source = readSwept(file);
-				if (source !== null && PUBLISH.test(codeOnly(source))) offenders.push(name);
+				if (callsTo(source, "writeInstallRecord").length > 0) offenders.push(name);
 			}
 		}
 

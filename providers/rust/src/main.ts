@@ -234,6 +234,7 @@ export class RustProvider {
 			imports: facts.imports,
 			literals: facts.literals,
 			comments: facts.comments,
+			...defined({ blankLines: facts.blankLines }),
 			diagnostics: facts.diagnostics,
 			role: rustFileRole(params.module, facts.declarations, this.store.project.rootModules),
 			...(outline ? { depth: "outline" as const } : {}),

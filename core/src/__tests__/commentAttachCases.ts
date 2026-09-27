@@ -16,11 +16,13 @@ export interface AttachCase {
 ////////////////////////////////
 //  Helpers
 
-/** Every comment in the text, found by marker. The fixtures here hold no strings, so this is safe. */
+/** Finds every marked comment and reports its trivia. Fixtures have no strings, and comments run to line end. */
 export function commentsIn(text: string) {
 	const found: Array<{
 		range: { start: { line: number; character: number }; end: { line: number; character: number } };
 		text: string;
+		codeBefore: boolean;
+		codeAfter: boolean;
 	}> = [];
 	const coordinates = coordinatesOf(text);
 	for (let line = 0; line < coordinates.lineCount(); line++) {
@@ -30,9 +32,21 @@ export function commentsIn(text: string) {
 		found.push({
 			range: { start: { line, character: at }, end: { line, character: content.length } },
 			text: content.slice(at),
+			codeBefore: content.slice(0, at).trim() !== "",
+			codeAfter: false,
 		});
 	}
 	return found;
+}
+
+/** Blank lines; fixtures have no multiline literals. */
+export function blanksIn(text: string): number[] {
+	const coordinates = coordinatesOf(text);
+	const blank: number[] = [];
+	for (let line = 0; line < coordinates.lineCount(); line++) {
+		if ((coordinates.lineText(line) ?? "").trim() === "") blank.push(line);
+	}
+	return blank;
 }
 
 /** A declaration whose range starts at the code, which is the majority convention. */
@@ -60,7 +74,7 @@ export const CASES: AttachCase[] = [
 		name: "attaches a comment directly above a declaration",
 		run: (attach) => {
 			const text = "// what work does\nfunction work() {\n}\n";
-			const [found] = attach([decl("work", 1, 2)], commentsIn(text), text);
+			const [found] = attach([decl("work", 1, 2)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("leading");
 			expect(found?.placement).toBe("above");
 			expect(anchorName(found?.anchorId ?? null)).toBe("work");
@@ -73,7 +87,19 @@ export const CASES: AttachCase[] = [
 			const text = "// what work does\nfunction work() {\n}\n";
 			const covering = decl("work", 1, 2);
 			covering.range = { start: { line: 0, character: 0 }, end: { line: 2, character: 1 } };
-			const [found] = attach([covering], commentsIn(text), text);
+			const [found] = attach([covering], commentsIn(text), text, blanksIn(text));
+			expect(found?.form).toBe("leading");
+			expect(anchorName(found?.anchorId ?? null)).toBe("work");
+		},
+	},
+	{
+		// A whole-script declaration starts at the comment too, but names nothing before `work` does.
+		name: "gives a comment at a script's first line to the declaration below, not to the script",
+		run: (attach) => {
+			const text = "// what work does\nfunction work() {\n}\n";
+			const { selectionRange: _span, ...unnamed } = decl("script", 0, 2);
+			const script = { ...unnamed, range: { start: { line: 0, character: 0 }, end: { line: 2, character: 1 } } };
+			const [found] = attach([script, decl("work", 1, 2)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("leading");
 			expect(anchorName(found?.anchorId ?? null)).toBe("work");
 		},
@@ -82,7 +108,7 @@ export const CASES: AttachCase[] = [
 		name: "reads a run of line comments as one fact",
 		run: (attach) => {
 			const text = "// refuses rather than\n// clamping the value\nfunction work() {\n}\n";
-			const attached = attach([decl("work", 2, 3)], commentsIn(text), text);
+			const attached = attach([decl("work", 2, 3)], commentsIn(text), text, blanksIn(text));
 			expect(attached).toHaveLength(1);
 			expect(attached[0]?.normalized).toBe("refuses rather than clamping the value");
 			expect(attached[0]?.form).toBe("leading");
@@ -93,7 +119,7 @@ export const CASES: AttachCase[] = [
 		name: "joins a run of more than two lines into one fact",
 		run: (attach) => {
 			const text = "// one\n// two\n// three\n// four\nfunction work() {\n}\n";
-			const attached = attach([decl("work", 4, 5)], commentsIn(text), text);
+			const attached = attach([decl("work", 4, 5)], commentsIn(text), text, blanksIn(text));
 			expect(attached).toHaveLength(1);
 			expect(attached[0]?.normalized).toBe("one two three four");
 			expect(attached[0]?.range.end.line).toBe(3);
@@ -104,7 +130,7 @@ export const CASES: AttachCase[] = [
 		run: (attach) => {
 			const lines = Array.from({ length: 40 }, (_, index) => `// line ${index}`);
 			const text = `${lines.join("\n")}\nfunction work() {\n}\n`;
-			const attached = attach([decl("work", 40, 41)], commentsIn(text), text);
+			const attached = attach([decl("work", 40, 41)], commentsIn(text), text, blanksIn(text));
 			expect(attached).toHaveLength(1);
 			expect(attached[0]?.normalized.split(" ").filter((word) => word === "line")).toHaveLength(40);
 		},
@@ -114,12 +140,25 @@ export const CASES: AttachCase[] = [
 		name: "keeps a block comment out of a line-comment run",
 		run: (attach) => {
 			const text = "// one\n/* block */\n// three\nfunction work() {\n}\n";
+			const alone = { codeBefore: false, codeAfter: false };
 			const spans = [
-				{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } }, text: "// one" },
-				{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 11 } }, text: "/* block */" },
-				{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 8 } }, text: "// three" },
+				{
+					range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+					text: "// one",
+					...alone,
+				},
+				{
+					range: { start: { line: 1, character: 0 }, end: { line: 1, character: 11 } },
+					text: "/* block */",
+					...alone,
+				},
+				{
+					range: { start: { line: 2, character: 0 }, end: { line: 2, character: 8 } },
+					text: "// three",
+					...alone,
+				},
 			];
-			expect(attach([decl("work", 3, 4)], spans, text).map((item) => item.normalized)).toEqual([
+			expect(attach([decl("work", 3, 4)], spans, text, blanksIn(text)).map((item) => item.normalized)).toEqual([
 				"one",
 				"block",
 				"three",
@@ -127,17 +166,50 @@ export const CASES: AttachCase[] = [
 		},
 	},
 	{
+		// A comment after it on the line is not code, so the doc still leads.
+		name: "keeps a doc comment leading when only another comment follows it on its line",
+		run: (attach) => {
+			const text = "/** Adds. */ // note\nfunction add() {\n}\n";
+			const spans = [
+				{
+					range: { start: { line: 0, character: 0 }, end: { line: 0, character: 12 } },
+					text: "/** Adds. */",
+					codeBefore: false,
+					codeAfter: false,
+				},
+				{
+					range: { start: { line: 0, character: 13 }, end: { line: 0, character: 20 } },
+					text: "// note",
+					codeBefore: false,
+					codeAfter: false,
+				},
+			];
+			const [doc] = attach([decl("add", 1, 2)], spans, text, blanksIn(text));
+			expect([doc?.form, anchorName(doc?.anchorId ?? null)]).toEqual(["leading", "add"]);
+		},
+	},
+	{
+		// The provider reports blank lines; one inside a string literal is not a paragraph break.
+		name: "keeps a comment leading across a blank line that sits inside a literal",
+		run: (attach) => {
+			const text = '// Doc for widget\n@register(help="""\nusage\n\n""")\nfunction widget() {\n}\n';
+			const outside = attach([decl("widget", 5, 6)], commentsIn(text), text, []);
+			const naive = attach([decl("widget", 5, 6)], commentsIn(text), text, blanksIn(text));
+			expect([outside[0]?.form, naive[0]?.form]).toEqual(["leading", "standalone"]);
+		},
+	},
+	{
 		name: "does not join a run that changes indent",
 		run: (attach) => {
 			const text = "// outer\n\t// inner\nfunction work() {\n}\n";
-			expect(attach([decl("work", 2, 3)], commentsIn(text), text)).toHaveLength(2);
+			expect(attach([decl("work", 2, 3)], commentsIn(text), text, blanksIn(text))).toHaveLength(2);
 		},
 	},
 	{
 		name: "calls a comment after the code on its line trailing",
 		run: (attach) => {
 			const text = "function work() { } // returns nothing\n";
-			const [found] = attach([decl("work", 0, 0)], commentsIn(text), text);
+			const [found] = attach([decl("work", 0, 0)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("trailing");
 			expect(found?.placement).toBe("after");
 			expect(anchorName(found?.anchorId ?? null)).toBe("work");
@@ -148,7 +220,7 @@ export const CASES: AttachCase[] = [
 		name: "refuses to guess when a blank line separates it from the declaration below",
 		run: (attach) => {
 			const text = "// floating\n\nfunction work() {\n}\n";
-			const [found] = attach([decl("work", 2, 3)], commentsIn(text), text);
+			const [found] = attach([decl("work", 2, 3)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("standalone");
 			expect(found?.anchorId).toBeNull();
 		},
@@ -158,7 +230,7 @@ export const CASES: AttachCase[] = [
 		name: "attaches across an annotation line between the comment and the declaration",
 		run: (attach) => {
 			const text = "// what work does\n@decorated\nfunction work() {\n}\n";
-			const [found] = attach([decl("work", 2, 3)], commentsIn(text), text);
+			const [found] = attach([decl("work", 2, 3)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("leading");
 			expect(anchorName(found?.anchorId ?? null)).toBe("work");
 		},
@@ -167,7 +239,7 @@ export const CASES: AttachCase[] = [
 		name: "anchors a comment in a body to the declaration that encloses it",
 		run: (attach) => {
 			const text = "function work() {\n\t// why this order\n\treturn 1;\n}\n";
-			const [found] = attach([decl("work", 0, 3)], commentsIn(text), text);
+			const [found] = attach([decl("work", 0, 3)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("standalone");
 			expect(found?.placement).toBe("inside");
 			expect(anchorName(found?.anchorId ?? null)).toBe("work");
@@ -178,7 +250,7 @@ export const CASES: AttachCase[] = [
 		name: "does not lead out of the body it sits in to the sibling declared below",
 		run: (attach) => {
 			const text = "function first() {\n\t// ends the body\n}\nfunction second() {\n}\n";
-			const [found] = attach([decl("first", 0, 2), decl("second", 3, 4)], commentsIn(text), text);
+			const [found] = attach([decl("first", 0, 2), decl("second", 3, 4)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("standalone");
 			expect(anchorName(found?.anchorId ?? null)).toBe("first");
 		},
@@ -187,7 +259,7 @@ export const CASES: AttachCase[] = [
 		name: "leaves a file header anchored to nothing",
 		run: (attach) => {
 			const text = "// Copyright someone\n\n\nfunction work() {\n}\n";
-			const [found] = attach([decl("work", 3, 4)], commentsIn(text), text);
+			const [found] = attach([decl("work", 3, 4)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("standalone");
 			expect(found?.anchorId).toBeNull();
 		},
@@ -197,7 +269,7 @@ export const CASES: AttachCase[] = [
 		name: "gives a declaration to the nearest group above it, not to every candidate",
 		run: (attach) => {
 			const text = "// far above\n\n// directly above\nfunction work() {\n}\n";
-			const attached = attach([decl("work", 3, 4)], commentsIn(text), text);
+			const attached = attach([decl("work", 3, 4)], commentsIn(text), text, blanksIn(text));
 			const near = attached.find((item) => item.normalized === "directly above");
 			const far = attached.find((item) => item.normalized === "far above");
 			expect(near?.form).toBe("leading");
@@ -209,7 +281,7 @@ export const CASES: AttachCase[] = [
 		name: "anchors a same-line comment to the symbol on its left",
 		run: (attach) => {
 			const text = "function work() { } // tail\n";
-			const [found] = attach([decl("work", 0, 0)], commentsIn(text), text);
+			const [found] = attach([decl("work", 0, 0)], commentsIn(text), text, blanksIn(text));
 			expect(anchorName(found?.anchorId ?? null)).toBe("work");
 			expect(found?.placement).toBe("after");
 		},
@@ -222,8 +294,10 @@ export const CASES: AttachCase[] = [
 			const spans = commentsIn(text).map((item) => ({
 				range: { start: item.range.start, end: { line: 0, character: 22 } },
 				text: "// tai",
+				codeBefore: true,
+				codeAfter: true,
 			}));
-			const [found] = attach([decl("work", 0, 0)], spans, text);
+			const [found] = attach([decl("work", 0, 0)], spans, text, blanksIn(text));
 			expect(found?.form).toBe("inline");
 			expect(found?.placement).toBe("after");
 		},
@@ -233,9 +307,25 @@ export const CASES: AttachCase[] = [
 		name: "calls a comment that precedes its only same-line symbol inline, not trailing",
 		run: (attach) => {
 			const text = "x; // note\nfunction work() { }\n";
-			const [found] = attach([decl("work", 0, 0, 20)], commentsIn(text), text);
+			const [found] = attach([decl("work", 0, 0, 20)], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("inline");
 			expect(found?.placement).toBe("before");
+		},
+	},
+	{
+		name: "anchors a comment that opens its line to the symbol after it, inline",
+		run: (attach) => {
+			const text = "/* note */ function work() { }\n";
+			const note = {
+				range: { start: { line: 0, character: 0 }, end: { line: 0, character: 10 } },
+				text: "/* note */",
+				codeBefore: false,
+				codeAfter: true,
+			};
+			const [found] = attach([decl("work", 0, 0, 20)], [note], text, blanksIn(text));
+			expect(found?.form).toBe("inline");
+			expect(found?.placement).toBe("before");
+			expect(anchorName(found?.anchorId ?? null)).toBe("work");
 		},
 	},
 	{
@@ -245,7 +335,7 @@ export const CASES: AttachCase[] = [
 			const text = "extends Node // the whole script\n";
 			const { selectionRange: _span, ...unnamed } = decl("player", 0, 0);
 			const script = { ...unnamed, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 32 } } };
-			const [found] = attach([script], commentsIn(text), text);
+			const [found] = attach([script], commentsIn(text), text, blanksIn(text));
 			expect(found?.form).toBe("standalone");
 			expect(anchorName(found?.anchorId ?? null)).toBe("player");
 		},
@@ -254,7 +344,7 @@ export const CASES: AttachCase[] = [
 		name: "keeps the raw text verbatim while normalizing separately",
 		run: (attach) => {
 			const text = "//   spaced   out\nfunction work() {\n}\n";
-			const [found] = attach([decl("work", 1, 2)], commentsIn(text), text);
+			const [found] = attach([decl("work", 1, 2)], commentsIn(text), text, blanksIn(text));
 			expect(found?.raw).toBe("//   spaced   out");
 			expect(found?.normalized).toBe("spaced out");
 		},

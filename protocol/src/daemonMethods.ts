@@ -251,7 +251,12 @@ const NoteWrite = z
 	])
 	.meta({ id: "RefactorNoteWriteRequest" });
 const BeforeImage = z
-	.object({ module: ModulePath, id: z.string().min(1).optional() })
+	.object({
+		module: ModulePath,
+		id: z.string().min(1).optional(),
+		/** False omits the bytes. */
+		content: z.boolean().optional(),
+	})
 	.meta({ id: "BeforeImageRequest" });
 const Settlements = z
 	.object({ after: z.number().int().nonnegative(), limit: z.number().int().positive().max(64).optional() })
@@ -270,6 +275,8 @@ const WriteFile = z
 			])
 			.nullable(),
 		expect: StepBaseSchema.shape.contentHash,
+		/** Requires the requested open refactor. `null` expects none. */
+		refactor: z.string().nullable().optional(),
 	})
 	.meta({ id: "WriteFileRequest" });
 const Replace = z

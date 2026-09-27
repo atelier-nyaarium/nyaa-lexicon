@@ -182,6 +182,9 @@ describe("Python declaration headers", () => {
 			"",
 			"TOTAL = 1 + \\",
 			"    2  # trailing",
+			"WIDE = 1 + \\",
+			"    \\",
+			"    2",
 			"NAMED = make(  # why",
 			'    "name",',
 			")",
@@ -192,6 +195,7 @@ describe("Python declaration headers", () => {
 
 		expect(found.get("run")).toBe("@first @second def run(value) -> int:");
 		expect(found.get("TOTAL")).toBe("TOTAL = 1 + 2");
+		expect(found.get("WIDE")).toBe("WIDE = 1 + 2");
 		expect(found.get("NAMED")).toBe('NAMED = make("name")');
 		expect(found.get("handle")).toBe("with open(path) as handle:");
 	});

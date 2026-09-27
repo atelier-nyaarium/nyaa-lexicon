@@ -137,17 +137,20 @@ export class SourceWorkspace {
 	}
 
 	/**
-	 * Writes one module's whole text, temp file then rename.
+	 * Writes via temp file and rename when disk matches `base`.
 	 *
 	 * The caller holds the workspace gate and has already journaled what was there. Checks the disk
 	 * through `writableSource` and the text through `writableText`, so no plan bypasses either.
+	 * Returns false when disk no longer matches `base`.
 	 */
-	writeModule(module: string, text: string): void {
+	writeModule(module: string, text: string, base: string | null): boolean {
 		const current = this.writable(module);
 		if ("refused" in current) throw new Error(current.refused);
 		const unwritable = writableText(module, text);
 		if (unwritable !== null) throw new Error(unwritable);
+		if ((current.text === null ? null : hashContent(current.text)) !== base) return false;
 		writeSourceFile(insideWorkspace(this.workspaceRoot, module), text);
+		return true;
 	}
 
 	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */

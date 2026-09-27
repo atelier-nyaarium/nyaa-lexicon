@@ -21,8 +21,7 @@ import {
 	reverseOf,
 } from "@nyaa-lexicon/protocol";
 import type { ReadContext } from "./readContext.js";
-import type { MoveEditsOutcome } from "./refactorPlanner.js";
-import { journaledStep, type RefusedWith, type StepPolicy, StepRefusal } from "./refactorStep.js";
+import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
 import { changedWhilePlanned, factsMovedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
@@ -153,14 +152,19 @@ function refactorMove(
 				const edits = await service.moveEdits(plan, context);
 				if (!edits.ok) return { refused: edits.reason, issues: edits.issues };
 				touched = edits.files.map((file) => file.module);
+				const bases = new Map(edits.bases.map((base) => [base.module, base.hash]));
 
 				return {
 					planned: {
 						modules: touched,
-						writes: touched,
+						// Edits carry bases.
+						writes: edits.files.map((file) => ({
+							module: file.module,
+							base: bases.get(file.module) ?? null,
+							text: file.text,
+						})),
 						planRecord: { from: plan.fromModule, to: plan.toModule },
-						plannedText: edits.files.map((file) => ({ module: file.module, text: file.text })),
-						stale: () => moveStale(service, plan, edits, context),
+						stale: () => moveStale(service, plan, context),
 						begin: () => {
 							for (const id of plan.closure) {
 								const rebased = service.rebaseIntoModule(id, plan.symbolId, plan.toModule);
@@ -171,9 +175,6 @@ function refactorMove(
 							entries: [...idMap].map(([from, to]) => ({ from, to })),
 							evidence: "journalMove",
 						}),
-						apply: () => {
-							for (const file of edits.files) service.writeModule(file.module, file.text);
-						},
 						// Target first, so every other module rebinds against a declaration that
 						// already exists in its new home rather than one that has just vanished.
 						reindex: [plan.toModule, ...touched.filter((m) => m !== plan.toModule)],
@@ -245,7 +246,7 @@ function refactorRename(
 				}
 				const plan = edits.plan;
 				oldName = plan.oldName;
-				const planned = service.renameTexts(edits.files);
+				const planned = service.renameWrites(edits.files);
 				if ("reason" in planned) return { refused: planned.reason };
 
 				idMap = service.renameIdMap(args.symbolId, args.newName, context);
@@ -255,23 +256,19 @@ function refactorRename(
 				const alsoBound = service
 					.modulesBoundTo(idMap.keys(), context)
 					.filter((module) => !edited.includes(module));
+				const written = planned.writes.map((write) => write.module);
+				modules = [...written, ...alsoBound];
 
 				return {
 					planned: {
 						modules: [...edited, ...alsoBound],
-						writes: edits.files.map((file) => file.module),
+						writes: planned.writes,
 						planRecord: plan,
-						plannedText: planned.texts,
 						stale: () => {
 							// Every site was chosen from stored ranges; a changed module has moved
 							// them, so rewriting would hit some occurrences and miss others.
 							const stale = service.staleModules(edited);
 							if (stale.length > 0) return staleSincePlanned(stale, "rename");
-							// The edits address the text they were planned on.
-							const changed = edits.files.find(
-								(file) => service.currentHashOf(file.module) !== file.contentHash,
-							);
-							if (changed !== undefined) return changedWhilePlanned(changed.module, "rename");
 							// Rows re-committed under an equal hash: a re-parse or an upgrade.
 							const moved = service.factsMoved(context.seen());
 							return moved.length > 0 ? factsMovedWhilePlanned(moved, "rename") : null;
@@ -280,14 +277,7 @@ function refactorRename(
 							entries: [...idMap].map(([from, to]) => ({ from, to })),
 							evidence: "journalRename",
 						}),
-						// The written files are reindexed by the write; only the stale-binding modules
-						// remain for the executor.
-						apply: async () => {
-							const written = await service.writeRenameEdits(edits.files);
-							if ("reason" in written) throw new StepRefusal(written.reason);
-							modules = [...written.modules, ...alsoBound];
-						},
-						reindex: alsoBound,
+						reindex: modules,
 						issues: plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail })),
 						finish: (_issues, rebound) => {
 							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
@@ -341,19 +331,14 @@ function refactorReplace(
 				return {
 					planned: {
 						modules: [plan.module],
-						writes: [plan.module],
+						// Splice and span share one base hash.
+						writes: [{ module: plan.module, base: plan.baseHash, text: plan.text }],
 						planRecord: { range: plan.range },
-						plannedText: [{ module: plan.module, text: plan.text }],
-						// The plan was spliced from, and its span checked on, one exact version of the file.
 						stale: () => {
-							if (service.currentHashOf(plan.module) !== plan.baseHash) {
-								return changedWhilePlanned(plan.module, "replacement");
-							}
-							// Rows re-committed under an equal hash: a re-parse or an upgrade.
+							// Equal hashes can hide reparses or upgrades.
 							const moved = service.factsMoved(plan.facts);
 							return moved.length > 0 ? factsMovedWhilePlanned(moved, "replacement") : null;
 						},
-						apply: () => service.writeModule(plan.module, plan.text),
 						reindex: [plan.module],
 						issues: plan.issues,
 					},
@@ -401,16 +386,12 @@ function refactorInsert(
 				return {
 					planned: {
 						modules: [plan.module],
-						writes: [plan.module],
+						// Created modules must stay absent until their write.
+						writes: [
+							{ module: plan.module, base: plan.created ? null : plan.baseHash, text: plan.candidate },
+						],
 						planRecord: { created: plan.created },
-						plannedText: [{ module: plan.module, text: plan.candidate }],
-						// A created module must STILL be absent: another writer landing one between
-						// planning and the gate would be clobbered by a candidate built from empty.
 						stale: () => {
-							const fresh = plan.created
-								? service.currentHashOf(plan.module) === null
-								: service.currentHashOf(plan.module) === plan.baseHash;
-							if (!fresh) return changedWhilePlanned(plan.module, "insert");
 							// The sibling set and the collision check were read from these rows.
 							const moved = service.factsMoved(plan.facts);
 							return moved.length > 0 ? factsMovedWhilePlanned(moved, "insert") : null;
@@ -418,7 +399,6 @@ function refactorInsert(
 						begin: () => {
 							held = new Set(service.declarationsIn(plan.module).map((d) => d.symbolId));
 						},
-						apply: () => service.writeModule(plan.module, plan.candidate),
 						reindex: [plan.module],
 						issues: plan.issues,
 						finish: () => {
@@ -473,18 +453,15 @@ function committedOutcome(kind: "rename" | "move"): (result: StepResult) => Comm
 	};
 }
 
+/** Written modules' bases are the executor's check. */
 function moveStale(
 	service: LexiconService,
 	plan: Extract<PlannedMove, { ok: true }>,
-	edits: Extract<MoveEditsOutcome, { ok: true }>,
 	context: ReadContext,
 ): Refusal | null {
 	if (service.currentHashOf(plan.fromModule) !== plan.baseHash) {
 		return changedWhilePlanned(plan.fromModule, "move");
 	}
-	// Target changes would be overwritten.
-	const moved = edits.bases.find((base) => service.currentHashOf(base.module) !== base.hash);
-	if (moved !== undefined) return changedWhilePlanned(moved.module, "move");
 	// Import edits use stored ranges.
 	const stale = service.staleModules(plan.referencing);
 	if (stale.length > 0) return staleSincePlanned(stale, "move");
@@ -526,7 +503,10 @@ async function previewMove(
 			reason: result.reason,
 		};
 	}
-	const moved = moveStale(service, plan, result, context);
+	// Targets must match planned hashes.
+	const changed = result.bases.find((base) => service.currentHashOf(base.module) !== base.hash);
+	const moved =
+		changed !== undefined ? changedWhilePlanned(changed.module, "move") : moveStale(service, plan, context);
 	if (moved !== null) return refused(moved);
 
 	return {
@@ -722,17 +702,19 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 				"absent" in params ? { absent: true } : { contentHash: params.contentHash },
 			),
 		),
-		refactorBeforeImage: read((params) => transactions().beforeImage(params.module, params.id)),
+		refactorBeforeImage: read((params) =>
+			transactions().beforeImage(params.module, params.id, params.content !== false),
+		),
 		refactorSettlements: read((params) => transactions().settlements(params.after, params.limit)),
 		refactorSettledImage: read((params) => transactions().settledImage(params.seq, params.module, params.side)),
-		refactorWriteFile: write(async ({ module, content, expect }) => {
+		refactorWriteFile: write(async ({ module, content, expect, refactor }) => {
 			const bytes =
 				content === null
 					? null
 					: content.encoding === "text"
 						? { text: content.text }
 						: { bytes: Buffer.from(content.bytes, "base64") };
-			const outcome = transactions().writeFile(module, bytes, expect);
+			const outcome = transactions().writeFile(module, bytes, expect, refactor);
 			if (!outcome.written) return outcome;
 			const indexed = await service.indexFile(module).then(
 				() => true,

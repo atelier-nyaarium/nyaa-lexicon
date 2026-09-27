@@ -1,7 +1,8 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
 import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
-import { angleDelta, isValueToken, KEYWORDS, type RustToken } from "./tokens.js";
+import type { TypeBrackets } from "./angles.js";
+import { isValueToken, KEYWORDS, OPERAND_WORDS, type RustToken } from "./tokens.js";
 
 ////////////////////////////////
 //  Constants
@@ -13,9 +14,6 @@ const COMMA = new Set([","]);
 const PIPE = new Set(["|"]);
 
 const BRACE = new Set(["{"]);
-
-/** Keywords that still end an operand. */
-const OPERAND_WORDS = new Set(["self", "Self", "true", "false", "crate", "super", "await"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -31,6 +29,18 @@ function isMacroName(token: RustToken | undefined): boolean {
 	return token?.kind === "identifier" && !KEYWORDS.has(token.value);
 }
 
+/** The first index whose start is at or past `offset`, over ascending starts. */
+export function firstFrom(count: number, startAt: (index: number) => number, offset: number): number {
+	let low = 0;
+	let high = count;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if (startAt(middle) < offset) low = middle + 1;
+		else high = middle;
+	}
+	return low;
+}
+
 ////////////////////////////////
 //  Classes
 
@@ -41,6 +51,7 @@ export class HeaderReader {
 		private readonly tokens: readonly RustToken[],
 		private readonly matching: ReadonlyMap<number, number>,
 		private readonly comments: readonly OffsetRange[],
+		private readonly brackets: TypeBrackets,
 	) {}
 
 	/** The first outer attribute directly above `index`, else `index`. */
@@ -93,6 +104,7 @@ export class HeaderReader {
 			folds,
 			omit: this.commentsWithin(span),
 			verbatim: this.literalsWithin(first, stop),
+			angles: this.anglesWithin(span),
 		});
 	}
 
@@ -121,18 +133,26 @@ export class HeaderReader {
 	}
 
 	private commentsWithin(span: OffsetRange): OffsetRange[] {
-		let low = 0;
-		let high = this.comments.length;
-		while (low < high) {
-			const middle = (low + high) >> 1;
-			if ((this.comments[middle]?.start ?? span.start) < span.start) low = middle + 1;
-			else high = middle;
-		}
 		const found: OffsetRange[] = [];
-		for (let index = low; index < this.comments.length; index++) {
+		const first = firstFrom(
+			this.comments.length,
+			(index) => (this.comments[index] as OffsetRange).start,
+			span.start,
+		);
+		for (let index = first; index < this.comments.length; index++) {
 			const comment = this.comments[index] as OffsetRange;
 			if (comment.start >= span.end) break;
 			found.push(comment);
+		}
+		return found;
+	}
+
+	private anglesWithin(span: OffsetRange): number[] {
+		const { offsets } = this.brackets;
+		const first = firstFrom(offsets.length, (index) => offsets[index] as number, span.start);
+		const found: number[] = [];
+		for (let index = first; index < offsets.length && (offsets[index] as number) < span.end; index++) {
+			found.push(offsets[index] as number);
 		}
 		return found;
 	}
@@ -172,7 +192,7 @@ export class HeaderReader {
 	private turbofishEnd(open: number, stop: number): number {
 		let depth = 0;
 		for (let index = open; index < stop; index++) {
-			depth += angleDelta(this.tokens[index] as RustToken);
+			depth += this.brackets.deltas.get(index) ?? 0;
 			if (depth <= 0) return index + 1;
 		}
 		return stop;

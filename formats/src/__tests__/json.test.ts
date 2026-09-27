@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
+import { MAX_NESTING, TOO_DEEP } from "../depth.js";
 import { readJson } from "../json.js";
 
 function read(text: string, strict = true) {
@@ -8,6 +9,10 @@ function read(text: string, strict = true) {
 		...readJson({ language: "json", module: "a.json", text, offset: 0, coordinates, strict }),
 		coordinates,
 	};
+}
+
+function tooDeep(text: string): boolean {
+	return read(text).diagnostics.some((diagnostic) => diagnostic.message === TOO_DEEP);
 }
 
 function names(text: string, strict = true): string[] {
@@ -161,6 +166,19 @@ describe("failure", () => {
 		const depth = 200_000;
 		const facts = read(`${"[".repeat(depth)}1${"]".repeat(depth)}`);
 		expect(facts.diagnostics.length).toBeGreaterThan(0);
+	});
+
+	it("counts nesting from the scanner's own tokens", () => {
+		const deep = "[".repeat(MAX_NESTING + 1);
+		expect(tooDeep(`${"[".repeat(MAX_NESTING)}1${"]".repeat(MAX_NESTING)}`)).toBe(false);
+		expect(tooDeep(`{"a": ${"[".repeat(MAX_NESTING)}1${"]".repeat(MAX_NESTING)}}`)).toBe(true);
+		expect(tooDeep(`["${"[".repeat(MAX_NESTING * 2)}", "a\\"b"]`)).toBe(false);
+		expect(tooDeep(`${"// [[[[\n".repeat(MAX_NESTING)}/* ${"{".repeat(MAX_NESTING * 2)} */ [1]`)).toBe(false);
+		expect(tooDeep(`/* ${deep}`)).toBe(false);
+		expect(tooDeep(`${"]".repeat(MAX_NESTING * 2)}${"[".repeat(MAX_NESTING)}`)).toBe(false);
+		expect(tooDeep(`["a\\"b", ${deep}]`)).toBe(true);
+		// A single quote opens no JSON string.
+		expect(tooDeep(`['${deep}`)).toBe(true);
 	});
 
 	it("declares a repeated key once, warns, and keeps the value a reader would get", () => {

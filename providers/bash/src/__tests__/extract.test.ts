@@ -92,6 +92,7 @@ describe("declarations", () => {
 				role: "write",
 				binding: { status: "bound", symbolId: "lexicon bash bin/deploy.sh LIMIT.", provenance: "bound" },
 				fromId: "lexicon bash bin/deploy.sh deploy().",
+				qualified: false,
 			},
 		]);
 		expect(wire.declarations.filter((declaration) => declaration.name === "LIMIT")).toHaveLength(1);
@@ -291,6 +292,10 @@ describe("diagnostics, types, and positions", () => {
 		const closed = parseBash("c.sh", "cat <<EOF\nline $X\nEOF\necho done\n");
 		expect(closed.diagnostics).toEqual([]);
 		expect(closed.references.map((reference) => reference.name)).toEqual(["cat", "X", "echo"]);
+		// `<<''` ends at an empty line, and a `)` after the delimiter is still end-of-file to bash.
+		expect(parseBash("d.sh", "cat <<''\nbody\n\necho done\n").diagnostics).toEqual([]);
+		const paren = parseBash("e.sh", "x=$(cat <<EOF\nbody\nEOF)\n");
+		expect(paren.diagnostics.map((diagnostic) => diagnostic.severity)).toEqual(["warning"]);
 	});
 
 	test("two heredocs on one line take their own bodies, and a byte order mark shifts every range", () => {
@@ -359,6 +364,7 @@ describe("diagnostics, types, and positions", () => {
 			"cat <<-T",
 			"\tone",
 			"\t\ttwo",
+			"\tthree\r\tfour",
 			"\tT",
 			"",
 		].join("\n");
@@ -369,7 +375,8 @@ describe("diagnostics, types, and positions", () => {
 			["hello ", "hello "],
 			["\n", "\n"],
 			["kept $NAME\n", "kept $NAME\n"],
-			["one\ntwo\n", "\tone\n\t\ttwo\n"],
+			// Only a line break starts a line.
+			["one\ntwo\nthree\r\tfour\n", "\tone\n\t\ttwo\n\tthree\r\tfour\n"],
 		]);
 		expect(parsed.diagnostics).toEqual([]);
 	});
@@ -519,6 +526,22 @@ describe("scopes", () => {
 			"j",
 		]);
 	});
+
+	test("a subscript is arithmetic for an indexed array and a string key for an associative one", () => {
+		const text = [
+			`echo \${arr[0x1F]} \${arr[i+1]}`,
+			"arr[16#FF]=1",
+			"declare -A m",
+			"m[color]=red",
+			`echo \${m[color]} \${m[$k]}`,
+			"(( arr[j] += m[size] ))",
+			"",
+		].join("\n");
+		const parsed = parseBash("i.sh", text);
+		const reads = parsed.references.filter((reference) => reference.role === "read");
+		expect(reads.map((reference) => reference.name)).toEqual(["arr", "arr", "i", "m", "m", "k", "j", "m"]);
+		for (const reference of parsed.references) expect(sliceOf(text, reference.range)).toBe(reference.name);
+	});
 });
 
 describe("builtins that write", () => {
@@ -549,6 +572,41 @@ describe("builtins that write", () => {
 		for (const declaration of parsed.declarations) {
 			expect(sliceOf(text, declaration.selectionRange as Range)).toBe(declaration.name);
 		}
+	});
+
+	test("a let word is arithmetic, where a based or hex number names nothing", () => {
+		const text = 'let v=16#FF "x = 0x1F" \'y = v + 2#101\' "a[i]"\n';
+		const parsed = parseBash("l.sh", text);
+		expect(parsed.declarations.map((declaration) => declaration.name)).toEqual(["v", "x", "y"]);
+		expect(parsed.references.map((reference) => [reference.name, reference.role])).toEqual([
+			["v", "read"],
+			["a", "read"],
+			["i", "read"],
+		]);
+		for (const declaration of parsed.declarations) {
+			expect(sliceOf(text, declaration.selectionRange as Range)).toBe(declaration.name);
+		}
+		for (const reference of parsed.references) expect(sliceOf(text, reference.range)).toBe(reference.name);
+	});
+
+	test("a declared name spelled through quotes sits inside them, and one an escape moves takes its whole word", () => {
+		const text = `declare "q=1" 'r'=2 $'\\x61'=3 x\\y=4 msg=hello\\ world\n`;
+		const parsed = parseBash("q.sh", text);
+		expect(
+			parsed.declarations.map((declaration) => [
+				declaration.name,
+				sliceOf(text, declaration.selectionRange as Range),
+			]),
+		).toEqual([
+			["q", "q"],
+			["r", "r"],
+			["a", "$'\\x61'=3"],
+			["xy", "x\\y=4"],
+			["msg", "msg"],
+		]);
+		const values = parsed.literals.map((literal) => literal.value);
+		expect(values).toContain("hello\\ world");
+		expect(values).not.toContain("=4");
 	});
 
 	test("printing and function forms of the declaring builtins declare nothing, and a nameref names its target", () => {
@@ -610,6 +668,117 @@ describe("comments", () => {
 		expect(commentsOf("# lead\r\necho x # tail\r\n")).toEqual(["# lead", "# tail"]);
 		expect(commentsOf('echo "unterminated\n# after\n')).toEqual([]);
 		expect(commentsOf("cat <<'#'\nbody\n#\necho done # yes\n")).toEqual(["# yes"]);
+		expect(commentsOf("x=$(cat <<'#'\nbody\n#)\necho done # yes\n")).toEqual(["# yes"]);
+	});
+
+	test("a comment says whether a keyword, word or multi-line token shares its line", () => {
+		const trivia = (text: string) =>
+			parseBash("c.sh", text).comments.map(({ text, codeBefore, codeAfter }) => [text, codeBefore, codeAfter]);
+		const text = [
+			"#!/bin/bash",
+			"# own line",
+			"\t# indented",
+			"a=1 # trailing",
+			"if true",
+			"then # after then",
+			"\tx=1",
+			"else # after else",
+			"\t:",
+			"fi",
+			"for i in a",
+			"do # after do",
+			"\tcase $i in",
+			"\t\ta) :",
+			"\t\t;; # after a terminator",
+			"\tesac",
+			"done",
+			"s='one",
+			"two' # after a string",
+			"cat <<EOF # beside a here-document",
+			"body",
+			"EOF",
+			"# after a here-document",
+			"x=$( # in a substitution",
+			"\ttrue",
+			")",
+			"# first",
+			"# second",
+			"",
+		].join("\n");
+		expect(trivia(text)).toEqual([
+			["#!/bin/bash", false, false],
+			["# own line", false, false],
+			["# indented", false, false],
+			["# trailing", true, false],
+			["# after then", true, false],
+			["# after else", true, false],
+			["# after do", true, false],
+			["# after a terminator", true, false],
+			["# after a string", true, false],
+			["# beside a here-document", true, false],
+			["# after a here-document", false, false],
+			["# in a substitution", true, false],
+			["# first", false, false],
+			["# second", false, false],
+		]);
+		expect(trivia("# lead\r\necho x # tail\r\n")).toEqual([
+			["# lead", false, false],
+			["# tail", true, false],
+		]);
+	});
+});
+
+describe("blank lines", () => {
+	const blankOf = (text: string) => parseBash("b.sh", text).blankLines;
+
+	test("a line inside a multi-line string or here-document body is not blank", () => {
+		const text = [
+			"a=1",
+			"",
+			"s='one",
+			"",
+			"two'",
+			'd="one',
+			"",
+			'$a"',
+			"c=$'one",
+			"",
+			"two'",
+			'l=$"one',
+			"",
+			'two"',
+			"cat <<'EOF'",
+			"",
+			"EOF",
+			"cat <<EOF",
+			"$a",
+			"",
+			"EOF",
+			"cat <<-EOF",
+			"\t",
+			"\tEOF",
+			"cat <<A; cat <<B",
+			"",
+			"A",
+			"",
+			"B",
+			"   ",
+			"# c",
+			"",
+			"b=2",
+		].join("\n");
+		expect(blankOf(`${text}\n`)).toEqual([1, 29, 31]);
+	});
+
+	test("a keyword or comment touches its line, and a final line break ends the last line", () => {
+		expect(blankOf("if true\nthen\n\n\t:\nelse\n\t:\nfi\n")).toEqual([2]);
+		expect(blankOf("a=1\n")).toEqual([]);
+		expect(blankOf("a=1\n\n")).toEqual([1]);
+		expect(blankOf("a=1\n\nb=2")).toEqual([1]);
+		expect(blankOf("\n")).toEqual([0]);
+		expect(blankOf("")).toEqual([]);
+		expect(blankOf("a=1\r\n\r\nb=2\r\n")).toEqual([1]);
+		expect(blankOf(`${BOM}\n# c\n`)).toEqual([0]);
 	});
 });
 
@@ -636,6 +805,37 @@ describe("the wire face", () => {
 			status: "bound",
 			symbolId: "lexicon bash third.sh THIRD.",
 		});
+	});
+
+	test("every reference is bare, a dotted or colon-joined function name included", () => {
+		const lib = "ns::helper() { :; }\nSHARED=1\n";
+		const main = [
+			"source ./lib.sh",
+			'obj.method() { local inner=$SHARED; echo "$inner"; }',
+			"COUNT=1",
+			"ns::helper",
+			"obj.method",
+			`echo \${LIST[COUNT]}`,
+			"(( COUNT += 1 ))",
+			"unset COUNT",
+			"",
+		].join("\n");
+		const facts = provider({ "main.sh": main, "lib.sh": lib }).parseFile({
+			module: "main.sh",
+			contentHash: "h",
+			text: main,
+		});
+		expect(facts.references.map((reference) => [reference.name, reference.role, reference.qualified])).toEqual([
+			["./lib.sh", "import", false],
+			["SHARED", "read", false],
+			["inner", "read", false],
+			["ns::helper", "call", false],
+			["obj.method", "call", false],
+			["LIST", "read", false],
+			["COUNT", "read", false],
+			["COUNT", "write", false],
+			["COUNT", "write", false],
+		]);
 	});
 
 	test("discovery claims the extensions, the exact filenames, and a bash shebang, and skips the rest", () => {

@@ -24,7 +24,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { codeOnly } from "../protocol/src/residue.js";
+import ts from "typescript";
+import { callsIn, parseSource } from "../protocol/src/astResidue.js";
 import { PROTOCOL_VERSION } from "../protocol/src/version.js";
 import { git, outliveInterrupts } from "./child";
 import { DIST_DIR } from "./dist";
@@ -34,10 +35,11 @@ import { DIST_DIR } from "./dist";
 
 export type BumpKind = "patch" | "minor" | "major";
 
-/** A site that recomputes the version at build time, named by a string that must still appear. */
+/** A site that recomputes the version at build time from the root package.json. */
 interface DerivedSite {
 	file: string;
-	needle: string;
+	/** Property the version read must initialize, if required. */
+	key?: string;
 	what: string;
 }
 
@@ -46,7 +48,6 @@ interface DerivedSite {
 
 const ROOT = path.join(import.meta.dirname, "..");
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
-const VERSION_FIELD_RE = /"version"\s*:\s*"[^"]*"/g;
 
 /**
  * Both are bundled for the same reason: a consumer runs them with no install. The conformance CLI
@@ -94,13 +95,55 @@ function providerBundles(root: string): Array<{ source: string; out: string; ass
 /** Names a smoke failure, so the catch can tell one from a bun error bun already printed. */
 const SMOKE_FAILURE = "failed to start";
 
+/** A string literal's text, through `as const`, `satisfies` and parentheses. */
+function stringValue(node: ts.Expression | undefined): string | undefined {
+	let at = node;
+	while (
+		at !== undefined &&
+		(ts.isAsExpression(at) || ts.isSatisfiesExpression(at) || ts.isParenthesizedExpression(at))
+	) {
+		at = at.expression;
+	}
+	return at !== undefined && ts.isStringLiteralLike(at) ? at.text : undefined;
+}
+
+function propertyName(name: ts.PropertyName): string | undefined {
+	return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
+}
+
+/** A `define.amd` or `define["amd"]` read. */
+function readsAmd(node: ts.Node): boolean {
+	if (ts.isPropertyAccessExpression(node)) {
+		return ts.isIdentifier(node.expression) && node.expression.text === "define" && node.name.text === "amd";
+	}
+	if (ts.isElementAccessExpression(node)) {
+		return (
+			ts.isIdentifier(node.expression) &&
+			node.expression.text === "define" &&
+			stringValue(node.argumentExpression) === "amd"
+		);
+	}
+	return false;
+}
+
 /**
- * The AMD branch of a UMD wrapper, which survives minification because `define.amd` cannot be renamed.
+ * Whether a bundle reads `define.amd`, the AMD branch of a UMD wrapper.
  *
- * Both operand orders and either quote: a minifier writes `"function"==typeof define`, rollup writes
- * single quotes, and `node_modules` holds all four spellings. Widening this needs all four rechecked.
+ * `define` is a free global, so minification leaves it named. Read off the syntax tree: the spelling
+ * inside a string or a comment is not a wrapper.
  */
-export const UMD_WRAPPER_RE = /\bdefine\.amd\b/;
+export function hasUmdWrapper(text: string): boolean {
+	const source = ts.createSourceFile("bundle.js", text, ts.ScriptTarget.ESNext, false, ts.ScriptKind.JS);
+	// A stack, not recursion: minified expression chains nest deeper than the call stack.
+	const pending: ts.Node[] = [source];
+	for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+		if (readsAmd(node)) return true;
+		ts.forEachChild(node, (child) => {
+			pending.push(child);
+		});
+	}
+	return false;
+}
 
 /**
  * No bundle may carry a UMD wrapper.
@@ -125,7 +168,7 @@ function checkBundlesAreSelfContained(root: string): number {
 	visit(path.join(root, DIST_DIR));
 
 	for (const bundle of bundles)
-		if (UMD_WRAPPER_RE.test(readFileSync(bundle, "utf8")))
+		if (hasUmdWrapper(readFileSync(bundle, "utf8")))
 			throw new Error(
 				`${path.relative(root, bundle)} ${SMOKE_FAILURE}: it carries a UMD wrapper, whose inner requires resolve against dist/`,
 			);
@@ -220,17 +263,15 @@ const PLUGIN_MANIFEST = path.join(".claude-plugin", "plugin.json");
 const DERIVED_SITES: DerivedSite[] = [
 	{
 		file: path.join("adapters", "mcp", "src", "serve.ts"),
-		needle: "version: packageJson.version",
+		key: "version",
 		what: "the MCP server's declared version",
 	},
 	{
 		file: path.join("core", "src", "version.ts"),
-		needle: "packageJson.version",
 		what: "the build version a daemon stamps into its lock",
 	},
 	{
 		file: path.join("client", "src", "version.ts"),
-		needle: "packageJson.version",
 		what: "the build a client judges a daemon by when no install is known",
 	},
 ];
@@ -248,25 +289,39 @@ export function nextVersion(current: string, kind: BumpKind): string {
 }
 
 /**
- * Rewrite a file's `"version"` field in place, leaving every other byte alone.
+ * A manifest's top-level `"version"` value: where its literal sits, and what it says.
  *
- * Textual rather than parse-and-restringify: these files are hand-formatted, and reformatting all
- * of them on every bump would bury the one line that actually changed. Exactly one occurrence is
- * required, because a file with two version fields is one this cannot edit unambiguously, and
- * picking the first would be wrong in a way nobody notices until a release.
+ * A duplicated key is refused: which one a reader honors is not this script's to guess.
+ */
+function versionField(text: string): { start: number; end: number; value: string } {
+	JSON.parse(text);
+	const json = ts.parseJsonText("manifest.json", text);
+	const top = json.statements[0]?.expression;
+	const fields =
+		top !== undefined && ts.isObjectLiteralExpression(top)
+			? top.properties.filter(
+					(property): property is ts.PropertyAssignment =>
+						ts.isPropertyAssignment(property) && propertyName(property.name) === "version",
+				)
+			: [];
+	if (fields.length !== 1) throw new Error(`expected exactly one "version" field, found ${fields.length}`);
+	const literal = (fields[0] as ts.PropertyAssignment).initializer;
+	if (!ts.isStringLiteral(literal)) throw new Error(`the "version" field is not a string`);
+	return { start: literal.getStart(json), end: literal.end, value: literal.text };
+}
+
+/**
+ * Rewrite a manifest's `"version"` value in place, leaving every other byte alone.
+ *
+ * Preserve the manifest's hand formatting.
  */
 export function setVersion(text: string, version: string): string {
-	const found = text.match(VERSION_FIELD_RE) ?? [];
-	if (found.length !== 1) throw new Error(`expected exactly one "version" field, found ${found.length}`);
-	return text.replace(VERSION_FIELD_RE, `"version": "${version}"`);
+	const field = versionField(text);
+	return `${text.slice(0, field.start)}${JSON.stringify(version)}${text.slice(field.end)}`;
 }
 
 export function readVersion(text: string): string {
-	const found = text.match(VERSION_FIELD_RE) ?? [];
-	if (found.length !== 1) throw new Error(`expected exactly one "version" field, found ${found.length}`);
-	const value = found[0]?.split('"')[3];
-	if (value === undefined) throw new Error("could not read the version value");
-	return value;
+	return versionField(text).value;
 }
 
 /**
@@ -319,11 +374,20 @@ export function versionTargets(root: string): string[] {
 	return ["package.json", ...workspaces.flatMap((entry) => expandWorkspaceEntry(root, entry)), PLUGIN_MANIFEST];
 }
 
-/** Throws unless every derived site still recomputes the version from package.json. */
+/** The major of the exported `PROTOCOL_VERSION` constant's literal. */
 function protocolMajorOf(text: string): string {
-	const found = /^export const PROTOCOL_VERSION\s*=\s*"(\d+)\.\d+\.\d+"/m.exec(text);
-	if (!found) throw new Error("protocol/src/version.ts no longer states PROTOCOL_VERSION as a plain version");
-	return found[1] as string;
+	const source = ts.createSourceFile("version.ts", text, ts.ScriptTarget.ESNext, false);
+	for (const statement of source.statements) {
+		if (!ts.isVariableStatement(statement)) continue;
+		if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+		if (!statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+		for (const declaration of statement.declarationList.declarations) {
+			if (!ts.isIdentifier(declaration.name) || declaration.name.text !== "PROTOCOL_VERSION") continue;
+			const major = SEMVER_RE.exec(stringValue(declaration.initializer) ?? "")?.[1];
+			if (major !== undefined) return major;
+		}
+	}
+	throw new Error("protocol/src/version.ts no longer states PROTOCOL_VERSION as a plain version");
 }
 
 /**
@@ -342,12 +406,40 @@ export function checkProtocolRelease(root: string, kind: BumpKind, headVersionSo
 	);
 }
 
+/** Whether the default manifest import supplies `version`, optionally as property `key`'s value. */
+function derivesVersion(root: string, site: DerivedSite): boolean {
+	const file = path.resolve(root, site.file);
+	const manifest = path.resolve(root, "package.json");
+	const { source } = parseSource(file, readFileSync(file, "utf8"));
+	const bindings = new Set<string>();
+	for (const statement of source.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+		const name = statement.importClause?.name;
+		if (name === undefined) continue;
+		if (path.resolve(path.dirname(file), statement.moduleSpecifier.text) === manifest) bindings.add(name.text);
+	}
+	const reads = (node: ts.Node): boolean => {
+		const read =
+			ts.isPropertyAccessExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			bindings.has(node.expression.text) &&
+			node.name.text === "version";
+		if (read && site.key === undefined) return true;
+		const parent = node.parent;
+		if (read && ts.isPropertyAssignment(parent) && parent.initializer === node) {
+			if (propertyName(parent.name) === site.key) return true;
+		}
+		return ts.forEachChild(node, reads) === true;
+	};
+	return reads(source);
+}
+
 export function checkDerivedSites(root: string): void {
 	for (const site of DERIVED_SITES) {
-		const text = readFileSync(path.join(root, site.file), "utf8");
-		if (text.includes(site.needle)) continue;
+		if (derivesVersion(root, site)) continue;
+		const where = site.key === undefined ? "" : ` as the value of ${site.key}`;
 		throw new Error(
-			`${site.file} no longer derives ${site.what} from package.json (looked for ${site.needle}).\n` +
+			`${site.file} no longer derives ${site.what} from package.json (expected a read of its version${where}).\n` +
 				`Either restore the derivation or add the file to this script's target list.`,
 		);
 	}
@@ -360,7 +452,11 @@ const UNGUARDED_ENTRYPOINT = "conformance.js";
 export function checkEntryGuards(root: string): void {
 	for (const entry of ENTRYPOINTS) {
 		if (entry.out === UNGUARDED_ENTRYPOINT) continue;
-		if (codeOnly(readFileSync(path.join(root, entry.source), "utf8")).includes("refuseRuntime(")) continue;
+		const { source } = parseSource(entry.source, readFileSync(path.join(root, entry.source), "utf8"));
+		const guarded = callsIn(source).some(
+			(call) => ts.isIdentifier(call.expression) && call.expression.text === "refuseRuntime",
+		);
+		if (guarded) continue;
 		throw new Error(
 			`${entry.source} does not call refuseRuntime, so dist/${entry.out} would die on a builtin instead of naming the runtime it needs.`,
 		);

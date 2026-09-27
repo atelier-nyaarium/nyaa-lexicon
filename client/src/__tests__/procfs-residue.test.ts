@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { sourceFiles } from "@nyaa-lexicon/protocol";
+import { parsedFiles, stringsIn } from "@nyaa-lexicon/protocol/ast";
+import type ts from "typescript";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -21,10 +22,12 @@ const SWEPT = [CLIENT_SRC, CORE_SRC, ADAPTERS_SRC];
 
 const OWNER = "procfs.ts";
 
-/** The narrowest unambiguous token: a path under the mount, never the word on its own. */
+/** A path under the mount inside a string, never the word on its own. */
 const TOKEN = "/proc/";
 
 const SKIP = ["__tests__", "dist", "node_modules"];
+
+const readsProc = (source: ts.SourceFile): boolean => stringsIn(source).some(({ text }) => text.includes(TOKEN));
 
 ////////////////////////////////
 //  Tests
@@ -35,18 +38,15 @@ describe("only procfs.ts reads /proc", () => {
 	});
 
 	it("sees the owner itself, so the rule is checking a real token", () => {
-		const owner = sourceFiles(CLIENT_SRC, SKIP).find((file) => basename(file) === OWNER);
+		const owner = parsedFiles(CLIENT_SRC, SKIP).find(({ file }) => basename(file) === OWNER);
 		expect(owner, "procfs.ts should exist").toBeDefined();
-		expect(codeOnly(readFileSync(owner as string, "utf8"))).toContain(TOKEN);
+		expect(readsProc((owner as { source: ts.SourceFile }).source)).toBe(true);
 	});
 
 	it("has no /proc path anywhere else in the client, core or the adapters", () => {
-		const offenders = SWEPT.flatMap((dir) => sourceFiles(dir, SKIP))
-			.filter((file) => basename(file) !== OWNER)
-			.filter((file) => {
-				const source = readSwept(file);
-				return source !== null && codeOnly(source).includes(TOKEN);
-			});
+		const offenders = SWEPT.flatMap((dir) => parsedFiles(dir, SKIP))
+			.filter(({ file, source }) => basename(file) !== OWNER && readsProc(source))
+			.map(({ file }) => file);
 
 		expect(
 			offenders,

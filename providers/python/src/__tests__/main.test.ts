@@ -617,14 +617,28 @@ describe("Python provider project behavior", () => {
 		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(info.tiers.comments).toBe(true);
+		const alone = { codeBefore: false, codeAfter: false };
 		expect(facts.comments).toEqual([
-			{ text: "#!/usr/bin/env python3", range: spanAt(text, text.indexOf("#!"), "#!/usr/bin/env python3") },
-			{ text: "# -*- coding: utf-8 -*-", range: spanAt(text, text.indexOf("# -*-"), "# -*- coding: utf-8 -*-") },
-			{ text: "# leading", range: spanAt(text, text.indexOf("# leading"), "# leading") },
-			{ text: "# inline", range: spanAt(text, text.indexOf("# inline"), "# inline") },
-			{ text: "# trailing", range: spanAt(text, text.indexOf("# trailing"), "# trailing") },
-			{ text: "#", range: spanAt(text, text.indexOf("\n#\n") + 1, "#") },
-			{ text: "# standalone", range: spanAt(text, text.indexOf("# standalone"), "# standalone") },
+			{
+				text: "#!/usr/bin/env python3",
+				range: spanAt(text, text.indexOf("#!"), "#!/usr/bin/env python3"),
+				...alone,
+			},
+			{
+				text: "# -*- coding: utf-8 -*-",
+				range: spanAt(text, text.indexOf("# -*-"), "# -*- coding: utf-8 -*-"),
+				...alone,
+			},
+			{ text: "# leading", range: spanAt(text, text.indexOf("# leading"), "# leading"), ...alone },
+			{ text: "# inline", range: spanAt(text, text.indexOf("# inline"), "# inline"), ...alone },
+			{
+				text: "# trailing",
+				range: spanAt(text, text.indexOf("# trailing"), "# trailing"),
+				codeBefore: true,
+				codeAfter: false,
+			},
+			{ text: "#", range: spanAt(text, text.indexOf("\n#\n") + 1, "#"), ...alone },
+			{ text: "# standalone", range: spanAt(text, text.indexOf("# standalone"), "# standalone"), ...alone },
 		]);
 		const declaration = facts.declarations.find((candidate) => candidate.name === "work");
 		expect(declaration?.range).toEqual({
@@ -649,7 +663,14 @@ describe("Python provider project behavior", () => {
 		].join("\n");
 		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
-		expect(facts.comments).toEqual([{ text: "# real", range: spanAt(text, text.indexOf("# real"), "# real") }]);
+		expect(facts.comments).toEqual([
+			{
+				text: "# real",
+				range: spanAt(text, text.indexOf("# real"), "# real"),
+				codeBefore: false,
+				codeAfter: false,
+			},
+		]);
 	});
 
 	it("measures comment columns in UTF-16 code units", async () => {
@@ -660,8 +681,18 @@ describe("Python provider project behavior", () => {
 		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.comments).toEqual([
-			{ text: "# tail", range: { start: { line: 0, character: 10 }, end: { line: 0, character: 16 } } },
-			{ text: "# 😀 lead", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 9 } } },
+			{
+				text: "# tail",
+				range: { start: { line: 0, character: 10 }, end: { line: 0, character: 16 } },
+				codeBefore: true,
+				codeAfter: false,
+			},
+			{
+				text: "# 😀 lead",
+				range: { start: { line: 1, character: 0 }, end: { line: 1, character: 9 } },
+				codeBefore: false,
+				codeAfter: false,
+			},
 		]);
 	});
 
@@ -685,9 +716,97 @@ describe("Python provider project behavior", () => {
 		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
 
 		expect(facts.comments).toEqual([
-			{ text: "# before", range: spanAt(text, text.indexOf("# before"), "# before") },
+			{
+				text: "# before",
+				range: spanAt(text, text.indexOf("# before"), "# before"),
+				codeBefore: false,
+				codeAfter: false,
+			},
 		]);
+		expect(facts.blankLines).toBeUndefined();
 		expect(facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+	});
+
+	it("says whether code shares each comment's first and last lines", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = [
+			`${String.fromCodePoint(0xfeff)}# after a byte order mark`,
+			"# after a comment",
+			"call(1,  # inside brackets",
+			"     2)",
+			'doc = """one',
+			'two"""  # after a multi-line string',
+			"value = 1  # trailing",
+			"",
+		].join("\n");
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+
+		expect((facts.comments ?? []).map((comment) => [comment.text, comment.codeBefore, comment.codeAfter])).toEqual([
+			["# after a byte order mark", false, false],
+			["# after a comment", false, false],
+			["# inside brackets", true, false],
+			["# after a multi-line string", true, false],
+			["# trailing", true, false],
+		]);
+	});
+
+	it("reports blank lines outside every token, string lines of each prefix excluded", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = [
+			"a = 1",
+			"",
+			's = """one',
+			"",
+			'two"""',
+			"b = rb'''x",
+			"",
+			"y'''",
+			'c = f"""{a}',
+			"",
+			'{b} {{"""',
+			"d = [",
+			"",
+			"]",
+			"   ",
+			"# note",
+			"",
+			"",
+		].join("\n");
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+
+		expect(facts.blankLines).toEqual([1, 12, 14, 16]);
+	});
+
+	it("names the line after a block class body's last statement, and none for a body on its header line", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = [
+			"class Box:",
+			"    a = 1",
+			"",
+			"    class Inner:  # note",
+			"        b = call(1,",
+			"        )",
+			"    def c(self): return 1",
+			"",
+			"@decorated",
+			"class Tight: d = 1",
+			"class Wide(",
+			"    Base,",
+			"):",
+			"    e = 1",
+			"class Last:",
+			"    f = 1",
+		].join("\n");
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+		const lineOf = (name: string) => declarationNamed(facts, name).memberInsertLine;
+
+		expect(["Box", "Inner", "Tight", "Wide", "Last"].map(lineOf)).toEqual([7, 6, undefined, 14, undefined]);
 	});
 
 	it("reports declaration metrics with explicit parameter and branch rules", async () => {
@@ -788,6 +907,35 @@ describe("Python provider project behavior", () => {
 			text: rewritten.text,
 		});
 		expect(reparsed.diagnostics).toEqual([]);
+	});
+
+	it("renames a definition at its selection however the header is spaced", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = "async  def  old():\n    return old\n";
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+		const declaration = declarationNamed(facts, "old").selectionRange;
+		const reference = spanAt(text, text.lastIndexOf("old"), "old");
+		expect(declaration).toEqual(spanAt(text, text.indexOf("old"), "old"));
+		if (declaration === undefined) throw new Error("declaration selection range missing");
+
+		const response = await provider.renameEdits({
+			module: "main.py",
+			text,
+			oldName: "old",
+			newName: "new",
+			sites: [{ range: declaration }, { range: reference }],
+		});
+
+		expect(response).toEqual({
+			status: "ready",
+			edits: [
+				{ range: declaration, newText: "new" },
+				{ range: reference, newText: "new" },
+			],
+			blocked: [],
+		});
 	});
 
 	it("applies rename sites using UTF-16 ranges", async () => {
@@ -1154,20 +1302,23 @@ describe("Python provider project behavior", () => {
 		expect(facts.references.filter((reference) => reference.name === "Base")).toEqual([
 			expect.objectContaining({
 				role: "extends",
+				qualified: false,
 				binding: { status: "bound", symbolId: base, provenance: "bound" },
 			}),
 			expect.objectContaining({
 				role: "typeUse",
+				qualified: false,
 				binding: { status: "bound", symbolId: base, provenance: "bound" },
 			}),
 			expect.objectContaining({
 				role: "typeUse",
+				qualified: false,
 				binding: { status: "bound", symbolId: base, provenance: "bound" },
 			}),
 		]);
-		expect(facts.references.find((reference) => reference.name === "helper")?.binding).toMatchObject({
-			status: "unbound",
-			reason: "Ambiguous",
+		expect(facts.references.find((reference) => reference.name === "helper")).toMatchObject({
+			qualified: true,
+			binding: { status: "unbound", reason: "Ambiguous" },
 		});
 	});
 

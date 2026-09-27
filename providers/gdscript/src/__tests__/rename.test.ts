@@ -139,6 +139,53 @@ test("blocks class_name and exported property contracts", () => {
 	expect(exportResult).toMatchObject({ status: "ready", blocked: [{ reason: "ExternalContract" }] });
 });
 
+test("reads an @export on the line above as the declaration's own annotation", () => {
+	const provider = started();
+	const text = "@export\nvar speed := 10.0\n";
+
+	const result = provider.renameEdits({
+		module: "export.gd",
+		text,
+		oldName: "speed",
+		newName: "velocity",
+		sites: [{ range: rangeFor(text, "speed") }],
+	});
+
+	expect(result).toMatchObject({ status: "ready", edits: [], blocked: [{ reason: "ExternalContract" }] });
+});
+
+test("classifies a site by the parser's strings, loader bindings and loader calls", () => {
+	const provider = started();
+	const rename = (text: string, oldName: string, site: RenameSite) =>
+		provider.renameEdits({ module: "sites.gd", text, oldName, newName: "renamed", sites: [site] });
+
+	// Unterminated strings end at line end.
+	const unterminated = 'var a = "oops\nvar old_name := 1\n';
+	expect(rename(unterminated, "old_name", { range: rangeFor(unterminated, "old_name") })).toMatchObject({
+		status: "ready",
+		blocked: [],
+	});
+
+	const commented = 'var names = [ # connect(\n\t"old_signal"]\n';
+	expect(rename(commented, "old_signal", { range: rangeFor(commented, "old_signal") })).toMatchObject({
+		blocked: [{ reason: "ExternalContract" }],
+	});
+
+	const typed = 'var LocalScript: int; var other = load("res://a.gd")\n';
+	expect(rename(typed, "LocalScript", { range: rangeFor(typed, "LocalScript"), role: "import" })).toMatchObject({
+		status: "ready",
+		blocked: [],
+	});
+
+	const member = "func run(saver, path):\n\tsaver.load(path)\n";
+	const method = rangeFor(member, "load");
+	expect(rename(member, "load", { range: method, role: "call" })).toEqual({
+		status: "ready",
+		edits: [{ range: method, newText: "renamed" }],
+		blocked: [],
+	});
+});
+
 test("blocks dynamic loaders and signal string sites while the scanner omits signal strings", () => {
 	const provider = started();
 	const text = `signal old_signal

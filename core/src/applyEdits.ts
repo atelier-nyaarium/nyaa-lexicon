@@ -1,25 +1,22 @@
-// Writing a set of edits to disk without leaving a half-rename.
+// Splicing edits into whole texts without writing; journaled steps write.
 //
 // The splice itself lives in the protocol package beside TextEdit, so the conformance suite checks
 // provider edits with the same code that applies them here.
 
 import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
 import type { WriteOutcome } from "./refusalSlots.js";
-import { editsRefused, moduleUnreadable, writeThrew } from "./refusals.js";
-import { insideWorkspace, type SourceReader, writableSource, writableText } from "./sourceRead.js";
-import { writeSourceFile } from "./sourceWriter.js";
+import { editsRefused, moduleUnreadable } from "./refusals.js";
+import { type SourceReader, writableSource, writableText } from "./sourceRead.js";
 
 export type { FileEdits } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-export type ApplyOutcome = WriteOutcome;
-
 /** A file's staged text, or the first refusal. */
 export type StagedEdits =
 	| { staged: Array<{ module: string; text: string }> }
-	| Extract<ApplyOutcome, { applied: false }>;
+	| Extract<WriteOutcome, { applied: false }>;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -40,24 +37,4 @@ export function stageAll(files: Array<Pick<FileEdits, "module" | "edits">>, read
 		staged.push({ module: file.module, text: result.text });
 	}
 	return { staged };
-}
-
-/** Preflights every file. Writes can stop partway. */
-export function writeAll(
-	workspaceRoot: string,
-	files: Array<Pick<FileEdits, "module" | "edits">>,
-	readSource: SourceReader,
-): ApplyOutcome {
-	const preflight = stageAll(files, readSource);
-	if (!("staged" in preflight)) return preflight;
-	const { staged } = preflight;
-
-	for (const file of staged) {
-		try {
-			writeSourceFile(insideWorkspace(workspaceRoot, file.module), file.text);
-		} catch (error) {
-			return { applied: false, reason: writeThrew(error), module: file.module };
-		}
-	}
-	return { applied: true, modules: staged.map((file) => file.module) };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join, relative } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "../residue";
+import { callsTo, parsedFiles } from "../astResidue";
+import { sourceFiles } from "../residue";
 
 /** Content hashing lives here. */
 const ROOT = join(import.meta.dirname, "..", "..", "..");
@@ -23,11 +24,10 @@ describe("no second content hash", () => {
 	it("hashes text through the protocol's hashContent alone", () => {
 		const offenders: string[] = [];
 		for (const dir of SWEPT) {
-			for (const file of sourceFiles(dir, SKIP_DIRS)) {
+			for (const { file, source } of parsedFiles(dir, SKIP_DIRS)) {
 				const name = relative(ROOT, file);
 				if (OWNERS.has(name)) continue;
-				const source = readSwept(file);
-				if (source !== null && /\bcreateHash\s*\(/.test(codeOnly(source))) offenders.push(name);
+				if (callsTo(source, "createHash").length > 0) offenders.push(name);
 			}
 		}
 

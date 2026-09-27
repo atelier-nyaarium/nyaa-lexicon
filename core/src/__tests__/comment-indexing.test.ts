@@ -31,6 +31,8 @@ interface Fixture {
 	text: string;
 	declarations: Declaration[];
 	comments: CommentSpan[];
+	/** What the provider reports as blank; defaults to none. */
+	blankLines?: number[];
 }
 
 function idOf(name: string): string {
@@ -53,12 +55,14 @@ function decl(name: string, startLine: number, endLine: number, nameChar = 0): D
 	};
 }
 
-/** A span over one line, from `character` to the end of that line. */
-function span(text: string, line: number, character: number): CommentSpan {
+/** A one-line span from `character` to line end; `codeBefore` marks preceding code. */
+function span(text: string, line: number, character: number, codeBefore = false): CommentSpan {
 	const lineText = text.split("\n")[line] ?? "";
 	return {
 		range: { start: { line, character }, end: { line, character: lineText.length } },
 		text: lineText.slice(character),
+		codeBefore,
+		codeAfter: false,
 	};
 }
 
@@ -76,6 +80,7 @@ function supervisorFor(fixture: Fixture): ProviderPort {
 				imports: [],
 				literals: [],
 				comments: fixture.comments,
+				blankLines: fixture.blankLines ?? [],
 				diagnostics: [],
 			}),
 		},
@@ -160,7 +165,12 @@ describe("indexing comments", () => {
 
 	it("still refuses across a blank line, annotation or not", async () => {
 		const text = "// floating\n\n@Suppress\nwork\n";
-		const service = await index({ text, declarations: [decl("work", 3, 3)], comments: [span(text, 0, 0)] });
+		const service = await index({
+			text,
+			declarations: [decl("work", 3, 3)],
+			comments: [span(text, 0, 0)],
+			blankLines: [1],
+		});
 
 		expect(service.commentsFor(idOf("work"))).toEqual([]);
 	});
@@ -185,7 +195,12 @@ describe("indexing comments", () => {
 			text,
 			declarations: [decl("work", 1, 1)],
 			comments: [
-				{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: line.length } }, text: line },
+				{
+					range: { start: { line: 0, character: 0 }, end: { line: 0, character: line.length } },
+					text: line,
+					codeBefore: false,
+					codeAfter: false,
+				},
 			],
 		});
 
@@ -199,6 +214,8 @@ describe("indexing comments", () => {
 		const block = {
 			range: { start: { line: 0, character: 5 }, end: { line: 1, character: 15 } },
 			text: "/* about work\n   continued */",
+			codeBefore: true,
+			codeAfter: false,
 		};
 		const service = await index({
 			text,

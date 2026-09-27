@@ -242,10 +242,12 @@ uses the current text as its base. An identical block returns `present`.
 None opens a transaction or writes workspace files. Their handlers may upgrade outline facts before
 answering and use the planners shared with their corresponding write methods.
 
-`refactorBeforeImage` takes `{ module, id? }`. It returns `{ tracked: false }` when no transaction
-is open, the optional id differs, or the module has no baseline. Otherwise it reports whether the
-file existed. An existing baseline includes its hash and exact bytes, as `text` when UTF-8 round
-trips without a NUL in the first 8192 bytes, or as `base64` otherwise.
+`refactorBeforeImage` takes `{ module, id?, content? }`. It returns `{ tracked: false }` when no
+transaction is open, the optional id differs, or the module has no baseline. Otherwise it reports
+whether the file existed. An existing baseline includes its hash and exact bytes, as `text` when
+UTF-8 round trips without a NUL in the first 8192 bytes, or as `base64` otherwise. With
+`content: false`, it returns the hash and encoding, sets `omitted: true`, and omits the bytes. Older
+daemons drop the field and send the bytes.
 
 An open `refactorStatus` includes the durable transaction `id` and `revision`, plus steps, tracked
 modules, issues, `drifted` entries and `edited` modules. See `docs/architecture.md` for how the
@@ -298,9 +300,13 @@ even when warmup fails.
 ### Gated writes
 
 `refactorWriteFile` writes one file under the exclusive gate used by commit, undo, revert and
-recovery. It takes `{ module, content, expect }`. Text content uses `{ encoding: "text", text }` and
-is written as UTF-8. Binary content uses `{ encoding: "base64", bytes }`. Null deletes the file.
-`expect` is `hashBytes` of the bytes read by the caller, or null when the file must not exist.
+recovery. It takes `{ module, content, expect, refactor? }`. Text content uses
+`{ encoding: "text", text }` and is written as UTF-8. Binary content uses
+`{ encoding: "base64", bytes }`. `null` deletes the file. `expect` is `hashBytes` of the bytes read
+by the caller, or `null` when the file must not exist. `refactor`, when given, is the expected open
+refactor id, or `null` when none is expected. Older daemons drop the field. A successful answer's
+`refactor` shows what was open. A mismatch refusal returns `openRefactor` with the current id, or
+`null`.
 
 Refusals, in order:
 
@@ -308,6 +314,7 @@ Refusals, in order:
 - `tooLarge`: More than 4 MiB (`MAX_SOURCE_BYTES`). The cap keeps base64 requests under the socket line limit.
 - `outside`: The real path leaves the workspace through a leaf or folder link.
 - `directory` or `notAFile`: The path is a directory, in-workspace link or special file.
+- `refactor`: The open refactor differs from the requested id. `openRefactor` gives it, or `null`.
 - `changed`: The disk hash differs from `expect`. `contentHash` gives the current hash.
 
 Otherwise, it writes the bytes as given, creating parent folders inside the workspace, or deletes

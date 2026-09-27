@@ -21,6 +21,28 @@ describe("a header as one line", () => {
 		expect(whole(text)).toBe("export async function add(left: number, right: number): Promise<number>");
 	});
 
+	test("only the parser's type brackets join tight across a break; a comparison keeps its spaces", () => {
+		const generic = "Map<\n\tK,\n\tV,\n> ";
+		const angles = [generic.indexOf("<"), generic.indexOf(">")];
+		expect(whole(generic, { angles })).toBe("Map<K, V>");
+		expect(whole("function f(x = a <\n\tb)")).toBe("function f(x = a < b)");
+		expect(whole("x = a\n\t> b")).toBe("x = a > b");
+	});
+
+	test("a splice leaves nothing in its place, so a continued word stays one word", () => {
+		const text = "Z=foo\\\nbar";
+		const at = text.indexOf("\\");
+		expect(whole(text, { splices: [{ start: at, end: at + 2 }] })).toBe("Z=foobar");
+		expect(whole(text, { omit: [{ start: at, end: at + 2 }] })).toBe("Z=foo bar");
+	});
+
+	test("a comma holding an empty slot survives a break before its closer", () => {
+		const unbound = "typeof(Dictionary<,\n>)";
+		const angles = [unbound.indexOf("<"), unbound.indexOf(">")];
+		expect(whole(unbound, { angles })).toBe("typeof(Dictionary<,>)");
+		expect(whole("f(a,\n)")).toBe("f(a)");
+	});
+
 	test("spacing written on one line is kept, collapsed", () => {
 		expect(whole("int  add( int a )  const")).toBe("int add( int a ) const");
 		expect(whole("type T = {\n\ta: string;\n\tb: number;\n}")).toBe("type T = { a: string; b: number; }");
@@ -78,6 +100,12 @@ describe("a header as one line", () => {
 	test("nothing left is no header", () => {
 		expect(whole("  \n\t")).toBeUndefined();
 		expect(whole("// only\n", { omit: [{ start: 0, end: 7 }] })).toBeUndefined();
+	});
+
+	test("a header holding every stand-in character is no header, not a throw", () => {
+		const every: string[] = [];
+		for (let code = 0xe000; code <= 0x10ffff; code++) every.push(String.fromCodePoint(code));
+		expect(whole(`x = "${every.join("")}"`)).toBeUndefined();
 	});
 
 	test("a literal keeps its spacing, with line breaks and tabs escaped, and still folds inside a container", () => {

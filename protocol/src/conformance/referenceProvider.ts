@@ -3,14 +3,14 @@
 // It answers the tiers it declares, a minimal move subset, and NotImplemented everywhere else.
 // This proves the suite reports a partial provider as partial rather than as broken.
 //
-// Its "analysis" is a toy regex over exported declarations. That is fine: what it demonstrates is
-// the SHAPE of an honest provider, not how to analyze a language.
+// Its toy scanner derives declarations, imports and comments from one token list; strings are not code or comments.
 
 import path from "node:path";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { coordinatesOf } from "../coordinates.js";
 import type { TextEdit } from "../edits.js";
 import type { MoveEditsRequest, MoveEditsResponse } from "../move.js";
+import type { CommentSpan } from "../project.js";
 import {
 	notImplementedBinding,
 	notImplementedImport,
@@ -23,6 +23,7 @@ import {
 import { composeSymbolId } from "../symbolId.js";
 import type { Declaration, Range } from "../symbols.js";
 import { PROTOCOL_VERSION } from "../version.js";
+import { toySpelled as spelled, toyTokens as tokenize, toyStringValue } from "./toyLexer.js";
 
 ////////////////////////////////
 //  Constants
@@ -51,17 +52,10 @@ export const REFERENCE_WORDS = {
 	literals: [],
 };
 
-/** `export class Foo` / `export function foo` / `export const foo`, and nothing cleverer. */
-const DECLARATION_RE = /^export\s+(class|function|const)\s+([A-Za-z_$][\w$]*)/gm;
-
 const KIND_OF = { class: "class", function: "function", const: "constant" } as const;
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function lineOf(text: string, index: number): number {
-	return coordinatesOf(text).positionAt(index)?.line ?? 0;
-}
 
 function offsetAt(text: string, position: Range["start"]): number | undefined {
 	return coordinatesOf(text).offsetAt(position);
@@ -74,51 +68,44 @@ function rangeAt(text: string, start: number, end: number): Range {
 }
 
 /**
- * Comment spans, scanned with string awareness.
- *
- * A marker inside a quoted string is not a comment, which is the one thing the corpus's exact-set
- * cases exist to catch, so this walks the text rather than pattern-matching it. Blocks do not nest,
- * matching the C family the toy grammar borrows from.
+ * Comment spans from the lexer, with whether the nearest code token on either side shares its line.
  */
-export function extractComments(text: string): Array<{ range: Range; text: string }> {
-	const found: Array<{ range: Range; text: string }> = [];
-	let index = 0;
-
-	while (index < text.length) {
-		const char = text[index];
-
-		if (char === '"' || char === "'" || char === "`") {
-			index++;
-			while (index < text.length && text[index] !== char) {
-				index += text[index] === "\\" ? 2 : 1;
-			}
-			index++;
-			continue;
+export function extractComments(text: string): CommentSpan[] {
+	const coordinates = coordinatesOf(text);
+	const lineOf = (offset: number) => coordinates.positionAt(offset)?.line;
+	const tokens = tokenize(text);
+	const code = (from: number, step: 1 | -1) => {
+		for (let at = from + step; at >= 0 && at < tokens.length; at += step) {
+			const token = tokens[at] as (typeof tokens)[number];
+			if (token.kind !== "comment") return token;
 		}
+		return undefined;
+	};
+	return tokens.flatMap((token, at) => {
+		if (token.kind !== "comment") return [];
+		const before = code(at, -1);
+		const after = code(at, 1);
+		return [
+			{
+				range: rangeAt(text, token.start, token.end),
+				text: token.text,
+				codeBefore: before !== undefined && lineOf(before.end) === lineOf(token.start),
+				codeAfter: after !== undefined && lineOf(after.start) === lineOf(token.end),
+			},
+		];
+	});
+}
 
-		if (char === "/" && text[index + 1] === "/") {
-			const end = text.indexOf("\n", index);
-			let stop = end === -1 ? text.length : end;
-			// Only a CR paired with the newline ends the line. A lone one is comment text.
-			if (end !== -1 && stop > index && text[stop - 1] === "\r") stop--;
-			found.push({ range: rangeAt(text, index, stop), text: text.slice(index, stop) });
-			index = stop;
-			continue;
-		}
-
-		if (char === "/" && text[index + 1] === "*") {
-			const close = text.indexOf("*/", index + 2);
-			// Unterminated runs to the end: the file has no more code to find after it.
-			const stop = close === -1 ? text.length : close + 2;
-			found.push({ range: rangeAt(text, index, stop), text: text.slice(index, stop) });
-			index = stop;
-			continue;
-		}
-
-		index++;
+/** Lines no token touches; a final line break does not add an empty line. */
+export function blankLinesOf(text: string): number[] {
+	const coordinates = coordinatesOf(text);
+	const lineOf = (offset: number) => coordinates.positionAt(offset)?.line ?? 0;
+	const touched = new Set<number>();
+	for (const token of tokenize(text)) {
+		for (let line = lineOf(token.start); line <= lineOf(token.end - 1); line++) touched.add(line);
 	}
-
-	return found;
+	const count = coordinates.lineCount() - (coordinates.lineText(coordinates.lineCount() - 1) === "" ? 1 : 0);
+	return Array.from({ length: count }, (_, line) => line).filter((line) => !touched.has(line));
 }
 
 function sameModule(left: string, right: string): boolean {
@@ -145,22 +132,28 @@ function namedImportEdit(request: MoveEditsRequest, index: number): TextEdit | u
 
 	const nameStart = offsetAt(request.text, site.range.start);
 	const nameEnd = offsetAt(request.text, site.range.end);
-	if (nameStart === undefined || nameEnd === undefined || request.text.slice(nameStart, nameEnd) !== request.name) {
-		return undefined;
-	}
+	if (nameStart === undefined || nameEnd === undefined) return undefined;
 
-	const statementStart = coordinatesOf(request.text).lineStartAt(nameStart) ?? 0;
-	const nextLine = request.text.indexOf("\n", nameEnd);
-	const statementEnd = nextLine === -1 ? request.text.length : nextLine;
-	const statement = request.text.slice(statementStart, statementEnd);
-	const match = /^import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+(["'])([^"']+)\2;?\s*$/.exec(statement);
-	if (match?.[1] !== request.name || match[3] !== site.specifier) return undefined;
+	// `import { name } from "specifier";`, alone on its line, the site's range naming the name token.
+	const coordinates = coordinatesOf(request.text);
+	const lineOf = (offset: number) => coordinates.positionAt(offset)?.line;
+	const line = tokenize(request.text).filter((token) => lineOf(token.start) === lineOf(nameStart));
+	const [opener, open, name, close, from, specifier, ...rest] = line;
+	const shaped =
+		spelled(opener, "word", "import") &&
+		spelled(open, "punct", "{") &&
+		spelled(name, "word", request.name) &&
+		spelled(close, "punct", "}") &&
+		spelled(from, "word", "from") &&
+		spelled(specifier, "string") &&
+		(rest.length === 0 || (rest.length === 1 && spelled(rest[0], "punct", ";")));
+	if (!shaped || specifier === undefined || name?.start !== nameStart || name.end !== nameEnd) return undefined;
+	const quote = specifier.text[0];
+	if (quote === "`" || specifier.text.length < 2 || specifier.text.at(-1) !== quote) return undefined;
+	if (toyStringValue(specifier) !== site.specifier) return undefined;
 
-	const specifierStart = statement.lastIndexOf(site.specifier);
-	if (specifierStart === -1) return undefined;
-	const absoluteStart = statementStart + specifierStart;
 	return {
-		range: rangeAt(request.text, absoluteStart, absoluteStart + site.specifier.length),
+		range: rangeAt(request.text, specifier.start + 1, specifier.end - 1),
 		newText: relativeSpecifier(request.module, request.toModule),
 	};
 }
@@ -191,30 +184,31 @@ export function makeReferenceMoveEdits(request: MoveEditsRequest): MoveEditsResp
 	return { status: "ready", edits: edits.filter((edit) => edit !== undefined), blocked: [] };
 }
 
+/** Line-opening declarations: `export class Foo`, `export function foo`, or `export const foo`. */
 export function extractDeclarations(module: string, text: string): Declaration[] {
 	const out: Declaration[] = [];
-	DECLARATION_RE.lastIndex = 0;
+	const coordinates = coordinatesOf(text);
+	const tokens = tokenize(text);
 
-	for (const match of text.matchAll(DECLARATION_RE)) {
-		const keyword = match[1] as keyof typeof KIND_OF;
-		const name = match[2] as string;
-		const line = lineOf(text, match.index);
-		const column = (match[0].length - name.length) as number;
-		const range = {
-			start: { line, character: 0 },
-			end: { line, character: match[0].length },
-		};
+	for (const [at, opener] of tokens.entries()) {
+		const keywordToken = tokens[at + 1];
+		const nameToken = tokens[at + 2];
+		if (!spelled(opener, "word", "export") || coordinates.positionAt(opener.start)?.character !== 0) continue;
+		if (keywordToken === undefined || nameToken === undefined || !spelled(nameToken, "word")) continue;
+		if (keywordToken.kind !== "word" || !Object.hasOwn(KIND_OF, keywordToken.text)) continue;
+		const kind = keywordToken.text as keyof typeof KIND_OF;
+		const name = nameToken.text;
 
 		out.push({
 			symbolId: composeSymbolId({
 				language: LANGUAGE,
 				module,
-				descriptors: [{ kind: keyword === "class" ? "type" : "term", name }],
+				descriptors: [{ kind: kind === "class" ? "type" : "term", name }],
 			}),
-			kind: KIND_OF[keyword],
+			kind: KIND_OF[kind],
 			name,
-			range,
-			selectionRange: { start: { line, character: column }, end: { line, character: column + name.length } },
+			range: rangeAt(text, opener.start, nameToken.end),
+			selectionRange: rangeAt(text, nameToken.start, nameToken.end),
 			visibility: "public",
 			exported: true,
 		});
@@ -249,6 +243,7 @@ export const referenceHandlers: ProviderHandlers = {
 		imports: [],
 		literals: [],
 		comments: extractComments(params.text),
+		blankLines: blankLinesOf(params.text),
 		diagnostics: [],
 	}),
 

@@ -132,6 +132,8 @@ export const DeclarationSchema = z
 		containerId: z.string().min(1).optional(),
 		/** Absent, this reads from the kind; an arrow constant must say `locals`. */
 		contains: ContainsSchema.optional(),
+		/** Safe member insertion line: closing-token line if it starts that line, else after the last statement; absent if unsafe. */
+		memberInsertLine: z.number().int().nonnegative().optional(),
 		/** Absent when the provider does not measure, which is not the same as measuring zero. */
 		metrics: MetricsSchema.optional(),
 	})
@@ -161,6 +163,8 @@ export const ReferenceSchema = z
 		binding: BindingSchema,
 		/** Enclosing declaration, so "who calls this" can answer with a symbol. */
 		fromId: z.string().min(1).optional(),
+		/** Syntax-tree receiver/path access (`a.b`, `a?.b`, `a->b`, `A::b`) cannot bind to a local; absent means unknown. */
+		qualified: z.boolean().optional(),
 	})
 	.meta({ id: "Reference" });
 

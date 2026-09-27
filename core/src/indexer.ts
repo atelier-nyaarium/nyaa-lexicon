@@ -362,16 +362,23 @@ export class WorkspaceIndexer {
 				declarations: facts.declarations,
 				references: facts.references,
 				imports: facts.imports,
-				literals: facts.literals,
+				// Shallow parses store no comments or literals.
+				literals: storedDepth === "full" ? facts.literals : [],
 				depth: storedDepth,
-				comments: attachComments(facts.declarations, facts.comments ?? [], text),
+				comments:
+					storedDepth === "full"
+						? attachComments(facts.declarations, facts.comments ?? [], text, facts.blankLines)
+						: [],
 				docs: facts.docs ?? [],
 				notes,
 				content: parser.content,
 				provider: parser.providerId,
 				// A shallow parse reports no comments, so only a full one can say what a digest covers; the
 				// supervisor drops a comments field from a provider that never declared the tier.
-				digests: storedDepth === "full" ? patternDigests(facts.declarations, facts.comments, text) : [],
+				digests:
+					storedDepth === "full"
+						? patternDigests(facts.declarations, facts.comments, facts.literals, text)
+						: [],
 				generated: generatedVerdict,
 				role: facts.role,
 			});

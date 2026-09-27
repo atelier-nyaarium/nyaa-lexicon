@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseSource, reachedCalls } from "../astResidue";
+import { instantiates, parseSource, reachedCalls } from "../astResidue";
 
 const FS = new Set(["node:fs", "node:fs/promises"]);
 const READERS = new Set(["readFileSync", "readFile"]);
@@ -87,4 +87,18 @@ describe("reachedCalls follows a binding rather than a spelling", () => {
 			expect(reached(source)).toEqual([]);
 		});
 	}
+});
+
+describe("instantiates", () => {
+	it("finds a generic call, a qualified one, and a qualified type", () => {
+		const found = (source: string) =>
+			instantiates(parseSource("probe.ts", source).source, new Set(["moduleStore", "ModuleStore"]));
+
+		expect([
+			found(`const store = moduleStore<State>(handlers);`),
+			found(`const store = kit.moduleStore<State>(handlers);`),
+			found(`let store: kit.ModuleStore<State>;`),
+			found(`const store = moduleStore(handlers);`),
+		]).toEqual([true, true, true, false]);
+	});
 });

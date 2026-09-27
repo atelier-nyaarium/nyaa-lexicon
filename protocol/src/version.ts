@@ -72,7 +72,12 @@ export type Compatibility =
 // A module whose real path leaves the workspace is unclaimed and forgotten, and writes refuse it.
 // A signature is the whole header on one line, through `renderHeader`. `outlineModule` leaves locals
 // out and each row carries `referenceCount`.
-export const PROTOCOL_VERSION = "3.18.0" as const;
+// 3.18.0: a settlement ledger written at every refactor close (`refactorSettlements`,
+// `refactorSettledImage`, `ledger` on status and track) and `refactorWriteFile`, a gated write.
+// 3.19.0: `refactorWriteFile.refactor` refuses a write unless that refactor, or none, is open.
+// `refactorBeforeImage.content: false` omits the bytes. An older daemon drops either field.
+// `Reference.qualified` marks a use reached through a receiver or path; an older core ignores it.
+export const PROTOCOL_VERSION = "3.19.0" as const;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

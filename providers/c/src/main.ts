@@ -190,6 +190,7 @@ function declarationWire(declaration: CDeclaration): Declaration {
 		...defined({
 			signature: declaration.signature,
 			containerId: declaration.containerId,
+			memberInsertLine: declaration.memberInsertLine,
 			metrics: declaration.metrics,
 		}),
 	};
@@ -202,6 +203,7 @@ function referenceWire(reference: CReference, binding: Binding): Reference {
 		role: reference.role,
 		binding,
 		...defined({ fromId: reference.fromId }),
+		qualified: reference.qualified,
 	};
 }
 
@@ -316,6 +318,7 @@ export class CProvider {
 			})),
 			literals: parsed.literals,
 			comments: parsed.comments,
+			blankLines: parsed.blankLines,
 			diagnostics: parsed.diagnostics,
 			role: fileRole(parsed),
 		};

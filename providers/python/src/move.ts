@@ -23,7 +23,7 @@ export interface PythonMoveFacts {
 	importBindings: Array<{ specifier: string; localName: string; scopePath: unknown[]; star: boolean }>;
 	importStatements: PythonImportStatement[];
 	literals: Array<{ kind: string; range: Range }>;
-	moduleDocstring?: Range | null;
+	prologueEnd: Range["start"] | null;
 }
 
 interface PythonImportAlias {
@@ -39,6 +39,8 @@ interface PythonImportStatement {
 	kind: "import" | "from";
 	specifier: string;
 	range: Range;
+	moduleRange: Range | null;
+	indent: string | null;
 	reExport: boolean;
 	aliases: PythonImportAlias[];
 }
@@ -103,12 +105,12 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 	}
 
 	if (pendingImports.size > 0) {
-		const position = importInsertionPosition(request.text, coordinates, facts);
-		const point = coordinates.positionAt(position);
-		if (point === undefined) {
+		const point = facts.prologueEnd;
+		if (point === null || coordinates.offsetAt(point) === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
 		} else {
-			const prefix = position > 0 && request.text[position - 1] !== "\n" ? "\n" : "";
+			// End an unterminated prologue line first.
+			const prefix = point.character > 0 ? "\n" : "";
 			edits.push({
 				range: { start: point, end: point },
 				newText: `${prefix}${[...pendingImports].join("\n")}\n`,
@@ -191,39 +193,25 @@ function rewriteImportSite(
 	if ("reason" in rendered) return { blocked: blockedSite(site.range, rendered.reason, rendered.detail) };
 	if (rendered.specifier === site.specifier) return {};
 
-	const offsets = coordinates.offsetsForRange(statement.range);
-	if (offsets === undefined) {
+	if (coordinates.offsetsForRange(statement.range) === undefined) {
 		return { blocked: blockedSite(site.range, "ParseError", "the import statement range is outside the module") };
 	}
 
 	if (statement.aliases.length === 1) {
-		const raw = request.text.slice(offsets.start, offsets.end);
-		const fromIndex = raw.indexOf("from");
-		const specifierStart = fromIndex < 0 ? -1 : raw.indexOf(site.specifier, fromIndex + 4);
-		if (specifierStart < 0) {
-			return { blocked: blockedSite(site.range, "ParseError", "the import statement has no matching specifier") };
+		if (statement.moduleRange === null) {
+			return { blocked: blockedSite(site.range, "ParseError", "the import statement has no module name") };
 		}
-		return {
-			edit: {
-				range: statement.range,
-				newText: `${raw.slice(0, specifierStart)}${rendered.specifier}${raw.slice(
-					specifierStart + site.specifier.length,
-				)}`,
-			},
-		};
+		return { edit: { range: statement.moduleRange, newText: rendered.specifier } };
 	}
 
-	const remaining = statement.aliases.filter((candidate) => candidate !== alias);
-	const indentation = statementIndent(request.text, coordinates, offsets.start);
-	return {
-		edit: {
-			range: statement.range,
-			newText: `${formatFromImport(site.specifier, remaining)}\n${indentation}${formatFromImport(
-				rendered.specifier,
-				[alias],
-			)}`,
-		},
-	};
+	const kept = formatFromImport(
+		site.specifier,
+		statement.aliases.filter((candidate) => candidate !== alias),
+	);
+	const moved = formatFromImport(rendered.specifier, [alias]);
+	// Keep a semicolon when the import shares a line.
+	const separator = statement.indent === null ? "; " : `\n${statement.indent}`;
+	return { edit: { range: statement.range, newText: `${kept}${separator}${moved}` } };
 }
 
 function aliasMatches(alias: PythonImportAlias, site: MoveImportSite): boolean {
@@ -382,42 +370,7 @@ function sameModule(left: string, right: string): boolean {
 }
 
 ////////////////////////////////
-//  Insertion & Ranges
-
-function importInsertionPosition(text: string, coordinates: TextCoordinates, facts: PythonMoveFacts): number {
-	let position = 0;
-	if (text.startsWith("#!")) position = afterLine(text, text.indexOf("\n") < 0 ? text.length : text.indexOf("\n"));
-	if (facts.moduleDocstring !== undefined && facts.moduleDocstring !== null) {
-		const offsets = coordinates.offsetsForRange(facts.moduleDocstring);
-		if (offsets !== undefined) position = Math.max(position, afterLine(text, offsets.end));
-	}
-	for (const statement of facts.importStatements) {
-		if (statement.kind !== "from" || statement.specifier !== "__future__") continue;
-		const offsets = coordinates.offsetsForRange(statement.range);
-		if (offsets === undefined || !isTopLevel(text, coordinates, offsets.start)) continue;
-		position = Math.max(position, afterLine(text, offsets.end));
-	}
-	return position;
-}
-
-/** What precedes `offset` on its own line, which is where both questions below start. */
-function beforeOnLine(text: string, coordinates: TextCoordinates, offset: number): string {
-	const lineStart = coordinates.lineStartAt(offset);
-	return lineStart === undefined ? "" : text.slice(lineStart, offset);
-}
-
-function isTopLevel(text: string, coordinates: TextCoordinates, offset: number): boolean {
-	return beforeOnLine(text, coordinates, offset) === "";
-}
-
-function statementIndent(text: string, coordinates: TextCoordinates, offset: number): string {
-	return beforeOnLine(text, coordinates, offset).match(/^[ \t]*/)?.[0] ?? "";
-}
-
-function afterLine(text: string, offset: number): number {
-	const newline = text.indexOf("\n", offset);
-	return newline < 0 ? text.length : newline + 1;
-}
+//  Ranges
 
 // Inclusive at both ends.
 function rangeContains(outer: Range, inner: Range): boolean {

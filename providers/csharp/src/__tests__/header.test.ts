@@ -157,6 +157,26 @@ describe("C# signatures are whole headers on one line", () => {
 		});
 	});
 
+	test("a fold follows tokens, never the spacing around them", () => {
+		const found = signatures(
+			[
+				"class Values",
+				"{",
+				"    private int? spaced = values ? [0];",
+				"    private int[] tight = pick ?[1] : [2];",
+				"    private object call = (G<A, B>(7));",
+				"}",
+				"",
+			].join("\n"),
+		);
+		const bracket = fold("[", "]");
+		expect(found).toMatchObject({
+			"field spaced": "private int? spaced = values ? [0]",
+			"field tight": `private int[] tight = pick ?${bracket} : ${bracket}`,
+			"field call": "private object call = (G<A, B>(7))",
+		});
+	});
+
 	test("literals keep their spacing and escape a line break", () => {
 		const found = signatures(
 			[
@@ -180,6 +200,64 @@ describe("C# signatures are whole headers on one line", () => {
 			"field first": 'private string first = "p  q"',
 			"field second": 'private string second = @"r\\ns"',
 			"method Take": 'public void Take(string s = "w  x")',
+		});
+	});
+
+	test("a broken type bracket joins tight and a broken comparison or shift keeps its spaces", () => {
+		const found = signatures(
+			[
+				"public class Pair<",
+				"    TKey,",
+				"    TValue> : Base<",
+				"        TKey>",
+				"    where TKey : IComparable<",
+				"        TKey>",
+				"{",
+				"    public int Shift = 1 >>",
+				"        2;",
+				"    public bool Less = A <",
+				"        B;",
+				"    public Dictionary<string, List<",
+				"        int>> Map = new Dictionary<string, List<int>>(",
+				"        );",
+				"    public Dictionary<string, List<int",
+				"        >> Nested;",
+				"    public void Take(int x = Y <",
+				"        Z, bool y = P >",
+				"        Q) { }",
+				"    public bool Both = F(a <",
+				"        b, c >",
+				"        d);",
+				"    public object Call = F<",
+				"        int>(1);",
+				"    [Gen<",
+				"        int>] public int Tagged;",
+				"    public int this[List<",
+				"        int> i] => 0;",
+				"    public static bool operator <(",
+				"        Pair<TKey, TValue> a, Pair<TKey, TValue> b) => true;",
+				"    public static int operator >>(",
+				"        Pair<TKey, TValue> a, int b) => 0;",
+				"    public static int operator >>>(Pair<",
+				"        TKey, TValue> a, int b) => 0;",
+				"}",
+				"",
+			].join("\n"),
+		);
+		expect(found).toMatchObject({
+			"class Pair": "public class Pair<TKey, TValue> : Base<TKey> where TKey : IComparable<TKey>",
+			"field Shift": "public int Shift = 1 >> 2",
+			"field Less": "public bool Less = A < B",
+			"field Map": "public Dictionary<string, List<int>> Map = new Dictionary<string, List<int>>()",
+			"field Nested": "public Dictionary<string, List<int>> Nested",
+			"method Take": "public void Take(int x = Y < Z, bool y = P > Q)",
+			"field Both": "public bool Both = F(a < b, c > d)",
+			"field Call": "public object Call = F<int>(1)",
+			"field Tagged": "[Gen<int>] public int Tagged",
+			"property this": "public int this[List<int> i]",
+			"operator operator<": "public static bool operator <(Pair<TKey, TValue> a, Pair<TKey, TValue> b)",
+			"operator operator>>": "public static int operator >>(Pair<TKey, TValue> a, int b)",
+			"operator operator>>>": "public static int operator >>>(Pair<TKey, TValue> a, int b)",
 		});
 	});
 

@@ -1,5 +1,6 @@
 import {
 	coordinatesOf,
+	type Declaration,
 	MOVE_EDIT_CONFLICT,
 	type MoveBlockedReason,
 	type MoveBlockedSite,
@@ -15,7 +16,10 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { GDScriptBindingIndex } from "./binding.js";
 import { extractDeclarations, extractFile } from "./extract.js";
+import type { LoaderCall } from "./extractCore.js";
+import { annotationLine, parseLineHeads } from "./line-syntax.js";
 import type { GDScriptStore } from "./module.js";
+import { isIgnorable, type LexedSource, lexSource } from "./tokens.js";
 
 ////////////////////////////////
 //  Main
@@ -97,7 +101,7 @@ export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): 
 	const dependencyInsertions: string[] = [];
 	const seenDependencyInsertions = new Set<string>();
 	for (const dependency of request.dependencies) {
-		const result = dependencyPlan(request, dependency, bindings);
+		const result = dependencyPlan(request, dependency, bindings, facts);
 		if (result.blocked !== undefined) blocked.push(result.blocked);
 		if (result.insertion !== undefined && !seenDependencyInsertions.has(result.insertion)) {
 			seenDependencyInsertions.add(result.insertion);
@@ -105,8 +109,9 @@ export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): 
 		}
 	}
 	if (dependencyInsertions.length > 0) {
-		const position = dependencyInsertionPosition(request.text);
-		const point = coordinates.positionAt(position);
+		const lexed = lexSource(request.text);
+		const line = dependencyInsertionLine(lexed);
+		const point = line < lexed.lines.length ? { line, character: 0 } : coordinates.positionAt(request.text.length);
 		if (point === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the dependency insertion point is outside the module" });
 		} else {
@@ -148,10 +153,17 @@ export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): 
 ////////////////////////////////
 //  Dependencies
 
+/** The target's own facts. */
+interface TargetFacts {
+	declarations: Declaration[];
+	loaders: LoaderCall[];
+}
+
 function dependencyPlan(
 	request: MoveEditsRequest,
 	dependency: MoveDependency,
 	bindings: GDScriptBindingIndex,
+	target: TargetFacts,
 ): { insertion?: string; blocked?: MoveBlockedSite } {
 	const origin = dependency.origin;
 	if (origin.kind === "insideClosure") return {};
@@ -167,7 +179,7 @@ function dependencyPlan(
 	}
 	if (origin.kind === "workspaceModule") {
 		if (bindings.isRegisteredClassNameSymbol(origin.symbolId)) return {};
-		return workspaceDependencyPlan(request, dependency, bindings);
+		return workspaceDependencyPlan(request, dependency, bindings, target);
 	}
 	if (origin.kind === "external") {
 		return {
@@ -191,6 +203,7 @@ function workspaceDependencyPlan(
 	request: MoveEditsRequest,
 	dependency: MoveDependency,
 	bindings: GDScriptBindingIndex,
+	target: TargetFacts,
 ): { insertion?: string; blocked?: MoveBlockedSite } {
 	const origin = dependency.origin;
 	if (origin.kind !== "workspaceModule") return {};
@@ -218,18 +231,17 @@ function workspaceDependencyPlan(
 		};
 	}
 	const localName = indexed.localName;
-	if (!isIdentifier(localName) || hasLoaderBinding(request.text, localName, indexed.specifier)) {
-		return hasLoaderBinding(request.text, localName, indexed.specifier)
-			? {}
-			: {
-					blocked: blockedSite(
-						dependency.range,
-						"NoImportPath",
-						"the loader binding name is not a GDScript identifier",
-					),
-				};
+	if (hasLoaderBinding(target.loaders, localName, indexed.specifier)) return {};
+	if (!isIdentifier(localName)) {
+		return {
+			blocked: blockedSite(
+				dependency.range,
+				"NoImportPath",
+				"the loader binding name is not a GDScript identifier",
+			),
+		};
 	}
-	if (hasLocalDeclaration(request.text, localName)) {
+	if (hasLocalDeclaration(target.declarations, localName)) {
 		return {
 			blocked: blockedSite(dependency.range, "NoImportPath", `${localName} already has another target binding`),
 		};
@@ -289,26 +301,23 @@ function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked:
 	return { status: "ready", edits: plan.edits, blocked };
 }
 
-function dependencyInsertionPosition(text: string): number {
-	let offset = 0;
-	let position = 0;
-	for (const line of text.matchAll(/[^\n]*(?:\n|$)/gu)) {
-		const full = line[0] as string;
-		if (full === "") break;
-		const trimmed = full.replace(/\r?\n$/u, "").trim();
-		if (
-			trimmed === "" ||
-			trimmed.startsWith("#") ||
-			trimmed.startsWith("@") ||
-			/^(?:class_name|extends)\b/u.test(trimmed)
-		) {
-			offset += full.length;
-			position = offset;
-			continue;
-		}
-		break;
+/** The line after the file's header lines. */
+function dependencyInsertionLine(lexed: LexedSource): number {
+	const lines = lexed.lines;
+	let insertion = 0;
+	for (const line of lines) {
+		// Opens inside a string.
+		if (lines[line.line - 1]?.endsInString === true) break;
+		const annotations = annotationLine(lexed, line.line);
+		const heads = parseLineHeads(lexed, line.line);
+		const header =
+			(isIgnorable(lexed, line.line) && !line.hasString) ||
+			annotations?.head === null ||
+			(heads.length > 0 && heads.every((head) => head.keyword === "class_name" || head.keyword === "extends"));
+		if (!header || line.endsInString) break;
+		insertion = line.line + 1;
 	}
-	return position;
+	return insertion;
 }
 
 function hasClassNameDeclaration(module: string, text: string, name?: string): boolean {
@@ -317,22 +326,20 @@ function hasClassNameDeclaration(module: string, text: string, name?: string): b
 	);
 }
 
-function hasLoaderBinding(text: string, localName: string, specifier: string): boolean {
-	const escapedName = escapeRegExp(localName);
-	const escapedSpecifier = escapeRegExp(specifier);
-	return new RegExp(
-		`^\\s*const\\s+${escapedName}\\s*=\\s*(?:preload|load)\\s*\\(\\s*&?\\s*["']${escapedSpecifier}["']\\s*\\)`,
-		"mu",
-	).test(text);
+function hasLoaderBinding(loaders: LoaderCall[], localName: string, specifier: string): boolean {
+	return loaders.some(
+		(call) =>
+			call.binding?.keyword === "const" && call.binding.name === localName && call.literal?.path === specifier,
+	);
 }
 
-function hasLocalDeclaration(text: string, name: string): boolean {
-	const escaped = escapeRegExp(name);
-	return new RegExp(`^\\s*(?:const|var|signal|enum|class|func)\\s+${escaped}\\b`, "mu").test(text);
-}
-
-function escapeRegExp(text: string): string {
-	return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+function hasLocalDeclaration(declarations: readonly Declaration[], name: string): boolean {
+	return declarations.some(
+		(declaration) =>
+			declaration.name === name &&
+			declaration.languageKind !== "parameter" &&
+			declaration.languageKind !== "script",
+	);
 }
 
 function quoteString(text: string): string | undefined {

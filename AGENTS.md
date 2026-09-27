@@ -20,6 +20,7 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
 - `adapters/lsp/` - the editor face, answering from the same service class but its own instance,
   which is why it reads and does not write.
 - `providers/<language>/` - one per language, separate process, own runtime, speaks the protocol.
+  A new language starts at `docs/parsing.md`: its tier, its standards, and the mistakes to avoid.
 - `formats/` - the one reading of a data format, for the providers that meet the same one. Markdown
   frontmatter and a `.yml` file are the same mapping, so they are the same function. It takes
   provider context as DATA, never as a language to branch on.
@@ -198,7 +199,8 @@ Ordered by how much they prove:
 
 - **Residue tests are build gates.** When adding one, plant the violation and watch it fail before
   trusting it. Every sweep also asserts it FOUND files to check, so a run matching nothing fails
-  instead of quietly reporting clean.
+  instead of quietly reporting clean. A sweep reads code through `protocol/src/astResidue.ts`
+  (calls, member reads, strings, forbidden reaches), never a pattern over the file's text.
 - **Match the token, never the context around it.** Planting proves a check fires on the case you
   thought of, and says nothing about the ones you did not. A check written against the spelling that
   motivated it lets every other spelling through. Forbid the narrowest unambiguous token. Where the
@@ -287,7 +289,10 @@ Ordered by how much they prove:
   process is reported as stalled, with the load and the elapsed time, and the CLI exits 3 rather
   than 1. Re-run at lower load before believing one; never file it as a provider bug from the first
   run.
-- **Parsers follow `docs/parsing.md`.** Check for a library before writing one.
+- **Parsers follow `docs/parsing.md`.** A provider reads through the language's own parser (gold)
+  or one written here to that law (in-house), never a third-party approximation patched around.
+  Adding a language or changing a provider: read that doc first, its "Writing a provider" sections
+  included.
 - **Comments state constraints, not narration.** One line, two at most for a critical one.
 - **A refusal names what the author did and what to do instead.** A merely correct refusal, like
   "not in the index", leaves the reader to invent a next step and invent it wrong. Every refusal is

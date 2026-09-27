@@ -278,6 +278,55 @@ describe("C++ parser edges", () => {
 		expect(roles("item")).toContain("read");
 	});
 
+	test("marks names reached through a receiver or path as qualified", () => {
+		const text = [
+			"namespace api { struct Item { int value; void run(); }; int count; }",
+			"using namespace api;",
+			"using api::count;",
+			"void api::Item::run() { value = 1; this->value = 2; }",
+			"int use(api::Item item, api::Item* pointer) {",
+			"\titem.value = ::api::count;",
+			"\tpointer->run();",
+			"\titem.template get<int>();",
+			"\treturn count;",
+			"}",
+		].join("\n");
+		const facts = wire().parseFile({ module: "qualified.cpp", contentHash: "qualified", text });
+		const flags = (name: string) =>
+			facts.references.filter((reference) => reference.name === name).map((reference) => reference.qualified);
+
+		expect(flags("value")).toEqual([false, true, true]);
+		expect(flags("count")).toEqual([false, true, false]);
+		expect(flags("api")).toEqual([false, false, false, false, false, true]);
+		expect(flags("Item")).toEqual([true, true, true]);
+		// Prototype name is bare.
+		expect(flags("run")).toEqual([false, true]);
+		expect(flags("get")).toEqual([true]);
+		expect(flags("item")).toEqual([false, false]);
+		expect(facts.references.every((reference) => typeof reference.qualified === "boolean")).toBe(true);
+	});
+
+	test("keeps trailing returns, member pointers and macro bodies unqualified", () => {
+		const text = [
+			"#define FIELD(object) object.field",
+			"struct Box { int field; };",
+			"auto make() -> Box;",
+			"auto build() noexcept -> Box { return make(); }",
+			"int read(Box box, int Box::*member, Box* pointer) {",
+			"\tauto pick = [](Box b) -> Box { return b; };",
+			"\treturn box.*member + pointer->*member + make().field + FIELD(box);",
+			"}",
+		].join("\n");
+		const references = parseCppFile("unqualified.cpp", text).references;
+		const flags = (name: string) =>
+			references.filter((reference) => reference.name === name).map((reference) => reference.qualified);
+
+		expect(flags("Box")).toEqual(Array(7).fill(false));
+		expect(flags("member")).toEqual([false, false]);
+		expect(flags("object")).toEqual([false, false]);
+		expect(flags("field")).toEqual([false, true]);
+	});
+
 	test("binds qualified names in the same file and keeps overloads ambiguous", () => {
 		const provider = wire();
 		const text = [

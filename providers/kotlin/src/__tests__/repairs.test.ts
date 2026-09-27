@@ -29,7 +29,15 @@ describe("the repair pipeline", () => {
 		const forms: Array<[string, Array<[string, string[]]>]> = [
 			["val x = 1\n", []],
 			["val x = 1\n/* c */ fun f() = x\n", [["comments", ["/* c */"]]]],
-			[`val json = ${D}${D}"""{ "a": ${D}${D}{x} }"""\nval after = 1\n`, [["respelling", [`${D}${D}`]]]],
+			[`val json = ${D}${D}"""{ "a": ${D}${D}{x} }"""\nval after = 1\n`, [["prefixes", [`${D}${D}`]]]],
+			[
+				`val cost = ${D}${D}"at ${D}amount ${D}{x}"\n`,
+				[
+					["prefixes", [`${D}${D}`]],
+					["templates", [D, D]],
+				],
+			],
+			["class A { class B { val x = 1 } }\n", [["respelling", [" "]]]],
 			["val a = listOf(1).filter { open }\nfun open() = true\n", [["respelling", ["o", "o"]]]],
 			[
 				"@Target(AnnotationTarget.CLASS) annotation class Marker\n",

@@ -8,7 +8,6 @@ import {
 	FileFactsSchema,
 	InitializeResponseSchema,
 	ProjectModelSchema,
-	type Range,
 	reasonOf,
 } from "@nyaa-lexicon/protocol";
 import { MarkdownProvider, TIERS } from "../main.js";
@@ -248,6 +247,14 @@ describe("a byte order mark", () => {
 			expect(parsed.docs.map((region) => region.text)).toEqual(["body"]);
 			for (const region of parsed.docs) expect(coordinates.sliceRange(region.range)).toBe(region.text);
 		}
+	});
+
+	test("hides no fence opening the file", () => {
+		const text = `${BOM}\`\`\`sh\nrun\n\`\`\`\n`;
+		const parsed = parseMarkdown("doc.md", text);
+
+		expect(parsed.docs.map((region) => [region.text, region.fenced])).toEqual([["run", true]]);
+		for (const region of parsed.docs) expect(coordinatesOf(text).sliceRange(region.range)).toBe(region.text);
 	});
 });
 

@@ -3,6 +3,7 @@ import { type HtmlFacts, readHtml } from "@nyaa-lexicon/formats/html";
 import {
 	type Binding,
 	coordinatesOf,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -80,6 +81,7 @@ export class HtmlProvider {
 			imports: [],
 			literals: shallow ? [] : facts.literals,
 			comments: shallow ? [] : facts.comments,
+			...defined({ blankLines: shallow ? undefined : facts.blankLines }),
 			docs: shallow ? [] : facts.docs,
 			diagnostics: facts.diagnostics,
 			...(shallow ? { depth: params.depth } : {}),

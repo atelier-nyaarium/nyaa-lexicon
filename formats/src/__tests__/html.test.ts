@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { coordinatesOf, type Range } from "@nyaa-lexicon/protocol";
+import { MAX_NESTING, TOO_DEEP } from "../depth.js";
 import { readHtml } from "../html.js";
 
 function read(text: string) {
@@ -73,5 +74,30 @@ describe("HTML", () => {
 		const facts = read('<svg><path d="M 0 0" /></svg><![CDATA[ignored]]>');
 		expect(facts.declarations.map((d) => d.name)).toContain("path");
 		expect(facts.comments).toEqual([]);
+	});
+});
+
+describe("nesting", () => {
+	const past = MAX_NESTING + 1;
+
+	function tooDeep(text: string): boolean {
+		return read(text).diagnostics.some((diagnostic) => diagnostic.message === TOO_DEEP);
+	}
+
+	it("reads depth from the parser's open elements", () => {
+		expect(tooDeep("<div>".repeat(past))).toBe(true);
+		// Not self-closing in HTML.
+		expect(tooDeep("<div/>".repeat(past))).toBe(true);
+		expect(tooDeep(`<div a=b/>`.repeat(past))).toBe(true);
+	});
+
+	it("counts no void element, implied end tag or raw text", () => {
+		expect(read("<br>".repeat(past)).declarations).toHaveLength(past);
+		expect(tooDeep("<p>x".repeat(past))).toBe(false);
+		expect(tooDeep(`<script>${"<div>".repeat(past)}</script>`)).toBe(false);
+	});
+
+	it("stops a deep document early", () => {
+		expect(tooDeep("<div>".repeat(100_000))).toBe(true);
 	});
 });

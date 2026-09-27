@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { codeOnly, readSwept } from "@nyaa-lexicon/protocol";
+import { readSwept } from "@nyaa-lexicon/protocol";
+import { memberCalls, parseSource } from "@nyaa-lexicon/protocol/ast";
 
 /**
  * A ranking reader reads the live surfaces, so a dead address cannot reach it. The raw readers
@@ -9,24 +10,29 @@ import { codeOnly, readSwept } from "@nyaa-lexicon/protocol";
  */
 const LEDGER = join(import.meta.dirname, "..", "knowledge.ts");
 
-const RAW = /\.(?:allAnswers|doubtedAnswers|gaps)\s*\(/g;
+const RAW = ["allAnswers", "doubtedAnswers", "gaps"];
+
+function rawReads(code: string): string[] {
+	return memberCalls(parseSource("probe.ts", code).source, RAW).map(({ name }) => name);
+}
 
 ////////////////////////////////
 //  Tests
 
 describe("the ledger ranks over live rows", () => {
 	it("fires on the spellings it forbids", () => {
-		expect("for (const answer of this.store.allAnswers()) {".match(RAW)).toHaveLength(1);
-		expect("const all = this.store.gaps(limit * 4);".match(RAW)).toHaveLength(1);
-		expect("for (const answer of this.store.doubtedAnswers()) {".match(RAW)).toHaveLength(1);
-		expect("this.store.liveGaps(limit)".match(RAW)).toBeNull();
-		expect("store.allAnswers ()".match(RAW)).toHaveLength(1);
-		expect("store.doubtedAnswers\n()".match(RAW)).toHaveLength(1);
+		expect(rawReads("for (const answer of this.store.allAnswers()) {}")).toHaveLength(1);
+		expect(rawReads("const all = this.store.gaps(limit * 4);")).toHaveLength(1);
+		expect(rawReads("for (const answer of this.store.doubtedAnswers()) {}")).toHaveLength(1);
+		expect(rawReads("this.store.liveGaps(limit)")).toEqual([]);
+		expect(rawReads("store.allAnswers ()")).toHaveLength(1);
+		expect(rawReads("store.doubtedAnswers\n()")).toHaveLength(1);
+		expect(rawReads('store["gaps"](1)')).toHaveLength(1);
 	});
 
 	it("reaches no raw answer or gap reader from the ledger", () => {
 		const source = readSwept(LEDGER);
 		expect(source).not.toBeNull();
-		expect(codeOnly(source as string).match(RAW) ?? []).toEqual([]);
+		expect(rawReads(source as string)).toEqual([]);
 	});
 });

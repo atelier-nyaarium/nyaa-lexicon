@@ -9,12 +9,14 @@ import {
 } from "@nyaa-lexicon/protocol";
 import {
 	type CommentSpan,
-	extractCommentsCore,
 	extractDeclarationsCore,
 	extractDiagnosticsCore,
 	extractImportsCore,
+	extractLayoutCore,
 	extractLiteralsCore,
+	extractLoaderCallsCore,
 	extractReferencesCore,
+	type LoaderCall,
 } from "./extractCore.js";
 
 //////// Constants
@@ -32,16 +34,21 @@ export function extractFile(
 	imports: ReturnType<typeof extractImportsCore>;
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines: number[];
 	diagnostics: Diagnostic[];
+	loaders: LoaderCall[];
 } {
 	const declarations = extractDeclarationsCore(module, text, composeSymbolId);
+	const layout = extractLayoutCore(text);
 	return {
 		declarations: declarations as Declaration[],
 		references: extractReferencesCore(module, text, composeSymbolId),
 		imports: extractImportsCore(module, text, composeSymbolId),
 		literals: extractLiteralsCore(module, text, declarations),
-		comments: extractCommentsCore(text),
+		comments: layout.comments,
+		blankLines: layout.blankLines,
 		diagnostics: extractDiagnosticsCore(module, text),
+		loaders: extractLoaderCallsCore(module, text, composeSymbolId),
 	};
 }
 

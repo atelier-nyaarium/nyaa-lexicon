@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
+	ADVISORY_ISSUE_KINDS,
 	type CommittedFile,
 	hashBytes,
 	type LedgerMark,
@@ -52,11 +53,13 @@ import {
 	notARegularFile,
 	notedWriteDoesNotMatch,
 	nothingToUndo,
+	pathInTheWay,
 	type Refusal,
 	recoveryPending,
 	refactorChangedSinceShown,
 	refactorDriftChangedSinceShown,
 	refactorPathLeavesWorkspace,
+	restoreFailed,
 	stepOutsideBases,
 	transactionAlreadyOpen,
 	undoWouldDiscard,
@@ -66,6 +69,7 @@ import {
 	writeNotTracked,
 	writeOverDirectory,
 	writeOverNonFile,
+	writeRefactorMismatch,
 	writeTooLarge,
 } from "./refusals.js";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
@@ -74,7 +78,7 @@ import type { AppliedRebind, KeptRebind, RebindEntry, RebindEvidence, RebindResu
 
 export type { RefactorIssue, StepKind, StepPhase, TransactionStatus, TransactionStep } from "@nyaa-lexicon/protocol";
 
-import { insideWorkspace, writableText } from "./sourceRead.js";
+import { writableText } from "./sourceRead.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -91,7 +95,10 @@ export interface FileImage {
 
 type Foreign = "link" | "directory" | "special";
 
-type PathState = FileImage | { module: string; foreign: Foreign };
+type PathState = FileImage | { module: string; foreign: Foreign | "outside" };
+
+/** Blocked means a path is in the way; failed means a disk error. */
+type Restore = "restored" | "blocked" | "failed";
 
 type DiskState =
 	| { module: string; kind: "file"; hash: string }
@@ -133,6 +140,8 @@ export interface Recovered {
 	unreversed: KeptRebind[];
 	/** How recovery closed an `own` transaction. */
 	closed?: "committed" | "reverted";
+	/** A disk error kept a step for the next recovery. */
+	retained?: true;
 }
 
 ////////////////////////////////
@@ -346,11 +355,12 @@ export class TransactionManager {
 		return { noted: true };
 	}
 
-	/** Gated write or delete. */
+	/** Gated write or delete; undefined `refactor` accepts any. */
 	writeFile(
 		module: string,
 		content: { text: string } | { bytes: Uint8Array } | null,
 		expect: string | null,
+		refactor?: string | null,
 	): WrittenFile {
 		if (content !== null && "text" in content) {
 			const unencodable = writableText(module, content.text);
@@ -376,12 +386,20 @@ export class TransactionManager {
 		if (leaf.kind === "link" || leaf.kind === "special") {
 			return { written: false, refused: "notAFile", reason: writeOverNonFile(module, leaf.kind) };
 		}
+		const open = this.openTransaction();
+		if (refactor !== undefined && (open?.id ?? null) !== refactor) {
+			return {
+				written: false,
+				refused: "refactor",
+				reason: writeRefactorMismatch(module, open?.id ?? null, refactor),
+				openRefactor: open === null ? null : { id: open.id },
+			};
+		}
 		const current = leaf.kind === "file" ? hashBytes(leaf.bytes) : null;
 		if (current !== expect) {
 			return { written: false, refused: "changed", reason: writeChanged(module, current), contentHash: current };
 		}
 
-		const open = this.openTransaction();
 		if (open !== null) {
 			// Journal before writing.
 			const tracked = this.track(module);
@@ -410,7 +428,7 @@ export class TransactionManager {
 	}
 
 	/** Reads the opening image. See `docs/daemon-protocol.md` `refactorBeforeImage`. */
-	beforeImage(module: string, id?: string): RefactorBeforeImage {
+	beforeImage(module: string, id?: string, content = true): RefactorBeforeImage {
 		const open = this.openTransaction();
 		if (!open || (id !== undefined && id !== open.id)) return { tracked: false };
 
@@ -428,7 +446,9 @@ export class TransactionManager {
 		if (contentHash === null) throw new Error(`tracked baseline has no content hash: ${module}`);
 		const bytes = this.store.blob(contentHash);
 		if (bytes === null) throw new Error(`tracked baseline bytes are missing: ${module}`);
-		return { tracked: true, existed: true, ...encoded(contentHash, bytes) };
+		const payload = encoded(contentHash, bytes);
+		if (!content) return { tracked: true, existed: true, contentHash, encoding: payload.encoding, omitted: true };
+		return { tracked: true, existed: true, ...payload };
 	}
 
 	ledger(): LedgerMark {
@@ -570,7 +590,7 @@ export class TransactionManager {
 		kind: StepKind,
 		modules: string[],
 		plan?: unknown,
-		plannedText?: Array<{ module: string; text: string }>,
+		plannedText?: ReadonlyArray<{ module: string; text: string }>,
 		expect?: { writes: string[]; bases: StepBase[] },
 	): StepOutcome {
 		const open = this.openTransaction();
@@ -608,16 +628,11 @@ export class TransactionManager {
 			const beforeEdited = known !== null && known.edited && holds(image, known.existed, known.hash);
 			// Store a known output hash before a write so recovery can identify its result.
 			const planned = plannedText?.find((entry) => entry.module === image.module);
-			this.writeImage(
-				open.id,
-				"step",
-				stepNo,
-				image,
-				planned === undefined
-					? undefined
-					: { module: image.module, existed: true, hash: hashBytes(Buffer.from(planned.text, "utf8")) },
-				beforeEdited,
-			);
+			const bytes = planned === undefined ? null : Buffer.from(planned.text, "utf8");
+			const after = bytes === null ? undefined : { module: image.module, existed: true, hash: hashBytes(bytes) };
+			// Settlement images read these bytes.
+			if (bytes !== null && after !== undefined) this.store.putBlob(after.hash, bytes);
+			this.writeImage(open.id, "step", stepNo, image, after, beforeEdited);
 		}
 
 		return { ok: true, stepNo };
@@ -629,8 +644,18 @@ export class TransactionManager {
 		if (!open) return;
 
 		if (phase === "written") {
-			const modules = this.modulesOf(open.id, stepNo);
-			for (const module of modules) {
+			const planned = new Map(
+				this.imagesOf(open.id, "step", stepNo).flatMap((image) =>
+					image.afterHash === null ? [] : [[image.module, image.afterHash] as const],
+				),
+			);
+			for (const module of this.modulesOf(open.id, stepNo)) {
+				// A planned write is its own output; a save racing it stays drift.
+				const hash = planned.get(module);
+				if (hash !== undefined) {
+					this.store.journalWrite((db) => this.writeKnownState(db, open.id, module, true, hash, false));
+					continue;
+				}
 				// Non-file paths have unknown after-images.
 				const after = this.snapshot(module);
 				const existsAfter = "foreign" in after || after.existed ? 1 : 0;
@@ -694,6 +719,28 @@ export class TransactionManager {
 		});
 	}
 
+	/** Whether the baseline tracks this module. */
+	tracks(module: string): boolean {
+		const open = this.openTransaction();
+		return open !== null && this.imageFor(open.id, "baseline", 0, module);
+	}
+
+	/** Drops unwritten step data; optionally removes the baseline. */
+	releaseModule(stepNo: number, module: string, untrack: boolean): void {
+		const open = this.openTransaction();
+		if (!open) return;
+		this.store.journalWrite((db) => {
+			db.prepare(
+				"DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'step' AND stepNo = ? AND module = ?",
+			).run(open.id, stepNo, module);
+			if (!untrack) return;
+			db.prepare(
+				"DELETE FROM refactor_images WHERE transactionId = ? AND scope = 'baseline' AND stepNo = 0 AND module = ?",
+			).run(open.id, module);
+			db.prepare("DELETE FROM refactor_known_states WHERE transactionId = ? AND module = ?").run(open.id, module);
+		});
+	}
+
 	/** A step's modules and hashes; gone after commit. */
 	stepFiles(stepNo: number): CommittedFile[] {
 		const open = this.openTransaction();
@@ -733,9 +780,7 @@ export class TransactionManager {
 			const blocked = this.directoriesAt(pending);
 			if (blocked.length > 0) return { undone: false, reason: directoryInTheWay(blocked, "undo") };
 			const restored = this.restoreAll(open.id, pending);
-			if (restored.conflicts.length > 0) {
-				return { undone: false, reason: directoryInTheWay(restored.conflicts, "undo") };
-			}
+			if (restored.conflicts.length > 0) return { undone: false, reason: this.unrestored(restored, "undo") };
 			return this.finalizeUndo(open.id, intent.stepNo);
 		}
 
@@ -761,9 +806,7 @@ export class TransactionManager {
 
 		this.markRecovery(open.id, "undo", top.stepNo);
 		const restored = this.restoreAll(open.id, images);
-		if (restored.conflicts.length > 0) {
-			return { undone: false, reason: directoryInTheWay(restored.conflicts, "undo") };
-		}
+		if (restored.conflicts.length > 0) return { undone: false, reason: this.unrestored(restored, "undo") };
 		this.failAfterRestore?.();
 		return this.finalizeUndo(open.id, top.stepNo);
 	}
@@ -800,7 +843,7 @@ export class TransactionManager {
 			if (restored.conflicts.length > 0) {
 				const unsafe = restored.conflicts.find((module) => this.diskState(module).kind === "outside");
 				if (unsafe) return { reverted: false, modules: [], reason: refactorPathLeavesWorkspace(unsafe) };
-				return { reverted: false, modules: [], reason: directoryInTheWay(restored.conflicts, "revert") };
+				return { reverted: false, modules: [], reason: this.unrestored(restored, "revert") };
 			}
 			return this.finalizeRevert(open.id);
 		}
@@ -810,7 +853,7 @@ export class TransactionManager {
 		if (restored.conflicts.length > 0) {
 			const unsafe = restored.conflicts.find((module) => this.diskState(module).kind === "outside");
 			if (unsafe) return { reverted: false, modules: [], reason: refactorPathLeavesWorkspace(unsafe) };
-			return { reverted: false, modules: [], reason: directoryInTheWay(restored.conflicts, "revert") };
+			return { reverted: false, modules: [], reason: this.unrestored(restored, "revert") };
 		}
 		this.failAfterRestore?.();
 		return this.finalizeRevert(open.id);
@@ -829,8 +872,9 @@ export class TransactionManager {
 		}
 
 		const issues = this.issues(open.id);
-		if (issues.length > 0 && options.force !== true) {
-			return { committed: false, issues, reason: unresolvedIssues(issues.length) };
+		const blocking = issues.filter((issue) => !ADVISORY_ISSUE_KINDS.has(issue.kind));
+		if (blocking.length > 0 && options.force !== true) {
+			return { committed: false, issues, reason: unresolvedIssues(blocking.length) };
 		}
 
 		this.close(open.id, "committed");
@@ -847,7 +891,12 @@ export class TransactionManager {
 		const open = this.openTransaction();
 		if (!open) return { recovered: false, restored: [], conflicts: [], unreversed: [] };
 		const outcome = this.putBack(open);
-		if (open.origin !== "own" || this.openTransaction()?.id !== open.id || this.recoveryIntent(open.id) !== null)
+		if (
+			open.origin !== "own" ||
+			outcome.retained === true ||
+			this.openTransaction()?.id !== open.id ||
+			this.recoveryIntent(open.id) !== null
+		)
 			return outcome;
 
 		const closed = this.stepCount(open.id) > 0 ? "committed" : "reverted";
@@ -903,23 +952,40 @@ export class TransactionManager {
 		const conflicts: string[] = [];
 		const unreversed: KeptRebind[] = [];
 
+		let retained = false;
 		for (const step of unfinished) {
 			const conflictsBefore = conflicts.length;
+			let failed = false;
 			for (const image of this.imagesOf(open.id, "step", step.stepNo)) {
-				const current = this.snapshot(image.module);
+				let current: PathState;
+				try {
+					current = this.snapshot(image.module);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === undefined) throw error;
+					conflicts.push(image.module);
+					failed = true;
+					continue;
+				}
 
 				if (holds(current, image.existedBefore, image.beforeHash)) {
 					this.rememberRestored(open.id, image);
 					continue;
 				}
-				if (image.afterHash !== null && holds(current, true, image.afterHash)) {
-					this.restore(image);
+				const outcome =
+					image.afterHash !== null && holds(current, true, image.afterHash) ? this.restore(image) : "blocked";
+				if (outcome === "restored") {
 					this.rememberRestored(open.id, image);
 					restored.push(image.module);
 					continue;
 				}
 				// A state matching neither image is a conflict and stays on disk.
 				conflicts.push(image.module);
+				if (outcome === "failed") failed = true;
+			}
+			// A disk error keeps the step for the next recovery.
+			if (failed) {
+				retained = true;
+				continue;
 			}
 
 			// Keep a move whose source and target both conflicted.
@@ -948,7 +1014,14 @@ export class TransactionManager {
 			unreversed.push(...kept);
 		}
 
-		return { recovered: true, transactionId: open.id, restored, conflicts, unreversed };
+		return {
+			recovered: true,
+			transactionId: open.id,
+			restored,
+			conflicts,
+			unreversed,
+			...(retained ? { retained: true as const } : {}),
+		};
 	}
 
 	////////////////////////////////
@@ -1027,19 +1100,17 @@ export class TransactionManager {
 		};
 	}
 
-	private full(module: string): string {
-		return insideWorkspace(this.workspaceRoot, module);
-	}
-
 	/** The leaf itself, never its link target; null if outside. */
 	private contained(module: string): string | null {
 		const where = resolveContained(this.workspaceRoot, module, "keep");
 		return where.kind === "outside" ? null : where.path;
 	}
 
-	/** Reads regular files without following links. */
+	/** Reads regular files; escaping parents count as links. */
 	private snapshot(module: string): PathState {
-		const leaf = readLeaf(this.full(module));
+		const full = this.contained(module);
+		if (full === null) return { module, foreign: "outside" };
+		const leaf = readLeaf(full);
 		if (leaf.kind === "missing") return { module, existed: false, hash: null };
 		if (leaf.kind !== "file") return { module, foreign: leaf.kind };
 
@@ -1166,26 +1237,34 @@ export class TransactionManager {
 			.map((image) => image.module);
 	}
 
-	/** Replaces or removes a leaf without following links; directories block restore. */
-	private restore(image: { module: string; existedBefore: boolean; beforeHash: string | null }): boolean {
-		const full = this.contained(image.module);
-		if (full === null) return false;
-		if (lstatOf(full)?.isDirectory() === true) return false;
+	/** Restores leaves without following links; reports blocked paths and disk errors. */
+	private restore(image: { module: string; existedBefore: boolean; beforeHash: string | null }): Restore {
+		try {
+			const full = this.contained(image.module);
+			if (full === null) return "blocked";
+			if (lstatOf(full)?.isDirectory() === true) return "blocked";
 
-		if (!image.existedBefore) {
-			rmSync(full, { force: true });
-			return true;
+			if (!image.existedBefore) {
+				rmSync(full, { force: true });
+				return "restored";
+			}
+
+			// Skip identical bytes to preserve the timestamp and avoid a watcher event.
+			const leaf = readLeaf(full);
+			if (leaf.kind === "file" && hashBytes(leaf.bytes) === image.beforeHash) return "restored";
+
+			const bytes = image.beforeHash === null ? null : this.store.blob(image.beforeHash);
+			if (bytes === null) return "restored";
+
+			writeSourceFile(full, bytes);
+			return "restored";
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			// A folder at the staging path, or a file where a folder belongs.
+			if (code === "EEXIST" || code === "EISDIR" || code === "ENOTDIR") return "blocked";
+			if (code !== undefined) return "failed";
+			throw error;
 		}
-
-		// Skip identical bytes to preserve the timestamp and avoid a watcher event.
-		const leaf = readLeaf(full);
-		if (leaf.kind === "file" && hashBytes(leaf.bytes) === image.beforeHash) return true;
-
-		const bytes = image.beforeHash === null ? null : this.store.blob(image.beforeHash);
-		if (bytes === null) return true;
-
-		writeSourceFile(full, bytes);
-		return true;
 	}
 
 	private restoreAll(
@@ -1200,9 +1279,12 @@ export class TransactionManager {
 	): {
 		restored: string[];
 		conflicts: string[];
+		/** Paths whose restore failed with a disk error. */
+		failed: string[];
 	} {
 		const restored: string[] = [];
 		const conflicts: string[] = [];
+		const failed: string[] = [];
 		for (const image of images) {
 			if (expectedStates !== undefined) {
 				const current = this.diskState(image.module);
@@ -1215,12 +1297,22 @@ export class TransactionManager {
 					continue;
 				}
 			}
-			if (this.restore(image)) {
+			const outcome = this.restore(image);
+			if (outcome === "restored") {
 				restored.push(image.module);
 				this.rememberRestored(transactionId, image);
-			} else conflicts.push(image.module);
+				continue;
+			}
+			conflicts.push(image.module);
+			if (outcome === "failed") failed.push(image.module);
 		}
-		return { restored, conflicts };
+		return { restored, conflicts, failed };
+	}
+
+	/** Disk errors and paths in the way refuse differently. */
+	private unrestored(restored: { conflicts: string[]; failed: string[] }, operation: "undo" | "revert"): Refusal {
+		if (restored.failed.length > 0) return restoreFailed(restored.failed, operation);
+		return pathInTheWay(restored.conflicts, operation);
 	}
 
 	private asShown(open: { id: string; revision: number } | null, expect: Expectation | undefined): boolean {
@@ -1234,7 +1326,15 @@ export class TransactionManager {
 			db.prepare("SELECT DISTINCT module FROM refactor_images").all(),
 		) as Array<{ module: string }>;
 
-		for (const row of rows) sweepTemporary(this.full(row.module));
+		for (const row of rows) {
+			try {
+				const full = this.contained(row.module);
+				if (full !== null) sweepTemporary(full);
+			} catch (error) {
+				// An unreachable path keeps its temporary until access returns.
+				if ((error as NodeJS.ErrnoException).code === undefined) throw error;
+			}
+		}
 	}
 
 	////////////////////////////////

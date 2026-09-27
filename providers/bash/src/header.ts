@@ -1,8 +1,9 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
-import { type HeaderFold, type HeaderSpan, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { Cursor, type HeaderFold, type HeaderSpan, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
 import type { Word } from "unbash";
-import { ASSIGNMENT_RE, type Walk } from "./context.js";
+import { rangesOf, type Token } from "./comments.js";
+import { assignmentOf, type Walk } from "./context.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -30,24 +31,19 @@ export function operandHeader(lead: OffsetRange, word: Word): HeaderSpan {
 
 /** An array or compound assignment folds its parentheses. */
 export function assignmentFolds(text: string, pos: number): HeaderFold[] {
-	const at = ASSIGNMENT_RE.exec(text)?.[0].length;
-	// A CRLF line leaves `\r` on the word.
-	const close = text.endsWith("\r") ? text.length - 1 : text.length;
-	if (at === undefined || text[at] !== "(" || text[close - 1] !== ")") return [];
-	return [{ start: pos + at, end: pos + close }];
-}
-
-/** Each line break escaped by an odd run of backslashes. */
-function continuations(text: string, piece: OffsetRange): OffsetRange[] {
-	const found: OffsetRange[] = [];
-	for (let at = piece.start; at < piece.end; at++) {
-		if (text[at] !== "\n") continue;
-		const last = text[at - 1] === "\r" ? at - 2 : at - 1;
-		let run = 0;
-		while (last - run >= piece.start && text[last - run] === "\\") run++;
-		if (run % 2 === 1) found.push({ start: last, end: at + 1 });
+	const head = assignmentOf(text);
+	if (head === undefined || !head.array) return [];
+	const cursor = new Cursor(head.value);
+	let before = "";
+	let last = "";
+	while (cursor.good()) {
+		before = last;
+		last = cursor.next();
 	}
-	return found;
+	// A CRLF line leaves `\r` on the word.
+	const carriage = last === "\r";
+	if ((carriage ? before : last) !== ")") return [];
+	return [{ start: pos + head.valueAt, end: pos + text.length - (carriage ? 1 : 0) }];
 }
 
 /** The ranges starting inside the piece, from ranges sorted by start. */
@@ -81,16 +77,21 @@ function outermost(pairs: readonly number[]): OffsetRange[] {
 }
 
 /** Every declaration's signature: comments and line continuations out, quoted parts as written. */
-export function signHeaders(w: Walk, comments: readonly OffsetRange[]): void {
+export function signHeaders(w: Walk, tokens: readonly Token[]): void {
+	const comments = rangesOf(tokens, "comment");
+	const continuations = rangesOf(tokens, "continuation");
 	const quoted = outermost(w.quoted);
 	for (const { declaration, span } of w.headers) {
 		const omit: OffsetRange[] = [...(span.omit ?? [])];
+		const splices: OffsetRange[] = [];
 		const verbatim: OffsetRange[] = [];
 		for (const piece of span.lead === undefined ? [span] : [span.lead, span]) {
-			omit.push(...startingWithin(comments, piece), ...continuations(w.text, piece));
+			omit.push(...startingWithin(comments, piece));
+			// Bash removes a backslash-newline outright, so a continued word stays one word.
+			splices.push(...startingWithin(continuations, piece));
 			verbatim.push(...startingWithin(quoted, piece));
 		}
-		const signature = renderHeader(w.text, { ...span, omit, verbatim });
+		const signature = renderHeader(w.text, { ...span, omit, splices, verbatim });
 		if (signature !== undefined) declaration.signature = signature;
 	}
 }

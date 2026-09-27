@@ -2,6 +2,7 @@ import { type Declaration, defined } from "@nyaa-lexicon/protocol";
 import type { DeclarationWalk, Scope } from "./declarationScope.js";
 import { accessOf, BODY_TYPES, contextOf, identifiers, LANGUAGE_MODIFIERS, modifiersOf } from "./declarationShape.js";
 import { headerOf } from "./header.js";
+import { memberInsertLine } from "./layout.js";
 import { bodyMetrics } from "./metrics.js";
 import { childOfType, nameText, type SyntaxNode } from "./tree.js";
 import { supertypePaths, TYPE_NODES } from "./typePaths.js";
@@ -38,6 +39,7 @@ export function typeDeclaration(walk: DeclarationWalk, node: SyntaxNode, scope: 
 		scope,
 		access: accessOf(modifiers, context),
 		signature: headerOf(walk.text, [node], body),
+		memberInsertLine: memberInsertLine(walk.tree.leaves, walk.lines, body),
 		owns: true,
 		metrics: bodyMetrics(walk.tree.leaves, body),
 	});
@@ -78,6 +80,7 @@ export function enumEntry(walk: DeclarationWalk, node: SyntaxNode, scope: Scope)
 	const nameNode = identifiers(node)[0];
 	if (nameNode === undefined) return scope;
 	const name = nameText(walk.text, nameNode);
+	const body = childOfType(node, "class_body");
 	const added = walk.sink.add({
 		node,
 		nameNode,
@@ -87,7 +90,8 @@ export function enumEntry(walk: DeclarationWalk, node: SyntaxNode, scope: Scope)
 		descriptorKind: "term",
 		scope,
 		access: accessOf([], "class"),
-		signature: headerOf(walk.text, [node], childOfType(node, "class_body")),
+		signature: headerOf(walk.text, [node], body),
+		memberInsertLine: memberInsertLine(walk.tree.leaves, walk.lines, body),
 		owns: true,
 	});
 	return {

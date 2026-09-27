@@ -11,10 +11,16 @@ export interface Token {
 	end: Position;
 	startOffset: number;
 	endOffset: number;
+	/** Whether code precedes the comment on its first line. */
+	codeBefore?: boolean;
+	/** Whether code follows the comment on its last line. */
+	codeAfter?: boolean;
 }
 
 export interface TokenizedSource {
 	tokens: Token[];
+	/** Lines no token or splice touches, an inactive branch's tokens included. */
+	blankLines: number[];
 	diagnostics: Diagnostic[];
 }
 
@@ -69,6 +75,9 @@ const OPERATORS = [
 ];
 
 const STRING_PREFIXES = ["u8R", "u8", "uR", "UR", "LR", "R", "u", "U", "L"];
+
+/** Not code, so a comment after it has none before it. */
+const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
 
 function pointRange(start: Position, end: Position): Range {
 	return { start, end };
@@ -266,10 +275,48 @@ function addToken(
 	tokens.push(tokenFrom(kind, text, value, start, end, startOffset, endOffset));
 }
 
+/** A token's last line; one ending at a line's start ends on the line before. */
+function lastLine(token: Token): number {
+	return token.end.character === 0 && token.end.line > token.start.line ? token.end.line - 1 : token.end.line;
+}
+
+/** Whether code shares a comment's first line before it or last line after it. */
+function markTrivia(tokens: readonly Token[]): void {
+	let previous: Token | undefined;
+	const waiting: Token[] = [];
+	for (const token of tokens) {
+		if (token.kind === "newline") continue;
+		if (token.kind === "comment") {
+			token.codeBefore = previous !== undefined && lastLine(previous) === token.start.line;
+			token.codeAfter = false;
+			waiting.push(token);
+			continue;
+		}
+		for (const comment of waiting) comment.codeAfter = lastLine(comment) === token.start.line;
+		waiting.length = 0;
+		previous = token;
+	}
+}
+
+/** Lines of `lineCount` that no token touches and no splice ends. */
+function blankLinesOf(tokens: readonly Token[], spliced: readonly number[], lineCount: number): number[] {
+	const touched = new Array<boolean>(lineCount).fill(false);
+	for (const line of spliced) touched[line] = true;
+	for (const token of tokens) {
+		if (token.kind === "newline") continue;
+		for (let line = token.start.line; line <= lastLine(token); line++) touched[line] = true;
+	}
+	const blank: number[] = [];
+	for (let line = 0; line < lineCount; line++) if (touched[line] !== true) blank.push(line);
+	return blank;
+}
+
 export function tokenize(text: string, module?: string): TokenizedSource {
 	const cursor = new Cursor(text);
 	const tokens: Token[] = [];
+	const spliced: number[] = [];
 	const diagnostics: Diagnostic[] = [];
+	if (cursor.peek() === BYTE_ORDER_MARK) cursor.next();
 	while (cursor.good()) {
 		const before = cursor.offset;
 		const start = cursor.position;
@@ -278,6 +325,7 @@ export function tokenize(text: string, module?: string): TokenizedSource {
 			cursor.peek() === "\\" &&
 			(cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n"))
 		) {
+			spliced.push(start.line);
 			cursor.next();
 			if (cursor.peek() === "\r") cursor.next();
 			cursor.next();
@@ -361,11 +409,13 @@ export function tokenize(text: string, module?: string): TokenizedSource {
 		}
 		if (cursor.offset <= before) throw new Error("tokenizer failed to advance");
 	}
+	markTrivia(tokens);
+	const blankLines = blankLinesOf(tokens, spliced, cursor.line + (cursor.column > 0 ? 1 : 0));
 	const resolved = resolveConditionals(tokens, diagnostics);
 	if (module !== undefined) {
 		for (const item of diagnostics) item.path = module;
 	}
-	return { tokens: resolved, diagnostics };
+	return { tokens: resolved, blankLines, diagnostics };
 }
 
 function directiveEnd(tokens: Token[], start: number): number {
@@ -407,6 +457,15 @@ function directivesIn(tokens: Token[]): ConditionalDirective[] {
 		lineStart = false;
 	}
 	return directives;
+}
+
+/** Every token on a preprocessing directive line. */
+export function directiveTokenIndexes(tokens: Token[]): Set<number> {
+	const indexes = new Set<number>();
+	for (const directive of directivesIn(tokens)) {
+		for (let index = directive.start; index < directive.end; index++) indexes.add(index);
+	}
+	return indexes;
 }
 
 function firstConditionIsZero(tokens: Token[], directive: ConditionalDirective): boolean {

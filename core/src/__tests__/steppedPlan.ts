@@ -44,6 +44,7 @@ const journal = {
 	recordIssues: () => {},
 	rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [] }),
 	stepFiles: () => [],
+	tracks: () => true,
 } as unknown as TransactionManager;
 
 ////////////////////////////////
@@ -117,7 +118,9 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 			world.planner.rebaseIntoModule(...args),
 		checkMoveLanded: (): unknown[] => [],
 		renameEdits: (...args: Parameters<RefactorPlanner["renameEdits"]>) => world.planner.renameEdits(...args),
-		renameTexts: (files: FileEdits[]) => ({ texts: files.map(editedText) }),
+		renameWrites: (files: FileEdits[]) => ({
+			writes: files.map((file) => ({ ...editedText(file), base: file.contentHash })),
+		}),
 		renameIdMap: (...args: Parameters<RefactorPlanner["renameIdMap"]>) => world.planner.renameIdMap(...args),
 		// The last synchronous read a rename plan takes.
 		modulesBoundTo: (...args: Parameters<RefactorPlanner["modulesBoundTo"]>) => {
@@ -125,16 +128,14 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 			planned();
 			return answer;
 		},
-		writeRenameEdits: async (files: FileEdits[]) => {
-			written.push(...files.map(editedText));
-			return { modules: files.map((file) => file.module) };
-		},
 		factsMoved: (...args: Parameters<RefactorPlanner["factsMoved"]>) => world.planner.factsMoved(...args),
 		currentHashOf: (module: string) => world.currentHashOf(module),
 		staleModules: (modules: string[]) => world.staleModules?.(modules) ?? [],
 		declarationsIn: (module: string) => world.declarationsIn(module),
-		writeModule: (module: string, text: string) => {
+		writeModule: (module: string, text: string, base: string | null) => {
+			if (world.currentHashOf(module) !== base) return false;
 			written.push({ module, text });
+			return true;
 		},
 		indexFile: async (module: string) => ({ module, action: "indexed" }),
 	} as unknown as LexiconService;

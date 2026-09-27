@@ -29,6 +29,17 @@ test("a main entry names its declaration through parse and probe: top level, or 
 	expect(handlers.probeFile(params).role).toEqual(parsed.role);
 });
 
+test("a JvmStatic annotation is the one its written name resolves to through the imports", () => {
+	const roles = [
+		"import kotlin.jvm.JvmStatic as Entry\nobject App {\n    @Entry\n    fun main() {}\n}\n",
+		"object App {\n    @[Suppress JvmStatic]\n    fun main() {}\n}\n",
+		"import app.Marker as JvmStatic\nobject App {\n    @JvmStatic\n    fun main() {}\n}\n",
+		"object App {\n    @foo.JvmStatic\n    fun main() {}\n}\n",
+	].map((text) => parseKotlin("Main.kt", text).role.kind);
+
+	expect(roles).toEqual(["entry", "entry", "library", "library"]);
+});
+
 test("a main in a class, a nested function, on a receiver, or without JvmStatic stays a library", () => {
 	const facts = parseKotlin(
 		"Library.kt",

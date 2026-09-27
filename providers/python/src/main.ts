@@ -152,6 +152,7 @@ interface RawDeclaration {
 	visibility: Declaration["visibility"];
 	exported: boolean;
 	header?: RawHeader;
+	memberInsertLine?: number;
 	metrics?: {
 		lines?: number;
 		parameters?: number;
@@ -218,6 +219,10 @@ interface RawImportStatement {
 	kind: "import" | "from";
 	specifier: string;
 	range: Range;
+	/** Module name tokens after `from`. */
+	moduleRange: Range | null;
+	/** Indent if the import starts its line; null otherwise. */
+	indent: string | null;
 	reExport: boolean;
 	aliases: RawImportAlias[];
 }
@@ -237,6 +242,7 @@ interface RawReference {
 	name: string;
 	range: Range;
 	role: Reference["role"];
+	qualified: boolean;
 	/** Where the name resolves, which a header takes from outside its declaration. */
 	scopePath: RawDescriptor[];
 	/** Declaration the use is written in, header included. */
@@ -258,13 +264,16 @@ interface RawFacts {
 	role: FileRole;
 	imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
 	importStatements: RawImportStatement[];
-	moduleDocstring?: Range | null;
+	/** Point after the shebang, module docstring and future imports. */
+	prologueEnd: Range["start"] | null;
 	importBindings: RawImportBinding[];
 	scopeInfos: RawScopeInfo[];
 	typeAnnotations: RawTypeAnnotation[];
 	inferredTypes: RawInferredType[];
 	literals: RawLiteral[];
 	comments: CommentSpan[];
+	/** Null when lexing stopped short. */
+	blankLines: number[] | null;
 	diagnostics: Diagnostic[];
 }
 
@@ -300,6 +309,7 @@ interface MappedFacts {
 	inferredTypes: RawInferredType[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines?: number[];
 	typeAnswers: Map<string, TypeAnswer>;
 }
 
@@ -329,13 +339,14 @@ async function extractFacts(python3: Python3Dispatch, module: string, text: stri
 			role: { kind: "unknown", reason: "NotImplemented" },
 			imports: [],
 			importStatements: [],
-			moduleDocstring: null,
+			prologueEnd: null,
 			importBindings: [],
 			scopeInfos: [],
 			typeAnnotations: [],
 			inferredTypes: [],
 			literals: [],
 			comments: [],
+			blankLines: null,
 			diagnostics: [{ severity: "error", message: detail }],
 		};
 	}
@@ -354,6 +365,7 @@ function mapFacts(module: string, text: string, raw: RawFacts): MappedFacts {
 		...defined({
 			signature:
 				declaration.header === undefined ? undefined : signatureOf(text, coordinates, declaration.header),
+			memberInsertLine: declaration.memberInsertLine,
 			metrics: declaration.metrics,
 		}),
 		...(declaration.containerPath.length === 0 ? {} : { containerId: idFor(module, declaration.containerPath) }),
@@ -412,6 +424,7 @@ function mapFacts(module: string, text: string, raw: RawFacts): MappedFacts {
 			name: reference.name,
 			range: reference.range,
 			role: reference.role,
+			qualified: reference.qualified,
 			binding:
 				reference.binding.status === "bound"
 					? {
@@ -438,6 +451,7 @@ function mapFacts(module: string, text: string, raw: RawFacts): MappedFacts {
 		inferredTypes: raw.inferredTypes,
 		literals,
 		comments: raw.comments,
+		...defined({ blankLines: raw.blankLines ?? undefined }),
 		typeAnswers,
 	};
 }
@@ -612,6 +626,7 @@ export class PythonProvider {
 			imports: facts.imports,
 			literals: facts.literals,
 			comments: facts.comments,
+			...defined({ blankLines: facts.blankLines }),
 			diagnostics: facts.diagnostics,
 		};
 	}

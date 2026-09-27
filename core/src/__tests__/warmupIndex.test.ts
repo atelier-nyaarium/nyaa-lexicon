@@ -21,6 +21,7 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
 import { fakeClock } from "./fakeClock";
+import { fakeClasses, fakeImports } from "./fakeGrammar";
 import { fakeSupervisor, resolveFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
 
@@ -57,11 +58,7 @@ function declaration(module: string, name: string): Declaration {
 }
 
 function importsFrom(text: string): Import[] {
-	return [...text.matchAll(/import\s+["']([^"']+)["']/g)].map((match) => ({
-		specifier: match[1] as string,
-		imported: [],
-		reExport: false,
-	}));
+	return fakeImports(text).map((specifier) => ({ specifier, imported: [], reExport: false }));
 }
 
 interface ParseSeen {
@@ -93,9 +90,7 @@ function depthSupervisor(
 				seen.push({ module: request.module, ...(request.depth === undefined ? {} : { depth: request.depth }) });
 				if (request.text.includes("DEAD")) throw new ProviderUnavailableError("provider exited with code null");
 				if (request.text.includes("POISON")) throw new Error("poisoned file");
-				const declarations = [...request.text.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)].map((match) =>
-					declaration(request.module, match[1] as string),
-				);
+				const declarations = fakeClasses(request.text).map((found) => declaration(request.module, found.name));
 				// A container the file never declares, which the store's admission refuses.
 				if (request.text.includes("BADCONTAINER") && declarations[0] !== undefined)
 					declarations[0].containerId = `lexicon fake ${request.module} Missing.`;

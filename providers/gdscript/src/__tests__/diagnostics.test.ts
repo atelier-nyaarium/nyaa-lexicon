@@ -95,6 +95,20 @@ test("keeps string and expression continuations out of indentation diagnostics",
 	expect(diagnostics(text)).toEqual([]);
 });
 
+test("a stray character after a colon or a backslash is a token, so it ends neither a header nor a continuation", () => {
+	const stray = String.fromCharCode(0xa0);
+
+	expect(diagnostics(`func run():${stray}\nvar after = 1\n`)).toEqual([]);
+	expect(diagnostics(`if ready and \\${stray}\n\t\tset:\n\tpass\n`)).toEqual([
+		{
+			severity: "error",
+			message: "Block header has no indented body.",
+			path: "broken.gd",
+			range: { start: { line: 1, character: 5 }, end: { line: 1, character: 6 } },
+		},
+	]);
+});
+
 test("reports no syntax diagnostics for checked-in provider sources", () => {
 	const files = providerSourceFiles(PROVIDER_ROOT);
 	expect(files.length).toBeGreaterThan(0);

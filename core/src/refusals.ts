@@ -410,11 +410,6 @@ export function writeFailed(module: string | undefined, reason: string): Refusal
 	return mint(`${module ?? "a file"}: ${reason}`);
 }
 
-/** The filesystem's own words for a write that threw, which name the condition better than we can. */
-export function writeThrew(error: unknown): Refusal {
-	return mint(error instanceof Error ? error.message : String(error));
-}
-
 ////////////////////////////////
 //  Transactions
 
@@ -474,6 +469,14 @@ export function writeChanged(module: string, now: string | null): Refusal {
 	return mint(`${module} ${holds}, not what the write expected. Read it again and write against what it holds`);
 }
 
+export function writeRefactorMismatch(module: string, open: string | null, expected: string | null): Refusal {
+	if (expected === null) {
+		return mint(`refactor ${open} is open, so ${module} is not written. Keep or revert that refactor, then retry`);
+	}
+	const found = open === null ? "none is open" : `${open} is open instead`;
+	return mint(`${module} expected refactor ${expected}, but ${found}. Read refactor_status, then retry`);
+}
+
 export function writeLeavesWorkspace(module: string): Refusal {
 	return mint(
 		`${module} resolves outside the workspace through a link, so nothing is written. Write a path inside it`,
@@ -499,7 +502,12 @@ export function recoveryPending(operation: "undo" | "revert"): Refusal {
 	);
 }
 
-export function notARegularFile(module: string, found: "link" | "directory" | "special"): Refusal {
+export function notARegularFile(module: string, found: "link" | "directory" | "special" | "outside"): Refusal {
+	if (found === "outside") {
+		return mint(
+			`${module} resolves outside the workspace through a parent link, so a refactor cannot snapshot it. Name a path inside the workspace`,
+		);
+	}
 	const what = found === "link" ? "a symbolic link" : found === "directory" ? "a directory" : "not a regular file";
 	return mint(
 		`${module} is ${what}, and a refactor snapshots regular files only. Name the file itself, or edit this path by hand`,
@@ -510,6 +518,18 @@ export function directoryInTheWay(modules: string[], operation: "undo" | "revert
 	const them = modules.length === 1 ? "it" : "them";
 	return mint(
 		`${modules.join(", ")} ${modules.length === 1 ? "is" : "are"} now a directory, so the ${operation} cannot restore ${them}. Delete ${them} and ${operation} again`,
+	);
+}
+
+export function pathInTheWay(modules: string[], operation: "undo" | "revert"): Refusal {
+	return mint(
+		`${modules.join(", ")} cannot be restored: a directory, a leftover staging folder beside it, or a file where its folder belongs is in the way. Remove it and ${operation} again`,
+	);
+}
+
+export function restoreFailed(modules: string[], operation: "undo" | "revert"): Refusal {
+	return mint(
+		`${modules.join(", ")} could not be written back because of a disk error, such as permissions or space. Fix that and ${operation} again`,
 	);
 }
 

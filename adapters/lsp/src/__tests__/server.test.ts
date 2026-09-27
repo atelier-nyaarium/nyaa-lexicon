@@ -142,6 +142,7 @@ function reference(module: string, name: string, range: Range): StoredReference 
 		role: "read",
 		targetId: "symbol:item",
 		fromId: null,
+		qualified: null,
 		provenance: "bound",
 		startLine: range.start.line,
 		startCharacter: range.start.character,

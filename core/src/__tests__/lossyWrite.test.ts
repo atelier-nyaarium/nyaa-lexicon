@@ -128,7 +128,7 @@ describe("a module that is not valid UTF-8", () => {
 
 	// A plan read some other way still cannot land.
 	it("is refused by the writer a step applies through", () => {
-		expect(() => service.writeModule("a.ref", "export class Cart {}\n")).toThrow("a.ref");
+		expect(() => service.writeModule("a.ref", "export class Cart {}\n", null)).toThrow("a.ref");
 		expect(bytes("a.ref").equals(LOSSY)).toBe(true);
 	});
 });
@@ -154,7 +154,7 @@ describe("new text holding a lone surrogate", () => {
 	it("is refused by the writer a step applies through", async () => {
 		await indexed("w.ref", BEFORE);
 
-		expect(() => service.writeModule("w.ref", `${BEFORE}${LONE}\n`)).toThrow("w.ref");
+		expect(() => service.writeModule("w.ref", `${BEFORE}${LONE}\n`, null)).toThrow("w.ref");
 		expect(bytes("w.ref").toString("utf8")).toBe(BEFORE);
 	});
 });

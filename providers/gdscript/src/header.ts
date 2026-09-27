@@ -1,10 +1,17 @@
 // Owns GDScript header spans, handed to the protocol's one renderer.
 
 import { type HeaderFold, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
-import { isIdentifierPart, isIdentifierStart } from "./cursor.js";
-import { annotationLine, indentationEnd, indentOf, isIgnorable } from "./line-syntax.js";
-import type { SourceLine } from "./parse-model.js";
-import type { ScannedSource } from "./source-scan.js";
+import { annotationLine, annotationsAbove } from "./line-syntax.js";
+import type { ReferenceToken, SourceLine } from "./parse-model.js";
+import {
+	firstLineToken,
+	isIgnorable,
+	type LexedSource,
+	nextReferenceToken,
+	previousReferenceToken,
+	tokenAt,
+	tokenRange,
+} from "./tokens.js";
 
 //////// Types
 
@@ -18,8 +25,8 @@ export interface HeaderRequest {
 	line: SourceLine;
 	/** Column of the header's first token on `line`. */
 	head: number;
-	/** Column just past the declared name. */
-	nameEnd: number;
+	/** Column of the declared name on `line`. */
+	name: number;
 	stop: HeaderStop;
 	/** A colon right after the name opens a type. */
 	typed?: boolean;
@@ -30,6 +37,11 @@ interface Scan {
 	folds: HeaderFold[];
 	/** Line-joining backslashes. */
 	joins: OffsetRange[];
+}
+
+/** A folded body and the token the scan resumes at. */
+interface Body extends OffsetRange {
+	next: number;
 }
 
 //////// Constants
@@ -45,20 +57,17 @@ const ACCESSORS = new Set(["get", "set"]);
 
 //////// Helpers
 
-function isBlank(character: string): boolean {
-	return character === " " || character === "\t" || character === "\r";
-}
-
-function isWhitespace(character: string): boolean {
-	return isBlank(character) || character === "\n";
+/** A line-joining backslash. */
+function isContinuation(token: ReferenceToken | undefined): boolean {
+	return token?.kind === "symbol" && token.value === "\\";
 }
 
 //////// Headers
 
-/** Scans masked code, so strings never count. */
+/** Walks tokens, so strings and comments never count. */
 export class HeaderReader {
 	private readonly lines: readonly SourceLine[];
-	private readonly masked: string;
+	private readonly tokens: ReferenceToken[];
 	private readonly starts: number[] = [];
 	private readonly comments = new Map<number, OffsetRange>();
 	/** In source order, prefixes included. */
@@ -66,16 +75,16 @@ export class HeaderReader {
 
 	constructor(
 		private readonly text: string,
-		scanned: ScannedSource,
+		private readonly lexed: LexedSource,
 	) {
-		this.lines = scanned.lines;
+		this.lines = lexed.lines;
+		this.tokens = lexed.tokens;
 		let offset = 0;
 		for (const line of this.lines) {
 			this.starts.push(offset);
 			offset += line.text.length + 1;
 		}
-		this.masked = this.lines.map((line) => line.code).join("\n");
-		for (const comment of scanned.comments) {
+		for (const comment of lexed.scanned.comments) {
 			const start = this.starts[comment.range.start.line];
 			if (start === undefined) continue;
 			this.comments.set(comment.range.start.line, {
@@ -83,36 +92,29 @@ export class HeaderReader {
 				end: start + comment.range.end.character,
 			});
 		}
-		this.strings = scanned.strings.map((string) => {
-			const start = (this.starts[string.start.line] ?? 0) + string.start.character;
-			return {
-				start: this.prefixed(start),
-				end: (this.starts[string.end.line] ?? 0) + string.end.character,
-			};
-		});
+		this.strings = lexed.scanned.strings.map((string) => ({
+			start: (this.starts[string.start.line] ?? 0) + string.start.character,
+			end: (this.starts[string.end.line] ?? 0) + string.end.character,
+		}));
 	}
 
 	/** One line, owned annotations included. */
 	header(request: HeaderRequest): string | undefined {
-		const lineStart = this.starts[request.line.line] ?? 0;
-		const first = this.firstLine(request.line, request.head);
-		const start = first === request.line.line ? lineStart + request.head : this.codeStart(first);
-		const scan = this.scan(lineStart + request.head, lineStart + request.nameEnd, request);
+		const line = request.line.line;
+		const head = tokenAt(this.lexed, line, request.head);
+		const name = tokenAt(this.lexed, line, request.name);
+		if (head < 0 || name < 0) return undefined;
+		const first = this.firstLine(line, request.head);
+		const start = first === line ? (this.starts[line] ?? 0) + request.head : this.codeStart(first);
+		const scan = this.scan(head, name, request);
 		const omit = [...scan.joins];
 		const last = this.lineAt(scan.end);
-		for (let line = first; line <= last; line++) {
-			const comment = this.comments.get(line);
+		for (let index = first; index <= last; index++) {
+			const comment = this.comments.get(index);
 			if (comment !== undefined) omit.push(comment);
 		}
 		const verbatim = this.stringsWithin(start, scan.end);
 		return renderHeader(this.text, { start, end: scan.end, folds: scan.folds, omit, verbatim });
-	}
-
-	/** StringName, NodePath and raw prefixes. */
-	private prefixed(quote: number): number {
-		const prefix = this.text.charAt(quote - 1);
-		if (prefix === "&" || prefix === "^") return quote - 1;
-		return prefix === "r" && !isIdentifierPart(this.text.charAt(quote - 2)) ? quote - 1 : quote;
 	}
 
 	private stringsWithin(start: number, end: number): OffsetRange[] {
@@ -133,34 +135,19 @@ export class HeaderReader {
 	}
 
 	/** Line of the first owned annotation. */
-	private firstLine(line: SourceLine, head: number): number {
-		let first = line.line;
-		let before = head - 1;
-		while (before >= 0 && isBlank(line.code.charAt(before))) before--;
-		if (before >= 0) return first;
-		for (let index = line.line - 1; index >= 0; index--) {
-			const above = this.lines[index] as SourceLine;
-			if (isIgnorable(above)) {
-				if (above.text.trim() === "") break;
-				continue;
-			}
-			const run = annotationLine(above);
-			if (run === null) break;
-			if (run.head !== null) first = index;
-			if (run.detached) break;
-		}
-		return first;
+	private firstLine(line: number, head: number): number {
+		const first = firstLineToken(this.lexed, line);
+		return first !== undefined && first.character < head ? line : annotationsAbove(this.lexed, line).first;
 	}
 
 	/** Start of its owned annotations. */
-	private codeStart(index: number): number {
-		const line = this.lines[index] as SourceLine;
-		const run = annotationLine(line);
-		return (this.starts[index] ?? 0) + (run?.head ?? indentationEnd(line.text));
+	private codeStart(line: number): number {
+		const column = annotationLine(this.lexed, line)?.head ?? firstLineToken(this.lexed, line)?.character ?? 0;
+		return (this.starts[line] ?? 0) + column;
 	}
 
-	private scan(from: number, nameEnd: number, request: HeaderRequest): Scan {
-		const masked = this.masked;
+	private scan(from: number, name: number, request: HeaderRequest): Scan {
+		const tokens = this.tokens;
 		const folds: HeaderFold[] = [];
 		const joins: OffsetRange[] = [];
 		const done = (end: number): Scan => ({ end, folds, joins });
@@ -169,170 +156,154 @@ export class HeaderReader {
 		let typed = request.typed === true;
 		let depth = 0;
 		let at = from;
-		while (at < masked.length) {
-			const character = masked.charAt(at);
-			if (at >= nameEnd && isIdentifierStart(character) && !isIdentifierPart(masked.charAt(at - 1))) {
-				const word = this.wordAt(at);
-				if (word === "func") lambdas.push(depth);
-				at += word.length;
-				continue;
-			}
-			if (character === "\n") {
-				if (depth === 0 && request.stop !== "member" && !this.inString(at)) {
-					const join = this.joinBefore(at);
-					if (join < 0) return done(at);
-					joins.push({ start: join, end: join + 1 });
+		while (at < tokens.length) {
+			const token = tokens[at] as ReferenceToken;
+			const value = token.value;
+			if (token.kind === "newline") {
+				if (depth === 0 && request.stop !== "member" && !this.endsInString(token.line)) {
+					const join = tokens[at - 1];
+					if (join === undefined || !isContinuation(join)) return done(this.offset(token));
+					const offset = this.offset(join);
+					joins.push({ start: offset, end: offset + 1 });
 				}
 				at++;
 				continue;
 			}
-			if (depth === 0 && (character === ";" || (character === "," && request.stop === "member"))) return done(at);
-			if (depth === 0 && character === "{" && request.stop === "brace") return done(at);
-			if ((character === "[" || character === "{") && this.startsLiteral(at)) {
+			if (token.kind !== "symbol") {
+				if (at > name && token.kind === "identifier" && value === "func") lambdas.push(depth);
+				at++;
+				continue;
+			}
+			if (depth === 0 && (value === ";" || (value === "," && request.stop === "member")))
+				return done(this.offset(token));
+			if (depth === 0 && value === "{" && request.stop === "brace") return done(this.offset(token));
+			if ((value === "[" || value === "{") && this.startsLiteral(at)) {
 				const close = this.closing(at);
 				if (close < 0) break;
-				folds.push({ start: at, end: close + 1 });
+				folds.push({ start: this.offset(token), end: this.end(close) });
 				at = close + 1;
 				continue;
 			}
-			if (OPENERS.has(character)) depth++;
-			if (CLOSERS.has(character)) {
-				if (depth === 0) return done(at);
+			if (OPENERS.has(value)) depth++;
+			if (CLOSERS.has(value)) {
+				if (depth === 0) return done(this.offset(token));
 				depth--;
 				while ((lambdas.at(-1) ?? -1) > depth) lambdas.pop();
 			}
-			if (character === ":") {
-				if (masked.charAt(at + 1) === "=") {
-					at += 2;
-					continue;
-				}
+			if (value === ":") {
 				if (lambdas.at(-1) === depth) {
 					lambdas.pop();
-					const body = this.lambdaBody(at + 1, depth);
+					const body = this.lambdaBody(at, depth);
 					if (body !== undefined) {
-						folds.push({ ...body, bare: true });
-						at = body.end;
+						folds.push({ start: body.start, end: body.end, bare: true });
+						at = body.next;
 						continue;
 					}
 				} else if (depth === 0) {
-					const opensType = typed && this.opensType(nameEnd, at);
+					const opensType = typed && this.opensType(name, at);
 					typed = false;
-					if (!opensType && request.stop === "colon") return done(at + 1);
+					if (!opensType && request.stop === "colon") return done(this.end(at));
 				}
 			}
 			at++;
 		}
-		const open = this.inString(masked.length - 1);
-		if (at >= masked.length && depth === 0 && request.stop !== "member" && !open) return done(masked.length);
+		const lastCode = this.lastCodeToken();
+		const open = this.endsInString(this.lines.length - 1);
+		if (at >= tokens.length && depth === 0 && request.stop !== "member" && !open && lastCode >= 0)
+			return done(this.end(lastCode));
 		// Unterminated: the first line alone.
-		const line = this.lines[this.lineAt(from)] as SourceLine;
-		return done((this.starts[line.line] ?? 0) + line.text.trimEnd().length);
+		const line = (tokens[from] as ReferenceToken).line;
+		const last = this.lexed.lineTokens[line]?.at(-1) ?? from;
+		return done(this.end(last));
 	}
 
-	private wordAt(at: number): string {
-		let end = at;
-		while (end < this.masked.length && isIdentifierPart(this.masked.charAt(end))) end++;
-		return this.masked.slice(at, end);
-	}
-
-	/** Continuation backslash, or -1. */
-	private joinBefore(newline: number): number {
-		let index = newline - 1;
-		while (index >= 0 && isBlank(this.masked.charAt(index))) index--;
-		return this.masked.charAt(index) === "\\" ? index : -1;
+	private lastCodeToken(): number {
+		let index = this.tokens.length - 1;
+		while (index >= 0 && (this.tokens[index] as ReferenceToken).kind === "newline") index--;
+		return index;
 	}
 
 	/** Its matching closer, or -1. */
 	private closing(open: number): number {
 		let depth = 0;
-		for (let index = open; index < this.masked.length; index++) {
-			const character = this.masked.charAt(index);
-			if (OPENERS.has(character)) depth++;
-			else if (CLOSERS.has(character) && --depth === 0) return index;
+		for (let index = open; index < this.tokens.length; index++) {
+			const value = (this.tokens[index] as ReferenceToken).value;
+			if (OPENERS.has(value)) depth++;
+			else if (CLOSERS.has(value) && --depth === 0) return index;
 		}
 		return -1;
 	}
 
 	/** After a value, `[` subscripts or types. */
 	private startsLiteral(at: number): boolean {
-		if (this.masked.charAt(at) === "{") return true;
-		let index = at - 1;
-		while (index >= 0 && isWhitespace(this.masked.charAt(index))) {
-			if (!isWhitespace(this.text.charAt(index)) && !this.inComment(index)) return false;
-			index--;
-		}
-		const previous = this.masked.charAt(index);
-		if (CLOSERS.has(previous)) return false;
-		if (!isIdentifierPart(previous)) return true;
-		let begin = index;
-		while (begin > 0 && isIdentifierPart(this.masked.charAt(begin - 1))) begin--;
-		return OPERATOR_WORDS.has(this.masked.slice(begin, index + 1));
+		if ((this.tokens[at] as ReferenceToken).value === "{") return true;
+		const previous = this.tokens[previousReferenceToken(this.tokens, at)];
+		if (previous === undefined) return true;
+		if (previous.kind === "string" || previous.kind === "number") return false;
+		if (previous.kind === "identifier") return OPERATOR_WORDS.has(previous.value);
+		return !CLOSERS.has(previous.value);
 	}
 
 	/** Unless `get` or `set` follows. */
-	private opensType(nameEnd: number, colon: number): boolean {
-		if (this.masked.slice(nameEnd, colon).trim() !== "") return false;
-		let at = colon + 1;
-		while (isBlank(this.masked.charAt(at))) at++;
-		const word = this.wordAt(at);
-		return word !== "" && !ACCESSORS.has(word);
+	private opensType(name: number, colon: number): boolean {
+		if (nextReferenceToken(this.tokens, name) !== colon) return false;
+		const next = this.tokens[colon + 1];
+		return next?.kind === "identifier" && !ACCESSORS.has(next.value);
 	}
 
 	/** Inline tail or indented block. */
-	private lambdaBody(after: number, depth: number): OffsetRange | undefined {
-		const line = this.lineAt(after);
-		const comment = this.comments.get(line)?.start ?? Number.POSITIVE_INFINITY;
-		let start = after;
-		while (isBlank(this.text.charAt(start))) start++;
-		const rest = this.text.charAt(start);
-		if (rest !== "" && rest !== "\n" && start < comment) return this.inlineBody(start, depth);
-		return this.blockBody(line);
+	private lambdaBody(colon: number, depth: number): Body | undefined {
+		const next = this.tokens[colon + 1];
+		if (next !== undefined && next.kind !== "newline") return this.inlineBody(colon + 1, depth);
+		return this.blockBody((this.tokens[colon] as ReferenceToken).line);
 	}
 
-	private inlineBody(start: number, depth: number): OffsetRange | undefined {
+	private inlineBody(start: number, depth: number): Body | undefined {
 		let local = 0;
 		let at = start;
-		for (; at < this.masked.length; at++) {
-			const character = this.masked.charAt(at);
-			if (local === 0 && (character === "\n" || character === ";" || (character === "," && depth > 0))) break;
-			if (OPENERS.has(character)) local++;
-			if (CLOSERS.has(character)) {
+		for (; at < this.tokens.length; at++) {
+			const token = this.tokens[at] as ReferenceToken;
+			const value = token.value;
+			if (local === 0 && (token.kind === "newline" || value === ";" || (value === "," && depth > 0))) break;
+			if (OPENERS.has(value)) local++;
+			if (CLOSERS.has(value)) {
 				if (local === 0) break;
 				local--;
 			}
 		}
-		while (at > start && isWhitespace(this.text.charAt(at - 1))) at--;
-		return at > start ? { start, end: at } : undefined;
+		if (at === start) return undefined;
+		return { start: this.offset(this.tokens[start] as ReferenceToken), end: this.end(at - 1), next: at };
 	}
 
-	private blockBody(colonLine: number): OffsetRange | undefined {
-		const indent = indentOf((this.lines[colonLine] as SourceLine).text);
+	private blockBody(colonLine: number): Body | undefined {
+		const indent = (this.lines[colonLine] as SourceLine).indent;
 		let first = -1;
 		let last = -1;
 		for (let index = colonLine + 1; index < this.lines.length; index++) {
-			const line = this.lines[index] as SourceLine;
-			if (isIgnorable(line)) continue;
-			if (indentOf(line.text) <= indent) break;
+			if (isIgnorable(this.lexed, index)) continue;
+			if ((this.lines[index] as SourceLine).indent <= indent) break;
 			if (first < 0) first = index;
 			last = index;
 		}
-		if (first < 0) return undefined;
-		const firstLine = this.lines[first] as SourceLine;
-		const lastLine = this.lines[last] as SourceLine;
-		return {
-			start: (this.starts[first] ?? 0) + indentationEnd(firstLine.text),
-			end: (this.starts[last] ?? 0) + lastLine.text.trimEnd().length,
-		};
+		const opening = firstLineToken(this.lexed, first);
+		const closing = this.lexed.lineTokens[last]?.at(-1);
+		if (opening === undefined || closing === undefined) return undefined;
+		return { start: this.offset(opening), end: this.end(closing), next: closing + 1 };
 	}
 
 	/** Whether its line ends inside a string. */
-	private inString(offset: number): boolean {
-		return this.lines[this.lineAt(offset)]?.endsInString === true;
+	private endsInString(line: number): boolean {
+		return this.lines[line]?.endsInString === true;
 	}
 
-	private inComment(offset: number): boolean {
-		const comment = this.comments.get(this.lineAt(offset));
-		return comment !== undefined && offset >= comment.start && offset < comment.end;
+	private offset(token: ReferenceToken): number {
+		return (this.starts[token.line] ?? 0) + token.character;
+	}
+
+	/** Offset past the token at `index`. */
+	private end(index: number): number {
+		const { end } = tokenRange(this.tokens[index] as ReferenceToken);
+		return (this.starts[end.line] ?? 0) + end.character;
 	}
 
 	private lineAt(offset: number): number {

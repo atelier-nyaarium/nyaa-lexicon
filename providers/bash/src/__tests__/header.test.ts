@@ -123,8 +123,26 @@ describe("signatures", () => {
 
 	test("a header continued over several lines is one line", () => {
 		expect(
-			signatures(["for host in \\", "  alpha \\", "  beta; do :; done", "declare -r \\", "  -i LIMIT=4"]),
-		).toEqual({ host: "for host in alpha beta", LIMIT: "declare -r -i LIMIT=4" });
+			signatures([
+				"for host in \\",
+				"  alpha \\",
+				"  beta; do :; done",
+				"declare -r \\",
+				"  -i LIMIT=4",
+				"Z=foo\\",
+				"bar",
+			]),
+		).toEqual({ host: "for host in alpha beta", LIMIT: "declare -r -i LIMIT=4", Z: "Z=foobar" });
+	});
+
+	test("a backslash ending a comment, a quote, a quoted here-document or another backslash continues nothing", () => {
+		expect(signatures(["function wave() # waves \\", "{", "  :", "}", "read -r -p 'a\\", "' first"])).toEqual({
+			wave: "function wave()",
+			first: "read -r -p 'a\\\\n' first",
+		});
+		expect(
+			signatures(["KEPT=$(cat <<'EOF'", "a\\", "b", "EOF", ")", "ESCAPED=$(cat <<EOF", "c\\\\", "d", "EOF", ")"]),
+		).toEqual({ KEPT: "KEPT=$(cat <<'EOF' a\\ b EOF)", ESCAPED: "ESCAPED=$(cat <<EOF c\\\\ d EOF)" });
 	});
 
 	test("a command or expression that writes a name first is that name's header", () => {

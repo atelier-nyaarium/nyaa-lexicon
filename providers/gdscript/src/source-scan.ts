@@ -1,18 +1,17 @@
 // Owns source masking, line construction, and comment spans.
 
 import type { CommentSpan, Position } from "@nyaa-lexicon/protocol";
-import { Cursor } from "./cursor.js";
-import type { SourceLine } from "./parse-model.js";
+import { Cursor, isIdentifierStart } from "./cursor.js";
+import type { SourceLine, StringPrefix, StringQuote, StringSpan } from "./parse-model.js";
 
 //////// Source scan
 
 // Derived rather than restated, so the wire shape cannot drift from this provider's.
-export type { CommentSpan };
-
-type TripleQuote = "'" | '"';
+export type { CommentSpan, StringSpan };
 
 interface ActiveString {
-	quote: TripleQuote;
+	prefix: StringPrefix;
+	quote: StringQuote;
 	triple: boolean;
 	start: Position;
 }
@@ -26,16 +25,7 @@ interface StringState {
 interface MaskedLine {
 	code: string;
 	hasString: boolean;
-	stringStarts: number[];
 	endsInString: boolean;
-}
-
-/** A terminated string, quotes included. */
-export interface StringSpan {
-	start: Position;
-	end: Position;
-	quote: TripleQuote;
-	triple: boolean;
 }
 
 export interface ScannedSource {
@@ -58,8 +48,12 @@ function commentSpan(line: number, character: number, raw: string): CommentSpan 
 	};
 }
 
-function tripleQuoteAt(cursor: Cursor, quote: TripleQuote): boolean {
+function tripleQuoteAt(cursor: Cursor, quote: StringQuote): boolean {
 	return cursor.peek() === quote && cursor.peek(1) === quote && cursor.peek(2) === quote;
+}
+
+function isQuote(character: string): character is StringQuote {
+	return character === "'" || character === '"';
 }
 
 function consumeMasked(cursor: Cursor, count: number): string {
@@ -108,34 +102,61 @@ function maskLine(text: string, line: number, state: StringState, comments: Comm
 	const cursor = new Cursor(text);
 	let code = "";
 	let hasString = state.active !== null;
-	const stringStarts: number[] = [];
+	const open = (prefix: StringPrefix, start: number): void => {
+		const quote = cursor.peek() as StringQuote;
+		const triple = tripleQuoteAt(cursor, quote);
+		hasString = true;
+		state.active = { prefix, quote, triple, start: { line, character: start } };
+		code += consumeMasked(cursor, triple ? 3 : 1);
+		code += maskStringContent(cursor, line, state);
+	};
 	while (cursor.good()) {
 		const before = cursor.offset;
+		const character = cursor.peek();
 		if (state.active !== null) {
 			code += maskStringContent(cursor, line, state);
-		} else if (cursor.peek() === "#") {
-			const character = cursor.column;
+		} else if (character === "#") {
+			const column = cursor.column;
 			let raw = "";
 			while (cursor.good()) {
 				const consumed = cursor.next();
 				raw += consumed;
 				code += masked(consumed);
 			}
-			comments.push(commentSpan(line, character, raw));
-		} else if (cursor.peek() === "'" || cursor.peek() === '"') {
-			const quote = cursor.peek() as TripleQuote;
-			const triple = tripleQuoteAt(cursor, quote);
-			hasString = true;
-			stringStarts.push(cursor.column);
-			state.active = { quote, triple, start: { line, character: cursor.column } };
-			code += consumeMasked(cursor, triple ? 3 : 1);
-			code += maskStringContent(cursor, line, state);
+			comments.push(commentSpan(line, column, raw));
+		} else if (isQuote(character)) {
+			open("", cursor.column);
+		} else if (character === "&" && cursor.peek(1) === "&") {
+			code += cursor.next() + cursor.next();
+		} else if ((character === "&" || character === "^") && isQuote(cursor.peek(1))) {
+			const start = cursor.column;
+			code += masked(cursor.next());
+			open(character, start);
+		} else if (isIdentifierStart(character)) {
+			// Raw `r` starts a word.
+			const start = cursor.column;
+			const word = cursor.readIdentifier()?.name ?? "";
+			if (word === "r" && isQuote(cursor.peek())) {
+				code += masked(word);
+				open("r", start);
+			} else {
+				code += word;
+			}
 		} else {
 			code += cursor.next();
 		}
 		if (cursor.offset <= before) throw new Error("maskLine failed to advance");
 	}
-	return { code, hasString, stringStarts, endsInString: state.active !== null };
+	return { code, hasString, endsInString: state.active !== null };
+}
+
+function indentWidth(text: string): number {
+	const cursor = new Cursor(text);
+	let width = 0;
+	while (cursor.peek() === " " || cursor.peek() === "\t") {
+		width += cursor.next() === "\t" ? 4 : 1;
+	}
+	return width;
 }
 
 export function scanSource(text: string): ScannedSource {
@@ -145,18 +166,15 @@ export function scanSource(text: string): ScannedSource {
 	const comments: CommentSpan[] = [];
 	let line = cursor.readLine();
 	while (line !== null) {
-		lines.push({ ...line, ...maskLine(line.text, line.line, state, comments) });
+		const end = line.text.endsWith("\r") ? line.text.length - 1 : line.text.length;
+		lines.push({
+			...line,
+			...maskLine(line.text, line.line, state, comments),
+			indent: indentWidth(line.text),
+			end,
+		});
 		line = cursor.readLine();
 	}
 	if (state.active !== null) state.unterminated.push(state.active.start);
 	return { lines, strings: state.strings, unterminatedStrings: state.unterminated, comments };
-}
-
-export function readLines(text: string): SourceLine[] {
-	return scanSource(text).lines;
-}
-
-/** GDScript has one comment form: `#` to end of line, and no block comment. */
-export function extractCommentsCore(text: string): CommentSpan[] {
-	return scanSource(text).comments;
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { callsTo, memberCalls, memberReads, parseSource, usesName } from "@nyaa-lexicon/protocol/ast";
+import type ts from "typescript";
 
 const ROOT = path.join(import.meta.dirname, "..", "..", "..");
 
@@ -12,6 +14,16 @@ function coreSources(): string[] {
 	return files;
 }
 
+const parsed = (file: string) => parseSource(file, readFileSync(file, "utf8")).source;
+
+/** `x.parse(params ...)`: a request's params parsed against a schema. */
+function parsesParams(source: ts.SourceFile): boolean {
+	return memberCalls(source, ["parse"]).some(({ node }) => {
+		const first = (node.parent as ts.CallExpression).arguments[0];
+		return first !== undefined && usesName(first, "params");
+	});
+}
+
 describe("the daemon wire has one owner", () => {
 	/**
 	 * Bug class killed: a request or response shape declared beside its handler, drifting from the
@@ -19,12 +31,10 @@ describe("the daemon wire has one owner", () => {
 	 * place a request is parsed.
 	 */
 	it("keeps daemon schemas and parsing out of dispatch", () => {
-		const dispatch = readFileSync(path.join(ROOT, "core", "src", "dispatch.ts"), "utf8");
-		expect(dispatch).not.toContain("z.");
+		const dispatch = parsed(path.join(ROOT, "core", "src", "dispatch.ts"));
+		expect(memberReads(dispatch).filter(({ receiver }) => receiver === "z")).toEqual([]);
 
-		const matches = coreSources().filter((file) =>
-			readFileSync(path.join(ROOT, "core", "src", file), "utf8").includes(".parse(params"),
-		);
+		const matches = coreSources().filter((file) => parsesParams(parsed(path.join(ROOT, "core", "src", file))));
 		expect(matches).toEqual(["dispatch.ts"]);
 	});
 
@@ -36,9 +46,9 @@ describe("the daemon wire has one owner", () => {
 		const files = ["daemonMethods.ts", "daemonShapes.ts"];
 		expect(files.length).toBeGreaterThan(0);
 		for (const file of files) {
-			const source = readFileSync(path.join(ROOT, "protocol", "src", file), "utf8");
-			expect(source, file).not.toContain("z.any(");
-			expect(source, file).not.toContain("z.unknown(");
+			const source = parsed(path.join(ROOT, "protocol", "src", file));
+			expect(callsTo(source, "any", "z"), file).toEqual([]);
+			expect(callsTo(source, "unknown", "z"), file).toEqual([]);
 		}
 	});
 });

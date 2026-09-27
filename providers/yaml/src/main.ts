@@ -1,8 +1,9 @@
 import path from "node:path";
-import { readYaml, readYamlComments } from "@nyaa-lexicon/formats/yaml";
+import { readYaml, readYamlLayout } from "@nyaa-lexicon/formats/yaml";
 import {
 	type Binding,
 	coordinatesOf,
+	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -85,6 +86,7 @@ export class YamlProvider {
 			coordinates,
 		});
 		const shallow = params.depth === "outline" || params.depth === "surface";
+		const layout = shallow ? undefined : readYamlLayout(params.text, 0, coordinates);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -92,7 +94,8 @@ export class YamlProvider {
 			references: [],
 			imports: [],
 			literals: shallow ? [] : facts.literals,
-			comments: shallow ? [] : readYamlComments(params.text, 0, coordinates),
+			comments: layout?.comments ?? [],
+			...defined({ blankLines: layout?.blankLines }),
 			diagnostics: facts.diagnostics,
 			...(shallow ? { depth: params.depth as IndexDepth } : {}),
 		};

@@ -96,7 +96,12 @@ describe("C++ comment spans", () => {
 
 		expect(TIERS.comments).toBe(true);
 		expect(facts.comments).toEqual([
-			{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } }, text: "// header" },
+			{
+				range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } },
+				text: "// header",
+				codeBefore: false,
+				codeAfter: false,
+			},
 		]);
 	});
 

@@ -50,6 +50,8 @@ interface FakeDeclaration {
 	range: Range;
 	/** Defaults to a single-line span at the range start line. */
 	selection?: Range;
+	/** Line where the provider says the next container member goes. */
+	memberInsertLine?: number;
 }
 
 function declarationOf(fake: FakeDeclaration): StoredDeclaration {
@@ -63,6 +65,7 @@ function declarationOf(fake: FakeDeclaration): StoredDeclaration {
 		range: fake.range,
 		selectionRange: fake.selection ?? range(fake.range.start.line, 0, fake.range.start.line, fake.name.length),
 		visibility: "public",
+		...(fake.memberInsertLine === undefined ? {} : { memberInsertLine: fake.memberInsertLine }),
 	} as StoredDeclaration;
 }
 
@@ -172,7 +175,7 @@ describe("choosing the splice point", () => {
 		const world: World = {
 			text: ["class C {", "\tonly() {}", "}", ""].join("\n"),
 			declarations: [
-				declarationOf({ name: "C", range: range(0, 0, 2, 1) }),
+				declarationOf({ name: "C", range: range(0, 0, 2, 1), memberInsertLine: 2 }),
 				member({ name: "only", container: "C", range: range(1, 1, 1, 10), selection: range(1, 1, 1, 5) }),
 			],
 		};
@@ -190,7 +193,7 @@ describe("choosing the splice point", () => {
 		const world: World = {
 			text: ["class A {", "\tm() {}", "}", "", "class B {}", ""].join("\n"),
 			declarations: [
-				declarationOf({ name: "A", range: range(0, 0, 2, 1) }),
+				declarationOf({ name: "A", range: range(0, 0, 2, 1), memberInsertLine: 2 }),
 				member({ name: "m", container: "A", range: range(1, 1, 1, 8), selection: range(1, 1, 1, 2) }),
 				declarationOf({ name: "B", range: range(4, 0, 4, 10) }),
 			],
@@ -205,12 +208,12 @@ describe("choosing the splice point", () => {
 		);
 	});
 
-	// C and C++ ranges end after "};", so the pre-delimiter char is ";" with "}" ahead of it.
+	// C and C++ ranges end after "};"; the provider names the closing line.
 	it("accepts a container that terminates in closers beyond the brace", async () => {
 		const world: World = {
 			text: ["struct S {", "\tint x;", "};", ""].join("\n"),
 			declarations: [
-				declarationOf({ name: "S", range: range(0, 0, 2, 2) }),
+				declarationOf({ name: "S", range: range(0, 0, 2, 2), memberInsertLine: 2 }),
 				member({ name: "x", container: "S", range: range(1, 1, 1, 7), selection: range(1, 5, 1, 6) }),
 			],
 		};
@@ -220,6 +223,32 @@ describe("choosing the splice point", () => {
 		expect(outcome.state).toBe("planned");
 		if (outcome.state !== "planned") return;
 		expect(outcome.candidate).toBe(["struct S {", "\tint x;", "", "\tint y;", "};", ""].join("\n"));
+	});
+});
+
+// Rust impl methods and C++ out-of-line definitions hang off a type whose body does not hold them.
+describe("members written outside their container's body", () => {
+	const text = ["struct S {", "\ta: i32,", "}", "impl S {", "\tfn m(&self) {}", "}", ""].join("\n");
+	const declarations = [
+		declarationOf({ name: "S", range: range(0, 0, 2, 1), memberInsertLine: 2 }),
+		member({ name: "a", container: "S", range: range(1, 1, 1, 8), selection: range(1, 1, 1, 2) }),
+		member({ name: "m", container: "S", range: range(4, 1, 4, 15), selection: range(4, 4, 4, 5) }),
+	];
+
+	it("puts a last field's follower in the body that holds it, never before a member in another block", async () => {
+		const outcome = await plan({ text, declarations }, { after: id("a", "S"), text: "b: i32," });
+
+		expect(outcome.state).toBe("planned");
+		if (outcome.state !== "planned") return;
+		expect(outcome.candidate).toBe(
+			["struct S {", "\ta: i32,", "", "\tb: i32,", "}", "impl S {", "\tfn m(&self) {}", "}", ""].join("\n"),
+		);
+	});
+
+	it("refuses after a member its container's body does not hold", async () => {
+		const outcome = await plan({ text, declarations }, { after: id("m", "S"), text: "fn n(&self) {}" });
+
+		expect(outcome.state).toBe("refused");
 	});
 });
 
@@ -548,7 +577,7 @@ describe("warning about a name already bound", () => {
 		const world: World = {
 			text: ["class C {", "\tother() {}", "}", "", "function run() {}", ""].join("\n"),
 			declarations: [
-				declarationOf({ name: "C", range: range(0, 0, 2, 1) }),
+				declarationOf({ name: "C", range: range(0, 0, 2, 1), memberInsertLine: 2 }),
 				member({ name: "other", container: "C", range: range(1, 1, 1, 11), selection: range(1, 1, 1, 6) }),
 				declarationOf({ name: "run", range: range(4, 0, 4, 17), selection: range(4, 9, 4, 12) }),
 			],
@@ -590,7 +619,7 @@ describe("warning about a name already bound", () => {
 		const world: World = {
 			text: ["class C {", "\trun() {}", "", "\tother() {}", "}", "", "function run() {}", ""].join("\n"),
 			declarations: [
-				declarationOf({ name: "C", range: range(0, 0, 4, 1) }),
+				declarationOf({ name: "C", range: range(0, 0, 4, 1), memberInsertLine: 4 }),
 				member({ name: "run", container: "C", range: range(1, 1, 1, 9), selection: range(1, 1, 1, 4) }),
 				member({ name: "other", container: "C", range: range(3, 1, 3, 11), selection: range(3, 1, 3, 6) }),
 				declarationOf({ name: "run", range: range(6, 0, 6, 17), selection: range(6, 9, 6, 12) }),

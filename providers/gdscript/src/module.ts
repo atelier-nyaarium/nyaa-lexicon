@@ -12,7 +12,7 @@ import {
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { extractDeclarations, extractFile } from "./extract.js";
-import type { CommentSpan } from "./extractCore.js";
+import type { CommentSpan, LoaderCall } from "./extractCore.js";
 import { extractTypeAnnotationsCore, type TypeAnnotationFact } from "./extractCore.js";
 
 export interface GDScriptScope {
@@ -30,8 +30,11 @@ export interface GDScriptValue extends ModuleValue {
 	imports: Import[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	/** Absent at outline depth. */
+	blankLines?: number[];
 	diagnostics: Diagnostic[];
 	annotations: TypeAnnotationFact[];
+	loaders: LoaderCall[];
 }
 
 export type GDScriptStore = ModuleStore<GDScriptValue, GDScriptProject, Declaration>;
@@ -56,6 +59,7 @@ function readGDScript(module: string, text: string, depth: IndexDepth): GDScript
 			comments: [],
 			diagnostics: [],
 			annotations: [],
+			loaders: [],
 		};
 	}
 	const extracted = extractFile(module, text);

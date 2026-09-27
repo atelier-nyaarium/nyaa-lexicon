@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import ts from "typescript";
 import { calleeOf, callsIn, parseSource, reachedCalls } from "../astResidue";
-import { codeOnly, readSwept, sourceFiles } from "../residue";
+import { readSwept, sourceFiles } from "../residue";
 
 /** The store owns fact-id minting. */
 const REPO = join(import.meta.dirname, "..", "..", "..");
@@ -21,15 +21,11 @@ const BUILDERS = new Set(
 /** Builder modules by import path. */
 const BUILDER_MODULES = new Set(["@nyaa-lexicon/protocol", "./factId.js", "./factId", "../factId.js", "../factId"]);
 
-const MINT = /\b(declaration|reference|import|literal|comment|doc)FactId\(/;
-
 const swept = () => ROOTS.flatMap((root) => sourceFiles(root, SKIP_DIRS)).filter((file) => file !== BUILDER_OWNER);
 
 /** Finds direct, aliased, and namespace calls. */
 function mints(file: string, text: string): boolean {
-	return (
-		MINT.test(codeOnly(text)) || reachedCalls(parseSource(file, text).source, BUILDER_MODULES, BUILDERS).length > 0
-	);
+	return factIdUses(file, text).length > 0;
 }
 
 /** Builder calls, and builders passed on as values. */

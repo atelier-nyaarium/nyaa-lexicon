@@ -1,7 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
-import { calleeOf, callsIn, lineOf, parseSource, reachedCalls } from "@nyaa-lexicon/protocol/ast";
+import { readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import {
+	calleeOf,
+	callsIn,
+	lineOf,
+	parsedFiles,
+	parseSource,
+	reachedCalls,
+	stringsIn,
+} from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds sourceWriter.ts as the only module that writes a source file in the workspace.
@@ -56,7 +64,7 @@ const WRITER_MODULE = new Set(["./sourceWriter.js", "./sourceWriter"]);
 const WRITE = new Set(["writeSourceFile"]);
 
 /** Text writers that check `writableSource` and `writableText`, and the journal's byte restore. */
-const CALLERS = new Set(["sourceWorkspace.ts", "applyEdits.ts", "transactions.ts"]);
+const CALLERS = new Set(["sourceWorkspace.ts", "transactions.ts"]);
 
 ////////////////////////////////
 //  Tests
@@ -114,20 +122,17 @@ describe("one module writes source files", () => {
 		expect([...reached].sort(), "every named caller is found by the check").toEqual([...CALLERS].sort());
 		expect(
 			offenders,
-			"write a module through SourceWorkspace.writeModule or writeAll, which read it through writableSource first.",
+			"write a module through SourceWorkspace.writeModule, which reads it through writableSource first.",
 		).toEqual([]);
 	});
 
 	// The suffix is a shared secret between the writer and the sweeper. Two spellings means a
 	// half-written file that recovery walks straight past.
 	it("spells the temporary suffix in one place", () => {
-		const offenders = sourceFiles(CORE_SRC, SKIP)
-			.filter((file) => basename(file) !== "sourceWriter.ts")
-			.filter((file) => {
-				const source = readSwept(file);
-				return source !== null && codeOnly(source).includes(TEMPORARY_SUFFIX);
-			})
-			.map((file) => basename(file));
+		const offenders = parsedFiles(CORE_SRC, SKIP)
+			.filter(({ file }) => basename(file) !== "sourceWriter.ts")
+			.filter(({ source }) => stringsIn(source).some(({ text }) => text.includes(TEMPORARY_SUFFIX)))
+			.map(({ file }) => basename(file));
 
 		expect(offenders, "the temp suffix belongs to sourceWriter.ts; ask it rather than retyping it.").toEqual([]);
 	});

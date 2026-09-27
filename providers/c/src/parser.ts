@@ -14,7 +14,7 @@ import {
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { type TokenSpan, tokenHeader } from "./header.js";
-import { type CToken, lexC, previousSignificant, significant, syntaxValue, tokenRange } from "./tokens.js";
+import { type CToken, type LexedC, lexC, previousSignificant, significant, syntaxValue, tokenRange } from "./tokens.js";
 
 const LANGUAGE = "c";
 
@@ -47,6 +47,7 @@ export interface CDeclaration extends Declaration {
 
 export interface CReference extends Reference {
 	tokenIndex: number;
+	qualified: boolean;
 }
 
 export interface ParsedCFile {
@@ -58,6 +59,7 @@ export interface ParsedCFile {
 	imports: CImportFact[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines: number[];
 	diagnostics: Diagnostic[];
 	typeAnswers: Map<string, CTypeAnswer>;
 }
@@ -257,6 +259,37 @@ const CALLING_CONVENTIONS = new Set([
 	"__ptr64",
 ]);
 
+/** Specifiers whose `(...)` holds arguments. */
+const ARGUMENT_SPECIFIERS = new Set(["__attribute__", "__attribute", "__declspec", "_Alignas", "alignas"]);
+
+/** Type specifiers taking `(...)`. */
+const TYPE_OPERATORS = new Set(["_Atomic", "typeof", "typeof_unqual", "__typeof__", "__typeof"]);
+
+const ASM_LABELS = new Set(["asm", "__asm", "__asm__"]);
+
+const ALIGNMENT_SPECIFIERS = new Set(["_Alignas", "alignas"]);
+
+/** Declaration words a type spelling omits. */
+const UNSPELLED_WORDS = new Set([
+	"static",
+	"extern",
+	"typedef",
+	"inline",
+	"register",
+	"auto",
+	"_Thread_local",
+	"__extension__",
+	"const",
+	"restrict",
+	"volatile",
+	"__const",
+	"__const__",
+	"__restrict",
+	"__restrict__",
+	"__volatile",
+	"__volatile__",
+]);
+
 const BUILTIN_TYPES = new Set([
 	"char",
 	"double",
@@ -327,6 +360,9 @@ const BUILTIN_TYPES = new Set([
 ]);
 
 const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
+
+/** Member access and designators. */
+const MEMBER_OPERATORS = new Set([".", "->"]);
 
 const COMMA = new Set([","]);
 
@@ -428,26 +464,15 @@ function containsPosition(range: Range, position: Range["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
-function renderTokens(tokens: CToken[], start: number, end: number): string {
-	const parts: string[] = [];
-	let previous: CToken | undefined;
-	for (let index = start; index < end; index++) {
-		const token = tokens[index] as CToken | undefined;
-		if (token === undefined || token.kind === "comment" || token.kind === "newline") continue;
-		const needsSpace =
-			previous !== undefined &&
-			(previous.kind === "identifier" ||
-				previous.kind === "number" ||
-				previous.kind === "string" ||
-				previous.kind === "char") &&
-			(token.kind === "identifier" ||
-				token.kind === "number" ||
-				token.kind === "string" ||
-				token.kind === "char");
-		parts.push(`${needsSpace ? " " : ""}${token.raw}`);
-		previous = token;
-	}
-	return parts.join("").trim();
+/** Adjacent word tokens need a space. */
+function wordLike(token: CToken): boolean {
+	return token.kind === "identifier" || token.kind === "number" || token.kind === "string" || token.kind === "char";
+}
+
+/** Joins a type's specifiers and declarator. */
+function joinSpelling(specifiers: string, declarator: string): string {
+	if (specifiers === "") return declarator;
+	return declarator === "" ? specifiers : `${specifiers} ${declarator}`;
 }
 
 function typeWords(value: string): boolean {
@@ -466,10 +491,8 @@ function isSpecifierWord(value: string): boolean {
 		STORAGE_WORDS.has(value) ||
 		TYPE_QUALIFIERS.has(value) ||
 		CALLING_CONVENTIONS.has(value) ||
-		value === "_Alignas" ||
-		value === "_Atomic" ||
-		value === "__attribute__" ||
-		value === "__declspec"
+		ARGUMENT_SPECIFIERS.has(value) ||
+		TYPE_OPERATORS.has(value)
 	);
 }
 
@@ -572,22 +595,17 @@ function hasTopLevelValue(tokens: CToken[], start: number, end: number, wanted: 
 	return false;
 }
 
-function stripTypeText(value: string): string {
-	return value
-		.replace(/\bextern\s+"(?:\\.|[^"])*"/gu, "extern")
-		.replace(/\b(?:static|extern|typedef|inline|register|auto|_Thread_local|__extension__)\b/gu, "")
-		.replace(
-			/\b(?:const|restrict|volatile|__const|__const__|__restrict|__restrict__|__volatile|__volatile__)\b/gu,
-			"",
-		)
-		.replace(/\s+/gu, " ")
-		.trim();
+function parserFor(module: string, text: string, lexed: LexedC): CParser {
+	return new CParser(module, text, lexed.tokens, lexed.comments, lexed.blankLines, lexed.diagnostics);
 }
 
 export function parseC(module: string, text: string): ParsedCFile {
 	const lexed = lexC(module, text);
-	const parser = new CParser(module, text, lexed.tokens, lexed.comments, lexed.diagnostics);
-	return parser.parse();
+	const c = parserFor(module, text, lexed);
+	if (!lexed.ghidraDiffers || c.paired()) return c.parse();
+	// Use Ghidra only if the C parser cannot pair delimiters.
+	const ghidra = parserFor(module, text, lexC(module, text, "ghidra"));
+	return (ghidra.paired() ? ghidra : c).parse();
 }
 
 class CParser {
@@ -612,20 +630,28 @@ class CParser {
 	private readonly diagnostics: Diagnostic[];
 	private readonly descriptorCounts = new Map<string, number>();
 	private conditionalSerial = 0;
+	private structured = false;
+	private unpaired = 0;
 
 	constructor(
 		private readonly module: string,
 		private readonly text: string,
 		private readonly tokens: CToken[],
 		private readonly comments: CommentSpan[],
+		private readonly blankLines: number[],
 		initialDiagnostics: Diagnostic[],
 	) {
 		this.diagnostics = [...initialDiagnostics];
 	}
 
+	/** Whether every delimiter pairs. */
+	paired(): boolean {
+		this.buildStructure();
+		return this.unpaired === 0;
+	}
+
 	parse(): ParsedCFile {
-		this.buildDirectives();
-		this.buildPairs();
+		this.buildStructure();
 		this.buildConditionals();
 		this.extractIncludesAndMacros();
 		this.parseScope(0, this.tokens.length, { kind: "file", parentPath: [] });
@@ -654,6 +680,7 @@ class CParser {
 			imports: this.imports,
 			literals: this.literals,
 			comments: this.comments,
+			blankLines: this.blankLines,
 			diagnostics: this.diagnostics,
 			typeAnswers: this.typeAnswers,
 		};
@@ -669,6 +696,13 @@ class CParser {
 			path: this.module,
 			range: { start: first.start, end: last?.end ?? first.end },
 		});
+	}
+
+	private buildStructure(): void {
+		if (this.structured) return;
+		this.structured = true;
+		this.buildDirectives();
+		this.buildPairs();
 	}
 
 	private buildPairs(): void {
@@ -690,6 +724,7 @@ class CParser {
 			if (opening === undefined) continue;
 			const top = stack.at(-1);
 			if (top?.value !== opening) {
+				this.unpaired++;
 				this.addDiagnostic(`Unexpected closing delimiter ${token.raw}.`, index);
 				continue;
 			}
@@ -700,6 +735,7 @@ class CParser {
 		}
 		for (const open of stack) {
 			if (open.value === "{" && this.isLinkageBlockOpen(open.index)) continue;
+			this.unpaired++;
 			this.addDiagnostic(`Opening ${open.value} is not closed before end of file.`, open.index);
 		}
 	}
@@ -998,6 +1034,11 @@ class CParser {
 		for (let index = start; index < beforeBody; index++) {
 			const token = this.tokens[index] as CToken;
 			if (token.kind === "comment" || token.kind === "newline" || this.directiveTokens.has(index)) continue;
+			const argumentsClose = this.argumentsClose(index, beforeBody);
+			if (argumentsClose >= 0) {
+				index = argumentsClose;
+				continue;
+			}
 			const value = syntaxValue(token);
 			if (value === "[") {
 				brackets++;
@@ -1456,6 +1497,8 @@ class CParser {
 		}
 		if (typeDeclaration === undefined && isTypedef && names.length > 0) typeDeclaration = this.declarations.at(-1);
 		if (aggregate.bodyOpen >= 0 && aggregate.bodyClose > aggregate.bodyOpen && typeDeclaration !== undefined) {
+			const closer = this.tokens[aggregate.bodyClose] as CToken;
+			if (closer.lineStart) typeDeclaration.memberInsertLine = closer.start.line;
 			if (aggregate.keyword === "enum")
 				this.parseEnumMembers(aggregate.bodyOpen + 1, aggregate.bodyClose, typeDeclaration);
 			else this.parseStructMembers(aggregate.bodyOpen + 1, aggregate.bodyClose, typeDeclaration);
@@ -1580,6 +1623,11 @@ class CParser {
 		const equals = this.topLevelIndex(start, end, ASSIGNMENT_OPERATORS);
 		const limit = equals < 0 ? end : equals;
 		for (let index = start; index < limit; index++) {
+			const argumentsClose = this.argumentsClose(index, limit);
+			if (argumentsClose >= 0) {
+				index = argumentsClose;
+				continue;
+			}
 			const token = this.tokens[index] as CToken;
 			if (
 				!isIdentifierToken(token) ||
@@ -1590,10 +1638,22 @@ class CParser {
 				continue;
 			const previous = previousCode(this.tokens, index);
 			if (previous >= start && [".", "->", "#"].includes(tokenValue(this.tokens, previous))) continue;
-			if (token.value === "__attribute__" || token.value === "__declspec") continue;
 			return index;
 		}
 		return -1;
+	}
+
+	/** Close of the `(...)` an argument-taking word opens, or -1. */
+	private argumentsClose(index: number, end: number): number {
+		const token = this.tokens[index];
+		if (
+			!isIdentifierToken(token) ||
+			!(ARGUMENT_SPECIFIERS.has(token.value) || TYPE_OPERATORS.has(token.value) || ASM_LABELS.has(token.value))
+		)
+			return -1;
+		const open = nextCode(this.tokens, index + 1, end);
+		if (tokenValue(this.tokens, open) !== "(") return -1;
+		return this.pairs.get(open) ?? -1;
 	}
 
 	/** The first code token from `start`, past directives when code follows them. */
@@ -1665,6 +1725,12 @@ class CParser {
 				}
 				continue;
 			}
+			const argumentsClose = this.argumentsClose(cursor, end);
+			if (argumentsClose >= 0) {
+				sawType = sawType || TYPE_OPERATORS.has(token.value);
+				cursor = nextCode(this.tokens, argumentsClose + 1, end);
+				continue;
+			}
 			if (isSpecifierWord(token.value)) {
 				const next = nextCode(this.tokens, cursor + 1, end);
 				if (sawType && (next >= end || [",", ";", "="].includes(tokenValue(this.tokens, next)))) break;
@@ -1674,9 +1740,7 @@ class CParser {
 					token.value === "const" ||
 					token.value === "signed" ||
 					token.value === "unsigned";
-				if (token.value === "__attribute__" || token.value === "__declspec")
-					cursor = this.skipAttribute(cursor, end);
-				else cursor = nextCode(this.tokens, cursor + 1, end);
+				cursor = nextCode(this.tokens, cursor + 1, end);
 				continue;
 			}
 			if (!sawType) {
@@ -1712,13 +1776,6 @@ class CParser {
 		return names;
 	}
 
-	private skipAttribute(start: number, end: number): number {
-		const open = nextCode(this.tokens, start + 1, end);
-		if (tokenValue(this.tokens, open) !== "(") return nextCode(this.tokens, start + 1, end);
-		const close = this.pairs.get(open);
-		return close === undefined ? end : nextCode(this.tokens, close + 1, end);
-	}
-
 	private aggregateDeclaratorNames(
 		aggregate: AggregateInfo,
 		start: number,
@@ -1734,8 +1791,10 @@ class CParser {
 			if (nameIndex < 0) continue;
 			const qualified = qualifiedNameForIdentifier(this.tokens, nameIndex, segment.end);
 			if (qualified === undefined) continue;
-			const pointer = renderTokens(this.tokens, segment.start, nameIndex).replace(/^[()]|[()]$/gu, "");
-			const typeText = stripTypeText(`${aggregate.keyword}${tag}${pointer === "" ? "" : ` ${pointer}`}`);
+			const typeText = joinSpelling(
+				`${aggregate.keyword}${tag}`,
+				this.typeSpelling(segment.start, nameIndex, nameIndex),
+			);
 			names.push({
 				nameIndex,
 				nameEndIndex: qualified.endIndex,
@@ -1753,9 +1812,10 @@ class CParser {
 	}
 
 	private typeTextForDeclarator(start: number, specEnd: number, segmentStart: number, nameIndex: number): string {
-		const base = renderTokens(this.tokens, start, specEnd);
-		const pointer = renderTokens(this.tokens, segmentStart, nameIndex).replace(/^[()]|[()]$/gu, "");
-		return stripTypeText(`${base}${pointer === "" ? "" : ` ${pointer}`}`);
+		return joinSpelling(
+			this.typeSpelling(start, specEnd, nameIndex),
+			this.typeSpelling(segmentStart, nameIndex, nameIndex),
+		);
 	}
 
 	private typeTextBefore(
@@ -1763,16 +1823,64 @@ class CParser {
 		nameIndex: number,
 	): { text: string; start: number; end: number; typeName?: string } {
 		const end = nameIndex;
-		const text = stripTypeText(renderTokens(this.tokens, start, end));
+		const text = this.typeSpelling(start, end, nameIndex);
 		const typeName = this.typeNameForRange(start, end);
 		return { text, start, end: Math.max(start, end - 1), ...defined({ typeName }) };
+	}
+
+	/** Type spelling of `[start, end)`. */
+	private typeSpelling(start: number, end: number, name: number): string {
+		const parts: string[] = [];
+		let spaced = false;
+		let previous: CToken | undefined;
+		let kept: CToken | undefined;
+		for (let index = start; index < end; index++) {
+			const token = this.tokens[index] as CToken;
+			if (token.kind === "comment" || token.kind === "newline") continue;
+			// Omitted words still separate.
+			if (previous !== undefined && wordLike(previous) && wordLike(token)) spaced = true;
+			const omitted = this.omittedThrough(index, end, name);
+			if (omitted >= 0) {
+				previous = this.tokens[omitted];
+				index = omitted;
+				continue;
+			}
+			if (kept !== undefined && (spaced || (wordLike(kept) && wordLike(token)))) parts.push(" ");
+			parts.push(token.raw);
+			spaced = false;
+			previous = token;
+			kept = token;
+		}
+		return parts.join("");
+	}
+
+	/** Last token of an unspelled run at `index`, or -1. */
+	private omittedThrough(index: number, end: number, name: number): number {
+		const token = this.tokens[index] as CToken;
+		if (token.kind === "symbol") {
+			// Declarator grouping.
+			const close = token.value === "(" ? this.pairs.get(index) : undefined;
+			return close !== undefined && close > name ? index : -1;
+		}
+		if (token.kind !== "identifier") return -1;
+		if (ALIGNMENT_SPECIFIERS.has(token.value)) return this.argumentsClose(index, end);
+		if (!UNSPELLED_WORDS.has(token.value)) return -1;
+		if (token.value !== "extern") return index;
+		const linkage = nextCode(this.tokens, index + 1, end);
+		return this.tokens[linkage]?.kind === "string" ? linkage : index;
 	}
 
 	private typeNameForRange(start: number, end: number): string | undefined {
 		let previous = "";
 		for (let index = start; index < end; index++) {
 			const token = this.tokens[index] as CToken;
-			if (!isIdentifierToken(token)) continue;
+			if (!isIdentifierToken(token) || TYPE_OPERATORS.has(token.value)) continue;
+			// Attribute arguments name no type.
+			const argumentsClose = this.argumentsClose(index, end);
+			if (argumentsClose >= 0) {
+				index = argumentsClose;
+				continue;
+			}
 			if (token.value === "struct" || token.value === "union" || token.value === "enum") {
 				previous = token.value;
 				continue;
@@ -1983,30 +2091,32 @@ class CParser {
 			const next = significant(this.tokens, index + 1);
 			const previousValue = previous < 0 ? "" : tokenValue(this.tokens, previous);
 			const nextValue = next < 0 ? "" : tokenValue(this.tokens, next);
+			// A directive's trailing operator is not this name's.
+			const member = MEMBER_OPERATORS.has(previousValue) && !this.directiveTokens.has(previous);
 			if (
 				this.typeUseIndices.has(index) ||
 				(previousValue === "(" && this.isTypeName(token.value) && nextValue === ")")
 			) {
-				this.addReference(index, "typeUse");
+				this.addReference(index, "typeUse", member);
 				continue;
 			}
 			if (nextValue === ":" && previousValue !== "?") continue;
 			if (nextValue === "++" || nextValue === "--" || previousValue === "++" || previousValue === "--") {
-				this.addReference(index, "read");
-				this.addReference(index, "write");
+				this.addReference(index, "read", member);
+				this.addReference(index, "write", member);
 				continue;
 			}
 			if (ASSIGNMENT_OPERATORS.has(nextValue)) {
-				if (nextValue !== "=") this.addReference(index, "read");
-				this.addReference(index, "write");
+				if (nextValue !== "=") this.addReference(index, "read", member);
+				this.addReference(index, "write", member);
 				continue;
 			}
 			if (nextValue === "(") {
-				this.addReference(index, "call");
+				this.addReference(index, "call", member);
 				continue;
 			}
 			if (previousValue === "#") continue;
-			this.addReference(index, "read");
+			this.addReference(index, "read", member);
 		}
 		for (const imported of this.imports) {
 			if (imported.range === undefined) continue;
@@ -2019,6 +2129,7 @@ class CParser {
 					reason: "NotImplemented",
 					detail: "include binding is resolved by the provider",
 				},
+				qualified: false,
 				tokenIndex: -1,
 			};
 			this.references.push(reference);
@@ -2035,31 +2146,32 @@ class CParser {
 		const previousValue = previous < 0 ? "" : tokenValue(this.tokens, previous);
 		const nextValue = next < 0 ? "" : tokenValue(this.tokens, next);
 		if (name.identifierIndices.some((index) => this.typeUseIndices.has(index))) {
-			this.addReference(name.startIndex, "typeUse", name.name, name.endIndex);
+			this.addReference(name.startIndex, "typeUse", true, name.name, name.endIndex);
 			return;
 		}
 		if (nextValue === ":" && previousValue !== "?") return;
 		if (nextValue === "++" || nextValue === "--" || previousValue === "++" || previousValue === "--") {
-			this.addReference(name.startIndex, "read", name.name, name.endIndex);
-			this.addReference(name.startIndex, "write", name.name, name.endIndex);
+			this.addReference(name.startIndex, "read", true, name.name, name.endIndex);
+			this.addReference(name.startIndex, "write", true, name.name, name.endIndex);
 			return;
 		}
 		if (ASSIGNMENT_OPERATORS.has(nextValue)) {
-			if (nextValue !== "=") this.addReference(name.startIndex, "read", name.name, name.endIndex);
-			this.addReference(name.startIndex, "write", name.name, name.endIndex);
+			if (nextValue !== "=") this.addReference(name.startIndex, "read", true, name.name, name.endIndex);
+			this.addReference(name.startIndex, "write", true, name.name, name.endIndex);
 			return;
 		}
 		if (nextValue === "(") {
-			this.addReference(name.startIndex, "call", name.name, name.endIndex);
+			this.addReference(name.startIndex, "call", true, name.name, name.endIndex);
 			return;
 		}
 		if (previousValue === "#") return;
-		this.addReference(name.startIndex, "read", name.name, name.endIndex);
+		this.addReference(name.startIndex, "read", true, name.name, name.endIndex);
 	}
 
 	private addReference(
 		index: number,
 		role: Reference["role"],
+		qualified: boolean,
 		name = tokenValue(this.tokens, index),
 		end = index,
 	): void {
@@ -2072,6 +2184,7 @@ class CParser {
 			role,
 			binding: { status: "unbound", reason: "NotImplemented", detail: "C binding is resolved by the provider" },
 			...(container === undefined ? {} : { fromId: container.symbolId }),
+			qualified,
 			tokenIndex: index,
 		});
 	}

@@ -32,6 +32,10 @@ interface ImportSiteNode {
 	literal: ts.StringLiteral;
 }
 
+type PlannedImport =
+	| { clause: "default" | "namespace"; typeOnly: boolean; specifier: string; localName: string }
+	| { clause: "named"; typeOnly: boolean; specifier: string; importedName: string; localName: string };
+
 ////////////////////////////////
 //  Constants
 
@@ -191,68 +195,48 @@ export function makeMoveEdits(
 		blocked.push(blockedSite(site, "NotImplemented", "the moved symbol occurs outside an import statement"));
 	}
 
-	const pendingImports = new Set<string>();
+	const pendingImports = new Map<string, PlannedImport>();
 	for (const dependency of request.dependencies) {
 		const plan = importForDependency(request, dependency, source, checker, imports, renderSpecifier);
 		if (plan.blocked !== undefined) blocked.push(plan.blocked);
-		if (plan.statement !== undefined) pendingImports.add(plan.statement);
+		if (plan.planned !== undefined) pendingImports.set(renderImport(plan.planned), plan.planned);
 	}
 
-	// Names that fit an import statement already in this module join it rather than starting a
-	// second one for the same specifier. Merging is refused when another edit already rewrites
-	// that statement, since two edits over one span cannot both apply.
 	const standalone: string[] = [];
-	for (const statement of pendingImports) {
-		const merged = mergeIntoExistingImport(source, coordinates, statement, edits);
+	for (const [statement, planned] of pendingImports) {
+		const merged = mergeIntoExistingImport(source, coordinates, planned, edits);
 		if (merged === undefined) standalone.push(statement);
 		else edits.push(merged);
 	}
 
 	if (standalone.length > 0) {
-		const position = importInsertionPosition(source);
-		const insertion = coordinates.positionAt(position);
+		const { offset, lineBreak } = importInsertion(source);
+		const insertion = coordinates.positionAt(offset);
 		if (insertion === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
 		} else {
-			const prefix = position > 0 && source.text[position - 1] !== "\n" ? "\n" : "";
 			edits.push({
 				range: { start: insertion, end: insertion },
-				newText: `${prefix}${standalone.join("\n")}\n`,
+				newText: `${lineBreak ? "\n" : ""}${standalone.join("\n")}\n`,
 			});
 		}
 	}
 
 	if (request.role.insertion !== undefined) {
-		const position =
-			request.role.insertion.position === undefined
-				? source.text.length
-				: coordinates.offsetAt(request.role.insertion.position);
-		if (position === undefined) {
+		const { text, position } = request.role.insertion;
+		const offset = position === undefined ? source.text.length : coordinates.offsetAt(position);
+		const point = offset === undefined ? undefined : coordinates.positionAt(offset);
+		if (point === undefined) {
 			blocked.push(
 				blockedSite(
-					request.role.insertion.position === undefined
-						? undefined
-						: { start: request.role.insertion.position, end: request.role.insertion.position },
+					position === undefined ? undefined : { start: position, end: position },
 					"ParseError",
 					"the insertion position is outside the module",
 				),
 			);
-		} else if (request.role.insertion.position === undefined && needsBlankLine(source.text)) {
-			// Appending to a file that already ends in content: separate the declarations, or the
-			// moved body ends up welded to whatever was last in the target.
-			const point = coordinates.positionAt(position);
-			if (point === undefined) {
-				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
-			} else {
-				edits.push({ range: { start: point, end: point }, newText: `\n${request.role.insertion.text}` });
-			}
 		} else {
-			const point = coordinates.positionAt(position);
-			if (point === undefined) {
-				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
-			} else {
-				edits.push({ range: { start: point, end: point }, newText: request.role.insertion.text });
-			}
+			const separate = position === undefined && needsBlankLine(source);
+			edits.push({ range: { start: point, end: point }, newText: separate ? `\n${text}` : text });
 		}
 	}
 
@@ -312,7 +296,7 @@ function rewriteImportSite(
 	const raw = source.text.slice(statementStart, statementEnd);
 	const relativeStart = literalStart - statementStart;
 	const relativeEnd = literalEnd - statementStart;
-	const quote = source.text[literalStart] === "'" ? "'" : '"';
+	const quote = statement.literal.getText(source).startsWith("'") ? "'" : '"';
 	const replacement = quoteSpecifier(rendered.specifier, quote);
 	return {
 		edit: {
@@ -353,7 +337,7 @@ function importForDependency(
 	checker: ts.TypeChecker | undefined,
 	imports: ExistingImport[],
 	renderSpecifier: SpecifierRenderer,
-): { statement?: string; blocked?: MoveBlockedSite } {
+): { planned?: PlannedImport; blocked?: MoveBlockedSite } {
 	if (isBuiltinName(dependency.name, checker, source)) return {};
 
 	const origin = dependency.origin;
@@ -386,37 +370,44 @@ function importForDependency(
 
 	if (hasExistingBinding(imports, dependency.name, specifier)) return {};
 
-	const statement = importStatement(dependency, specifier);
-	if (statement === undefined) {
+	const planned = plannedImport(dependency, specifier);
+	if (planned === undefined) {
 		return {
 			blocked: blockedSite(dependency.range, "NotImplemented", "the import form cannot bind a moved dependency"),
 		};
 	}
-	return { statement };
+	return { planned };
 }
 
-function importStatement(dependency: MoveDependency, specifier: string): string | undefined {
+function plannedImport(dependency: MoveDependency, specifier: string): PlannedImport | undefined {
 	const origin = dependency.origin;
 	const via = origin.kind === "workspaceModule" || origin.kind === "external" ? origin.via : undefined;
 	const importedName = via?.importedName ?? dependency.name;
 	const localName = dependency.name;
 
 	if (via?.importKind === "wildcard" || via?.importKind === "sideEffect") return undefined;
-	if (via?.importKind === "default") {
+	if (via?.importKind === "default" || via?.importKind === "namespace") {
 		if (localName === "default") return undefined;
-		return `import ${localName} from ${quoteSpecifier(specifier, '"')};`;
-	}
-	if (via?.importKind === "namespace") {
-		if (localName === "default") return undefined;
-		return `import * as ${localName} from ${quoteSpecifier(specifier, '"')};`;
+		return { clause: via.importKind, typeOnly: false, specifier, localName };
 	}
 	if (via?.importKind === "typeOnly" && via.importedName === undefined && via.localName !== undefined) {
-		return `import type ${localName} from ${quoteSpecifier(specifier, '"')};`;
+		return { clause: "default", typeOnly: true, specifier, localName };
 	}
+	return { clause: "named", typeOnly: via?.importKind === "typeOnly", specifier, importedName, localName };
+}
 
-	const named = importedName === localName ? importedName : `${importedName} as ${localName}`;
-	const prefix = via?.importKind === "typeOnly" ? "import type" : "import";
-	return `${prefix} { ${named} } from ${quoteSpecifier(specifier, '"')};`;
+function renderImport(planned: PlannedImport): string {
+	const keyword = planned.typeOnly ? "import type" : "import";
+	const from = quoteSpecifier(planned.specifier, '"');
+	if (planned.clause === "named") return `${keyword} { ${namedElement(planned)} } from ${from};`;
+	const binding = planned.clause === "namespace" ? `* as ${planned.localName}` : planned.localName;
+	return `${keyword} ${binding} from ${from};`;
+}
+
+function namedElement(planned: Extract<PlannedImport, { clause: "named" }>): string {
+	return planned.importedName === planned.localName
+		? planned.importedName
+		: `${planned.importedName} as ${planned.localName}`;
 }
 
 function existingImports(source: ts.SourceFile): ExistingImport[] {
@@ -549,32 +540,24 @@ function isBuiltinName(name: string, checker: ts.TypeChecker | undefined, source
 ////////////////////////////////
 //  Ranges & Validation
 
-/** True when the target already ends in content, so an appended declaration needs separating. */
-function needsBlankLine(text: string): boolean {
-	return text.trim().length > 0 && !text.endsWith("\n\n");
+/** True when the target's last token or comment has no blank line after it. */
+function needsBlankLine(source: ts.SourceFile): boolean {
+	const last = contentLineBefore(source.endOfFileToken, source);
+	return last !== undefined && lineOf(source, source.text.length) - last < 2;
 }
 
-/**
- * Folds a plain `import { name } from "spec";` into an existing statement for the same specifier.
- *
- * Only a plain named import merges into a plain named import: a default or namespace clause, a
- * type-only statement, or a span another edit already rewrites all keep their own statement,
- * because guessing at those shapes is how a rewrite silently changes what a name means.
- */
+/** Joins an existing plain named import. */
 function mergeIntoExistingImport(
 	source: ts.SourceFile,
 	coordinates: TextCoordinates,
-	statement: string,
+	planned: PlannedImport,
 	edits: TextEdit[],
 ): TextEdit | undefined {
-	const parsed = /^import \{ (\w+(?: as \w+)?) \} from ("[^"]+"|'[^']+');$/.exec(statement);
-	if (parsed === null) return undefined;
-	const clause = parsed[1] as string;
-	const specifier = (parsed[2] as string).slice(1, -1);
+	if (planned.clause !== "named" || planned.typeOnly) return undefined;
 
 	for (const candidate of source.statements) {
 		if (!ts.isImportDeclaration(candidate) || !ts.isStringLiteral(candidate.moduleSpecifier)) continue;
-		if (candidate.moduleSpecifier.text !== specifier) continue;
+		if (candidate.moduleSpecifier.text !== planned.specifier) continue;
 		const bindings = candidate.importClause?.namedBindings;
 		if (candidate.importClause === undefined || candidate.importClause.name !== undefined) continue;
 		if (candidate.importClause.isTypeOnly || bindings === undefined || !ts.isNamedImports(bindings)) continue;
@@ -586,7 +569,7 @@ function mergeIntoExistingImport(
 		const names = bindings.elements.map((element) => element.getText(source));
 		return {
 			range,
-			newText: `import { ${[...names, clause].join(", ")} } from ${quoteSpecifier(specifier, '"')};`,
+			newText: `import { ${[...names, namedElement(planned)].join(", ")} } from ${quoteSpecifier(planned.specifier, '"')};`,
 		};
 	}
 	return undefined;
@@ -596,16 +579,38 @@ function rangesOverlap(left: Range, right: Range): boolean {
 	return comparePositions(left.start, right.end) < 0 && comparePositions(right.start, left.end) < 0;
 }
 
-function importInsertionPosition(source: ts.SourceFile): number {
-	let lastImportEnd: number | undefined;
+/** Before the first other statement, else after the last import, else at the end. */
+function importInsertion(source: ts.SourceFile): { offset: number; lineBreak: boolean } {
+	let lastImport: ts.Statement | undefined;
 	for (const statement of source.statements) {
-		if (isImportLike(statement)) {
-			lastImportEnd = statement.getEnd();
-			continue;
-		}
-		return statement.getStart(source);
+		if (!isImportLike(statement)) return lineBefore(statement, source);
+		lastImport = statement;
 	}
-	return lastImportEnd ?? source.text.length;
+	return lastImport === undefined
+		? lineBefore(source.endOfFileToken, source)
+		: { offset: lastImport.getEnd(), lineBreak: true };
+}
+
+/** Just before `node`, breaking the line when a token or comment ends on it first. */
+function lineBefore(node: ts.Node, source: ts.SourceFile): { offset: number; lineBreak: boolean } {
+	const offset = node.getStart(source);
+	return { offset, lineBreak: contentLineBefore(node, source) === lineOf(source, offset) };
+}
+
+/** Line of the last token or comment before `node`, if any. */
+function contentLineBefore(node: ts.Node, source: ts.SourceFile): number | undefined {
+	const text = source.text;
+	// Its `pos` is the previous token's end, and its trivia holds any comment before it.
+	const comments = [
+		...(ts.getTrailingCommentRanges(text, node.pos) ?? []),
+		...(ts.getLeadingCommentRanges(text, node.pos) ?? []),
+	];
+	const end = Math.max(node.pos, ts.getShebang(text)?.length ?? 0, ...comments.map((comment) => comment.end));
+	return end > 0 ? lineOf(source, end - 1) : undefined;
+}
+
+function lineOf(source: ts.SourceFile, offset: number): number {
+	return source.getLineAndCharacterOfPosition(offset).line;
 }
 
 function isImportLike(statement: ts.Statement): boolean {

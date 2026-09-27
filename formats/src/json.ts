@@ -23,10 +23,9 @@ import {
 	printParseErrorCode,
 	type ScanError,
 } from "jsonc-parser/lib/esm/main.js";
-import { type CommentSyntax, isTooDeep, nestedTooDeep, TOO_DEEP } from "./depth.js";
+import { isTooDeep, NestingGauge, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
-
-const JSON_COMMENTS: CommentSyntax = { line: ["//"], block: ["/*", "*/"] };
+import { type Layout, LayoutRecorder } from "./layout.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -48,6 +47,8 @@ export interface JsonFacts {
 	declarations: Declaration[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	/** Absent when the text was not read to its end. */
+	blankLines?: number[];
 	diagnostics: Diagnostic[];
 }
 
@@ -64,17 +65,20 @@ function literalOf(value: unknown): { kind: Literal["kind"]; value: string; numb
 
 /** What strict JSON lacks, from the value scanner. */
 interface Lenience {
-	comments: CommentSpan[];
+	layout: Layout;
 	trailingCommas: Range[];
 }
 
 /** Closers and scalars: what a trailing comma follows. */
 const VALUE_END = new Set([2, 4, 7, 8, 9, 10, 11]);
 
-/** One pass, so a string's marker stays a string. */
+const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
+
+/** One pass, so a string's marker stays a string. Throws past the nesting limit. */
 function scanLenience(text: string, offset: number, coordinates: TextCoordinates): Lenience {
 	const scanner = createScanner(text, false);
-	const comments: CommentSpan[] = [];
+	const gauge = new NestingGauge();
+	const layout = new LayoutRecorder(coordinates);
 	const trailingCommas: Range[] = [];
 	// Last significant token; a comma after a value.
 	let previous = 0;
@@ -83,19 +87,22 @@ function scanLenience(text: string, offset: number, coordinates: TextCoordinates
 		const token = scanner.scan();
 		// 17 ends the stream. 12 and 13 are the line and block comment tokens.
 		if (token === 17) break;
+		// 1 and 3 open an object and an array; 2 and 4 close them.
+		if (token === 1 || token === 3) gauge.open();
+		else if (token === 2 || token === 4) gauge.close();
 		const at = scanner.getTokenOffset();
 		// Clamped: an unterminated `/*` at the end reports a length one past the text, which for a
 		// JSONL record is inside the file and spans into the next line rather than being refused.
 		const end = Math.min(at + scanner.getTokenLength(), text.length);
 		if (token === 12 || token === 13) {
-			const range = coordinates.rangeAt(offset + at, offset + end);
 			// Sliced from the source rather than taken from the scanner, so a span's range and its text
 			// cannot disagree: getTokenValue carries leading trivia that the offset does not.
-			const source = text.slice(at, end);
-			if (range !== undefined && source !== "") comments.push({ range, text: source });
+			layout.comment(offset + at, offset + end, text.slice(at, end));
 			continue;
 		}
-		if (token === 14 || token === 15) continue;
+		// 14 and 15 are line breaks and spaces. A byte order mark scans as an unknown token, 16.
+		if (token === 14 || token === 15 || (token === 16 && text.slice(at, end) === BYTE_ORDER_MARK)) continue;
+		layout.code(offset + at, offset + end);
 		// Value, comma, closer.
 		if ((token === 2 || token === 4) && previous === 5 && commaAt !== null) {
 			const range = coordinates.rangeAt(offset + commaAt[0], offset + commaAt[1]);
@@ -104,7 +111,7 @@ function scanLenience(text: string, offset: number, coordinates: TextCoordinates
 		if (token === 5) commaAt = VALUE_END.has(previous) ? [at, end] : null;
 		previous = token;
 	}
-	return { comments, trailingCommas };
+	return { layout: layout.finish({ start: offset, end: offset + text.length }), trailingCommas };
 }
 
 /** Once per kind, never a fault. */
@@ -127,7 +134,11 @@ export function readJson(context: JsonContext): JsonFacts {
 	const problems: ParseError[] = [];
 
 	// Before the parser recurses.
-	if (nestedTooDeep(text, JSON_COMMENTS)) {
+	let lenience: Lenience;
+	try {
+		lenience = scanLenience(text, offset, coordinates);
+	} catch (failure) {
+		if (!isTooDeep(failure)) throw failure;
 		diagnostics.push({ severity: "error", message: TOO_DEEP, path: module });
 		return { declarations, literals, comments: [], diagnostics };
 	}
@@ -240,13 +251,13 @@ export function readJson(context: JsonContext): JsonFacts {
 	}
 	if (tooDeep) diagnostics.push({ severity: "error", message: TOO_DEEP, path: module });
 
-	const lenience = scanLenience(text, offset, coordinates);
+	const { layout, trailingCommas } = lenience;
 	if (strict) {
-		const { comments, trailingCommas } = lenience;
+		const { comments } = layout;
 		if (comments.length > 0) diagnostics.push(noted("comment", comments.length, module, comments[0]?.range));
 		if (trailingCommas.length > 0)
 			diagnostics.push(noted("trailing comma", trailingCommas.length, module, trailingCommas[0]));
 	}
 
-	return { declarations, literals, comments: lenience.comments, diagnostics };
+	return { declarations, literals, comments: layout.comments, blankLines: layout.blankLines, diagnostics };
 }

@@ -1,6 +1,7 @@
 // A declaration's header spans over its tokens, handed to the protocol's one renderer.
 
-import { angleDelta, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { bracketDelta, bracketsOf } from "./angles.js";
 import { isSignificant, type Token } from "./tokens.js";
 
 ////////////////////////////////
@@ -19,6 +20,7 @@ interface Cuts {
 	folds: OffsetRange[];
 	omit: OffsetRange[];
 	verbatim: OffsetRange[];
+	angles: number[];
 }
 
 ////////////////////////////////
@@ -33,12 +35,12 @@ function isPunctuation(token: Token, value: string): boolean {
 	return token.kind === "punctuation" && token.text === value;
 }
 
-/** Depth delta for parens, brackets and template angles. */
-function nesting(token: Token): number {
+/** Depth delta for parens, brackets and template brackets. */
+function nesting(token: Token, angles: ReadonlySet<number>): number {
 	if (token.kind !== "punctuation") return 0;
 	if (token.text === "(" || token.text === "[") return 1;
 	if (token.text === ")" || token.text === "]") return -1;
-	return angleDelta(token.text);
+	return bracketDelta(token, angles);
 }
 
 /** The last token of the directive opening at `index`. */
@@ -76,8 +78,15 @@ function offsetsOf(tokens: Token[], span: TokenSpan): OffsetRange {
 	return { start: (tokens[span.start] as Token).startOffset, end: (tokens[span.end - 1] as Token).endOffset };
 }
 
-/** Comments, directives and inactive text out, literals verbatim, braces folded by `kind`. */
-function collectCuts(text: string, tokens: Token[], span: TokenSpan, kind: HeaderKind, cuts: Cuts): void {
+/** Drops comments, directives and inactive text; keeps literals verbatim, folds braces by `kind`, marks template brackets. */
+function collectCuts(
+	text: string,
+	tokens: Token[],
+	span: TokenSpan,
+	kind: HeaderKind,
+	angles: ReadonlySet<number>,
+	cuts: Cuts,
+): void {
 	const last = span.end - 1;
 	let depth = 0;
 	for (let index = span.start; index <= last; index++) {
@@ -99,14 +108,16 @@ function collectCuts(text: string, tokens: Token[], span: TokenSpan, kind: Heade
 			cuts.folds.push({ start: token.startOffset, end: (tokens[close] as Token).endOffset });
 			index = close;
 		} else {
-			depth += nesting(token);
+			cuts.angles.push(...bracketsOf(token, angles));
+			depth += nesting(token, angles);
 		}
 	}
 }
 
 /**
  * Header over `[startIndex, endIndex)`, comments, directives and inactive branches dropped. A later
- * declarator names its shared specifiers as `lead`, so it never walks its siblings.
+ * declarator names its shared specifiers as `lead`, so it never walks its siblings. `angles` holds
+ * the offsets of template brackets; every other `<` and `>` is an operator.
  */
 export function headerOf(
 	text: string,
@@ -114,14 +125,15 @@ export function headerOf(
 	startIndex: number,
 	endIndex: number,
 	kind: HeaderKind,
+	angles: ReadonlySet<number>,
 	lead?: TokenSpan,
 ): string | undefined {
 	const own = trimmed(tokens, { start: startIndex, end: endIndex });
 	if (own === undefined) return undefined;
 	const shared = lead === undefined ? undefined : trimmed(tokens, lead);
-	const cuts: Cuts = { folds: [], omit: [], verbatim: [] };
-	collectCuts(text, tokens, own, kind, cuts);
-	if (shared !== undefined) collectCuts(text, tokens, shared, kind, cuts);
+	const cuts: Cuts = { folds: [], omit: [], verbatim: [], angles: [] };
+	collectCuts(text, tokens, own, kind, angles, cuts);
+	if (shared !== undefined) collectCuts(text, tokens, shared, kind, angles, cuts);
 	const { start, end } = offsetsOf(tokens, own);
 	return renderHeader(text, {
 		...(shared === undefined ? {} : { lead: offsetsOf(tokens, shared) }),

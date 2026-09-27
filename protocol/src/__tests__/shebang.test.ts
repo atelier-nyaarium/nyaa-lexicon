@@ -14,6 +14,8 @@ describe("the interpreter a shebang names", () => {
 			"#!/usr/bin/env -u NAME bash": "bash",
 			"#!/usr/bin/env FOO=1 bash": "bash",
 			"#!/usr/bin/env -S /bin/sh": "sh",
+			'#!/usr/bin/env -S "python3" -O': "python3",
+			"#!/usr/bin/env -S 'python3'": "python3",
 			"#!/usr/bin/env -- -u": "-u",
 			"#!/usr/bin/env --": undefined,
 			"#!\0bash": undefined,

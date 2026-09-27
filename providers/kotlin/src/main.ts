@@ -4,6 +4,7 @@ import {
 	type Binding,
 	comparePositions,
 	type Declaration,
+	defined,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
@@ -206,11 +207,6 @@ function bound(symbolId: string): Binding {
 	return { status: "bound", symbolId, provenance: "bound" };
 }
 
-function simpleTypeName(display: string): string | undefined {
-	const match = /(?:^|[<,( .])([A-Za-z_][A-Za-z0-9_]*)(?:\?|$)/u.exec(display.trim());
-	return match?.[1];
-}
-
 export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIndexEntry> {
 	readonly store = moduleStore<KotlinFile, null, PackageIndexEntry>({
 		read: (module, text, depth) => parseKotlin(module, text, depth === "outline"),
@@ -271,6 +267,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
 			literals: outline ? [] : facts.literals,
 			comments: outline ? [] : facts.comments,
+			...(outline ? {} : defined({ blankLines: facts.blankLines })),
 			diagnostics: facts.diagnostics,
 			role: facts.role,
 			...(outline ? { depth: "outline" as const } : {}),
@@ -387,17 +384,11 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 		return this.withTypeSymbol(facts, fact);
 	}
 
-	/** The written type's own reference, bound as any use of it is. */
+	/** The written head type's own reference, bound as any use of it is. */
 	private withTypeSymbol(facts: KotlinFile, fact: TypeFact): TypeInfo {
-		const { answer, annotationRange } = fact;
-		if (answer.status !== "known" || annotationRange === undefined) return answer;
-		const typeName = simpleTypeName(answer.display);
-		const written = facts.references.find(
-			(info) =>
-				info.reference.role === "typeUse" &&
-				info.reference.name === typeName &&
-				contains(annotationRange, info.reference.range.start),
-		);
+		const { answer, head } = fact;
+		if (answer.status !== "known" || head === undefined) return answer;
+		const written = facts.references.find((info) => info.reference.role === "typeUse" && info.offset === head);
 		if (written === undefined) return answer;
 		const binding = this.binder(facts).resolve(written).binding;
 		return binding.status === "bound" ? { ...answer, symbolId: binding.symbolId } : answer;

@@ -10,6 +10,7 @@ interface Cuts {
 	folds: OffsetRange[];
 	omit: OffsetRange[];
 	verbatim: OffsetRange[];
+	angles: number[];
 }
 
 ////////////////////////////////
@@ -83,7 +84,24 @@ function foldedFrom(node: ts.Node, source: ts.SourceFile): number | undefined {
 	return ts.isClassExpression(node) ? openBrace(node, source) : undefined;
 }
 
-/** Folds, comments and literals within `span`, in one walk that never enters a fold. */
+function isAngle(node: ts.Node | undefined): node is ts.Node {
+	return node?.kind === ts.SyntaxKind.LessThanToken || node?.kind === ts.SyntaxKind.GreaterThanToken;
+}
+
+/** This node's `<` and `>` type brackets, including type assertions. */
+function typeBrackets(node: ts.Node, children: readonly ts.Node[], source: ts.SourceFile): number[] {
+	if (ts.isTypeAssertionExpression(node)) return children.filter(isAngle).map((child) => child.getStart(source));
+	const held = node as { typeParameters?: ts.NodeArray<ts.Node>; typeArguments?: ts.NodeArray<ts.Node> };
+	const list = held.typeParameters ?? held.typeArguments;
+	if (list === undefined) return [];
+	const at = children.findIndex(
+		(child) => child.kind === ts.SyntaxKind.SyntaxList && child.pos === list.pos && child.end === list.end,
+	);
+	if (at < 0) return [];
+	return [children[at - 1], children[at + 1]].filter(isAngle).map((child) => child.getStart(source));
+}
+
+/** Folds, comments, literals and type brackets within `span`, in one walk that never enters a fold. */
 function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: ts.SourceFile, cuts: Cuts): void {
 	if (node.pos >= span.end || node.end <= span.start) return;
 	if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
@@ -105,9 +123,11 @@ function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: t
 	}
 	const from = foldedFrom(node, source);
 	if (from !== undefined) cuts.folds.push({ start: from, end: node.getEnd() });
+	const children = node.getChildren(source);
+	cuts.angles.push(...typeBrackets(node, children, source));
 	// Signature types stay whole.
 	const inner = types && !ts.isParameter(node) && !ts.isFunctionTypeNode(node) && !ts.isConstructorTypeNode(node);
-	for (const child of node.getChildren(source)) {
+	for (const child of children) {
 		if (from === undefined || child.end <= from) collectCuts(child, inner, span, source, cuts);
 	}
 }
@@ -117,7 +137,7 @@ function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: t
  * A variable leads with its statement's `export const`, then its own declarator alone.
  */
 export function headerOf(node: ts.Node, source: ts.SourceFile): string | undefined {
-	const cuts: Cuts = { folds: [], omit: [], verbatim: [] };
+	const cuts: Cuts = { folds: [], omit: [], verbatim: [], angles: [] };
 	if (ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent)) {
 		const lead = { start: node.parent.parent.getStart(source), end: node.parent.declarations.pos };
 		const own = { start: node.getStart(source), end: node.getEnd() };

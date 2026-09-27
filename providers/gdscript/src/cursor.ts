@@ -64,10 +64,6 @@ export class Cursor {
 		return { line, text };
 	}
 
-	skipWhitespace(): void {
-		while (this.peek() === " " || this.peek() === "\t" || this.peek() === "\r") this.next();
-	}
-
 	readIdentifier(): Token | null {
 		const start = this.offset;
 		if (!isIdentifierStart(this.peek())) return null;

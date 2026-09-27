@@ -425,6 +425,31 @@ describe("a declared type's symbol", () => {
 		expect(typeOfNamed(provider, "q/Other.kt", unimported, "x")).not.toHaveProperty("symbolId");
 	});
 
+	test("is the head type's, never an argument's or a function type's", () => {
+		const root = workspace({ "p/Types.kt": "package p\n\nclass Foo\nclass Box<T>\n" });
+		const provider = started(root);
+		const use = [
+			"package p",
+			"",
+			"val boxed: Box<Foo?> = Box()",
+			"val pairs: Box<Box<Foo>>? = null",
+			"val make: (Int) -> Foo = { Foo() }",
+			"val plain: Foo? = null",
+			"",
+		].join("\n");
+		const symbolOf = (name: string) => {
+			const answer = typeOfNamed(provider, "p/Use.kt", use, name);
+			return "symbolId" in answer ? answer.symbolId : null;
+		};
+
+		expect(["boxed", "pairs", "make", "plain"].map(symbolOf)).toEqual([
+			"lexicon kotlin p/Types.kt Box#",
+			"lexicon kotlin p/Types.kt Box#",
+			null,
+			"lexicon kotlin p/Types.kt Foo#",
+		]);
+	});
+
 	test("follows a declaration added after the walk, as the binding does", () => {
 		const root = workspace({ "a/Use.kt": "package p\n\nval x: Foo = Foo()\n" });
 		const provider = started(root);

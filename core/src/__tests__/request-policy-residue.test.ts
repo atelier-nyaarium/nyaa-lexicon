@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { join, relative } from "node:path";
-import { codeOnly, DAEMON_CONTROLS, DAEMON_METHODS, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { DAEMON_CONTROLS, DAEMON_METHODS, sourceFiles } from "@nyaa-lexicon/protocol";
+import { literalText, nodesIn, parsedFiles, parseSource } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -18,23 +20,32 @@ const SWEPT = [join(ROOT, "client", "src"), join(ROOT, "core", "src")];
 
 const SKIP = ["__tests__", "dist", "node_modules", ".tsbuild"];
 
-const NAMES = [...Object.keys(DAEMON_METHODS), ...Object.keys(DAEMON_CONTROLS)].join("|");
+const NAMES = new Set([...Object.keys(DAEMON_METHODS), ...Object.keys(DAEMON_CONTROLS)]);
 
-/** A quoted request name beside an equality, or as a switch case. */
-const COMPARED = new RegExp(
-	[
-		`[!=]==?\\s*(["'\`])(${NAMES})\\1`,
-		`(["'\`])(${NAMES})\\3\\s*[!=]==?`,
-		`\\bcase\\s+(["'\`])(${NAMES})\\5\\s*:`,
-	].join("|"),
-	"g",
-);
+const EQUALITIES = new Set([
+	ts.SyntaxKind.EqualsEqualsToken,
+	ts.SyntaxKind.EqualsEqualsEqualsToken,
+	ts.SyntaxKind.ExclamationEqualsToken,
+	ts.SyntaxKind.ExclamationEqualsEqualsToken,
+]);
 
 ////////////////////////////////
 //  Functions & Helpers
 
-function comparedNames(code: string): string[] {
-	return [...code.matchAll(COMPARED)].map((match) => match[2] ?? match[4] ?? match[6] ?? "");
+/** Request names in equality operands or switch cases. */
+function comparedNames(root: ts.Node): string[] {
+	return nodesIn(root).flatMap((node) => {
+		const operands =
+			ts.isBinaryExpression(node) && EQUALITIES.has(node.operatorToken.kind)
+				? [node.left, node.right]
+				: ts.isCaseClause(node)
+					? [node.expression]
+					: [];
+		return operands.flatMap((operand) => {
+			const name = literalText(operand);
+			return name !== undefined && NAMES.has(name) ? [name] : [];
+		});
+	});
 }
 
 ////////////////////////////////
@@ -46,25 +57,24 @@ describe("request policy lives in the declared lifecycle", () => {
 	});
 
 	it("catches a planted name branch in each spelling", () => {
-		expect(
-			comparedNames(
-				[
-					`if (method === "shutdown") stop();`,
-					`if ('indexStatus' !== name) warm();`,
-					"switch (method) { case `refactorStatus`: break; }",
-					`if (rule.lifecycle === "control") answer();`,
-					`callDaemon(lock, "shutdown", {});`,
-				].join("\n"),
-			),
-		).toEqual(["shutdown", "indexStatus", "refactorStatus"]);
+		const planted = [
+			`if (method === "shutdown") stop();`,
+			`if ('indexStatus' !== name) warm();`,
+			"switch (method) { case `refactorStatus`: break; }",
+			`if (rule.lifecycle === "control") answer();`,
+			`callDaemon(lock, "shutdown", {});`,
+		].join("\n");
+		expect(comparedNames(parseSource("probe.ts", planted).source)).toEqual([
+			"shutdown",
+			"indexStatus",
+			"refactorStatus",
+		]);
 	});
 
 	it("has no client or daemon source branching on a request name", () => {
-		const found = SWEPT.flatMap((dir) => sourceFiles(dir, SKIP)).flatMap((file) => {
-			const source = readSwept(file);
-			if (source === null) return [];
+		const found = SWEPT.flatMap((dir) => parsedFiles(dir, SKIP)).flatMap(({ file, source }) => {
 			const where = relative(ROOT, file).split("\\").join("/");
-			return comparedNames(codeOnly(source)).map((name) => `${where}: ${name}`);
+			return comparedNames(source).map((name) => `${where}: ${name}`);
 		});
 
 		expect(found, "judge a request by requestRule(name), never by comparing its name").toEqual([]);

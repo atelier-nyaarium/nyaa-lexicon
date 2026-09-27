@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+	chmodSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
@@ -134,6 +135,10 @@ describe("reading tracked before-images", () => {
 			bytes: binary.toString("base64"),
 		});
 		expect(manager.beforeImage("untracked.ts")).toEqual({ tracked: false });
+		expect([manager.beforeImage("tracked.ts", id, false), manager.beforeImage("binary.ts", id, false)]).toEqual([
+			{ tracked: true, existed: true, contentHash: hashBytes(opening), encoding: "text", omitted: true },
+			{ tracked: true, existed: true, contentHash: hashBytes(binary), encoding: "base64", omitted: true },
+		]);
 		expect(manager.beforeImage("tracked.ts", id)).toMatchObject({ tracked: true, text: "opening\n" });
 		expect(manager.beforeImage("tracked.ts", "rt-another")).toEqual({ tracked: false });
 		manager.commit();
@@ -565,6 +570,17 @@ describe("committing", () => {
 		expect(manager.status().open).toBe(true);
 	});
 
+	it("commits past advisory issues alone, carrying them into the answer", () => {
+		const stepNo = step("replace", { "a.ts": "edited\n" });
+		manager.recordIssues(stepNo, [
+			{ kind: "SameSpellingUnbound", detail: "3 occurrences of add did not bind" },
+			{ kind: "ExportedBeyondIndex", detail: "add is exported" },
+		]);
+
+		const outcome = manager.commit();
+		expect(outcome).toMatchObject({ committed: true, issues: [{}, {}] });
+	});
+
 	it("commits anyway when forced, carrying the issues into the answer", () => {
 		const stepNo = step("replace", { "a.ts": "edited\n" });
 		manager.recordIssues(stepNo, [{ kind: "OrphanedReference", detail: "add is referenced from b.ts" }]);
@@ -724,6 +740,82 @@ describe("recovering after a crash", () => {
 
 		manager.recover();
 		expect(read("a.ts.lexicon-tmp")).toBeNull();
+	});
+
+	it("keeps an unfinished step when a disk error stops its restore, and restores it on the next recovery", () => {
+		const begun = manager.beginStep("replace", ["a.ts"]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "written by the step\n");
+		manager.completeStep(begun.stepNo, "written");
+		chmodSync(root, 0o555);
+		let first: ReturnType<TransactionManager["recover"]>;
+		try {
+			first = manager.recover();
+		} finally {
+			chmodSync(root, 0o755);
+		}
+		const kept = manager.status().steps.length;
+		const second = manager.recover();
+
+		expect({ first, kept, second, text: read("a.ts") }).toMatchObject({
+			first: { conflicts: ["a.ts"], retained: true },
+			kept: 1,
+			second: { restored: ["a.ts"], conflicts: [] },
+			text: "original\n",
+		});
+	});
+
+	it("keeps an unfinished step whose folder it cannot read, and restores it once access returns", () => {
+		write("private/a.ts", "original\n");
+		const begun = manager.beginStep("replace", ["private/a.ts"]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("private/a.ts", "written by the step\n");
+		manager.completeStep(begun.stepNo, "written");
+		chmodSync(path.join(root, "private"), 0o000);
+		let first: ReturnType<TransactionManager["recover"]>;
+		try {
+			first = manager.recover();
+		} finally {
+			chmodSync(path.join(root, "private"), 0o755);
+		}
+		const second = manager.recover();
+
+		expect({ first, second, text: read("private/a.ts") }).toMatchObject({
+			first: { conflicts: ["private/a.ts"], retained: true },
+			second: { restored: ["private/a.ts"], conflicts: [] },
+			text: "original\n",
+		});
+	});
+
+	it("finishes around a folder at the staging path, a parent link leaving the workspace, and a file parent", () => {
+		const outside = mkdtempSync(path.join(tmpdir(), "lexicon-outside-"));
+		write("src/b.ts", "original b\n");
+		write("lib/c.ts", "original c\n");
+		const begun = manager.beginStep("replace", ["a.ts", "src/b.ts", "lib/c.ts"]);
+		if (!begun.ok) throw new Error(begun.reason);
+		for (const [module, text] of [
+			["a.ts", "written a\n"],
+			["src/b.ts", "written b\n"],
+			["lib/c.ts", "written c\n"],
+		] as const) {
+			write(module, text);
+		}
+		manager.completeStep(begun.stepNo, "written");
+		mkdirSync(path.join(root, "a.ts.lexicon-tmp"));
+		rmSync(path.join(root, "src"), { recursive: true });
+		symlinkSync(outside, path.join(root, "src"));
+		rmSync(path.join(root, "lib"), { recursive: true });
+		write("lib", "a file now\n");
+
+		const outcome = manager.recover();
+		const left = { a: read("a.ts"), staging: lstatSync(path.join(root, "a.ts.lexicon-tmp")).isDirectory() };
+		rmSync(outside, { recursive: true, force: true });
+
+		expect({ outcome, left }).toMatchObject({
+			outcome: { recovered: true, restored: [] },
+			left: { a: "written a\n", staging: true },
+		});
+		expect([...outcome.conflicts].sort()).toEqual(["a.ts", "lib/c.ts", "src/b.ts"]);
 	});
 
 	it("keeps a transaction refactor_start opened, since someone may still be holding it", () => {

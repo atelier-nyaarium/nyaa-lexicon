@@ -13,10 +13,11 @@ import {
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import { extractFile } from "./extract.js";
-import { extractGdscriptParameterNames, isGdscriptIdentifier } from "./extractCore.js";
+import { extractGdscriptParameterNames, isGdscriptIdentifier, type LoaderCall } from "./extractCore.js";
+import { annotationsAbove, parseLineHeads } from "./line-syntax.js";
 import type { GDScriptStore } from "./module.js";
-
-type StringSpan = { start: number; end: number; contentStart: number; contentEnd: number };
+import type { ParsedLine, ReferenceToken } from "./parse-model.js";
+import { type LexedSource, lexSource, previousReferenceToken } from "./tokens.js";
 
 const GDSCRIPT_KEYWORDS = new Set([
 	"and",
@@ -58,61 +59,35 @@ const GDSCRIPT_KEYWORDS = new Set([
 	"yield",
 ]);
 
-function stringSpans(text: string): StringSpan[] {
-	const spans: StringSpan[] = [];
-	let index = 0;
-	let lineStart = true;
-	while (index < text.length) {
-		const character = text[index];
-		if (character === "\n") {
-			lineStart = true;
-			index++;
-			continue;
-		}
-		if (lineStart && (character === " " || character === "\t" || character === "\r")) {
-			index++;
-			continue;
-		}
-		lineStart = false;
-		if (character === "#") {
-			const newline = text.indexOf("\n", index);
-			index = newline < 0 ? text.length : newline;
-			continue;
-		}
-		if (character !== "'" && character !== '"') {
-			index++;
-			continue;
-		}
-		const quote = character;
-		const triple = text.startsWith(quote.repeat(3), index);
-		const delimiterLength = triple ? 3 : 1;
-		const contentStart = index + delimiterLength;
-		let cursor = contentStart;
-		let close = text.length;
-		while (cursor < text.length) {
-			if (text[cursor] === "\\") {
-				cursor += 2;
-				continue;
-			}
-			if (text.startsWith(quote.repeat(delimiterLength), cursor)) {
-				close = cursor;
-				break;
-			}
-			cursor++;
-		}
-		const end = close === text.length ? text.length : close + delimiterLength;
-		spans.push({ start: index, end, contentStart, contentEnd: close });
-		index = end;
-	}
-	return spans;
+/** Content offsets of a string token. */
+interface StringContent {
+	index: number;
+	start: number;
+	end: number;
 }
 
-function stringSpanFor(spans: StringSpan[], start: number, end: number): StringSpan | undefined {
-	return spans.find((span) => start >= span.contentStart && end <= span.contentEnd);
+function stringContents(tokens: ReferenceToken[], coordinates: TextCoordinates): StringContent[] {
+	const contents: StringContent[] = [];
+	tokens.forEach((token, index) => {
+		const span = token.string;
+		const start = span === undefined ? undefined : coordinates.offsetAt(span.start);
+		const end = span === undefined ? undefined : coordinates.offsetAt(span.end);
+		if (span === undefined || start === undefined || end === undefined) return;
+		const quotes = span.triple ? 3 : 1;
+		contents.push({ index, start: start + span.prefix.length + quotes, end: end - quotes });
+	});
+	return contents;
 }
 
-function lineText(text: string, line: number): string {
-	return text.split(/\r?\n/u)[line] ?? "";
+/** Opens `connect(` or `emit_signal(`. */
+function isSignalArgument(tokens: ReferenceToken[], index: number): boolean {
+	const open = previousReferenceToken(tokens, index);
+	const callee = tokens[previousReferenceToken(tokens, open)];
+	return (
+		tokens[open]?.value === "(" &&
+		callee?.kind === "identifier" &&
+		(callee.value === "connect" || callee.value === "emit_signal")
+	);
 }
 
 function declarationAt(declarations: Declaration[], range: Range): Declaration | undefined {
@@ -121,48 +96,29 @@ function declarationAt(declarations: Declaration[], range: Range): Declaration |
 	);
 }
 
-function isExportedProperty(text: string, declaration: Declaration): boolean {
-	const line = lineText(text, (declaration.selectionRange ?? declaration.range).start.line);
-	return /^\s*@export(?:\b|_)/.test(line);
+function headAt(lexed: LexedSource, position: Range["start"]): ParsedLine | undefined {
+	return parseLineHeads(lexed, position.line).find((head) => head.name?.start === position.character);
 }
 
-function isClassNameLine(coordinates: TextCoordinates, range: Range): boolean {
-	const before = coordinates.sliceRange({
-		start: { line: range.start.line, character: 0 },
-		end: range.start,
-	});
-	return before !== undefined && /\bclass_name\s*$/.test(before);
+function isExportedProperty(lexed: LexedSource, declaration: Declaration): boolean {
+	const start = (declaration.selectionRange ?? declaration.range).start;
+	const head = headAt(lexed, start);
+	if (head === undefined) return false;
+	const above = head.leading ? annotationsAbove(lexed, start.line).names : [];
+	return [...above, ...head.annotations].some((name) => name === "export" || name.startsWith("export_"));
 }
 
-function isLoaderLocal(coordinates: TextCoordinates, text: string, range: Range): boolean {
-	const line = lineText(text, range.start.line);
-	const before = coordinates.sliceRange({
-		start: { line: range.start.line, character: 0 },
-		end: range.start,
-	});
-	const after = coordinates.sliceRange({
-		start: range.end,
-		end: { line: range.end.line, character: line.length },
-	});
-	return (
-		before !== undefined &&
-		after !== undefined &&
-		/\b(?:const|var)\s*$/.test(before) &&
-		/^\s*(?::[^=]*)?=\s*(?:preload|load)\s*\(/.test(after)
-	);
+function isClassNameSite(lexed: LexedSource, range: Range): boolean {
+	return headAt(lexed, range.start)?.keyword === "class_name";
 }
 
-function isDynamicLoaderCall(
-	coordinates: TextCoordinates,
-	text: string,
-	range: Range,
-	role: string | undefined,
-): boolean {
+function isLoaderLocal(loaders: LoaderCall[], range: Range): boolean {
+	return loaders.some((call) => call.binding !== undefined && sameRange(call.binding.range, range));
+}
+
+function isDynamicLoaderCall(loaders: LoaderCall[], range: Range, role: string | undefined): boolean {
 	if (role !== "call" && role !== "import") return false;
-	const current = coordinates.sliceRange(range);
-	if (current !== "load" && current !== "preload") return false;
-	const line = lineText(text, range.start.line);
-	return /\b(?:preload|load)\s*\(\s*(?!["'])/.test(line);
+	return loaders.some((call) => call.literal === undefined && sameRange(call.range, range));
 }
 
 function blocked(range: Range, reason: BlockedSite["reason"], detail: string): BlockedSite {
@@ -199,7 +155,9 @@ export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore)
 		return refused("Collision", "the new name is already a registered class_name");
 
 	const coordinates = coordinatesOf(params.text);
-	const spans = stringSpans(params.text);
+	const lexed = lexSource(params.text);
+	const tokens = lexed.tokens;
+	const strings = stringContents(tokens, coordinates);
 	const edits: TextEdit[] = [];
 	const blockedSites: BlockedSite[] = [];
 	const seenEdits = new Set<string>();
@@ -210,18 +168,17 @@ export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore)
 		const current = coordinates.sliceRange(site.range);
 		if (current === undefined) return refused("ParseError", "a rename site has an invalid range");
 		if (current === params.newName) continue;
-		const stringSpan = stringSpanFor(spans, offsets.start, offsets.end);
+		const string = strings.find((content) => offsets.start >= content.start && offsets.end <= content.end);
 		let block: BlockedSite | undefined;
-		if (stringSpan !== undefined) {
-			const prefix = params.text.slice(Math.max(0, stringSpan.start - 160), stringSpan.start);
+		if (string !== undefined) {
 			block = blocked(
 				site.range,
-				/\b(?:connect|emit_signal)\s*\(\s*$/.test(prefix) ? "StringLiteral" : "ExternalContract",
+				isSignalArgument(tokens, string.index) ? "StringLiteral" : "ExternalContract",
 				"the site is a string literal whose consumer is outside identifier syntax",
 			);
 		} else {
 			const declaration = declarationAt(facts.declarations, site.range);
-			if (declaration?.languageKind === "class_name" || isClassNameLine(coordinates, site.range)) {
+			if (declaration?.languageKind === "class_name" || isClassNameSite(lexed, site.range)) {
 				block = blocked(
 					site.range,
 					"ExternalContract",
@@ -233,15 +190,15 @@ export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore)
 					"StringLiteral",
 					"signal names can be referenced by connect and emit_signal strings",
 				);
-			} else if (declaration !== undefined && isExportedProperty(params.text, declaration)) {
+			} else if (declaration !== undefined && isExportedProperty(lexed, declaration)) {
 				block = blocked(site.range, "ExternalContract", "@export property names are stored in scene files");
-			} else if (site.role === "import" && isLoaderLocal(coordinates, params.text, site.range)) {
+			} else if (site.role === "import" && isLoaderLocal(facts.loaders, site.range)) {
 				block = blocked(
 					site.range,
 					"ExternalContract",
 					"the local import binding is not the source export name",
 				);
-			} else if (isDynamicLoaderCall(coordinates, params.text, site.range, site.role)) {
+			} else if (isDynamicLoaderCall(facts.loaders, site.range, site.role)) {
 				block = blocked(site.range, "NotImplemented", "computed loader paths are not safely renameable");
 			} else if (current !== params.oldName) {
 				block = blocked(site.range, "NotImplemented", "the site is not an identifier span");

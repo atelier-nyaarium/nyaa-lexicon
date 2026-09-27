@@ -1,14 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
-import { readYaml, readYamlComments } from "../yaml.js";
+import { MAX_NESTING, TOO_DEEP } from "../depth.js";
+import { readYaml, readYamlLayout } from "../yaml.js";
 
 function read(text: string) {
 	const coordinates = coordinatesOf(text);
 	return {
 		...readYaml({ language: "yaml", module: "a.yml", text, offset: 0, coordinates }),
-		comments: readYamlComments(text, 0, coordinates),
+		comments: readYamlLayout(text, 0, coordinates).comments,
 		coordinates,
 	};
+}
+
+function tooDeep(text: string): boolean {
+	return read(text).diagnostics.some((diagnostic) => diagnostic.message === TOO_DEEP);
 }
 
 function names(text: string): string[] {
@@ -122,6 +127,23 @@ describe("failure", () => {
 		const depth = 200_000;
 		const facts = read(`a: ${"[".repeat(depth)}1${"]".repeat(depth)}\n`);
 		expect(facts.diagnostics.length).toBeGreaterThan(0);
+	});
+
+	it("counts nesting from the lexer, so quoted, block and comment brackets are text", () => {
+		const deep = "[".repeat(MAX_NESTING + 1);
+		expect(tooDeep(`a: [${"[".repeat(MAX_NESTING - 1)}1${"]".repeat(MAX_NESTING)}\n`)).toBe(false);
+		expect(tooDeep(`a: ${deep}\n`)).toBe(true);
+		expect(tooDeep(`a: |\n  ${"{".repeat(MAX_NESTING + 1)}\n`)).toBe(false);
+		expect(tooDeep(`key: 'it''s ${deep}'\n`)).toBe(false);
+		expect(tooDeep(`${"# [[[[\n".repeat(MAX_NESTING)}a: [1]\n`)).toBe(false);
+		expect(tooDeep(`key: 'it''s [' ${deep}`)).toBe(true);
+		expect(tooDeep(`key: 'a\\' ${deep}`)).toBe(true);
+	});
+
+	it("closes every unclosed flow where the lexer gives up on it", () => {
+		const facts = read("a: [\n".repeat(MAX_NESTING + 1));
+		expect(facts.diagnostics.length).toBeGreaterThan(0);
+		expect(facts.diagnostics.some((d) => d.message === TOO_DEEP)).toBe(false);
 	});
 
 	it("does not expand an alias, so a bomb stays the size of its source", () => {

@@ -268,6 +268,68 @@ describe("move edits", () => {
 		if (response.status === "ready") expect(response.blocked).toMatchObject([{ reason: "StringLiteral" }]);
 	});
 
+	function moveHelper(source: string, target: string) {
+		const moved = "func moved() -> void:\n\tHelper.run()\n";
+		const root = workspace({ "source.gd": source, "target.gd": target, "helper.gd": "extends Node\n" });
+		return move(root, {
+			module: "target.gd",
+			text: target,
+			exists: true,
+			symbolId: methodId("source.gd", "source", "moved"),
+			name: "moved",
+			fromModule: "source.gd",
+			toModule: "target.gd",
+			role: { insertion: { text: moved } },
+			importSites: [],
+			dependencies: [
+				{
+					name: "Helper",
+					origin: { kind: "workspaceModule", symbolId: classId("helper.gd", "helper"), module: "helper.gd" },
+				},
+			],
+			sites: [],
+		});
+	}
+
+	const helperLoader = 'const Helper = preload("res://helper.gd")\n';
+
+	it.each([
+		["a string", 'extends Node\n@export_multiline var help = """\n# Usage\n"""\n'],
+		["an annotation and its member", "extends Node\n@export\nvar speed = 1\n"],
+	])("inserts a dependency after the header lines, not inside %s", (_, target) => {
+		const response = moveHelper(helperLoader, target);
+
+		expect(response.status).toBe("ready");
+		if (response.status !== "ready") return;
+		expect(response.edits.find((edit) => edit.newText === helperLoader)?.range.start).toEqual({
+			line: 1,
+			character: 0,
+		});
+	});
+
+	it.each([
+		["a loader", `extends Node\nvar doc = """\n${helperLoader}"""\n`],
+		["a declaration", 'extends Node\nvar doc = """\nvar Helper = 1\n"""\n'],
+	])("reads the target's own facts, not %s written inside its strings", (_, target) => {
+		const response = moveHelper(helperLoader, target);
+
+		expect(response).toMatchObject({ status: "ready", blocked: [] });
+		if (response.status === "ready")
+			expect(response.edits.some((edit) => edit.newText === helperLoader)).toBe(true);
+	});
+
+	it("reads the source's loader from its facts, not from a string", () => {
+		const response = moveHelper(`var doc = """\n${helperLoader}"""\n`, "extends Node\n");
+
+		expect(response).toMatchObject({ status: "ready", blocked: [{ reason: "StringLiteral" }] });
+	});
+
+	it("blocks a dependency whose name the target registers as its class_name", () => {
+		const response = moveHelper(helperLoader, "class_name Helper\nextends Node\n");
+
+		expect(response).toMatchObject({ status: "ready", blocked: [{ reason: "NoImportPath" }] });
+	});
+
 	it.each(["preload", "load"] as const)("copies an absolute %s dependency into the target", (loader) => {
 		const target = "extends Node\n";
 		const moved = "func moved() -> void:\n\tHelper.run()\n";

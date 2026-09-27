@@ -23,6 +23,8 @@ export interface TypeFact {
 	symbolId: string;
 	answer: TypeInfo;
 	annotationRange?: Range;
+	/** The head type name's offset. */
+	head?: number;
 }
 
 export interface ImportInfo {
@@ -106,6 +108,8 @@ export interface KotlinFile extends HeaderFacts {
 	imports: ImportInfo[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	/** Absent at outline depth. */
+	blankLines?: number[];
 	typeFacts: TypeFact[];
 	diagnostics: Diagnostic[];
 	role: FileRole;

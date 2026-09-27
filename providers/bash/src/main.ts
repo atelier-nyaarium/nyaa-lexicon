@@ -228,6 +228,8 @@ export class BashProvider {
 				role: reference.role,
 				binding,
 				...defined({ fromId: reference.fromId }),
+				// No receiver or path syntax.
+				qualified: false,
 			});
 		}
 		return {
@@ -239,6 +241,7 @@ export class BashProvider {
 			literals: parsed.literals,
 			role: parsed.role,
 			comments: parsed.comments,
+			blankLines: parsed.blankLines,
 			diagnostics: parsed.diagnostics,
 		};
 	}

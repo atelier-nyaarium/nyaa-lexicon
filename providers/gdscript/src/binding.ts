@@ -3,12 +3,15 @@ import path from "node:path";
 import {
 	type Binding,
 	comparePositions,
-	coordinatesOf,
 	type Declaration,
 	type ImportResolution,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
+import type { LoaderCall } from "./extractCore.js";
 import { type GDScriptStore, scopeForModule } from "./module.js";
+import { isLoaderCall } from "./path-syntax.js";
+import { scanSource } from "./source-scan.js";
+import { referenceTokens } from "./tokens.js";
 
 //////// Types
 
@@ -120,7 +123,7 @@ export class GDScriptBindingIndex {
 				};
 			}
 			if (reference.binding.reason === "NotImplemented") {
-				if (this.memberAccess(module, reference)) {
+				if (reference.qualified === true) {
 					return {
 						status: "unbound",
 						reason: "DynamicallyTyped",
@@ -178,21 +181,16 @@ export class GDScriptBindingIndex {
 		return candidates.size === 1 ? [...candidates.values()][0] : undefined;
 	}
 
-	resolvePreloadType(module: string, expression: string): Declaration | undefined {
-		const match = /^preload\s*\(\s*&?\s*(["'])([^"']+)\1\s*\)$/u.exec(expression.trim());
-		if (match === null) return undefined;
+	/** The script a literal `preload` path names. */
+	resolvePreloadType(module: string, resource: string): Declaration | undefined {
 		const scope = scopeForModule(module, this.store.project);
-		const targetModule = moduleForResource(
-			this.store.root,
-			this.projectDirectory(scope),
-			match[2] as string,
-			module,
-		);
+		const targetModule = moduleForResource(this.store.root, this.projectDirectory(scope), resource, module);
 		return targetModule === null ? undefined : this.rootDeclaration(targetModule);
 	}
 
 	resolveImport(fromModule: string, specifier: string): ImportResolution {
-		if (/(?:^|\.)\s*(?:preload|load)\s*\(/.test(specifier)) {
+		// Computed loaders keep call source.
+		if (isLoaderCall(referenceTokens(scanSource(specifier)), 0)) {
 			return {
 				status: "unresolved",
 				reason: "RuntimeConstructed",
@@ -230,22 +228,25 @@ export class GDScriptBindingIndex {
 	}
 
 	loaderBinding(module: string, localName: string, targetModule: string): GDScriptLoaderBinding | undefined {
-		const held = this.store.text(module);
-		if (held === undefined) return undefined;
-		const source = held.text;
 		const scope = scopeForModule(module, this.store.project);
 		const matches: GDScriptLoaderBinding[] = [];
-		const pattern =
-			/^\s*const\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)\s*=\s*(preload|load)\s*\(\s*&?\s*(["'])([^"']+)\3\s*\)/gmu;
-		for (const match of source.matchAll(pattern)) {
-			const name = match[1] as string;
-			const loader = match[2] as "preload" | "load";
-			const specifier = match[4] as string;
-			if (name !== localName) continue;
-			const resolved = moduleForResource(this.store.root, this.projectDirectory(scope), specifier, module);
-			if (resolved === targetModule) matches.push({ localName: name, loader, specifier });
+		for (const call of this.constLoaders(module)) {
+			if (call.binding?.name !== localName || call.literal === undefined) continue;
+			const resolved = moduleForResource(
+				this.store.root,
+				this.projectDirectory(scope),
+				call.literal.path,
+				module,
+			);
+			if (resolved === targetModule)
+				matches.push({ localName, loader: call.loader, specifier: call.literal.path });
 		}
 		return matches.length === 1 ? matches[0] : undefined;
+	}
+
+	private constLoaders(module: string): LoaderCall[] {
+		const loaders = this.store.load(module, "full")?.loaders ?? [];
+		return loaders.filter((call) => call.binding?.keyword === "const");
 	}
 
 	private candidates(module: string, reference: Reference): Declaration[] {
@@ -255,7 +256,7 @@ export class GDScriptBindingIndex {
 		};
 		const sameFile = this.store.load(module, "full")?.declarations ?? [];
 		const containerId = this.sameFileContainer(sameFile, reference);
-		const memberAccess = this.memberAccess(module, reference);
+		const memberAccess = reference.qualified === true;
 		const scope = scopeForModule(module, this.store.project);
 
 		if (isPathReference(reference)) {
@@ -310,33 +311,11 @@ export class GDScriptBindingIndex {
 		);
 	}
 
-	private memberAccess(module: string, reference: Reference): boolean {
-		const source = this.store.text(module)?.text;
-		if (source === undefined) return false;
-		const prefix = coordinatesOf(source).sliceRange({
-			start: { line: reference.range.start.line, character: 0 },
-			end: reference.range.start,
-		});
-		return prefix !== undefined && /\.\s*$/.test(prefix);
-	}
-
 	private preloadType(module: string, name: string): Declaration | undefined {
-		const source = this.store.text(module)?.text;
-		if (source === undefined) return undefined;
-		const scope = scopeForModule(module, this.store.project);
-		for (const line of source.split(/\r?\n/u)) {
-			const match =
-				/^\s*const\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)\s*=\s*preload\s*\(\s*&?\s*(["'])([^"']+)\2\s*\)/u.exec(line);
-			if (match === null || match[1] !== name) continue;
-			const targetModule = moduleForResource(
-				this.store.root,
-				this.projectDirectory(scope),
-				match[3] as string,
-				module,
-			);
-			return targetModule === null ? undefined : this.rootDeclaration(targetModule);
-		}
-		return undefined;
+		const call = this.constLoaders(module).find(
+			(candidate) => candidate.loader === "preload" && candidate.binding?.name === name,
+		);
+		return call?.literal === undefined ? undefined : this.resolvePreloadType(module, call.literal.path);
 	}
 
 	private sameFileContainer(declarations: Declaration[], reference: Reference): string | undefined {

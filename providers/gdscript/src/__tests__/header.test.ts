@@ -93,6 +93,12 @@ describe("a GDScript header", () => {
 		});
 	});
 
+	test("a lambda body folds whole through a string spanning lines, and nothing after it joins", () => {
+		const found = signatures(['var cb = func(): return """a', 'b"""', "var after = 1", ""].join("\n"));
+
+		expect(found).toMatchObject({ cb: `var cb = func(): ${FOLD_MARK}`, after: "var after = 1" });
+	});
+
 	test("owned annotations above join the header, and script or group annotations do not", () => {
 		const found = signatures(
 			[
@@ -169,6 +175,7 @@ describe("a GDScript header", () => {
 				'const DOC = """one',
 				'\ttwo  # kept"""',
 				'const NAME := &"a  b"; const PATH := ^"x\ty"',
+				'const RAW := r"a  b"',
 				'var list = ["a  b"]',
 				"",
 			].join("\n"),
@@ -179,6 +186,7 @@ describe("a GDScript header", () => {
 			DOC: 'const DOC = """one\\n\\ttwo  # kept"""',
 			NAME: 'const NAME := &"a  b"',
 			PATH: 'const PATH := ^"x\\ty"',
+			RAW: 'const RAW := r"a  b"',
 			list: `var list = ${fold("[", "]")}`,
 		});
 	});

@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { coordinatesOf, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { typeBrackets } from "../angles.js";
 import { RustProvider } from "../main.js";
+import { tokenize } from "../tokens.js";
 
 function rustFiles(directory: string): string[] {
 	const files: string[] = [];
@@ -35,6 +37,10 @@ corpusTest(
 		// A span whose range does not cut its own text back out attaches to the wrong symbol, and only
 		// real source has the string forms that break that.
 		const strayed: string[] = [];
+		// Whitespace beside comments and on blank lines is not code.
+		const misplaced: string[] = [];
+		// An unclosed bracket shifts all later angle depths.
+		const unbalanced: string[] = [];
 		let spans = 0;
 		const parsed: Array<Awaited<ReturnType<typeof handlers.parseFile>>> = [];
 		for (const file of files) {
@@ -49,7 +55,20 @@ corpusTest(
 				if (coordinates.sliceRange(comment.range) !== comment.text) {
 					strayed.push(`${module}: ${JSON.stringify(comment.text)}`);
 				}
+				const before = coordinates.lineText(comment.range.start.line)?.slice(0, comment.range.start.character);
+				const after = coordinates.lineText(comment.range.end.line)?.slice(comment.range.end.character);
+				if (comment.codeBefore !== false && before?.trim() === "") misplaced.push(`${module}: ${comment.text}`);
+				if (comment.codeAfter !== false && after?.trim() === "") misplaced.push(`${module}: ${comment.text}`);
 			}
+			for (const line of facts.blankLines ?? []) {
+				if (coordinates.lineText(line)?.trim() !== "") misplaced.push(`${module}: blank line ${line}`);
+			}
+			let depth = 0;
+			for (const delta of typeBrackets(tokenize(text).tokens).deltas.values()) {
+				depth += delta;
+				if (depth < 0) break;
+			}
+			if (depth !== 0) unbalanced.push(`${module}: ends at depth ${depth}`);
 			parsed.push(facts);
 		}
 		const errorFiles = parsed
@@ -62,6 +81,8 @@ corpusTest(
 		expect(parsed.every((facts) => Array.isArray(facts.references) && Array.isArray(facts.literals))).toBe(true);
 		expect(errorFiles).toEqual([]);
 		expect(strayed).toEqual([]);
+		expect(misplaced).toEqual([]);
+		expect(unbalanced).toEqual([]);
 		expect(spans).toBeGreaterThan(0);
 	},
 	120_000,

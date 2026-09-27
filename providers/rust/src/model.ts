@@ -72,6 +72,8 @@ export interface ParsedFile {
 	imports: Import[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	/** Absent in an outline or a failed parse. */
+	blankLines?: number[];
 	diagnostics: Diagnostic[];
 	rawDeclarations: RawDeclaration[];
 	rawReferences: RawReference[];

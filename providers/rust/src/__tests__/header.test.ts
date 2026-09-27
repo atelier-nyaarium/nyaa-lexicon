@@ -219,3 +219,51 @@ pub fn f() {}
 		f: '#[deprecated(note = "use  g")] pub fn f()',
 	});
 });
+
+test("joins a type list broken across lines tight and keeps an operator's spaces", () => {
+	expect(
+		signatures(`pub fn wrap<
+    T: Into<Vec<u8>>,
+    U,
+>(value: T) -> Option<
+    Vec<U>,
+> {
+    None
+}
+pub const MASK: u32 = 1
+    << 4;
+pub const HALF: u32 = MASK
+    >> 1;
+pub const LESS: bool = MASK
+    < 3;
+pub const SIZE: usize = size_of::<
+    u8,
+>() << 1;
+pub struct Grid {
+    pub cells: [u8; 2
+        << 1],
+    pub nested: Vec<Vec<
+        u8,
+    >>,
+}
+pub enum Flag {
+    Wide = 1
+        << 2,
+}
+fn run(x: u8) {
+    let big = x
+        > 1;
+}
+`),
+	).toMatchObject({
+		wrap: "pub fn wrap<T: Into<Vec<u8>>, U>(value: T) -> Option<Vec<U>>",
+		MASK: "pub const MASK: u32 = 1 << 4",
+		HALF: "pub const HALF: u32 = MASK >> 1",
+		LESS: "pub const LESS: bool = MASK < 3",
+		SIZE: "pub const SIZE: usize = size_of::<u8>() << 1",
+		cells: "pub cells: [u8; 2 << 1]",
+		nested: "pub nested: Vec<Vec<u8>>",
+		Wide: "Wide = 1 << 2",
+		big: "let big = x > 1",
+	});
+});

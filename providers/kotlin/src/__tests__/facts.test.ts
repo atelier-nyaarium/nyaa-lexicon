@@ -249,6 +249,32 @@ describe("literals", () => {
 		expect(facts.literals.map((item) => item.value)).toEqual(["world", `hello \${name}!`, "hi $name"]);
 		for (const literal of facts.literals) expect(coordinatesOf(text).sliceRange(literal.range)).toBeDefined();
 	});
+
+	test("a multi-dollar literal interpolates only where a full run of its dollars opens a template", () => {
+		const bodies = [
+			`${D}${D}"${D}amount ${D}${D}amount ${D}{amount} ${D}${D}{amount}"`,
+			`${D}${D}"""${D}amount ${D}${D}amount ${D}${D}${D}amount ${D}{amount} ${D}${D}{amount}"""`,
+			`"${D}amount ${D}${D}amount ${D}{amount}"`,
+			`${D}${D}${D}"${D}${D}amount ${D}${D}${D}amount"`,
+		];
+		const lines = ["val amount = 1", ...bodies.map((body, index) => `val v${index} = ${body}`)];
+		const facts = parseKotlin("Dollars.kt", `${lines.join("\n")}\n`);
+		// Nth `amount` on its line, from 1.
+		const interpolated: Record<number, number[]> = {};
+		for (const { reference } of facts.references) {
+			if (reference.name !== "amount") continue;
+			const { line, character } = reference.range.start;
+			const before = (lines[line] as string).slice(0, character).split("amount").length;
+			interpolated[line] = [...(interpolated[line] ?? []), before];
+		}
+
+		expect(interpolated).toEqual({ 1: [2, 4], 2: [2, 3, 5], 3: [1, 2, 3], 4: [2] });
+		expect(facts.literals.map((item) => item.value)).toEqual([
+			"1",
+			...bodies.map((body) => body.replace(/^\$*"+|"+$/gu, "")),
+		]);
+		expect(facts.diagnostics).toEqual([]);
+	});
 });
 
 describe("comments", () => {

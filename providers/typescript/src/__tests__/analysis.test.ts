@@ -314,6 +314,22 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
+	it("keeps qualified beside the bound binding", () => {
+		const useText = 'import * as lib from "./lib";\nexport function run() { lib.go(); }\n';
+		const root = workspace({ "lib.ts": "export function go() {}\n", "use.ts": useText });
+		const provider = harness();
+		provider.initialize(root);
+		const facts = provider.parseFile({ module: "use.ts", contentHash: "use", text: useText });
+		const go = facts.references.find((reference) => reference.name === "go");
+
+		expect(facts.references.map((reference) => [reference.name, reference.qualified])).toEqual([
+			["lib", false],
+			["go", true],
+		]);
+		expect(go?.binding.status).toBe("bound");
+		provider.shutdown();
+	});
+
 	it("attaches checker bindings to supported reference roles", () => {
 		const text = [
 			"export class Base {}",

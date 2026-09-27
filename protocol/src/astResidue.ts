@@ -6,9 +6,10 @@
 //  capability is a different question: the same spelling can be an import, a local, an injected
 //  parameter or a property, and text cannot tell them apart.
 //
-//  Imported ONLY by tests, through the `./ast` subpath, so `typescript` never reaches a bundle.
+//  Tests and build scripts import this through `./ast`, keeping `typescript` out of bundles.
 
 import ts from "typescript";
+import { readSwept, sourceFiles } from "./residue.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -24,6 +25,14 @@ export interface ParsedSource {
 
 export function parseSource(file: string, text: string): ParsedSource {
 	return { file, source: ts.createSourceFile(file, text, ts.ScriptTarget.ESNext, true) };
+}
+
+/** Parsed `.ts` files under `dir`, skipping named directories and files that vanish before reading. */
+export function parsedFiles(dir: string, skip: Iterable<string>): ParsedSource[] {
+	return sourceFiles(dir, skip).flatMap((file) => {
+		const text = readSwept(file);
+		return text === null ? [] : [parseSource(file, text)];
+	});
 }
 
 function specifierOf(statement: ts.Statement): string | undefined {
@@ -70,9 +79,26 @@ export function namespacesOf(source: ts.SourceFile, modules: ReadonlySet<string>
 	return local;
 }
 
-/** Every module specifier this file imports, however it imports it. */
+/**
+ * Module specifiers loaded through imports, re-exports, `import = require`, `require` calls or
+ * dynamic `import()`.
+ */
 export function importSpecifiers(source: ts.SourceFile): string[] {
-	return source.statements.map(specifierOf).filter((specifier): specifier is string => specifier !== undefined);
+	const found: string[] = [];
+	for (const statement of source.statements) {
+		const declared =
+			ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)
+				? statement.moduleSpecifier
+				: ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)
+					? statement.moduleReference.expression
+					: undefined;
+		if (declared !== undefined && ts.isStringLiteral(declared)) found.push(declared.text);
+	}
+	for (const call of callsIn(source)) {
+		const loaded = loadedModule(call);
+		if (loaded !== undefined) found.push(loaded);
+	}
+	return found;
 }
 
 /** Every call under `root`, which may be a whole file or one handler's subtree. */
@@ -319,6 +345,243 @@ export function declaresName(source: ts.SourceFile, name: string): boolean {
 		ts.forEachChild(node, walk);
 	};
 	walk(source);
+	return found;
+}
+
+////////////////////////////////
+//  Token-scoped queries
+//
+//  Residue queries inspect syntax, not comments or string contents. Text patterns apply to one token.
+
+/** Every node under `root`, root included, without recursion. */
+export function nodesIn(root: ts.Node): ts.Node[] {
+	const found: ts.Node[] = [];
+	const pending: ts.Node[] = [root];
+	for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+		found.push(node);
+		ts.forEachChild(node, (child) => {
+			pending.push(child);
+		});
+	}
+	return found.sort((a, b) => a.pos - b.pos || b.end - a.end);
+}
+
+/** A string literal's text, through `as const`, `satisfies` and parentheses. */
+export function literalText(node: ts.Node | undefined): string | undefined {
+	let at = node;
+	while (
+		at !== undefined &&
+		(ts.isAsExpression(at) || ts.isSatisfiesExpression(at) || ts.isParenthesizedExpression(at))
+	) {
+		at = at.expression;
+	}
+	return at !== undefined && ts.isStringLiteralLike(at) ? at.text : undefined;
+}
+
+/** Whether an identifier named `name` appears under `root`, declarations included. */
+export function usesName(root: ts.Node, name: string): boolean {
+	return nodesIn(root).some((node) => ts.isIdentifier(node) && node.text === name);
+}
+
+/**
+ * Names in canonical dotted form: `fs`, `this.store` or `transactions().start` (an empty call).
+ * Returns undefined beyond a computed expression.
+ */
+export function dottedName(node: ts.Node): string | undefined {
+	if (ts.isIdentifier(node)) return node.text;
+	if (node.kind === ts.SyntaxKind.ThisKeyword) return "this";
+	if (ts.isCallExpression(node) && node.arguments.length === 0) {
+		const callee = dottedName(node.expression);
+		return callee === undefined ? undefined : `${callee}()`;
+	}
+	if (!ts.isPropertyAccessExpression(node)) return undefined;
+	const head = dottedName(node.expression);
+	return head === undefined ? undefined : `${head}.${node.name.text}`;
+}
+
+/** Whether `word` appears as an identifier or as a whole word in a string. */
+export function mentionsWord(root: ts.Node, word: string): boolean {
+	if (usesName(root, word)) return true;
+	const bounded = new RegExp(`(?:^|[^\\w$])${word.replace(/[$]/g, "\\$&")}(?:[^\\w$]|$)`);
+	return stringsIn(root).some(({ text }) => bounded.test(text));
+}
+
+/** Member reads such as `a.b`, `a?.b` or `a["b"]`, with the receiver as a `dottedName` when available. */
+export interface MemberRead {
+	readonly node: ts.PropertyAccessExpression | ts.ElementAccessExpression;
+	readonly receiver?: string;
+	readonly name: string;
+}
+
+function memberRead(node: ts.Node): MemberRead | undefined {
+	if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return undefined;
+	const name = ts.isPropertyAccessExpression(node) ? node.name.text : literalText(node.argumentExpression);
+	if (name === undefined) return undefined;
+	const receiver = dottedName(node.expression);
+	return receiver === undefined ? { node, name } : { node, receiver, name };
+}
+
+export function memberReads(root: ts.Node): MemberRead[] {
+	return nodesIn(root).flatMap((node) => memberRead(node) ?? []);
+}
+
+/** Member calls such as `a.f()`, `a?.f()` or `a["f"]()`; excludes bare calls and filters by `names` when given. */
+export function memberCalls(root: ts.Node, names?: Iterable<string>): MemberRead[] {
+	const wanted = names === undefined ? undefined : new Set(names);
+	return memberReads(root).filter(
+		({ node, name }) =>
+			(wanted === undefined || wanted.has(name)) &&
+			ts.isCallExpression(node.parent) &&
+			node.parent.expression === node,
+	);
+}
+
+/** Calls to `name`: `f()`, `a.f()`, `a?.f()` or `a["f"]()`. `receiver` uses `dottedName`. */
+export function callsTo(root: ts.Node, name: string, receiver?: string): ts.CallExpression[] {
+	return callsIn(root).filter((call) => {
+		const callee = call.expression;
+		if (ts.isIdentifier(callee)) return receiver === undefined && callee.text === name;
+		const read = memberRead(callee);
+		return read?.name === name && (receiver === undefined || read.receiver === receiver);
+	});
+}
+
+/** The function, method or accessor declared as `name` under `root`, or the variable a function initializes. */
+export function declarationNamed(root: ts.Node, name: string): ts.Node | undefined {
+	return nodesIn(root).find((node) => {
+		if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isAccessor(node)) {
+			return node.name !== undefined && ts.isIdentifier(node.name) && node.name.text === name;
+		}
+		return ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name;
+	});
+}
+
+/** Whether the file exports a class, interface, type alias, function or variable named `name`. */
+export function exportsNamed(source: ts.SourceFile, name: string): boolean {
+	return source.statements.some((statement) => {
+		const exported = ts.canHaveModifiers(statement)
+			? ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true
+			: false;
+		if (!exported) return false;
+		if (ts.isVariableStatement(statement)) {
+			return statement.declarationList.declarations.some(
+				(declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
+			);
+		}
+		const named =
+			ts.isClassDeclaration(statement) ||
+			ts.isInterfaceDeclaration(statement) ||
+			ts.isTypeAliasDeclaration(statement) ||
+			ts.isFunctionDeclaration(statement);
+		return named && statement.name?.text === name;
+	});
+}
+
+/** Constructor parameters as declared, including modifiers, name and type, e.g. `private readonly store: IndexStore`. */
+export function constructorParameters(source: ts.SourceFile, className: string): string[] | undefined {
+	const owner = nodesIn(source).find(
+		(node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === className,
+	);
+	const declared = owner?.members.find(ts.isConstructorDeclaration);
+	return declared?.parameters.map((parameter) => {
+		const modifiers = (ts.getModifiers(parameter) ?? []).map((modifier) => modifier.getText(source));
+		const type = parameter.type === undefined ? "" : `: ${parameter.type.getText(source)}`;
+		return [...modifiers, `${parameter.name.getText(source)}${type}`].join(" ");
+	});
+}
+
+/** Store member reads through `store` or any receiver ending in `.store`. */
+export function storeReads(root: ts.Node, names: Iterable<string>): MemberRead[] {
+	const wanted = new Set(names);
+	return memberReads(root).filter(
+		({ name, receiver }) => wanted.has(name) && (receiver === "store" || receiver?.endsWith(".store") === true),
+	);
+}
+
+////////////////////////////////
+//  Forbidden reaches
+//
+//  A module's port lists forbidden reaches and why. AST checks ignore spellings in comments and messages.
+
+export interface ForbiddenReach {
+	readonly name: string;
+	readonly why: string;
+	readonly reaches: (source: ts.SourceFile) => boolean;
+}
+
+export function importing(specifier: string, why: string): ForbiddenReach {
+	return { name: `import ${specifier}`, why, reaches: (source) => importSpecifiers(source).includes(specifier) };
+}
+
+/** A store member named in `names` or prefixed by one of `prefixes`. */
+export function readingStore(names: readonly string[], why: string, prefixes: readonly string[] = []): ForbiddenReach {
+	const label = [...names, ...prefixes.map((prefix) => `${prefix}*`)].join("|");
+	const reaches = (source: ts.SourceFile) =>
+		memberReads(source).some(({ name, receiver }) => {
+			const store = receiver === "store" || receiver?.endsWith(".store") === true;
+			return store && (names.includes(name) || prefixes.some((prefix) => name.startsWith(prefix)));
+		});
+	return { name: `store.${label}`, why, reaches };
+}
+
+export function calling(name: string, why: string): ForbiddenReach {
+	return { name: `${name}()`, why, reaches: (source) => callsTo(source, name).length > 0 };
+}
+
+export function naming(names: readonly string[], why: string): ForbiddenReach {
+	return { name: names.join("|"), why, reaches: (source) => names.some((name) => usesName(source, name)) };
+}
+
+/** The rules a module breaks, as `name: why`. */
+export function reachesIn(source: ts.SourceFile, rules: readonly ForbiddenReach[]): string[] {
+	return rules.filter((rule) => rule.reaches(source)).map((rule) => `${rule.name}: ${rule.why}`);
+}
+
+/** Where a node's own text begins, past its leading trivia. */
+export function startOf(node: ts.Node): number {
+	return node.getStart(node.getSourceFile());
+}
+
+/** The name a type or callee ends in: `Name` for `Name`, `kit.Name` and `kit.Name`'s qualified type. */
+function lastName(node: ts.Node): string | undefined {
+	if (ts.isIdentifier(node)) return node.text;
+	if (ts.isPropertyAccessExpression(node)) return node.name.text;
+	if (ts.isQualifiedName(node)) return node.right.text;
+	return undefined;
+}
+
+/** Whether any of `names` is applied to type arguments: `Name<T>` as a type, a call, a `new` or a heritage clause. */
+export function instantiates(root: ts.Node, names: ReadonlySet<string>): boolean {
+	return nodesIn(root).some((node) => {
+		if (ts.isTypeReferenceNode(node)) {
+			return node.typeArguments !== undefined && names.has(lastName(node.typeName) ?? "");
+		}
+		if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isExpressionWithTypeArguments(node)) {
+			return node.typeArguments !== undefined && names.has(lastName(node.expression) ?? "");
+		}
+		return false;
+	});
+}
+
+/** `new Name(...)` expressions under `root`. */
+export function constructionsOf(root: ts.Node, name: string): ts.NewExpression[] {
+	return nodesIn(root).filter(
+		(node): node is ts.NewExpression =>
+			ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name,
+	);
+}
+
+/** Each string literal's text, and each template's static pieces, as one token each. */
+export function stringsIn(root: ts.Node): Array<{ node: ts.Node; text: string }> {
+	const found: Array<{ node: ts.Node; text: string }> = [];
+	for (const node of nodesIn(root)) {
+		const piece =
+			ts.isStringLiteralLike(node) ||
+			ts.isTemplateHead(node) ||
+			ts.isTemplateMiddle(node) ||
+			ts.isTemplateTail(node);
+		if (piece) found.push({ node, text: node.text });
+	}
 	return found;
 }
 

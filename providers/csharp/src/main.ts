@@ -303,6 +303,7 @@ export class CsharpProvider {
 			role: facts.role,
 			literals: outline ? [] : facts.literals,
 			comments: outline ? [] : facts.comments,
+			blankLines: facts.blankLines,
 			diagnostics: facts.diagnostics,
 			...(outline ? { depth: "outline" as const } : {}),
 		};

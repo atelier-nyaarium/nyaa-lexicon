@@ -48,6 +48,7 @@ export {
 	parseDaemonLock,
 } from "./daemonRecords.js";
 export {
+	ADVISORY_ISSUE_KINDS,
 	type AdmittedModule,
 	AdmittedModuleSchema,
 	type Answer,
@@ -331,6 +332,7 @@ export {
 	planEdits,
 	type TextEdit,
 	TextEditSchema,
+	unionOf,
 } from "./edits.js";
 export {
 	answerFactId,
@@ -481,7 +483,7 @@ export {
 	type RenameSite,
 	RenameSiteSchema,
 } from "./rename.js";
-export { codeOnly, readSwept, sourceFiles } from "./residue.js";
+export { readSwept, sourceFiles } from "./residue.js";
 export {
 	notImplementedBinding,
 	notImplementedImport,

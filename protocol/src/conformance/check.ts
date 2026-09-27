@@ -16,6 +16,7 @@ import type {
 	ExpectedLiteral,
 	ExpectedReferenceSchema,
 	ExpectedRole,
+	ExpectedTrivia,
 } from "./types.js";
 
 ////////////////////////////////
@@ -79,6 +80,14 @@ function checkDeclaration(
 					"A character column off by the width of one astral character means this provider is not counting UTF-16 code units.",
 			);
 		}
+	}
+	if (
+		expected.memberInsertLine !== undefined &&
+		actual.memberInsertLine !== (expected.memberInsertLine ?? undefined)
+	) {
+		problems.push(
+			`${at}: memberInsertLine is ${actual.memberInsertLine ?? "absent"}, expected ${expected.memberInsertLine ?? "absent"}`,
+		);
 	}
 	if (expected.signature !== undefined && actual.signature !== expected.signature) {
 		problems.push(
@@ -276,6 +285,15 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 	if (wantedComments !== undefined) problems.push(...checkComments(wantedComments, facts.comments ?? []));
 	// Every span, not only expected ones: right text under a lying range attaches to the wrong symbol.
 	if (source !== undefined) problems.push(...checkCommentRanges(source, facts.comments ?? []));
+	if (source !== undefined) problems.push(...checkTriviaAgainstSource(source, facts.comments ?? []));
+	const wantedTrivia = fixture?.commentTrivia ?? testCase.commentTrivia;
+	if (wantedTrivia !== undefined) problems.push(...checkTrivia(wantedTrivia, facts.comments ?? []));
+
+	const wantedBlank = fixture?.blankLines ?? testCase.blankLines;
+	if (wantedBlank !== undefined) problems.push(...checkBlankLines(wantedBlank, facts.blankLines));
+	if (source !== undefined && facts.blankLines !== undefined) {
+		problems.push(...checkBlankLinesAgainstSource(source, facts.blankLines));
+	}
 
 	const wantedLiterals = fixture?.literals ?? testCase.literals;
 	if (wantedLiterals !== undefined) problems.push(...checkLiterals(wantedLiterals, facts.literals ?? []));
@@ -448,6 +466,77 @@ function checkCommentRanges(source: string, actual: CommentSpan[]): string[] {
 		}
 	}
 	return problems;
+}
+
+/** Trivia as core reads it: an absent field is true. */
+function triviaOf(comment: CommentSpan): { codeBefore: boolean; codeAfter: boolean } {
+	return { codeBefore: comment.codeBefore ?? true, codeAfter: comment.codeAfter ?? true };
+}
+
+/** Expectations pair with reported comments in source order, so a repeated text checks each copy. */
+function checkTrivia(expected: ExpectedTrivia[], actual: CommentSpan[]): string[] {
+	const problems: string[] = [];
+	const ordered = [...actual].sort(
+		(a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character,
+	);
+	const taken = new Set<CommentSpan>();
+	for (const want of expected) {
+		const found = ordered.find((comment) => comment.text === want.comment && !taken.has(comment));
+		if (found !== undefined) taken.add(found);
+		if (found === undefined) {
+			problems.push(`comment ${JSON.stringify(want.comment)}: not reported, so its trivia cannot be checked`);
+			continue;
+		}
+		const got = triviaOf(found);
+		if (got.codeBefore !== want.codeBefore || got.codeAfter !== want.codeAfter) {
+			problems.push(
+				`comment ${JSON.stringify(want.comment)}: codeBefore ${got.codeBefore} and codeAfter ${got.codeAfter}, expected ${want.codeBefore} and ${want.codeAfter}`,
+			);
+		}
+	}
+	return problems;
+}
+
+/**
+ * Whitespace-only text beside a comment proves there is no code on that side. Text may be another
+ * comment, so the reverse does not hold.
+ */
+function checkTriviaAgainstSource(source: string, actual: CommentSpan[]): string[] {
+	const problems: string[] = [];
+	const coordinates = coordinatesOf(source);
+	for (const comment of actual) {
+		const first = coordinates.lineText(comment.range.start.line);
+		const last = coordinates.lineText(comment.range.end.line);
+		if (first === undefined || last === undefined) continue;
+		const { codeBefore, codeAfter } = triviaOf(comment);
+		if (codeBefore && first.slice(0, comment.range.start.character).trim() === "") {
+			problems.push(
+				`comment ${JSON.stringify(comment.text)}: only whitespace precedes it, but codeBefore is true`,
+			);
+		}
+		if (codeAfter && last.slice(comment.range.end.character).trim() === "") {
+			problems.push(`comment ${JSON.stringify(comment.text)}: only whitespace follows it, but codeAfter is true`);
+		}
+	}
+	return problems;
+}
+
+/** Exact and ordered. */
+function checkBlankLines(expected: number[], actual: number[] | undefined): string[] {
+	if (actual === undefined) return [`blankLines: not reported, expected ${JSON.stringify(expected)}`];
+	return JSON.stringify(actual) === JSON.stringify(expected)
+		? []
+		: [`blankLines: ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`];
+}
+
+/** A reported blank line holds only whitespace. A whitespace line inside a literal is not blank, so the converse is unchecked. */
+function checkBlankLinesAgainstSource(source: string, actual: number[]): string[] {
+	const coordinates = coordinatesOf(source);
+	return actual.flatMap((line) => {
+		const text = coordinates.lineText(line);
+		if (text === undefined) return [`blankLines: line ${line} is outside the file`];
+		return text.trim() === "" ? [] : [`blankLines: line ${line} holds ${JSON.stringify(text.trim())}`];
+	});
 }
 
 /** Verbatim and multiset: text is compared as written, since a span reaching past its own marker

@@ -40,16 +40,40 @@ describe("C# conditional groups", () => {
 		expect(facts.declarations.map((item) => item.name)).toEqual(["C", "yes"]);
 	});
 
-	// Only the bare word is the comment idiom; anything else is a condition nobody here can evaluate.
+	// A symbol's value is unknown here.
 	test.each([
 		["#if false // dead", ["C", "yes"]],
 		["#if   false  ", ["C", "yes"]],
+		["#if /* c */ false", ["C", "yes"]],
+		["#if (false)", ["C", "yes"]],
+		["#if(false)", ["C", "yes"]],
+		["#if !true", ["C", "yes"]],
+		["#if false && X", ["C", "yes"]],
+		["#if (X || true) == false", ["C", "yes"]],
+		["#if true != true", ["C", "yes"]],
 		["#if FALSE", ["C", "no", "yes"]],
 		["#if false || X", ["C", "no", "yes"]],
-		["#if (false)", ["C", "no", "yes"]],
+		["#if !X", ["C", "no", "yes"]],
+		["#if false == X", ["C", "no", "yes"]],
+		["#if false X", ["C", "no", "yes"]],
+		["#if (false", ["C", "no", "yes"]],
+		['#if "false"', ["C", "no", "yes"]],
+		["#if false = false", ["C", "no", "yes"]],
 	])("reads %s exactly", (directive, names) => {
 		const facts = parse(`class C {\n${directive}\nint no;\n#else\nint yes;\n#endif\n}`);
 		expect(facts.declarations.map((item) => item.name)).toEqual(names);
+	});
+
+	test("drops a parenthesized false group at file scope", () => {
+		const facts = parse("#if (false)\nclass Dead {}\n#endif");
+		expect(facts.declarations).toEqual([]);
+		expect(facts.diagnostics).toEqual([]);
+	});
+
+	test("ends a condition directive at its line comment", () => {
+		const lexed = tokenize("#if (false) // note\nint x;");
+		expect(lexed.comments.map((item) => item.raw)).toEqual(["// note"]);
+		expect(lexed.tokens.find((item) => item.kind === "directive")?.raw).toBe("#if (false) ");
 	});
 
 	test("leaves a closed inner group alone under an unclosed outer one", () => {

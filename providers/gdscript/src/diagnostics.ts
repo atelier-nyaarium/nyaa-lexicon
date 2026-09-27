@@ -1,10 +1,8 @@
 // Owns GDScript syntax diagnostics and delimiter state.
 
 import { comparePositions, type Diagnostic, type Position, type Range } from "@nyaa-lexicon/protocol";
-import { indentationEnd, indentOf, isIgnorable } from "./line-syntax.js";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
-import { scanSource } from "./source-scan.js";
-import { referenceTokens } from "./tokens.js";
+import { firstLineToken, isIgnorable, type LexedSource, lastLineToken, lexSource } from "./tokens.js";
 
 //////// Diagnostics
 
@@ -29,22 +27,20 @@ function pointRange(position: Position, length = 1): Range {
 	};
 }
 
-function blockHeaderRange(line: SourceLine): Range | null {
-	const end = line.code.trimEnd().length;
-	if (end === 0 || line.code[end - 1] !== ":") return null;
-	if (line.stringStarts.some((start) => start >= end)) return null;
-	return {
-		start: { line: line.line, character: end - 1 },
-		end: { line: line.line, character: end },
-	};
+/** The line's last token, when it is a block colon. */
+function blockHeaderRange(lexed: LexedSource, line: number): Range | null {
+	const last = lastLineToken(lexed, line);
+	if (last?.kind !== "symbol" || last.value !== ":") return null;
+	return pointRange({ line: last.line, character: last.character });
 }
 
-function syntaxMeaningful(line: SourceLine): boolean {
-	return line.hasString || !isIgnorable(line);
+function syntaxMeaningful(lexed: LexedSource, line: SourceLine): boolean {
+	return line.hasString || !isIgnorable(lexed, line.line);
 }
 
-function lineContinues(line: SourceLine): boolean {
-	return line.code.trimEnd().endsWith("\\");
+function lineContinues(lexed: LexedSource, line: number): boolean {
+	const last = lastLineToken(lexed, line);
+	return last?.kind === "symbol" && last.value === "\\";
 }
 
 function closingDelimiter(value: string): OpenDelimiter["value"] | null {
@@ -56,25 +52,19 @@ function closingDelimiter(value: string): OpenDelimiter["value"] | null {
 
 export function extractDiagnosticsCore(module: string, text: string): Diagnostic[] {
 	if (!module.endsWith(".gd")) return [];
-	const scanned = scanSource(text);
-	const diagnostics = scanned.unterminatedStrings.map((position) =>
+	const lexed = lexSource(text);
+	const diagnostics = lexed.scanned.unterminatedStrings.map((position) =>
 		diagnosticAt(module, "String literal has no closing quote.", pointRange(position)),
 	);
-	const tokensByLine = new Map<number, ReferenceToken[]>();
-	for (const token of referenceTokens(scanned.lines)) {
-		const lineTokens = tokensByLine.get(token.line) ?? [];
-		lineTokens.push(token);
-		tokensByLine.set(token.line, lineTokens);
-	}
 
 	const delimiters: OpenDelimiter[] = [];
 	const indentationLevels = [0];
 	let logicalStart: SourceLine | null = null;
 	let pendingHeader: PendingBlockHeader | null = null;
-	for (const line of scanned.lines) {
-		if (logicalStart === null && syntaxMeaningful(line)) {
+	for (const line of lexed.lines) {
+		if (logicalStart === null && syntaxMeaningful(lexed, line)) {
 			logicalStart = line;
-			const indent = indentOf(line.text);
+			const indent = line.indent;
 			const currentIndent = indentationLevels[indentationLevels.length - 1] as number;
 			const opensBody = pendingHeader !== null && indent > pendingHeader.indent;
 			if (pendingHeader !== null && !opensBody) {
@@ -94,7 +84,7 @@ export function extractDiagnosticsCore(module: string, text: string): Diagnostic
 					diagnostics.push(
 						diagnosticAt(module, "Indentation dedents to a level that was not opened.", {
 							start: { line: line.line, character: 0 },
-							end: { line: line.line, character: indentationEnd(line.text) },
+							end: { line: line.line, character: firstLineToken(lexed, line.line)?.character ?? 0 },
 						}),
 					);
 					indentationLevels.push(indent);
@@ -102,7 +92,8 @@ export function extractDiagnosticsCore(module: string, text: string): Diagnostic
 			}
 		}
 
-		for (const token of tokensByLine.get(line.line) ?? []) {
+		for (const index of lexed.lineTokens[line.line] ?? []) {
+			const token = lexed.tokens[index] as ReferenceToken;
 			if (token.value === "(" || token.value === "[" || token.value === "{") {
 				delimiters.push({ value: token.value, position: { line: token.line, character: token.character } });
 				continue;
@@ -111,10 +102,10 @@ export function extractDiagnosticsCore(module: string, text: string): Diagnostic
 			if (opening !== null && delimiters[delimiters.length - 1]?.value === opening) delimiters.pop();
 		}
 
-		const continues = delimiters.length > 0 || line.endsInString || lineContinues(line);
+		const continues = delimiters.length > 0 || line.endsInString || lineContinues(lexed, line.line);
 		if (logicalStart !== null && !continues) {
-			const headerRange = blockHeaderRange(line);
-			if (headerRange !== null) pendingHeader = { indent: indentOf(logicalStart.text), range: headerRange };
+			const headerRange = blockHeaderRange(lexed, line.line);
+			if (headerRange !== null) pendingHeader = { indent: logicalStart.indent, range: headerRange };
 			logicalStart = null;
 		}
 	}

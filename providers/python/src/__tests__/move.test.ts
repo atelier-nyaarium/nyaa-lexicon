@@ -45,15 +45,9 @@ async function apply(text: string, request: MoveEditsRequest, files: Record<stri
 	return result.text;
 }
 
-function namedImportRequest(
-	text: string,
-	siteText: string,
-	fromModule = text.includes("from .cart") ? "src/cart.py" : "cart.py",
-	toModule = text.includes("from .cart") ? "src/items.py" : "items.py",
-): MoveEditsRequest {
-	const relative = text.includes("from .cart");
-	const importLine = text.split("\n").find((line) => line.startsWith("from ")) ?? "";
-	const imported = /\badd(?:\s+as\s+(\w+))?/.exec(importLine);
+/** Moves `add` out of cart. */
+function namedImportRequest(text: string, siteText: string, localName: string, relative = false): MoveEditsRequest {
+	const fromModule = relative ? "src/cart.py" : "cart.py";
 	return {
 		module: relative ? "src/use.py" : "use.py",
 		text,
@@ -61,7 +55,7 @@ function namedImportRequest(
 		symbolId: symbolId(fromModule, "add"),
 		name: "add",
 		fromModule,
-		toModule,
+		toModule: relative ? "src/items.py" : "items.py",
 		role: {},
 		importSites: [
 			{
@@ -69,7 +63,7 @@ function namedImportRequest(
 				specifier: relative ? ".cart" : "cart",
 				importKind: "named",
 				importedName: "add",
-				localName: imported?.[1] ?? "add",
+				localName,
 				reExport: false,
 			},
 		],
@@ -121,7 +115,7 @@ describe("Python move edits", () => {
 
 	it("splits a multi-name import and keeps the moved alias", async () => {
 		const text = "from .cart import keep, add as total\nvalue = total(1, 2)\n";
-		const request = namedImportRequest(text, "add", "src/cart.py", "src/items.py");
+		const request = namedImportRequest(text, "add", "total", true);
 
 		expect(
 			await apply(text, request, {
@@ -133,9 +127,104 @@ describe("Python move edits", () => {
 		).toBe("from .cart import keep\nfrom .items import add as total\nvalue = total(1, 2)\n");
 	});
 
+	it("moves an aliased name listed after a longer name it prefixes", async () => {
+		const text = "from cart import add_all, add as total\nvalue = total(1, 2)\n";
+		const request = namedImportRequest(text, "add as total", "total");
+
+		expect(
+			await apply(text, request, {
+				"cart.py": "def add(left, right):\n    return left + right\ndef add_all():\n    pass\n",
+				"items.py": "",
+				"use.py": text,
+			}),
+		).toBe("from cart import add_all\nfrom items import add as total\nvalue = total(1, 2)\n");
+	});
+
+	it("rewrites a module name however its dotted path is spelled", async () => {
+		for (const text of ["from package . subpackage import add\n", "from package.\\\n    subpackage import add\n"]) {
+			const request: MoveEditsRequest = {
+				module: "use.py",
+				text,
+				exists: true,
+				symbolId: symbolId("package/subpackage.py", "add"),
+				name: "add",
+				fromModule: "package/subpackage.py",
+				toModule: "items.py",
+				role: {},
+				importSites: [
+					{
+						range: span(text, "add", text.lastIndexOf("add")),
+						specifier: "package.subpackage",
+						importKind: "named",
+						importedName: "add",
+						localName: "add",
+						reExport: false,
+					},
+				],
+				dependencies: [],
+				sites: [],
+			};
+
+			expect(
+				await apply(text, request, {
+					"package/__init__.py": "",
+					"package/subpackage.py": "def add():\n    pass\n",
+					"items.py": "",
+					"use.py": text,
+				}),
+			).toBe("from items import add\n");
+		}
+	});
+
+	it("splits a multi-name import where its statement sits", async () => {
+		const cases = [
+			[
+				"try: from cart import add, keep\nexcept ImportError: pass\n",
+				"try: from cart import keep; from items import add\nexcept ImportError: pass\n",
+			],
+			[
+				"def load():\n\tfrom cart import add, keep\n\treturn add\n",
+				"def load():\n\tfrom cart import keep\n\tfrom items import add\n\treturn add\n",
+			],
+		] as const;
+
+		for (const [text, expected] of cases) {
+			const request: MoveEditsRequest = {
+				module: "use.py",
+				text,
+				exists: true,
+				symbolId: symbolId("cart.py", "add"),
+				name: "add",
+				fromModule: "cart.py",
+				toModule: "items.py",
+				role: {},
+				importSites: [
+					{
+						range: span(text, "add"),
+						specifier: "cart",
+						importKind: "named",
+						importedName: "add",
+						localName: "add",
+						reExport: false,
+					},
+				],
+				dependencies: [],
+				sites: [],
+			};
+
+			expect(
+				await apply(text, request, {
+					"cart.py": "def add():\n    pass\ndef keep():\n    pass\n",
+					"items.py": "",
+					"use.py": text,
+				}),
+			).toBe(expected);
+		}
+	});
+
 	it("preserves an alias in a single named import", async () => {
 		const text = "from cart import add as total\nvalue = total(1, 2)\n";
-		const request = namedImportRequest(text, "add");
+		const request = namedImportRequest(text, "add", "total");
 
 		expect(
 			await apply(text, request, {
@@ -361,40 +450,51 @@ describe("Python move edits", () => {
 		expect(await apply(text, request, { "src/cart.py": "def add():\n    pass\n" })).toBe("def add():\n    pass\n");
 	});
 
-	it("inserts dependencies after a module docstring and future imports", async () => {
-		const text = '"""docs"""\nfrom __future__ import annotations\nvalue = 1\n';
-		const request: MoveEditsRequest = {
-			module: "src/items.py",
-			text,
-			exists: true,
-			symbolId: symbolId("src/cart.py", "add"),
-			name: "add",
-			fromModule: "src/cart.py",
-			toModule: "src/items.py",
-			role: { insertion: { text: "def add(value):\n    return helper(value)\n" } },
-			importSites: [],
-			dependencies: [
-				{
-					name: "helper",
-					origin: {
-						kind: "sourceModule",
-						symbolId: symbolId("src/cart.py", "helper"),
-						name: "helper",
-						exported: true,
-					},
-				},
-			],
-			sites: [],
-		};
+	it("inserts dependencies after a shebang, a module docstring and future imports", async () => {
+		const cases = [
+			['"""docs"""\nfrom __future__ import annotations\nvalue = 1\n', 2],
+			['"""docs""" \\\n    ; value = 1\n', 2],
+			["#!/usr/bin/env python\nvalue = 1\n", 1],
+		] as const;
 
-		expect(
-			await apply(text, request, {
-				"src/__init__.py": "",
-				"src/cart.py": "def helper(value):\n    return value\n",
-				"src/items.py": text,
-			}),
-		).toBe(
-			'"""docs"""\nfrom __future__ import annotations\nfrom .cart import helper\nvalue = 1\ndef add(value):\n    return helper(value)\n',
-		);
+		for (const [text, prologueLines] of cases) {
+			const request: MoveEditsRequest = {
+				module: "src/items.py",
+				text,
+				exists: true,
+				symbolId: symbolId("src/cart.py", "add"),
+				name: "add",
+				fromModule: "src/cart.py",
+				toModule: "src/items.py",
+				role: { insertion: { text: "def add(value):\n    return helper(value)\n" } },
+				importSites: [],
+				dependencies: [
+					{
+						name: "helper",
+						origin: {
+							kind: "sourceModule",
+							symbolId: symbolId("src/cart.py", "helper"),
+							name: "helper",
+							exported: true,
+						},
+					},
+				],
+				sites: [],
+			};
+			const lines = text.split("\n");
+			const expected = [
+				...lines.slice(0, prologueLines),
+				"from .cart import helper",
+				...lines.slice(prologueLines),
+			].join("\n");
+
+			expect(
+				await apply(text, request, {
+					"src/__init__.py": "",
+					"src/cart.py": "def helper(value):\n    return value\n",
+					"src/items.py": text,
+				}),
+			).toBe(`${expected}def add(value):\n    return helper(value)\n`);
+		}
 	});
 });

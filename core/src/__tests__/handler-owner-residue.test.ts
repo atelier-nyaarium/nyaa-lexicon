@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import { readSwept } from "@nyaa-lexicon/protocol";
+import { callsTo, nodesIn, parseSource } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 import { TREE_FIRST } from "./dispatchTiers";
 
 /**
@@ -8,16 +10,6 @@ import { TREE_FIRST } from "./dispatchTiers";
  * named here: the type cannot see a staged handler ignore its gate, so adding one is a reviewed edit.
  */
 const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
-
-const CAST = /as Handler</g;
-
-const MINT = /\bmint\(/g;
-
-const STAGED_ENTRY = /^\t\t(\w+): staged\(/gm;
-
-const TREE_ENTRY = /^\t\t(\w+): treeFirst\(/gm;
-
-const UPGRADED_ENTRY = /^\t\t(\w+): upgradedRead\(/gm;
 
 /** Reads under the gate, writes under it, or steps the work itself. */
 const STAGED = [
@@ -34,8 +26,33 @@ const STAGED = [
 /** The background upgrade ungated, then the answer shared. */
 const UPGRADED = ["prepareRename", "renameEdits", "planMove", "previewMove", "previewInsert"];
 
-function names(source: string, pattern: RegExp): string[] {
-	return [...source.matchAll(pattern)].map((match) => match[1] as string).sort();
+function parsed(code: string): ts.SourceFile {
+	return parseSource("probe.ts", code).source;
+}
+
+/** `as Handler<...>` casts. */
+function casts(root: ts.Node): ts.Node[] {
+	return nodesIn(root).filter(
+		(node) =>
+			ts.isAsExpression(node) &&
+			ts.isTypeReferenceNode(node.type) &&
+			ts.isIdentifier(node.type.typeName) &&
+			node.type.typeName.text === "Handler",
+	);
+}
+
+/** Handler-table entries built by one builder: `name: builder(...)`. */
+function entries(root: ts.Node, builder: string): string[] {
+	return nodesIn(root)
+		.filter(
+			(node): node is ts.PropertyAssignment =>
+				ts.isPropertyAssignment(node) &&
+				ts.isCallExpression(node.initializer) &&
+				ts.isIdentifier(node.initializer.expression) &&
+				node.initializer.expression.text === builder,
+		)
+		.map((node) => (ts.isIdentifier(node.name) ? node.name.text : ""))
+		.sort();
 }
 
 ////////////////////////////////
@@ -43,24 +60,29 @@ function names(source: string, pattern: RegExp): string[] {
 
 describe("one place mints a daemon handler", () => {
 	it("fires on the spellings it counts", () => {
-		expect("return { effect, run } as Handler<M>;".match(CAST)).toHaveLength(1);
-		expect('=> mint("read", run);'.match(MINT)).toHaveLength(1);
-		expect(names("\t\trecallAnswer: staged(async (params, gate) => {", STAGED_ENTRY)).toEqual(["recallAnswer"]);
-		expect(names("\t\tdescribe: treeFirst(", TREE_ENTRY)).toEqual(["describe"]);
-		expect(names("\t\tplanMove: upgradedRead((params) =>", UPGRADED_ENTRY)).toEqual(["planMove"]);
+		expect(casts(parsed("function f() { return { effect, run } as Handler<M>; }"))).toHaveLength(1);
+		expect(callsTo(parsed('const h = () => mint("read", run);'), "mint")).toHaveLength(1);
+		expect(entries(parsed("const t = { recallAnswer: staged(async (params, gate) => {}) };"), "staged")).toEqual([
+			"recallAnswer",
+		]);
+		expect(entries(parsed("const t = { describe: treeFirst(run) };"), "treeFirst")).toEqual(["describe"]);
+		expect(entries(parsed("const t = { planMove: upgradedRead((params) => 1) };"), "upgradedRead")).toEqual([
+			"planMove",
+		]);
 	});
 
 	it("casts to the handler brand once and calls mint three times, one per effect", () => {
-		const source = readSwept(DISPATCH) as string;
-		expect(source).not.toBeNull();
-		expect(source.match(CAST) ?? []).toHaveLength(1);
-		expect(source.match(MINT) ?? []).toHaveLength(3);
+		const text = readSwept(DISPATCH);
+		expect(text).not.toBeNull();
+		const source = parsed(text as string);
+		expect(casts(source)).toHaveLength(1);
+		expect(callsTo(source, "mint")).toHaveLength(3);
 	});
 
 	it("names every method that takes the gate in parts", () => {
-		const source = readSwept(DISPATCH) as string;
-		expect(names(source, STAGED_ENTRY)).toEqual([...STAGED].sort());
-		expect(names(source, TREE_ENTRY)).toEqual([...TREE_FIRST].sort());
-		expect(names(source, UPGRADED_ENTRY)).toEqual([...UPGRADED].sort());
+		const source = parsed(readSwept(DISPATCH) as string);
+		expect(entries(source, "staged")).toEqual([...STAGED].sort());
+		expect(entries(source, "treeFirst")).toEqual([...TREE_FIRST].sort());
+		expect(entries(source, "upgradedRead")).toEqual([...UPGRADED].sort());
 	});
 });

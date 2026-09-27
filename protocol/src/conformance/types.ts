@@ -43,8 +43,21 @@ export const ExpectedDeclarationSchema = z
 		 * one is the only thing that can tell UTF-16 code units from bytes from codepoints.
 		 */
 		nameStart: z.object({ line: z.number().int().min(0), character: z.number().int().min(0) }).optional(),
+		/** The line a member after the container's last one goes on; null when there is no safe point. */
+		memberInsertLine: z.number().int().min(0).nullable().optional(),
 	})
 	.meta({ id: "ExpectedDeclaration" });
+
+/** Whether code shares a comment's first and last lines, as core reads it: absent is true. */
+export const ExpectedTriviaSchema = z
+	.object({
+		comment: z.string().min(1),
+		codeBefore: z.boolean(),
+		codeAfter: z.boolean(),
+	})
+	.meta({ id: "ExpectedTrivia" });
+
+export type ExpectedTrivia = z.infer<typeof ExpectedTriviaSchema>;
 
 export const ExpectedReferenceSchema = z
 	.object({
@@ -205,6 +218,10 @@ export const ConformanceFixtureSchema = z
 		 * every other language overrides it.
 		 */
 		comments: z.array(z.string()).optional(),
+		/** Trivia expectations only this language can state; they replace the case's when present. */
+		commentTrivia: z.array(ExpectedTriviaSchema).optional(),
+		/** Exactly these blank lines, in order; a final line break adds no empty line. */
+		blankLines: z.array(z.number().int().min(0)).optional(),
 		/**
 		 * Literal expectations only this language can state, replacing the case's when present.
 		 *
@@ -275,6 +292,19 @@ export const ConformanceCaseSchema = z
 		 * positive: a marker inside a string passes an at-least check and poisons search.
 		 */
 		comments: z.array(z.string()).optional(),
+		/**
+		 * Whether code shares each named comment's first and last lines.
+		 *
+		 * Core decides a leading comment from these alone, so a comment wrongly sharing a line with
+		 * code loses its declaration, and one wrongly alone takes the next one.
+		 */
+		commentTrivia: z.array(ExpectedTriviaSchema).optional(),
+		/**
+		 * Exactly these blank lines, in order: lines untouched by any token, including comment and literal tokens.
+		 *
+		 * Core ends a comment's claim at a blank line; lines inside strings do not count as blank.
+		 */
+		blankLines: z.array(z.number().int().min(0)).optional(),
 		/**
 		 * EXACTLY these literals, any order, duplicates counted.
 		 *

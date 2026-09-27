@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { daemonHandlers, type LexiconService } from "@nyaa-lexicon/core";
 import { DAEMON_METHODS } from "@nyaa-lexicon/protocol";
+import { callsTo, literalText, parseSource } from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds the daemon-backed backend to methods the daemon actually has.
@@ -16,9 +17,12 @@ import { DAEMON_METHODS } from "@nyaa-lexicon/protocol";
  */
 const ROOT = path.join(import.meta.dirname, "..", "..", "..", "..");
 
+/** The method each `ask(...)` names as its first argument. */
 function methodsAsked(): string[] {
-	const source = readFileSync(path.join(ROOT, "adapters", "mcp", "src", "serve.ts"), "utf8");
-	return [...new Set([...source.matchAll(/ask\("([A-Za-z]+)"/g)].map((match) => match[1] as string))].sort();
+	const file = path.join(ROOT, "adapters", "mcp", "src", "serve.ts");
+	const { source } = parseSource(file, readFileSync(file, "utf8"));
+	const methods = callsTo(source, "ask").flatMap((call) => literalText(call.arguments[0]) ?? []);
+	return [...new Set(methods)].sort();
 }
 
 describe("what the MCP server asks a daemon for", () => {

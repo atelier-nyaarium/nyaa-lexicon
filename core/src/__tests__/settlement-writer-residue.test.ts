@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { sourceFiles } from "@nyaa-lexicon/protocol";
-import { lineOf, type ParsedSource, parseSource } from "@nyaa-lexicon/protocol/ast";
+import { lineOf, type ParsedSource, parseSource, stringsIn } from "@nyaa-lexicon/protocol/ast";
 import ts from "typescript";
 
 ////////////////////////////////
@@ -18,16 +18,11 @@ const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".tsbuild", "fix
 const WRITE =
 	/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+refactor_(?:settlements|settled_files)\b/i;
 
+/** Statements writing the ledger, each read inside one string or template piece. */
 function writes(parsed: ParsedSource): ts.Node[] {
-	const found: ts.Node[] = [];
-	const walk = (node: ts.Node): void => {
-		const literal =
-			ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node);
-		if (literal && WRITE.test(node.getText(parsed.source))) found.push(node);
-		else ts.forEachChild(node, walk);
-	};
-	walk(parsed.source);
-	return found;
+	return stringsIn(parsed.source)
+		.filter(({ text }) => WRITE.test(text))
+		.map(({ node }) => node);
 }
 
 function inDrop(node: ts.Node): boolean {

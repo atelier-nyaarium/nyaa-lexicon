@@ -1,16 +1,19 @@
 import {
+	type CommentSpan,
 	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
 	type DocRegion,
 	defined,
 	type Literal,
+	type OffsetRange,
 	type Range,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
-import { type DefaultTreeAdapterMap, parse } from "parse5";
-import { markupTooDeep, TOO_DEEP } from "./depth.js";
+import { type DefaultTreeAdapterMap, defaultTreeAdapter, parse, type TreeAdapter } from "parse5";
+import { isTooDeep, NestingGauge, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
+import { LayoutRecorder, trimmedSpan } from "./layout.js";
 import { startTagSignature } from "./startTag.js";
 
 export interface HtmlContext {
@@ -24,7 +27,9 @@ export interface HtmlContext {
 export interface HtmlFacts {
 	declarations: Declaration[];
 	literals: Literal[];
-	comments: Array<{ range: Range; text: string }>;
+	comments: CommentSpan[];
+	/** Absent when the text was not read. */
+	blankLines?: number[];
 	docs: DocRegion[];
 	diagnostics: Diagnostic[];
 }
@@ -76,6 +81,12 @@ type ElementLocation = { startTag: Location; endTag?: Location; attrs?: Record<s
 
 function rangeAt(context: HtmlContext, start: number, end: number): Range | undefined {
 	return context.coordinates.rangeAt(context.offset + start, context.offset + end);
+}
+
+/** parse5's open-element stack, bounded. */
+function gaugedTree(): TreeAdapter<DefaultTreeAdapterMap> {
+	const gauge = new NestingGauge();
+	return { ...defaultTreeAdapter, onItemPush: () => gauge.open(), onItemPop: () => gauge.close() };
 }
 
 function location(node: { sourceCodeLocation?: Location | ElementLocation | null }): Location | undefined {
@@ -155,23 +166,109 @@ function sourceEnd(node: Node): number {
 	return end;
 }
 
+/** The first span starting at or after `offset`, in spans sorted by start. */
+function firstFrom(spans: readonly Location[], offset: number): number {
+	let low = 0;
+	let high = spans.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if ((spans[middle] as Location).startOffset < offset) low = middle + 1;
+		else high = middle;
+	}
+	return low;
+}
+
+/**
+ * Every token's lines from parse5's own locations: tags, doctypes and text are code.
+ *
+ * A text node's location runs from its first character token to its last, so one merged across a
+ * tag or comment elsewhere is cut at them. Only its non-whitespace stretches are code.
+ */
+function recordLayout(document: Node, text: string, layout: LayoutRecorder, file: (offset: number) => number): void {
+	const walls: Location[] = [];
+	const texts: Location[] = [];
+	const wall = (span: Location | undefined, code: boolean, comment?: string): void => {
+		if (span === undefined) return;
+		walls.push(span);
+		if (code) layout.code(file(span.startOffset), file(span.endOffset));
+		else layout.comment(file(span.startOffset), file(span.endOffset), comment);
+	};
+	const pending: Array<{ node: Node; inTemplate: boolean }> = [{ node: document, inTemplate: false }];
+	while (pending.length > 0) {
+		const { node, inTemplate } = pending.pop() as { node: Node; inTemplate: boolean };
+		const span = location(node);
+		if (node.nodeName === "#text") {
+			if (span !== undefined) texts.push(span);
+			continue;
+		}
+		if (node.nodeName === "#comment") {
+			const source = span === undefined ? "" : text.slice(span.startOffset, span.endOffset);
+			// CDATA outside foreign content reads as a comment nobody wrote; template content is not indexed.
+			wall(span, false, inTemplate || source.startsWith("<![CDATA[") ? undefined : source);
+			continue;
+		}
+		if (node.nodeName === "#documentType") {
+			wall(span, true);
+			continue;
+		}
+		if ("tagName" in node) {
+			const loc = node.sourceCodeLocation as ElementLocation | null | undefined;
+			wall(loc?.startTag, true);
+			wall(loc?.endTag, true);
+		}
+		if (node.nodeName === "template") {
+			const content = (node as DefaultTreeAdapterMap["template"]).content;
+			for (const child of content.childNodes) pending.push({ node: child as Node, inTemplate: true });
+		}
+		if ("childNodes" in node)
+			for (const child of node.childNodes) pending.push({ node: child as Node, inTemplate });
+	}
+
+	walls.sort((left, right) => left.startOffset - right.startOffset);
+	for (const span of texts) {
+		const segments: OffsetRange[] = [];
+		let from = span.startOffset;
+		for (let at = firstFrom(walls, from); at < walls.length; at++) {
+			const cut = walls[at] as Location;
+			if (cut.startOffset >= span.endOffset) break;
+			segments.push({ start: from, end: cut.startOffset });
+			from = Math.max(from, cut.endOffset);
+		}
+		segments.push({ start: from, end: span.endOffset });
+		for (const segment of segments) {
+			if (segment.end <= segment.start) continue;
+			const code = trimmedSpan(text.slice(segment.start, segment.end), segment.start);
+			if (code !== undefined) layout.code(file(code.start), file(code.end));
+		}
+	}
+}
+
 export function readHtml(context: HtmlContext): HtmlFacts {
 	const declarations: Declaration[] = [];
 	const literals: Literal[] = [];
-	const comments: Array<{ range: Range; text: string }> = [];
 	const docs: DocRegion[] = [];
 	const diagnostics: Diagnostic[] = [];
 	const bom = context.text.startsWith("\uFEFF") ? 1 : 0;
 	const text = context.text.slice(bom);
-	if (markupTooDeep(text, undefined, RAW))
+	let document: DefaultTreeAdapterMap["document"];
+	try {
+		document = parse(text, { sourceCodeLocationInfo: true, treeAdapter: gaugedTree() });
+	} catch (failure) {
+		if (!isTooDeep(failure)) throw failure;
 		return {
 			declarations,
 			literals,
-			comments,
+			comments: [],
 			docs,
 			diagnostics: [{ severity: "error", message: TOO_DEEP, path: context.module }],
 		};
-	const document = parse(text, { sourceCodeLocationInfo: true }) as DefaultTreeAdapterMap["document"];
+	}
+	const layout = new LayoutRecorder(context.coordinates);
+	recordLayout(document, text, layout, (offset) => context.offset + bom + offset);
+	const { comments, blankLines } = layout.finish({
+		start: context.offset,
+		end: context.offset + context.text.length,
+	});
 	let heading: string | undefined;
 	const addLiteral = (value: string, start: number, end: number, containerId: string, label: string): void => {
 		if (value.trim() === "") return;
@@ -199,15 +296,7 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 		const parentId = current.parentId;
 		const inFence = current.inFence;
 		const parents = current.parents;
-		if (node.nodeName === "#comment") {
-			const span = location(node);
-			if (span !== undefined && !text.slice(span.startOffset, span.endOffset).startsWith("<![CDATA[")) {
-				const range = rangeAt(context, bom + span.startOffset, bom + span.endOffset);
-				if (range !== undefined) comments.push({ range, text: text.slice(span.startOffset, span.endOffset) });
-			}
-			continue;
-		}
-		if (node.nodeName === "#text") continue;
+		if (node.nodeName === "#comment" || node.nodeName === "#text") continue;
 		if (node.nodeName === "#documentType" || node.nodeName === "template") continue;
 		if (!("tagName" in node)) {
 			if ("childNodes" in node)
@@ -328,5 +417,5 @@ export function readHtml(context: HtmlContext): HtmlFacts {
 				parents: descriptors,
 			});
 	}
-	return { declarations, literals, comments, docs, diagnostics };
+	return { declarations, literals, comments, blankLines, docs, diagnostics };
 }

@@ -3,6 +3,9 @@ import { Cursor, isHorizontalWhitespace } from "./cursor.js";
 
 export type TokenKind = "identifier" | "number" | "string" | "char" | "symbol" | "newline" | "comment";
 
+/** `ghidra` reads code after Ghidra's load warning. */
+export type Dialect = "c" | "ghidra";
+
 export interface CToken {
 	kind: TokenKind;
 	value: string;
@@ -20,7 +23,11 @@ export interface LexedC {
 	tokens: CToken[];
 	/** Every comment the language defines, verbatim. */
 	comments: CommentSpan[];
+	/** Lines no token touches, a removed branch's tokens included. */
+	blankLines: number[];
 	diagnostics: Diagnostic[];
+	/** The Ghidra dialect reads these tokens differently. */
+	ghidraDiffers: boolean;
 }
 
 interface ConditionalDirective {
@@ -232,16 +239,21 @@ interface TokenRead {
 	lineComment?: LineCommentInfo;
 }
 
-function ghidraWarningTokens(
+const GHIDRA_WARNING = "WARNING: Load size is inaccurate";
+
+/** Not code, so a comment after it has none before it. */
+const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
+
+/** Ghidra's code after its warning, within this comment. */
+function ghidraSuffixTokens(
 	module: string,
 	cursor: Cursor,
 	comment: LineCommentInfo,
 ): { tokens: CToken[]; diagnostics: Diagnostic[] } {
-	const marker = "WARNING: Load size is inaccurate";
-	const markerEnd = comment.value.indexOf(marker);
-	if (markerEnd < 0) return { tokens: [], diagnostics: [] };
+	const markerStart = comment.value.indexOf(GHIDRA_WARNING);
+	if (markerStart < 0) return { tokens: [], diagnostics: [] };
 
-	const suffixStart = advanced(comment.start, `//${comment.value.slice(0, markerEnd + marker.length)}`);
+	const suffixStart = advanced(comment.start, `//${comment.value.slice(0, markerStart + GHIDRA_WARNING.length)}`);
 	const saved = cursor.mark();
 	const tokens: CToken[] = [];
 	const diagnostics: Diagnostic[] = [];
@@ -462,30 +474,81 @@ function readToken(module: string, cursor: Cursor, lineStart: boolean, diagnosti
 	return { token: makeToken("symbol", value, value, start, cursor.mark(), lineStart), lineStart: false };
 }
 
-export function lexC(module: string, text: string): LexedC {
+/** A token's last line; one ending at a line's start ends on the line before. */
+function lastLine(token: CToken): number {
+	return token.end.character === 0 && token.end.line > token.start.line ? token.end.line - 1 : token.end.line;
+}
+
+function isCode(token: CToken): boolean {
+	return token.kind !== "comment" && token.kind !== "newline";
+}
+
+/** Whether code shares a comment's first line before it or last line after it. */
+function commentSpans(read: readonly CToken[]): CommentSpan[] {
+	const following: Array<CToken | undefined> = new Array(read.length);
+	let next: CToken | undefined;
+	for (let index = read.length - 1; index >= 0; index--) {
+		following[index] = next;
+		const token = read[index] as CToken;
+		if (isCode(token)) next = token;
+	}
+	const spans: CommentSpan[] = [];
+	let previous: CToken | undefined;
+	for (let index = 0; index < read.length; index++) {
+		const token = read[index] as CToken;
+		if (isCode(token)) previous = token;
+		if (token.kind !== "comment") continue;
+		const after = following[index];
+		spans.push({
+			range: tokenRange(token),
+			text: token.raw,
+			codeBefore: previous !== undefined && lastLine(previous) === token.start.line,
+			codeAfter: after !== undefined && after.start.line === lastLine(token),
+		});
+	}
+	return spans;
+}
+
+/** Lines of `lineCount` that no token touches. */
+function blankLinesOf(read: readonly CToken[], lineCount: number): number[] {
+	const touched = new Array<boolean>(lineCount).fill(false);
+	for (const token of read) {
+		if (token.kind === "newline") continue;
+		for (let line = token.start.line; line <= lastLine(token); line++) touched[line] = true;
+	}
+	const blank: number[] = [];
+	for (let line = 0; line < lineCount; line++) if (touched[line] !== true) blank.push(line);
+	return blank;
+}
+
+export function lexC(module: string, text: string, dialect: Dialect = "c"): LexedC {
 	const cursor = new Cursor(text);
 	const tokens: CToken[] = [];
-	// Only this loop sees comments: a marker retokenized inside one is not a second comment.
-	const comments: CommentSpan[] = [];
+	// Only this loop's tokens: a marker retokenized inside a comment is not a second comment.
+	const read: CToken[] = [];
 	const diagnostics: Diagnostic[] = [];
 	let lineStart = true;
 	let guard = -1;
+	let ghidraDiffers = false;
 
+	if (cursor.peek() === BYTE_ORDER_MARK) cursor.next();
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("C lexer failed to advance");
 		guard = cursor.offset;
 		const result = readToken(module, cursor, lineStart, diagnostics);
 		if (result.token !== undefined) {
 			tokens.push(result.token);
-			if (result.token.kind === "comment")
-				comments.push({ range: tokenRange(result.token), text: result.token.raw });
+			read.push(result.token);
 		}
 		lineStart = result.lineStart;
 		if (result.lineComment !== undefined) {
-			const warning = ghidraWarningTokens(module, cursor, result.lineComment);
-			tokens.push(...warning.tokens);
-			diagnostics.push(...warning.diagnostics);
-			if (warning.tokens.length > 0) lineStart = false;
+			const suffix = ghidraSuffixTokens(module, cursor, result.lineComment);
+			if (suffix.tokens.length > 0) ghidraDiffers = true;
+			if (dialect === "ghidra") {
+				tokens.push(...suffix.tokens);
+				diagnostics.push(...suffix.diagnostics);
+				if (suffix.tokens.length > 0) lineStart = false;
+			}
 		}
 	}
 
@@ -496,10 +559,12 @@ export function lexC(module: string, text: string): LexedC {
 	}
 	return {
 		tokens: resolved,
-		comments: comments.filter((comment) =>
+		comments: commentSpans(read).filter((comment) =>
 			kept.has(`${comment.range.start.line}:${comment.range.start.character}`),
 		),
+		blankLines: blankLinesOf(read, cursor.line + (cursor.column > 0 ? 1 : 0)),
 		diagnostics,
+		ghidraDiffers,
 	};
 }
 

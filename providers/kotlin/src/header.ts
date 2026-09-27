@@ -4,6 +4,14 @@ import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
 import { COMMENT_TYPES, childOfType, STRING_TYPES, type SyntaxNode } from "./tree.js";
 
 ////////////////////////////////
+//  Constants
+
+/** Nodes whose `<` and `>` are type brackets. */
+const ANGLE_OWNERS: ReadonlySet<string> = new Set(["type_arguments", "type_parameters"]);
+
+const ANGLES: ReadonlySet<string> = new Set(["<", ">"]);
+
+////////////////////////////////
 //  Functions & Helpers
 
 /** The folded span of a literal container written as a value. */
@@ -23,15 +31,20 @@ function containerOf(node: SyntaxNode): SyntaxNode | undefined {
 	}
 }
 
-/** Comments, literals and outermost containers between `start` and `end`, never inside a fold or literal. */
+/** Comments, literals, type brackets and outermost containers in the span, without descending into folds or literals. */
 function rendered(text: string, nodes: readonly SyntaxNode[], start: number, end: number, fold: boolean) {
 	const folds: OffsetRange[] = [];
 	const omit: OffsetRange[] = [];
 	const verbatim: OffsetRange[] = [];
+	const angles: number[] = [];
 	const stack = [...nodes];
 	while (stack.length > 0) {
 		const node = stack.pop() as SyntaxNode;
 		if (node.end <= start || node.start >= end) continue;
+		if (ANGLES.has(node.type) && !node.missing && ANGLE_OWNERS.has(node.parent?.type ?? "")) {
+			angles.push(node.start);
+			continue;
+		}
 		if (COMMENT_TYPES.has(node.type)) {
 			omit.push({ start: node.start, end: node.end });
 			continue;
@@ -45,7 +58,7 @@ function rendered(text: string, nodes: readonly SyntaxNode[], start: number, end
 		if (container !== undefined) folds.push({ start: container.start, end: container.end });
 		for (const child of node.children) if (child !== container) stack.push(child);
 	}
-	return renderHeader(text, { start, end, folds, omit, verbatim });
+	return renderHeader(text, { start, end, folds, omit, verbatim, angles });
 }
 
 /**

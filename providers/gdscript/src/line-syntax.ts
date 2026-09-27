@@ -1,7 +1,8 @@
-// Owns GDScript line-head syntax.
+// Owns GDScript line-head syntax, read from each line's tokens.
 
 import { Cursor } from "./cursor.js";
-import type { ParsedKeyword, ParsedLine, SourceLine } from "./parse-model.js";
+import type { ParsedKeyword, ParsedLine, ReferenceToken } from "./parse-model.js";
+import { isIgnorable, type LexedSource } from "./tokens.js";
 
 //////// Line scanner
 
@@ -17,162 +18,183 @@ const DETACHED_ANNOTATIONS = new Set([
 	"warning_ignore_restore",
 ]);
 
+/** Keywords that head a declaration. */
+const DECLARING = new Set(["class_name", "extends", "func", "var", "const", "signal", "enum", "class", "for"]);
+
 /** A run of annotations: where the ones the next declaration owns begin. */
 export interface AnnotationRun {
 	/** Null when none follow the last detached one. */
 	head: number | null;
 	detached: boolean;
+	/** Names from `head` on. */
+	owned: string[];
 }
 
-function skipAnnotation(cursor: Cursor): string {
-	cursor.next();
-	const name = cursor.readIdentifier()?.name ?? "";
-	if (cursor.peek() !== "(") return name;
-
-	let depth = 0;
-	while (cursor.good()) {
-		const character = cursor.next();
-		if (character === "(") depth++;
-		if (character === ")") {
-			depth--;
-			if (depth === 0) return name;
-		}
-	}
-	return name;
-}
-
-function skipAnnotations(cursor: Cursor): AnnotationRun {
-	const run: AnnotationRun = { head: null, detached: false };
-	while (cursor.peek() === "@") {
-		const start = cursor.offset;
-		if (DETACHED_ANNOTATIONS.has(skipAnnotation(cursor))) {
-			run.head = null;
-			run.detached = true;
-		} else {
-			run.head ??= start;
-		}
-		cursor.skipWhitespace();
-	}
-	return run;
-}
-
-/** Null unless the line holds annotations and nothing else. */
-export function annotationLine(line: SourceLine): AnnotationRun | null {
-	const cursor = new Cursor(line.code);
-	cursor.skipWhitespace();
-	if (cursor.peek() !== "@") return null;
-	const run = skipAnnotations(cursor);
-	return cursor.good() ? null : run;
-}
-
-interface LineSegment {
+/** Token indices, end exclusive. */
+interface Span {
 	start: number;
 	end: number;
 }
 
-function lineSegments(line: SourceLine): LineSegment[] {
-	const cursor = new Cursor(line.code);
-	const segments: LineSegment[] = [];
-	let start = 0;
-	let guard = -1;
-	while (cursor.good()) {
-		if (cursor.offset <= guard) throw new Error("lineSegments failed to advance");
-		guard = cursor.offset;
-		const character = cursor.next();
-		if (character === ";") {
-			segments.push({ start, end: cursor.offset - 1 });
-			start = cursor.offset;
-		}
+function identifierAt(tokens: readonly ReferenceToken[], at: number, end: number): ReferenceToken | undefined {
+	const token = tokens[at];
+	return at < end && token?.kind === "identifier" ? token : undefined;
+}
+
+/** Past `@name` and its arguments; unclosed arguments run to `end`. */
+function skipAnnotation(tokens: readonly ReferenceToken[], at: number, end: number): { name: string; next: number } {
+	const word = identifierAt(tokens, at + 1, end);
+	let next = word === undefined ? at + 1 : at + 2;
+	const name = word?.value ?? "";
+	if (next >= end || tokens[next]?.value !== "(") return { name, next };
+	let depth = 0;
+	while (next < end) {
+		const value = (tokens[next] as ReferenceToken).value;
+		next++;
+		if (value === "(") depth++;
+		if (value === ")" && --depth === 0) break;
 	}
-	segments.push({ start, end: line.code.length });
+	return { name, next };
+}
+
+function skipAnnotations(tokens: readonly ReferenceToken[], span: Span): { run: AnnotationRun; next: number } {
+	const run: AnnotationRun = { head: null, detached: false, owned: [] };
+	let next = span.start;
+	while (next < span.end && tokens[next]?.value === "@") {
+		const start = (tokens[next] as ReferenceToken).character;
+		const skipped = skipAnnotation(tokens, next, span.end);
+		if (DETACHED_ANNOTATIONS.has(skipped.name)) {
+			run.head = null;
+			run.detached = true;
+			run.owned = [];
+		} else {
+			run.head ??= start;
+			run.owned.push(skipped.name);
+		}
+		next = skipped.next;
+	}
+	return { run, next };
+}
+
+/** Code tokens starting on `line`. */
+function lineSpan(lexed: LexedSource, line: number): Span {
+	const indices = lexed.lineTokens[line] ?? [];
+	const start = indices[0] ?? 0;
+	return { start, end: indices.length === 0 ? start : (indices.at(-1) as number) + 1 };
+}
+
+/** Null unless the line holds annotations and nothing else. */
+export function annotationLine(lexed: LexedSource, line: number): AnnotationRun | null {
+	const span = lineSpan(lexed, line);
+	if (lexed.tokens[span.start]?.value !== "@" || span.end === span.start) return null;
+	const { run, next } = skipAnnotations(lexed.tokens, span);
+	return next < span.end ? null : run;
+}
+
+export interface AnnotationsAbove {
+	/** First owned annotation's line. */
+	first: number;
+	names: string[];
+}
+
+/** No token, string or comment touches it. */
+function isBlank(lexed: LexedSource, line: number): boolean {
+	return isIgnorable(lexed, line) && lexed.lines[line]?.hasString !== true && !lexed.commentLines.has(line);
+}
+
+/** Owned annotation lines above `line`. */
+export function annotationsAbove(lexed: LexedSource, line: number): AnnotationsAbove {
+	const above: AnnotationsAbove = { first: line, names: [] };
+	for (let index = line - 1; index >= 0; index--) {
+		if (isIgnorable(lexed, index)) {
+			if (isBlank(lexed, index)) break;
+			continue;
+		}
+		const run = annotationLine(lexed, index);
+		if (run === null) break;
+		if (run.head !== null) {
+			above.first = index;
+			above.names.unshift(...run.owned);
+		}
+		if (run.detached) break;
+	}
+	return above;
+}
+
+/** Split at `;`. */
+function lineSegments(tokens: readonly ReferenceToken[], span: Span): Span[] {
+	const segments: Span[] = [];
+	let start = span.start;
+	for (let index = span.start; index < span.end; index++) {
+		if ((tokens[index] as ReferenceToken).value !== ";") continue;
+		segments.push({ start, end: index });
+		start = index + 1;
+	}
+	segments.push({ start, end: span.end });
 	return segments;
 }
 
-export function parseLineHead(line: SourceLine, generic = false, start = 0, end = line.code.length): ParsedLine | null {
-	const cursor = new Cursor(line.code, start, end);
-	cursor.skipWhitespace();
-	if (cursor.peek() === "" || cursor.peek() === "#") return null;
+function parseLineHead(
+	tokens: readonly ReferenceToken[],
+	segment: Span,
+	line: Span,
+	generic: boolean,
+): ParsedLine | null {
+	if (segment.start >= segment.end) return null;
+	const annotated = tokens[segment.start]?.value === "@";
+	const { run, next } = skipAnnotations(tokens, segment);
+	let at = next;
+	let first = identifierAt(tokens, at, segment.end);
+	if (first === undefined) return null;
+	const head = run.head ?? first.character;
+	const leading = segment.start === line.start && head === (tokens[line.start] as ReferenceToken).character;
+	const owned = { annotations: run.owned, leading };
+	const nameAfter = (index: number) => {
+		const name = identifierAt(tokens, index + 1, segment.end);
+		return name === undefined ? null : { name: name.value, start: name.character };
+	};
 
-	const annotated = cursor.peek() === "@";
-	const annotations = skipAnnotations(cursor);
-	const head = annotations.head ?? cursor.offset;
-
-	let first = cursor.readIdentifier();
-	if (first === null) return null;
 	if (generic) {
-		if (first.name !== "export") return null;
-		cursor.skipWhitespace();
-		first = cursor.readIdentifier();
-		if (first === null) return null;
-		if (first.name !== "class" && first.name !== "function" && first.name !== "const") return null;
-		cursor.skipWhitespace();
-		const name = cursor.readIdentifier();
+		if (first.value !== "export") return null;
+		at++;
+		first = identifierAt(tokens, at, segment.end);
+		if (first === undefined) return null;
+		if (first.value !== "class" && first.value !== "function" && first.value !== "const") return null;
+		const name = nameAfter(at);
 		if (name === null) return null;
 		return {
-			keyword: first.name === "function" ? "func" : first.name,
+			keyword: first.value === "function" ? "func" : first.value,
 			name,
 			static: false,
 			annotated: false,
 			head,
+			...owned,
 		};
 	}
 
 	let isStatic = false;
-	if (first.name === "static") {
+	if (first.value === "static") {
 		isStatic = true;
-		cursor.skipWhitespace();
-		first = cursor.readIdentifier();
-		if (first === null) return null;
+		at++;
+		first = identifierAt(tokens, at, segment.end);
+		if (first === undefined) return null;
 	}
 
-	const keyword = first.name as ParsedKeyword;
-	if (!["class_name", "extends", "func", "var", "const", "signal", "enum", "class", "for"].includes(keyword))
-		return null;
-	if (keyword === "extends") return { keyword, name: null, static: isStatic, annotated, head };
-	cursor.skipWhitespace();
-	return {
-		keyword,
-		name: cursor.readIdentifier(),
-		static: isStatic,
-		annotated,
-		head,
-	};
+	if (!DECLARING.has(first.value)) return null;
+	const keyword = first.value as ParsedKeyword;
+	if (keyword === "extends") return { keyword, name: null, static: isStatic, annotated, head, ...owned };
+	return { keyword, name: nameAfter(at), static: isStatic, annotated, head, ...owned };
 }
 
-export function parseLineHeads(line: SourceLine, generic = false): ParsedLine[] {
+export function parseLineHeads(lexed: LexedSource, line: number, generic = false): ParsedLine[] {
+	const span = lineSpan(lexed, line);
 	const parsed: ParsedLine[] = [];
-	for (const segment of lineSegments(line)) {
-		const lineHead = parseLineHead(line, generic, segment.start, segment.end);
+	// A generic head reads the whole line.
+	for (const segment of generic ? [span] : lineSegments(lexed.tokens, span)) {
+		const lineHead = parseLineHead(lexed.tokens, segment, span, generic);
 		if (lineHead !== null) parsed.push(lineHead);
 	}
 	return parsed;
-}
-
-export function indentOf(text: string): number {
-	const cursor = new Cursor(text);
-	let width = 0;
-	while (cursor.peek() === " " || cursor.peek() === "\t") {
-		width += cursor.next() === "\t" ? 4 : 1;
-	}
-	return width;
-}
-
-export function indentationEnd(text: string): number {
-	const cursor = new Cursor(text);
-	while (cursor.peek() === " " || cursor.peek() === "\t") cursor.next();
-	return cursor.column;
-}
-
-export function isIgnorable(line: SourceLine): boolean {
-	const cursor = new Cursor(line.code);
-	cursor.skipWhitespace();
-	return cursor.peek() === "" || cursor.peek() === "#";
-}
-
-export function containsCharacter(text: string, wanted: string): boolean {
-	const cursor = new Cursor(text);
-	while (cursor.good()) if (cursor.next() === wanted) return true;
-	return false;
 }
 
 export function basenameOf(module: string): string {

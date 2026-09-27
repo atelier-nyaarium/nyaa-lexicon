@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync } from "node:fs";
 import path from "node:path";
-import { codeOnly, readSwept } from "@nyaa-lexicon/protocol";
+import { readSwept } from "@nyaa-lexicon/protocol";
+import { callsTo, declarationNamed, memberReads, nodesIn, parseSource, stringsIn } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 
 /** The one owner of a read's declaration topology and of the summary a declaration answers as. */
 const OWNER = "readContext.ts";
@@ -82,17 +84,29 @@ function sourceFiles(directory: string): string[] {
 
 const FILES = sourceFiles(ROOT).map((file) => ({
 	name: path.relative(ROOT, file),
-	code: codeOnly(readSwept(file) ?? ""),
+	source: parseSource(file, readSwept(file) ?? "").source,
 }));
 
+const EMPTY = parseSource("empty.ts", "").source;
+
+/** Whether an identifier or string contains `token`. */
+function mentions(source: ts.SourceFile, token: string): boolean {
+	const named = nodesIn(source).some((node) => ts.isIdentifier(node) && node.text.includes(token));
+	return named || stringsIn(source).some(({ text }) => text.includes(token));
+}
+
 function holdersOf(token: string, allowed: string[]): string[] {
-	return FILES.filter((file) => file.name !== SELF && file.code.includes(token))
+	return FILES.filter((file) => file.name !== SELF && mentions(file.source, token))
 		.map((file) => file.name)
 		.filter((name) => !allowed.includes(name));
 }
 
-function codeOf(name: string): string {
-	return FILES.find((file) => file.name === name)?.code ?? "";
+function sourceOf(name: string): ts.SourceFile {
+	return FILES.find((file) => file.name === name)?.source ?? EMPTY;
+}
+
+function mentionedIn(name: string, token: string): boolean {
+	return mentions(sourceOf(name), token);
 }
 
 /** Holders outside the tests, whose doubles spell the store's reads. */
@@ -109,11 +123,11 @@ describe("one owner derives a read's declaration topology", () => {
 		expect(FILES.map((file) => file.name)).toEqual(
 			expect.arrayContaining([OWNER, PRIMITIVES, PINS, SELF, PLANNER, ...Object.keys(ROW_READERS)]),
 		);
-		expect(codeOf(OWNER).length).toBeGreaterThan(1_000);
+		expect(sourceOf(OWNER).text.length).toBeGreaterThan(1_000);
 	});
 
 	it("reads a module's rows only where nothing about nesting is asked", () => {
-		const stale = Object.keys(ROW_READERS).filter((name) => !codeOf(name).includes(ROWS));
+		const stale = Object.keys(ROW_READERS).filter((name) => !mentionedIn(name, ROWS));
 		expect(stale, "a reader listed here no longer reads the rows").toEqual([]);
 
 		const offenders = codeHolders(ROWS, [OWNER, ...Object.keys(ROW_READERS)]);
@@ -121,7 +135,7 @@ describe("one owner derives a read's declaration topology", () => {
 	});
 
 	it("stamps a module's rows only where the owner records and compares them", () => {
-		expect(codeOf(OWNER).includes(STAMP), "the owner no longer stamps what it reads").toBe(true);
+		expect(mentionedIn(OWNER, STAMP), "the owner no longer stamps what it reads").toBe(true);
 
 		const offenders = codeHolders(STAMP, [OWNER, STORE]);
 		expect(offenders, "a writer proving its rows still stand asks the context's stamps").toEqual([]);
@@ -136,13 +150,15 @@ describe("one owner derives a read's declaration topology", () => {
 	});
 
 	it("declares the declaration summary nowhere else, by either spelling", () => {
-		expect(holdersOf("function toSummary", [OWNER])).toEqual([]);
-		expect(holdersOf("const toSummary", [OWNER])).toEqual([]);
+		const declaring = FILES.filter(({ source }) => declarationNamed(source, "toSummary") !== undefined).map(
+			({ name }) => name,
+		);
+		expect(declaring).toEqual([OWNER]);
 	});
 
 	it("reads no container field in the readers", () => {
 		const offenders = ["scope.ts", "knowledge.ts", "indexReads.ts"].filter((name) =>
-			codeOf(name).includes("containerId"),
+			mentionedIn(name, "containerId"),
 		);
 
 		expect(offenders, "a nesting question answered by hand belongs on the context").toEqual([]);
@@ -151,7 +167,7 @@ describe("one owner derives a read's declaration topology", () => {
 
 describe("a rename or move plan walks the id grammar, never the store, unstamped", () => {
 	it("reads every module's ids only where a reason is named", () => {
-		const stale = Object.keys(ID_READERS).filter((name) => !codeOf(name).includes(IDS));
+		const stale = Object.keys(ID_READERS).filter((name) => !mentionedIn(name, IDS));
 		expect(stale, "a reader listed here no longer reads the ids").toEqual([]);
 
 		const offenders = codeHolders(IDS, Object.keys(ID_READERS));
@@ -159,14 +175,16 @@ describe("a rename or move plan walks the id grammar, never the store, unstamped
 	});
 
 	it("never walks the ids straight off the store inside the planner", () => {
-		const offender = codeOf(PLANNER).includes(`store.${IDS}`);
+		const offender = memberReads(sourceOf(PLANNER)).some(
+			({ name, receiver }) => name === IDS && (receiver === "store" || receiver?.endsWith(".store") === true),
+		);
 		expect(offender, "a rename or move plan must stamp the ids it walks through the context").toBe(false);
 	});
 });
 
 describe("a rename or move plan reads its import rows through the context, never the store", () => {
 	it("reads every import-by-name lookup only where a reason is named", () => {
-		const stale = Object.keys(IMPORTS_NAMED_READERS).filter((name) => !codeOf(name).includes(IMPORTS_NAMED));
+		const stale = Object.keys(IMPORTS_NAMED_READERS).filter((name) => !mentionedIn(name, IMPORTS_NAMED));
 		expect(stale, "a reader listed here no longer reads importsNamed").toEqual([]);
 
 		const offenders = codeHolders(IMPORTS_NAMED, Object.keys(IMPORTS_NAMED_READERS));
@@ -174,7 +192,7 @@ describe("a rename or move plan reads its import rows through the context, never
 	});
 
 	it("reads every module's import statements only where a reason is named", () => {
-		const stale = Object.keys(IMPORTS_IN_READERS).filter((name) => !codeOf(name).includes(IMPORTS_IN));
+		const stale = Object.keys(IMPORTS_IN_READERS).filter((name) => !mentionedIn(name, IMPORTS_IN));
 		expect(stale, "a reader listed here no longer reads importsIn").toEqual([]);
 
 		const offenders = codeHolders(IMPORTS_IN, Object.keys(IMPORTS_IN_READERS));
@@ -182,8 +200,9 @@ describe("a rename or move plan reads its import rows through the context, never
 	});
 
 	it("never reads an import row straight off the store inside the resolver's planning methods", () => {
-		const needles = [`this.store.${IMPORTS_NAMED}(`, `this.store.${IMPORTS_IN}(`];
-		const offenders = needles.filter((needle) => codeOf("imports.ts").includes(needle));
+		const offenders = [IMPORTS_NAMED, IMPORTS_IN].filter(
+			(method) => callsTo(sourceOf("imports.ts"), method, "this.store").length > 0,
+		);
 		expect(
 			offenders,
 			"importSitesFor, importSitesForMove and importOriginFor must ask `reads`, so a plan can stamp what they answer",
@@ -206,23 +225,24 @@ const ROW_READ_METHODS = [
 	"symbolIdsIn",
 ];
 
-/** A raw store call, the receiver and the method dot-chained over any whitespace or newline. */
-function rawStoreCall(method: string): RegExp {
-	return new RegExp(`this\\s*\\.\\s*store\\s*\\.\\s*${method}\\s*\\(`, "g");
+/** Raw store calls: `this.store.method(...)`. */
+function rawStoreCalls(method: string): ts.CallExpression[] {
+	return callsTo(sourceOf(PLANNER), method, "this.store");
 }
 
 describe("the planner reads every row through the context, never the store", () => {
 	it("finds no store row read in the planner but checkMoveLanded's own", () => {
-		const code = codeOf(PLANNER);
-		const offenders = ROW_READ_METHODS.filter((method) => method !== "referencesIn").filter((method) =>
-			rawStoreCall(method).test(code),
+		const offenders = ROW_READ_METHODS.filter((method) => method !== "referencesIn").filter(
+			(method) => rawStoreCalls(method).length > 0,
 		);
 		expect(offenders, "a plan-phase read must ask the context, never the store").toEqual([]);
 	});
 
 	// checkMoveLanded's own read, after the reindex, stays raw.
 	it("keeps exactly one raw read: checkMoveLanded's own, after the reindex", () => {
-		const matches = codeOf(PLANNER).match(rawStoreCall("referencesIn")) ?? [];
-		expect(matches.length, "checkMoveLanded is the one read that must see fresh rows, not the plan's").toBe(1);
+		const reads = rawStoreCalls("referencesIn");
+		expect(reads.length, "checkMoveLanded is the one read that must see fresh rows, not the plan's").toBe(1);
+		const landed = declarationNamed(sourceOf(PLANNER), "checkMoveLanded");
+		expect(landed !== undefined && callsTo(landed, "referencesIn", "this.store").length).toBe(1);
 	});
 });

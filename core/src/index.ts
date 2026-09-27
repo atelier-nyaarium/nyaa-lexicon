@@ -15,7 +15,7 @@ export {
 	type RecalledAnswer,
 	type RecordOutcome,
 } from "./answers.js";
-export { type ApplyOutcome, type FileEdits, writeAll } from "./applyEdits.js";
+export { type FileEdits, stageAll } from "./applyEdits.js";
 export { type Clock, systemClock, type TimerHandle } from "./clock.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
 export { DAEMON_USAGE, type DaemonArgs, type ParsedDaemonArgs, parseDaemonArgs } from "./daemonArgs.js";
@@ -178,10 +178,7 @@ export {
 	routingContextOf,
 } from "./routing.js";
 export { compileSearchRegex, type SearchPattern, searchTerm } from "./search.js";
-export {
-	LexiconService,
-	type RenameOutcome,
-} from "./service.js";
+export { LexiconService } from "./service.js";
 export {
 	type BindOutcome,
 	createSessionBinds,

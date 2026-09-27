@@ -27,7 +27,10 @@ coordinate map belongs to the whole file, never to the slice.
 - A range that slices its own text back out of the file. The conformance suite checks every span.
 - A diagnostic instead of a throw. A file's own shape is never the caller's error: `isTooDeep` in
   `depth.ts` is the single owner of recognizing a recursion limit, and every recursion site rethrows
-  what it does not recognize rather than reporting a real bug as a depth problem.
+  what it does not recognize rather than reporting a real bug as a depth problem. Depth is counted
+  from the parser's own events through `NestingGauge`, never from a scan of the text.
+- Comment trivia and blank lines from the library's own tokens, recorded through `LayoutRecorder`
+  in `layout.ts`. In markup, tags and non-whitespace text are code; whitespace text is not.
 - One declaration per symbol id. A repeated key, and a sequence sibling, both mint one path twice;
   the store's primary key would silently keep whichever arrived last.
 - A reason when a key is dropped, worded by `dropped.ts` rather than by each reader, so the same

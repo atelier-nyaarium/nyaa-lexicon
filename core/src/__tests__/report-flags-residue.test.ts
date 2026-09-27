@@ -1,21 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { codeOnly, readSwept } from "@nyaa-lexicon/protocol";
+import { readSwept } from "@nyaa-lexicon/protocol";
+import { memberReads, parseSource, stringsIn } from "@nyaa-lexicon/protocol/ast";
 
 /** Node's report machinery kills a bun child on the signal it arms, so no source may reach for it. */
 const ROOT = path.join(import.meta.dirname, "..", "..", "..");
 
 const SWEPT = ["core/src", "client/src", "adapters/mcp/src", "adapters/lsp/src"].map((dir) => path.join(ROOT, dir));
 
-/** The narrowest tokens: each one is the report machinery itself, never a word near it. */
-const FORBIDDEN = [
-	"--report-on-signal",
-	"--report-signal",
-	"--report-on-fatalerror",
-	"--report-directory",
-	"process.report",
-];
+/** Flags inside a string: each one is the report machinery itself, never a word near it. */
+const FLAGS = ["--report-on-signal", "--report-signal", "--report-on-fatalerror", "--report-directory"];
 
 ////////////////////////////////
 //  Helpers
@@ -42,12 +37,15 @@ describe("no source arms node's report machinery", () => {
 	it("finds no report flag or report API outside the tests", () => {
 		const offenders: string[] = [];
 		for (const file of SWEPT.flatMap(sourceFiles)) {
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source);
-			for (const token of FORBIDDEN) {
-				if (code.includes(token)) offenders.push(`${path.relative(ROOT, file)}: ${token}`);
+			const text = readSwept(file);
+			if (text === null) continue;
+			const { source } = parseSource(file, text);
+			const strings = stringsIn(source);
+			const found = FLAGS.filter((flag) => strings.some((piece) => piece.text.includes(flag)));
+			if (memberReads(source).some(({ receiver, name }) => receiver === "process" && name === "report")) {
+				found.push("process.report");
 			}
+			for (const token of found) offenders.push(`${path.relative(ROOT, file)}: ${token}`);
 		}
 		expect(offenders, "diagnostics come from process.memoryUsage and the runtime's heap snapshot").toEqual([]);
 	});

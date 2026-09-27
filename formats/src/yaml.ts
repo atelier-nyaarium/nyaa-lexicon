@@ -11,11 +11,10 @@ import {
 	type Literal,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
-import { isMap, isNode, isPair, isScalar, isSeq, Parser, parseAllDocuments, type Scalar } from "yaml";
-import { type CommentSyntax, isTooDeep, nestedTooDeep, saysTooDeep, TOO_DEEP } from "./depth.js";
+import { CST, isMap, isNode, isPair, isScalar, isSeq, Lexer, Parser, parseAllDocuments, type Scalar } from "yaml";
+import { isTooDeep, NestingGauge, saysTooDeep, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
-
-const YAML_COMMENTS: CommentSyntax = { line: ["#"] };
+import { LayoutRecorder } from "./layout.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -40,6 +39,12 @@ export interface YamlFacts {
 	diagnostics: Diagnostic[];
 }
 
+export interface YamlLayout {
+	comments: CommentSpan[];
+	/** Absent when nesting stopped the read. */
+	blankLines?: number[];
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -58,6 +63,25 @@ function literalKind(value: unknown): { kind: Literal["kind"]; value: string; nu
 	return null;
 }
 
+/** Tracks parser-defined flow nesting per lexeme; throws past the limit. */
+class FlowGauge {
+	private readonly gauge = new NestingGauge();
+	/** Next lexeme is scalar content. */
+	private content = false;
+
+	step(lexeme: string): void {
+		if (this.content) {
+			this.content = false;
+			return;
+		}
+		const type = CST.tokenType(lexeme);
+		if (type === "scalar") this.content = true;
+		else if (type === "flow-map-start" || type === "flow-seq-start") this.gauge.open();
+		else if (type === "flow-map-end" || type === "flow-seq-end") this.gauge.close();
+		else if (type === "flow-error-end") this.gauge.reset();
+	}
+}
+
 /** Every key in a mapping, at any depth, with values this index can hold. */
 export function readYaml(context: YamlContext): YamlFacts {
 	const { language, module, text, offset, coordinates } = context;
@@ -69,14 +93,14 @@ export function readYaml(context: YamlContext): YamlFacts {
 	// a property of the FILE and belongs in a diagnostic; thrown, it stops the scan. The guard runs
 	// first, since an exhausted stack is not always catchable.
 	let documents: ReturnType<typeof parseAllDocuments> = [];
-	let tooDeep = nestedTooDeep(text, YAML_COMMENTS);
-	if (!tooDeep) {
-		try {
-			documents = parseAllDocuments(text);
-		} catch (failure) {
-			if (!isTooDeep(failure)) throw failure;
-			tooDeep = true;
-		}
+	let tooDeep = false;
+	try {
+		const flow = new FlowGauge();
+		for (const lexeme of new Lexer().lex(text)) flow.step(lexeme);
+		documents = parseAllDocuments(text);
+	} catch (failure) {
+		if (!isTooDeep(failure)) throw failure;
+		tooDeep = true;
 	}
 
 	function walk(node: unknown, parents: Descriptor[], containerId: string | undefined): void {
@@ -215,36 +239,59 @@ export function readYaml(context: YamlContext): YamlFacts {
 	return { declarations, literals, diagnostics };
 }
 
+/** CST source tokens that are neither code nor comment. */
+const SPACING = new Set(["space", "newline", "byte-order-mark"]);
+
+/** A block scalar's body starts after its header line, which ends its props. */
+function bodyStart(props: unknown, at: number): number {
+	const last: unknown = Array.isArray(props) ? props[props.length - 1] : undefined;
+	const { offset, source } = (last ?? {}) as { offset?: unknown; source?: unknown };
+	return typeof offset === "number" && typeof source === "string" ? offset + source.length : at;
+}
+
 /**
- * Comments from the library's OWN parser, never a second scan for markers.
+ * Comments and blank lines from the library's OWN parser, never a second scan for markers.
  *
  * A `#` is a comment only where it is not inside a string, a block scalar or another comment, which
  * is the one rule a separate scanner always gets wrong. The parser that reads the values already
- * knows, so it is the only thing asked.
+ * knows, so it is the only thing asked. Every CST source token but spacing is code or a comment.
  */
-export function readYamlComments(text: string, offset: number, coordinates: TextCoordinates): CommentSpan[] {
-	const spans: CommentSpan[] = [];
+export function readYamlLayout(text: string, offset: number, coordinates: TextCoordinates): YamlLayout {
+	const layout = new LayoutRecorder(coordinates);
 
 	function collect(token: unknown): void {
-		if (token === null || typeof token !== "object") return;
-		const node = token as { type?: string; offset?: number; source?: string };
-		if (node.type === "comment" && typeof node.offset === "number" && typeof node.source === "string") {
-			const range = coordinates.rangeAt(offset + node.offset, offset + node.offset + node.source.length);
-			if (range !== undefined && node.source !== "") spans.push({ range, text: node.source });
-		}
-		for (const value of Object.values(node)) {
-			if (Array.isArray(value)) for (const item of value) collect(item);
-			else if (value !== null && typeof value === "object") collect(value);
+		const pending: unknown[] = [token];
+		while (pending.length > 0) {
+			const node = pending.pop();
+			if (node === null || typeof node !== "object") continue;
+			const { type, offset: at, source } = node as { type?: unknown; offset?: unknown; source?: unknown };
+			if (typeof type === "string" && typeof at === "number" && typeof source === "string") {
+				if (type === "comment") layout.comment(offset + at, offset + at + source.length, source);
+				else if (type === "block-scalar") {
+					const start = bodyStart((node as { props?: unknown }).props, at);
+					layout.code(offset + start, offset + start + source.length);
+				} else if (!SPACING.has(type)) layout.code(offset + at, offset + at + source.length);
+			}
+			for (const value of Object.values(node)) {
+				if (Array.isArray(value)) for (const item of value) pending.push(item);
+				else pending.push(value);
+			}
 		}
 	}
 
-	// Deep enough nesting exhausts the stack here too. There is no diagnostic channel on this call, and
-	// `readYaml` already reports the depth for the same file, so the spans found so far are the answer.
-	if (nestedTooDeep(text, YAML_COMMENTS)) return [];
+	// This call has no diagnostic channel; `readYaml` reports the same file's depth.
+	// Return comments found so far; blank lines are unknown.
+	const flow = new FlowGauge();
+	const parser = new Parser();
 	try {
-		for (const token of new Parser().parse(text)) collect(token);
+		for (const lexeme of new Lexer().lex(text)) {
+			flow.step(lexeme);
+			for (const token of parser.next(lexeme)) collect(token);
+		}
+		for (const token of parser.end()) collect(token);
 	} catch (failure) {
 		if (!isTooDeep(failure)) throw failure;
+		return { comments: layout.finish({ start: offset, end: offset }).comments };
 	}
-	return spans.sort((left, right) => left.range.start.line - right.range.start.line);
+	return layout.finish({ start: offset, end: offset + text.length });
 }

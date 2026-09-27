@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "../residue";
+import ts from "typescript";
+import { parsedFiles, stringsIn } from "../astResidue";
+import { sourceFiles } from "../residue";
 
 /**
  * Keeps the production packages free of `bun:` modules.
@@ -23,18 +25,16 @@ describe("no production source imports a bun: module", () => {
 		for (const root of ROOTS) expect(sourceFiles(root, SKIP_DIRS).length, root).toBeGreaterThan(0);
 	});
 
-	// The narrowest token: a quoted specifier starting with the scheme, whichever quote and whether
-	// it sits in an import, a require or a dynamic import.
+	// A string beginning with the scheme, in an import, require or dynamic import.
 	it("names no bun: specifier outside the tests", () => {
 		const offenders: string[] = [];
-		const pattern = /["'`]bun:/;
 
 		for (const root of ROOTS) {
-			for (const file of sourceFiles(root, SKIP_DIRS)) {
-				const source = readSwept(file);
-				if (source === null) continue;
-				const match = pattern.exec(codeOnly(source));
-				if (match) offenders.push(`${file}: ${match[0]}`);
+			for (const { file, source } of parsedFiles(root, SKIP_DIRS)) {
+				for (const { node, text } of stringsIn(source)) {
+					const opens = ts.isStringLiteralLike(node) || ts.isTemplateHead(node);
+					if (opens && text.startsWith("bun:")) offenders.push(`${file}: ${text}`);
+				}
 			}
 		}
 

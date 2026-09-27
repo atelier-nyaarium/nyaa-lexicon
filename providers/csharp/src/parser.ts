@@ -1,5 +1,4 @@
 import {
-	angleDelta,
 	type CommentSpan,
 	comparePositions,
 	composeSymbolId,
@@ -20,7 +19,7 @@ import {
 	type SymbolKind,
 } from "@nyaa-lexicon/protocol";
 import { Cursor } from "./cursor.js";
-import { type LexedSource, positionRange, type Token, tokenize } from "./tokens.js";
+import { type LexedSource, lastLine, positionRange, type Token, tokenize } from "./tokens.js";
 
 export const LANGUAGE = "csharp";
 
@@ -60,6 +59,7 @@ export interface CsharpFacts {
 	imports: CsharpImport[];
 	literals: Literal[];
 	comments: CommentSpan[];
+	blankLines: number[];
 	diagnostics: Diagnostic[];
 	metadata: Map<string, DeclarationMeta>;
 	namespaceNames: string[];
@@ -82,6 +82,15 @@ interface Leading {
 interface HeaderSkip {
 	from: number;
 	to: number;
+}
+
+/** Each type bracket `<` by token index, to the index of the `>` or `>>` closing it. */
+type AnglePairs = ReadonlyMap<number, number>;
+
+/** Type bracket pairs found so far, and the header's folded groups by opener index. */
+interface BracketWalk {
+	pairs: Map<number, number>;
+	folded: ReadonlyMap<number, number>;
 }
 
 interface AttributeSection {
@@ -115,6 +124,7 @@ interface RawDeclaration {
 	bodyEndToken?: Token | undefined;
 	parameterCount?: number | undefined;
 	isStatic?: boolean | undefined;
+	memberInsertLine?: number | undefined;
 	nameTokenOffsets: number[];
 }
 
@@ -160,6 +170,24 @@ interface TypeSpan {
 	start: number;
 	end: number;
 }
+
+/** Type read from tokens. */
+interface TypeShape {
+	/** Past its last token. */
+	end: number;
+	/** Rightmost simple name; none for tuples. */
+	name: Token | undefined;
+	/** Tuple element names. */
+	elementNames: number[];
+}
+
+interface LeadingType {
+	first: number;
+	shape: TypeShape;
+}
+
+/** Deeper is no type. */
+const MAX_TYPE_DEPTH = 32;
 
 const MODIFIERS = new Set([
 	"public",
@@ -304,6 +332,9 @@ const BUILTIN_TYPES = new Set([
 	"var",
 ]);
 
+/** May precede a type. */
+const TYPE_PREFIXES = new Set([...MODIFIERS, "this", "params", "checked"]);
+
 const ASSIGNMENT_WORDS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "??="]);
 
 const ACCESSOR_KEYWORDS = new Set(["get", "set", "init", "add", "remove"]);
@@ -325,6 +356,49 @@ const VALUE_FOLLOWERS = new Set(["is", "as", "switch", "with"]);
 
 /** After `()`: lambda params, a type argument, or another argument before `,`. */
 const NOT_TUPLE_FOLLOWERS = new Set(["=>", ",", ">", ">>"]);
+
+/** Member access and qualifier operators. */
+const MEMBER_OPERATORS = new Set([".", "?.", "->", "::"]);
+
+/** After a type argument list in an expression, these keep it one. */
+const TYPE_ARGUMENT_FOLLOWERS = new Set([
+	"(",
+	")",
+	"]",
+	"}",
+	":",
+	";",
+	",",
+	".",
+	"?",
+	"?.",
+	"==",
+	"!=",
+	"|",
+	"^",
+	"&&",
+	"||",
+	"&",
+	"[",
+	"{",
+	"=>",
+	"<",
+	"<=",
+	">=",
+	"is",
+	"as",
+]);
+
+const GROUP_CLOSERS = new Map([
+	["(", ")"],
+	["[", "]"],
+	["{", "}"],
+]);
+
+/** Punctuation a type argument list holds outside its groups. */
+const TYPE_LIST_PUNCTUATION = new Set([",", ".", "::", "?", "*", "<", ">", ">>", "(", "["]);
+
+const EMPTY_MAP: ReadonlyMap<number, number> = new Map();
 
 function isTrivia(token: Token | undefined): boolean {
 	return (
@@ -374,22 +448,13 @@ function joinTokenValues(tokens: Token[]): string {
 	return tokens.map((token) => token.value).join(".");
 }
 
-function typeNameFromText(text: string): string | undefined {
-	let value = text.trim().replace(/^global::/u, "");
-	const generic = value.indexOf("<");
-	if (generic >= 0) value = value.slice(0, generic);
-	const array = value.indexOf("[");
-	if (array >= 0) value = value.slice(0, array);
-	value = value.replace(/\?$/u, "");
-	value = value.split(/\.|::/u).at(-1)?.trim().split(/\s+/u).at(-1) ?? "";
-	return value === "" || BUILTIN_TYPES.has(value) ? undefined : value;
-}
-
 function displayForLiteral(token: Token): string | undefined {
 	if (token.kind === "string") return "string";
 	if (token.kind === "boolean") return "bool";
 	if (token.kind !== "number") return undefined;
 	const raw = token.value.toLowerCase();
+	// Hex digits read as suffixes and exponents.
+	if (raw.startsWith("0x") || raw.startsWith("0b")) return "int";
 	if (raw.endsWith("m")) return "decimal";
 	if (raw.endsWith("f")) return "float";
 	if (raw.includes(".") || raw.includes("e")) return "double";
@@ -436,6 +501,8 @@ export class CsharpParser {
 	private readonly namespaceNames = new Set<string>();
 	private readonly attributeNames = new Set<string>();
 	private readonly accessorBodyRanges: Array<{ start: number; end: number }> = [];
+	/** Type argument list openers known to stay open up to this index. */
+	private readonly openLists = new Map<number, number>();
 	private readonly diagnostics: Diagnostic[];
 	private readonly reportedDiagnostics = new Set<string>();
 	private readonly scopeCounts = new Map<RawDeclaration | undefined, Map<string, number>>();
@@ -479,6 +546,7 @@ export class CsharpParser {
 			imports: this.rawImports,
 			literals,
 			comments,
+			blankLines: this.lexed.blankLines,
 			diagnostics,
 			metadata: finalized.metadata,
 			namespaceNames: [...this.namespaceNames].sort(),
@@ -530,15 +598,42 @@ export class CsharpParser {
 		return -1;
 	}
 
-	private matchingAngle(index: number, end = this.tokens.length): number {
-		let depth = 0;
-		for (let current = index; current < end; current++) {
-			const item = this.token(current);
-			const value = item?.kind === "punctuation" ? item.value : undefined;
-			depth += angleDelta(value ?? "");
-			if (depth === 0 && current > index) return current;
+	/** Closer of the group or type argument list at `index`; `index` when none opens, `end` when unclosed. */
+	private closeOf(index: number, angles: AnglePairs, end: number): number {
+		const value = this.value(index);
+		if (value === "<") return angles.get(index) ?? index;
+		const closer = value === undefined ? undefined : GROUP_CLOSERS.get(value);
+		if (value === undefined || closer === undefined) return index;
+		const close = this.matching(index, value, closer, end);
+		return close < 0 ? end : close;
+	}
+
+	/** Split at the commas outside groups and type argument lists. */
+	private commaSegments(start: number, end: number, angles: AnglePairs = this.typeAngles(start, end)): TypeSpan[] {
+		const segments: TypeSpan[] = [];
+		let segmentStart = start;
+		for (let current = start; current < end; current = this.closeOf(current, angles, end) + 1) {
+			if (this.value(current) !== ",") continue;
+			segments.push({ start: segmentStart, end: current });
+			segmentStart = current + 1;
+		}
+		segments.push({ start: segmentStart, end });
+		return segments;
+	}
+
+	/** First `value` outside groups and type argument lists. */
+	private topLevelValue(start: number, end: number, value: string, angles: AnglePairs): number {
+		for (let current = start; current < end; current = this.closeOf(current, angles, end) + 1) {
+			if (this.value(current) === value) return current;
 		}
 		return -1;
+	}
+
+	/** The outermost type argument list `close` ends; -1 when none. */
+	private listEndingAt(close: number, angles: AnglePairs): number {
+		let found = -1;
+		for (const [open, end] of angles) if (end === close && (found < 0 || open < found)) found = open;
+		return found;
 	}
 
 	private report(message: string, token: Token | undefined): void {
@@ -680,7 +775,7 @@ export class CsharpParser {
 			const item = this.token(cursor);
 			const value = syntaxValue(item);
 			if (value === "<") {
-				const angleClose = this.matchingAngle(cursor, close);
+				const angleClose = this.listClose(cursor, close);
 				cursor = angleClose < 0 ? close : angleClose + 1;
 				break;
 			}
@@ -911,6 +1006,7 @@ export class CsharpParser {
 				visibility: "public",
 				exported: true,
 				signature: this.header(codeStartIndex, next),
+				memberInsertLine: this.lineAfterLast(next, end),
 				nameTokenOffsets: names.map((item) => item.startOffset),
 			});
 			this.namespaceNames.add(fullName);
@@ -937,6 +1033,7 @@ export class CsharpParser {
 			visibility: "public",
 			exported: true,
 			signature: this.header(codeStartIndex, next),
+			memberInsertLine: this.closerLine(close),
 			nameTokenOffsets: names.map((item) => item.startOffset),
 		});
 		this.namespaceNames.add(fullName);
@@ -986,7 +1083,7 @@ export class CsharpParser {
 		let typeParameterClose = -1;
 		if (this.value(afterName) === "<") {
 			typeParameterOpen = afterName;
-			typeParameterClose = this.matchingAngle(afterName, end);
+			typeParameterClose = this.listClose(afterName, end);
 			if (typeParameterClose < 0)
 				this.report("Generic type parameter list is not closed.", this.token(afterName));
 			afterName = typeParameterClose < 0 ? end : this.nextSignificant(typeParameterClose + 1, end);
@@ -1015,6 +1112,7 @@ export class CsharpParser {
 			signature: this.header(leading?.attributes ?? codeStartIndex, codeEnd),
 			bodyStartToken: bodyOpen < 0 ? undefined : this.token(bodyOpen),
 			bodyEndToken: bodyClose < 0 ? undefined : this.token(bodyClose),
+			memberInsertLine: this.closerLine(bodyClose),
 			nameTokenOffsets: [nameToken.startOffset],
 		});
 		this.markTypeParameters(typeParameterOpen, typeParameterClose, type);
@@ -1023,8 +1121,9 @@ export class CsharpParser {
 		if (primaryClose >= 0) type.parameterCount = this.parseParameters(primaryOpen, primaryClose, type);
 		if (!this.outline) {
 			const headerEnd = bodyOpen >= 0 ? bodyOpen : codeEnd;
-			this.markBaseTypes(nameIndex, headerEnd, type);
-			this.parseTypeConstraints(nameIndex, headerEnd);
+			const angles = this.typeAngles(nameIndex, headerEnd);
+			this.markBaseTypes(nameIndex, headerEnd, type, angles);
+			this.parseTypeConstraints(nameIndex, headerEnd, angles);
 		}
 		if (bodyOpen >= 0) {
 			if (kind === "enum") this.parseEnumMembers(bodyOpen + 1, bodyClose < 0 ? end : bodyClose, type);
@@ -1066,85 +1165,45 @@ export class CsharpParser {
 		}
 	}
 
-	private markBaseTypes(start: number, end: number, parent: RawDeclaration): void {
-		const whereIndex = this.topLevelKeyword(start + 1, end, "where");
+	/** `angles` from a walk starting at the name. */
+	private markBaseTypes(start: number, end: number, parent: RawDeclaration, angles: AnglePairs): void {
+		const whereIndex = this.topLevelValue(start + 1, end, "where", angles);
 		const bound = whereIndex < 0 ? end : whereIndex;
-		let colon = -1;
-		let current = this.nextSignificant(start + 1, bound);
-		while (current >= 0 && current < bound) {
-			const value = this.value(current);
-			if (value === ":") {
-				colon = current;
-				break;
-			}
-			current = this.nextSignificant(current + 1, bound);
-		}
+		const colon = this.topLevelValue(start + 1, bound, ":", angles);
 		if (colon < 0) return;
-		let segmentStart = this.nextSignificant(colon + 1, bound);
-		const role: Reference["role"] = "extends";
-		let segmentRole: Reference["role"] = parent.kind === "struct" ? "implements" : role;
-		let depth = 0;
-		for (let cursor = segmentStart; cursor <= bound; cursor++) {
-			const value = this.value(cursor);
-			if (value === "[" || value === "(") depth++;
-			else if (value === "]" || value === ")") depth--;
-			else depth += angleDelta(value ?? "");
-			if ((value === "," && depth === 0) || cursor === bound) {
-				const segmentEnd = value === "," ? cursor : bound;
-				this.addTypeReference(segmentStart, segmentEnd - 1, "typeUse");
-				const first = this.nextSignificant(segmentStart, segmentEnd);
-				const firstToken = this.token(first);
-				if (firstToken?.kind === "identifier") this.roleByOffset.set(firstToken.startOffset, segmentRole);
-				segmentRole = parent.kind === "interface" ? "extends" : "implements";
-				segmentStart = this.nextSignificant(cursor + 1, bound);
-			}
+		let segmentRole: Reference["role"] = parent.kind === "struct" ? "implements" : "extends";
+		for (const segment of this.commaSegments(colon + 1, bound, angles)) {
+			this.addTypeReference(segment.start, segment.end - 1, "typeUse");
+			const firstToken = this.token(this.nextSignificant(segment.start, segment.end));
+			if (firstToken?.kind === "identifier") this.roleByOffset.set(firstToken.startOffset, segmentRole);
+			segmentRole = parent.kind === "interface" ? "extends" : "implements";
 		}
-	}
-
-	/** First top-level occurrence of `keyword`. */
-	private topLevelKeyword(start: number, end: number, keyword: string): number {
-		let depth = 0;
-		for (let current = start; current < end; current++) {
-			const value = this.value(current);
-			if (value === "(" || value === "[") depth++;
-			else if (value === ")" || value === "]") depth--;
-			else depth += angleDelta(value ?? "");
-			if (value === keyword && depth === 0) return current;
-		}
-		return -1;
 	}
 
 	/** A `where` clause's constrained parameter and its bounds are a type use. */
-	private parseTypeConstraints(start: number, end: number): void {
-		let clauseStart = this.topLevelKeyword(start, end, "where");
+	private parseTypeConstraints(start: number, end: number, angles: AnglePairs = this.typeAngles(start, end)): void {
+		let clauseStart = this.topLevelValue(start, end, "where", angles);
 		while (clauseStart >= 0 && clauseStart < end) {
 			const nameIndex = this.nextSignificant(clauseStart + 1, end);
-			const colon = this.nextSignificant(nameIndex + 1, end);
-			const nextWhere = this.topLevelKeyword(colon + 1, end, "where");
+			const colon = nameIndex < 0 ? -1 : this.nextSignificant(nameIndex + 1, end);
+			if (colon < 0) return;
+			const nextWhere = this.topLevelValue(colon + 1, end, "where", angles);
 			const clauseEnd = nextWhere < 0 ? end : nextWhere;
 			if (this.value(colon) === ":" && isIdentifier(this.token(nameIndex))) {
 				this.addTypeReference(nameIndex, nameIndex, "typeUse");
-				this.markConstraintSegments(colon + 1, clauseEnd);
+				this.markConstraintSegments(colon + 1, clauseEnd, angles);
 			}
 			clauseStart = nextWhere;
 		}
 	}
 
-	private markConstraintSegments(start: number, end: number): void {
-		let segmentStart = this.nextSignificant(start, end);
-		if (segmentStart < 0) return;
-		let depth = 0;
-		for (let cursor = segmentStart; cursor <= end; cursor++) {
-			const value = this.value(cursor);
-			if (value === "(" || value === "[") depth++;
-			else if (value === ")" || value === "]") depth--;
-			else depth += angleDelta(value ?? "");
-			if ((value === "," && depth === 0) || cursor === end) {
-				const segmentEnd = value === "," ? cursor : end;
-				if (segmentEnd > segmentStart && !this.isConstraintKeyword(segmentStart, segmentEnd))
-					this.addTypeReference(segmentStart, segmentEnd - 1, "typeUse");
-				segmentStart = this.nextSignificant(cursor + 1, end);
-			}
+	private markConstraintSegments(start: number, end: number, angles: AnglePairs): void {
+		for (const segment of this.commaSegments(start, end, angles)) {
+			if (
+				this.nextSignificant(segment.start, segment.end) >= 0 &&
+				!this.isConstraintKeyword(segment.start, segment.end)
+			)
+				this.addTypeReference(segment.start, segment.end - 1, "typeUse");
 		}
 	}
 
@@ -1178,7 +1237,7 @@ export class CsharpParser {
 		while (current >= 0 && current < end) {
 			const value = this.value(current);
 			if (value === "<") {
-				const close = this.matchingAngle(current, end);
+				const close = this.listClose(current, end);
 				return close < 0 ? undefined : close;
 			}
 			if (value === "." || value === "::" || this.token(current)?.kind === "identifier") {
@@ -1208,7 +1267,7 @@ export class CsharpParser {
 		}
 		let afterLast = this.nextSignificant(lastIdent + 1);
 		if (this.value(afterLast) === "<") {
-			const angleClose = this.matchingAngle(afterLast);
+			const angleClose = this.listClose(afterLast, this.tokens.length);
 			if (angleClose < 0) return;
 			afterLast = this.nextSignificant(angleClose + 1);
 		}
@@ -1219,7 +1278,9 @@ export class CsharpParser {
 		if (target !== undefined) this.roleByOffset.set(target.startOffset, "instantiate");
 	}
 
-	/** A statement-boundary run is an attribute only inside a method-shaped body; an expression-start run is one only before a lambda, an anonymous method, or its parameter list. */
+	/** Statement-boundary runs are attributes only inside method-shaped bodies. At expression starts,
+	 * only runs before lambdas, anonymous methods, or their parameter lists are attributes.
+	 */
 	private scanNestedAttributes(metadata: Map<string, DeclarationMeta>): void {
 		const end = this.tokens.length;
 		const bodies = this.runningBodyRanges(metadata);
@@ -1317,7 +1378,7 @@ export class CsharpParser {
 			while (current >= 0 && current < end) {
 				const value = this.value(current);
 				if (value === "<") {
-					const close = this.matchingAngle(current, end);
+					const close = this.listClose(current, end);
 					if (close < 0) return false;
 					current = this.nextSignificant(close + 1, end);
 					continue;
@@ -1418,7 +1479,7 @@ export class CsharpParser {
 		const boundary = this.findSemicolon(keywordIndex + 1, end);
 		if (boundary < 0) this.report("Delegate declaration has no terminating semicolon.", keyword);
 		const finish = boundary < 0 ? end : boundary;
-		const open = this.findTopLevelValue(keywordIndex + 1, finish, "(");
+		const open = this.findCallParen(keywordIndex + 1, finish);
 		const nameIndex =
 			open < 0 ? this.lastIdentifier(keywordIndex + 1, finish) : this.methodNameIndex(open, keywordIndex + 1);
 		const name = this.token(nameIndex);
@@ -1498,7 +1559,8 @@ export class CsharpParser {
 		modifiers: Set<string>,
 	): number {
 		const operator = this.operatorName(start, open);
-		const nameIndex = operator?.end ?? this.methodNameIndex(open, start);
+		const angles = this.typeAngles(start, open);
+		const nameIndex = operator?.end ?? this.methodNameIndex(open, start, angles);
 		const name = this.token(nameIndex);
 		const declarationName = operator?.name ?? (isIdentifier(name) ? name.value : undefined);
 		if (declarationName === undefined) {
@@ -1506,7 +1568,7 @@ export class CsharpParser {
 			return this.advanceBoundary(boundary, end);
 		}
 		const isConstructor = operator === undefined && declarationName === parent.name;
-		const qualifier = operator === undefined ? this.explicitInterfaceQualifier(start, nameIndex) : [];
+		const qualifier = operator === undefined ? this.explicitInterfaceQualifier(start, nameIndex, angles) : [];
 		const kind: SymbolKind = operator === undefined ? (isConstructor ? "constructor" : "method") : "operator";
 		const selectionStart = operator === undefined ? name : this.token(operator.start);
 		const selectionEnd = operator === undefined ? name : this.token(operator.end);
@@ -1545,18 +1607,19 @@ export class CsharpParser {
 			nameTokenOffsets,
 			isStatic: modifiers.has("static"),
 		});
+		const conversion = modifiers.has("implicit") || modifiers.has("explicit");
 		const typeSpan =
 			operator === undefined
 				? isConstructor
 					? undefined
 					: this.spanBeforeName(start, nameIndex)
-				: { start: operator.start + 1, end: operator.end + 1 };
+				: conversion
+					? { start: operator.start + 1, end: operator.end + 1 }
+					: this.spanBeforeName(start, operator.start);
 		this.recordTypeSpan(typeSpan, method);
 		const genericOpen = this.nextSignificant(nameIndex + 1, open);
-		if (this.value(genericOpen) === "<") {
-			const genericClose = this.matchingAngle(genericOpen, open);
-			if (genericClose >= 0) this.markTypeParameters(genericOpen, genericClose, method);
-		}
+		const genericClose = angles.get(genericOpen);
+		if (genericClose !== undefined) this.markTypeParameters(genericOpen, genericClose, method);
 		method.parameterCount = close < 0 ? 0 : this.parseParameters(open, close, method);
 		if (!this.outline && close >= 0) this.parseTypeConstraints(close + 1, boundary.index);
 		if (boundary.kind === "body")
@@ -1564,56 +1627,26 @@ export class CsharpParser {
 		return this.advanceBoundary(boundary, end, bodyClose);
 	}
 
-	private parseParameters(open: number, close: number, parent: RawDeclaration | undefined): number {
+	private parseParameters(open: number, close: number, parent: RawDeclaration): number {
 		if (open < 0 || close < 0 || close <= open) return 0;
-		const segments: Array<{ start: number; end: number }> = [];
-		let segmentStart = open + 1;
-		let parentheses = 0;
-		let brackets = 0;
-		let angles = 0;
-		for (let current = open + 1; current < close; current++) {
-			const value = this.value(current);
-			if (value === "(") parentheses++;
-			else if (value === ")") parentheses--;
-			else if (value === "[") brackets++;
-			else if (value === "]") brackets--;
-			angles += angleDelta(value ?? "");
-			if (value === "," && parentheses === 0 && brackets === 0 && angles === 0) {
-				segments.push({ start: segmentStart, end: current });
-				segmentStart = current + 1;
-			}
-		}
-		segments.push({ start: segmentStart, end: close });
-		if (parent === undefined) return segments.length;
-		for (const segment of segments) this.addParameter(segment.start, segment.end, parent);
+		const angles = this.typeAngles(open + 1, close);
+		const segments = this.commaSegments(open + 1, close, angles);
+		for (const segment of segments) this.addParameter(segment.start, segment.end, parent, angles);
 		parent.parameterCount = segments.filter(
-			(segment) => this.findParameterName(segment.start, segment.end) >= 0,
+			(segment) => this.findParameterName(segment.start, segment.end, angles) >= 0,
 		).length;
 		return parent.parameterCount;
 	}
 
-	private findParameterName(start: number, end: number): number {
-		let current = this.nextSignificant(start, end);
-		let equals = end;
-		let depth = 0;
-		while (current >= 0 && current < end) {
-			const value = this.value(current);
-			if (value === "(" || value === "[") depth++;
-			else if (value === ")" || value === "]") depth--;
-			else depth += angleDelta(value ?? "");
-			if (value === "=" && depth === 0) {
-				equals = current;
-				break;
-			}
-			current = this.nextSignificant(current + 1, end);
-		}
-		let last = this.previousSignificant(equals, start);
+	private findParameterName(start: number, end: number, angles: AnglePairs): number {
+		const equals = this.topLevelValue(start, end, "=", angles);
+		let last = this.previousSignificant(equals < 0 ? end : equals, start);
 		while (last >= start && this.value(last) === "]") last = this.previousSignificant(last, start);
 		return last;
 	}
 
-	private addParameter(start: number, end: number, parent: RawDeclaration): void {
-		const nameIndex = this.findParameterName(start, end);
+	private addParameter(start: number, end: number, parent: RawDeclaration, angles: AnglePairs): void {
+		const nameIndex = this.findParameterName(start, end, angles);
 		const name = this.token(nameIndex);
 		if (!isIdentifier(name)) return;
 		const first = this.token(this.nextSignificant(start, end));
@@ -1660,23 +1693,19 @@ export class CsharpParser {
 				isIdentifier(nextToken) &&
 				this.isLocalNameFollower(this.nextSignificant(next + 1, end));
 			const inferred = syntaxValue(item) === "var" && isIdentifier(nextToken);
-			if (!explicit && !inferred) {
+			const nameIndex = explicit || inferred ? next : this.tupleLocalName(current, end);
+			if (nameIndex < 0) {
 				statementStart = false;
 				current = this.nextSignificant(current + 1, end);
 				continue;
 			}
-			const nameToken = nextToken as Token;
-			const finish = this.findSemicolon(next + 1, end);
-			const endToken = this.token(finish >= 0 ? finish : next) ?? nameToken;
-			const declarator = this.declaratorSegments(current, finish >= 0 ? finish : next + 1)[0];
-			const typeEnd = this.previousSignificant(next, current);
-			const typeText =
-				!this.outline && !inferred && typeEnd >= current
-					? this.sourceSpan(item as Token, this.token(typeEnd) as Token)
-					: undefined;
+			const nameToken = this.token(nameIndex) as Token;
+			const finish = this.findSemicolon(nameIndex + 1, end);
+			const endToken = this.token(finish >= 0 ? finish : nameIndex) ?? nameToken;
+			const declarator = this.commaSegments(current, finish >= 0 ? finish : nameIndex + 1)[0];
 			const initializer = this.outline
 				? undefined
-				: this.initializerToken(current, finish >= 0 ? finish : end, next);
+				: this.initializerToken(current, finish >= 0 ? finish : end, nameIndex);
 			const inferredType =
 				!this.outline && inferred && initializer !== undefined ? displayForLiteral(initializer) : undefined;
 			const local = this.addDeclaration({
@@ -1692,13 +1721,12 @@ export class CsharpParser {
 				visibility: "local",
 				exported: false,
 				signature: declarator === undefined ? undefined : this.header(current, declarator.end),
-				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
 				...defined({ inferredType }),
 				nameTokenOffsets: [nameToken.startOffset],
 			});
-			this.recordTypeSpan(explicit ? { start: current, end: next } : undefined, local);
+			this.recordTypeSpan(inferred ? undefined : { start: current, end: nameIndex }, local);
 			if (finish >= 0) current = finish + 1;
-			else current = next + 1;
+			else current = nameIndex + 1;
 			statementStart = true;
 		}
 	}
@@ -1742,7 +1770,6 @@ export class CsharpParser {
 			visibility,
 			exported: exportedFor(visibility, parent),
 			signature: this.header(leading?.attributes ?? codeStartIndex, headerEnd),
-			...(this.outline ? {} : { typeText: this.typeTextBeforeName(start, nameIndex) }),
 			nameTokenOffsets: [name.startOffset],
 		});
 		this.recordTypeSpan(this.spanBeforeName(start, nameIndex), property);
@@ -1770,11 +1797,12 @@ export class CsharpParser {
 			this.report("Event declaration needs a terminating delimiter.", this.token(start));
 			return -1;
 		}
-		const finish = boundary.kind === "semicolon" ? boundary.index : boundary.index;
-		const segments = this.declaratorSegments(start + 1, finish);
+		const finish = boundary.index;
+		const angles = this.typeAngles(start + 1, finish);
+		const segments = this.commaSegments(start + 1, finish, angles);
 		const firstSegment = segments[0];
 		const firstNameIndex =
-			firstSegment === undefined ? -1 : this.findDeclaratorName(firstSegment.start, firstSegment.end);
+			firstSegment === undefined ? -1 : this.firstDeclaratorName(firstSegment.start, firstSegment.end, angles);
 		const firstName = this.token(firstNameIndex);
 		if (!isIdentifier(firstName)) {
 			this.report("Event declaration needs a name.", this.token(start));
@@ -1783,11 +1811,12 @@ export class CsharpParser {
 		const close = boundary.kind === "body" ? this.matching(boundary.index, "{", "}", end) : -1;
 		if (close >= 0) this.parseAccessorAttributes(boundary.index + 1, close);
 		const visibility = visibilityFor(modifiers, parent, "event");
-		const typeText = this.outline ? undefined : this.typeTextBeforeName(start + 1, firstNameIndex);
-		const qualifier = this.explicitInterfaceQualifier(start + 1, firstNameIndex);
+		const type = this.declaredType(this.spanBeforeName(start + 1, firstNameIndex));
+		const qualifier = this.explicitInterfaceQualifier(start + 1, firstNameIndex, angles);
 		for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
-			const segment = segments[segmentIndex] as { start: number; end: number };
-			const nameIndex = this.findDeclaratorName(segment.start, segment.end);
+			const segment = segments[segmentIndex] as TypeSpan;
+			const nameIndex =
+				segmentIndex === 0 ? firstNameIndex : this.findDeclaratorName(segment.start, segment.end, angles);
 			const name = this.token(nameIndex);
 			if (!isIdentifier(name)) continue;
 			this.ignoredOffsets.add(name.startOffset);
@@ -1809,7 +1838,7 @@ export class CsharpParser {
 					segment.end,
 					segmentIndex === 0 ? undefined : { from: firstNameIndex, to: nameIndex },
 				),
-				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
+				...type,
 				nameTokenOffsets: [name.startOffset],
 			});
 			this.recordTypeSpan(segmentIndex === 0 ? this.spanBeforeName(start + 1, nameIndex) : undefined, event);
@@ -1827,29 +1856,27 @@ export class CsharpParser {
 		modifiers: Set<string>,
 	): number {
 		const finish = boundary.kind === "semicolon" ? boundary.index : this.advanceBoundary(boundary, end);
-		const segments = this.declaratorSegments(start, finish);
-		if (segments.length === 0) {
-			this.report("Field declaration needs a name.", this.token(start));
-			return this.advanceBoundary(boundary, end);
-		}
-		const firstName = this.findDeclaratorName(segments[0]?.start ?? start, segments[0]?.end ?? finish);
+		const angles = this.typeAngles(start, finish);
+		const segments = this.commaSegments(start, finish, angles);
+		const firstName = this.firstDeclaratorName(segments[0]?.start ?? start, segments[0]?.end ?? finish, angles);
 		const firstNameToken = this.token(firstName);
 		if (!isIdentifier(firstNameToken)) {
 			this.report("Field declaration needs a name.", this.token(start));
 			return this.advanceBoundary(boundary, end);
 		}
-		const typeText = this.outline ? undefined : this.typeTextBeforeName(start, firstName);
+		const type = this.declaredType(this.spanBeforeName(start, firstName));
 		const kind: SymbolKind = modifiers.has("const") ? "constant" : "field";
 		const visibility = visibilityFor(modifiers, parent, kind);
 		for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
-			const segment = segments[segmentIndex] as { start: number; end: number };
-			const nameIndex = this.findDeclaratorName(segment.start, segment.end);
+			const segment = segments[segmentIndex] as TypeSpan;
+			const nameIndex =
+				segmentIndex === 0 ? firstName : this.findDeclaratorName(segment.start, segment.end, angles);
 			const name = this.token(nameIndex);
 			if (!isIdentifier(name)) continue;
 			this.ignoredOffsets.add(name.startOffset);
 			const initializer = this.initializerToken(segment.start, segment.end, nameIndex);
 			const inferredType =
-				!this.outline && typeText === undefined && initializer !== undefined
+				!this.outline && type.typeText === undefined && initializer !== undefined
 					? displayForLiteral(initializer)
 					: undefined;
 			const field = this.addDeclaration({
@@ -1869,7 +1896,7 @@ export class CsharpParser {
 					segment.end,
 					segmentIndex === 0 ? undefined : { from: firstName, to: nameIndex },
 				),
-				...(typeText === undefined ? {} : { typeText, typeName: typeNameFromText(typeText) }),
+				...type,
 				...defined({ inferredType }),
 				nameTokenOffsets: [name.startOffset],
 			});
@@ -1917,41 +1944,60 @@ export class CsharpParser {
 		return undefined;
 	}
 
+	/** Skips a leading or conversion tuple type, and an operator's symbol. */
 	private findCallParen(start: number, end: number): number {
-		let brackets = 0;
-		let angles = 0;
+		let typePosition = true;
+		let afterOperator = false;
+		let previous = -1;
 		for (let current = start; current < end; current++) {
-			const value = this.value(current);
-			if (value === "[") brackets++;
-			else if (value === "]") brackets--;
-			angles += angleDelta(value ?? "");
+			const item = this.token(current);
+			if (isTrivia(item)) continue;
+			const value = syntaxValue(item);
+			if (value === "(" && typePosition) {
+				const tuple = this.typeShape(current, end);
+				if (tuple !== undefined) {
+					current = tuple.end - 1;
+					previous = current;
+					typePosition = false;
+					afterOperator = false;
+					continue;
+				}
+			}
+			// `>>>` is two tokens.
+			const symbol: boolean = afterOperator && item?.kind === "punctuation" && value !== "(";
+			afterOperator = value === "operator" || symbol;
+			typePosition = value === "operator";
+			if (symbol) continue;
 			if (value === "=" || value === "=>") return -1;
-			if (value === "(" && brackets === 0 && angles === 0) return current;
+			if (value === "(") return current;
+			// Before its parameters a member holds types and names only.
+			if (value === "[" || (value === "<" && this.opensTypeList(previous, current, end, true, 0))) {
+				const close = value === "[" ? this.matching(current, "[", "]", end) : this.listClose(current, end);
+				if (close < 0) return -1;
+				current = close;
+			}
+			previous = current;
 		}
 		return -1;
 	}
 
-	private methodNameIndex(open: number, start: number): number {
+	private methodNameIndex(open: number, start: number, angles: AnglePairs = this.typeAngles(start, open)): number {
 		const nameIndex = this.previousSignificant(open, start);
-		if (nameIndex < 0 || (this.value(nameIndex) !== ">" && this.value(nameIndex) !== ">>")) return nameIndex;
-		let depth = 0;
-		for (let current = nameIndex; current >= start; current--) {
-			const value = this.value(current);
-			depth -= angleDelta(value ?? "");
-			if (value === "<") {
-				if (depth <= 0) return this.previousSignificant(current, start);
-			}
-		}
-		return nameIndex;
+		const list = this.listEndingAt(nameIndex, angles);
+		return list < 0 ? nameIndex : this.previousSignificant(list, start);
 	}
 
 	/** The written interface of an explicit implementation, as names; kinds are settled once the parse is whole. */
-	private explicitInterfaceQualifier(start: number, nameIndex: number): string[] {
+	private explicitInterfaceQualifier(
+		start: number,
+		nameIndex: number,
+		angles: AnglePairs = this.typeAngles(start, nameIndex),
+	): string[] {
 		const names: string[] = [];
 		let current = this.previousSignificant(nameIndex, start);
 		while (current >= start && this.value(current) === ".") {
 			const qualifier = this.previousSignificant(current, start);
-			const segment = this.genericInterfaceBefore(qualifier, start);
+			const segment = this.genericInterfaceBefore(qualifier, start, angles);
 			if (segment === null) break;
 			names.unshift(segment.name);
 			current = this.previousSignificant(segment.start, start);
@@ -1959,23 +2005,17 @@ export class CsharpParser {
 		return names;
 	}
 
-	private genericInterfaceBefore(index: number, start: number): { name: string; start: number } | null {
+	private genericInterfaceBefore(
+		index: number,
+		start: number,
+		angles: AnglePairs,
+	): { name: string; start: number } | null {
 		const token = this.token(index);
 		if (isIdentifier(token)) return { name: token.value, start: index };
-		if (this.value(index) !== ">" && this.value(index) !== ">>") return null;
-		let depth = 0;
-		for (let current = index; current >= start; current--) {
-			const value = this.value(current);
-			depth -= angleDelta(value ?? "");
-			if (value === "<") {
-				if (depth === 0) {
-					const nameIndex = this.previousSignificant(current, start);
-					const name = this.token(nameIndex);
-					return isIdentifier(name) ? { name: name.value, start: nameIndex } : null;
-				}
-			}
-		}
-		return null;
+		const list = this.listEndingAt(index, angles);
+		const nameIndex = list < 0 ? -1 : this.previousSignificant(list, start);
+		const name = this.token(nameIndex);
+		return isIdentifier(name) ? { name: name.value, start: nameIndex } : null;
 	}
 
 	private operatorName(start: number, open: number): { name: string; start: number; end: number } | undefined {
@@ -2054,44 +2094,12 @@ export class CsharpParser {
 		return found;
 	}
 
-	private declaratorSegments(start: number, end: number): Array<{ start: number; end: number }> {
-		const segments: Array<{ start: number; end: number }> = [];
-		let segmentStart = start;
-		let parentheses = 0;
-		let brackets = 0;
-		let braces = 0;
-		let angles = 0;
-		for (let current = start; current < end; current++) {
-			const value = this.value(current);
-			if (value === "(") parentheses++;
-			else if (value === ")") parentheses--;
-			else if (value === "[") brackets++;
-			else if (value === "]") brackets--;
-			else if (value === "{") braces++;
-			else if (value === "}") braces--;
-			angles += angleDelta(value ?? "");
-			if (value === "," && parentheses === 0 && brackets === 0 && braces === 0 && angles === 0) {
-				segments.push({ start: segmentStart, end: current });
-				segmentStart = current + 1;
-			}
-		}
-		segments.push({ start: segmentStart, end });
-		return segments;
-	}
-
-	private findDeclaratorName(start: number, end: number): number {
-		let current = this.nextSignificant(start, end);
-		let angles = 0;
-		while (current >= 0 && current < end) {
-			const item = this.token(current);
-			angles += angleDelta(this.value(current) ?? "");
-			if (item?.kind === "identifier" && angles === 0) {
-				const next = this.nextSignificant(current + 1, end);
-				const nextValue = this.value(next);
-				if (next < 0 || next >= end || nextValue === "=" || nextValue === "[" || nextValue === ",")
-					return current;
-			}
-			current = this.nextSignificant(current + 1, end);
+	private findDeclaratorName(start: number, end: number, angles: AnglePairs): number {
+		for (let current = start; current < end; current = this.closeOf(current, angles, end) + 1) {
+			if (!isIdentifier(this.token(current))) continue;
+			const next = this.nextSignificant(current + 1, end);
+			const nextValue = this.value(next);
+			if (next < 0 || nextValue === "=" || nextValue === "[" || nextValue === ",") return current;
 		}
 		return -1;
 	}
@@ -2119,11 +2127,129 @@ export class CsharpParser {
 		return { start: first, end: last + 1 };
 	}
 
-	private typeTextBeforeName(start: number, nameIndex: number): string | undefined {
-		const span = this.spanBeforeName(start, nameIndex);
-		if (span === undefined) return undefined;
-		const text = this.sourceSpan(this.token(span.start) as Token, this.token(span.end - 1) as Token);
-		return text === "var" ? undefined : text;
+	/** Undefined when no type starts here. */
+	private typeShape(start: number, end: number, depth = 0): TypeShape | undefined {
+		if (depth > MAX_TYPE_DEPTH) return undefined;
+		const shape: TypeShape = { end: -1, name: undefined, elementNames: [] };
+		let current = this.nextSignificant(start, end);
+		let expectName = true;
+		let qualifiable = false;
+		while (current >= 0 && current < end) {
+			const item = this.token(current);
+			const value = syntaxValue(item);
+			let next = current + 1;
+			if (expectName) {
+				if (isIdentifier(item)) {
+					shape.name = item;
+					qualifiable = true;
+				} else if (value === "(" && shape.end < 0) {
+					next = this.tupleClose(current, end, shape.elementNames, depth + 1) + 1;
+					if (next <= 0) return undefined;
+				} else break;
+				expectName = false;
+			} else if (value === "*" && shape.name?.value === "delegate") {
+				// Function pointer signature.
+				const open = this.findTopLevelValue(next, end, "<");
+				const pairs = open < 0 ? EMPTY_MAP : this.listWalk(open, end, depth + 1);
+				const close = pairs.get(open) ?? -1;
+				if (close < 0) break;
+				this.typeArguments(open, close, shape.elementNames, depth + 1, pairs);
+				next = close + 1;
+				qualifiable = false;
+			} else if (value === "<" && qualifiable) {
+				const pairs = this.listWalk(current, end, depth + 1);
+				const close = pairs.get(current) ?? -1;
+				this.typeArguments(current, close < 0 ? end : close, shape.elementNames, depth + 1, pairs);
+				// Closed by an outer `>>`.
+				if (close < 0) {
+					shape.end = end;
+					break;
+				}
+				next = close + 1;
+			} else if ((value === "." || value === "::") && qualifiable) {
+				expectName = true;
+			} else if (value === "?" || value === "*") {
+				qualifiable = false;
+			} else if (value === "[") {
+				const close = this.matching(current, "[", "]", end);
+				if (close < 0) break;
+				next = close + 1;
+				qualifiable = false;
+			} else break;
+			if (!expectName) shape.end = next;
+			current = this.nextSignificant(next, end);
+		}
+		return shape.end < 0 ? undefined : shape;
+	}
+
+	/** -1 when not a tuple type. */
+	private tupleClose(open: number, end: number, names: number[], depth: number): number {
+		const close = this.matching(open, "(", ")", end);
+		if (close < 0) return -1;
+		const segments = this.commaSegments(open + 1, close, this.typeAngles(open + 1, close, false, depth));
+		if (segments.length < 2) return -1;
+		const found: number[] = [];
+		for (const segment of segments) {
+			const element = this.typeShape(segment.start, segment.end, depth);
+			if (element === undefined) return -1;
+			found.push(...element.elementNames);
+			const name = this.nextSignificant(element.end, segment.end);
+			if (name < 0) continue;
+			if (!isIdentifier(this.token(name)) || this.nextSignificant(name + 1, segment.end) >= 0) return -1;
+			found.push(name);
+		}
+		names.push(...found);
+		return close;
+	}
+
+	/** Tuple names in type arguments. */
+	private typeArguments(open: number, close: number, names: number[], depth: number, angles: AnglePairs): void {
+		for (const segment of this.commaSegments(open + 1, close, angles)) {
+			names.push(...(this.typeShape(segment.start, segment.end, depth)?.elementNames ?? []));
+		}
+	}
+
+	/** Past modifier words. */
+	private leadingType(span: TypeSpan): LeadingType | undefined {
+		let first = this.nextSignificant(span.start, span.end);
+		while (first >= 0 && TYPE_PREFIXES.has(this.value(first) ?? ""))
+			first = this.nextSignificant(first + 1, span.end);
+		const shape = first < 0 ? undefined : this.typeShape(first, span.end);
+		return shape === undefined ? undefined : { first, shape };
+	}
+
+	private declaredType(span: TypeSpan | undefined): { typeText?: string; typeName?: string } {
+		if (this.outline || span === undefined) return {};
+		return this.typeFacts(this.leadingType(span));
+	}
+
+	/** `var` declares neither. */
+	private typeFacts(leading: LeadingType | undefined): { typeText?: string; typeName?: string } {
+		if (leading === undefined) return {};
+		const first = this.token(leading.first) as Token;
+		const last = this.token(this.previousSignificant(leading.shape.end, leading.first)) as Token;
+		if (first === last && first.value === "var") return {};
+		const name = leading.shape.name?.value;
+		return {
+			typeText: this.sourceSpan(first, last),
+			...(name === undefined || BUILTIN_TYPES.has(name) ? {} : { typeName: name }),
+		};
+	}
+
+	/** Searched past the type. */
+	private firstDeclaratorName(start: number, end: number, angles: AnglePairs): number {
+		const type = this.typeShape(start, end);
+		const name = type === undefined ? -1 : this.findDeclaratorName(type.end, end, angles);
+		return name >= 0 ? name : this.findDeclaratorName(start, end, angles);
+	}
+
+	/** A tuple-typed local's name, or -1. */
+	private tupleLocalName(start: number, end: number): number {
+		if (this.value(start) !== "(") return -1;
+		const type = this.typeShape(start, end);
+		const name = type === undefined ? -1 : this.nextSignificant(type.end, end);
+		if (!isIdentifier(this.token(name))) return -1;
+		return this.isLocalNameFollower(this.nextSignificant(name + 1, end)) ? name : -1;
 	}
 
 	private sourceSpan(start: Token, end: Token): string {
@@ -2137,6 +2263,8 @@ export class CsharpParser {
 		const tail = this.token(last);
 		if (last < first || head === undefined || tail === undefined) return undefined;
 		const folds: HeaderFold[] = [];
+		/** Opener index to closer index. */
+		const folded = new Map<number, number>();
 		const omit: OffsetRange[] = [];
 		const verbatim: OffsetRange[] = [];
 		let lead: OffsetRange | undefined;
@@ -2153,7 +2281,7 @@ export class CsharpParser {
 				previous = undefined;
 				continue;
 			}
-			if (previous !== undefined && this.text.slice(previous.endOffset, item.startOffset).trim() !== "")
+			if (previous !== undefined && this.lexed.droppedBefore.has(item))
 				omit.push({ start: previous.endOffset, end: item.startOffset });
 			previous = item;
 			if (item.kind === "comment" || item.kind === "doc" || item.kind === "directive") {
@@ -2167,6 +2295,7 @@ export class CsharpParser {
 			if (close > index) {
 				const closeToken = this.tokens[close] as Token;
 				folds.push({ start: item.startOffset, end: closeToken.endOffset });
+				folded.set(index, close);
 				index = close;
 				previous = closeToken;
 			}
@@ -2179,7 +2308,146 @@ export class CsharpParser {
 			folds,
 			omit,
 			verbatim,
+			angles:
+				skip === undefined
+					? this.typeBrackets(first, last + 1, folded)
+					: [...this.typeBrackets(first, skip.from, folded), ...this.typeBrackets(skip.to, last + 1, folded)],
 		});
+	}
+
+	/** Offsets of the `<` and `>` read as type brackets; folded groups are never walked. */
+	private typeBrackets(start: number, end: number, folded: ReadonlyMap<number, number>): number[] {
+		const walk: BracketWalk = { pairs: new Map(), folded };
+		this.bracketsIn(start, end, false, walk, 0);
+		const offsets: number[] = [];
+		// A `>>` closing two lists closes the inner with its first half.
+		const halves = new Map<number, number>();
+		for (const [open, close] of [...walk.pairs].sort((left, right) => right[0] - left[0])) {
+			const half = halves.get(close) ?? 0;
+			halves.set(close, half + 1);
+			offsets.push((this.tokens[open] as Token).startOffset, (this.tokens[close] as Token).startOffset + half);
+		}
+		return offsets;
+	}
+
+	/** The type bracket pairs of a span that starts as a type, or as a value. */
+	private typeAngles(start: number, end: number, value = false, depth = 0): AnglePairs {
+		const walk: BracketWalk = { pairs: new Map(), folded: EMPTY_MAP };
+		this.bracketsIn(start, end, value, walk, depth);
+		return walk.pairs;
+	}
+
+	/** The `>` or `>>` closing the type argument list opening at `open`; -1 when none does before `end`. */
+	private listClose(open: number, end: number): number {
+		return this.listWalk(open, end, 0).get(open) ?? -1;
+	}
+
+	/** The pairs of the type argument list opening at `open`, its own included once it closes. */
+	private listWalk(open: number, end: number, depth: number): AnglePairs {
+		const walk: BracketWalk = { pairs: new Map(), folded: EMPTY_MAP };
+		this.bracketsIn(open + 1, end, false, walk, depth, open);
+		return walk.pairs;
+	}
+
+	/**
+	 * A value group keeps a type argument list only where the grammar's disambiguation does.
+	 *
+	 * With `opened`, the walk is inside the list opening there and stops once it closes, or at a
+	 * token no type argument list holds. A list it leaves open stays open in a walk of its own, so
+	 * each is remembered.
+	 */
+	private bracketsIn(
+		start: number,
+		end: number,
+		value: boolean,
+		walk: BracketWalk,
+		depth: number,
+		opened?: number,
+	): void {
+		if (depth > MAX_TYPE_DEPTH) return;
+		const lists: number[] = opened === undefined ? [] : [opened];
+		let inValue = value;
+		let afterColon = false;
+		let previous = -1;
+		for (
+			let current = this.nextSignificant(start, end);
+			current >= 0 && current < end;
+			current = this.nextSignificant(current + 1, end)
+		) {
+			const item = this.token(current) as Token;
+			const text = syntaxValue(item);
+			const typed = lists.length > 0 || !inValue;
+			if (opened !== undefined && !isIdentifier(item) && !TYPE_LIST_PUNCTUATION.has(text ?? "")) break;
+			if (text === "<" && this.opensTypeList(previous, current, end, typed, depth)) {
+				lists.push(current);
+			} else if ((text === ">" || text === ">>") && lists.length > 0) {
+				// A `>>` with a half to spare leaves the opened list unclosed.
+				if (text === ">>" && lists.length === 1 && opened !== undefined) break;
+				walk.pairs.set(lists.pop() as number, current);
+				// One `>>` closes two lists.
+				if (text === ">>" && lists.length > 0) walk.pairs.set(lists.pop() as number, current);
+				if (lists.length === 0 && opened !== undefined) return;
+			} else if (text === "operator" && typed) {
+				// Its symbol, `>>>` being two tokens.
+				let symbol = this.nextSignificant(current + 1, end);
+				while (this.token(symbol)?.kind === "punctuation" && this.value(symbol) !== "(") {
+					current = symbol;
+					symbol = this.nextSignificant(symbol + 1, end);
+				}
+			} else if (text === "(" || text === "[" || text === "{") {
+				const fold = walk.folded.get(current);
+				const close = fold ?? this.matching(current, text, GROUP_CLOSERS.get(text) as string, end);
+				if (close < 0) break;
+				const holdsValue = this.groupHoldsValue(text, previous, typed, afterColon, lists.length > 0);
+				if (fold === undefined) this.bracketsIn(current + 1, close, holdsValue, walk, depth + 1);
+				current = close;
+			} else if (lists.length === 0) {
+				if (text === "=") inValue = true;
+				else if (text === ",") inValue = value;
+				else if (text === ":" && !inValue) afterColon = true;
+			}
+			previous = current;
+		}
+		if (opened === undefined) return;
+		for (const open of lists) this.openLists.set(open, Math.max(this.openLists.get(open) ?? -1, end));
+	}
+
+	private opensTypeList(previous: number, open: number, end: number, typed: boolean, depth: number): boolean {
+		const before = this.token(previous);
+		if (!typed) return isIdentifier(before) && this.expressionTypeArguments(open, end, depth);
+		if (isIdentifier(before)) return true;
+		// Function pointer.
+		return syntaxValue(before) === "*" && this.value(this.previousSignificant(previous)) === "delegate";
+	}
+
+	/** Types only, then a follower that keeps the list. */
+	private expressionTypeArguments(open: number, end: number, depth: number): boolean {
+		if ((this.openLists.get(open) ?? -1) >= end) return false;
+		const pairs = this.listWalk(open, end, depth + 1);
+		const close = pairs.get(open);
+		if (close === undefined) return false;
+		for (const segment of this.commaSegments(open + 1, close, pairs)) {
+			const shape = this.typeShape(segment.start, segment.end, depth + 1);
+			if (shape === undefined || this.nextSignificant(shape.end, segment.end) >= 0) return false;
+		}
+		const follower = this.token(this.nextSignificant(close + 1));
+		return follower?.kind === "eof" || TYPE_ARGUMENT_FOLLOWERS.has(syntaxValue(follower) ?? "");
+	}
+
+	/** Parameter lists, tuples, typeof operands and indexer parameters hold types. */
+	private groupHoldsValue(
+		open: string,
+		previous: number,
+		typed: boolean,
+		afterColon: boolean,
+		inList: boolean,
+	): boolean {
+		if (open === "{") return true;
+		const before = this.value(previous) ?? "";
+		if (open === "[") return !(typed && before === "this");
+		if (!typed) return !TYPE_OPERATORS.has(before);
+		// Base and constructor initializer arguments.
+		return !inList && afterColon;
 	}
 
 	/** Where a literal container opening at `index` closes; -1 when none does. */
@@ -2189,15 +2457,17 @@ export class CsharpParser {
 		const opener = this.value(before);
 		if (opener === undefined || !VALUE_OPENERS.has(opener)) return -1;
 		if (value === "[") {
-			// `a?[0]` indexes.
-			if (opener === "?" && this.token(before)?.endOffset === this.token(index)?.startOffset) return -1;
 			const close = this.matching(index, "[", "]", last + 1);
-			return close < 0 || this.declaresAfter(close, last) ? -1 : close;
+			if (close < 0 || this.declaresAfter(close, last)) return -1;
+			// `a?[0]` indexes; `c ? [0] : d` is a branch.
+			return opener === "?" && this.value(this.nextSignificant(close + 1, last + 1)) !== ":" ? -1 : close;
 		}
 		if (value !== "(") return -1;
 		if (opener === "(" && TYPE_OPERATORS.has(this.value(this.previousSignificant(before)) ?? "")) return -1;
 		const close = this.matching(index, "(", ")", last + 1);
 		if (close < 0 || this.findTopLevelValue(index + 1, close, ",") < 0) return -1;
+		// The comma may sit inside type arguments.
+		if (this.commaSegments(index + 1, close, this.typeAngles(index + 1, close, true)).length < 2) return -1;
 		const after = this.value(this.nextSignificant(close + 1, last + 1)) ?? "";
 		return NOT_TUPLE_FOLLOWERS.has(after) || this.declaresAfter(close, last) ? -1 : close;
 	}
@@ -2210,23 +2480,44 @@ export class CsharpParser {
 		return value === "(" || value === "[" || value === "?";
 	}
 
+	/** Element names are not references. */
 	private recordTypeSpan(span: TypeSpan | undefined, declaration: RawDeclaration): void {
 		if (this.outline || span === undefined) return;
+		const leading = this.leadingType(span);
+		// Explicit interface qualifier.
+		const qualifier = leading === undefined ? undefined : this.typeShape(leading.shape.end, span.end);
+		const elementNames = new Set([...(leading?.shape.elementNames ?? []), ...(qualifier?.elementNames ?? [])]);
 		for (let current = span.start; current < span.end; current++) {
 			const item = this.token(current);
-			if (item?.kind === "identifier" && !MODIFIERS.has(item.value)) this.typeTokenIndices.add(current);
+			if (item?.kind !== "identifier" || MODIFIERS.has(item.value)) continue;
+			if (elementNames.has(current)) this.ignoredOffsets.add(item.startOffset);
+			else this.typeTokenIndices.add(current);
 		}
-		if (declaration.typeText === undefined) {
-			const first = this.token(span.start);
-			const last = this.token(span.end - 1);
-			if (first !== undefined && last !== undefined) {
-				const text = this.sourceSpan(first, last);
-				if (text !== "var") {
-					declaration.typeText = text;
-					declaration.typeName = typeNameFromText(text);
-				}
-			}
+		if (declaration.typeText === undefined) Object.assign(declaration, this.typeFacts(leading));
+	}
+
+	/** Its line when nothing precedes it there. */
+	private closerLine(close: number): number | undefined {
+		const closer = close < 0 ? undefined : this.token(close);
+		if (closer === undefined) return undefined;
+		let previous = close - 1;
+		while (this.token(previous)?.kind === "newline") previous--;
+		const before = this.token(previous);
+		return before === undefined || lastLine(before) < closer.start.line ? closer.start.line : undefined;
+	}
+
+	/** Past the line break after the last code in the span. */
+	private lineAfterLast(from: number, end: number): number | undefined {
+		let last = from;
+		for (let index = from + 1; index < end; index++) {
+			const kind = this.token(index)?.kind;
+			if (kind !== "newline" && kind !== "comment" && kind !== "doc" && kind !== "eof") last = index;
 		}
+		for (let index = last + 1; index < this.tokens.length; index++) {
+			const item = this.token(index) as Token;
+			if (item.kind === "newline") return item.start.line + 1;
+		}
+		return undefined;
 	}
 
 	private advanceBoundary(boundary: Boundary, end: number, bodyClose = -1): number {
@@ -2375,7 +2666,7 @@ export class CsharpParser {
 				selectionRange: { start: raw.selectionStart.start, end: raw.selectionEnd.end },
 				visibility: raw.visibility,
 				exported: raw.exported,
-				...defined({ signature: raw.signature, containerId }),
+				...defined({ signature: raw.signature, containerId, memberInsertLine: raw.memberInsertLine }),
 				metrics,
 			};
 			declarations.push(declaration);
@@ -2430,6 +2721,7 @@ export class CsharpParser {
 			for (const offset of raw.nameTokenOffsets) declarationOffsets.add(offset);
 		const references: Reference[] = [];
 		const added = new Set<string>();
+		const qualified = this.qualifiedNameOffsets();
 		const add = (token: Token, role: Reference["role"], name = token.value): void => {
 			const key = `${token.startOffset}:${role}`;
 			if (added.has(key)) return;
@@ -2439,6 +2731,7 @@ export class CsharpParser {
 				name,
 				range: positionRange(token),
 				role,
+				qualified: qualified.has(token.startOffset),
 				binding: {
 					status: "unbound",
 					reason: "NotImplemented",
@@ -2521,6 +2814,18 @@ export class CsharpParser {
 		return references;
 	}
 
+	/** Names right of a member operator. */
+	private qualifiedNameOffsets(): Set<number> {
+		const offsets = new Set<number>();
+		let afterOperator = false;
+		for (const item of this.tokens) {
+			if (isTrivia(item)) continue;
+			if (afterOperator && isIdentifier(item)) offsets.add(item.startOffset);
+			afterOperator = item.kind === "punctuation" && MEMBER_OPERATORS.has(item.value);
+		}
+		return offsets;
+	}
+
 	private tokenForRange(range: Range): Token | undefined {
 		return this.tokens.find((item) => comparePositions(item.start, range.start) === 0);
 	}
@@ -2561,6 +2866,11 @@ export class CsharpParser {
 
 	/** Raw spans off the lexed stream, so a marker inside a string is never one. */
 	private extractComments(): CommentSpan[] {
-		return this.lexed.comments.map((item) => ({ range: positionRange(item), text: item.raw }));
+		return this.lexed.comments.map((item) => ({
+			range: positionRange(item),
+			text: item.raw,
+			codeBefore: this.lexed.trivia.get(item)?.codeBefore ?? false,
+			codeAfter: this.lexed.trivia.get(item)?.codeAfter ?? false,
+		}));
 	}
 }

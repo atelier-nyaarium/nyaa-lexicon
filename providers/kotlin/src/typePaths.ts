@@ -12,16 +12,28 @@ export const TYPE_NODES: ReadonlySet<string> = new Set([
 
 const TYPE_WRAPPERS: ReadonlySet<string> = new Set(["nullable_type", "non_nullable_type", "parenthesized_type"]);
 
-/** A named type's segments; undefined for a function type. */
-export function typePath(text: string, node: SyntaxNode | undefined): TypePath | undefined {
+/** Wrappers peeled; none for a function type. */
+function userType(node: SyntaxNode | undefined): SyntaxNode | undefined {
 	let current = node;
 	while (current !== undefined && current.type !== "user_type") {
 		if (!TYPE_WRAPPERS.has(current.type)) return undefined;
 		current = current.children.find((child) => child.named);
 	}
-	if (current === undefined) return undefined;
-	const segments = childrenOfType(current, "identifier").map((item) => nameText(text, item));
+	return current;
+}
+
+/** A named type's segments; undefined for a function type. */
+export function typePath(text: string, node: SyntaxNode | undefined): TypePath | undefined {
+	const type = userType(node);
+	if (type === undefined) return undefined;
+	const segments = childrenOfType(type, "identifier").map((item) => nameText(text, item));
 	return segments.length === 0 ? undefined : segments;
+}
+
+/** Last segment, never an argument. */
+export function headName(node: SyntaxNode | undefined): SyntaxNode | undefined {
+	const type = userType(node);
+	return type === undefined ? undefined : childrenOfType(type, "identifier").at(-1);
 }
 
 export function supertypePaths(text: string, node: SyntaxNode): TypePath[] {

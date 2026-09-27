@@ -170,8 +170,67 @@ const HEX = 0xff_u32;
 	});
 	expect(provider.typeOf({ symbolId: hexDeclaration.symbolId })).toMatchObject({
 		status: "inferred",
-		display: "i32",
+		display: "u32",
 	});
+});
+
+test("types a literal initializer from the number the lexer read", () => {
+	const { provider, facts } = parse(`fn run() {
+    let hex = 0x1e;
+    let sum = 0x1e+2;
+    let float = 1e3;
+    let small = 7u8;
+    let single = 2.5f32;
+    let byte = b'a';
+    let space = ' ';
+}
+`);
+	const typeOf = (name: string) => provider.typeOf({ symbolId: declaration(facts, name).symbolId });
+
+	expect(typeOf("hex")).toMatchObject({ status: "inferred", display: "i32" });
+	expect(typeOf("float")).toMatchObject({ status: "inferred", display: "f64" });
+	expect(typeOf("small")).toMatchObject({ status: "inferred", display: "u8" });
+	expect(typeOf("single")).toMatchObject({ status: "inferred", display: "f32" });
+	expect(typeOf("byte")).toMatchObject({ status: "inferred", display: "u8" });
+	expect(typeOf("space")).toMatchObject({ status: "inferred", display: "char" });
+	expect(facts.literals.map((literal) => [literal.value, literal.number])).toEqual([
+		["0x1e", 30],
+		["0x1e", 30],
+		["2", 2],
+		["1e3", 1000],
+		["7u8", 7],
+		["2.5f32", 2.5],
+	]);
+	expect(facts.references.some((reference) => reference.name === "b")).toBe(false);
+});
+
+test("reads a method called on a tuple field or an integer", () => {
+	const { facts } = parse("fn run(pair: (Vec<u8>, u8)) -> usize { pair.0.len() + 1.max(2) }\n");
+	const calls = facts.references.filter((reference) => reference.role === "call").map((reference) => reference.name);
+
+	expect(calls).toEqual(["len", "max"]);
+});
+
+test("indexes a CRLF file whose string literal spans lines", () => {
+	const { facts } = parse('pub const S: &str = "a\r\nb";\r\npub fn after() {}\r\n');
+
+	expect(facts.diagnostics).toEqual([]);
+	expect(facts.declarations.map((candidate) => candidate.name)).toEqual(["S", "after"]);
+});
+
+test("keeps a trait impl method id free of comments in the impl header", () => {
+	const header = (between: string) => `pub struct S;
+pub trait A { fn f(&self); }
+pub trait B { fn f(&self); }
+impl A for S { fn f(&self) {} }
+impl crate::${between}B for S { fn f(&self) {} }
+`;
+	const ids = (text: string) =>
+		parse(text)
+			.facts.declarations.filter((candidate) => candidate.name === "f" && candidate.kind === "method")
+			.map((candidate) => candidate.symbolId);
+
+	expect(ids(header("/* note */"))).toEqual(ids(header("")));
 });
 
 test("reports a format! string as one literal, its captured-identifier braces left verbatim", () => {
@@ -314,6 +373,58 @@ impl Render<String> for Ref<'_> {
 	});
 });
 
+test("marks member accesses and later path segments qualified, and bare names not", () => {
+	const text = `use crate::util::helper;
+pub struct Item { count: i32 }
+impl Item {
+    fn make() -> Self { Item { count: 0 } }
+    fn bump(&mut self) -> Option<i32> {
+        self.count += 1;
+        helper();
+        crate::util::run();
+        let other = Item::make();
+        let got = other.value()?.total;
+        std::dbg!(got);
+        println!("{}", got);
+        let list = Vec::<u8>::new();
+        match got { LOW...HIGH => {} _ => {} }
+        None
+    }
+}
+`;
+	const { facts } = parse(text);
+	const qualifiedAt = (snippet: string, name: string) => {
+		const at = text.indexOf(snippet) + snippet.indexOf(name);
+		const start = coordinatesOf(text).rangeAt(at, at + name.length)?.start;
+		if (start === undefined) throw new Error(`missing test text ${snippet}`);
+		const found = facts.references.filter(
+			(reference) =>
+				reference.range.start.line === start.line && reference.range.start.character === start.character,
+		);
+		if (found.length === 0) throw new Error(`no reference ${name} in ${snippet}`);
+		return [...new Set(found.map((reference) => reference.qualified))];
+	};
+
+	expect(facts.references.every((reference) => typeof reference.qualified === "boolean")).toBe(true);
+	expect(qualifiedAt("use crate::util::helper", "helper")).toEqual([false]);
+	expect(qualifiedAt("helper();", "helper")).toEqual([false]);
+	expect(qualifiedAt("-> Option", "Option")).toEqual([false]);
+	expect(qualifiedAt("{ count: 0 }", "count")).toEqual([false]);
+	expect(qualifiedAt("self.count", "count")).toEqual([true]);
+	expect(qualifiedAt("crate::util::run", "util")).toEqual([true]);
+	expect(qualifiedAt("crate::util::run", "run")).toEqual([true]);
+	expect(qualifiedAt("Item::make()", "Item")).toEqual([false]);
+	expect(qualifiedAt("Item::make()", "make")).toEqual([true]);
+	expect(qualifiedAt("other.value()", "other")).toEqual([false]);
+	expect(qualifiedAt("other.value()", "value")).toEqual([true]);
+	expect(qualifiedAt("?.total", "total")).toEqual([true]);
+	expect(qualifiedAt("std::dbg!", "dbg")).toEqual([true]);
+	expect(qualifiedAt("println!", "println")).toEqual([false]);
+	expect(qualifiedAt("Vec::<u8>::new", "Vec")).toEqual([false]);
+	expect(qualifiedAt("Vec::<u8>::new", "new")).toEqual([true]);
+	expect(qualifiedAt("LOW...HIGH", "HIGH")).toEqual([false]);
+});
+
 test("parses grouped imports, aliases, globs, and import references", () => {
 	const { facts } = parse(`use crate::util::{Thing, Other as Alias, *};
 use self::local::Value;
@@ -360,6 +471,114 @@ test("owns declarations in inline modules and gives fields and variants descript
 		"type:Item",
 		"term:value",
 	]);
+});
+
+test("names the line a member after a container's last one goes on, or none without a safe point", () => {
+	const { facts } = parse(`pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+pub union Bits {
+    pub int: u32,
+    pub float: f32,
+}
+pub enum State {
+    Ready,
+    Done(u8),
+}
+pub trait Shape {
+    fn area(&self) -> f64;
+}
+pub mod nested {
+    pub fn inner() {}
+    }
+pub struct Empty {
+}
+pub struct Tight { pub c: i32 }
+pub struct Unended {
+    pub a: i32
+}
+pub enum Crowded { A,
+    B,
+}
+pub mod noted {
+    pub fn f() {}
+    /* note */ }
+pub trait Spanned {
+    fn f(&self); /* opens
+    closes */ }
+pub struct Unit;
+pub struct Pair(i32, i32);
+pub struct Inline {}
+`);
+	const lines = Object.fromEntries(
+		facts.declarations
+			.filter((candidate) => candidate.containerId === undefined)
+			.map((candidate) => [candidate.name, candidate.memberInsertLine ?? null]),
+	);
+
+	expect(lines).toEqual({
+		Point: 3,
+		Bits: 7,
+		State: 11,
+		Shape: 14,
+		nested: 17,
+		Empty: 19,
+		Tight: null,
+		Unended: null,
+		Crowded: 26,
+		noted: null,
+		Spanned: null,
+		Unit: null,
+		Pair: null,
+		Inline: null,
+	});
+	expect(declaration(facts, "Bits")).toMatchObject({
+		kind: "struct",
+		languageKind: "union",
+		signature: "pub union Bits",
+	});
+	expect(declaration(facts, "float").containerId).toBe(declaration(facts, "Bits").symbolId);
+	expect(facts.references.some((reference) => reference.name === "union")).toBe(false);
+});
+
+test("counts only type brackets as angle depth, so a comparison or a shift ends nothing early", () => {
+	const { facts } = parse(`pub struct Grid {
+    pub cells: [u8; 1 << 2],
+    pub rows: Vec<Vec<u8>>,
+}
+fn run(x: u8, y: u8) {
+    let less = x < y;
+    let shifted = x >> 1;
+    let after = 2;
+}
+`);
+
+	expect(facts.declarations.map((candidate) => candidate.name)).toEqual([
+		"Grid",
+		"cells",
+		"rows",
+		"run",
+		"x",
+		"y",
+		"less",
+		"shifted",
+		"after",
+	]);
+	expect(declaration(facts, "cells").signature).toBe("pub cells: [u8; 1 << 2]");
+});
+
+test("reports each comment's trivia and the blank lines on the wire, and withholds both from an outline", () => {
+	const text = 'pub const A: &str = "one\n\ntwo"; // trailing\n\n/* own */\npub const B: i32 = 1;\n';
+	const full = parse(text).facts;
+	const outline = parse(text, "src/lib.rs", "outline").facts;
+
+	expect(full.comments).toEqual([
+		expect.objectContaining({ text: "// trailing", codeBefore: true, codeAfter: false }),
+		expect.objectContaining({ text: "/* own */", codeBefore: false, codeAfter: false }),
+	]);
+	expect(full.blankLines).toEqual([3]);
+	expect(outline.blankLines).toBeUndefined();
 });
 
 test("records function metrics, parameter declarations, and local pattern bindings", () => {
@@ -498,9 +717,11 @@ test("closes an empty block comment instead of swallowing the rest of the file",
 test("reports a shebang line and leaves an inner attribute alone", () => {
 	const shebang = parse("#!/usr/bin/env run-cargo-script\npub const A: i32 = 1;\n", "src/tool.rs").facts;
 	const attribute = parse("#![allow(dead_code)]\n// real\n", "src/attr.rs").facts;
+	const spaced = parse("#! [allow(dead_code)]\n// real\n", "src/spaced.rs").facts;
 
 	expect((shebang.comments ?? []).map((comment) => comment.text)).toEqual(["#!/usr/bin/env run-cargo-script"]);
 	expect((attribute.comments ?? []).map((comment) => comment.text)).toEqual(["// real"]);
+	expect((spaced.comments ?? []).map((comment) => comment.text)).toEqual(["// real"]);
 });
 
 test("ends a line comment before a CRLF terminator", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
-import { codeOnly, readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
+import { sourceFiles } from "@nyaa-lexicon/protocol";
+import { callsTo, parsedFiles } from "@nyaa-lexicon/protocol/ast";
 
 /**
  * Holds WorkspaceIndexer as the only writer of the index.
@@ -17,13 +18,10 @@ const OWNER = "indexer.ts";
 /** Defining the methods is not calling them. */
 const STORE = "store.ts";
 
-/** This file, which names the forbidden calls in its own patterns. */
-const RULE = "index-writer-residue.test.ts";
-
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "tmp", "fixtures"]);
 
 /** The two calls that change what the index holds for a file. */
-const WRITES = [/\breplaceFile\s*\(/, /\bforgetFile\s*\(/];
+const WRITES = ["replaceFile", "forgetFile"];
 
 const swept = (dir: string) => sourceFiles(dir, SKIP_DIRS);
 
@@ -41,15 +39,12 @@ describe("one module writes the index", () => {
 	// paths in a running system.
 	it("has nobody in production but the indexer replacing or forgetting a file's facts", () => {
 		const offenders: string[] = [];
-		const exempt = new Set([OWNER, STORE, RULE]);
+		const exempt = new Set([OWNER, STORE]);
 
-		for (const file of PACKAGES.flatMap(swept)) {
+		for (const { file, source } of PACKAGES.flatMap((dir) => parsedFiles(dir, SKIP_DIRS))) {
 			if (exempt.has(basename(file)) || file.includes("__tests__")) continue;
-			const source = readSwept(file);
-			if (source === null) continue;
-			const code = codeOnly(source);
-			for (const pattern of WRITES) {
-				if (pattern.test(code)) offenders.push(`${basename(file)}: ${pattern.source}`);
+			for (const write of WRITES) {
+				if (callsTo(source, write).length > 0) offenders.push(`${basename(file)}: ${write}`);
 			}
 		}
 

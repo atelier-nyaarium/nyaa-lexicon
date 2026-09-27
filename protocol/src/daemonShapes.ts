@@ -136,6 +136,8 @@ export const StoredReferenceSchema = z
 		/** Null when the reference did not bind, which is a fact worth keeping. */
 		targetId: z.string().nullable(),
 		fromId: z.string().nullable(),
+		/** Reached through a receiver or path; null when the provider did not say. */
+		qualified: z.boolean().nullable(),
 		/** A bound reference's provenance, or the reason an unbound one did not bind. */
 		provenance: z.string(),
 		startLine: z.number(),
@@ -1241,6 +1243,9 @@ export const REFACTOR_ISSUE_KINDS = [
 	"Landed",
 ] as const;
 
+/** Reported, never block commits. */
+export const ADVISORY_ISSUE_KINDS: ReadonlySet<string> = new Set(["ExportedBeyondIndex", "SameSpellingUnbound"]);
+
 export const RefactorIssueSchema = z
 	.object({
 		kind: z
@@ -1408,6 +1413,14 @@ export const RefactorBeforeImageSchema = z
 			encoding: z.literal("base64"),
 			bytes: z.string(),
 		}),
+		/** Asked with `content: false`. */
+		z.object({
+			tracked: z.literal(true),
+			existed: z.literal(true),
+			contentHash: z.string(),
+			encoding: z.enum(["text", "base64"]),
+			omitted: z.literal(true),
+		}),
 	])
 	.meta({ id: "RefactorBeforeImage" });
 
@@ -1548,10 +1561,12 @@ export const RefactorWriteFileResultSchema = z
 		}),
 		z.object({
 			written: z.literal(false),
-			refused: z.enum(["changed", "outside", "directory", "notAFile", "tooLarge", "unencodable"]),
+			refused: z.enum(["changed", "outside", "directory", "notAFile", "tooLarge", "unencodable", "refactor"]),
 			reason: z.string(),
 			/** Current hash when changed. */
 			contentHash: Hash32.nullable().optional(),
+			/** Open refactor on refusal. */
+			openRefactor: z.object({ id: z.string() }).nullable().optional(),
 		}),
 	])
 	.meta({ id: "RefactorWriteFileResult" });

@@ -6,16 +6,26 @@ import { Python3Dispatch } from "../python3";
 const EXTRACTOR = fileURLToPath(new URL("../extract.py", import.meta.url));
 const python3 = new Python3Dispatch();
 
+interface Span {
+	start: { line: number; character: number };
+	end: { line: number; character: number };
+}
+
+/** One-line span as [line, start column, end column]. */
+function at(span: Span): [number, number, number] {
+	return [span.start.line, span.start.character, span.end.character];
+}
+
 async function extract(module: string, text: string) {
 	const facts = await python3.runJson<{
-		declarations: { name: string; kind: string; exported: boolean; visibility: string }[];
+		declarations: { name: string; kind: string; exported: boolean; visibility: string; selectionRange: Span }[];
 		imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
 		role:
 			| { kind: "library" }
 			| { kind: "entry"; how: "main" | "guardedMain" | "topLevel"; symbolId?: string }
 			| { kind: "unknown"; reason: string };
 		literals: { kind: string; value: string; range: { start: { line: number; character: number } } }[];
-		references: { name: string; role: string }[];
+		references: { name: string; role: string; qualified: boolean; range: Span }[];
 		diagnostics: { severity: string }[];
 	}>([EXTRACTOR], { input: JSON.stringify({ module, text }) });
 	if (facts === null) throw new Error(python3.unavailableDetail);
@@ -275,14 +285,20 @@ test("classifies calls, receiver reads, writes, bases, and annotations", async (
 test("classifies explicit type comments without inferring types", async () => {
 	const facts = await extract(
 		"pkg/mod.py",
-		["def run(value):  # type: (Input) -> Output", "    result = value  # type: Result", "    return result"].join(
-			"\n",
-		),
+		[
+			"def run(value):  # type: (Input) -> Output",
+			"    result = value  # type: Result",
+			"    return result",
+			"def spread(*args, **kwargs):  # type: (*Args, **Kwargs) -> Spread",
+			"    pass",
+			'def arrow(value):  # type: (Literal["->"]) -> Arrow',
+			"    pass",
+		].join("\n"),
 	);
 
 	expect(
 		facts.references.filter((reference) => reference.role === "typeUse").map((reference) => reference.name),
-	).toEqual(["Input", "Output", "Result"]);
+	).toEqual(["Input", "Output", "Result", "Args", "Kwargs", "Spread", "Literal", "Arrow"]);
 });
 
 test("classifies exception and pattern captures as writes", async () => {
@@ -302,6 +318,97 @@ test("classifies exception and pattern captures as writes", async () => {
 	expect(
 		facts.references.filter((reference) => reference.role === "write").map((reference) => reference.name),
 	).toEqual(["failure", "x", "y", "point"]);
+});
+
+test("selects the name token each definition and capture binds", async () => {
+	const facts = await extract(
+		"pkg/mod.py",
+		[
+			"def ef():",
+			"    pass",
+			"async def sync():",
+			"    pass",
+			"class ss:",
+			"    pass",
+			"try:",
+			"    pass",
+			"except Error as E:",
+			"    pass",
+			"match p:",
+			"    case Point(x=b) as a:",
+			"        pass",
+			'    case {"k": v, **rest}:',
+			"        pass",
+			"    case [*tail]:",
+			"        pass",
+		].join("\n"),
+	);
+
+	expect(facts.declarations.map((declaration) => [declaration.name, ...at(declaration.selectionRange)])).toEqual([
+		["ef", 0, 4, 6],
+		["sync", 2, 10, 14],
+		["ss", 4, 6, 8],
+	]);
+	expect(
+		facts.references
+			.filter((reference) => reference.role === "write")
+			.map((reference) => [reference.name, ...at(reference.range)]),
+	).toEqual([
+		["E", 8, 16, 17],
+		["b", 11, 17, 18],
+		["a", 11, 23, 24],
+		["v", 13, 15, 16],
+		["rest", 13, 20, 24],
+		["tail", 15, 11, 15],
+	]);
+});
+
+test("marks only receiver and path uses qualified", async () => {
+	const facts = await extract(
+		"pkg/mod.py",
+		[
+			"import pkg.sub",
+			"from .other import thing",
+			"class Base:",
+			"    limit = 1",
+			"    cap = limit",
+			"class Child(pkg.sub.Base, Base):",
+			"    @tools.wrap",
+			"    def run(self, value: pkg.sub.Input) -> Output:",
+			"        thing(value)",
+			"        self.count += value.size",
+			"        try:",
+			"            pass",
+			"        except errors.Failure as failure:",
+			"            pass",
+		].join("\n"),
+	);
+
+	expect(facts.references.map((reference) => [reference.name, reference.role, reference.qualified])).toEqual([
+		["limit", "write", false],
+		["cap", "write", false],
+		["limit", "read", false],
+		["pkg", "read", false],
+		["sub", "read", true],
+		["Base", "extends", true],
+		["Base", "extends", false],
+		["tools", "read", false],
+		["wrap", "read", true],
+		["pkg", "typeUse", false],
+		["sub", "typeUse", true],
+		["Input", "typeUse", true],
+		["Output", "typeUse", false],
+		["thing", "call", false],
+		["value", "read", false],
+		["self", "read", false],
+		["count", "read", true],
+		["count", "write", true],
+		["value", "read", false],
+		["size", "read", true],
+		["errors", "read", false],
+		["Failure", "read", true],
+		["failure", "write", false],
+	]);
 });
 
 test("keeps imports and exports in import facts rather than duplicate references", async () => {

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { instantiates, parsedFiles } from "../astResidue";
 import { loadLifecycleCases } from "../conformance/lifecycleCorpus";
 import { runSuite } from "../conformance/runner";
-import { codeOnly, readSwept, sourceFiles } from "../residue";
 
 const PROVIDERS = join(import.meta.dirname, "..", "..", "..", "providers");
 
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "__tests__"]);
+
+const STORES = new Set(["moduleStore", "ModuleStore", "asyncModuleStore", "AsyncModuleStore"]);
 
 /** Stateful providers discovered by store use. */
 function statefulProviders(): string[] {
@@ -15,9 +17,7 @@ function statefulProviders(): string[] {
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => entry.name)
 		.filter((provider) =>
-			sourceFiles(join(PROVIDERS, provider, "src"), SKIP_DIRS).some((file) =>
-				/\b(async)?[mM]oduleStore</.test(codeOnly(readSwept(file) ?? "")),
-			),
+			parsedFiles(join(PROVIDERS, provider, "src"), SKIP_DIRS).some(({ source }) => instantiates(source, STORES)),
 		)
 		.sort();
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { extractComments } from "../comments";
+import { extractTrivia } from "../comments";
 import { harness } from "./harness.js";
 
 ////////////////////////////////
@@ -23,9 +23,18 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-function comments(text: string, module = "src/a.ts") {
+function trivia(text: string, module = "src/a.ts") {
 	const kind = module.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-	return extractComments(ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, kind));
+	return extractTrivia(ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, kind));
+}
+
+function comments(text: string, module?: string) {
+	return trivia(text, module).comments;
+}
+
+/** Each comment's text with whether code shares its first and last lines. */
+function sharedOf(text: string, module?: string): [string, boolean | undefined, boolean | undefined][] {
+	return comments(text, module).map((comment) => [comment.text, comment.codeBefore, comment.codeAfter]);
 }
 
 function textsOf(text: string, module?: string): string[] {
@@ -101,7 +110,14 @@ describe("comment spans", () => {
 	});
 
 	it("does not report JSX text or attribute values that read like markers", () => {
-		const text = 'const el = <div title="// not">text // not either</div>; // real\n';
+		const text = [
+			'const el = <div title="// not">text // not either</div>; // real',
+			"const opens = <p>// not at the start</p>;",
+			"const wrapped = <p>",
+			"\t/* not after a break */ text",
+			"</p>;",
+			"",
+		].join("\n");
 
 		expect(textsOf(text, "src/a.tsx")).toEqual(["// real"]);
 	});
@@ -138,9 +154,82 @@ describe("comment spans", () => {
 	});
 });
 
+describe("code beside a comment", () => {
+	it("says whether code shares a comment's first line before it and its last line after it", () => {
+		const text = [
+			"// own line",
+			"export const a = 1; // trailing",
+			"export const b = /* inline */ 2;",
+			"/* first */ // second",
+			"/* before */ export const c = 3;",
+			"export const d = 4; /* spans",
+			"   lines */ export const e = 5;",
+			"/* alone",
+			"   over lines */",
+			"export const f = 6; // last, with no line break after",
+		].join("\n");
+
+		expect(sharedOf(text)).toEqual([
+			["// own line", false, false],
+			["// trailing", true, false],
+			["/* inline */", true, true],
+			["/* first */", false, false],
+			["// second", false, false],
+			["/* before */", false, true],
+			["/* spans\n   lines */", true, true],
+			["/* alone\n   over lines */", false, false],
+			["// last, with no line break after", true, false],
+		]);
+	});
+
+	it("reads a JSX brace or a substitution as code, and an interpreter line as alone", () => {
+		expect(sharedOf("const el = <p>{/* note */}</p>;\n", "src/a.tsx")).toEqual([["/* note */", true, true]]);
+		expect(sharedOf(`const t = \`\${/* hole */ 1}\`;\n`)).toEqual([["/* hole */", true, true]]);
+		expect(sharedOf("#!/usr/bin/env node\nrun();\n")).toEqual([["#!/usr/bin/env node", false, false]]);
+	});
+});
+
+describe("blank lines", () => {
+	it("counts a line blank only when no token or comment touches it", () => {
+		const text = [
+			"export const a = 1;",
+			"",
+			"export const plain = `one",
+			"",
+			"two`;",
+			`export const held = \`x \${a}`,
+			"",
+			`\${a} y\`;`,
+			"/* block",
+			"",
+			"   comment */",
+			"export const el = <p>one",
+			"",
+			"two</p>;",
+			"export const layout = <div>",
+			"",
+			"\t<span />",
+			"</div>;",
+			"\t",
+			"export const b = 2;",
+			"",
+		].join("\n");
+
+		// JSX text is content, but whitespace between elements is layout.
+		expect(trivia(text, "src/a.tsx").blankLines).toEqual([1, 15, 18]);
+	});
+
+	it("ends the last line at a final line break, and counts none in an empty file", () => {
+		expect(trivia("a();\n").blankLines).toEqual([]);
+		expect(trivia("a();\n\n").blankLines).toEqual([1]);
+		expect(trivia("a();\r\n  ").blankLines).toEqual([1]);
+		expect(trivia("").blankLines).toEqual([]);
+	});
+});
+
 describe("the comments tier on the wire", () => {
-	it("carries comments with full facts, having declared the tier", () => {
-		const text = "// leading\nexport const total = 42; // trailing\n";
+	it("carries comments and blank lines with full facts, having declared the tier", () => {
+		const text = "// leading\n\nexport const total = 42; // trailing\n";
 		const root = workspace({ "src/a.ts": text });
 		const provider = harness();
 		const declared = provider.initialize(root);
@@ -152,6 +241,7 @@ describe("the comments tier on the wire", () => {
 			"// leading",
 			"// trailing",
 		]);
+		expect("blankLines" in facts ? facts.blankLines : undefined).toEqual([1]);
 	});
 
 	it("reports no comments at a reduced depth, like the literals beside them", () => {
