@@ -544,7 +544,9 @@ class Kit<V extends ModuleValue, P, E> {
 		const read = readWorkspaceFile(this.root, module);
 		// Retry unreadable files on later reads.
 		if (read.kind === "unreadable") return;
-		const contentHash = read.kind === "text" && read.lossless ? hashContent(read.text) : undefined;
+		// A UTF-16 file decodes faithfully; only a damaged decode is not what the file says.
+		const faithful = read.kind === "text" && (read.lossless || read.encoding !== undefined);
+		const contentHash = faithful ? hashContent(read.text) : undefined;
 		if (read.kind !== "text" || contentHash === undefined || contentHash === base.refused) {
 			this.miss(module, slot);
 			return;

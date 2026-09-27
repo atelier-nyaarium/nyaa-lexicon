@@ -205,7 +205,7 @@ against a promise that lives as long as the provider keeps one reaction per requ
 provider dies, and `core/src/deadline.ts` is the one module that races at all, minting its own
 second arm so nothing raced outlives the call.
 
-A git call, the python provider's own helper and the runtime version probe all run through
+A git call, the python provider's import probe and the runtime version probe all run through
 `protocol/src/boundedChild.ts`'s `runBounded`, the one owner of a bounded, reaped child process:
 spawned `detached`, bounded by a timeout that kills the whole process group and reaps it, since a
 shell script's own forked helper can inherit the child's stdout pipe and outlive a plain
@@ -538,8 +538,9 @@ A writer splices decoded text and writes it back as UTF-8, so it reads through `
 `core/src/sourceRead.ts`. That answers the text only when the decode was lossless: the text
 re-encoded as UTF-8 equals the bytes read. A BOM decodes to U+FEFF and round-trips, so it is kept.
 A module that is not valid UTF-8 is refused by name, since its U+FFFD would replace bytes nobody
-edited. A binary or oversized module is refused too, rather than overwritten as though absent, and so
-is one whose real path leaves the workspace through a link.
+edited. A UTF-16 module, read by its byte order mark, indexes but is refused the same way: written
+back as UTF-8, it would change encoding. A binary or oversized module is refused too, rather than
+overwritten as though absent, and so is one whose real path leaves the workspace through a link.
 Text bound for a module passes `writableText` beside it: a lone surrogate encodes as U+FFFD, so
 new text holding one is refused before a replace or an insert plans, and again at the write.
 

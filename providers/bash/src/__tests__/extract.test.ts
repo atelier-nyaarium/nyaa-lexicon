@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { coordinatesOf, handlersFor, PROTOCOL_VERSION, type Range } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, handlersFor, PROTOCOL_VERSION, type Range, TOO_DEEP } from "@nyaa-lexicon/protocol";
 import { parseBash } from "../extract.js";
 import { BashProvider } from "../main.js";
+import { parseBashScript } from "../syntax/parser.js";
 
 const BOM = String.fromCodePoint(0xfeff);
 
@@ -105,6 +106,47 @@ describe("declarations", () => {
 	});
 });
 
+describe("grammar", () => {
+	test("reads through line continuations, quotes in a subscript or brace, and a coprocess named before [[", () => {
+		const first = (text: string) => parseBashScript(text).script.commands[0]?.command;
+		expect(first("if\\\n true; then :; fi\n")?.type).toBe("If");
+		expect(first("f\\\n() { :; }\n")?.type).toBe("Function");
+		expect(first("true &\\\n& false\n")?.type).toBe("AndOr");
+		expect(first("coproc C [[ x == x ]]\n")).toMatchObject({ name: { value: "C" }, body: { type: "TestCommand" } });
+		expect(first('A["x]y"]=value\n')).toMatchObject({ prefix: [{ name: "A", value: { value: "value" } }] });
+		expect(first('echo {a,"b"}\n')).toMatchObject({ suffix: [{ parts: [{ type: "BraceExpansion" }] }] });
+		expect(first("FO\\\nO=1\n")).toMatchObject({ prefix: [{ name: "FOO", value: { value: "1" } }] });
+	});
+
+	test("reads a here-document's delimiter as bash does: quoting, not expansion, keeps the body literal", () => {
+		const redirect = (text: string) => {
+			const command = parseBashScript(text).script.commands[0]?.command;
+			return command?.type === "Command" ? command.redirects[0] : undefined;
+		};
+		expect(redirect("cat <<$END\n$VALUE\n$END\n")).toMatchObject({
+			heredocQuoted: undefined,
+			closing: { pos: 18 },
+			body: { parts: [{ type: "SimpleExpansion" }, { type: "Literal" }] },
+		});
+		expect(redirect("cat <<'END'\n$VALUE\nEND\n")?.heredocQuoted).toBe(true);
+		// An unquoted delimiter matches after line continuations join.
+		expect(redirect("cat <<EOF\nEO\\\nF\nafter\n")?.body?.value).toBe("");
+	});
+
+	test("a comment between [[ words, and a chain past the nesting limit, answer as bash and the limit do", () => {
+		expect(parseBashScript("[[ $X == a && # note\n   $Y == b ]]\n").script.errors).toEqual([]);
+		const long = `(( ${Array.from({ length: 5000 }, () => "x").join(" + ")} ))\n`;
+		expect(parseBashScript(long).script.errors.map((error) => error.message)).toEqual([TOO_DEEP]);
+		const nots = `[[ ${"! ".repeat(5000)}x ]]\n`;
+		expect(parseBashScript(nots).script.errors.map((error) => error.message)).toEqual([TOO_DEEP]);
+	});
+
+	test("an error inside backquotes lands where the source spells it", () => {
+		const text = "echo `echo )`\n";
+		expect(parseBashScript(text).script.errors[0]?.pos).toBe(text.indexOf(")"));
+	});
+});
+
 describe("file roles", () => {
 	const roleOf = (text: string) =>
 		provider({ "lib.sh": text }).parseFile({ module: "lib.sh", contentHash: "h", text }).role;
@@ -180,6 +222,15 @@ describe("references and literals", () => {
 
 		expect(parsed.literals.map((literal) => literal.value)).toEqual(["install ", "@", " now"]);
 		for (const literal of parsed.literals) expect(sliceOf(line, literal.range)).toBe(literal.value);
+	});
+
+	test("an array value's expansions and a substring's arithmetic read their variables", () => {
+		const reads = (line: string) =>
+			parseBash("x.sh", line)
+				.references.filter((reference) => reference.role === "read")
+				.map((reference) => reference.name);
+		expect(reads("declare -a ITEMS=($SOURCE)\n")).toEqual(["SOURCE"]);
+		expect(reads(`printf '%s' "\${TEXT:START:COUNT}"\n`)).toEqual(["TEXT", "START", "COUNT"]);
 	});
 
 	test("a call names a function of the file and a program is not a reference", () => {
@@ -366,10 +417,20 @@ describe("diagnostics, types, and positions", () => {
 			"\t\ttwo",
 			"\tthree\r\tfour",
 			"\tT",
+			"cat <<E",
+			"\\$x foo\\",
+			"bar",
+			"E",
+			"cat <<-S",
+			"\t\t$NAME",
+			"\tS",
 			"",
 		].join("\n");
 		const parsed = parseBash("h.sh", text);
-		expect(parsed.references.filter((reference) => reference.role === "read").map((r) => r.name)).toEqual(["NAME"]);
+		expect(parsed.references.filter((reference) => reference.role === "read").map((r) => r.name)).toEqual([
+			"NAME",
+			"NAME",
+		]);
 		expect(parsed.literals.map((literal) => [literal.value, sliceOf(text, literal.range)])).toEqual([
 			// An expanding body reports its own text runs too, around the $NAME the read above counts.
 			["hello ", "hello "],
@@ -377,8 +438,24 @@ describe("diagnostics, types, and positions", () => {
 			["kept $NAME\n", "kept $NAME\n"],
 			// Only a line break starts a line.
 			["one\ntwo\nthree\r\tfour\n", "\tone\n\t\ttwo\n\tthree\r\tfour\n"],
+			// Escapes and a continuation read as bash reads them.
+			["$x foobar\n", "\\$x foo\\\nbar\n"],
+			["\n", "\n"],
 		]);
 		expect(parsed.diagnostics).toEqual([]);
+	});
+
+	test("an indexed array's subscript is arithmetic, an associative array's a string", () => {
+		const text = 'declare -A map\necho "${arr[i + $j]}" "${map[$k-1]}"\n';
+		const parsed = parseBash("s.sh", text);
+		expect(parsed.references.filter((r) => r.role === "read").map((r) => r.name)).toEqual([
+			"arr",
+			"i",
+			"j",
+			"map",
+			"k",
+		]);
+		expect(parsed.literals.map((literal) => literal.value)).toEqual(["-1"]);
 	});
 
 	test("bind answers for a reference or a declaration at a position", () => {
@@ -589,8 +666,8 @@ describe("builtins that write", () => {
 		for (const reference of parsed.references) expect(sliceOf(text, reference.range)).toBe(reference.name);
 	});
 
-	test("a declared name spelled through quotes sits inside them, and one an escape moves takes its whole word", () => {
-		const text = `declare "q=1" 'r'=2 $'\\x61'=3 x\\y=4 msg=hello\\ world\n`;
+	test("a declared name sits inside its quotes and over its escapes; one an ANSI-C escape spells takes its word", () => {
+		const text = `declare "q=1" 'r'=2 $'\\x61'=3 x\\y=4 msg=hello\\ world\nread -a 'arr' <<< x\nunset 'q'\n`;
 		const parsed = parseBash("q.sh", text);
 		expect(
 			parsed.declarations.map((declaration) => [
@@ -601,8 +678,13 @@ describe("builtins that write", () => {
 			["q", "q"],
 			["r", "r"],
 			["a", "$'\\x61'=3"],
-			["xy", "x\\y=4"],
+			["xy", "x\\y"],
 			["msg", "msg"],
+			["arr", "arr"],
+		]);
+		expect(parsed.references.map((reference) => [reference.name, sliceOf(text, reference.range)])).toContainEqual([
+			"q",
+			"q",
 		]);
 		const values = parsed.literals.map((literal) => literal.value);
 		expect(values).toContain("hello\\ world");

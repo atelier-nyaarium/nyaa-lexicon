@@ -35,6 +35,11 @@ export function repeatedNamePathCase(): ConformanceCase {
 				subject: "src/twice.sh",
 				declarationNames: ["work", "work"],
 			},
+			powershell: {
+				files: { "src/twice.ps1": "function Invoke-Work { 1 }\nfunction Invoke-Work { 2 }\n" },
+				subject: "src/twice.ps1",
+				declarationNames: ["Invoke-Work", "Invoke-Work"],
+			},
 		},
 	};
 }

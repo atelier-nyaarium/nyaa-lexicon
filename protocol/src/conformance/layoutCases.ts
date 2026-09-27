@@ -20,6 +20,7 @@ const YAML = "yaml";
 const XML = "xml";
 const HTML = "html";
 const BASH = "bash";
+const POWERSHELL = "powershell";
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -45,6 +46,7 @@ function trivia(own: string, trailing: string, both?: string, before?: string): 
 
 const SLASH = trivia("// own line", "// trailing", "/* both */", "/* before */");
 const HASH = trivia("# own line", "# trailing");
+const HASH_BLOCK = trivia("# own line", "# trailing", "<# both #>", "<# before #>");
 const MARKUP = trivia("<!-- own line -->", "<!-- trailing -->", "<!-- both -->", "<!-- before -->");
 
 ////////////////////////////////
@@ -158,6 +160,13 @@ export function layoutCases(): ConformanceCase[] {
 					commentTrivia: HASH,
 				},
 				[BASH]: { ...file("src/trivia.sh", lines("# own line", "a=1 # trailing")), commentTrivia: HASH },
+				[POWERSHELL]: {
+					...file(
+						"src/trivia.ps1",
+						lines("# own line", "$a = 1 # trailing", "$b = <# both #> 2", "<# before #> $c = 3"),
+					),
+					commentTrivia: HASH_BLOCK,
+				},
 				[YAML]: { ...file("trivia.yml", lines("# own line", "a: 1 # trailing")), commentTrivia: HASH },
 				[XML]: {
 					...file(
@@ -304,6 +313,28 @@ export function layoutCases(): ConformanceCase[] {
 					...file(
 						"src/blank.sh",
 						lines("a=1", "", "s='one", "", "two'", "cat <<EOF", "x", "", "y", "EOF", "b=2"),
+					),
+					blankLines: [1],
+				},
+				[POWERSHELL]: {
+					...file(
+						"src/blank.ps1",
+						lines(
+							"$a = 1",
+							"",
+							"$s = 'one",
+							"",
+							"two'",
+							'$h = @"',
+							"x",
+							"",
+							"y",
+							'"@',
+							"<# a",
+							"",
+							"b #>",
+							"$b = 2",
+						),
 					),
 					blankLines: [1],
 				},

@@ -21,7 +21,7 @@ prebuilt bundle, so there is no install step and nothing else to set up.
 
 ## Languages
 
-Fifteen, each in its own process behind a documented protocol.
+Sixteen, each in its own process behind a documented protocol.
 
 | Provider   | Files                                                 |
 | ---------- | ----------------------------------------------------- |
@@ -34,6 +34,7 @@ Fifteen, each in its own process behind a documented protocol.
 | C          | `.c` `.h`                                             |
 | GDScript   | `.gd`                                                 |
 | Bash       | `.sh` `.bash`, the `.bashrc` family, `.profile`, and extensionless files whose shebang names `bash` or `sh` |
+| PowerShell | `.ps1` `.psm1` `.psd1`, and extensionless files whose shebang names `pwsh` or `powershell` |
 | Markdown   | `.md` `.mdc` `.markdown`                              |
 | JSON       | `.json` `.jsonc` `.jsonl` `.ndjson`                   |
 | YAML       | `.yml` `.yaml`                                        |

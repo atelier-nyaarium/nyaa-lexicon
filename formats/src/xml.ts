@@ -4,17 +4,15 @@ import {
 	type Declaration,
 	type Diagnostic,
 	defined,
-	isTooDeep,
 	type Literal,
-	MAX_NESTING,
 	type Range,
 	type TextCoordinates,
-	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
-import { parseXml, XmlCdata, XmlComment, XmlElement, type XmlNode, XmlText } from "@rgrove/parse-xml";
 import { droppedKey } from "./dropped.js";
-import { LayoutRecorder, trimmedSpan } from "./layout.js";
+import { LayoutRecorder } from "./layout.js";
 import { startTagSignature } from "./startTag.js";
+import { isBlankDocument, parseXmlDocument } from "./xml/parser.js";
+import { contentSpan, isWhiteSpace, type XmlContent } from "./xml/syntax.js";
 
 export interface XmlContext {
 	language: string;
@@ -35,142 +33,51 @@ export interface XmlFacts {
 
 const LIMIT = 16_384;
 
-interface AttributeSpan {
-	name: string;
-	value: string;
-	nameStart: number;
-	valueStart: number;
-	valueEnd: number;
-}
+/** Attributes that name their element, first found first. */
+const IDENTITY = ["id", "name", "key"];
 
 function localName(name: string): string {
 	const at = name.indexOf(":");
 	return (at < 0 ? name : name.slice(at + 1)).toLowerCase();
 }
 
-function tagEnd(text: string, start: number): number | undefined {
-	let quote: string | null = null;
-	for (let i = start; i < text.length; i++) {
-		const ch = text[i] as string;
-		if (quote !== null) {
-			if (ch === quote) quote = null;
-			continue;
-		}
-		if (ch === '"' || ch === "'") quote = ch;
-		else if (ch === ">") return i;
-	}
-	return undefined;
-}
-
-/** The attributes as written in one start tag, by a cursor that stops at the closing bracket. */
-function scanAttributes(text: string, start: number, end: number): { spans: AttributeSpan[] } {
-	const spans: AttributeSpan[] = [];
-	let i = start + 1;
-	while (i < end && /\s/u.test(text[i] as string)) i++;
-	while (i < end && text[i] !== ">") {
-		if (text[i] === "/") {
-			i++;
-			continue;
-		}
-		const nameStart = i;
-		while (i < end && !/[\s=/>]/u.test(text[i] as string)) i++;
-		if (i === nameStart) {
-			i++;
-			continue;
-		}
-		const name = text.slice(nameStart, i);
-		while (i < end && /\s/u.test(text[i] as string)) i++;
-		if (text[i] !== "=") continue;
-		i++;
-		while (i < end && /\s/u.test(text[i] as string)) i++;
-		const quote = text[i] as string;
-		if (quote !== '"' && quote !== "'") continue;
-		const valueStart = i;
-		i++;
-		while (i < end && text[i] !== quote) i++;
-		const valueEnd = Math.min(i + 1, end);
-		spans.push({
-			name,
-			value: text.slice(valueStart + 1, Math.max(valueStart + 1, i)),
-			nameStart,
-			valueStart,
-			valueEnd,
-		});
-		i = valueEnd;
-	}
-	return { spans };
-}
-
 function rangeAt(context: XmlContext, start: number, end: number): Range | undefined {
 	return context.coordinates.rangeAt(context.offset + start, context.offset + end);
-}
-
-/** Element depth past the limit, walked without recursing. */
-function nestedTooDeep(nodes: readonly XmlNode[]): boolean {
-	const pending = nodes.map((node) => ({ node, depth: 1 }));
-	while (pending.length > 0) {
-		const { node, depth } = pending.pop() as { node: XmlNode; depth: number };
-		if (!(node instanceof XmlElement)) continue;
-		if (depth > MAX_NESTING) return true;
-		for (const child of node.children) pending.push({ node: child, depth: depth + 1 });
-	}
-	return false;
 }
 
 export function readXml(context: XmlContext): XmlFacts {
 	const declarations: Declaration[] = [];
 	const literals: Literal[] = [];
-	const comments: CommentSpan[] = [];
 	const diagnostics: Diagnostic[] = [];
-	const bom = context.text.startsWith("\uFEFF") ? 1 : 0;
-	const text = context.text.slice(bom);
+	const text = context.text;
 	const layout = new LayoutRecorder(context.coordinates);
-	const extent = { start: context.offset, end: context.offset + context.text.length };
-	if (text.trim() === "")
-		return { declarations, literals, comments, blankLines: layout.finish(extent).blankLines, diagnostics };
-	const tooDeep: XmlFacts = {
-		declarations,
-		literals,
-		comments,
-		diagnostics: [{ severity: "error", message: TOO_DEEP, path: context.module }],
-	};
-	let document: { children: XmlNode[] };
-	try {
-		// Every node kept, so each token's lines are known.
-		document = parseXml(text, {
-			includeOffsets: true,
-			preserveComments: true,
-			preserveCdata: true,
-			preserveDocumentType: true,
-			preserveXmlDeclaration: true,
-		}) as unknown as {
-			children: XmlNode[];
-		};
-	} catch (error) {
-		// The parser recurses per element.
-		if (isTooDeep(error)) return tooDeep;
-		const failure = error as { message?: string; pos?: number };
-		const at = typeof failure.pos === "number" ? rangeAt(context, bom + failure.pos, bom + failure.pos) : undefined;
-		return {
-			declarations,
-			literals,
-			comments,
-			diagnostics: [
-				{
-					severity: "error",
-					message: failure.message ?? String(error),
-					path: context.module,
-					...defined({ range: at }),
-				},
-			],
-		};
+	const extent = { start: context.offset, end: context.offset + text.length };
+	if (isBlankDocument(text))
+		return { declarations, literals, comments: [], blankLines: layout.finish(extent).blankLines, diagnostics };
+	const parsed = parseXmlDocument(text);
+	if (parsed.problem !== undefined) {
+		const { message, pos } = parsed.problem;
+		const range = rangeAt(context, pos, pos);
+		diagnostics.push({ severity: "error", message, path: context.module, ...defined({ range }) });
+		return { declarations, literals, comments: [], diagnostics };
 	}
-	if (nestedTooDeep(document.children)) return tooDeep;
+	const { document } = parsed;
 
-	const file = (offset: number): number => context.offset + bom + offset;
+	const file = (offset: number): number => context.offset + offset;
+	for (const token of document.tokens) {
+		const piece = text.slice(token.pos, token.end);
+		if (token.kind === "comment") layout.comment(file(token.pos), file(token.end), piece);
+		else if (token.kind !== "text") layout.code(file(token.pos), file(token.end));
+		else {
+			// White space text is not code.
+			const code = contentSpan(piece, token.pos);
+			if (code !== undefined) layout.code(file(code.pos), file(code.end));
+		}
+	}
+
 	const addLiteral = (value: string, start: number, end: number, containerId: string, label: string): void => {
-		if (value.trim() === "") return;
-		const range = rangeAt(context, bom + start, bom + end);
+		if (isWhiteSpace(value)) return;
+		const range = rangeAt(context, start, end);
 		if (value.length > LIMIT) {
 			diagnostics.push(droppedKey("oversized", context.module, range, label, value.length));
 			return;
@@ -179,69 +86,29 @@ export function readXml(context: XmlContext): XmlFacts {
 	};
 
 	interface Pending {
-		node: XmlNode;
+		node: XmlContent;
 		parentId?: string;
 		parentName?: string;
 		parents: Array<{ kind: "term"; name: string }>;
 	}
-	const pending: Pending[] = document.children.map((node) => ({ node, parents: [] })).reverse();
+	const pending: Pending[] = [{ node: document.root, parents: [] }];
 	while (pending.length > 0) {
-		const current = pending.pop() as Pending;
-		const node = current.node;
-		const parentId = current.parentId;
-		const parents = current.parents;
-		if (node instanceof XmlComment) {
-			layout.comment(file(node.start), file(node.end), text.slice(node.start, node.end));
+		const { node, parentId, parentName, parents } = pending.pop() as Pending;
+		if (node.type === "text" || node.type === "cdata") {
+			if (parentId !== undefined) addLiteral(node.text, node.pos, node.end, parentId, parentName ?? "");
 			continue;
 		}
-		if (node instanceof XmlText || node instanceof XmlCdata) {
-			// Whitespace text is not code; CDATA always is.
-			const code =
-				node instanceof XmlCdata
-					? { start: node.start, end: node.end }
-					: trimmedSpan(text.slice(node.start, node.end), node.start);
-			if (code !== undefined) layout.code(file(code.start), file(code.end));
-			if (parentId !== undefined) addLiteral(node.text, node.start, node.end, parentId, current.parentName ?? "");
-			continue;
-		}
-		if (!(node instanceof XmlElement)) {
-			layout.code(file(node.start), file(node.end));
-			continue;
-		}
-		// Children abut, so the tags are what lies outside them.
-		const first = node.children[0];
-		const last = node.children[node.children.length - 1];
-		if (first === undefined || last === undefined) layout.code(file(node.start), file(node.end));
-		else {
-			layout.code(file(node.start), file(first.start));
-			layout.code(file(last.end), file(node.end));
-		}
-		const end = tagEnd(text, node.start);
-		if (end === undefined) continue;
-		const scan = scanAttributes(text, node.start, end);
-		const parsedNames = Object.keys(node.attributes);
-		if (scan.spans.length !== parsedNames.length || scan.spans.some((item) => !(item.name in node.attributes))) {
-			diagnostics.push({
-				severity: "info",
-				message: `attribute scan disagreed with the parser on ${node.name}`,
-				path: context.module,
-			});
-		}
-		const identity = ["id", "name", "key"].map((wanted) =>
-			scan.spans.find((item) => localName(item.name) === wanted && item.value !== ""),
-		);
-		const promoted = identity.find((item) => item !== undefined);
+		if (node.type !== "element") continue;
+		const promoted = IDENTITY.map((wanted) =>
+			node.attributes.find((attribute) => localName(attribute.name) === wanted && attribute.value !== ""),
+		).find((attribute) => attribute !== undefined);
 		const name = promoted?.value ?? node.name;
 		// The rename span is the identity as written, inside its quotes.
 		const selectionRange =
 			promoted === undefined
-				? rangeAt(context, bom + node.start + 1, bom + node.start + 1 + node.name.length)
-				: rangeAt(
-						context,
-						bom + promoted.valueStart + 1,
-						bom + Math.max(promoted.valueStart + 1, promoted.valueEnd - 1),
-					);
-		const range = rangeAt(context, bom + node.start, bom + node.end);
+				? rangeAt(context, node.pos + 1, node.pos + 1 + node.name.length)
+				: rangeAt(context, promoted.valuePos + 1, Math.max(promoted.valuePos + 1, promoted.end - 1));
+		const range = rangeAt(context, node.pos, node.end);
 		if (selectionRange === undefined || range === undefined) continue;
 		const descriptors = [...parents, { kind: "term" as const, name }];
 		const elementId = composeSymbolId({ language: context.language, module: context.module, descriptors });
@@ -255,20 +122,16 @@ export function readXml(context: XmlContext): XmlFacts {
 			...defined({
 				signature: startTagSignature(
 					text,
-					node.start,
-					end + 1,
-					scan.spans.map((attribute) => ({ start: attribute.valueStart, end: attribute.valueEnd })),
+					node.pos,
+					node.startTagEnd,
+					node.attributes.map((attribute) => ({ start: attribute.valuePos, end: attribute.end })),
 				),
 				containerId: parentId,
 			}),
 		});
-		for (const attribute of scan.spans) {
-			const attrRange = rangeAt(context, bom + attribute.nameStart, bom + attribute.valueEnd);
-			const attrSelection = rangeAt(
-				context,
-				bom + attribute.nameStart,
-				bom + attribute.nameStart + attribute.name.length,
-			);
+		for (const attribute of node.attributes) {
+			const attrRange = rangeAt(context, attribute.pos, attribute.end);
+			const attrSelection = rangeAt(context, attribute.pos, attribute.nameEnd);
 			if (attrRange === undefined || attrSelection === undefined) continue;
 			const attrId = composeSymbolId({
 				language: context.language,
@@ -284,13 +147,13 @@ export function readXml(context: XmlContext): XmlFacts {
 				visibility: "public",
 				containerId: elementId,
 			});
-			addLiteral(attribute.value, attribute.valueStart, attribute.valueEnd, attrId, attribute.name);
+			addLiteral(attribute.value, attribute.valuePos, attribute.end, attrId, attribute.name);
 		}
 		for (let index = node.children.length - 1; index >= 0; index--) {
-			const child = node.children[index] as XmlNode;
+			const child = node.children[index] as XmlContent;
 			pending.push({ node: child, parentId: elementId, parentName: name, parents: descriptors });
 		}
 	}
-	const { comments: spans, blankLines } = layout.finish(extent);
-	return { declarations, literals, comments: spans, blankLines, diagnostics };
+	const { comments, blankLines } = layout.finish(extent);
+	return { declarations, literals, comments, blankLines, diagnostics };
 }

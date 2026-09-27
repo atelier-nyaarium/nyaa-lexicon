@@ -12,7 +12,7 @@ export function roleCases(): ConformanceCase[] {
 			tier: "fileRoles",
 			about: "Declarations and their initializers do not make an entry, including a prototype, an instance Main, and a Kotlin main in a class or on a receiver.",
 			semanticForm: "declarations-only",
-			applicableLanguages: ["typescript", "python", "bash", "c", "cpp", "csharp", "rust", "kotlin"],
+			applicableLanguages: ["typescript", "python", "bash", "c", "cpp", "csharp", "rust", "kotlin", "powershell"],
 			role: { kind: "library" },
 			fixtures: {
 				typescript: {
@@ -56,6 +56,13 @@ export function roleCases(): ConformanceCase[] {
 					},
 					subject: "src/Cart.kt",
 				},
+				powershell: {
+					files: {
+						"src/cart.ps1":
+							"function Add-Item([int]$a, [int]$b = 1) {\n\treturn $a + $b\n}\n\nclass Cart {\n\t[int]$Total = 0\n\tstatic [void] Main() {}\n}\n\nenum Size {\n\tSmall\n\tLarge\n}\n",
+					},
+					subject: "src/cart.ps1",
+				},
 			},
 		},
 		{
@@ -87,7 +94,7 @@ export function roleCases(): ConformanceCase[] {
 			tier: "fileRoles",
 			about: "Assignments used to initialize or export a library stay declarative whatever value they compute.",
 			semanticForm: "assignment-setup",
-			applicableLanguages: ["typescript", "python", "bash"],
+			applicableLanguages: ["typescript", "python", "bash", "powershell"],
 			role: { kind: "library" },
 			fixtures: {
 				typescript: {
@@ -108,6 +115,10 @@ export function roleCases(): ConformanceCase[] {
 					files: { "src/lib.sh": "STARTED=$(date +%s)\nVERSION=1\n" },
 					subject: "src/lib.sh",
 				},
+				powershell: {
+					files: { "src/lib.ps1": "$script:Started = Get-Date\n[int]$Version = 1\n" },
+					subject: "src/lib.ps1",
+				},
 			},
 		},
 		{
@@ -115,7 +126,7 @@ export function roleCases(): ConformanceCase[] {
 			tier: "fileRoles",
 			about: "Conditional setup stays declarative when only its branches are considered, including try fallbacks and setup blocks.",
 			semanticForm: "conditional-setup",
-			applicableLanguages: ["typescript", "python", "bash"],
+			applicableLanguages: ["typescript", "python", "bash", "powershell"],
 			role: { kind: "library" },
 			fixtures: {
 				typescript: {
@@ -138,19 +149,32 @@ export function roleCases(): ConformanceCase[] {
 					},
 					subject: "src/setup.sh",
 				},
+				powershell: {
+					files: {
+						"src/setup.ps1":
+							"if (Test-Path $PSScriptRoot/local.ps1) { . $PSScriptRoot/local.ps1 }\ntry { Import-Module Optional } catch { $Fallback = $true } finally { $Completed = $true }\n",
+					},
+					subject: "src/setup.ps1",
+				},
 			},
 		},
 		{
 			id: "sourced-setup-is-not-an-entry",
 			tier: "fileRoles",
-			about: "Bash source and dot commands set up a library without making it an entry.",
+			about: "Sourcing and dot-sourcing another script set up a library without making it an entry.",
 			semanticForm: "sourced-setup",
-			applicableLanguages: ["bash"],
+			applicableLanguages: ["bash", "powershell"],
 			role: { kind: "library" },
 			fixtures: {
 				bash: {
 					files: { "src/lib.sh": 'source "$(dirname "$0")/common.sh"\n. ./colors.sh\n' },
 					subject: "src/lib.sh",
+				},
+				powershell: {
+					files: {
+						"src/lib.ps1": '. "$PSScriptRoot\\common.ps1"\n. (Join-Path $PSScriptRoot colors.ps1)\n',
+					},
+					subject: "src/lib.ps1",
 				},
 			},
 		},
@@ -303,7 +327,7 @@ export function roleCases(): ConformanceCase[] {
 			tier: "fileRoles",
 			about: "A statement outside declarations that runs on load makes the file a top-level entry.",
 			semanticForm: "statements-run-on-load",
-			applicableLanguages: ["typescript", "python", "bash"],
+			applicableLanguages: ["typescript", "python", "bash", "powershell"],
 			role: { kind: "entry", how: "topLevel" },
 			fixtures: {
 				typescript: {
@@ -317,6 +341,13 @@ export function roleCases(): ConformanceCase[] {
 				bash: {
 					files: { "src/script.sh": 'greet() {\n  echo "$1"\n}\ngreet hello\n' },
 					subject: "src/script.sh",
+				},
+				powershell: {
+					files: {
+						"src/script.ps1":
+							"function Invoke-Greet($Name) {\n\tWrite-Output $Name\n}\nInvoke-Greet hello\n",
+					},
+					subject: "src/script.ps1",
 				},
 			},
 		},

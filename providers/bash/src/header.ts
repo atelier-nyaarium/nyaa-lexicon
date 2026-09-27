@@ -1,9 +1,9 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
 import { Cursor, type HeaderFold, type HeaderSpan, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
-import type { Word } from "unbash";
-import { rangesOf, type Token } from "./comments.js";
+import { rangesOf } from "./comments.js";
 import { assignmentOf, type Walk } from "./context.js";
+import type { Token, Word } from "./syntax/ast.js";
 
 ////////////////////////////////
 //  Interfaces & Types

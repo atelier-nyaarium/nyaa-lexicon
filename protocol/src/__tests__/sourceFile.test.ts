@@ -119,6 +119,25 @@ describe("reading a module inside the workspace", () => {
 		});
 	});
 
+	it("decodes a UTF-16 file by its byte order mark, for reading only, and keeps a NUL-bearing file binary", () => {
+		const text = `${String.fromCodePoint(0xfeff)}$x = 1\r\n`;
+		writeFileSync(path.join(root, "le.ps1"), Buffer.from(text, "utf16le"));
+		writeFileSync(path.join(root, "be.ps1"), Buffer.from(text, "utf16le").swap16());
+		writeFileSync(path.join(root, "odd.ps1"), Buffer.concat([Buffer.from(text, "utf16le"), Buffer.from([0x41])]));
+		writeFileSync(path.join(root, "nul.ts"), Buffer.from([0x61, 0x00, 0x62]));
+		expect({
+			le: readWorkspaceFile(root, "le.ps1"),
+			be: readWorkspaceFile(root, "be.ps1"),
+			odd: readWorkspaceFile(root, "odd.ps1").kind,
+			nul: readWorkspaceFile(root, "nul.ts").kind,
+		}).toEqual({
+			le: { kind: "text", text, lossless: false, encoding: "utf-16le" },
+			be: { kind: "text", text, lossless: false, encoding: "utf-16be" },
+			odd: "binary",
+			nul: "binary",
+		});
+	});
+
 	it("reads a shebang line only from a file inside", () => {
 		expect([
 			readWorkspaceHead(root, "file-in.ts"),

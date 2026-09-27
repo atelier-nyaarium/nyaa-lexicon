@@ -1,15 +1,6 @@
-// The walk over the unbash tree: what each node means to an index.
+// The walk over the syntax tree: what each node means to an index.
 
 import { Cursor, coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
-import {
-	type Command,
-	type If,
-	type Node,
-	type ParsedScript,
-	parse,
-	type Statement,
-	type TestExpression,
-} from "unbash";
 import {
 	aliases,
 	DECLARING,
@@ -22,11 +13,10 @@ import {
 	unsetting,
 	walkAssignmentPrefix,
 } from "./builtins.js";
-import { blankLinesOf, commentSpans, spansOf, tokensOf } from "./comments.js";
+import { blankLinesOf, commentSpans } from "./comments.js";
 import {
 	FUNCTION_NAME_RE,
 	type ParsedBashFile,
-	pushOpaque,
 	pushReference,
 	rangeAt,
 	type Scope,
@@ -37,7 +27,9 @@ import {
 import { commandHeader, signHeaders } from "./header.js";
 import { walkRedirect } from "./heredoc.js";
 import { declare, settle, subshell } from "./scope.js";
-import { declareOrWriteWord, walkArithmetic, walkWord, walkWords } from "./words.js";
+import type { Command, Function as FunctionNode, If, Node, Script, Statement, TestExpression } from "./syntax/ast.js";
+import { parseBashScript } from "./syntax/parser.js";
+import { declareOrWriteWord, nameRange, walkArithmetic, walkWord, walkWords } from "./words.js";
 
 export type { BashDeclaration, BashReference, DeclaredType, ParsedBashFile, SourceImport } from "./context.js";
 export { LANGUAGE } from "./context.js";
@@ -122,9 +114,8 @@ function runsOnLoad(statement: Statement): boolean {
 	}
 }
 
-function fileRole(script: ParsedScript): ParsedBashFile["role"] {
-	if (script.errors !== undefined && script.errors.length > 0)
-		return { kind: "unknown" as const, reason: "ParseError" as const };
+function fileRole(script: Script): ParsedBashFile["role"] {
+	if (script.errors.length > 0) return { kind: "unknown" as const, reason: "ParseError" as const };
 	return script.commands.some(runsOnLoad)
 		? { kind: "entry" as const, how: "topLevel" as const }
 		: { kind: "library" as const };
@@ -152,10 +143,10 @@ function walkTest(w: Walk, scope: Scope, expression: TestExpression): void {
 	}
 }
 
-function walkFunction(w: Walk, scope: Scope, node: Extract<Node, { type: "Function" }>): void {
+function walkFunction(w: Walk, scope: Scope, node: FunctionNode): void {
 	const name = node.name.value;
 	const range = rangeAt(w, node.pos, node.end);
-	const declaration = declare(w, scope, name, wordRange(w, node.name), range, {
+	const declaration = declare(w, scope, name, nameRange(w, node.name, name), range, {
 		kind: "function",
 		local: false,
 		header: { start: node.pos, end: node.body.pos },
@@ -242,7 +233,6 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 			walkArithmetic(w, scope, node.initialize);
 			walkArithmetic(w, scope, node.test);
 			walkArithmetic(w, scope, node.update);
-			pushOpaque(w, node.pos, node.body.pos);
 			walkNode(w, scope, node.body);
 			break;
 		case "TestCommand":
@@ -250,7 +240,6 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 			break;
 		case "ArithmeticCommand":
 			walkArithmetic(w, scope, node.expression);
-			pushOpaque(w, node.pos, node.end);
 			break;
 	}
 }
@@ -261,7 +250,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 export function parseBash(module: string, source: string): ParsedBashFile {
 	const shift = new Cursor(source).peek() === BYTE_ORDER_MARK ? 1 : 0;
 	const text = source.slice(shift);
-	const script = parse(text);
+	const { script, tokens } = parseBashScript(text);
 	const out: ParsedBashFile = {
 		module,
 		text: source,
@@ -285,21 +274,17 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 		out,
 		pending: [],
 		headers: [],
-		heredocNext: 0,
 		minted: new Map(),
 		definedIn: new WeakMap(),
 		statements: (scope, statements) => walkStatements(w, scope, statements),
-		opaque: [],
 		quoted: [],
-		raw: [],
 	};
 	walkStatements(w, { locals: new Map(), confined: false }, script.commands);
 	settle(w);
-	const tokens = tokensOf(w, spansOf(w.opaque), spansOf(w.raw));
 	out.comments = commentSpans(w, tokens);
 	out.blankLines = blankLinesOf(w, tokens);
 	signHeaders(w, tokens);
-	for (const error of script.errors ?? []) {
+	for (const error of script.errors) {
 		out.diagnostics.push({
 			severity: "error",
 			message: error.message,

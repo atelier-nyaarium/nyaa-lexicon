@@ -1,35 +1,14 @@
 import { expect, test } from "bun:test";
-import { fileURLToPath } from "node:url";
-import type { ImportedName } from "@nyaa-lexicon/protocol";
-import { Python3Dispatch } from "../python3";
-
-const EXTRACTOR = fileURLToPath(new URL("../extract.py", import.meta.url));
-const python3 = new Python3Dispatch();
-
-interface Span {
-	start: { line: number; character: number };
-	end: { line: number; character: number };
-}
+import { extractFacts } from "../facts/extract";
+import type { Range } from "../facts/types";
 
 /** One-line span as [line, start column, end column]. */
-function at(span: Span): [number, number, number] {
+function at(span: Range): [number, number, number] {
 	return [span.start.line, span.start.character, span.end.character];
 }
 
 async function extract(module: string, text: string) {
-	const facts = await python3.runJson<{
-		declarations: { name: string; kind: string; exported: boolean; visibility: string; selectionRange: Span }[];
-		imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
-		role:
-			| { kind: "library" }
-			| { kind: "entry"; how: "main" | "guardedMain" | "topLevel"; symbolId?: string }
-			| { kind: "unknown"; reason: string };
-		literals: { kind: string; value: string; range: { start: { line: number; character: number } } }[];
-		references: { name: string; role: string; qualified: boolean; range: Span }[];
-		diagnostics: { severity: string }[];
-	}>([EXTRACTOR], { input: JSON.stringify({ module, text }) });
-	if (facts === null) throw new Error(python3.unavailableDetail);
-	return facts;
+	return extractFacts(module, text);
 }
 
 test("recognizes guarded main in either order, nested in setup too, unless its else runs on import", async () => {

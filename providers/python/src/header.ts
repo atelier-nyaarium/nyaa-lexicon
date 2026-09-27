@@ -1,4 +1,4 @@
-// A declaration's header spans from the helper, handed to the protocol's one renderer.
+// A declaration's header spans from the extractor, handed to the protocol's one renderer.
 
 import {
 	type Declaration,
@@ -13,7 +13,7 @@ import {
 
 type Range = Declaration["range"];
 
-/** Where a header sits, as the helper reports it in UTF-16 positions. */
+/** Where a header sits, in UTF-16 positions. */
 export interface RawHeader {
 	/** Rendered before `start`. */
 	lead?: Range;

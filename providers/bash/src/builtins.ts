@@ -1,13 +1,11 @@
 // The builtins that declare or write a variable, and the assignment prefix before a command.
 
 import { Cursor, defined, type Range } from "@nyaa-lexicon/protocol";
-import type { AssignmentPrefix, Word } from "unbash";
 import {
 	assignmentOf,
 	FUNCTION_NAME_RE,
 	IDENTIFIER_RE,
 	pushLiteral,
-	pushOpaque,
 	pushReference,
 	rangeAt,
 	type Scope,
@@ -18,12 +16,14 @@ import {
 } from "./context.js";
 import { assignmentFolds, commandHeader, leadOf, operandHeader } from "./header.js";
 import { confinedIn, declare, declareOrWrite, resolve } from "./scope.js";
+import type { AssignmentPrefix, Word } from "./syntax/ast.js";
+import { parseArithmeticAt } from "./syntax/parser.js";
 import {
-	arithmeticAt,
 	bareValue,
 	declareOrWriteWord,
 	inPlaceValue,
 	markQuoted,
+	nameRange,
 	valueOffsets,
 	walkArithmetic,
 	walkIndex,
@@ -101,17 +101,7 @@ export function walkAssignmentPrefix(w: Walk, scope: Scope, prefix: AssignmentPr
 	}
 	bareValue(w, scope, prefix.value);
 	walkWord(w, scope, prefix.value, false);
-	// The name and its `=` are data; the value marks itself, and an array body may hold a comment.
-	pushOpaque(w, prefix.pos, valueStart(prefix));
 	for (const word of prefix.array ?? []) walkWord(w, scope, word);
-}
-
-/** Where a prefix's value starts, past an array's `(`, from `NAME[index]+=` as the tree spells it. */
-function valueStart(prefix: AssignmentPrefix): number {
-	if (prefix.value !== undefined) return prefix.value.pos;
-	if (prefix.array === undefined || prefix.name === undefined) return prefix.end;
-	const subscript = prefix.index === undefined ? 0 : prefix.index.length + 2;
-	return prefix.pos + prefix.name.length + subscript + (prefix.append === true ? 2 : 1) + 1;
 }
 
 /** `local`, `declare`, `typeset`, `readonly` and `export`, each naming variables after its flags. */
@@ -246,11 +236,10 @@ export function letting(w: Walk, scope: Scope, command: Word, words: Word[]): vo
 			walkWord(w, scope, word, false);
 			continue;
 		}
-		pushOpaque(w, word.pos, word.end);
 		markQuoted(w, word);
 		const laid = inPlaceValue(word);
 		if (laid === undefined) continue;
-		walkArithmetic(w, scope, arithmeticAt(laid, word.pos), operandHeader(lead, word));
+		walkArithmetic(w, scope, parseArithmeticAt(laid, word.pos), operandHeader(lead, word));
 	}
 }
 
@@ -264,7 +253,7 @@ export function unsetting(w: Walk, scope: Scope, words: Word[]): void {
 			walkWord(w, scope, word);
 			continue;
 		}
-		const range = rangeAt(w, word.pos, word.pos + name.length);
+		const range = nameRange(w, word, name);
 		if (functions) pushReference(w, scope, { name, range, role: "write", ofFunction: true });
 		else {
 			const target = resolve(w, scope, name, { local: false })?.symbolId;

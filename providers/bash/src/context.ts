@@ -1,4 +1,4 @@
-// What a walk over the unbash tree carries, and the facts it collects.
+// What a walk over the syntax tree carries, and the facts it collects.
 
 import {
 	type CommentSpan,
@@ -16,7 +16,7 @@ import {
 	type SymbolKind,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
-import type { Statement, Word, WordPart } from "unbash";
+import type { Statement, Word, WordPart } from "./syntax/ast.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -88,7 +88,7 @@ export interface PendingHeader {
 
 export interface Walk {
 	module: string;
-	/** The text unbash read: the file without its byte order mark. */
+	/** The parsed text: the file without its byte order mark. */
 	text: string;
 	/** Code units the file holds before the parsed text. */
 	shift: number;
@@ -96,20 +96,14 @@ export interface Walk {
 	out: ParsedBashFile;
 	pending: Pending[];
 	headers: PendingHeader[];
-	/** Where the next here-document body may begin; bodies on one line stack. */
-	heredocNext: number;
 	/** Name paths already minted, so a repeat carries an occurrence. */
 	minted: Map<string, number>;
 	/** Where each function was defined, since one defined in a subshell is unknown outside it. */
 	definedIn: WeakMap<BashDeclaration, Scope>;
 	/** The statement walk, handed in so a command substitution descends without a module cycle. */
 	statements: (scope: Scope, statements: Statement[]) => void;
-	/** Start and end pairs of every span a `#` is data in; a `#` outside them opens a comment. */
-	opaque: number[];
 	/** Start and end pairs of every quoted part, which a header keeps as written. */
 	quoted: number[];
-	/** Spans where backslash-newline is preserved: `'...'`, `$'...'` and quoted here-document bodies. */
-	raw: number[];
 }
 
 /** A word's `NAME=`, `NAME+=` or `NAME[...]=` head, as `declare` reads its operands. */
@@ -217,10 +211,6 @@ export function pushReference(w: Walk, scope: Scope, reference: BashReference): 
 /** A bare word is a number literal when it is all digits; anything else it holds is walked elsewhere. */
 export function bareNumber(w: Walk, scope: Scope, word: Word): void {
 	if (NUMBER_RE.test(word.text)) pushLiteral(w, scope, word.text, word.pos, word.end);
-}
-
-export function pushOpaque(w: Walk, start: number, end: number): void {
-	if (end > start) w.opaque.push(start, end);
 }
 
 /** The subscript runs to the first `]`. */

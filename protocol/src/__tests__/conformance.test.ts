@@ -315,14 +315,14 @@ describe("corpus", () => {
 				[...(testCase.applicableLanguages ?? [])].sort(),
 			]),
 		);
-		const all = ["bash", "c", "cpp", "csharp", "kotlin", "python", "rust", "typescript"];
+		const all = ["bash", "c", "cpp", "csharp", "kotlin", "powershell", "python", "rust", "typescript"];
 
 		expect(matrix).toEqual({
 			"declarations-only": all,
 			"header-declarations-only": ["c", "cpp"],
-			"assignment-setup": ["bash", "python", "typescript"],
-			"conditional-setup": ["bash", "python", "typescript"],
-			"sourced-setup": ["bash"],
+			"assignment-setup": ["bash", "powershell", "python", "typescript"],
+			"conditional-setup": ["bash", "powershell", "python", "typescript"],
+			"sourced-setup": ["bash", "powershell"],
 			"jvm-static-main-object": ["kotlin"],
 			"jvm-static-main-companion-object": ["kotlin"],
 			"runtime-main": ["c", "cpp", "csharp", "kotlin", "rust"],
@@ -330,7 +330,7 @@ describe("corpus", () => {
 			"commonjs-run-as-program-guard": ["typescript"],
 			"run-as-program-guard-nested-in-setup": ["python", "typescript"],
 			"run-as-program-guard-else-runs": ["python", "typescript"],
-			"statements-run-on-load": ["bash", "python", "typescript"],
+			"statements-run-on-load": ["bash", "powershell", "python", "typescript"],
 			"unplaceable-entry-candidate": ["csharp", "rust"],
 		});
 	});

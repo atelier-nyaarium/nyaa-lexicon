@@ -12,6 +12,7 @@ const CSHARP = "csharp";
 const RUST = "rust";
 const KOTLIN = "kotlin";
 const BASH = "bash";
+const POWERSHELL = "powershell";
 const XML = "xml";
 const HTML = "html";
 
@@ -157,6 +158,10 @@ export function headerCases(): ConformanceCase[] {
 				[BASH]: literalFixture("literals.sh", ['SEP="a  b"', "DOC='one", "  two'", ""], {
 					SEP: 'SEP="a  b"',
 					DOC: "DOC='one\\n  two'",
+				}),
+				[POWERSHELL]: literalFixture("literals.ps1", ['$Sep = "a  b"', "$Doc = @'", "one", "  two", "'@", ""], {
+					Sep: '$Sep = "a  b"',
+					Doc: "$Doc = @'\\none\\n  two\\n'@",
 				}),
 				[XML]: literalFixture("literals.xml", ['<root id="r" title="a  b"', '\tnote="one', '  two"/>', ""], {
 					r: '<root id="r" title="a  b" note="one\\n  two"/>',
@@ -515,6 +520,60 @@ export function headerCases(): ConformanceCase[] {
 						greet: "function greet",
 					}),
 				},
+				[POWERSHELL]: {
+					files: {
+						"header.ps1": [
+							"#!/usr/bin/env pwsh",
+							"<# Doc. #>",
+							"$Table = @(",
+							"\t'a'",
+							"\t'b'",
+							")",
+							'$Name = "x"',
+							"$Empty = @{}",
+							"$Handler = {",
+							"\tparam($Value)",
+							"\t$Value + 1",
+							"}",
+							"",
+							"function Add-Item {",
+							"\tparam(",
+							"\t\t[Parameter(Mandatory)][int]$Left, # wide",
+							"\t\t[int]$Right",
+							"\t)",
+							"\t$Left + $Right",
+							"}",
+							"",
+							"function Get-Greeting([string]$Who = 'you') {",
+							'\t"hi $Who"',
+							"}",
+							"",
+							"class Box : Base {",
+							"\t# Doc.",
+							"\thidden [ValidateRange(0, 9)][int]$Size = 3",
+							"",
+							"\t[int] Area(",
+							"\t\t[int]$Scale # wide",
+							"\t) {",
+							"\t\treturn $this.Size * $Scale",
+							"\t}",
+							"}",
+							"",
+						].join("\n"),
+					},
+					subject: "header.ps1",
+					declarations: signatures({
+						Table: `$Table = ${fold("@(", ")")}`,
+						Name: '$Name = "x"',
+						Empty: "$Empty = @{}",
+						Handler: `$Handler = ${fold("{", "}")}`,
+						"Add-Item": "function Add-Item param([Parameter(Mandatory)][int]$Left, [int]$Right)",
+						"Get-Greeting": "function Get-Greeting([string]$Who = 'you')",
+						Box: "class Box : Base",
+						Size: "hidden [ValidateRange(0, 9)][int]$Size = 3",
+						Area: "[int] Area([int]$Scale)",
+					}),
+				},
 			},
 		},
 		{
@@ -608,6 +667,30 @@ export function headerCases(): ConformanceCase[] {
 					files: { "locals.sh": 'add() {\n  local sum=1\n  echo "$sum"\n}\n' },
 					subject: "locals.sh",
 					declarations: locals(["sum"]),
+				},
+				[POWERSHELL]: {
+					files: {
+						"locals.ps1": [
+							"function Invoke-Outer {",
+							"\t$inner = 2",
+							"\tfunction Get-Nested { 1 }",
+							"\t$inner",
+							"}",
+							"",
+							"class Box {",
+							"\t[int] Area() {",
+							"\t\t$side = 2",
+							"\t\treturn $side",
+							"\t}",
+							"}",
+							"",
+						].join("\n"),
+					},
+					subject: "locals.ps1",
+					declarations: [
+						...locals(["inner", "Get-Nested", "side"]),
+						{ name: "Invoke-Outer", visibility: "public" },
+					],
 				},
 			},
 		},

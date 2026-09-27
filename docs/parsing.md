@@ -9,18 +9,19 @@ that does not follow it.
 
 A provider reads a language through one of two parsers:
 
-- **Gold:** the language's own parser, or its spec's reference implementation, where Lexicon can
-  call it: in-process, or through a toolchain that language's users already have. The TypeScript
-  compiler, CPython's `ast` and `tokenize`, CommonMark's micromark, `yaml`, parse5, `jsonc-parser`.
-- **In-house:** a parser written here to this law, reporting exactly the facts Lexicon needs. C,
-  C++, C#, Rust, GDScript and Kotlin.
+- **Gold:** the language's own parser, or its spec's reference implementation, packaged as a
+  library Lexicon bundles and calls in-process. The TypeScript compiler, CommonMark's micromark,
+  `yaml`, parse5, `jsonc-parser`.
+- **In-house:** a parser written here to this law, from the language's specification, reporting
+  exactly the facts Lexicon needs. C, C++, C#, Rust, GDScript, Kotlin, Bash, XML, Python and
+  PowerShell.
 
 A third-party approximation of a grammar is neither. Its gaps become repairs, gap lexers and text
-scans around it, each a rule of this law broken on purpose. Bash's unbash and XML's parse-xml each
-move to in-house.
+scans around it, each a rule of this law broken on purpose.
 
-Gold when the real parser is callable where Lexicon runs, in-house when it is not. Bash has no
-parser anyone can call, so Bash is in-house.
+Gold when the real parser ships as a library, in-house otherwise. A toolchain the user installs is
+not a library: CPython's `ast` answered only through a `python3` child, at that interpreter's
+version, so Python is in-house. Bash has no parser anyone can call, so Bash is in-house.
 
 A document format is rejected for a library when no maintained one reports source POSITIONS, since
 a declaration without a range is not a declaration. Markdown, YAML and JSON are read through pinned
@@ -43,16 +44,11 @@ in 81ms, 16000 in 1.4 seconds, 100000 in about three minutes. It is still the ri
 nothing else reads YAML correctly, but a cost like that has to be known and written down rather than
 discovered by a repository that contains one large file.
 
-XML is read through `@rgrove/parse-xml` and HTML through `parse5`, and both answer all three.
-Both put offsets on every node, parse5 on every attribute too; both bundle for node with no
-UMD wrapper; and 6 MB of either parses in under half a second. Their nesting cost is the one to
-know: parse-xml recurses and overflows the stack at ten thousand nested elements under node, and
-parse5 survives a hundred thousand but spends thirty-five seconds on them, so each reader counts
-depth from its own parser's events through `NestingGauge` in `protocol/src/depth.ts` and refuses
-past the shared limit.
-
-parse-xml keeps no attribute offsets or start-tag end, so `formats/src/xml.ts` still finds attribute
-value spans with its own start-tag scan. That scan runs only on text parse-xml accepted.
+HTML is read through `parse5`, which answers all three: offsets on every node and attribute, a node
+bundle with no UMD wrapper, and 6 MB in under half a second. Its nesting cost is the one to know: it
+survives a hundred thousand nested elements but spends thirty-five seconds on them, so the reader
+counts depth from parse5's events through `NestingGauge` in `protocol/src/depth.ts` and refuses past
+the shared limit.
 
 Kotlin is in-house. `providers/kotlin/src/lexer.ts` reads the specification's lexical grammar
 through one `SourceCursor`, and `grammar.ts` reads its syntax grammar by recursive descent. Nodes
@@ -75,10 +71,102 @@ Switchboard's `android/` (569 files, 3.5 MB) takes 620 ms for the bare parse, 1.
 and 1.56 s for full facts. kotlinx-coroutines (1,082 files, 4.1 MB) takes 540 ms, 1.0 s and
 1.31 s. Neither corpus has a problem.
 
+Bash is in-house. `providers/bash/src/syntax/` reads the grammar in the Bash reference manual's
+"Shell Syntax" chapter by recursive descent. Bash lexes by context, so there is no token list ahead
+of the parser: the parser asks `scanner.ts` for the next piece in the mode it stands in, and the
+scanner places every character it consumes as a token. Tokens are code, comment, continuation,
+here-document body and delimiter line; only blanks and line breaks fall between them.
+
+- **Reserved words** count only where a command starts.
+- **Here-document bodies** are read at the line break ending the line that opened them, in opening
+  order. Inside `$(`, a line spelling the delimiter then `)` ends the body as end-of-file does, as
+  bash 5.2 reads it.
+- **Backquotes** are read over their text with the escapes removed. Each decoded character keeps
+  its source offset, so every node and token inside lands on the source it came from.
+- **`NAME=(...)x`** assigns no array. Bash reads the list and what follows as one word.
+- **Here-document delimiters** decide expansion by quoting alone: `<<$END` expands its body. An
+  unquoted delimiter matches after line continuations join.
+- **Nesting** past `MAX_NESTING`, counted by one `NestingGauge` across commands, substitutions,
+  arithmetic and `[[ ]]`, answers one error. Operator chains and prefix runs are read in a loop, each
+  link a level.
+
+The bash-completion corpus (659 files, 1.5 MB) takes 180 ms for the bare parse and 430 ms for full
+facts.
+
+XML is in-house. `formats/src/xml/parser.ts` reads XML 1.0 (Fifth Edition) through one
+`SourceCursor`, open elements on a stack rather than the call stack and counted by the gauge. Every
+attribute keeps its name, value and quote positions and every element its tag ends, so the reader
+signs and ranges from the tree alone.
+
+- **Non-validating.** The internal subset is read for its entity declarations. Element, attribute
+  list and notation declarations are read to their `>` and not checked.
+- **References** are replaced in text and attribute values. In text, an entity whose replacement
+  holds markup stays as written, as does an external one, and an undeclared one when an external
+  subset or parameter entity may declare it.
+- **Attribute values** are normalized per section 3.3.3: each white space character reads as a
+  space, a line break as one.
+- **Expansion** may write a million characters plus ten times the document's length. Past that, the
+  outermost reference is refused, so nested entities cannot multiply into gigabytes.
+- **The first well-formedness error** ends the parse, as the specification requires.
+
+A corpus of 3,596 files from this machine (38.6 MB) takes 1.1 s for the bare parse.
+
+Python is in-house. `providers/python/src/syntax/` reads the reference manual's "Lexical analysis"
+chapter and "Full Grammar specification": `tokenizer.ts` through one `SourceCursor`, reporting the
+tokens CPython's `tokenize` reports, and `parser.ts` by recursive descent. Nodes, fields and
+positions follow CPython's `ast`, with UTF-16 offsets.
+
+- **Grammar** is the newest release's, 3.14: t-strings, type parameter defaults and unparenthesized
+  `except` types parse.
+- **Positions** match CPython 3.12's `ast` on every node. A block ends at its last token past
+  layout, a trailing `;` included.
+- **Type comments** attach where CPython's `type_comments` mode accepts them; one anywhere else is a
+  comment, not an error. Their text is read in `eval` and `func_type` modes, and each name lands
+  where the comment spells it. `# type: ignore` comments land in `Module.typeIgnores` with their
+  tags, spanning the comment where CPython gives a line.
+- **`\N{...}`** reads names and aliases from the Unicode Character Database 16.0, generated into
+  `unicodeNameData.ts` by `scripts/unicodeNames.ts`.
+- **Nesting** past `MAX_NESTING`, counted by one `NestingGauge` in the parser, answers one error. A
+  tree deeper than the limit, as a long operator or `elif` chain builds, is refused after the parse.
+  Both chains are read in loops.
+
+`/usr/lib/python3` (4,272 files, 53 MB) takes 5.2 s for the bare parse and 13.5 s for full facts.
+Every file's tree matches CPython 3.12's `ast` field by field. On 75,000 mutated files and
+statements, the parser accepts and refuses what 3.12 does, the 3.13 and 3.14 additions aside.
+
+PowerShell is in-house. PowerShell's parser is a .NET assembly, not a library Lexicon can bundle.
+`providers/powershell/src/syntax/` reads the grammar as that parser does: the parser asks the
+tokenizer for the next token in the mode it stands in (command, expression, type name, class
+signature), and backs up to reread a stretch in another mode. Nodes take PowerShell's class names and
+extents.
+
+- **Grammar** is PowerShell 7.6's: ternaries, `??`, `?.`, pipeline chains, `clean` blocks, number
+  suffixes. Workflows and DSC configurations still parse.
+- **A string's `$(...)`** is read as its own scan over the string's text, doubled quotes undone.
+  Each character keeps its file mark, so every token and node inside lands on its source.
+- **The first syntax error** refuses the file. Semantic checks, `#Requires` validation and signature
+  blocks are PowerShell's rules about meaning and metadata, not grammar, and are not applied. The
+  text past the error is still read as commands, so its comments and blank lines hold.
+- **Numbers** take PowerShell's types and values: hex and binary at full width read a sign bit, a
+  double past its range is infinite, and a suffix's type must hold the value.
+- **An empty block** spans the gap between its braces, the last character excluded, unless the
+  braces touch column-wise, as PowerShell measures it. Columns follow the cursor, so a lone CR is
+  content.
+- **Nesting** past `MAX_NESTING`, counted by one `NestingGauge` in the parser, answers one error. A
+  tree deeper than the limit, as a long operator chain builds, is refused after the parse.
+
+A corpus of 1,854 files (16 MB: Windows modules, Pester, PSScriptAnalyzer, PowerShell's own tests,
+ImportExcel, posh-git, PowerShellEditorServices) takes 2.9 s for the bare parse and 6.6 s for full
+facts. pwsh 7.6.6's trees match node for node, type and extent, on every file it accepts; Windows
+PowerShell 5.1's match on all but 7.x syntax. On 60,000 mutated files, the parser refuses what
+7.6.6's parser refuses. On 5,840 generated number literals, types and values match 7.6.6's.
+
 ## 2. One cursor owns character access
 
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes
-peek, next and a good flag, and tracks line, column and offset as it goes.
+peek, next and a good flag, and tracks line, column and offset as it goes. A token's text read again
+comes from `textOf`, which answers only for text already passed. A parser keeps the source private
+to its cursor, so a stray slice does not compile.
 
 A structural search that bypasses the cursor is the defect this law exists to prevent. An
 `indexOf(")")` picks the wrong delimiter and collapses two distinct symbols onto one id, and
@@ -146,12 +234,10 @@ library's own parser where the values come from a tree. YAML reads values from t
 comments from the CST, which are two entry points into one grammar and so cannot disagree; a hash
 inside a quoted scalar or a block scalar stays content, which is the whole point of the rule.
 
-Bash has no comment in unbash's tree at all, so the provider derives them from the library's own
-spans: every word, part and body the tree tokenized is opaque, and a `#` outside them opens a
-comment. The scan decides nothing about quoting; it looks only where the library left no token.
-`providers/bash/src/__tests__/mask.test.ts` proves the marking exhaustive with a walk that knows
-only the tree's shape, over the machine's bash-completion corpus, because each span the walk had
-forgotten to mark leaked a false comment.
+Bash's comments are tokens from the scanner that reads its words. Over the machine's
+bash-completion corpus, `providers/bash/src/__tests__/mask.test.ts` proves that tokens leave only
+blanks and line breaks uncovered, that every node spans its own text, and that no comment starts
+inside a word.
 
 The corollary costs more than the rule: every hole in the string grammar surfaces as a false
 comment. The holes to look for are an interpolation hole holding a string of its own, and a

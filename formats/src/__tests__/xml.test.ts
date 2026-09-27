@@ -58,6 +58,10 @@ describe("XML", () => {
 		expect(read(`<a>`).diagnostics[0]?.severity).toBe("error");
 		expect(read("").diagnostics).toEqual([]);
 		expect(read(" \r\n ").declarations).toEqual([]);
+		// A no-break space is content, not XML white space.
+		const noBreak = String.fromCodePoint(0xa0);
+		expect(read(noBreak).diagnostics[0]?.severity).toBe("error");
+		expect(read(`<a>${noBreak}</a>`).literals.map((literal) => literal.value)).toEqual([noBreak]);
 	});
 
 	it("skips a BOM without shifting the returned range", () => {
@@ -67,7 +71,7 @@ describe("XML", () => {
 		expect(facts.literals[0]?.range.start.character).toBe(7);
 	});
 
-	it("reads depth from the parsed tree, and survives the parser's stack overflow", () => {
+	it("refuses elements nested past the limit, and nothing inside a comment", () => {
 		const nest = (depth: number) => `${"<a>".repeat(depth)}${"</a>".repeat(depth)}`;
 		const tooDeep = (text: string) => read(text).diagnostics.some((d) => d.message === TOO_DEEP);
 		expect(tooDeep(nest(MAX_NESTING))).toBe(false);

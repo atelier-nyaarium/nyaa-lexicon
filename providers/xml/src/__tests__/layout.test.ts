@@ -64,9 +64,9 @@ describe("blank lines", () => {
 		const text = [
 			'<?xml version="1.0"?>',
 			"",
-			"<!DOCTYPE root [",
+			"<!DOCTYPE root [<!ENTITY e 'one",
 			"",
-			"]>",
+			"two'>]>",
 			"<root",
 			"",
 			'\ta="1">',
@@ -87,6 +87,10 @@ describe("blank lines", () => {
 			"",
 		].join("\n");
 		expect(parse(text).blankLines).toEqual([1, 20]);
+	});
+
+	it("reads white space between a document type's declarations as blank, as between elements", () => {
+		expect(parse("<!DOCTYPE r [\n<!ENTITY a 'x'>\n\n<!-- b -->\n]>\n<r/>\n").blankLines).toEqual([2]);
 	});
 
 	it("counts every line of a whitespace file, and none of text that does not parse", () => {

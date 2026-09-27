@@ -240,9 +240,9 @@ Ordered by how much they prove:
   fails in-flight callers on death instead.
 - **A bounded, one-shot child process is spawned through `protocol/src/boundedChild.ts`'s
   `runBounded`, never `spawn` or `execFile` by hand.** It is the one owner of the reap and
-  process-group-kill machinery a git call, the runtime probe and the python helper each used to
-  hand-copy; `bounded-child-owner-residue.test.ts` forbids a new copy, with a named exception for a
-  long-lived process (the provider supervisor) that never fits a bounded run.
+  process-group-kill machinery a git call, the runtime probe and the python import probe each used
+  to hand-copy; `bounded-child-owner-residue.test.ts` forbids a new copy, with a named exception for
+  a long-lived process (the provider supervisor) that never fits a bounded run.
 - **Indexing never runs the indexed repo's code.** Every daemon and provider argv starts from
   `bunCommand` in `client/src/launch.ts`, which pins lexicon's own bunfig and tsconfig and turns off
   `.env` loading and auto-install; `launch.test.ts` forbids one built elsewhere and holds the

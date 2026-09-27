@@ -57,7 +57,6 @@
       "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "@rgrove/parse-xml": "5.0.0",
         "jsonc-parser": "3.3.1",
         "parse5": "8.0.1",
         "yaml": "2.9.0",
@@ -79,7 +78,6 @@
       "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
-        "unbash": "4.0.11",
         "vscode-jsonrpc": "9.0.2",
       },
     },
@@ -152,6 +150,14 @@
         "mdast-util-frontmatter": "2.0.1",
         "mdast-util-to-string": "4.0.0",
         "micromark-extension-frontmatter": "2.0.0",
+        "vscode-jsonrpc": "9.0.2",
+      },
+    },
+    "providers/powershell": {
+      "name": "@nyaa-lexicon/provider-powershell",
+      "version": "10.1.1",
+      "dependencies": {
+        "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
@@ -266,6 +272,8 @@
 
     "@nyaa-lexicon/provider-markdown": ["@nyaa-lexicon/provider-markdown@workspace:providers/markdown"],
 
+    "@nyaa-lexicon/provider-powershell": ["@nyaa-lexicon/provider-powershell@workspace:providers/powershell"],
+
     "@nyaa-lexicon/provider-python": ["@nyaa-lexicon/provider-python@workspace:providers/python"],
 
     "@nyaa-lexicon/provider-rust": ["@nyaa-lexicon/provider-rust@workspace:providers/rust"],
@@ -277,8 +285,6 @@
     "@nyaa-lexicon/provider-xml": ["@nyaa-lexicon/provider-xml@workspace:providers/xml"],
 
     "@nyaa-lexicon/provider-yaml": ["@nyaa-lexicon/provider-yaml@workspace:providers/yaml"],
-
-    "@rgrove/parse-xml": ["@rgrove/parse-xml@5.0.0", "", {}, "sha512-SgHFyisNAkS2ZbM8SCriUm1N0bxLiz0POKvpDeAtrnLrXaYG1PawNwu1rSjmE/vcVHbZzYWNgVP6xkep6R4uXg=="],
 
     "@types/debug": ["@types/debug@4.1.13", "", { "dependencies": { "@types/ms": "*" } }, "sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw=="],
 
@@ -537,8 +543,6 @@
     "type-is": ["type-is@2.1.0", "", { "dependencies": { "content-type": "^2.0.0", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA=="],
 
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
-
-    "unbash": ["unbash@4.0.11", "", {}, "sha512-FoSOKV7NEofQSkAefMVHam4ZPKYMxjAydxiV72UFEDNV/YofxjGfiZ2A9pZjdL/lRJzTjcu4PABo1JYJX8N5iQ=="],
 
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
 

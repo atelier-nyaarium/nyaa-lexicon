@@ -65,6 +65,9 @@ export class SourceCursor {
 	peek(ahead = 0): string {
 		const index = this.at + ahead;
 		if (index < 0 || index >= this.limit) return "";
+		const unit = this.source.charCodeAt(index);
+		// Only a high surrogate can start a pair.
+		if (unit < 0xd800 || unit > 0xdbff) return this.source[index] as string;
 		const point = this.source.codePointAt(index);
 		if (point === undefined) return "";
 		const character = String.fromCodePoint(point);
@@ -78,14 +81,7 @@ export class SourceCursor {
 
 	next(): string {
 		const character = this.peek();
-		if (character === "") return "";
-		this.at += character.length;
-		if (character === "\n") {
-			this.lineAt++;
-			this.columnAt = 0;
-		} else {
-			this.columnAt += character.length;
-		}
+		if (character !== "") this.advance(character);
 		return character;
 	}
 
@@ -126,14 +122,31 @@ export class SourceCursor {
 		return this.source.slice(from.offset, this.at);
 	}
 
+	/** The text of a span already passed, by offsets: a token's, read again after the fact. */
+	textOf(start: number, end = this.at): string {
+		if (start < 0 || start > end || end > this.at) throw new Error("cursor textOf reads only text already passed");
+		return this.source.slice(start, end);
+	}
+
 	readWhile(predicate: (character: string) => boolean): string {
 		const from = this.at;
 		let guard = -1;
-		while (this.good() && predicate(this.peek())) {
-			if (this.at <= guard) throw new Error("cursor reader failed to advance");
+		for (let character = this.peek(); character !== "" && predicate(character); character = this.peek()) {
+			if (this.at <= guard) throw new Error("cursor readWhile failed to advance");
 			guard = this.at;
-			this.next();
+			this.advance(character);
 		}
 		return this.source.slice(from, this.at);
+	}
+
+	/** Past `character`, the non-empty code point at the cursor. */
+	private advance(character: string): void {
+		this.at += character.length;
+		if (character === "\n") {
+			this.lineAt++;
+			this.columnAt = 0;
+		} else {
+			this.columnAt += character.length;
+		}
 	}
 }

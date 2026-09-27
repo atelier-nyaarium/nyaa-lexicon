@@ -1,6 +1,5 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	asyncModuleStore,
 	type Binding,
@@ -9,13 +8,11 @@ import {
 	composeSymbolId,
 	coordinatesOf,
 	type Declaration,
-	type Descriptor,
 	type Diagnostic,
 	defined,
 	discoverByWalk,
 	type FileRole,
 	handlersFor,
-	type ImportedName,
 	type ImportResolution,
 	type Literal,
 	type MoveEditsRequest,
@@ -37,7 +34,19 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { type RawHeader, signatureOf } from "./header";
+import { extractFacts } from "./facts/extract";
+import { renameEdits } from "./facts/rename";
+import type {
+	Range,
+	RawDescriptor,
+	RawFacts,
+	RawImportBinding,
+	RawInferredType,
+	RawScopeInfo,
+	RawTypeAnnotation,
+	RawTypeReference,
+} from "./facts/types";
+import { signatureOf } from "./header";
 import { isValidTargetModule, makeMoveEdits } from "./move";
 import { Python3Dispatch } from "./python3";
 
@@ -45,7 +54,6 @@ import { Python3Dispatch } from "./python3";
 
 const LANGUAGE = "python";
 const EXTENSIONS = [".py"];
-const HELPER_PATH = fileURLToPath(new URL("./extract.py", import.meta.url));
 const EXCLUDED_DIRECTORIES = new Set([
 	".git",
 	".hg",
@@ -139,144 +147,6 @@ const TYPE_USE_KINDS = new Set<Declaration["kind"]>(["class", "variable", "funct
 
 //////// Types
 
-type Range = Declaration["range"];
-type RawDescriptor = Pick<Descriptor, "kind" | "name" | "disambiguator">;
-
-interface RawDeclaration {
-	name: string;
-	kind: Declaration["kind"];
-	descriptorPath: RawDescriptor[];
-	containerPath: RawDescriptor[];
-	range: Range;
-	selectionRange: Range;
-	visibility: Declaration["visibility"];
-	exported: boolean;
-	header?: RawHeader;
-	memberInsertLine?: number;
-	metrics?: {
-		lines?: number;
-		parameters?: number;
-		nesting?: number;
-		branches?: number;
-	};
-	typeText?: string;
-	typeForwardReference?: boolean;
-	typeDescriptorPath?: RawDescriptor[];
-	typeReference?: RawTypeReference;
-}
-
-interface RawTypeReference {
-	name: string;
-	range: Range;
-	role: "call" | "typeUse";
-}
-
-interface RawTypeAnnotation {
-	anchorRange: Range;
-	annotationRange: Range;
-	text: string;
-	forwardReference: boolean;
-	typeDescriptorPath?: RawDescriptor[];
-	typeReference?: RawTypeReference;
-}
-
-interface RawInferredType {
-	descriptorPath: RawDescriptor[];
-	display?: string;
-	basis?: string;
-	typeDescriptorPath?: RawDescriptor[];
-	reason?: UnknownReason;
-	detail?: string;
-}
-
-interface RawLiteral {
-	kind: Literal["kind"];
-	value: string;
-	number?: number;
-	range: Range;
-	containerPath?: RawDescriptor[];
-}
-
-interface RawImportBinding {
-	specifier: string;
-	localName: string;
-	importedName: string | null;
-	scopePath: RawDescriptor[];
-	conditional: boolean;
-	star: boolean;
-}
-
-interface RawImportAlias {
-	name: string;
-	localName: string;
-	range: Range;
-	importedRange?: Range | null;
-	localRange?: Range | null;
-	star: boolean;
-}
-
-interface RawImportStatement {
-	kind: "import" | "from";
-	specifier: string;
-	range: Range;
-	/** Module name tokens after `from`. */
-	moduleRange: Range | null;
-	/** Indent if the import starts its line; null otherwise. */
-	indent: string | null;
-	reExport: boolean;
-	aliases: RawImportAlias[];
-}
-
-interface RawScopeInfo {
-	scopePath: RawDescriptor[];
-	kind: "module" | "class" | "function";
-	locals: string[];
-	parameters: string[];
-	globals: string[];
-	nonlocals: string[];
-	conditional: string[];
-	dynamic: boolean;
-}
-
-interface RawReference {
-	name: string;
-	range: Range;
-	role: Reference["role"];
-	qualified: boolean;
-	/** Where the name resolves, which a header takes from outside its declaration. */
-	scopePath: RawDescriptor[];
-	/** Declaration the use is written in, header included. */
-	ownerPath: RawDescriptor[];
-	binding: RawBinding;
-}
-
-type RawBinding =
-	| { status: "bound"; descriptorPath: RawDescriptor[] }
-	| {
-			status: "unbound";
-			reason: "NotImplemented" | "NotIndexed" | "Ambiguous" | "RuntimeConstructed";
-			detail: string;
-	  };
-
-interface RawFacts {
-	declarations: RawDeclaration[];
-	references: RawReference[];
-	role: FileRole;
-	imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
-	importStatements: RawImportStatement[];
-	/** Point after the shebang, module docstring and future imports. */
-	prologueEnd: Range["start"] | null;
-	importBindings: RawImportBinding[];
-	scopeInfos: RawScopeInfo[];
-	typeAnnotations: RawTypeAnnotation[];
-	inferredTypes: RawInferredType[];
-	literals: RawLiteral[];
-	comments: CommentSpan[];
-	/** Null when lexing stopped short. */
-	blankLines: number[] | null;
-	diagnostics: Diagnostic[];
-}
-
 type TypeAnswer =
 	| {
 			kind: "declared";
@@ -317,39 +187,6 @@ interface MappedFacts {
 
 function idFor(module: string, descriptors: RawDescriptor[]): string {
 	return composeSymbolId({ language: LANGUAGE, module, descriptors });
-}
-
-async function runExtractor(python3: Python3Dispatch, module: string, text: string): Promise<RawFacts> {
-	const facts = await python3.runJson<RawFacts>([HELPER_PATH], {
-		input: JSON.stringify({ module, text }),
-		maxBuffer: 32 * 1024 * 1024,
-	});
-	if (facts === null) throw new Error(python3.unavailableDetail);
-	return facts;
-}
-
-async function extractFacts(python3: Python3Dispatch, module: string, text: string): Promise<RawFacts> {
-	try {
-		return await runExtractor(python3, module, text);
-	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error);
-		return {
-			declarations: [],
-			references: [],
-			role: { kind: "unknown", reason: "NotImplemented" },
-			imports: [],
-			importStatements: [],
-			prologueEnd: null,
-			importBindings: [],
-			scopeInfos: [],
-			typeAnnotations: [],
-			inferredTypes: [],
-			literals: [],
-			comments: [],
-			blankLines: null,
-			diagnostics: [{ severity: "error", message: detail }],
-		};
-	}
 }
 
 function mapFacts(module: string, text: string, raw: RawFacts): MappedFacts {
@@ -570,7 +407,7 @@ export class PythonProvider {
 
 	constructor(private readonly python3 = new Python3Dispatch()) {
 		this.store = asyncModuleStore<MappedFacts>({
-			read: async (module, text) => mapFacts(module, text, await extractFacts(this.python3, module, text)),
+			read: async (module, text) => mapFacts(module, text, extractFacts(module, text)),
 		});
 	}
 
@@ -859,7 +696,7 @@ export class PythonProvider {
 				);
 	}
 
-	async moveEdits(params: MoveEditsRequest): Promise<MoveEditsResponse> {
+	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
 		if (!isValidTargetModule(params.toModule)) {
 			return {
 				status: "refused",
@@ -867,20 +704,11 @@ export class PythonProvider {
 				detail: `the target is not a Python module: ${params.toModule}`,
 			};
 		}
-		return makeMoveEdits(params, await extractFacts(this.python3, params.module, params.text));
+		return makeMoveEdits(params, extractFacts(params.module, params.text));
 	}
 
-	async renameEdits(params: RenameEditsRequest): Promise<RenameEditsResponse> {
-		try {
-			const response = await this.python3.runJson<RenameEditsResponse>([HELPER_PATH], {
-				input: JSON.stringify({ mode: "rename", ...params }),
-				maxBuffer: 32 * 1024 * 1024,
-			});
-			return response ?? { status: "refused", reason: "NotImplemented", detail: this.python3.unavailableDetail };
-		} catch (error) {
-			const detail = error instanceof Error ? error.message : String(error);
-			return { status: "refused", reason: "NotImplemented", detail };
-		}
+	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
+		return renameEdits(params);
 	}
 }
 

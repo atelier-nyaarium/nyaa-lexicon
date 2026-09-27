@@ -14,6 +14,7 @@ const CSHARP = "csharp";
 const RUST = "rust";
 const KOTLIN = "kotlin";
 const BASH = "bash";
+const POWERSHELL = "powershell";
 
 /**
  * One workspace per language: `target` declares `name`, `user` uses it across the file boundary.
@@ -113,6 +114,16 @@ const FIXTURES = {
 		user: "src/use.sh",
 		name: "add",
 		refusedText: "sum() { :; }\n",
+	},
+	[POWERSHELL]: {
+		files: {
+			"src/cart.ps1": "function Add-Item { }\n",
+			"src/use.ps1": ". $PSScriptRoot/cart.ps1\nfunction Invoke-Run { Add-Item }\n",
+		},
+		target: "src/cart.ps1",
+		user: "src/use.ps1",
+		name: "Add-Item",
+		refusedText: "function Remove-Item { }\n",
 	},
 };
 

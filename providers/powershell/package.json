@@ -1,0 +1,14 @@
+{
+	"name": "@nyaa-lexicon/provider-powershell",
+	"version": "10.1.1",
+	"private": true,
+	"type": "module",
+	"description": "PowerShell provider over an in-house parser",
+	"exports": {
+		".": "./src/main.ts"
+	},
+	"dependencies": {
+		"@nyaa-lexicon/protocol": "workspace:*",
+		"vscode-jsonrpc": "9.0.2"
+	}
+}

@@ -113,16 +113,6 @@ async function makesItem(provider: PythonProvider, name = "Item"): Promise<strin
 	return facts.references.find((candidate) => candidate.name === name && candidate.role === "call")?.binding.status;
 }
 
-// Defaults need Python 3.13. Resolved before registration: skipIf needs a plain boolean.
-const pythonVersion = (await new Python3Dispatch().runJson<number[]>([
-	"-c",
-	"import json, sys; print(json.dumps(list(sys.version_info[:2])))",
-])) ?? [0, 0];
-const typeParameterDefaultsMajor = pythonVersion[0] ?? 0;
-const typeParameterDefaultsMinor = pythonVersion[1] ?? 0;
-const typeParameterDefaults =
-	typeParameterDefaultsMajor > 3 || (typeParameterDefaultsMajor === 3 && typeParameterDefaultsMinor >= 13);
-
 describe("Python provider project behavior", () => {
 	it("declares extracted roles and binds a certain module call", async () => {
 		const root = workspace({});
@@ -909,6 +899,38 @@ describe("Python provider project behavior", () => {
 		expect(reparsed.diagnostics).toEqual([]);
 	});
 
+	it("binds and renames a class where type comments name it", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = "class Old: pass\ndef f(x):  # type: (Old) -> Old\n    y = x  # type: Old\n    return y\n";
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+		const declaration = declarationNamed(facts, "Old");
+		const uses = facts.references.filter((reference) => reference.name === "Old");
+		expect(uses.map((reference) => [reference.role, reference.binding.status])).toEqual([
+			["typeUse", "bound"],
+			["typeUse", "bound"],
+			["typeUse", "bound"],
+		]);
+
+		const response = await provider.renameEdits({
+			module: "main.py",
+			text,
+			oldName: "Old",
+			newName: "New",
+			sites: [declaration.selectionRange, ...uses.map((reference) => reference.range)].map((range) => ({
+				range: range as NonNullable<typeof range>,
+			})),
+		});
+		if (response.status !== "ready") throw new Error("rename was refused");
+		expect(response.blocked).toEqual([]);
+		const rewritten = applyEdits(text, response.edits);
+		if ("problem" in rewritten) throw new Error(rewritten.problem);
+		expect(rewritten.text).toBe(
+			"class New: pass\ndef f(x):  # type: (New) -> New\n    y = x  # type: New\n    return y\n",
+		);
+	});
+
 	it("renames a definition at its selection however the header is spaced", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
@@ -1003,16 +1025,37 @@ describe("Python provider project behavior", () => {
 			}),
 		).toMatchObject({ status: "refused", reason: "NotImplemented" });
 
-		const collisionText = "def old():\n    pass\ndef new():\n    pass\n";
+		const everyOld = (text: string) =>
+			[...text.matchAll(/old/g)].map((match) => ({ range: spanAt(text, match.index, "old") }));
+		for (const text of [
+			"def old():\n    pass\ndef new():\n    pass\n",
+			// An inner local of the new name would capture the renamed read.
+			"old = 1\ndef f():\n    new = 0\n    return old\n",
+			// The renamed local would capture a read of the global.
+			"new = 0\ndef f():\n    old = 1\n    return new + old\n",
+		]) {
+			expect(
+				await provider.renameEdits({
+					module: "main.py",
+					text,
+					oldName: "old",
+					newName: "new",
+					sites: everyOld(text),
+				}),
+			).toMatchObject({ status: "refused", reason: "Collision" });
+		}
+
+		const allText = '__all__ = ["old_name"]\nold = 1\n';
+		const allSite = { range: spanAt(allText, allText.indexOf('"old_name"'), '"old_name"') };
 		expect(
 			await provider.renameEdits({
 				module: "main.py",
-				text: collisionText,
+				text: allText,
 				oldName: "old",
 				newName: "new",
-				sites: [{ range: spanAt(collisionText, collisionText.indexOf("old"), "old") }],
+				sites: [allSite],
 			}),
-		).toMatchObject({ status: "refused", reason: "Collision" });
+		).toMatchObject({ status: "ready", edits: [], blocked: [{ reason: "StringLiteral" }] });
 	});
 
 	it("rewrites named owner calls and leaves positional or unrelated calls alone", async () => {
@@ -1461,7 +1504,7 @@ describe("Python provider project behavior", () => {
 		]);
 	});
 
-	it.skipIf(!typeParameterDefaults)("writes a type parameter's default in the declaration it heads", async () => {
+	it("writes a type parameter's default in the declaration it heads", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
 		initializeProvider(provider, root);
@@ -2455,19 +2498,15 @@ describe("Python provider project behavior", () => {
 		});
 	});
 
-	it("uses one honest answer when python3 is absent", async () => {
+	it("reads files without python3, and says so only where an import needs it", async () => {
 		const executable = "python3-lexicon-provider-missing";
 		const provider = new PythonProvider(new Python3Dispatch(executable));
 		initializeProvider(provider, workspace({}));
-		const facts = await parseFile(provider, { module: "broken.py", contentHash: "hash", text: "value = 1\n" });
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text: "value = 1\n" });
 		const detail = `Executable not found in $PATH: ${executable}`;
 
-		expect(facts).toMatchObject({
-			declarations: [],
-			references: [],
-			imports: [],
-			diagnostics: [{ severity: "error", message: detail }],
-		});
+		expect(facts.declarations.map((declaration) => declaration.name)).toEqual(["value"]);
+		expect(facts.diagnostics).toEqual([]);
 		expect(await provider.resolveImport({ fromModule: "main.py", specifier: "ast" })).toEqual({
 			status: "unresolved",
 			reason: "NotImplemented",

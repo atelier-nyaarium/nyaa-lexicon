@@ -52,6 +52,7 @@ const XML = "xml";
 const HTML = "html";
 const YAML = "yaml";
 const BASH = "bash";
+const POWERSHELL = "powershell";
 
 const CASES: ConformanceCase[] = [
 	{
@@ -137,6 +138,19 @@ const CASES: ConformanceCase[] = [
 					{ name: "add", kind: "function" },
 				],
 			},
+			// Export-ModuleMember names the exported functions; there is no constant keyword.
+			[POWERSHELL]: {
+				files: {
+					"src/Cart.psm1":
+						"class Cart {}\nfunction Add-Item { }\nfunction Get-Secret { }\nExport-ModuleMember -Function Add-Item\n",
+				},
+				subject: "src/Cart.psm1",
+				declarations: [
+					{ name: "Cart", kind: "class" },
+					{ name: "Add-Item", kind: "function", exported: true },
+					{ name: "Get-Secret", kind: "function", exported: false },
+				],
+			},
 		},
 		declarations: [
 			{ name: "Cart", kind: "class", exported: true },
@@ -158,6 +172,7 @@ const CASES: ConformanceCase[] = [
 			[CSHARP]: { files: { "src/cart.cs": "public class Cart {}\n" }, subject: "src/cart.cs" },
 			[RUST]: { files: { "src/cart.rs": "pub struct Cart {}\n" }, subject: "src/cart.rs" },
 			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nclass Cart\n" }, subject: "src/Cart.kt" },
+			[POWERSHELL]: { files: { "src/Cart.ps1": "class Cart {}\n" }, subject: "src/Cart.ps1" },
 		},
 		// The one expectation that must hold in every language: a class is a `type` descriptor. Three
 		// syntaxes with nothing in common still have to mint the same id shape, because the id is the
@@ -399,6 +414,12 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.sh",
 				declarations: [{ name: "Y", nameStart: { line: 0, character: 8 } }],
 			},
+			// `<# ` is 3, the astral is 2, ` #> class ` is 10.
+			[POWERSHELL]: {
+				files: { "src/Cart.ps1": `<# ${ASTRAL} #> class Cart {}\n` },
+				subject: "src/Cart.ps1",
+				declarations: [{ name: "Cart", nameStart: { line: 0, character: 15 } }],
+			},
 		},
 	},
 	{
@@ -466,6 +487,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.sh",
 				declarations: [{ name: "cart", nameStart: { line: 1, character: 0 } }],
 			},
+			[POWERSHELL]: {
+				files: { "src/cart.ps1": "\n$cart = 1\n" },
+				subject: "src/cart.ps1",
+				declarations: [{ name: "cart", nameStart: { line: 1, character: 1 } }],
+			},
 		},
 	},
 	{
@@ -488,6 +514,7 @@ const CASES: ConformanceCase[] = [
 			[XML]: { files: { "empty.xml": "\n" }, subject: "empty.xml" },
 			[HTML]: { files: { "empty.html": "\n" }, subject: "empty.html" },
 			[BASH]: { files: { "src/empty.sh": "\n" }, subject: "src/empty.sh" },
+			[POWERSHELL]: { files: { "src/empty.ps1": "\n" }, subject: "src/empty.ps1" },
 		},
 		declarations: [],
 		// The "does not error" half, which the wording claimed and nothing checked. An empty file is
@@ -508,6 +535,15 @@ const CASES: ConformanceCase[] = [
 				subject: "bin/run",
 				discovery: { "bin/run": true, "bin/strict": true, "src/lib.sh": true },
 			},
+			[POWERSHELL]: {
+				files: {
+					"bin/run": "#!/usr/bin/env pwsh\nWrite-Output hi\n",
+					"bin/strict": "#!/opt/microsoft/powershell/7/pwsh -NoProfile\nWrite-Output hi\n",
+					"src/lib.ps1": "$x = 1\n",
+				},
+				subject: "bin/run",
+				discovery: { "bin/run": true, "bin/strict": true, "src/lib.ps1": true },
+			},
 		},
 	},
 	{
@@ -523,6 +559,15 @@ const CASES: ConformanceCase[] = [
 				},
 				subject: "src/lib.sh",
 				discovery: { "bin/tool": false, "bin/plain": false, "src/lib.sh": true },
+			},
+			[POWERSHELL]: {
+				files: {
+					"bin/tool": "#!/usr/bin/env bash\necho hi\n",
+					"bin/plain": "Write-Output 'no shebang'\n",
+					"src/lib.ps1": "$x = 1\n",
+				},
+				subject: "src/lib.ps1",
+				discovery: { "bin/tool": false, "bin/plain": false, "src/lib.ps1": true },
 			},
 		},
 	},
@@ -622,6 +667,14 @@ const CASES: ConformanceCase[] = [
 				subject: "src/comments.sh",
 				comments: ["# leading", "# inline", "# trailing", "# standalone"],
 			},
+			[POWERSHELL]: {
+				files: {
+					"src/comments.ps1":
+						"# leading\nfunction Invoke-Work($first <# inline #>, $second) {\n\treturn $first + $second\n}\n\n$total = 42 # trailing\n\n<# standalone #>\n",
+				},
+				subject: "src/comments.ps1",
+				comments: ["# leading", "<# inline #>", "# trailing", "<# standalone #>"],
+			},
 		},
 		comments: ["// leading", "/* inline */", "// trailing", "/* standalone */"],
 	},
@@ -653,6 +706,11 @@ const CASES: ConformanceCase[] = [
 			[BASH]: {
 				files: { "src/crlf.sh": "# leading\r\ntotal=42 # trailing\r\n" },
 				subject: "src/crlf.sh",
+				comments: ["# leading", "# trailing"],
+			},
+			[POWERSHELL]: {
+				files: { "src/crlf.ps1": "# leading\r\n$total = 42 # trailing\r\n" },
+				subject: "src/crlf.ps1",
 				comments: ["# leading", "# trailing"],
 			},
 			[C]: {
@@ -751,6 +809,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/astral.sh",
 				comments: [`# ${ASTRAL} tail`],
 			},
+			[POWERSHELL]: {
+				files: { "src/astral.ps1": `$s = "${ASTRAL}" # ${ASTRAL} tail\n` },
+				subject: "src/astral.ps1",
+				comments: [`# ${ASTRAL} tail`],
+			},
 			[C]: {
 				files: { "src/astral.c": `const char *s = "${ASTRAL}"; // ${ASTRAL} tail\n` },
 				subject: "src/astral.c",
@@ -808,6 +871,14 @@ const CASES: ConformanceCase[] = [
 				files: { "src/doc.sh": "# What work does.\nwork() {\n\treturn 1\n}\n" },
 				subject: "src/doc.sh",
 				documentation: { declaration: "work", comment: "# What work does." },
+			},
+			// Comment-based help, written above the function.
+			[POWERSHELL]: {
+				files: {
+					"src/doc.ps1": "<#\n.SYNOPSIS\nWhat work does.\n#>\nfunction Invoke-Work {\n\treturn 1\n}\n",
+				},
+				subject: "src/doc.ps1",
+				documentation: { declaration: "Invoke-Work", comment: "<#\n.SYNOPSIS\nWhat work does.\n#>" },
 			},
 			[C]: {
 				files: { "src/doc.c": "/** What work does. */\nint work(void) {\n\treturn 1;\n}\n" },
@@ -887,6 +958,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/nested.sh",
 				comments: ["# real"],
 			},
+			[POWERSHELL]: {
+				files: { "src/nested.ps1": '$x = "a $(Write-Output "b # c <# d") e" # real\n' },
+				subject: "src/nested.ps1",
+				comments: ["# real"],
+			},
 		},
 		comments: ["// real"],
 	},
@@ -916,6 +992,11 @@ const CASES: ConformanceCase[] = [
 				files: { "src/hole.sh": 'x="a $(\n# here\ntrue) b" # real\n' },
 				subject: "src/hole.sh",
 				comments: ["# here", "# real"],
+			},
+			[POWERSHELL]: {
+				files: { "src/hole.ps1": '$x = "a $(1 <# here #>) b" # real\n' },
+				subject: "src/hole.ps1",
+				comments: ["<# here #>", "# real"],
 			},
 		},
 		comments: ["/* here */", "// real"],
@@ -955,6 +1036,14 @@ const CASES: ConformanceCase[] = [
 			[BASH]: {
 				files: { "src/markers.sh": 'url="https://example.com/path"\nhashed="# not a comment"\n# real\n' },
 				subject: "src/markers.sh",
+				comments: ["# real"],
+			},
+			[POWERSHELL]: {
+				files: {
+					"src/markers.ps1":
+						'$url = "https://example.com/path"\n$hashed = "# not a comment"\n$block = \'<# not a comment #>\'\n# real\n',
+				},
+				subject: "src/markers.ps1",
 				comments: ["# real"],
 			},
 			[C]: {
@@ -1035,6 +1124,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/tool.sh",
 				comments: ["#!/usr/bin/env bash", "# real"],
 			},
+			[POWERSHELL]: {
+				files: { "src/tool.ps1": "#!/usr/bin/env pwsh\n# real\n\nfunction Invoke-Work {\n\treturn 1\n}\n" },
+				subject: "src/tool.ps1",
+				comments: ["#!/usr/bin/env pwsh", "# real"],
+			},
 		},
 	},
 	{
@@ -1072,6 +1166,11 @@ const CASES: ConformanceCase[] = [
 			[KOTLIN]: {
 				files: { "src/Open.kt": "val before = 1\n/* opened and never closed" },
 				subject: "src/Open.kt",
+			},
+			[POWERSHELL]: {
+				files: { "src/open.ps1": "$before = 1\n<# opened and never closed" },
+				subject: "src/open.ps1",
+				comments: ["<# opened and never closed"],
 			},
 		},
 		comments: ["/* opened and never closed"],
@@ -1113,6 +1212,11 @@ const CASES: ConformanceCase[] = [
 				files: { "src/Nest.cs": "/* outer /* inner */\npublic class Nest { }\n" },
 				subject: "src/Nest.cs",
 			},
+			[POWERSHELL]: {
+				files: { "src/nest.ps1": "<# outer <# inner #>\n$after = 1\n" },
+				subject: "src/nest.ps1",
+				comments: ["<# outer <# inner #>"],
+			},
 		},
 		comments: ["/* outer /* inner */"],
 	},
@@ -1150,6 +1254,12 @@ const CASES: ConformanceCase[] = [
 			[BASH]: {
 				files: { "src/bom.sh": `${BOM}# a note\nafter=1\n` },
 				subject: "src/bom.sh",
+				comments: ["# a note"],
+			},
+			[POWERSHELL]: {
+				files: { "src/bom.ps1": `${BOM}# a note\n$after = 1\n` },
+				subject: "src/bom.ps1",
+				declarations: [{ name: "after" }],
 				comments: ["# a note"],
 			},
 			[C]: {
@@ -1229,6 +1339,7 @@ const CASES: ConformanceCase[] = [
 			[JSON_LANG]: { files: { "broken.json": '{\n\t"a": \n}\n' }, subject: "broken.json" },
 			[YAML]: { files: { "broken.yml": "a: [1,\n" }, subject: "broken.yml" },
 			[BASH]: { files: { "src/broken.sh": 'echo "unterminated\n' }, subject: "src/broken.sh" },
+			[POWERSHELL]: { files: { "src/broken.ps1": "function Add-Item( {\n" }, subject: "src/broken.ps1" },
 		},
 		parseErrors: "required",
 	},
@@ -1311,6 +1422,10 @@ const CASES: ConformanceCase[] = [
 					{ value: "2", kind: "number" },
 				],
 			},
+			[POWERSHELL]: {
+				files: { "src/cart.ps1": '$Name = "cart"\n$Limit = 2\n$Ready = $true\n' },
+				subject: "src/cart.ps1",
+			},
 		},
 	},
 	{
@@ -1329,6 +1444,8 @@ const CASES: ConformanceCase[] = [
 			// YAML 1.2 reads only true and false as booleans, so `yes` stays a string and is not a
 			// third spelling to fold. The capitalized forms are the ones that decode.
 			[YAML]: { files: { "flags.yml": "a: TRUE\nb: False\n" }, subject: "flags.yml" },
+			// Variable names ignore case, so both spell the constants.
+			[POWERSHELL]: { files: { "src/flags.ps1": "$A = $True\n$B = $FALSE\n" }, subject: "src/flags.ps1" },
 		},
 	},
 	{
@@ -1415,6 +1532,15 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.sh",
 				imports: [{ specifier: "./item.sh", status: "resolved", module: "src/item.sh" }],
 			},
+			// `$PSScriptRoot` is the dot-sourcing script's own folder.
+			[POWERSHELL]: {
+				files: {
+					"src/cart.ps1": ". $PSScriptRoot/item.ps1\n",
+					"src/item.ps1": "function Get-CartItem { }\n",
+				},
+				subject: "src/cart.ps1",
+				imports: [{ specifier: "$PSScriptRoot/item.ps1", status: "resolved", module: "src/item.ps1" }],
+			},
 		},
 		imports: [{ specifier: "./item", status: "resolved", module: "src/item.ts" }],
 	},
@@ -1487,6 +1613,12 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.sh",
 				imports: [{ specifier: "/etc/profile", status: "external" }],
 			},
+			// A module PowerShell ships, which every host has.
+			[POWERSHELL]: {
+				files: { "src/cart.ps1": "Import-Module Microsoft.PowerShell.Utility\n" },
+				subject: "src/cart.ps1",
+				imports: [{ specifier: "Microsoft.PowerShell.Utility", status: "external" }],
+			},
 		},
 		imports: [{ specifier: "zod", status: "external" }],
 	},
@@ -1539,6 +1671,11 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.sh",
 				imports: [{ specifier: "./gone.sh", status: "unresolved" }],
 			},
+			[POWERSHELL]: {
+				files: { "src/cart.ps1": ". $PSScriptRoot/gone.ps1\n" },
+				subject: "src/cart.ps1",
+				imports: [{ specifier: "$PSScriptRoot/gone.ps1", status: "unresolved" }],
+			},
 		},
 		imports: [{ specifier: "./gone", status: "unresolved" }],
 	},
@@ -1586,6 +1723,10 @@ const CASES: ConformanceCase[] = [
 			[BASH]: {
 				files: { "src/cart.sh": "add() { :; }\nrun() { add; }\n" },
 				subject: "src/cart.sh",
+			},
+			[POWERSHELL]: {
+				files: { "src/cart.ps1": "function add { }\nfunction run { add }\n" },
+				subject: "src/cart.ps1",
 			},
 		},
 		references: [{ name: "add", status: "bound", bindsTo: "add" }],
@@ -2569,6 +2710,12 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.sh",
 				typeOf: { name: "LIMIT", display: "integer" },
 			},
+			// No constant keyword; a type constraint is the annotation.
+			[POWERSHELL]: {
+				files: { "src/cart.ps1": "[int]$LIMIT = 1\n" },
+				subject: "src/cart.ps1",
+				typeOf: { name: "LIMIT", display: "int" },
+			},
 		},
 		typeOf: { name: "LIMIT", display: "number" },
 	},
@@ -2595,6 +2742,7 @@ const CASES: ConformanceCase[] = [
 			[RUST]: { files: { "src/cart.rs": "pub const LIMIT: i32 = 1;\n" }, subject: "src/cart.rs" },
 			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nconst val LIMIT: Int = 1\n" }, subject: "src/Cart.kt" },
 			[BASH]: { files: { "src/cart.sh": "declare -i LIMIT=1\n" }, subject: "src/cart.sh" },
+			[POWERSHELL]: { files: { "src/cart.ps1": "[int]$LIMIT = 1\n" }, subject: "src/cart.ps1" },
 		},
 		typeOf: { name: "LIMIT", status: "known" },
 	},
@@ -2719,6 +2867,7 @@ const CASES: ConformanceCase[] = [
 			},
 			[RUST]: { files: { "src/cart.rs": "pub const LIMIT = 1;\n" }, subject: "src/cart.rs" },
 			[KOTLIN]: { files: { "src/Cart.kt": "package cart\nval LIMIT = 1\n" }, subject: "src/Cart.kt" },
+			[POWERSHELL]: { files: { "src/cart.ps1": "$LIMIT = 1\n" }, subject: "src/cart.ps1" },
 		},
 		// Status only. `inferred` is the whole claim: the source never said this, we concluded it,
 		// and a consumer weighs that differently from an annotation it can go and read.
@@ -3346,6 +3495,12 @@ const CASES: ConformanceCase[] = [
 					{ value: "install ", kind: "string" },
 					{ value: " now", kind: "string" },
 				],
+			},
+			// One literal, the variable kept as written.
+			[POWERSHELL]: {
+				files: { "src/cmd.ps1": '$Cmd = "install $name now"\n' },
+				subject: "src/cmd.ps1",
+				literals: [{ value: "install $name now", kind: "string" }],
 			},
 			// A hole is code, not text: what it renders to is not known here, so the one literal
 			// carries the hole's own source, braces included, rather than dropping it.

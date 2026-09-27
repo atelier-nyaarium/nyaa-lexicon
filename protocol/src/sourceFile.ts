@@ -15,6 +15,8 @@ export type SourceFileRead =
 			text: string;
 			/** Re-encoding `text` as UTF-8 gives back the bytes read; a BOM does. */
 			lossless: boolean;
+			/** Present for a UTF-16 file, decoded faithfully though not losslessly as UTF-8. */
+			encoding?: "utf-16le" | "utf-16be";
 	  }
 	/** Absent, or not a regular file. */
 	| { kind: "missing" }
@@ -122,11 +124,30 @@ function readSourceFile(fd: number): SourceFileRead {
 		// Bounded by the size seen, so a file growing under the read cannot outrun the limit.
 		const buffer = Buffer.allocUnsafe(size);
 		const bytes = buffer.subarray(0, readSync(fd, buffer, 0, size, 0));
+		const encoding = utf16Of(bytes);
+		if (encoding !== undefined) return utf16Text(bytes, encoding);
 		if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { kind: "binary" };
 		const text = bytes.toString("utf8");
 		return { kind: "text", text, lossless: roundTrips(text, bytes) };
 	} catch {
 		return { kind: "unreadable" };
+	}
+}
+
+/** A UTF-16 byte order mark, whose file holds NULs as text; UTF-32's starts the same and is not text here. */
+function utf16Of(bytes: Buffer): "utf-16le" | "utf-16be" | undefined {
+	if (bytes[0] === 0xfe && bytes[1] === 0xff) return "utf-16be";
+	if (bytes[0] !== 0xff || bytes[1] !== 0xfe) return undefined;
+	return bytes.length >= 4 && bytes[2] === 0 && bytes[3] === 0 ? undefined : "utf-16le";
+}
+
+/** Decoded whole, the mark kept as U+FEFF as a UTF-8 file's is. Not UTF-8, so no write lands on it. */
+function utf16Text(bytes: Buffer, encoding: "utf-16le" | "utf-16be"): SourceFileRead {
+	try {
+		const text = new TextDecoder(encoding, { ignoreBOM: true, fatal: true }).decode(bytes);
+		return { kind: "text", text, lossless: false, encoding };
+	} catch {
+		return { kind: "binary" };
 	}
 }
 

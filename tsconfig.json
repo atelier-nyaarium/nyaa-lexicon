@@ -12,6 +12,7 @@
 		{ "path": "./providers/python" },
 		{ "path": "./providers/gdscript" },
 		{ "path": "./providers/bash" },
+		{ "path": "./providers/powershell" },
 		{ "path": "./providers/c" },
 		{ "path": "./providers/cpp" },
 		{ "path": "./providers/csharp" },
