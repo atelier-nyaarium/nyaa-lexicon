@@ -5,9 +5,10 @@
 // character are backtick-quoted and spaces in the module are percent-encoded, so the field count
 // stays stable.
 
-import { Cursor, err, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
 import type { ReverseStep } from "./daemonShapes.js";
 import { defined } from "./defined.js";
+import { err, ok, type ParseFailure, type ParseResult, safeDigits } from "./parseResult.js";
+import { type CursorMark, SourceCursor } from "./sourceCursor.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -221,7 +222,7 @@ export function composeSymbolId(id: SymbolId): string {
 }
 
 /** Bare names stop at the first structural character, which is the caller's suffix. */
-function readName(c: Cursor): string | null {
+function readName(c: SourceCursor): string | null {
 	if (c.peek() === "`") {
 		c.next();
 		let out = "";
@@ -239,19 +240,23 @@ function readName(c: Cursor): string | null {
 		return null;
 	}
 
-	const out = c.takeWhile((ch) => !STRUCTURAL.has(ch));
+	const out = c.readWhile((ch) => !STRUCTURAL.has(ch));
 	return out === "" ? null : out;
 }
 
-/** `[n]` after a name or its parens, or nothing; the bracket opening a type parameter never sits there. */
-function readOccurrence(c: Cursor): ParseResult<number | undefined> {
+/**
+ * `[n]` after a name or its parens, or nothing; the bracket opening a type parameter never sits
+ * there. A failure brackets from the descriptor's `start`.
+ */
+function readOccurrence(c: SourceCursor, start: CursorMark): ParseResult<number | undefined> {
 	if (c.peek() !== "[") return ok(undefined);
 	c.next();
-	const digits = c.takeWhile((ch) => ch >= "0" && ch <= "9");
-	if (digits === "") return err(c.fail("expected an occurrence ordinal"));
+	const digits = c.readWhile((ch) => ch >= "0" && ch <= "9");
+	if (digits === "") return err(c.failure("expected an occurrence ordinal", start));
 	const occurrence = safeDigits(digits);
-	if (occurrence === null || occurrence < 2) return err(c.fail(`occurrence must be 2 or more, got ${digits}`));
-	if (c.peek() !== "]") return err(c.fail("expected ] to close the occurrence"));
+	if (occurrence === null || occurrence < 2)
+		return err(c.failure(`occurrence must be 2 or more, got ${digits}`, start));
+	if (c.peek() !== "]") return err(c.failure("expected ] to close the occurrence", start));
 	c.next();
 	return ok(occurrence);
 }
@@ -260,19 +265,20 @@ function readOccurrence(c: Cursor): ParseResult<number | undefined> {
  * Token stage collapsed on purpose, per docs/parsing.md rule 2: the grammar is non-recursive and
  * the input is machine-generated, so a token type would carry no information the caller can use.
  */
-function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | null {
+function parseDescriptors(c: SourceCursor, out: Descriptor[]): DescriptorFailure | null {
 	let guard = -1;
-	// The mark is the failing descriptor's start, so rewinding to it reads the rest through the cursor.
+	let start = c.mark();
+	// Rewinding to the failing descriptor's start reads the rest through the cursor.
 	const failed = (failure: ParseFailure): DescriptorFailure => {
-		c.resetToMark();
-		return { failure, rest: c.takeWhile(() => true) };
+		c.rewind(start);
+		return { failure, rest: c.readWhile(() => true) };
 	};
 
 	while (c.good()) {
 		// Asserted rather than reasoned about, since a future branch could stall the loop.
 		if (c.offset <= guard) throw new Error("parseDescriptors failed to advance");
 		guard = c.offset;
-		c.mark();
+		start = c.mark();
 
 		const ch = c.peek();
 
@@ -280,13 +286,13 @@ function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | nul
 			const close = ch === "(" ? ")" : "]";
 			c.next();
 			const name = readName(c);
-			if (name === null) return failed(c.fail("expected a parameter name"));
+			if (name === null) return failed(c.failure("expected a parameter name", start));
 			if (ch === "[" && DIGITS_RE.test(name)) {
-				return failed(c.fail("a type parameter cannot be named by digits alone"));
+				return failed(c.failure("a type parameter cannot be named by digits alone", start));
 			}
-			if (c.peek() !== close) return failed(c.fail(`expected ${close} to close the parameter`));
+			if (c.peek() !== close) return failed(c.failure(`expected ${close} to close the parameter`, start));
 			c.next();
-			const occurrence = readOccurrence(c);
+			const occurrence = readOccurrence(c, start);
 			if (!occurrence.ok) return failed(occurrence.failure);
 			out.push({
 				kind: ch === "(" ? "parameter" : "typeParameter",
@@ -297,16 +303,16 @@ function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | nul
 		}
 
 		const name = readName(c);
-		if (name === null) return failed(c.fail("expected a descriptor name"));
+		if (name === null) return failed(c.failure("expected a descriptor name", start));
 
 		// The open paren is what separates a method from a term of the same name.
 		if (c.peek() === "(") {
 			c.next();
 			// Charset-restricted rather than balanced, per parsing law rule 4.
-			const disambiguator = c.takeWhile((x) => DISAMBIGUATOR_RE.test(x));
-			if (c.peek() !== ")") return failed(c.fail("expected ) to close the disambiguator"));
+			const disambiguator = c.readWhile((x) => DISAMBIGUATOR_RE.test(x));
+			if (c.peek() !== ")") return failed(c.failure("expected ) to close the disambiguator", start));
 			c.next();
-			const occurrence = readOccurrence(c);
+			const occurrence = readOccurrence(c, start);
 			if (!occurrence.ok) return failed(occurrence.failure);
 			const carried = occurrence.value === undefined ? {} : { occurrence: occurrence.value };
 
@@ -319,87 +325,96 @@ function parseDescriptors(c: Cursor, out: Descriptor[]): DescriptorFailure | nul
 
 			const kind = SUFFIX_KIND.get(c.peek());
 			if (kind === undefined) {
-				return failed(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+				return failed(c.failure(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`, start));
 			}
 			// Empty parens stay method-only, or one symbol would have two spellings.
 			if (disambiguator === "") {
-				return failed(c.fail("only a method descriptor may carry an empty disambiguator"));
+				return failed(c.failure("only a method descriptor may carry an empty disambiguator", start));
 			}
 			c.next();
 			out.push({ kind, name, disambiguator, ...carried });
 			continue;
 		}
 
-		const occurrence = readOccurrence(c);
+		const occurrence = readOccurrence(c, start);
 		if (!occurrence.ok) return failed(occurrence.failure);
 		const kind = SUFFIX_KIND.get(c.peek());
 		if (kind === undefined) {
-			return failed(c.fail(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`));
+			return failed(c.failure(`expected a descriptor suffix, got ${JSON.stringify(c.peek())}`, start));
 		}
 		c.next();
 		out.push({ kind, name, ...defined({ occurrence: occurrence.value }) });
 	}
 
-	if (out.length === 0) return { failure: c.fail("a symbol needs at least one descriptor"), rest: "" };
+	if (out.length === 0) return { failure: c.failure("a symbol needs at least one descriptor", start), rest: "" };
 	return null;
 }
 
-/** Leaves the delimiter unconsumed, so a failure brackets the field and not the space after it. */
-export function readIdField(c: Cursor, what: string): ParseResult<string> {
-	c.mark();
-	const field = c.takeWhile((ch) => ch !== " ");
-	if (field === "") return err(c.fail(`expected ${what}`));
-	return ok(field);
+/** A space-delimited id field, and where it began, so a later refusal of it brackets it. */
+export interface IdField {
+	text: string;
+	start: CursorMark;
 }
 
-export function expectIdSpace(c: Cursor, after: string): ParseFailure | null {
-	if (c.peek() !== " ") return c.fail(`expected a space after ${after}`);
+/** Leaves the delimiter unconsumed, so a failure brackets the field and not the space after it. */
+export function readIdField(c: SourceCursor, what: string): ParseResult<IdField> {
+	const start = c.mark();
+	const text = c.readWhile((ch) => ch !== " ");
+	if (text === "") return err(c.failure(`expected ${what}`, start));
+	return ok({ text, start });
+}
+
+/** A space after the field that began at `from`. */
+export function expectIdSpace(c: SourceCursor, after: string, from: CursorMark): ParseFailure | null {
+	if (c.peek() !== " ") return c.failure(`expected a space after ${after}`, from);
 	c.next();
 	return null;
 }
 
 /** Scheme, language, module and the local form; leaves the cursor at the first descriptor. */
-function parseHead(c: Cursor, text: string): ParseResult<IdHead> {
+function parseHead(c: SourceCursor): ParseResult<IdHead> {
 	const scheme = readIdField(c, "the scheme");
 	if (!scheme.ok) return scheme;
-	if (scheme.value !== SYMBOL_SCHEME) return err(c.fail(`expected scheme ${SYMBOL_SCHEME}`));
-	const afterScheme = expectIdSpace(c, "the scheme");
+	if (scheme.value.text !== SYMBOL_SCHEME)
+		return err(c.failure(`expected scheme ${SYMBOL_SCHEME}`, scheme.value.start));
+	const afterScheme = expectIdSpace(c, "the scheme", scheme.value.start);
 	if (afterScheme) return err(afterScheme);
 
 	const language = readIdField(c, "the language");
 	if (!language.ok) return language;
-	const afterLanguage = expectIdSpace(c, "the language");
+	const afterLanguage = expectIdSpace(c, "the language", language.value.start);
 	if (afterLanguage) return err(afterLanguage);
 
 	const moduleField = readIdField(c, "the module");
 	if (!moduleField.ok) return moduleField;
 
-	const module = decodeModuleField(moduleField.value);
+	const module = decodeModuleField(moduleField.value.text);
 	// The parser must accept exactly what the composer emits, or an id becomes host-dependent.
-	if (!isCanonicalModule(module)) return err(c.fail(`module is not in canonical form: ${module}`));
+	if (!isCanonicalModule(module))
+		return err(c.failure(`module is not in canonical form: ${module}`, moduleField.value.start));
 
-	const afterModule = expectIdSpace(c, "the module");
+	const afterModule = expectIdSpace(c, "the module", moduleField.value.start);
 	if (afterModule) return err(afterModule);
 
-	c.mark();
-	if (c.peek() === "l") {
-		const rest = text.slice(c.offset);
-		const localMatch = /^local(\d+)$/.exec(rest);
-		if (localMatch) {
-			const digits = localMatch[1] as string;
+	// `local<n>` is the whole rest; anything else is the first descriptor.
+	const start = c.mark();
+	if (c.take("local")) {
+		const digits = c.readWhile((ch) => ch >= "0" && ch <= "9");
+		if (digits !== "" && !c.good()) {
 			const local = safeDigits(digits);
-			if (local === null) return err(c.fail(`local ordinal is not a safe integer: ${digits}`));
-			return ok({ language: language.value, module, local });
+			if (local === null) return err(c.failure(`local ordinal is not a safe integer: ${digits}`, start));
+			return ok({ language: language.value.text, module, local });
 		}
+		c.rewind(start);
 	}
 
-	return ok({ language: language.value, module });
+	return ok({ language: language.value.text, module });
 }
 
 /** Canonical form, carrying a diagnosis. `parseSymbolId` is the null-returning shim over it. */
 export function parseSymbolIdResult(text: string): ParseResult<SymbolId> {
-	const c = new Cursor(text);
-	const head = parseHead(c, text);
+	const c = new SourceCursor(text);
+	const head = parseHead(c);
 	if (!head.ok) return head;
 	const { language, module, local } = head.value;
 	if (local !== undefined) return ok({ language, module, descriptors: [], local });
@@ -412,8 +427,8 @@ export function parseSymbolIdResult(text: string): ParseResult<SymbolId> {
 
 /** The descriptors a malformed id parsed before it failed, and the text it did not. */
 export function parseSymbolIdPrefix(text: string): SymbolIdPrefix {
-	const c = new Cursor(text);
-	const head = parseHead(c, text);
+	const c = new SourceCursor(text);
+	const head = parseHead(c);
 	if (!head.ok) return { descriptors: [], failure: head.failure, rest: "" };
 	if (head.value.local !== undefined) return { descriptors: [], failure: null, rest: "" };
 
@@ -425,7 +440,7 @@ export function parseSymbolIdPrefix(text: string): SymbolIdPrefix {
 
 /** Whole tokens of unparsed descriptor text; a quoted name and a `(...)` span are one unit each. */
 function tailTokens(rest: string): string[] {
-	const c = new Cursor(rest);
+	const c = new SourceCursor(rest);
 	const tokens: string[] = [];
 	while (c.good()) {
 		const ch = c.peek();
@@ -435,7 +450,7 @@ function tailTokens(rest: string): string[] {
 			continue;
 		}
 		if (ch === "(") {
-			c.takeWhile((x) => x !== ")");
+			c.readWhile((x) => x !== ")");
 			c.next();
 			continue;
 		}
@@ -443,7 +458,7 @@ function tailTokens(rest: string): string[] {
 			c.next();
 			continue;
 		}
-		tokens.push(c.takeWhile((x) => !STRUCTURAL.has(x)));
+		tokens.push(c.readWhile((x) => !STRUCTURAL.has(x)));
 	}
 	return tokens;
 }
@@ -477,7 +492,7 @@ export function moduleOf(text: string): string | null {
 
 /** The language field alone, read from the head so a bulk grouping never parses descriptors. */
 export function languageOf(text: string): string | null {
-	const head = parseHead(new Cursor(text), text);
+	const head = parseHead(new SourceCursor(text));
 	return head.ok ? head.value.language : null;
 }
 

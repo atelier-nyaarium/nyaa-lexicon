@@ -1,6 +1,6 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
-import { Cursor, type HeaderFold, type HeaderSpan, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { type HeaderFold, type HeaderSpan, type OffsetRange, renderHeader, SourceCursor } from "@nyaa-lexicon/protocol";
 import { rangesOf } from "./comments.js";
 import { assignmentOf, type Walk } from "./context.js";
 import type { Token, Word } from "./syntax/ast.js";
@@ -33,7 +33,7 @@ export function operandHeader(lead: OffsetRange, word: Word): HeaderSpan {
 export function assignmentFolds(text: string, pos: number): HeaderFold[] {
 	const head = assignmentOf(text);
 	if (head === undefined || !head.array) return [];
-	const cursor = new Cursor(head.value);
+	const cursor = new SourceCursor(head.value);
 	let before = "";
 	let last = "";
 	while (cursor.good()) {

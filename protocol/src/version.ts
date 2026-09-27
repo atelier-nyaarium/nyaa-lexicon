@@ -1,7 +1,7 @@
 // Protocol version negotiation. Core and providers ship separately, so both sides meet a peer
 // that is not their own build.
 
-import { safeDigits } from "./cursor.js";
+import { safeDigits } from "./parseResult.js";
 
 ////////////////////////////////
 //  Interfaces & Types

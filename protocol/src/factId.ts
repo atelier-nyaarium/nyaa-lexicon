@@ -21,8 +21,9 @@
 // alternative: inserting one sibling renumbers every later one, and nothing announces it.
 
 import { createHash } from "node:crypto";
-import { Cursor, err, ok, type ParseResult } from "./cursor.js";
+import { err, ok, type ParseResult } from "./parseResult.js";
 import type { CommentSpan, DocRegion, ImportedName, Literal } from "./project.js";
+import { SourceCursor } from "./sourceCursor.js";
 import {
 	decodeModuleField,
 	encodeModuleField,
@@ -265,36 +266,39 @@ export function doubtFactId(
 
 /** Canonical form, carrying a diagnosis. `parseFactId` is the null-returning shim over it. */
 export function parseFactIdResult(text: string): ParseResult<FactId> {
-	const c = new Cursor(text);
+	const c = new SourceCursor(text);
 
 	const scheme = readIdField(c, "the scheme");
 	if (!scheme.ok) return scheme;
-	if (scheme.value !== FACT_SCHEME) return err(c.fail(`expected scheme ${FACT_SCHEME}`));
-	const afterScheme = expectIdSpace(c, "the scheme");
+	if (scheme.value.text !== FACT_SCHEME) return err(c.failure(`expected scheme ${FACT_SCHEME}`, scheme.value.start));
+	const afterScheme = expectIdSpace(c, "the scheme", scheme.value.start);
 	if (afterScheme) return err(afterScheme);
 
 	const kind = readIdField(c, "the fact kind");
 	if (!kind.ok) return kind;
-	if (!KIND_SET.has(kind.value)) return err(c.fail(`unknown fact kind: ${kind.value}`));
-	const afterKind = expectIdSpace(c, "the fact kind");
+	if (!KIND_SET.has(kind.value.text))
+		return err(c.failure(`unknown fact kind: ${kind.value.text}`, kind.value.start));
+	const afterKind = expectIdSpace(c, "the fact kind", kind.value.start);
 	if (afterKind) return err(afterKind);
 
 	const moduleField = readIdField(c, "the module");
 	if (!moduleField.ok) return moduleField;
-	const module = decodeModuleField(moduleField.value);
+	const module = decodeModuleField(moduleField.value.text);
 	// The parser must accept exactly what the composer emits, or an id becomes host-dependent.
-	if (!isCanonicalModule(module)) return err(c.fail(`module is not in canonical form: ${module}`));
-	const afterModule = expectIdSpace(c, "the module");
+	if (!isCanonicalModule(module))
+		return err(c.failure(`module is not in canonical form: ${module}`, moduleField.value.start));
+	const afterModule = expectIdSpace(c, "the module", moduleField.value.start);
 	if (afterModule) return err(afterModule);
 
 	const digest = readIdField(c, "the digest");
 	if (!digest.ok) return digest;
-	if (digest.value.length !== DIGEST_LENGTH || !DIGEST_RE.test(digest.value)) {
-		return err(c.fail(`digest must be ${DIGEST_LENGTH} lowercase hex characters`));
+	const hex = digest.value.text;
+	if (hex.length !== DIGEST_LENGTH || !DIGEST_RE.test(hex)) {
+		return err(c.failure(`digest must be ${DIGEST_LENGTH} lowercase hex characters`, digest.value.start));
 	}
-	if (c.good()) return err(c.fail("unexpected trailing text after the digest"));
+	if (c.good()) return err(c.failure("unexpected trailing text after the digest", digest.value.start));
 
-	return ok({ kind: kind.value as FactKind, module, digest: digest.value });
+	return ok({ kind: kind.value.text as FactKind, module, digest: hex });
 }
 
 /** Null rather than throwing: a fact id arrives from a stored answer and from a tool caller. */

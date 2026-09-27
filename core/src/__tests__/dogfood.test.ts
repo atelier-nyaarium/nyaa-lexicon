@@ -50,14 +50,14 @@ afterEach(() => {
 
 describe("indexing this repository's own source", () => {
 	it("finds the cursor class and its real methods", async () => {
-		await index("protocol/src/cursor.ts");
+		await index("protocol/src/sourceCursor.ts");
 
-		const found = service.findByName("Cursor");
+		const found = service.findByName("SourceCursor");
 		expect(found).toHaveLength(1);
 
 		const described = service.describe(found[0]?.symbolId ?? "");
 		const members = described?.members.map((m) => m.name) ?? [];
-		expect(members).toEqual(expect.arrayContaining(["peek", "next", "good", "takeWhile", "mark", "fail"]));
+		expect(members).toEqual(expect.arrayContaining(["peek", "next", "good", "readWhile", "mark", "failure"]));
 	}, 40_000);
 
 	it("separates an exported function from a file-local one, in a real file", async () => {
@@ -75,8 +75,8 @@ describe("indexing this repository's own source", () => {
 	}, 40_000);
 
 	it("resolves a relative import between two real files", async () => {
-		const resolution = await service.resolveImport("protocol/src/symbolId.ts", "./cursor.js");
-		expect(resolution).toMatchObject({ status: "resolved", module: "protocol/src/cursor.ts" });
+		const resolution = await service.resolveImport("protocol/src/symbolId.ts", "./sourceCursor.js");
+		expect(resolution).toMatchObject({ status: "resolved", module: "protocol/src/sourceCursor.ts" });
 	}, 40_000);
 
 	it("calls an installed dependency external rather than unresolved", async () => {
@@ -93,7 +93,7 @@ describe("indexing this repository's own source", () => {
 	}, 40_000);
 
 	it("answers through the daemon dispatch the MCP tools actually use", async () => {
-		await index("protocol/src/cursor.ts");
+		await index("protocol/src/parseResult.ts");
 		const dispatch = createDispatch(service);
 
 		const found = (await dispatch("findByName", { name: "formatFailure" })) as Array<{ symbolId: string }>;

@@ -1,6 +1,6 @@
 // Words, their parts, and arithmetic: the literals, the reads, and the writes an expansion or `++` performs.
 
-import { Cursor, defined, type HeaderSpan, type Range, type Reference, SourceCursor } from "@nyaa-lexicon/protocol";
+import { defined, type HeaderSpan, type Range, type Reference, SourceCursor } from "@nyaa-lexicon/protocol";
 import {
 	bareNumber,
 	type DeclaredType,
@@ -162,9 +162,12 @@ export function inPlaceValue(word: Word): string | undefined {
 	const value = staticValue(word);
 	const offsets = valueOffsets(word);
 	if (value === undefined || offsets === undefined || offsets.length !== value.length) return undefined;
-	const cursor = new Cursor(value);
+	const cursor = new SourceCursor(value);
 	let laid = "";
-	for (const offset of offsets) laid += " ".repeat(offset - word.pos - laid.length) + cursor.next();
+	while (cursor.good()) {
+		const offset = offsets[cursor.offset] as number;
+		laid += " ".repeat(offset - word.pos - laid.length) + cursor.next();
+	}
 	return laid + " ".repeat(word.text.length - laid.length);
 }
 
@@ -251,8 +254,8 @@ function arithmeticName(expression: ArithmeticWord): string | undefined {
 		return IDENTIFIER_RE.test(name) ? name : undefined;
 	}
 	// `NAME[$i]`: the expansion sits in the subscript.
-	const cursor = new Cursor(expression.value);
-	const name = cursor.takeWhile((character) => NAME_CHAR_RE.test(character));
+	const cursor = new SourceCursor(expression.value);
+	const name = cursor.readWhile((character) => NAME_CHAR_RE.test(character));
 	return IDENTIFIER_RE.test(name) && cursor.peek() === "[" ? name : undefined;
 }
 

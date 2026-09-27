@@ -1,6 +1,6 @@
 // The builtins that declare or write a variable, and the assignment prefix before a command.
 
-import { Cursor, defined, type Range } from "@nyaa-lexicon/protocol";
+import { defined, type Range, SourceCursor } from "@nyaa-lexicon/protocol";
 import {
 	assignmentOf,
 	FUNCTION_NAME_RE,
@@ -65,7 +65,7 @@ function options(words: Word[], valued: ReadonlySet<string>): Options {
 			index++;
 			break;
 		}
-		const cursor = new Cursor(text);
+		const cursor = new SourceCursor(text);
 		if (cursor.next() !== "-" || !cursor.good()) break;
 		let last = "";
 		while (cursor.good()) {
@@ -267,8 +267,8 @@ export function aliases(w: Walk, scope: Scope, command: Word, words: Word[]): vo
 	const { operands } = options(words, NO_VALUES);
 	const lead = leadOf(command, words, operands);
 	for (const word of operands) {
-		const cursor = new Cursor(word.text);
-		const name = cursor.takeWhile((character) => character !== "=" && !BLANK_RE.test(character));
+		const cursor = new SourceCursor(word.text);
+		const name = cursor.readWhile((character) => character !== "=" && !BLANK_RE.test(character));
 		if (name === "" || cursor.next() !== "=") continue;
 		declare(w, scope, name, rangeAt(w, word.pos, word.pos + name.length), wordRange(w, word), {
 			kind: "function",

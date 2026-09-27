@@ -1,9 +1,17 @@
-// Character access for a hand-written lexer, in the positions `coordinatesOf` defines.
+// The sole owner of character access for every hand-written parser here, in the positions
+// `coordinatesOf` defines. See docs/parsing.md.
 //
 // Lines break only at `\n`; a lone `\r` is content, as it is to every range core reads. Columns
 // count UTF-16 code units, and `peek` and `next` read whole code points.
 
+import type { ParseFailure } from "./parseResult.js";
 import type { Position } from "./symbols.js";
+
+////////////////////////////////
+//  Constants
+
+/** Characters of context either side of a failure. */
+const CONTEXT_RADIUS = 20;
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -120,6 +128,20 @@ export class SourceCursor {
 	/** The text from `from` to here. */
 	textSince(from: CursorMark): string {
 		return this.source.slice(from.offset, this.at);
+	}
+
+	/** A failure here, the token from `from` bracketed with some text either side. */
+	failure(message: string, from: CursorMark = this.mark()): ParseFailure {
+		const before = this.source.slice(Math.max(0, from.offset - CONTEXT_RADIUS), from.offset);
+		const token = this.source.slice(from.offset, this.at);
+		const after = this.source.slice(this.at, Math.min(this.limit, this.at + CONTEXT_RADIUS));
+		return {
+			message,
+			offset: this.at,
+			line: this.lineAt + 1,
+			column: this.columnAt + 1,
+			context: `${before}[${token}]${after}`,
+		};
 	}
 
 	/** The text of a span already passed, by offsets: a token's, read again after the fact. */

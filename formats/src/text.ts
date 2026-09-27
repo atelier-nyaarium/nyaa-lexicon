@@ -1,4 +1,4 @@
-import { Cursor, type Diagnostic, type DocRegion, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { type Diagnostic, type DocRegion, SourceCursor, type TextCoordinates } from "@nyaa-lexicon/protocol";
 
 export interface TextContext {
 	language: string;
@@ -24,14 +24,19 @@ interface Line {
 }
 
 function linesOf(text: string): Line[] {
-	const cursor = new Cursor(text);
+	const cursor = new SourceCursor(text);
 	const lines: Line[] = [];
 	let start = 0;
+	let previous = "";
 	while (cursor.good()) {
 		const at = cursor.offset;
-		if (cursor.next() !== "\n") continue;
-		lines.push({ start, end: text.slice(at - 1, at) === "\r" ? at - 1 : at });
-		start = cursor.offset;
+		const character = cursor.next();
+		if (character === "\n") {
+			// A CRLF line ends before its `\r`.
+			lines.push({ start, end: previous === "\r" ? at - 1 : at });
+			start = cursor.offset;
+		}
+		previous = character;
 	}
 	lines.push({ start, end: text.length });
 	return lines;

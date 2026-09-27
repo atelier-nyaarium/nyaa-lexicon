@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "../coordinates.js";
+import { formatFailure } from "../parseResult.js";
 import { SourceCursor } from "../sourceCursor.js";
 
 ////////////////////////////////
@@ -67,5 +68,16 @@ describe("SourceCursor", () => {
 		expect(cursor.good()).toBe(false);
 		expect(cursor.peek()).toBe("");
 		expect(cursor.next()).toBe("");
+	});
+
+	it("brackets a failure's token in its context, at a 1-based line and column", () => {
+		const cursor = new SourceCursor("aaa BAD bbb\nnext");
+		cursor.readWhile((character) => character !== " ");
+		cursor.next();
+		const start = cursor.mark();
+		cursor.readWhile((character) => character !== " ");
+		const failure = cursor.failure("nope", start);
+		expect(failure).toMatchObject({ context: "aaa [BAD] bbb\nnext", offset: 7, line: 1, column: 8 });
+		expect(formatFailure(failure)).toContain("nope at 1:8 (offset 7)");
 	});
 });

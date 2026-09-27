@@ -2,7 +2,6 @@
 
 import {
 	type CommentSpan,
-	Cursor,
 	type Declaration,
 	type Descriptor,
 	type Diagnostic,
@@ -13,6 +12,7 @@ import {
 	type Literal,
 	type Range,
 	type Reference,
+	SourceCursor,
 	type SymbolKind,
 	type TextCoordinates,
 } from "@nyaa-lexicon/protocol";
@@ -215,24 +215,24 @@ export function bareNumber(w: Walk, scope: Scope, word: Word): void {
 
 /** The subscript runs to the first `]`. */
 export function assignmentOf(text: string): AssignmentHead | undefined {
-	const cursor = new Cursor(text);
-	const name = cursor.takeWhile((character) => NAME_CHAR_RE.test(character));
+	const cursor = new SourceCursor(text);
+	const name = cursor.readWhile((character) => NAME_CHAR_RE.test(character));
 	if (!IDENTIFIER_RE.test(name)) return undefined;
 	if (cursor.peek() === "[") {
-		cursor.takeWhile((character) => character !== "]");
+		cursor.readWhile((character) => character !== "]");
 		if (cursor.next() !== "]") return undefined;
 	}
 	if (cursor.peek() === "+") cursor.next();
 	if (cursor.next() !== "=") return undefined;
 	const valueAt = cursor.offset;
 	const array = cursor.peek() === "(";
-	return { name, valueAt, value: cursor.takeWhile(() => true), array };
+	return { name, valueAt, value: cursor.readWhile(() => true), array };
 }
 
 /** The name runs to the first `[`, and a final `]` closes the subscript. */
 export function subscripted(text: string): Subscripted {
-	const cursor = new Cursor(text);
-	const name = cursor.takeWhile((character) => character !== "[");
+	const cursor = new SourceCursor(text);
+	const name = cursor.readWhile((character) => character !== "[");
 	if (cursor.next() !== "[") return { name };
 	let index = "";
 	while (cursor.good()) {

@@ -1,6 +1,6 @@
 // The walk over the syntax tree: what each node means to an index.
 
-import { Cursor, coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, parseSymbolId, SourceCursor } from "@nyaa-lexicon/protocol";
 import {
 	aliases,
 	DECLARING,
@@ -248,7 +248,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 //  Main
 
 export function parseBash(module: string, source: string): ParsedBashFile {
-	const shift = new Cursor(source).peek() === BYTE_ORDER_MARK ? 1 : 0;
+	const shift = new SourceCursor(source).peek() === BYTE_ORDER_MARK ? 1 : 0;
 	const text = source.slice(shift);
 	const { script, tokens } = parseBashScript(text);
 	const out: ParsedBashFile = {

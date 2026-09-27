@@ -163,10 +163,12 @@ PowerShell 5.1's match on all but 7.x syntax. On 60,000 mutated files, the parse
 
 ## 2. One cursor owns character access
 
-Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The cursor exposes
-peek, next and a good flag, and tracks line, column and offset as it goes. A token's text read again
-comes from `textOf`, which answers only for text already passed. A parser keeps the source private
-to its cursor, so a stray slice does not compile.
+Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The one cursor is
+protocol's `SourceCursor`, for source files and machine-written ids alike. It exposes peek, next and
+a good flag, and tracks line, column and offset as it goes, in the positions `coordinatesOf` gives.
+A token's text read again comes from `textOf`, which answers only for text already passed; a
+failure's context comes from `failure`. A parser keeps the source private to its cursor, so a stray
+slice does not compile.
 
 A structural search that bypasses the cursor is the defect this law exists to prevent. An
 `indexOf(")")` picks the wrong delimiter and collapses two distinct symbols onto one id, and

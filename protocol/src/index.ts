@@ -16,7 +16,6 @@ export {
 	sameRange,
 	type TextCoordinates,
 } from "./coordinates.js";
-export { Cursor, err, formatFailure, ok, type ParseFailure, type ParseResult, safeDigits } from "./cursor.js";
 export {
 	answerBudgetMs,
 	BUDGETS,
@@ -434,6 +433,7 @@ export {
 } from "./move.js";
 export { withOccurrences } from "./occurrences.js";
 export { type PaintFacts, PaintFactsSchema } from "./paint.js";
+export { err, formatFailure, ok, type ParseFailure, type ParseResult, safeDigits } from "./parseResult.js";
 export {
 	type CommentSpan,
 	CommentSpanSchema,
@@ -517,6 +517,7 @@ export {
 	decodeModuleField,
 	encodeModuleField,
 	expectIdSpace,
+	type IdField,
 	isCanonicalModule,
 	isLocalSymbol,
 	isParameterSymbol,
