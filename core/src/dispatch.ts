@@ -24,6 +24,7 @@ import {
 	refactorRename,
 	refactorReplace,
 	renameStepOutcome,
+	underClientStep,
 } from "./stepRunners.js";
 import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
@@ -355,15 +356,22 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			refactorMove(service, transactions(), gate.write, params, "join").then(moveOutcome),
 		),
 		refactorRenameCommitted: staged((params, gate) =>
-			refactorRename(service, transactions(), gate.write, params, { own: params.bases }).then(
-				committedOutcome("rename"),
+			underClientStep(transactions(), params.stepId, "rename", (cancelled) =>
+				refactorRename(service, transactions(), gate.write, params, { own: params.bases }, cancelled).then(
+					committedOutcome("rename"),
+				),
 			),
 		),
 		refactorMoveCommitted: staged((params, gate) =>
-			refactorMove(service, transactions(), gate.write, params, { own: params.bases }).then(
-				committedOutcome("move"),
+			underClientStep(transactions(), params.stepId, "move", (cancelled) =>
+				refactorMove(service, transactions(), gate.write, params, { own: params.bases }, cancelled).then(
+					committedOutcome("move"),
+				),
 			),
 		),
+		// Neither waits on the gate: a step holding it is past cancelling, and its outcome is a row.
+		refactorStepOutcome: staged((params) => transactions().stepOutcome(params.stepId)),
+		refactorStepCancel: staged((params) => transactions().cancelStep(params.stepId)),
 	} satisfies { [M in DaemonMethod]: Handler<M> };
 }
 

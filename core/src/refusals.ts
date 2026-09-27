@@ -431,6 +431,15 @@ export function refactorOpenForCommittedStep(id: string): Refusal {
 	);
 }
 
+export function stepCancelled(stepId: string): Refusal {
+	return mint(`step ${stepId} was cancelled before it wrote anything`);
+}
+
+/** A step id already names a step, which was not answered. */
+export function stepIdTaken(stepId: string, status: string): Refusal {
+	return mint(`step ${stepId} is already ${status}; ask refactorStepOutcome what became of it`);
+}
+
 export function stepOutsideBases(modules: string[]): Refusal {
 	const them = modules.length === 1 ? "it is" : "they are";
 	return mint(

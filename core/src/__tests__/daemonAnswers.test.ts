@@ -528,6 +528,24 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			openRefactor: { id: answers.refactorStart?.id },
 		});
 	},
+	refactorStepOutcome: async () => {
+		const bases = [{ module: "cart.ref", contentHash: null }];
+		const named = { symbolId: cart, newName: "Basket", bases, stepId: "sample-step" };
+		const first = await ask("refactorRenameCommitted", named);
+		expect(await ask("refactorStepOutcome", { stepId: "sample-step" })).toEqual({
+			status: "answered",
+			answer: first,
+		});
+		// A retry under the same id is answered, never run again.
+		expect(await ask("refactorRenameCommitted", named)).toEqual(first);
+		expect(await ask("refactorStepOutcome", { stepId: "never-named" })).toEqual({ status: "unknown" });
+	},
+	refactorStepCancel: async () => {
+		expect(await ask("refactorStepCancel", { stepId: "sample-step" })).toMatchObject({
+			cancelled: false,
+			outcome: { status: "answered" },
+		});
+	},
 	refactorRevert: async () => {
 		const status = await ask("refactorStatus", {});
 		expect(
@@ -598,6 +616,8 @@ const REFACTOR = [
 	"refactorMove",
 	"refactorRenameCommitted",
 	"refactorMoveCommitted",
+	"refactorStepOutcome",
+	"refactorStepCancel",
 	"refactorRevert",
 	"refactorCommit",
 	"refactorSettlements",

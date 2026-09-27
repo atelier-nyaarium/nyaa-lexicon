@@ -22,6 +22,8 @@ import type { DatabaseSync } from "node:sqlite";
 import {
 	ADVISORY_ISSUE_KINDS,
 	type CommittedFile,
+	type CommittedStep,
+	CommittedStepSchema,
 	hashBytes,
 	type LedgerMark,
 	MAX_SOURCE_BYTES,
@@ -32,12 +34,15 @@ import {
 	type RefactorSettlements,
 	resolveContained,
 	type StepBase,
+	type StepCancel,
 	type StepKind,
+	type StepOutcome as ClientStepOutcome,
+	StepOutcomeSchema,
 	type StepPhase,
 	type TransactionStatus,
 } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
-import { SETTLEMENTS_KEPT } from "./journalSchema.js";
+import { CLIENT_STEPS_KEPT, SETTLEMENTS_KEPT } from "./journalSchema.js";
 import type {
 	CommittedTransaction,
 	NotedFileWrite,
@@ -281,6 +286,9 @@ function parseDiskStates(raw: string | null): DiskState[] | null {
  * Gate ownership follows `WorkspaceGate` in `docs/architecture.md`.
  */
 export class TransactionManager {
+	/** Client steps this daemon is running; a row naming any other was left by one that stopped. */
+	private readonly liveSteps = new Set<string>();
+
 	constructor(
 		private readonly store: IndexStore,
 		private readonly workspaceRoot: string,
@@ -580,6 +588,87 @@ export class TransactionManager {
 			...(row.module === null ? {} : { module: row.module }),
 			...(row.line === null ? {} : { line: row.line }),
 		}));
+	}
+
+	////////////////////////////////
+	//  Client steps
+
+	/**
+	 * Names a committed step by the client's id before it plans. A taken id answers what became of
+	 * the step that took it, so a retry never runs twice. See `docs/daemon-protocol.md`
+	 * `refactorStepOutcome`.
+	 */
+	claimStep(
+		stepId: string,
+		kind: "rename" | "move",
+	): { claimed: true } | { claimed: false; outcome: ClientStepOutcome } {
+		const outcome = this.stepOutcome(stepId);
+		if (outcome.status !== "unknown") return { claimed: false, outcome };
+		this.liveSteps.add(stepId);
+		this.store.journalWrite((db) => {
+			db.prepare(
+				"INSERT INTO refactor_client_steps (stepId, kind, state, recordedAt) VALUES (?, ?, 'planning', ?)",
+			).run(stepId, kind, this.now());
+			db.prepare(
+				"DELETE FROM refactor_client_steps WHERE stepId NOT IN (SELECT stepId FROM refactor_client_steps ORDER BY recordedAt DESC, rowid DESC LIMIT ?)",
+			).run(CLIENT_STEPS_KEPT);
+		});
+		return { claimed: true };
+	}
+
+	/** Past its last check, inside the gate: false when a cancel came first, and the step must not write. */
+	proceedStep(stepId: string): boolean {
+		return this.moveStep(stepId, "planning", "writing");
+	}
+
+	/** Cancels a step still planning; one past its last check answers as it will. */
+	cancelStep(stepId: string): StepCancel {
+		const cancelled = this.moveStep(stepId, "planning", "cancelled");
+		if (cancelled) this.liveSteps.delete(stepId);
+		return { cancelled, outcome: this.stepOutcome(stepId) };
+	}
+
+	/** A cancelled step keeps that as its outcome. */
+	answerStep(stepId: string, answer: CommittedStep): void {
+		this.liveSteps.delete(stepId);
+		this.store.journalWrite((db) => {
+			db.prepare(
+				"UPDATE refactor_client_steps SET state = 'answered', answer = ? WHERE stepId = ? AND state != 'cancelled'",
+			).run(JSON.stringify(answer), stepId);
+		});
+	}
+
+	/** A step that threw has no answer to keep; its refactor settled or recovery settles it. */
+	abandonStep(stepId: string): void {
+		this.liveSteps.delete(stepId);
+		this.store.journalWrite((db) => {
+			db.prepare(
+				"UPDATE refactor_client_steps SET state = 'interrupted' WHERE stepId = ? AND state IN ('planning', 'writing')",
+			).run(stepId);
+		});
+	}
+
+	stepOutcome(stepId: string): ClientStepOutcome {
+		const row = this.store.journalRead((db) =>
+			db.prepare("SELECT state, answer FROM refactor_client_steps WHERE stepId = ?").get(stepId),
+		) as { state: string; answer: string | null } | undefined;
+		if (row === undefined) return { status: "unknown" };
+		// Only this daemon's own steps are still running; another's stopped with it.
+		if ((row.state === "planning" || row.state === "writing") && !this.liveSteps.has(stepId))
+			return { status: "interrupted" };
+		if (row.state === "answered" && row.answer !== null)
+			return { status: "answered", answer: CommittedStepSchema.parse(JSON.parse(row.answer)) };
+		return StepOutcomeSchema.parse({ status: row.state });
+	}
+
+	private moveStep(stepId: string, from: string, to: string): boolean {
+		if (!this.liveSteps.has(stepId)) return false;
+		const changed = this.store.journalWrite((db) =>
+			db
+				.prepare("UPDATE refactor_client_steps SET state = ? WHERE stepId = ? AND state = ?")
+				.run(to, stepId, from),
+		);
+		return Number(changed.changes) > 0;
 	}
 
 	////////////////////////////////

@@ -24,6 +24,8 @@ export const SETTLEMENTS_KEPT = 128;
 
 export const SETTLED_IMAGES_KEPT = 32;
 
+export const CLIENT_STEPS_KEPT = 256;
+
 export const JOURNAL_TABLES = {
 	// The partial index enforces one open transaction.
 	refactor_transactions: {
@@ -162,6 +164,21 @@ CREATE INDEX IF NOT EXISTS refactor_issues_txn ON refactor_issues(transactionId)
 `,
 		salvage: true,
 		revision: true,
+	},
+	// A client's name for a committed step, so a lost answer can be asked for again.
+	refactor_client_steps: {
+		ddl: `
+CREATE TABLE IF NOT EXISTS refactor_client_steps (
+  stepId     TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('rename', 'move')),
+  state      TEXT NOT NULL CHECK (state IN ('planning', 'writing', 'cancelled', 'interrupted', 'answered')),
+  answer     TEXT,
+  recordedAt INTEGER NOT NULL,
+  CHECK ((state = 'answered') = (answer IS NOT NULL))
+);
+`,
+		salvage: true,
+		revision: false,
 	},
 	// AUTOINCREMENT preserves pruned sequence numbers.
 	refactor_settlements: {

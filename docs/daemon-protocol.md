@@ -353,6 +353,17 @@ method with those bases; redo is the reverse's reverse. After a lost answer, `re
 reverse is not byte-exact: a re-pointed import may format differently, and a module the forward move
 created stays.
 
+A client that names the step with `stepId` can ask after it instead. The daemon records the id
+before planning and the answer after, whole, `forwarded` included, so member ids a class rename
+re-minted come back too. A retry under an answered id gets that answer again and runs nothing.
+`refactorStepOutcome({ stepId })` answers `unknown` (never named, or among the oldest pruned past the
+last 256), `planning`, `writing` (past its last check, so it will answer), `cancelled`,
+`interrupted` (the daemon stopped mid-step; `refactorSettlements` says whether its refactor
+committed), or `answered` with the answer. `refactorStepCancel({ stepId })` stops a step still
+planning: inside the gate, after the plan's own checks, a cancelled step refuses before it journals
+or writes. It answers `cancelled: true` only then, and the outcome either way. Neither method waits
+on the workspace gate.
+
 ### One read binds an answer to its bytes
 
 `moduleDeclarations` answers one module's status (`exists`, `claimed`, `indexed`, `depth`, the

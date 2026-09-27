@@ -21,6 +21,8 @@ const STAGED = [
 	"refactorMove",
 	"refactorRenameCommitted",
 	"refactorMoveCommitted",
+	"refactorStepOutcome",
+	"refactorStepCancel",
 ];
 
 /** The background upgrade ungated, then the answer shared. */

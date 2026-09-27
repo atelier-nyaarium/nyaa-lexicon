@@ -1727,6 +1727,34 @@ export const CommittedStepSchema = z
 
 export type CommittedStep = z.infer<typeof CommittedStepSchema>;
 
+/** What became of a committed step a client named. */
+export const StepOutcomeSchema = z
+	.discriminatedUnion("status", [
+		/** Never named here, or pruned. */
+		z.object({ status: z.literal("unknown") }),
+		/** Planning, and cancellable. */
+		z.object({ status: z.literal("planning") }),
+		/** Past its last check: it will answer. */
+		z.object({ status: z.literal("writing") }),
+		z.object({ status: z.literal("cancelled") }),
+		/** The daemon stopped mid-step; `refactorSettlements` says whether its refactor committed. */
+		z.object({ status: z.literal("interrupted") }),
+		z.object({ status: z.literal("answered"), answer: CommittedStepSchema }),
+	])
+	.meta({ id: "StepOutcome" });
+
+export type StepOutcome = z.infer<typeof StepOutcomeSchema>;
+
+export const StepCancelSchema = z
+	.object({
+		/** True only when the step was still planning, so it will never write. */
+		cancelled: z.boolean(),
+		outcome: StepOutcomeSchema,
+	})
+	.meta({ id: "StepCancel" });
+
+export type StepCancel = z.infer<typeof StepCancelSchema>;
+
 export const InsertOutcomeSchema = z
 	.object({
 		inserted: z.boolean(),

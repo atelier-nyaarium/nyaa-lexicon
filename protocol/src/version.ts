@@ -79,7 +79,8 @@ export type Compatibility =
 // `Reference.qualified` marks a use reached through a receiver or path; an older core ignores it.
 // 3.20.0: `oldestClientMajor` on the lock, the welcome and `version.json`: the oldest protocol major
 // whose table the daemon still serves. A client behind a newer major rides only down to it; absent
-// reads as the daemon's own major.
+// reads as the daemon's own major. A committed step takes a client's `stepId`, and
+// `refactorStepOutcome` and `refactorStepCancel` answer what became of it. An older daemon strips the id.
 export const PROTOCOL_VERSION = "3.20.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */

@@ -61,6 +61,8 @@ import {
 	SearchSymbolsResultSchema,
 	SharedLiteralsResultSchema,
 	StepBaseSchema,
+	StepCancelSchema,
+	StepOutcomeSchema,
 	StoredDeclarationSchema,
 	SubjectDiagnosisSchema,
 	SymbolAtReplySchema,
@@ -117,8 +119,13 @@ const Bases = z
 	.array(z.object({ module: ModulePath, contentHash: StepBaseSchema.shape.contentHash }))
 	.min(1)
 	.max(4096);
-const RenameCommitted = Rename.extend({ bases: Bases }).meta({ id: "RenameCommittedRequest" });
-const MoveCommitted = Move.extend({ bases: Bases }).meta({ id: "MoveCommittedRequest" });
+/** A client's own name for a committed step, so it can ask after a lost answer. */
+const StepId = z.string().min(1).max(128);
+const RenameCommitted = Rename.extend({ bases: Bases, stepId: StepId.optional() }).meta({
+	id: "RenameCommittedRequest",
+});
+const MoveCommitted = Move.extend({ bases: Bases, stepId: StepId.optional() }).meta({ id: "MoveCommittedRequest" });
+const ByStep = z.object({ stepId: StepId }).meta({ id: "ByStepRequest" });
 const Literals = z
 	.object({
 		value: z.string().optional(),
@@ -837,6 +844,22 @@ export const DAEMON_METHODS = {
 		lifecycle: "query",
 		mutates: true,
 		budget: "refactor",
+	},
+	/** What became of a named committed step. See `docs/daemon-protocol.md` `refactorStepOutcome`. */
+	refactorStepOutcome: {
+		request: ByStep,
+		response: StepOutcomeSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "status",
+	},
+	/** Cancel a named committed step still planning. See `docs/daemon-protocol.md` `refactorStepOutcome`. */
+	refactorStepCancel: {
+		request: ByStep,
+		response: StepCancelSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "status",
 	},
 } as const satisfies Record<
 	string,

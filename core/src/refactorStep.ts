@@ -89,6 +89,8 @@ export interface StepShape<Outcome> {
 	refuse: (reason: Refusal, issues: RefactorIssue[], why?: RefusedWith) => Outcome;
 	/** `files` are the written modules with their journaled hashes. */
 	succeed: (issues: RefactorIssue[], hold: StepHold, files: CommittedFile[]) => Outcome;
+	/** Inside the gate, after the plan checks: a refusal when the caller cancelled, else null and the step writes. */
+	cancelled?: () => Refusal | null;
 }
 
 ////////////////////////////////
@@ -145,6 +147,8 @@ export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Ou
 			if (moved !== null) return refuse(changedWhilePlanned(moved, nounOf(shape.kind)));
 			const stale = planned.stale();
 			if (stale !== null) return refuse(stale);
+			const cancelled = shape.cancelled?.() ?? null;
+			if (cancelled !== null) return refuse(cancelled);
 			planned.begin?.();
 
 			const rebind = planned.rebind?.();

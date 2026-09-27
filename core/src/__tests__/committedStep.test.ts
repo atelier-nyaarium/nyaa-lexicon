@@ -250,6 +250,42 @@ describe("a committed step while a refactor is open", () => {
 	});
 });
 
+describe("a committed step a client names", () => {
+	it("keeps its answer, full id map and all, for the caller that lost it, and answers a retry with it", async () => {
+		const params = { symbolId: CART, newName: "Basket", bases: await renameBases(CART, "Basket"), stepId: "s1" };
+		const outcome = await committed("refactorRenameCommitted", params);
+
+		expect(outcome).toMatchObject({ committed: true, forwarded: [{ from: CART, to: RENAMED }] });
+		expect(transactions.stepOutcome("s1")).toEqual({ status: "answered", answer: outcome });
+		expect(await committed("refactorRenameCommitted", params)).toEqual(outcome);
+		expect(read("a.ref")).toBe("export class Basket {}\n");
+	});
+
+	it("is cancelled while it plans, and then never writes", async () => {
+		let cancel: ReturnType<TransactionManager["cancelStep"]> | undefined;
+		const outcome = await committed(
+			"refactorRenameCommitted",
+			{ symbolId: CART, newName: "Basket", bases: await renameBases(CART, "Basket"), stepId: "s2" },
+			gateAfter(() => {
+				cancel = transactions.cancelStep("s2");
+			}),
+		);
+
+		expect(cancel).toEqual({ cancelled: true, outcome: { status: "cancelled" } });
+		expect(outcome).toMatchObject({ committed: false });
+		expect(transactions.stepOutcome("s2")).toEqual({ status: "cancelled" });
+		expect(read("a.ref")).toBe(ORIGINAL);
+		expect(transactions.status().open).toBe(false);
+	});
+
+	it("reads as interrupted to a daemon that did not run it", async () => {
+		transactions.claimStep("s3", "move");
+		expect(transactions.stepOutcome("s3")).toEqual({ status: "planning" });
+		expect(new TransactionManager(store, root).stepOutcome("s3")).toEqual({ status: "interrupted" });
+		expect(new TransactionManager(store, root).cancelStep("s3")).toMatchObject({ cancelled: false });
+	});
+});
+
 describe("the bases a committed step is held to", () => {
 	it("refuses a written module missing from them or moved off its hash, naming where it stands", async () => {
 		const shown = await moveBases(CART, "b.ref");

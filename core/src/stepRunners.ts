@@ -15,7 +15,14 @@ import {
 import type { ReadContext } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
-import { changedWhilePlanned, factsMovedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
+import {
+	changedWhilePlanned,
+	factsMovedWhilePlanned,
+	type Refusal,
+	stepCancelled,
+	stepIdTaken,
+	staleSincePlanned,
+} from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { TransactionManager } from "./transactions.js";
 
@@ -66,6 +73,7 @@ export function refactorMove(
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId: string; toModule: string },
 	hold: StepPolicy,
+	cancelled?: () => Refusal | null,
 ): Promise<StepResult> {
 	let requested = args.symbolId;
 	let touched: string[] = [];
@@ -79,6 +87,7 @@ export function refactorMove(
 		{
 			kind: "move",
 			hold,
+			...defined({ cancelled }),
 			refuse: (reason, issues, why) => ({ done: false, reason, issues, ...why }),
 			succeed: (issues, _hold, files) => {
 				const root = idMap.get(requested) ?? requested;
@@ -157,6 +166,7 @@ export function refactorRename(
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { symbolId: string; newName: string },
 	hold: StepPolicy,
+	cancelled?: () => Refusal | null,
 ): Promise<StepResult> {
 	let modules: string[] = [];
 	let oldName = "";
@@ -168,6 +178,7 @@ export function refactorRename(
 		{
 			kind: "rename",
 			hold,
+			...defined({ cancelled }),
 			refuse: (reason, issues, why) => ({ done: false, reason, issues, ...why }),
 			succeed: (issues, _hold, files) => {
 				const root = idMap.get(args.symbolId) ?? args.symbolId;
@@ -407,6 +418,34 @@ export function committedOutcome(kind: "rename" | "move"): (result: StepResult) 
 			issues: result.issues,
 		};
 	};
+}
+
+/**
+ * A committed step under the client's id: claimed before it plans, cancellable until its last check
+ * in the gate, and its answer kept for a caller that lost it. A retry of an answered id gets that
+ * answer again rather than a second run.
+ */
+export async function underClientStep(
+	transactions: TransactionManager,
+	stepId: string | undefined,
+	kind: "rename" | "move",
+	run: (cancelled?: () => Refusal | null) => Promise<CommittedStep>,
+): Promise<CommittedStep> {
+	if (stepId === undefined) return run();
+	const claim = transactions.claimStep(stepId, kind);
+	if (!claim.claimed) {
+		if (claim.outcome.status === "answered") return claim.outcome.answer;
+		return { committed: false, reason: stepIdTaken(stepId, claim.outcome.status), issues: [] };
+	}
+	let answer: CommittedStep;
+	try {
+		answer = await run(() => (transactions.proceedStep(stepId) ? null : stepCancelled(stepId)));
+	} catch (error) {
+		transactions.abandonStep(stepId);
+		throw error;
+	}
+	transactions.answerStep(stepId, answer);
+	return answer;
 }
 
 /** Written modules' bases are the executor's check. */
