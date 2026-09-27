@@ -560,7 +560,11 @@ export class RustParser {
 			context,
 			descriptor,
 			kind,
-			context.kind === "impl" && context.implTrait !== undefined ? "traitImplMethod" : "fn",
+			context.kind === "trait"
+				? "traitMethod"
+				: context.kind === "impl" && context.implTrait !== undefined
+					? "traitImplMethod"
+					: "fn",
 			prefix.visibility,
 			prefix.exported,
 			{

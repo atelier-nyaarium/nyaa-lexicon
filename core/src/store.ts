@@ -161,7 +161,7 @@ export interface FactsStamp {
 //  Constants
 
 /** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -256,7 +256,9 @@ CREATE TABLE symbols (
   -- Null reads the kind.
   contains        TEXT CHECK (contains IN ('members', 'locals')),
   -- Null: the provider named no safe insertion line.
-  memberInsertLine INTEGER
+  memberInsertLine INTEGER,
+  -- The provider's own word for the form, such as an extension or a trait method.
+  languageKind    TEXT
 );
 CREATE INDEX symbols_module ON symbols(module);
 CREATE INDEX symbols_name ON symbols(name);
@@ -1104,8 +1106,8 @@ export class IndexStore {
 				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
 				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage, contains,
-				  memberInsertLine)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  memberInsertLine, languageKind)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
 				// The name columns are NOT NULL from before names could be absent; the flag says which.
@@ -1139,6 +1141,7 @@ export class IndexStore {
 					digest?.patternCoverage ?? null,
 					d.contains ?? null,
 					d.memberInsertLine ?? null,
+					d.languageKind ?? null,
 				);
 			}
 			this.subjects.restoreResolving(module, this.clock.now());
@@ -2404,6 +2407,7 @@ interface SymbolRow {
 	mBranches: number | null;
 	contains: string | null;
 	memberInsertLine: number | null;
+	languageKind: string | null;
 }
 
 /** Absent stays absent through the round trip, so "not measured" never arrives looking like zero. */
@@ -2461,6 +2465,7 @@ function rowToDeclaration(raw: unknown): StoredDeclaration {
 		...(row.signature === null ? {} : { signature: row.signature }),
 		...(row.contains === null ? {} : { contains: row.contains as StoredDeclaration["contains"] }),
 		...(row.memberInsertLine === null ? {} : { memberInsertLine: row.memberInsertLine }),
+		...(row.languageKind === null ? {} : { languageKind: row.languageKind }),
 	};
 }
 

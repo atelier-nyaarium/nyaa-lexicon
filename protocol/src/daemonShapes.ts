@@ -1232,6 +1232,7 @@ export const REFACTOR_ISSUE_KINDS = [
 	"UnresolvedAfterMove",
 	"NotImplemented",
 	"ParseError",
+	"ReceiverMemberMayCapture",
 	"StringLiteral",
 	"ExternalContract",
 	"NotEditable",
@@ -1244,7 +1245,11 @@ export const REFACTOR_ISSUE_KINDS = [
 ] as const;
 
 /** Reported, never block commits. */
-export const ADVISORY_ISSUE_KINDS: ReadonlySet<string> = new Set(["ExportedBeyondIndex", "SameSpellingUnbound"]);
+export const ADVISORY_ISSUE_KINDS: ReadonlySet<string> = new Set([
+	"ExportedBeyondIndex",
+	"ReceiverMemberMayCapture",
+	"SameSpellingUnbound",
+]);
 
 export const RefactorIssueSchema = z
 	.object({

@@ -29,8 +29,8 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { ReferenceBinder } from "./binding.js";
-import { type KotlinFile, LANGUAGE, REFERENCE_ROLES, type TypeFact } from "./facts.js";
-import { cleanSpecifier, fileSite, PackageIndex, type PackageIndexEntry } from "./packageIndex.js";
+import { type KotlinFile, LANGUAGE, REFERENCE_ROLES, type ReferenceInfo, type TypeFact } from "./facts.js";
+import { cleanSpecifier, fileSite, isClassifier, PackageIndex, type PackageIndexEntry } from "./packageIndex.js";
 import { parseKotlin } from "./parse.js";
 
 export const TIERS = {
@@ -360,7 +360,24 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 
 	private wireReferences(facts: KotlinFile): Reference[] {
 		const binder = this.binder(facts);
-		return facts.references.map((info) => ({ ...info.reference, binding: binder.resolve(info).binding }));
+		return facts.references.map((info) => {
+			const { binding } = binder.resolve(info);
+			return { ...info.reference, binding, ...defined({ qualified: this.qualifiedBy(info, binding) }) };
+		});
+	}
+
+	/**
+	 * A use through a receiver that binds a class member is out of reach of every local, and a member
+	 * outranks every extension, so no rename can capture it.
+	 */
+	private qualifiedBy(info: ReferenceInfo, binding: Binding): boolean | undefined {
+		const written = info.reference.qualified;
+		if (written !== undefined || info.receiver === undefined || binding.status !== "bound") return written;
+		const target = this.index.declaration(binding.symbolId)?.declaration;
+		const containerId = target?.containerId;
+		const container = containerId === undefined ? undefined : this.index.declaration(containerId)?.declaration;
+		if (target === undefined || container === undefined || !isClassifier(container)) return undefined;
+		return this.index.receiverTypeOf(target.symbolId) === undefined ? true : undefined;
 	}
 
 	private typeOfSymbol(symbolId: string): TypeInfo {

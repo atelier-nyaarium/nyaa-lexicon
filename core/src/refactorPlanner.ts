@@ -118,6 +118,18 @@ function unknownReasonOf(provenance: string): UnknownReason {
 	return UNKNOWN_REASONS.includes(provenance as UnknownReason) ? (provenance as UnknownReason) : "NotIndexed";
 }
 
+/**
+ * Language kinds a use reaches only when the receiver's type has no member of the name: Kotlin and
+ * C# extensions, Rust trait methods. Renaming one onto such a member's name moves those uses.
+ */
+const REACHED_BY_RESOLUTION_ORDER: ReadonlySet<string> = new Set([
+	"extensionFunction",
+	"extensionProperty",
+	"extensionMethod",
+	"traitMethod",
+	"traitImplMethod",
+]);
+
 const UNKNOWN_REASONS: UnknownReason[] = [
 	"NotImplemented",
 	"DynamicallyTyped",
@@ -1054,7 +1066,7 @@ export class RefactorPlanner {
 			occurrences: files.reduce((total, file) => total + file.sites.length, 0),
 			blockers,
 			warnings: [
-				...this.renameWarnings(declaration, oldName, symbolId, context),
+				...this.renameWarnings(declaration, oldName, newName, symbolId, context),
 				...this.ownerCallConcerns(symbolId, context),
 			],
 		};
@@ -1258,10 +1270,18 @@ export class RefactorPlanner {
 	private renameWarnings(
 		declaration: StoredDeclaration,
 		oldName: string,
+		newName: string,
 		symbolId: string,
 		context: ReadContext,
 	): RenameConcern[] {
 		const warnings: RenameConcern[] = [];
+
+		if (declaration.languageKind?.split(" ").some((part) => REACHED_BY_RESOLUTION_ORDER.has(part)) === true) {
+			warnings.push({
+				kind: "ReceiverMemberMayCapture",
+				detail: `${oldName} is reached through receivers, and a receiver type's own member named ${newName} outranks it; the index does not know every receiver's type`,
+			});
+		}
 
 		const unbound = context.referencesSpelled(oldName, symbolId);
 		if (unbound.length > 0) {

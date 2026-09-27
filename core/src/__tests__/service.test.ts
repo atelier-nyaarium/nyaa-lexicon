@@ -941,6 +941,35 @@ describe("planning a rename", () => {
 		expect(plan.warnings.map((w) => w.kind)).toContain("ExportedBeyondIndex");
 	});
 
+	it("says an extension's receiver may own a member of the new name, and a plain function draws no such warning", async () => {
+		const plain = plant();
+		const extension = "lexicon kotlin src/ext.kt size().";
+		store.replaceFile({
+			module: "src/ext.kt",
+			contentHash: "h1",
+			declarations: [
+				{
+					symbolId: extension,
+					kind: "function",
+					name: "size",
+					languageKind: "extensionFunction",
+					range: { start: { line: 0, character: 0 }, end: { line: 0, character: 30 } },
+					selectionRange: { start: { line: 0, character: 11 }, end: { line: 0, character: 15 } },
+					visibility: "public",
+					exported: false,
+				},
+			],
+			references: [],
+		});
+
+		const kinds = async (target: string) =>
+			(await service.prepareRename(target, "length", ctx())).warnings.map((w) => w.kind);
+
+		expect(
+			[await kinds(plain), await kinds(extension)].map((list) => list.includes("ReceiverMemberMayCapture")),
+		).toEqual([false, true]);
+	});
+
 	it("blocks a symbol it does not have, rather than planning an empty rename", async () => {
 		const plan = await service.prepareRename("lexicon ts src/gone.ts ghost().", "other", ctx());
 

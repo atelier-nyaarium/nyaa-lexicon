@@ -135,7 +135,13 @@ A `Reference`'s `qualified` is true when the syntax tree reaches the name throug
 path: a member access (`a.b`, `a?.b`, `a->b`, `self.b`, `this.b`) or a qualified name (`A::b`,
 `pkg.Type`). It is false for a bare name, and absent when the provider cannot tell. Rename relies on
 it: no local can capture a qualified use, so an unmarked one is treated as capturable. Set it from
-the parse tree, never from the text around the name.
+the parse tree, never from the text around the name. Where an extension could also answer a member
+access, as in Kotlin, mark the use only once it binds to a class member, which outranks every
+extension.
+
+An extension or trait method is reached only when the receiver's type has no member of the name.
+Tag its `languageKind` with `extensionFunction`, `extensionProperty`, `extensionMethod`,
+`traitMethod` or `traitImplMethod`, and a rename of it warns `ReceiverMemberMayCapture`.
 
 A `Reference`'s `fromId` names the declaration a use is WRITTEN in, and a header use a provider
 emits belongs to the declaration whose header it sits in rather than to the scope around it.

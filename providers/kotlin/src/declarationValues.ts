@@ -20,20 +20,22 @@ export function property(walk: DeclarationWalk, node: SyntaxNode, scope: Scope):
 	const modifiers = modifiersOf(walk.text, childOfType(node, "modifiers"));
 	const constant = modifiers.includes("const");
 	const accessors = node.children.find((child) => child.type === "getter" || child.type === "setter");
+	const beforeName = node.children.slice(0, node.children.indexOf(variable));
+	const extension = beforeName.some((child) => child.type === ".");
+	const keywordKind = constant ? "constVal" : keyword?.type;
 	const added = walk.sink.add({
 		node,
 		nameNode,
 		name: nameText(walk.text, nameNode),
 		kind: context === "function" ? "variable" : constant ? "constant" : "property",
-		...defined({ languageKind: constant ? "constVal" : keyword?.type }),
+		...defined({ languageKind: extension ? `${keywordKind ?? "val"} extensionProperty` : keywordKind }),
 		descriptorKind: "term",
 		scope,
 		access: accessOf(modifiers, context),
 		signature: headerOf(walk.text, [node], accessors),
 		owns: true,
 	});
-	const beforeName = node.children.slice(0, node.children.indexOf(variable));
-	if (beforeName.some((child) => child.type === ".")) walk.sink.receiverType(added.symbolId, beforeName);
+	if (extension) walk.sink.receiverType(added.symbolId, beforeName);
 	const type = variable.children.find((child) => TYPE_NODES.has(child.type));
 	if (type !== undefined) walk.sink.declaredType(added.symbolId, type);
 	else walk.sink.inferredType(added.symbolId, initializerOf(node));

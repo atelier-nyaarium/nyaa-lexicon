@@ -987,7 +987,14 @@ export class CsharpDeclarationParser extends CsharpTypeReader {
 		const method = this.addDeclaration({
 			kind,
 			...(qualifier.length === 0 ? {} : { qualifier }),
-			languageKind: operator === undefined ? (isConstructor ? "constructor" : "method") : "conversionOperator",
+			languageKind:
+				operator !== undefined
+					? "conversionOperator"
+					: isConstructor
+						? "constructor"
+						: modifiers.has("static") && this.value(open + 1) === "this"
+							? "method extensionMethod"
+							: "method",
 			name: declarationName,
 			parent,
 			startToken: leading?.start ?? this.token(codeStartIndex) ?? selectionStart,

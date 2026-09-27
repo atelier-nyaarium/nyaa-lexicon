@@ -614,7 +614,7 @@ describe("Kotlin qualified names", () => {
 		});
 	});
 
-	test("a path or super marks a use qualified; a bare name, an import's local or a capturable receiver does not", () => {
+	test("a path, super or a receiver binding a member marks a use qualified; a bare name, an import's local, an extension or an unknown receiver does not", () => {
 		const provider = started(process.cwd());
 		const facts = provider.parseFile({
 			module: "Reach.kt",
@@ -624,9 +624,10 @@ describe("Kotlin qualified names", () => {
 				"import a.b.Other as Alias",
 				"class Box : a.Base() {",
 				"    val size = 1",
-				'    fun f(box: Box): a.b.Item? { size; this.size; box.size; super.g(); box.h(); box add 1; "$size" }',
+				'    fun f(box: Box): a.b.Item? { size; this.size; box.size; super.g(); box.h(); box add 1; "$size"; this.ext() }',
 				"    fun g() = ::size",
 				"}",
+				"fun Box.ext() = 2",
 				"",
 			].join("\n"),
 		});
@@ -645,12 +646,13 @@ describe("Kotlin qualified names", () => {
 			"4:a:typeUse": [false],
 			"4:b:typeUse": [true],
 			"4:Item:typeUse": [true],
-			// Bare, then `this.`, `box.`, and the template.
-			"4:size:read": [false, "absent", "absent", false],
+			// Bare, then `this.` binding the member, `box.` of no known type, and the template.
+			"4:size:read": [false, true, "absent", false],
 			"4:g:call": [true],
 			"4:h:call": ["absent"],
 			"4:box:read": [false, false, false],
 			"4:add:call": ["absent"],
+			"4:ext:call": ["absent"],
 			"5:size:read": [false],
 		});
 	});
