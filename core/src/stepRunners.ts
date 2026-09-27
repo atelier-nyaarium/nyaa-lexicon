@@ -19,9 +19,9 @@ import {
 	changedWhilePlanned,
 	factsMovedWhilePlanned,
 	type Refusal,
+	staleSincePlanned,
 	stepCancelled,
 	stepIdTaken,
-	staleSincePlanned,
 } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { TransactionManager } from "./transactions.js";

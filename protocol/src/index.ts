@@ -257,10 +257,10 @@ export {
 	StepBaseSchema,
 	type StepCancel,
 	StepCancelSchema,
-	type StepOutcome,
-	StepOutcomeSchema,
 	type StepKind,
 	StepKindSchema,
+	type StepOutcome,
+	StepOutcomeSchema,
 	type StepPhase,
 	StepPhaseSchema,
 	type StoredComment,
@@ -473,6 +473,7 @@ export {
 	workspaceFile,
 	workspaceModule,
 } from "./providerKit.js";
+export { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
 export {
 	type BlockedSite,
 	type BlockedSiteReason,

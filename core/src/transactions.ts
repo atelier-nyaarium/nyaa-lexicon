@@ -21,6 +21,7 @@ import {
 import type { DatabaseSync } from "node:sqlite";
 import {
 	ADVISORY_ISSUE_KINDS,
+	type StepOutcome as ClientStepOutcome,
 	type CommittedFile,
 	type CommittedStep,
 	CommittedStepSchema,
@@ -36,7 +37,6 @@ import {
 	type StepBase,
 	type StepCancel,
 	type StepKind,
-	type StepOutcome as ClientStepOutcome,
 	StepOutcomeSchema,
 	type StepPhase,
 	type TransactionStatus,

@@ -73,7 +73,12 @@ export const ProviderWordsSchema = z
 export type ProviderWords = z.infer<typeof ProviderWordsSchema>;
 
 export const InitializeRequestSchema = z
-	.object({ workspaceRoot: z.string().min(1), protocolVersion: z.string().min(1) })
+	.object({
+		workspaceRoot: z.string().min(1),
+		protocolVersion: z.string().min(1),
+		/** Workspace globs the index denies; the provider reads none of them. */
+		deny: z.array(z.string()).optional(),
+	})
 	.meta({ id: "InitializeRequest" });
 
 export const InitializeResponseSchema = z

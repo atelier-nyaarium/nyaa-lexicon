@@ -29,6 +29,7 @@ import type { z } from "zod";
 import { type Clock, systemClock } from "./clock.js";
 import { withTimeout } from "./deadline.js";
 import { settleDeclaredTiers } from "./declaredTiers.js";
+import { readScopeConfig } from "./fileScope.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
 import {
@@ -95,6 +96,15 @@ const RESPAWN_DELAY_MS = 500;
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** A provider learns the scope's deny globs at every start, so none of its own reads reach them. */
+function initializeParams(workspaceRoot: string): {
+	workspaceRoot: string;
+	protocolVersion: string;
+	deny: string[];
+} {
+	return { workspaceRoot, protocolVersion: PROTOCOL_VERSION, deny: readScopeConfig(workspaceRoot).deny ?? [] };
+}
 
 /** A signal death has no code, and "code null" hides which signal it was. */
 function describeExit(code: number | null, signal: string | null): string {
@@ -185,7 +195,7 @@ export class ProviderSupervisor implements ProviderPort {
 		try {
 			info = await withTimeout(
 				this.clock,
-				running.connection.sendRequest("initialize", { workspaceRoot, protocolVersion: PROTOCOL_VERSION }),
+				running.connection.sendRequest("initialize", initializeParams(workspaceRoot)),
 				timeout,
 				"initialize",
 			);
@@ -305,10 +315,7 @@ export class ProviderSupervisor implements ProviderPort {
 			const timeout = previous.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 			const info = await withTimeout(
 				this.clock,
-				running.connection.sendRequest("initialize", {
-					workspaceRoot: previous.workspaceRoot,
-					protocolVersion: PROTOCOL_VERSION,
-				}),
+				running.connection.sendRequest("initialize", initializeParams(previous.workspaceRoot)),
 				timeout,
 				"initialize",
 			);

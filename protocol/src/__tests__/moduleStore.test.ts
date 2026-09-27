@@ -439,6 +439,24 @@ describe("the module store's fills", () => {
 			x: store.get("name:x"),
 		}).toEqual({ outside: undefined, inside: "x", y: [], x: ["a.toy", "c.toy"] });
 	});
+
+	it("never reads what the index denies, by name or through a link, and says so to the provider", () => {
+		const root = workspace({ "secret.toy": "s", "a.toy": "x" });
+		symlinkSync(path.join(root, "secret.toy"), path.join(root, "alias.toy"));
+		const store = moduleStore<Toy, null, string>({ read, entries });
+		const provider = toy(store, root);
+		provider.initialize({ workspaceRoot: root, protocolVersion: "0", deny: ["secret.toy"] });
+		provider.discoverProject({ workspaceRoot: root });
+
+		expect({
+			named: store.load("secret.toy"),
+			linked: store.load("alias.toy"),
+			open: store.load("a.toy")?.text,
+			s: store.get("name:s"),
+			outside: store.policy.readable(path.join(tmpdir(), "elsewhere.toy")),
+			denied: store.policy.readable(path.join(root, "secret.toy")),
+		}).toEqual({ named: undefined, linked: undefined, open: "x", s: [], outside: true, denied: false });
+	});
 });
 
 describe("the module store's layers", () => {

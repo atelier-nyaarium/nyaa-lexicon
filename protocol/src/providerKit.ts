@@ -6,6 +6,7 @@ import type { z } from "zod";
 import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
+import { type ReadPolicy, readPolicy } from "./readPolicy.js";
 import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
 import { shebangInterpreter } from "./shebang.js";
 import { readWorkspaceHead } from "./sourceFile.js";
@@ -22,7 +23,8 @@ type Response<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["re
 
 /** Handler contract for stateless providers. */
 export interface ProviderMethods {
-	initialize(workspaceRoot: string): Response<"initialize">;
+	/** `policy` says which workspace files it may read. */
+	initialize(workspaceRoot: string, policy: ReadPolicy): Response<"initialize">;
 	discoverProject(workspaceRoot: string): Response<"discoverProject">;
 	parseFile(params: Request<"parseFile">): Response<"parseFile">;
 	resolveImport(params: Request<"resolveImport">): Response<"resolveImport">;
@@ -75,7 +77,8 @@ export function handlersFor<V extends ModuleValue, P, E>(
 ): ProviderHandlers & ProviderNotificationHandlers {
 	if ("store" in provider) return storeHandlersFor(provider);
 	return {
-		initialize: (params) => provider.initialize(params.workspaceRoot),
+		initialize: (params) =>
+			provider.initialize(params.workspaceRoot, readPolicy(params.workspaceRoot, params.deny)),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
 		parseFile: (params) => provider.parseFile(params),
 		probeFile: (params) => provider.parseFile(params),

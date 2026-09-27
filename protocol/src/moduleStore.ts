@@ -6,6 +6,7 @@ import type { z } from "zod";
 import { hashContent } from "./hash.js";
 import type { METHOD_SCHEMAS, ModuleAdmission, ProviderMethod } from "./methods.js";
 import type { IndexDepth } from "./project.js";
+import { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
 import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
 import { readWorkspaceFile } from "./sourceFile.js";
 import type { Diagnostic } from "./symbols.js";
@@ -63,6 +64,8 @@ export interface AsyncStoreSpec<V extends ModuleValue, P, E> {
 
 interface StoreReads<P> {
 	readonly root: string;
+	/** What the index denies, for reads the provider makes beside the store. */
+	readonly policy: ReadPolicy;
 	/** Throws before discovery. */
 	readonly project: P;
 	/** Moves with a visible value, index entry, withheld mark or project. */
@@ -99,7 +102,8 @@ export interface AsyncModuleStore<V, P, E> extends StoreReads<P> {
 /** Stateful provider backed by the kit's store. */
 export interface StoreProvider<V extends ModuleValue, P, E> {
 	readonly store: ModuleStore<V, P, E> | AsyncModuleStore<V, P, E>;
-	initialize(workspaceRoot: string): Response<"initialize">;
+	/** The store holds the read policy too; `policy` is for reads the provider makes itself. */
+	initialize(workspaceRoot: string, policy: ReadPolicy): Response<"initialize">;
 	/** Refresh project configuration. */
 	discoverProject(
 		workspaceRoot: string,
@@ -192,6 +196,8 @@ function refusable(value: ModuleValue): boolean {
 class Kit<V extends ModuleValue, P, E> {
 	root = "";
 	generation = 0;
+	/** What the index denies, which no fill reads. */
+	policy: ReadPolicy = OPEN_READ_POLICY;
 	private discovery: { project: P } | null = null;
 	private discovered = new Set<string>();
 	private readonly slots = new Map<string, Slot<V>>();
@@ -231,8 +237,9 @@ class Kit<V extends ModuleValue, P, E> {
 	////////////////////////////////
 	//  Writes
 
-	reset(root: string): void {
+	reset(root: string, policy = this.policy): void {
 		this.root = path.resolve(root);
+		this.policy = policy;
 		this.discovery = null;
 		this.discovered = new Set();
 		this.slots.clear();
@@ -541,6 +548,10 @@ class Kit<V extends ModuleValue, P, E> {
 			this.owed.delete(module);
 			return;
 		}
+		if (!this.policy.readable(path.join(this.root, module))) {
+			this.miss(module, slot);
+			return;
+		}
 		const read = readWorkspaceFile(this.root, module);
 		// Retry unreadable files on later reads.
 		if (read.kind === "unreadable") return;
@@ -618,6 +629,7 @@ function readSide<V extends ModuleValue, P, E, S extends object>(kit: Kit<V, P, 
 	);
 	Object.defineProperties(store, {
 		root: { get: () => kit.root, enumerable: true },
+		policy: { get: () => kit.policy, enumerable: true },
 		project: { get: () => kit.project, enumerable: true },
 		generation: { get: () => kit.generation, enumerable: true },
 	});
@@ -667,8 +679,9 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 		kit.discoveredOnce ? work() : after(discover(kit.root), work);
 	const handlers = {
 		initialize: (params: Request<"initialize">) => {
-			kit.reset(params.workspaceRoot);
-			return provider.initialize(params.workspaceRoot);
+			const policy = readPolicy(params.workspaceRoot, params.deny);
+			kit.reset(params.workspaceRoot, policy);
+			return provider.initialize(params.workspaceRoot, policy);
 		},
 		discoverProject: (params: Request<"discoverProject">) => discover(params.workspaceRoot),
 		parseFile: (params: Request<"parseFile">) =>
