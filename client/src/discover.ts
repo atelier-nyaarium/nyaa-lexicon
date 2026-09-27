@@ -35,7 +35,7 @@ import { markVerdict } from "./identity.js";
 import { bunCommand } from "./launch.js";
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
-import { type BunExecutable, bunExecutable } from "./runtime.js";
+import { type BundledBun, type BunExecutable, bunExecutable } from "./runtime.js";
 import { requestOnce } from "./transport.js";
 import { CLIENT_BUILD_VERSION } from "./version.js";
 
@@ -176,7 +176,7 @@ export async function daemonCommand(
 	workspaceRoot: string,
 	stateDir?: string,
 	host: PlatformEnv = currentHost(),
-	bundledBun?: string,
+	bundledBun?: BundledBun,
 ): Promise<DaemonCommand> {
 	const bundle = path.join(root, "dist", "daemon.js");
 	try {

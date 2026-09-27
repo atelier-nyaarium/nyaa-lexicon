@@ -17,7 +17,15 @@ export type BunExecutable =
 	| { kind: "bun"; executable: string; version: string }
 	| { kind: "missing"; executable: string }
 	| { kind: "malformed"; executable: string; version: string }
-	| { kind: "belowFloor"; executable: string; version: string; floor: string };
+	| { kind: "belowFloor"; executable: string; version: string; floor: string }
+	/** The caller's bundled bun did not run, and no bun as new was found. */
+	| { kind: "bundleBroken"; executable: string; version: string };
+
+/** A bun shipped with the caller, and the version it was packaged at. */
+export interface BundledBun {
+	executable: string;
+	version: string;
+}
 
 export type RuntimeProbe = (executable: string) => Promise<string | null>;
 
@@ -127,14 +135,20 @@ export function runtimeProblem(runtime: Exclude<BunExecutable, { kind: "bun" }>)
 			return `the daemon needs bun ${BUN_FLOOR} or newer; ${runtime.executable} reported ${runtime.version}`;
 		case "belowFloor":
 			return `the daemon needs bun ${runtime.floor} or newer; ${runtime.executable} is bun ${runtime.version}`;
+		case "bundleBroken":
+			return `the bundled bun ${runtime.version} at ${runtime.executable} did not run, and no bun ${runtime.version} or newer was found`;
 	}
 }
 
-/** Reuse the caller's Bun; otherwise try PATH, `$BUN_INSTALL`, then bundle. Skip older OS Bun. */
+/**
+ * Reuse the caller's Bun; otherwise try PATH, `$BUN_INSTALL`, then bundle.
+ *
+ * An OS bun older than the bundle's packaged version is skipped, whether or not the bundle runs.
+ */
 export async function bunExecutable(
 	host: { platform: NodeJS.Platform; env: Record<string, string | undefined>; execPath?: string },
 	probe: RuntimeProbe = defaultProbe,
-	bundled?: string,
+	bundled?: BundledBun,
 ): Promise<BunExecutable> {
 	const running = host.execPath ?? "";
 	const base = path.basename(running.replaceAll("\\", "/")).toLowerCase();
@@ -154,8 +168,9 @@ export async function bunExecutable(
 						]
 					: []),
 			];
-	const bundle = bundled === undefined ? null : await judged(bundled, probe);
-	const minimum = bundle?.kind === "bun" ? bundle.version : null;
+	const bundlePath = bundled?.executable;
+	const bundle = bundlePath === undefined ? null : await judged(bundlePath, probe);
+	const minimum = bundled?.version ?? null;
 	let failure: BunExecutable | null = null;
 	let last: BunExecutable = { kind: "missing", executable: candidates[0] as string };
 	for (const executable of candidates) {
@@ -168,6 +183,9 @@ export async function bunExecutable(
 		else failure ??= found;
 	}
 	if (bundle?.kind === "bun") return bundle;
-	if (bundle !== null && bundle.kind !== "missing") failure ??= bundle;
-	return failure ?? bundle ?? last;
+	if (bundled !== undefined && bundle?.kind === "missing") {
+		return { kind: "bundleBroken", executable: bundled.executable, version: bundled.version };
+	}
+	if (bundle !== null) failure ??= bundle;
+	return failure ?? last;
 }

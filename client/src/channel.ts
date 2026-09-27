@@ -16,6 +16,7 @@ import {
 import { DaemonRef } from "./daemonRef.js";
 import { type EnsureMode, ensureDaemon, ensureFailure, type InstallSource } from "./ensure.js";
 import { DaemonError, unfiltered } from "./errors.js";
+import type { BundledBun } from "./runtime.js";
 import { ConnectionLostError, connectFrames, type FrameClient } from "./transport.js";
 
 ////////////////////////////////
@@ -31,7 +32,7 @@ export interface DaemonChannelOptions {
 	patience?: number;
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 	/** The caller's own bun, for daemons it spawns. */
-	bundledBun?: string;
+	bundledBun?: BundledBun;
 	/** False only attaches. True lets a method whose lifecycle `starts` start a daemon. */
 	start?: boolean;
 	/** Acquisition seam for tests. */

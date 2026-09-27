@@ -125,17 +125,31 @@ describe("bunExecutable", () => {
 		});
 	});
 
-	it("uses OS bun only when it meets the bundle version", async () => {
+	it("uses OS bun only when it meets the bundle's packaged version, even when the bundle does not run", async () => {
 		const node = { platform: "linux" as const, env: { PATH: "" }, execPath: "/usr/bin/node" };
-		const pick = async (onPath: string) =>
-			(await bunExecutable(node, probing({ bun: onPath, "/ext/bun": "1.4.5" }).probe, "/ext/bun")).executable;
+		const bundled = { executable: "/ext/bun", version: "1.4.5" };
+		const pick = async (onPath: string, bundleRuns = true) =>
+			await bunExecutable(
+				node,
+				probing(bundleRuns ? { bun: onPath, "/ext/bun": "1.4.5" } : { bun: onPath }).probe,
+				bundled,
+			);
 
 		expect({
-			newer: await pick("1.4.9"),
-			equal: await pick("1.4.5"),
-			older: await pick("1.4.2"),
-			prerelease: await pick("1.4.5-canary.1"),
-		}).toEqual({ newer: "bun", equal: "bun", older: "/ext/bun", prerelease: "/ext/bun" });
+			newer: (await pick("1.4.9")).executable,
+			equal: (await pick("1.4.5")).executable,
+			older: (await pick("1.4.2")).executable,
+			prerelease: (await pick("1.4.5-canary.1")).executable,
+			newerBundleBroken: (await pick("1.4.9", false)).executable,
+			olderBundleBroken: await pick("1.4.2", false),
+		}).toEqual({
+			newer: "bun",
+			equal: "bun",
+			older: "/ext/bun",
+			prerelease: "/ext/bun",
+			newerBundleBroken: "bun",
+			olderBundleBroken: { kind: "bundleBroken", executable: "/ext/bun", version: "1.4.5" },
+		});
 	});
 
 	it("tries later candidates before falling back to the bundle", async () => {
@@ -148,18 +162,17 @@ describe("bunExecutable", () => {
 
 		expect({
 			belowFloorThenInstalled: await bunExecutable(host, probing({ bun: "1.3.9", [installed]: "1.4.6" }).probe),
-			malformedThenBundle: await bunExecutable(
-				host,
-				probing({ bun: "garbage", "/ext/bun": "1.4.5" }).probe,
-				"/ext/bun",
-			),
+			malformedThenBundle: await bunExecutable(host, probing({ bun: "garbage", "/ext/bun": "1.4.5" }).probe, {
+				executable: "/ext/bun",
+				version: "1.4.5",
+			}),
 			nothingWorks: await bunExecutable(host, probing({ bun: "1.3.9" }).probe),
-			bundleMissing: await bunExecutable(host, probing({}).probe, "/ext/bun"),
+			bundleBroken: await bunExecutable(host, probing({}).probe, { executable: "/ext/bun", version: "1.4.5" }),
 		}).toEqual({
 			belowFloorThenInstalled: { kind: "bun", executable: installed, version: "1.4.6" },
 			malformedThenBundle: { kind: "bun", executable: "/ext/bun", version: "1.4.5" },
 			nothingWorks: { kind: "belowFloor", executable: "bun", version: "1.3.9", floor: BUN_FLOOR },
-			bundleMissing: { kind: "missing", executable: "/ext/bun" },
+			bundleBroken: { kind: "bundleBroken", executable: "/ext/bun", version: "1.4.5" },
 		});
 	});
 

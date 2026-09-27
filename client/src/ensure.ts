@@ -20,7 +20,7 @@ import {
 import { DaemonError, NotInstalled } from "./errors.js";
 import type { LockDecision } from "./lock.js";
 import { currentHost, workspacePaths } from "./paths.js";
-import { runtimeProblem } from "./runtime.js";
+import { type BundledBun, runtimeProblem } from "./runtime.js";
 import { notifyWaiting } from "./transport.js";
 
 ////////////////////////////////
@@ -57,7 +57,7 @@ export interface EnsureDaemonOptions {
 	/** Asks the outgoing daemon whether anything is in flight. Injected for the same reason. */
 	ask?: (lock: DaemonLock, method: string) => Promise<unknown>;
 	/** The caller's own bun, for daemons it spawns. */
-	bundledBun?: string;
+	bundledBun?: BundledBun;
 	/** Attach never retires, waits or spawns; unusable locks yield `notRunning`. */
 	mode?: EnsureMode;
 	/** Abort with the signal's reason; no later ask, signal or spawn occurs. */

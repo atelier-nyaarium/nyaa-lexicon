@@ -19,7 +19,7 @@ stateDir       a store directory of the caller's choosing; the default is derive
 lexiconRoot    the install to spawn from, instead of the one last recorded
 patience       how long a request waits on a starting daemon, in milliseconds; zero asks once
 onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and `elapsedMs`
-bundledBun     bundled bun; OS bun must meet its version
+bundledBun     `{ executable, version }`: the caller's bun and the version it was packaged at
 start          whether this session may start a daemon, in `connect` and on a later ask whose
                lifecycle `starts` (every one but a status read); default true
 signal         aborts the connect; it fails `closed`, and nothing is asked, signalled or spawned
@@ -27,8 +27,10 @@ signal         aborts the connect; it fails `closed`, and nothing is asked, sign
 ```
 
 Spawn runtime: a caller already running on bun uses that bun. Any other caller tries PATH, then
-`$BUN_INSTALL`, then the bundled bun. `bundledBun` sets the minimum version, so an older OS bun is
-skipped; prereleases sort below releases. A handover keeps the running daemon's bun.
+`$BUN_INSTALL`, then the bundled bun. The packaged `version` is the minimum, known without running
+the bundle, so an older OS bun is skipped even when the bundle does not run; that fails as
+`bundleBroken` naming the bundle. Prereleases sort below releases. A handover keeps the running
+daemon's bun.
 
 Four things are read, in this order:
 

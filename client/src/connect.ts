@@ -25,6 +25,7 @@ import { ensureDaemon, ensureFailure } from "./ensure.js";
 import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
 import { INSTALL_SETTLE_MS, newestInstallBeside, readInstallRecord, readInstallVersion } from "./install.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
+import type { BundledBun } from "./runtime.js";
 import { shutdownDaemon, shutdownRef } from "./stop.js";
 
 ////////////////////////////////
@@ -40,7 +41,7 @@ export interface ConnectOptions {
 	patience?: number;
 	onWaiting?: (event: { waitingFor: string; retryInMs: number; elapsedMs: number }) => void;
 	/** The caller's own bun. An OS bun spawns a daemon only when at least as new. */
-	bundledBun?: string;
+	bundledBun?: BundledBun;
 	/** False only attaches. True lets the connect and any ask but a status read start one. */
 	start?: boolean;
 	/** Aborts with `closed`; prevents later retirement, signalling or spawning. */

@@ -127,7 +127,7 @@ describe("getting a daemon", () => {
 		const commands: string[][] = [];
 		await ensureDaemon({
 			...options,
-			bundledBun: bundled,
+			bundledBun: { executable: bundled, version: "99.0.0" },
 			look: looking([
 				{ action: "spawn", reason: "no daemon is registered" },
 				{ action: "connect", lock: LOCK },

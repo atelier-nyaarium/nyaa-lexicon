@@ -77,6 +77,7 @@ export {
 } from "./procfs.js";
 export {
 	BUN_FLOOR,
+	type BundledBun,
 	type BunExecutable,
 	bunExecutable,
 	type RuntimeVerdict,
