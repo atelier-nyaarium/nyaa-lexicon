@@ -20,9 +20,10 @@ import {
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
-import { createDispatch, daemonHandlers, type Gate, gateOf } from "../dispatch";
+import { createDispatch, daemonHandlers, gateOf } from "../dispatch";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
+import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";

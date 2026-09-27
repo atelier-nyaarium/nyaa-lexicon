@@ -6,10 +6,8 @@ import {
 	defined,
 	type Import,
 	type ImportedName,
-	type Literal,
 	type OffsetRange,
 	type Range,
-	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { type TypeBrackets, typeBrackets } from "./angles.js";
 import { sourceRange } from "./cursor.js";
@@ -23,37 +21,16 @@ import type {
 	RustDescriptor,
 	TypeAnswer,
 } from "./model.js";
-import { isValueToken, KEYWORDS, type RustNumber, type RustToken, tokenize } from "./tokens.js";
+import { primitiveTypeForLiteral } from "./numbers.js";
+import { type SpanRange, scanReferences } from "./references.js";
+import { isNameToken, isValueToken, KEYWORDS, type RustToken, TYPE_WORDS, tokenAt, tokenize } from "./tokens.js";
+
+////////////////////////////////
+//  Constants
 
 const LANGUAGE = "rust";
 
 const MODIFIERS = new Set(["async", "const", "default", "extern", "unsafe", "auto", "safe", "gen"]);
-
-const TYPE_WORDS = new Set([
-	"bool",
-	"char",
-	"str",
-	"u8",
-	"u16",
-	"u32",
-	"u64",
-	"u128",
-	"usize",
-	"i8",
-	"i16",
-	"i32",
-	"i64",
-	"i128",
-	"isize",
-	"f32",
-	"f64",
-	"Self",
-	"self",
-	"dyn",
-	"impl",
-]);
-
-const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
 
 const STATEMENT_END = new Set([";"]);
 
@@ -63,6 +40,9 @@ const VARIANT_END = new Set([","]);
 const CONDITION_WORDS = ["if", "while", "&&"];
 
 const CONDITION_END = new Set(["{", "&&", "||", ";"]);
+
+////////////////////////////////
+//  Interfaces & Types
 
 interface ParseContext {
 	descriptors: RustDescriptor[];
@@ -91,18 +71,8 @@ interface UseEntry {
 	glob: boolean;
 }
 
-interface SpanRange {
-	startOffset: number;
-	endOffset: number;
-}
-
-function tokenAt(tokens: RustToken[], index: number): RustToken | undefined {
-	return tokens[index];
-}
-
-function isNameToken(token: RustToken | undefined): token is RustToken {
-	return token !== undefined && (token.kind === "identifier" || token.value === "self" || token.value === "Self");
-}
+////////////////////////////////
+//  Functions & Helpers
 
 function rangeOfTokens(tokens: RustToken[], start: number, end: number): Range | undefined {
 	const first = tokenAt(tokens, start);
@@ -139,88 +109,8 @@ function sanitizeDisambiguator(value: string): string {
 	return cleaned === "" ? "impl" : cleaned;
 }
 
-const INTEGER_SUFFIXES = new Set([
-	"u8",
-	"u16",
-	"u32",
-	"u64",
-	"u128",
-	"usize",
-	"i8",
-	"i16",
-	"i32",
-	"i64",
-	"i128",
-	"isize",
-]);
-const FLOAT_SUFFIXES = new Set(["f32", "f64"]);
-const BASE_PREFIX = { 2: "0b", 8: "0o", 10: "", 16: "0x" } as const;
-const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-const MAX_SAFE_INTEGER_TEXT = String(Number.MAX_SAFE_INTEGER);
-
-function isFloat(number: RustNumber): boolean {
-	return number.fraction !== undefined || number.exponent !== undefined;
-}
-
-/** Underscore-free digits, if all valid. */
-function digitsIn(text: string, base: RustNumber["base"]): string | undefined {
-	const digits = text.replaceAll("_", "");
-	if (digits === "") return undefined;
-	return [...digits].every((character) => Number.parseInt(character, base) >= 0) ? digits : undefined;
-}
-
-function safeIntegerValue(prefix: string, digits: string): number | undefined {
-	const value = BigInt(`${prefix}${digits}`);
-	return value <= MAX_SAFE_INTEGER_BIGINT ? Number(value) : undefined;
-}
-
-function decimalExceedsSafeInteger(integerPart: string, fractionPart: string, exponent: number): boolean {
-	const digits = `${integerPart}${fractionPart}`.replace(/^0+/u, "");
-	if (digits === "") return false;
-	if (!Number.isFinite(exponent)) return exponent > 0;
-	const scale = fractionPart.length - exponent;
-	if (scale <= 0) {
-		const trailingZeroes = -scale;
-		const digitCount = digits.length + trailingZeroes;
-		if (digitCount !== MAX_SAFE_INTEGER_TEXT.length) return digitCount > MAX_SAFE_INTEGER_TEXT.length;
-		return BigInt(`${digits}${"0".repeat(trailingZeroes)}`) > MAX_SAFE_INTEGER_BIGINT;
-	}
-	const thresholdLength = MAX_SAFE_INTEGER_TEXT.length + scale;
-	if (digits.length !== thresholdLength) return digits.length > thresholdLength;
-	return BigInt(digits) > MAX_SAFE_INTEGER_BIGINT * 10n ** BigInt(scale);
-}
-
-function numericValue(number: RustNumber): number | undefined {
-	const { base, suffix } = number;
-	const integer = digitsIn(number.integer, base);
-	if (integer === undefined) return undefined;
-	if (!isFloat(number)) {
-		if (suffix === "" || INTEGER_SUFFIXES.has(suffix)) return safeIntegerValue(BASE_PREFIX[base], integer);
-		return base === 10 && FLOAT_SUFFIXES.has(suffix) ? safeIntegerValue("", integer) : undefined;
-	}
-	if (base !== 10 || !(suffix === "" || FLOAT_SUFFIXES.has(suffix))) return undefined;
-	const fraction = (number.fraction ?? "").replaceAll("_", "");
-	let exponent = "0";
-	if (number.exponent !== undefined) {
-		const digits = digitsIn(number.exponent.digits, 10);
-		if (digits === undefined) return undefined;
-		exponent = `${number.exponent.sign}${digits}`;
-	}
-	const value = Number(`${integer}.${fraction}e${exponent}`);
-	return Number.isFinite(value) && !decimalExceedsSafeInteger(integer, fraction, Number.parseInt(exponent, 10))
-		? value
-		: undefined;
-}
-
-function primitiveTypeForLiteral(token: RustToken): string | undefined {
-	if (token.kind === "string") return "&str";
-	if (token.kind === "char") return token.prefix === "b" ? "u8" : "char";
-	if (token.value === "true" || token.value === "false") return "bool";
-	const number = token.number;
-	if (number === undefined) return undefined;
-	if (INTEGER_SUFFIXES.has(number.suffix) || FLOAT_SUFFIXES.has(number.suffix)) return number.suffix;
-	return isFloat(number) ? "f64" : "i32";
-}
+////////////////////////////////
+//  Classes
 
 export class RustParser {
 	private readonly scan: ReturnType<typeof tokenize>;
@@ -259,8 +149,22 @@ export class RustParser {
 	parse(): ParsedFile {
 		this.parseItems(0, this.tokens.length, { descriptors: [], kind: "root" });
 		const declarations = this.rawDeclarations.map((raw) => raw.declaration);
-		const references = this.depth === "outline" ? [] : this.extractReferences();
-		const literals = this.depth === "outline" ? [] : this.extractLiterals();
+		const { references, literals } =
+			this.depth === "outline"
+				? { references: [], literals: [] }
+				: scanReferences({
+						tokens: this.tokens,
+						rawDeclarations: this.rawDeclarations,
+						rawReferences: this.rawReferences,
+						importBindings: this.importBindings,
+						ignoredRanges: this.ignoredRanges,
+						attributeTokens: this.attributeTokens,
+						useRanges: this.useRanges,
+						declarationNameTokens: this.declarationNameTokens,
+						implTraitTokens: this.implTraitTokens,
+						implTypeTokens: this.implTypeTokens,
+						keywordTokens: this.keywordTokens,
+					});
 		const diagnostics = this.diagnostics();
 		return {
 			module: this.module,
@@ -1547,232 +1451,10 @@ export class RustParser {
 		}
 		return entries;
 	}
-
-	private isInRange(offset: number, range: SpanRange): boolean {
-		return offset >= range.startOffset && offset <= range.endOffset;
-	}
-
-	private isIgnored(offset: number): boolean {
-		return this.ignoredRanges.some((range) => this.isInRange(offset, range));
-	}
-
-	private isUse(offset: number): boolean {
-		return this.useRanges.some((range) => this.isInRange(offset, range));
-	}
-
-	private containerAt(offset: number): string | undefined {
-		const candidates = this.rawDeclarations.filter(
-			(raw) =>
-				raw.startOffset <= offset &&
-				offset <= raw.endOffset &&
-				raw.declaration.kind !== "variable" &&
-				raw.declaration.kind !== "field" &&
-				raw.declaration.kind !== "constant",
-		);
-		candidates.sort((left, right) => left.endOffset - left.startOffset - (right.endOffset - right.startOffset));
-		return candidates[0]?.declaration.symbolId;
-	}
-
-	private literalContainerAt(offset: number): string | undefined {
-		const candidates = this.rawDeclarations.filter((raw) => raw.startOffset <= offset && offset <= raw.endOffset);
-		candidates.sort((left, right) => left.endOffset - left.startOffset - (right.endOffset - right.startOffset));
-		return candidates[0]?.declaration.symbolId;
-	}
-
-	private typeContext(index: number, token: RustToken): boolean {
-		if (this.implTraitTokens.has(index) || this.implTypeTokens.has(index) || token.value === "Self") return true;
-		for (const raw of this.rawDeclarations) {
-			const range = raw.typeRange;
-			if (range === undefined) continue;
-			if (comparePositions(range.start, token.start) <= 0 && comparePositions(range.end, token.end) >= 0)
-				return true;
-		}
-		const previous = tokenAt(this.tokens, index - 1)?.value;
-		return (
-			previous === ":" ||
-			previous === "->" ||
-			previous === "as" ||
-			previous === "impl" ||
-			previous === "dyn" ||
-			previous === "where"
-		);
-	}
-
-	private typeDeclaration(name: string): RawDeclaration | undefined {
-		return this.rawDeclarations.find(
-			(raw) =>
-				raw.declaration.name === name &&
-				["struct", "enum", "interface", "class"].includes(raw.declaration.kind),
-		);
-	}
-
-	private extractReferences(): Reference[] {
-		const references: Reference[] = [];
-		for (const binding of this.importBindings) {
-			if (binding.sourceName === null || binding.sourceRange === undefined) continue;
-			const sourceStart = binding.sourceRange.start;
-			const token = this.tokens.find((candidate) => comparePositions(candidate.start, sourceStart) === 0);
-			if (token === undefined) continue;
-			const reference: Reference = {
-				name: binding.sourceName,
-				range: binding.sourceRange,
-				role: "import",
-				binding: {
-					status: "unbound",
-					reason: "NotIndexed",
-					detail: "import binding awaits workspace resolution",
-				},
-				// Binds a local name.
-				qualified: false,
-				...(binding.containerId === undefined ? {} : { fromId: binding.containerId }),
-			};
-			references.push(reference);
-			this.rawReferences.push({
-				reference,
-				token,
-				...(binding.containerId === undefined ? {} : { containerId: binding.containerId }),
-				importBinding: binding,
-				path: binding.path,
-			});
-		}
-		let index = 0;
-		let guard = -1;
-		while (index < this.tokens.length) {
-			if (index <= guard) throw new Error("reference parser failed to advance");
-			guard = index;
-			const token = this.tokens[index] as RustToken;
-			if (this.attributeTokens.has(index) || this.isIgnored(token.startOffset) || this.isUse(token.startOffset)) {
-				index++;
-				continue;
-			}
-			if (
-				!isNameToken(token) ||
-				KEYWORDS.has(token.value) ||
-				this.keywordTokens.has(index) ||
-				(this.declarationNameTokens.has(index) &&
-					!this.implTraitTokens.has(index) &&
-					!this.implTypeTokens.has(index))
-			) {
-				index++;
-				continue;
-			}
-			if (isValueToken(this.tokens[index - 1], "'")) {
-				index++;
-				continue;
-			}
-			const next = tokenAt(this.tokens, index + 1);
-			if (TYPE_WORDS.has(token.value) && token.value !== "Self") {
-				index++;
-				continue;
-			}
-			if (isValueToken(next, "!")) {
-				this.addReference(references, index, "call", {
-					status: "unbound",
-					reason: "RuntimeConstructed",
-					detail: "macro expansion can construct runtime items",
-				});
-				index++;
-				continue;
-			}
-			const role = this.referenceRole(index, token);
-			const receiver = isValueToken(this.tokens[index - 1], "::") ? tokenAt(this.tokens, index - 2) : undefined;
-			const path = receiver !== undefined && isNameToken(receiver) ? [receiver.value] : [];
-			if (role === "write" && ASSIGNMENT_OPERATORS.has(next?.value ?? "")) {
-				if (next?.value !== "=") this.addReference(references, index, "read", undefined, path);
-				this.addReference(references, index, "write", undefined, path);
-			} else {
-				this.addReference(references, index, role, undefined, path);
-			}
-			index++;
-		}
-		return references;
-	}
-
-	private referenceRole(index: number, token: RustToken): Reference["role"] {
-		if (this.implTraitTokens.has(index)) return "implements";
-		if (this.typeContext(index, token)) return "typeUse";
-		const next = tokenAt(this.tokens, index + 1)?.value;
-		if (next === "{" && this.typeDeclaration(token.value) !== undefined) return "instantiate";
-		if (next === "(") {
-			if (this.typeDeclaration(token.value) !== undefined) return "instantiate";
-			if (!["if", "while", "for", "match", "loop"].includes(token.value)) return "call";
-		}
-		if (ASSIGNMENT_OPERATORS.has(next ?? "")) return "write";
-		return "read";
-	}
-
-	/** A field, method, or later path segment. */
-	private qualifiedAt(index: number): boolean {
-		const joiner = tokenAt(this.tokens, index - 1);
-		return joiner?.kind === "symbol" && (joiner.value === "." || joiner.value === "::");
-	}
-
-	private addReference(
-		references: Reference[],
-		index: number,
-		role: Reference["role"],
-		binding: Reference["binding"] = {
-			status: "unbound",
-			reason: "NotIndexed",
-			detail: "name awaits scope resolution",
-		},
-		path: string[] = [],
-	): void {
-		const token = this.tokens[index] as RustToken;
-		const reference: Reference = {
-			name: token.value,
-			range: { start: token.start, end: token.end },
-			role,
-			binding,
-			qualified: this.qualifiedAt(index),
-			...(this.containerAt(token.startOffset) === undefined
-				? {}
-				: { fromId: this.containerAt(token.startOffset) }),
-		};
-		references.push(reference);
-		const containerId = this.containerAt(token.startOffset);
-		this.rawReferences.push({ reference, token, ...defined({ containerId }), path });
-	}
-
-	private extractLiterals(): Literal[] {
-		const literals: Literal[] = [];
-		for (const [index, token] of this.tokens.entries()) {
-			if (this.isIgnored(token.startOffset) || this.attributeTokens.has(index)) continue;
-			if (token.kind === "string") {
-				const containerId = this.literalContainerAt(token.startOffset);
-				literals.push({
-					kind: "string",
-					value: token.value,
-					range: { start: token.start, end: token.end },
-					...defined({ containerId }),
-				});
-				continue;
-			}
-			if (token.value === "true" || token.value === "false") {
-				const containerId = this.literalContainerAt(token.startOffset);
-				literals.push({
-					kind: "boolean",
-					value: token.value,
-					range: { start: token.start, end: token.end },
-					...defined({ containerId }),
-				});
-				continue;
-			}
-			if (token.number !== undefined) {
-				const number = numericValue(token.number);
-				const containerId = this.literalContainerAt(token.startOffset);
-				literals.push({
-					kind: "number",
-					value: token.value,
-					...defined({ number }),
-					range: { start: token.start, end: token.end },
-					...defined({ containerId }),
-				});
-			}
-		}
-		return literals;
-	}
 }
+
+////////////////////////////////
+//  Functions & Helpers
 
 export function parseRustFile(module: string, text: string, depth: "full" | "outline" = "full"): ParsedFile {
 	return new RustParser(module, text, depth).parse();

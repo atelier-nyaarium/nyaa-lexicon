@@ -1,6 +1,9 @@
 import { type CommentSpan, type Diagnostic, defined, type Position, type Range } from "@nyaa-lexicon/protocol";
 import { Cursor, isHorizontalWhitespace } from "./cursor.js";
 
+////////////////////////////////
+//  Interfaces & Types
+
 export type TokenKind = "identifier" | "number" | "string" | "char" | "symbol" | "newline" | "comment";
 
 /** `ghidra` reads code after Ghidra's load warning. */
@@ -49,6 +52,9 @@ interface ConditionalGroup {
 	closed: boolean;
 }
 
+////////////////////////////////
+//  Constants
+
 /**
  * Whether a token's text is syntax rather than data.
  *
@@ -64,11 +70,17 @@ const CARRIES_SYNTAX: Record<TokenKind, boolean> = {
 	comment: false,
 };
 
+////////////////////////////////
+//  Functions & Helpers
+
 /** A token's text as syntax, empty for the kinds whose text is content the program merely holds. */
 export function syntaxValue(token: CToken | undefined): string {
 	if (token === undefined) return "";
 	return CARRIES_SYNTAX[token.kind] ? token.value : "";
 }
+
+////////////////////////////////
+//  Constants
 
 const MULTI_SYMBOLS = [
 	"<<=",
@@ -96,6 +108,9 @@ const MULTI_SYMBOLS = [
 	">>",
 	"##",
 ] as const;
+
+////////////////////////////////
+//  Functions & Helpers
 
 function range(start: Position, end: Position): Range {
 	return { start, end };
@@ -181,6 +196,9 @@ function readQuoted(cursor: Cursor, quote: "'" | '"'): { value: string; terminat
 	return { value: value.join(""), terminated, end: cursor.mark() };
 }
 
+////////////////////////////////
+//  Interfaces & Types
+
 interface CursorMarkLike {
 	offset: number;
 	line: number;
@@ -188,6 +206,9 @@ interface CursorMarkLike {
 }
 
 /** Backslash-newline continues a line comment onto the next line. */
+////////////////////////////////
+//  Functions & Helpers
+
 function continuesLine(cursor: Cursor): boolean {
 	if (cursor.peek() !== "\\") return false;
 	return cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n");
@@ -227,6 +248,9 @@ function advanced(mark: CursorMarkLike, text: string): CursorMarkLike {
 	return { offset, line, column };
 }
 
+////////////////////////////////
+//  Interfaces & Types
+
 interface LineCommentInfo {
 	value: string;
 	start: CursorMarkLike;
@@ -239,12 +263,18 @@ interface TokenRead {
 	lineComment?: LineCommentInfo;
 }
 
+////////////////////////////////
+//  Constants
+
 const GHIDRA_WARNING = "WARNING: Load size is inaccurate";
 
 /** Not code, so a comment after it has none before it. */
 const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
 
 /** Ghidra's code after its warning, within this comment. */
+////////////////////////////////
+//  Functions & Helpers
+
 function ghidraSuffixTokens(
 	module: string,
 	cursor: Cursor,

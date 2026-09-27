@@ -4,12 +4,12 @@
 // stops using it is caught. A text sweep cannot see this; the compiler already knows.
 
 import type { StagedEdits } from "../applyEdits.js";
-import type { StepResult } from "../dispatch.js";
 import type { InsertPlan, MoveEditsOutcome, RefactorPlanner, ReplacementPlan } from "../refactorPlanner.js";
 import type { PlanAnswer, StepShape } from "../refactorStep.js";
 import type { Refusal } from "../refusals.js";
 import type { LexiconService } from "../service.js";
 import type { SourceWorkspace } from "../sourceWorkspace.js";
+import type { StepResult } from "../stepRunners.js";
 import type { TransactionManager } from "../transactions.js";
 
 ////////////////////////////////

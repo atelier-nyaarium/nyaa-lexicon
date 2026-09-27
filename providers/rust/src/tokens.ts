@@ -2,6 +2,9 @@ import type { OffsetRange, Range } from "@nyaa-lexicon/protocol";
 import { Cursor, type CursorSpan, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "./cursor.js";
 import type { CommentSpan } from "./model.js";
 
+////////////////////////////////
+//  Interfaces & Types
+
 export type RustTokenKind = "identifier" | "number" | "string" | "char" | "lifetime" | "symbol";
 
 /** Lexed number parts, underscores kept. */
@@ -45,6 +48,9 @@ export interface ScanResult {
 	diagnostics: ScanDiagnostic[];
 	lineTokens: Map<number, RustToken[]>;
 }
+
+////////////////////////////////
+//  Constants
 
 export const KEYWORDS = new Set([
 	"as",
@@ -91,9 +97,47 @@ export const KEYWORDS = new Set([
 /** Keywords that still end an operand. */
 export const OPERAND_WORDS = new Set(["self", "Self", "true", "false", "crate", "super", "await"]);
 
+export const TYPE_WORDS: ReadonlySet<string> = new Set([
+	"bool",
+	"char",
+	"str",
+	"u8",
+	"u16",
+	"u32",
+	"u64",
+	"u128",
+	"usize",
+	"i8",
+	"i16",
+	"i32",
+	"i64",
+	"i128",
+	"isize",
+	"f32",
+	"f64",
+	"Self",
+	"self",
+	"dyn",
+	"impl",
+]);
+
+////////////////////////////////
+//  Functions & Helpers
+
 export function isValueToken(token: RustToken | undefined, value: string): boolean {
 	return token !== undefined && (token.kind === "symbol" || token.kind === "identifier") && token.value === value;
 }
+
+export function tokenAt(tokens: readonly RustToken[], index: number): RustToken | undefined {
+	return tokens[index];
+}
+
+export function isNameToken(token: RustToken | undefined): token is RustToken {
+	return token !== undefined && (token.kind === "identifier" || token.value === "self" || token.value === "Self");
+}
+
+////////////////////////////////
+//  Constants
 
 const MULTI_SYMBOLS = [
 	">>=",
@@ -122,6 +166,9 @@ const MULTI_SYMBOLS = [
 	"..",
 	"??",
 ] as const;
+
+////////////////////////////////
+//  Functions & Helpers
 
 function matches(cursor: Cursor, text: string): boolean {
 	let index = 0;
@@ -414,11 +461,17 @@ function isShebang(source: string, cursor: Cursor): boolean {
 	return !attribute;
 }
 
+////////////////////////////////
+//  Constants
+
 const BASE_PREFIXES = new Map<string, 2 | 8 | 16>([
 	["b", 2],
 	["o", 8],
 	["x", 16],
 ]);
+
+////////////////////////////////
+//  Functions & Helpers
 
 function isHexLetter(character: string): boolean {
 	return (character >= "a" && character <= "f") || (character >= "A" && character <= "F");

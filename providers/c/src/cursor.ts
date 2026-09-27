@@ -1,8 +1,14 @@
+////////////////////////////////
+//  Interfaces & Types
+
 export interface CursorMark {
 	offset: number;
 	line: number;
 	column: number;
 }
+
+////////////////////////////////
+//  Classes
 
 export class Cursor {
 	private offsetValue: number;
@@ -112,6 +118,9 @@ export class Cursor {
 		return { name, start, end: this.mark() };
 	}
 }
+
+////////////////////////////////
+//  Functions & Helpers
 
 export function isIdentifierStart(character: string): boolean {
 	return character === "_" || character === "$" || /^\p{L}$/u.test(character);

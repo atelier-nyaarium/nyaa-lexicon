@@ -26,7 +26,11 @@ import {
 	serveProvider as wireServeProvider,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { type CsharpFacts, CsharpParser, type DeclarationMeta, LANGUAGE, positionKey } from "./parser.js";
+import { type CsharpFacts, type DeclarationMeta, LANGUAGE, positionKey } from "./model.js";
+import { CsharpParser } from "./parser.js";
+
+////////////////////////////////
+//  Constants
 
 export const TIERS = {
 	projectModel: true,
@@ -206,7 +210,14 @@ const EXTERNAL_ROOTS = new Set([
 ]);
 const TYPE_DECLARATION_KINDS = new Set(["class", "interface", "struct", "enum"]);
 const MEMBER_KINDS = new Set(["method", "constructor", "property", "field", "event", "constant", "variable"]);
+
+////////////////////////////////
+//  Interfaces & Types
+
 type Range = Declaration["range"];
+
+////////////////////////////////
+//  Functions & Helpers
 
 function contains(range: Range, position: Range["start"]): boolean {
 	// Inclusive both ends
@@ -241,6 +252,9 @@ function isExternalSpecifier(specifier: string): boolean {
 function typeOwner(meta: DeclarationMeta): string {
 	return meta.typePath;
 }
+
+////////////////////////////////
+//  Classes
 
 export class CsharpProvider {
 	readonly store = moduleStore<CsharpFacts>({
@@ -653,6 +667,9 @@ export class CsharpProvider {
 		return chain;
 	}
 }
+
+////////////////////////////////
+//  Functions & Helpers
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CsharpProvider()): void {
 	wireServeProvider(connection, handlersFor(provider));

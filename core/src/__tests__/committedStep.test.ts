@@ -14,10 +14,11 @@ import {
 	type StepBase,
 	type StepPhase,
 } from "@nyaa-lexicon/protocol";
-import { createDispatch, daemonHandlers, type Gate, gateOf } from "../dispatch";
+import { createDispatch, daemonHandlers, gateOf } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
+import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { type StepOutcome, TransactionManager } from "../transactions";

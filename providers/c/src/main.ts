@@ -29,15 +29,11 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import {
-	bindingCandidates,
-	type CDeclaration,
-	type CReference,
-	type ParsedCFile,
-	parseC,
-	rangeContains,
-	typeInfoFor,
-} from "./parser.js";
+import type { CDeclaration, CReference, ParsedCFile } from "./model.js";
+import { bindingCandidates, parseC, rangeContains, typeInfoFor } from "./parser.js";
+
+////////////////////////////////
+//  Constants
 
 const LANGUAGE = "c";
 const EXTENSIONS = [".c", ".h"];
@@ -166,6 +162,9 @@ export const WORDS = {
 
 export const REFERENCE_ROLES = ["call", "read", "write", "import", "typeUse"] as const;
 
+////////////////////////////////
+//  Functions & Helpers
+
 function containsStart(range: Range, position: Range["start"]): boolean {
 	return rangeContains(range, position);
 }
@@ -278,6 +277,9 @@ function discover(root: string): ProjectModel {
 		);
 	}
 }
+
+////////////////////////////////
+//  Classes
 
 export class CProvider {
 	/** Include lookup uses held facts. */
@@ -497,6 +499,9 @@ export class CProvider {
 		return { status: "refused", reason: "NotImplemented", detail: "C move edits are not implemented" };
 	}
 }
+
+////////////////////////////////
+//  Functions & Helpers
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CProvider()): void {
 	serveProvider(connection, handlersFor(provider));

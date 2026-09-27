@@ -24,7 +24,11 @@ import {
 	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { type CppFacts, type CppReferenceRecord, LANGUAGE, parseCppFile } from "./parser.js";
+import { type CppFacts, type CppReferenceRecord, LANGUAGE } from "./model.js";
+import { parseCppFile } from "./parser.js";
+
+////////////////////////////////
+//  Constants
 
 const EXTENSIONS = [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"];
 const EXCLUDED_DIRECTORIES = new Set([
@@ -173,6 +177,9 @@ export const WORDS = {
 	literals: ["false", "nullptr", "true"],
 };
 
+////////////////////////////////
+//  Functions & Helpers
+
 // Inclusive at both ends.
 function contains(range: Range, position: Range["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
@@ -191,6 +198,9 @@ function sameSuffix(left: string[], right: string[]): boolean {
 function unknown(reason: UnknownReason, detail: string): TypeInfo {
 	return { status: "unknown", reason, detail };
 }
+
+////////////////////////////////
+//  Classes
 
 export class CppProvider {
 	readonly store = moduleStore<CppFacts>({ read: (module, text) => parseCppFile(module, text) });
@@ -452,6 +462,9 @@ export class CppProvider {
 			: { status: "resolved", module };
 	}
 }
+
+////////////////////////////////
+//  Functions & Helpers
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CppProvider()): void {
 	serveProvider(connection, handlersFor(provider));
