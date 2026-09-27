@@ -94,6 +94,20 @@ function folded(text: string, fold: HeaderFold): string {
 	return `${open}${empty ? "" : FOLD_MARK}${close}`;
 }
 
+/** A literal's text with the splices inside it removed: a line continuation joins its lines. */
+function spliced(text: string, literal: OffsetRange, splices: readonly OffsetRange[]): string {
+	const slice = text.slice(literal.start, literal.end);
+	const coordinates = coordinatesOf(slice);
+	const edits: TextEdit[] = [];
+	for (const splice of splices) {
+		if (!within(literal, splice)) continue;
+		const range = coordinates.rangeAt(splice.start - literal.start, splice.end - literal.start);
+		if (range !== undefined) edits.push({ range, newText: "" });
+	}
+	const result = applyEdits(slice, planEdits(coordinates, edits).edits);
+	return "text" in result ? result.text : slice;
+}
+
 /** A literal on one line: any whitespace but a space escaped. */
 function escaped(literal: string): string {
 	return literal.replace(
@@ -153,17 +167,22 @@ function applied(
 		if (range !== undefined) edits.push({ range, newText });
 	};
 	for (const fold of span.folds ?? []) if (within(piece, fold)) replace(fold.start, fold.end, folded(text, fold));
-	for (const literal of span.verbatim ?? []) {
-		if (!within(piece, literal)) continue;
+	const splices = span.splices ?? [];
+	const verbatim = (span.verbatim ?? []).filter((literal) => within(piece, literal));
+	for (const literal of verbatim) {
 		replace(literal.start, literal.end, `${mark}${literals.length}${mark}`);
-		literals.push(escaped(text.slice(literal.start, literal.end)));
+		literals.push(escaped(spliced(text, literal, splices)));
 	}
 	for (const cut of span.omit ?? []) {
 		if (!within(piece, cut)) continue;
 		const omitted = omission(text, piece, cut);
 		replace(omitted.start, omitted.end, omitted.newText);
 	}
-	for (const splice of span.splices ?? []) if (within(piece, splice)) replace(splice.start, splice.end, "");
+	// A splice inside a literal was applied to its text above.
+	for (const splice of splices) {
+		if (within(piece, splice) && !verbatim.some((literal) => within(literal, splice)))
+			replace(splice.start, splice.end, "");
+	}
 	for (const at of span.angles ?? []) {
 		if (at < piece.start || at >= piece.end) continue;
 		if (text[at] === "<") replace(at, at + 1, marks.open);

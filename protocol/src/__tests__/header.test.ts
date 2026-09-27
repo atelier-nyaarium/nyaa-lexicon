@@ -36,6 +36,13 @@ describe("a header as one line", () => {
 		expect(whole(text, { omit: [{ start: at, end: at + 2 }] })).toBe("Z=foo bar");
 	});
 
+	test("a splice inside a literal joins its lines, where an unspliced break is escaped", () => {
+		const text = 'x = "one\\\ntwo" + "three\nfour"';
+		const at = text.indexOf("\\");
+		const verbatim = [...spansOf(text, '"one\\\ntwo"'), ...spansOf(text, '"three\nfour"')];
+		expect(whole(text, { verbatim, splices: [{ start: at, end: at + 2 }] })).toBe('x = "onetwo" + "three\\nfour"');
+	});
+
 	test("a comma holding an empty slot survives a break before its closer", () => {
 		const unbound = "typeof(Dictionary<,\n>)";
 		const angles = [unbound.indexOf("<"), unbound.indexOf(">")];
