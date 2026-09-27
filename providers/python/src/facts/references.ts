@@ -135,13 +135,16 @@ export class ReferenceVisitor extends NodeVisitor {
 				this.visitTypeComment(node.typeComment, node);
 				break;
 			case "Lambda":
-				this.blocked("lambda scope is not indexed", lambdaParameterNames(node), node);
+				// Defaults run where the lambda is written.
+				for (const value of [...node.args.defaults, ...node.args.kwDefaults])
+					if (value !== undefined) this.visit(value);
+				this.blocked("lambda scope is not indexed", lambdaParameterNames(node), () => this.visit(node.body));
 				break;
 			case "ListComp":
 			case "SetComp":
 			case "DictComp":
 			case "GeneratorExp":
-				this.blocked("comprehension scope is not indexed", comprehensionTargetNames(node), node);
+				this.visitComprehension(node);
 				break;
 			case "ExceptHandler":
 				if (node.exceptionType !== undefined) this.visit(node.exceptionType);
@@ -174,14 +177,31 @@ export class ReferenceVisitor extends NodeVisitor {
 		}
 	}
 
-	private blocked(reason: string, names: ReadonlySet<string>, node: A.Node): void {
+	/** Visits a lambda's or comprehension's own scope, whose `names` are its locals. */
+	private blocked(reason: string, names: ReadonlySet<string>, visit: () => void): void {
 		const oldBlocked = this.bindingBlocked;
 		const oldLocals = this.blockedLocals;
 		this.bindingBlocked = reason;
 		this.blockedLocals = new Set([...oldLocals, ...names]);
-		this.genericVisit(node);
+		visit();
 		this.bindingBlocked = oldBlocked;
 		this.blockedLocals = oldLocals;
+	}
+
+	/** The first iterable runs where the comprehension is written; the rest in its own scope. */
+	private visitComprehension(node: A.Comprehended | A.DictComp): void {
+		const [first] = node.generators;
+		if (first !== undefined) this.visit(first.iter);
+		this.blocked("comprehension scope is not indexed", comprehensionTargetNames(node), () => {
+			for (const child of childNodes(node)) {
+				if (child !== first) {
+					this.visit(child);
+					continue;
+				}
+				this.visit(first.target);
+				for (const test of first.ifs) this.visit(test);
+			}
+		});
 	}
 
 	private visitDefinition(node: A.FunctionDef | A.ClassDef): void {

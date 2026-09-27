@@ -18,6 +18,7 @@ const BLOCKS: ReadonlyMap<A.Node["type"], number> = new Map([
 	["With", 0],
 	["AsyncWith", 0],
 	["Try", 0],
+	["TryStar", 0],
 	["ExceptHandler", 1],
 ]);
 

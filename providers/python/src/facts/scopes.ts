@@ -184,12 +184,12 @@ export class Scopes {
 		return found;
 	}
 
-	/** Names a walrus in a node binds, nested scopes and comprehensions aside. */
+	/** Names a walrus in a node binds, nested scopes aside; one in a comprehension binds here too. */
 	private walrusNames(node: A.Node): string[] {
 		let names = this.walruses.get(node);
 		if (names === undefined) {
 			names = node.type === "NamedExpr" && node.target.type === "Name" ? [node.target.id] : [];
-			if (!isDefinition(node) && node.type !== "Lambda" && node.type !== "comprehension") {
+			if (!isDefinition(node) && node.type !== "Lambda") {
 				for (const child of childNodes(node)) names.push(...this.walrusNames(child));
 			}
 			this.walruses.set(node, names);
@@ -370,9 +370,13 @@ export class Scopes {
 		const info = this.infos.get(current);
 		const global = info?.kind === "function" && info.globals.has(name);
 		const nonlocal = info?.kind === "function" && info.nonlocals.has(name);
+		// Inside a lambda or comprehension: its own names are unindexed locals, and the rest resolve
+		// as in the scope around it, never through a class body.
+		const nested = query.blockedReason !== undefined;
+		if (nested && query.blockedLocal === true) return unbound("NotIndexed", query.blockedReason as string);
 
 		// A closer ordinary binding wins over a type parameter.
-		if (query.blockedReason === undefined && !global) {
+		if (!global && !(nested && info?.kind === "class")) {
 			const result = this.resolveLevel(scopePath, name, role, position, current, nonlocal);
 			if (result !== undefined) return result;
 		}
@@ -388,7 +392,6 @@ export class Scopes {
 			if (candidate !== undefined) return candidate;
 		}
 
-		if (query.blockedReason !== undefined) return unbound("NotIndexed", query.blockedReason);
 		if (info === undefined) return unbound("NotImplemented", "reference scope is not indexed");
 		if (info.dynamic) return unbound("RuntimeConstructed", "exec or eval can change this scope");
 

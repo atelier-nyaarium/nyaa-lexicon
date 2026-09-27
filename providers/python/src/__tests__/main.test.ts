@@ -1889,6 +1889,36 @@ describe("Python provider project behavior", () => {
 		expect(use?.binding).toEqual({ status: "bound", symbolId: typeParameter.symbolId, provenance: "bound" });
 	});
 
+	it("binds a comprehension's other names as the scope around it does, a class body aside", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = [
+			"shared = 'module'",
+			"def f(items):",
+			"    [x for x in items if (shared := x)]",
+			"    return shared",
+			"class C:",
+			"    names = []",
+			"    upper = [n for n in names if names]",
+			"",
+		].join("\n");
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+		const bindings = facts.references
+			.filter((reference) => reference.role === "read")
+			.map((reference) => `${reference.name}@${reference.range.start.line}:${reference.binding.status}`);
+		// A walrus binds in the function; a class name is seen only by the first iterable.
+		expect(bindings).toEqual([
+			"items@2:bound",
+			"x@2:unbound",
+			"x@2:unbound",
+			"shared@3:unbound",
+			"names@6:bound",
+			"n@6:unbound",
+			"names@6:unbound",
+		]);
+	});
+
 	it("resolves a lambda's own parameter over the enclosing function's type parameter", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
@@ -2388,6 +2418,58 @@ describe("Python provider project behavior", () => {
 			reason: "NotImplemented",
 			detail: "generator return inference is not implemented",
 		});
+	});
+
+	it("follows a body's paths: branches join, loops widen, a full try returns, a shadowing name is not the function", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const text = [
+			"LIMIT = 3",
+			"def source():",
+			"    return 1",
+			"def caller(source):",
+			"    return source()",
+			"def choose(flag):",
+			"    if flag:",
+			"        value = 1",
+			"    else:",
+			"        value = 's'",
+			"    return value",
+			"def count(xs):",
+			"    total = 0",
+			"    for x in xs:",
+			"        total += 1",
+			"    return total",
+			"def spin(flag):",
+			"    while True:",
+			"        if flag:",
+			"            return LIMIT",
+			"def attempt():",
+			"    try:",
+			"        return 1",
+			"    except Exception:",
+			"        return 2",
+			"def ratio():",
+			`    return 1 / 1${"0".repeat(308)}`,
+		].join("\n");
+		const facts = await parseFile(provider, { module: "main.py", contentHash: "hash", text });
+		const display = async (name: string) => {
+			const declaration = facts.declarations.find(
+				(candidate) => candidate.name === name && candidate.kind === "function",
+			);
+			if (declaration === undefined) throw new Error(`${name} declaration missing`);
+			const type = await provider.typeOf({ symbolId: declaration.symbolId });
+			return type.status === "inferred" ? type.display : type.status;
+		};
+		expect(await Promise.all(["caller", "choose", "count", "spin", "attempt", "ratio"].map(display))).toEqual([
+			"unknown",
+			"Literal[1, 's']",
+			"int",
+			"Literal[3]",
+			"Literal[1, 2]",
+			"Literal[1e-308]",
+		]);
 	});
 
 	it("keeps conditional definitions ambiguous", async () => {

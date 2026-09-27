@@ -19,6 +19,11 @@ const UNPRINTABLE_RE = /^[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]$/u;
 /** Past this, `int / int` leaves the doubles that divide it exactly. */
 const EXACT_LIMIT = 1n << 53n;
 
+/** C's `float.h` for a double. */
+const DBL_MANT_DIG = 53;
+const DBL_MIN_EXP = -1021;
+const DBL_MAX_EXP = 1024;
+
 /** A repeated string longer than this is not folded. */
 const REPEAT_LIMIT = 1 << 24;
 
@@ -119,7 +124,10 @@ function bitLength(value: bigint): number {
 	return value === 0n ? 0 : value.toString(2).length;
 }
 
-/** `int / int`, correctly rounded as CPython rounds it. */
+/**
+ * `int / int`, correctly rounded as CPython's `long_true_divide` rounds it: the quotient keeps two
+ * or three bits past the double's, fewer where the result is subnormal, and rounds half to even.
+ */
 function trueDivide(dividend: bigint, divisor: bigint): number | undefined {
 	if (magnitude(dividend) <= EXACT_LIMIT && magnitude(divisor) <= EXACT_LIMIT) {
 		return Number(dividend) / Number(divisor);
@@ -128,14 +136,25 @@ function trueDivide(dividend: bigint, divisor: bigint): number | undefined {
 	const numerator = magnitude(dividend);
 	const denominator = magnitude(divisor);
 	if (numerator === 0n) return negative ? -0 : 0;
-	// A quotient of 55 bits or more rounds once to 53, with a sticky low bit for any remainder.
-	const shift = bitLength(numerator) - bitLength(denominator) - 55;
-	const scaled = shift >= 0 ? numerator : numerator << BigInt(-shift);
-	const by = shift >= 0 ? denominator << BigInt(shift) : denominator;
-	let quotient = scaled / by;
-	if (scaled % by !== 0n) quotient |= 1n;
-	const result = Number(quotient) * 2 ** shift;
-	if (!Number.isFinite(result)) return undefined;
+	const diff = bitLength(numerator) - bitLength(denominator);
+	if (diff > DBL_MAX_EXP) return undefined;
+	if (diff < DBL_MIN_EXP - DBL_MANT_DIG - 1) return negative ? -0 : 0;
+	const shift = Math.max(diff, DBL_MIN_EXP) - DBL_MANT_DIG - 2;
+	const scaled = shift >= 0 ? numerator >> BigInt(shift) : numerator << BigInt(-shift);
+	let inexact = shift > 0 && (numerator & ((1n << BigInt(shift)) - 1n)) !== 0n;
+	let quotient = scaled / denominator;
+	if (scaled % denominator !== 0n) inexact = true;
+	const bits = bitLength(quotient);
+	const extra = Math.max(bits, DBL_MIN_EXP - shift) - DBL_MANT_DIG;
+	const mask = 1n << BigInt(extra - 1);
+	if (inexact) quotient |= 1n;
+	if ((quotient & mask) !== 0n && (quotient & (3n * mask - 1n)) !== 0n) quotient += mask;
+	quotient &= ~(2n * mask - 1n);
+	const rounded = Number(quotient);
+	if (shift + bits >= DBL_MAX_EXP && (shift + bits > DBL_MAX_EXP || rounded === 2 ** bits)) return undefined;
+	// Two exact steps, since one power of two this small underflows to zero.
+	const first = Math.max(shift, -1000);
+	const result = rounded * 2 ** first * 2 ** (shift - first);
 	return negative ? -result : result;
 }
 
@@ -236,29 +255,33 @@ function isDigit(character: string | undefined): boolean {
 	return character !== undefined && character >= "0" && character <= "9";
 }
 
-/** `text % value` for one value no tuple holds, when every conversion is a text or integer one. */
+/**
+ * `text % value` for one value no tuple holds, when every conversion is a text or integer one. Read
+ * by code point, as Python counts characters.
+ */
 function formatted(text: string, value: PyLiteral): string | undefined {
+	const characters = [...text];
 	let written = "";
 	let used = false;
 	let at = 0;
-	while (at < text.length) {
-		const character = text[at++] as string;
+	while (at < characters.length) {
+		const character = characters[at++] as string;
 		if (character !== "%") {
 			written += character;
 			continue;
 		}
 		let flags = "";
-		while (at < text.length && "-+ #0".includes(text[at] as string)) flags += text[at++];
+		while (at < characters.length && "-+ #0".includes(characters[at] as string)) flags += characters[at++];
 		let width = "";
-		while (isDigit(text[at])) width += text[at++];
+		while (isDigit(characters[at])) width += characters[at++];
 		let precision: string | undefined;
-		if (text[at] === ".") {
+		if (characters[at] === ".") {
 			at++;
 			precision = "";
-			while (isDigit(text[at])) precision += text[at++];
+			while (isDigit(characters[at])) precision += characters[at++];
 		}
-		if (at < text.length && "hlL".includes(text[at] as string)) at++;
-		const conversion = text[at++];
+		if (at < characters.length && "hlL".includes(characters[at] as string)) at++;
+		const conversion = characters[at++];
 		if (conversion === undefined || !"%sradiuxXoc".includes(conversion)) return undefined;
 		if (conversion === "%") {
 			written += "%";
@@ -279,7 +302,8 @@ function converted(
 	precision: string | undefined,
 	value: PyLiteral,
 ): string | undefined {
-	const cut = (text: string): string => (precision === undefined ? text : text.slice(0, Number(precision || "0")));
+	const cut = (text: string): string =>
+		precision === undefined ? text : [...text].slice(0, Number(precision || "0")).join("");
 	switch (conversion) {
 		case "s":
 			return cut(pyStr(value));
@@ -330,11 +354,13 @@ function integerField(
 	return `${sign}${prefix}${digits}`;
 }
 
-/** Width padding: left with `-`, zeros after any sign and prefix with `0` on a number. */
+/** Width padding by code point: left with `-`, zeros after any sign and prefix with `0` on a number. */
 function padded(field: string, flags: string, width: number, number: boolean): string {
-	if (field.length >= width) return field;
-	if (flags.includes("-")) return field.padEnd(width, " ");
-	if (!number || !flags.includes("0")) return field.padStart(width, " ");
+	const length = [...field].length;
+	if (length >= width) return field;
+	const blanks = " ".repeat(width - length);
+	if (flags.includes("-")) return `${field}${blanks}`;
+	if (!number || !flags.includes("0")) return `${blanks}${field}`;
 	let lead = "-+ ".includes(field[0] as string) ? 1 : 0;
 	if (field[lead] === "0" && "oxX".includes(field[lead + 1] ?? "_")) lead += 2;
 	return field.slice(0, lead) + field.slice(lead).padStart(width - lead, "0");
