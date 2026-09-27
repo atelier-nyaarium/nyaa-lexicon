@@ -34,6 +34,7 @@ export {
 	type Sleeper,
 } from "./ensure.js";
 export { DaemonError, type DaemonErrorDetails, Incompatible, NotInstalled } from "./errors.js";
+export { markVerdict, ownMark } from "./identity.js";
 export {
 	bundlesSettled,
 	INSTALL_SETTLE_MS,

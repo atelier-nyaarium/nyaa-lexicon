@@ -18,8 +18,9 @@ export const DaemonLockSchema = z
 		/** Presented on every call. Closes the hole that binding a TCP port opens on a shared box. */
 		token: z.string().min(32),
 		pid: z.number().int().positive(),
-		/** The pid's birth ticks where the platform offers them. A reused pid fails this, so a dead
-		 * daemon can never read as live on pid alone (issue #7). */
+		/** The pid's identity mark where the platform offers one: birth ticks on Linux, a held named
+		 * pipe on Windows. A reused pid fails this, so a dead daemon can never read as live on pid
+		 * alone (issue #7). */
 		pidStart: z.string().min(1).optional(),
 		/** Protocol version the daemon speaks, so a client on a different major replaces it. */
 		protocolVersion: z.string().min(1),

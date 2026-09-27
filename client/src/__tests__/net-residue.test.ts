@@ -20,6 +20,9 @@ const SWEPT = [join(ROOT, "client", "src"), join(ROOT, "core", "src"), join(ROOT
 /** The two ends, as paths from the repository root. */
 const OWNERS = ["client/src/transport.ts", "core/src/socketTransport.ts"];
 
+/** Other importers, and why none is a wire. */
+const EXEMPT = new Map([["client/src/identity.ts", "holds a Windows pipe as a process mark; no frame crosses it"]]);
+
 /** The module specifier, as any string in code: an import, a `require` or a dynamic import. */
 const SPECIFIER = "node:net";
 
@@ -37,6 +40,7 @@ describe("two modules own the daemon wire", () => {
 		const importers = SWEPT.flatMap((dir) => parsedFiles(dir, SKIP))
 			.filter(({ source }) => stringsIn(source).some(({ text }) => text === SPECIFIER))
 			.map(({ file }) => relative(ROOT, file).split("\\").join("/"))
+			.filter((file) => !EXEMPT.has(file))
 			.sort();
 
 		expect(

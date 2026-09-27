@@ -38,14 +38,38 @@ export type BoundedResult =
 /** Every spawned group's pid still without a close, so this process's own exit can reap what it forked. */
 const liveGroups = new Set<number>();
 
+const TASKKILL_MS = 5_000;
+
 ////////////////////////////////
 //  Functions & Helpers
+
+/** Windows has no process groups: `taskkill /T` walks the tree from a live root. Resolves when it ends. */
+function taskkillTree(pid: number): Promise<void> {
+	return new Promise((resolve) => {
+		const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+			stdio: "ignore",
+			windowsHide: true,
+			detached: true,
+		});
+		const bound = setTimeout(resolve, TASKKILL_MS);
+		bound.unref?.();
+		const done = () => {
+			clearTimeout(bound);
+			resolve();
+		};
+		killer.once("error", done);
+		killer.once("close", done);
+		killer.unref();
+	});
+}
 
 /** Kills every process group this module still tracks. A SIGKILL of that process itself cannot be covered. */
 export function killLiveGroups(): void {
 	for (const pid of liveGroups) {
 		try {
-			process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
+			// Started before this process exits; it finishes on its own.
+			if (process.platform === "win32") void taskkillTree(pid);
+			else process.kill(-pid, "SIGKILL");
 		} catch {
 			// Already gone.
 		}
@@ -74,6 +98,8 @@ export function liveGroupCount(): number {
 
 /** Awaits the one `closed` shared by every caller, never a fresh `once("close", ...)` (fires once, so a late listener waits forever); kills the whole group whenever close has not fired, since a pgid stays reserved while any member lives and ESRCH just means it is already empty. */
 async function reap(child: ChildProcess, closed: Promise<void>, hasClosed: () => boolean): Promise<void> {
+	// The tree first: a root killed alone orphans what it forked.
+	if (!hasClosed() && process.platform === "win32" && child.pid !== undefined) await taskkillTree(child.pid);
 	if (!hasClosed()) {
 		try {
 			if (process.platform !== "win32" && child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
@@ -98,6 +124,7 @@ export async function runBounded(
 			stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			// Its own process group, so a wedged reap can kill what it forked, not only itself.
 			detached: process.platform !== "win32",
+			windowsHide: true,
 		});
 	} catch (error) {
 		// Nothing spawned: no group to reap.

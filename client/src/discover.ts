@@ -31,10 +31,10 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { beforeDeadline } from "./deadline.js";
 import { DaemonError, unfiltered } from "./errors.js";
+import { markVerdict } from "./identity.js";
 import { bunCommand } from "./launch.js";
 import { decideFromLock, type LockDecision } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
-import { processIdentity } from "./procfs.js";
 import { type BunExecutable, bunExecutable } from "./runtime.js";
 import { requestOnce } from "./transport.js";
 import { CLIENT_BUILD_VERSION } from "./version.js";
@@ -93,20 +93,18 @@ export function processIsAlive(pid: number): boolean {
 
 /** Liveness a lock can trust: the pid answers and is still the process that wrote the lock.
  * Unlike processIsAlive, EPERM is not taken on faith: a pid we may not signal is only the holder
- * if its recorded identity says so, since bare existence proves a stranger reused the number. */
+ * if its recorded mark says so, since bare existence proves a stranger reused the number. */
 export function lockHolderAlive(holder: { pid: number; pidStart?: string | undefined }): boolean {
+	let signalled = true;
 	try {
 		process.kill(holder.pid, 0);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
-		const identity = processIdentity(holder.pid);
-		return identity !== null && !identity.zombie && identity.startTicks === holder.pidStart;
+		signalled = false;
 	}
-	const identity = processIdentity(holder.pid);
-	// No /proc, no verdict: the plain probe stands, as it always has off Linux.
-	if (identity === null) return true;
-	if (identity.zombie) return false;
-	return holder.pidStart === undefined || identity.startTicks === holder.pidStart;
+	const verdict = markVerdict(holder.pid, holder.pidStart);
+	// No verdict: the plain probe stands.
+	return signalled ? verdict !== false : verdict === true;
 }
 
 ////////////////////////////////
@@ -286,6 +284,8 @@ export function spawnDaemonProcess(command: string[], logFile: string): SpawnWat
 	const child = spawn(executable, args, {
 		stdio: ["ignore", log ?? "ignore", log ?? "ignore"],
 		detached: true,
+		// Detached on Windows opens a console window otherwise.
+		windowsHide: true,
 	});
 	if (log !== null) closeSync(log);
 

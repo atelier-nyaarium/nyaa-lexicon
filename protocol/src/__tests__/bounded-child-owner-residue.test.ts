@@ -56,6 +56,10 @@ const ALLOWED = new Map<string, string>([
 		"client/src/__tests__/discover.test.ts",
 		"spawns a live process for a liveness-probe fixture, not a bounded command",
 	],
+	[
+		"client/src/__tests__/identity.test.ts",
+		"spawns a child whose mark is read after it exits, not a bounded command",
+	],
 ]);
 
 ////////////////////////////////

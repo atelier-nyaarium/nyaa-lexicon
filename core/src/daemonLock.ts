@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { processIdentity } from "@nyaa-lexicon/client";
+import { ownMark } from "@nyaa-lexicon/client";
 import { type DaemonLock, type LockRole, parseDaemonLock } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
@@ -43,11 +43,10 @@ export function mintToken(): string {
 	return randomBytes(TOKEN_BYTES).toString("hex");
 }
 
-/** This process as a holder: its pid, and its birth where the platform says. */
+/** This process as a holder: its pid, and its mark where the platform has one. */
 export function holderIdentity(): { pid: number; pidStart?: string } {
-	const identity = processIdentity(process.pid);
-	if (identity === null) return { pid: process.pid };
-	return { pid: process.pid, pidStart: identity.startTicks };
+	const mark = ownMark();
+	return mark === undefined ? { pid: process.pid } : { pid: process.pid, pidStart: mark };
 }
 
 /** Linked from a fully-written staging file, since a `wx` write has a create-then-fill gap where a

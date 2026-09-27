@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Python3Dispatch } from "../python3";
+import { Python3Dispatch, python3Commands } from "../python3";
 
 ////////////////////////////////
 //  Tests
@@ -31,6 +31,32 @@ describe("runJson", () => {
 		const dispatch = new Python3Dispatch("sh");
 
 		expect(await dispatch.runJson<{ ok: boolean }>(["-c", "printf '{\"ok\":true}'"])).toEqual({ ok: true });
+	});
+
+	it("falls through missing launchers to the first that runs, prefix first; none found answers null", async () => {
+		const missing = { command: "lexicon-no-such-python", prefix: [] };
+		const found = new Python3Dispatch([missing, { command: "sh", prefix: ["-c"] }]);
+		const none = new Python3Dispatch([missing]);
+
+		expect({
+			found: await found.runJson<{ ok: boolean }>(["printf '{\"ok\":true}'"]),
+			none: await none.runJson<unknown>(["-c", "print(1)"]),
+			detail: none.unavailableDetail,
+		}).toEqual({
+			found: { ok: true },
+			none: null,
+			detail: "Executable not found in $PATH: lexicon-no-such-python",
+		});
+	});
+
+	it("tries the py launcher before python on Windows, and python3 elsewhere", () => {
+		expect({ win32: python3Commands("win32"), linux: python3Commands("linux") }).toEqual({
+			win32: [
+				{ command: "py", prefix: ["-3"] },
+				{ command: "python", prefix: [] },
+			],
+			linux: [{ command: "python3", prefix: [] }],
+		});
 	});
 
 	// A python3 child imports from its cwd first, so starting it in the indexed repo let a root

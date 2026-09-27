@@ -23,7 +23,7 @@ The lock is `DaemonLockSchema`:
 ```
 port             localhost port, chosen by the OS at bind
 token            48 hex characters, presented on every connection
-pid, pidStart    the holder, and its birth ticks where the platform offers them
+pid, pidStart    the holder, and its identity mark where the platform offers one
 protocolVersion  what the daemon speaks
 buildVersion     which release it runs, which decides its method table
 bundleStamp      a digest of every bundle's bytes under dist/, so a rebuild inside one version is noticed and two copies of one release agree
@@ -33,7 +33,11 @@ role             "daemon" or "delete"; absent reads as "daemon"
 ```
 
 `pidStart` is what stops a reused pid from reading as a live daemon: `lockHolderAlive` requires
-the process to answer AND to still be the process that wrote the file.
+the process to answer AND to still be the process that wrote the file. `identity.ts` owns the mark.
+On Linux it is the birth ticks from `/proc`. On Windows the holder listens on a named pipe named
+for its pid, `pipe:nyaa-lexicon-<pid>-<random>`, and a check lists `\\.\pipe\`; the pipe closes
+with the process, and a reused pid never holds it. Elsewhere there is no mark, and the plain probe
+stands.
 
 The claim is a race the daemons run, not the clients. A starting daemon binds port zero on
 `127.0.0.1` first, because the lock carries the port, writes the lock to a staging file beside it,

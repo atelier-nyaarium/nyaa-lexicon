@@ -353,7 +353,7 @@ export class ProviderSupervisor implements ProviderPort {
 	private spawnProcess(spec: ProviderSpec, workspaceRoot: string): StartingProcess {
 		const [bin, ...args] = spec.command as [string, ...string[]];
 		// cwd stated rather than inherited: the daemon's own cwd is its state dir, not the project.
-		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], cwd: workspaceRoot });
+		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], cwd: workspaceRoot, windowsHide: true });
 		if (!child.stdin || !child.stdout) throw new Error("provider process has no stdio pipes");
 
 		const connection = createMessageConnection(
