@@ -27,6 +27,10 @@ moveEdits(request)           -> MoveEditsResponse
 shutdown()
 ```
 
+`FileFacts` also carries the facts core decides from instead of reading source text:
+`blankLines`, each container's `memberInsertLine`, and each comment's `codeBefore` and `codeAfter`.
+`docs/parsing.md` defines each.
+
 Two notifications travel the other way without an answer:
 
 ```

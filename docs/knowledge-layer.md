@@ -132,7 +132,8 @@ the live index runs one every hour so an idle workspace still ages; the store's 
 the judging in `sweepSubjects`, one bounded batch in one transaction, from what the indexer just
 decided about presence: a module is absent when the prune did not reach it, failing when it holds
 a parse failure, parsing otherwise. Every write of a module sets its bound subjects' pattern
-digests to exactly what the index holds, null after an outline or surface parse.
+digests to exactly what the index holds, null after an outline or surface parse. A pattern digest
+covers kind, name and text, with comments cut and whitespace collapsed outside string literals.
 
 - **Exempt.** A subject in a failing module is left alone; nothing is dated while a person is
   mid-edit. A malformed address has no module and is never exempt.
