@@ -8,9 +8,12 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	isTooDeep,
 	type Literal,
+	NestingGauge,
 	type Range,
 	type TextCoordinates,
+	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
 // The ESM entry by path, because the package has no `exports` map and its `main` is a UMD file whose
 // inner requires survive bundling and then fail on node. Pinned exact so the path cannot move.
@@ -23,7 +26,6 @@ import {
 	printParseErrorCode,
 	type ScanError,
 } from "jsonc-parser/lib/esm/main.js";
-import { isTooDeep, NestingGauge, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
 import { type Layout, LayoutRecorder } from "./layout.js";
 

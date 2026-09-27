@@ -292,10 +292,10 @@ export class PackageIndex {
 			const found: IndexedDeclaration[] = [];
 			for (const id of level) {
 				seen.add(id);
-				found.push(
-					...reachable(this.named(id, name, admit)),
-					...reachable(this.companionMembers(id, name, admit)),
-				);
+				found.push(...reachable(this.named(id, name, admit)));
+				// A superclass's companion reaches subclasses; an interface's never does.
+				if (this.byId(id)?.declaration.kind !== "interface")
+					found.push(...reachable(this.companionMembers(id, name, admit)));
 			}
 			if (found.length > 0) return found;
 			level = [...new Set(level.flatMap((id) => this.supertypeIds(id)))].filter((id) => !seen.has(id));

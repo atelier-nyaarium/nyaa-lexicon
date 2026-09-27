@@ -41,11 +41,22 @@ export function matchesRole(declaration: Declaration, role: Reference["role"]): 
 
 const CALLABLE_KINDS: ReadonlySet<string> = new Set(["function", "method", "constructor"]);
 
-/** A read names a function only by `::`, so a value beside it wins. */
+/**
+ * A read names a function only by `::`, so a value beside it wins. A call never reaches a plain
+ * interface; a fun interface's SAM constructor still competes.
+ */
 function narrowed(role: Reference["role"], candidates: Declaration[]): Declaration[] {
-	if (role !== "read") return candidates;
-	const values = candidates.filter((candidate) => !CALLABLE_KINDS.has(candidate.kind));
-	return values.length > 0 ? values : candidates;
+	const kept =
+		role === "read"
+			? candidates.filter((candidate) => !CALLABLE_KINDS.has(candidate.kind))
+			: role === "call"
+				? candidates.filter(
+						(candidate) =>
+							candidate.kind !== "interface" ||
+							candidate.languageKind?.split(" ").includes("fun") === true,
+					)
+				: candidates;
+	return kept.length > 0 ? kept : candidates;
 }
 
 function unbound(reason: UnknownReason, detail: string): Resolved {

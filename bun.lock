@@ -12,7 +12,7 @@
     },
     "adapters/lsp": {
       "name": "@nyaa-lexicon/adapter-lsp",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/core": "workspace:*",
@@ -21,7 +21,7 @@
     },
     "adapters/mcp": {
       "name": "@nyaa-lexicon/adapter-mcp",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "@nyaa-lexicon/client": "workspace:*",
@@ -36,14 +36,14 @@
     },
     "client": {
       "name": "@nyaa-lexicon/client",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
       },
     },
     "core": {
       "name": "@nyaa-lexicon/core",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -54,7 +54,7 @@
     },
     "formats": {
       "name": "@nyaa-lexicon/formats",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "@rgrove/parse-xml": "5.0.0",
@@ -65,7 +65,7 @@
     },
     "protocol": {
       "name": "@nyaa-lexicon/protocol",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "vscode-jsonrpc": "9.0.2",
         "zod": "4.6.1",
@@ -76,7 +76,7 @@
     },
     "providers/bash": {
       "name": "@nyaa-lexicon/provider-bash",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "unbash": "4.0.11",
@@ -85,7 +85,7 @@
     },
     "providers/c": {
       "name": "@nyaa-lexicon/provider-c",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
@@ -93,7 +93,7 @@
     },
     "providers/cpp": {
       "name": "@nyaa-lexicon/provider-cpp",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
@@ -101,7 +101,7 @@
     },
     "providers/csharp": {
       "name": "@nyaa-lexicon/provider-csharp",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
@@ -109,7 +109,7 @@
     },
     "providers/gdscript": {
       "name": "@nyaa-lexicon/provider-gdscript",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
@@ -117,7 +117,7 @@
     },
     "providers/html": {
       "name": "@nyaa-lexicon/provider-html",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -126,7 +126,7 @@
     },
     "providers/json": {
       "name": "@nyaa-lexicon/provider-json",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -135,16 +135,15 @@
     },
     "providers/kotlin": {
       "name": "@nyaa-lexicon/provider-kotlin",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
-        "web-tree-sitter": "0.27.0",
       },
     },
     "providers/markdown": {
       "name": "@nyaa-lexicon/provider-markdown",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -158,7 +157,7 @@
     },
     "providers/python": {
       "name": "@nyaa-lexicon/provider-python",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
@@ -166,7 +165,7 @@
     },
     "providers/rust": {
       "name": "@nyaa-lexicon/provider-rust",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
@@ -174,7 +173,7 @@
     },
     "providers/text": {
       "name": "@nyaa-lexicon/provider-text",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -183,7 +182,7 @@
     },
     "providers/typescript": {
       "name": "@nyaa-lexicon/provider-typescript",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "typescript": "6.0.3",
@@ -192,7 +191,7 @@
     },
     "providers/xml": {
       "name": "@nyaa-lexicon/provider-xml",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -201,7 +200,7 @@
     },
     "providers/yaml": {
       "name": "@nyaa-lexicon/provider-yaml",
-      "version": "5.0.0",
+      "version": "10.1.1",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -556,8 +555,6 @@
     "vary": ["vary@1.1.2", "", {}, "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="],
 
     "vscode-jsonrpc": ["vscode-jsonrpc@9.0.2", "", {}, "sha512-SbQSV9yRemARxeXw6LU5sS6Zq0e9/DgCCX5yelH263ZQWukbTk8EF8fjTrr1dziasf4GwlJbvTwFnTrnQFWZXQ=="],
-
-    "web-tree-sitter": ["web-tree-sitter@0.27.0", "", {}, "sha512-XK08gj6RwTMQatAG7uVRP8MunqotL/XC19vHgkSPKmELgbGPBj4ECvB8haHOUnyj6ls2B8t42UTro14zxGgAHg=="],
 
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 

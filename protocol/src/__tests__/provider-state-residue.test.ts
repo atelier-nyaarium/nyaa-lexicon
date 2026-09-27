@@ -18,7 +18,6 @@ const CONTENT_READS = new Set(["readFileSync", "readFile", "readWorkspaceFile", 
 const ALLOWED_READS: Record<string, string> = {
 	"rust/src/project.ts": "Cargo.toml",
 	"gdscript/src/project.ts": "project.godot",
-	"kotlin/src/tree.ts": "the bundled grammar",
 	"typescript/src/analyzer.ts": "types and display of files the index does not hold",
 	"typescript/src/project.ts": "tsconfig and package.json",
 };

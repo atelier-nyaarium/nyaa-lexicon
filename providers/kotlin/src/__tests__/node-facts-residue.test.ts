@@ -7,7 +7,7 @@ import ts from "typescript";
 /** A syntax node carries syntax; a derived fact lives in `environment.ts`, keyed by the node. */
 const SRC = join(import.meta.dirname, "..");
 
-/** What tree-sitter reports. Anything else is derived. */
+/** What the grammar reports. Anything else is derived. */
 const STRUCTURAL = ["children", "end", "field", "missing", "named", "parent", "start", "type"];
 
 const SKIP = ["__tests__", ".tsbuild", "dist", "node_modules"];
@@ -58,7 +58,7 @@ function interfaceMembers(source: ts.SourceFile, name: string): string[] | null 
 //  Tests
 
 describe("a syntax node carries syntax, never a derived fact", () => {
-	it("declares only what tree-sitter reports on SyntaxNode", () => {
+	it("declares only what the grammar reports on SyntaxNode", () => {
 		const text = readSwept(join(SRC, "tree.ts"));
 		expect(text, "tree.ts is the home of SyntaxNode and the sweep must read it").not.toBeNull();
 		const members = interfaceMembers(parseSource("tree.ts", text as string).source, "SyntaxNode");

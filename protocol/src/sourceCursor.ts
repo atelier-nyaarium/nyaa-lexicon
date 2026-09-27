@@ -1,0 +1,139 @@
+// Character access for a hand-written lexer, in the positions `coordinatesOf` defines.
+//
+// Lines break only at `\n`; a lone `\r` is content, as it is to every range core reads. Columns
+// count UTF-16 code units, and `peek` and `next` read whole code points.
+
+import type { Position } from "./symbols.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+export interface CursorMark {
+	offset: number;
+	line: number;
+	column: number;
+}
+
+export interface CursorSpan {
+	startOffset: number;
+	endOffset: number;
+	start: Position;
+	end: Position;
+}
+
+////////////////////////////////
+//  Classes
+
+export class SourceCursor {
+	private at: number;
+	private lineAt = 0;
+	private columnAt = 0;
+	private readonly limit: number;
+
+	constructor(
+		private readonly source: string,
+		startOffset = 0,
+		endOffset = source.length,
+	) {
+		this.limit = Math.min(source.length, Math.max(0, endOffset));
+		this.at = 0;
+		const start = Math.min(this.limit, Math.max(0, startOffset));
+		while (this.at < start) this.next();
+	}
+
+	get offset(): number {
+		return this.at;
+	}
+
+	get line(): number {
+		return this.lineAt;
+	}
+
+	get column(): number {
+		return this.columnAt;
+	}
+
+	get position(): Position {
+		return { line: this.lineAt, character: this.columnAt };
+	}
+
+	good(): boolean {
+		return this.at < this.limit;
+	}
+
+	/** The code point `ahead` UTF-16 units on; empty past the end. */
+	peek(ahead = 0): string {
+		const index = this.at + ahead;
+		if (index < 0 || index >= this.limit) return "";
+		const point = this.source.codePointAt(index);
+		if (point === undefined) return "";
+		const character = String.fromCodePoint(point);
+		return index + character.length > this.limit ? (this.source[index] as string) : character;
+	}
+
+	/** Whether `text` is next. */
+	startsWith(text: string): boolean {
+		return this.at + text.length <= this.limit && this.source.startsWith(text, this.at);
+	}
+
+	next(): string {
+		const character = this.peek();
+		if (character === "") return "";
+		this.at += character.length;
+		if (character === "\n") {
+			this.lineAt++;
+			this.columnAt = 0;
+		} else {
+			this.columnAt += character.length;
+		}
+		return character;
+	}
+
+	/** Consumes `text` when it is next; false and unmoved otherwise. */
+	take(text: string): boolean {
+		if (!this.startsWith(text)) return false;
+		let guard = -1;
+		const end = this.at + text.length;
+		while (this.at < end) {
+			if (this.at <= guard) throw new Error("cursor take failed to advance");
+			guard = this.at;
+			this.next();
+		}
+		return true;
+	}
+
+	mark(): CursorMark {
+		return { offset: this.at, line: this.lineAt, column: this.columnAt };
+	}
+
+	rewind(mark: CursorMark): void {
+		this.at = mark.offset;
+		this.lineAt = mark.line;
+		this.columnAt = mark.column;
+	}
+
+	span(from: CursorMark): CursorSpan {
+		return {
+			startOffset: from.offset,
+			endOffset: this.at,
+			start: { line: from.line, character: from.column },
+			end: { line: this.lineAt, character: this.columnAt },
+		};
+	}
+
+	/** The text from `from` to here. */
+	textSince(from: CursorMark): string {
+		return this.source.slice(from.offset, this.at);
+	}
+
+	readWhile(predicate: (character: string) => boolean): string {
+		const from = this.at;
+		let guard = -1;
+		while (this.good() && predicate(this.peek())) {
+			if (this.at <= guard) throw new Error("cursor reader failed to advance");
+			guard = this.at;
+			this.next();
+		}
+		return this.source.slice(from, this.at);
+	}
+}

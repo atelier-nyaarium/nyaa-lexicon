@@ -1,24 +1,14 @@
 import { type Binding, type CommentSpan, defined, type Literal } from "@nyaa-lexicon/protocol";
-import { unclosedComment } from "./diagnostics.js";
 import type { ScopeEnvironment } from "./environment.js";
 import type { Frame, Receiver, ReferenceInfo, ReferenceRole } from "./facts.js";
-import { blankLines, codeLeaves, triviaOf } from "./layout.js";
-import { literalShape, shortTemplateName } from "./literals.js";
-import {
-	COMMENT_TYPES,
-	childOfType,
-	type LineTable,
-	misreadKeyword,
-	nameText,
-	type SyntaxNode,
-	type SyntaxTree,
-} from "./tree.js";
+import { type Span, triviaOf } from "./layout.js";
+import { literalShape } from "./literals.js";
+import { COMMENT_TYPES, childOfType, type LineTable, nameText, type SyntaxNode, type SyntaxTree } from "./tree.js";
 
 export interface UseFacts {
 	references: ReferenceInfo[];
 	literals: Literal[];
 	comments: CommentSpan[];
-	blankLines: number[];
 }
 
 const LITERAL_TYPES: ReadonlySet<string> = new Set([
@@ -93,19 +83,15 @@ class UseWalker {
 	private readonly owners: string[] = [];
 	private readonly binders: string[] = [];
 	private frame: Frame | undefined;
-	/** An unclosed comment's start, which swallows everything after. */
-	private readonly unclosed: number;
-	private readonly code: SyntaxNode[];
 
 	constructor(
 		private readonly text: string,
 		private readonly tree: SyntaxTree,
 		private readonly lines: LineTable,
 		private readonly environment: ScopeEnvironment,
-	) {
-		this.unclosed = unclosedComment(text, tree) ?? text.length;
-		this.code = codeLeaves(tree.leaves);
-	}
+		/** Tokens with width, comments excluded. */
+		private readonly code: readonly Span[],
+	) {}
 
 	private comment(start: number, end: number): CommentSpan {
 		return {
@@ -144,20 +130,12 @@ class UseWalker {
 			for (let index = node.children.length - 1; index >= 0; index--)
 				stack.push({ node: node.children[index] as SyntaxNode, exit: false });
 		}
-		if (this.unclosed < this.text.length) this.comments.push(this.comment(this.unclosed, this.text.length));
-		return {
-			references: this.references,
-			literals: this.literals,
-			comments: this.comments,
-			blankLines: blankLines(this.text, this.tree.leaves, this.lines, this.unclosed),
-		};
+		return { references: this.references, literals: this.literals, comments: this.comments };
 	}
 
 	private visit(node: SyntaxNode): void {
 		if (COMMENT_TYPES.has(node.type)) {
-			if (node.start >= this.unclosed) return;
-			const end = this.text.charAt(node.end - 1) === "\r" ? node.end - 1 : node.end;
-			this.comments.push(this.comment(node.start, end));
+			this.comments.push(this.comment(node.start, node.end));
 			return;
 		}
 		if (LITERAL_TYPES.has(node.type) || node.type === "identifier") {
@@ -175,27 +153,6 @@ class UseWalker {
 			}
 		}
 		if (node.type === "identifier" && node.end > node.start) this.identifier(node);
-		else if (node.type === "string_content") this.shortTemplate(node);
-	}
-
-	private shortTemplate(node: SyntaxNode): void {
-		const name = shortTemplateName(this.text, node);
-		if (name === undefined) return;
-		const [start, end] = name;
-		this.add(
-			{
-				type: "identifier",
-				named: true,
-				missing: false,
-				field: null,
-				start,
-				end,
-				parent: node.parent,
-				children: [],
-			},
-			"read",
-			BARE,
-		);
 	}
 
 	private add(node: SyntaxNode, role: ReferenceRole, reach: Reach): void {
@@ -250,28 +207,13 @@ class UseWalker {
 				this.add(node, "write", reach);
 				return true;
 			}
-			// The grammar reads `!f(x)` as `(!f)(x)`.
-			const call = parent.parent;
-			if (
-				operator !== undefined &&
-				operator.start < target.start &&
-				call?.type === "call_expression" &&
-				call.children[0] === parent
-			) {
-				this.add(
-					node,
-					this.environment.declaresType(nameText(this.text, node)) ? "instantiate" : "call",
-					reach,
-				);
-				return true;
-			}
 		}
 		return false;
 	}
 
 	private identifier(node: SyntaxNode): void {
 		const parent = node.parent;
-		if (parent === null || this.environment.namesDeclaration(node) || misreadKeyword(this.text, node)) return;
+		if (parent === null || this.environment.namesDeclaration(node)) return;
 		const importInfo = this.environment.importAt(node);
 		if (importInfo !== undefined) {
 			this.add(node, "import", { qualified: aliasedPathSegment(node), importInfo });
@@ -308,7 +250,11 @@ class UseWalker {
 				if (position === 0) break;
 				const operator = siblings[position - 1];
 				if (operator?.type === "::" && name === "class") return;
-				const reach = { qualified: receiverReach(siblings[0]), receiver: this.receiverOf(siblings[0]) };
+				const receiver = this.receiverOf(siblings[0]);
+				// `Type::member` reaches instance members.
+				const reference =
+					operator?.type === "::" && receiver.kind === "name" ? { ...receiver, callable: true } : receiver;
+				const reach = { qualified: receiverReach(siblings[0]), receiver: reference };
 				if (!this.applied(node, parent, reach)) this.add(node, "read", reach);
 				return;
 			}
@@ -338,6 +284,12 @@ class UseWalker {
 	}
 }
 
-export function walkUses(text: string, tree: SyntaxTree, lines: LineTable, environment: ScopeEnvironment): UseFacts {
-	return new UseWalker(text, tree, lines, environment).walk();
+export function walkUses(
+	text: string,
+	tree: SyntaxTree,
+	lines: LineTable,
+	environment: ScopeEnvironment,
+	code: readonly Span[],
+): UseFacts {
+	return new UseWalker(text, tree, lines, environment, code).walk();
 }

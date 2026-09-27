@@ -3,8 +3,10 @@ import { walkDeclarations } from "./declarations.js";
 import { syntaxDiagnostics } from "./diagnostics.js";
 import { buildEnvironment } from "./environment.js";
 import type { KotlinFile } from "./facts.js";
+import { parseKotlinSyntax } from "./grammar.js";
+import { blankLines, type Span } from "./layout.js";
+import { codeSpans, lexKotlin } from "./lexer.js";
 import { walkUses } from "./references.js";
-import { parseSource } from "./repairs.js";
 import { childOfType, childrenOfType, LineTable, type SyntaxNode } from "./tree.js";
 import { typePath } from "./typePaths.js";
 
@@ -72,15 +74,35 @@ function fileRole(
 		: { kind: "entry", how: "main", symbolId: staticMain.symbolId };
 }
 
+/** Two source-order span lists as one. */
+function merged(first: readonly Span[], second: readonly Span[]): Span[] {
+	const spans: Span[] = [];
+	let left = 0;
+	let right = 0;
+	while (left < first.length || right < second.length) {
+		const next = first[left];
+		const other = second[right];
+		if (other === undefined || (next !== undefined && next.start <= other.start)) {
+			spans.push(next as Span);
+			left++;
+		} else {
+			spans.push(other);
+			right++;
+		}
+	}
+	return spans;
+}
+
 /** An outline answers declarations alone, so it builds no environment. */
 export function parseKotlin(module: string, text: string, outline = false): KotlinFile {
-	const parsed = parseSource(text);
-	const { tree } = parsed;
+	const lexed = lexKotlin(text);
+	const { tree, problems } = parseKotlinSyntax(text, lexed.tokens, lexed.comments);
 	const lines = new LineTable(text);
+	const code = codeSpans(lexed.tokens);
 	const facts = walkDeclarations(module, text, tree, lines, outline);
 	const uses = outline
-		? { references: [], literals: [], comments: [], blankLines: undefined }
-		: walkUses(text, tree, lines, buildEnvironment(text, tree, facts));
+		? { references: [], literals: [], comments: [] }
+		: walkUses(text, tree, lines, buildEnvironment(text, tree, facts), code);
 	return {
 		module,
 		...defined({ packageName: facts.packageName }),
@@ -89,11 +111,11 @@ export function parseKotlin(module: string, text: string, outline = false): Kotl
 		imports: facts.imports,
 		literals: uses.literals,
 		comments: uses.comments,
-		...defined({ blankLines: uses.blankLines }),
+		...(outline ? {} : { blankLines: blankLines(merged(code, lexed.comments), lines, text.length) }),
 		typeFacts: facts.typeFacts,
 		supertypes: facts.supertypes,
 		receiverTypes: facts.receiverTypes,
-		diagnostics: syntaxDiagnostics(module, parsed, lines),
+		diagnostics: syntaxDiagnostics(module, [...lexed.problems, ...problems], lines),
 		role: fileRole(facts.declarations, text, facts.nodes.declarations, facts.imports),
 	};
 }

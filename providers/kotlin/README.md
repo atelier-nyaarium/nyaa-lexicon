@@ -1,13 +1,13 @@
 # The Kotlin provider
 
-Where each concept lives, and the rules that hold it. Kotlin's grammar and its repairs are in
+Where each concept lives, and the rules that hold it. The parser's place in the parsing law is in
 `docs/parsing.md`. This file is the provider's own structure.
 
 ## The pipeline
 
 `parse.ts` owns the order.
 
-1. `repairs.ts` settles a tree, repairing by error until the least damaged reading wins.
+1. `lexer.ts` reads tokens and comments through one `SourceCursor`; `grammar.ts` builds the tree.
 2. `declarations.ts` walks it and answers what the file declares.
 3. `environment.ts` turns those declarations into the scopes a use is read against.
 4. `references.ts` walks it again and emits the uses. Literals and comments come off the same walk.
@@ -23,10 +23,9 @@ order. `main.ts` decides when.
 
 ## A node carries syntax, never a derived fact
 
-`SyntaxNode` declares exactly what tree-sitter reports, and nothing writes a property onto it. A
-fact written onto a shared node is a channel the type system cannot see, and the tree is shared with
-the repairs, which reparent and reposition nodes. The declaration walk hands its facts on as a
-value instead.
+`SyntaxNode` declares exactly what the grammar reports, and nothing writes a property onto it. A
+fact written onto a shared node is a channel the type system cannot see. The declaration walk hands
+its facts on as a value instead.
 
 `ScopeEnvironment` in `environment.ts` is that value. It holds:
 
@@ -46,7 +45,7 @@ lives in it: which nodes open a frame, which receiver a frame carries, where a l
 visible, and which frames end a constructor parameter's reach. `references.ts` asks and emits;
 `binding.ts` walks the frames it was handed.
 
-`__tests__/node-facts-residue.test.ts` holds the interface to what tree-sitter reports, and refuses
+`__tests__/node-facts-residue.test.ts` holds the interface to what the grammar reports, and refuses
 the widening casts that would let a fact back onto the tree. `tsc` refuses the write itself, so the
 residue's job is to keep the interface from growing a field under a new spelling.
 
@@ -54,8 +53,9 @@ residue's job is to keep the interface from growing a field under a new spelling
 
 | File | Owns |
 | --- | --- |
-| `tree.ts` | The parse into plain nodes, the line table, and node helpers. |
-| `repairs.ts` | The repair order, and every reread of a masked copy. |
+| `lexer.ts` | Tokens, comments and string parts per the specification's lexical grammar. |
+| `grammar.ts` | The tree, by recursive descent over the specification's syntax grammar. |
+| `tree.ts` | The node shape, the line table, and node helpers. |
 | `parse.ts` | The pipeline, and the outline cut. |
 | `declarations.ts` | The walk, and which handler each Kotlin node takes. |
 | `declarationScope.ts` | The scope handed to a declaration's children, and what every handler reads. |
@@ -72,6 +72,7 @@ residue's job is to keep the interface from growing a field under a new spelling
 | `references.ts` | Uses, literals and comments. |
 | `binding.ts` | Kotlin's lookup order over the package index. |
 | `packageIndex.ts` | Cross-file lookup, accessibility, and import resolution. |
-| `diagnostics.ts` | What damage refuses a file and what merely warns. |
+| `diagnostics.ts` | Syntax problems as the errors that refuse a file. |
+| `layout.ts` | Comment trivia, blank lines and member insertion points, from tokens. |
 | `render.ts` | Signature text from a span of nodes. |
 | `main.ts` | The provider surface, the module lifecycle, and the `WORDS` vocabulary. |

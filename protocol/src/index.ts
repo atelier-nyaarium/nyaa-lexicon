@@ -325,6 +325,7 @@ export {
 	WelcomeFrameSchema,
 } from "./daemonWire.js";
 export { defined } from "./defined.js";
+export { isTooDeep, MAX_NESTING, NestingGauge, saysTooDeep, TOO_DEEP } from "./depth.js";
 export {
 	applyEdits,
 	type EditConflict,
@@ -495,6 +496,7 @@ export {
 	serveProvider,
 } from "./serve.js";
 export { firstLineOf, shebangInterpreter } from "./shebang.js";
+export { type CursorMark, type CursorSpan, SourceCursor } from "./sourceCursor.js";
 export {
 	MAX_SOURCE_BYTES,
 	type OutsideRead,

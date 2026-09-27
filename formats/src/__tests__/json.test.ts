@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { coordinatesOf } from "@nyaa-lexicon/protocol";
-import { MAX_NESTING, TOO_DEEP } from "../depth.js";
+import { coordinatesOf, MAX_NESTING, TOO_DEEP } from "@nyaa-lexicon/protocol";
 import { readJson } from "../json.js";
 
 function read(text: string, strict = true) {

@@ -4,12 +4,14 @@ import {
 	type Declaration,
 	type Diagnostic,
 	defined,
+	isTooDeep,
 	type Literal,
+	MAX_NESTING,
 	type Range,
 	type TextCoordinates,
+	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
 import { parseXml, XmlCdata, XmlComment, XmlElement, type XmlNode, XmlText } from "@rgrove/parse-xml";
-import { isTooDeep, MAX_NESTING, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
 import { LayoutRecorder, trimmedSpan } from "./layout.js";
 import { startTagSignature } from "./startTag.js";

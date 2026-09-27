@@ -23,7 +23,7 @@ describe("declarations", () => {
 			"    companion object { const val LIMIT = 3 }",
 			'    private val hidden = "x"',
 			'    suspend fun fetch(item: Int): String { if (item > 0) return label; return "none" }',
-			"    inner class Detail",
+			"    inner class Detail { }",
 			"    private constructor(code: String) : this(1, code, 0)",
 			"    init { val seed = 1 }",
 			"}",
@@ -148,8 +148,23 @@ describe("declarations", () => {
 		expect(named(facts.declarations, "café")?.selectionRange?.start).toEqual({ line: 6, character: 4 });
 	});
 
-	test("valid source the grammar reads only after repair declares everything and notes nothing", () => {
+	test("valid source in unusual forms declares everything and notes nothing", () => {
 		const forms: Array<[string, string[]]> = [
+			['fun f() {\n    @Suppress("x") while (true) { }\n}\nval after = 1\n', ["f", "after"]],
+			["fun g(x: Any) = when (x) {\n    is Int -> if (x > 0) 1\n    // other\n    else -> 2\n}\n", ["g", "x"]],
+			["val pick = if (on) { v -> v } else null\nval sum = listOf(1\n    + 2)\n", ["pick", "v", "sum"]],
+			["val join = f.zip(g, String?::plus)\n", ["join"]],
+			["context(log: Log) fun h(y: Any) = when (y) { is Int if y > 0 -> 1; else -> 0 }\n", ["h", "y"]],
+			["class Repo\n    @Inject\n    constructor(val api: Api)\n", ["Repo", "Repo", "api"]],
+			[
+				"open class Base\nclass Child()\n    : Base()\nval xs: List <String> = emptyList()\n",
+				["Base", "Child", "Child", "xs"],
+			],
+			["fun outer() {\n    fun String.(x: Int) = x\n}\n", ["outer", "x"]],
+			[
+				"fun constructor(x: Int) = x\nfun caller() { constructor(1); init { } }\n",
+				["constructor", "x", "caller"],
+			],
 			["/**\n * Example:\n * /* nested sample */\n * Text after.\n */\nclass Box\n", ["Box"]],
 			[
 				`val pattern = Regex("""([a-z]+\\s*=\\s*"([^"]*)"""")\nval text = """outer ${D}{"""inner"""} C:\\path"""\n`,
@@ -394,13 +409,6 @@ describe("syntax diagnostics", () => {
 	test("text ending in an annotation with no newline parses rather than stalling the scanner", () => {
 		for (const text of ["class A\n@Target(X)", "val a = 1\n@T"])
 			expect(parseKotlin("Tail.kt", text).declarations.length).toBeGreaterThan(0);
-	});
-
-	test("a grammar gap in valid source only warns, naming the region, and keeps what parsed", () => {
-		const facts = parseKotlin("Gap.kt", 'fun f() {\n    @Suppress("x") while (true) { }\n}\nval after = 1\n');
-
-		expect(facts.diagnostics.map((item) => [item.severity, item.range?.start.line])).toEqual([["warning", 1]]);
-		expect(facts.declarations.map((item) => item.name)).toEqual(["f", "after"]);
 	});
 });
 

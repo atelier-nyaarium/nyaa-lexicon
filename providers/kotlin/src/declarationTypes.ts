@@ -26,6 +26,7 @@ export function typeDeclaration(walk: DeclarationWalk, node: SyntaxNode, scope: 
 	const languageParts = [
 		...modifiers.filter((modifier) => LANGUAGE_MODIFIERS.has(modifier)),
 		...(object ? [companion ? "companionObject" : "object"] : []),
+		...(interfaceKeyword !== undefined && childOfType(node, "fun") !== undefined ? ["fun"] : []),
 		...(interfaceKeyword !== undefined ? ["interface"] : []),
 	];
 	const body = node.children.find((child) => BODY_TYPES.has(child.type));

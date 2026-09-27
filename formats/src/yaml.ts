@@ -8,11 +8,14 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	isTooDeep,
 	type Literal,
+	NestingGauge,
+	saysTooDeep,
 	type TextCoordinates,
+	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
 import { CST, isMap, isNode, isPair, isScalar, isSeq, Lexer, Parser, parseAllDocuments, type Scalar } from "yaml";
-import { isTooDeep, NestingGauge, saysTooDeep, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
 import { LayoutRecorder } from "./layout.js";
 

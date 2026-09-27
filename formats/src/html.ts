@@ -5,13 +5,15 @@ import {
 	type Diagnostic,
 	type DocRegion,
 	defined,
+	isTooDeep,
 	type Literal,
+	NestingGauge,
 	type OffsetRange,
 	type Range,
 	type TextCoordinates,
+	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
 import { type DefaultTreeAdapterMap, defaultTreeAdapter, parse, type TreeAdapter } from "parse5";
-import { isTooDeep, NestingGauge, TOO_DEEP } from "./depth.js";
 import { droppedKey } from "./dropped.js";
 import { LayoutRecorder, trimmedSpan } from "./layout.js";
 import { startTagSignature } from "./startTag.js";

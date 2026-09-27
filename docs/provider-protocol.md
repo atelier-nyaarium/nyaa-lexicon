@@ -544,7 +544,8 @@ decides. Several candidates answer `ambiguous`, sorted.
    arguments and `by` delegates, never a member body. An arrowless lambda binds `it` and an accessor
    binds `field`; both answer unbound rather than reaching a package name.
 2. **Implicit receivers**, innermost first: the class's own members, its companion's, then each
-   supertype depth the index can resolve, across files and cycle-guarded. Past a nested (not
+   supertype depth the index can resolve, across files and cycle-guarded. A superclass's companion
+   members count; an interface's never do. Past a nested (not
    `inner`) class, an outer class offers only nested classifiers, enum entries and companion
    members. An extension function or property adds its receiver
    type's members. A receiver the index cannot resolve is skipped, not a stop.
@@ -558,7 +559,8 @@ decides. Several candidates answer `ambiguous`, sorted.
 An extension declaration is a candidate for a bare name only where an implicit receiver whose type
 has the extension's receiver name is in scope. Calling a local value or a property stops the walk as
 unbound instead of reaching a same-named function further out. A read prefers a value to a function
-of the same name.
+of the same name. A call prefers a function or class to an interface of the same name, which only a
+fun interface's SAM constructor calls.
 
 A name after a dot binds by what stands left of it:
 
