@@ -79,9 +79,16 @@ function fakeSupervisor(
 		lazyEvidence = true,
 		fallback = false,
 		plainHeaders = false,
-	}: { lazyEvidence?: boolean; fallback?: boolean; plainHeaders?: boolean } = {},
+		released,
+	}: {
+		lazyEvidence?: boolean;
+		fallback?: boolean;
+		plainHeaders?: boolean;
+		released?: Array<{ module: string; providerId: string }>;
+	} = {},
 ): ProviderPort {
 	return sharedFake({
+		...(released === undefined ? {} : { released }),
 		claims: [
 			claims,
 			dataClaims,
@@ -497,9 +504,10 @@ describe("a shared extension claim", () => {
 		await initGit();
 		put("e.fakeh", "export class Header {}\n");
 		const parses: Array<{ module: string }> = [];
+		const released: Array<{ module: string; providerId: string }> = [];
 		service = new LexiconService(
 			store,
-			fakeSupervisor(["e.fakeh"], parses, { plainHeaders: true }),
+			fakeSupervisor(["e.fakeh"], parses, { plainHeaders: true, released }),
 			sourceReader(root),
 			root,
 		);
@@ -517,7 +525,17 @@ describe("a shared extension claim", () => {
 			shared,
 			back: store.writerOf("e.fakeh"),
 			headerParses: parses.filter((parse) => parse.module === "e.fakeh").length,
-		}).toEqual({ plain: "fakeplain", shared: "fakeheader", back: "fakeplain", headerParses: 3 });
+			released,
+		}).toEqual({
+			plain: "fakeplain",
+			shared: "fakeheader",
+			back: "fakeplain",
+			headerParses: 3,
+			released: [
+				{ module: "e.fakeh", providerId: "fakeplain" },
+				{ module: "e.fakeh", providerId: "fakeheader" },
+			],
+		});
 		expect(service.findByName("Header")).toHaveLength(1);
 	});
 });

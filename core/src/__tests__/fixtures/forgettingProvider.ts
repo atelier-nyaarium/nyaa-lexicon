@@ -1,5 +1,5 @@
-// A provider that remembers each module it is told to forget, and says so through `bind`, so the
-// supervisor's notification can be tested live.
+// A provider that remembers each module it is told to forget or release, and says so through
+// `bind`, so the supervisor's notifications can be tested live.
 
 import {
 	notImplementedImport,
@@ -52,6 +52,9 @@ const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 	shutdown: () => ({}),
 	forgetModule: ({ module }) => {
 		forgotten.push(module);
+	},
+	releaseModule: ({ module }) => {
+		forgotten.push(`released ${module}`);
 	},
 };
 

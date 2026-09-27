@@ -31,10 +31,11 @@ shutdown()
 `blankLines`, each container's `memberInsertLine`, and each comment's `codeBefore` and `codeAfter`.
 `docs/parsing.md` defines each.
 
-Two notifications travel the other way without an answer:
+Three notifications travel the other way without an answer:
 
 ```
 forgetModule(module)         the index no longer holds this module
+releaseModule(module)        another provider owns this module now
 moduleAdmission(module, contentHash, outcome)
                              what the index did with the parse you just answered
 ```
@@ -43,6 +44,11 @@ The core sends `forgetModule` to every running provider when it removes a module
 the file is deleted, exceeds the size limit, becomes binary, or leaves scope. The notification
 follows earlier requests on the provider queue. A store-backed provider withholds the module until
 a parse is admitted. A provider without a store has no handler for it and ignores it.
+
+The core sends `releaseModule` to a module's former owner only, when a shared claim moves the module
+to another provider. A header claimed by C moves to C++ once a C++ source appears beside it. The
+former owner still reads the module as a dependency, so a store-backed provider drops what the index
+admitted and fills it from disk.
 
 ## What the index admitted
 
@@ -87,6 +93,7 @@ lookups use `store.get(key)`, not provider-owned maps.
   handlers. The kit removes each layer before the next request runs, even if the daemon timed out
   while waiting.
 - `forgetModule` hides a module. Fills cannot restore it until a parse is admitted.
+- `releaseModule` drops a module's admitted and staged values. The next read fills it from disk.
 - A fill reads a module with `readWorkspaceFile` at outline depth. The reader applies the core's
   containment, size and binary checks. Missing, binary, oversized, lossy files, files whose real path
   leaves the workspace, and parses with error diagnostics are skipped until rediscovery. Unreadable files remain owed and retry on later

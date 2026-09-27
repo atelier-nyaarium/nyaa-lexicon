@@ -353,6 +353,27 @@ describe("the module store's verdicts", () => {
 		});
 	});
 
+	it("reads a released module from disk and ignores a verdict staged before the release", () => {
+		const root = workspace({ "a.toy": "x" });
+		const store = moduleStore<Toy, null, string>({ read, entries });
+		const handlers = toy(store, root);
+		handlers.parseFile({ module: "a.toy", contentHash: "h1", text: "y" });
+		handlers.moduleAdmission?.({ module: "a.toy", contentHash: "h1", outcome: { status: "admitted" } });
+		const admitted = store.load("a.toy")?.text;
+		handlers.parseFile({ module: "a.toy", contentHash: "h2", text: "w" });
+		writeFileSync(path.join(root, "a.toy"), "z");
+		handlers.releaseModule?.({ module: "a.toy" });
+		handlers.moduleAdmission?.({ module: "a.toy", contentHash: "h2", outcome: { status: "admitted" } });
+
+		expect({
+			admitted,
+			released: store.load("a.toy")?.text,
+			withheld: store.withheld("a.toy"),
+			y: store.get("name:y"),
+			z: store.get("name:z"),
+		}).toEqual({ admitted: "y", released: "z", withheld: false, y: [], z: ["a.toy"] });
+	});
+
 	it("marks refused bytes even when their read threw, so no fill takes them", () => {
 		const shallowOnly = (module: string, text: string, depth: IndexDepth): Toy => {
 			if (text === "deep" && depth === "full") throw new Error("deep");

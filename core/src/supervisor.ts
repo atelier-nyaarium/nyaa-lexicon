@@ -505,6 +505,17 @@ export class ProviderSupervisor implements ProviderPort {
 		}
 	}
 
+	/** Queued behind that provider's work, so a parse it already answered lands first. */
+	release(module: string, providerId: string): void {
+		const provider = this.providers.get(providerId);
+		if (provider === undefined) return;
+		const params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseModule"]> = { module };
+		provider.queue
+			.run(() => provider.connection.sendNotification("releaseModule" satisfies ProviderNotification, params))
+			// A dead provider held nothing to release.
+			.catch(() => {});
+	}
+
 	/** Which process answers for this provider now; null when none does. */
 	incarnationOf(providerId: string): number | null {
 		return this.providers.get(providerId)?.incarnation ?? null;

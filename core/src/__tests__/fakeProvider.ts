@@ -46,6 +46,8 @@ export interface FakeOptions {
 	lazyEvidence?: boolean;
 	/** Each module the index told providers to forget. */
 	forgotten?: string[];
+	/** Each module the index told its former owner to release. */
+	released?: Array<{ module: string; providerId: string }>;
 	/** Each verdict DELIVERED, with the provider it named, in order. */
 	admissions?: Array<{ providerId: string; verdict: ModuleAdmission }>;
 	/** Which spawn answers now. A test advances it to restart a provider under the same id. */
@@ -208,6 +210,9 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		},
 		forget: (module) => {
 			options.forgotten?.push(module);
+		},
+		release: (module, providerId) => {
+			options.released?.push({ module, providerId });
 		},
 		incarnationOf: () => incarnation.current,
 		admission: (providerId, given, verdict) => {

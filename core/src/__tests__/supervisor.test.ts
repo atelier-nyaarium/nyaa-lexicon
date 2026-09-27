@@ -223,6 +223,8 @@ describe("forgetting a module", () => {
 
 		supervisor.forget("src/gone.forget");
 		supervisor.forget("src/moved.ref");
+		supervisor.release("src/owned.forget", "forgetting-provider");
+		supervisor.release("src/other.forget", "reference-provider");
 		const told = await supervisor.askProvider("forgetting-provider", "bind", {
 			module: "src/a.forget",
 			name: "x",
@@ -230,7 +232,9 @@ describe("forgetting a module", () => {
 		});
 		const reference = await supervisor.ask("a.ref", "parseFile", { module: "a.ref", contentHash: "h", text: "" });
 
-		expect(told).toMatchObject({ detail: "forgotten: src/gone.forget,src/moved.ref" });
+		expect(told).toMatchObject({
+			detail: "forgotten: src/gone.forget,src/moved.ref,released src/owned.forget",
+		});
 		expect(reference.module).toBe("a.ref");
 	}, 30_000);
 });

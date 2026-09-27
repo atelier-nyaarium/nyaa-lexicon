@@ -857,7 +857,10 @@ export class WorkspaceIndexer {
 		return roots;
 	}
 
-	/** Drop rows owned by a different provider. */
+	/**
+	 * Drop rows owned by a different provider, and tell the one that wrote them, which would
+	 * otherwise keep answering from a copy only the new owner is sent.
+	 */
 	private dropMovedOwners(): void {
 		let dropped = false;
 		for (const [module, writer] of this.store.writers()) {
@@ -865,6 +868,7 @@ export class WorkspaceIndexer {
 			if (!route.owned || route.providerId === writer) continue;
 			// Keep dependency reads available.
 			dropped = this.store.forgetFile(module) || dropped;
+			this.supervisor.release(module, writer);
 		}
 		if (dropped) this.caches.facts.invalidate();
 	}

@@ -166,6 +166,15 @@ export const ForgetModuleNotificationSchema = z
 	.meta({ id: "ForgetModuleNotification" });
 
 /**
+ * Another provider owns this module now, as a shared claim moves when the workspace gains a file
+ * of another language. The provider drops what the index admitted from it and reads the file from
+ * disk like any dependency, so it never serves a copy nobody updates.
+ */
+export const ReleaseModuleNotificationSchema = z
+	.object({ module: z.string().min(1) })
+	.meta({ id: "ReleaseModuleNotification" });
+
+/**
  * What the index did with a parse, after it decided, never before.
  *
  * Distinct from `forgetModule`, which says the index holds nothing. A refusal says the index kept
@@ -236,12 +245,13 @@ export const METHOD_SCHEMAS = {
  * Told, never asked: no answer, so an older provider that ignores one keeps working. A provider
  * holding workspace state beyond one parse handles them; any other ignores them.
  */
-export const PROVIDER_NOTIFICATIONS = ["forgetModule", "moduleAdmission"] as const;
+export const PROVIDER_NOTIFICATIONS = ["forgetModule", "releaseModule", "moduleAdmission"] as const;
 
 export type ProviderNotification = (typeof PROVIDER_NOTIFICATIONS)[number];
 
 export const NOTIFICATION_SCHEMAS = {
 	forgetModule: ForgetModuleNotificationSchema,
+	releaseModule: ReleaseModuleNotificationSchema,
 	moduleAdmission: ModuleAdmissionNotificationSchema,
 } as const satisfies Record<ProviderNotification, z.ZodType>;
 

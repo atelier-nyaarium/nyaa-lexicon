@@ -328,6 +328,16 @@ class Kit<V extends ModuleValue, P, E> {
 		this.owed.delete(module);
 	}
 
+	/** Another provider owns it now: nothing admitted stays, and a read fills it fresh from disk. */
+	release(module: string): void {
+		const slot = this.slot(module);
+		this.change(module, () => {
+			slot.base = UNKNOWN;
+			slot.chain = [];
+		});
+		if (this.discovered.has(module)) this.owed.add(module);
+	}
+
 	/** Candidate view; removed when the callback settles. */
 	transient<R>(module: string, text: string, depth: IndexDepth, run: (value: V) => Maybe<R>): Maybe<R> {
 		if (this.transientOpen) throw new Error("a transient layer is already open");
@@ -705,6 +715,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			ready(() => kit.transient(params.module, params.text, "full", () => provider.moveEdits(params))),
 		moduleAdmission: (verdict: ModuleAdmission) => kit.settle(verdict),
 		forgetModule: (params: { module: string }) => kit.forget(params.module),
+		releaseModule: (params: { module: string }) => kit.release(params.module),
 		shutdown: () => {
 			provider.shutdown?.();
 			kit.reset(kit.root);

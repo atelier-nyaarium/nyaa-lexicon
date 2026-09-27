@@ -35,6 +35,8 @@ export interface ProviderPort {
 	askProvider<K extends ProviderMethod>(providerId: string, method: K, params: unknown): Promise<MethodResponse<K>>;
 	/** Tells every provider a module is gone. Not awaited. */
 	forget(module: string): void;
+	/** Tells a module's former owner that another provider owns it now. Not awaited. */
+	release(module: string, providerId: string): void;
 	/** Which process answers for this provider now; null when none does. */
 	incarnationOf(providerId: string): number | null;
 	/**

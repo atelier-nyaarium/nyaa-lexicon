@@ -82,6 +82,7 @@ export type Compatibility =
 // reads as the daemon's own major. A committed step takes a client's `stepId`, and
 // `refactorStepOutcome` and `refactorStepCancel` answer what became of it. An older daemon strips the id.
 // Provider `initialize` carries the scope's `deny` globs, which the provider never reads.
+// The `releaseModule` provider notification, which an older provider ignores.
 export const PROTOCOL_VERSION = "3.20.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
