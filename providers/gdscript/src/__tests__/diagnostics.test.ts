@@ -49,6 +49,14 @@ test.each([
 	]);
 });
 
+test("reports an escape Godot refuses, at its backslash, and not in a raw string", () => {
+	const found = diagnostics('var value = "a\\eb" + r"\\e"\n');
+
+	expect(found.map((diagnostic) => [diagnostic.severity, diagnostic.range?.start])).toEqual([
+		["error", { line: 0, character: 14 }],
+	]);
+});
+
 test("reports a dedent to an indentation level that was not opened", () => {
 	const text = "func run():\n    if ready:\n        pass\n  return\n";
 

@@ -28,11 +28,28 @@ function returnTypes(text: string, declaration: Declaration | undefined): string
 //  Headers and bodies
 
 test("a one-line function ends on its line, and the lines after it are not its body", () => {
-	const text = lines("func a() -> int: return 1 if ready else 2", "var b = c", "func d():", "\tpass");
+	const text = lines(
+		"func a() -> int: return 1 if ready else 2",
+		"var b = c",
+		"func d():",
+		"\tpass",
+		"class Inner:",
+		"\tfunc e(): return 1",
+		"\t# still Inner's",
+		"\tfunc f(): pass;",
+		"func g(): if ready: pass",
+	);
 	const found = declared(text);
 	const scope = extractFile(MODULE, text).references.find((reference) => reference.name === "c")?.fromId;
 
-	expect([span(found("a")), span(found("d"))]).toEqual(["0-0", "2-3"]);
+	expect(["a", "d", "Inner", "e", "f", "g"].map((name) => span(found(name)))).toEqual([
+		"0-0",
+		"2-3",
+		"4-7",
+		"5-5",
+		"7-7",
+		"8-8",
+	]);
 	expect(found("a")?.metrics).toEqual({ lines: 1, parameters: 0, nesting: 0, branches: 2 });
 	expect(scope).toBe(found("spans")?.symbolId);
 });

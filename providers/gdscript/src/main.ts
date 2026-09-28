@@ -21,6 +21,7 @@ import { createGDScriptStore, type GDScriptProject, type GDScriptValue } from ".
 import { makeMoveEdits } from "./move.js";
 import { discoverGDScriptProject } from "./project.js";
 import { renameGdscript } from "./rename.js";
+import { scriptRole } from "./role.js";
 import { GDScriptTypeIndex } from "./types.js";
 
 //////// Constants
@@ -37,6 +38,7 @@ export const TIERS = {
 	docs: false,
 	metrics: true,
 	syntaxDiagnostics: true,
+	fileRoles: true,
 } as const;
 
 /** GDScript 2.0 (Godot 4) keywords. Builtins are core types and the global math constants. */
@@ -153,7 +155,7 @@ export class GDScriptProvider {
 	}
 
 	discoverProject(workspaceRoot: string, _previous: GDScriptProject | undefined) {
-		return discoverGDScriptProject(workspaceRoot);
+		return discoverGDScriptProject(workspaceRoot, this.store.policy);
 	}
 
 	parseFile(
@@ -180,6 +182,7 @@ export class GDScriptProvider {
 			comments: value.comments,
 			...defined({ blankLines: value.blankLines }),
 			diagnostics: value.diagnostics,
+			role: scriptRole(params.module, value, this.store.project),
 			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}

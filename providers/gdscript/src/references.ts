@@ -1,21 +1,19 @@
 // Owns GDScript reference extraction.
 
-import { comparePositions, coordinatesOf, type Reference } from "@nyaa-lexicon/protocol";
-import { blocksOf, bodyEndLine } from "./blocks.js";
-import { extractGdscript, isAccessorHead } from "./declarations.js";
-import type { ComposeSymbolId, DeclarationFact, ReferenceBlock, ReferenceToken, SourceLine } from "./parse-model.js";
-import { extendsPaths, isLoaderCall, loaderCalls, type PathLiteral } from "./path-syntax.js";
-import { scanSource } from "./source-scan.js";
+import { comparePositions, type Reference } from "@nyaa-lexicon/protocol";
+import { type Blocks, bodyEndLine } from "./blocks.js";
+import { isAccessorHead } from "./declarations.js";
+import type { DeclarationFact, ReferenceBlock, ReferenceToken, SourceLine } from "./parse-model.js";
+import { extendsPaths, isLoaderCall, loaderCalls, nodePathNames, type PathLiteral } from "./path-syntax.js";
+import type { ParsedScript } from "./script.js";
 import {
 	isIgnorable,
 	type LexedSource,
-	lexSource,
 	matchingReferenceToken,
 	nextReferenceToken,
 	referenceAssignmentOperators,
 	referenceCallKeywords,
 	referenceKeywords,
-	referenceTokens,
 	tokenRange,
 } from "./tokens.js";
 
@@ -86,8 +84,7 @@ function addReferenceParameters(
 	addSegment(segmentStart, end);
 }
 
-export function extractGdscriptParameterNames(text: string): Set<string> {
-	const tokens = referenceTokens(scanSource(text));
+export function parameterNamesOf(tokens: ReferenceToken[]): Set<string> {
 	const parameterPositions = new Set<string>();
 	for (let index = 0; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
@@ -107,24 +104,24 @@ export function extractGdscriptParameterNames(text: string): Set<string> {
 	);
 }
 
-function referenceBlocks(lexed: LexedSource, declarations: DeclarationFact[]): ReferenceBlock[] {
+function referenceBlocks(lexed: LexedSource, bodies: Blocks, declarations: DeclarationFact[]): ReferenceBlock[] {
 	const lines = lexed.lines;
-	const bodies = blocksOf(lexed);
 	const blocks: ReferenceBlock[] = [];
 	for (const declaration of declarations.slice(1)) {
+		// Accessors or a lambda's block.
 		if (declaration.kind === "property" && declaration.range.end.line > declaration.range.start.line) {
-			let accessorLine = declaration.range.start.line + 1;
-			while (accessorLine < lines.length && isIgnorable(lexed, accessorLine)) accessorLine++;
-			const accessor = lines[accessorLine] as SourceLine | undefined;
-			if (accessor !== undefined && isAccessorHead(lexed, accessorLine)) {
-				blocks.push({
-					startLine: accessorLine,
-					endLine: declaration.range.end.line,
-					indent: accessor.indent,
-					containerId: declaration.symbolId,
-					functionId: declaration.symbolId,
-				});
-			}
+			let bodyLine = declaration.range.start.line + 1;
+			while (bodyLine < lines.length && isIgnorable(lexed, bodyLine)) bodyLine++;
+			const body = lines[bodyLine] as SourceLine | undefined;
+			if (body === undefined) continue;
+			// A lambda's parameters sit on the header line.
+			blocks.push({
+				startLine: isAccessorHead(lexed, bodyLine) ? bodyLine : declaration.range.start.line,
+				endLine: declaration.range.end.line,
+				indent: body.indent,
+				containerId: declaration.symbolId,
+				functionId: declaration.symbolId,
+			});
 			continue;
 		}
 		if (declaration.kind !== "method" && declaration.languageKind !== "innerClass") continue;
@@ -190,7 +187,8 @@ function referenceIsQualified(tokens: ReferenceToken[], index: number): boolean 
 	return tokens[index - 1]?.value === ".";
 }
 
-function referenceIsAccessorHead(tokens: ReferenceToken[], index: number): boolean {
+/** Its parentheses, then a colon. */
+function opensParameterBlock(tokens: ReferenceToken[], index: number): boolean {
 	const open = nextReferenceToken(tokens, index);
 	if (open < 0 || (tokens[open] as ReferenceToken).value !== "(") return false;
 	const close = matchingReferenceToken(tokens, open, "(", ")");
@@ -198,9 +196,50 @@ function referenceIsAccessorHead(tokens: ReferenceToken[], index: number): boole
 	return after >= 0 && (tokens[after] as ReferenceToken).value === ":";
 }
 
-function extractGdscriptReferences(module: string, text: string, compose: ComposeSymbolId): Reference[] {
-	const lexed = lexSource(text);
-	const declarations = extractGdscript(module, text, compose);
+/** Lines a property's header and accessors span. */
+function accessorLinesOf(declarations: readonly DeclarationFact[]): Set<number> {
+	const lines = new Set<number>();
+	for (const declaration of declarations) {
+		if (declaration.kind !== "property") continue;
+		for (let line = declaration.range.start.line; line <= declaration.range.end.line; line++) lines.add(line);
+	}
+	return lines;
+}
+
+/** `get:`, `set(value):` or `get = fn`, leading a property's accessor. */
+function isAccessorKeyword(tokens: ReferenceToken[], index: number, accessorLines: Set<number>): boolean {
+	const token = tokens[index] as ReferenceToken;
+	if ((token.value !== "get" && token.value !== "set") || !accessorLines.has(token.line)) return false;
+	const previous = tokens[index - 1];
+	if (previous !== undefined && previous.kind !== "newline" && previous.value !== "," && previous.value !== ":")
+		return false;
+	const next = tokens[nextReferenceToken(tokens, index)]?.value;
+	return next === ":" || next === "=" || opensParameterBlock(tokens, index);
+}
+
+/** A cast or test's type, `not` skipped: `Name`, `A.B` or `Array[T]`. */
+function addCastType(tokens: ReferenceToken[], keyword: number, typePositions: Set<string>): void {
+	const mark = (index: number): void => {
+		const token = tokens[index] as ReferenceToken;
+		typePositions.add(`${token.line}:${token.character}`);
+	};
+	let at = nextReferenceToken(tokens, keyword);
+	if (tokens[at]?.value === "not") at = nextReferenceToken(tokens, at);
+	if (tokens[at]?.kind !== "identifier") return;
+	mark(at);
+	for (let dot = nextReferenceToken(tokens, at); tokens[dot]?.value === "."; dot = nextReferenceToken(tokens, at)) {
+		if (tokens[dot + 1]?.kind !== "identifier") return;
+		at = dot + 1;
+		mark(at);
+	}
+	const open = nextReferenceToken(tokens, at);
+	if (tokens[open]?.value !== "[") return;
+	const close = matchingReferenceToken(tokens, open, "[", "]");
+	for (let index = open + 1; index < close; index++) if (tokens[index]?.kind === "identifier") mark(index);
+}
+
+function extractGdscriptReferences(script: ParsedScript): Reference[] {
+	const { lexed, declarations } = script;
 	const tokens = lexed.tokens;
 	// Every declaration this provider extracts has its name in the source.
 	const declarationPositions = new Set(
@@ -213,6 +252,8 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 	const parameterPositions = new Set<string>();
 	const typePositions = new Set<string>();
 	const heritagePositions = new Set<string>();
+	const accessorLines = accessorLinesOf(declarations);
+	const nodePaths = nodePathNames(tokens);
 	for (let index = 0; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
 		if (token.value === "->") {
@@ -220,11 +261,8 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 			continue;
 		}
 		if (token.kind !== "identifier") continue;
-		if (
-			token.value === "func" ||
-			token.value === "signal" ||
-			((token.value === "get" || token.value === "set") && referenceIsAccessorHead(tokens, index))
-		) {
+		const accessor = isAccessorKeyword(tokens, index, accessorLines);
+		if (token.value === "func" || token.value === "signal" || (accessor && opensParameterBlock(tokens, index))) {
 			let open = nextReferenceToken(tokens, index);
 			while (open >= 0 && (tokens[open] as ReferenceToken).value !== "(") open = nextReferenceToken(tokens, open);
 			if (open >= 0 && (tokens[open] as ReferenceToken).value === "(") {
@@ -232,9 +270,7 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 				if (close >= 0) addReferenceParameters(tokens, open + 1, close, parameterPositions);
 			}
 		}
-		if (token.value === "as" || token.value === "is") {
-			addReferenceTypeExpression(tokens, index + 1, new Set([",", ")", "]", "=", ":", "in"]), typePositions);
-		}
+		if (token.value === "as" || token.value === "is") addCastType(tokens, index, typePositions);
 		if (token.value === "extends") {
 			addReferenceTypeExpression(tokens, index + 1, new Set([":"]), typePositions, heritagePositions);
 		}
@@ -253,7 +289,7 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 		}
 	}
 
-	const blocks = referenceBlocks(lexed, declarations);
+	const blocks = referenceBlocks(lexed, script.blocks, declarations);
 	const rootId = (declarations[0] as DeclarationFact).symbolId;
 	const localNames = new Map<string, Set<string>>();
 	for (const declaration of declarations) {
@@ -287,7 +323,7 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 		});
 	};
 	for (const literal of extendsPaths(tokens)) addPathReference(literal, "extends");
-	for (const call of loaderCalls(tokens, coordinatesOf(text), declarations)) {
+	for (const call of loaderCalls(tokens, script.coordinates, declarations)) {
 		if (call.literal === undefined) continue;
 		literalLoaderPositions.add(`${call.range.start.line}:${call.range.start.character}`);
 		addPathReference(call.literal, "import");
@@ -307,7 +343,8 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 	};
 	for (let index = 0; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
-		if (token.kind !== "identifier") continue;
+		// A lone `_` is Godot's wildcard, not a name.
+		if (token.kind !== "identifier" || token.value === "_" || nodePaths.has(index)) continue;
 		const tokenKey = `${token.line}:${token.character}`;
 		const next = nextReferenceToken(tokens, index);
 		const nextValue = next < 0 ? "" : (tokens[next] as ReferenceToken).value;
@@ -348,26 +385,14 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 		}
 		if (declarationPositions.has(tokenKey) || parameterPositions.has(tokenKey)) continue;
 		if (referenceKeywords.has(token.value) || previous?.value === "@") continue;
-		if ((token.value === "get" || token.value === "set") && referenceIsAccessorHead(tokens, index)) continue;
-		const increment = nextValue === "++" || previous?.value === "++";
-		if (increment) {
-			addReference(index, "read");
-			addReference(index, "write");
-			continue;
-		}
+		if (isAccessorKeyword(tokens, index, accessorLines)) continue;
 		if (referenceAssignmentOperators.has(nextValue) && !referenceIsNamedArgument(tokens, index)) {
 			if (nextValue !== "=" && nextValue !== ":=") addReference(index, "read");
 			addReference(index, "write");
 			continue;
 		}
 		if (nextValue === "(") {
-			if (
-				!referenceCallKeywords.has(token.value) &&
-				token.value !== "new" &&
-				!referenceIsAccessorHead(tokens, index)
-			) {
-				addReference(index, "call");
-			}
+			if (!referenceCallKeywords.has(token.value) && token.value !== "new") addReference(index, "call");
 			continue;
 		}
 		addReference(index, "read");
@@ -375,6 +400,6 @@ function extractGdscriptReferences(module: string, text: string, compose: Compos
 	return [...references, ...pathReferences];
 }
 
-export function extractReferencesCore(module: string, text: string, compose: ComposeSymbolId): Reference[] {
-	return module.endsWith(".gd") ? extractGdscriptReferences(module, text, compose) : [];
+export function referencesOf(script: ParsedScript): Reference[] {
+	return script.module.endsWith(".gd") ? extractGdscriptReferences(script) : [];
 }

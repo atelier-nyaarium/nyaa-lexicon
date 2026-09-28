@@ -15,6 +15,14 @@ export interface ProjectModelFact {
 	configFiles: string[];
 	diagnostics: Diagnostic[];
 	projectDirectories: string[];
+	/** Scenes and `.uid` sidecars, which a `uid://` path may name. */
+	resources: string[];
+}
+
+interface Found {
+	files: string[];
+	projectDirectories: string[];
+	resources: string[];
 }
 
 type NormalizeModulePath = (raw: string) => string;
@@ -25,38 +33,35 @@ const IGNORED_DIRECTORIES = new Set([".git", ".godot"]);
 
 //////// Functions
 
-function filesUnder(
-	root: string,
-	directory: string,
-	files: string[],
-	projectDirectories: string[],
-	normalize: NormalizeModulePath,
-): void {
+function filesUnder(root: string, directory: string, found: Found, normalize: NormalizeModulePath): void {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (entry.isDirectory() && !IGNORED_DIRECTORIES.has(entry.name)) {
-			filesUnder(root, path.join(directory, entry.name), files, projectDirectories, normalize);
+			filesUnder(root, path.join(directory, entry.name), found, normalize);
 			continue;
 		}
 		if (!entry.isFile()) continue;
 		if (entry.name === "project.godot") {
 			const relative = path.relative(root, directory);
-			projectDirectories.push(relative === "" ? "" : relative.split(path.sep).join("/"));
+			found.projectDirectories.push(relative === "" ? "" : relative.split(path.sep).join("/"));
 		}
-		if (!entry.name.endsWith(".gd")) continue;
 		const relative = path.relative(root, path.join(directory, entry.name));
-		files.push(normalize(relative));
+		if (entry.name.endsWith(".gd")) found.files.push(normalize(relative));
+		else if (entry.name.endsWith(".uid") || entry.name.endsWith(".tscn"))
+			found.resources.push(relative.split(path.sep).join("/"));
 	}
 }
 
 export function discoverProjectCore(workspaceRoot: string, normalize: NormalizeModulePath): ProjectModelFact {
 	const root = path.resolve(workspaceRoot);
-	const files: string[] = [];
-	const projectDirectories: string[] = [];
-	filesUnder(root, root, files, projectDirectories, normalize);
+	const found: Found = { files: [], projectDirectories: [], resources: [] };
+	filesUnder(root, root, found, normalize);
+	const { files, projectDirectories, resources } = found;
 	files.sort();
 	projectDirectories.sort();
+	resources.sort();
 
 	return {
+		resources,
 		files,
 		externalRoots: [],
 		configFiles: projectDirectories.includes("") ? ["project.godot"] : [],

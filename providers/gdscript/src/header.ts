@@ -10,7 +10,6 @@ import {
 	nextReferenceToken,
 	previousReferenceToken,
 	tokenAt,
-	tokenRange,
 } from "./tokens.js";
 
 //////// Types
@@ -68,7 +67,7 @@ function isContinuation(token: ReferenceToken | undefined): boolean {
 export class HeaderReader {
 	private readonly lines: readonly SourceLine[];
 	private readonly tokens: ReferenceToken[];
-	private readonly starts: number[] = [];
+	private readonly starts: number[];
 	private readonly comments = new Map<number, OffsetRange>();
 	/** In source order, prefixes included. */
 	private readonly strings: OffsetRange[];
@@ -79,12 +78,8 @@ export class HeaderReader {
 	) {
 		this.lines = lexed.lines;
 		this.tokens = lexed.tokens;
-		let offset = 0;
-		for (const line of this.lines) {
-			this.starts.push(offset);
-			offset += line.text.length + 1;
-		}
-		for (const comment of lexed.scanned.comments) {
+		this.starts = this.lines.map((line) => line.start);
+		for (const comment of lexed.comments) {
 			const start = this.starts[comment.range.start.line];
 			if (start === undefined) continue;
 			this.comments.set(comment.range.start.line, {
@@ -92,7 +87,7 @@ export class HeaderReader {
 				end: start + comment.range.end.character,
 			});
 		}
-		this.strings = lexed.scanned.strings.map((string) => ({
+		this.strings = lexed.strings.map((string) => ({
 			start: (this.starts[string.start.line] ?? 0) + string.start.character,
 			end: (this.starts[string.end.line] ?? 0) + string.end.character,
 		}));
@@ -297,13 +292,13 @@ export class HeaderReader {
 	}
 
 	private offset(token: ReferenceToken): number {
-		return (this.starts[token.line] ?? 0) + token.character;
+		return token.offset;
 	}
 
 	/** Offset past the token at `index`. */
 	private end(index: number): number {
-		const { end } = tokenRange(this.tokens[index] as ReferenceToken);
-		return (this.starts[end.line] ?? 0) + end.character;
+		const token = this.tokens[index] as ReferenceToken;
+		return token.offset + token.value.length;
 	}
 
 	private lineAt(offset: number): number {

@@ -170,9 +170,10 @@ test("rediscovery indexes class names and autoloads by the nearest project scope
 
 	const model = handlers.discoverProject({ workspaceRoot: root });
 	expect(model.configFiles).toEqual(["nested/project.godot", "project.godot"]);
+	// Only a starred autoload is a singleton; both run.
 	expect(provider.store.project.scopes).toEqual([
-		{ directory: "", autoloads: { RootGlobal: "src/cart.gd" } },
-		{ directory: "nested", autoloads: { NestedGlobal: "nested/state.gd" } },
+		{ directory: "", autoloads: { RootGlobal: "src/cart.gd" }, entries: ["src/cart.gd"] },
+		{ directory: "nested", autoloads: {}, entries: ["nested/state.gd"] },
 	]);
 	expect(provider.store.get("scoped:\0Common").map((declaration) => moduleOf(declaration.symbolId))).toEqual([
 		"common.gd",

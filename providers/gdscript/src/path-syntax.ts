@@ -46,12 +46,14 @@ export interface LoaderCall {
 function pathLiteral(token: ReferenceToken | undefined, prefixes: readonly StringPrefix[]): PathLiteral | undefined {
 	const span = token?.string;
 	if (token === undefined || span === undefined || span.triple || !prefixes.includes(span.prefix)) return undefined;
-	if (span.start.line !== span.end.line) return undefined;
-	const path = token.value.slice(span.prefix.length + 1, -1);
-	if (path === "") return undefined;
-	const start = span.start.character + span.prefix.length + 1;
+	if (span.start.line !== span.end.line || span.value === "") return undefined;
+	// The content between the quotes.
 	const line = span.start.line;
-	return { path, range: { start: { line, character: start }, end: { line, character: start + path.length } }, token };
+	const range = {
+		start: { line, character: span.start.character + span.prefix.length + 1 },
+		end: { line, character: span.end.character - 1 },
+	};
+	return { path: span.value, range, token };
 }
 
 /** Not a member or declaration. */
@@ -81,6 +83,37 @@ function literalArgument(tokens: ReferenceToken[], open: number): PathLiteral | 
 }
 
 //////// Path syntax
+
+/** Words after which `%` starts an operand. */
+const OPERAND_WORDS = new Set(["and", "or", "not", "in", "if", "elif", "else", "while", "return", "await", "when"]);
+
+/** Where a prefix `%` stands: after an operator, an opener, a line break or an operand word. */
+function startsOperand(tokens: ReferenceToken[], index: number): boolean {
+	const previous = tokens[index - 1];
+	if (previous === undefined || previous.kind === "newline") return true;
+	if (previous.kind === "identifier") return OPERAND_WORDS.has(previous.value);
+	if (previous.kind !== "symbol") return false;
+	return previous.value !== ")" && previous.value !== "]" && previous.value !== "}";
+}
+
+/** Token indices of the names in `$A/B` and `%Unique` node paths, which are not identifiers. */
+export function nodePathNames(tokens: ReferenceToken[]): Set<number> {
+	const names = new Set<number>();
+	for (let index = 0; index < tokens.length; index++) {
+		const value = (tokens[index] as ReferenceToken).value;
+		if (value !== "$" && !(value === "%" && startsOperand(tokens, index))) continue;
+		let at = index + 1;
+		if (value === "$" && tokens[at]?.value === "%") at++;
+		while (tokens[at]?.kind === "identifier") {
+			names.add(at);
+			if (tokens[at + 1]?.value !== "/") break;
+			at += 2;
+			if (tokens[at]?.value === "%") at++;
+		}
+		index = Math.max(index, at - 1);
+	}
+	return names;
+}
 
 export function extendsPaths(tokens: ReferenceToken[]): PathLiteral[] {
 	const paths: PathLiteral[] = [];

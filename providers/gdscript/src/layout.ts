@@ -1,32 +1,23 @@
 // Owns the layout facts core decides from: comment trivia, blank lines, and member insertion lines.
 
 import type { CommentSpan, TextCoordinates } from "@nyaa-lexicon/protocol";
+import { type Blocks, blockHeader, indentedBodyEnd } from "./blocks.js";
 import type { DeclarationFact, ReferenceToken } from "./parse-model.js";
-import { type ScannedSource, scanSource } from "./source-scan.js";
-import { matchingReferenceToken, nextReferenceToken, previousReferenceToken, referenceTokens } from "./tokens.js";
+import {
+	type LexedSource,
+	matchingReferenceToken,
+	nextReferenceToken,
+	previousReferenceToken,
+	tokenAt,
+} from "./tokens.js";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-/** One logical line: a newline inside brackets or after a backslash continues it. */
-interface Statement {
-	line: number;
-	/** Last token's last line. */
-	lastLine: number;
-	/** First token's column; Godot refuses mixed indentation, so columns compare. */
-	indent: number;
-}
 
 export interface Layout {
 	comments: CommentSpan[];
 	blankLines: number[];
 }
-
-////////////////////////////////
-//  Constants
-
-const OPENERS = new Set(["(", "[", "{"]);
-const CLOSERS = new Set([")", "]", "}"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -36,11 +27,7 @@ function lastLineOf(token: ReferenceToken): number {
 	return token.string?.end.line ?? token.line;
 }
 
-function isContinuation(token: ReferenceToken | undefined): boolean {
-	return token?.kind === "symbol" && token.value === "\\";
-}
-
-/** Comments are masked out of the tokens, so every token but a newline is code. */
+/** Comments are not tokens, so every token but a newline is code. */
 function codeTokens(tokens: readonly ReferenceToken[]): ReferenceToken[] {
 	return tokens.filter((token) => token.kind !== "newline");
 }
@@ -67,71 +54,20 @@ export function commentTrivia(comments: readonly CommentSpan[], tokens: readonly
 }
 
 /** Lines no token, string or comment touches. */
-export function blankLinesOf(scanned: ScannedSource, tokens: readonly ReferenceToken[]): number[] {
+export function blankLinesOf(lexed: LexedSource): number[] {
 	const touched = new Set<number>();
-	for (const token of codeTokens(tokens)) {
+	for (const token of codeTokens(lexed.tokens)) {
 		for (let line = token.line; line <= lastLineOf(token); line++) touched.add(line);
 	}
-	for (const comment of scanned.comments) touched.add(comment.range.start.line);
+	for (const comment of lexed.comments) touched.add(comment.range.start.line);
 	// An unterminated string yields no token.
-	for (const line of scanned.lines) if (line.hasString) touched.add(line.line);
-	return scanned.lines.filter((line) => !touched.has(line.line)).map((line) => line.line);
+	for (const line of lexed.lines) if (line.hasString) touched.add(line.line);
+	return lexed.lines.filter((line) => !touched.has(line.line)).map((line) => line.line);
 }
 
 /** GDScript has one comment form: `#` to end of line, and no block comment. */
-export function extractLayoutCore(text: string): Layout {
-	const scanned = scanSource(text);
-	const tokens = referenceTokens(scanned);
-	return { comments: commentTrivia(scanned.comments, tokens), blankLines: blankLinesOf(scanned, tokens) };
-}
-
-/** Logical lines, and each code token's statement index. */
-function statementsOf(tokens: readonly ReferenceToken[]): { statements: Statement[]; owner: Map<number, number> } {
-	const statements: Statement[] = [];
-	const owner = new Map<number, number>();
-	let depth = 0;
-	let open: Statement | null = null;
-	for (let index = 0; index < tokens.length; index++) {
-		const token = tokens[index] as ReferenceToken;
-		if (token.kind === "newline") {
-			if (open !== null && depth === 0 && !isContinuation(tokens[index - 1])) {
-				statements.push(open);
-				open = null;
-			}
-			continue;
-		}
-		if (OPENERS.has(token.value)) depth++;
-		else if (CLOSERS.has(token.value) && depth > 0) depth--;
-		if (open === null) open = { line: token.line, lastLine: lastLineOf(token), indent: token.character };
-		else open.lastLine = lastLineOf(token);
-		owner.set(index, statements.length);
-	}
-	if (open !== null) statements.push(open);
-	return { statements, owner };
-}
-
-/** An indented body's last line, or undefined when inline or empty. Indented comments before the dedent count. */
-function indentedBodyEnd(
-	statements: readonly Statement[],
-	header: number,
-	indent: number,
-	comments: readonly CommentSpan[],
-): number | undefined {
-	let last: number | undefined;
-	let next = header + 1;
-	while (next < statements.length && (statements[next] as Statement).indent > indent) {
-		last = (statements[next] as Statement).lastLine;
-		next++;
-	}
-	if (last === undefined) return undefined;
-	const dedent = statements[next]?.line;
-	for (const comment of comments) {
-		const line = comment.range.start.line;
-		if (comment.codeBefore !== false || line <= last) continue;
-		if (dedent !== undefined && line >= dedent) break;
-		if (comment.range.start.character > indent) last = line;
-	}
-	return last;
+export function layoutOf(lexed: LexedSource): Layout {
+	return { comments: commentTrivia(lexed.comments, lexed.tokens), blankLines: blankLinesOf(lexed) };
 }
 
 /** The closing brace's line when nothing precedes it there. */
@@ -152,29 +88,29 @@ function isRootClass(declaration: DeclarationFact): boolean {
 /** Containers with the line a member after their last one goes on, where one is safe. */
 export function withMemberInsertLines(
 	declarations: DeclarationFact[],
-	scanned: ScannedSource,
-	tokens: ReferenceToken[],
+	blocks: Blocks,
 	coordinates: TextCoordinates,
 ): DeclarationFact[] {
-	const { statements, owner } = statementsOf(tokens);
-	const comments = commentTrivia(scanned.comments, tokens);
-	const named = new Map<string, number>();
-	tokens.forEach((token, index) => {
-		if (token.kind === "identifier") named.set(`${token.line}:${token.character}`, index);
-	});
+	const { lexed, statements } = blocks;
 	// The line after a body, when the text has one.
 	const after = (last: number | undefined): number | undefined =>
 		last !== undefined && last + 1 < coordinates.lineCount() ? last + 1 : undefined;
+	// Undefined when statement `index` has no indented body.
+	const bodyEnd = (index: number, indent: number): number | undefined => {
+		const first = statements[index + 1];
+		if (first === undefined || first.indent <= indent) return undefined;
+		return indentedBodyEnd(blocks, index, indent, first.lastLine);
+	};
 	const insertLine = (declaration: DeclarationFact): number | undefined => {
-		if (isRootClass(declaration)) return after(indentedBodyEnd(statements, -1, -1, comments));
-		const { line, character } = declaration.selectionRange.start;
-		const name = named.get(`${line}:${character}`);
-		if (name === undefined) return undefined;
-		if (declaration.kind === "enum") return braceInsertLine(tokens, name);
+		if (isRootClass(declaration)) return after(bodyEnd(-1, -1));
+		if (declaration.kind === "enum") {
+			const { line, character } = declaration.selectionRange.start;
+			const name = tokenAt(lexed, line, character);
+			return name < 0 ? undefined : braceInsertLine(lexed.tokens, name);
+		}
 		if (declaration.languageKind !== "innerClass") return undefined;
-		const header = owner.get(name);
-		if (header === undefined) return undefined;
-		return after(indentedBodyEnd(statements, header, (statements[header] as Statement).indent, comments));
+		const header = blockHeader(blocks, declaration);
+		return header === undefined ? undefined : after(bodyEnd(header.index, header.statement.indent));
 	};
 	return declarations.map((declaration) => {
 		const memberInsertLine = insertLine(declaration);

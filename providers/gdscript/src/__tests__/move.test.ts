@@ -327,7 +327,7 @@ describe("move edits", () => {
 	it("blocks a dependency whose name the target registers as its class_name", () => {
 		const response = moveHelper(helperLoader, "class_name Helper\nextends Node\n");
 
-		expect(response).toMatchObject({ status: "ready", blocked: [{ reason: "NoImportPath" }] });
+		expect(response).toMatchObject({ status: "ready", blocked: [{ reason: "TargetCollision" }] });
 	});
 
 	it.each(["preload", "load"] as const)("copies an absolute %s dependency into the target", (loader) => {

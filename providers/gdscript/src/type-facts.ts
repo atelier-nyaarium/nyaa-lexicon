@@ -1,17 +1,9 @@
 // Owns GDScript type annotation facts and their source ranges.
 
-import {
-	comparePositions,
-	coordinatesOf,
-	defined,
-	type Position,
-	type Range,
-	type TextCoordinates,
-} from "@nyaa-lexicon/protocol";
-import { extractGdscript } from "./declarations.js";
-import type { ComposeSymbolId, DeclarationFact, ReferenceToken } from "./parse-model.js";
-import { scanSource } from "./source-scan.js";
-import { matchingReferenceToken, nextReferenceToken, referenceTokens, sourceBetween, tokenRange } from "./tokens.js";
+import { comparePositions, defined, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import type { DeclarationFact, ReferenceToken } from "./parse-model.js";
+import type { ParsedScript } from "./script.js";
+import { matchingReferenceToken, nextReferenceToken, sourceBetween, tokenAt, tokenRange } from "./tokens.js";
 
 export interface TypeAnnotationFact {
 	symbolId?: string;
@@ -23,10 +15,6 @@ export interface TypeAnnotationFact {
 }
 
 //////// Type facts
-
-function tokenIndexAt(tokens: ReferenceToken[], position: Position): number {
-	return tokens.findIndex((token) => comparePositions(token, position) === 0);
-}
 
 function typeExpressionEnd(tokens: ReferenceToken[], start: number, stops: Set<string>, allowNewline = false): number {
 	let parentheses = 0;
@@ -137,20 +125,14 @@ function addParameterTypeFacts(
 	addSegment(segmentStart, end);
 }
 
-export function extractTypeAnnotationsCore(
-	module: string,
-	text: string,
-	compose: ComposeSymbolId,
-): TypeAnnotationFact[] {
-	if (!module.endsWith(".gd")) return [];
-	const coordinates = coordinatesOf(text);
-	const scanned = scanSource(text);
-	const declarations = extractGdscript(module, text, compose);
-	const tokens = referenceTokens(scanned);
+export function typeAnnotationsOf(script: ParsedScript): TypeAnnotationFact[] {
+	if (!script.module.endsWith(".gd")) return [];
+	const { coordinates, declarations } = script;
+	const tokens = script.lexed.tokens;
 	const facts: TypeAnnotationFact[] = [];
 	for (const declaration of declarations) {
-		// Every declaration this provider extracts has its name in the source.
-		const nameIndex = tokenIndexAt(tokens, (declaration.selectionRange ?? declaration.range).start);
+		const { start } = declaration.selectionRange;
+		const nameIndex = tokenAt(script.lexed, start.line, start.character);
 		if (nameIndex < 0) continue;
 		const name = tokens[nameIndex] as ReferenceToken;
 		if (

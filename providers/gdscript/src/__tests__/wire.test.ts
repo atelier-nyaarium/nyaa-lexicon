@@ -28,3 +28,21 @@ test("a script with no class_name has no selectionRange, and one with a class_na
 	const player = named.declarations.find((declaration) => declaration.name === "Player");
 	expect(player?.selectionRange).toEqual({ start: { line: 0, character: 11 }, end: { line: 0, character: 17 } });
 });
+
+// Godot measures a class from its class_name or extends line, so a doc comment above it is outside it.
+test("a script's range starts at its header, past script annotations and a doc comment", () => {
+	const root = (text: string) =>
+		parse(text).declarations.find((declaration) => declaration.containerId === undefined)?.range.start;
+	const documented = parse("## The player.\n@tool\nextends Node\nvar count = 1\n");
+
+	expect([
+		root("## The player.\n@tool\nextends Node\nvar count = 1\n"),
+		root("# License\n\nclass_name Player\nextends Node\n"),
+		root("## A counter.\nvar count = 1\n"),
+	]).toEqual([
+		{ line: 2, character: 0 },
+		{ line: 2, character: 0 },
+		{ line: 0, character: 0 },
+	]);
+	expect(documented.comments?.map((comment) => [comment.codeBefore, comment.codeAfter])).toEqual([[false, false]]);
+});

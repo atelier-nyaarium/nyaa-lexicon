@@ -32,13 +32,15 @@ export interface DeclarationFact {
 
 export interface SourceLine {
 	line: number;
-	text: string;
-	code: string;
+	/** Offset of its first character. */
+	start: number;
 	/** Leading blanks' width, a tab counting four. */
 	indent: number;
 	/** Content end, before a carriage return. */
 	end: number;
+	/** A string touches it. */
 	hasString: boolean;
+	/** Its line break is inside a string. */
 	endsInString: boolean;
 }
 
@@ -54,6 +56,8 @@ export interface StringSpan {
 	prefix: StringPrefix;
 	quote: StringQuote;
 	triple: boolean;
+	/** Content with escapes decoded; a raw string's verbatim. */
+	value: string;
 }
 
 export interface ReferenceToken {
@@ -62,6 +66,8 @@ export interface ReferenceToken {
 	value: string;
 	line: number;
 	character: number;
+	/** Of its first character; its source ends `value.length` past it. */
+	offset: number;
 	/** Strings only. */
 	string?: StringSpan;
 }
@@ -72,11 +78,6 @@ export interface ReferenceBlock {
 	indent: number;
 	containerId: string;
 	functionId?: string;
-}
-
-export interface RawLine {
-	line: number;
-	text: string;
 }
 
 export interface Token {
@@ -104,13 +105,6 @@ export interface Scope {
 	descriptors: Descriptor[];
 	containerId: string;
 	functionScope: boolean;
-}
-
-export interface ActiveEnum {
-	indent: number;
-	descriptors: Descriptor[];
-	containerId: string;
-	names: Set<string>;
 }
 
 export interface ActiveFunctionHeader {

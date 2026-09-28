@@ -1,12 +1,12 @@
 // Owns GDScript declaration extraction and declaration spans.
 
-import { coordinatesOf, defined, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
-import { type Blocks, blockHeader, blocksOf, bodyEndLine, hasCode, headerEndLine } from "./blocks.js";
+import { defined, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { type Blocks, blockHeader, bodyEndLine, hasCode, headerEndLine, indentedBodyEnd } from "./blocks.js";
+import type { LogicalLine } from "./expression.js";
 import { HeaderReader, type HeaderStop } from "./header.js";
 import { withMemberInsertLines } from "./layout.js";
-import { basenameOf, parseLineHeads } from "./line-syntax.js";
+import { annotationLine, basenameOf, parseLineHeads } from "./line-syntax.js";
 import type {
-	ActiveEnum,
 	ActiveFunctionHeader,
 	ComposeSymbolId,
 	DeclarationFact,
@@ -20,17 +20,20 @@ import type {
 	Token,
 	Visibility,
 } from "./parse-model.js";
+import type { ParsedScript } from "./script.js";
 import {
 	firstLineToken,
 	isIgnorable,
 	type LexedSource,
-	lexSource,
 	matchingReferenceToken,
 	nextReferenceToken,
 	tokenAt,
 } from "./tokens.js";
 
 //////// Declarations
+
+/** Before a mid-line `var`: a pattern's bracket, brace, comma or entry colon, or an inline body's colon. */
+const BINDING_OPENERS = new Set(["[", "{", ",", ":"]);
 
 function rangeOf(coordinates: TextCoordinates, line: SourceLine): Range {
 	return rangeOfLines(coordinates, line, line);
@@ -74,11 +77,11 @@ function memberHeader(headers: HeaderReader, line: SourceLine, member: Token): s
 	return headers.header({ line, head: member.start, name: member.start, stop: "member" });
 }
 
-/** `get` or `set`, then its parameters or colon. */
+/** `get` or `set`, then its parameters, colon, or `=` and a function. */
 export function isAccessorHead(lexed: LexedSource, line: number): boolean {
 	const [first, second] = (lexed.lineTokens[line] ?? []).slice(0, 2).map((index) => lexed.tokens[index]);
 	if (first?.kind !== "identifier" || (first.value !== "set" && first.value !== "get")) return false;
-	return second?.value === "(" || second?.value === ":";
+	return second?.value === "(" || second?.value === ":" || second?.value === "=";
 }
 
 function accessorEndLine(lexed: LexedSource, declarationIndex: number, declarationIndent: number): SourceLine {
@@ -303,57 +306,113 @@ function addFunctionParameters(
 	}
 }
 
-/** Members written after the line's `{`. */
-function enumMembers(lexed: LexedSource, line: number): Token[] {
-	const members: Token[] = [];
-	let inside = false;
-	let expectName = false;
-	let expressionDepth = 0;
+interface EnumBody {
+	members: ReferenceToken[];
+	/** The closing brace's line; the opening line when unclosed. */
+	lastLine: number;
+}
+
+/** Members between the braces opened on `line`; an unclosed enum's on that line alone. */
+function enumBody(lexed: LexedSource, line: number): EnumBody {
+	const tokens = lexed.tokens;
+	const lineTokens = lexed.lineTokens[line] ?? [];
+	const open = lineTokens.find((index) => tokens[index]?.value === "{");
+	if (open === undefined) return { members: [], lastLine: line };
+	const close = matchingReferenceToken(tokens, open, "{", "}");
+	const end = close < 0 ? (lineTokens.at(-1) as number) + 1 : close;
+	const members: ReferenceToken[] = [];
+	const names = new Set<string>();
+	let depth = 0;
+	let expectName = true;
+	for (let index = open + 1; index < end; index++) {
+		const token = tokens[index] as ReferenceToken;
+		const value = token.value;
+		if (token.kind === "newline") continue;
+		if (value === "(" || value === "[" || value === "{") depth++;
+		else if (value === ")" || value === "]" || value === "}") depth--;
+		if (depth === 0 && value === ",") {
+			expectName = true;
+			continue;
+		}
+		if (expectName && depth === 0 && token.kind === "identifier" && !names.has(value)) {
+			members.push(token);
+			names.add(value);
+		}
+		expectName = false;
+	}
+	return { members, lastLine: close < 0 ? line : (tokens[close] as ReferenceToken).line };
+}
+
+/** `var` names bound mid-line: match patterns and inline bodies. */
+function inlineBindings(lexed: LexedSource, line: number): Array<{ head: number; name: Token }> {
+	const tokens = lexed.tokens;
+	const bindings: Array<{ head: number; name: Token }> = [];
+	for (const index of lexed.lineTokens[line] ?? []) {
+		const token = tokens[index] as ReferenceToken;
+		const previous = tokens[index - 1];
+		const name = tokens[index + 1];
+		if (token.kind !== "identifier" || token.value !== "var" || name?.kind !== "identifier") continue;
+		if (previous === undefined || previous.line !== line || !BINDING_OPENERS.has(previous.value)) continue;
+		bindings.push({ head: token.character, name: { name: name.value, start: name.character } });
+	}
+	return bindings;
+}
+
+/** The statement holding `name` ends by opening a lambda's block. */
+function opensLambdaBlock(blocks: Blocks, statement: LogicalLine, name: number): boolean {
+	const tokens = blocks.lexed.tokens;
+	let last = statement.end - 1;
+	while (last > name && (tokens[last] as ReferenceToken).kind === "newline") last--;
+	if ((tokens[last] as ReferenceToken).value !== ":") return false;
+	for (let index = name + 1; index < last; index++) {
+		const token = tokens[index] as ReferenceToken;
+		if (token.kind === "identifier" && token.value === "func") return true;
+	}
+	return false;
+}
+
+/** A script's `class_name` and `extends` lines, which only annotations and strings may precede. */
+export interface ScriptHeader {
+	line: number;
+	/** The `extends` target: a class name or a path. */
+	base?: string;
+}
+
+function isScriptHeader(lexed: LexedSource, line: SourceLine): boolean {
+	const head = parseLineHeads(lexed, line.line)[0];
+	return line.indent === 0 && (head?.keyword === "class_name" || head?.keyword === "extends");
+}
+
+/** A header line's `extends` target. */
+function baseOn(lexed: LexedSource, line: number): string | undefined {
 	for (const index of lexed.lineTokens[line] ?? []) {
 		const token = lexed.tokens[index] as ReferenceToken;
-		const value = token.value;
-		if (!inside) {
-			if (value === "{") {
-				inside = true;
-				expectName = true;
-			}
-			continue;
-		}
-		if (expressionDepth > 0) {
-			if (value === "(") expressionDepth++;
-			if (value === ")") expressionDepth--;
-			continue;
-		}
-		if (value === "}") break;
-		if (value === "(") expressionDepth = 1;
-		else if (value === ",") expectName = true;
-		else if (expectName && token.kind === "identifier") {
-			members.push({ name: value, start: token.character });
-			expectName = false;
-		}
+		if (token.kind !== "identifier" || token.value !== "extends") continue;
+		const target = lexed.tokens[nextReferenceToken(lexed.tokens, index)];
+		return target?.kind === "identifier" ? target.value : target?.string?.value;
 	}
-	return members;
+	return undefined;
 }
 
-/** An enum member leading a line of a multi-line enum. */
-function multilineEnumMember(lexed: LexedSource, line: number): Token | null {
-	const first = firstLineToken(lexed, line);
-	return first?.kind === "identifier" ? { name: first.value, start: first.character } : null;
+export function scriptHeaderOf(lexed: LexedSource): ScriptHeader | undefined {
+	let header: ScriptHeader | undefined;
+	for (const line of lexed.lines) {
+		if (isIgnorable(lexed, line.line)) continue;
+		if (header === undefined && annotationLine(lexed, line.line) !== null) continue;
+		if (firstLineToken(lexed, line.line)?.kind === "string") continue;
+		if (!isScriptHeader(lexed, line)) break;
+		header ??= { line: line.line };
+		const base = baseOn(lexed, line.line);
+		if (base !== undefined) header.base ??= base;
+	}
+	return header;
 }
 
-/** Opens a brace it does not close. */
-function opensBrace(lexed: LexedSource, line: number): boolean {
-	const values = (lexed.lineTokens[line] ?? []).map((index) => (lexed.tokens[index] as ReferenceToken).value);
-	return values.includes("{") && !values.includes("}");
-}
-
-export function extractGdscript(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
-	const coordinates = coordinatesOf(text);
-	const lexed = lexSource(text);
-	const blocks = blocksOf(lexed);
+export function extractGdscript(script: ParsedScript): DeclarationFact[] {
+	const { coordinates, lexed, module, compose, blocks } = script;
 	const statementLines = new Set(blocks.statements.map((statement) => statement.line));
 	const lines = lexed.lines;
-	const headers = new HeaderReader(text, lexed);
+	const headers = new HeaderReader(script.text, lexed);
 	const classLine = lines
 		.map((line) => ({
 			line,
@@ -366,19 +425,10 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 			? undefined
 			: lineHeader(headers, classLine.line, classLine.parsed, className);
 	const rootName = className?.name ?? basenameOf(module);
-	const rootLine = classLine?.line ?? {
-		line: 0,
-		text: "",
-		code: "",
-		indent: 0,
-		end: 0,
-		hasString: false,
-		endsInString: false,
-	};
+	const rootLine = classLine?.line ?? { line: 0, start: 0, indent: 0, end: 0, hasString: false, endsInString: false };
 	const root = makeImplicitClass(compose, module, coordinates, rootLine, rootName, className, classHeader);
-	// The script IS the class, so the root's range spans the whole file. A one-line range here made
-	// a class-level move relocate only the class_name line and orphan every member behind it.
-	const firstLine = lines[0] ?? rootLine;
+	// Godot's class extents: header to end of file.
+	const firstLine = lines[scriptHeaderOf(lexed)?.line ?? 0] ?? rootLine;
 	const lastLine = lines[lines.length - 1] ?? firstLine;
 	root.range = rangeOfLines(coordinates, firstLine, lastLine);
 	const declarations: DeclarationFact[] = [root];
@@ -390,8 +440,28 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 			functionScope: false,
 		},
 	];
-	let activeEnum: ActiveEnum | null = null;
 	let activeFunctionHeader: ActiveFunctionHeader | null = null;
+	const addEnumMembers = (members: ReferenceToken[], scope: Scope): void => {
+		for (const token of members) {
+			const memberLine = lines[token.line] as SourceLine;
+			const member = { name: token.value, start: token.character };
+			declarations.push(
+				makeDeclaration(
+					compose,
+					module,
+					coordinates,
+					memberLine,
+					member,
+					"const",
+					member.name,
+					scope,
+					"enumMember",
+					visibilityOf(member.name, false),
+					memberHeader(headers, memberLine, member),
+				),
+			);
+		}
+	};
 	const openFunction = (header: ActiveFunctionHeader): void => {
 		addFunctionParameters(declarations, module, compose, header.declaration, header.scope, lexed);
 		scopes.push({
@@ -416,36 +486,6 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 		if (isIgnorable(lexed, line.line)) continue;
 
 		const indent = line.indent;
-		if (activeEnum !== null) {
-			if (indent <= activeEnum.indent || parsedLines.length > 0) {
-				activeEnum = null;
-			} else {
-				const member = multilineEnumMember(lexed, line.line);
-				if (member !== null && !activeEnum.names.has(member.name)) {
-					activeEnum.names.add(member.name);
-					const declaration = makeDeclaration(
-						compose,
-						module,
-						coordinates,
-						line,
-						member,
-						"const",
-						member.name,
-						{
-							indent: activeEnum.indent,
-							descriptors: activeEnum.descriptors,
-							containerId: activeEnum.containerId,
-							functionScope: false,
-						},
-						"enumMember",
-						visibilityOf(member.name, false),
-						memberHeader(headers, line, member),
-					);
-					declarations.push(declaration);
-				}
-				continue;
-			}
-		}
 		// A continuation line closes no scope.
 		if (statementLines.has(line.line)) {
 			while (scopes.length > 1 && indent <= (scopes[scopes.length - 1] as Scope).indent) scopes.pop();
@@ -460,6 +500,11 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					containerId: scope.containerId,
 					functionScope: true,
 				});
+				continue;
+			}
+			// An unnamed enum's members are the enclosing class's constants.
+			if (parsed.keyword === "enum" && parsed.name === null) {
+				addEnumMembers(enumBody(lexed, line.line).members, { ...scope, functionScope: false });
 				continue;
 			}
 			if (parsed.name === null || parsed.keyword === "extends") continue;
@@ -501,36 +546,15 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 					visibilityOf(parsed.name.name, false),
 					lineHeader(headers, line, parsed, parsed.name),
 				);
+				const body = enumBody(lexed, line.line);
+				declaration.range = rangeOfLines(coordinates, line, lines[body.lastLine] as SourceLine);
 				declarations.push(declaration);
-				const members = enumMembers(lexed, line.line);
-				for (const member of members) {
-					const memberDeclaration = makeDeclaration(
-						compose,
-						module,
-						coordinates,
-						line,
-						member,
-						"const",
-						member.name,
-						{
-							...scope,
-							descriptors: [...scope.descriptors, { kind: "type", name: parsed.name.name }],
-							containerId: declaration.symbolId,
-						},
-						"enumMember",
-						visibilityOf(member.name, false),
-						memberHeader(headers, line, member),
-					);
-					declarations.push(memberDeclaration);
-				}
-				if (opensBrace(lexed, line.line)) {
-					activeEnum = {
-						indent,
-						descriptors: [...scope.descriptors, { kind: "type", name: parsed.name.name }],
-						containerId: declaration.symbolId,
-						names: new Set(members.map((member) => member.name)),
-					};
-				}
+				addEnumMembers(body.members, {
+					...scope,
+					descriptors: [...scope.descriptors, { kind: "type", name: parsed.name.name }],
+					containerId: declaration.symbolId,
+					functionScope: false,
+				});
 				continue;
 			}
 
@@ -558,14 +582,49 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 				visibilityOf(parsed.name.name, local),
 				lineHeader(headers, line, parsed, parsed.name),
 			);
-			if (parsed.keyword === "var") {
-				declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lexed, lineIndex, indent));
+			const nameIndex = tokenAt(lexed, line.line, parsed.name.start);
+			const statementIndex = blocks.owner[nameIndex] ?? -1;
+			const statement = blocks.statements[statementIndex];
+			if ((parsed.keyword === "var" || parsed.keyword === "const") && statement !== undefined) {
+				if (opensLambdaBlock(blocks, statement, nameIndex)) {
+					const end = indentedBodyEnd(blocks, statementIndex, statement.indent, statement.lastLine);
+					declaration.range = rangeOfLines(coordinates, line, lines[end] as SourceLine);
+					// A class-level lambda's locals are not members.
+					if (!local)
+						scopes.push({
+							indent,
+							descriptors: [...scope.descriptors, { kind: "term", name: declaration.name }],
+							containerId: declaration.symbolId,
+							functionScope: true,
+						});
+				} else if (parsed.keyword === "var" && !local) {
+					declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lexed, lineIndex, indent));
+				}
 			}
 			declarations.push(declaration);
 			if (parsed.keyword !== "func") continue;
 			const header = { indent, scope, declaration, start: line, endLine: headerEndLine(blocks, declaration) };
 			if (header.endLine > line.line) activeFunctionHeader = header;
 			else openFunction(header);
+		}
+		const scope = scopes[scopes.length - 1] as Scope;
+		if (!scope.functionScope) continue;
+		for (const binding of inlineBindings(lexed, line.line)) {
+			declarations.push(
+				makeDeclaration(
+					compose,
+					module,
+					coordinates,
+					line,
+					binding.name,
+					"var",
+					binding.name.name,
+					scope,
+					undefined,
+					"local",
+					headers.header({ line, head: binding.head, name: binding.name.start, stop: "member" }),
+				),
+			);
 		}
 	}
 
@@ -577,7 +636,7 @@ export function extractGdscript(module: string, text: string, compose: ComposeSy
 			? declaration
 			: { ...declaration, range: rangeOfLines(coordinates, start, end) };
 	});
-	return withMemberInsertLines(spanned, lexed.scanned, lexed.tokens, coordinates);
+	return withMemberInsertLines(spanned, blocks, coordinates);
 }
 
 function functionParameterCount(lexed: LexedSource, declaration: DeclarationFact): number {
@@ -687,19 +746,10 @@ function metricsForDeclaration(blocks: Blocks, declaration: DeclarationFact): Me
 	return metrics;
 }
 
-function addDeclarationMetrics(declarations: DeclarationFact[], text: string): DeclarationFact[] {
-	const blocks = blocksOf(lexSource(text));
-	return declarations.map((declaration) => ({
-		...declaration,
-		metrics: metricsForDeclaration(blocks, declaration),
-	}));
-}
-
-function extractGeneric(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
+function extractGeneric(script: ParsedScript): DeclarationFact[] {
+	const { coordinates, lexed, module, compose } = script;
 	const declarations: DeclarationFact[] = [];
-	const coordinates = coordinatesOf(text);
-	const lexed = lexSource(text);
-	const headers = new HeaderReader(text, lexed);
+	const headers = new HeaderReader(script.text, lexed);
 	for (const line of lexed.lines) {
 		const parsed = parseLineHeads(lexed, line.line, true)[0];
 		if (parsed === undefined || parsed.name === null) continue;
@@ -731,9 +781,11 @@ function extractGeneric(module: string, text: string, compose: ComposeSymbolId):
 	return declarations;
 }
 
-export function extractDeclarationsCore(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
-	const declarations = module.endsWith(".gd")
-		? extractGdscript(module, text, compose)
-		: extractGeneric(module, text, compose);
-	return module.endsWith(".gd") ? addDeclarationMetrics(declarations, text) : declarations;
+/** Metrics included. */
+export function declarationsOf(script: ParsedScript): DeclarationFact[] {
+	if (!script.module.endsWith(".gd")) return extractGeneric(script);
+	return script.declarations.map((declaration) => ({
+		...declaration,
+		metrics: metricsForDeclaration(script.blocks, declaration),
+	}));
 }

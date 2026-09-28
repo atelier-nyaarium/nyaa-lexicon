@@ -21,8 +21,7 @@ import {
 import type { TypeAnnotationFact } from "./extractCore.js";
 import type { GDScriptStore, GDScriptValue } from "./module.js";
 import type { ReferenceToken } from "./parse-model.js";
-import { scanSource } from "./source-scan.js";
-import { initializerStart, matchingReferenceToken, nextReferenceToken, referenceTokens } from "./tokens.js";
+import { initializerStart, lexSource, matchingReferenceToken, nextReferenceToken } from "./tokens.js";
 
 //////// Types
 
@@ -253,7 +252,7 @@ function literalPath(tokens: ReferenceToken[], span: TokenSpan): string | undefi
 	if (string === undefined || string.triple || (string.prefix !== "" && string.prefix !== "&")) return undefined;
 	const after = nextReferenceToken(tokens, first);
 	if (after >= 0 && after < span.end) return undefined;
-	return token?.value.slice(string.prefix.length + 1, -1);
+	return string.value;
 }
 
 function evaluate(expression: Expression, context: InferenceContext, environment: Map<string, EvalResult>): EvalResult {
@@ -630,9 +629,9 @@ function inferFile(
 	text: string,
 	resolver: TypeResolver,
 ): Map<string, TypeInfo> {
-	const scanned = scanSource(text);
-	const tokens = referenceTokens(scanned);
-	const lines = logicalLines(tokens, scanned.lines);
+	const lexed = lexSource(text);
+	const tokens = lexed.tokens;
+	const lines = logicalLines(tokens, lexed.lines);
 	const context: InferenceContext = {
 		module,
 		resolver,
@@ -733,7 +732,7 @@ export class GDScriptTypeIndex {
 		const value = this.store.load(parsed.module, "full");
 		if (value === undefined) return unknownType("NotIndexed", "module is not indexed");
 		const declaration = value.declarations.find((candidate) => candidate.symbolId === symbolId);
-		if (declaration === undefined) return unknownType("ParseError", "the symbol id has no declaration");
+		if (declaration === undefined) return unknownType("NotIndexed", "the symbol id has no declaration");
 		return this.typeOfDeclaration(parsed.module, value, declaration);
 	}
 

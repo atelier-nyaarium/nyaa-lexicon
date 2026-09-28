@@ -80,25 +80,30 @@ function commentAfter(comments: readonly CommentSpan[], line: number): number {
 	return low;
 }
 
+/** Last line of the body indented past `indent` after statement `index`, its comments included; `last` when empty. */
+export function indentedBodyEnd(blocks: Blocks, index: number, indent: number, last: number): number {
+	const { lexed, statements } = blocks;
+	let end = last;
+	let next = index + 1;
+	while (next < statements.length && (statements[next] as LogicalLine).indent > indent) {
+		end = (statements[next] as LogicalLine).lastLine;
+		next++;
+	}
+	const dedent = statements[next]?.line ?? lexed.lines.length;
+	const comments = lexed.comments;
+	for (let at = commentAfter(comments, end); at < comments.length; at++) {
+		const line = (comments[at] as CommentSpan).range.start.line;
+		if (line >= dedent) break;
+		if ((lexed.lines[line] as SourceLine).indent > indent) end = line;
+	}
+	return end;
+}
+
 /** Line after the body: an inline tail, or indented statements and the indented comments before the dedent. */
 export function bodyEndLine(blocks: Blocks, declaration: Pick<DeclarationFact, "range" | "selectionRange">): number {
 	const header = blockHeader(blocks, declaration);
 	if (header === undefined) return declaration.range.end.line + 1;
-	const { lexed, statements } = blocks;
 	const { statement } = header;
-	if (hasCode(lexed.tokens, header.inline)) return statement.lastLine + 1;
-	let last = statement.lastLine;
-	let next = header.index + 1;
-	while (next < statements.length && (statements[next] as LogicalLine).indent > statement.indent) {
-		last = (statements[next] as LogicalLine).lastLine;
-		next++;
-	}
-	const dedent = statements[next]?.line ?? lexed.lines.length;
-	const comments = lexed.scanned.comments;
-	for (let index = commentAfter(comments, last); index < comments.length; index++) {
-		const line = (comments[index] as CommentSpan).range.start.line;
-		if (line >= dedent) break;
-		if ((lexed.lines[line] as SourceLine).indent > statement.indent) last = line;
-	}
-	return last + 1;
+	if (hasCode(blocks.lexed.tokens, header.inline)) return statement.lastLine + 1;
+	return indentedBodyEnd(blocks, header.index, statement.indent, statement.lastLine) + 1;
 }

@@ -2,7 +2,7 @@
 
 import { comparePositions, type Diagnostic, type Position, type Range } from "@nyaa-lexicon/protocol";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
-import { firstLineToken, isIgnorable, type LexedSource, lastLineToken, lexSource } from "./tokens.js";
+import { firstLineToken, isIgnorable, type LexedSource, lastLineToken } from "./tokens.js";
 
 //////// Diagnostics
 
@@ -50,12 +50,16 @@ function closingDelimiter(value: string): OpenDelimiter["value"] | null {
 	return null;
 }
 
-export function extractDiagnosticsCore(module: string, text: string): Diagnostic[] {
+export function diagnosticsOf(module: string, lexed: LexedSource): Diagnostic[] {
 	if (!module.endsWith(".gd")) return [];
-	const lexed = lexSource(text);
-	const diagnostics = lexed.scanned.unterminatedStrings.map((position) =>
-		diagnosticAt(module, "String literal has no closing quote.", pointRange(position)),
-	);
+	const diagnostics = [
+		...lexed.unterminatedStrings.map((position) =>
+			diagnosticAt(module, "String literal has no closing quote.", pointRange(position)),
+		),
+		...lexed.invalidEscapes.map((position) =>
+			diagnosticAt(module, "String literal has an escape Godot refuses.", pointRange(position)),
+		),
+	];
 
 	const delimiters: OpenDelimiter[] = [];
 	const indentationLevels = [0];

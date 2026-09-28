@@ -1,4 +1,4 @@
-// Maps the scanner's facts onto the protocol's shared declaration types.
+// Maps one parse's facts onto the protocol's shared declaration types.
 
 import {
 	composeSymbolId,
@@ -7,51 +7,71 @@ import {
 	type Literal,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
-import {
-	type CommentSpan,
-	extractDeclarationsCore,
-	extractDiagnosticsCore,
-	extractImportsCore,
-	extractLayoutCore,
-	extractLiteralsCore,
-	extractLoaderCallsCore,
-	extractReferencesCore,
-	type LoaderCall,
-} from "./extractCore.js";
+import { declarationsOf, scriptHeaderOf } from "./declarations.js";
+import { diagnosticsOf } from "./diagnostics.js";
+import { type ImportFact, importsOf, loaderCallsOf } from "./imports.js";
+import { layoutOf } from "./layout.js";
+import type { CommentSpan } from "./lexer.js";
+import { literalsOf } from "./literal-tokens.js";
+import type { LoaderCall } from "./path-syntax.js";
+import { referencesOf } from "./references.js";
+import { ParsedScript } from "./script.js";
+import { type TypeAnnotationFact, typeAnnotationsOf } from "./type-facts.js";
 
 //////// Constants
 
 export const LANGUAGE = "gdscript";
 
-//////// Functions
+//////// Types
 
-export function extractFile(
-	module: string,
-	text: string,
-): {
+export interface OutlineFacts {
 	declarations: Declaration[];
+	/** The script's `extends` target. */
+	base?: string;
+}
+
+export interface FileFacts extends OutlineFacts {
 	references: Reference[];
-	imports: ReturnType<typeof extractImportsCore>;
+	imports: ImportFact[];
 	literals: Literal[];
 	comments: CommentSpan[];
 	blankLines: number[];
 	diagnostics: Diagnostic[];
 	loaders: LoaderCall[];
-} {
-	const declarations = extractDeclarationsCore(module, text, composeSymbolId);
-	const layout = extractLayoutCore(text);
+	annotations: TypeAnnotationFact[];
+}
+
+//////// Functions
+
+function outlineOf(script: ParsedScript): OutlineFacts {
+	const base = scriptHeaderOf(script.lexed)?.base;
+	return { declarations: declarationsOf(script) as Declaration[], ...(base === undefined ? {} : { base }) };
+}
+
+export function extractFile(module: string, text: string): FileFacts {
+	const script = new ParsedScript(module, text, composeSymbolId);
+	const declarations = declarationsOf(script);
+	const base = scriptHeaderOf(script.lexed)?.base;
+	const layout = layoutOf(script.lexed);
+	const loaders = loaderCallsOf(script);
 	return {
 		declarations: declarations as Declaration[],
-		references: extractReferencesCore(module, text, composeSymbolId),
-		imports: extractImportsCore(module, text, composeSymbolId),
-		literals: extractLiteralsCore(module, text, declarations),
+		...(base === undefined ? {} : { base }),
+		references: referencesOf(script),
+		imports: importsOf(script, loaders),
+		literals: literalsOf(script, declarations, loaders),
 		comments: layout.comments,
 		blankLines: layout.blankLines,
-		diagnostics: extractDiagnosticsCore(module, text),
-		loaders: extractLoaderCallsCore(module, text, composeSymbolId),
+		diagnostics: diagnosticsOf(module, script.lexed),
+		loaders,
+		annotations: typeAnnotationsOf(script),
 	};
 }
 
+export function extractOutline(module: string, text: string): OutlineFacts {
+	return outlineOf(new ParsedScript(module, text, composeSymbolId));
+}
+
 export function extractDeclarations(module: string, text: string): Declaration[] {
-	return extractDeclarationsCore(module, text, composeSymbolId) as Declaration[];
+	return extractOutline(module, text).declarations;
 }

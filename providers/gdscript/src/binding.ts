@@ -8,10 +8,9 @@ import {
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import type { LoaderCall } from "./extractCore.js";
+import { lexGdscript } from "./lexer.js";
 import { type GDScriptStore, scopeForModule } from "./module.js";
 import { isLoaderCall } from "./path-syntax.js";
-import { scanSource } from "./source-scan.js";
-import { referenceTokens } from "./tokens.js";
 
 //////// Types
 
@@ -190,7 +189,7 @@ export class GDScriptBindingIndex {
 
 	resolveImport(fromModule: string, specifier: string): ImportResolution {
 		// Computed loaders keep call source.
-		if (isLoaderCall(referenceTokens(scanSource(specifier)), 0)) {
+		if (isLoaderCall(lexGdscript(specifier).tokens, 0)) {
 			return {
 				status: "unresolved",
 				reason: "RuntimeConstructed",
@@ -271,16 +270,6 @@ export class GDScriptBindingIndex {
 			return [...candidates.values()];
 		}
 
-		if (projectClassName(reference.role) && !memberAccess) {
-			for (const declaration of this.store.get(`scoped:${scope}\0${reference.name}`)) add(declaration);
-		}
-
-		if (reference.role === "read" && !memberAccess) {
-			const targetModule = this.autoloadModule(scope, reference.name);
-			const target = targetModule === undefined ? undefined : this.rootDeclaration(targetModule);
-			if (target !== undefined) add(target);
-		}
-
 		for (const declaration of sameFile) {
 			if (
 				!memberAccess &&
@@ -291,6 +280,18 @@ export class GDScriptBindingIndex {
 				sameFileKind(reference.role, declaration)
 			)
 				add(declaration);
+		}
+		// A class's own member shadows a global class or singleton.
+		if (candidates.size > 0) return [...candidates.values()];
+
+		if (projectClassName(reference.role) && !memberAccess) {
+			for (const declaration of this.store.get(`scoped:${scope}\0${reference.name}`)) add(declaration);
+		}
+
+		if (reference.role === "read" && !memberAccess) {
+			const targetModule = this.autoloadModule(scope, reference.name);
+			const target = targetModule === undefined ? undefined : this.rootDeclaration(targetModule);
+			if (target !== undefined) add(target);
 		}
 
 		return [...candidates.values()];

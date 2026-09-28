@@ -1,5 +1,4 @@
 import {
-	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
 	type Held,
@@ -11,13 +10,15 @@ import {
 	moduleStore,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
-import { extractDeclarations, extractFile } from "./extract.js";
-import type { CommentSpan, LoaderCall } from "./extractCore.js";
-import { extractTypeAnnotationsCore, type TypeAnnotationFact } from "./extractCore.js";
+import { extractFile, extractOutline } from "./extract.js";
+import type { CommentSpan, LoaderCall, TypeAnnotationFact } from "./extractCore.js";
 
 export interface GDScriptScope {
 	directory: string;
+	/** Singletons: each global name and the script it binds to. */
 	autoloads: Readonly<Record<string, string>>;
+	/** Scripts the engine runs on its own: the main scene's root and every autoload. */
+	entries: readonly string[];
 }
 
 export interface GDScriptProject {
@@ -26,6 +27,8 @@ export interface GDScriptProject {
 
 export interface GDScriptValue extends ModuleValue {
 	declarations: Declaration[];
+	/** The script's `extends` target. */
+	base?: string;
 	references: Reference[];
 	imports: Import[];
 	literals: Literal[];
@@ -52,7 +55,7 @@ export function scopeForModule(module: string, project: GDScriptProject): string
 function readGDScript(module: string, text: string, depth: IndexDepth): GDScriptValue {
 	if (depth === "outline") {
 		return {
-			declarations: extractDeclarations(module, text),
+			...extractOutline(module, text),
 			references: [],
 			imports: [],
 			literals: [],
@@ -62,11 +65,7 @@ function readGDScript(module: string, text: string, depth: IndexDepth): GDScript
 			loaders: [],
 		};
 	}
-	const extracted = extractFile(module, text);
-	return {
-		...extracted,
-		annotations: extractTypeAnnotationsCore(module, text, composeSymbolId),
-	};
+	return extractFile(module, text);
 }
 
 function* classNameEntries(

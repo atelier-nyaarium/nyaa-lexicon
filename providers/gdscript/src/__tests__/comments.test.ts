@@ -85,6 +85,8 @@ test("does not report a marker written inside a string literal", () => {
 	const text = `var url = "https://example.com/path"
 var hashed = "# not a comment"
 var single = '# not a comment either'
+var raw = r"# not a comment"
+var named = &"# not a comment" + ^"# not a comment"
 # real
 `;
 
@@ -114,10 +116,12 @@ test("an unterminated multiline string swallows no comment span", () => {
 	expect(commentsOf(text, "open.gd")).toEqual([]);
 });
 
-test("does not report a marker written after an unterminated string on the same line", () => {
-	const text = 'var broken = "open # inside\n# real\n';
+// Godot 4 lets a regular string span lines, so only its closing quote or end of file ends it.
+test("does not report a marker inside a regular string that spans lines", () => {
+	const text =
+		'var spanning = "open # inside\n# still inside" # real\nvar broken = \'open # inside\n# never closed\n';
 
-	expect(commentsOf(text, "broken.gd").map((comment) => comment.text)).toEqual(["# real"]);
+	expect(commentsOf(text, "spanning.gd").map((comment) => comment.text)).toEqual(["# real"]);
 });
 
 test("measures the comment range in UTF-16 code units", () => {

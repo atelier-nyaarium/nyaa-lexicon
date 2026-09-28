@@ -12,11 +12,13 @@ import {
 	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
+import { isGdscriptIdentifier } from "./characters.js";
 import { extractFile } from "./extract.js";
-import { extractGdscriptParameterNames, isGdscriptIdentifier, type LoaderCall } from "./extractCore.js";
 import { annotationsAbove, parseLineHeads } from "./line-syntax.js";
 import type { GDScriptStore } from "./module.js";
 import type { ParsedLine, ReferenceToken } from "./parse-model.js";
+import type { LoaderCall } from "./path-syntax.js";
+import { parameterNamesOf } from "./references.js";
 import { type LexedSource, lexSource, previousReferenceToken } from "./tokens.js";
 
 const GDSCRIPT_KEYWORDS = new Set([
@@ -145,7 +147,9 @@ export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore)
 	} catch {
 		return refused("ParseError", "the supplied GDScript text could not be parsed");
 	}
-	if (extractGdscriptParameterNames(params.text).has(params.newName)) {
+	const lexed = lexSource(params.text);
+	const tokens = lexed.tokens;
+	if (parameterNamesOf(tokens).has(params.newName)) {
 		return refused("Collision", "the new name already exists as a function parameter");
 	}
 	if (facts.declarations.some((declaration) => declaration.name === params.newName)) {
@@ -155,8 +159,6 @@ export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore)
 		return refused("Collision", "the new name is already a registered class_name");
 
 	const coordinates = coordinatesOf(params.text);
-	const lexed = lexSource(params.text);
-	const tokens = lexed.tokens;
 	const strings = stringContents(tokens, coordinates);
 	const edits: TextEdit[] = [];
 	const blockedSites: BlockedSite[] = [];

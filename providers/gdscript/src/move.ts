@@ -11,12 +11,15 @@ import {
 	normalizeModulePath,
 	planEdits,
 	type Range,
+	SourceCursor,
 	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import { GDScriptBindingIndex } from "./binding.js";
+import { isGdscriptIdentifier } from "./characters.js";
 import { extractDeclarations, extractFile } from "./extract.js";
 import type { LoaderCall } from "./extractCore.js";
+import { quoteGdscriptString } from "./lexer.js";
 import { annotationLine, parseLineHeads } from "./line-syntax.js";
 import type { GDScriptStore } from "./module.js";
 import { isIgnorable, type LexedSource, lexSource } from "./tokens.js";
@@ -232,7 +235,7 @@ function workspaceDependencyPlan(
 	}
 	const localName = indexed.localName;
 	if (hasLoaderBinding(target.loaders, localName, indexed.specifier)) return {};
-	if (!isIdentifier(localName)) {
+	if (!isGdscriptIdentifier(localName)) {
 		return {
 			blocked: blockedSite(
 				dependency.range,
@@ -243,14 +246,14 @@ function workspaceDependencyPlan(
 	}
 	if (hasLocalDeclaration(target.declarations, localName)) {
 		return {
-			blocked: blockedSite(dependency.range, "NoImportPath", `${localName} already has another target binding`),
+			blocked: blockedSite(
+				dependency.range,
+				"TargetCollision",
+				`${localName} already has another target binding`,
+			),
 		};
 	}
-	const quote = quoteString(indexed.specifier);
-	if (quote === undefined) {
-		return { blocked: blockedSite(dependency.range, "StringLiteral", "the loader path cannot be rendered safely") };
-	}
-	return { insertion: `const ${localName} = ${indexed.loader}(${quote})` };
+	return { insertion: `const ${localName} = ${indexed.loader}(${quoteGdscriptString(indexed.specifier)})` };
 }
 
 ////////////////////////////////
@@ -274,9 +277,11 @@ function blockedImportSite(
 	);
 }
 
+/** From the path before any query or fragment. */
 function resourceReason(text: string): MoveBlockedReason | undefined {
-	if (/\.(?:tscn|tres)(?:$|[?#])/u.test(text)) return "ExternalContract";
-	if (/res:\/\/|\.gd(?:$|[?#])/u.test(text)) return "StringLiteral";
+	const path = new SourceCursor(text).readWhile((character) => character !== "?" && character !== "#");
+	if (path.endsWith(".tscn") || path.endsWith(".tres")) return "ExternalContract";
+	if (path.startsWith("res://") || path.endsWith(".gd")) return "StringLiteral";
 	return undefined;
 }
 
@@ -342,11 +347,6 @@ function hasLocalDeclaration(declarations: readonly Declaration[], name: string)
 	);
 }
 
-function quoteString(text: string): string | undefined {
-	if (/[\0\n\r]/u.test(text)) return undefined;
-	return `"${text.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
-}
-
 function newlineFor(text: string): string {
 	return text.includes("\r\n") ? "\r\n" : "\n";
 }
@@ -369,8 +369,4 @@ function sameModule(left: string, right: string): boolean {
 	} catch {
 		return left === right;
 	}
-}
-
-function isIdentifier(name: string): boolean {
-	return /^[_\p{L}][\p{L}\p{M}\p{N}_]*$/u.test(name);
 }

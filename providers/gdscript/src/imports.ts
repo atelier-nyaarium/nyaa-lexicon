@@ -1,11 +1,9 @@
 // Owns GDScript static import facts and loader name resolution.
 
-import { comparePositions, coordinatesOf, type ImportedName, type Position } from "@nyaa-lexicon/protocol";
-import { extractGdscript } from "./declarations.js";
-import type { ComposeSymbolId, DeclarationFact } from "./parse-model.js";
+import { comparePositions, type ImportedName, type Position } from "@nyaa-lexicon/protocol";
+import type { DeclarationFact } from "./parse-model.js";
 import { extendsPaths, type LoaderCall, loaderCalls } from "./path-syntax.js";
-import { scanSource } from "./source-scan.js";
-import { referenceTokens } from "./tokens.js";
+import type { ParsedScript } from "./script.js";
 
 //////// Imports
 
@@ -31,23 +29,20 @@ function importedLoaderName(declarations: DeclarationFact[], loader: Position): 
 	return [{ local: declaration.name, localRange: declaration.selectionRange ?? declaration.range }];
 }
 
-function moduleLoaderCalls(module: string, text: string, compose: ComposeSymbolId) {
-	const scanned = scanSource(text);
-	const tokens = referenceTokens(scanned);
-	const declarations = extractGdscript(module, text, compose);
-	return { tokens, declarations, calls: loaderCalls(tokens, coordinatesOf(text), declarations) };
-}
-
-export function extractLoaderCallsCore(module: string, text: string, compose: ComposeSymbolId): LoaderCall[] {
-	return module.endsWith(".gd") ? moduleLoaderCalls(module, text, compose).calls : [];
+export function loaderCallsOf(script: ParsedScript): LoaderCall[] {
+	if (!script.module.endsWith(".gd")) return [];
+	return loaderCalls(script.lexed.tokens, script.coordinates, script.declarations);
 }
 
 /** Literal paths in source order, then computed loaders. */
-export function extractImportsCore(module: string, text: string, compose: ComposeSymbolId): ImportFact[] {
-	if (!module.endsWith(".gd")) return [];
-	const { tokens, declarations, calls } = moduleLoaderCalls(module, text, compose);
+export function importsOf(script: ParsedScript, calls = loaderCallsOf(script)): ImportFact[] {
+	if (!script.module.endsWith(".gd")) return [];
+	const { declarations } = script;
 	const literal = [
-		...extendsPaths(tokens).map((path) => ({ at: path.range.start, fact: { specifier: path.path, imported: [] } })),
+		...extendsPaths(script.lexed.tokens).map((path) => ({
+			at: path.range.start,
+			fact: { specifier: path.path, imported: [] },
+		})),
 		...calls
 			.filter((call) => call.literal !== undefined)
 			.map((call) => ({

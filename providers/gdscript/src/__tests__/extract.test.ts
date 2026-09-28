@@ -52,6 +52,92 @@ test("extracts the GDScript declaration forms used by the project", () => {
 	expect(declarations.every((declaration) => declaration.exported === undefined)).toBe(true);
 });
 
+test("an unnamed enum's members are the class's constants, and an enum spans its braces", () => {
+	const text = `enum { IDLE, RUNNING = 2 }
+enum Mode { A, B = 1 << 2,
+	C, D,
+	E
+}
+`;
+	const declarations = extractDeclarationsCore("scripts/enums.gd", text, composeSymbolId);
+	const shape = declarations.slice(1).map((declaration) => ({
+		name: declaration.name,
+		container: declarations.find((candidate) => candidate.symbolId === declaration.containerId)?.name,
+		lines: `${declaration.range.start.line}-${declaration.range.end.line}`,
+	}));
+	const references = extractReferencesCore("scripts/enums.gd", text, composeSymbolId);
+
+	expect(shape).toEqual([
+		{ name: "IDLE", container: "enums", lines: "0-0" },
+		{ name: "RUNNING", container: "enums", lines: "0-0" },
+		{ name: "Mode", container: "enums", lines: "1-4" },
+		{ name: "A", container: "Mode", lines: "1-1" },
+		{ name: "B", container: "Mode", lines: "1-1" },
+		{ name: "C", container: "Mode", lines: "2-2" },
+		{ name: "D", container: "Mode", lines: "2-2" },
+		{ name: "E", container: "Mode", lines: "3-3" },
+	]);
+	expect(references).toEqual([]);
+});
+
+test("a block lambda's body belongs to the variable it initializes, and a class's lambda declares no member", () => {
+	const text = `var on_hit = func(amount):
+	var scaled = amount * 2
+	return scaled
+func run():
+	var cb := func(a: int) -> int:
+		return a
+	cb.call(1)
+`;
+	const declarations = extractDeclarationsCore("scripts/lambdas.gd", text, composeSymbolId);
+	const found = (name: string) => declarations.find((declaration) => declaration.name === name);
+	const onHit = found("on_hit");
+
+	const references = extractReferencesCore("scripts/lambdas.gd", text, composeSymbolId);
+	const read = (name: string) => references.find((reference) => reference.name === name && reference.role === "read");
+
+	expect([onHit, found("cb")].map((declaration) => declaration?.range.end.line)).toEqual([2, 5]);
+	expect(found("scaled")).toMatchObject({ kind: "variable", visibility: "local", containerId: onHit?.symbolId });
+	expect([read("scaled")?.fromId, read("amount")?.fromId]).toEqual([onHit?.symbolId, onHit?.symbolId]);
+	// The lambda's own parameter, not a member to bind.
+	expect([read("amount")?.binding, read("a")?.binding]).toMatchObject([
+		{ reason: "NotIndexed" },
+		{ reason: "NotIndexed" },
+	]);
+});
+
+test("a match pattern's var binds a local, and a lone underscore names nothing", () => {
+	const text = `func run(value):
+	match value:
+		[var head, _, ..]:
+			print(head)
+		{"key": var entry}:
+			print(entry)
+		_:
+			pass
+`;
+	const declarations = extractDeclarationsCore("scripts/match.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/match.gd", text, composeSymbolId);
+	const run = declarations.find((declaration) => declaration.name === "run");
+
+	expect(
+		declarations
+			.filter((declaration) => declaration.containerId === run?.symbolId)
+			.map((declaration) => [declaration.name, declaration.kind, declaration.signature]),
+	).toEqual([
+		["value", "variable", undefined],
+		["head", "variable", "var head"],
+		["entry", "variable", "var entry"],
+	]);
+	expect(references.map((reference) => `${reference.name}:${reference.role}:${reference.range.start.line}`)).toEqual([
+		"value:read:1",
+		"print:call:3",
+		"head:read:3",
+		"print:call:5",
+		"entry:read:5",
+	]);
+});
+
 test("extends block declaration ranges through their owned bodies", () => {
 	const text = `func add(a, b):
 	var sum := a + b
@@ -264,10 +350,11 @@ signal changed(signal_value: String)
 
 test("preserves Unicode identifier names and symbol identity", () => {
 	const module = "scripts/unicode.gd";
-	const declarations = extractDeclarationsCore(module, "var przykład := 1\n", composeSymbolId);
-	const declaration = declarations.find((candidate) => candidate.name === "przykład");
+	const word = `przyk${String.fromCodePoint(0x142)}ad`;
+	const declarations = extractDeclarationsCore(module, `var ${word} := 1\n`, composeSymbolId);
+	const declaration = declarations.find((candidate) => candidate.name === word);
 
-	expect(declaration?.name).toBe("przykład");
+	expect(declaration?.name).toBe(word);
 	expect(declaration?.selectionRange).toEqual({
 		start: { line: 0, character: 4 },
 		end: { line: 0, character: 12 },
@@ -278,7 +365,7 @@ test("preserves Unicode identifier names and symbol identity", () => {
 			module,
 			descriptors: [
 				{ kind: "type", name: "unicode" },
-				{ kind: "term", name: "przykład" },
+				{ kind: "term", name: word },
 			],
 		}),
 	);
@@ -286,12 +373,13 @@ test("preserves Unicode identifier names and symbol identity", () => {
 
 test("uses UTF-16 units for every emitted GDScript range", () => {
 	const provider = started();
+	const face = String.fromCodePoint(0x1f600);
 	const text = `var target := 1
-var face = "😀"; const Script = preload("res://other.gd")
-var face2 = "😀"; var marker = "hello"; var count = 0xFF; var enabled = true
-var face3 = "😀"; target = target
-var face4 = "😀"; var loaded = load(path)
-var face5 = "😀"; var pathLoaded = load("res://other.gd")
+var face = "${face}"; const Script = preload("res://other.gd")
+var face2 = "${face}"; var marker = "hello"; var count = 0xFF; var enabled = true
+var face3 = "${face}"; target = target
+var face4 = "${face}"; var loaded = load(path)
+var face5 = "${face}"; var pathLoaded = load("res://other.gd")
 `;
 	const facts = provider.parseFile({ module: "ranges.gd", contentHash: "ranges", text });
 	const lines = text.split("\n");
@@ -305,8 +393,8 @@ var face5 = "😀"; var pathLoaded = load("res://other.gd")
 	const count = facts.literals.find((literal) => literal.value === "0xFF");
 	const enabled = facts.literals.find((literal) => literal.value === "true");
 	const imported = facts.imports.find((entry) => entry.specifier === "res://other.gd");
-	const targetStart = targetLine.indexOf("target", targetLine.indexOf("😀"));
-	const loadStart = loadLine.indexOf("load(", loadLine.indexOf("😀"));
+	const targetStart = targetLine.indexOf("target", targetLine.indexOf(face));
+	const loadStart = loadLine.indexOf("load(", loadLine.indexOf(face));
 	const pathStart = pathLine.indexOf("res://");
 	const targetReferences = facts.references.filter(
 		(reference) => reference.name === "target" && reference.range.start.line === 3,
@@ -359,41 +447,63 @@ var face5 = "😀"; var pathLoaded = load("res://other.gd")
 	});
 });
 
-test("extends accessor-bodied property ranges through the accessor body", () => {
+test("extends a property's range through its accessors in every form, and never a local's", () => {
 	const declarations = extractDeclarationsCore(
 		"scripts/accessor.gd",
 		`@export var value: int = 0
 	set(value):
 		value = value
-var after: int = 1
+var speed: float:
+	get = get_speed, set = set_speed
+var inline: int: get = get_inline
+func run():
+	var node = 1
+	set("value", 2)
 `,
 		composeSymbolId,
 	);
-	const value = declarations.find((declaration) => declaration.name === "value");
+	const lines = (name: string) => {
+		const range = declarations.find((declaration) => declaration.name === name)?.range;
+		return `${range?.start.line}-${range?.end.line}`;
+	};
 
-	expect(value?.kind).toBe("property");
-	expect(value?.range.end).toEqual({ line: 2, character: "\t\tvalue = value".length });
+	expect(declarations.find((declaration) => declaration.name === "value")?.range.end).toEqual({
+		line: 2,
+		character: "\t\tvalue = value".length,
+	});
+	expect(["speed", "inline", "node"].map(lines)).toEqual(["3-4", "5-5", "7-7"]);
 });
 
-test("treats accessor parameters as local reference candidates", () => {
+test("treats accessor parameters as local reference candidates, and accessor words as no reference", () => {
 	const references = extractReferencesCore(
 		"scripts/accessor.gd",
-		`var value: int = 0
+		`var value: int = 0:
+	get:
+		return value
 	set(value):
 		value = value
+var speed: float: get = get_speed, set = set_speed
+func run():
+	set("value", get("value"))
 `,
 		composeSymbolId,
 	);
 
 	expect(references.map((reference) => [reference.name, reference.role])).toEqual([
 		["int", "typeUse"],
+		["value", "read"],
 		["value", "write"],
 		["value", "read"],
+		["float", "typeUse"],
+		["get_speed", "read"],
+		["set_speed", "read"],
+		["set", "call"],
+		["get", "call"],
 	]);
-	const valueBindings = references
-		.filter((reference) => reference.name === "value")
+	const setterBindings = references
+		.filter((reference) => reference.name === "value" && reference.range.start.line === 4)
 		.map((reference) => reference.binding);
-	expect(valueBindings.every((binding) => binding.status === "unbound" && binding.reason === "NotIndexed")).toBe(
+	expect(setterBindings.every((binding) => binding.status === "unbound" && binding.reason === "NotIndexed")).toBe(
 		true,
 	);
 });
@@ -467,6 +577,25 @@ func run(value: int) -> void:
 		),
 	).toBe(false);
 	expect(roles("method", "call")[0]?.fromId).toBe(roles("helper", "call")[0]?.fromId);
+});
+
+test("a call before a colon is a call, a node path names no identifier, and a cast takes only its type", () => {
+	const text = `func run(item, local):
+	if is_valid(item) and item is not Node2D and not local:
+		for child in children():
+			pass
+	var node = $Hud/Label if local else %Health
+	local = [%Bar, $"Quoted/Path"].size() % 2
+	return item as Array[int]
+`;
+	const references = extractReferencesCore("scripts/tokens.gd", text, composeSymbolId);
+	const named = (role: string) =>
+		references.filter((reference) => reference.role === role).map((reference) => reference.name);
+
+	expect(named("call")).toEqual(["is_valid", "children", "size"]);
+	expect(named("typeUse")).toEqual(["Node2D", "Array", "int"]);
+	expect(named("read")).toEqual(["item", "item", "local", "local", "item"]);
+	expect(named("write")).toEqual(["child", "local"]);
 });
 
 test("marks a use qualified only when a receiver or path reaches it", () => {

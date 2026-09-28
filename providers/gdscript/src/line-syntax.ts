@@ -1,6 +1,6 @@
 // Owns GDScript line-head syntax, read from each line's tokens.
 
-import { Cursor } from "./cursor.js";
+import { SourceCursor } from "@nyaa-lexicon/protocol";
 import type { ParsedKeyword, ParsedLine, ReferenceToken } from "./parse-model.js";
 import { isIgnorable, type LexedSource } from "./tokens.js";
 
@@ -198,18 +198,15 @@ export function parseLineHeads(lexed: LexedSource, line: number, generic = false
 }
 
 export function basenameOf(module: string): string {
-	const cursor = new Cursor(module);
+	const cursor = new SourceCursor(module);
 	let segment = "";
-	let current = "";
+	let guard = -1;
 	while (cursor.good()) {
-		const character = cursor.next();
-		if (character === "/") {
-			segment = current;
-			current = "";
-		} else {
-			current += character;
-		}
+		if (cursor.offset <= guard) throw new Error("basename scan failed to advance");
+		guard = cursor.offset;
+		const current = cursor.readWhile((character) => character !== "/");
+		if (current !== "") segment = current;
+		cursor.take("/");
 	}
-	segment = current === "" ? segment : current;
 	return segment.endsWith(".gd") ? segment.slice(0, -3) : segment;
 }
