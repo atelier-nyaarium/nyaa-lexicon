@@ -85,16 +85,14 @@ export function nothingToDoubt(symbolId: string): Refusal {
 ////////////////////////////////
 //  Notes
 
-export function noteFieldsEmpty(fields: readonly string[]): Refusal {
-	return mint(`every field needs text, or \`n/a\` when nothing applies. Empty: ${fields.join(", ")}`);
+export function noteOpensWith(block: string): Refusal {
+	return mint(
+		`a note opens with a plain paragraph, the summary cards and hovers show; this one opens with a ${block}. Put the summary first`,
+	);
 }
 
-export function noteSummaryOneLine(): Refusal {
-	return mint(`summary is one line. Move the rest into description`);
-}
-
-export function noteFieldTooLong(field: string, max: number, length: number): Refusal {
-	return mint(`${field} is at most ${max} characters, and this is ${length}`);
+export function noteTooLong(max: number, length: number): Refusal {
+	return mint(`a note is at most ${max} characters, and this is ${length}`);
 }
 
 export function noteNotApplicable(kind: string): Refusal {

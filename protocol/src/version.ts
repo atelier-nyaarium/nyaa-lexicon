@@ -102,10 +102,13 @@ export type Compatibility =
 // 3.24.0: `symbolEdges`, both directions by role, each site credited to the declaration owning it; an
 // older daemon answers it as an unknown method. `callHierarchy` credits a call written in a local to
 // the local's owner, in both directions.
-export const PROTOCOL_VERSION = "3.24.0" as const;
+// 4.0.0: a note is one markdown `text` opening with its summary paragraph, in place of `summary`,
+// `description`, `why` and `gotchas`; empty text removes it. `writeNote` takes `text`. Links and
+// backlinks lose `field`; a ref problem carries `at`. A clean break, no window.
+export const PROTOCOL_VERSION = "4.0.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
-export const OLDEST_CLIENT_MAJOR = 3;
+export const OLDEST_CLIENT_MAJOR = 4;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

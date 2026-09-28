@@ -459,19 +459,16 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	writeNote: async () => {
 		const note = {
 			symbolId: harness.symbol("add", "cart.ref"),
-			summary: "Adds one item to a [Cart](ref://cart.ref:Cart).",
-			description: "n/a",
-			why: "N/A",
-			gotchas: "n/a",
+			text: "Adds one item to a [Cart](ref://cart.ref:Cart).",
 			expectedRevision: 0,
 			author: AGENT,
 		};
-		const broken = await ask("writeNote", { ...note, summary: "Adds to a [cart](ref://cart.ref:Ghost)." });
+		const broken = await ask("writeNote", { ...note, text: "Adds to a [cart](ref://cart.ref:Ghost)." });
 		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain("ref://cart.ref:Cart");
 		const saved = await ask("writeNote", note);
 		expect(saved.outcome === "saved" && saved.note).toMatchObject({
 			revision: 1,
-			why: null,
+			text: note.text,
 			links: [{ state: "ok", symbolId: cart }],
 		});
 	},
@@ -494,8 +491,12 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	},
 	resolveNoteProposal: async () => {
 		const symbolId = harness.symbol("add", "cart.ref");
-		const fields = { summary: "Adds one item.", description: "n/a", why: "n/a", gotchas: "n/a" };
-		const proposed = await ask("writeNote", { symbolId, ...fields, expectedRevision: 1, author: AGENT });
+		const proposed = await ask("writeNote", {
+			symbolId,
+			text: "Adds one item.",
+			expectedRevision: 1,
+			author: AGENT,
+		});
 		expect(proposed.outcome).toBe("proposed");
 		const expectedProposal = proposed.outcome === "proposed" ? (proposed.note.proposal?.at ?? -1) : -1;
 		const accepted = await ask("resolveNoteProposal", {
@@ -504,7 +505,7 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			expectedRevision: 1,
 			expectedProposal,
 		});
-		expect(accepted.outcome === "saved" && accepted.note).toMatchObject({ revision: 2, summary: "Adds one item." });
+		expect(accepted.outcome === "saved" && accepted.note).toMatchObject({ revision: 2, text: "Adds one item." });
 	},
 	searchRefs: async () => {
 		const found = await ask("searchRefs", { text: "car", limit: 10 });
@@ -515,13 +516,8 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	},
 	noteBacklinks: async () => {
 		const symbolId = harness.symbol("add", "cart.ref");
-		const fields = {
-			summary: "Fills a [Cart](ref://cart.ref:Cart).",
-			description: "n/a",
-			why: "n/a",
-			gotchas: "n/a",
-		};
-		await ask("writeNote", { symbolId, ...fields, expectedRevision: 2, author: { kind: "person" } });
+		const text = "Fills a [Cart](ref://cart.ref:Cart).";
+		await ask("writeNote", { symbolId, text, expectedRevision: 2, author: { kind: "person" } });
 		const backlinks = await ask("noteBacklinks", { symbolId: cart });
 		expect(backlinks.notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
 	},

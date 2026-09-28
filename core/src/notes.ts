@@ -7,13 +7,10 @@ import {
 	formatRef,
 	isLocalSymbol,
 	moduleOf,
-	NOT_APPLICABLE,
-	NOTE_FIELDS,
 	type Note,
 	type NoteAuthor,
 	NoteAuthorSchema,
 	type NoteBacklinks,
-	type NoteField,
 	type NoteLink,
 	type NoteOutcome,
 	type NoteProposal,
@@ -24,13 +21,8 @@ import {
 	walkChain,
 } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
-import {
-	MODULE_TARGET,
-	type NoteFieldValues,
-	type NoteLinkRow,
-	type NoteProposalRow,
-	type NoteRow,
-} from "./noteRows.js";
+import { MODULE_TARGET, type NoteLinkRow, type NoteProposalRow, type NoteRow } from "./noteRows.js";
+import { noteOpening, type OpeningBlock } from "./noteText.js";
 import { ReadContext } from "./readContext.js";
 import * as refusal from "./refusals.js";
 import type { IndexStore } from "./store.js";
@@ -38,13 +30,10 @@ import type { IndexStore } from "./store.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-/** Every field as the writer sent it: text, or `n/a`. */
+/** Empty text removes the note. */
 export interface NoteWrite {
 	symbolId: string;
-	summary: string;
-	description: string;
-	why: string;
-	gotchas: string;
+	text: string;
 	/** 0 when no note stands. */
 	expectedRevision: number;
 	author?: NoteAuthor | undefined;
@@ -57,7 +46,6 @@ export type LedgerNoteOutcome = Exclude<NoteOutcome, Refused> | (Omit<Refused, "
 
 /** A ref that resolved, not yet claimed. */
 interface ResolvedRef {
-	field: NoteField;
 	written: string;
 	target: { kind: "symbol"; symbolId: string } | { kind: "module"; module: string };
 }
@@ -67,8 +55,18 @@ type Checked<T> = { ok: true; value: T } | { ok: false; outcome: LedgerNoteOutco
 ////////////////////////////////
 //  Constants
 
-const SUMMARY_MAX = 300;
-const FIELD_MAX = 16_000;
+const NOTE_MAX = 16_000;
+/** Opening blocks, as refusals name them. */
+const BLOCK_NAMES: Record<OpeningBlock, string> = {
+	heading: "heading",
+	list: "list",
+	quote: "quote",
+	code: "code block",
+	rule: "rule",
+	html: "HTML block",
+	definition: "link definition",
+	block: "block",
+};
 const BACKLINKS_SHOWN = 50;
 const CANDIDATES_SHOWN = 8;
 const REFS_SHOWN = 30;
@@ -106,10 +104,6 @@ function heldByPerson(row: NoteRow): boolean {
 	return isPerson(authorOf(row.editedBy)) || isPerson(authorOf(row.confirmedBy));
 }
 
-function allEmpty(values: NoteFieldValues): boolean {
-	return NOTE_FIELDS.every((field) => values[field] === null);
-}
-
 /** Each ref at its target's current address, rewritten from the end so indices hold. */
 function rewriteRefs(text: string, current: ReadonlyMap<string, string>): string {
 	let out = text;
@@ -135,10 +129,10 @@ export class NoteLedger {
 		return row === null ? null : this.render(row);
 	}
 
-	/** An agent's write over a note a person holds becomes a proposal; every `n/a` removes the note. */
+	/** An agent's write over a note a person holds becomes a proposal; empty text removes the note. */
 	write(request: NoteWrite): LedgerNoteOutcome {
-		const values = this.fieldValues(request);
-		if (!values.ok) return values.outcome;
+		const text = this.checkedText(request.text);
+		if (!text.ok) return text.outcome;
 
 		const declaration = this.store.declaration(request.symbolId);
 		if (declaration === null) return refused(refusal.subjectRefused(request.symbolId, this.store));
@@ -154,7 +148,8 @@ export class NoteLedger {
 			});
 		}
 
-		const refs = this.resolveRefs(values.value);
+		// Offsets into the text as sent.
+		const refs = this.resolveRefs(request.text);
 		if (!refs.ok) return refs.outcome;
 
 		const writer = request.author ?? null;
@@ -166,7 +161,7 @@ export class NoteLedger {
 				const proposedAt = Math.max(now, replaced + 1);
 				this.store.notes.propose(
 					row.subjectId,
-					{ ...values.value, baseRevision: row.revision, proposedBy: authorText(writer), proposedAt },
+					{ text: text.value, baseRevision: row.revision, proposedBy: authorText(writer), proposedAt },
 					this.claimLinks(refs.value, now),
 				);
 				return {
@@ -174,7 +169,7 @@ export class NoteLedger {
 					note: this.render(this.store.notes.byAddress(request.symbolId) as NoteRow),
 				};
 			}
-			if (allEmpty(values.value)) {
+			if (text.value === "") {
 				if (row !== null) this.store.notes.remove(row.subjectId);
 				return { outcome: "saved", note: null };
 			}
@@ -185,7 +180,7 @@ export class NoteLedger {
 			this.store.notes.save(
 				subject.subjectId,
 				{
-					...values.value,
+					text: text.value,
 					recordedAs: request.symbolId,
 					revision: revision + 1,
 					author: row === null ? authorText(writer) : row.author,
@@ -266,35 +261,33 @@ export class NoteLedger {
 
 		// The proposal's refs as its targets stand now, so a rename since resolves to the same symbol.
 		const shown = this.proposalOf(proposal, row.subjectId);
-		const gone = shown.links.filter((link) => link.state === "broken");
-		if (gone.length > 0) {
-			return refused(refusal.noteRefsRefused(gone.length), {
-				refs: gone.map((link) => ({
-					field: link.field,
-					ref: link.written,
+		const gone = new Set(shown.links.filter((link) => link.state === "broken").map((link) => link.written));
+		if (gone.size > 0) {
+			const refs = findRefs(shown.text)
+				.filter((found) => gone.has(found.ref))
+				.map((found) => ({
+					ref: found.ref,
+					at: found.index,
 					problem: refusal.refTargetGone(),
 					candidates: [],
-				})),
-			});
+				}));
+			return refused(refusal.noteRefsRefused(refs.length), { refs });
 		}
-		const values: NoteFieldValues = {
-			summary: shown.summary,
-			description: shown.description,
-			why: shown.why,
-			gotchas: shown.gotchas,
-		};
-		const refs = this.resolveRefs(values);
+		// Current addresses can lengthen it, so the text is checked as it will stand.
+		const text = this.checkedText(shown.text);
+		if (!text.ok) return text.outcome;
+		const refs = this.resolveRefs(text.value);
 		if (!refs.ok) return refs.outcome;
 		const now = this.clock.now();
 		return this.store.noteWrite(() => {
-			if (allEmpty(values)) {
+			if (text.value === "") {
 				this.store.notes.remove(row.subjectId);
 				return { outcome: "saved", note: null };
 			}
 			this.store.notes.save(
 				row.subjectId,
 				{
-					...values,
+					text: text.value,
 					recordedAs: row.symbolId,
 					revision: row.revision + 1,
 					author: row.author,
@@ -351,51 +344,59 @@ export class NoteLedger {
 	/** Notes whose refs name a symbol, or a file when `symbolId` is a module path. */
 	backlinks(symbolId: string, limit = BACKLINKS_SHOWN): NoteBacklinks {
 		const subject = this.store.subjects.forAddress(symbolId);
-		if (subject !== null) return this.store.notes.backlinks(subject.subjectId, limit);
-		if (this.store.depthOf(symbolId) !== null) return this.store.notes.backlinks(MODULE_TARGET + symbolId, limit);
-		return { notes: [], total: 0 };
+		const target =
+			subject !== null
+				? subject.subjectId
+				: this.store.depthOf(symbolId) !== null
+					? MODULE_TARGET + symbolId
+					: null;
+		if (target === null) return { notes: [], total: 0 };
+		const found = this.store.notes.backlinks(target, limit);
+		return {
+			notes: found.notes.map((note) => ({
+				symbolId: note.symbolId,
+				summary: this.backlinkSummary(note.subjectId, note.text),
+			})),
+			total: found.total,
+		};
+	}
+
+	/** Only the summary's own refs are read at current addresses. */
+	private backlinkSummary(subjectId: string, text: string): string | null {
+		const opening = noteOpening(text);
+		if (opening.kind !== "paragraph") return null;
+		const written = new Set(findRefs(opening.summary).map((found) => found.ref));
+		if (written.size === 0) return opening.summary;
+		const links = this.store.notes.links(subjectId).filter((link) => written.has(link.written));
+		return this.shown(opening.summary, links).text;
 	}
 
 	////////////////////////////////
 	//  Validation
 
-	private fieldValues(request: NoteWrite): Checked<NoteFieldValues> {
-		const values: Partial<NoteFieldValues> = {};
-		const empty: NoteField[] = [];
-		for (const field of NOTE_FIELDS) {
-			const trimmed = request[field].trim();
-			if (trimmed === "") empty.push(field);
-			else values[field] = trimmed.toLowerCase() === NOT_APPLICABLE ? null : trimmed;
+	/** Trimmed; empty removes the note. */
+	private checkedText(text: string): Checked<string> {
+		const trimmed = text.trim();
+		if (trimmed.length > NOTE_MAX) {
+			return { ok: false, outcome: refused(refusal.noteTooLong(NOTE_MAX, trimmed.length)) };
 		}
-		if (empty.length > 0) return { ok: false, outcome: refused(refusal.noteFieldsEmpty(empty)) };
-
-		const summary = values.summary ?? null;
-		if (summary !== null && /[\r\n]/.test(summary)) {
-			return { ok: false, outcome: refused(refusal.noteSummaryOneLine()) };
+		// Untrimmed, so an indented code block still reads as one.
+		const opening = noteOpening(text);
+		if (opening.kind !== "paragraph" && opening.kind !== "empty") {
+			return { ok: false, outcome: refused(refusal.noteOpensWith(BLOCK_NAMES[opening.kind])) };
 		}
-		for (const field of NOTE_FIELDS) {
-			const text = values[field] ?? null;
-			const max = field === "summary" ? SUMMARY_MAX : FIELD_MAX;
-			if (text !== null && text.length > max) {
-				return { ok: false, outcome: refused(refusal.noteFieldTooLong(field, max, text.length)) };
-			}
-		}
-		return { ok: true, value: values as NoteFieldValues };
+		return { ok: true, value: trimmed };
 	}
 
-	/** Every ref in every field must name one indexed declaration or file. */
-	private resolveRefs(values: NoteFieldValues): Checked<ResolvedRef[]> {
+	/** Every ref must name one indexed declaration or file. */
+	private resolveRefs(text: string): Checked<ResolvedRef[]> {
 		const resolved: ResolvedRef[] = [];
 		const problems: NoteRefProblem[] = [];
 		const context = new ReadContext(this.store);
-		for (const field of NOTE_FIELDS) {
-			const text = values[field];
-			if (text === null) continue;
-			for (const { ref } of findRefs(text)) {
-				const found = this.resolveRef(ref, context);
-				if (found.ok) resolved.push({ field, written: ref, target: found.target });
-				else problems.push({ field, ref, problem: found.problem, candidates: found.candidates });
-			}
+		for (const { ref, index } of findRefs(text)) {
+			const found = this.resolveRef(ref, context);
+			if (found.ok) resolved.push({ written: ref, target: found.target });
+			else problems.push({ ref, at: index, problem: found.problem, candidates: found.candidates });
 		}
 		if (problems.length > 0) {
 			return { ok: false, outcome: refused(refusal.noteRefsRefused(problems.length), { refs: problems }) };
@@ -460,16 +461,10 @@ export class NoteLedger {
 	private claimLinks(refs: readonly ResolvedRef[], now: number): NoteLinkRow[] {
 		return refs.map((ref) => {
 			if (ref.target.kind === "module") {
-				return {
-					field: ref.field,
-					written: ref.written,
-					target: MODULE_TARGET + ref.target.module,
-					targetDigest: null,
-				};
+				return { written: ref.written, target: MODULE_TARGET + ref.target.module, targetDigest: null };
 			}
 			const subject = this.store.subjects.claim(ref.target.symbolId, now);
 			return {
-				field: ref.field,
 				written: ref.written,
 				target: subject?.subjectId ?? MODULE_TARGET,
 				targetDigest: subject?.lastDigest ?? null,
@@ -480,37 +475,29 @@ export class NoteLedger {
 	////////////////////////////////
 	//  Rendering
 
-	/** Each field with its refs at their targets' current addresses. */
-	private shown(values: NoteFieldValues, rows: readonly NoteLinkRow[]): NoteFieldValues & { links: NoteLink[] } {
+	/** The text with its refs at their targets' current addresses. */
+	private shown(text: string, rows: readonly NoteLinkRow[]): { text: string; links: NoteLink[] } {
 		const context = new ReadContext(this.store);
 		const links = rows.map((link) => this.linkNow(link, context));
-		const text = (field: NoteField) => {
-			const value = values[field];
-			const current = new Map(
-				links.filter((link) => link.field === field).map((link) => [link.written, link.current]),
-			);
-			return value === null ? null : rewriteRefs(value, current);
-		};
-		return {
-			summary: text("summary"),
-			description: text("description"),
-			why: text("why"),
-			gotchas: text("gotchas"),
-			links,
-		};
+		return { text: rewriteRefs(text, new Map(links.map((link) => [link.written, link.current]))), links };
+	}
+
+	private summaryOf(text: string): Pick<Note, "summary" | "restAt"> {
+		const opening = noteOpening(text);
+		return opening.kind === "paragraph"
+			? { summary: opening.summary, restAt: opening.restAt }
+			: { summary: null, restAt: 0 };
 	}
 
 	private render(row: NoteRow): Note {
-		const shown = this.shown(row, this.store.notes.links(row.subjectId));
+		const shown = this.shown(row.text, this.store.notes.links(row.subjectId));
 		const proposal = this.store.notes.proposal(row.subjectId);
 		return {
 			symbolId: row.symbolId,
 			recordedAs: row.recordedAs,
 			revision: row.revision,
-			summary: shown.summary,
-			description: shown.description,
-			why: shown.why,
-			gotchas: shown.gotchas,
+			text: shown.text,
+			...this.summaryOf(shown.text),
 			author: authorOf(row.author),
 			authoredAt: row.authoredAt,
 			editedBy: authorOf(row.editedBy),
@@ -529,7 +516,7 @@ export class NoteLedger {
 
 	private proposalOf(proposal: NoteProposalRow, subjectId: string): NoteProposal {
 		return {
-			...this.shown(proposal, this.store.notes.proposalLinks(subjectId)),
+			...this.shown(proposal.text, this.store.notes.proposalLinks(subjectId)),
 			baseRevision: proposal.baseRevision,
 			by: authorOf(proposal.proposedBy),
 			at: proposal.proposedAt,
@@ -538,7 +525,7 @@ export class NoteLedger {
 
 	/** A link at its target's current address, or broken where the target is gone. */
 	private linkNow(link: NoteLinkRow, context: ReadContext): NoteLink {
-		const broken: NoteLink = { field: link.field, written: link.written, current: link.written, state: "broken" };
+		const broken: NoteLink = { written: link.written, current: link.written, state: "broken" };
 		if (link.target.startsWith(MODULE_TARGET)) {
 			const module = link.target.slice(MODULE_TARGET.length);
 			return module !== "" && this.store.depthOf(module) !== null
@@ -553,7 +540,6 @@ export class NoteLedger {
 		const declaration = declarations.find((row) => row.symbolId === at.symbolId);
 		if (module === null || segments === null || declaration === undefined) return broken;
 		return {
-			field: link.field,
 			written: link.written,
 			current: formatRef(module, segments),
 			symbolId: at.symbolId,

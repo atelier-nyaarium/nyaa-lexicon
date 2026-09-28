@@ -99,8 +99,8 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 	};
 }
 
-/** Every field answered, none saying anything. */
-const NOTHING = { summary: "Nothing.", description: "n/a", why: "n/a", gotchas: "n/a", expectedRevision: 0 };
+/** Minimal valid note. */
+const NOTHING = { text: "Nothing.", expectedRevision: 0 };
 
 beforeEach(async () => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-e2e-"));
@@ -187,7 +187,7 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		await callDaemon(daemon.lock, "indexFile", { module: "item.ref" });
 		const [item] = await backend.findByName("Item", undefined);
 		const itemId = item?.symbolId as string;
-		expect((await backend.writeNote({ symbolId: itemId, ...NOTHING, summary: "An item." })).outcome).toBe("saved");
+		expect((await backend.writeNote({ symbolId: itemId, ...NOTHING, text: "An item." })).outcome).toBe("saved");
 		files.delete("item.ref");
 		await callDaemon(daemon.lock, "indexFile", { module: "item.ref" });
 
@@ -239,7 +239,7 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		const [add] = await backend.findByName("add", undefined);
 		const cartId = cart?.symbolId as string;
 		const symbolId = add?.symbolId as string;
-		const note = { ...NOTHING, symbolId, summary: "Adds one item to a [Cart](ref://cart.ref:Cart)." };
+		const note = { ...NOTHING, symbolId, text: "Adds one item to a [Cart](ref://cart.ref:Cart)." };
 
 		expect((await writeNote(backend, note)).isError).toBeUndefined();
 		expect(await backend.readNote(symbolId)).toMatchObject({
@@ -255,7 +255,7 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		expect((await writeNote(backend, note)).isError).toBe(true);
 		const broken = await backend.writeNote({
 			...note,
-			summary: "Adds to a [cart](ref://cart.ref:Ghost).",
+			text: "Adds to a [cart](ref://cart.ref:Ghost).",
 			expectedRevision: 1,
 		});
 		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain("ref://cart.ref:Cart");

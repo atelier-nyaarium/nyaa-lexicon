@@ -3,6 +3,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { hashContent, moduleOf, sameNameAndKind } from "@nyaa-lexicon/protocol";
+import { insertNote } from "./noteRows.js";
 import type { PatternCoverage } from "./patternDigest.js";
 
 ////////////////////////////////
@@ -160,10 +161,7 @@ export interface SalvagedNote {
 	subjectId: string | null;
 	recordedAs: string;
 	revision: number;
-	summary: string | null;
-	description: string | null;
-	why: string | null;
-	gotchas: string | null;
+	text: string;
 	author: string | null;
 	authoredAt: number;
 	editedBy: string | null;
@@ -178,7 +176,7 @@ export interface SalvagedNote {
 
 export interface SalvagedNoteLink {
 	subjectId: string;
-	field: string;
+	proposed: boolean;
 	written: string;
 	target: string;
 	targetDigest: string | null;
@@ -187,10 +185,7 @@ export interface SalvagedNoteLink {
 export interface SalvagedNoteProposal {
 	subjectId: string;
 	baseRevision: number;
-	summary: string | null;
-	description: string | null;
-	why: string | null;
-	gotchas: string | null;
+	text: string;
 	proposedBy: string | null;
 	proposedAt: number;
 }
@@ -291,16 +286,13 @@ CREATE TABLE IF NOT EXISTS gaps (
   PRIMARY KEY (subjectId, question)
 );
 
--- One note per subject: four fields, each null when its writer answered n/a. Author columns hold
--- the harness's JSON; sourceDigest is the subject's digest when last saved or confirmed.
+-- One note per subject: markdown opening with its summary paragraph. Author columns hold the
+-- harness's JSON; sourceDigest is the subject's digest when last saved or confirmed.
 CREATE TABLE IF NOT EXISTS symbol_notes (
   subjectId    TEXT PRIMARY KEY,
   recordedAs   TEXT NOT NULL,
   revision     INTEGER NOT NULL CHECK (revision > 0),
-  summary      TEXT,
-  description  TEXT,
-  why          TEXT,
-  gotchas      TEXT,
+  text         TEXT NOT NULL,
   author       TEXT,
   authoredAt   INTEGER NOT NULL,
   editedBy     TEXT,
@@ -314,25 +306,24 @@ CREATE TABLE IF NOT EXISTS symbol_notes (
 );
 
 -- A note's refs as written, each with what it named: a subject id, or "module:<path>" for a whole
--- file. targetDigest is the target's digest when the note was last saved or confirmed.
+-- file. targetDigest is the target's digest when the note was last saved or confirmed. proposed is
+-- 1 for a pending proposal's refs.
 CREATE TABLE IF NOT EXISTS symbol_note_links (
   subjectId    TEXT NOT NULL,
-  field        TEXT NOT NULL,
+  proposed     INTEGER NOT NULL CHECK (proposed IN (0, 1)),
   written      TEXT NOT NULL,
   target       TEXT NOT NULL,
   targetDigest TEXT,
-  PRIMARY KEY (subjectId, field, written)
+  PRIMARY KEY (subjectId, proposed, written)
 );
 CREATE INDEX IF NOT EXISTS symbol_note_links_target ON symbol_note_links(target);
 
 -- An agent's replacement for a note a person last edited, until that person accepts or rejects it.
+-- Empty text proposes removing the note.
 CREATE TABLE IF NOT EXISTS symbol_note_proposals (
   subjectId    TEXT PRIMARY KEY,
   baseRevision INTEGER NOT NULL,
-  summary      TEXT,
-  description  TEXT,
-  why          TEXT,
-  gotchas      TEXT,
+  text         TEXT NOT NULL,
   proposedBy   TEXT,
   proposedAt   INTEGER NOT NULL
 );
@@ -393,6 +384,9 @@ export const KNOWLEDGE_TABLES = [
 
 /** Checked before the insert, so a salvaged row from another version cannot fail the rebuild. */
 const EVIDENCE = new Set<string>(EVIDENCE_VALUES);
+
+/** A four-field note's columns. */
+const NOTE_FIELD_COLUMNS = ["summary", "description", "why", "gotchas"] as const;
 
 const COVERAGE = new Set<string>(["commentsStripped", "commentsKept"]);
 
@@ -483,8 +477,105 @@ export function rekeyKnowledge(db: DatabaseSync, now: number): void {
 	db.exec("DROP TABLE gaps_by_address");
 }
 
+/** A four-field note as paragraphs, in field order. */
+function joinedFields(row: Record<string, unknown>): string {
+	return NOTE_FIELD_COLUMNS.map((column) => row[column])
+		.filter((value): value is string => typeof value === "string" && value.trim() !== "")
+		.map((value) => value.trim())
+		.join("\n\n");
+}
+
+/** A seeded describe answer nobody wrote, edited or confirmed. */
+function untouchedSeed(row: Record<string, unknown>, seededAt: number | null): boolean {
+	const authoredAt = row["authoredAt"];
+	return (
+		seededAt !== null &&
+		row["revision"] === 1 &&
+		row["author"] == null &&
+		row["editedBy"] == null &&
+		row["confirmedBy"] == null &&
+		typeof authoredAt === "number" &&
+		authoredAt <= seededAt
+	);
+}
+
+/**
+ * In the caller's transaction, once. Untouched seeds go; every other note and proposal becomes one
+ * text.
+ */
+export function joinNoteFields(db: DatabaseSync, seededAt: number | null): void {
+	// A rename rewrites any view over the table; none may survive it.
+	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
+	// A store interrupted between creating these may lack one; it reads as empty.
+	const columns: Record<string, string> = {
+		symbol_notes: "subjectId TEXT",
+		symbol_note_links: "subjectId TEXT, field TEXT, written TEXT, target TEXT, targetDigest TEXT",
+		symbol_note_proposals: "subjectId TEXT, baseRevision INTEGER, proposedBy TEXT, proposedAt INTEGER",
+	};
+	const tables = Object.keys(columns);
+	for (const table of tables) {
+		const held = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+		if (held !== undefined) db.exec(`ALTER TABLE ${table} RENAME TO ${table}_by_field`);
+		else db.exec(`CREATE TABLE ${table}_by_field (${columns[table]})`);
+	}
+	// Renamed tables keep the trigger and index names; recreated once they drop.
+	db.exec(KNOWLEDGE_SCHEMA);
+
+	for (const row of db.prepare("SELECT * FROM symbol_notes_by_field").all() as Array<Record<string, unknown>>) {
+		const text = joinedFields(row);
+		if (text === "" || untouchedSeed(row, seededAt)) continue;
+		insertNote(
+			db,
+			row["subjectId"] as string,
+			{
+				recordedAs: row["recordedAs"] as string,
+				revision: row["revision"] as number,
+				text,
+				author: row["author"] as string | null,
+				authoredAt: row["authoredAt"] as number,
+				editedBy: row["editedBy"] as string | null,
+				editedAt: row["editedAt"] as number,
+				confirmedBy: row["confirmedBy"] as string | null,
+				confirmedAt: row["confirmedAt"] as number | null,
+				sourceDigest: row["sourceDigest"] as string | null,
+				doubtBy: row["doubtBy"] as string | null,
+				doubtReason: row["doubtReason"] as string | null,
+				doubtAt: row["doubtAt"] as number | null,
+			},
+			false,
+		);
+	}
+	const proposal = db.prepare(
+		"INSERT INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt) VALUES (?, ?, ?, ?, ?)",
+	);
+	const proposals = db
+		.prepare("SELECT * FROM symbol_note_proposals_by_field WHERE subjectId IN (SELECT subjectId FROM symbol_notes)")
+		.all() as Array<Record<string, unknown>>;
+	for (const row of proposals) {
+		proposal.run(
+			row["subjectId"] as string,
+			row["baseRevision"] as number,
+			joinedFields(row),
+			row["proposedBy"] as string | null,
+			row["proposedAt"] as number,
+		);
+	}
+	db.exec(`
+		INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
+		SELECT subjectId, field LIKE 'proposal:%', written, target, targetDigest FROM symbol_note_links_by_field
+		WHERE subjectId IN (SELECT subjectId FROM symbol_notes) ORDER BY rowid
+	`);
+
+	for (const table of tables) db.exec(`DROP TABLE ${table}_by_field`);
+	db.exec(KNOWLEDGE_SCHEMA);
+}
+
 /** Every salvaged table read once into closed values; nothing past this reads a raw row. */
-export function normalizeSalvaged(raw: Record<string, Array<Record<string, unknown>>>, now: number): NormalizedSalvage {
+export function normalizeSalvaged(
+	raw: Record<string, Array<Record<string, unknown>>>,
+	now: number,
+	seededAt: number | null = null,
+): NormalizedSalvage {
 	let dropped = 0;
 	const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
 	// A whole number, or a numeric string from a text-typed column, or a boolean flag; else the fallback.
@@ -586,18 +677,18 @@ export function normalizeSalvaged(raw: Record<string, Array<Record<string, unkno
 	const notes: SalvagedNote[] = [];
 	for (const row of raw["symbol_notes"] ?? []) {
 		const recordedAs = addressOf(row);
-		if (recordedAs === null) {
+		// One text, or four fields.
+		const text = str(row["text"]) ?? joinedFields(row);
+		if (recordedAs === null || text === "") {
 			dropped++;
 			continue;
 		}
+		if (untouchedSeed(row, seededAt)) continue;
 		notes.push({
 			subjectId: str(row["subjectId"]),
 			recordedAs,
 			revision: Math.max(1, num(row["revision"], 1)),
-			summary: str(row["summary"]),
-			description: str(row["description"]),
-			why: str(row["why"]),
-			gotchas: str(row["gotchas"]),
+			text,
 			author: str(row["author"]),
 			authoredAt: num(row["authoredAt"], 0),
 			editedBy: str(row["editedBy"]),
@@ -614,14 +705,15 @@ export function normalizeSalvaged(raw: Record<string, Array<Record<string, unkno
 	const noteLinks: SalvagedNoteLink[] = [];
 	for (const row of raw["symbol_note_links"] ?? []) {
 		const subjectId = str(row["subjectId"]);
-		const field = str(row["field"]);
 		const written = str(row["written"]);
 		const target = str(row["target"]);
-		if (subjectId === null || field === null || written === null || target === null) {
+		if (subjectId === null || written === null || target === null) {
 			dropped++;
 			continue;
 		}
-		noteLinks.push({ subjectId, field, written, target, targetDigest: str(row["targetDigest"]) });
+		// Four-field stores mark proposal links by a `proposal:` field.
+		const proposed = num(row["proposed"], 0) === 1 || (str(row["field"])?.startsWith("proposal:") ?? false);
+		noteLinks.push({ subjectId, proposed, written, target, targetDigest: str(row["targetDigest"]) });
 	}
 
 	const noteProposals: SalvagedNoteProposal[] = [];
@@ -634,10 +726,7 @@ export function normalizeSalvaged(raw: Record<string, Array<Record<string, unkno
 		noteProposals.push({
 			subjectId,
 			baseRevision: Math.max(1, num(row["baseRevision"], 1)),
-			summary: str(row["summary"]),
-			description: str(row["description"]),
-			why: str(row["why"]),
-			gotchas: str(row["gotchas"]),
+			text: str(row["text"]) ?? joinedFields(row),
 			proposedBy: str(row["proposedBy"]),
 			proposedAt: num(row["proposedAt"], 0),
 		});

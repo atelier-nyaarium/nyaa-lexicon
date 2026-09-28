@@ -165,8 +165,8 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 	};
 }
 
-/** Every field answered, none saying anything. */
-const NOTHING = { summary: "n/a", description: "n/a", why: "n/a", gotchas: "n/a", expectedRevision: 0 };
+/** Empty text removes. */
+const NOTHING = { text: "", expectedRevision: 0 };
 
 const described: DescribeResult = {
 	symbol: summary("Cart", { kind: "class", signature: "class Cart" }),
@@ -324,10 +324,9 @@ describe("the note tools", () => {
 		symbolId: CART,
 		recordedAs: CART,
 		revision: 1,
+		text: "Holds items.\n\nOne per shopper.",
 		summary: "Holds items.",
-		description: null,
-		why: null,
-		gotchas: null,
+		restAt: 12,
 		author: null,
 		authoredAt: 1,
 		editedBy: null,
@@ -345,7 +344,7 @@ describe("the note tools", () => {
 		expect(result.isError).toBeUndefined();
 	});
 
-	it("resolves a name, then sends every field and the harness's author untouched", async () => {
+	it("resolves a name, then sends the text and the harness's author untouched", async () => {
 		const sent: unknown[] = [];
 		const author = { kind: "client" as const, name: "claude-code", version: null };
 		const result = await writeNote(
@@ -356,11 +355,11 @@ describe("the note tools", () => {
 					return { outcome: "saved", note: saved };
 				},
 			}),
-			{ name: "Cart", ...NOTHING, summary: "Holds items.", author },
+			{ name: "Cart", ...NOTHING, text: "Holds items.", author },
 		);
 
 		expect(result.isError).toBeUndefined();
-		expect(sent).toEqual([{ symbolId: CART, ...NOTHING, summary: "Holds items.", author }]);
+		expect(sent).toEqual([{ symbolId: CART, ...NOTHING, text: "Holds items.", author }]);
 	});
 
 	it("marks a refused write and a refused doubt as errors, and a proposal as neither", async () => {
@@ -383,7 +382,7 @@ describe("the note tools", () => {
 			findByName: async () => [summary("Cart")],
 			noteBacklinks: async (target) => {
 				asked.push(target);
-				return { notes: [{ symbolId: CART, summary: null, fields: ["description"] }], total: 1 };
+				return { notes: [{ symbolId: CART, summary: null }], total: 1 };
 			},
 		});
 
@@ -397,7 +396,7 @@ describe("the note tools", () => {
 		const result = await describeSymbol(backend({ describe: async () => described, readNote: async () => saved }), {
 			symbolId: CART,
 		});
-		expect(result.content[0]?.text).toContain(saved.summary);
+		expect(result.content[0]?.text).toContain("Holds items. `read_note` shows the rest.");
 	});
 });
 

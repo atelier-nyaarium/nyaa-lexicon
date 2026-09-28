@@ -689,7 +689,7 @@ export const DAEMON_METHODS = {
 		mutates: false,
 		budget: "read",
 	},
-	/** Save a note: every field text or `n/a`, refs checked. */
+	/** Save a note's text, refs checked; empty text removes it. */
 	writeNote: {
 		request: WriteNoteRequestSchema,
 		response: NoteOutcomeSchema,

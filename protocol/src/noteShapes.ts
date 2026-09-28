@@ -1,22 +1,10 @@
-// A knowledge note: one per symbol, four fields a writer answers or declines with `n/a`, the refs
-// they carry, who wrote it, and what has moved since.
+// A knowledge note: one per symbol, a markdown text opening with its summary paragraph, the refs it
+// carries, who wrote it, and what has moved since.
 
 import { z } from "zod";
 
 ////////////////////////////////
-//  Constants
-
-export const NOTE_FIELDS = ["summary", "description", "why", "gotchas"] as const;
-
-/** A writer's explicit "nothing supported to say"; stored as null. */
-export const NOT_APPLICABLE = "n/a";
-
-////////////////////////////////
 //  Schemas
-
-export const NoteFieldSchema = z.enum(NOTE_FIELDS).meta({ id: "NoteField" });
-
-export type NoteField = z.infer<typeof NoteFieldSchema>;
 
 /** Who wrote, as the harness attests it; an agent never names itself. */
 export const NoteAuthorSchema = z
@@ -40,7 +28,6 @@ export type NoteAuthor = z.infer<typeof NoteAuthorSchema>;
 /** One ref a note carries, at its target's current address. */
 export const NoteLinkSchema = z
 	.object({
-		field: NoteFieldSchema,
 		/** As the writer wrote it. */
 		written: z.string(),
 		/** At the target's current address; the written text when broken. */
@@ -59,18 +46,10 @@ export const NoteLinkSchema = z
 
 export type NoteLink = z.infer<typeof NoteLinkSchema>;
 
-const Fields = {
-	summary: z.string().nullable(),
-	description: z.string().nullable(),
-	why: z.string().nullable(),
-	gotchas: z.string().nullable(),
-};
-
-/** An agent's replacement for a note a person last edited, waiting on that person. */
-/** Field text carries each ref at its target's current address, as a note's does. */
+/** An agent's replacement awaiting a person; empty text proposes removal. Refs read current. */
 export const NoteProposalSchema = z
 	.object({
-		...Fields,
+		text: z.string(),
 		baseRevision: z.number().int().positive(),
 		by: NoteAuthorSchema.nullable(),
 		at: z.number(),
@@ -80,14 +59,19 @@ export const NoteProposalSchema = z
 
 export type NoteProposal = z.infer<typeof NoteProposalSchema>;
 
-/** Field text carries each ref at its target's current address. */
+/** Refs read at their targets' current addresses. */
 export const NoteSchema = z
 	.object({
 		symbolId: z.string(),
 		/** The address the note was last saved at. */
 		recordedAs: z.string(),
 		revision: z.number().int().positive(),
-		...Fields,
+		/** Markdown; its opening paragraph is the summary. */
+		text: z.string(),
+		/** The opening paragraph as one line; null when the note opens with another block. */
+		summary: z.string().nullable(),
+		/** Where the text after the summary starts; 0 with no summary. */
+		restAt: z.number().int().nonnegative(),
 		author: NoteAuthorSchema.nullable(),
 		authoredAt: z.number(),
 		editedBy: NoteAuthorSchema.nullable(),
@@ -107,12 +91,18 @@ export type Note = z.infer<typeof NoteSchema>;
 
 /** A ref a save could not accept, with what the writer might have meant. */
 export const NoteRefProblemSchema = z
-	.object({ field: NoteFieldSchema, ref: z.string(), problem: z.string(), candidates: z.array(z.string()) })
+	.object({
+		ref: z.string(),
+		/** Where the ref starts in the written text, in UTF-16 code units. */
+		at: z.number().int().nonnegative(),
+		problem: z.string(),
+		candidates: z.array(z.string()),
+	})
 	.meta({ id: "NoteRefProblem" });
 
 export type NoteRefProblem = z.infer<typeof NoteRefProblemSchema>;
 
-/** `saved` with no note: every field was `n/a`, so nothing stands. `proposed`: waiting on a person. */
+/** `saved` with no note: the text was empty, so nothing stands. `proposed`: waiting on a person. */
 export const NoteOutcomeSchema = z
 	.discriminatedUnion("outcome", [
 		z.object({ outcome: z.literal("saved"), note: NoteSchema.nullable() }),
@@ -131,9 +121,7 @@ export type NoteOutcome = z.infer<typeof NoteOutcomeSchema>;
 
 export const NoteBacklinksSchema = z
 	.object({
-		notes: z.array(
-			z.object({ symbolId: z.string(), summary: z.string().nullable(), fields: z.array(NoteFieldSchema) }),
-		),
+		notes: z.array(z.object({ symbolId: z.string(), summary: z.string().nullable() })),
 		total: z.number().int().nonnegative(),
 	})
 	.meta({ id: "NoteBacklinks" });
@@ -145,14 +133,11 @@ export type NoteBacklinks = z.infer<typeof NoteBacklinksSchema>;
 
 const Author = { author: NoteAuthorSchema.optional() };
 
-/** Every field required: text, or `n/a`. `expectedRevision` 0 means no note stands. */
+/** Empty `text` removes the note. `expectedRevision` 0 means no note stands. */
 export const WriteNoteRequestSchema = z
 	.object({
 		symbolId: z.string().min(1),
-		summary: z.string(),
-		description: z.string(),
-		why: z.string(),
-		gotchas: z.string(),
+		text: z.string(),
 		expectedRevision: z.number().int().nonnegative(),
 		...Author,
 	})

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { renderDescribe, renderDocs, renderNote, renderOutline, renderOverview } from "../render";
+import { renderDescribe, renderDocs, renderNote, renderNoteLine, renderOutline, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -28,10 +28,9 @@ describe("reading a note back", () => {
 		symbolId: SYMBOL,
 		recordedAs: SYMBOL,
 		revision: 2,
+		text: "Adds one item.\n\nTotals are cached, so every add refreshes them.",
 		summary: "Adds one item.",
-		description: null,
-		why: "Totals are cached, so every add refreshes them.",
-		gotchas: null,
+		restAt: 14,
 		author: null,
 		authoredAt: 1,
 		editedBy: { kind: "client" as const, name: "claude-code", version: "2.1.0" },
@@ -44,23 +43,22 @@ describe("reading a note back", () => {
 		proposal: null,
 	};
 
-	// An `n/a` field says nothing, so it takes no section.
-	it("shows each field that says something, and none that said n/a", () => {
-		const rendered = renderNote(SYMBOL, note);
-		expect(rendered).toContain(note.summary);
-		expect(rendered).toContain(note.why);
-		expect(rendered).not.toContain("## Description");
-		expect(rendered).not.toContain("## Gotchas");
-		expect(rendered).not.toContain("n/a");
+	it("shows the whole text on a read, and the summary with a pointer to the rest on a describe", () => {
+		expect(renderNote(SYMBOL, note)).toContain(note.text);
+		const line = renderNoteLine(note);
+		expect(line).toContain("Adds one item. `read_note` shows the rest.");
+		expect(line).not.toContain("Totals");
+		expect(renderNoteLine({ ...note, text: "Adds one item." })).not.toContain("read_note");
+		expect(renderNoteLine({ ...note, summary: null, restAt: 0 })).toContain(
+			"No summary. `read_note` shows the rest.",
+		);
 	});
 
 	it("lists what moved as advisories, and none when nothing did", () => {
 		const moved = renderNote(SYMBOL, {
 			...note,
 			sourceChanged: true,
-			links: [
-				{ field: "summary", written: "ref://src/b.ts:Gone", current: "ref://src/b.ts:Gone", state: "broken" },
-			],
+			links: [{ written: "ref://src/b.ts:Gone", current: "ref://src/b.ts:Gone", state: "broken" }],
 		});
 		expect(moved).toContain("## Advisories");
 		expect(moved).toContain("ref://src/b.ts:Gone");

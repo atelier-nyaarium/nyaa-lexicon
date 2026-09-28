@@ -564,10 +564,7 @@ describe("mutation project routing", () => {
 
 	const args = {
 		symbolId: "lexicon test a.ts Thing.",
-		summary: "Observed.",
-		description: "n/a",
-		why: "n/a",
-		gotchas: "n/a",
+		text: "Observed.",
 		expectedRevision: 0,
 	};
 

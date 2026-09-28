@@ -10,19 +10,18 @@ hands over facts, takes back prose, refuses what it cannot verify, and remembers
 
 ## Notes
 
-One note per symbol, four fields, each written as text or `n/a` (stored null):
+One markdown note per symbol, mermaid blocks included. Its opening paragraph is the summary that
+cards, hovers, `describe` and backlinks show. The markdown parser reads it (`noteOpening`), and a
+read carries it as `summary` with `restAt`, where the rest starts. A note whose first block is not
+a paragraph (a heading, list, quote, code block, rule, HTML block or link definition) bounces. Empty text removes the note. A write
+carries the revision it read, and a mismatch bounces with the note as it stands.
 
-- `summary`: one plain line. Refs allowed, no other markdown.
-- `description`: markdown. Refs anywhere; mermaid blocks render.
-- `why`: a supported reason for a design choice the code and docs do not show.
-- `gotchas`: a non-obvious constraint, failure mode or limitation, and its consequence.
-
-A missing field bounces; every field `n/a` removes the note. A write carries the revision it read,
-and a mismatch bounces with the note as it stands.
+What to write is the `write_note` prompt: what the symbol is for, then only what the code and its
+doc comment do not show.
 
 A ref is a link, `[label](ref://path:Scope:Name)`, or `[label](ref://path)` for a file, anywhere in
-any field, a mermaid `click` line included; never inside other code. Saving resolves each to a
-subject and refuses a broken or ambiguous one with candidates. Refs are stored by subject, so a read
+the text, a mermaid `click` line included; never inside other code. Saving resolves each to a
+subject and refuses a broken or ambiguous one with candidates and its text offset (`at`). Refs are stored by subject, so a read
 renders each at its target's current address and a rename needs no rewrite. `noteBacklinks` reads
 them back.
 

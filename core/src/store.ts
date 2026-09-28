@@ -62,12 +62,13 @@ import {
 	keptBlobs,
 } from "./journalSchema.js";
 import { stampSeen } from "./lastSeen.js";
-import { NoteRows, seedNotesFromAnswers } from "./noteRows.js";
+import { insertNote, NoteRows } from "./noteRows.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 import {
+	joinNoteFields,
 	KNOWLEDGE_SCHEMA,
 	KNOWLEDGE_TABLES,
 	KNOWLEDGE_VIEWS,
@@ -546,7 +547,7 @@ const WORKSPACE_KEY = "workspaceRoot";
 /** Carries the ledger id across rebuilds. */
 const LEDGER_KEY = "refactorLedger";
 
-/** Set once describe answers have seeded notes; carried across rebuilds so a removed note stays removed. */
+/** When describe answers seeded notes. */
 const NOTES_SEEDED_KEY = "notesSeeded";
 
 /** 1 for a module under a test directory or named as a test, so a name search lists source first. */
@@ -613,8 +614,13 @@ interface RestoreReport {
 }
 
 /** The salvaged knowledge put back: subjects as they were, every other row through the one placement. */
-function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: number): RestoreReport {
-	const rows = normalizeSalvaged(salvaged, now);
+function restoreKnowledge(
+	db: DatabaseSync,
+	salvaged: SalvagedKnowledge,
+	now: number,
+	seededAt: number | null,
+): RestoreReport {
+	const rows = normalizeSalvaged(salvaged, now, seededAt);
 	restoreSubjects(db, rows.subjects);
 	const subjects = new KnowledgeSubjects(db);
 	let unplaced = 0;
@@ -686,11 +692,6 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: nu
 
 	// A note's links and proposal follow the note to wherever it was placed.
 	const notePlaced = new Map<string, string>();
-	const note = db.prepare(
-		`INSERT INTO symbol_notes (subjectId, recordedAs, revision, summary, description, why, gotchas, author,
-		 authoredAt, editedBy, editedAt, confirmedBy, confirmedAt, sourceDigest, doubtBy, doubtReason, doubtAt)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	);
 	for (const row of rows.notes) {
 		if (row.subjectId !== null && refused.has(row.subjectId)) {
 			unplaced++;
@@ -702,50 +703,25 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: nu
 			continue;
 		}
 		if (row.subjectId !== null) notePlaced.set(row.subjectId, placement.subjectId);
-		note.run(
-			placement.subjectId,
-			row.recordedAs,
-			row.revision,
-			row.summary,
-			row.description,
-			row.why,
-			row.gotchas,
-			row.author,
-			row.authoredAt,
-			row.editedBy,
-			row.editedAt,
-			row.confirmedBy,
-			row.confirmedAt,
-			row.sourceDigest,
-			row.doubtBy,
-			row.doubtReason,
-			row.doubtAt,
-		);
+		insertNote(db, placement.subjectId, row, false);
 	}
 	const link = db.prepare(
-		"INSERT OR IGNORE INTO symbol_note_links (subjectId, field, written, target, targetDigest) VALUES (?, ?, ?, ?, ?)",
+		`INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
+		 VALUES (?, ?, ?, ?, ?)`,
 	);
 	for (const row of rows.noteLinks) {
 		const subjectId = notePlaced.get(row.subjectId);
-		if (subjectId !== undefined) link.run(subjectId, row.field, row.written, row.target, row.targetDigest);
+		if (subjectId === undefined) continue;
+		link.run(subjectId, row.proposed ? 1 : 0, row.written, row.target, row.targetDigest);
 	}
 	const proposal = db.prepare(
-		`INSERT OR IGNORE INTO symbol_note_proposals (subjectId, baseRevision, summary, description, why, gotchas,
-		 proposedBy, proposedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt)
+		 VALUES (?, ?, ?, ?, ?)`,
 	);
 	for (const row of rows.noteProposals) {
 		const subjectId = notePlaced.get(row.subjectId);
 		if (subjectId === undefined) continue;
-		proposal.run(
-			subjectId,
-			row.baseRevision,
-			row.summary,
-			row.description,
-			row.why,
-			row.gotchas,
-			row.proposedBy,
-			row.proposedAt,
-		);
+		proposal.run(subjectId, row.baseRevision, row.text, row.proposedBy, row.proposedAt);
 	}
 
 	for (const table of SALVAGED_JOURNAL) restoreByColumn(db, table, salvaged[table] ?? []);
@@ -1088,6 +1064,7 @@ export class IndexStore {
 		// Preserve the ledger id across rebuilds.
 		const ledger = readMeta(db, LEDGER_KEY);
 		const seeded = readMeta(db, NOTES_SEEDED_KEY);
+		const seededAt = seeded === null || !Number.isFinite(Number(seeded)) ? null : Number(seeded);
 		// Read before a rebuild creates it: a store without the table journaled its moves as JSON.
 		const liftRebinds = !tableExists(db, "refactor_rebinds");
 		if (version === SCHEMA_VERSION && compatibility != null && stored !== null && stored !== compatibility) {
@@ -1118,7 +1095,7 @@ export class IndexStore {
 				for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
 				db.exec(SCHEMA);
-				({ unplaced, dropped } = restoreKnowledge(db, salvaged, clock.now()));
+				({ unplaced, dropped } = restoreKnowledge(db, salvaged, clock.now(), seededAt));
 				// The steps are back, so what they journaled as JSON moves into the table in the same commit.
 				if (liftRebinds) dropped += liftAppliedRebinds(db);
 				db.exec("COMMIT");
@@ -1178,6 +1155,17 @@ export class IndexStore {
 				throw error;
 			}
 		}
+		// Once, in place, keeping every note someone wrote.
+		if (columnExists(db, "symbol_notes", "summary")) {
+			db.exec("BEGIN");
+			try {
+				joinNoteFields(db, seededAt);
+				db.exec("COMMIT");
+			} catch (error) {
+				db.exec("ROLLBACK");
+				throw error;
+			}
+		}
 		// Every statement is IF NOT EXISTS, so an index, trigger or view added later lands on an existing store here.
 		db.exec(KNOWLEDGE_SCHEMA);
 		db.exec(JOURNAL_DDL);
@@ -1219,17 +1207,6 @@ export class IndexStore {
 		`);
 		installRevisionTriggers(db);
 		if (readMeta(db, LEDGER_KEY) === null) writeMeta(db, LEDGER_KEY, ledger ?? randomUUID());
-		if (readMeta(db, NOTES_SEEDED_KEY) === null) {
-			db.exec("BEGIN");
-			try {
-				if (seeded === null) seedNotesFromAnswers(db);
-				writeMeta(db, NOTES_SEEDED_KEY, seeded ?? String(clock.now()));
-				db.exec("COMMIT");
-			} catch (error) {
-				db.exec("ROLLBACK");
-				throw error;
-			}
-		}
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {

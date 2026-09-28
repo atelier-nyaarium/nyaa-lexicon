@@ -28,7 +28,6 @@ import type {
 	Note,
 	NoteAuthor,
 	NoteBacklinks,
-	NoteField,
 	NoteOutcome,
 	RefactorCommitResult,
 	RefactorStartResult,
@@ -632,15 +631,6 @@ export function renderFileHistory(result: {
 	return lines.join("\n");
 }
 
-const FIELD_TITLES: Record<NoteField, string> = {
-	summary: "Summary",
-	description: "Description",
-	why: "Why",
-	gotchas: "Gotchas",
-};
-
-const NOTE_FIELD_ORDER: readonly NoteField[] = ["summary", "description", "why", "gotchas"];
-
 /** Who, as the harness attested it. */
 function authorName(author: NoteAuthor | null): string {
 	if (author === null) return "unattributed";
@@ -666,7 +656,7 @@ function noteAdvisories(note: Note): string[] {
 	const found: string[] = [];
 	if (note.sourceChanged) found.push(`- **Source changed; review:** the symbol changed since this revision.`);
 	for (const link of note.links.filter((entry) => entry.state === "broken")) {
-		found.push(`- **Broken ref:** ${code(link.written)} in ${link.field} names nothing now.`);
+		found.push(`- **Broken ref:** ${code(link.written)} names nothing now.`);
 	}
 	const changed = note.links.filter((entry) => entry.state === "changed");
 	if (changed.length > 0) {
@@ -687,15 +677,15 @@ function noteAdvisories(note: Note): string[] {
 export function renderNote(symbolId: string, note: Note | null): string {
 	if (note === null) return `# Note on ${code(symbolId)}\n\nNo note stands. \`write_note\` writes one.`;
 
-	const lines = [`# Note on ${code(symbolId)}`, "", provenance(note)];
-	for (const field of NOTE_FIELD_ORDER) {
-		const value = note[field];
-		if (value === null) continue;
-		lines.push(`
-## ${FIELD_TITLES[field]}
+	const lines = [
+		`
+# Note on ${code(symbolId)}
 
-${value}`);
-	}
+${provenance(note)}
+
+${note.text}
+		`.trim(),
+	];
 	const advisories = noteAdvisories(note);
 	if (advisories.length > 0)
 		lines.push(`
@@ -709,8 +699,9 @@ ${advisories.join("\n")}`);
 export function renderNoteLine(note: Note | null): string {
 	if (note === null) return `## Note\n\nNo note stands.`;
 
-	const summary = note.summary ?? `No summary. \`read_note\` shows the rest.`;
-	const lines = [`## Note`, "", summary, "", provenance(note)];
+	const more = note.summary === null || note.text.slice(note.restAt).trim() !== "";
+	const lead = `${note.summary ?? "No summary."}${more ? " `read_note` shows the rest." : ""}`;
+	const lines = [`## Note`, "", lead, "", provenance(note)];
 	const advisories = noteAdvisories(note);
 	if (advisories.length > 0) lines.push("", ...advisories);
 	return lines.join("\n");
@@ -728,7 +719,7 @@ export function renderNoteOutcome(symbolId: string, outcome: NoteOutcome, action
 				problem.candidates.length === 0
 					? ""
 					: ` Candidates: ${problem.candidates.map((candidate) => code(candidate)).join(", ")}.`;
-			lines.push(`- ${code(problem.ref)} in ${problem.field}: ${problem.problem}.${candidates}`);
+			lines.push(`- ${code(problem.ref)} at offset ${problem.at}: ${problem.problem}.${candidates}`);
 		}
 		if (outcome.current !== undefined && outcome.current !== null) {
 			lines.push("", `**Current revision:** ${outcome.current.revision}`);
@@ -738,7 +729,7 @@ export function renderNoteOutcome(symbolId: string, outcome: NoteOutcome, action
 	if (outcome.outcome === "proposed") {
 		return `# Proposal saved\n\n**Symbol:** ${code(symbolId)}\n\nA person wrote or confirmed revision ${outcome.note.revision}, so this waits for them.`;
 	}
-	if (outcome.note === null) return `# No note stands\n\n**Symbol:** ${code(symbolId)}\n\nEvery field was \`n/a\`.`;
+	if (outcome.note === null) return `# No note stands\n\n**Symbol:** ${code(symbolId)}\n\nThe text was empty.`;
 	if (action === "doubt") {
 		return `# Doubt recorded\n\n**Symbol:** ${code(symbolId)}\n\nOn revision ${outcome.note.revision}. The next save or confirm clears it.`;
 	}
@@ -752,7 +743,7 @@ export function renderNoteBacklinks(target: string, result: NoteBacklinks): stri
 	const lines = [`# Notes naming ${code(target)}`, ""];
 	for (const entry of result.notes) {
 		const summary = entry.summary === null ? "" : `: ${entry.summary}`;
-		lines.push(`- ${code(entry.symbolId)} (${entry.fields.join(", ")})${summary}`);
+		lines.push(`- ${code(entry.symbolId)}${summary}`);
 	}
 	if (result.total > result.notes.length)
 		lines.push(`

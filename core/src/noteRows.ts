@@ -2,24 +2,17 @@
 // only; what a note means and whether a write stands lives in the note ledger.
 
 import type { DatabaseSync } from "node:sqlite";
-import type { NoteField } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-export interface NoteFieldValues {
-	summary: string | null;
-	description: string | null;
-	why: string | null;
-	gotchas: string | null;
-}
-
 /** A note row at its subject's current address, with the subject's current digest. */
-export interface NoteRow extends NoteFieldValues {
+export interface NoteRow {
 	subjectId: string;
 	symbolId: string;
 	recordedAs: string;
 	revision: number;
+	text: string;
 	author: string | null;
 	authoredAt: number;
 	editedBy: string | null;
@@ -34,15 +27,18 @@ export interface NoteRow extends NoteFieldValues {
 	lastDigest: string | null;
 }
 
+/** A note's own columns, as every insert writes them. */
+export type NoteColumns = Omit<NoteRow, "subjectId" | "symbolId" | "lastDigest">;
+
 export interface NoteLinkRow {
-	field: NoteField;
 	written: string;
 	/** A subject id, or `module:<path>`. */
 	target: string;
 	targetDigest: string | null;
 }
 
-export interface NoteProposalRow extends NoteFieldValues {
+export interface NoteProposalRow {
+	text: string;
 	baseRevision: number;
 	proposedBy: string | null;
 	proposedAt: number;
@@ -51,58 +47,31 @@ export interface NoteProposalRow extends NoteFieldValues {
 /** A target that names a whole module rather than a subject. */
 export const MODULE_TARGET = "module:";
 
-/** Marks a pending proposal's links, which share the table with the note's own. */
-const PROPOSED = "proposal:";
-
-/** A describe answer that restates the declaration. */
-const RESTATED = /^(A|An|The) .* (declared|declaration)\b/i;
-
-const SUMMARY_SEED_MAX = 300;
-
 ////////////////////////////////
 //  Functions & Helpers
 
-/**
- * In the caller's transaction. Each describe answer not restating its declaration seeds a note
- * where none stands: one line as the summary, more as the description. Self-reported authors
- * on answers are cleared, since nothing attested them.
- */
-export function seedNotesFromAnswers(db: DatabaseSync): number {
-	const rows = db
-		.prepare(
-			`SELECT a.subjectId, a.recordedAs, a.prose, a.createdAt, s.lastDigest
-			 FROM answers a JOIN subjects_addressed s ON s.subjectId = a.subjectId
-			 WHERE a.question = 'describe' AND NOT EXISTS (SELECT 1 FROM symbol_notes n WHERE n.subjectId = a.subjectId)`,
-		)
-		.all() as Array<{
-		subjectId: string;
-		recordedAs: string;
-		prose: string;
-		createdAt: number;
-		lastDigest: string | null;
-	}>;
-	const insert = db.prepare(
-		`INSERT INTO symbol_notes (subjectId, recordedAs, revision, summary, description, authoredAt, editedAt, sourceDigest)
-		 VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
+/** The only insert into the notes table. `replace` overwrites a standing row. */
+export function insertNote(db: DatabaseSync, subjectId: string, note: NoteColumns, replace: boolean): void {
+	db.prepare(
+		`INSERT ${replace ? "OR REPLACE " : ""}INTO symbol_notes (subjectId, recordedAs, revision, text, author,
+		 authoredAt, editedBy, editedAt, confirmedBy, confirmedAt, sourceDigest, doubtBy, doubtReason, doubtAt)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	).run(
+		subjectId,
+		note.recordedAs,
+		note.revision,
+		note.text,
+		note.author,
+		note.authoredAt,
+		note.editedBy,
+		note.editedAt,
+		note.confirmedBy,
+		note.confirmedAt,
+		note.sourceDigest,
+		note.doubtBy,
+		note.doubtReason,
+		note.doubtAt,
 	);
-	let seeded = 0;
-	for (const row of rows) {
-		const prose = row.prose.trim();
-		if (prose === "" || RESTATED.test(prose)) continue;
-		const oneLine = !prose.includes("\n") && prose.length <= SUMMARY_SEED_MAX;
-		insert.run(
-			row.subjectId,
-			row.recordedAs,
-			oneLine ? prose : null,
-			oneLine ? null : prose,
-			row.createdAt,
-			row.createdAt,
-			row.lastDigest,
-		);
-		seeded++;
-	}
-	db.exec("UPDATE answers SET model = NULL, doubtBy = NULL WHERE model IS NOT NULL OR doubtBy IS NOT NULL");
-	return seeded;
 }
 
 ////////////////////////////////
@@ -120,23 +89,11 @@ export class NoteRows {
 	}
 
 	links(subjectId: string): NoteLinkRow[] {
-		return this.db
-			.prepare(
-				`SELECT field, written, target, targetDigest FROM symbol_note_links
-				 WHERE subjectId = ? AND field NOT LIKE '${PROPOSED}%' ORDER BY rowid`,
-			)
-			.all(subjectId) as unknown as NoteLinkRow[];
+		return this.linksOf(subjectId, false);
 	}
 
-	/** The pending proposal's links, by the field they sit in. */
 	proposalLinks(subjectId: string): NoteLinkRow[] {
-		const rows = this.db
-			.prepare(
-				`SELECT field, written, target, targetDigest FROM symbol_note_links
-				 WHERE subjectId = ? AND field LIKE '${PROPOSED}%' ORDER BY rowid`,
-			)
-			.all(subjectId) as unknown as NoteLinkRow[];
-		return rows.map((row) => ({ ...row, field: row.field.slice(PROPOSED.length) as NoteField }));
+		return this.linksOf(subjectId, true);
 	}
 
 	proposal(subjectId: string): NoteProposalRow | null {
@@ -161,37 +118,9 @@ export class NoteRows {
 	}
 
 	/** Replaces the note and its links whole. */
-	save(
-		subjectId: string,
-		note: Omit<NoteRow, "subjectId" | "symbolId" | "lastDigest">,
-		links: readonly NoteLinkRow[],
-	): void {
-		this.db
-			.prepare(
-				`INSERT OR REPLACE INTO symbol_notes (subjectId, recordedAs, revision, summary, description, why, gotchas,
-				 author, authoredAt, editedBy, editedAt, confirmedBy, confirmedAt, sourceDigest, doubtBy, doubtReason, doubtAt)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				subjectId,
-				note.recordedAs,
-				note.revision,
-				note.summary,
-				note.description,
-				note.why,
-				note.gotchas,
-				note.author,
-				note.authoredAt,
-				note.editedBy,
-				note.editedAt,
-				note.confirmedBy,
-				note.confirmedAt,
-				note.sourceDigest,
-				note.doubtBy,
-				note.doubtReason,
-				note.doubtAt,
-			);
-		this.replaceLinks(subjectId, links);
+	save(subjectId: string, note: NoteColumns, links: readonly NoteLinkRow[]): void {
+		insertNote(this.db, subjectId, note, true);
+		this.replaceLinks(subjectId, links, false);
 		this.recordKnowledgeWrite(true);
 	}
 
@@ -217,7 +146,7 @@ export class NoteRows {
 				 doubtBy = NULL, doubtReason = NULL, doubtAt = NULL WHERE subjectId = ?`,
 			)
 			.run(by, at, sourceDigest, subjectId);
-		this.replaceLinks(subjectId, links);
+		this.replaceLinks(subjectId, links, false);
 		this.recordKnowledgeWrite(true);
 	}
 
@@ -229,68 +158,54 @@ export class NoteRows {
 	}
 
 	propose(subjectId: string, proposal: NoteProposalRow, links: readonly NoteLinkRow[]): void {
-		this.replaceLinks(
-			subjectId,
-			links.map((link) => ({ ...link, field: `${PROPOSED}${link.field}` as NoteField })),
-			PROPOSED,
-		);
+		this.replaceLinks(subjectId, links, true);
 		this.db
 			.prepare(
-				`INSERT OR REPLACE INTO symbol_note_proposals (subjectId, baseRevision, summary, description, why, gotchas,
-				 proposedBy, proposedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT OR REPLACE INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt)
+				 VALUES (?, ?, ?, ?, ?)`,
 			)
-			.run(
-				subjectId,
-				proposal.baseRevision,
-				proposal.summary,
-				proposal.description,
-				proposal.why,
-				proposal.gotchas,
-				proposal.proposedBy,
-				proposal.proposedAt,
-			);
+			.run(subjectId, proposal.baseRevision, proposal.text, proposal.proposedBy, proposal.proposedAt);
 		this.recordKnowledgeWrite(true);
 	}
 
 	dropProposal(subjectId: string): void {
 		const dropped = this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
-		this.replaceLinks(subjectId, [], PROPOSED);
+		this.replaceLinks(subjectId, [], true);
 		this.recordKnowledgeWrite(dropped.changes > 0);
 	}
 
-	/** Notes whose refs name `target`, newest edit first, with the fields that name it. */
+	/** Notes whose refs name `target`, newest edit first. */
 	backlinks(
 		target: string,
 		limit: number,
-	): { notes: Array<{ symbolId: string; summary: string | null; fields: NoteField[] }>; total: number } {
+	): { notes: Array<{ subjectId: string; symbolId: string; text: string }>; total: number } {
 		const rows = this.db
 			.prepare(
-				`SELECT n.symbolId, n.summary, group_concat(DISTINCT l.field) AS fields
-				 FROM symbol_note_links l JOIN notes_addressed n ON n.subjectId = l.subjectId
-				 WHERE l.target = ? AND l.field NOT LIKE '${PROPOSED}%'
-				 GROUP BY n.subjectId ORDER BY n.editedAt DESC`,
+				`SELECT n.subjectId, n.symbolId, n.text FROM notes_addressed n
+				 WHERE n.subjectId IN (SELECT subjectId FROM symbol_note_links WHERE target = ? AND proposed = 0)
+				 ORDER BY n.editedAt DESC`,
 			)
-			.all(target) as Array<{ symbolId: string; summary: string | null; fields: string }>;
-		return {
-			notes: rows.slice(0, limit).map((row) => ({
-				symbolId: row.symbolId,
-				summary: row.summary,
-				fields: row.fields.split(",") as NoteField[],
-			})),
-			total: rows.length,
-		};
+			.all(target) as Array<{ subjectId: string; symbolId: string; text: string }>;
+		return { notes: rows.slice(0, limit), total: rows.length };
 	}
 
-	/** Replaces the note's links, or with `PROPOSED` the proposal's. */
-	private replaceLinks(subjectId: string, links: readonly NoteLinkRow[], kind: "" | typeof PROPOSED = ""): void {
-		this.db
+	private linksOf(subjectId: string, proposed: boolean): NoteLinkRow[] {
+		return this.db
 			.prepare(
-				`DELETE FROM symbol_note_links WHERE subjectId = ? AND field ${kind === "" ? "NOT " : ""}LIKE '${PROPOSED}%'`,
+				`SELECT written, target, targetDigest FROM symbol_note_links
+				 WHERE subjectId = ? AND proposed = ? ORDER BY rowid`,
 			)
-			.run(subjectId);
+			.all(subjectId, proposed ? 1 : 0) as unknown as NoteLinkRow[];
+	}
+
+	/** Replaces the note's links, or the proposal's. */
+	private replaceLinks(subjectId: string, links: readonly NoteLinkRow[], proposed: boolean): void {
+		const flag = proposed ? 1 : 0;
+		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ? AND proposed = ?").run(subjectId, flag);
 		const insert = this.db.prepare(
-			"INSERT OR IGNORE INTO symbol_note_links (subjectId, field, written, target, targetDigest) VALUES (?, ?, ?, ?, ?)",
+			`INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
+			 VALUES (?, ?, ?, ?, ?)`,
 		);
-		for (const link of links) insert.run(subjectId, link.field, link.written, link.target, link.targetDigest);
+		for (const link of links) insert.run(subjectId, flag, link.written, link.target, link.targetDigest);
 	}
 }

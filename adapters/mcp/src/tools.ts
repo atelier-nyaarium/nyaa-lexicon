@@ -354,13 +354,10 @@ const NOTE_SUBJECT = {
 
 export const ReadNoteInput = NOTE_SUBJECT;
 
-// Unbounded strings: the core names every empty field at once.
+// Core caps the length.
 export const WriteNoteInput = {
 	...NOTE_SUBJECT,
-	summary: z.string().describe(`One plain line, or \`n/a\`.`),
-	description: z.string().describe(`Markdown with refs, or \`n/a\`.`),
-	why: z.string().describe(`A supported reason for a design choice, or \`n/a\`.`),
-	gotchas: z.string().describe(`A non-obvious constraint and its consequence, or \`n/a\`.`),
+	text: z.string().describe(`Markdown opening with one summary sentence. Empty removes the note.`),
 	expectedRevision: z
 		.number()
 		.int()
@@ -659,7 +656,7 @@ Matches case and word boundaries. Includes changed-file counts.
 export const READ_NOTE_DESCRIPTION = `
 # Read Note
 
-Show a symbol's note: summary, description, why, gotchas, revision and advisories.
+Show a symbol's note: its text, revision and advisories.
 
 Refs read at their targets' current addresses. Advisories: source changed, broken or changed refs,
 doubt, pending proposal.
@@ -673,16 +670,18 @@ stands.
 
 Write on demand, when you learned something the code does not show. Never sweep for coverage.
 
-Every field is required: text, or \`n/a\` when nothing supported applies.
+\`text\` is markdown:
+- Open with one sentence on what the symbol is for. It shows on cards and hovers.
+- Then only what the code and its doc comment do not show: a reason for a design choice, a
+  constraint or failure a caller would miss, how it works with other symbols.
+- State only what you can support: the code, its history, or what you were told.
+- Never restate the signature, callers, members or doc comment.
+- One sentence is a complete note.
 
-- \`summary\`: one plain line. Refs allowed, no other markdown.
-- \`description\`: markdown. Refs anywhere, as \`[label](ref://path:Scope:Name)\`;
-  \`[label](ref://path)\` names a file. Mermaid blocks allowed.
-- \`why\`: a supported reason for a design choice the code and docs do not show.
-- \`gotchas\`: a non-obvious constraint, failure mode or limitation, and its consequence.
+Refs anywhere, as \`[label](ref://path:Scope:Name)\`; \`[label](ref://path)\` names a file. Mermaid
+blocks allowed. A broken ref, or a note opening with anything but a paragraph, is refused.
 
-A broken ref is refused with candidates. Over a note a person wrote or confirmed, the write becomes
-a proposal for them.
+Over a note a person wrote or confirmed, the write becomes a proposal for them.
 `.trim();
 
 export const DOUBT_NOTE_DESCRIPTION = `
@@ -1205,26 +1204,15 @@ export async function readNote(backend: ToolBackend, args: SymbolArgs): Promise<
 
 export async function writeNote(
 	backend: ToolBackend,
-	args: SymbolArgs & {
-		summary: string;
-		description: string;
-		why: string;
-		gotchas: string;
-		expectedRevision: number;
-		author?: NoteAuthor | undefined;
-	},
+	args: SymbolArgs & { text: string; expectedRevision: number; author?: NoteAuthor | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
-	const { summary, description, why, gotchas, expectedRevision } = args;
 	const outcome = await backend.writeNote({
 		symbolId: resolved.symbolId,
-		summary,
-		description,
-		why,
-		gotchas,
-		expectedRevision,
+		text: args.text,
+		expectedRevision: args.expectedRevision,
 		...defined({ author: args.author }),
 	});
 	return text(renderNoteOutcome(resolved.symbolId, outcome, "write"), outcome.outcome === "refused");
