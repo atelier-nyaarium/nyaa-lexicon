@@ -6,11 +6,13 @@ import {
 	defined,
 	type FileRole,
 	handlersFor,
+	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
 	notImplementedMove,
+	type OffsetRange,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -26,7 +28,31 @@ import {
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import type { ImportBinding, ParsedFile, RawDeclaration, RawReference } from "./model.js";
 import { parseRustFile } from "./parser.js";
-import { discoverRustProject, RustProjectResolver, type RustProjectState } from "./project.js";
+import {
+	discoverRustProject,
+	isModRs,
+	moduleFileOf,
+	pathSegments,
+	type RustEntry,
+	RustProjectResolver,
+	type RustProjectState,
+} from "./project.js";
+import {
+	containersAround,
+	type Found,
+	ITEM_SCOPES,
+	importSite,
+	type Lookup,
+	type Place,
+	placeOf,
+	ScopeResolver,
+	type Site,
+	sameBlock,
+	samePath,
+	type Tiers,
+	tighter,
+	within,
+} from "./scopes.js";
 
 export const LANGUAGE = "rust";
 export const EXTENSIONS = [".rs"] as const;
@@ -150,12 +176,113 @@ function ambiguity(candidates: string[], detail: string): Binding {
 }
 
 function declarationKindMatches(role: Reference["role"], declaration: Declaration): boolean {
-	if (role === "call") return declaration.kind === "function" || declaration.kind === "method";
-	if (role === "instantiate") return declaration.kind === "struct" || declaration.kind === "enum";
+	// A tuple variant constructs like a function.
+	const variant = declaration.languageKind === "variant";
+	if (role === "call") return declaration.kind === "function" || declaration.kind === "method" || variant;
+	if (role === "instantiate") return declaration.kind === "struct" || declaration.kind === "enum" || variant;
 	if (role === "typeUse" || role === "implements")
 		return ["struct", "enum", "interface", "class"].includes(declaration.kind);
-	if (role === "write") return declaration.kind !== "constant" && declaration.languageKind !== "variant";
+	if (role === "write") return declaration.kind !== "constant" || declaration.languageKind === "static";
 	return true;
+}
+
+/** Roles a local's name can take. */
+const VALUE_ROLES: ReadonlySet<Reference["role"]> = new Set(["read", "write", "call"]);
+
+/** Targets whose `main` something runs. */
+const EXECUTABLES: ReadonlySet<string> = new Set(["bin", "example", "build"]);
+
+/** What a path segment another follows can name. */
+const QUALIFIER_KINDS: ReadonlySet<string> = new Set(["module", "struct", "enum", "interface", "class"]);
+
+/** `.name` reads a field and calls a method, a segment another follows names a module or type, and nothing else reaches a field. */
+function kindAdmits(raw: RawReference, declaration: Declaration): boolean {
+	if (raw.qualifier === true) return QUALIFIER_KINDS.has(declaration.kind);
+	if (!declarationKindMatches(raw.reference.role, declaration)) return false;
+	if (raw.member === true && raw.reference.role !== "call") return declaration.kind === "field";
+	return declaration.kind !== "field";
+}
+
+/** A scope's own declarations and imports of a name. */
+interface NamingScope {
+	/** How far out: the index of its container around the use. */
+	rank: number;
+	block: OffsetRange | undefined;
+	items: RawDeclaration[];
+	imports: ImportBinding[];
+}
+
+/** Several imports' answers as one: two of one declaration supply one name. */
+function combined(results: readonly Binding[]): Binding {
+	const ambiguous = results.find((result) => result.status === "ambiguous");
+	if (ambiguous !== undefined) return ambiguous;
+	const targets = [...new Set(results.flatMap((result) => (result.status === "bound" ? [result.symbolId] : [])))];
+	if (targets.length > 1) return ambiguity(targets, "multiple imports supply this name");
+	if (targets.length === 1) return bound(targets[0] as string);
+	return results[0] ?? unbound("NotIndexed", "the import target is not indexed");
+}
+
+/** Bound to the one declaration found, else ambiguous or unbound. */
+function oneOf(found: readonly Found[], none: string, many: string): Binding {
+	const first = found[0];
+	if (first === undefined) return unbound("NotIndexed", none);
+	if (found.length === 1) return bound(first.raw.declaration.symbolId);
+	return ambiguity(
+		found.map(({ raw }) => raw.declaration.symbolId),
+		many,
+	);
+}
+
+function typePlace(lookup: Lookup): Place | undefined {
+	return lookup?.kind === "type" ? lookup : undefined;
+}
+
+/** A generic parameter of an item around the use. */
+function genericNamed(facts: ParsedFile, raw: RawReference): boolean {
+	return containersAround(facts, raw.containerId).some((holder) => holder.generics?.has(raw.reference.name) === true);
+}
+
+/**
+ * The local a name at `offset` refers to: the narrowest in scope of the nearest function, and with
+ * `parameters`, that function's parameter of the name when no local shadows it.
+ */
+function localNamed(
+	facts: ParsedFile,
+	name: string,
+	offset: number,
+	chain: readonly RawDeclaration[],
+	parameters: boolean,
+): RawDeclaration | undefined {
+	const owner = chain.find((holder) => holder.declaration.kind === "function" || holder.declaration.kind === "method")
+		?.declaration.symbolId;
+	// Scopes nest or part, so of those holding the offset the latest to start is the narrowest.
+	const scoped = facts.locals.get(name) ?? [];
+	let low = 0;
+	let high = scoped.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if (((scoped[middle] as RawDeclaration).scope?.start ?? 0) <= offset) low = middle + 1;
+		else high = middle;
+	}
+	for (let at = low - 1; at >= 0; at--) {
+		const candidate = scoped[at] as RawDeclaration;
+		if (candidate.scope === undefined || !within(candidate.scope, offset)) continue;
+		const holder = facts.byId.get(candidate.declaration.containerId ?? "")?.declaration;
+		const running = holder?.kind === "function" || holder?.kind === "method";
+		if (!running || owner === holder?.symbolId) return candidate;
+	}
+	if (!parameters) return undefined;
+	return facts.byName
+		.get(name)
+		?.find(
+			(candidate) => candidate.declaration.visibility === "local" && candidate.declaration.containerId === owner,
+		);
+}
+
+/** How far out a use reaches a container; -1 when it cannot. */
+function reach(chain: readonly RawDeclaration[], containerId: string | undefined): number {
+	if (containerId === undefined) return chain.length;
+	return chain.findIndex((holder) => holder.declaration.symbolId === containerId);
 }
 
 function parseFailure(module: string, detail: string): ParsedFile {
@@ -170,14 +297,18 @@ function parseFailure(module: string, detail: string): ParsedFile {
 		comments: [],
 		diagnostics: [diagnostic],
 		rawDeclarations: [],
+		byName: new Map(),
+		byId: new Map(),
+		locals: new Map(),
+		impls: [],
 		rawReferences: [],
+		referenceAt: new Map(),
 		importBindings: [],
 		typeAnswers: new Map(),
-		lineTokens: new Map(),
 	};
 }
 
-function rustFileRole(module: string, declarations: readonly Declaration[], rootModules: readonly string[]): FileRole {
+function rustFileRole(module: string, declarations: readonly Declaration[], project: RustProjectState): FileRole {
 	const main = declarations.find(
 		(declaration) =>
 			declaration.name === "main" &&
@@ -186,7 +317,7 @@ function rustFileRole(module: string, declarations: readonly Declaration[], root
 			declaration.containerId === undefined,
 	);
 	if (main === undefined) return { kind: "library" };
-	if (rootModules.includes(module) && (module === "main.rs" || /(?:^|\/)src\/main\.rs$/u.test(module)))
+	if (EXECUTABLES.has(project.targets.get(module)?.kind ?? ""))
 		return { kind: "entry", how: "main", symbolId: main.symbolId };
 	return { kind: "unknown", reason: "NotImplemented" };
 }
@@ -199,9 +330,44 @@ function readRustFile(module: string, text: string, depth: IndexDepth): ParsedFi
 	}
 }
 
+/**
+ * A module's index rows: under each name its impls' targets are written with, so members bind wherever
+ * an impl lives, and under each file its `mod` declarations load, so the module tree reads upward.
+ */
+function rustEntries(
+	module: string,
+	facts: ParsedFile,
+	_held: unknown,
+	project: RustProjectState,
+): Iterable<readonly [string, RustEntry]> {
+	const rows: Array<readonly [string, RustEntry]> = [];
+	const names = new Set<string>();
+	for (const impl of facts.impls) {
+		// An impl over its own generic implements no named type.
+		const generic = impl.memberPath === undefined || samePath(impl.memberPath, impl.descriptorPath);
+		if (impl.targetName !== undefined && !generic) names.add(impl.targetName);
+	}
+	for (const name of names) rows.push([`impl:${name}`, { module }]);
+	const modRs = isModRs(module, project);
+	for (const raw of facts.rawDeclarations) {
+		const inline = raw.descriptorPath.slice(0, -1);
+		if (raw.fileModule === undefined || inline.some((descriptor) => descriptor.kind !== "namespace")) continue;
+		const names = inline.map((descriptor) => descriptor.name);
+		const file = moduleFileOf(module, modRs, names, raw.declaration.name, raw.fileModule.path, project.fileSet);
+		if (file !== null) rows.push([`declares:${file}`, { module, declaration: raw.declaration.symbolId }]);
+	}
+	return rows;
+}
+
 export class RustProvider {
-	readonly store = moduleStore<ParsedFile, RustProjectState>({ read: readRustFile });
+	readonly store = moduleStore<ParsedFile, RustProjectState, RustEntry>({ read: readRustFile, entries: rustEntries });
 	private readonly resolver = new RustProjectResolver(this.store);
+	private readonly scopes = new ScopeResolver(
+		(module) => this.factsForModule(module),
+		this.resolver,
+		(typeName) => this.store.get(`impl:${typeName}`).map(({ module }) => module),
+		(key, compute) => this.store.memo(key, compute),
+	);
 
 	initialize(_workspaceRoot: string) {
 		return {
@@ -216,7 +382,7 @@ export class RustProvider {
 	}
 
 	discoverProject(workspaceRoot: string): { model: ProjectModel; project: RustProjectState } {
-		const discovered = discoverRustProject(workspaceRoot);
+		const discovered = discoverRustProject(workspaceRoot, this.store.policy);
 		return { model: discovered.model, project: discovered.state };
 	}
 
@@ -236,13 +402,44 @@ export class RustProvider {
 			comments: facts.comments,
 			...defined({ blankLines: facts.blankLines }),
 			diagnostics: facts.diagnostics,
-			role: rustFileRole(params.module, facts.declarations, this.store.project.rootModules),
+			role: rustFileRole(params.module, facts.declarations, this.store.project),
 			...(outline ? { depth: "outline" as const } : {}),
 		};
 	}
 
-	resolveImport(params: { fromModule: string; specifier: string }) {
-		return this.resolver.resolveImport(params.fromModule, params.specifier);
+	/** Where a specifier lands from a module's top, through the module tree its crate's declarations build. */
+	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
+		const { absolute, segments } = pathSegments(params.specifier);
+		if (segments.length === 0)
+			return { status: "unresolved", reason: "ParseError", detail: "the import path is empty" };
+		const facts = this.factsForModule(params.fromModule);
+		const missing: ImportResolution = {
+			status: "unresolved",
+			reason: "NotIndexed",
+			detail: `nothing indexed matched ${params.specifier}`,
+		};
+		if (facts === null) return missing;
+		const site = { containerId: undefined, offset: -1 };
+		const external = this.scopes.externalHead(facts, segments, site, absolute);
+		if (external !== undefined) return { status: "external", packageName: external };
+		const module = this.landingModule(facts, segments, site, absolute);
+		return module === undefined ? missing : { status: "resolved", module };
+	}
+
+	/** The module file a path names, or the one holding the item it names. */
+	private landingModule(
+		facts: ParsedFile,
+		segments: readonly string[],
+		site: Site,
+		absolute: boolean,
+	): string | undefined {
+		const placed = this.scopes.place(facts, segments, site, [], absolute);
+		if (placed !== undefined && placed !== null) return this.scopes.moduleFileName(placed) ?? placed.facts.module;
+		const name = segments.at(-1);
+		if (segments.length < 2 || name === undefined) return undefined;
+		const parent = this.scopes.place(facts, segments.slice(0, -1), site, [], absolute);
+		if (parent === undefined || parent === null || parent.kind !== "module") return undefined;
+		return this.scopes.itemsIn(parent, name)[0]?.facts.module;
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {
@@ -300,181 +497,268 @@ export class RustProvider {
 
 	private bindingFor(facts: ParsedFile, raw: RawReference): Binding {
 		if (
-			raw.reference.binding.status === "unbound" &&
-			["RuntimeConstructed", "ExternalDependency"].includes(raw.reference.binding.reason)
+			raw.reference.binding.status === "bound" ||
+			(raw.reference.binding.status === "unbound" &&
+				["RuntimeConstructed", "ExternalDependency"].includes(raw.reference.binding.reason))
 		)
 			return raw.reference.binding;
-		if (raw.path.length > 0) {
-			const qualified = this.qualifiedCandidates(facts, raw);
-			if (qualified.length > 1)
-				return ambiguity(
-					qualified.map((candidate) => candidate.declaration.symbolId),
-					"multiple qualified declarations match this name",
-				);
-			const qualifiedCandidate = qualified[0];
-			if (qualifiedCandidate !== undefined) return bound(qualifiedCandidate.declaration.symbolId);
-		}
-		const local = this.sameFileCandidates(facts, raw);
-		if (local.length > 1)
-			return ambiguity(
-				local.map((candidate) => candidate.declaration.symbolId),
-				"multiple declarations match this name in scope",
-			);
-		const localCandidate = local[0];
-		if (localCandidate !== undefined) return bound(localCandidate.declaration.symbolId);
-		const visibleImports = this.visibleImports(facts, raw);
-		const directImports = visibleImports.filter((candidate) => !candidate.glob);
-		const imports = directImports.length > 0 ? directImports : visibleImports;
-		if (imports.length === 0) return unbound("NotIndexed", "no indexed declaration matches this name");
-		const results: Binding[] = [];
-		for (const imported of imports) results.push(...this.resolveImportBinding(facts, raw, imported));
-		const boundResults = results.filter(
-			(result): result is Extract<Binding, { status: "bound" }> => result.status === "bound",
-		);
-		const ambiguousResults = results.filter((result) => result.status === "ambiguous");
-		if (ambiguousResults.length > 0) return ambiguousResults[0] as Binding;
-		if (boundResults.length > 1)
-			return ambiguity(
-				boundResults.map((result) => result.symbolId),
-				"multiple imports supply this name",
-			);
-		if (boundResults.length === 1) return boundResults[0] as Binding;
-		return results[0] ?? unbound("NotIndexed", "the import target is not indexed");
+		if (raw.importBinding !== undefined) return this.importedBinding(facts, raw, raw.importBinding);
+		if (raw.member === true && raw.path.length === 0) return this.receivedBinding(facts, raw);
+		if (raw.path.length > 0) return this.qualifiedBinding(facts, raw);
+		// A crate's name after a leading `::`, or a name after a qualifier no path spells.
+		if (raw.reference.qualified === true) return this.crateBinding(facts, raw);
+		if (genericNamed(facts, raw)) return unbound("NotIndexed", "a generic parameter names no indexed declaration");
+		return this.scopedBinding(facts, raw);
 	}
 
-	private qualifiedCandidates(facts: ParsedFile, raw: RawReference): RawDeclaration[] {
-		const receiver = raw.path.at(-1);
+	/**
+	 * A bare name, scope by scope outward: a local, then each scope's items, its imports, and the globs
+	 * that supply it.
+	 */
+	private scopedBinding(facts: ParsedFile, raw: RawReference): Binding {
+		const chain = containersAround(facts, raw.containerId);
+		if (VALUE_ROLES.has(raw.reference.role) && raw.qualifier !== true) {
+			const local = localNamed(facts, raw.reference.name, raw.token.startOffset, chain, false);
+			if (local !== undefined) return bound(local.declaration.symbolId);
+		}
+		let unsupplied: Binding | undefined;
+		for (const scope of this.scopesNaming(facts, raw, chain, raw.reference.name)) {
+			const first = scope.items[0];
+			if (first !== undefined)
+				return scope.items.length === 1
+					? bound(first.declaration.symbolId)
+					: ambiguity(
+							scope.items.map((candidate) => candidate.declaration.symbolId),
+							"multiple declarations match this name in scope",
+						);
+			const direct = scope.imports.filter((binding) => !binding.glob);
+			if (direct.length > 0)
+				return combined(direct.map((imported) => this.importedBinding(facts, raw, imported)));
+			const globbed = scope.imports.map((imported) => this.importedBinding(facts, raw, imported));
+			const supplied = globbed.filter((result) => result.status !== "unbound");
+			if (supplied.length > 0) return combined(supplied);
+			unsupplied ??= globbed[0];
+		}
+		if (unsupplied !== undefined) return unsupplied;
+		return raw.qualifier === true
+			? this.crateBinding(facts, raw)
+			: unbound("NotIndexed", "no indexed declaration matches this name");
+	}
+
+	/** A name a crate's extern prelude may hold: its root declares nothing, or it is outside the workspace. */
+	private crateBinding(facts: ParsedFile, raw: RawReference): Binding {
+		const crate =
+			raw.absolute === true || raw.qualifier === true
+				? this.resolver.externCrate(facts.module, raw.reference.name)
+				: undefined;
+		if (crate?.kind === "external")
+			return unbound("ExternalDependency", `crate ${raw.reference.name} is outside the workspace`);
+		if (crate?.kind === "workspace") return unbound("NotIndexed", "a workspace crate's root declares no symbol");
+		return unbound("NotIndexed", "the path's qualifier names no indexed module or type");
+	}
+
+	/** `path::name` binds only through what its path names. */
+	private qualifiedBinding(facts: ParsedFile, raw: RawReference): Binding {
+		const site = { containerId: raw.containerId, offset: raw.token.startOffset };
+		const name = raw.reference.name;
+		const admit = (candidate: RawDeclaration) =>
+			candidate.declaration.symbolId !== raw.reference.fromId && kindAdmits(raw, candidate.declaration);
+		const absolute = raw.absolute === true;
+		const tiers = this.scopes.typesOf(facts, raw.path, site, absolute);
+		let found: Found[];
+		if (tiers.length > 0) found = this.scopes.membersIn(tiers, name, facts, admit);
+		else {
+			const place = this.scopes.place(facts, raw.path, site, [], absolute);
+			if (place === undefined || place === null || place.kind !== "module") return this.unplaced(facts, raw);
+			found = this.scopes.itemsIn(place, name).filter(({ raw: candidate }) => admit(candidate));
+			const external = found.length === 0 ? this.scopes.externalImport(place, name) : undefined;
+			if (external !== undefined)
+				return unbound("ExternalDependency", `crate ${external} is outside the workspace`);
+		}
+		return oneOf(
+			found,
+			"the path's module or type has no declaration of this name",
+			"multiple qualified declarations match this name",
+		);
+	}
+
+	/** Why a path names nothing indexed: an outside crate, written or imported, or not. */
+	private unplaced(facts: ParsedFile, raw: RawReference): Binding {
+		const site = { containerId: raw.containerId, offset: raw.token.startOffset };
+		let external = this.scopes.externalHead(facts, raw.path, site, raw.absolute === true);
+		const chain = containersAround(facts, raw.containerId);
+		for (const scope of raw.absolute === true ? [] : this.scopesNaming(facts, raw, chain, raw.path[0] ?? ""))
+			for (const imported of scope.imports)
+				if (!imported.glob)
+					external ??= this.scopes.externalHead(
+						facts,
+						imported.path,
+						importSite(imported),
+						imported.absolute === true,
+						[imported],
+					);
+		return external === undefined
+			? unbound("NotIndexed", "the path names no indexed module or type")
+			: unbound("ExternalDependency", `crate ${external} is outside the workspace`);
+	}
+
+	/** `.name` binds only through its receiver's types; members several of them declare are ambiguous. */
+	private receivedBinding(facts: ParsedFile, raw: RawReference): Binding {
+		const tiers = this.receiverTypes(facts, raw);
+		if (tiers.length === 0) return this.untyped(facts, raw);
+		return oneOf(
+			this.scopes.membersIn(tiers, raw.reference.name, facts, (candidate) =>
+				kindAdmits(raw, candidate.declaration),
+			),
+			"the receiver's type has no member of this name",
+			"the receiver's type has more than one member of this name",
+		);
+	}
+
+	/** The types of `self`, or of a parameter or local whose annotation or constructor names one. */
+	private receiverTypes(facts: ParsedFile, raw: RawReference): Tiers {
+		const receiver = raw.receiver;
 		if (receiver === undefined) return [];
-		const localType = facts.rawDeclarations.find(
-			(candidate) =>
-				candidate.declaration.name === receiver &&
-				["struct", "enum", "interface", "class"].includes(candidate.declaration.kind),
-		);
-		if (localType !== undefined) {
-			return facts.rawDeclarations.filter(
-				(candidate) =>
-					candidate.declaration.name === raw.reference.name &&
-					candidate.declaration.containerId === localType.declaration.symbolId &&
-					declarationKindMatches(raw.reference.role, candidate.declaration),
-			);
+		if (receiver.raw === "self")
+			return this.scopes.typesOf(facts, ["Self"], {
+				containerId: raw.containerId,
+				offset: raw.token.startOffset,
+			});
+		const local = this.receiverLocal(facts, raw);
+		if (local === undefined) return [];
+		const site = { containerId: local.declaration.containerId, offset: local.startOffset };
+		if (local.valueType !== undefined)
+			return this.scopes
+				.typesOf(facts, local.valueType, site)
+				.map((tier) => tier.flatMap((type) => this.scopes.valueOf(type) ?? []));
+		const returned = local.initializer === undefined ? undefined : this.returnedType(facts, local.initializer);
+		return returned === undefined ? [] : [[returned]];
+	}
+
+	private receiverLocal(facts: ParsedFile, raw: RawReference): RawDeclaration | undefined {
+		const receiver = raw.receiver;
+		if (receiver === undefined) return undefined;
+		const chain = containersAround(facts, raw.containerId);
+		return localNamed(facts, receiver.value, receiver.startOffset, chain, true);
+	}
+
+	/** Why a receiver's type is not established: an annotation naming an outside crate's type, or none. */
+	private untyped(facts: ParsedFile, raw: RawReference): Binding {
+		const written = this.receiverLocal(facts, raw)?.valueType;
+		if (written !== undefined && written.length > 0) {
+			const reason = this.unplaced(facts, { ...raw, path: [...written] });
+			if (reason.status === "unbound" && reason.reason === "ExternalDependency") return reason;
 		}
-		const imported = facts.importBindings.find(
-			(candidate) => candidate.localName === receiver && candidate.sourceName !== null,
-		);
-		if (imported === undefined) return [];
-		const module = this.importTargetModule(facts.module, imported);
-		if (module === null) return [];
-		const target = this.factsForModule(module);
-		if (target === null) return [];
-		const targetType = target.rawDeclarations.find(
-			(candidate) =>
-				candidate.declaration.name === imported.sourceName &&
-				["struct", "enum", "interface", "class"].includes(candidate.declaration.kind),
-		);
-		if (targetType === undefined) return [];
-		return target.rawDeclarations.filter(
-			(candidate) =>
-				candidate.declaration.name === raw.reference.name &&
-				candidate.declaration.containerId === targetType.declaration.symbolId &&
-				declarationKindMatches(raw.reference.role, candidate.declaration),
-		);
+		return unbound("NotIndexed", "the receiver's type is not established");
 	}
 
-	private sameFileCandidates(facts: ParsedFile, raw: RawReference): RawDeclaration[] {
-		return facts.rawDeclarations.filter((candidate) => {
-			if (
-				candidate.declaration.name !== raw.reference.name ||
-				!declarationKindMatches(raw.reference.role, candidate.declaration)
-			)
-				return false;
-			if (candidate.declaration.symbolId === raw.reference.fromId) return false;
-			return this.visibleInScope(facts, raw.containerId, candidate.declaration.containerId);
-		});
+	/**
+	 * The type a call at `offset` builds, through what its callee binds to: a function's declared
+	 * return, a tuple struct, or a variant's enum.
+	 */
+	private returnedType(facts: ParsedFile, offset: number): Place | undefined {
+		const callee = facts.referenceAt.get(offset);
+		const binding = callee === undefined ? undefined : this.bindingFor(facts, callee);
+		if (binding?.status !== "bound") return undefined;
+		const module = parseSymbolId(binding.symbolId)?.module;
+		const holder = module === undefined ? null : this.factsForModule(module);
+		const target = holder?.byId.get(binding.symbolId);
+		if (holder === null || holder === undefined || target === undefined) return undefined;
+		const kind = target.declaration.kind;
+		if (target.declaration.languageKind === "variant" || kind === "struct")
+			return this.scopes.valueOf(placeOf(holder, target));
+		if ((kind !== "function" && kind !== "method") || target.valueType === undefined) return undefined;
+		// The function's own generics are in scope for its return type.
+		const own = { containerId: target.declaration.symbolId, offset: target.startOffset };
+		return typePlace(this.scopes.place(holder, target.valueType, own));
 	}
 
-	private visibleInScope(
+	/**
+	 * The scopes around a use that declare or import `name`, nearest first: by container, then by
+	 * narrowest block. An item never sees an outer function's locals.
+	 */
+	private scopesNaming(
 		facts: ParsedFile,
-		fromId: string | undefined,
-		candidateContainer: string | undefined,
-	): boolean {
-		if (candidateContainer === undefined) return true;
-		if (fromId === undefined) return false;
-		const visible = new Set<string>();
-		let current: string | undefined = fromId;
-		while (current !== undefined && !visible.has(current)) {
-			visible.add(current);
-			const owner = facts.rawDeclarations.find((candidate) => candidate.declaration.symbolId === current);
-			current = owner?.declaration.containerId;
-		}
-		return visible.has(candidateContainer);
-	}
-
-	private visibleImports(facts: ParsedFile, raw: RawReference): ImportBinding[] {
-		return facts.importBindings.filter((binding) => {
-			if (binding.glob) return true;
-			if (
-				binding.localName !== raw.reference.name &&
-				!(raw.reference.role === "import" && binding.sourceName === raw.reference.name)
-			)
-				return false;
-			return this.visibleInScope(facts, raw.containerId, binding.containerId);
-		});
-	}
-
-	private resolveImportBinding(facts: ParsedFile, raw: RawReference, imported: ImportBinding): Binding[] {
-		const module = this.importTargetModule(facts.module, imported);
-		const resolution = this.resolver.resolveImport(facts.module, imported.path.join("::"));
-		if (module === null) {
-			if (resolution.status === "external")
-				return [unbound("ExternalDependency", `crate ${resolution.packageName} is outside the workspace`)];
-			return [
-				unbound(
-					resolution.status === "unresolved" ? resolution.reason : "NotIndexed",
-					"the imported module is not indexed",
-				),
-			];
-		}
-		const target = this.factsForModule(module);
-		if (target === null) return [unbound("NotIndexed", "the imported module is not indexed")];
-		if (imported.glob) {
-			const candidates = target.rawDeclarations
-				.filter(
-					(candidate) => candidate.declaration.containerId === undefined && candidate.declaration.name !== "",
-				)
-				.map((candidate) => candidate.declaration.symbolId);
-			return [ambiguity(candidates, "a glob import can supply more than one declaration")];
-		}
-		const sourceName = imported.sourceName ?? raw.reference.name;
-		const matches = target.rawDeclarations.filter(
-			(candidate) => candidate.declaration.name === sourceName && candidate.declaration.containerId === undefined,
+		raw: RawReference,
+		chain: readonly RawDeclaration[],
+		name: string,
+	): NamingScope[] {
+		const scopes: NamingScope[] = [];
+		const scopeAt = (rank: number, block: OffsetRange | undefined) => {
+			let scope = scopes.find((candidate) => candidate.rank === rank && sameBlock(candidate.block, block));
+			if (scope === undefined) {
+				scope = { rank, block, items: [], imports: [] };
+				scopes.push(scope);
+			}
+			return scope;
+		};
+		const owner = chain.findIndex(
+			(holder) => holder.declaration.kind === "function" || holder.declaration.kind === "method",
 		);
-		if (matches.length > 1)
-			return [
-				ambiguity(
-					matches.map((candidate) => candidate.declaration.symbolId),
-					"multiple imported declarations match this name",
-				),
-			];
-		const match = matches[0];
-		if (match !== undefined) return [bound(match.declaration.symbolId)];
-		return [unbound("NotIndexed", `the imported declaration ${sourceName} is not indexed`)];
+		const offset = raw.token.startOffset;
+		for (const candidate of facts.byName.get(name) ?? []) {
+			const declaration = candidate.declaration;
+			if (declaration.symbolId === raw.reference.fromId || candidate.scope !== undefined) continue;
+			if (!kindAdmits(raw, declaration)) continue;
+			if (candidate.block !== undefined && !within(candidate.block, offset)) continue;
+			// An associated item, field or variant takes a path or a receiver.
+			const holder = facts.byId.get(declaration.containerId ?? "")?.declaration.kind;
+			if (holder !== undefined && !ITEM_SCOPES.has(holder)) continue;
+			const rank =
+				declaration.visibility === "local"
+					? owner >= 0 && chain[owner]?.declaration.symbolId === declaration.containerId
+						? owner
+						: -1
+					: reach(chain, declaration.containerId);
+			if (rank >= 0) scopeAt(rank, candidate.block).items.push(candidate);
+		}
+		for (const binding of facts.importBindings) {
+			if (!binding.glob && binding.localName !== name) continue;
+			if (binding.block !== undefined && !within(binding.block, offset)) continue;
+			const rank = reach(chain, binding.containerId);
+			if (rank >= 0) scopeAt(rank, binding.block).imports.push(binding);
+		}
+		return scopes.sort(
+			(left, right) =>
+				left.rank - right.rank ||
+				(tighter(left.block, right.block) ? -1 : tighter(right.block, left.block) ? 1 : 0),
+		);
 	}
 
-	private importTargetModule(fromModule: string, imported: ImportBinding): string | null {
-		const resolution = this.resolver.resolveImport(fromModule, imported.path.join("::"));
-		if (resolution.status === "external") return null;
-		const full = this.resolver.resolvePath(fromModule, imported.path);
-		if (full !== null) {
-			const facts = this.factsForModule(full);
-			if (
-				imported.glob ||
-				imported.sourceName === null ||
-				facts?.rawDeclarations.some((candidate) => candidate.declaration.name === imported.sourceName)
-			)
-				return full;
+	/** A name through one import: what its path names, or what its glob supplies. */
+	private importedBinding(facts: ParsedFile, raw: RawReference, imported: ImportBinding): Binding {
+		const admitted = (found: Found[]) =>
+			raw.qualifier === true
+				? found.filter(({ raw: candidate }) => kindAdmits(raw, candidate.declaration))
+				: found;
+		if (!imported.glob) {
+			const found = this.scopes.importItems(facts, imported);
+			return found === null
+				? this.unfollowed(facts, imported)
+				: oneOf(
+						admitted(found),
+						"the imported declaration is not indexed",
+						"multiple imported declarations match this name",
+					);
 		}
-		if (imported.path.length > 1) return this.resolver.resolvePath(fromModule, imported.path.slice(0, -1));
-		return full;
+		const from = this.scopes.globPlace(facts, imported);
+		if (from === undefined) return unbound("NotIndexed", "the glob import names nothing indexed");
+		if (from === null) return this.unfollowed(facts, imported);
+		return oneOf(
+			admitted(this.scopes.globItems(from, raw.reference.name)),
+			"no indexed declaration of this name comes through the glob import",
+			"a glob import supplies more than one declaration of this name",
+		);
+	}
+
+	/** Why an import's path leads nowhere indexed. */
+	private unfollowed(facts: ParsedFile, imported: ImportBinding): Binding {
+		const crate = this.scopes.externalHead(facts, imported.path, importSite(imported), imported.absolute === true, [
+			imported,
+		]);
+		return crate === undefined
+			? unbound("NotIndexed", "the imported module is not indexed")
+			: unbound("ExternalDependency", `crate ${crate} is outside the workspace`);
 	}
 
 	private typeOfSymbol(symbolId: string): TypeInfo {
@@ -542,15 +826,8 @@ export class RustProvider {
 				["struct", "enum", "interface", "class"].includes(candidate.declaration.kind),
 		);
 		if (local !== undefined) return local.declaration.symbolId;
-		const imported = facts.importBindings.find(
-			(candidate) => candidate.localName === name && candidate.sourceName !== null,
-		);
-		if (imported === undefined) return undefined;
-		const module = this.importTargetModule(facts.module, imported);
-		if (module === null) return undefined;
-		return this.factsForModule(module)?.rawDeclarations.find(
-			(candidate) => candidate.declaration.name === imported.sourceName,
-		)?.declaration.symbolId;
+		const placed = this.scopes.place(facts, [name], { containerId: undefined, offset: -1 });
+		return placed?.kind === "type" ? placed.raw?.declaration.symbolId : undefined;
 	}
 }
 

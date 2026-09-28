@@ -31,6 +31,7 @@ test("reads a comparison or a shift in a value as an operator", () => {
 test("reads an array length and a const block as expressions inside a type", () => {
 	expect(bracketed("struct S { a: [u8; 1 << 2], b: Vec<u8> }")).toBe("struct S { a: [u8; 1 << 2], b: Vec[u8] }");
 	expect(bracketed("fn f() -> Foo<{ 1 << 2 }> {}")).toBe("fn f() -> Foo[{ 1 << 2 }] {}");
+	expect(bracketed("struct S { a: u32 = 1 << 2, b: Vec<u8> }")).toBe("struct S { a: u32 = 1 << 2, b: Vec[u8] }");
 });
 
 test("opens a bracket in an expression only for a turbofish, a qualified path or a cast's type", () => {

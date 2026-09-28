@@ -62,11 +62,11 @@ let quote = '\\'';
 	expect(result.tokens.some((token) => token.kind === "lifetime" && token.value.includes("Option"))).toBe(false);
 });
 
-test("decodes Rust escapes and preserves unknown escape spelling", () => {
-	const result = tokenize(`const value = "\\0\\a\\b\\f\\n\\r\\t\\v\\\\\\"\\'\\u{1f600}\\q";`);
+test("decodes Rust escapes and preserves the spelling of any other", () => {
+	const result = tokenize(`const value = "\\0\\n\\r\\t\\\\\\"\\'\\x41\\u{1f_600}\\a\\q\\u{110000}";`);
 
 	expect(result.diagnostics).toEqual([]);
-	expect(result.tokens[3]?.value).toBe(`\0\x07\b\f\n\r\t\v\\"'😀\\q`);
+	expect(result.tokens[3]?.value).toBe(`\0\n\r\t\\"'A${String.fromCodePoint(0x1f600)}\\a\\q\\u{110000}`);
 });
 
 test("handles nested block comments and reports an incomplete one", () => {
@@ -153,6 +153,13 @@ test("scans numbers, suffixes, raw identifiers, and operators", () => {
 		{ kind: "number", value: "1" },
 		{ kind: "symbol", value: ";" },
 	]);
+	expect(values("x?? 'r#fn")).toEqual([
+		{ kind: "identifier", value: "x" },
+		{ kind: "symbol", value: "?" },
+		{ kind: "symbol", value: "?" },
+		{ kind: "lifetime", value: "'fn" },
+	]);
+	expect(values(`${String.fromCodePoint(0xfeff)}fn f()`).map((token) => token.value)).toEqual(["fn", "f", "(", ")"]);
 });
 
 test("ends a number where rustc's lexer ends it", () => {
@@ -203,13 +210,16 @@ test("reads byte and one-symbol character literals as one token", () => {
 	]);
 });
 
-test("reads a CRLF inside a string as string content", () => {
-	const result = tokenize('const S: &str = "a\r\nb";\r\nconst T: &str = "c\\\r\n    d";\r\nfn after() {}\r\n');
+test("reads a CRLF inside any string as one line feed, and keeps a lone CR", () => {
+	const result = tokenize(
+		'const S: &str = "a\r\nb";\r\nconst T: &str = "c\\\r\n    d";\r\nconst R: &str = r#"e\r\nf\rg"#;\r\nfn after() {}\r\n',
+	);
 
 	expect(result.diagnostics).toEqual([]);
 	expect(result.tokens.filter((token) => token.kind === "string").map((token) => token.value)).toEqual([
-		"a\r\nb",
+		"a\nb",
 		"cd",
+		"e\nf\rg",
 	]);
 	expect(result.tokens.some((token) => token.value === "after")).toBe(true);
 });

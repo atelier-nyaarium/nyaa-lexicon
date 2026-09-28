@@ -68,6 +68,12 @@ test("discovers Rust files and excludes generated directories", () => {
 	expect(model.files).toEqual(["src/lib.rs", "src/util.rs"]);
 	expect(model.configFiles).toEqual(["Cargo.toml"]);
 	expect(model.diagnostics).toEqual([]);
+	expect(provider.discoverProject(root).fingerprint).toBe(model.fingerprint);
+	writeFileSync(
+		path.join(root, "Cargo.toml"),
+		'[package]\nname = "demo"\nversion = "0.1.0"\n\n[dependencies]\nserde = "1"\n',
+	);
+	expect(provider.discoverProject(root).fingerprint).not.toBe(model.fingerprint);
 });
 
 test("reports a main role for a known executable crate root", () => {
@@ -88,18 +94,24 @@ test("reports a main role for a known executable crate root", () => {
 	}
 });
 
-test("reports an unknown role for other top-level mains and library without one", () => {
+test("reports an entry for a discovered binary, an unknown role for another top-level main, and a library without one", () => {
 	const root = workspace({
-		"src/lib.rs": "pub fn add() {}\nmod child { fn main() {} }\n",
+		"Cargo.toml": '[package]\nname = "demo"\nversion = "0.1.0"\n',
+		"src/lib.rs": "pub fn add() {}\nmod child { fn main() {} }\nmod loose;\n",
+		"src/loose.rs": "fn main() {}\n",
 		"src/bin/tool.rs": "fn main() {}\n",
 	});
 	const provider = client(new RustProvider());
 	provider.initialize(root);
 	provider.discoverProject(root);
 
-	expect(provider.parseFile({ module: "src/bin/tool.rs", contentHash: "tool", text: "fn main() {}\n" }).role).toEqual(
-		{ kind: "unknown", reason: "NotImplemented" },
-	);
+	expect(
+		provider.parseFile({ module: "src/bin/tool.rs", contentHash: "tool", text: "fn main() {}\n" }).role,
+	).toMatchObject({ kind: "entry", how: "main" });
+	expect(provider.parseFile({ module: "src/loose.rs", contentHash: "loose", text: "fn main() {}\n" }).role).toEqual({
+		kind: "unknown",
+		reason: "NotImplemented",
+	});
 	expect(
 		provider.parseFile({
 			module: "src/lib.rs",
@@ -219,7 +231,7 @@ test("reports a Cargo.toml it cannot read as TOML", () => {
 	]);
 });
 
-test("binds direct imports across files and makes glob bindings ambiguous", () => {
+test("binds direct imports across files, and a glob import by the name it supplies", () => {
 	const root = workspace({
 		"src/lib.rs": `pub mod util;
 use crate::util::{Item, Other as Alias};
@@ -266,10 +278,14 @@ pub fn helper() {}
 		provenance: "bound",
 	});
 	expect(aliasReference.binding).toMatchObject({ status: "bound" });
-	expect(helperReference.binding.status).toBe("ambiguous");
+	const helper = utilFacts.declarations.find((declaration) => declaration.name === "helper");
+	expect(helperReference.binding).toMatchObject({ status: "bound", symbolId: helper?.symbolId });
 	expect(provider.bind({ module: "src/lib.rs", name: "helper", range: helperReference.range })).toMatchObject({
-		status: "ambiguous",
+		status: "bound",
 	});
+	const label = facts.references.find((reference) => reference.name === "value" && reference.range.start.line === 7);
+	const field = utilFacts.declarations.find((declaration) => declaration.name === "value");
+	expect(label).toMatchObject({ qualified: true, binding: { status: "bound", symbolId: field?.symbolId } });
 	expect(provider.bind({ module: "src/lib.rs", name: "Item", range: itemReference.range })).toEqual({
 		status: "bound",
 		symbolId: itemDeclaration.symbolId,
@@ -277,13 +293,32 @@ pub fn helper() {}
 	});
 });
 
+test("supplies a module glob's top-level items, not those of a same-named module inside it", () => {
+	const root = workspace({
+		"src/lib.rs": "mod util;\nuse crate::util::*;\nfn run() { top(); inner(); }\n",
+		"src/util.rs": "pub mod util { pub fn inner() {} }\npub fn top() {}\n",
+	});
+	const provider = client(new RustProvider());
+	provider.initialize(root);
+	const text = (module: string) => readFileSync(path.join(root, module), "utf8");
+	const util = provider.parseFile({ module: "src/util.rs", contentHash: "util", text: text("src/util.rs") });
+	const lib = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text: text("src/lib.rs") });
+	const bindingOf = (name: string) => lib.references.find((reference) => reference.name === name)?.binding;
+
+	expect(bindingOf("top")).toMatchObject({
+		status: "bound",
+		symbolId: util.declarations.find((declaration) => declaration.name === "top")?.symbolId,
+	});
+	expect(bindingOf("inner")).toMatchObject({ status: "unbound" });
+});
+
 // Each call consults the glob, which asks whether lib.rs declares Token.
 test("binds every call through a glob import of a costly sibling module", () => {
 	const locals = Array.from({ length: 1500 }, (_, index) => `    let v${index} = ${index};`).join("\n");
 	const calls = Array.from({ length: 1000 }, (_, index) => `        c${index}();`).join("\n");
 	const root = workspace({
-		"src/lib.rs": `pub enum Token { Literal }\nfn filler() {\n${locals}\n}\n`,
-		"src/glob.rs": `mod tests {\n    use super::Token::*;\n    fn run() {\n${calls}\n    }\n}\n`,
+		"src/lib.rs": `mod glob;\npub enum Token { Literal }\nfn filler() {\n${locals}\n}\n`,
+		"src/glob.rs": `mod tests {\n    use super::super::Token::*;\n    fn run() {\n        let token = Literal;\n${calls}\n    }\n}\n`,
 	});
 	const provider = client(new RustProvider());
 	provider.initialize(root);
@@ -297,20 +332,21 @@ test("binds every call through a glob import of a costly sibling module", () => 
 		contentHash: "glob",
 		text: readFileSync(path.join(root, "src/glob.rs"), "utf8"),
 	});
-	const topLevel = lib.declarations
-		.filter((declaration) => declaration.containerId === undefined)
-		.map((declaration) => declaration.symbolId);
 	const bindings = glob.references.filter((reference) => reference.role === "call").map((call) => call.binding);
+	const variant = lib.declarations.find((declaration) => declaration.name === "Literal");
 
-	expect(topLevel).toHaveLength(2);
 	expect(bindings).toHaveLength(1000);
 	expect(new Set(bindings.map((binding) => JSON.stringify(binding)))).toEqual(new Set([JSON.stringify(bindings[0])]));
-	expect(bindings[0]).toMatchObject({ status: "ambiguous", candidates: topLevel });
+	expect(bindings[0]).toMatchObject({ status: "unbound", reason: "NotIndexed" });
+	expect(glob.references.find((reference) => reference.name === "Literal")?.binding).toMatchObject({
+		status: "bound",
+		symbolId: variant?.symbolId,
+	});
 }, 5_000);
 
 test("answers a base-module symbol import from the text the store holds", () => {
 	const root = workspace({
-		"src/lib.rs": "pub enum Token { Literal }\n",
+		"src/lib.rs": "mod glob;\npub enum Token { Literal }\n",
 		"src/glob.rs": "use super::Token;\n",
 	});
 	const provider = client(new RustProvider());
@@ -318,9 +354,13 @@ test("answers a base-module symbol import from the text the store holds", () => 
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
 
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
-	writeFileSync(path.join(root, "src/lib.rs"), "pub enum Other { Literal }\n");
+	writeFileSync(path.join(root, "src/lib.rs"), "mod glob;\npub enum Other { Literal }\n");
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
-	provider.parseFile({ module: "src/lib.rs", contentHash: "changed", text: "pub enum Other { Literal }\n" });
+	provider.parseFile({
+		module: "src/lib.rs",
+		contentHash: "changed",
+		text: "mod glob;\npub enum Other { Literal }\n",
+	});
 	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 });
 
@@ -358,19 +398,20 @@ test("honors outline depth for declarations and imports only", () => {
 		depth: "outline",
 		text: `use std::fmt::Display;
 pub struct Item;
-fn run(value: Item) { println!("value"); }
+fn run(value: Item) {
+    use std::io::Write;
+    fn nested() {}
+    let local = |x: u8| x;
+    println!("value");
+}
 `,
 	});
 	const item = facts.declarations.find((declaration) => declaration.name === "Item");
 
 	expect(facts.depth).toBe("outline");
 	expect(item).toBeDefined();
-	expect(facts.imports).toHaveLength(1);
-	expect(facts.imports[0]).toMatchObject({
-		specifier: "std::fmt::Display",
-		imported: [{ name: "Display", local: "Display", range: expect.any(Object), localRange: expect.any(Object) }],
-		reExport: false,
-	});
+	expect(facts.declarations.map((declaration) => declaration.name)).toEqual(["Item", "run", "nested"]);
+	expect(facts.imports.map((entry) => entry.specifier)).toEqual(["std::fmt::Display", "std::io::Write"]);
 	expect(facts.references).toEqual([]);
 	expect(facts.literals).toEqual([]);
 	if (item === undefined) throw new Error("outline declaration missing");
@@ -419,12 +460,59 @@ test("typeOf accepts a declaration range and reports unknown inputs honestly", (
 	});
 });
 
-test("resolves file modules beside files and inside module directories", () => {
+test("reads each target's own module tree, and a name in scope before a crate of that name", () => {
 	const root = workspace({
-		"src/lib.rs": "pub mod feature;\n",
-		"src/feature/mod.rs": "pub mod item;\npub struct Feature;\n",
+		"Cargo.toml": '[package]\nname = "demo"\nversion = "0.1.0"\n\n[dependencies]\nfoo = "1"\ndep = "1"\n',
+		"src/lib.rs": "pub mod util;\nmod foo;\nmod dep { pub struct Item; }\nfn run() { ::dep::Item; dep::Item; }\n",
+		"src/foo.rs": "pub struct Local;\n",
+		"src/util.rs": '#[path = "moved.rs"]\npub mod thing;\n',
+		"src/moved.rs": "pub struct Thing;\n",
+		"src/util/thing.rs": "pub struct Thing;\n",
+		"src/main.rs": "mod cli;\nfn main() {}\n",
+		"src/cli.rs": "pub struct Cli;\n",
+		"src/bin/tool/main.rs": "mod helper;\nfn main() {}\n",
+		"src/bin/tool/helper.rs": "pub struct Helper;\n",
+		"tests/it.rs": "mod common;\n",
+		"tests/common/mod.rs": "pub struct Common;\n",
+	});
+	const provider = client(new RustProvider());
+	provider.initialize(root);
+	provider.discoverProject(root);
+	const resolve = (fromModule: string, specifier: string) => provider.resolveImport({ fromModule, specifier });
+	const resolved = (module: string) => ({ status: "resolved" as const, module });
+
+	expect(resolve("src/util.rs", "crate::util::thing::Thing")).toEqual(resolved("src/moved.rs"));
+	expect(resolve("src/cli.rs", "crate::cli::Cli")).toEqual(resolved("src/cli.rs"));
+	expect(resolve("src/cli.rs", "crate::util")).toMatchObject({ status: "unresolved" });
+	expect(resolve("src/main.rs", "demo::util::thing::Thing")).toEqual(resolved("src/moved.rs"));
+	expect(resolve("src/bin/tool/helper.rs", "crate::helper::Helper")).toEqual(resolved("src/bin/tool/helper.rs"));
+	expect(resolve("tests/it.rs", "crate::common::Common")).toEqual(resolved("tests/common/mod.rs"));
+	expect(resolve("src/lib.rs", "foo::Local")).toEqual(resolved("src/foo.rs"));
+	expect(resolve("src/lib.rs", "::foo::Local")).toEqual({ status: "external", packageName: "foo" });
+	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
+	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text });
+	const items = facts.references
+		.filter((reference) => reference.name === "Item")
+		.map((reference) => reference.binding);
+	expect(items).toMatchObject([
+		{ status: "unbound", reason: "ExternalDependency" },
+		{ status: "bound", symbolId: expect.stringContaining(" dep/Item#") },
+	]);
+	expect(
+		provider.parseFile({ module: "src/bin/tool/main.rs", contentHash: "tool", text: "mod helper;\nfn main() {}\n" })
+			.role,
+	).toMatchObject({ kind: "entry" });
+});
+
+test("resolves only the files the module tree declares, beside files, in module directories or by path", () => {
+	const root = workspace({
+		"src/lib.rs": 'pub mod feature;\nmod inline {\n    #[path = "elsewhere.rs"]\n    pub mod moved;\n}\n',
+		"src/feature/mod.rs": "pub mod item;\npub mod leaf;\npub struct Feature;\n",
 		"src/feature/item.rs": "pub struct Item;\n",
 		"src/feature/leaf.rs": "pub struct Leaf;\n",
+		"src/feature/hidden.rs": "pub struct Hidden;\n",
+		"src/inline/elsewhere.rs": "pub struct Moved;\n",
+		"src/inline/moved.rs": "pub struct Moved;\n",
 	});
 	const provider = client(new RustProvider());
 	provider.initialize(root);
@@ -446,15 +534,29 @@ test("resolves file modules beside files and inside module directories", () => {
 		status: "resolved",
 		module: "src/feature/mod.rs",
 	});
+	expect(
+		provider.resolveImport({ fromModule: "src/feature/mod.rs", specifier: "self::hidden::Hidden" }),
+	).toMatchObject({
+		status: "unresolved",
+	});
+	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::inline::moved::Moved" })).toEqual({
+		status: "resolved",
+		module: "src/inline/elsewhere.rs",
+	});
 });
 
-test("discovers multiple Cargo roots and resolves crate paths within the nearest root", () => {
+test("discovers multiple Cargo roots and resolves crate paths within the nearest root, never another crate's", () => {
 	const root = workspace({
-		"Cargo.toml": '[workspace]\nmembers = ["crates/one", "crates/two"]\n',
-		"crates/one/Cargo.toml": '[package]\nname = "one"\nversion = "0.1.0"\n',
+		"Cargo.toml":
+			'[package]\nname = "tool"\nversion = "0.1.0"\nautotests = false\n\n[[bin]]\nname = "tool"\npath = "crates/core/main.rs"\n\n[workspace]\nmembers = ["crates/*"]\n',
+		"crates/core/main.rs": "mod app;\n",
+		"crates/core/app.rs": "pub struct App;\n",
+		"tests/it.rs": "",
+		"crates/one/Cargo.toml": '[package]\nname = "one-lib"\nversion = "0.1.0"\n\n[dependencies]\nwalkdir = "2"\n',
 		"crates/one/src/lib.rs": "pub mod item;\n",
 		"crates/one/src/item.rs": "pub struct One;\n",
-		"crates/two/Cargo.toml": '[package]\nname = "two"\nversion = "0.1.0"\n',
+		"crates/two/Cargo.toml":
+			'[package]\nname = "two"\nversion = "0.1.0"\n\n[lib]\nname = "second"\n\n[dependencies]\nfirst = { package = "one-lib", path = "../one" }\nwalkdir = "2"\n',
 		"crates/two/src/lib.rs": "pub mod item;\n",
 		"crates/two/src/item.rs": "pub struct Two;\n",
 		"crates/two/target/ignored.rs": "pub struct Ignored;\n",
@@ -467,9 +569,39 @@ test("discovers multiple Cargo roots and resolves crate paths within the nearest
 	expect(model.files).toContain("crates/one/src/lib.rs");
 	expect(model.files).toContain("crates/two/src/lib.rs");
 	expect(model.files).not.toContain("crates/two/target/ignored.rs");
+	expect(model.configFiles).toEqual(["Cargo.toml", "crates/one/Cargo.toml", "crates/two/Cargo.toml"]);
+	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "first::item" })).toEqual({
+		status: "resolved",
+		module: "crates/one/src/item.rs",
+	});
+	for (const [fromModule, specifier] of [
+		["crates/two/src/lib.rs", "one_lib::item"],
+		["crates/one/src/lib.rs", "second::item"],
+	] as const)
+		expect(provider.resolveImport({ fromModule, specifier })).toMatchObject({ status: "unresolved" });
+	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "walkdir::WalkDir" })).toEqual({
+		status: "external",
+		packageName: "walkdir",
+	});
+	const one = provider.parseFile({ module: "crates/one/src/item.rs", contentHash: "one", text: "pub struct One;\n" });
+	const two = provider.parseFile({
+		module: "crates/two/src/lib.rs",
+		contentHash: "two",
+		text: "pub mod item;\nfn f(x: first::item::One, w: walkdir::DirEntry) { w.path(); }\n",
+	});
+	const bindingOf = (name: string) => two.references.find((reference) => reference.name === name)?.binding;
+	expect(bindingOf("One")).toMatchObject({ symbolId: one.declarations[0]?.symbolId });
+	expect(bindingOf("path")).toMatchObject({ status: "unbound", reason: "ExternalDependency" });
 	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "crate::item" })).toEqual({
 		status: "resolved",
 		module: "crates/two/src/item.rs",
+	});
+	expect(provider.resolveImport({ fromModule: "crates/core/app.rs", specifier: "crate::app::App" })).toEqual({
+		status: "resolved",
+		module: "crates/core/app.rs",
+	});
+	expect(provider.resolveImport({ fromModule: "tests/it.rs", specifier: "crate::item" })).toMatchObject({
+		status: "unresolved",
 	});
 });
 
@@ -487,6 +619,7 @@ pretty_assertions = "1"
 
 [build-dependencies]
 cc = "1"
+grep-searcher = { path = "crates/searcher" }
 `,
 		"src/lib.rs": "",
 	});
@@ -499,6 +632,8 @@ cc = "1"
 		["serde::Serialize", "serde"],
 		["pretty_assertions::assert_eq", "pretty_assertions"],
 		["cc::Build", "cc"],
+		["grep_searcher::Searcher", "grep_searcher"],
+		["::std::io::{self, Read}", "std"],
 	] as const) {
 		expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier })).toEqual({
 			status: "external",
@@ -541,45 +676,63 @@ test("binds parameters and locals in their containing function", () => {
 	});
 });
 
-test("binds qualified methods through a same-file type and an imported type", () => {
+test("binds qualified methods and members through a same-file type, an imported one, its aliases and its impls anywhere", () => {
 	const root = workspace({
+		"Cargo.toml": '[package]\nname = "demo"\nversion = "0.1.0"\n',
 		"src/lib.rs": `pub mod util;
-use crate::util::External;
+pub mod extra;
+use crate::util::{External, Alias};
 struct Local;
 impl Local { fn make() -> Self { Local } }
-fn run() { Local::make(); External::make(); }
+fn run(alias: Alias) { Local::make(); External::make(); alias.more(); Alias::make(); alias.renamed(); }
 `,
 		"src/util.rs": `pub struct External;
 impl External { pub fn make() -> Self { External } }
+pub type Inner = External;
+pub type Alias = Inner;
+`,
+		"src/extra.rs": `use crate::util::External;
+use crate::util::External as Renamed;
+impl External { pub fn more(&self) {} }
+impl Renamed { pub fn renamed(&self) {} }
 `,
 	});
 	const provider = client(new RustProvider());
 	provider.initialize(root);
+	provider.discoverProject(root);
 	const lib = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const util = readFileSync(path.join(root, "src/util.rs"), "utf8");
-	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "qualified", text: lib });
+	const extra = readFileSync(path.join(root, "src/extra.rs"), "utf8");
 	provider.parseFile({ module: "src/util.rs", contentHash: "external", text: util });
-	const calls = facts.references.filter((reference) => reference.role === "call" && reference.name === "make");
-	const localMethod = facts.declarations.find((declaration) => declaration.name === "make");
+	const impls = provider.parseFile({ module: "src/extra.rs", contentHash: "extra", text: extra });
+	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "qualified", text: lib });
+	const bindings = (name: string) =>
+		facts.references.filter((reference) => reference.name === name).map((reference) => reference.binding);
+	const idIn = (declarations: typeof facts.declarations, name: string) =>
+		declarations.find((declaration) => declaration.name === name)?.symbolId;
+	const [local, external, aliased] = bindings("make");
 
-	if (calls.length !== 2 || localMethod === undefined) throw new Error("qualified calls missing");
-	expect(calls[0]?.binding).toEqual({
-		status: "bound",
-		symbolId: localMethod.symbolId,
-		provenance: "bound",
-	});
-	expect(calls[1]?.binding.status).toBe("bound");
-	expect(calls[1]?.binding).not.toEqual(calls[0]?.binding);
+	expect(local).toMatchObject({ symbolId: idIn(facts.declarations, "make") });
+	expect(external).toMatchObject({ status: "bound" });
+	expect(external).not.toEqual(local);
+	expect(aliased).toEqual(external);
+	expect(bindings("more")).toMatchObject([{ symbolId: idIn(impls.declarations, "more") }]);
+	expect(bindings("renamed")).toMatchObject([{ symbolId: idIn(impls.declarations, "renamed") }]);
 });
 
 // The container id would name nothing in this parse, which the core refuses to store.
-test("names no container for an impl of a type declared in another file", () => {
+test("contains every impl item in its impl block, wherever the type is declared", () => {
 	const root = workspace({
 		"src/lib.rs": `pub mod util;
 use crate::util::External;
 struct Local;
 impl Local { fn make() -> Self { Local } }
-impl External { fn extra(&self) {} }
+impl External {
+    fn extra(&self) {}
+}
+impl Later { fn early(&self) { self.late() } }
+impl Later { fn late(&self) {} }
+struct Later;
 `,
 		"src/util.rs": "pub struct External;\n",
 	});
@@ -587,13 +740,26 @@ impl External { fn extra(&self) {} }
 	provider.initialize(root);
 	const lib = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "foreign-impl", text: lib });
-	const local = facts.declarations.find((declaration) => declaration.name === "Local");
-	const make = facts.declarations.find((declaration) => declaration.name === "make");
-	const extra = facts.declarations.find((declaration) => declaration.name === "extra");
+	const named = (name: string) => facts.declarations.find((declaration) => declaration.name === name);
+	const impls = facts.declarations.filter((declaration) => declaration.languageKind === "impl");
+	const late = facts.references.find((reference) => reference.name === "late");
 
-	expect(make?.containerId).toBe(local?.symbolId);
-	expect(extra?.containerId).toBeUndefined();
-	expect(extra?.symbolId).toContain("External#extra");
+	expect(impls.map((declaration) => declaration.name)).toEqual([
+		"impl Local",
+		"impl External",
+		"impl Later",
+		"impl Later",
+	]);
+	expect(new Set(impls.map((declaration) => declaration.symbolId)).size).toBe(4);
+	expect(
+		impls.every((declaration) => declaration.kind === "namespace" && declaration.containerId === undefined),
+	).toBe(true);
+	expect(named("make")?.containerId).toBe(impls[0]?.symbolId);
+	expect(named("extra")?.containerId).toBe(impls[1]?.symbolId);
+	expect(named("extra")?.symbolId).toContain("External#extra");
+	expect(impls[1]?.memberInsertLine).toBe(6);
+	expect(named("late")?.containerId).toBe(impls[3]?.symbolId);
+	expect(late?.binding).toMatchObject({ status: "bound", symbolId: named("late")?.symbolId });
 });
 
 test("returns explicit reasons for external, missing, and runtime constructed bindings", () => {
@@ -913,13 +1079,13 @@ test("lets a new workspace fill a module the previous one withheld", () => {
 
 test("resolves a base-module symbol import against what the index holds, not the disk", () => {
 	const root = workspace({
-		"src/lib.rs": "pub enum Token { Literal }\n",
+		"src/lib.rs": "mod glob;\npub enum Token { Literal }\n",
 		"src/glob.rs": "use super::Token;\n",
 	});
 	const provider = client(new RustProvider());
 	provider.initialize(root);
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
-	const token = "pub enum Token { Literal }\n";
+	const token = "mod glob;\npub enum Token { Literal }\n";
 
 	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
 

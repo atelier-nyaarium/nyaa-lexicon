@@ -15,7 +15,7 @@ function signatures(text: string): Record<string, string | undefined> {
 	return Object.fromEntries(declarations(text).map((declaration) => [declaration.name, declaration.signature]));
 }
 
-test("reads a function header from its attributes to its body, without moving its range", () => {
+test("reads a function header and its range from its first outer attribute", () => {
 	const found = declarations(`#![allow(dead_code)]
 
 /// Runs.
@@ -35,8 +35,25 @@ where
 	expect(run?.signature).toBe(
 		"#[must_use] pub async unsafe fn run<T: Send>(items: Vec<T>, limit: usize) -> Result<(), Error> where T: 'static",
 	);
-	expect(run?.range.start).toEqual({ line: 4, character: 0 });
+	expect(run?.range.start).toEqual({ line: 3, character: 0 });
 	expect(found.find((declaration) => declaration.name === "items")?.signature).toBeUndefined();
+});
+
+test("starts a range at the first outer attribute, past a comment among them", () => {
+	const found = declarations(`#[derive(Debug)]
+/// Kept above the name.
+#[repr(C)]
+struct Split;
+
+#[inline] // trailing
+fn tight() {}
+`);
+
+	expect(found.find((declaration) => declaration.name === "Split")?.range.start).toEqual({ line: 0, character: 0 });
+	expect(found.find((declaration) => declaration.name === "Split")?.signature).toBe(
+		"#[derive(Debug)] #[repr(C)] struct Split",
+	);
+	expect(found.find((declaration) => declaration.name === "tight")?.range.start).toEqual({ line: 5, character: 0 });
 });
 
 test("keeps a trait method's return type and gives a trait impl method only its own header", () => {

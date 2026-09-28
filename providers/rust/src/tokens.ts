@@ -1,5 +1,12 @@
-import type { OffsetRange, Range } from "@nyaa-lexicon/protocol";
-import { Cursor, type CursorSpan, isAsciiDigit, isIdentifierPart, isIdentifierStart, sourceRange } from "./cursor.js";
+import { type CursorMark, type CursorSpan, type OffsetRange, type Range, SourceCursor } from "@nyaa-lexicon/protocol";
+import {
+	BYTE_ORDER_MARK,
+	isAsciiDigit,
+	isHexDigit,
+	isIdentifierPart,
+	isIdentifierStart,
+	isWhitespace,
+} from "./characters.js";
 import type { CommentSpan } from "./model.js";
 
 ////////////////////////////////
@@ -46,7 +53,8 @@ export interface ScanResult {
 	/** Lines no token or comment touches. */
 	blankLines: number[];
 	diagnostics: ScanDiagnostic[];
-	lineTokens: Map<number, RustToken[]>;
+	/** The source between two offsets, read from the cursor that lexed it. */
+	textOf: (start: number, end: number) => string;
 }
 
 ////////////////////////////////
@@ -124,8 +132,14 @@ export const TYPE_WORDS: ReadonlySet<string> = new Set([
 ////////////////////////////////
 //  Functions & Helpers
 
+/** A symbol, or a word as written; a raw identifier spells no keyword. */
 export function isValueToken(token: RustToken | undefined, value: string): boolean {
-	return token !== undefined && (token.kind === "symbol" || token.kind === "identifier") && token.value === value;
+	return token !== undefined && (token.kind === "symbol" || token.kind === "identifier") && token.raw === value;
+}
+
+/** A keyword as written, never a raw identifier spelling one. */
+export function isKeyword(token: RustToken | undefined): boolean {
+	return token?.kind === "identifier" && token.raw === token.value && KEYWORDS.has(token.value);
 }
 
 export function tokenAt(tokens: readonly RustToken[], index: number): RustToken | undefined {
@@ -133,12 +147,13 @@ export function tokenAt(tokens: readonly RustToken[], index: number): RustToken 
 }
 
 export function isNameToken(token: RustToken | undefined): token is RustToken {
-	return token !== undefined && (token.kind === "identifier" || token.value === "self" || token.value === "Self");
+	return token !== undefined && token.kind === "identifier";
 }
 
 ////////////////////////////////
 //  Constants
 
+/** rustc glues these; `?` stays single, so `x??` is two. */
 const MULTI_SYMBOLS = [
 	">>=",
 	"<<=",
@@ -164,97 +179,94 @@ const MULTI_SYMBOLS = [
 	"<<",
 	">>",
 	"..",
-	"??",
 ] as const;
+
+const SIMPLE_ESCAPES = new Map([
+	["0", "\0"],
+	["n", "\n"],
+	["r", "\r"],
+	["t", "\t"],
+	["\\", "\\"],
+	['"', '"'],
+	["'", "'"],
+]);
 
 ////////////////////////////////
 //  Functions & Helpers
 
-function matches(cursor: Cursor, text: string): boolean {
-	let index = 0;
-	for (const character of text) {
-		if (cursor.peek(index) !== character) return false;
-		index += character.length;
-	}
-	return true;
+function isContinuationSpace(character: string): boolean {
+	return character === " " || character === "\t" || character === "\n" || character === "\r";
 }
 
-function consumeText(cursor: Cursor, text: string): void {
-	for (const _character of text) cursor.next();
-}
-
-function decodeString(text: string): string {
-	const cursor = new Cursor(text);
+/** A literal body's value: escapes decoded, CRLF read as LF. */
+function decodeString(body: string): string {
+	const cursor = new SourceCursor(body);
 	let decoded = "";
+	let guard = -1;
 	while (cursor.good()) {
+		if (cursor.offset <= guard) throw new Error("escape decoder failed to advance");
+		guard = cursor.offset;
 		const character = cursor.next();
+		if (character === "\r" && cursor.peek() === "\n") continue;
 		if (character !== "\\" || !cursor.good()) {
 			decoded += character;
 			continue;
 		}
 		const escaped = cursor.next();
 		if (escaped === "\n" || (escaped === "\r" && cursor.peek() === "\n")) {
-			// Continuation skips following whitespace.
-			cursor.readWhile((next) => next === " " || next === "\t" || next === "\n" || next === "\r");
+			cursor.readWhile(isContinuationSpace);
 			continue;
 		}
-		if (escaped === "x") {
-			const hex = cursor.next() + cursor.next();
-			const codePoint = Number.parseInt(hex, 16);
-			if (/^[0-9a-fA-F]{2}$/u.test(hex) && Number.isFinite(codePoint)) {
-				decoded += String.fromCharCode(codePoint);
-				continue;
-			}
-			decoded += `\\x${hex}`;
+		const simple = SIMPLE_ESCAPES.get(escaped);
+		if (simple !== undefined) {
+			decoded += simple;
 			continue;
 		}
-		const simple: Record<string, string> = {
-			"0": "\0",
-			a: "\x07",
-			b: "\b",
-			f: "\f",
-			n: "\n",
-			r: "\r",
-			t: "\t",
-			v: "\v",
-			"\\": "\\",
-			'"': '"',
-			"'": "'",
-		};
-		const replacement = simple[escaped];
-		if (replacement !== undefined) {
-			decoded += replacement;
+		if (escaped === "x" && isHexDigit(cursor.peek()) && isHexDigit(cursor.peek(1))) {
+			decoded += String.fromCharCode(Number.parseInt(cursor.next() + cursor.next(), 16));
 			continue;
 		}
 		if (escaped === "u" && cursor.peek() === "{") {
+			const mark = cursor.mark();
 			cursor.next();
-			const hex = cursor.readWhile((value) => value !== "}");
-			if (cursor.peek() === "}") cursor.next();
-			const codePoint = Number.parseInt(hex, 16);
-			if (hex !== "" && Number.isFinite(codePoint) && codePoint <= 0x10ffff) {
+			const digits = cursor.readWhile((value) => isHexDigit(value) || value === "_").replaceAll("_", "");
+			const codePoint = Number.parseInt(digits, 16);
+			if (cursor.peek() === "}" && digits !== "" && digits.length <= 6 && codePoint <= 0x10ffff) {
+				cursor.next();
 				decoded += String.fromCodePoint(codePoint);
 				continue;
 			}
+			cursor.rewind(mark);
 		}
 		decoded += `\\${escaped}`;
 	}
 	return decoded;
 }
 
-function spanFrom(mark: ReturnType<Cursor["mark"]>, cursor: Cursor): CursorSpan {
-	return cursor.span(mark);
+/** A raw body's value: CRLF read as LF. */
+function normalizeLineBreaks(body: string): string {
+	const cursor = new SourceCursor(body);
+	let value = "";
+	let guard = -1;
+	while (cursor.good()) {
+		if (cursor.offset <= guard) throw new Error("line break reader failed to advance");
+		guard = cursor.offset;
+		const character = cursor.next();
+		if (character !== "\r" || cursor.peek() !== "\n") value += character;
+	}
+	return value;
 }
 
-function addComment(source: string, comments: ScanComments, span: CursorSpan): void {
+function addComment(cursor: SourceCursor, comments: ScanComments, span: CursorSpan): void {
 	comments.spans.push({
 		range: { start: span.start, end: span.end },
-		text: sourceRange(source, span.startOffset, span.endOffset),
+		text: cursor.textOf(span.startOffset, span.endOffset),
 	});
 	comments.offsets.push({ start: span.startOffset, end: span.endOffset });
 }
 
 /** A line comment stops before its terminator, and CRLF is one terminator. */
-function readToLineEnd(cursor: Cursor): void {
+function readToLineEnd(cursor: SourceCursor): void {
 	let guard = -1;
 	while (cursor.good() && cursor.peek() !== "\n") {
 		if (cursor.offset <= guard) throw new Error("line comment reader failed to advance");
@@ -264,19 +276,22 @@ function readToLineEnd(cursor: Cursor): void {
 	}
 }
 
-function makeToken(source: string, kind: RustTokenKind, value: string, span: CursorSpan): RustToken {
-	return { kind, value, raw: sourceRange(source, span.startOffset, span.endOffset), ...span };
+function makeToken(cursor: SourceCursor, kind: RustTokenKind, value: string, span: CursorSpan): RustToken {
+	return { kind, value, raw: cursor.textOf(span.startOffset, span.endOffset), ...span };
+}
+
+function skip(cursor: SourceCursor, count: number): void {
+	for (let index = 0; index < count; index++) cursor.next();
 }
 
 function scanQuoted(
-	source: string,
-	cursor: Cursor,
+	cursor: SourceCursor,
 	quote: '"' | "'",
 	prefixLength: number,
 	diagnostics: ScanDiagnostic[],
 ): RustToken {
 	const mark = cursor.mark();
-	for (let index = 0; index < prefixLength; index++) cursor.next();
+	skip(cursor, prefixLength);
 	const bodyStart = cursor.offset;
 	let closed = false;
 	let guard = -1;
@@ -300,17 +315,16 @@ function scanQuoted(
 	else
 		diagnostics.push({
 			message: "string or character literal has no closing delimiter",
-			span: spanFrom(mark, cursor),
+			span: cursor.span(mark),
 		});
-	const span = spanFrom(mark, cursor);
-	const body = sourceRange(source, bodyStart, bodyEnd);
-	return makeToken(source, quote === '"' ? "string" : "char", decodeString(body), span);
+	const body = cursor.textOf(bodyStart, bodyEnd);
+	return makeToken(cursor, quote === '"' ? "string" : "char", decodeString(body), cursor.span(mark));
 }
 
 /** rustc's char literal. Null if unterminated. */
-function tryCharacter(source: string, cursor: Cursor, prefixLength: number): RustToken | null {
+function tryCharacter(cursor: SourceCursor, prefixLength: number): RustToken | null {
 	const mark = cursor.mark();
-	for (let index = 0; index < prefixLength; index++) cursor.next();
+	skip(cursor, prefixLength);
 	const bodyStart = cursor.offset;
 	if (cursor.peek(1) === "'" && cursor.peek() !== "\\") {
 		cursor.next();
@@ -331,33 +345,34 @@ function tryCharacter(source: string, cursor: Cursor, prefixLength: number): Rus
 	}
 	const bodyEnd = cursor.offset;
 	cursor.next();
-	return makeToken(source, "char", decodeString(sourceRange(source, bodyStart, bodyEnd)), spanFrom(mark, cursor));
+	return makeToken(cursor, "char", decodeString(cursor.textOf(bodyStart, bodyEnd)), cursor.span(mark));
 }
 
-function isLifetime(cursor: Cursor): boolean {
-	if (cursor.peek() !== "'" || !isIdentifierStart(cursor.peek(1))) return false;
-	let offset = 1;
-	while (isIdentifierPart(cursor.peek(offset))) offset++;
-	return cursor.peek(offset) !== "'";
-}
-
-function scanLifetime(source: string, cursor: Cursor): RustToken {
+/** `'name` or `'r#name` with no closing quote after the name. */
+function isLifetime(cursor: SourceCursor): boolean {
+	if (cursor.peek() !== "'" || cursor.peek(1) === "'") return false;
 	const mark = cursor.mark();
-	let value = cursor.next();
-	value += cursor.next();
-	while (isIdentifierPart(cursor.peek())) value += cursor.next();
-	return makeToken(source, "lifetime", value, spanFrom(mark, cursor));
+	cursor.next();
+	if (cursor.peek() === "r" && cursor.peek(1) === "#" && isIdentifierStart(cursor.peek(2))) cursor.take("r#");
+	const named = isIdentifierStart(cursor.peek()) && cursor.readWhile(isIdentifierPart) !== "";
+	const lifetime = named && cursor.peek() !== "'";
+	cursor.rewind(mark);
+	return lifetime;
 }
 
-function scanRawString(source: string, cursor: Cursor, prefixLength: number, diagnostics: ScanDiagnostic[]): RustToken {
+function scanLifetime(cursor: SourceCursor): RustToken {
 	const mark = cursor.mark();
-	for (let index = 0; index < prefixLength; index++) cursor.next();
-	let hashes = 0;
-	while (cursor.peek() === "#") {
-		hashes++;
-		cursor.next();
-	}
-	if (cursor.peek() === '"') cursor.next();
+	cursor.next();
+	if (cursor.startsWith("r#")) skip(cursor, 2);
+	const name = cursor.readWhile(isIdentifierPart);
+	return makeToken(cursor, "lifetime", `'${name}`, cursor.span(mark));
+}
+
+function scanRawString(cursor: SourceCursor, prefixLength: number, diagnostics: ScanDiagnostic[]): RustToken {
+	const mark = cursor.mark();
+	skip(cursor, prefixLength);
+	const hashes = cursor.readWhile((character) => character === "#").length;
+	cursor.take('"');
 	const bodyStart = cursor.offset;
 	let bodyEnd = cursor.offset;
 	let closed = false;
@@ -370,8 +385,7 @@ function scanRawString(source: string, cursor: Cursor, prefixLength: number, dia
 			for (let index = 1; index <= hashes; index++) if (cursor.peek(index) !== "#") valid = false;
 			if (valid) {
 				bodyEnd = cursor.offset;
-				cursor.next();
-				for (let index = 0; index < hashes; index++) cursor.next();
+				skip(cursor, hashes + 1);
 				closed = true;
 				break;
 			}
@@ -380,42 +394,37 @@ function scanRawString(source: string, cursor: Cursor, prefixLength: number, dia
 	}
 	if (!closed) {
 		bodyEnd = cursor.offset;
-		diagnostics.push({ message: "raw string literal has no closing delimiter", span: spanFrom(mark, cursor) });
+		diagnostics.push({ message: "raw string literal has no closing delimiter", span: cursor.span(mark) });
 	}
-	const span = spanFrom(mark, cursor);
-	return makeToken(source, "string", sourceRange(source, bodyStart, bodyEnd), span);
+	return makeToken(cursor, "string", normalizeLineBreaks(cursor.textOf(bodyStart, bodyEnd)), cursor.span(mark));
 }
 
-function scanLineComment(source: string, cursor: Cursor, comments: ScanComments): void {
+function scanLineComment(cursor: SourceCursor, comments: ScanComments): void {
 	const mark = cursor.mark();
-	const inner = cursor.peek(2) === "!";
-	const doc = cursor.peek(2) === "/" || inner;
-	consumeText(cursor, doc ? (inner ? "//!" : "///") : "//");
+	cursor.take("//");
 	readToLineEnd(cursor);
-	addComment(source, comments, spanFrom(mark, cursor));
+	addComment(cursor, comments, cursor.span(mark));
 }
 
-function scanBlockComment(source: string, cursor: Cursor, comments: ScanComments, diagnostics: ScanDiagnostic[]): void {
+function scanBlockComment(cursor: SourceCursor, comments: ScanComments, diagnostics: ScanDiagnostic[]): void {
 	const mark = cursor.mark();
 	// `/**/` closes the comment rather than opening a doc one.
 	const doc = cursor.peek(2) === "!" || (cursor.peek(2) === "*" && cursor.peek(3) !== "/");
-	consumeText(cursor, "/*");
+	cursor.take("/*");
 	if (doc) cursor.next();
 	let depth = 1;
 	let guard = -1;
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("block comment reader failed to advance");
 		guard = cursor.offset;
-		if (matches(cursor, "/*")) {
-			consumeText(cursor, "/*");
+		if (cursor.take("/*")) {
 			depth++;
 			continue;
 		}
-		if (matches(cursor, "*/")) {
-			consumeText(cursor, "*/");
+		if (cursor.take("*/")) {
 			depth--;
 			if (depth === 0) {
-				addComment(source, comments, spanFrom(mark, cursor));
+				addComment(cursor, comments, cursor.span(mark));
 				return;
 			}
 			continue;
@@ -423,38 +432,38 @@ function scanBlockComment(source: string, cursor: Cursor, comments: ScanComments
 		cursor.next();
 	}
 	// An unterminated block is one span reaching end of file.
-	addComment(source, comments, spanFrom(mark, cursor));
-	diagnostics.push({ message: "block comment has no closing delimiter", span: spanFrom(mark, cursor) });
+	addComment(cursor, comments, cursor.span(mark));
+	diagnostics.push({ message: "block comment has no closing delimiter", span: cursor.span(mark) });
 }
 
 /** Whitespace or one comment. */
-function scanTrivia(source: string, cursor: Cursor, comments: ScanComments, diagnostics: ScanDiagnostic[]): boolean {
-	if (/\s/u.test(cursor.peek())) {
+function scanTrivia(cursor: SourceCursor, comments: ScanComments, diagnostics: ScanDiagnostic[]): boolean {
+	if (isWhitespace(cursor.peek())) {
 		cursor.next();
 		return true;
 	}
-	if (matches(cursor, "//")) {
-		scanLineComment(source, cursor, comments);
+	if (cursor.startsWith("//")) {
+		scanLineComment(cursor, comments);
 		return true;
 	}
-	if (matches(cursor, "/*")) {
-		scanBlockComment(source, cursor, comments, diagnostics);
+	if (cursor.startsWith("/*")) {
+		scanBlockComment(cursor, comments, diagnostics);
 		return true;
 	}
 	return false;
 }
 
 /** Shebang unless the next token is `[`. */
-function isShebang(source: string, cursor: Cursor): boolean {
-	if (!matches(cursor, "#!")) return false;
+function isShebang(cursor: SourceCursor): boolean {
+	if (!cursor.startsWith("#!")) return false;
 	const mark = cursor.mark();
-	consumeText(cursor, "#!");
+	cursor.take("#!");
 	const skipped: ScanComments = { spans: [], offsets: [] };
 	let guard = -1;
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("shebang lookahead failed to advance");
 		guard = cursor.offset;
-		if (!scanTrivia(source, cursor, skipped, [])) break;
+		if (!scanTrivia(cursor, skipped, [])) break;
 	}
 	const attribute = cursor.peek() === "[";
 	cursor.rewind(mark);
@@ -473,30 +482,26 @@ const BASE_PREFIXES = new Map<string, 2 | 8 | 16>([
 ////////////////////////////////
 //  Functions & Helpers
 
-function isHexLetter(character: string): boolean {
-	return (character >= "a" && character <= "f") || (character >= "A" && character <= "F");
-}
-
 /** Binary and octal accept decimal digits. */
-function readDigits(cursor: Cursor, hex: boolean): string {
+function readDigits(cursor: SourceCursor, hex: boolean): string {
 	return cursor.readWhile(
-		(character) => character === "_" || isAsciiDigit(character) || (hex && isHexLetter(character)),
+		(character) => character === "_" || (hex ? isHexDigit(character) : isAsciiDigit(character)),
 	);
 }
 
-function readExponent(cursor: Cursor): NonNullable<RustNumber["exponent"]> {
+function readExponent(cursor: SourceCursor): NonNullable<RustNumber["exponent"]> {
 	const character = cursor.peek();
 	const sign = character === "+" || character === "-" ? character : "";
 	if (sign !== "") cursor.next();
 	return { sign, digits: readDigits(cursor, false) };
 }
 
-function readSuffix(cursor: Cursor): string {
+function readSuffix(cursor: SourceCursor): string {
 	return isIdentifierStart(cursor.peek()) ? cursor.readWhile(isIdentifierPart) : "";
 }
 
 /** rustc_lexer's number grammar. */
-function scanNumber(cursor: Cursor): RustNumber {
+function scanNumber(cursor: SourceCursor): RustNumber {
 	const first = cursor.next();
 	const base = first === "0" ? BASE_PREFIXES.get(cursor.peek()) : undefined;
 	let number: RustNumber;
@@ -528,25 +533,13 @@ function scanNumber(cursor: Cursor): RustNumber {
 	return number;
 }
 
-function scanIdentifier(cursor: Cursor): string {
-	let value = "";
-	if (cursor.peek() === "r" && cursor.peek(1) === "#" && isIdentifierStart(cursor.peek(2))) {
-		cursor.next();
-		cursor.next();
-		value = cursor.next();
-		while (isIdentifierPart(cursor.peek())) value += cursor.next();
-		return value;
-	}
-	value += cursor.next();
-	while (isIdentifierPart(cursor.peek())) value += cursor.next();
-	return value;
-}
-
-function addToken(source: string, tokens: RustToken[], lineTokens: Map<number, RustToken[]>, token: RustToken): void {
-	tokens.push(token);
-	const line = lineTokens.get(token.start.line) ?? [];
-	line.push(token);
-	lineTokens.set(token.start.line, line);
+/** The name an identifier spells; `r#` is no part of it. */
+function scanIdentifier(cursor: SourceCursor): string {
+	if (cursor.peek() === "r" && cursor.peek(1) === "#" && isIdentifierStart(cursor.peek(2))) cursor.take("r#");
+	const start = cursor.mark();
+	cursor.next();
+	cursor.readWhile(isIdentifierPart);
+	return cursor.textSince(start);
 }
 
 /** From the nearest code token on each side; comments are not code. */
@@ -581,95 +574,71 @@ function blankLinesOf(ranges: readonly Range[], lineCount: number): number[] {
 	return blank;
 }
 
+/** A raw string, byte or C string, or byte character at the cursor; null for anything else. */
+function scanPrefixed(cursor: SourceCursor, diagnostics: ScanDiagnostic[]): RustToken | null {
+	const character = cursor.peek();
+	const prefix = character === "b" || character === "c" ? character : undefined;
+	const rawAt = prefix === undefined ? 0 : 1;
+	if (cursor.peek(rawAt) === "r" && (character === "r" || prefix !== undefined)) {
+		let offset = rawAt + 1;
+		while (cursor.peek(offset) === "#") offset++;
+		if (cursor.peek(offset) === '"') {
+			const token = scanRawString(cursor, rawAt + 1, diagnostics);
+			return prefix === undefined ? token : { ...token, prefix };
+		}
+	}
+	if (prefix !== undefined && cursor.peek(1) === '"') return { ...scanQuoted(cursor, '"', 2, diagnostics), prefix };
+	if (prefix === "b" && cursor.peek(1) === "'") {
+		const token = tryCharacter(cursor, 2);
+		return token === null ? null : { ...token, prefix };
+	}
+	return null;
+}
+
+/** The one token at the cursor, which trivia does not start. */
+function scanToken(cursor: SourceCursor, diagnostics: ScanDiagnostic[]): RustToken {
+	const character = cursor.peek();
+	const mark: CursorMark = cursor.mark();
+	const prefixed = scanPrefixed(cursor, diagnostics);
+	if (prefixed !== null) return prefixed;
+	if (character === '"') return scanQuoted(cursor, '"', 1, diagnostics);
+	if (character === "'") {
+		if (isLifetime(cursor)) return scanLifetime(cursor);
+		const token = tryCharacter(cursor, 1);
+		if (token !== null) return token;
+	}
+	if (isIdentifierStart(character)) {
+		const value = scanIdentifier(cursor);
+		return makeToken(cursor, "identifier", value, cursor.span(mark));
+	}
+	if (isAsciiDigit(character)) {
+		const number = scanNumber(cursor);
+		return { ...makeToken(cursor, "number", cursor.textSince(mark), cursor.span(mark)), number };
+	}
+	const symbol = MULTI_SYMBOLS.find((candidate) => cursor.startsWith(candidate)) ?? character;
+	cursor.take(symbol);
+	return makeToken(cursor, "symbol", symbol, cursor.span(mark));
+}
+
 export function tokenize(source: string): ScanResult {
-	const cursor = new Cursor(source);
+	const cursor = new SourceCursor(source);
 	const tokens: RustToken[] = [];
 	const comments: ScanComments = { spans: [], offsets: [] };
 	const diagnostics: ScanDiagnostic[] = [];
-	const lineTokens = new Map<number, RustToken[]>();
 	let guard = -1;
 
-	if (isShebang(source, cursor)) {
+	cursor.take(BYTE_ORDER_MARK);
+	if (isShebang(cursor)) {
 		const mark = cursor.mark();
 		readToLineEnd(cursor);
-		addComment(source, comments, spanFrom(mark, cursor));
+		addComment(cursor, comments, cursor.span(mark));
 	}
 
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("tokenizer failed to advance");
 		guard = cursor.offset;
-		if (scanTrivia(source, cursor, comments, diagnostics)) continue;
-		const character = cursor.peek();
-		const mark = cursor.mark();
-		if (character === "r" && (cursor.peek(1) === '"' || cursor.peek(1) === "#")) {
-			let offset = 1;
-			while (cursor.peek(offset) === "#") offset++;
-			if (cursor.peek(offset) === '"') {
-				const token = scanRawString(source, cursor, 1, diagnostics);
-				addToken(source, tokens, lineTokens, token);
-				continue;
-			}
-		}
-		if ((character === "b" || character === "c") && cursor.peek(1) === '"') {
-			const token = scanQuoted(source, cursor, '"', 2, diagnostics);
-			addToken(source, tokens, lineTokens, { ...token, prefix: character });
-			continue;
-		}
-		if ((character === "b" || character === "c") && cursor.peek(1) === "r") {
-			let offset = 2;
-			while (cursor.peek(offset) === "#") offset++;
-			if (cursor.peek(offset) === '"') {
-				const token = scanRawString(source, cursor, 2, diagnostics);
-				addToken(source, tokens, lineTokens, { ...token, prefix: character });
-				continue;
-			}
-		}
-		if (character === "b" && cursor.peek(1) === "'") {
-			const token = tryCharacter(source, cursor, 2);
-			if (token !== null) {
-				addToken(source, tokens, lineTokens, { ...token, prefix: character });
-				continue;
-			}
-		}
-		if (character === '"') {
-			const token = scanQuoted(source, cursor, '"', 1, diagnostics);
-			addToken(source, tokens, lineTokens, token);
-			continue;
-		}
-		if (character === "'") {
-			if (isLifetime(cursor)) {
-				addToken(source, tokens, lineTokens, scanLifetime(source, cursor));
-				continue;
-			}
-			const token = tryCharacter(source, cursor, 1);
-			if (token !== null) {
-				addToken(source, tokens, lineTokens, token);
-				continue;
-			}
-		}
-		if (isIdentifierStart(character)) {
-			const value = scanIdentifier(cursor);
-			const span = spanFrom(mark, cursor);
-			addToken(source, tokens, lineTokens, makeToken(source, "identifier", value, span));
-			continue;
-		}
-		if (isAsciiDigit(character)) {
-			const number = scanNumber(cursor);
-			const span = spanFrom(mark, cursor);
-			const token = makeToken(source, "number", sourceRange(source, span.startOffset, span.endOffset), span);
-			addToken(source, tokens, lineTokens, { ...token, number });
-			continue;
-		}
-		const symbol = MULTI_SYMBOLS.find((candidate) => matches(cursor, candidate));
-		if (symbol !== undefined) {
-			consumeText(cursor, symbol);
-			const span = spanFrom(mark, cursor);
-			addToken(source, tokens, lineTokens, makeToken(source, "symbol", symbol, span));
-			continue;
-		}
-		const value = cursor.next();
-		const span = spanFrom(mark, cursor);
-		addToken(source, tokens, lineTokens, makeToken(source, "symbol", value, span));
+		if (scanTrivia(cursor, comments, diagnostics)) continue;
+		tokens.push(scanToken(cursor, diagnostics));
 	}
 
 	// A final line break ends the last line rather than opening another.
@@ -681,6 +650,6 @@ export function tokenize(source: string): ScanResult {
 		commentOffsets: comments.offsets,
 		blankLines: blankLinesOf(ranges, lineCount),
 		diagnostics,
-		lineTokens,
+		textOf: (start, end) => cursor.textOf(start, end),
 	};
 }

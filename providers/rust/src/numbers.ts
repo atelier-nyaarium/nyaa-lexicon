@@ -1,4 +1,4 @@
-// Numeric literal values, and the primitive type a literal spells.
+// Numeric literal values, and the type a literal spells.
 
 import type { RustNumber, RustToken } from "./tokens.js";
 
@@ -81,8 +81,14 @@ export function numericValue(number: RustNumber): number | undefined {
 		: undefined;
 }
 
+/** A byte string's value holds one character per byte. */
+function stringType(token: RustToken): string {
+	if (token.prefix === "b") return `&[u8; ${token.value.length}]`;
+	return token.prefix === "c" ? "&CStr" : "&str";
+}
+
 export function primitiveTypeForLiteral(token: RustToken): string | undefined {
-	if (token.kind === "string") return "&str";
+	if (token.kind === "string") return stringType(token);
 	if (token.kind === "char") return token.prefix === "b" ? "u8" : "char";
 	if (token.value === "true" || token.value === "false") return "bool";
 	const number = token.number;

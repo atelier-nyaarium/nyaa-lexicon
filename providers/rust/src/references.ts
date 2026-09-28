@@ -1,9 +1,9 @@
 // References and literals, read from the tokens the item parse marked.
 
-import { comparePositions, defined, type Literal, type Reference } from "@nyaa-lexicon/protocol";
+import { defined, type Literal, type Reference } from "@nyaa-lexicon/protocol";
 import type { ImportBinding, RawDeclaration, RawReference } from "./model.js";
 import { numericValue } from "./numbers.js";
-import { isNameToken, isValueToken, KEYWORDS, type RustToken, TYPE_WORDS, tokenAt } from "./tokens.js";
+import { isKeyword, isNameToken, isValueToken, type RustToken, TYPE_WORDS, tokenAt } from "./tokens.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -26,12 +26,26 @@ export interface ItemMarks {
 	implTraitTokens: ReadonlySet<number>;
 	implTypeTokens: ReadonlySet<number>;
 	keywordTokens: ReadonlySet<number>;
+	/** Struct literal and pattern field labels, each to its brace. */
+	labels: ReadonlyMap<number, number>;
+	/** Type brackets each token opens, less those it closes. */
+	angleDeltas: ReadonlyMap<number, number>;
+	/** An or-pattern's later sites of a binding, each to that binding. */
+	bindingSites: ReadonlyMap<number, string>;
 }
 
 ////////////////////////////////
 //  Constants
 
 const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
+
+/** Kinds whose references belong to their container. */
+const HELD_KINDS = new Set(["variable", "field", "constant"]);
+
+const TYPE_KINDS = new Set(["struct", "enum", "interface", "class"]);
+
+/** Previous tokens after which a name is a type. */
+const TYPE_LEADS = new Set([":", "->", "as", "impl", "dyn", "where"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -43,6 +57,18 @@ export function scanReferences(marks: ItemMarks): { references: Reference[]; lit
 	return { references, literals: scan.extractLiterals() };
 }
 
+/** The first token starting at or past `offset`. */
+function firstTokenFrom(tokens: readonly RustToken[], offset: number): number {
+	let low = 0;
+	let high = tokens.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if ((tokens[middle] as RustToken).startOffset < offset) low = middle + 1;
+		else high = middle;
+	}
+	return low;
+}
+
 ////////////////////////////////
 //  Classes
 
@@ -51,93 +77,120 @@ class ReferenceScan {
 	private readonly rawDeclarations: readonly RawDeclaration[];
 	private readonly rawReferences: RawReference[];
 	private readonly importBindings: readonly ImportBinding[];
-	private readonly ignoredRanges: readonly SpanRange[];
 	private readonly attributeTokens: ReadonlySet<number>;
-	private readonly useRanges: readonly SpanRange[];
 	private readonly declarationNameTokens: ReadonlySet<number>;
 	private readonly implTraitTokens: ReadonlySet<number>;
 	private readonly implTypeTokens: ReadonlySet<number>;
 	private readonly keywordTokens: ReadonlySet<number>;
+	private readonly labels: ReadonlyMap<number, number>;
+	private readonly angleDeltas: ReadonlyMap<number, number>;
+	private readonly bindingSites: ReadonlyMap<number, string>;
+	/** Each token's innermost owning declaration. */
+	private readonly owners: Array<string | undefined>;
+	/** Each token's innermost declaration of any kind. */
+	private readonly holders: Array<string | undefined>;
+	private readonly typed: Uint8Array;
+	private readonly ignored: Uint8Array;
+	private readonly used: Uint8Array;
+	private readonly typeNames: ReadonlySet<string>;
 
 	constructor(marks: ItemMarks) {
 		this.tokens = marks.tokens;
 		this.rawDeclarations = marks.rawDeclarations;
 		this.rawReferences = marks.rawReferences;
 		this.importBindings = marks.importBindings;
-		this.ignoredRanges = marks.ignoredRanges;
 		this.attributeTokens = marks.attributeTokens;
-		this.useRanges = marks.useRanges;
 		this.declarationNameTokens = marks.declarationNameTokens;
 		this.implTraitTokens = marks.implTraitTokens;
 		this.implTypeTokens = marks.implTypeTokens;
 		this.keywordTokens = marks.keywordTokens;
-	}
-
-	private isInRange(offset: number, range: SpanRange): boolean {
-		return offset >= range.startOffset && offset <= range.endOffset;
-	}
-
-	private isIgnored(offset: number): boolean {
-		return this.ignoredRanges.some((range) => this.isInRange(offset, range));
-	}
-
-	private isUse(offset: number): boolean {
-		return this.useRanges.some((range) => this.isInRange(offset, range));
-	}
-
-	private containerAt(offset: number): string | undefined {
-		const candidates = this.rawDeclarations.filter(
-			(raw) =>
-				raw.startOffset <= offset &&
-				offset <= raw.endOffset &&
-				raw.declaration.kind !== "variable" &&
-				raw.declaration.kind !== "field" &&
-				raw.declaration.kind !== "constant",
+		this.labels = marks.labels;
+		this.angleDeltas = marks.angleDeltas;
+		this.bindingSites = marks.bindingSites;
+		this.owners = new Array<string | undefined>(this.tokens.length);
+		this.holders = new Array<string | undefined>(this.tokens.length);
+		this.paintDeclarations();
+		this.typed = new Uint8Array(this.tokens.length);
+		for (const raw of this.rawDeclarations) {
+			if (raw.typeSpan === undefined) continue;
+			for (let index = raw.typeSpan.start; index < raw.typeSpan.end; index++) this.typed[index] = 1;
+		}
+		// Inside type brackets.
+		let depth = 0;
+		for (let index = 0; index < this.tokens.length; index++) {
+			if (depth > 0) this.typed[index] = 1;
+			depth = Math.max(0, depth + (marks.angleDeltas.get(index) ?? 0));
+		}
+		this.ignored = this.paintRanges(marks.ignoredRanges);
+		this.used = this.paintRanges(marks.useRanges);
+		this.typeNames = new Set(
+			this.rawDeclarations
+				.filter((raw) => TYPE_KINDS.has(raw.declaration.kind))
+				.map((raw) => raw.declaration.name),
 		);
-		candidates.sort((left, right) => left.endOffset - left.startOffset - (right.endOffset - right.startOffset));
-		return candidates[0]?.declaration.symbolId;
 	}
 
-	private literalContainerAt(offset: number): string | undefined {
-		const candidates = this.rawDeclarations.filter((raw) => raw.startOffset <= offset && offset <= raw.endOffset);
-		candidates.sort((left, right) => left.endOffset - left.startOffset - (right.endOffset - right.startOffset));
-		return candidates[0]?.declaration.symbolId;
+	/**
+	 * Each token's innermost holder and owner, in one sweep: a declaration opens at its start and stays
+	 * on its stack until a token starts at or past its end. Of equal ranges, the first declared is
+	 * innermost.
+	 */
+	private paintDeclarations(): void {
+		const ordered = this.rawDeclarations
+			.map((raw, order) => ({ raw, order }))
+			.sort(
+				(left, right) =>
+					left.raw.startOffset - right.raw.startOffset ||
+					right.raw.endOffset - left.raw.endOffset ||
+					right.order - left.order,
+			);
+		const holding: RawDeclaration[] = [];
+		const owning: RawDeclaration[] = [];
+		let next = 0;
+		for (let index = 0; index < this.tokens.length; index++) {
+			const offset = (this.tokens[index] as RustToken).startOffset;
+			while (next < ordered.length) {
+				const raw = (ordered[next] as { raw: RawDeclaration }).raw;
+				if (raw.startOffset > offset) break;
+				holding.push(raw);
+				if (!HELD_KINDS.has(raw.declaration.kind)) owning.push(raw);
+				next++;
+			}
+			while ((holding.at(-1)?.endOffset ?? offset + 1) <= offset) holding.pop();
+			while ((owning.at(-1)?.endOffset ?? offset + 1) <= offset) owning.pop();
+			this.holders[index] = holding.at(-1)?.declaration.symbolId;
+			this.owners[index] = owning.at(-1)?.declaration.symbolId;
+		}
+	}
+
+	/** Tokens starting inside a half-open range. */
+	private paintRanges(ranges: readonly SpanRange[]): Uint8Array {
+		const painted = new Uint8Array(this.tokens.length);
+		for (const range of ranges) {
+			for (
+				let index = firstTokenFrom(this.tokens, range.startOffset);
+				index < this.tokens.length && (this.tokens[index] as RustToken).startOffset < range.endOffset;
+				index++
+			)
+				painted[index] = 1;
+		}
+		return painted;
 	}
 
 	private typeContext(index: number, token: RustToken): boolean {
 		if (this.implTraitTokens.has(index) || this.implTypeTokens.has(index) || token.value === "Self") return true;
-		for (const raw of this.rawDeclarations) {
-			const range = raw.typeRange;
-			if (range === undefined) continue;
-			if (comparePositions(range.start, token.start) <= 0 && comparePositions(range.end, token.end) >= 0)
-				return true;
-		}
-		const previous = tokenAt(this.tokens, index - 1)?.value;
-		return (
-			previous === ":" ||
-			previous === "->" ||
-			previous === "as" ||
-			previous === "impl" ||
-			previous === "dyn" ||
-			previous === "where"
-		);
-	}
-
-	private typeDeclaration(name: string): RawDeclaration | undefined {
-		return this.rawDeclarations.find(
-			(raw) =>
-				raw.declaration.name === name &&
-				["struct", "enum", "interface", "class"].includes(raw.declaration.kind),
-		);
+		if (this.typed[index] === 1) return true;
+		// A field label's `:` leads a value.
+		if (this.labels.has(index - 2)) return false;
+		return TYPE_LEADS.has(tokenAt(this.tokens, index - 1)?.raw ?? "");
 	}
 
 	extractReferences(): Reference[] {
 		const references: Reference[] = [];
 		for (const binding of this.importBindings) {
-			if (binding.sourceName === null || binding.sourceRange === undefined) continue;
-			const sourceStart = binding.sourceRange.start;
-			const token = this.tokens.find((candidate) => comparePositions(candidate.start, sourceStart) === 0);
-			if (token === undefined) continue;
+			if (binding.sourceName === null || binding.sourceRange === undefined || binding.sourceIndex === undefined)
+				continue;
+			const token = this.tokens[binding.sourceIndex] as RustToken;
 			const reference: Reference = {
 				name: binding.sourceName,
 				range: binding.sourceRange,
@@ -160,55 +213,47 @@ class ReferenceScan {
 				path: binding.path,
 			});
 		}
-		let index = 0;
-		let guard = -1;
-		while (index < this.tokens.length) {
-			if (index <= guard) throw new Error("reference parser failed to advance");
-			guard = index;
+		for (let index = 0; index < this.tokens.length; index++) {
 			const token = this.tokens[index] as RustToken;
-			if (this.attributeTokens.has(index) || this.isIgnored(token.startOffset) || this.isUse(token.startOffset)) {
-				index++;
-				continue;
-			}
+			if (this.attributeTokens.has(index) || this.ignored[index] === 1 || this.used[index] === 1) continue;
 			if (
 				!isNameToken(token) ||
-				KEYWORDS.has(token.value) ||
+				isKeyword(token) ||
+				// The wildcard names nothing.
+				token.raw === "_" ||
 				this.keywordTokens.has(index) ||
 				(this.declarationNameTokens.has(index) &&
 					!this.implTraitTokens.has(index) &&
 					!this.implTypeTokens.has(index))
-			) {
-				index++;
+			)
 				continue;
-			}
-			if (isValueToken(this.tokens[index - 1], "'")) {
-				index++;
+			if (TYPE_WORDS.has(token.value) && token.value !== "Self") continue;
+			const binds = this.bindingSites.get(index);
+			if (binds !== undefined) {
+				this.addReference(references, index, "write", {
+					status: "bound",
+					symbolId: binds,
+					provenance: "bound",
+				});
 				continue;
 			}
 			const next = tokenAt(this.tokens, index + 1);
-			if (TYPE_WORDS.has(token.value) && token.value !== "Self") {
-				index++;
-				continue;
-			}
 			if (isValueToken(next, "!")) {
 				this.addReference(references, index, "call", {
 					status: "unbound",
 					reason: "RuntimeConstructed",
 					detail: "macro expansion can construct runtime items",
 				});
-				index++;
 				continue;
 			}
 			const role = this.referenceRole(index, token);
-			const receiver = isValueToken(this.tokens[index - 1], "::") ? tokenAt(this.tokens, index - 2) : undefined;
-			const path = receiver !== undefined && isNameToken(receiver) ? [receiver.value] : [];
+			const path = this.receiverPath(index);
 			if (role === "write" && ASSIGNMENT_OPERATORS.has(next?.value ?? "")) {
 				if (next?.value !== "=") this.addReference(references, index, "read", undefined, path);
 				this.addReference(references, index, "write", undefined, path);
 			} else {
 				this.addReference(references, index, role, undefined, path);
 			}
-			index++;
 		}
 		return references;
 	}
@@ -217,19 +262,93 @@ class ReferenceScan {
 		if (this.implTraitTokens.has(index)) return "implements";
 		if (this.typeContext(index, token)) return "typeUse";
 		const next = tokenAt(this.tokens, index + 1)?.value;
-		if (next === "{" && this.typeDeclaration(token.value) !== undefined) return "instantiate";
-		if (next === "(") {
-			if (this.typeDeclaration(token.value) !== undefined) return "instantiate";
+		if (next === "{" && this.typeNames.has(token.value)) return "instantiate";
+		if (this.tokens[this.pastTurbofish(index + 1)]?.value === "(") {
+			if (this.typeNames.has(token.value)) return "instantiate";
 			if (!["if", "while", "for", "match", "loop"].includes(token.value)) return "call";
 		}
 		if (ASSIGNMENT_OPERATORS.has(next ?? "")) return "write";
 		return "read";
 	}
 
-	/** A field, method, or later path segment. */
+	/** Past `::<..>` at `index`, so `f::<T>(` reads as a call; else `index`. */
+	private pastTurbofish(index: number): number {
+		if (!isValueToken(this.tokens[index], "::") || (this.angleDeltas.get(index + 1) ?? 0) <= 0) return index;
+		let depth = 0;
+		for (let at = index + 1; at < this.tokens.length; at++) {
+			depth += this.angleDeltas.get(at) ?? 0;
+			if (depth <= 0) return at + 1;
+		}
+		return index;
+	}
+
+	/** A field, method, later path segment, or a struct literal's or pattern's field label. */
 	private qualifiedAt(index: number): boolean {
 		const joiner = tokenAt(this.tokens, index - 1);
-		return joiner?.kind === "symbol" && (joiner.value === "." || joiner.value === "::");
+		return this.labels.has(index) || (joiner?.kind === "symbol" && (joiner.value === "." || joiner.value === "::"));
+	}
+
+	/** The type a path segment or a field label hangs from, when the source names it. */
+	/** The written path before a name, and whether a leading `::` starts it at the crates. */
+	private receiverPath(index: number): { path: string[]; absolute: boolean } {
+		const brace = this.labels.get(index);
+		let joined = brace === undefined && isValueToken(this.tokens[index - 1], "::");
+		let at = brace !== undefined ? brace - 1 : joined ? index - 2 : -1;
+		const path: string[] = [];
+		for (;;) {
+			if (at >= 0 && (this.angleDeltas.get(at) ?? 0) < 0) {
+				const open = this.angleOpener(at);
+				// A turbofish's type arguments sit inside the path; a qualified path's type starts it.
+				if (open >= 0 && isValueToken(this.tokens[open - 1], "::")) {
+					at = open - 2;
+					continue;
+				}
+				if (open >= 0) path.unshift(...this.qualifiedSelf(open, at));
+				return { path, absolute: false };
+			}
+			const token = this.tokens[at];
+			if (at < 0 || !isNameToken(token)) return { path, absolute: joined };
+			path.unshift(token.value);
+			joined = isValueToken(this.tokens[at - 1], "::");
+			if (!joined) return { path, absolute: false };
+			at -= 2;
+		}
+	}
+
+	/** The type bracket a closer at `close` ends, or -1. */
+	private angleOpener(close: number): number {
+		let depth = 0;
+		for (let at = close; at >= 0; at--) {
+			depth += this.angleDeltas.get(at) ?? 0;
+			if (depth === 0) return at;
+		}
+		return -1;
+	}
+
+	/** In `<Type as Trait>` the trait's path, in `<Type>` the type's, from `open` to `close`. */
+	private qualifiedSelf(open: number, close: number): string[] {
+		let start = open + 1;
+		let depth = 0;
+		for (let at = open + 1; at < close; at++) {
+			if (depth === 0 && isValueToken(this.tokens[at], "as")) start = at + 1;
+			depth += this.angleDeltas.get(at) ?? 0;
+		}
+		if (isValueToken(this.tokens[start], "::")) start++;
+		const names: string[] = [];
+		for (let at = start; at < close && isNameToken(this.tokens[at]); at += 2) {
+			names.push((this.tokens[at] as RustToken).value);
+			if (!isValueToken(this.tokens[at + 1], "::")) break;
+		}
+		return names;
+	}
+
+	/** A `.name` access's receiver when it is one name, not a chain. */
+	private receiverAt(index: number): RustToken | undefined {
+		if (!isValueToken(this.tokens[index - 1], ".")) return undefined;
+		const receiver = this.tokens[index - 2];
+		const before = this.tokens[index - 3];
+		if (!isNameToken(receiver) || isValueToken(before, ".") || isValueToken(before, "::")) return undefined;
+		return receiver;
 	}
 
 	private addReference(
@@ -241,56 +360,54 @@ class ReferenceScan {
 			reason: "NotIndexed",
 			detail: "name awaits scope resolution",
 		},
-		path: string[] = [],
+		{ path, absolute }: { path: string[]; absolute: boolean } = { path: [], absolute: false },
 	): void {
 		const token = this.tokens[index] as RustToken;
+		const containerId = this.owners[index];
 		const reference: Reference = {
 			name: token.value,
 			range: { start: token.start, end: token.end },
 			role,
 			binding,
 			qualified: this.qualifiedAt(index),
-			...(this.containerAt(token.startOffset) === undefined
-				? {}
-				: { fromId: this.containerAt(token.startOffset) }),
+			...defined({ fromId: containerId }),
 		};
 		references.push(reference);
-		const containerId = this.containerAt(token.startOffset);
-		this.rawReferences.push({ reference, token, ...defined({ containerId }), path });
+		const member = this.labels.has(index) || isValueToken(this.tokens[index - 1], ".");
+		const receiver = this.receiverAt(index);
+		const qualifier = isValueToken(this.tokens[index + 1], "::") && isNameToken(this.tokens[index + 2]);
+		this.rawReferences.push({
+			reference,
+			token,
+			...defined({ containerId, receiver }),
+			path,
+			member,
+			qualifier,
+			...(absolute ? { absolute } : {}),
+		});
 	}
 
 	extractLiterals(): Literal[] {
 		const literals: Literal[] = [];
 		for (const [index, token] of this.tokens.entries()) {
-			if (this.isIgnored(token.startOffset) || this.attributeTokens.has(index)) continue;
+			if (this.ignored[index] === 1 || this.attributeTokens.has(index)) continue;
+			const containerId = this.holders[index];
+			const range = { start: token.start, end: token.end };
 			if (token.kind === "string") {
-				const containerId = this.literalContainerAt(token.startOffset);
-				literals.push({
-					kind: "string",
-					value: token.value,
-					range: { start: token.start, end: token.end },
-					...defined({ containerId }),
-				});
+				literals.push({ kind: "string", value: token.value, range, ...defined({ containerId }) });
 				continue;
 			}
-			if (token.value === "true" || token.value === "false") {
-				const containerId = this.literalContainerAt(token.startOffset);
-				literals.push({
-					kind: "boolean",
-					value: token.value,
-					range: { start: token.start, end: token.end },
-					...defined({ containerId }),
-				});
+			if (token.kind === "identifier" && (isValueToken(token, "true") || isValueToken(token, "false"))) {
+				literals.push({ kind: "boolean", value: token.value, range, ...defined({ containerId }) });
 				continue;
 			}
 			if (token.number !== undefined) {
 				const number = numericValue(token.number);
-				const containerId = this.literalContainerAt(token.startOffset);
 				literals.push({
 					kind: "number",
 					value: token.value,
 					...defined({ number }),
-					range: { start: token.start, end: token.end },
+					range,
 					...defined({ containerId }),
 				});
 			}

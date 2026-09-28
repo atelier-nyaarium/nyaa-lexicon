@@ -2,7 +2,7 @@
 
 import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
 import type { TypeBrackets } from "./angles.js";
-import { isValueToken, KEYWORDS, OPERAND_WORDS, type RustToken } from "./tokens.js";
+import { isKeyword, isValueToken, OPERAND_WORDS, type RustToken } from "./tokens.js";
 
 ////////////////////////////////
 //  Constants
@@ -21,12 +21,12 @@ const BRACE = new Set(["{"]);
 /** Whether a `(` or `[` after this token applies to it: a call or an index. */
 function endsOperand(token: RustToken): boolean {
 	if (token.kind === "number" || token.kind === "string" || token.kind === "char") return true;
-	if (token.kind === "identifier") return !KEYWORDS.has(token.value) || OPERAND_WORDS.has(token.value);
+	if (token.kind === "identifier") return !isKeyword(token) || OPERAND_WORDS.has(token.value);
 	return token.value === "?";
 }
 
 function isMacroName(token: RustToken | undefined): boolean {
-	return token?.kind === "identifier" && !KEYWORDS.has(token.value);
+	return token?.kind === "identifier" && !isKeyword(token);
 }
 
 /** The first index whose start is at or past `offset`, over ascending starts. */
@@ -163,7 +163,7 @@ export class HeaderReader {
 		let index = start;
 		while (index < stop) {
 			const token = this.tokens[index] as RustToken;
-			if (isValueToken(token, "::") && isValueToken(this.tokens[index + 1], "<")) {
+			if (isValueToken(token, "::") && (this.brackets.deltas.get(index + 1) ?? 0) > 0) {
 				index = this.turbofishEnd(index + 1, stop);
 				operand = true;
 				continue;

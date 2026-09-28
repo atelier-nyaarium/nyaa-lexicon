@@ -1,6 +1,7 @@
-// The one reading of which `<` and `>` tokens are type brackets, for every angle depth and header.
+// The one reading of which `<` and `>` tokens are type brackets, for every angle depth and header,
+// of which `|` opens a closure's parameters, and of which name labels a struct literal's field.
 
-import { KEYWORDS, OPERAND_WORDS, type RustToken } from "./tokens.js";
+import { isKeyword, OPERAND_WORDS, type RustToken } from "./tokens.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -29,6 +30,7 @@ type Kind =
 	/** An item before its body. */
 	| "header"
 	| "let"
+	/** A variant's discriminant or a field's default, ended by `,`. */
 	| "discriminant";
 
 interface Frame {
@@ -40,6 +42,8 @@ interface Frame {
 	condition?: boolean;
 	/** A cast awaiting a type segment rather than a joiner. */
 	expecting?: boolean;
+	/** A closure's opening `|`, or a plain block's `{`. */
+	opener?: number;
 }
 
 export interface TypeBrackets {
@@ -47,6 +51,10 @@ export interface TypeBrackets {
 	deltas: ReadonlyMap<number, number>;
 	/** Each bracket's offset, ascending; a `>>` closing two lists is two. */
 	offsets: readonly number[];
+	/** Each closure parameter list's opening `|` index to its closing one. */
+	closures: ReadonlyMap<number, number>;
+	/** Each struct literal or pattern field label's index to its brace's. */
+	labels: ReadonlyMap<number, number>;
 }
 
 ////////////////////////////////
@@ -110,6 +118,8 @@ export function typeBrackets(tokens: readonly RustToken[]): TypeBrackets {
 class BracketReader {
 	private readonly deltas = new Map<number, number>();
 	private readonly offsets: number[] = [];
+	private readonly closures = new Map<number, number>();
+	private readonly labels = new Map<number, number>();
 	private readonly frames: Frame[] = [frame("items", "type")];
 	private previous: RustToken | undefined;
 	/** The previous token closed a bracket, so it ended an operand. */
@@ -128,7 +138,7 @@ class BracketReader {
 			this.previous = token;
 			this.previousClosed = closed;
 		}
-		return { deltas: this.deltas, offsets: this.offsets };
+		return { deltas: this.deltas, offsets: this.offsets, closures: this.closures, labels: this.labels };
 	}
 
 	private top(): Frame {
@@ -170,11 +180,16 @@ class BracketReader {
 		else if (value === ";") this.semicolon();
 		else if (value === "=") this.equals(top);
 		else if (value === "," && top.kind === "discriminant") this.pop();
-		else if (value === "|" && top.kind === "closure") this.pop();
-		else if (value === "|" && top.mode === "expression" && !this.endsOperand()) {
-			this.frames.push(frame("closure", "type", "|"));
+		else if (value === "|" && top.kind === "closure") {
+			this.closures.set(top.opener as number, index);
+			this.pop();
+		} else if (value === "|" && top.mode === "expression" && !this.endsOperand()) {
+			this.frames.push({ ...frame("closure", "type", "|"), opener: index });
 		} else if (value === "->" && top.mode === "expression") this.pushCast();
-		else if (token.kind === "identifier") this.word(index, token, top);
+		else if (token.kind === "identifier") {
+			this.label(index, top);
+			this.word(index, token, top);
+		}
 	}
 
 	private word(index: number, token: RustToken, top: Frame): void {
@@ -198,7 +213,7 @@ class BracketReader {
 	private itemAt(index: number, token: RustToken): Item | undefined {
 		if (token.raw !== token.value) return undefined;
 		const next = this.tokens[index + 1];
-		const named = next?.kind === "identifier" && !KEYWORDS.has(next.value);
+		const named = next?.kind === "identifier" && !isKeyword(next);
 		if (token.value === "const") return named ? "value" : undefined;
 		if (token.value === "union") return named ? "struct" : undefined;
 		if (token.value === "macro_rules") return isSymbol(next, "!") ? "macro" : undefined;
@@ -226,8 +241,14 @@ class BracketReader {
 		} else if (top.kind === "items" && !this.isMacroCall(index)) {
 			this.frames.push(frame("items", "type", "}"));
 		} else {
-			this.frames.push(frame("block", "expression", "}"));
+			this.frames.push({ ...frame("block", "expression", "}"), opener: index });
 		}
+	}
+
+	/** `name:` first in a brace or after a comma: a struct literal's or pattern's field. */
+	private label(index: number, top: Frame): void {
+		if (top.kind !== "block" || top.opener === undefined || !isSymbol(this.tokens[index + 1], ":")) return;
+		if (isSymbol(this.previous, "{") || isSymbol(this.previous, ",")) this.labels.set(index, top.opener);
 	}
 
 	private isMacroCall(index: number): boolean {
@@ -245,7 +266,8 @@ class BracketReader {
 
 	private equals(top: Frame): void {
 		if (top.kind === "let" || (top.kind === "header" && top.item === "value")) top.mode = "expression";
-		else if (top.kind === "variants") this.frames.push(frame("discriminant", "expression"));
+		else if (top.kind === "variants" || top.kind === "fields")
+			this.frames.push(frame("discriminant", "expression"));
 	}
 
 	/** Pops through the group `closer` ends; a stray closer changes nothing. */
@@ -310,7 +332,7 @@ class BracketReader {
 		const token = this.previous;
 		if (token === undefined) return false;
 		if (token.kind === "number" || token.kind === "string" || token.kind === "char") return true;
-		if (token.kind === "identifier") return !KEYWORDS.has(token.value) || OPERAND_WORDS.has(token.value);
+		if (token.kind === "identifier") return !isKeyword(token) || OPERAND_WORDS.has(token.value);
 		if (token.kind === "lifetime") return false;
 		return this.previousClosed || [")", "]", "}", "?"].includes(token.value);
 	}

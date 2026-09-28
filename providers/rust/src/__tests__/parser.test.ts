@@ -109,14 +109,15 @@ macro_rules! make_item {
 	expect(ready.kind).toBe("constant");
 	expect(ready.containerId).toBe(state.symbolId);
 	expect(display.kind).toBe("interface");
-	expect(showMethods).toHaveLength(2);
-	expect(
-		showMethods.every(
-			(candidate) => candidate.containerId === packet.symbolId || candidate.containerId === display.symbolId,
-		),
-	).toBe(true);
+	const impls = facts.declarations.filter((candidate) => candidate.languageKind === "impl");
+	expect(impls.map((candidate) => candidate.name)).toEqual(["impl Packet", "impl Display for Packet"]);
+	expect(showMethods.map((candidate) => candidate.containerId)).toEqual([display.symbolId, impls[1]?.symbolId]);
 	expect(newMethod.kind).toBe("method");
-	expect(newMethod.containerId).toBe(packet.symbolId);
+	expect(newMethod.containerId).toBe(impls[0]?.symbolId);
+	expect(parseSymbolId(newMethod.symbolId)?.descriptors.map((descriptor) => descriptor.name)).toEqual([
+		"Packet",
+		"new",
+	]);
 	expect(newMethod.signature).toContain("fn new(value: i32) -> Self");
 	expect(limit.kind).toBe("constant");
 	expect(limit.exported).toBe(true);
@@ -133,7 +134,7 @@ macro_rules! make_item {
 });
 
 test("uses UTF-16 positions and attaches literal containers", () => {
-	const text = `/* 😀 */ pub struct Cart {}
+	const text = `/* ${String.fromCodePoint(0x1f600)} */ pub struct Cart {}
 pub const TEXT: &str = "line\\n";
 const RAW = r#"raw"#;
 static ENABLED: bool = true;
@@ -183,10 +184,18 @@ test("types a literal initializer from the number the lexer read", () => {
     let single = 2.5f32;
     let byte = b'a';
     let space = ' ';
+    let bytes = b"a\\x00c";
+    let raw_bytes = br#"ab"#;
+    let c_text = c"text";
+    let annotated: u64 = 5;
 }
 `);
 	const typeOf = (name: string) => provider.typeOf({ symbolId: declaration(facts, name).symbolId });
 
+	expect(typeOf("bytes")).toMatchObject({ status: "inferred", display: "&[u8; 3]" });
+	expect(typeOf("raw_bytes")).toMatchObject({ status: "inferred", display: "&[u8; 2]" });
+	expect(typeOf("c_text")).toMatchObject({ status: "inferred", display: "&CStr" });
+	expect(typeOf("annotated")).toMatchObject({ status: "known", display: "u64" });
 	expect(typeOf("hex")).toMatchObject({ status: "inferred", display: "i32" });
 	expect(typeOf("float")).toMatchObject({ status: "inferred", display: "f64" });
 	expect(typeOf("small")).toMatchObject({ status: "inferred", display: "u8" });
@@ -200,6 +209,10 @@ test("types a literal initializer from the number the lexer read", () => {
 		["1e3", 1000],
 		["7u8", 7],
 		["2.5f32", 2.5],
+		["a\u0000c", undefined],
+		["ab", undefined],
+		["text", undefined],
+		["5", 5],
 	]);
 	expect(facts.references.some((reference) => reference.name === "b")).toBe(false);
 });
@@ -363,7 +376,8 @@ impl Render<String> for Ref<'_> {
 	expect(facts.diagnostics).toEqual([]);
 	expect(methods).toHaveLength(2);
 	expect(methods[0]?.containerId).toBe(trait.symbolId);
-	expect(methods[1]?.containerId).toBe(referenceType.symbolId);
+	expect(methods[1]?.containerId).toBe(declaration(facts, "impl Render<String> for Ref<'_>").symbolId);
+	expect(methods[1]?.symbolId.startsWith(referenceType.symbolId)).toBe(true);
 	expect(methods[1]?.languageKind).toBe("traitImplMethod");
 	expect(methods[1]?.signature).toBe("fn render<'a>(&'a self, value: String) -> &'a str");
 	expect(methods[1]?.metrics?.parameters).toBe(2);
@@ -409,7 +423,7 @@ impl Item {
 	expect(qualifiedAt("use crate::util::helper", "helper")).toEqual([false]);
 	expect(qualifiedAt("helper();", "helper")).toEqual([false]);
 	expect(qualifiedAt("-> Option", "Option")).toEqual([false]);
-	expect(qualifiedAt("{ count: 0 }", "count")).toEqual([false]);
+	expect(qualifiedAt("{ count: 0 }", "count")).toEqual([true]);
 	expect(qualifiedAt("self.count", "count")).toEqual([true]);
 	expect(qualifiedAt("crate::util::run", "util")).toEqual([true]);
 	expect(qualifiedAt("crate::util::run", "run")).toEqual([true]);
@@ -425,33 +439,90 @@ impl Item {
 	expect(qualifiedAt("LOW...HIGH", "HIGH")).toEqual([false]);
 });
 
-test("parses grouped imports, aliases, globs, and import references", () => {
+test("names the innermost declaration a reference sits in as its origin, none past its last token", () => {
+	const { facts } = parse(`struct Inner;
+struct Pair(Inner);
+impl Pair {
+    fn make() -> Pair {
+        fn helper() -> Inner { Inner }
+        Pair(helper())
+    }
+}
+fn local() {}Inner;
+`);
+	const fromOf = (name: string, line: number) =>
+		facts.declarations.find(
+			(candidate) =>
+				candidate.symbolId ===
+				facts.references.find((reference) => reference.name === name && reference.range.start.line === line)
+					?.fromId,
+		)?.name;
+
+	expect(fromOf("Inner", 1)).toBe("Pair");
+	expect(fromOf("Pair", 2)).toBe("impl Pair");
+	expect(fromOf("Inner", 4)).toBe("helper");
+	expect(fromOf("helper", 5)).toBe("make");
+	expect(facts.references.find((reference) => reference.range.start.line === 8)).toMatchObject({ name: "Inner" });
+	expect(fromOf("Inner", 8)).toBeUndefined();
+});
+
+test("imports each use-tree leaf by its whole path, an alias alone writing a local name", () => {
 	const { facts } = parse(`use crate::util::{Thing, Other as Alias, *};
 use self::local::Value;
-use super::parent::Parent;
+use super::parent::{Parent, deep::{self, Leaf}};
+extern crate alloc as heap;
+fn run() { use std::mem::drop;drop(1); }
 `);
 
 	expect(facts.diagnostics).toEqual([]);
-	expect(facts.imports).toHaveLength(3);
-	expect(facts.imports[0]?.specifier).toBe("crate::util::{Thing, Other as Alias, *}");
-	expect(facts.imports[0]?.imported).toEqual([
-		expect.objectContaining({ name: "Thing" }),
-		expect.objectContaining({ name: "Other" }),
-		expect.objectContaining({ name: "*" }),
+	expect(facts.imports.map((entry) => entry.specifier)).toEqual([
+		"crate::util::Thing",
+		"crate::util::Other",
+		"crate::util::*",
+		"self::local::Value",
+		"super::parent::Parent",
+		"super::parent::deep",
+		"super::parent::deep::Leaf",
+		"alloc",
+		"std::mem::drop",
 	]);
-	expect(facts.imports[0]?.imported[1]?.local).toBe("Alias");
-	expect(facts.references.filter((reference) => reference.role === "import")).toHaveLength(4);
+	expect(facts.imports.map((entry) => entry.imported.map((name) => `${name.name}>${name.local ?? ""}`))).toEqual([
+		["Thing>"],
+		["Other>Alias"],
+		["*>"],
+		["Value>"],
+		["Parent>"],
+		["deep>"],
+		["Leaf>"],
+		["alloc>heap"],
+		["drop>"],
+	]);
+	expect(facts.references.filter((reference) => reference.role === "import")).toHaveLength(8);
 	expect(facts.references.filter((reference) => reference.name === "Other")).toHaveLength(1);
+	expect(
+		facts.references.filter((reference) => reference.name === "drop").map((reference) => reference.role),
+	).toEqual(["import", "call"]);
 });
 
-test("owns declarations in inline modules and gives fields and variants descriptor paths", () => {
+test("owns declarations in inline modules and gives fields and variants descriptor paths, a repeat its occurrence", () => {
 	const { facts } = parse(`pub mod outer {
     pub mod inner {
         pub struct Item { pub value: i32, hidden: bool }
         pub enum State { Ready, Done(u8) }
     }
 }
+#[cfg(unix)]
+struct Twin;
+#[cfg(windows)]
+struct Twin;
+use A as B;
+use B as A;
+impl A { fn cyclic() {} }
 `);
+	const twins = facts.declarations.filter((candidate) => candidate.name === "Twin");
+
+	expect(twins.map((twin) => parseSymbolId(twin.symbolId)?.descriptors.at(-1)?.occurrence)).toEqual([undefined, 2]);
+	expect(declaration(facts, "cyclic").kind).toBe("method");
 	const outer = declaration(facts, "outer");
 	const inner = declaration(facts, "inner");
 	const item = declaration(facts, "Item");
@@ -471,6 +542,114 @@ test("owns declarations in inline modules and gives fields and variants descript
 		"type:Item",
 		"term:value",
 	]);
+});
+
+test("hangs an impl's items from the type its path names from the impl's module, and binds a path by every segment", () => {
+	const { facts } = parse(`mod a { pub struct T; impl T { pub fn f() {} } }
+mod b { pub struct T; impl T { pub fn f() {} } }
+mod c { use super::a::T; impl T { pub fn g() {} } }
+struct Root;
+mod d { impl super::Root { fn h() {} } }
+mod inner { pub struct N { pub field: u8 } }
+use crate::inner::N;
+fn run(n: N) -> u8 { b::T::f(); a::T::f(); crate::a::T::g(); n.field }
+`);
+	const bindingsOf = (name: string) =>
+		facts.references
+			.filter((reference) => reference.name === name && reference.range.start.line === 7)
+			.map((reference) => reference.binding);
+	const idOf = (id: string) => facts.declarations.find((candidate) => candidate.symbolId.endsWith(id))?.symbolId;
+
+	expect(bindingsOf("f")).toMatchObject([{ symbolId: idOf("b/T#f().") }, { symbolId: idOf("a/T#f().") }]);
+	expect(bindingsOf("g")).toMatchObject([{ symbolId: idOf("a/T#g().") }]);
+	expect(bindingsOf("N")).toMatchObject([{ symbolId: idOf("inner/N#") }]);
+	expect(bindingsOf("field")).toMatchObject([{ symbolId: idOf("inner/N#field.") }]);
+	const members = facts.declarations
+		.filter((candidate) => candidate.kind === "method")
+		.map((candidate) => {
+			const owner = facts.declarations.find((impl) => impl.symbolId === candidate.containerId);
+			return `${parseSymbolId(candidate.symbolId)
+				?.descriptors.map((part) => part.name)
+				.join("/")}@${owner?.range.start.line}`;
+		});
+
+	expect(members).toEqual(["a/T/f@0", "b/T/f@1", "a/T/g@2", "Root/h@4"]);
+});
+
+test("names attributed fields and variants, and a struct variant's fields", () => {
+	const { facts } = parse(`pub enum Shape {
+    #[default]
+    Unit,
+    Named { width: u32 },
+}
+struct Entry {
+    #[cfg(unix)]
+    ino: u64,
+    default: u8,
+}
+`);
+	const width = declaration(facts, "width");
+
+	expect(facts.declarations.map((candidate) => candidate.name)).toEqual([
+		"Shape",
+		"Unit",
+		"Named",
+		"width",
+		"Entry",
+		"ino",
+		"default",
+	]);
+	expect(declaration(facts, "Unit").range.start).toEqual({ line: 1, character: 4 });
+	expect(width.containerId).toBe(declaration(facts, "Named").symbolId);
+	expect(width.visibility).toBe("public");
+	expect(facts.references.some((reference) => reference.name === "width")).toBe(false);
+});
+
+test("reads every item past brackets, macro invocations and foreign blocks, and each item a body holds", () => {
+	const { facts } = parse(`const A: [u8; 2] = [1; 2];
+static S: u32 = { let x = 1; x };
+struct Pair<F: Fn(u8) -> u8>(F);
+lazy_static! { static ref HIDDEN: u8 = 0; }
+extern "C" { fn c_abs(x: i32) -> i32; }
+fn map<F: FnOnce(u8)>(f: F) {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+    const LOCAL: u8 = 1;
+    fn helper(y: u8) -> u8 { y }
+    struct Inner;
+    let r#type = helper(LOCAL);
+}
+union r#type { a: u32 }
+fn after() {}
+`);
+	const names = facts.declarations.map((candidate) => `${candidate.name}@${candidate.containerId ?? ""}`);
+	const map = declaration(facts, "map").symbolId;
+
+	expect(facts.diagnostics).toEqual([]);
+	expect(names).toEqual([
+		"A@",
+		"S@",
+		`x@${declaration(facts, "S").symbolId}`,
+		"Pair@",
+		"c_abs@",
+		`x@${declaration(facts, "c_abs").symbolId}`,
+		"map@",
+		`f@${map}`,
+		`LOCAL@${map}`,
+		`helper@${map}`,
+		`y@${declaration(facts, "helper").symbolId}`,
+		`Inner@${map}`,
+		`type@${map}`,
+		"type@",
+		`a@${facts.declarations.find((candidate) => candidate.languageKind === "union")?.symbolId}`,
+		"after@",
+	]);
+	expect(declaration(facts, "Pair").range.end).toEqual({ line: 2, character: 32 });
+	expect(facts.imports.map((entry) => entry.specifier)).toEqual(["std::os::unix::ffi::OsStrExt"]);
+	expect(facts.references.some((reference) => reference.name === "cfg" || reference.name === "unix")).toBe(false);
+	expect(facts.references.find((reference) => reference.name === "LOCAL")?.binding).toMatchObject({
+		symbolId: declaration(facts, "LOCAL").symbolId,
+	});
 });
 
 test("names the line a member after a container's last one goes on, or none without a safe point", () => {
@@ -603,6 +782,294 @@ test("records function metrics, parameter declarations, and local pattern bindin
 	expect(provider.typeOf({ symbolId: first.symbolId })).toMatchObject({ status: "known", display: "(i32, i32)" });
 });
 
+test("declares only a pattern's bindings: never a constructor, path, field label or wildcard", () => {
+	const { facts } = parse(`fn patterns(opt: Option<u8>, p: Point) {
+    let Some(x) = opt else { return };
+    let Point { x: px, y, .. } = p;
+    let Wrapper(inner) = wrap;
+    let N = 3;
+    let _ = x;
+    if let None = opt {}
+    while let Some(Kind::Deep(v)) | Some(Kind::Other(v)) = next() {}
+    match opt { Some(found) if found > 1 => {} LIMIT => {} rest @ _ => {} }
+    for (index, value) in pairs {}
+}
+`);
+	const locals = facts.declarations
+		.filter((candidate) => candidate.visibility === "local" && candidate.languageKind !== "parameter")
+		.map((candidate) => `${candidate.languageKind}:${candidate.name}`);
+
+	expect(locals).toEqual([
+		"let:x",
+		"let:px",
+		"let:y",
+		"let:inner",
+		"let:N",
+		"let:v",
+		"matchBinding:found",
+		"matchBinding:rest",
+		"forBinding:index",
+		"forBinding:value",
+	]);
+	expect(facts.references.some((reference) => reference.name === "_")).toBe(false);
+	expect(facts.references.find((reference) => reference.name === "Some")?.role).toBe("call");
+});
+
+test("reads an or-pattern's later sites of a binding as writes of that one binding", () => {
+	const { facts } = parse(`fn pick(value: Option<u8>, pair: Pair) -> u8 {
+    let total = match value { Some(x) | Other(x) => x, _ => 0 };
+    let (A(y) | B(y)) = pair;
+    total + y
+}
+`);
+	const binding = (name: string) => declaration(facts, name).symbolId;
+	const uses = (name: string) =>
+		facts.references
+			.filter((reference) => reference.name === name)
+			.map(
+				(reference) =>
+					`${reference.role}:${reference.binding.status === "bound" && reference.binding.symbolId}`,
+			);
+
+	expect(facts.declarations.filter((candidate) => ["x", "y"].includes(candidate.name))).toHaveLength(2);
+	expect(uses("x")).toEqual([`write:${binding("x")}`, `read:${binding("x")}`]);
+	expect(uses("y")).toEqual([`write:${binding("y")}`, `read:${binding("y")}`]);
+});
+
+test("decides a let-else from the statement, past an initializer's own `if` chain", () => {
+	const { facts } = parse(`const N: u8 = 1;
+fn run(opt: Option<u8>, flag: bool) {
+    let Some(N) = match opt { x => Some(x) } else { return; };
+    let v = if flag { 1 } else if !flag { 2 } else { 3 };
+}
+`);
+	const locals = facts.declarations
+		.filter((candidate) => candidate.visibility === "local" && candidate.languageKind !== "parameter")
+		.map((candidate) => candidate.name);
+
+	expect(locals).toEqual(["x", "v"]);
+	expect(declaration(facts, "v").range.end).toEqual({ line: 3, character: 56 });
+	expect(facts.references.find((reference) => reference.name === "N")?.binding).toMatchObject({
+		symbolId: declaration(facts, "N").symbolId,
+	});
+});
+
+test("binds each of many shadowing `let`s to the one before it", () => {
+	const lets = Array.from({ length: 4000 }, () => "    let x = x;").join("\n");
+	const { facts } = parse(`fn run(x: u8) {\n${lets}\n}\n`);
+	const locals = facts.declarations.filter((candidate) => candidate.name === "x");
+	const reads = facts.references.filter((reference) => reference.name === "x");
+
+	expect(reads).toHaveLength(4000);
+	expect(reads.map((reference) => reference.binding)).toMatchObject(
+		locals.slice(0, -1).map((local) => ({ symbolId: local.symbolId })),
+	);
+}, 5_000);
+
+test("scopes each local to where Rust sees it, so a use binds the nearest and a closure's parameters shadow", () => {
+	const text = `fn shadow(x: u8, items: Vec<u8>) -> u8 {
+    let early = x;
+    let x = x + 1;
+    {
+        let x = x * 2;
+        let inner = x;
+    }
+    let add = |x: u8, step| x + step;
+    let doubled = items.iter().map(|x| x * 2);
+    let sum = add(x, 1);
+    fn nested(x: u8) -> u8 { x }
+    let caught = match x { value => value, };
+    sum + caught
+}
+`;
+	const { facts } = parse(text);
+	const at = (line: number, character: number) =>
+		facts.references.find(
+			(reference) => reference.range.start.line === line && reference.range.start.character === character,
+		)?.binding;
+	const local = (line: number, name: string) =>
+		facts.declarations.find((candidate) => candidate.name === name && candidate.range.start.line === line)
+			?.symbolId;
+	const parameter = facts.declarations.find((candidate) => candidate.symbolId.endsWith("shadow().(x)"))?.symbolId;
+
+	expect(at(1, 16)).toMatchObject({ symbolId: parameter });
+	expect(at(2, 12)).toMatchObject({ symbolId: parameter });
+	expect(at(4, 16)).toMatchObject({ symbolId: local(2, "x") });
+	expect(at(5, 20)).toMatchObject({ symbolId: local(4, "x") });
+	expect(at(7, 28)).toMatchObject({ symbolId: local(7, "x") });
+	expect(at(7, 32)).toMatchObject({ symbolId: local(7, "step") });
+	expect(at(8, 39)).toMatchObject({ symbolId: local(8, "x") });
+	expect(at(9, 14)).toMatchObject({ symbolId: local(7, "add") });
+	expect(at(9, 18)).toMatchObject({ symbolId: local(2, "x") });
+	expect(at(10, 29)).toMatchObject({ symbolId: local(10, "x") });
+	expect(at(11, 36)).toMatchObject({ symbolId: local(11, "value") });
+	expect(
+		facts.declarations
+			.filter((candidate) => candidate.languageKind === "closureParameter")
+			.map((candidate) => candidate.containerId),
+	).toEqual(Array(3).fill(declaration(facts, "shadow").symbolId));
+});
+
+test("confines an item or `use` in a body to the block holding it, where it shadows the scopes around", () => {
+	const { facts } = parse(`enum Kind { First }
+mod other { pub struct First; }
+use other::First;
+fn run() {
+    {
+        use Kind::*;
+        fn inner() {}
+        let a = First;
+        inner();
+    }
+    let b = First;
+    inner();
+}
+fn helper() {}
+struct Unit;
+impl Unit {
+    fn helper() {}
+    fn go() { helper(); }
+}
+`);
+	const bindingOf = (name: string, line: number) =>
+		facts.references.find((reference) => reference.name === name && reference.range.start.line === line)?.binding;
+	const idOf = (id: string) => facts.declarations.find((candidate) => candidate.symbolId.endsWith(id))?.symbolId;
+
+	expect(bindingOf("First", 7)).toMatchObject({ symbolId: idOf("Kind#First.") });
+	expect(bindingOf("inner", 8)).toMatchObject({ symbolId: declaration(facts, "inner").symbolId });
+	expect(bindingOf("First", 10)).toMatchObject({ symbolId: idOf("other/First#") });
+	expect(bindingOf("inner", 11)).toMatchObject({ status: "unbound" });
+	expect(bindingOf("helper", 17)).toMatchObject({ symbolId: idOf(" helper().") });
+});
+
+test("binds a field only through `.` or a label, a method or tuple variant as a call, and a segment before `::` as a module or type", () => {
+	const text = `struct Size { width: u32, len: u32 }
+impl Size {
+    fn len(&self) -> u32 { self.len }
+    fn grow(&self, width: u32) -> Size {
+        let total = self.len();
+        Size { width: width + total, len: width }
+    }
+}
+mod shapes { pub fn area() {} }
+enum Shape { Circle(u8) }
+struct Circle;
+fn draw(shapes: u8) { Shape::Circle(1); shapes::area(); }
+trait Named { fn named() -> u8; }
+impl Named for Size { fn named() -> u8 { 0 } } struct Pair<T>(T); impl<T> Pair<T> { fn make() {} }
+fn names() { <Size as Named>::named(); <Size>::grow; Pair::<Size>::make(); }
+`;
+	const { facts } = parse(text);
+	const named = (name: string, line: number, character: number) =>
+		facts.references.find(
+			(reference) =>
+				reference.name === name &&
+				reference.range.start.line === line &&
+				reference.range.start.character === character,
+		);
+	const field = (name: string) =>
+		facts.declarations.find((candidate) => candidate.name === name && candidate.kind === "field")?.symbolId;
+
+	expect(named("len", 2, 32)?.binding).toMatchObject({ symbolId: field("len") });
+	expect(named("len", 4, 25)?.binding).toMatchObject({
+		symbolId: facts.declarations.find((candidate) => candidate.name === "len" && candidate.kind === "method")
+			?.symbolId,
+	});
+	expect(named("width", 5, 15)).toMatchObject({ qualified: true, binding: { symbolId: field("width") } });
+	expect(named("width", 5, 22)?.binding).toMatchObject({ symbolId: expect.stringContaining("grow().(width)") });
+	expect(named("width", 5, 22)?.role).toBe("read");
+	expect(named("Circle", 11, 29)?.binding).toMatchObject({ symbolId: declaration(facts, "Circle").symbolId });
+	expect(declaration(facts, "Circle").containerId).toBe(declaration(facts, "Shape").symbolId);
+	expect(named("shapes", 11, 40)?.binding).toMatchObject({ symbolId: declaration(facts, "shapes").symbolId });
+	expect(named("area", 11, 48)?.binding).toMatchObject({ symbolId: declaration(facts, "area").symbolId });
+	expect(named("named", 14, 30)?.binding).toMatchObject({ symbolId: expect.stringContaining(" Named#named().") });
+	expect(named("grow", 14, 47)?.binding).toMatchObject({ symbolId: declaration(facts, "grow").symbolId });
+	expect(named("make", 14, 67)?.binding).toMatchObject({ symbolId: declaration(facts, "make").symbolId });
+});
+
+test("binds `.name` only through its receiver's established type: an annotation, a constructor, `self` or a label", () => {
+	const { facts } = parse(`struct B { size: u8 }
+impl B { fn ping(&self) -> u8 { self.size } }
+struct C;
+impl C { fn ping(&self) {} fn make() -> Self { Self } fn call(&self, other: Unknown) { other.ping(); self.inner.ping(); } }
+enum E { V { x: u8 } } impl E { fn describe(&self) {} }
+struct S { y: u8 }
+impl S { fn new() -> Self { Self { y: 1 } } } fn make_s() -> S { S::new() }
+fn call(b: &B, c: C, other: Box<B>) -> E {
+    b.ping();
+    let d: B = make();
+    d.size;
+    c.ping();
+    other.ping();
+    let s = S::new(); s.y; let t = S { y: 2 }; t.y; let f = |r: S| r.y; let e = E::V { x: 3 }; e.describe(); let m = make_s(); m.y;
+    E::V { x: 1 }
+}
+`);
+	const bindingsOf = (name: string, line: number) =>
+		facts.references
+			.filter((reference) => reference.name === name && reference.range.start.line === line)
+			.map((reference) => reference.binding);
+	const bindingOf = (name: string, line: number) => bindingsOf(name, line)[0];
+	const idOf = (id: string) => facts.declarations.find((candidate) => candidate.symbolId.endsWith(id))?.symbolId;
+
+	expect(bindingOf("size", 1)).toMatchObject({ symbolId: idOf("B#size.") });
+	expect(bindingsOf("ping", 3)).toMatchObject([{ status: "unbound" }, { status: "unbound" }]);
+	expect(bindingOf("ping", 8)).toMatchObject({ symbolId: idOf("B#ping().") });
+	expect(bindingOf("size", 10)).toMatchObject({ symbolId: idOf("B#size.") });
+	expect(bindingOf("ping", 11)).toMatchObject({ symbolId: idOf("C#ping().") });
+	expect(bindingOf("ping", 12)).toMatchObject({ status: "unbound" });
+	expect(bindingsOf("y", 13)).toMatchObject(Array(5).fill({ symbolId: idOf("S#y.") }));
+	expect(bindingOf("describe", 13)).toMatchObject({ symbolId: idOf("E#describe().") });
+	expect(bindingOf("x", 14)).toMatchObject({ symbolId: idOf("E#V.x.") });
+	expect(bindingOf("y", 6)).toMatchObject({ symbolId: idOf("S#y.") });
+});
+
+test("names a receiver's type from where its annotation is written: the nearest import or a glob, or a generic's bounds", () => {
+	const { facts } = parse(`mod a { pub struct T; impl T { pub fn hit(&self) {} } }
+mod b { pub struct U; impl U { pub fn hit(&self) {} } }
+mod g { pub struct G { pub w: u8 } }
+use a::T;
+use g::*;
+struct Item;
+impl Item { fn ping(&self) {} }
+fn read(x: T, y: G) -> u8 {
+    x.hit();
+    { use b::U as T; let z: T = make(); z.hit(); }
+    y.w
+}
+fn invoke<Item: Ping>(value: Item) { value.ping(); Item::ping(&value); }
+impl<Item: Ping> Wrap for Item { fn go(&self) { self.ping(); self.go(); } }
+trait Ping { fn ping(&self); }
+trait Pong { fn ping(&self); }
+fn both<P>(pair: P) where P: Ping + Pong { pair.ping(); }
+fn plain<Q>(bare: Q) { bare.ping(); }
+`);
+	const bindingOf = (name: string, line: number) =>
+		facts.references.find((reference) => reference.name === name && reference.range.start.line === line)?.binding;
+	const idOf = (id: string) => facts.declarations.find((candidate) => candidate.symbolId.endsWith(id))?.symbolId;
+
+	expect(bindingOf("hit", 8)).toMatchObject({ symbolId: idOf("a/T#hit().") });
+	expect(bindingOf("T", 9)).toMatchObject({ symbolId: idOf("b/U#") });
+	expect(bindingOf("hit", 9)).toMatchObject({ symbolId: idOf("b/U#hit().") });
+	expect(bindingOf("w", 10)).toMatchObject({ symbolId: idOf("g/G#w.") });
+	const ping = idOf("Ping#ping().");
+	const bindingsOf = (name: string, line: number) =>
+		facts.references
+			.filter((reference) => reference.name === name && reference.range.start.line === line)
+			.map((reference) => reference.binding);
+
+	expect(bindingOf("Item", 12)).toMatchObject({ status: "unbound" });
+	expect(bindingsOf("ping", 12)).toMatchObject([{ symbolId: ping }, { symbolId: ping }]);
+	expect(bindingOf("ping", 13)).toMatchObject({ symbolId: ping });
+	expect(bindingOf("go", 13)).toMatchObject({ symbolId: declaration(facts, "go").symbolId });
+	expect(bindingOf("ping", 16)).toMatchObject({ status: "ambiguous", candidates: [ping, idOf("Pong#ping().")] });
+	expect(bindingOf("ping", 17)).toMatchObject({ status: "unbound" });
+	expect(parseSymbolId(declaration(facts, "go").symbolId)?.descriptors.map((part) => part.kind)).toEqual([
+		"meta",
+		"method",
+	]);
+});
+
 test("assigns roles for calls, reads, writes, type uses, construction, and trait implementation", () => {
 	const { facts } = parse(`trait Service { fn run(&self); }
 struct Item { field: i32 }
@@ -623,6 +1090,24 @@ fn call(item: Item) {
 	expect(roles.get("call")).toBeGreaterThan(0);
 	expect(roles.get("read")).toBeGreaterThan(0);
 	expect(roles.get("write")).toBeGreaterThan(0);
+});
+
+test("reads a name in type brackets or tuple fields as a type use and a turbofish call as a call", () => {
+	const { facts } = parse(`fn run(items: Vec<Item>) -> HashMap<Key, Iter<Item = Value>> {
+    let parsed = items.iter().collect::<Vec<Item>>();
+    size_of::<Item>();
+}
+struct Pair(Item, Key);
+enum Either { Left(Item) }
+`);
+	const roles = (name: string) =>
+		facts.references.filter((reference) => reference.name === name).map((reference) => reference.role);
+
+	expect(roles("Item")).toEqual(["typeUse", "typeUse", "typeUse", "typeUse", "typeUse", "typeUse"]);
+	expect(roles("Key")).toEqual(["typeUse", "typeUse"]);
+	expect(roles("Value")).toEqual(["typeUse"]);
+	expect(roles("collect")).toEqual(["call"]);
+	expect(roles("size_of")).toEqual(["call"]);
 });
 
 test("ignores attribute contents and macro bodies while retaining macro declarations and calls", () => {
