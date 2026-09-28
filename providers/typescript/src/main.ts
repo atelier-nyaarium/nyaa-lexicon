@@ -44,6 +44,9 @@ import { extractSurfaceFile } from "./surface.js";
 ////////////////////////////////
 //  Constants
 
+/** What the provider is doing while the program builds, as core shows it. */
+const PROGRAM_LABEL = "building the TypeScript program";
+
 /** Declares the semantic tiers backed by the TypeScript checker. */
 export const TIERS = {
 	projectModel: true,
@@ -179,6 +182,35 @@ export class TypeScriptProvider {
 		const project = this.store.project;
 		project.analyzer ??= new TypeScriptAnalyzer(this.store, project);
 		return project.analyzer;
+	}
+
+	/**
+	 * Builds a cold program between requests, bracketed for core: "initializing", a turn for that
+	 * to go out before the build holds the thread, the build, then "ready". Answers the build to
+	 * wait on, or nothing once the program is built. A replaced project or a shutdown skips it.
+	 */
+	warmProgram(): Promise<void> | undefined {
+		const project = this.currentProject();
+		if (project === undefined) return undefined;
+		if (project.warming !== undefined) return project.warming;
+		const analyzer = this.analyzed();
+		if (!analyzer.cold()) return undefined;
+		this.store.announcePhase("initializing", PROGRAM_LABEL);
+		const warming = new Promise<void>((resolve) => setTimeout(resolve, 0))
+			.then(() => {
+				if (this.currentProject() !== project || project.analyzer !== analyzer) return;
+				try {
+					analyzer.warm();
+				} catch {
+					// The request that needs the program meets the same failure and reports it.
+				}
+			})
+			.finally(() => {
+				project.warming = undefined;
+				this.store.announcePhase("ready");
+			});
+		project.warming = warming;
+		return warming;
 	}
 
 	discoverProject(
@@ -417,8 +449,32 @@ export class TypeScriptProvider {
 ////////////////////////////////
 //  Main
 
-export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new TypeScriptProvider()) {
-	serveProvider(connection, handlersFor(provider));
+/**
+ * The wire handlers, warming the program right after discovery and holding a request that reads
+ * it until it is built. Changed in place, since the kit hears it was served through this table.
+ */
+export function warmingHandlers(provider: TypeScriptProvider): ReturnType<typeof handlersFor> {
+	const handlers = handlersFor(provider);
+	const discover = handlers.discoverProject;
+	handlers.discoverProject = (params) => {
+		const model = discover(params);
+		void Promise.resolve(model).then(() => provider.warmProgram());
+		return model;
+	};
+	const reads = handlers as unknown as Record<string, (params: { depth?: IndexDepth }) => unknown>;
+	for (const method of ["parseFile", "probeFile", "bind", "typeOf", "renameEdits", "moveEdits"]) {
+		const handle = reads[method] as (params: { depth?: IndexDepth }) => unknown;
+		reads[method] = (params) => {
+			// An outline reads no program.
+			const warming = params.depth === "outline" ? undefined : provider.warmProgram();
+			return warming === undefined ? handle(params) : warming.then(() => handle(params));
+		};
+	}
+	return handlers;
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new TypeScriptProvider()));
+export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new TypeScriptProvider()) {
+	serveProvider(connection, warmingHandlers(provider));
+}
+
+if (import.meta.main) runProviderOnStdio(warmingHandlers(new TypeScriptProvider()));

@@ -244,6 +244,16 @@ export class TypeScriptAnalyzer {
 		return this.programCounters.snapshot(program?.getRootFileNames().length ?? 0);
 	}
 
+	/** No program built yet, so the next read pays the whole build. */
+	cold(): boolean {
+		return this.programCounters.snapshot(0).programGenerations === 0;
+	}
+
+	/** Builds the program ahead of any read. */
+	warm(): void {
+		this.program();
+	}
+
 	dispose(): void {
 		this.service.dispose();
 	}

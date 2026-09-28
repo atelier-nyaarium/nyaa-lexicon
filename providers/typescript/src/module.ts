@@ -42,6 +42,8 @@ export interface TypeScriptProject {
 	/** Digest of what reading depends on beyond text. */
 	readonly fingerprint: string;
 	analyzer: TypeScriptAnalyzer | undefined;
+	/** The analyzer's first program build, while it runs. */
+	warming: Promise<void> | undefined;
 }
 
 export type TypeScriptStore = ModuleStore<TypeScriptValue, TypeScriptProject, string>;
@@ -53,6 +55,7 @@ export function createTypeScriptProject(root: string, loaded: LoadedProject, fin
 		roots: new Set(loaded.files.map((file) => path.resolve(file))),
 		fingerprint,
 		analyzer: undefined,
+		warming: undefined,
 	};
 }
 

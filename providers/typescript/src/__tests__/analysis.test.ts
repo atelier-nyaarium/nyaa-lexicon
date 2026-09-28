@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { coordinatesOf, type ProjectModel, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, PROTOCOL_VERSION, type ProjectModel, parseSymbolId } from "@nyaa-lexicon/protocol";
+import type { TypeScriptAnalyzer } from "../analyzer.js";
+import { TypeScriptProvider, warmingHandlers } from "../main.js";
 import { harness } from "./harness.js";
 
 ////////////////////////////////
@@ -225,6 +227,100 @@ describe("checker-backed analysis", () => {
 		});
 		expect(provider.programStats().programGenerations - afterSameProbe).toBe(2);
 		provider.shutdown();
+	});
+
+	it("announces a cold program build, lets the notice out before the build holds the thread, then says ready", async () => {
+		const root = workspace({
+			"tsconfig.json": JSON.stringify({ include: ["*.ts"] }),
+			"a.ts": "export const a = 1;\n",
+		});
+		const served = (fails = false) => {
+			const provider = new TypeScriptProvider();
+			const handlers = warmingHandlers(provider);
+			const events: string[] = [];
+			provider.store.announcePhase = (phase, label) => {
+				events.push(label === undefined ? phase : `${phase}: ${label}`);
+				// A turn later, when a written notice has gone out.
+				setTimeout(() => events.push(`${phase} out`), 0);
+			};
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			handlers.discoverProject({ workspaceRoot: root });
+			// The warm starts after discovery returns, so a fake build set now is the one it runs.
+			let built = false;
+			const fake = {
+				cold: () => !built,
+				warm: () => {
+					events.push("build");
+					built = true;
+					if (fails) throw new Error("the build failed");
+				},
+				dispose: () => {},
+			};
+			provider.store.project.analyzer = fake as unknown as TypeScriptAnalyzer;
+			return { provider, handlers, events };
+		};
+		const settled = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+		// A build that throws still says ready.
+		for (const fails of [false, true]) {
+			const warmed = served(fails);
+			await settled();
+			expect(warmed.events, `fails=${fails}`).toEqual([
+				"initializing: building the TypeScript program",
+				"initializing out",
+				"build",
+				"ready",
+				"ready out",
+			]);
+		}
+
+		// Shut down once announced: nothing builds, and the bracket still closes.
+		const stopped = served();
+		await Promise.resolve();
+		stopped.handlers.shutdown({});
+		await settled();
+		expect(stopped.events).toEqual([
+			"initializing: building the TypeScript program",
+			"initializing out",
+			"ready",
+			"ready out",
+		]);
+
+		// Shut down before the warm starts: nothing to announce.
+		const early = served();
+		early.handlers.shutdown({});
+		await settled();
+		expect(early.events).toEqual([]);
+	});
+
+	it("holds a request that reads the program until the warm build ends, and warms again after a config change", async () => {
+		const text = "export const a = 1;\n";
+		const root = workspace({ "tsconfig.json": JSON.stringify({ include: ["*.ts"] }), "a.ts": text });
+		const provider = new TypeScriptProvider();
+		const handlers = warmingHandlers(provider);
+		const phases: [string, boolean][] = [];
+		provider.store.announcePhase = (phase) => phases.push([phase, provider.store.project.analyzer?.cold() ?? true]);
+		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		handlers.discoverProject({ workspaceRoot: root });
+		const facts = await handlers.parseFile({ module: "a.ts", contentHash: "a", text });
+
+		expect(facts.declarations.map((declaration) => declaration.name)).toEqual(["a"]);
+		expect(phases).toEqual([
+			["initializing", true],
+			["ready", false],
+		]);
+
+		writeFileSync(
+			path.join(root, "tsconfig.json"),
+			JSON.stringify({ include: ["*.ts"], compilerOptions: { strict: true } }),
+		);
+		handlers.discoverProject({ workspaceRoot: root });
+		await handlers.parseFile({ module: "a.ts", contentHash: "a", text });
+		expect(phases.slice(2)).toEqual([
+			["initializing", true],
+			["ready", false],
+		]);
+		handlers.shutdown({});
 	});
 
 	it("roots every discovered source when no tsconfig exists, and reads one once created", () => {
