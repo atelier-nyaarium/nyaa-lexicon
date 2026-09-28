@@ -310,4 +310,117 @@ describe("symbolAt", () => {
 			"needsText",
 		]);
 	});
+
+	it("follows an imported name through aliases and re-exports to the declaration it imports", async () => {
+		const LIB = "export class Widget { Missing }";
+		const lib = coordinatesOf(LIB);
+		const libWidget = "lexicon fake lib.fake Widget#";
+		store.replaceFile({
+			module: "lib.fake",
+			contentHash: hashContent(LIB),
+			declarations: [
+				{
+					symbolId: libWidget,
+					kind: "class",
+					name: "Widget",
+					range: lib.rangeAt(0, LIB.length) as Range,
+					visibility: "public",
+					exported: true,
+				},
+				{
+					symbolId: `${libWidget}Missing.`,
+					kind: "property",
+					name: "Missing",
+					range: lib.rangeAt(LIB.indexOf("Missing"), LIB.indexOf("Missing") + 7) as Range,
+					visibility: "public",
+					containerId: libWidget,
+				},
+				{
+					symbolId: "lexicon fake lib.fake default#",
+					kind: "class",
+					name: "default",
+					range: lib.rangeAt(0, 6) as Range,
+					visibility: "public",
+					exported: true,
+				},
+			],
+			references: [],
+		});
+		const nowhere = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+		store.replaceFile({
+			module: "barrel.fake",
+			contentHash: hashContent("barrel"),
+			// Unexported, so the star re-export's Widget still answers.
+			declarations: [
+				{
+					symbolId: "lexicon fake barrel.fake Widget#",
+					kind: "class",
+					name: "Widget",
+					range: nowhere,
+					visibility: "public",
+					exported: false,
+				},
+			],
+			references: [],
+			imports: [
+				{
+					specifier: "./lib",
+					reExport: true,
+					imported: [{ name: "Widget", range: nowhere, local: "Thing", localRange: nowhere }],
+				},
+				{ specifier: "./lib", reExport: true, imported: [] },
+				{
+					specifier: "./lib",
+					reExport: true,
+					imported: [{ local: "ns", localRange: nowhere, kind: "namespace" }],
+				},
+			],
+			importTargets: new Map([["./lib", "lib.fake"]]),
+		});
+		const MAIN = 'import Def, { Thing as Alias, Widget, ns, Missing } from "./barrel";';
+		const main = coordinatesOf(MAIN);
+		const at = (needle: string) =>
+			main.rangeAt(MAIN.indexOf(needle), MAIN.indexOf(needle) + needle.length) as Range;
+		store.replaceFile({
+			module: "main.fake",
+			contentHash: hashContent(MAIN),
+			declarations: [],
+			references: [],
+			imports: [
+				{
+					specifier: "./barrel",
+					reExport: false,
+					imported: [
+						{ local: "Def", localRange: at("Def"), kind: "default" },
+						{ name: "Thing", range: at("Thing"), local: "Alias", localRange: at("Alias") },
+						{ name: "Widget", range: at("Widget") },
+						{ name: "ns", range: at("ns") },
+						{ name: "Missing", range: at("Missing") },
+					],
+				},
+			],
+			importTargets: new Map([["./barrel", "barrel.fake"]]),
+		});
+		const reads = new PaintReads(store, liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS })), () => 0);
+		const under = async (needle: string) => {
+			const reply = await reads.symbolAt({ module: "main.fake", position: at(needle).start });
+			return "needsText" in reply ? "needsText" : reply.found ? `${reply.via} ${reply.symbolId}` : reply.reason;
+		};
+
+		expect({
+			sourceName: await under("Thing"),
+			alias: await under("Alias"),
+			throughStar: await under("Widget"),
+			namespace: await under("ns"),
+			member: await under("Missing"),
+			defaultThroughStar: await under("Def"),
+		}).toEqual({
+			sourceName: `reference ${libWidget}`,
+			alias: `reference ${libWidget}`,
+			throughStar: `reference ${libWidget}`,
+			namespace: "noSymbol",
+			member: "noSymbol",
+			defaultThroughStar: "noSymbol",
+		});
+	});
 });

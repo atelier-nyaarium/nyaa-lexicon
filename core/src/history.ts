@@ -7,7 +7,7 @@
 // two constants that must never diverge. No graph edge connects any of those, and every one of
 // them gets fixed in the same commit.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import type { CoChange, FileHistory, FileHistoryCommit, Mention } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
@@ -217,12 +217,19 @@ export function fileHistoryFor(module: string, commits: Commit[]): FileHistory {
  * Files that changed alongside this one, most often first.
  *
  * Counted over commits rather than over pairs, so a file touched in ten commits with another can
- * never score above ten however many times either appears.
+ * never score above ten however many times either appears. A partner `present` denies, such as a
+ * file deleted since, is left out.
  */
+/** Whether a path history names is still a file in the working tree. */
+export function presentIn(workspaceRoot: string): (file: string) => boolean {
+	return (file) => statSync(path.join(workspaceRoot, file), { throwIfNoEntry: false })?.isFile() === true;
+}
+
 export function coChangesFor(
 	module: string,
 	commits: Commit[],
 	widthLimit = DEFAULT_WIDTH_LIMIT,
+	present: (file: string) => boolean = () => true,
 ): { partners: CoChange[]; report: HistoryReport } {
 	const together = new Map<string, number>();
 	let outOf = 0;
@@ -244,6 +251,7 @@ export function coChangesFor(
 	}
 
 	const partners = [...together.entries()]
+		.filter(([partner]) => present(partner))
 		.map(([partner, count]) => ({ module: partner, together: count, outOf }))
 		.sort((a, b) => b.together - a.together || a.module.localeCompare(b.module));
 

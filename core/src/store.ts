@@ -195,6 +195,9 @@ interface SurfaceEntry {
 /** Store layout version; mismatches rebuild the index. */
 export const SCHEMA_VERSION = 24;
 
+/** Re-export hops an imported name follows before giving up. */
+const EXPORT_HOPS = 32;
+
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
 -- A provider's warnings and info for a file, replaced with its facts.
@@ -2282,6 +2285,57 @@ export class IndexStore {
 	importsIn(module: string): StoredImport[] {
 		const rows = this.db.prepare("SELECT * FROM imports WHERE module = ? ORDER BY startLine").all(module);
 		return rows.map(rowToImport);
+	}
+
+	/** Where `specifier` landed from `module` when it was written; null when unknown. */
+	importTarget(module: string, specifier: string): string | null {
+		const row = this.db
+			.prepare("SELECT target FROM imports WHERE module = ? AND specifier = ? AND target IS NOT NULL LIMIT 1")
+			.get(module, specifier) as { target: string } | undefined;
+		return row?.target ?? null;
+	}
+
+	/**
+	 * The top-level declaration `name` means in `module`, followed through re-exports. Null when
+	 * nothing exports it, or it names a namespace. A declaration its provider marks unexported never
+	 * answers; an unmarked one does, since some languages export every top-level name.
+	 */
+	exportedSymbol(module: string, name: string): string | null {
+		const declared = this.db.prepare(
+			`SELECT symbolId FROM symbols
+			 WHERE module = ? AND name = ? AND containerId IS NULL AND visibility <> 'local'
+			   AND (exported IS NULL OR exported = 1)
+			 ORDER BY exported DESC, startLine LIMIT 1`,
+		);
+		const forwarded = this.db.prepare(
+			`SELECT name, localName, target FROM imports
+			 WHERE module = ? AND reExport = 1 AND target IS NOT NULL
+			   AND (localName = ? OR (localName IS NULL AND (name = ? OR name IS NULL)))
+			 ORDER BY startLine`,
+		);
+		const queue = [{ module, name }];
+		const seen = new Set<string>();
+		while (queue.length > 0 && seen.size < EXPORT_HOPS) {
+			const next = queue.shift() as { module: string; name: string };
+			const key = `${next.module}\n${next.name}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			const hit = declared.get(next.module, next.name) as { symbolId: string } | undefined;
+			if (hit !== undefined) return hit.symbolId;
+			const rows = forwarded.all(next.module, next.name, next.name) as Array<{
+				name: string | null;
+				localName: string | null;
+				target: string;
+			}>;
+			for (const row of rows) {
+				// `export * as ns` binds a namespace, not a declaration.
+				if (row.name === null && row.localName !== null) continue;
+				// `export *` never passes a default on.
+				if (row.name === null && next.name === "default") continue;
+				queue.push({ module: row.target, name: row.name ?? next.name });
+			}
+		}
+		return null;
 	}
 
 	/** Import rows for bounded application-side searches. */

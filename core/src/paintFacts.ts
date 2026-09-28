@@ -90,20 +90,41 @@ function inside(inner: Range, outer: Range): boolean {
 	return !before(inner.start, outer.start) && !before(outer.end, inner.end);
 }
 
+/** An imported name's written spans: the source name, the local alias, or both. */
+interface ImportedSpan {
+	specifier: string;
+	name?: string | undefined;
+	range?: Range | undefined;
+	localRange?: Range | undefined;
+	kind?: string | undefined;
+}
+
+function importedSpans(imports: FileFacts["imports"]): ImportedSpan[] {
+	return imports.flatMap((statement) =>
+		statement.imported.map((entry) => ({ specifier: statement.specifier, ...entry })),
+	);
+}
+
 /**
- * The target a bound reference under `position` names, else the innermost declaration around it.
- * A reference strictly under the cursor wins over one ending at it.
+ * The target a bound reference under `position` names, else the declaration an imported name under
+ * it imports, else the innermost declaration around it. A reference strictly under the cursor wins
+ * over one ending at it.
  */
 export function pickSymbol(
 	references: readonly { range: Range; target: string | null }[],
 	declarations: readonly { range: Range; symbolId: string }[],
 	position: Position,
+	imported: (position: Position) => string | null = () => null,
 ): { symbolId: string; via: "reference" | "declaration" } | null {
 	const bound = references.filter((reference) => reference.target !== null);
 	const under =
 		bound.find((reference) => covers(reference.range, position, false)) ??
 		bound.find((reference) => covers(reference.range, position, true));
 	if (under?.target != null) return { symbolId: under.target, via: "reference" };
+
+	// Answered as a reference, which an older client's schema still reads.
+	const target = imported(position);
+	if (target !== null) return { symbolId: target, via: "reference" };
 
 	let innermost: { range: Range; symbolId: string } | null = null;
 	for (const declaration of declarations) {
@@ -181,7 +202,8 @@ export class PaintReads {
 			const references = this.store
 				.referencesIn(module)
 				.map((reference) => ({ range: storedReferenceRange(reference), target: reference.targetId }));
-			return picked(pickSymbol(references, this.store.declarationsIn(module), position), stored);
+			const imported = (at: Position) => this.importedAt(module, this.store.importsIn(module), at);
+			return picked(pickSymbol(references, this.store.declarationsIn(module), position, imported), stored);
 		}
 		if (!this.probe.owner(module).owned) return this.unowned(module);
 		const candidate =
@@ -192,7 +214,23 @@ export class PaintReads {
 			range: reference.range,
 			target: reference.binding.status === "bound" ? reference.binding.symbolId : null,
 		}));
-		return picked(pickSymbol(references, candidate.facts.declarations, position), contentHash);
+		const imported = (at: Position) => this.importedAt(module, importedSpans(candidate.facts.imports), at);
+		return picked(pickSymbol(references, candidate.facts.declarations, position, imported), contentHash);
+	}
+
+	/** The declaration an imported name under `position` names, through the specifier's stored target. */
+	private importedAt(module: string, spans: readonly ImportedSpan[], position: Position): string | null {
+		const under = spans.find(
+			(span) =>
+				(span.range !== undefined && covers(span.range, position, true)) ||
+				(span.localRange !== undefined && covers(span.localRange, position, true)),
+		);
+		if (under === undefined) return null;
+		// A default import writes no source name.
+		const name = under.name ?? (under.kind === "default" ? "default" : undefined);
+		if (name === undefined) return null;
+		const target = this.store.importTarget(module, under.specifier);
+		return target === null ? null : this.store.exportedSymbol(target, name);
 	}
 
 	private unowned(module: string): SymbolAtResult {

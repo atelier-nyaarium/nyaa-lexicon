@@ -44,6 +44,8 @@ export interface ConnectOptions {
 	bundledBun?: BundledBun;
 	/** False only attaches. True lets the connect and any ask but a status read start one. */
 	start?: boolean;
+	/** False keeps asks attach-only, so only this connect may start a daemon. */
+	respawn?: boolean;
 	/** Aborts with `closed`; prevents later retirement, signalling or spawning. */
 	signal?: AbortSignal;
 }
@@ -169,7 +171,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 			patience: options.patience,
 			onWaiting: options.onWaiting,
 			bundledBun: options.bundledBun,
-			start: options.start,
+			start: options.respawn === false ? false : options.start,
 		}),
 	};
 	const channel = daemonChannel(channelOptions);

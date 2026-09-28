@@ -263,16 +263,26 @@ describe("attaching and aborting", () => {
 		const results = await Promise.all([
 			attach({ action: "connect", lock: LOCK }),
 			attach({ action: "spawn", reason: "no daemon is registered" }),
+			attach({ action: "spawn", reason: "pid 1 is gone", stale: true }),
 			attach(stale),
 			attach({ action: "awaitDelete", lock: LOCK, reason: "pid 1 is deleting /w right now" }),
 			attach({ action: "replace", lock: LOCK, reason: "the daemon serves /other", cause: "otherWorkspace" }),
 		]);
+		const verdict = (result: (typeof results)[number]) => {
+			if (result.connected) return "connected";
+			if (result.reason !== "notRunning") return result.reason;
+			return ["notRunning", result.stale ? "stale" : "", result.older ? "older" : ""].filter(Boolean).join(" ");
+		};
 
-		expect({
-			verdicts: results.map((result) => (result.connected ? "connected" : result.reason)),
-			touched,
-		}).toEqual({
-			verdicts: ["connected", "notRunning", "notRunning", "notRunning", "otherWorkspace"],
+		expect({ verdicts: results.map(verdict), touched }).toEqual({
+			verdicts: [
+				"connected",
+				"notRunning",
+				"notRunning stale",
+				"notRunning older",
+				"notRunning",
+				"otherWorkspace",
+			],
 			touched: [],
 		});
 	});

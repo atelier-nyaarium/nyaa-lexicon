@@ -458,9 +458,13 @@ rules on none of it. The last eight parsed candidates are kept by module, conten
 generation, so asking again about unchanged text parses nothing while its candidate is kept.
 
 **`symbolAt`** (`{ module, position, contentHash?, text? }`, protocol 3.10.0) answers which symbol a
-cursor means: the target of a bound reference under `position`, else the innermost declaration
-whose range holds it. An unbound or ambiguous reference falls through to the declaration; nothing
-is guessed by name. It reads under the gate, and the daemon decides the source (protocol 3.12.0):
+cursor means: the target of a bound reference under `position`, else the declaration an imported
+name under it imports, else the innermost declaration whose range holds it. An imported name, the
+source name or its local alias, follows the specifier's stored target through re-exports to a
+top-level declaration and answers `via: "reference"`. A declaration its provider marks unexported
+never answers, `export *` passes no default on, and a namespace import answers nothing. An
+unbound or ambiguous reference falls through; nothing is guessed by name. It reads under the gate,
+and the daemon decides the source (protocol 3.12.0):
 
 - A module the store lacks is final. It is `unowned` when no provider uniquely owns it (unclaimed
   or contested, protocol 3.11.0); otherwise it is `notIndexed`. Handed text is not parsed.

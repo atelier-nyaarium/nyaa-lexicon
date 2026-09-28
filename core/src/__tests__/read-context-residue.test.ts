@@ -72,6 +72,7 @@ const IMPORTS_IN_READERS: Record<string, string> = {
 	"imports.ts": "the resolver; `reads` is required, named explicitly by every caller",
 	"indexer.ts": "walks the import closure while indexing, not a plan",
 	"service.ts": "warms a symbol's tree before answering, not a plan",
+	"paintFacts.ts": "finds the imported name under a cursor, not a plan",
 };
 
 const ROOT = path.resolve(import.meta.dirname, "..");

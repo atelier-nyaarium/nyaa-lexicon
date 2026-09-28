@@ -22,6 +22,8 @@ onWaiting      called once per waiting state with `waitingFor`, `retryInMs` and 
 bundledBun     `{ executable, version }`: the caller's bun and the version it was packaged at
 start          whether this session may start a daemon, in `connect` and on a later ask whose
                lifecycle `starts` (every one but a status read); default true
+respawn        false keeps later asks attach-only, so only `connect` itself may start a daemon;
+               a caller that decides restarts itself uses it. Default true
 signal         aborts the connect; it fails `closed`, and nothing is asked, signalled or spawned
                after. A session already returned is the caller's to close
 ```
@@ -172,6 +174,10 @@ message.
   when a wait expires. `code` carries the structural frame code (`"stopping"`), apart
   from `cause` and the message. A daemon refusal includes `from`, a `DaemonRef` for
   `stopDaemon(from)`. `DaemonRef` keeps its token private, so logging the ref does not expose it.
+  `stale` is true on a `notRunning` over a lock whose holder died: the daemon crashed. A stop
+  removes its lock, so `notRunning` after a stop reads false. An unreadable lock names no holder
+  and reads false too. `older` is true on a `notRunning` over a live daemon a start would replace,
+  such as an older build.
 
 An unbuilt install or missing Bun runtime has cause `spawnFailed`. An unsuitable workspace or a
 startup timeout has cause `daemon`.

@@ -77,7 +77,13 @@ export type EnsureReason =
 	| "notInstalled";
 export type EnsureResult =
 	| { connected: true; lock: DaemonLock }
-	| { connected: false; reason: Exclude<EnsureReason, "notInstalled" | "clientOutdated">; detail: string }
+	| {
+			connected: false;
+			reason: Exclude<EnsureReason, "notInstalled" | "clientOutdated" | "notRunning">;
+			detail: string;
+	  }
+	/** `stale`: the last daemon died and left its lock. `older`: a live daemon a start would replace. */
+	| { connected: false; reason: "notRunning"; detail: string; stale?: true; older?: true }
 	| { connected: false; reason: "notInstalled"; detail: string; root: string | undefined }
 	| { connected: false; reason: "clientOutdated"; detail: string; daemonProtocol: string };
 
@@ -93,7 +99,10 @@ export function ensureFailure(
 	if (result.reason === "notInstalled") return new NotInstalled(`${context}${result.detail}`, result.root);
 	if (result.reason === "clientOutdated")
 		return new Incompatible(`${context}${result.detail}`, PROTOCOL_VERSION, result.daemonProtocol);
-	if (result.reason === "notRunning") return new DaemonError(`${context}${result.detail}`, "notRunning");
+	if (result.reason === "notRunning") {
+		const details = { stale: result.stale === true, older: result.older === true };
+		return new DaemonError(`${context}${result.detail}`, "notRunning", details);
+	}
 	const spawn = result.reason === "spawnFailed" || result.reason === "unbuilt" || result.reason === "noBunRuntime";
 	return new DaemonError(`${context}${result.detail}`, spawn ? "spawnFailed" : "daemon");
 }
@@ -103,7 +112,9 @@ function attached(decision: LockDecision): EnsureResult {
 	if (decision.action === "outdated") return outdated(decision);
 	if (decision.action === "replace" && decision.cause === "otherWorkspace")
 		return { connected: false, reason: "otherWorkspace", detail: decision.reason };
-	return { connected: false, reason: "notRunning", detail: decision.reason };
+	const stale = decision.action === "spawn" && decision.stale === true ? { stale: true as const } : {};
+	const older = decision.action === "replace" ? { older: true as const } : {};
+	return { connected: false, reason: "notRunning", detail: decision.reason, ...stale, ...older };
 }
 
 function outdated(decision: Extract<LockDecision, { action: "outdated" }>): EnsureResult {

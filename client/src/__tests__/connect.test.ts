@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
@@ -366,5 +366,28 @@ describe("stopping the daemon", () => {
 
 		expect(existsSync(lockFile)).toBe(false);
 		expect(fake.asked).toEqual(["shutdown"]);
+	});
+
+	it("tells a crash from a stop under a session that may not respawn, and starts nothing", async () => {
+		writeInstallRecord(install, host);
+		const fake = await daemonAnswering(serving);
+		const session = await open({ workspaceRoot: workspace, respawn: false });
+		expect(await session.cacheStats({})).toEqual(STATS);
+		const lockFile = workspacePaths(host, workspace).lockFile;
+		const held = JSON.parse(readFileSync(lockFile, "utf8"));
+		const outcome = (error: unknown) => error instanceof DaemonError && { cause: error.cause, stale: error.stale };
+
+		await fake.close();
+		const dead = Bun.spawnSync(["true"]).pid;
+		writeFileSync(lockFile, JSON.stringify({ ...held, pid: dead, pidStart: undefined }));
+		const crashed = await session.overview({}).catch(outcome);
+		rmSync(lockFile);
+		const stopped = await session.overview({}).catch(outcome);
+
+		expect({ crashed, stopped, lock: existsSync(lockFile) }).toEqual({
+			crashed: { cause: "notRunning", stale: true },
+			stopped: { cause: "notRunning", stale: false },
+			lock: false,
+		});
 	});
 });

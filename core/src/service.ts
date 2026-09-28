@@ -32,6 +32,7 @@ import {
 	DEFAULT_DEPTH,
 	DEFAULT_MENTION_LIMIT,
 	fileHistoryFor,
+	presentIn,
 	readHistory,
 } from "./history.js";
 import { ImportResolver } from "./imports.js";
@@ -618,7 +619,7 @@ export class LexiconService {
 	async coChangedWith(module: string, limit = 20): Promise<CoChangedWithResult> {
 		return this.caches.facts.through(`coChange ${module} ${limit}`, async () => {
 			const commits = await readHistory(this.workspaceRoot, DEFAULT_DEPTH, this.clock);
-			const { partners, report } = coChangesFor(module, commits);
+			const { partners, report } = coChangesFor(module, commits, undefined, presentIn(this.workspaceRoot));
 			return { module, partners: partners.slice(0, limit), total: partners.length, ...report };
 		});
 	}

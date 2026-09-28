@@ -36,14 +36,25 @@ describe("finding a daemon", () => {
 		expect(decide()).toMatchObject({ action: "connect" });
 	});
 
-	it("spawns when nothing is registered", () => {
-		expect(decide({ lock: null })).toMatchObject({ action: "spawn" });
+	it("spawns when nothing is registered, which a stop leaves", () => {
+		expect(decide({ lock: null })).toEqual({ action: "spawn", reason: "no daemon is registered" });
 	});
 
-	it("spawns rather than replaces when the pid is gone, since there is nothing to stop", () => {
+	it("spawns rather than replaces when the pid is gone, marking the lock a crash left", () => {
 		const decision = decide({ alive: false });
-		expect(decision.action).toBe("spawn");
+		expect(decision).toMatchObject({ action: "spawn", stale: true });
 		expect(decision.action === "spawn" && decision.reason).toMatch(/4242 is gone/);
+	});
+
+	it("spawns over an unreadable lock without calling it a crash, since it names no holder", () => {
+		const decision = decideFromLock({
+			raw: "{ not a lock",
+			isAlive: () => false,
+			ourProtocolVersion: "0.2.0",
+			ourBuildVersion: "1.10.2",
+			workspaceRoot: "/home/me/proj",
+		});
+		expect(decision).toEqual({ action: "spawn", reason: "the lock file does not parse as a lock" });
 	});
 
 	// Issue #7: liveness got only the pid, so identity could not be judged and a reused pid read

@@ -20,7 +20,8 @@ import { type DaemonLock, parseDaemonLock, servesClient } from "@nyaa-lexicon/pr
  */
 export type LockDecision =
 	| { action: "connect"; lock: DaemonLock }
-	| { action: "spawn"; reason: string }
+	/** `stale`: a lock its holder left behind, so the daemon died rather than stopped. */
+	| { action: "spawn"; reason: string; stale?: true }
 	| { action: "replace"; lock: DaemonLock; reason: string; cause: ReplaceCause }
 	| { action: "awaitDelete"; lock: DaemonLock; reason: string }
 	| { action: "outdated"; lock: DaemonLock; reason: string };
@@ -97,7 +98,7 @@ export function decideFromLock(context: LockContext): LockDecision {
 	const lock = parseDaemonLock(context.raw);
 	if (lock === null) return { action: "spawn", reason: "the lock file does not parse as a lock" };
 
-	if (!context.isAlive(lock)) return { action: "spawn", reason: `pid ${lock.pid} is gone` };
+	if (!context.isAlive(lock)) return { action: "spawn", reason: `pid ${lock.pid} is gone`, stale: true };
 
 	// A delete's `workspaceRoot` names the directory it is removing, never a daemon to retire.
 	if (lock.role === "delete") {

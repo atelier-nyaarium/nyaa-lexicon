@@ -48,6 +48,10 @@ export interface DaemonErrorDetails {
 	code?: string | undefined;
 	/** Daemon that answered, for targeted shutdown. */
 	from?: DaemonRef | undefined;
+	/** `notRunning` over a lock a dead daemon left: it crashed rather than stopped. */
+	stale?: boolean | undefined;
+	/** `notRunning` over a live daemon older than the install, which a start replaces. */
+	older?: boolean | undefined;
 }
 
 /**
@@ -67,6 +71,8 @@ export class DaemonError extends Error {
 	readonly waitingFor: string | undefined;
 	readonly code: "stopping" | undefined;
 	readonly from: DaemonRef | undefined;
+	readonly stale: boolean;
+	readonly older: boolean;
 
 	constructor(message: string, cause: DaemonError["cause"] = "daemon", details: DaemonErrorDetails = {}) {
 		super(message);
@@ -75,5 +81,7 @@ export class DaemonError extends Error {
 		this.waitingFor = details.waitingFor;
 		this.code = details.code === "stopping" ? "stopping" : undefined;
 		this.from = details.from;
+		this.stale = details.stale === true;
+		this.older = details.older === true;
 	}
 }

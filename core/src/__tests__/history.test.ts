@@ -60,6 +60,14 @@ describe("co-change", () => {
 		expect(report.skippedWideCommits).toBe(1);
 	});
 
+	it("leaves out a partner deleted since, so every row can be opened", () => {
+		const commits = [commit("1", "a.ts", "b.ts", "gone.ts"), commit("2", "a.ts", "gone.ts")];
+
+		const { partners } = coChangesFor("a.ts", commits, undefined, (file) => file !== "gone.ts");
+
+		expect(partners).toEqual([{ module: "b.ts", together: 1, outOf: 2 }]);
+	});
+
 	it("answers nothing for a file with no history rather than inventing a partner", () => {
 		expect(coChangesFor("ghost.ts", [commit("1", "a.ts", "b.ts")]).partners).toEqual([]);
 	});
