@@ -553,6 +553,10 @@ const NOTES_SEEDED_KEY = "notesSeeded";
 const TEST_PATH = `(module LIKE '%__tests__/%' OR module LIKE '%.test.%' OR module LIKE '%.spec.%'
  OR module LIKE 'test/%' OR module LIKE '%/test/%' OR module LIKE 'tests/%' OR module LIKE '%/tests/%')`;
 
+/** 1 for a module under a dependency directory, so a name search lists the workspace's own code first. */
+const VENDOR_PATH = `(module LIKE 'node_modules/%' OR module LIKE '%/node_modules/%' OR module LIKE 'vendor/%'
+ OR module LIKE '%/vendor/%' OR module LIKE 'third_party/%' OR module LIKE '%/third_party/%')`;
+
 /** Preserve journals needed to recover disk edits. */
 const SALVAGED_JOURNAL: readonly string[] = JOURNAL_TABLE_NAMES.filter((table) => {
 	const entry: JournalTable = JOURNAL_TABLES[table];
@@ -2490,13 +2494,13 @@ export class IndexStore {
 		return rows.filter((row) => regex.test(row.name)).slice(0, options.limit);
 	}
 
-	/** Declarations whose name contains `text`, any case: exact names first, then prefixes, then shortest. */
+	/** Declarations whose name contains `text`, any case: exact names, then own code, then prefixes, then shortest. */
 	symbolsNamedLike(text: string, limit: number, offset = 0): StoredDeclaration[] {
 		const escaped = likePattern(text);
 		return this.db
 			.prepare(
 				`SELECT * FROM symbols WHERE name LIKE ? ESCAPE '\\'
-				 ORDER BY (name = ? COLLATE NOCASE) DESC, (name LIKE ? ESCAPE '\\') DESC, ${TEST_PATH} ASC,
+				 ORDER BY (name = ? COLLATE NOCASE) DESC, ${VENDOR_PATH} ASC, (name LIKE ? ESCAPE '\\') DESC, ${TEST_PATH} ASC,
 				 length(name), module, startLine
 				 LIMIT ? OFFSET ?`,
 			)
@@ -2504,14 +2508,14 @@ export class IndexStore {
 			.map(rowToDeclaration);
 	}
 
-	/** Indexed files whose path contains `text`, any case: a name starting with it first, then shortest. */
+	/** Indexed files whose path contains `text`, any case: own code, then a name starting with it, then shortest. */
 	filesNamedLike(text: string, limit: number): string[] {
 		const escaped = likePattern(text);
 		// The directory part is what rtrim leaves once every character but '/' is trimmed away.
 		const rows = this.db
 			.prepare(
 				`SELECT module FROM files WHERE module LIKE ? ESCAPE '\\'
-				 ORDER BY (substr(module, length(rtrim(module, replace(module, '/', ''))) + 1) LIKE ? ESCAPE '\\') DESC,
+				 ORDER BY ${VENDOR_PATH} ASC, (substr(module, length(rtrim(module, replace(module, '/', ''))) + 1) LIKE ? ESCAPE '\\') DESC,
 				 ${TEST_PATH} ASC, length(module), module LIMIT ?`,
 			)
 			.all(`%${escaped}%`, `${escaped}%`, limit) as Array<{ module: string }>;

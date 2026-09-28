@@ -261,18 +261,27 @@ describe("whose words an agent may replace", () => {
 });
 
 describe("searching for a ref", () => {
-	it("lists source before tests at the same match, and files after declarations", () => {
+	it("lists source before tests, own code before dependencies, and files after declarations", () => {
 		plant("src/__tests__/cart.test.ref", [
 			{ symbolId: "lexicon reference src/__tests__/cart.test.ref Cart#", name: "Cart", digest: "t1" },
 		]);
 		plant("src/cart.ref", [{ symbolId: "lexicon reference src/cart.ref Cart#", name: "Cart", digest: "s1" }]);
+		plant("src/shop.ref", [
+			{ symbolId: "lexicon reference src/shop.ref ShopCart#", name: "ShopCart", digest: "p1" },
+		]);
+		plant("node_modules/zod/cart.ref", [
+			{ symbolId: "lexicon reference node_modules/zod/cart.ref Carton#", name: "Carton", digest: "v1" },
+		]);
 
 		expect(service.searchRefs("Cart").results.map((entry) => [entry.kind, entry.ref])).toEqual([
 			["class", "ref://a.ref:Cart"],
 			["class", "ref://src/cart.ref:Cart"],
 			["class", "ref://src/__tests__/cart.test.ref:Cart"],
+			["class", "ref://src/shop.ref:ShopCart"],
+			["class", "ref://node_modules/zod/cart.ref:Carton"],
 			["file", "ref://src/cart.ref"],
 			["file", "ref://src/__tests__/cart.test.ref"],
+			["file", "ref://node_modules/zod/cart.ref"],
 		]);
 	});
 });
