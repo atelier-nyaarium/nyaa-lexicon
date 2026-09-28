@@ -259,12 +259,16 @@ describe("checker-backed analysis", () => {
 			provider.store.project.analyzer = fake as unknown as TypeScriptAnalyzer;
 			return { provider, handlers, events };
 		};
-		const settled = () => new Promise((resolve) => setTimeout(resolve, 5));
+		const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
+		/** Until `events` holds `count`, however late a loaded machine runs the markers. */
+		const settled = async (events: string[], count: number) => {
+			for (let turns = 0; events.length < count && turns < 10_000; turns++) await turn();
+		};
 
 		// A build that throws still says ready.
 		for (const fails of [false, true]) {
 			const warmed = served(fails);
-			await settled();
+			await settled(warmed.events, 5);
 			expect(warmed.events, `fails=${fails}`).toEqual([
 				"initializing: building the TypeScript program",
 				"initializing out",
@@ -278,7 +282,7 @@ describe("checker-backed analysis", () => {
 		const stopped = served();
 		await Promise.resolve();
 		stopped.handlers.shutdown({});
-		await settled();
+		await settled(stopped.events, 4);
 		expect(stopped.events).toEqual([
 			"initializing: building the TypeScript program",
 			"initializing out",
@@ -289,7 +293,8 @@ describe("checker-backed analysis", () => {
 		// Shut down before the warm starts: nothing to announce.
 		const early = served();
 		early.handlers.shutdown({});
-		await settled();
+		// The warm would announce in a microtask, which every timer turn follows.
+		await turn();
 		expect(early.events).toEqual([]);
 	});
 
