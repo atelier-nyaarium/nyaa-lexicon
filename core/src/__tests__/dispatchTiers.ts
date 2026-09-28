@@ -3,6 +3,7 @@ export const TREE_FIRST = [
 	"describe",
 	"typeHierarchy",
 	"callHierarchy",
+	"symbolEdges",
 	"findReferences",
 	"usesFrom",
 	"factsFor",

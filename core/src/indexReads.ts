@@ -25,12 +25,14 @@ import {
 	type ReferenceUse,
 	type SearchSymbolsResult,
 	type SharedLiteralsResult,
+	type SymbolEdges,
 	type SymbolSummary,
 	type TypeHierarchy,
 	UnknownReasonSchema,
 	type UseFrom,
 	type UsesFromResult,
 } from "@nyaa-lexicon/protocol";
+import { isEdgeRole, NameCount, type NamespaceTarget, PeerTally } from "./edges.js";
 import { findCycles } from "./graph.js";
 import { inSourceOrder } from "./locals.js";
 import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
@@ -143,6 +145,11 @@ function bindingOf(reference: StoredReference): Pick<UseFrom, "status" | "reason
 	if (ProvenanceSchema.safeParse(reference.provenance).success) return { status: "ambiguous" };
 	const reason = UnknownReasonSchema.safeParse(reference.provenance);
 	return { status: "unbound", ...(reason.success ? { reason: reason.data } : {}) };
+}
+
+/** Locals' evidence belongs to their owner. */
+function ownerOf(context: ReadContext, reference: StoredReference): StoredDeclaration | null {
+	return reference.fromId === null ? null : context.ownerIn(reference.module, reference.fromId);
 }
 
 /** A use's owner is read in the use's own file. */
@@ -813,13 +820,86 @@ export class IndexReadModel {
 		};
 
 		const callers = this.store.usesTo(symbolId);
+		// Local calls belong to their owner.
+		const callerOf = (reference: StoredReference) => ownerOf(context, reference)?.symbolId ?? null;
 		// A top-level call has no calling symbol, so it groups by the module it sits in.
-		const fromModules = spansBy(callers, (reference) => (reference.fromId === null ? reference.module : null));
+		const fromModules = spansBy(callers, (reference) => (callerOf(reference) === null ? reference.module : null));
+		const written = context
+			.ownedIds(symbolId)
+			.flatMap((id) => this.store.usesFrom(id))
+			.sort((a, b) => a.startLine - b.startLine || a.startCharacter - b.startCharacter);
 		return {
 			symbolId,
-			incoming: edges(spansBy(callers, (reference) => reference.fromId)),
-			outgoing: edges(spansBy(this.store.usesFrom(symbolId), (reference) => reference.targetId)),
+			incoming: edges(spansBy(callers, callerOf)),
+			outgoing: edges(spansBy(written, (reference) => reference.targetId)),
 			incomingFromModules: [...fromModules].map(([module, ranges]) => ({ module, ranges })),
+		};
+	}
+
+	/**
+	 * Count sites before caps.
+	 * Service resolves namespace targets.
+	 */
+	symbolEdges(
+		symbolId: string,
+		namespaces: ReadonlyMap<string, NamespaceTarget>,
+		limit = DEFAULT_REFERENCE_LIMIT,
+	): SymbolEdges {
+		const context = new ReadContext(this.store);
+		const focus = context.declaration(symbolId);
+		const empty = { names: [], total: 0 };
+		if (focus === null) {
+			return {
+				symbolId,
+				incoming: { groups: [], internal: 0 },
+				outgoing: { groups: [], internal: 0, modules: [], library: empty, unresolved: empty },
+			};
+		}
+		const inside = context.descendantIds(symbolId);
+
+		const users = new PeerTally(focus.module);
+		let self = 0;
+		for (const reference of this.store.usesTo(symbolId)) {
+			if (!isEdgeRole(reference.role)) continue;
+			const owner = ownerOf(context, reference);
+			if (owner !== null && inside.has(owner.symbolId)) {
+				self++;
+				continue;
+			}
+			users.add(owner === null ? null : toSummary(owner), reference.module, reference.role);
+		}
+
+		const used = new PeerTally(focus.module);
+		const internal = new Set<string>();
+		const modules = new NameCount();
+		const library = new NameCount();
+		const unresolved = new NameCount();
+		for (const reference of this.store.usesIn(focus.module)) {
+			if (reference.fromId === null || !inside.has(reference.fromId) || !isEdgeRole(reference.role)) continue;
+			const holder = ownerOf(context, reference)?.symbolId;
+			const target = reference.targetId === null ? null : context.summaryOf(reference.targetId);
+			if (reference.targetId !== null && inside.has(reference.targetId)) internal.add(reference.targetId);
+			else if (target !== null) used.add(target, target.module, reference.role, holder);
+			else if (bindingOf(reference).status === "ambiguous") unresolved.add(reference.name);
+			else {
+				const landed = namespaces.get(reference.name);
+				if (landed !== undefined && "module" in landed) modules.add(landed.module);
+				else if (landed !== undefined || bindingOf(reference).reason === "ExternalDependency") {
+					library.add(reference.name);
+				} else unresolved.add(reference.name);
+			}
+		}
+
+		return {
+			symbolId,
+			incoming: { groups: users.groups(limit, false), internal: self },
+			outgoing: {
+				groups: used.groups(limit, true),
+				internal: internal.size,
+				modules: modules.entries().map(([module, sites]) => ({ module, sites })),
+				library: library.tally(limit),
+				unresolved: unresolved.tally(limit),
+			},
 		};
 	}
 

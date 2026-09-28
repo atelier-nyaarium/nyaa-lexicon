@@ -97,6 +97,12 @@ export class Containment {
 		return this.ancestry(declaration).ancestors.find((ancestor) => !this.isLocal(ancestor)) ?? null;
 	}
 
+	/** Owner of evidence written here. */
+	ownerOf(symbolId: string): StoredDeclaration | null {
+		const declaration = this.byId.get(symbolId);
+		return declaration === undefined ? null : this.nearestNonLocal(declaration);
+	}
+
 	/** Locals whose evidence belongs to this declaration, in source order. */
 	localsOwnedBy(symbolId: string): string[] {
 		if (this.owned === undefined) {

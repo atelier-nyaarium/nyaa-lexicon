@@ -776,6 +776,68 @@ export const CallHierarchySchema = z
 
 export type CallHierarchy = z.infer<typeof CallHierarchySchema>;
 
+/** Edge roles in precedence order; a peer's first role names its group. */
+export const EdgeRoleSchema = z.enum(["call", "instantiate", "write", "read", "typeUse"]).meta({ id: "EdgeRole" });
+
+export type EdgeRole = z.infer<typeof EdgeRoleSchema>;
+
+/** Peer symbol, module, roles, and sites. */
+export const EdgePeerSchema = z
+	.object({
+		/** Omitted for module top-level sites. */
+		symbol: SymbolSummarySchema.optional(),
+		module: z.string(),
+		roles: z.partialRecord(EdgeRoleSchema, z.number().int().positive()),
+		sites: z.number().int().positive(),
+		/** Outgoing only: declarations inside the focus that use it. */
+		holders: z.number().int().positive().optional(),
+	})
+	.meta({ id: "EdgePeer" });
+
+export type EdgePeer = z.infer<typeof EdgePeerSchema>;
+
+/** Peers by first role, capped; `total` is uncapped. */
+export const EdgeGroupSchema = z
+	.object({ role: EdgeRoleSchema, peers: z.array(EdgePeerSchema), total: z.number().int().nonnegative() })
+	.meta({ id: "EdgeGroup" });
+
+export type EdgeGroup = z.infer<typeof EdgeGroupSchema>;
+
+/** Names without symbols by sites, capped; `total` counts every name. */
+export const NameTallySchema = z
+	.object({
+		names: z.array(z.object({ name: z.string(), sites: z.number().int().positive() })),
+		total: z.number().int().nonnegative(),
+	})
+	.meta({ id: "NameTally" });
+
+export type NameTally = z.infer<typeof NameTallySchema>;
+
+/** Both directions by role; the nearest non-local declaration owns each site. */
+export const SymbolEdgesSchema = z
+	.object({
+		symbolId: z.string(),
+		incoming: z.object({
+			groups: z.array(EdgeGroupSchema),
+			/** Sites inside focus, including recursion. */
+			internal: z.number().int().nonnegative(),
+		}),
+		outgoing: z.object({
+			groups: z.array(EdgeGroupSchema),
+			/** Distinct locals and members used inside. */
+			internal: z.number().int().nonnegative(),
+			/** A namespace import's own name, by module; its members stay peers. */
+			modules: z.array(z.object({ module: z.string(), sites: z.number().int().positive() })),
+			/** Names declared outside the workspace. */
+			library: NameTallySchema,
+			/** Names without a resolved target. */
+			unresolved: NameTallySchema,
+		}),
+	})
+	.meta({ id: "SymbolEdges" });
+
+export type SymbolEdges = z.infer<typeof SymbolEdgesSchema>;
+
 export const SearchSymbolsResultSchema = z
 	.object({
 		text: z.string().optional(),

@@ -392,7 +392,7 @@ file is not failed by it; only a provider outage is the daemon's own trouble.
 
 ### Reading around a symbol
 
-Four reads let a client draw what surrounds one symbol without walking the store itself.
+These reads let a client draw what surrounds one symbol without walking the store itself.
 
 - **Uses, not mentions:** `findReferences`, `usesFrom`, `mostReferenced`, the knowledge gap
   `fanIn`, and `describe`'s `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents`
@@ -415,6 +415,13 @@ Four reads let a client draw what surrounds one symbol without walking the store
   stored row, where an ambiguous binding keeps a provenance and loses its candidates.
   `graph.fanOut` counts bound targets of the symbol and its direct declared members only, each with
   the locals it owns.
+- **`symbolEdges`** answers both directions over the `call`, `instantiate`, `write`, `read` and
+  `typeUse` roles, each site credited to its owner: the nearest declaration on the `fromId` chain
+  that is not a local or parameter. A peer's first role in that order names its group; groups rank
+  by sites, the symbol's own file, then name, and cap at `limit` after counting every peer. Sites
+  inside the symbol count as `internal`. Outgoing, its own locals, parameters and members count as
+  `internal`, a namespace import's own name counts toward its module while the members it reaches
+  stay peers, and other unbound names split into `library` (`ExternalDependency`) and `unresolved`. `callHierarchy` credits calls the same way.
 - **`describe`'s `members`** and `graph.viaMembers` are declared members: direct children, a
   function's parameters and locals excluded by `core/src/locals.ts`, which reads a container's
   `contains` and otherwise its kind.

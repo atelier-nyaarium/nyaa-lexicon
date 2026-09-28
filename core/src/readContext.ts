@@ -206,6 +206,11 @@ export class ReadContext {
 		return questionsFor({ kind: declaration.kind, local: this.isLocal(declaration) });
 	}
 
+	/** Resolve ownership in the use's module. */
+	ownerIn(module: string, symbolId: string): StoredDeclaration | null {
+		return this.topology(module).ownerOf(symbolId);
+	}
+
 	/** The outermost holder below the grouping kinds. A use's containers stay in its own file. */
 	topLevelIn(module: string, symbolId: string): StoredDeclaration | null {
 		return this.topology(module).topLevel(symbolId);

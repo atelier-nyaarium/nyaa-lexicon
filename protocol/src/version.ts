@@ -99,7 +99,10 @@ export type Compatibility =
 // `recordAnswer` takes no `omitting`, and its refusal carries no `uncovered`.
 // 3.23.0: `resolveNoteProposal` takes `expectedProposal`, the shown proposal's `at`, which rises
 // per proposal on a note; a replaced proposal refuses. An older daemon ignores it.
-export const PROTOCOL_VERSION = "3.23.0" as const;
+// 3.24.0: `symbolEdges`, both directions by role, each site credited to the declaration owning it; an
+// older daemon answers it as an unknown method. `callHierarchy` credits a call written in a local to
+// the local's owner, in both directions.
+export const PROTOCOL_VERSION = "3.24.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 3;

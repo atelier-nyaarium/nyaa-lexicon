@@ -217,6 +217,10 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			(params) => params.symbolId,
 			(params) => service.callHierarchy(params.symbolId),
 		),
+		symbolEdges: treeFirst(
+			(params) => params.symbolId,
+			(params) => service.symbolEdges(params.symbolId, params.limit),
+		),
 		findReferences: treeFirst(
 			(params) => params.symbolId,
 			(params) => service.findReferences(params.symbolId, params.limit, params.within),

@@ -19,12 +19,15 @@ import {
 	type ParseFactsResult,
 	parseSymbolId,
 	type SharedLiteralsResult,
+	type StoredImport,
 	type SymbolAtReply,
+	type SymbolEdges,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { stageAll } from "./applyEdits.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
+import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from "./edges.js";
 import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
 import {
 	coChangesFor,
@@ -70,6 +73,9 @@ import { WorkspaceGate } from "./workspaceGate.js";
 
 /** How long a tree-first answer waits on its priority parse before serving outline facts. */
 const ENSURE_TREE_BUDGET_MS = 60_000;
+
+/** How long an edges read waits on namespace imports resolving. */
+const NAMESPACE_BUDGET_MS = 2_000;
 
 /** A reporting cap, not a correctness one. Says so in the output when it bites. */
 const COMMENT_COUNT_SCAN = 200_000;
@@ -445,6 +451,34 @@ export class LexiconService {
 
 	callHierarchy(symbolId: string): CallHierarchy {
 		return this.reads.callHierarchy(symbolId);
+	}
+
+	/** Resolve namespace imports through providers. */
+	async symbolEdges(symbolId: string, limit?: number): Promise<SymbolEdges> {
+		const declaration = this.store.declaration(symbolId);
+		const byLocal = new Map<string, StoredImport[]>();
+		for (const statement of declaration === null ? [] : this.store.importsIn(declaration.module)) {
+			if (statement.local === undefined || !bindsModule(statement)) continue;
+			byLocal.set(statement.local, [...(byLocal.get(statement.local) ?? []), statement]);
+		}
+		const namespaces = new Map<string, NamespaceTarget>();
+		const work = Promise.all(
+			[...byLocal].map(async ([local, statements]) => {
+				const targets = await Promise.all(statements.map((statement) => this.namespaceTarget(statement)));
+				// Imports that disagree name neither.
+				const [first] = targets;
+				if (first && targets.every((target) => target !== null && sameTarget(target, first))) {
+					namespaces.set(local, first);
+				}
+			}),
+		);
+		// A slow provider leaves names unresolved.
+		await withinBudget(this.clock, work, NAMESPACE_BUDGET_MS);
+		return this.reads.symbolEdges(symbolId, new Map(namespaces), limit);
+	}
+
+	private async namespaceTarget(statement: StoredImport): Promise<NamespaceTarget | null> {
+		return namespaceTargetOf(await this.resolveImport(statement.module, statement.specifier).catch(() => null));
 	}
 
 	mostReferenced(limit = 20): MostReferencedResult {

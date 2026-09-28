@@ -66,6 +66,7 @@ import {
 	StoredDeclarationSchema,
 	SubjectDiagnosisSchema,
 	SymbolAtReplySchema,
+	SymbolEdgesSchema,
 	SymbolSourceSchema,
 	SymbolSummarySchema,
 	TransactionStatusSchema,
@@ -111,6 +112,13 @@ const References = z
 const UsesFrom = z
 	.object({ symbolId: z.string().min(1), limit: z.number().int().positive().optional() })
 	.meta({ id: "UsesFromRequest" });
+const SymbolEdgesRequest = z
+	.object({
+		symbolId: z.string().min(1),
+		/** Peers per group and names per tally. */
+		limit: z.number().int().positive().optional(),
+	})
+	.meta({ id: "SymbolEdgesRequest" });
 const KnowledgeScopeRequest = z
 	.object({
 		symbolId: z.string().min(1).optional(),
@@ -417,6 +425,14 @@ export const DAEMON_METHODS = {
 	callHierarchy: {
 		request: BySymbol,
 		response: CallHierarchySchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Edges grouped by role and owner. */
+	symbolEdges: {
+		request: SymbolEdgesRequest,
+		response: SymbolEdgesSchema,
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",

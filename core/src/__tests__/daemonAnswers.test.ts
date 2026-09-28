@@ -203,6 +203,7 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	},
 	typeHierarchy: () => ask("typeHierarchy", { symbolId: cart }),
 	callHierarchy: () => ask("callHierarchy", { symbolId: cart }),
+	symbolEdges: () => ask("symbolEdges", { symbolId: cart, limit: 5 }),
 	findReferences: () => ask("findReferences", { symbolId: cart, limit: 5, within: cart }),
 	usesFrom: () => ask("usesFrom", { symbolId: cart, limit: 5 }),
 	resolveImport: async () => {
@@ -856,6 +857,14 @@ describe("populated answers parse back to themselves", () => {
 		const calls = await ask("callHierarchy", { symbolId: ping });
 		expect(calls.incoming.find((edge) => edge.symbol.symbolId === pong)?.ranges.length).toBeGreaterThan(0);
 		expect(calls.outgoing.some((edge) => edge.symbol.symbolId === pong)).toBe(true);
+
+		const edges = await ask("symbolEdges", { symbolId: ping });
+		const peersIn = (groups: typeof edges.incoming.groups) =>
+			groups.find((group) => group.role === "call")?.peers.map((peer) => peer.symbol?.symbolId);
+		expect({ callers: peersIn(edges.incoming.groups), callees: peersIn(edges.outgoing.groups) }).toEqual({
+			callers: expect.arrayContaining([pong]),
+			callees: expect.arrayContaining([pong]),
+		});
 	}, 60_000);
 
 	it("reads the hierarchy, the hubs, the cycle and a repeated name", async () => {

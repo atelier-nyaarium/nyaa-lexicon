@@ -170,6 +170,17 @@ describe("the tree-first tier", () => {
 				unboundSupertypes: [],
 			}),
 			callHierarchy: traced("callHierarchy", { symbolId: SYMBOL, incoming: [], outgoing: [] }),
+			symbolEdges: traced("symbolEdges", {
+				symbolId: SYMBOL,
+				incoming: { groups: [], internal: 0 },
+				outgoing: {
+					groups: [],
+					internal: 0,
+					modules: [],
+					library: { names: [], total: 0 },
+					unresolved: { names: [], total: 0 },
+				},
+			}),
 			findReferences: traced("findReferences", NO_REFERENCES),
 			usesFrom: traced("usesFrom", NO_REFERENCES),
 			typeOf: traced("typeOf", { status: "unknown", reason: "NotImplemented" }),
