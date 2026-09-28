@@ -745,14 +745,6 @@ ${outcome.reason}`,
 `);
 		for (const factId of outcome.unresolved ?? []) lines.push(`- ${code(factId)}`);
 	}
-	if (outcome.uncovered !== undefined && outcome.uncovered.length > 0) {
-		lines.push(`
-## Uncovered fact IDs
-
-Fact IDs from the existing answer:
-`);
-		for (const factId of outcome.uncovered) lines.push(`- ${code(factId)}`);
-	}
 	return lines.join("\n");
 }
 

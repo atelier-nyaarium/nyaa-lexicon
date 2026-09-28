@@ -169,16 +169,6 @@ describe("every refusal is a named constructor", () => {
 		expect(service.recallAnswer(SYMBOL, "describe")?.answer.doubt?.reason).toBe("checkout rewrite");
 	});
 
-	it("replacesSoundAnswer: refuses a blind replacement, naming what it dropped", async () => {
-		const [declaration] = plant();
-		const literal = store.literalsContainedBy(SYMBOL, 1)[0]?.factId as string;
-		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string, literal]);
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string]);
-		expect(reasonOf(outcome)).toBe(refusal.replacesSoundAnswer());
-		expect(outcome.recorded === false && outcome.uncovered).toEqual([literal]);
-		expect(service.recallAnswer(SYMBOL, "describe")?.answer.prose).toBe("A shopping cart.");
-	});
-
 	it("doubtNeedsReason: refuses a blank reason and sets no doubt", async () => {
 		const [declaration] = plant();
 		const recorded = await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
@@ -1845,63 +1835,23 @@ describe("re-affirming an answer", () => {
 	});
 });
 
-/**
- * The adjudicated-supersede gate: replacing an answer that is wrong while every cited input still
- * holds is a judgement call, so the challenger covers the incumbent's facts or explains what it
- * drops. A stale or doubted incumbent is already invited to be rewritten, so the gate stands down.
- */
-describe("the adjudicated supersede gate", () => {
-	it("accepts a challenger that explains the omission", async () => {
+describe("replacing an answer", () => {
+	it("records a rewrite that cites fewer facts, from an agent or a person, with no reason asked", async () => {
 		const [declaration] = plant();
 		const literal = store.literalsContainedBy(SYMBOL, 10)[0]?.factId as string;
 		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string, literal]);
 
-		const outcome = await service.recordAnswer(
-			SYMBOL,
-			"describe",
-			"Actually a wishlist.",
-			[declaration as string],
-			{
-				omitting: "the event literal is emitted by a neighbour, not this class",
-			},
-		);
-		expect(outcome.recorded).toBe(true);
-	});
-
-	it("accepts a challenger that covers the incumbent's facts", async () => {
-		const [declaration] = plant();
-		const literal = store.literalsContainedBy(SYMBOL, 10)[0]?.factId as string;
-		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
-
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart that emits cart.updated.", [
-			declaration as string,
-			literal,
-		]);
-		expect(outcome.recorded).toBe(true);
-	});
-
-	it("stands down for a stale incumbent, which is already invited to be rewritten", async () => {
-		const [declaration] = plant();
-		await service.recordAnswer(SYMBOL, "describe", "A shopping cart.", [declaration as string]);
-		store.replaceFile({
-			module: "a.ref",
-			contentHash: "h2",
-			declarations: [
-				{
-					symbolId: SYMBOL,
-					kind: "class",
-					name: "Cart",
-					range: at(0),
-					selectionRange: at(0),
-					visibility: "public",
-					signature: "class Cart implements Basket",
-				},
-			],
-			references: [],
+		const byAgent = await service.recordAnswer(SYMBOL, "describe", "A cart.", [declaration as string], {
+			model: "gpt-5",
 		});
-		const current = store.declarationsIn("a.ref")[0]?.factId as string;
+		const byPerson = await service.recordAnswer(SYMBOL, "describe", "A basket.", [declaration as string], {
+			model: "human",
+		});
 
-		const outcome = await service.recordAnswer(SYMBOL, "describe", "A cart implementing Basket.", [current]);
-		expect(outcome.recorded).toBe(true);
+		expect({
+			byAgent: byAgent.recorded,
+			byPerson: byPerson.recorded,
+			prose: service.recallAnswer(SYMBOL, "describe")?.answer.prose,
+		}).toEqual({ byAgent: true, byPerson: true, prose: "A basket." });
 	});
 });

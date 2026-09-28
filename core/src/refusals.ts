@@ -64,12 +64,6 @@ export function wrongDoubtId(): Refusal {
 	return mint(`resolvesDoubt does not name the standing doubt. Recall the answer and cite the doubt id it shows`);
 }
 
-export function replacesSoundAnswer(): Refusal {
-	return mint(
-		`this replaces an answer whose every cited input still holds. Cite the facts it cited too, or explain what you are dropping and why in \`omitting\``,
-	);
-}
-
 export function questionNotApplicable(question: string, kind: string, applicable: readonly string[]): Refusal {
 	if (applicable.length === 0) return mint(`${kind} is function-scoped; no question class applies to it`);
 	return mint(`${kind} takes ${applicable.join(", ")}, not ${question}`);

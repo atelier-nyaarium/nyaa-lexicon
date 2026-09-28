@@ -145,7 +145,7 @@ export interface ToolBackend {
 		question: QuestionClass,
 		prose: string,
 		citations: string[],
-		options?: { model?: string; resolvesDoubt?: string; omitting?: string },
+		options?: { model?: string; resolvesDoubt?: string },
 	) => Promise<RecordOutcome>;
 	recallAnswer: (symbolId: string, question: QuestionClass) => Promise<RecalledAnswer | null>;
 	recallAnswers: (symbolId: string) => Promise<RecalledAnswer[]>;
@@ -377,7 +377,6 @@ export const RecordAnswerInput = {
 	citations: z.array(z.string().min(1)).min(1).describe(`Current full fact IDs from \`symbol_facts\`.`),
 	model: z.string().min(1).optional().describe(`Author or model name.`),
 	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\`. Omit to carry it forward.`),
-	omitting: z.string().min(1).optional().describe(`Why an existing fact ID is omitted.`),
 };
 
 export const RecallAnswerInput = {
@@ -1265,11 +1264,10 @@ export async function recordAnswer(
 		citations: string[];
 		model?: string | undefined;
 		resolvesDoubt?: string | undefined;
-		omitting?: string | undefined;
 	},
 ): Promise<ToolResult> {
 	const outcome = await backend.recordAnswer(args.symbolId, args.question, args.prose, args.citations, {
-		...defined({ model: args.model, resolvesDoubt: args.resolvesDoubt, omitting: args.omitting }),
+		...defined({ model: args.model, resolvesDoubt: args.resolvesDoubt }),
 	});
 	return text(renderRecordOutcome(outcome), !outcome.recorded);
 }

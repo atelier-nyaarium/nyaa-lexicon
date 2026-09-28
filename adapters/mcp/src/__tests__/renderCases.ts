@@ -279,11 +279,7 @@ export const CASES: Record<string, unknown[][]> = {
 			"src",
 		],
 	],
-	renderRecordOutcome: [
-		[{ recorded: true, answer: ANSWER, uncovered: [] }],
-		[{ recorded: true, answer: ANSWER, uncovered: [ANSWER.citations[0]] }],
-		[{ recorded: false, reason: "a citation is stale" }],
-	],
+	renderRecordOutcome: [[{ recorded: true, answer: ANSWER }], [{ recorded: false, reason: "a citation is stale" }]],
 	renderInvalidateOutcome: [
 		[{ refused: "no such symbol" }],
 		[

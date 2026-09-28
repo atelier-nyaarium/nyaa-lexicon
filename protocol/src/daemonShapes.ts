@@ -312,8 +312,6 @@ export const RecordOutcomeSchema = z
 			recorded: z.literal(false),
 			reason: z.string(),
 			unresolved: z.array(z.string()).optional(),
-			/** The incumbent's still-live citations this write failed to cover. */
-			uncovered: z.array(z.string()).optional(),
 		}),
 	])
 	.meta({ id: "RecordOutcome" });

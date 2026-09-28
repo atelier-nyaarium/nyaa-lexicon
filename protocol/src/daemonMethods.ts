@@ -194,7 +194,6 @@ const RecordAnswer = z
 		citations: z.array(z.string().min(1)),
 		model: z.string().min(1).optional(),
 		resolvesDoubt: z.string().min(1).optional(),
-		omitting: z.string().min(1).optional(),
 	})
 	.meta({ id: "RecordAnswerRequest" });
 const RecallAnswer = z

@@ -86,8 +86,8 @@ instead. Clearing a doubt requires citing the doubt's own id, which only a recal
 writer who never looked cannot erase a warning. An uncited doubt rides forward onto the rewrite
 rather than being dropped.
 
-**Adjudicated.** The answer is wrong while every input still holds. Replacing it requires covering
-the incumbent's live citations or explaining the omission.
+**Rewritten.** The answer is wrong while every input still holds. Anyone records a new one over
+it, citing whatever supports the new prose; the old citations are not required.
 
 Re-affirming is the heal: the same prose re-grounded on current ids in one call, which retires the
 old id so anything citing it heals the same way, leaves first.

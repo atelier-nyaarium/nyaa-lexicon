@@ -233,9 +233,9 @@ export class KnowledgeLedger {
 		question: QuestionClass,
 		prose: string,
 		citations: string[],
-		options: { model?: string; resolvesDoubt?: string; omitting?: string } = {},
+		options: { model?: string; resolvesDoubt?: string } = {},
 	): Promise<LedgerRecordOutcome> {
-		const { model, resolvesDoubt, omitting } = options;
+		const { model, resolvesDoubt } = options;
 		const declaration = this.store.declaration(symbolId);
 		if (declaration === null) {
 			return { recorded: false, reason: refusal.subjectRefused(symbolId, this.store) };
@@ -273,20 +273,6 @@ export class KnowledgeLedger {
 				reason: check.reason,
 				...(check.unresolved ? { unresolved: check.unresolved } : {}),
 			};
-		}
-
-		// The adjudicated-supersede gate, from `docs/knowledge-layer.md`: replacing an answer that is
-		// wrong while EVERY cited input still holds is a judgement call, so the challenger must cover
-		// the incumbent's facts or say what they are leaving out. A stale or doubted incumbent is
-		// already invited to be rewritten, so the gate stands down for those.
-		if (previous !== null && previous.doubt === undefined && previous.prose !== prose) {
-			const allLive = previous.citations.every((factId) => this.store.factById(factId) !== null);
-			if (allLive) {
-				const uncovered = previous.citations.filter((factId) => !citations.includes(factId));
-				if (uncovered.length > 0 && omitting === undefined) {
-					return { recorded: false, reason: refusal.replacesSoundAnswer(), uncovered };
-				}
-			}
 		}
 
 		// Thin when nothing cited reaches beyond the subject's own declaration: structurally a

@@ -262,7 +262,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		resolveFacts: read((params) => service.resolveFacts(params.factIds)),
 		recordAnswer: write((params) =>
 			service.recordAnswer(params.symbolId, params.question, params.prose, params.citations, {
-				...defined({ model: params.model, resolvesDoubt: params.resolvesDoubt, omitting: params.omitting }),
+				...defined({ model: params.model, resolvesDoubt: params.resolvesDoubt }),
 			}),
 		),
 		invalidateAnswer: write((params) =>
