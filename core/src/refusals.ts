@@ -121,6 +121,10 @@ export function noProposalStands(symbolId: string): Refusal {
 	return mint(`no proposal waits on the note about ${symbolId}`);
 }
 
+export function proposalReplaced(symbolId: string): Refusal {
+	return mint(`a newer proposal replaced the one shown for ${symbolId}. Review it before resolving`);
+}
+
 export function refModuleNotIndexed(module: string): Refusal {
 	return mint(`${module} is not an indexed file`);
 }

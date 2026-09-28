@@ -496,7 +496,13 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		const fields = { summary: "Adds one item.", description: "n/a", why: "n/a", gotchas: "n/a" };
 		const proposed = await ask("writeNote", { symbolId, ...fields, expectedRevision: 1, author: AGENT });
 		expect(proposed.outcome).toBe("proposed");
-		const accepted = await ask("resolveNoteProposal", { symbolId, accept: true, expectedRevision: 1 });
+		const expectedProposal = proposed.outcome === "proposed" ? (proposed.note.proposal?.at ?? -1) : -1;
+		const accepted = await ask("resolveNoteProposal", {
+			symbolId,
+			accept: true,
+			expectedRevision: 1,
+			expectedProposal,
+		});
 		expect(accepted.outcome === "saved" && accepted.note).toMatchObject({ revision: 2, summary: "Adds one item." });
 	},
 	searchRefs: async () => {

@@ -179,6 +179,8 @@ export const ResolveNoteProposalRequestSchema = z
 		symbolId: z.string().min(1),
 		accept: z.boolean(),
 		expectedRevision: z.number().int().positive(),
+		/** The shown proposal's `at`; a proposal that replaced it since refuses. */
+		expectedProposal: z.number(),
 		...Author,
 	})
 	.meta({ id: "ResolveNoteProposalRequest" });

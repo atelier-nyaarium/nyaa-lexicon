@@ -294,7 +294,13 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			service.doubtNote(params.symbolId, params.reason, params.expectedRevision, params.author),
 		),
 		resolveNoteProposal: write((params) =>
-			service.resolveNoteProposal(params.symbolId, params.accept, params.expectedRevision, params.author),
+			service.resolveNoteProposal(
+				params.symbolId,
+				params.accept,
+				params.expectedRevision,
+				params.expectedProposal,
+				params.author,
+			),
 		),
 		noteBacklinks: read((params) => service.noteBacklinks(params.symbolId, params.limit)),
 		searchRefs: read((params) => service.searchRefs(params.text, params.limit)),

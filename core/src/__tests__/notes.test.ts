@@ -65,6 +65,11 @@ function plantBoth(cartDigest = "c1", basketDigest = "b1"): void {
 	plant("b.ref", [{ symbolId: BASKET, name: "Basket", digest: basketDigest }]);
 }
 
+/** The pending proposal's `at`, as a person would be shown it. */
+function shownAt(symbolId = BASKET): number {
+	return service.readNote(symbolId)?.proposal?.at ?? -1;
+}
+
 function note(fields: Partial<NoteWrite> = {}): NoteWrite {
 	return {
 		symbolId: BASKET,
@@ -237,16 +242,29 @@ describe("whose words an agent may replace", () => {
 		store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9);
 
 		expect(service.readNote(BASKET)?.proposal?.summary).toBe("Wraps a [Cart](ref://a.ref:Trolley).");
-		expect(saved(service.resolveNoteProposal(BASKET, true, 1, PERSON))).toMatchObject({
+		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toMatchObject({
 			revision: 2,
 			links: [{ symbolId: TROLLEY }],
+		});
+	});
+
+	it("refuses to resolve a proposal replaced since it was shown", () => {
+		saved(service.writeNote(note()));
+		service.writeNote(note({ summary: "Holds items.", expectedRevision: 1, author: AGENT }));
+		const shown = shownAt();
+		service.writeNote(note({ summary: "Holds nothing.", expectedRevision: 1, author: AGENT }));
+
+		expect(service.resolveNoteProposal(BASKET, true, 1, shown, PERSON).outcome).toBe("refused");
+		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toMatchObject({
+			revision: 2,
+			summary: "Holds nothing.",
 		});
 	});
 
 	it("rejects a proposal without a new revision, and replaces an agent's note in place", () => {
 		saved(service.writeNote(note()));
 		service.writeNote(note({ summary: "Holds items.", expectedRevision: 1, author: AGENT }));
-		expect(saved(service.resolveNoteProposal(BASKET, false, 1, PERSON))).toMatchObject({
+		expect(saved(service.resolveNoteProposal(BASKET, false, 1, shownAt(), PERSON))).toMatchObject({
 			revision: 1,
 			proposal: null,
 		});

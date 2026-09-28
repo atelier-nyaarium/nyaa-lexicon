@@ -32,7 +32,8 @@ one revision; the next save or confirm clears it.
 
 The author comes from the harness, never the writer. A client names a person or the agent it
 launched; the MCP adapter names the client from its handshake. An agent's write over a note a person
-wrote or confirmed becomes a proposal for that person.
+wrote or confirmed becomes a proposal for that person. A newer proposal replaces it with a later
+`at`; resolving names the revision and the `at` shown, so a replaced proposal refuses.
 
 The MCP tools are `read_note`, `write_note`, `doubt_note` and `note_backlinks`. Notes are written on
 demand, never as a coverage sweep.

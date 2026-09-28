@@ -161,9 +161,12 @@ export class NoteLedger {
 		const now = this.clock.now();
 		return this.store.noteWrite(() => {
 			if (row !== null && heldByPerson(row) && !isPerson(writer)) {
+				// Rises per proposal, so `at` names the one a person was shown.
+				const replaced = this.store.notes.proposal(row.subjectId)?.proposedAt ?? -1;
+				const proposedAt = Math.max(now, replaced + 1);
 				this.store.notes.propose(
 					row.subjectId,
-					{ ...values.value, baseRevision: row.revision, proposedBy: authorText(writer), proposedAt: now },
+					{ ...values.value, baseRevision: row.revision, proposedBy: authorText(writer), proposedAt },
 					this.claimLinks(refs.value, now),
 				);
 				return {
@@ -241,6 +244,7 @@ export class NoteLedger {
 		symbolId: string,
 		accept: boolean,
 		expectedRevision: number,
+		expectedProposal: number,
 		author?: NoteAuthor,
 	): LedgerNoteOutcome {
 		const row = this.store.notes.byAddress(symbolId);
@@ -249,6 +253,9 @@ export class NoteLedger {
 		if (proposal === null) return refused(refusal.noProposalStands(symbolId));
 		if (row.revision !== expectedRevision || proposal.baseRevision !== row.revision) {
 			return refused(refusal.noteRevisionMoved(expectedRevision, row.revision), { current: this.render(row) });
+		}
+		if (proposal.proposedAt !== expectedProposal) {
+			return refused(refusal.proposalReplaced(symbolId), { current: this.render(row) });
 		}
 		if (!accept) {
 			return this.store.noteWrite(() => {
