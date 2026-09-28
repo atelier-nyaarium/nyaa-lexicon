@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-powershell",
-	"version": "11.4.0",
+	"version": "11.4.1",
 	"private": true,
 	"type": "module",
 	"description": "PowerShell provider over an in-house parser",

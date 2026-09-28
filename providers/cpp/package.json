@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-cpp",
-	"version": "11.4.0",
+	"version": "11.4.1",
 	"private": true,
 	"type": "module",
 	"description": "C++ provider for nyaa-lexicon",
