@@ -161,6 +161,89 @@ facts. pwsh 7.6.6's trees match node for node, type and extent, on every file it
 PowerShell 5.1's match on all but 7.x syntax. On 60,000 mutated files, the parser refuses what
 7.6.6's parser refuses. On 5,840 generated number literals, types and values match 7.6.6's.
 
+GDScript is in-house. `providers/gdscript/src/lexer.ts` reads Godot 4's tokenizer rules through one
+`SourceCursor`, and `godot-config.ts` reads `project.godot` and `.tscn` files as Godot's
+`VariantParser` does.
+
+- **Escapes** are Godot's: `\a \b \f \n \r \t \v \' \" \\`, four-digit `\u`, six-digit `\U` and an
+  escaped line break. Any other escape, a short `\u` or `\U` and an unpaired surrogate add nothing
+  to the value and are errors, as Godot refuses them.
+- **Raw strings** (`r"..."`) decode no escape. Every backslash stays in the value; one before the
+  quote keeps it from closing the string, and `\\` is read as a pair.
+- **Line breaks** inside a regular string are content, so a string may span lines.
+- **The project model** reads autoloads, `run/main_scene` and each scene's root script, following
+  inherited scenes and `uid://` paths through `.uid` sidecars and scene headers, each read once per
+  project.
+
+nyaadot (2,048 files) takes 12.4 s for full facts.
+
+Rust is in-house. `providers/rust/src/tokens.ts` reads the Rust Reference's lexical grammar through
+one `SourceCursor`, and `parser.ts` reads items and statements over its tokens.
+
+- **Literals** follow the Reference. `1.e2` is `1`, `.`, `e2`, since a float's `.` may not precede
+  an identifier. Byte and C strings type as `&[u8; N]` and `&CStr`, and a string's CRLF reads as LF.
+- **An `impl` block is a container**, `Cart(impl):` or `Cart(impl-Default):`, a repeat numbered
+  `[2]`. Its target resolves by the written path from the block's own scope; its items keep
+  `Cart#add().`.
+- **A declaration's range** starts at its first outer attribute.
+- **A use tree** gives one import per leaf. A `use` or item inside a body is visible only in the
+  block holding it.
+- **A local use** binds the binding in view at that point. A name repeated across an or-pattern is
+  one binding, each later site a write to it.
+- **A field or method** after `.` binds through the receiver's type when the receiver is `self`, or
+  an annotated parameter, let or closure parameter.
+
+ripgrep (100 files) takes 2.0 s for full facts.
+
+C is in-house. `providers/c/src/tokens.ts` reads C23's lexical grammar through one `SourceCursor`, and
+`declarations.ts` reads declarations over its tokens.
+
+- **Includes** resolve by the exact written name, through `compile_commands.json` at the root or in
+  a `build*/` directory, with each translation unit's search lists: a quoted include tries the
+  includer's directory, then `-iquote`, then `-I`, `-isystem` and `-idirafter`. `-I-` and forced
+  includes follow GCC. Without a database, the workspace's `include/` directories, then the root. A
+  header no unit builds resolves only where every unit agrees.
+- **A header's declarations** are visible after the include that reaches it, directly or through
+  other headers. The nearest include depth that declares a name wins.
+- **A name's scope** starts past its declarator, so `int p[sizeof p]` reads the outer `p`. Each
+  block and `for` initializer is its own scope. An enumerator is a name of the scope around its enum.
+
+libuv and a decompiled firmware tree (534 files) take about 30 s for full facts.
+
+C++ is in-house. `providers/cpp/src/tokens.ts` reads C++'s lexical grammar through one
+`SourceCursor`, the parser layers from `declarators.ts` to `bodies.ts` read declarations, and
+`binder.ts` binds names.
+
+- **Includes** resolve as C's do, through the same reader.
+- **An unqualified name** binds through the scopes around the use, each from its declaration point.
+  Class members are visible throughout member bodies. A base the provider cannot read stops the
+  lookup rather than reaching an outer name. A using-directive applies only inside its block.
+- **A member** after `.` or `->` binds only through the receiver's declared class. `->` needs one
+  pointer and `.` none. An `auto` or template-parameter receiver stays unbound.
+- **Declarations in exclusive `#if` branches** make a binding ambiguous. Overloads stay ambiguous.
+- **Ids:** a specialization is named by its arguments, `` `Box <T*>` ``. A merged redeclaration has
+  one id, at its definition.
+
+nlohmann json and doctest (476 files) take about 6 s for full facts.
+
+C# is in-house. `providers/csharp/src/tokens.ts` reads C#'s lexical grammar through one
+`SourceCursor`. Parser layers from `recorder.ts` up to `declarations.ts` and `statements.ts` read
+declarations and locals over its tokens, and `binding.ts` binds names.
+
+- **Lookup** follows the specification's order: type parameters, the enclosing types with every
+  partial part and base, then each namespace level outward. A level reads its members, then the
+  aliases and `using` directives of the namespace blocks around the use. The file's directives and
+  every `global using` apply at the global level.
+- **A namespace index** in the module store finds types across files by namespace, name and arity. A
+  type declared in several files resolves to the referring file's own, then its project's, the nearest
+  `.csproj`.
+- **A member** through a type receiver binds across files and partial parts. A value of the same
+  name hides the type, unless the value's type is that type (`Color Color`). Overloads stay
+  ambiguous.
+- **Ids:** every generic type, delegates included, carries its arity: `Box(1)#`.
+
+Newtonsoft.Json (944 files) takes about 7 s for full facts.
+
 ## 2. One cursor owns character access
 
 Nothing else indexes the text: no `text[i]`, no `indexOf`, no scattered `slice`. The one cursor is
@@ -248,16 +331,25 @@ reports about itself
 contradicts a false comment, because the bad span is internally consistent, so the only guard is a
 case that plants a marker inside each string form the language has.
 
-C, C++ and C# conditional groups nest. Alternatives are kept when each branch is whole, meaning its
+C and C++ conditional groups nest. Alternatives are kept when each branch is whole, meaning its
 delimiters balance after nested groups resolve. When a branch is a fragment, the first branch is
-kept, or the branch after exact `#if 0` in C and C++ or `#if false` in C#; C# spells the comment
-idiom `#if false`. The other branches are removed before parsing. A group
+kept, or the branch after exact `#if 0`. The other branches are removed before parsing. A group
 inside a dropped branch is dropped with it. Only the conditional directive lines stay in a dropped
 branch, so every other line, including `#define` and `#include`, is not indexed. An `#if` with no
 `#endif` is reported and nothing in it is dropped. A stray `#elif`, `#else` or `#endif` is reported
-and ignored. The C++ tokenizer deletes a backslash-newline before tokenizing, as translation phase
-two does, so a directive continued over several lines is one line to the parser and a macro body
-never reads as code; surviving tokens keep their physical positions.
+and ignored. The C and C++ tokenizers delete a backslash-newline before tokenizing, as translation
+phase two does, so a directive continued over several lines is one line to the parser, a macro body
+never reads as code and a name split across lines is one name; surviving tokens keep their physical
+positions.
+
+C# evaluates its conditional groups as the compiler does. `#define` and `#undef` apply on top of the
+project's symbols, read as an IDE's one context does: `DefineConstants` for Debug and the first
+target framework, in MSBuild's import order, plus the SDK's implicit `DEBUG`, `TRACE` and framework
+symbols. A symbol neither defines is false. `#if` and `#elif` expressions are evaluated, and exactly
+one section of each group is live. A skipped section is read as lines, not tokens, so an apostrophe in
+commented-out prose cannot hide an `#endif`, and a directive counts only at the start of a line. A
+malformed expression, a `#define` after the first token and an `#elif` after `#else` are errors. An
+`#if` with no `#endif` is reported and still evaluated.
 
 ## 13. Decide from tokens, never from the raw text around a position
 
