@@ -282,7 +282,8 @@ function importStatementForDependency(dependency: MoveDependency, specifier: str
 		importKind === "wildcard" ||
 		importKind === "sideEffect" ||
 		importKind === "default" ||
-		importKind === "typeOnly"
+		importKind === "require" ||
+		via?.typeOnly === true
 	) {
 		return undefined;
 	}

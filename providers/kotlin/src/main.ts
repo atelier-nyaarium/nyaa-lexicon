@@ -387,7 +387,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 		const facts = this.factsForModule(parsed.module);
 		if (facts === null) return unknownType("NotIndexed", "module is not indexed");
 		const declaration = facts.declarations.find((candidate) => candidate.symbolId === symbolId);
-		if (declaration === undefined) return unknownType("ParseError", "the symbol id has no Kotlin declaration");
+		if (declaration === undefined) return unknownType("NotIndexed", "the symbol id has no Kotlin declaration");
 		return this.typeForDeclaration(facts, declaration);
 	}
 

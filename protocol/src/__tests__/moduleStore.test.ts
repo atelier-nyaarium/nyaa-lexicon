@@ -51,11 +51,19 @@ function model(root: string): ProjectModel {
 	return { files: readdirSync(root).sort(), externalRoots: [], configFiles: [], diagnostics: [] };
 }
 
-function toy(store: ModuleStore<Toy, null, string>, root: string, onParse?: (value: Toy) => void) {
+function toy(
+	store: ModuleStore<Toy, null, string>,
+	root: string,
+	onParse?: (value: Toy) => void,
+	fingerprint?: () => string,
+) {
 	const provider: StoreProvider<Toy, null, string> = {
 		store,
 		initialize: () => ({}) as never,
-		discoverProject: (workspaceRoot) => ({ model: model(workspaceRoot), project: null }),
+		discoverProject: (workspaceRoot) => ({
+			model: { ...model(workspaceRoot), ...(fingerprint === undefined ? {} : { fingerprint: fingerprint() }) },
+			project: null,
+		}),
 		parseFile: (_params, value) => {
 			onParse?.(value);
 			return value as never;
@@ -351,6 +359,70 @@ describe("the module store's verdicts", () => {
 			forgotten: undefined,
 			withheld: true,
 		});
+	});
+
+	it("reads every module again, admitted ones included, once discovery's fingerprint moves", () => {
+		const root = workspace({ "a.toy": "x", "b.toy": "y" });
+		let symbols = "one";
+		const tagged = (module: string, text: string, depth: IndexDepth): Toy => ({
+			...read(module, text, depth),
+			names: [`${symbols}:${text}`],
+		});
+		const store = moduleStore<Toy, null, string>({ read: tagged, entries });
+		const parsed: string[] = [];
+		const handlers = toy(
+			store,
+			root,
+			(value) => parsed.push(...value.names),
+			() => symbols,
+		);
+		const admit = (contentHash: string) =>
+			handlers.moduleAdmission?.({ module: "a.toy", contentHash, outcome: { status: "admitted" } });
+		handlers.parseFile({ module: "a.toy", contentHash: "h1", text: "x" });
+		admit("h1");
+		const filled = store.load("b.toy")?.names;
+		handlers.discoverProject({ workspaceRoot: root });
+		const sameFingerprint = store.load("a.toy")?.names;
+		handlers.parseFile({ module: "a.toy", contentHash: "h2", text: "x" });
+		symbols = "two";
+		handlers.discoverProject({ workspaceRoot: root });
+		admit("h2");
+		const moved = { a: store.load("a.toy")?.names, b: store.load("b.toy")?.names };
+		handlers.parseFile({ module: "a.toy", contentHash: "h3", text: "x" });
+
+		expect({ filled, sameFingerprint, moved, parsed }).toEqual({
+			filled: ["one:y"],
+			sameFingerprint: ["one:x"],
+			moved: { a: ["two:x"], b: ["two:y"] },
+			parsed: ["one:x", "one:x", "two:x"],
+		});
+	});
+
+	// The index keeps its old rows after a refusal, so the store answers from them too.
+	it("restores what the index admitted when a re-parse after a moved fingerprint is refused", () => {
+		const root = workspace({ "a.toy": "x" });
+		let symbols = "one";
+		const tagged = (module: string, text: string, depth: IndexDepth): Toy => ({
+			...read(module, text, depth),
+			names: [`${symbols}:${text}`],
+		});
+		const store = moduleStore<Toy, null, string>({ read: tagged, entries });
+		const handlers = toy(store, root, undefined, () => symbols);
+		const verdict = (contentHash: string, admitted: boolean) =>
+			handlers.moduleAdmission?.({
+				module: "a.toy",
+				contentHash,
+				outcome: admitted ? { status: "admitted" } : { status: "refused", reason: "no" },
+			});
+		handlers.parseFile({ module: "a.toy", contentHash: "h1", text: "x" });
+		verdict("h1", true);
+		symbols = "two";
+		handlers.discoverProject({ workspaceRoot: root });
+		const reread = store.load("a.toy")?.names;
+		handlers.parseFile({ module: "a.toy", contentHash: "h2", text: "x" });
+		verdict("h2", false);
+
+		expect({ reread, refused: store.load("a.toy")?.names }).toEqual({ reread: ["two:x"], refused: ["one:x"] });
 	});
 
 	it("reads a released module from disk and ignores a verdict staged before the release", () => {

@@ -15,7 +15,7 @@ any branch on language, which a residue test enforces.
 ## Methods
 
 ```
-initialize(root)             -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
+initialize(root, deny)       -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
 discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
 parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[], docs[] }
 probeFile(module, hash, text)-> FileFacts, derived by handlersFor; the provider holds what it held before
@@ -100,7 +100,8 @@ lookups use `store.get(key)`, not provider-owned maps.
   lookups. Refused bytes stay blocked until they change. A refusal drops a held fill. Rediscovery
   clears all fills.
 - `discoverProject` receives the previous project value. The kit updates discovery and project
-  state while preserving admitted values.
+  state while preserving admitted values. A moved `fingerprint` drops admitted values and staged
+  parses too, so every read starts over.
 - `generation` increments on reset, on each discovery, and when a visible value, index entry or
   withheld mark changes. `memo` caches each key for one generation.
 - Check mode recursively freezes plain objects and arrays. Set `LEXICON_STORE_CHECKS=1` to enable it.
@@ -119,6 +120,17 @@ settle.
 the core's job, and a provider writing prose means the boundary leaked. `discoverProject` is the
 underestimated one, since config discovery and specifier resolution rules are the largest
 per-language cost.
+
+A provider whose reading of a file depends on more than its text, such as C#'s project-defined
+preprocessor symbols, reports a `fingerprint` of that input. The core stores it per provider. When a
+batch edits a file in `configFiles`, the core asks that provider for its project again, and a moved
+fingerprint parses every module the provider wrote, unchanged bytes included. A scan does the same
+when the fingerprint moved while no daemon ran. The core records the new fingerprint only once every
+one of those modules is admitted under it.
+
+`configFiles` may name a file that does not exist yet, such as a `package.json` resolution probed;
+creating it restates the project. A config file under an ignored directory is still watched, unless
+the index denies it.
 
 ## The values carry the contract
 
@@ -219,8 +231,11 @@ provider claims a shebang.
 In Git mode, tracked files remain in scope even under a default-excluded directory; directory exclusions
 only limit files added by provider discovery. An ignored file never enters scope unless explicitly included.
 Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
-Denied files are excluded from indexing. A provider compiler host may still read a denied file for
-`typeOf`. The TypeScript host may fall back to its own file reads.
+Denied files are excluded from indexing, and no provider reads one. `initialize` carries the scope's
+`deny` globs. The kit's module store never fills a denied file, and `store.policy` gates every read a
+provider makes itself, such as a compiler host, a config file or a scene. A denied glob matches a
+file by its name and, through a link, by its real path. A file outside the workspace stays readable,
+since no workspace glob names it.
 
 Indexing, the watcher and the provider probe read through the guarded source reader. Transaction snapshots
 read bytes for byte-exact rollback and never send those bytes to a provider.
@@ -459,9 +474,16 @@ that classified builtins would be branching on language.
 An inventory is complete by contract. A provider never reads an absent entry as "no import needed",
 which is the failure that would relocate a declaration and leave its dependencies dangling.
 
+A dependency's origin and an import site carry the form of the statement that brought the name in.
+The core reads it from `ImportedName.kind`. An entry without one reads as `named` when it carries
+a source name and `namespace` otherwise, so a provider whose language has default or require
+imports states the form. `typeOnly` marks a name erased at runtime, in any form, so
+`import type * as ns` keeps both.
+
 Rendering the new specifier belongs to the provider, inside `moveEdits`, since tsconfig paths,
 package export maps and alias schemes are things only it knows. It answers with the edit, or
-refuses that site with `NoImportPath` or `AmbiguousImportPath`.
+refuses that site with `NoImportPath` or `AmbiguousImportPath`, or `TargetCollision` when the
+target already binds the import's name to something else.
 
 A target that does not exist yet arrives with `exists: false` and empty text. The provider parses
 the supplied text and answers as usual; the file is created by applying the edits.

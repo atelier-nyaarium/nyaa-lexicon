@@ -193,6 +193,9 @@ export function importFactId(module: string, specifier: string, reExport: boolea
 		...rangeFields(name?.range),
 		name?.local,
 		...rangeFields(name?.localRange),
+		// Only when stated, so an import stating neither keeps its id.
+		...(name?.kind === undefined ? [] : [name.kind]),
+		...(name?.typeOnly === true ? ["typeOnly"] : []),
 	]);
 }
 

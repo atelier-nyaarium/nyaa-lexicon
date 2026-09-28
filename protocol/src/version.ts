@@ -83,6 +83,11 @@ export type Compatibility =
 // `refactorStepOutcome` and `refactorStepCancel` answer what became of it. An older daemon strips the id.
 // Provider `initialize` carries the scope's `deny` globs, which the provider never reads.
 // The `releaseModule` provider notification, which an older provider ignores.
+// A blocked move site may answer `TargetCollision`. `ImportedName.kind` states the form that binds
+// a name, so a default import no longer reads as a namespace one; an older core ignores it.
+// `typeOnly` is a flag on imported names, origins and sites, composing with any form; the
+// `typeOnly` import kind is gone, and `require` names an import-equals. `ProjectModel.fingerprint`:
+// when it moves, core parses every module the provider owns again.
 export const PROTOCOL_VERSION = "3.20.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */

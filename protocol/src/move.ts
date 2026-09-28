@@ -31,8 +31,8 @@ export const ImportKindSchema = z
 		"wildcard",
 		/** Imported for effect, binding no name. */
 		"sideEffect",
-		/** Erased at runtime, e.g. TypeScript's `import type`. */
-		"typeOnly",
+		/** The module's whole exported value through a require form, e.g. TypeScript's `import x = require("m")`. */
+		"require",
 	])
 	.meta({ id: "ImportKind" });
 
@@ -43,6 +43,8 @@ export const ImportOriginSchema = z
 	.object({
 		specifier: z.string().min(1),
 		importKind: ImportKindSchema,
+		/** Erased at runtime, e.g. TypeScript's `import type`, in any form. */
+		typeOnly: z.boolean().optional(),
 		/** The name as the origin exports it. Absent for namespace and side-effect imports. */
 		importedName: z.string().min(1).optional(),
 		/** The name as this module spells it, which is what the moved body actually wrote. */
@@ -123,6 +125,8 @@ export const MoveImportSiteSchema = z
 		range: RangeSchema,
 		specifier: z.string().min(1),
 		importKind: ImportKindSchema,
+		/** Erased at runtime, e.g. TypeScript's `import type`, in any form. */
+		typeOnly: z.boolean().optional(),
 		importedName: z.string().min(1).optional(),
 		localName: z.string().min(1).optional(),
 		/** Set when this statement re-exports rather than consumes, which rewrites differently. */
@@ -158,6 +162,8 @@ export const MoveBlockedReasonSchema = z
 		"NoImportPath",
 		/** Several specifiers could address it and nothing chooses between them. */
 		"AmbiguousImportPath",
+		/** The target already binds the name the import needs to something else. */
+		"TargetCollision",
 		/** Reached by reflection, a computed import or a string, so no edit is safe. */
 		"DynamicDependency",
 		/** Reached through a string literal, where rewriting risks hitting unrelated text. */

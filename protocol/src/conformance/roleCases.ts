@@ -12,7 +12,18 @@ export function roleCases(): ConformanceCase[] {
 			tier: "fileRoles",
 			about: "Declarations and their initializers do not make an entry, including a prototype, an instance Main, and a Kotlin main in a class or on a receiver.",
 			semanticForm: "declarations-only",
-			applicableLanguages: ["typescript", "python", "bash", "c", "cpp", "csharp", "rust", "kotlin", "powershell"],
+			applicableLanguages: [
+				"typescript",
+				"python",
+				"bash",
+				"c",
+				"cpp",
+				"csharp",
+				"rust",
+				"kotlin",
+				"powershell",
+				"gdscript",
+			],
 			role: { kind: "library" },
 			fixtures: {
 				typescript: {
@@ -62,6 +73,31 @@ export function roleCases(): ConformanceCase[] {
 							"function Add-Item([int]$a, [int]$b = 1) {\n\treturn $a + $b\n}\n\nclass Cart {\n\t[int]$Total = 0\n\tstatic [void] Main() {}\n}\n\nenum Size {\n\tSmall\n\tLarge\n}\n",
 					},
 					subject: "src/cart.ps1",
+				},
+				gdscript: {
+					files: {
+						"project.godot": "config_version=5\n",
+						"src/cart.gd":
+							"class_name Cart\nextends Node\n\nfunc _init():\n\tpass\n\nfunc add(a, b):\n\treturn a + b\n",
+					},
+					subject: "src/cart.gd",
+				},
+			},
+		},
+		{
+			id: "a-script-the-engine-starts-is-an-entry",
+			tier: "fileRoles",
+			about: "A script `godot -s` runs is an entry naming its script class.",
+			semanticForm: "engine-started-script",
+			applicableLanguages: ["gdscript"],
+			role: { kind: "entry", how: "main", main: { name: "Build", line: 0 } },
+			fixtures: {
+				gdscript: {
+					files: {
+						"project.godot": "config_version=5\n",
+						"src/build.gd": "class_name Build\nextends SceneTree\n\nfunc _initialize():\n\tquit()\n",
+					},
+					subject: "src/build.gd",
 				},
 			},
 		},

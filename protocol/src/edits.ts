@@ -135,12 +135,16 @@ export function applyEdits(text: string, edits: TextEdit[]): { text: string } | 
 		};
 	}
 
-	let out = text;
-	for (const edit of [...plan.edits].reverse()) {
+	// The plan is in source order and overlap-free, so one forward pass joins the pieces.
+	const pieces: string[] = [];
+	let at = 0;
+	for (const edit of plan.edits) {
 		const offsets = coordinates.offsetsForRange(edit.range) as { start: number; end: number };
-		out = out.slice(0, offsets.start) + edit.newText + out.slice(offsets.end);
+		pieces.push(text.slice(at, offsets.start), edit.newText);
+		at = offsets.end;
 	}
-	return { text: out };
+	pieces.push(text.slice(at));
+	return { text: pieces.join("") };
 }
 
 /** Spans sorted, with every overlapping or touching pair joined into one. */

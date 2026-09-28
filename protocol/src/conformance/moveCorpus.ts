@@ -359,7 +359,8 @@ const MOVE_CASES: MoveCase[] = [
 						{
 							range: rangeForText(IMPORTER_TYPE_ONLY_FILES, "src/use.ts", "Cart"),
 							specifier: "./cart",
-							importKind: "typeOnly",
+							importKind: "named",
+							typeOnly: true,
 							importedName: "Cart",
 							localName: "Cart",
 							reExport: false,

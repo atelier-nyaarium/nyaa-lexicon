@@ -15,7 +15,7 @@ test("initialize declares identity, every tier but docs, and the roles the provi
 	expect(Object.entries(TIERS).filter(([, claimed]) => !claimed)).toEqual([["docs", false]]);
 });
 
-test("every handler answers, both notifications included, and write operations refuse with a closed reason", () => {
+test("every handler answers, the notifications included, and write operations refuse with a closed reason", () => {
 	const handlers = handlersFor(new KotlinProvider());
 	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
 	handlers.discoverProject({ workspaceRoot: process.cwd() });
@@ -29,6 +29,7 @@ test("every handler answers, both notifications included, and write operations r
 		"moveEdits",
 		"parseFile",
 		"probeFile",
+		"releaseModule",
 		"renameEdits",
 		"resolveImport",
 		"shutdown",

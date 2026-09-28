@@ -1158,7 +1158,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 		}
 		const results: CaseResult[] = [];
 
-		for (const testCase of options.cases) {
+		for (const [index, testCase] of options.cases.entries()) {
 			const tier = testCase.tier as Tier;
 			if (!info.tiers[tier]) {
 				results.push({
@@ -1192,14 +1192,13 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				continue;
 			}
 
-			writeFixture(root, fixture.files);
-			// Discovery before questions, because that is the order the core uses: it discovers a
-			// project and then parses each module. Skipping it here tested providers in a state
-			// nothing ever puts them in, and any provider that builds a project model during
-			// discovery answered differently under conformance than in the real thing. Found when a
-			// GDScript preload of a file plainly sitting in the fixture resolved as external.
+			// Its own project, so a workspace-wide lookup never meets an earlier case's files.
+			const caseRoot = path.join(root, `case-${index}`);
+			writeFixture(caseRoot, fixture.files);
+			// Discovery before questions, the order core uses, so a model built at discovery is present.
 			try {
-				const project = await session.call("discoverProject", { workspaceRoot: root });
+				await session.call("initialize", { workspaceRoot: caseRoot, protocolVersion: PROTOCOL_VERSION });
+				const project = await session.call("discoverProject", { workspaceRoot: caseRoot });
 				const problems = [
 					...discoveryProblems(fixture, project.files),
 					...(await runCase(

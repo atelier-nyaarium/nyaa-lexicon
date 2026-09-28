@@ -17,7 +17,10 @@ const CONTENT_READS = new Set(["readFileSync", "readFile", "readWorkspaceFile", 
 /** Allowed configuration and asset reads. */
 const ALLOWED_READS: Record<string, string> = {
 	"rust/src/project.ts": "Cargo.toml",
-	"gdscript/src/project.ts": "project.godot",
+	"c/src/project.ts": "compile_commands.json at the root and in build*/ directories",
+	"cpp/src/project.ts": "compile_commands.json at the root and in build*/ directories",
+	"csharp/src/project.ts": "*.csproj, Directory.Build.props and the workspace .props or .targets files they import",
+	"gdscript/src/project.ts": "project.godot, the scenes it starts and .uid sidecars",
 	"typescript/src/analyzer.ts": "types and display of files the index does not hold",
 	"typescript/src/project.ts": "tsconfig and package.json",
 };
@@ -40,7 +43,7 @@ const MUTATORS = new Set([
 	"copyWithin",
 ]);
 
-const KIT_NOTIFICATIONS = new Set(["moduleAdmission", "forgetModule", "probeFile"]);
+const KIT_NOTIFICATIONS = new Set(["moduleAdmission", "forgetModule", "releaseModule", "probeFile"]);
 
 ////////////////////////////////
 //  Helpers
@@ -99,6 +102,39 @@ function classesOf(source: ts.SourceFile): ts.ClassDeclaration[] {
 	return found;
 }
 
+function baseNameOf(declaration: ts.ClassDeclaration): string | undefined {
+	for (const clause of declaration.heritageClauses ?? []) {
+		if (clause.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+		const expression = clause.types[0]?.expression;
+		if (expression !== undefined && ts.isIdentifier(expression)) return expression.text;
+	}
+	return undefined;
+}
+
+/** Every class in an extends chain that holds a store, layers above and below included. */
+function storeChains(files: ParsedSource[]): Array<{ parsed: ParsedSource; declaration: ts.ClassDeclaration }> {
+	const classes = files.flatMap((parsed) => classesOf(parsed.source).map((declaration) => ({ parsed, declaration })));
+	const byName = new Map(
+		classes.flatMap((entry) => (entry.declaration.name ? [[entry.declaration.name.text, entry]] : [])),
+	);
+	const holds = new Set(classes.filter(({ declaration }) => fieldsOf(declaration).some((f) => f.name === "store")));
+	const chainOf = (entry: (typeof classes)[number]) => {
+		const chain: Array<(typeof classes)[number]> = [];
+		for (let at: (typeof classes)[number] | undefined = entry; at !== undefined && !chain.includes(at); ) {
+			chain.push(at);
+			const base = baseNameOf(at.declaration);
+			at = base === undefined ? undefined : byName.get(base);
+		}
+		return chain;
+	};
+	return classes.filter((entry) => {
+		if (holds.has(entry)) return true;
+		// A layer below a store holder, or one above it.
+		if (chainOf(entry).some((link) => holds.has(link))) return true;
+		return classes.some((other) => holds.has(other) && chainOf(other).includes(entry));
+	});
+}
+
 /** Instance fields and parameter properties. */
 function fieldsOf(declaration: ts.ClassDeclaration): Array<{ node: ts.Node; name: string; init?: ts.Expression }> {
 	const fields: Array<{ node: ts.Node; name: string; init?: ts.Expression }> = [];
@@ -143,7 +179,7 @@ describe("provider state lives in the kit's module store", () => {
 			}
 		}
 
-		expect(offenders, "handlersFor stages, settles, probes and forgets through the store").toEqual([]);
+		expect(offenders, "handlersFor stages, settles, probes, forgets and releases through the store").toEqual([]);
 	});
 
 	it("fires on a read through an alias, a namespace or a require", () => {
@@ -179,17 +215,15 @@ describe("provider state lives in the kit's module store", () => {
 	it("keeps no other state beside the store", () => {
 		const offenders: string[] = [];
 		for (const { files } of parsedProviders()) {
-			for (const parsed of files) {
-				for (const declaration of classesOf(parsed.source)) {
-					const fields = fieldsOf(declaration);
-					if (!fields.some((field) => field.name === "store")) continue;
-					for (const field of fields) {
-						if (field.name === "store") continue;
-						const readonly = hasModifier(field.node, ts.SyntaxKind.ReadonlyKeyword);
-						if (!readonly || isCollection(field.init))
-							offenders.push(`${where(parsed, field.node)} ${field.name}`);
-					}
+			for (const { parsed, declaration } of storeChains(files)) {
+				for (const field of fieldsOf(declaration)) {
+					if (field.name === "store") continue;
+					const readonly = hasModifier(field.node, ts.SyntaxKind.ReadonlyKeyword);
+					if (!readonly || isCollection(field.init))
+						offenders.push(`${where(parsed, field.node)} ${field.name}`);
 				}
+			}
+			for (const parsed of files) {
 				for (const statement of parsed.source.statements) {
 					if (!ts.isVariableStatement(statement)) continue;
 					const list = statement.declarationList;

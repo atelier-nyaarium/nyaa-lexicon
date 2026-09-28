@@ -146,6 +146,8 @@ interface Slot<V> {
 	/** Oldest parse first. */
 	chain: Staged<V>[];
 	transient?: Layer<V> | undefined;
+	/** The admitted layer a moved fingerprint set aside; a refusal restores it. */
+	aside?: Layer<V> | undefined;
 }
 
 ////////////////////////////////
@@ -198,7 +200,7 @@ class Kit<V extends ModuleValue, P, E> {
 	generation = 0;
 	/** What the index denies, which no fill reads. */
 	policy: ReadPolicy = OPEN_READ_POLICY;
-	private discovery: { project: P } | null = null;
+	private discovery: { project: P; fingerprint: string | undefined } | null = null;
 	private discovered = new Set<string>();
 	private readonly slots = new Map<string, Slot<V>>();
 	/** Discovered modules awaiting a fill. */
@@ -206,7 +208,9 @@ class Kit<V extends ModuleValue, P, E> {
 	private readonly index = new Map<string, Map<string, readonly E[]>>();
 	private readonly contributed = new Map<string, readonly string[]>();
 	private readonly ordered = new Map<string, readonly E[]>();
-	private readonly memos = new Map<string, { generation: number; value: unknown }>();
+	/** Every entry belongs to `memoGeneration`. */
+	private readonly memos = new Map<string, unknown>();
+	private memoGeneration = -1;
 	private readonly filling = new Map<string, Promise<void>>();
 	private transientOpen = false;
 
@@ -253,18 +257,25 @@ class Kit<V extends ModuleValue, P, E> {
 		this.generation++;
 	}
 
-	/** Drop fills; preserve admitted values and refusal marks. */
-	rediscover(root: string, files: readonly string[], project: P): void {
+	/**
+	 * Drop fills; preserve admitted values and refusal marks. A moved fingerprint means every file
+	 * reads differently, so admitted values and staged parses go too, and each read starts over.
+	 */
+	rediscover(root: string, files: readonly string[], project: P, fingerprint?: string): void {
+		const reread = this.discovery !== null && this.discovery.fingerprint !== fingerprint;
 		this.root = path.resolve(root);
-		this.discovery = { project };
+		this.discovery = { project, fingerprint };
 		this.discovered = new Set(files);
 		this.owed.clear();
 		for (const slot of this.slots.values()) {
 			const base = slot.base;
-			const filled = base.kind === "held" && base.layer.origin === "fill";
+			// The index keeps its rows until a re-parse is admitted, so keep what they came from.
+			if (reread && base.kind === "held" && base.layer.origin !== "fill") slot.aside = base.layer;
+			const filled = base.kind === "held" && (reread || base.layer.origin === "fill");
 			if (filled || (base.kind === "unknown" && base.missed === true)) {
 				slot.base = base.refused === undefined ? UNKNOWN : { kind: "unknown", refused: base.refused };
 			}
+			if (reread) slot.chain = [];
 		}
 		for (const module of this.discovered) {
 			if ((this.slots.get(module)?.base ?? UNKNOWN).kind === "unknown") this.owed.add(module);
@@ -303,8 +314,16 @@ class Kit<V extends ModuleValue, P, E> {
 		if (slot === undefined || oldest === undefined || oldest.requestHash !== verdict.contentHash) return;
 		this.change(verdict.module, () => {
 			slot.chain.shift();
+			const aside = slot.aside;
+			slot.aside = undefined;
 			if (verdict.outcome.status === "admitted") {
 				if (oldest.layer !== undefined) slot.base = { kind: "held", layer: oldest.layer };
+				this.owed.delete(verdict.module);
+				return;
+			}
+			// The index still holds what it last admitted.
+			if (aside !== undefined) {
+				slot.base = { kind: "held", layer: aside };
 				this.owed.delete(verdict.module);
 				return;
 			}
@@ -324,6 +343,7 @@ class Kit<V extends ModuleValue, P, E> {
 		this.change(module, () => {
 			slot.base = { kind: "withheld" };
 			slot.chain = [];
+			slot.aside = undefined;
 		});
 		this.owed.delete(module);
 	}
@@ -334,6 +354,7 @@ class Kit<V extends ModuleValue, P, E> {
 		this.change(module, () => {
 			slot.base = UNKNOWN;
 			slot.chain = [];
+			slot.aside = undefined;
 		});
 		if (this.discovered.has(module)) this.owed.add(module);
 	}
@@ -419,11 +440,12 @@ class Kit<V extends ModuleValue, P, E> {
 	}
 
 	memo<R>(key: string, compute: () => R): R {
-		const hit = this.memos.get(key);
-		if (hit !== undefined && hit.generation === this.generation) return hit.value as R;
+		this.sweepMemos();
+		if (this.memos.has(key)) return this.memos.get(key) as R;
 		const value = compute();
 		// Cache against the generation after compute.
-		this.memos.set(key, { generation: this.generation, value });
+		this.sweepMemos();
+		this.memos.set(key, value);
 		return value;
 	}
 
@@ -533,6 +555,13 @@ class Kit<V extends ModuleValue, P, E> {
 		this.contributed.set(module, [...grouped.keys()]);
 	}
 
+	/** Past generations' memos never hit again. */
+	private sweepMemos(): void {
+		if (this.memoGeneration === this.generation) return;
+		this.memos.clear();
+		this.memoGeneration = this.generation;
+	}
+
 	private ensure(module: string): Maybe<void> {
 		if (this.visible(module) !== undefined) return;
 		return this.fill(module);
@@ -540,6 +569,7 @@ class Kit<V extends ModuleValue, P, E> {
 
 	/** Fill each owed module in sorted order. */
 	private drain(): Maybe<void> {
+		if (this.owed.size === 0) return;
 		const pending: Promise<void>[] = [];
 		for (const module of [...this.owed].sort()) {
 			const done = this.fill(module);
@@ -681,7 +711,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 	if (kit === undefined) throw new Error("the provider's store was not made by moduleStore or asyncModuleStore");
 	const discover = (root: string) =>
 		after(provider.discoverProject(root, kit.previousProject()), ({ model, project }) => {
-			kit.rediscover(root, model.files, project);
+			kit.rediscover(root, model.files, project, model.fingerprint);
 			return model;
 		});
 	// Discover before the first request.

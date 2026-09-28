@@ -4,6 +4,7 @@
 // tsconfig paths, exports maps, sys.path, csproj references, and project.godot autoloads.
 
 import { z } from "zod";
+import { ImportKindSchema } from "./move.js";
 import { DeclarationSchema, DiagnosticSchema, RangeSchema, ReferenceSchema } from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
 
@@ -75,6 +76,13 @@ export const ImportedNameSchema = z
 		/** The binding written in THIS file. Absent when the import writes no local name. */
 		local: z.string().min(1).optional(),
 		localRange: RangeSchema.optional(),
+		/**
+		 * The form that binds it. Absent reads as `named` when `name` is present and `namespace`
+		 * otherwise, which cannot tell a default import from a namespace one.
+		 */
+		kind: ImportKindSchema.optional(),
+		/** Erased at runtime, e.g. TypeScript's `import type`, in any form. */
+		typeOnly: z.boolean().optional(),
 	})
 	.refine((entry) => entry.name !== undefined || entry.local !== undefined, {
 		message: "an imported name must carry a source name, a local binding, or both",
@@ -186,6 +194,11 @@ export const ProjectModelSchema = z
 		/** Config files consulted, so a stale model can be invalidated when one changes. */
 		configFiles: z.array(z.string().min(1)),
 		diagnostics: z.array(DiagnosticSchema),
+		/**
+		 * What reading a file depends on beyond its text, such as the preprocessor symbols a project
+		 * defines. When it changes, every module the provider owns is parsed again.
+		 */
+		fingerprint: z.string().min(1).optional(),
 	})
 	.meta({ id: "ProjectModel" });
 

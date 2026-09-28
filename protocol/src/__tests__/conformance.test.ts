@@ -315,7 +315,7 @@ describe("corpus", () => {
 				[...(testCase.applicableLanguages ?? [])].sort(),
 			]),
 		);
-		const all = ["bash", "c", "cpp", "csharp", "kotlin", "powershell", "python", "rust", "typescript"];
+		const all = ["bash", "c", "cpp", "csharp", "gdscript", "kotlin", "powershell", "python", "rust", "typescript"];
 
 		expect(matrix).toEqual({
 			"declarations-only": all,
@@ -332,6 +332,7 @@ describe("corpus", () => {
 			"run-as-program-guard-else-runs": ["python", "typescript"],
 			"statements-run-on-load": ["bash", "powershell", "python", "typescript"],
 			"unplaceable-entry-candidate": ["csharp", "rust"],
+			"engine-started-script": ["gdscript"],
 		});
 	});
 

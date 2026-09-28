@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS } from "./factId.js";
-import { MoveDependencySchema } from "./move.js";
+import { ImportKindSchema, MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
 import { EntryRoleSchema, FileRoleSchema, IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
@@ -211,6 +211,9 @@ export const StoredImportSchema = z
 		/** Present only when the import writes an alias, which renames must NOT follow. */
 		local: z.string().optional(),
 		localRange: RangeSchema.optional(),
+		/** The form the provider named; absent when it named none. */
+		kind: ImportKindSchema.optional(),
+		typeOnly: z.boolean().optional(),
 	})
 	.meta({ id: "StoredImport" });
 
