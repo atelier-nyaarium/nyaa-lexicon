@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
+import type { FileEvent } from "../invalidation";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
 import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
+import { ProviderUnavailableError } from "../supervisor";
 import { fakeClasses, fakeImports } from "./fakeGrammar";
 import { parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
 import { gitAdd, gitInit } from "./gitFixture";
@@ -305,6 +307,250 @@ describe("where a specifier lands", () => {
 		await service.applyBatch([{ kind: "changed", module: "fake.config", contentHash: "config-2" }]);
 
 		expect(asked.length).toBeGreaterThan(0);
+	});
+
+	// Unchanged bytes read differently once the project's symbols move.
+	it("parses every module again when a config edit moves the project's fingerprint, and only then", async () => {
+		await initGit();
+		put("root.fake", 'export class Root {}\nimport "./leaf.fake";\n');
+		put("leaf.fake", "export class Leaf {}\n");
+		put("fake.config", "symbols\n");
+		const parses: string[] = [];
+		const port = () =>
+			sharedFake({
+				answers: {
+					discoverProject: () => ({
+						files: ["root.fake", "leaf.fake"],
+						externalRoots: [],
+						configFiles: ["fake.config"],
+						diagnostics: [],
+						// The config's first line stands for what the provider reads it for.
+						fingerprint: readFileSync(path.join(root, "fake.config"), "utf8").split("\n")[0] as string,
+					}),
+					parseFile: (request) => {
+						parses.push(request.module);
+						return parseFake(request);
+					},
+				},
+			});
+		const edit = async (text: string): Promise<string[]> => {
+			parses.length = 0;
+			put("fake.config", text);
+			await service.applyBatch([{ kind: "changed", module: "fake.config", contentHash: text }]);
+			return [...parses].sort();
+		};
+		const warm = async (): Promise<string[]> => {
+			parses.length = 0;
+			service = new LexiconService(store, port(), sourceReader(root), root);
+			await service.warmupWorkspace();
+			return [...parses].sort();
+		};
+		service = new LexiconService(store, port(), sourceReader(root), root);
+		await service.indexWorkspace();
+
+		const sameSymbols = await edit("symbols\ncomment\n");
+		const newSymbols = await edit("other\n");
+		const warmUnchanged = await warm();
+		put("fake.config", "moved while stopped\n");
+		const warmMoved = await warm();
+
+		expect({ sameSymbols, newSymbols, warmUnchanged, warmMoved }).toEqual({
+			sameSymbols: [],
+			newSymbols: ["leaf.fake", "root.fake"],
+			warmUnchanged: [],
+			warmMoved: ["leaf.fake", "root.fake"],
+		});
+	});
+
+	// A build database under an ignored build/ still states the rules.
+	it("lets the watcher read a config file git ignores, never a denied one", async () => {
+		await initGit();
+		put(".gitignore", "build/\n");
+		put("lexicon.json", JSON.stringify({ deny: ["secret/**"] }));
+		put("root.fake", "export class Root {}\n");
+		put("build/fake.config", "symbols\n");
+		put("build/other.fake", "export class Other {}\n");
+		put("secret/fake.config", "symbols\n");
+		const port = sharedFake({
+			answers: {
+				discoverProject: () => ({
+					files: ["root.fake"],
+					externalRoots: [],
+					configFiles: ["build/fake.config", "secret/fake.config"],
+					diagnostics: [],
+				}),
+			},
+		});
+		service = new LexiconService(store, port, sourceReader(root), root);
+		await service.indexWorkspace();
+		const scope = service.watchScope();
+
+		expect(["build/fake.config", "secret/fake.config", "build/other.fake"].map(scope.admits)).toEqual([
+			true,
+			false,
+			false,
+		]);
+	});
+});
+
+describe("a config edit that restates a project", () => {
+	/**
+	 * A provider reading `fake.config`: its first line is the project's fingerprint, the rest the
+	 * files it discovers. Every parse declares `Under_<fingerprint>`, the project it read under.
+	 */
+	function projectService({ refusing, down }: { refusing?: Set<string>; down?: Set<string> } = {}): LexiconService {
+		let reading = "";
+		const port = sharedFake({
+			answers: {
+				discoverProject: () => {
+					const [fingerprint = "", ...files] = readFileSync(path.join(root, "fake.config"), "utf8")
+						.trim()
+						.split("\n");
+					reading = fingerprint;
+					return { files, externalRoots: [], configFiles: ["fake.config"], diagnostics: [], fingerprint };
+				},
+				parseFile: (request) => {
+					if (down?.has(request.module)) throw new ProviderUnavailableError("provider is gone");
+					const facts = parseFake(request);
+					return {
+						...facts,
+						declarations: [...facts.declarations, declaration(request.module, `Under_${reading}`)],
+						diagnostics:
+							refusing?.has(request.module) === true
+								? [{ severity: "error" as const, message: "refused" }]
+								: facts.diagnostics,
+					};
+				},
+			},
+		});
+		return new LexiconService(store, port, sourceReader(root), root);
+	}
+
+	const restate = (fingerprint: string, ...others: FileEvent[]) => {
+		put("fake.config", `${fingerprint}\n`);
+		return service.applyBatch([{ kind: "changed", module: "fake.config", contentHash: fingerprint }, ...others]);
+	};
+
+	// The source edited beside the config is read once, and under the project the config now states.
+	it("parses a source edited beside the config under the project it states", async () => {
+		await initGit();
+		put("fake.config", "old\n");
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		service = projectService();
+		await service.indexWorkspace();
+
+		put("a.fake", "export class A {}\nexport class Edited {}\n");
+		await restate("new", { kind: "changed", module: "a.fake", contentHash: "a-2" });
+
+		const under = service.findByName("Under_new").map((found) => found.module);
+		expect(under.sort()).toEqual(["a.fake", "b.fake"]);
+	});
+
+	// A module the new reading never admitted still holds the old one, so the next warm scan owes it.
+	it("records the restated project only once every module it reads was admitted under it", async () => {
+		await initGit();
+		put("fake.config", "one\n");
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		const refusing = new Set<string>();
+		const down = new Set<string>();
+		service = projectService({ refusing, down });
+		await service.indexWorkspace();
+
+		refusing.add("a.fake");
+		await restate("two");
+		const refused = store.projectFingerprint("fake");
+		refusing.clear();
+		down.add("b.fake");
+		await restate("three");
+		const outage = store.projectFingerprint("fake");
+		down.clear();
+		await restate("four");
+
+		expect({ refused, outage, admitted: store.projectFingerprint("fake") }).toEqual({
+			refused: "one",
+			outage: "one",
+			admitted: "four",
+		});
+	});
+
+	// No git: the provider's own discovery is all that makes a file a root.
+	it("roots a file the restated project names and prunes one it no longer does", async () => {
+		put("fake.config", "one\na.fake\nb.fake\n");
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		put("c.fake", "export class C {}\n");
+		service = projectService();
+		await service.indexWorkspace();
+		const before = store.indexedFiles().sort();
+
+		put("fake.config", "two\na.fake\nc.fake\n");
+		await service.applyBatch([{ kind: "changed", module: "fake.config", contentHash: "two" }]);
+
+		expect({ before, after: store.indexedFiles().sort() }).toEqual({
+			before: ["a.fake", "b.fake"],
+			after: ["a.fake", "c.fake"],
+		});
+	});
+
+	// A warm scan holds a moved project to the batch's rule: a refused module leaves the old one.
+	it("records a project a warm scan restated only once every module it reads was admitted", async () => {
+		await initGit();
+		put("fake.config", "one\n");
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		const refusing = new Set<string>();
+		service = projectService({ refusing });
+		await service.indexWorkspace();
+
+		put("fake.config", "two\n");
+		refusing.add("a.fake");
+		service = projectService({ refusing });
+		await service.warmupWorkspace();
+		const refused = store.projectFingerprint("fake");
+		refusing.clear();
+		service = projectService({ refusing });
+		await service.warmupWorkspace();
+
+		expect({ refused, retried: store.projectFingerprint("fake") }).toEqual({ refused: "one", retried: "two" });
+	});
+
+	// Where a specifier lands follows the project, even one that stops naming the config that moved it.
+	it("asks again where specifiers land once a restated project stops naming its own config", async () => {
+		await initGit();
+		// Reached only through the import, so the landing decides which is indexed.
+		put(".gitignore", "a.fake\nb.fake\n");
+		put("root.fake", 'export class Root {}\nimport "lib";\n');
+		put("a.fake", "export class A {}\n");
+		put("b.fake", "export class B {}\n");
+		// The fingerprint, then where "lib" lands.
+		put("fake.config", "one\na.fake\n");
+		const lines = () => readFileSync(path.join(root, "fake.config"), "utf8").trim().split("\n");
+		const port = sharedFake({
+			answers: {
+				discoverProject: () => {
+					const [fingerprint = "", landing = ""] = lines();
+					const configFiles = landing === "b.fake" ? [] : ["fake.config"];
+					return { files: [], externalRoots: [], configFiles, diagnostics: [], fingerprint };
+				},
+				resolveImport: (request) =>
+					request.specifier === "lib"
+						? { status: "resolved" as const, module: lines()[1] as string }
+						: resolveFake(request),
+			},
+		});
+		service = new LexiconService(store, port, sourceReader(root), root);
+		await service.indexWorkspace();
+		const before = store.indexedFiles().sort();
+
+		put("fake.config", "two\nb.fake\n");
+		await service.applyBatch([{ kind: "changed", module: "fake.config", contentHash: "two" }]);
+
+		expect({ before, after: store.indexedFiles().sort() }).toEqual({
+			before: ["a.fake", "root.fake"],
+			after: ["b.fake", "root.fake"],
+		});
 	});
 });
 

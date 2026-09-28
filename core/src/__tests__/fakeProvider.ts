@@ -52,6 +52,8 @@ export interface FakeOptions {
 	admissions?: Array<{ providerId: string; verdict: ModuleAdmission }>;
 	/** Which spawn answers now. A test advances it to restart a provider under the same id. */
 	incarnation?: { current: number };
+	/** Filled in with a respawn: it advances `incarnation` and tells whoever listens, as a restart does. */
+	respawns?: { respawn?: (providerId: string) => void };
 }
 
 ////////////////////////////////
@@ -137,6 +139,13 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 	const failure = options.fail ?? {};
 	const incarnation = options.incarnation ?? { current: 1 };
 	const lazyEvidence = options.lazyEvidence ?? true;
+	let respawned: ((providerId: string) => void) | undefined;
+	if (options.respawns !== undefined) {
+		options.respawns.respawn = (providerId) => {
+			incarnation.current++;
+			respawned?.(providerId);
+		};
+	}
 	let evidence: () => Iterable<string> = () => [];
 	let head: HeadReader | undefined;
 	let routing: ReturnType<typeof routingContextOf> | undefined;
@@ -215,6 +224,9 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 			options.released?.push({ module, providerId });
 		},
 		incarnationOf: () => incarnation.current,
+		respawnedFrom: (listener) => {
+			respawned = listener;
+		},
 		admission: (providerId, given, verdict) => {
 			// Dropped as the supervisor drops it: a verdict for a process that has been replaced.
 			if (given !== incarnation.current) return;

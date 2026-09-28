@@ -24,7 +24,9 @@ import {
 	type FileNotes,
 	type FileRole,
 	FileRoleSchema,
+	hashContent,
 	type Import,
+	type ImportKind,
 	type IndexDepth,
 	importFactId,
 	type Literal,
@@ -149,6 +151,8 @@ export interface ReplaceFileInput {
 	digests?: PatternDigest[];
 	generated?: GeneratedVerdict | null;
 	role?: FileRole | undefined;
+	/** Where each import's specifier landed, when known. */
+	importTargets?: ReadonlyMap<string, string>;
 }
 
 /** One commit of a module's rows: the depth they hold and the clock stamp the commit took. */
@@ -157,11 +161,39 @@ export interface FactsStamp {
 	indexedAt: number;
 }
 
+/** A write that moved what other modules can bind to, and who may now bind differently. */
+export interface SurfaceChange {
+	/** Names of declarations the module did not hold in this form before. */
+	gained: string[];
+	/** Names of declarations the module held before in a form it no longer does. */
+	lost: string[];
+	/** Other modules with a reference bound to a declaration the module held before. */
+	boundInto: string[];
+	/** Whether the module held a surface before, so a provider may still hold a parse of what it was. */
+	heldBefore: boolean;
+}
+
+/** One declaration as another module may bind to it. */
+interface SurfaceRow {
+	symbolId: string;
+	name: string;
+	kind: string;
+	visibility: string;
+	exported: boolean | null;
+}
+
+/** One thing another module can bind to, keyed by everything a binding to it depends on. */
+interface SurfaceEntry {
+	key: string;
+	/** The name a use spells; null for a re-export that names none. */
+	name: string | null;
+}
+
 ////////////////////////////////
 //  Constants
 
 /** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 24;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -208,7 +240,9 @@ CREATE TABLE files (
   role             TEXT,
   roleHow          TEXT,
   roleSymbolId     TEXT,
-  roleReason       TEXT
+  roleReason       TEXT,
+  -- Digest of what other modules can bind to; NULL on a row written before it was kept.
+  surface          TEXT
 );
 CREATE INDEX files_indexed_at ON files(indexedAt);
 CREATE INDEX files_depth ON files(depth);
@@ -221,6 +255,32 @@ CREATE TABLE parse_failures (
   failedAt INTEGER NOT NULL
 );
 ${NOTES_TABLE}
+-- What a write moved of a module's surface, until the road that wrote it has made durable the
+-- dependents it owes. Written with the facts, so a daemon stopping first leaves the question here.
+CREATE TABLE surface_moves (
+  module    TEXT PRIMARY KEY,
+  -- JSON arrays: names gained, names lost, modules bound into what the module held.
+  gained     TEXT NOT NULL,
+  lost       TEXT NOT NULL,
+  boundInto  TEXT NOT NULL,
+  -- 1 when the module held a surface before, so a provider may still hold a parse of what it was.
+  heldBefore INTEGER NOT NULL CHECK (heldBefore IN (0, 1))
+);
+
+-- Modules owed a parse because a move left their bindings stale, until a parse reading references
+-- is admitted.
+CREATE TABLE rebind_owed (
+  module     TEXT PRIMARY KEY,
+  -- Null when payable now; else the provider a failed parse waits on.
+  blockedBy  TEXT,
+  -- 'outage' waits for that provider to answer again; 'refusal' for its own file or a restart.
+  blockedFor TEXT CHECK (blockedFor IN ('outage', 'refusal')),
+  -- The daemon and provider process that failed it; either restarting retries it.
+  blockedIn  TEXT
+);
+-- Every admitted parse asks for its provider's outages, so the ask is an indexed read.
+CREATE INDEX rebind_owed_blocked ON rebind_owed(blockedBy, blockedFor);
+
 CREATE TABLE symbols (
   symbolId    TEXT PRIMARY KEY,
   -- Not the same thing as symbolId, deliberately. A symbol id names the SYMBOL and survives edits;
@@ -308,11 +368,17 @@ CREATE TABLE imports (
   localStartLine INTEGER,
   localStartChar INTEGER,
   localEndLine   INTEGER,
-  localEndChar   INTEGER
+  localEndChar   INTEGER,
+  -- The form the provider named, null when it named none.
+  importKind     TEXT,
+  typeOnly       INTEGER NOT NULL DEFAULT 0,
+  -- Where the specifier landed when it was written; null when unknown.
+  target         TEXT
 );
 CREATE INDEX imports_module ON imports(module);
 CREATE INDEX imports_name ON imports(name);
 CREATE INDEX imports_fact ON imports(factId);
+CREATE INDEX imports_target ON imports(target);
 
 -- Text as facts rather than as bytes. A name inside a string is not a reference, so without this
 -- table an __all__ entry and a connect("thing_happened") argument are in no index anywhere.
@@ -452,11 +518,17 @@ function rowToNote(row: NoteRow): FileNote {
 	};
 }
 
+/** Makes a held rebind debt payable again. */
+const UNBLOCK = "UPDATE rebind_owed SET blockedBy = NULL, blockedFor = NULL, blockedIn = NULL";
+
 /** Where the last scan's coverage arithmetic lives in the meta table. */
 const SCAN_SUMMARY_KEY = "scanSummary";
 
 /** Where the last capped sweep stopped, beside the scan summary. */
 const SWEEP_CURSOR_KEY = "knowledgeSweepCursor";
+
+/** Prefix of each provider's project fingerprint, suffixed with its id. */
+const PROJECT_FINGERPRINT_KEY = "projectFingerprint";
 
 /**
  * Where the indexed workspace's path lives in the meta table.
@@ -794,6 +866,53 @@ function columnExists(db: DatabaseSync, table: string, column: string): boolean 
 	return columns.some((row) => row.name === column);
 }
 
+/** What another module can bind to: one row per id, as the symbols table keeps it, locals aside. */
+/** A declaration another module may bind to, keyed by its id, kind and exposure. */
+function declarationEntry(row: SurfaceRow): SurfaceEntry {
+	return { key: JSON.stringify([row.symbolId, row.kind, row.visibility, row.exported]), name: row.name };
+}
+
+/** A re-export, keyed by what it names, from where, and where that landed when known. */
+function reExportEntry(
+	specifier: string,
+	name: string | null,
+	local: string | null,
+	target: string | null,
+): SurfaceEntry {
+	return { key: JSON.stringify(["reExport", specifier, name, local, target]), name: local ?? name };
+}
+
+/**
+ * What a write lets another module bind to: one entry per declaration id, as the symbols table
+ * keeps them, locals aside, and one per re-exported name.
+ */
+function surfaceOf(
+	declarations: readonly Declaration[],
+	imports: readonly Import[],
+	targets: ReadonlyMap<string, string>,
+): SurfaceEntry[] {
+	const byId = new Map<string, SurfaceEntry>();
+	for (const d of declarations) {
+		if (d.visibility === "local") continue;
+		const { symbolId, name, kind, visibility } = d;
+		byId.set(symbolId, declarationEntry({ symbolId, name, kind, visibility, exported: d.exported ?? null }));
+	}
+	const entries = new Map([...byId.values()].map((entry) => [entry.key, entry]));
+	for (const statement of imports) {
+		if (!statement.reExport) continue;
+		const target = targets.get(statement.specifier) ?? null;
+		for (const imported of statement.imported.length > 0 ? statement.imported : [undefined]) {
+			const entry = reExportEntry(statement.specifier, imported?.name ?? null, imported?.local ?? null, target);
+			entries.set(entry.key, entry);
+		}
+	}
+	return [...entries.values()].sort((left, right) => (left.key < right.key ? -1 : 1));
+}
+
+function namesOf(entries: readonly SurfaceEntry[]): string[] {
+	return [...new Set(entries.flatMap((entry) => (entry.name === null ? [] : [entry.name])))].sort();
+}
+
 ////////////////////////////////
 //  Class
 
@@ -1054,8 +1173,11 @@ export class IndexStore {
 	 * Surgical by module, which is what makes an edit cost a delete and some inserts rather than a
 	 * whole-index rebuild. The delete-then-insert is not an optimization: a symbol removed from a
 	 * file has to disappear, and an upsert alone would leave it behind forever.
+	 *
+	 * Answers what the write moved of the module's surface, read before its old rows go, or null
+	 * when other modules can bind to exactly what they could before.
 	 */
-	replaceFile(input: ReplaceFileInput): void {
+	replaceFile(input: ReplaceFileInput): SurfaceChange | null {
 		const {
 			module,
 			contentHash,
@@ -1072,17 +1194,21 @@ export class IndexStore {
 			digests = [],
 			generated = null,
 			role,
+			importTargets = new Map(),
 		} = input;
 		admitFacts(module, { declarations, references, literals, docs, role });
 		const owners = ownerStarts(declarations);
 		const digestOf = new Map(digests.map((digest) => [digest.symbolId, digest]));
-		this.inTransaction(() => {
+		const surface = surfaceOf(declarations, imports, importTargets);
+		const surfaceDigest = hashContent(surface.map((entry) => entry.key).join("\n"));
+		return this.inTransaction(() => {
+			const change = this.surfaceChange(module, surface, surfaceDigest);
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
 					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, provider, generated, generatedReason,
-					 role, roleHow, roleSymbolId, roleReason)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 role, roleHow, roleSymbolId, roleReason, surface)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					module,
@@ -1097,9 +1223,13 @@ export class IndexStore {
 					role?.kind === "entry" ? role.how : null,
 					role?.kind === "entry" && role.how === "main" ? role.symbolId : null,
 					role?.kind === "unknown" ? role.reason : null,
+					surfaceDigest,
 				);
 			// A successful parse clears its failure record.
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
+			if (change !== null) this.recordMove(module, change);
+			// A parse reading references binds against every move so far, so it settles what was owed.
+			if (depth !== "outline") this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
 
 			const symbol = this.db.prepare(
 				`INSERT OR REPLACE INTO symbols
@@ -1174,8 +1304,8 @@ export class IndexStore {
 
 			const importRow = this.db.prepare(
 				`INSERT INTO imports (factId, module, specifier, reExport, name, startLine, startChar, endLine, endChar,
-				 localName, localStartLine, localStartChar, localEndLine, localEndChar)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 localName, localStartLine, localStartChar, localEndLine, localEndChar, importKind, typeOnly, target)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			// One row per entry, and one for a statement that names nothing. Skipping the latter
 			// dropped the EDGE along with the name: `import os`, `import * as ns` and a preload const
@@ -1200,6 +1330,9 @@ export class IndexStore {
 						name?.localRange?.start.character ?? null,
 						name?.localRange?.end.line ?? null,
 						name?.localRange?.end.character ?? null,
+						name?.kind ?? null,
+						name?.typeOnly === true ? 1 : 0,
+						importTargets.get(statement.specifier) ?? null,
 					);
 				}
 			}
@@ -1285,18 +1418,238 @@ export class IndexStore {
 					note.range?.end.character ?? null,
 				);
 			});
+			return change;
 		});
+	}
+
+	/** What the module's surface moved, from the rows it holds before a write replaces them. */
+	private surfaceChange(module: string, surface: SurfaceEntry[], digest: string): SurfaceChange | null {
+		const file = this.db.prepare("SELECT surface FROM files WHERE module = ?").get(module) as
+			| { surface: string | null }
+			| undefined;
+		if (file?.surface === digest) return null;
+		const before = this.surfaceHeld(module);
+		const keys = new Set(before.map((entry) => entry.key));
+		const after = new Set(surface.map((entry) => entry.key));
+		const gained = surface.filter((entry) => !keys.has(entry.key));
+		const lost = before.filter((entry) => !after.has(entry.key));
+		if (gained.length === 0 && lost.length === 0) return null;
+		return {
+			gained: namesOf(gained),
+			lost: namesOf(lost),
+			boundInto: this.boundInto(module),
+			heldBefore: file !== undefined,
+		};
+	}
+
+	/** What the module lets another module bind to, as its declaration and re-export rows hold it. */
+	private surfaceHeld(module: string): SurfaceEntry[] {
+		const rows = this.db
+			.prepare(
+				"SELECT symbolId, name, kind, visibility, exported FROM symbols WHERE module = ? AND visibility <> 'local'",
+			)
+			.all(module) as Array<Omit<SurfaceRow, "exported"> & { exported: number | null }>;
+		const reExports = this.db
+			.prepare("SELECT specifier, name, localName, target FROM imports WHERE module = ? AND reExport = 1")
+			.all(module) as Array<{
+			specifier: string;
+			name: string | null;
+			localName: string | null;
+			target: string | null;
+		}>;
+		return [
+			...rows.map((row) =>
+				declarationEntry({ ...row, exported: row.exported === null ? null : row.exported === 1 }),
+			),
+			...reExports.map((row) => reExportEntry(row.specifier, row.name, row.localName, row.target)),
+		];
+	}
+
+	/** Other modules with a reference bound to a declaration this module holds. */
+	boundInto(module: string): string[] {
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT r.module FROM symbols s JOIN refs r ON r.targetId = s.symbolId
+				 WHERE s.module = ? AND r.module <> ? ORDER BY r.module`,
+			)
+			.all(module, module) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Adds a move to what the module's earlier writes left unasked. */
+	private recordMove(module: string, change: SurfaceChange): void {
+		const held = this.surfaceMovesOf([module]).get(module);
+		const merged = (key: "gained" | "lost" | "boundInto") =>
+			[...new Set([...(held?.[key] ?? []), ...change[key]])].sort();
+		this.db
+			.prepare(
+				"INSERT OR REPLACE INTO surface_moves (module, gained, lost, boundInto, heldBefore) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(
+				module,
+				JSON.stringify(merged("gained")),
+				JSON.stringify(merged("lost")),
+				JSON.stringify(merged("boundInto")),
+				held?.heldBefore === true || change.heldBefore ? 1 : 0,
+			);
+	}
+
+	/** The moves writes left for `modules`, or for every module when null, still pending. */
+	surfaceMovesOf(modules: readonly string[] | null): Map<string, SurfaceChange> {
+		const columns = "SELECT module, gained, lost, boundInto, heldBefore FROM surface_moves";
+		const rows = (
+			modules === null
+				? this.db.prepare(columns).all()
+				: this.db
+						.prepare(`${columns} WHERE module IN (SELECT value FROM json_each(?))`)
+						.all(JSON.stringify(modules))
+		) as Array<{ module: string; gained: string; lost: string; boundInto: string; heldBefore: number }>;
+		return new Map(
+			rows.map((row) => [
+				row.module,
+				{
+					gained: JSON.parse(row.gained),
+					lost: JSON.parse(row.lost),
+					boundInto: JSON.parse(row.boundInto),
+					heldBefore: row.heldBefore === 1,
+				},
+			]),
+		);
+	}
+
+	/**
+	 * Writes the debt a road owes for moves it read, and acknowledges those moves, in one
+	 * transaction, so a stop between the two leaves the move rather than losing both. A move a
+	 * later write merged into since it was read stays pending.
+	 */
+	settleMoves(moves: ReadonlyMap<string, SurfaceChange>, owed: readonly string[]): void {
+		const owe = this.db.prepare("INSERT OR IGNORE INTO rebind_owed (module) VALUES (?)");
+		const acknowledge = this.db.prepare(
+			"DELETE FROM surface_moves WHERE module = ? AND gained = ? AND lost = ? AND boundInto = ? AND heldBefore = ?",
+		);
+		this.inTransaction(() => {
+			for (const module of owed) owe.run(module);
+			for (const [module, change] of moves) {
+				acknowledge.run(
+					module,
+					JSON.stringify(change.gained),
+					JSON.stringify(change.lost),
+					JSON.stringify(change.boundInto),
+					change.heldBefore ? 1 : 0,
+				);
+			}
+		});
+	}
+
+	/** Owes each module a parse for its bindings until one reading references is admitted. */
+	oweRebinds(modules: readonly string[]): void {
+		this.settleMoves(new Map(), modules);
+	}
+
+	/** The first payable owed module after `after` in module order, or null. */
+	owedRebindAfter(after: string | null): string | null {
+		const row = this.db
+			.prepare("SELECT module FROM rebind_owed WHERE blockedBy IS NULL AND module > ? ORDER BY module LIMIT 1")
+			.get(after ?? "") as { module: string } | undefined;
+		return row?.module ?? null;
+	}
+
+	/** Holds a debt until `providerId` answers again, or `blockedIn` restarts, or the module's own parse lands. */
+	blockRebind(module: string, providerId: string, blockedFor: "outage" | "refusal", blockedIn: string): void {
+		this.db
+			.prepare(
+				`INSERT INTO rebind_owed (module, blockedBy, blockedFor, blockedIn) VALUES (?, ?, ?, ?)
+				 ON CONFLICT (module) DO UPDATE SET blockedBy = excluded.blockedBy, blockedFor = excluded.blockedFor,
+				 blockedIn = excluded.blockedIn`,
+			)
+			.run(module, providerId, blockedFor, blockedIn);
+	}
+
+	/** Debts held back by a failed parse, with who failed them and in which process. */
+	blockedRebinds(): Array<{ module: string; blockedBy: string; blockedFor: string; blockedIn: string }> {
+		return this.db
+			.prepare("SELECT module, blockedBy, blockedFor, blockedIn FROM rebind_owed WHERE blockedBy IS NOT NULL")
+			.all() as Array<{ module: string; blockedBy: string; blockedFor: string; blockedIn: string }>;
+	}
+
+	/** Which of these modules hold a debt their own refusal blocks. */
+	refusalBlocked(modules: readonly string[]): string[] {
+		const rows = this.db
+			.prepare(
+				`SELECT module FROM rebind_owed
+				 WHERE blockedFor = 'refusal' AND module IN (SELECT value FROM json_each(?)) ORDER BY module`,
+			)
+			.all(JSON.stringify(modules)) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Makes these held debts payable again. */
+	unblockRebinds(modules: readonly string[]): void {
+		const unblock = this.db.prepare(`${UNBLOCK} WHERE module = ?`);
+		this.inTransaction(() => {
+			for (const module of modules) unblock.run(module);
+		});
+	}
+
+	/** Makes the debts one provider's outage held payable again, answering how many. */
+	unblockOutages(providerId: string): number {
+		return Number(
+			this.db.prepare(`${UNBLOCK} WHERE blockedBy = ? AND blockedFor = 'outage'`).run(providerId).changes,
+		);
+	}
+
+	/** Settles a debt nothing can pay: the module holds no facts to parse again. */
+	clearRebind(module: string): void {
+		this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
+	}
+
+	/** Modules with an import that landed on one of `targets` when it was written. */
+	importersLandedOn(targets: readonly string[]): string[] {
+		if (targets.length === 0) return [];
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT module FROM imports
+				 WHERE target IN (SELECT value FROM json_each(?)) ORDER BY module`,
+			)
+			.all(JSON.stringify(targets)) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Modules with an unbound reference spelled as one of `names`. */
+	modulesWithUnbound(names: readonly string[]): string[] {
+		if (names.length === 0) return [];
+		const rows = this.db
+			.prepare(
+				// The unary plus keeps the planner on refs_name: unbound rows are many, one name's are few.
+				`SELECT DISTINCT module FROM refs
+				 WHERE name IN (SELECT value FROM json_each(?)) AND +targetId IS NULL ORDER BY module`,
+			)
+			.all(JSON.stringify(names)) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Each module's distinct import specifiers, for asking where each lands. */
+	importEdges(): Array<{ module: string; specifier: string }> {
+		return this.db
+			.prepare("SELECT DISTINCT module, specifier FROM imports ORDER BY module, specifier")
+			.all() as Array<{ module: string; specifier: string }>;
 	}
 
 	/** Everything a file contributed, gone. Used when a file is deleted rather than changed. */
 	forgetFile(module: string): boolean {
 		return this.inTransaction(() => {
+			// Read while the rows it asks about still exist.
+			const lost = namesOf(this.surfaceHeld(module));
+			const boundInto = this.boundInto(module);
 			let removed = false;
 			for (const table of FACT_TABLES) {
 				if (this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module).changes > 0) removed = true;
 			}
 			if (this.db.prepare("DELETE FROM files WHERE module = ?").run(module).changes > 0) removed = true;
 			if (this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module).changes > 0) removed = true;
+			// A module the index no longer holds owes nothing.
+			this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
+			if (removed) this.recordMove(module, { gained: [], lost, boundInto, heldBefore: true });
 			return removed;
 		});
 	}
@@ -1456,6 +1809,15 @@ export class IndexStore {
 			| { module: string; reason: string }
 			| undefined;
 		return row ?? null;
+	}
+
+	/** The project fingerprint a provider's stored facts were parsed under; null when it gave none. */
+	projectFingerprint(providerId: string): string | null {
+		return readMeta(this.db, `${PROJECT_FINGERPRINT_KEY}:${providerId}`);
+	}
+
+	recordProjectFingerprint(providerId: string, fingerprint: string): void {
+		writeMeta(this.db, `${PROJECT_FINGERPRINT_KEY}:${providerId}`, fingerprint);
 	}
 
 	/** Persists scan counts used to explain coverage gaps. */
@@ -2705,6 +3067,8 @@ interface ImportRow {
 	localStartChar: number | null;
 	localEndLine: number | null;
 	localEndChar: number | null;
+	importKind: ImportKind | null;
+	typeOnly: number;
 }
 
 function rowToImport(raw: unknown): StoredImport {
@@ -2738,6 +3102,8 @@ function rowToImport(raw: unknown): StoredImport {
 		reExport: row.reExport === 1,
 		...named,
 		...alias,
+		...(row.importKind === null ? {} : { kind: row.importKind }),
+		...(row.typeOnly === 1 ? { typeOnly: true } : {}),
 	};
 }
 

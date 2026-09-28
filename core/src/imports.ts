@@ -6,6 +6,7 @@
 import {
 	defined,
 	type FindImportsResult,
+	type ImportKind,
 	type ImportOrigin,
 	type ImportResolution,
 	type IndexDepth,
@@ -33,6 +34,11 @@ export function importTarget(resolution: ImportResolution): { module: string; de
 		return { module: resolution.surface.module, depth: "surface" };
 	}
 	return null;
+}
+
+/** The provider's stated form; without one, a statement naming no export binds the module itself. */
+function kindOf(statement: StoredImport): ImportKind {
+	return statement.kind ?? (statement.name === undefined ? "namespace" : "named");
 }
 
 ////////////////////////////////
@@ -67,7 +73,8 @@ export class ImportResolver {
 			sites.push({
 				range: statement.range,
 				specifier: statement.specifier,
-				importKind: statement.name === undefined ? "namespace" : "named",
+				importKind: kindOf(statement),
+				...(statement.typeOnly === true ? { typeOnly: true } : {}),
 				...defined({ importedName: statement.name, localName: statement.local }),
 				reExport: statement.reExport,
 			});
@@ -82,8 +89,8 @@ export class ImportResolver {
 			if (statement.name !== name && statement.local !== name) continue;
 			return {
 				specifier: statement.specifier,
-				// A statement naming no export binds the module itself, which is a namespace import.
-				importKind: statement.name === undefined ? "namespace" : "named",
+				importKind: kindOf(statement),
+				...(statement.typeOnly === true ? { typeOnly: true } : {}),
 				...defined({ importedName: statement.name, localName: statement.local }),
 			};
 		}

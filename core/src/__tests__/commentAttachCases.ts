@@ -236,6 +236,40 @@ export const CASES: AttachCase[] = [
 		},
 	},
 	{
+		// A range that starts at the attributes holds a comment among them before its name.
+		name: "gives a comment among a declaration's attributes to it, after any doc above them",
+		run: (attach) => {
+			const withName = (declaration: Declaration, line: number): Declaration => ({
+				...declaration,
+				selectionRange: { start: { line, character: 6 }, end: { line, character: 10 } },
+			});
+			const among = "@first\n// why second\n@second\nclass Cart {\n\tfield() {}\n}\n";
+			const [alone] = attach(
+				[withName(decl("Cart", 0, 5), 3), decl("field", 4, 4, 1)],
+				commentsIn(among),
+				among,
+				blanksIn(among),
+			);
+			const documented = "// Cart docs\n@first\n// why second\n@second\nclass Cart {\n}\n";
+			const [doc, inner] = attach(
+				[withName(decl("Cart", 1, 5), 4)],
+				commentsIn(documented),
+				documented,
+				blanksIn(documented),
+			);
+
+			expect({
+				alone: [alone?.form, anchorName(alone?.anchorId ?? null)],
+				doc: [doc?.form, anchorName(doc?.anchorId ?? null)],
+				inner: [inner?.form, anchorName(inner?.anchorId ?? null)],
+			}).toEqual({
+				alone: ["leading", "Cart"],
+				doc: ["leading", "Cart"],
+				inner: ["standalone", "Cart"],
+			});
+		},
+	},
+	{
 		name: "anchors a comment in a body to the declaration that encloses it",
 		run: (attach) => {
 			const text = "function work() {\n\t// why this order\n\treturn 1;\n}\n";

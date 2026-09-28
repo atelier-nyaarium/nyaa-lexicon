@@ -14,7 +14,7 @@ import { readSource } from "./sourceRead.js";
 
 /** What may be read: the scope as it stands, then git for the rest, once per burst. */
 export interface WatchScope {
-	/** True for a module the scope admits or the index holds. Read without asking git. */
+	/** True for a module the scope admits, the index holds, or a provider reads as config. No git. */
 	admits: (module: string) => boolean;
 	/** Which of the rest git ignores. Null when git cannot say, so none here are ignored yet. */
 	ignored: (modules: string[]) => Promise<Set<string> | null>;

@@ -211,11 +211,25 @@ function leadingTarget(
 	declarations: Declaration[],
 	blankLines: Set<number> | null,
 	declarationLines: Set<number>,
-): Declaration | undefined {
+): { target: Declaration; header: boolean } | undefined {
 	const included = declarations.find(
 		(declaration) => sameStart(declaration.range, group.range) && namesNext(declaration, group, declarations),
 	);
-	if (included !== undefined) return included;
+	if (included !== undefined) return { target: included, header: false };
+
+	// Between a declaration's attributes and its name: that declaration's, never a member's.
+	const scope = enclosing(declarations, group.range);
+	const name = scope?.selectionRange?.start;
+	if (
+		scope !== undefined &&
+		name !== undefined &&
+		comparePoints(group.range.end, name) < 0 &&
+		namesNext(scope, group, declarations)
+	) {
+		return nothingBetween(group.range.end.line, name.line, blankLines, declarationLines)
+			? { target: scope, header: true }
+			: undefined;
+	}
 
 	let nearest: Declaration | undefined;
 	for (const declaration of declarations) {
@@ -228,9 +242,8 @@ function leadingTarget(
 	// A comment cannot document something outside the scope holding it. Inside a body, the next
 	// declaration below is a SIBLING of the enclosing one, and the comment belongs to the body it
 	// sits in. A member nested in that same scope is still reachable, which is the common case.
-	const scope = enclosing(declarations, group.range);
 	if (scope !== undefined && comparePoints(scope.range.end, nearest.range.start) < 0) return undefined;
-	return nearest;
+	return { target: nearest, header: false };
 }
 
 ////////////////////////////////
@@ -298,13 +311,17 @@ export function attachComments(
 	// A declaration takes the NEAREST qualifying group; the rest of its candidates fall through to
 	// standalone rather than every one of them claiming the same symbol.
 	const leadFor = new Map<string, Group>();
+	const headerFor = new Map<string, Group>();
 	for (const group of groups) {
 		if (!group.ownLine || group.codeAfter) continue;
-		const target = leadingTarget(group, declarations, blank, declarationLines);
-		if (target === undefined) continue;
-		const held = leadFor.get(target.symbolId);
-		if (held === undefined || group.range.end.line > held.range.end.line) leadFor.set(target.symbolId, group);
+		const found = leadingTarget(group, declarations, blank, declarationLines);
+		if (found === undefined) continue;
+		const claims = found.header ? headerFor : leadFor;
+		const held = claims.get(found.target.symbolId);
+		if (held === undefined || group.range.end.line > held.range.end.line) claims.set(found.target.symbolId, group);
 	}
+	// A doc above the attributes outranks a comment among them.
+	for (const [symbolId, group] of headerFor) if (!leadFor.has(symbolId)) leadFor.set(symbolId, group);
 	const leading = new Map<Group, string>();
 	for (const [symbolId, group] of leadFor) leading.set(group, symbolId);
 

@@ -291,6 +291,56 @@ that file's own bytes, so only its own event can mean they moved, and retrying i
 and refuses it again while nothing anywhere changed. It stays named in `overview` and in the failure
 count, because it is still failing; what stops is the repetition.
 
+A binding is stored at parse time, so a module that gains, loses or renames a declaration leaves its
+users' references stale until something parses them again. Each `files` row keeps a surface digest
+of the non-local declaration ids, kinds and exposure, and of each re-export: what it names, its
+specifier, and where that landed when the write resolved it, since an importer binds through it.
+When a write moves it, `replaceFile` or
+`forgetFile` records the move in `surface_moves` in the same transaction, read before the old rows
+go: the names gained, the names lost, and the modules bound into what the module held. A road reads
+its moves, works out the dependents, and acknowledges each move only in the transaction that writes
+the debt it owes, so a daemon stopping anywhere between leaves the move for the next; a move a later
+write merged into stays. The dependents are the modules importing a moved module, found through an
+index of resolved imports that a write refreshes for its own module alone, the modules whose
+import landed on it when written, since a deleted module leaves no import landing on it, the
+modules bound into it, and the modules with an unresolved use of a gained or lost name; an
+ambiguous use binds to nothing, so a lost name is what finds it. A resolver fault is no answer about
+an import, so the importer keeps what the index held for it and the moves stay pending; so do moves
+whose importers were read while resolutions turned over or another road replaced the index. A
+pending move arms one retry that waits a second and doubles to a minute while it stays pending, so
+it does not sleep until unrelated work.
+
+`applyBatch` asks after its own parses and parses the dependents at their stored depth, one hop, and
+a further hop only from a dependent whose own surface moved. A module the batch wrote after the last
+move it depends on read that move already and is skipped; one written before is parsed again. An
+outline holds no references and a refused file owes only its own event, so neither is owed. Past
+`REBIND_CAP` parses in one batch the rest are owed in `rebind_owed`, which the background pump pays
+one module per hold, each run trying each payable debt once; an owed outline is paid by its full
+parse. A failed rebind is held rather than retried at once: an outage until its provider admits a
+parse again, a refusal until its own file parses, and either once the daemon or the provider process
+restarts. The supervisor tells the indexer of a respawn, which starts a run, and a refused module's
+file restored to the bytes the index holds counts as its own event, though the batch parses nothing.
+Any admitted parse that reads references settles the module's debt, since it binds against every
+move before it, and a module the index forgets owes nothing. A body edit moves no surface and parses
+nobody else. A scan reads every move still pending, a stopped daemon's included, and owes the pump the
+dependents it did not parse itself. A provider reads from disk a module it holds no parse of, so only
+a module that held a surface before, or whose file changed after the scan first looked at it, can
+leave a stale parse behind. A root is first looked at as the scan begins, an imported module once a
+module importing it is parsed. A scan orders its writes against those moves alone, and parses again
+a dependent it wrote before one. A first scan has none and parses nothing twice; a live rescan parses
+again what it read before a module that changed. A pump upgrade and a rebind owe theirs too.
+`indexFile`, the road a direct request, a refactor step or a recovery takes, notes what it wrote, and
+the pump asks once that road lets go of the gate. A fault no parse caught, such as a store closed
+under the pump, ends its run, rejects whoever awaits it, and restarts nothing.
+
+A batch touching a config file a provider consults asks that provider for its project first, before
+the roots are counted or any file is read, so a source edited beside the config parses under the new
+project and a file the project stops naming prunes. Where specifiers land is asked again for a config
+the providers named before the batch, or a project whose fingerprint moved, even one that no longer
+names its config. A moved fingerprint parses again every module the provider wrote, and the new
+fingerprint is recorded, by a batch or a scan alike, only once each of them was admitted under it;
+an outage, a refusal or a fault leaves the old one, and the next warm scan restates.
+
 Extraction depends on the file AND on the code that read it, so the indexer is hashed too. Without
 that, a provider that changes how it classifies leaves every stored fact stale while no file has
 moved, and nothing anywhere would say so.

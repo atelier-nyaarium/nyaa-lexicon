@@ -6,7 +6,7 @@ import type { attachComments } from "../commentAttach";
 import { lexiconRoot } from "../providers";
 import { CASES } from "./commentAttachCases";
 
-/** Four mutants, one per attachment defect that shipped; the case table must fail each. */
+/** One mutant per attachment defect that shipped; the case table must fail each. */
 const SOURCE = join(import.meta.dirname, "..", "commentAttach.ts");
 
 /** Outside `core/src`, where the residue sweeps walk, and inside the checkout, where packages resolve. */
@@ -46,6 +46,11 @@ const MUTANTS: Mutant[] = [
 		name: "every written line between a comment and a declaration is a wall",
 		find: "\t\tif (blankLines.has(line) || declarationLines.has(line)) return false;",
 		replace: "\t\tif (blankLines.has(line) || declarationLines.has(line) || line >= 0) return false;",
+	},
+	{
+		name: "a comment among a declaration's attributes leads its first member",
+		find: "\t\tcomparePoints(group.range.end, name) < 0 &&",
+		replace: "\t\tfalse &&",
 	},
 ];
 

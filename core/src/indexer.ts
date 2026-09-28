@@ -4,8 +4,10 @@
 // the only one. Reaches wide on purpose: indexing IS reading files and asking providers.
 
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import type {
 	AdmittedModule,
+	Import,
 	ImportResolution,
 	IndexCause,
 	IndexDepth,
@@ -16,7 +18,7 @@ import type {
 	ModuleStatus,
 } from "@nyaa-lexicon/protocol";
 import { defined, hashContent } from "@nyaa-lexicon/protocol";
-import type { Clock } from "./clock.js";
+import type { Clock, TimerHandle } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
 import {
@@ -34,8 +36,14 @@ import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarat
 import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import type { ResultCache } from "./resultCache.js";
-import { OUTSIDE_WORKSPACE_REASON, readHead, type SourceReader, unreadableReason } from "./sourceRead.js";
-import type { FileNote, IndexStore } from "./store.js";
+import {
+	insideWorkspace,
+	OUTSIDE_WORKSPACE_REASON,
+	readHead,
+	type SourceReader,
+	unreadableReason,
+} from "./sourceRead.js";
+import type { FileNote, IndexStore, SurfaceChange } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
 import type { WatchScope } from "./watcher.js";
@@ -80,6 +88,14 @@ export const NAMED_FAILURES = 3;
 /** Subjects one sweep examines across both passes; a capped sweep resumes from its cursor. */
 export const ORPHAN_SWEEP_CAP = 200;
 
+/** Dependents one batch parses again itself; the rest wait for the background pump. */
+export const REBIND_CAP = 64;
+
+/** The first wait before asking again after a resolver fault left moves pending; it doubles to the cap. */
+export const RESOLVE_RETRY_MS = 1_000;
+
+const RESOLVE_RETRY_MAX_MS = 60_000;
+
 /**
  * Two questions with two lifetimes, so one turnover rule cannot serve both.
  *
@@ -117,6 +133,18 @@ type Step = <T>(work: () => Promise<T>) => Promise<T>;
 /** Already exclusive: the caller took the gate around a unit larger than one file. */
 const held: Step = (work) => work();
 
+/** Import targets both ways, so a write refreshes its own module's entries alone. */
+interface ImporterIndex {
+	generation: number;
+	byTarget: Map<string, Set<string>>;
+	targetsOf: Map<string, Set<string>>;
+	/** Settles once the whole read that built it has; undefined only while it is being made. */
+	ready: Promise<void> | undefined;
+}
+
+/** Outcomes that leave a module's facts unread under the reading asked for. */
+const UNREAD: ReadonlySet<IndexCause | undefined> = new Set(["parseFailed", "providerDown", "fault"]);
+
 /** What `followImports` needs beyond the frontier, so no positional default decides the gate. */
 interface ImportWalk {
 	/** False skips a reached module whose stored facts already sit at the depth this walk wants. */
@@ -124,6 +152,8 @@ interface ImportWalk {
 	previousDepths?: ReadonlyMap<string, IndexDepth>;
 	floor?: "full" | "outline";
 	step: Step;
+	/** Runs after each module the walk parses, before the next parse. */
+	reached?: (module: string) => Promise<void>;
 }
 
 ////////////////////////////////
@@ -147,6 +177,8 @@ export class WorkspaceIndexer {
 		// completed: evidenceFrom is synchronous, and admission now asks git asynchronously.
 		supervisor.evidenceFrom(() => this.lastAdmitted?.reachable ?? []);
 		supervisor.headFrom((module) => readHead(this.workspaceRoot, module));
+		// A provider process starting again may answer what its predecessor failed or refused.
+		supervisor.respawnedFrom(() => this.queueRebinds());
 	}
 
 	/** What the last prune kept; null until one has run, and the timer's sweep judges nothing before that. */
@@ -162,7 +194,8 @@ export class WorkspaceIndexer {
 	private scope: FileScope | null = null;
 	/** For the synchronous evidence callback alone: as fresh as the last admission, which every create or delete renews. */
 	private lastAdmitted: Admitted | null = null;
-	private discovered = new Set<string>();
+	/** Each provider's discovered files, replaced whole whenever it states its project again. */
+	private discovered = new Map<string, Set<string>>();
 	private roots = new Set<string>();
 	private depths = new Map<string, IndexDepth>();
 
@@ -170,14 +203,31 @@ export class WorkspaceIndexer {
 	private breakdown: ScanBreakdown | null = null;
 	/** Git's word per admitted module, refreshed with the scope. */
 	private generated = new Map<string, GeneratedVerdict>();
-	/** What the providers said they consult, so an edit to one retires every resolution. */
-	private configFiles = new Set<string>();
+	/** Each config file a provider said it consults, with who consults it. */
+	private configFiles = new Map<string, Set<string>>();
+	/** Providers whose project fingerprint moved since their stored facts were parsed. */
+	private restated = new Set<string>();
 	private coverage: WarmCoverage = { state: "idle" };
 
 	/** Full-parse orders run between background files. */
 	private orders: Array<{ modules: string[]; resolve: () => void; reject: (error: unknown) => void }> = [];
 	private pumping: Promise<void> | null = null;
 	private upgradeWanted = false;
+
+	/** Modules a single-file road wrote, whose dependents the pump asks after once that road lets go. */
+	private readonly unasked = new Set<string>();
+	/** Debt was owed since the pump last started through it; a run tries each owed module once. */
+	private rebindQueued = false;
+	private rebindCursor: string | null = null;
+	/** Moved modules whose importers a resolver fault left unread; the next run asks again. */
+	private readonly resolvePending = new Set<string>();
+	/** The armed retry for `resolvePending`, and the wait the next one takes. */
+	private resolveRetry: TimerHandle | null = null;
+	private resolveRetryMs = RESOLVE_RETRY_MS;
+	/** Who imports each module, by where each import landed, for one resolution generation. */
+	private importers: ImporterIndex | null = null;
+	/** Modules whose import rows were written since the index last read them. */
+	private readonly importsWritten = new Set<string>();
 
 	/**
 	 * One step of a self-driven road, alone.
@@ -227,14 +277,19 @@ export class WorkspaceIndexer {
 	}
 
 	/**
-	 * What the watcher may read unasked: admitted by the scope as it stands, or held by the index.
+	 * What the watcher may read unasked: admitted by the scope as it stands, held by the index, or a
+	 * config file a provider consults. A config under an ignored directory still states the rules.
 	 *
 	 * Synchronous over a scope already computed: the caller starts the live index before the warm
 	 * pass has run, so nothing here may lazily ask git for the first time.
 	 */
 	watchScope(): WatchScope {
 		return {
-			admits: (module) => this.scopeOrThrow().allows(module) || this.store.contentHashOf(module) !== null,
+			admits: (module) => {
+				const scope = this.scopeOrThrow();
+				if (scope.allows(module) || this.store.contentHashOf(module) !== null) return true;
+				return this.configFiles.has(module) && !scope.denies(module);
+			},
 			ignored: (modules) => gitIgnored(this.workspaceRoot, modules, this.clock),
 		};
 	}
@@ -249,9 +304,22 @@ export class WorkspaceIndexer {
 	 * so facts are never filed under the hash of a different version.
 	 *
 	 * Caller-held: a refactor step, a restore, a recovery or the daemon's own request reaches this,
-	 * and each already holds the gate across a unit larger than this file.
+	 * and each already holds the gate across a unit larger than this file. None of them asks who
+	 * binds against what it wrote, so the pump does once the caller lets go.
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
+		const outcome = await this.parseAndStore(module, depth, skipIfCurrent);
+		this.unasked.add(module);
+		this.ensurePumping();
+		return outcome;
+	}
+
+	/** `indexFile` for a road that asks after its own writes. */
+	private async parseAndStore(
+		module: string,
+		depth: IndexDepth = "full",
+		skipIfCurrent = false,
+	): Promise<IndexOutcome> {
 		// Self-sufficient: recovery, and a standalone call on a fresh service, both reach here before
 		// any scan has run. The synchronous scope reads below (claimOf, rootDepth's default) must not
 		// be the first to ask for it, and a shared claim's routing needs the evidence callback seeded
@@ -295,10 +363,11 @@ export class WorkspaceIndexer {
 		// the hash of another, and every staleness check downstream would compare the wrong pair.
 		const readHash = hashContent(text);
 
-		// Preserve deeper facts when owner matches or is unrecorded.
+		// Preserve deeper facts when owner matches or is unrecorded, and the project reads files as it did.
 		const writer = this.store.writerOf(module);
 		if (
 			skipIfCurrent &&
+			!this.restated.has(parser.providerId) &&
 			this.store.contentHashOf(module) === readHash &&
 			(writer ?? parser.providerId) === parser.providerId
 		) {
@@ -355,6 +424,9 @@ export class WorkspaceIndexer {
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
 		// question only the source text answers, and this is the last place holding it.
 		const generatedVerdict = await this.verdictFor(module);
+		// Where a re-export lands is what its importers bind through, so it is part of the surface; where
+		// any import landed names this module once that target goes.
+		const importTargets = await this.importTargets(module, facts.imports);
 		try {
 			this.store.replaceFile({
 				module,
@@ -381,6 +453,7 @@ export class WorkspaceIndexer {
 						: [],
 				generated: generatedVerdict,
 				role: facts.role,
+				importTargets,
 			});
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
@@ -404,12 +477,46 @@ export class WorkspaceIndexer {
 		}
 		// Committed, so the provider is told what the index holds rather than what it is about to.
 		this.publish(answered, { module, contentHash: readHash, outcome: { status: "admitted" } });
+		this.importsWritten.add(module);
+		// The provider answers again, so what its outage held back is tried again.
+		if (this.store.unblockOutages(parser.providerId) > 0) this.queueRebinds();
 		if (fresh) this.newInPass.add(module);
 		// A success re-admits the module to the background backlog.
 		this.upgradeFailed.delete(module);
 		// Every stored answer was drawn from facts that just moved, so all of them are unreachable.
 		this.caches.facts.invalidate();
 		return { module, action: "indexed", declarations: facts.declarations.length };
+	}
+
+	/** A file's modification time and size, to tell whether it changed between two looks; null when unreadable. */
+	private fileStat(module: string): string | null {
+		try {
+			const stats = statSync(insideWorkspace(this.workspaceRoot, module));
+			return `${stats.mtimeMs}:${stats.size}`;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Stats each module `module` imports that `stats` has not looked at, before a later parse can read it. */
+	private async noteReached(module: string, stats: Map<string, string | null>): Promise<void> {
+		for (const statement of this.store.importsIn(module)) {
+			const landed = await this.resolve(module, statement.specifier).catch(() => null);
+			const target = landed === null ? null : importTarget(landed);
+			if (target !== null && !stats.has(target.module)) stats.set(target.module, this.fileStat(target.module));
+		}
+	}
+
+	/** Where each of a write's imports lands, when the resolver can say. */
+	private async importTargets(module: string, imports: readonly Import[]): Promise<Map<string, string>> {
+		const targets = new Map<string, string>();
+		for (const statement of imports) {
+			if (targets.has(statement.specifier)) continue;
+			const landed = await this.resolve(module, statement.specifier).catch(() => null);
+			const target = landed === null ? null : importTarget(landed);
+			if (target !== null) targets.set(statement.specifier, target.module);
+		}
+		return targets;
 	}
 
 	/**
@@ -459,20 +566,21 @@ export class WorkspaceIndexer {
 		this.status = { state: "discovering", done: 0, total: 0 };
 		try {
 			this.newInPass = new Set();
-			this.discovered = new Set<string>();
-			this.configFiles = new Set<string>();
+			this.discovered = new Map();
+			this.configFiles = new Map();
 			// The workspace is being re-learned, so nothing a previous pass was told still vouches
 			// for itself. Once, rather than per file: a scan reads what is already on disk.
 			this.caches.resolutions.invalidate();
+			const fingerprints = new Map<string, string>();
 			for (const provider of this.supervisor.running()) {
-				const project = await this.supervisor.askProvider(provider.providerId, "discoverProject", {
-					workspaceRoot: this.workspaceRoot,
-				});
-				for (const module of project.files) this.discovered.add(module);
-				// The provider names them, so core learns which files state the rules without telling
-				// one language from another.
-				for (const module of project.configFiles) this.configFiles.add(module);
+				const project = await this.discover(provider.providerId);
+				if (project.fingerprint !== undefined) fingerprints.set(provider.providerId, project.fingerprint);
 			}
+			this.restated = new Set(
+				[...fingerprints]
+					.filter(([providerId, fingerprint]) => fingerprint !== this.store.projectFingerprint(providerId))
+					.map(([providerId]) => providerId),
+			);
 
 			// One hold: the summary must not describe a root set another road has already moved past.
 			const pending = await this.alone(async () => {
@@ -484,6 +592,9 @@ export class WorkspaceIndexer {
 				this.writeScanSummary(missing.size === 0 && this.store.readScanSummary()?.outlined === true);
 				return missing;
 			});
+			// Each file as the scan first looked at it, so a change during the scan is seen at its end: a
+			// root as the scan began, an imported module once a module importing it was parsed.
+			const firstStats = new Map([...this.roots].map((module) => [module, this.fileStat(module)]));
 			if (floor === "outline") {
 				this.coverage =
 					pending.size === 0 ? { state: "covered" } : { state: "outlining", pending, attempting: new Set() };
@@ -507,6 +618,7 @@ export class WorkspaceIndexer {
 					}
 				});
 				if (floor === "outline" && this.coverage.state === "outlining") this.coverage.attempting.delete(module);
+				await this.noteReached(module, firstStats);
 				outcomes.push(outcome);
 				if (outcome.action === "forgotten") this.roots.delete(module);
 				else seen.add(module);
@@ -519,6 +631,7 @@ export class WorkspaceIndexer {
 					indexExisting: true,
 					floor,
 					step: (work) => this.alone(work),
+					reached: (module) => this.noteReached(module, firstStats),
 				})),
 			);
 			// An outage is a file value, not a workspace refusal, but the summary cannot claim a full outline.
@@ -530,9 +643,33 @@ export class WorkspaceIndexer {
 					const pruned = this.prune(seen);
 					this.sweepAfterPrune(seen);
 					this.writeScanSummary(!outaged);
+					// Recorded only where every module was admitted under it; an outage, a refusal or a
+					// fault leaves the old one, so the next scan restates again.
+					for (const [providerId, fingerprint] of fingerprints) {
+						if (!this.readAllUnder(providerId, outcomes)) continue;
+						this.store.recordProjectFingerprint(providerId, fingerprint);
+						this.restated.delete(providerId);
+					}
 					return pruned;
 				})),
 			);
+			// A module whose bytes moved while nothing watched leaves its unchanged dependents stale, and
+			// so does a move a stopped daemon never answered. Read whole, inside a hold.
+			const moves = await this.alone(async () => this.pendingMoves(null));
+			const order = new Map<string, number>();
+			for (const [at, outcome] of outcomes.entries())
+				if (outcome.action !== "skipped") order.set(outcome.module, at);
+			// A provider reads from disk a module it holds no parse of, so only a module that held a surface
+			// before, or whose file changed after the scan first looked at it, since a provider may have read
+			// it for an earlier dependent, can have left a module this scan wrote earlier reading a stale one.
+			const stale = (module: string, change: SurfaceChange) =>
+				change.heldBefore || (firstStats.has(module) && this.fileStat(module) !== firstStats.get(module));
+			const unwritten = this.store.indexedFiles().some((module) => !order.has(module));
+			if (unwritten || [...moves].some(([module, change]) => stale(module, change)))
+				await this.oweDependents(moves, order, stale);
+			else this.settle(moves, []);
+			// Debt a stopped daemon left owed is the pump's to pay.
+			if (this.store.owedRebindAfter(null) !== null) this.queueRebinds();
 			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
 			this.coverage = { state: "covered" };
 			return outcomes;
@@ -541,6 +678,64 @@ export class WorkspaceIndexer {
 				this.coverage = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
 			throw error;
 		}
+	}
+
+	/** Asks one provider for its project, noting its files and the config it consults. */
+	private async discover(providerId: string): Promise<MethodResponse<"discoverProject">> {
+		const project = await this.supervisor.askProvider(providerId, "discoverProject", {
+			workspaceRoot: this.workspaceRoot,
+		});
+		// Replaced, not added to: a file the project no longer names leaves the roots with it.
+		this.discovered.set(providerId, new Set(project.files));
+		for (const [module, owners] of this.configFiles) {
+			owners.delete(providerId);
+			if (owners.size === 0) this.configFiles.delete(module);
+		}
+		// The provider names them, so core learns which files state the rules without telling
+		// one language from another.
+		for (const module of project.configFiles) {
+			const owners = this.configFiles.get(module) ?? new Set<string>();
+			owners.add(providerId);
+			this.configFiles.set(module, owners);
+		}
+		return project;
+	}
+
+	/**
+	 * Rediscovers each provider whose config a batch touched. A moved fingerprint owes a parse of
+	 * every module that provider wrote, since its bytes did not change but their reading did.
+	 */
+	private async restatements(
+		modules: readonly string[],
+	): Promise<Array<{ providerId: string; fingerprint: string; written: string[] }>> {
+		const providers = new Set(modules.flatMap((module) => [...(this.configFiles.get(module) ?? [])]));
+		const owed: Array<{ providerId: string; fingerprint: string; written: string[] }> = [];
+		for (const providerId of providers) {
+			const project = await this.discover(providerId);
+			const fingerprint = project.fingerprint;
+			if (fingerprint === undefined || fingerprint === this.store.projectFingerprint(providerId)) continue;
+			const written = [...this.store.writers()]
+				.filter(([, writer]) => writer === providerId)
+				.map(([module]) => module);
+			owed.push({ providerId, fingerprint, written });
+		}
+		return owed;
+	}
+
+	/**
+	 * Whether every module a provider reads, and every module in `also`, took an admitted parse or
+	 * held what it had among these outcomes. An outage, a refusal or a fault did neither.
+	 */
+	private readAllUnder(
+		providerId: string,
+		outcomes: readonly IndexOutcome[],
+		also: ReadonlySet<string> = new Set(),
+	): boolean {
+		return !outcomes.some((outcome) => {
+			if (!UNREAD.has(outcome.cause)) return false;
+			const route = this.supervisor.route(outcome.module);
+			return also.has(outcome.module) || (route.owned && route.providerId === providerId);
+		});
 	}
 
 	/** Queues full parses ahead of the background upgrade. */
@@ -564,15 +759,52 @@ export class WorkspaceIndexer {
 	}
 
 	private ensurePumping(): void {
-		this.pumping ??= this.pump().finally(() => {
+		if (this.pumping !== null) return;
+		const run = this.pump().finally(() => {
 			this.pumping = null;
 			// Restart if work arrived before completion.
-			if (this.orders.length > 0 || this.upgradeWanted) this.ensurePumping();
+			if (this.orders.length > 0 || this.unasked.size > 0 || this.rebindQueued || this.upgradeWanted)
+				this.ensurePumping();
 		});
+		// Whoever awaits the run hears its fault; a run nobody awaits must not surface as unhandled.
+		run.catch(() => {});
+		this.pumping = run;
 	}
 
-	/** The one full-parse loop. Orders first, then the store's outline backlog, one file per turn. */
+	/**
+	 * The one background parse loop. Orders first, then who binds against what single-file roads
+	 * wrote, then owed rebinds, then the store's outline backlog, one file per turn.
+	 *
+	 * A fault no parse caught, such as a store closed under the run, ends it and rejects it, and
+	 * nothing restarts it: what is owed stays in the store for the next start.
+	 */
 	private async pump(): Promise<void> {
+		try {
+			this.startRun();
+			await this.pumpTurns();
+		} catch (error) {
+			this.upgradeWanted = false;
+			this.unasked.clear();
+			this.rebindQueued = false;
+			for (const order of this.orders.splice(0)) order.reject(error);
+			throw error;
+		}
+	}
+
+	/** Each run tries every payable debt once; a provider or daemon that restarted since a parse failed is asked again. */
+	private startRun(): void {
+		this.rebindCursor = null;
+		this.rebindQueued = false;
+		const restarted = this.store
+			.blockedRebinds()
+			.filter((debt) => debt.blockedIn !== this.processOf(debt.blockedBy))
+			.map((debt) => debt.module);
+		if (restarted.length > 0) this.store.unblockRebinds(restarted);
+		for (const module of this.resolvePending) this.unasked.add(module);
+		this.resolvePending.clear();
+	}
+
+	private async pumpTurns(): Promise<void> {
 		while (true) {
 			const order = this.orders.shift();
 			if (order !== undefined) {
@@ -588,6 +820,8 @@ export class WorkspaceIndexer {
 				}
 				continue;
 			}
+
+			if (await this.rebindStep()) continue;
 
 			if (!this.upgradeWanted) return;
 			const backlog = this.store.outlineModules().filter((module) => !this.upgradeFailed.has(module));
@@ -606,6 +840,26 @@ export class WorkspaceIndexer {
 		}
 	}
 
+	/** One turn of rebind work: who binds against single-file writes, else one owed module. False when idle. */
+	private async rebindStep(): Promise<boolean> {
+		if (this.unasked.size > 0) {
+			// Read inside a hold, so the road that wrote them has let go of every module it wrote.
+			const { written, moves } = await this.alone(async () => {
+				const modules = [...this.unasked];
+				this.unasked.clear();
+				return { written: modules, moves: this.pendingMoves(modules) };
+			});
+			// In the order that road wrote them.
+			await this.oweDependents(moves, new Map(written.map((module, at) => [module, at])));
+			return true;
+		}
+		const owed = this.store.owedRebindAfter(this.rebindCursor);
+		if (owed === null) return false;
+		this.rebindCursor = owed;
+		await this.rebindOne(owed);
+		return true;
+	}
+
 	/** Attempts one outline module without discarding stored facts on failure. */
 	private async upgradeOne(module: string): Promise<void> {
 		await this.alone(async () => {
@@ -622,6 +876,8 @@ export class WorkspaceIndexer {
 				this.faultOutcome(module, error);
 			}
 		});
+		// An outline may hold fewer declarations than the full parse that replaced it.
+		await this.oweDependents(this.pendingMoves([module]), new Map([[module, 0]]));
 	}
 
 	/** The mark is carried forward unless a caller says otherwise. */
@@ -671,7 +927,7 @@ export class WorkspaceIndexer {
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
 		if (this.scopeOrThrow().denies(module)) return this.unadmitted(module, "denied by scope");
-		return this.indexFile(module, depth, skipIfCurrent);
+		return this.parseAndStore(module, depth, skipIfCurrent);
 	}
 
 	/** A module nothing may index keeps no facts. */
@@ -738,7 +994,7 @@ export class WorkspaceIndexer {
 	 * bounded surface, never the package implementation tree.
 	 */
 	private async followImports(seen: Set<string>, walk: ImportWalk): Promise<IndexOutcome[]> {
-		const { indexExisting, step, previousDepths = new Map(), floor = "full" } = walk;
+		const { indexExisting, step, reached, previousDepths = new Map(), floor = "full" } = walk;
 		const outcomes: IndexOutcome[] = [];
 		// Each round walks only what the last one indexed. A module already walked had its imports
 		// read then, and nothing in this loop rewrites them, so re-walking the whole set every round
@@ -784,6 +1040,7 @@ export class WorkspaceIndexer {
 						}
 					}),
 				);
+				await reached?.(module);
 			}
 			// What this round indexed, including what it skipped as current: their imports are what
 			// the next round has not read yet.
@@ -811,7 +1068,8 @@ export class WorkspaceIndexer {
 		const named = includedFiles(this.workspaceRoot, this.scope.include);
 		const namedSet = new Set(named);
 		const goneSet = new Set(gone);
-		const everything = [...new Set([...(this.scope.known ?? []), ...this.discovered, ...named, ...extra])].filter(
+		const discovered = [...this.discovered.values()].flatMap((files) => [...files]);
+		const everything = [...new Set([...(this.scope.known ?? []), ...discovered, ...named, ...extra])].filter(
 			(module) => !goneSet.has(module),
 		);
 		const candidates = everything.filter((module) => this.scope?.allows(module) ?? true);
@@ -868,6 +1126,7 @@ export class WorkspaceIndexer {
 			if (!route.owned || route.providerId === writer) continue;
 			// Keep dependency reads available.
 			dropped = this.store.forgetFile(module) || dropped;
+			this.importsWritten.add(module);
 			this.supervisor.release(module, writer);
 		}
 		if (dropped) this.caches.facts.invalidate();
@@ -885,10 +1144,274 @@ export class WorkspaceIndexer {
 
 	private forgetFile(module: string): boolean {
 		const removed = this.store.forgetFile(module);
+		this.importsWritten.add(module);
 		// Told regardless: a provider may still hold the file.
 		this.supervisor.forget(module);
 		this.caches.facts.invalidate();
 		return removed;
+	}
+
+	/**
+	 * The moves still pending for `modules`, or for every module when null. Read, not taken: a road
+	 * acknowledges them only with the debt it owes for them, so a stop in between loses neither.
+	 */
+	private pendingMoves(modules: Iterable<string> | null): Map<string, SurfaceChange> {
+		return this.store.surfaceMovesOf(modules === null ? null : [...modules]);
+	}
+
+	/** Writes the debt and acknowledges the moves it answers in one transaction, then starts the pump. */
+	private settle(moves: ReadonlyMap<string, SurfaceChange>, owed: readonly string[]): void {
+		this.store.settleMoves(moves, owed);
+		if (owed.length > 0) this.queueRebinds();
+	}
+
+	private queueRebinds(): void {
+		this.rebindQueued = true;
+		this.ensurePumping();
+	}
+
+	/**
+	 * Keeps moves a resolver fault left unanswered pending, and arms one retry: a run then asks again.
+	 * Each retry that finds them still pending waits twice as long, to a cap, so a provider that stays
+	 * down is not asked in a loop.
+	 */
+	private retryResolving(moved: Iterable<string>): void {
+		for (const module of moved) this.resolvePending.add(module);
+		if (this.resolveRetry !== null) return;
+		const wait = this.resolveRetryMs;
+		this.resolveRetryMs = Math.min(wait * 2, RESOLVE_RETRY_MAX_MS);
+		this.resolveRetry = this.clock.setTimer(() => {
+			this.resolveRetry = null;
+			// Queued rather than only started, so a run already going starts another after it.
+			this.queueRebinds();
+		}, wait);
+	}
+
+	/**
+	 * Holds a failed rebind back: an outage until its provider answers again, a refusal until its own
+	 * file parses; either until the daemon or the provider restarts.
+	 */
+	private holdRebind(module: string, outcome: IndexOutcome): void {
+		const route = this.supervisor.route(module);
+		if (!route.owned) return;
+		const reason = outcome.cause === "parseFailed" ? "refusal" : "outage";
+		this.store.blockRebind(module, route.providerId, reason, this.processOf(route.providerId));
+	}
+
+	/** This daemon and the provider process answering now, so a restart of either reads as new. */
+	private processOf(providerId: string): string {
+		return `${this.epoch}:${this.supervisor.incarnationOf(providerId) ?? "none"}`;
+	}
+
+	/**
+	 * Parses again the modules that bind against a surface this batch moved, so their references see
+	 * it without an edit of their own. One hop, and a further one only from a dependent whose own
+	 * surface moved. Past `REBIND_CAP` parses, the rest wait for the pump.
+	 *
+	 * Caller-held, inside `applyBatch`.
+	 */
+	private async rebindDependents(
+		outcomes: readonly IndexOutcome[],
+		shouldAbandon?: () => boolean,
+	): Promise<IndexOutcome[]> {
+		const rebound: IndexOutcome[] = [];
+		// Where each module the batch wrote stands in its order of writes.
+		const order = new Map<string, number>();
+		for (const [at, outcome] of outcomes.entries()) if (outcome.action !== "skipped") order.set(outcome.module, at);
+		const answered = new Map<string, SurfaceChange>();
+		const owed: string[] = [];
+		let budget = REBIND_CAP;
+		let moves = this.pendingMoves(outcomes.map((outcome) => outcome.module));
+		while (moves.size > 0) {
+			const { modules, complete } = await this.dependentsOf(moves);
+			if (complete) for (const [module, change] of moves) answered.set(module, change);
+			else this.retryResolving(moves.keys());
+			const hop: string[] = [];
+			for (const module of modules) {
+				if (this.readAfter(module, moves, order) || !this.rebindable(module)) continue;
+				if (budget === 0 || shouldAbandon?.() === true) {
+					owed.push(module);
+					continue;
+				}
+				budget--;
+				let outcome: IndexOutcome;
+				try {
+					outcome = await this.parseAndStore(module, this.store.depthOf(module) ?? undefined);
+				} catch (error) {
+					outcome = this.faultOutcome(module, error);
+				}
+				order.set(module, outcomes.length + rebound.length);
+				rebound.push(outcome);
+				// Owed until a parse is admitted: an outage or a refusal waits, never dropped.
+				if (UNREAD.has(outcome.cause)) this.holdRebind(module, outcome);
+				hop.push(module);
+			}
+			moves = this.pendingMoves(hop);
+		}
+		this.settle(answered, owed);
+		return rebound;
+	}
+
+	/**
+	 * Leaves to the pump every module binding against these moves, but for one written after the last
+	 * of them, which read them already. A move `stale` does not name counts as before everything. A
+	 * resolver fault leaves the moves pending for a later run.
+	 */
+	private async oweDependents(
+		moves: ReadonlyMap<string, SurfaceChange>,
+		order: ReadonlyMap<string, number>,
+		stale: (module: string, change: SurfaceChange) => boolean = () => true,
+	): Promise<void> {
+		const { modules, complete } = await this.dependentsOf(moves);
+		const owed = modules.filter(
+			(module) => !this.readAfter(module, moves, order, stale) && this.rebindable(module),
+		);
+		if (!complete) this.retryResolving(moves.keys());
+		else if (this.resolvePending.size === 0) this.resolveRetryMs = RESOLVE_RETRY_MS;
+		this.settle(complete ? moves : new Map(), owed);
+	}
+
+	/**
+	 * Whether a module was written after every move here, so it bound against each of them. A move no
+	 * road here wrote, or one that could have left no stale parse behind, came first.
+	 */
+	private readAfter(
+		module: string,
+		moves: ReadonlyMap<string, SurfaceChange>,
+		order: ReadonlyMap<string, number>,
+		stale: (module: string, change: SurfaceChange) => boolean = () => true,
+	): boolean {
+		const written = order.get(module);
+		if (written === undefined) return false;
+		return [...moves].every(([moved, change]) => written > (stale(moved, change) ? (order.get(moved) ?? -1) : -1));
+	}
+
+	/**
+	 * Who binds against these moved surfaces: modules importing one, now or when they were written,
+	 * modules bound into what one held, and modules with an unresolved use of a name
+	 * one gained or lost. In module order. Incomplete when a resolver fault left an importer unread.
+	 */
+	private async dependentsOf(
+		moves: ReadonlyMap<string, SurfaceChange>,
+	): Promise<{ modules: string[]; complete: boolean }> {
+		if (moves.size === 0) return { modules: [], complete: true };
+		const { importers, complete } = await this.importersOf(moves.keys());
+		// The import index answers where specifiers land now; a module that went, or that a specifier
+		// stopped landing on, is still named by the import written against it.
+		for (const module of this.store.importersLandedOn([...moves.keys()])) importers.add(module);
+		const names = new Set<string>();
+		for (const change of moves.values()) {
+			for (const module of change.boundInto) importers.add(module);
+			for (const name of [...change.gained, ...change.lost]) names.add(name);
+		}
+		for (const module of this.store.modulesWithUnbound([...names])) importers.add(module);
+		return { modules: [...importers].filter((module) => !moves.has(module)).sort(), complete };
+	}
+
+	/**
+	 * Modules importing any of `targets`. The index is read whole once per resolution generation,
+	 * then each written module's own rows alone, so a run of writes costs their imports, not the
+	 * workspace's each time. A module whose resolution faulted is read again next time.
+	 */
+	private async importersOf(targets: Iterable<string>): Promise<{ importers: Set<string>; complete: boolean }> {
+		const generation = this.caches.resolutions.stats().generation;
+		let index = this.importers;
+		if (index?.generation !== generation) {
+			const building: ImporterIndex = { generation, byTarget: new Map(), targetsOf: new Map(), ready: undefined };
+			building.ready = this.readWhole(building);
+			index = building;
+			this.importers = building;
+		}
+		// Another road's build of this generation is read only once it is whole.
+		await index.ready;
+		const unread: string[] = [];
+		for (const module of [...this.importsWritten]) {
+			this.importsWritten.delete(module);
+			const listed = this.store.importsIn(module).map((statement) => statement.specifier);
+			if (!(await this.readImports(index, module, listed))) unread.push(module);
+		}
+		for (const module of unread) this.importsWritten.add(module);
+		const importers = new Set<string>();
+		for (const target of targets) for (const module of index.byTarget.get(target) ?? []) importers.add(module);
+		// Resolutions turned over, or another road replaced the index, while this read ran: what it
+		// found answers an older generation.
+		const current = this.importers === index && this.caches.resolutions.stats().generation === generation;
+		return { importers, complete: unread.length === 0 && current };
+	}
+
+	/** Reads every module's import rows into a fresh index; one the resolver faulted on is read again. */
+	private async readWhole(index: ImporterIndex): Promise<void> {
+		// Cleared before the read: a module written while it runs is read again next time.
+		this.importsWritten.clear();
+		const specifiers = new Map<string, string[]>();
+		for (const { module, specifier } of this.store.importEdges()) {
+			const listed = specifiers.get(module);
+			if (listed === undefined) specifiers.set(module, [specifier]);
+			else listed.push(specifier);
+		}
+		for (const [module, listed] of specifiers) {
+			if (!(await this.readImports(index, module, listed))) this.importsWritten.add(module);
+		}
+	}
+
+	/**
+	 * Replaces one module's entries with where its specifiers land now, through the cached resolver.
+	 * A resolver fault is no answer, so the module keeps what it held and answers false.
+	 */
+	private async readImports(index: ImporterIndex, module: string, specifiers: readonly string[]): Promise<boolean> {
+		const targets = new Set<string>();
+		for (const specifier of new Set(specifiers)) {
+			let landed: ImportResolution;
+			try {
+				landed = await this.resolve(module, specifier);
+			} catch {
+				return false;
+			}
+			const target = importTarget(landed);
+			if (target !== null) targets.add(target.module);
+		}
+		for (const target of index.targetsOf.get(module) ?? []) index.byTarget.get(target)?.delete(module);
+		index.targetsOf.set(module, targets);
+		for (const target of targets) {
+			const importers = index.byTarget.get(target);
+			if (importers === undefined) index.byTarget.set(target, new Set([module]));
+			else importers.add(module);
+		}
+		return true;
+	}
+
+	/**
+	 * Whether a module is worth parsing again for its bindings. An outline holds no references to
+	 * rebind, and a refused parse is about the file's own bytes.
+	 */
+	private rebindable(module: string): boolean {
+		const depth = this.store.depthOf(module);
+		return depth !== null && depth !== "outline" && this.store.parseFailureOf(module) === null;
+	}
+
+	/** One owed module; a failure holds it for its provider or its own file. */
+	private async rebindOne(module: string): Promise<void> {
+		await this.alone(async () => {
+			const depth = this.store.depthOf(module);
+			// Nothing held has nothing to rebind.
+			if (depth === null) {
+				this.store.clearRebind(module);
+				return;
+			}
+			// An outline pays its debt with the full parse it owes anyway.
+			if (depth === "outline") this.depths.set(module, "full");
+			let outcome: IndexOutcome;
+			try {
+				outcome = await this.indexOne(module, depth === "outline" ? "full" : depth);
+			} catch (error) {
+				outcome = this.faultOutcome(module, error);
+			}
+			if (UNREAD.has(outcome.cause)) this.holdRebind(module, outcome);
+			// Gone or no longer owned: nothing left for a later run to pay.
+			else if (outcome.action !== "indexed") this.store.clearRebind(module);
+		});
+		// A dependent whose own surface moved owes its dependents one more hop.
+		await this.oweDependents(this.pendingMoves([module]), new Map([[module, 0]]));
 	}
 
 	/**
@@ -982,8 +1505,18 @@ export class WorkspaceIndexer {
 				indexedHash: (module) => this.store.contentHashOf(module),
 			}),
 		);
+		// A module whose refusal holds its debt waits on its own event, and bytes restored to what the
+		// index holds are one: the debt is paid by the pump, since the batch has nothing to parse.
+		const unchanged = decisions.filter(
+			(decision) => decision.action === "ignore" && decision.reason === UNCHANGED_REASON,
+		);
+		const restored = this.store.refusalBlocked(unchanged.map((decision) => decision.module));
+		if (restored.length > 0) {
+			this.store.unblockRebinds(restored);
+			this.queueRebinds();
+		}
 		// Decided before admission: a save that changed nothing asks neither git nor a provider.
-		if (decisions.every((decision) => decision.action === "ignore" && decision.reason === UNCHANGED_REASON)) {
+		if (unchanged.length === decisions.length) {
 			return decisions.map((decision) => this.outcome(decision.module, "current", UNCHANGED_REASON));
 		}
 		this.newInPass = new Set();
@@ -992,7 +1525,13 @@ export class WorkspaceIndexer {
 		const previousDepths = this.depths;
 		const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
 		const deleted = events.filter((event) => event.kind === "deleted").map((event) => event.module);
-		for (const module of deleted) this.discovered.delete(module);
+		for (const files of this.discovered.values()) for (const module of deleted) files.delete(module);
+		// Asked of the config files as providers named them before this batch: a restated project
+		// may stop naming the very file that restated it.
+		const touchedConfig = decisions.some((decision) => this.configFiles.has(decision.module));
+		// A provider whose config the batch touched states its project, and its files, before
+		// anything is read under it or the roots are counted.
+		const restated = await this.restatements(decisions.map((decision) => decision.module));
 		const roots = await this.rootModules(changed, deleted);
 		this.roots = roots;
 		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
@@ -1000,12 +1539,15 @@ export class WorkspaceIndexer {
 		// file arriving or leaving, or a config restating the rules, moves where a specifier lands.
 		// Editing a body moves none of them, which is the ordinary batch. Asked of the roots the scope
 		// just decided, so a write the workspace does not admit retires nothing.
-		const moved = decisions.some(
-			(decision) =>
-				decision.action === "forget" ||
-				this.configFiles.has(decision.module) ||
-				(roots.has(decision.module) && this.store.contentHashOf(decision.module) === null),
-		);
+		const moved =
+			touchedConfig ||
+			restated.length > 0 ||
+			decisions.some(
+				(decision) =>
+					decision.action === "forget" ||
+					this.configFiles.has(decision.module) ||
+					(roots.has(decision.module) && this.store.contentHashOf(decision.module) === null),
+			);
 		if (moved) this.caches.resolutions.invalidate();
 		// Persisted here too, or a watcher batch leaves overview describing the previous scan.
 		this.writeScanSummary();
@@ -1040,7 +1582,7 @@ export class WorkspaceIndexer {
 			attempted.add(decision.module);
 			pending.delete(decision.module);
 			try {
-				const outcome = await this.indexFile(
+				const outcome = await this.parseAndStore(
 					decision.module,
 					this.depths.get(decision.module) ?? this.rootDepth(decision.module),
 				);
@@ -1081,6 +1623,21 @@ export class WorkspaceIndexer {
 		// Cut short at a file boundary: nothing further here runs against a batch that stopped
 		// partway, and the abandoned roots stay pending for the next daemon's warm scan to pick up.
 		if (abandoned) return outcomes;
+		for (const { providerId, fingerprint, written } of restated) {
+			for (const module of written) {
+				if (attempted.has(module)) continue;
+				attempted.add(module);
+				try {
+					outcomes.push(await this.indexOne(module, this.store.depthOf(module) ?? undefined));
+				} catch (error) {
+					outcomes.push(this.faultOutcome(module, error));
+				}
+			}
+			// Recorded once every module it reads took a parse under it; otherwise the next warm scan
+			// restates it again.
+			if (this.readAllUnder(providerId, outcomes, new Set(written)))
+				this.store.recordProjectFingerprint(providerId, fingerprint);
+		}
 
 		const seen = new Set(roots);
 		outcomes.push(...(await this.followImports(seen, { indexExisting: false, previousDepths, step: held })));
@@ -1088,6 +1645,7 @@ export class WorkspaceIndexer {
 		this.store.syncGenerated(this.generated);
 		outcomes.push(...this.prune(seen));
 		this.sweepAfterPrune(seen);
+		outcomes.push(...(await this.rebindDependents(outcomes, shouldAbandon)));
 		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
 		if (this.coverage.state !== "failed") this.coverage = { state: "covered" };
 		// A module created or deleted by this batch renews the evidence snapshot with what the batch

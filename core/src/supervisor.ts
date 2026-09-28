@@ -355,6 +355,7 @@ export class ProviderSupervisor implements ProviderPort {
 		this.providers.set(previous.claims.providerId, entry);
 		this.watchForExit(entry);
 		console.log(`provider ${previous.claims.providerId} respawned`);
+		this.respawned?.(previous.claims.providerId);
 	}
 
 	private spawnProcess(spec: ProviderSpec, workspaceRoot: string): StartingProcess {
@@ -395,6 +396,13 @@ export class ProviderSupervisor implements ProviderPort {
 	/** Where a module's first line comes from, for a shebang claim. */
 	headFrom(read: HeadReader): void {
 		this.head = read;
+	}
+
+	private respawned: ((providerId: string) => void) | undefined;
+
+	/** Who hears that a provider's process started again under the same id. */
+	respawnedFrom(listener: (providerId: string) => void): void {
+		this.respawned = listener;
 	}
 
 	/** Records the workspace extensions used by shared claims. */

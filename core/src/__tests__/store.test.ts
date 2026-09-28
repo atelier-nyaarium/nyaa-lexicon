@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
+import { ImportResolver } from "../imports";
 import { HiddenModules, IndexStore, SCHEMA_VERSION } from "../store";
 
 ////////////////////////////////
@@ -502,6 +503,47 @@ describe("opening the index", () => {
 		second.store.close();
 	});
 
+	// Version 23 never shipped, and dev builds wrote it in more than one layout.
+	it("rebuilds a store written at version 23, whatever its layout", async () => {
+		const file = path.join(dir, "dev.sqlite");
+		IndexStore.open(file).store.close();
+		const { DatabaseSync } = await import("node:sqlite");
+		const raw = new DatabaseSync(file);
+		// An earlier 23 layout, before imports kept their form.
+		raw.exec("ALTER TABLE imports DROP COLUMN importKind");
+		raw.exec("ALTER TABLE imports DROP COLUMN typeOnly");
+		raw.exec("PRAGMA user_version = 23");
+		raw.close();
+
+		const reopened = IndexStore.open(file);
+		reopened.store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [declaration("a")],
+			references: [],
+			imports: [{ specifier: "./b", imported: [], reExport: false }],
+		});
+		expect(reopened.rebuilt).toBe(true);
+		expect(reopened.store.importsIn("src/a.ts")).toHaveLength(1);
+		reopened.store.close();
+	});
+
+	// Every admitted parse asks for its provider's held debts, so the ask must not read them all.
+	it("finds a provider's outage debts by an index, not a scan", async () => {
+		const file = path.join(dir, "debts.sqlite");
+		IndexStore.open(file).store.close();
+		const { DatabaseSync } = await import("node:sqlite");
+		const raw = new DatabaseSync(file);
+		const plan = raw
+			.prepare(
+				"EXPLAIN QUERY PLAN UPDATE rebind_owed SET blockedBy = NULL WHERE blockedBy = ? AND blockedFor = 'outage'",
+			)
+			.all("fake") as Array<{ detail: string }>;
+		raw.close();
+
+		expect(plan.map((step) => step.detail).join(" ")).toContain("USING INDEX");
+	});
+
 	// Facts are derivable from source and a blob is not. A rebuild that dropped the journal would
 	// strand a half-applied refactor with nothing left that knows how to undo it.
 	it("carries an unfinished refactor across a rebuild", async () => {
@@ -683,6 +725,34 @@ describe("a file's role", () => {
  * survives edits by design, so a citation built on it could never notice the signature changing
  * underneath it.
  */
+describe("the form an import binds", () => {
+	it("keeps the form a provider names, and reads one it does not from the names it carries", () => {
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [
+				{
+					specifier: "./d.js",
+					imported: [{ local: "d", localRange: POINT, kind: "default" }],
+					reExport: false,
+				},
+				{ specifier: "./n.js", imported: [{ local: "n", localRange: POINT }], reExport: false },
+				{ specifier: "./x.js", imported: [{ name: "x", range: POINT }], reExport: false },
+			],
+			literals: [],
+		});
+		const resolver = new ImportResolver(store, async () => ({ status: "unresolved", reason: "NotImplemented" }));
+
+		expect(["d", "n", "x"].map((name) => resolver.importOriginFor("src/a.ts", name, store)?.importKind)).toEqual([
+			"default",
+			"namespace",
+			"named",
+		]);
+	});
+});
+
 describe("citable facts", () => {
 	const literal = { kind: "string" as const, value: "hello", range: POINT };
 

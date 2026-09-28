@@ -39,6 +39,8 @@ export interface ProviderPort {
 	release(module: string, providerId: string): void;
 	/** Which process answers for this provider now; null when none does. */
 	incarnationOf(providerId: string): number | null;
+	/** Calls `listener` whenever a provider's process starts again under the same id. */
+	respawnedFrom(listener: (providerId: string) => void): void;
 	/**
 	 * Tells the process that ANSWERED the parse what the index did with it. Not awaited.
 	 *

@@ -173,7 +173,8 @@ describe("a real provider's function values and namespaces", () => {
 				["Run", 1],
 				["Shop", 0],
 			]);
-			expect(scope?.localsExcluded).toBe(1);
+			// `amount` and `taxed` under Tax, `go` under Run.
+			expect(scope?.localsExcluded).toBe(3);
 			expect(service.describe(idOf("Shop"))?.members.map((member) => member.name)).toEqual(["Tax", "Run"]);
 		},
 		60_000,

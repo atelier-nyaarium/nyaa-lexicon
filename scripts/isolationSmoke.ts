@@ -1,7 +1,8 @@
 // Indexes a hostile workspace through the client's launch path, from inside it, and fails if the
 // workspace ran anything inside lexicon: a bunfig preload, a .env, or a json.py standing in for
 // Python's. It also fails if a tracked link out of the workspace let an outside canary into the
-// store. Run by the release build after the bundle; meaningful only against a fresh dist/.
+// store, or a file lexicon.json denies reached the store or a type answer. Run by the release build
+// after the bundle; meaningful only against a fresh dist/.
 //
 //   bun scripts/isolationSmoke.ts
 
@@ -27,6 +28,7 @@ interface Hostile {
 	markers: string;
 	leaked: string;
 	canary: string;
+	denied: string;
 }
 
 function hostileWorkspace(scratch: string): Hostile {
@@ -35,6 +37,7 @@ function hostileWorkspace(scratch: string): Hostile {
 	const outside = path.join(scratch, "outside");
 	const leaked = path.join(workspace, "leaked-state");
 	const canary = `lexicon-canary-${randomUUID()}`;
+	const denied = `lexicon-denied-${randomUUID()}`;
 	mkdirSync(workspace);
 	mkdirSync(markers);
 	mkdirSync(outside);
@@ -45,6 +48,9 @@ function hostileWorkspace(scratch: string): Hostile {
 		"json.py": `open(${JSON.stringify(path.join(markers, "json.py"))}, "w").close()\n`,
 		"main.py": `import ${ABSENT_PACKAGE}\n`,
 		"main.ts": "import { canary } from './linked-dir/canary';\nexport const greet = (): string => canary;\n",
+		"lexicon.json": `${JSON.stringify({ deny: ["secret.ts"] })}\n`,
+		"secret.ts": `export const secret = "${denied}";\n`,
+		"uses.ts": "import { secret } from './secret';\nexport const shown = secret;\n",
 	};
 	for (const [name, text] of Object.entries(files)) writeFileSync(path.join(workspace, name), text);
 	writeFileSync(path.join(outside, "canary.ts"), `// ${canary}\nexport const canary = "${canary}";\n`);
@@ -54,7 +60,7 @@ function hostileWorkspace(scratch: string): Hostile {
 	symlinkSync(outside, path.join(workspace, "linked-dir"));
 	git(workspace, ["init", "-q"]);
 	git(workspace, ["add", "-A"]);
-	return { workspace, markers, leaked, canary };
+	return { workspace, markers, leaked, canary, denied };
 }
 
 function git(cwd: string, args: string[]): void {
@@ -87,7 +93,7 @@ async function waitReady(session: Session): Promise<void> {
 
 async function main(): Promise<void> {
 	const scratch = mkdtempSync(path.join(os.tmpdir(), "lexicon-isolation-"));
-	const { workspace, markers, leaked, canary } = hostileWorkspace(scratch);
+	const { workspace, markers, leaked, canary, denied } = hostileWorkspace(scratch);
 	const stateDir = path.join(scratch, "state");
 	// A .env only sets a variable the process lacks, so the canary needs it absent.
 	delete process.env["XDG_STATE_HOME"];
@@ -109,13 +115,26 @@ async function main(): Promise<void> {
 			const what = [...ran, ...(leakedEnv ? [".env"] : [])].join(", ");
 			throw new Error(`the workspace ran code inside lexicon: ${what}`);
 		}
+		const [shown] = await session.findByName({ name: "shown", module: "uses.ts" });
+		if (shown === undefined) throw new Error("uses.ts was not indexed");
+		// A literal type would carry the denied file's text.
+		const type = await session.typeOf({ symbolId: shown.symbolId });
+		if (JSON.stringify(type).includes(denied)) {
+			throw new Error(`a type answer read a denied file: ${JSON.stringify(type)}`);
+		}
 		// Stopped first, so writes are flushed to disk.
 		await session.stopDaemon();
 		const holding = holdingCanary(stateDir, canary);
 		if (holding.length > 0) {
 			throw new Error(`a link out of the workspace reached the store: ${holding.join(", ")}`);
 		}
-		console.log("isolation ok: no bunfig preload, .env or json.py ran, and no outside link reached the store");
+		const holdingDenied = holdingCanary(stateDir, denied);
+		if (holdingDenied.length > 0) {
+			throw new Error(`a denied file reached the store: ${holdingDenied.join(", ")}`);
+		}
+		console.log(
+			"isolation ok: no bunfig preload, .env or json.py ran, and no outside link or denied file reached the store or a type",
+		);
 	} finally {
 		await session?.stopDaemon().catch(() => {});
 		clearInterval(holdOpen);
