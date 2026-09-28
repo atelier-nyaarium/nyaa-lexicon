@@ -828,7 +828,8 @@ describe("checker-backed analysis", () => {
 			expect(fallbackSecond).toEqual(fallbackFirst);
 			expect(fallbackFresh).toEqual(fallbackFirst);
 		},
-		{ timeout: 15_000 },
+		// Five programs built in turn; the parallel gate triples their time.
+		{ timeout: 30_000 },
 	);
 
 	it("attributes initializer references to the declared variable", () => {
