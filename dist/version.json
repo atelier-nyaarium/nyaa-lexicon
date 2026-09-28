@@ -1,4 +1,5 @@
 {
-	"buildVersion": "10.1.1",
-	"protocolVersion": "3.19.0"
+	"buildVersion": "11.0.0",
+	"protocolVersion": "3.20.0",
+	"oldestClientMajor": 3
 }
