@@ -10,7 +10,8 @@
 		"./json": "./src/json.ts",
 		"./xml": "./src/xml.ts",
 		"./html": "./src/html.ts",
-		"./text": "./src/text.ts"
+		"./text": "./src/text.ts",
+		"./compile-commands": "./src/compileCommands.ts"
 	},
 	"dependencies": {
 		"@nyaa-lexicon/protocol": "workspace:*",

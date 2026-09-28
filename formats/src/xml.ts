@@ -14,6 +14,18 @@ import { startTagSignature } from "./startTag.js";
 import { isBlankDocument, parseXmlDocument } from "./xml/parser.js";
 import { contentSpan, isWhiteSpace, type XmlContent } from "./xml/syntax.js";
 
+// The tree itself, for a provider reading its own XML (MSBuild projects).
+export { parseXmlDocument } from "./xml/parser.js";
+export type {
+	XmlAttribute,
+	XmlContent,
+	XmlDocument,
+	XmlElement,
+	XmlParse,
+	XmlProblem,
+	XmlText,
+} from "./xml/syntax.js";
+
 export interface XmlContext {
 	language: string;
 	module: string;
